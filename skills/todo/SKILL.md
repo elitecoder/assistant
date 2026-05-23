@@ -21,10 +21,12 @@ Persistent TODO list for the Assistant system. File: `~/.claude/assistant-todo.j
 
 ### Add flags
 
-- `--auto` — set `autoDispatch: true` (Triage will spawn a workspace via /spawn-claude-workspace)
+- `--no-auto` — set `autoDispatch: false` (opt out — for design rules, discipline reminders, and other not-actually-dispatchable items)
 - `--detail "<text>"` — longer description shown on hover/expand
 - `--ws ws:N` — link to an existing workspace (sets `dispatchedWs`)
 - `--source "<text>"` — override default source (which is `manual:<YYYY-MM-DD>`)
+
+**Default: `autoDispatch=true`.** New TODOs are agent-dispatchable by default — Triage will spawn a workspace for them on the next pulse. Pass `--no-auto` to opt out for items that aren't actually shippable work (e.g. "be careful about X" rules, items waiting on a product decision). The Triage in-flight check prevents duplicate dispatches when a workspace is already shipping the same work.
 
 ## Execution
 
@@ -130,6 +132,9 @@ if duplicates:
     print("(TODO_FORCE_DEDUP_BYPASS=1 set — proceeding anyway.)")
 
 tid = next_id()
+# Default autoDispatch=True. Caller passes --no-auto to opt out (sets to False).
+# An explicit `auto` flag of None should default to True; only False flips it off.
+auto_dispatch = False if no_auto else True
 new_item = {
     "id": tid,
     "priority": priority,
@@ -137,13 +142,14 @@ new_item = {
     "source": source or f"manual:{datetime.now(timezone.utc).date().isoformat()}",
     "createdAt": datetime.now(timezone.utc).date().isoformat(),
     "status": "open",
+    "autoDispatch": auto_dispatch,
 }
 if detail: new_item["detail"] = detail
-if auto: new_item["autoDispatch"] = True
 if ws: new_item["dispatchedWs"] = ws
 items.append(new_item)
 write_atomic()
-print(f"✓ {tid} added ({priority}, status=open{', autoDispatch' if auto else ''})")
+flag_note = "autoDispatch" if auto_dispatch else "manual-only"
+print(f"✓ {tid} added ({priority}, status=open, {flag_note})")
 ```
 
 **done / defer**:
@@ -215,10 +221,13 @@ Single line. ID, priority, what changed. No verbose output.
 
 ```
 /todo P1 "Fix the dashboard refresh bug"
-→ ✓ td-031 added (P1, status=open)
+→ ✓ td-031 added (P1, status=open, autoDispatch)
 
-/todo P0 "ws:117 needs review" --auto --ws ws:117
-→ ✓ td-032 added (P0, status=open, autoDispatch)
+/todo P2 "Watch out for ECS coupling to Selection in Squirrel" --no-auto
+→ ✓ td-032 added (P2, status=open, manual-only)
+
+/todo P0 "ws:117 needs review" --ws ws:117
+→ ✓ td-033 added (P0, status=open, autoDispatch)
 
 /todo done td-024
 → ✓ td-024 → done

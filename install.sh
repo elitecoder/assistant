@@ -277,7 +277,12 @@ for skill_dir in "$REPO_ROOT"/skills/*/; do
         warn "DRIFT $target differs from $expected"
         note "       backing up live copy to $backup, then overwriting with repo version"
         note "       diff summary:"
-        diff -rq "$expected" "$target" 2>&1 | sed 's/^/         /' | head -10
+        # `diff -rq` returns rc=1 when files differ — that's expected and not an
+        # error. Combined with `head`'s early-close SIGPIPE, the pipeline returns
+        # nonzero, and under `set -euo pipefail` that aborts the loop iteration
+        # BEFORE the mv+cp can run. Wrap with `|| true` to swallow the expected
+        # nonzero exit while keeping the diff output visible.
+        (diff -rq "$expected" "$target" 2>&1 | sed 's/^/         /' | head -10) || true
         if [[ $APPLY -eq 1 ]]; then
             mv "$target" "$backup"
             cp -R "$expected" "$target"
