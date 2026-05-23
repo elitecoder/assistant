@@ -128,3 +128,15 @@ esac
 "$CMUX_BIN" send --workspace "$WS" "inbox" >/dev/null 2>&1
 "$CMUX_BIN" send-key --workspace "$WS" Return >/dev/null 2>&1
 log "pulsed $WS (pulse_file=$PULSE_FILE)"
+
+# --- 6. Schedule the post-pulse audit -------------------------------------
+# After Triage has had time to write its triage-state.json (~90s typical),
+# run the audit watchdog: catches stale awaiting cards Triage's own Step 2.5
+# re-validation rule may have missed. Run in background so this script returns
+# immediately to the LaunchAgent.
+AUDIT_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/triage-audit.sh"
+if [ -x "$AUDIT_SCRIPT" ]; then
+    (sleep 90 && "$AUDIT_SCRIPT" >/dev/null 2>&1) &
+    disown 2>/dev/null || true
+    log "scheduled post-pulse audit in 90s"
+fi

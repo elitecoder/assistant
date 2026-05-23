@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "generated_at": "2026-05-23T07:28:00.000000+00:00",
+    "model": "sonnet-4-6-1m",
+    "pulse_idx": 200,
+    "n_sessions_reviewed": 0,
+    "n_actions_taken": 0,
+    "n_awaiting": 1
+  },
+  "actions_taken": [],
+  "awaiting_input": [
+    {
+      "key": "triage:autodispatch-unset:bulk",
+      "tier": "T2",
+      "title": "Set autoDispatch for 2 TODOs",
+      "detail": "td-501, td-502 all have autoDispatch=null.",
+      "touches": [],
+      "alt_actions": [
+        "Set autoDispatch=true (Triage will spawn next pulse)",
+        "Set autoDispatch=false (manual only)"
+      ],
+      "confidence": null
+    }
+  ]
+}

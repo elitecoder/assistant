@@ -116,6 +116,25 @@ The pulse script reads this file to wake you next time. If you skip writing it, 
 - For each `mark-todo-status` action: open `~/.claude/assistant-todo.json` and confirm the item now has the target status.
 - If any verification fails, **fix it on this same pulse** — clear the input buffer (Ctrl-U via `cmux rpc surface.send_key`), resend the literal text, retry the close, etc. Add a `verification_failure` entry to the state file.
 
+### Step 2.5 — Re-validate carried-over awaiting cards (ABSOLUTE RULE)
+
+**Awaiting cards from the prior pulse are HYPOTHESES, not facts.** Mukul or another tool may have changed underlying state between pulses (flipped `autoDispatch=true`, merged a PR, closed a workspace) that invalidates the card's premise. **Never re-emit a card without re-checking its predicate against current state.**
+
+For every entry in the prior pulse's `awaiting_input[]`, re-validate before deciding to keep it:
+
+| Card key pattern | Re-validation predicate (drop the card if FALSE) |
+|---|---|
+| `triage:autodispatch-unset:*` | At least one referenced TODO still has `autoDispatch == null` in `~/.claude/assistant-todo.json`. If ALL referenced TODOs now have `autoDispatch=true` or `=false`, drop the card and proceed to dispatch the `=true` ones in Step 3. |
+| `triage:cleanup-gated:*:pr-NNN` | `gh pr view NNN --json state -q .state` still returns `OPEN` (not `MERGED` / `CLOSED`). If merged or closed, drop the card. |
+| `triage:needs-you:workspace:N:*` | `world.workspaces[]` still contains `workspace:N`. If gone, drop the card. |
+| `triage:dispatch-skipped:td-NNN:*` | The TODO `td-NNN` still has `autoDispatch=true` AND a matching live session is still in `world.live_sessions[]`. Both must hold; if either fails, drop the card. |
+| `triage:dispatch-failed:td-NNN` | The TODO still has `dispatchedAt` empty OR pointing at a gone workspace. If a fresh dispatch already succeeded, drop the card. |
+| Any other key | Re-derive its predicate from the card's `detail` text. If you can't, default to dropping the card (a fresh pulse with current state will re-emit if still relevant). |
+
+**Incident reference (2026-05-23):** pulse 122 inherited a `triage:autodispatch-unset:bulk` card from pulse 121 listing td-003/005/006/007/008/010/011 as `autoDispatch=null`. Between pulses, Mukul ran a bulk-flip script setting all of them to `true`. Pulse 122 re-emitted the card without checking and **failed to dispatch** any of the now-eligible TODOs. Net effect: 7 dispatchable items sat idle for ~30 minutes until Mukul manually nudged Triage. This rule prevents that pattern.
+
+For each card you DROP, add an `actions_taken[]` entry with key `triage:awaiting-purged:<original-key>` and `evidence` quoting the now-current state that invalidated it. This makes the audit trail explicit.
+
 ### Step 3 — For each TODO whose status is `open` or `in-progress`
 Find which workspace did the work — live OR closed. Don't blindly walk all transcripts; reason from what you have:
 - If the TODO has a `dispatchedWs` field, that's canonical. Check `world.workspaces[]`. If still live, use its session's recent_turns. If closed, find its transcript via `~/.claude/cmux-registry.json` (match by cwd, time-window around `dispatchedAt` or `createdAt ± 24h`).
