@@ -34,6 +34,22 @@ mkdir -p "$INBOX" "$LEDGER_DIR" "$(dirname "$LOG")"
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$LOG"; }
 
+# Probe a cmux RPC up to 3 times with 2s backoff. Returns 0 on first success;
+# only 3 consecutive failures count as a real "gone." Without this, a single
+# transient `cmux tree` failure triggers a spurious respawn — exactly the bug
+# that produced the 2026-05-23 zombie-workspace incident (ws:39, ws:41 spawned
+# while ws:2 was still alive and healthy).
+cmux_retry() {
+    local i
+    for i in 1 2 3; do
+        if "$@" >/dev/null 2>&1; then
+            return 0
+        fi
+        [ "$i" -lt 3 ] && sleep 2
+    done
+    return 1
+}
+
 # --- 1. Drop pulse file ----------------------------------------------------
 TS=$(date +%s)
 ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -95,8 +111,8 @@ fi
 # pulse an unrelated workspace (e.g. type "inbox" into a LinkedIn editing
 # session). We accept legacy "Triage Agent" titles too so a pre-rename
 # heartbeat doesn't get respawned away on the first tick after upgrade.
-if ! "$CMUX_BIN" tree --workspace "$WS" --json >/dev/null 2>&1; then
-    log "workspace $WS no longer exists in cmux — running spawn-assistant.sh"
+if ! cmux_retry "$CMUX_BIN" tree --workspace "$WS" --json; then
+    log "workspace $WS not found after 3 retries — running spawn-assistant.sh"
     [ -x "$SPAWN_SCRIPT" ] && "$SPAWN_SCRIPT" 2>>"$LOG" || log "spawn-assistant missing"
     exit 0
 fi

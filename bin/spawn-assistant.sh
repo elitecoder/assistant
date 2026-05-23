@@ -38,6 +38,42 @@ mkdir -p "$(dirname "$LOG")" "$CWD"
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG" >&2; }
 
+# Serialize concurrent spawns (e.g. cron pulse + manual respawn within ~2s).
+# Without this, two parallel runs each pass the "alive?" check, both create
+# workspaces, and the zombie cleanup at the end of each runs before the other
+# is visible — leaving 2 Assistants alive. Reproduced 2026-05-23: ws:42+ws:43.
+#
+# `mkdir` is atomic on POSIX, so it's a portable mutex that works without flock.
+# A stale lockdir from a previous crash gets cleaned up if it's >5min old.
+LOCK_DIR="$HOME/.assistant/spawn-assistant.lock"
+if [ -d "$LOCK_DIR" ]; then
+    LOCK_AGE=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0) ))
+    if [ "$LOCK_AGE" -gt 300 ]; then
+        log "stale lockdir ($LOCK_AGE s old) — removing"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
+fi
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    log "another spawn-assistant is running (lockdir exists) — exiting"
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+# Probe a cmux RPC up to 3 times with 2s backoff. Returns 0 if any attempt
+# succeeds; only returns non-zero when all 3 fail. A single transient failure
+# must NOT trigger a respawn — that's how we ended up spawning ws:39 then ws:41
+# while the original ws:2 was still alive (2026-05-23 incident).
+cmux_retry() {
+    local i
+    for i in 1 2 3; do
+        if "$@" >/dev/null 2>&1; then
+            return 0
+        fi
+        [ "$i" -lt 3 ] && sleep 2
+    done
+    return 1
+}
+
 # --- 1. Already alive? ------------------------------------------------------
 if [ -f "$HEARTBEAT" ]; then
     EXISTING_WS=$(python3 -c "
@@ -90,8 +126,10 @@ for line in sys.stdin:
 fi
 
 # --- 2. Sanity: cmux running? -----------------------------------------------
-if ! "$CMUX_BIN" ping >/dev/null 2>&1; then
-    log "cmux is not running — cannot spawn Assistant. Start /Applications/cmux.app and retry."
+# Retry to absorb transient RPC failures — cmux is healthy but `ping` can
+# briefly fail under load. Only treat 3 consecutive failures as "really down".
+if ! cmux_retry "$CMUX_BIN" ping; then
+    log "cmux ping failed 3× in a row — cannot spawn Assistant. Start /Applications/cmux.app and retry."
     exit 1
 fi
 
@@ -102,12 +140,38 @@ CWD_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CW
 
 # --- 4. Compose the launch command -----------------------------------------
 # Sonnet 1M for routine pulse-driven work. Bedrock prefix when applicable.
+#
+# Bedrock detection: launchd does NOT inherit env from ~/.claude/settings.json,
+# so $CLAUDE_CODE_USE_BEDROCK is empty when this script runs as a LaunchAgent.
+# Read settings.json directly. Also accept the env var (for invocations from
+# inside an active claude session) and the AWS_BEARER_TOKEN_BEDROCK signal.
+USE_BEDROCK=0
+if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ] || [ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]; then
+    USE_BEDROCK=1
+elif [ -f "$HOME/.claude/settings.json" ]; then
+    if python3 -c "
+import json, sys
+try:
+    s = json.load(open('$HOME/.claude/settings.json'))
+    sys.exit(0 if str(s.get('env',{}).get('CLAUDE_CODE_USE_BEDROCK','')) == '1' else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+        USE_BEDROCK=1
+    fi
+fi
+
 MODEL_SLUG="claude-sonnet-4-6[1m]"
-if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ]; then
+if [ "$USE_BEDROCK" = "1" ]; then
     MODEL_ID="us.anthropic.$MODEL_SLUG"
+    # Bedrock SDK in the claude CLI needs AWS_REGION. settings.json sets it for
+    # interactive sessions; LaunchAgents don't inherit that. Default if unset.
+    export AWS_REGION="${AWS_REGION:-us-west-2}"
+    export CLAUDE_CODE_USE_BEDROCK=1
 else
     MODEL_ID="$MODEL_SLUG"
 fi
+log "model_id=$MODEL_ID use_bedrock=$USE_BEDROCK aws_region=${AWS_REGION:-unset}"
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --add-dir ~/.assistant --add-dir /tmp --model \"$MODEL_ID\""
 
 # --- 5. Create the workspace ------------------------------------------------
@@ -203,6 +267,29 @@ with open(path + ".tmp", "w") as f:
     json.dump(hb, f, indent=2)
 os.replace(path + ".tmp", path)
 PY
+
+# --- 10. Zombie cleanup: close any other "Assistant (Sonnet 1M)" workspaces -
+# When a false-positive in the liveness check triggered a respawn, the prior
+# Assistant workspace stayed alive in cmux even though we no longer pulse it.
+# After we've successfully spawned the NEW Assistant, find every other ws with
+# the same title and close it. Keep only the freshly spawned $WS_REF.
+"$CMUX_BIN" list-workspaces 2>/dev/null | python3 - "$WS_REF" <<'PY' | while IFS= read -r zombie_ws; do
+import sys, re
+me = sys.argv[1]
+for line in sys.stdin:
+    m = re.match(r'^\s*\*?\s*(workspace:\d+)\s+(.+?)(?:\s+\[selected\])?\s*$', line)
+    if not m:
+        continue
+    ws, title = m.group(1), m.group(2).strip()
+    if ws == me:
+        continue
+    if "Assistant (Sonnet 1M)" in title or title.startswith("Triage Agent"):
+        print(ws)
+PY
+    log "closing zombie Assistant workspace $zombie_ws"
+    "$CMUX_BIN" close-workspace --workspace "$zombie_ws" >/dev/null 2>&1 \
+        || log "failed to close $zombie_ws (may already be gone)"
+done
 
 log "Assistant spawned → $WS_REF $SURFACE_REF (heartbeat written)"
 echo "workspace=$WS_REF surface=$SURFACE_REF claude_ready=$CLAUDE_READY"
