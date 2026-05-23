@@ -55,8 +55,27 @@ except Exception:
         AGE=$((NOW - EXISTING_TS))
         if [ "$AGE" -lt 300 ]; then
             if "$CMUX_BIN" tree --workspace "$EXISTING_WS" --json >/dev/null 2>&1; then
-                log "existing Triage at $EXISTING_WS is alive (heartbeat age ${AGE}s) — exit"
-                exit 0
+                # cmux restarts reissue workspace refs — confirm the title still
+                # matches Triage before declaring it alive. Otherwise we'd skip
+                # respawn while the heartbeat points at someone else's workspace.
+                EXISTING_TITLE=$("$CMUX_BIN" list-workspaces 2>/dev/null | python3 -c "
+import sys, re
+target = sys.argv[1]
+for line in sys.stdin:
+    m = re.match(r'^\s*\*?\s*(workspace:\d+)\s+(.+?)(?:\s+\[selected\])?\s*$', line)
+    if m and m.group(1) == target:
+        print(m.group(2).strip())
+        break
+" "$EXISTING_WS")
+                case "$EXISTING_TITLE" in
+                    *"Triage Agent"*)
+                        log "existing Triage at $EXISTING_WS is alive (heartbeat age ${AGE}s, title='$EXISTING_TITLE') — exit"
+                        exit 0
+                        ;;
+                    *)
+                        log "heartbeat points at $EXISTING_WS but its title is '$EXISTING_TITLE' (refs reissued) — respawning"
+                        ;;
+                esac
             fi
         fi
         log "existing heartbeat for $EXISTING_WS is stale (${AGE}s) or workspace gone — respawning"

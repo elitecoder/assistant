@@ -276,12 +276,25 @@ assistant-curator.py write \
 
 A persistent list of open items lives at `~/.claude/assistant-todo.json` (source of truth) and `~/.claude/assistant-todo.html` (rendered view, same dark theme as the dashboard). The Assistant owns keeping both in sync. Mukul will add items by telling you what's on his mind; you prioritize and place them.
 
+### ABSOLUTE RULE — always go through the `/todo` skill for adds
+
+**Never write to `~/.claude/assistant-todo.json` directly to add a new item.** Always invoke the `/todo add` skill (or its underlying script). The skill enforces a Jaccard-similarity de-dup check (40% token-overlap threshold) against open items — without it, the same work gets captured as multiple TODOs and downstream auto-dispatch spawns duplicate workspaces shipping the same PR (incident 2026-05-22: td-019 → ws:98 + ws:114 both shipped to PR #10164).
+
+This applies to:
+- Closing a workspace with unfinished work (`/todo add` for each captured item)
+- Closing a Dead workspace with a dirty worktree
+- Mukul saying "add to TODO" / "remind me"
+- Triage's own audit logic (Triage's prompt only EDITS existing TODOs; if it ever needs to create one, it calls the skill)
+- Any ad-hoc inline `python3 -c '...'` you might be tempted to write
+
+If de-dup fires and you genuinely need to bypass (rare — usually the duplicate IS real and you should edit the existing item instead), set `TODO_FORCE_DEDUP_BYPASS=1` in the env. Don't make this the default.
+
 | Trigger | Behavior |
 |---|---|
-| **Closing a workspace with unfinished work** | Before closing, capture every *Waiting* ask and every still-actionable thread from the workspace into the TODO board with `source: "closed-ws:<ref>"`. Never close without doing this. Mention the items captured when reporting the close. |
-| **Closing a Dead workspace** | Still inspect the worktree (if any) for uncommitted work; if found, capture as P1 item with source `worktree:<path>`. Only after the capture is the close safe. |
-| **Mukul says "add to TODO" / "remind me to" / "put this on my list"** | Add a new item. Default priority by signal: *P0* if blocking / time-sensitive, *P1* if a real design call, *P2* if smaller decision, *P3* maintenance, *P4* someday/parked. State the priority you chose so he can override. |
-| **Mukul says "done" / "completed" / "ship it"** | Move the item to `completed[]` with a `closedAt` stamp. Don't delete — completion history is signal. |
+| **Closing a workspace with unfinished work** | Before closing, capture every *Waiting* ask and every still-actionable thread via `/todo add ... --source closed-ws:<ref>`. Never close without doing this. Mention the items captured when reporting the close. |
+| **Closing a Dead workspace** | Still inspect the worktree (if any) for uncommitted work; if found, capture as P1 item via `/todo add ... --source worktree:<path>`. Only after the capture is the close safe. |
+| **Mukul says "add to TODO" / "remind me to" / "put this on my list"** | `/todo add` with priority by signal: *P0* if blocking / time-sensitive, *P1* if a real design call, *P2* if smaller decision, *P3* maintenance, *P4* someday/parked. State the priority you chose so he can override. |
+| **Mukul says "done" / "completed" / "ship it"** | `/todo done td-NNN`. Don't delete — completion history is signal. |
 | **Surface waiting** | Once per dispatcher turn (or when Mukul asks "what's on my plate"), render the TODO HTML and surface the top P0/P1 items inline. Don't re-list the whole board unless asked. |
 
 Schema is documented in the `_description` field of the JSON. Priority values: `P0 P1 P2 P3 P4`. Required item fields: `id priority title detail source createdAt`. Optional: `url closedAt`.

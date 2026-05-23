@@ -88,12 +88,35 @@ if [ -n "$LAST_TS" ] && [ "$LAST_TS" -gt 0 ]; then
     fi
 fi
 
-# --- 4. Verify the workspace still exists ----------------------------------
+# --- 4. Verify the workspace still exists AND is actually Triage -----------
+# After a cmux restart, workspace refs get reissued — workspace:12 may now be
+# a completely different workspace. Tree-existence alone is not enough; we
+# must confirm the title is still "Triage Agent ...". Otherwise we'll pulse
+# an unrelated workspace (e.g. type "inbox" into a LinkedIn editing session).
 if ! "$CMUX_BIN" tree --workspace "$WS" --json >/dev/null 2>&1; then
     log "workspace $WS no longer exists in cmux — running spawn-triage.sh"
     [ -x "$SPAWN_SCRIPT" ] && "$SPAWN_SCRIPT" 2>>"$LOG" || log "spawn-triage missing"
     exit 0
 fi
+
+WS_TITLE=$("$CMUX_BIN" list-workspaces 2>/dev/null | python3 -c "
+import sys, re
+target = sys.argv[1]
+for line in sys.stdin:
+    m = re.match(r'^\s*\*?\s*(workspace:\d+)\s+(.+?)(?:\s+\[selected\])?\s*$', line)
+    if m and m.group(1) == target:
+        print(m.group(2).strip())
+        break
+" "$WS")
+case "$WS_TITLE" in
+    *"Triage Agent"*)
+        ;;
+    *)
+        log "workspace $WS title is '$WS_TITLE' (expected to contain 'Triage Agent') — refs were reissued; running spawn-triage.sh"
+        [ -x "$SPAWN_SCRIPT" ] && "$SPAWN_SCRIPT" 2>>"$LOG" || log "spawn-triage missing"
+        exit 0
+        ;;
+esac
 
 # --- 5. Wake Triage with a short literal text + Enter ---------------------
 # The inbox file is the real signal — but a bare Enter alone is too weak; it

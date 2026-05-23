@@ -153,7 +153,25 @@ If confidence is below 0.85, leave the TODO alone — better to miss than guess.
 
 ### Step 3.5 — Dispatch open TODOs that need a workspace
 
-A TODO is the source of truth for *intent*. A workspace is the source of truth for *execution*. The bridge between them is dispatch. Three TODO buckets need attention here, in this order:
+A TODO is the source of truth for *intent*. A workspace is the source of truth for *execution*. The bridge between them is dispatch. Three TODO buckets need attention here, in this order.
+
+#### Pre-dispatch in-flight check (ALWAYS run before any spawn)
+
+Before spawning a workspace for ANY TODO (Bucket A re-dispatch OR Bucket B initial dispatch), check whether *similar work is already in flight*. The TODO's `dispatchedWs` field can be stale — a hand-spawned workspace doing the same work without the dispatch handshake is invisible to it. This is what caused the **td-019 incident (2026-05-22)**: ws:98 was hand-spawned at 01:45Z to ship td-019 and was actively shipping the PR. At 05:51Z Triage's Bucket B logic looked at td-019 (autoDispatch=true, dispatchedAt empty) and spawned ws:114 to do the same thing. PR #10164 ended up with both workspaces force-pushing to the same branch.
+
+**The check:** scan `world.live_sessions[]` (and `world.workspaces[]`) for ANY workspace whose:
+- `ws_title` contains the td-id literally (e.g. `td-019`) OR
+- `ws_title` contains 2+ distinctive words from the TODO's `title` (lowercased, ignore stop-words; e.g. for "Deferrals worktree (agent-a10ad15a9bd79fd2d) — dirty, no upstream, contains can-expand-trim feature", the distinctive tokens are `deferrals`, `can-expand-trim`, `worktree`) OR
+- `cwd` matches the TODO's referenced worktree path (if the TODO mentions a path) OR
+- last 6 transcript turns mention the td-id (`td-019`) or the same distinctive 2+ tokens
+
+If a match is found, **DO NOT SPAWN**. Instead:
+
+1. Update the TODO in `~/.claude/assistant-todo.json`: set `dispatchedWs` to the matched workspace's `ws_ref` and `dispatchedAt` to its `ts` (creation time from world.json) so future pulses see the in-flight binding.
+2. Add an `actions_taken[]` entry with key `triage:dispatch-skipped:td-NNN:already-in-flight`, `evidence` quoting the matched workspace's title + ws_ref + the matching keyword/path.
+3. Surface a low-tier `awaiting_input` card asking Mukul to confirm the binding is correct (key `triage:dispatch-skipped:td-NNN:confirm-binding`, tier T3, confidence 0.7) — because the auto-detected match could be wrong (different work that happens to share keywords).
+
+This rule applies **before any other dispatch logic in this section runs**. It is a hard prerequisite for both Bucket A re-dispatch and Bucket B initial dispatch.
 
 **Bucket A — `autoDispatch: true`, `dispatchedAt` set, but `dispatchedWs` is GONE from `world.workspaces[]`** (the workspace closed without flipping the TODO status).
 

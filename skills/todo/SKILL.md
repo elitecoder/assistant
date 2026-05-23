@@ -76,8 +76,59 @@ def write_atomic():
 
 ### Step 3 — apply the operation
 
-**add**:
+**add** (with de-dup pre-check):
 ```python
+# De-dup: don't create a TODO that overlaps an existing OPEN item.
+# Triage-side incident 2026-05-22: td-019 was created from a closed-workspace
+# audit, then a similar td had already been hand-added; downstream auto-dispatch
+# spawned two workspaces shipping the same PR. De-dup at creation time prevents
+# the duplicate from existing.
+import re
+
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "by",
+    "is", "was", "are", "with", "from", "as", "at", "this", "that",
+    "fix", "feat", "feature", "todo", "task", "work", "auto", "ws",
+    "squirrel", "ffp", "pr",  # too common in this project
+}
+
+def normalize_title(s: str) -> set:
+    """Token set for similarity scoring."""
+    s = (s or "").lower()
+    tokens = re.findall(r"[a-z0-9][a-z0-9\-]+", s)
+    return {t for t in tokens if t not in STOPWORDS and len(t) >= 3}
+
+def jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+# Build candidate set from currently-OPEN (or in-progress) TODOs.
+new_tokens = normalize_title(title) | normalize_title(detail or "")
+duplicates = []
+for it in items:
+    if it.get("status") in ("done", "deferred"):
+        continue
+    existing_tokens = normalize_title(it.get("title", "")) | normalize_title(it.get("detail", ""))
+    score = jaccard(new_tokens, existing_tokens)
+    if score >= 0.4:  # 40%+ token overlap → likely the same work
+        duplicates.append((score, it))
+
+if duplicates:
+    duplicates.sort(reverse=True)
+    print("⚠️  Possible duplicate(s) of this title in OPEN TODOs:")
+    for score, it in duplicates[:3]:
+        print(f"     [{score:.0%} overlap] {it['id']} ({it.get('status','open')}) — {it.get('title','')[:80]}")
+    print("")
+    if not (auto and os.environ.get("TODO_FORCE_DEDUP_BYPASS") == "1"):
+        # Hard stop unless caller explicitly bypassed (Triage's own auto-create
+        # path can pass TODO_FORCE_DEDUP_BYPASS=1 after Triage has confirmed the
+        # match isn't real — but the default for human /todo invocations is to
+        # block).
+        print("Aborting: edit the existing TODO instead, or pass TODO_FORCE_DEDUP_BYPASS=1 to override.")
+        sys.exit(1)
+    print("(TODO_FORCE_DEDUP_BYPASS=1 set — proceeding anyway.)")
+
 tid = next_id()
 new_item = {
     "id": tid,
