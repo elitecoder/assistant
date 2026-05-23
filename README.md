@@ -27,26 +27,57 @@ assistant/
 
 ## Where the live system reads from
 
-This repo is the **source of truth**. The actual running system reads from `~/.claude/` and `~/Library/LaunchAgents/`. The two are kept in sync manually for now (no build/install step yet — Mukul will iterate). To deploy a change:
+This repo is the **source of truth**. The actual running system reads from `~/.claude/` and `~/Library/LaunchAgents/`. Wire-up is via `install.sh`:
 
 ```bash
-# bin/
-cp bin/world-scanner.py ~/.claude/bin/
-launchctl kickstart -k gui/$UID/com.mukuls.world-scanner
+./install.sh              # dry-run, shows what would change
+./install.sh --apply      # actually wires it up
+```
 
-# Triage prompt — edits land instantly because triage-pulse.sh re-reads the file each pulse.
-# But if you've edited the prompt and Triage is mid-session, push the new policy directly:
-cp prompts/prompt-triage-agent.md ~/.claude/spawn-prompts/
-cmux send --workspace workspace:126 --surface surface:239 "POLICY UPDATE — re-read $(realpath ~/.claude/spawn-prompts/prompt-triage-agent.md)"
+After `--apply`:
+
+| Repo path | Live path | Mechanism |
+|---|---|---|
+| `bin/` | `~/.claude/bin` | symlink |
+| `prompts/prompt-triage-agent.md` | `~/.claude/spawn-prompts/prompt-triage-agent.md` | symlink |
+| `lessons/active/` | `~/.claude/lessons/active` | symlink |
+| `docs/assistant-operating-guide.md` | `~/.claude/assistant-operating-guide.md` | symlink |
+| `skills/todo/`, `skills/cleanup/`, `skills/spawn-claude-workspace/` | `~/.claude/skills/<name>/` | **copy** (so they're shareable) |
+| `launchagents/*.plist` | `~/Library/LaunchAgents/*.plist` | copy + launchctl reload |
+
+### Why some are symlinks and skills are copies
+
+- **Code/prompts/lessons are symlinked** so an edit in the repo is live immediately — no copy step.
+- **Skills are copied** so each skill directory is a self-contained, shareable artifact. You can `cp -r ~/dev/assistant/skills/todo /elsewhere/` and it just works. The trade-off: edits made in place at `~/.claude/skills/<name>/` don't auto-sync back. Use `./install.sh --pull-skills` to bring those edits into the repo (it shows a diff in dry-run, applies on `--apply`).
+- **Plists are copied** because launchd does not follow symlinks reliably.
+
+### Daily workflow
+
+```bash
+# Edit code in the repo — it's live (symlink).
+$EDITOR bin/world-scanner.py
+launchctl kickstart -k gui/$UID/com.mukuls.world-scanner   # reload that one daemon
+
+# Edit Triage prompt — re-read by triage-pulse.sh each pulse, no daemon reload needed.
+# But if Triage is mid-session, push the policy update directly:
+$EDITOR prompts/prompt-triage-agent.md
+cmux send --workspace workspace:126 --surface surface:239 "POLICY UPDATE — re-read prompt"
 cmux send-key --workspace workspace:126 --surface surface:239 enter
 
-# Skills
-cp skills/todo/SKILL.md ~/.claude/skills/todo/
+# Edit a skill in the repo — re-run install to copy it live.
+$EDITOR skills/todo/SKILL.md
+./install.sh --apply
 
-# LaunchAgent
-cp launchagents/com.mukuls.world-scanner.plist ~/Library/LaunchAgents/
-launchctl unload ~/Library/LaunchAgents/com.mukuls.world-scanner.plist
-launchctl load   ~/Library/LaunchAgents/com.mukuls.world-scanner.plist
+# Edit a skill IN PLACE at ~/.claude/skills/todo/ then pull the edit back.
+$EDITOR ~/.claude/skills/todo/SKILL.md
+./install.sh --pull-skills          # dry-run; shows the diff
+./install.sh --pull-skills --apply  # write into the repo
+git diff skills/todo                # review
+git commit -am "..."
+
+# Edit a plist — re-run install to copy + reload that daemon.
+$EDITOR launchagents/com.mukuls.world-scanner.plist
+./install.sh --apply
 ```
 
 ## Runtime state — NOT committed
