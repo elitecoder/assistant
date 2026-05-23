@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/.claude/bin/session-context-watcher.py</string>
+        <string>/Users/mukuls/dev/assistant/bin/session-context-watcher.py</string>
         <string>--daemon</string>
     </array>
     <key>RunAtLoad</key>

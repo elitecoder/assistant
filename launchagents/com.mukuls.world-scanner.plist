@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/.claude/bin/world-scanner.py</string>
+        <string>/Users/mukuls/dev/assistant/bin/world-scanner.py</string>
     </array>
     <key>StartInterval</key>
     <integer>30</integer>

@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/.claude/bin/render-assistant-page.py</string>
+        <string>/Users/mukuls/dev/assistant/bin/render-assistant-page.py</string>
     </array>
     <key>StartInterval</key>
     <integer>15</integer>

@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/.claude/bin/todo-server.py</string>
+        <string>/Users/mukuls/dev/assistant/bin/todo-server.py</string>
     </array>
 
     <key>EnvironmentVariables</key>

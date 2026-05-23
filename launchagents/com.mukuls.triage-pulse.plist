@@ -6,7 +6,7 @@
     <string>com.mukuls.triage-pulse</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/mukuls/.claude/bin/triage-pulse.sh</string>
+        <string>/Users/mukuls/dev/assistant/bin/triage-pulse.sh</string>
     </array>
     <key>StartInterval</key>
     <integer>120</integer>
