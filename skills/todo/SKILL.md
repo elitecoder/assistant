@@ -1,11 +1,11 @@
 ---
 name: todo
-description: Add, list, and update items in Mukul's persistent TODO list at ~/.claude/assistant-todo.json. Use when the user types /todo, asks to "add a todo", "mark td-NNN done", "defer td-NNN", "remove td-NNN", or wants to see the current TODO list. Single source of truth — Triage agent reads from the same file. After any mutation, the dashboard auto-refreshes within ~15s; nudge Triage with a pulse for sub-minute freshness.
+description: Add, list, and update items in Mukul's persistent TODO list at ~/.claude/assistant-todo.json. Use when the user types /todo, asks to "add a todo", "mark td-NNN done", "defer td-NNN", "remove td-NNN", or wants to see the current TODO list. Single source of truth — the Assistant agent reads from the same file. After any mutation, the dashboard auto-refreshes within ~15s; nudge the Assistant with a pulse for sub-minute freshness.
 ---
 
 # /todo — TODO management
 
-Persistent TODO list for the Assistant system. File: `~/.claude/assistant-todo.json`. Schema documented in the file's `_schema` field. Triage agent reads this file on every pulse; dashboard renderer surfaces it on the **TODOs** tab.
+Persistent TODO list for the Assistant system. File: `~/.claude/assistant-todo.json`. Schema documented in the file's `_schema` field. The Assistant agent reads this file on every pulse; dashboard renderer surfaces it on the **TODOs** tab.
 
 ## Subcommands
 
@@ -26,11 +26,11 @@ Persistent TODO list for the Assistant system. File: `~/.claude/assistant-todo.j
 - `--ws ws:N` — link to an existing workspace (sets `dispatchedWs`)
 - `--source "<text>"` — override default source (which is `manual:<YYYY-MM-DD>`)
 
-**Default: `autoDispatch=true`.** New TODOs are agent-dispatchable by default — Triage will spawn a workspace for them on the next pulse. Pass `--no-auto` to opt out for items that aren't actually shippable work (e.g. "be careful about X" rules, items waiting on a product decision). The Triage in-flight check prevents duplicate dispatches when a workspace is already shipping the same work.
+**Default: `autoDispatch=true`.** New TODOs are agent-dispatchable by default — the Assistant will spawn a workspace for them on the next pulse. Pass `--no-auto` to opt out for items that aren't actually shippable work (e.g. "be careful about X" rules, items waiting on a product decision). The Assistant's in-flight check prevents duplicate dispatches when a workspace is already shipping the same work.
 
 ## Execution
 
-All work is filesystem-side — read JSON, mutate, atomic write. No HTTP, no subprocess except the Triage repulse at the end.
+All work is filesystem-side — read JSON, mutate, atomic write. No HTTP, no subprocess except the Assistant repulse at the end.
 
 ### Step 1 — parse args
 
@@ -81,7 +81,7 @@ def write_atomic():
 **add** (with de-dup pre-check):
 ```python
 # De-dup: don't create a TODO that overlaps an existing OPEN item.
-# Triage-side incident 2026-05-22: td-019 was created from a closed-workspace
+# Assistant-side incident 2026-05-22: td-019 was created from a closed-workspace
 # audit, then a similar td had already been hand-added; downstream auto-dispatch
 # spawned two workspaces shipping the same PR. De-dup at creation time prevents
 # the duplicate from existing.
@@ -123,10 +123,10 @@ if duplicates:
         print(f"     [{score:.0%} overlap] {it['id']} ({it.get('status','open')}) — {it.get('title','')[:80]}")
     print("")
     if not (auto and os.environ.get("TODO_FORCE_DEDUP_BYPASS") == "1"):
-        # Hard stop unless caller explicitly bypassed (Triage's own auto-create
-        # path can pass TODO_FORCE_DEDUP_BYPASS=1 after Triage has confirmed the
-        # match isn't real — but the default for human /todo invocations is to
-        # block).
+        # Hard stop unless caller explicitly bypassed (the Assistant's own
+        # auto-create path can pass TODO_FORCE_DEDUP_BYPASS=1 after it has
+        # confirmed the match isn't real — but the default for human /todo
+        # invocations is to block).
         print("Aborting: edit the existing TODO instead, or pass TODO_FORCE_DEDUP_BYPASS=1 to override.")
         sys.exit(1)
     print("(TODO_FORCE_DEDUP_BYPASS=1 set — proceeding anyway.)")
@@ -201,15 +201,15 @@ for p in ("P0","P1","P2","P3","P4"):
         print(f"  {it['id']}  [{it.get('status','open'):<11}]  {it.get('title','')[:80]}{flags}")
 ```
 
-### Step 4 — nudge Triage so the new TODO surfaces in <2 min
+### Step 4 — nudge the Assistant so the new TODO surfaces in <2 min
 
 For `add` / `done` / `defer` / `rm` (any mutation), run:
 
 ```bash
-~/.claude/bin/triage-pulse.sh 2>/dev/null || true
+~/.claude/bin/assistant-pulse.sh 2>/dev/null || true
 ```
 
-Don't block on output. The pulse fires `pulse-now` to the Triage workspace; Triage's next emission will reflect the change. Dashboard auto-refreshes the tab within 15s.
+Don't block on output. The pulse fires `pulse-now` to the Assistant workspace; the Assistant's next emission will reflect the change. Dashboard auto-refreshes the tab within 15s.
 
 For `list` / `show` (read-only), skip the pulse.
 
@@ -246,14 +246,14 @@ Single line. ID, priority, what changed. No verbose output.
 
 ## Guardrails
 
-- **Atomic writes** — always tmp-file + rename, never partial writes that Triage would read.
+- **Atomic writes** — always tmp-file + rename, never partial writes that the Assistant would read.
 - **Never delete** — `rm` moves to `removed[]` with timestamp; the file's removed bucket is the recovery rope.
 - **ID is monotonic** — `next_id()` scans all three buckets so a new TODO never collides with a removed/completed one.
-- **status is one of**: `open / in-progress / blocked / done / deferred / stale`. The skill writes `open` on add, `done`/`deferred` on flip; Triage owns transitions to `in-progress`/`blocked`/`stale`.
+- **status is one of**: `open / in-progress / blocked / done / deferred / stale`. The skill writes `open` on add, `done`/`deferred` on flip; the Assistant owns transitions to `in-progress`/`blocked`/`stale`.
 - **Don't break legacy completed[]** — items with `status=done` may live in either `items[]` (new) or `completed[]` (legacy). `find()` handles both.
 
 ## Failure handling
 
 - **JSON parse error** → don't write; tell user file is corrupt at `~/.claude/assistant-todo.json` and stop.
 - **ID not found** → exit non-zero with `not found: <tid>`. Don't fuzzy-match — if user typed wrong ID, that's their error to fix.
-- **Triage pulse fails** → log silently, don't block the success message. The TODO is on disk regardless.
+- **Assistant pulse fails** → log silently, don't block the success message. The TODO is on disk regardless.

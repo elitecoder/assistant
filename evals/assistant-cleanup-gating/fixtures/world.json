@@ -24,7 +24,7 @@
       "session_id": "eval-fake-pr99999-1111-2222-3333-444444444444",
       "pid": 99001,
       "cwd": "/tmp/eval-fake-worktree",
-      "transcript_path": "/Users/mukuls/.claude/evals/triage-cleanup-gating/fixtures/transcript.jsonl",
+      "transcript_path": "/Users/mukuls/.claude/evals/assistant-cleanup-gating/fixtures/transcript.jsonl",
       "tab_id": "EVAL-FAKE-TAB-9912",
       "ts": 1779403200.0,
       "tty": "ttys99",

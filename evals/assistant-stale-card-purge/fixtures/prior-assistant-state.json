@@ -10,13 +10,13 @@
   "actions_taken": [],
   "awaiting_input": [
     {
-      "key": "triage:autodispatch-unset:bulk",
+      "key": "assistant:autodispatch-unset:bulk",
       "tier": "T2",
       "title": "Set autoDispatch for 2 TODOs",
       "detail": "td-501, td-502 all have autoDispatch=null.",
       "touches": [],
       "alt_actions": [
-        "Set autoDispatch=true (Triage will spawn next pulse)",
+        "Set autoDispatch=true (Assistant will spawn next pulse)",
         "Set autoDispatch=false (manual only)"
       ],
       "confidence": null

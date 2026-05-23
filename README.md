@@ -5,7 +5,7 @@ Mukul's personal dispatcher system that manages parallel cmux Claude Code worksp
 | Component | Cadence | Role |
 |---|---|---|
 | **Scanner** (`bin/world-scanner.py`) | 30s | Reads cmux registry + Claude transcripts, writes `~/.claude/cache/world.json` |
-| **Triage** (Sonnet 1M Claude in cmux ws:126) | 2min pulse | Reads `world.json`, decides + acts in one loop, writes `~/.claude/cache/triage-state.json` |
+| **Assistant agent** (Sonnet 1M Claude in a cmux workspace titled "Assistant (Sonnet 1M)") | 2min pulse | Reads `world.json`, decides + acts in one loop, writes `~/.claude/cache/assistant-state.json` |
 | **Renderer** (`bin/render-assistant-page.py`) | 15s | Renders both files into `~/.claude/assistant-dashboard.html` |
 | **TODO server** (`bin/todo-server.py`) | HTTP daemon | Powers dashboard buttons (`/focus/<ws>`, `/toggle`, `/remove`) on `127.0.0.1:9876` |
 | **Session-context watcher** (`bin/session-context-watcher.py`) | event-driven (kqueue) | Tails Claude JSONL transcripts → `~/.claude/cache/session-context.json` |
@@ -17,10 +17,10 @@ The dispatcher itself (this Claude session) reads `MEMORY.md`, `docs/assistant-o
 ```
 assistant/
 ├── bin/                   # All five daemons + curator CLI
-├── prompts/               # Triage agent prompt (the policy spec)
+├── prompts/               # Assistant agent prompt (the policy spec)
 ├── skills/                # /todo, /cleanup, /cmux, /spawn-claude-workspace
 ├── lessons/active/        # Curated rules from past corrections (read by dispatcher on boot)
-├── evals/                 # Regression tests for Triage policy decisions
+├── evals/                 # Regression tests for Assistant policy decisions
 ├── launchagents/          # macOS LaunchAgent plists for the 5 daemons
 └── docs/                  # assistant-operating-guide.md
 ```
@@ -39,7 +39,7 @@ After `--apply`:
 | Repo path | Live path | Mechanism |
 |---|---|---|
 | `bin/` | `~/.claude/bin` | symlink |
-| `prompts/prompt-triage-agent.md` | `~/.claude/spawn-prompts/prompt-triage-agent.md` | symlink |
+| `prompts/prompt-assistant-agent.md` | `~/.claude/spawn-prompts/prompt-assistant-agent.md` | symlink |
 | `lessons/active/` | `~/.claude/lessons/active` | symlink |
 | `docs/assistant-operating-guide.md` | `~/.claude/assistant-operating-guide.md` | symlink |
 | `skills/todo/`, `skills/cleanup/`, `skills/spawn-claude-workspace/` | `~/.claude/skills/<name>/` | **copy** (so they're shareable) |
@@ -58,11 +58,12 @@ After `--apply`:
 $EDITOR bin/world-scanner.py
 launchctl kickstart -k gui/$UID/com.mukuls.world-scanner   # reload that one daemon
 
-# Edit Triage prompt — re-read by triage-pulse.sh each pulse, no daemon reload needed.
-# But if Triage is mid-session, push the policy update directly:
-$EDITOR prompts/prompt-triage-agent.md
-cmux send --workspace workspace:126 --surface surface:239 "POLICY UPDATE — re-read prompt"
-cmux send-key --workspace workspace:126 --surface surface:239 enter
+# Edit Assistant prompt — re-read by assistant-pulse.sh each pulse, no daemon reload needed.
+# But if the Assistant is mid-session, push the policy update directly:
+$EDITOR prompts/prompt-assistant-agent.md
+WS=$(python3 -c 'import json; print(json.load(open("/Users/mukuls/.assistant/heartbeat.json"))["ws_ref"])')
+cmux send --workspace "$WS" "POLICY UPDATE — re-read prompt"
+cmux send-key --workspace "$WS" Return
 
 # Edit a skill in the repo — re-run install to copy it live.
 $EDITOR skills/todo/SKILL.md
@@ -85,28 +86,30 @@ $EDITOR launchagents/com.mukuls.world-scanner.plist
 These live under `~/.claude/cache/` and `~/.architect/` and are regenerated continuously:
 
 - `~/.claude/cache/world.json` — Scanner output
-- `~/.claude/cache/triage-state.json` — Triage decisions
+- `~/.claude/cache/assistant-state.json` — Assistant decisions
 - `~/.claude/cache/session-context.json` — transcript tails
 - `~/.claude/assistant-dashboard.html` — rendered page
 - `~/.claude/assistant-todo.json` — TODO data
 - `~/.architect/orchestrator-ledger/` — cleanup `--undo` history
-- `~/.architect/triage-registry.json` — Triage workspace ref
+- `~/.assistant/heartbeat.json` — Assistant workspace ref (self-healing; written each pulse)
 
 ## Evals
 
-Regression tests for Triage's policy decisions. Run them after any edit to `prompts/prompt-triage-agent.md`:
+Regression tests for the Assistant's policy decisions. Run them after any edit to `prompts/prompt-assistant-agent.md`:
 
 ```bash
-python3 evals/triage-cleanup-gating/run.py
+python3 evals/assistant-cleanup-gating/run.py
 ```
 
-Each eval spawns a one-shot headless Sonnet 1M pulse against fixture data, captures the decision, and asserts on the resulting `triage-state.json`. PASS exits 0; FAIL prints a diff.
+Each eval spawns a one-shot headless Sonnet 1M pulse against fixture data, captures the decision, and asserts on the resulting `assistant-state.json`. PASS exits 0; FAIL prints a diff.
 
-Currently 1 eval:
+Currently 3 evals:
 
 | Eval | What it locks down |
 |---|---|
-| `triage-cleanup-gating` | Triage must NOT auto-cleanup a workspace whose PR is OPEN (not MERGED), even when the agent's recap suggests cleanup. Evidence in actions_taken must quote `gh pr view` output, not the agent recap. |
+| `assistant-cleanup-gating` | Assistant must NOT auto-cleanup a workspace whose PR is OPEN (not MERGED), even when the agent's recap suggests cleanup. Evidence in actions_taken must quote `gh pr view` output, not the agent recap. |
+| `assistant-inflight-check` | Assistant must skip dispatch when the same work is already in flight in another workspace. |
+| `assistant-stale-card-purge` | Assistant must drop carried-over awaiting cards whose predicate is no longer true, and dispatch any newly-eligible TODOs in the same pulse. |
 
 ## Adding a new eval
 
@@ -132,11 +135,11 @@ evals/<name>/
                                ▼
                        world.json (cache)
                                │
-                ┌──────────────▼──────────────┐         ┌─────────────────────┐
-                │  Triage (Sonnet 1M, ws:126) │◄────────┤ triage-pulse (2min) │
-                └──────────────┬──────────────┘         └─────────────────────┘
+                ┌──────────────▼──────────────┐         ┌────────────────────────┐
+                │  Assistant (Sonnet 1M, ws:N) │◄────────┤ assistant-pulse (2min) │
+                └──────────────┬──────────────┘         └────────────────────────┘
                                ▼
-                    triage-state.json (cache)
+                  assistant-state.json (cache)
                                │
                                ▼
                 ┌──────────────────────────────┐

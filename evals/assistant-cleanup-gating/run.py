@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""triage-cleanup-gating eval runner.
+"""assistant-cleanup-gating eval runner.
 
-Spawns a one-shot headless Sonnet 1M Claude pulse with the same Triage prompt
+Spawns a one-shot headless Sonnet 1M Claude pulse with the same Assistant prompt
 the production agent runs, but pointed at a fixture world.json + a fake gh.
 The agent writes its decision to $EVAL_STATE_OUT; this script then asserts:
 
@@ -25,11 +25,11 @@ FIXTURES = EVAL_DIR / "fixtures"
 WORLD_FIXTURE = FIXTURES / "world.json"
 TRANSCRIPT_FIXTURE = FIXTURES / "transcript.jsonl"
 PROMPT_FILE = EVAL_DIR / "eval-prompt.md"
-TRIAGE_PROMPT_FILE = Path.home() / ".claude/spawn-prompts/prompt-triage-agent.md"
+ASSISTANT_PROMPT_FILE = Path.home() / ".claude/spawn-prompts/prompt-assistant-agent.md"
 FAKE_GH_DIR = FIXTURES / "fake-gh-bin"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
-# Use the full Bedrock model identifier — same one the live Triage runs with.
+# Use the full Bedrock model identifier — same one the live Assistant runs with.
 MODEL = os.environ.get("EVAL_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
 TIMEOUT_SEC = int(os.environ.get("EVAL_TIMEOUT_SEC", "600"))
 
@@ -37,7 +37,7 @@ TIMEOUT_SEC = int(os.environ.get("EVAL_TIMEOUT_SEC", "600"))
 def fail(msg, *, state=None):
     print(f"\n❌ FAIL: {msg}")
     if state is not None:
-        print("\n--- triage-state output ---")
+        print("\n--- assistant-state output ---")
         print(json.dumps(state, indent=2))
     sys.exit(1)
 
@@ -49,7 +49,7 @@ def log(msg):
 def assert_fixtures_present():
     missing = [
         p
-        for p in (WORLD_FIXTURE, TRANSCRIPT_FIXTURE, PROMPT_FILE, TRIAGE_PROMPT_FILE)
+        for p in (WORLD_FIXTURE, TRANSCRIPT_FIXTURE, PROMPT_FILE, ASSISTANT_PROMPT_FILE)
         if not p.exists()
     ]
     if missing:
@@ -196,8 +196,8 @@ def assert_decision(state: dict):
 
 def main():
     assert_fixtures_present()
-    with tempfile.TemporaryDirectory(prefix="triage-eval-") as td:
-        state_out = Path(td) / "triage-state.json"
+    with tempfile.TemporaryDirectory(prefix="assistant-eval-") as td:
+        state_out = Path(td) / "assistant-state.json"
         log(f"state-out: {state_out}")
         state = run_pulse(state_out)
         assert_decision(state)
@@ -205,7 +205,7 @@ def main():
         last = EVAL_DIR / "last-run.json"
         last.write_text(json.dumps(state, indent=2))
         log(f"saved last-run.json → {last}")
-    print("\n✅ PASS — Triage refused auto-cleanup on unmerged PR.")
+    print("\n✅ PASS — Assistant refused auto-cleanup on unmerged PR.")
     sys.exit(0)
 
 

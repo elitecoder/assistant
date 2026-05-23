@@ -1,16 +1,16 @@
 #!/bin/bash
-# spawn-triage.sh — bring up a fresh Triage agent workspace.
+# spawn-assistant.sh — bring up a fresh Assistant agent workspace.
 #
 # Idempotent: safe to re-run. Used for cold-start AND auto-recovery (called by
-# triage-pulse.sh when ~/.assistant/heartbeat.json is missing or stale).
+# assistant-pulse.sh when ~/.assistant/heartbeat.json is missing or stale).
 #
 # Strategy:
-#   1. Check if a fresh, alive Triage already exists (heartbeat <5min old AND
+#   1. Check if a fresh, alive Assistant already exists (heartbeat <5min old AND
 #      its ws_ref is still in cmux). If so, exit 0 — no respawn needed.
-#   2. Otherwise, create a new cmux workspace at ~/.architect (Triage's cwd),
+#   2. Otherwise, create a new cmux workspace at ~/.architect (Assistant's cwd),
 #      launch claude with the Sonnet 1M model and bypassPermissions, and deliver
-#      the Triage prompt by reference (per spawn-claude-workspace skill).
-#   3. Triage's own prompt routine writes the initial heartbeat on first pulse.
+#      the Assistant prompt by reference (per spawn-claude-workspace skill).
+#   3. Assistant's own prompt routine writes the initial heartbeat on first pulse.
 #
 # Constraints we honor (from the spawn-claude-workspace skill):
 #   - --focus true, otherwise the workspace has no terminal surface.
@@ -25,10 +25,10 @@ set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CMUX_BIN="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 HEARTBEAT="$HOME/.assistant/heartbeat.json"
-LOG="$HOME/.assistant/spawn-triage.log"
-TRIAGE_PROMPT="$REPO_ROOT/prompts/prompt-triage-agent.md"
+LOG="$HOME/.assistant/spawn-assistant.log"
+ASSISTANT_PROMPT="$REPO_ROOT/prompts/prompt-assistant-agent.md"
 CWD="$HOME/.architect"
-TITLE="Triage Agent (Sonnet 1M)"
+TITLE="Assistant (Sonnet 1M)"
 
 mkdir -p "$(dirname "$LOG")" "$CWD"
 
@@ -56,7 +56,7 @@ except Exception:
         if [ "$AGE" -lt 300 ]; then
             if "$CMUX_BIN" tree --workspace "$EXISTING_WS" --json >/dev/null 2>&1; then
                 # cmux restarts reissue workspace refs — confirm the title still
-                # matches Triage before declaring it alive. Otherwise we'd skip
+                # matches Assistant before declaring it alive. Otherwise we'd skip
                 # respawn while the heartbeat points at someone else's workspace.
                 EXISTING_TITLE=$("$CMUX_BIN" list-workspaces 2>/dev/null | python3 -c "
 import sys, re
@@ -68,9 +68,12 @@ for line in sys.stdin:
         break
 " "$EXISTING_WS")
                 case "$EXISTING_TITLE" in
-                    *"Triage Agent"*)
-                        log "existing Triage at $EXISTING_WS is alive (heartbeat age ${AGE}s, title='$EXISTING_TITLE') — exit"
+                    *"Assistant (Sonnet 1M)"*)
+                        log "existing Assistant at $EXISTING_WS is alive (heartbeat age ${AGE}s, title='$EXISTING_TITLE') — exit"
                         exit 0
+                        ;;
+                    *"Triage Agent"*)
+                        log "heartbeat points at $EXISTING_WS (legacy 'Triage Agent' title from pre-rename) — respawning under new name"
                         ;;
                     *)
                         log "heartbeat points at $EXISTING_WS but its title is '$EXISTING_TITLE' (refs reissued) — respawning"
@@ -84,7 +87,7 @@ fi
 
 # --- 2. Sanity: cmux running? -----------------------------------------------
 if ! "$CMUX_BIN" ping >/dev/null 2>&1; then
-    log "cmux is not running — cannot spawn Triage. Start /Applications/cmux.app and retry."
+    log "cmux is not running — cannot spawn Assistant. Start /Applications/cmux.app and retry."
     exit 1
 fi
 
@@ -105,7 +108,7 @@ fi
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --add-dir ~/.assistant --add-dir /tmp --model \"$MODEL_ID\""
 
 # --- 5. Create the workspace ------------------------------------------------
-log "creating Triage workspace at cwd=$CWD_REAL"
+log "creating Assistant workspace at cwd=$CWD_REAL"
 OUT=$("$CMUX_BIN" new-workspace --cwd "$CWD_REAL" --name "$TITLE" --focus true --command "$CLAUDE_CMD" 2>&1)
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 if [ -z "$WS_REF" ]; then
@@ -158,8 +161,8 @@ if [ "$CLAUDE_READY" != "1" ]; then
 fi
 log "claude ready in $WS_REF"
 
-# --- 7. Deliver the Triage prompt by reference -----------------------------
-INSTRUCTION="Read $TRIAGE_PROMPT in full and execute every instruction in it. This is a fresh Triage spawn — your first action should be to write your initial heartbeat to ~/.assistant/heartbeat.json so the pulse script can find you."
+# --- 7. Deliver the Assistant prompt by reference --------------------------
+INSTRUCTION="Read $ASSISTANT_PROMPT in full and execute every instruction in it. This is a fresh Assistant spawn — your first action should be to write your initial heartbeat to ~/.assistant/heartbeat.json so the pulse script can find you."
 python3 - "$SURFACE_REF" "$INSTRUCTION" <<'PYEOF'
 import json, subprocess, sys
 surface, text = sys.argv[1], sys.argv[2]
@@ -182,7 +185,7 @@ if [ -n "$ORIGIN_WS" ]; then
 fi
 
 # --- 9. Write a provisional heartbeat so the next pulse finds the new ws --
-# Triage will overwrite this with its own heartbeat on first pulse — but if
+# Assistant will overwrite this with its own heartbeat on first pulse — but if
 # something goes wrong before then, at least the next pulse-script tick can
 # wake the new workspace.
 python3 - "$WS_REF" "$SURFACE_REF" <<'PY'
@@ -195,7 +198,7 @@ hb = {
     "last_pulse_ts": int(datetime.datetime.utcnow().timestamp()),
     "status": "spawn-bootstrap",
     "model": "sonnet-4-6-1m",
-    "_note": "Provisional heartbeat written by spawn-triage.sh. Triage will overwrite on first pulse.",
+    "_note": "Provisional heartbeat written by spawn-assistant.sh. Assistant will overwrite on first pulse.",
 }
 path = os.path.expanduser("~/.assistant/heartbeat.json")
 with open(path + ".tmp", "w") as f:
@@ -203,5 +206,5 @@ with open(path + ".tmp", "w") as f:
 os.replace(path + ".tmp", path)
 PY
 
-log "Triage spawned → $WS_REF $SURFACE_REF (heartbeat written)"
+log "Assistant spawned → $WS_REF $SURFACE_REF (heartbeat written)"
 echo "workspace=$WS_REF surface=$SURFACE_REF claude_ready=$CLAUDE_READY"

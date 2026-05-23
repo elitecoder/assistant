@@ -268,10 +268,10 @@ json.dump(d, open('$LEDGER','w'), indent=2)
 fi
 ```
 
-### Step 10 — nudge Triage and report
+### Step 10 — nudge Assistant and report
 
 ```bash
-~/.claude/bin/triage-pulse.sh 2>/dev/null || true
+~/.claude/bin/assistant-pulse.sh 2>/dev/null || true
 
 # Single-line summary
 echo "✓ cleanup $LEDGER_ID — ws=$WS_REF branch=${BRANCH:-none} worktree=$([ "$IS_WORKTREE" = "1" ] && echo "removed" || echo "n/a") todo=${RELATED_TID:-none} stash=${STASH_REF:-none}"

@@ -2,7 +2,7 @@
   "_meta": {
     "generated_at": "2026-05-23T05:50:00.000000+00:00",
     "scanner_version": "eval-fixture-1.0",
-    "note": "FIXTURE — DO NOT TREAT AS LIVE WORLD STATE. Tests Triage's pre-dispatch in-flight check."
+    "note": "FIXTURE — DO NOT TREAT AS LIVE WORLD STATE. Tests the Assistant's pre-dispatch in-flight check."
   },
   "counts": {
     "live_sessions": 1,
@@ -24,7 +24,7 @@
       "session_id": "eval-fake-inflight-9898-aaaa-bbbb-cccc-dddddddddddd",
       "pid": 99098,
       "cwd": "/Users/mukuls/dev/firefly-platform/.claude/worktrees/agent-a10ad15a9bd79fd2d",
-      "transcript_path": "/Users/mukuls/dev/assistant/evals/triage-inflight-check/fixtures/transcript.jsonl",
+      "transcript_path": "/Users/mukuls/dev/assistant/evals/assistant-inflight-check/fixtures/transcript.jsonl",
       "tab_id": "EVAL-FAKE-TAB-9898",
       "ts": 1779335114.0,
       "tty": "ttys98",

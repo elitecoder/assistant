@@ -19,7 +19,8 @@ from pathlib import Path
 
 HOME = Path(os.environ["HOME"])
 WORLD_PATH = HOME / ".claude/cache/world.json"
-TRIAGE_STATE = HOME / ".claude/cache/triage-state.json"
+ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
+LEGACY_TRIAGE_STATE = HOME / ".claude/cache/triage-state.json"
 DASHBOARD_HTML = HOME / ".claude/assistant-dashboard.html"
 TODO_HTML = HOME / ".claude/assistant-todo.html"  # legacy redirect
 
@@ -72,18 +73,24 @@ def first_ws_ref(touches):
     return None
 
 
-def load_triage_state():
-    try:
-        return json.loads(TRIAGE_STATE.read_text())
-    except Exception:
-        return {}
+def load_assistant_state():
+    """Read the Assistant's pulse output. Falls back to the legacy
+    `triage-state.json` path if the new file isn't there yet — until the live
+    Assistant has run one pulse on the renamed prompt, the old path may still
+    be the only one populated."""
+    for path in (ASSISTANT_STATE, LEGACY_TRIAGE_STATE):
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            continue
+    return {}
 
 
 def render_awaiting(world):
-    """Awaiting cards now come from Triage's `awaiting_input[]` directly.
-    No proposals dir, no Evaluator, no fuse. If Triage put it there, surface it.
+    """Awaiting cards now come from Assistant's `awaiting_input[]` directly.
+    No proposals dir, no Evaluator, no fuse. If the Assistant put it there, surface it.
     Sorted by confidence desc."""
-    ts = load_triage_state()
+    ts = load_assistant_state()
     awaiting = list(ts.get("awaiting_input") or [])
     awaiting.sort(key=lambda a: a.get("confidence") or 0, reverse=True)
     if not awaiting:
@@ -128,10 +135,10 @@ def render_awaiting(world):
 
 
 def render_activity(world):
-    """Activity feed = Triage's actions_taken[] + recent ledger entries.
-    Newest first. The actions are already verified by Triage on the same pulse,
-    so we display them as ✓ / ✗ based on the verification flag."""
-    triage = load_triage_state()
+    """Activity feed = Assistant's actions_taken[] + recent ledger entries.
+    Newest first. The actions are already verified by the Assistant on the
+    same pulse, so we display them as ✓ / ✗ based on the verification flag."""
+    triage = load_assistant_state()
     actions = triage.get("actions_taken") or []
     ledger = world.get("ledger_recent", [])
     events = world.get("inbox_events_recent", [])
@@ -227,7 +234,7 @@ def render_live_sessions(world):
         role, ts, text = max(cands, key=lambda c: c[1] or now)
         age_sec = int((now - ts).total_seconds()) if ts else None
         # Errored / dead-pending: API error in the last assistant text + idle >5min.
-        # These already surface as awaiting cards via Triage; don't double-list.
+        # These already surface as awaiting cards via the Assistant; don't double-list.
         text_lower = (text or "").lower()
         is_errored = any(p in text_lower for p in _ERROR_PATTERNS) and (age_sec or 0) > 300
         if is_errored:
@@ -287,7 +294,7 @@ def render_decisions_tab(world):
     activity_html, activity_n = render_activity(world)
     live_html, live_n = render_live_sessions(world)
     counts = world.get("counts", {})
-    triage = load_triage_state()
+    triage = load_assistant_state()
     actions_24h = len(triage.get("actions_taken") or [])
     triage_meta = triage.get("_meta") or {}
     triage_age = "?"
@@ -297,10 +304,10 @@ def render_decisions_tab(world):
     return f"""
 <div class="stats">
   <div class="stat"><div class="v">{awaiting_n}</div><div class="k">Awaiting input</div></div>
-  <div class="stat"><div class="v">{actions_24h}</div><div class="k">Triage actions</div></div>
+  <div class="stat"><div class="v">{actions_24h}</div><div class="k">Assistant actions</div></div>
   <div class="stat"><div class="v">{counts.get('truly_active_30m', 0)}</div><div class="k">Active sessions</div></div>
   <div class="stat"><div class="v">{counts.get('human_sessions', 0)}</div><div class="k">Live · {counts.get('cron_sessions', 0)} cron hidden</div></div>
-  <div class="stat"><div class="v">{triage_age}</div><div class="k">Last Triage pulse</div></div>
+  <div class="stat"><div class="v">{triage_age}</div><div class="k">Last Assistant pulse</div></div>
 </div>
 
 <div class="section">

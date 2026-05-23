@@ -1,13 +1,14 @@
 #!/bin/bash
-# triage-audit.sh — independent watchdog that catches Triage's stale awaiting cards.
+# assistant-audit.sh — independent watchdog that catches Assistant's stale awaiting cards.
 #
-# Reads ~/.claude/cache/triage-state.json, cross-checks each awaiting_input card
-# against current ground truth (assistant-todo.json, gh pr view, cmux workspace
-# list). If any card's predicate has been invalidated since the pulse that
-# emitted it, log a warning and (optionally) nudge Triage with a corrective
-# message naming the stale cards.
+# Reads ~/.claude/cache/assistant-state.json, cross-checks each awaiting_input
+# card against current ground truth (assistant-todo.json, gh pr view, cmux
+# workspace list). If any card's predicate has been invalidated since the
+# pulse that emitted it, log a warning and (optionally) nudge Assistant with a
+# corrective message naming the stale cards.
 #
-# Run by triage-pulse.sh ~30s after each pulse, or as its own cron. Idempotent.
+# Run by assistant-pulse.sh ~30s after each pulse, or as its own cron.
+# Idempotent.
 #
 # What this catches:
 #   - autodispatch-unset:bulk cards listing TODOs whose autoDispatch is now
@@ -16,28 +17,32 @@
 #   - needs-you cards for workspaces that no longer exist.
 #
 # What it does NOT do:
-#   - Mutate triage-state.json. Only Triage writes that file. We only nudge.
-#   - Replace Triage's Step 2.5 re-validation. That's the primary defense; this
-#     is a safety net for when Triage's prompt fails to enforce it.
+#   - Mutate assistant-state.json. Only Assistant writes that file. We only nudge.
+#   - Replace Assistant's Step 2.5 re-validation. That's the primary defense; this
+#     is a safety net for when Assistant's prompt fails to enforce it.
 
 set -u
-STATE="$HOME/.claude/cache/triage-state.json"
+STATE="$HOME/.claude/cache/assistant-state.json"
+LEGACY_STATE="$HOME/.claude/cache/triage-state.json"
 TODO="$HOME/.claude/assistant-todo.json"
 HEARTBEAT="$HOME/.assistant/heartbeat.json"
-LOG="$HOME/.assistant/triage-audit.log"
+LOG="$HOME/.assistant/assistant-audit.log"
 CMUX_BIN="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
-NUDGE="${TRIAGE_AUDIT_NUDGE:-1}"   # 0 to log only, 1 to send corrective nudge
+NUDGE="${ASSISTANT_AUDIT_NUDGE:-${TRIAGE_AUDIT_NUDGE:-1}}"   # 0 to log only, 1 to send corrective nudge
 
 mkdir -p "$(dirname "$LOG")"
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$LOG"; }
 
-[ -f "$STATE" ] || { log "no triage-state.json yet"; exit 0; }
+if [ ! -f "$STATE" ] && [ -f "$LEGACY_STATE" ]; then
+    STATE="$LEGACY_STATE"
+fi
+[ -f "$STATE" ] || { log "no assistant-state.json yet"; exit 0; }
 [ -f "$TODO" ] || { log "no assistant-todo.json"; exit 0; }
 
-STALE_REPORT=$(python3 << 'PY'
+STALE_REPORT=$(STATE_PATH="$STATE" python3 << 'PY'
 import json, os, subprocess
 
-state = json.load(open(os.path.expanduser("~/.claude/cache/triage-state.json")))
+state = json.load(open(os.environ["STATE_PATH"]))
 todo = json.load(open(os.path.expanduser("~/.claude/assistant-todo.json")))
 
 # Build a quick lookup of current TODO autoDispatch state.
@@ -96,11 +101,11 @@ for s in json.load(sys.stdin):
 " >> "$LOG"
 
 if [ "$NUDGE" = "0" ]; then
-    log "TRIAGE_AUDIT_NUDGE=0 — log only, not nudging"
+    log "ASSISTANT_AUDIT_NUDGE=0 — log only, not nudging"
     exit 0
 fi
 
-# Find Triage's workspace from heartbeat
+# Find Assistant's workspace from heartbeat
 [ -f "$HEARTBEAT" ] || { log "no heartbeat — can't nudge"; exit 0; }
 WS=$(python3 -c "
 import json

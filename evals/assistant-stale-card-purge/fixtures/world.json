@@ -2,7 +2,7 @@
   "_meta": {
     "generated_at": "2026-05-23T07:30:00.000000+00:00",
     "scanner_version": "eval-fixture-1.0",
-    "note": "FIXTURE — DO NOT TREAT AS LIVE. Tests Triage's Step 2.5 re-validation."
+    "note": "FIXTURE — DO NOT TREAT AS LIVE. Tests the Assistant's Step 2.5 re-validation."
   },
   "counts": {"live_sessions": 0, "workspaces": 0, "todos_open": 2},
   "workspaces": [],

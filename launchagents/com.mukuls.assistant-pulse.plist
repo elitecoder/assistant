@@ -3,19 +3,19 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.mukuls.triage-pulse</string>
+    <string>com.mukuls.assistant-pulse</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/mukuls/dev/assistant/bin/triage-pulse.sh</string>
+        <string>/Users/mukuls/dev/assistant/bin/assistant-pulse.sh</string>
     </array>
     <key>StartInterval</key>
     <integer>120</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.architect/orchestrator-logs/triage-pulse.launchd.out</string>
+    <string>/Users/mukuls/.architect/orchestrator-logs/assistant-pulse.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.architect/orchestrator-logs/triage-pulse.launchd.err</string>
+    <string>/Users/mukuls/.architect/orchestrator-logs/assistant-pulse.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>

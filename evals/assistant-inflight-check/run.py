@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""triage-inflight-check eval runner.
+"""assistant-inflight-check eval runner.
 
-Spawns a one-shot headless Sonnet 1M Claude pulse with the production Triage
-prompt, against a fixture world.json that contains:
+Spawns a one-shot headless Sonnet 1M Claude pulse with the production
+Assistant prompt, against a fixture world.json that contains:
 
   - One open TODO (td-019, autoDispatch=true, dispatchedAt empty) — Bucket B
     would normally fire a fresh dispatch.
@@ -27,7 +27,7 @@ FIXTURES = EVAL_DIR / "fixtures"
 WORLD_FIXTURE = FIXTURES / "world.json"
 TRANSCRIPT_FIXTURE = FIXTURES / "transcript.jsonl"
 PROMPT_FILE = EVAL_DIR / "eval-prompt.md"
-TRIAGE_PROMPT_FILE = Path.home() / ".claude/spawn-prompts/prompt-triage-agent.md"
+ASSISTANT_PROMPT_FILE = Path.home() / ".claude/spawn-prompts/prompt-assistant-agent.md"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 MODEL = os.environ.get("EVAL_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
@@ -37,7 +37,7 @@ TIMEOUT_SEC = int(os.environ.get("EVAL_TIMEOUT_SEC", "600"))
 def fail(msg, *, state=None):
     print(f"\n❌ FAIL: {msg}")
     if state is not None:
-        print("\n--- triage-state output ---")
+        print("\n--- assistant-state output ---")
         print(json.dumps(state, indent=2))
     sys.exit(1)
 
@@ -49,7 +49,7 @@ def log(msg):
 def assert_fixtures_present():
     missing = [
         p
-        for p in (WORLD_FIXTURE, TRANSCRIPT_FIXTURE, PROMPT_FILE, TRIAGE_PROMPT_FILE)
+        for p in (WORLD_FIXTURE, TRANSCRIPT_FIXTURE, PROMPT_FILE, ASSISTANT_PROMPT_FILE)
         if not p.exists()
     ]
     if missing:
@@ -118,8 +118,8 @@ def assert_decision(state: dict):
         key = (a.get("key") or "").lower()
         kind = (a.get("kind") or "").lower()
         target_str = json.dumps(a.get("target") or {}).lower()
-        # `triage:dispatch:td-019` would be the bad action. The good one is
-        # `triage:dispatch-skipped:td-019:already-in-flight` — that key
+        # `assistant:dispatch:td-019` would be the bad action. The good one
+        # is `assistant:dispatch-skipped:td-019:already-in-flight` — that key
         # contains "dispatch-skipped" not "dispatch:".
         if "td-019" in target_str or "td-019" in key:
             if "dispatch" in key and "dispatch-skipped" not in key and "dispatch-failed" not in key:
@@ -185,15 +185,15 @@ def assert_decision(state: dict):
 
 def main():
     assert_fixtures_present()
-    with tempfile.TemporaryDirectory(prefix="triage-inflight-eval-") as td:
-        state_out = Path(td) / "triage-state.json"
+    with tempfile.TemporaryDirectory(prefix="assistant-inflight-eval-") as td:
+        state_out = Path(td) / "assistant-state.json"
         log(f"state-out: {state_out}")
         state = run_pulse(state_out)
         assert_decision(state)
         last = EVAL_DIR / "last-run.json"
         last.write_text(json.dumps(state, indent=2))
         log(f"saved last-run.json → {last}")
-    print("\n✅ PASS — Triage skipped duplicate dispatch when work is already in flight.")
+    print("\n✅ PASS — Assistant skipped duplicate dispatch when work is already in flight.")
     sys.exit(0)
 
 

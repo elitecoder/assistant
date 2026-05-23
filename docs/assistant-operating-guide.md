@@ -284,7 +284,7 @@ This applies to:
 - Closing a workspace with unfinished work (`/todo add` for each captured item)
 - Closing a Dead workspace with a dirty worktree
 - Mukul saying "add to TODO" / "remind me"
-- Triage's own audit logic (Triage's prompt only EDITS existing TODOs; if it ever needs to create one, it calls the skill)
+- The Assistant's own audit logic (the Assistant's prompt only EDITS existing TODOs; if it ever needs to create one, it calls the skill)
 - Any ad-hoc inline `python3 -c '...'` you might be tempted to write
 
 If de-dup fires and you genuinely need to bypass (rare — usually the duplicate IS real and you should edit the existing item instead), set `TODO_FORCE_DEDUP_BYPASS=1` in the env. Don't make this the default.
@@ -538,7 +538,7 @@ Every 300 seconds, the LaunchAgent `com.mukuls.orchestrator-pulse` sends the lit
 1. Read recent worker pulse-rollups from `~/.architect/orchestrator-inbox-archive/<today>/`, current state from `~/.claude/cache/dashboard-state.json` (maintained by render-dashboard.py), and **direct-talk context from `~/.claude/cache/session-context.json`** (maintained by the event-driven `session-context-watcher`). The latter lets you see what Mukul has typed directly to other sessions — `recent_user_inputs[]` is a cross-session feed sorted by recency, and `by_session[<session_id>]` carries the last few user/assistant turns plus a `user_unanswered` flag and `queue_pending` count (typed-but-not-sent inputs).
 2. For each session classified as `waiting` (excluding the Orchestrator itself and the four worker sessions), AND for system-level signals (RAM > 90%, dead workspace with uncommitted state, TODO items with autoDispatch eligible), generate a proposal.
 3. Per proposal, write JSON to `~/.architect/orchestrator-proposals/<id>.json` with the schema in `~/.architect/proposal-schema.md` (mirrors the UX doc at `~/dev/generated-docs/dashboard-ux-proposal.html` — search for "proposal.json" in the diagram).
-4. Use Scout (`mcp__scout__*`) and Read tool to gather context for confidence calibration. Do not exceed ~10 tool calls per pulse — proposals should be quick triages, not deep investigations.
+4. Use Scout (`mcp__scout__*`) and Read tool to gather context for confidence calibration. Do not exceed ~10 tool calls per pulse — proposals should be quick triage decisions, not deep investigations.
 5. End your turn after writing proposals. Do not respond conversationally.
 
 Hard rules during a pulse:

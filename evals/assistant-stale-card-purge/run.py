@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""triage-stale-card-purge eval runner.
+"""assistant-stale-card-purge eval runner.
 
 Tests Step 2.5 — re-validation of carried-over awaiting cards.
 
 Fixture:
   - world.json: td-501, td-502 with autoDispatch=true, dispatchedAt empty
-  - prior triage-state: a `triage:autodispatch-unset:bulk` card claiming both
-    TODOs have autoDispatch=null (which was true at the moment that prior
-    pulse ran but is no longer true)
+  - prior assistant-state: a `assistant:autodispatch-unset:bulk` card claiming
+    both TODOs have autoDispatch=null (which was true at the moment that
+    prior pulse ran but is no longer true)
 
 Asserts:
   1. Output awaiting_input[] does NOT contain the stale autodispatch-unset card.
@@ -29,9 +29,9 @@ from pathlib import Path
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURES = EVAL_DIR / "fixtures"
 WORLD_FIXTURE = FIXTURES / "world.json"
-PRIOR_STATE_FIXTURE = FIXTURES / "prior-triage-state.json"
+PRIOR_STATE_FIXTURE = FIXTURES / "prior-assistant-state.json"
 PROMPT_FILE = EVAL_DIR / "eval-prompt.md"
-TRIAGE_PROMPT_FILE = Path.home() / ".claude/spawn-prompts/prompt-triage-agent.md"
+ASSISTANT_PROMPT_FILE = Path.home() / ".claude/spawn-prompts/prompt-assistant-agent.md"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 MODEL = os.environ.get("EVAL_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
@@ -41,7 +41,7 @@ TIMEOUT_SEC = int(os.environ.get("EVAL_TIMEOUT_SEC", "600"))
 def fail(msg, *, state=None):
     print(f"\n❌ FAIL: {msg}")
     if state is not None:
-        print("\n--- triage-state output ---")
+        print("\n--- assistant-state output ---")
         print(json.dumps(state, indent=2))
     sys.exit(1)
 
@@ -52,7 +52,7 @@ def log(msg):
 
 def assert_fixtures_present():
     missing = [
-        p for p in (WORLD_FIXTURE, PRIOR_STATE_FIXTURE, PROMPT_FILE, TRIAGE_PROMPT_FILE)
+        p for p in (WORLD_FIXTURE, PRIOR_STATE_FIXTURE, PROMPT_FILE, ASSISTANT_PROMPT_FILE)
         if not p.exists()
     ]
     if missing:
@@ -145,7 +145,7 @@ def assert_decision(state: dict):
         fail(
             f"agent did NOT dispatch the eligible TODOs: missing {missing}. "
             f"Both td-501 and td-502 had autoDispatch=true and no live in-flight session. "
-            f"They are clear Bucket B candidates and should have a `triage:dispatch:td-NNN` action.",
+            f"They are clear Bucket B candidates and should have a `assistant:dispatch:td-NNN` action.",
             state=state,
         )
     log(f"both td-501 and td-502 have dispatch actions ✓")
@@ -153,15 +153,15 @@ def assert_decision(state: dict):
 
 def main():
     assert_fixtures_present()
-    with tempfile.TemporaryDirectory(prefix="triage-purge-eval-") as td:
-        state_out = Path(td) / "triage-state.json"
+    with tempfile.TemporaryDirectory(prefix="assistant-purge-eval-") as td:
+        state_out = Path(td) / "assistant-state.json"
         log(f"state-out: {state_out}")
         state = run_pulse(state_out)
         assert_decision(state)
         last = EVAL_DIR / "last-run.json"
         last.write_text(json.dumps(state, indent=2))
         log(f"saved last-run.json → {last}")
-    print("\n✅ PASS — Triage purged stale awaiting card AND dispatched newly-eligible TODOs.")
+    print("\n✅ PASS — Assistant purged stale awaiting card AND dispatched newly-eligible TODOs.")
     sys.exit(0)
 
 

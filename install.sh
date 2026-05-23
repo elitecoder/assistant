@@ -52,10 +52,10 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
-  - ~/.claude/spawn-prompts/prompt-triage-agent.md → symlink → $REPO_ROOT/prompts/...
+  - ~/.claude/spawn-prompts/prompt-assistant-agent.md → symlink → $REPO_ROOT/prompts/...
   - ~/.claude/lessons/active                     → symlink → $REPO_ROOT/lessons/active
   - ~/.claude/skills/{todo,cleanup,spawn-claude-workspace} → COPIES (shareable)
-  - ~/Library/LaunchAgents/com.mukuls.{world-scanner,triage-pulse,assistant-page,
+  - ~/Library/LaunchAgents/com.mukuls.{world-scanner,assistant-pulse,assistant-page,
        session-context-watcher,assistant-todo-server}.plist → COPIED
   - launchd: kickstart -k each agent (load if not loaded)
 
@@ -220,8 +220,19 @@ ensure_symlink "$HOME_DIR/.claude/bin" "$REPO_ROOT/bin"
 
 mkdir -p "$HOME_DIR/.claude/spawn-prompts"
 ensure_symlink \
-    "$HOME_DIR/.claude/spawn-prompts/prompt-triage-agent.md" \
-    "$REPO_ROOT/prompts/prompt-triage-agent.md"
+    "$HOME_DIR/.claude/spawn-prompts/prompt-assistant-agent.md" \
+    "$REPO_ROOT/prompts/prompt-assistant-agent.md"
+
+# Clean up the legacy symlink from before the Triage→Assistant rename. Eval
+# runners and any in-flight Assistant workspace still reference the old path
+# in their loaded prompt; leaving a dangling symlink would silently fail.
+LEGACY_PROMPT_LINK="$HOME_DIR/.claude/spawn-prompts/prompt-triage-agent.md"
+if [[ -L "$LEGACY_PROMPT_LINK" ]]; then
+    note "REMOVE legacy $LEGACY_PROMPT_LINK (replaced by prompt-assistant-agent.md)"
+    if [[ $APPLY -eq 1 ]]; then
+        rm "$LEGACY_PROMPT_LINK"
+    fi
+fi
 
 mkdir -p "$HOME_DIR/.claude/lessons"
 ensure_symlink \
@@ -321,6 +332,19 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         CHANGED_LABELS+=("$label")
     fi
 done
+
+# Tear down the legacy triage-pulse LaunchAgent (renamed → assistant-pulse).
+# If we leave it loaded, two pulse scripts run in parallel: the old one will
+# fail to find triage-pulse.sh on disk (renamed) and spam stderr; or worse,
+# wake the wrong workspace. Always unload + remove the plist on apply.
+LEGACY_PLIST="$HOME_DIR/Library/LaunchAgents/com.mukuls.triage-pulse.plist"
+if [[ -f "$LEGACY_PLIST" ]]; then
+    note "REMOVE legacy LaunchAgent com.mukuls.triage-pulse (renamed → assistant-pulse)"
+    if [[ $APPLY -eq 1 ]]; then
+        launchctl bootout "gui/$UID/com.mukuls.triage-pulse" 2>/dev/null || true
+        rm "$LEGACY_PLIST"
+    fi
+fi
 log ""
 
 # --- 4. Reload only the daemons whose plists actually changed --------------
