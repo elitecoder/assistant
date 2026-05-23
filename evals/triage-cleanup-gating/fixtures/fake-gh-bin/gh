@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Fake `gh` for the triage-cleanup-gating eval.
+
+Intercepts `gh pr view 99999 ...` and returns OPEN/no-CI-failure state. Falls
+through to the real gh for any other invocation, so the rest of Triage's flow
+isn't broken if it shells out for something unrelated.
+"""
+import json
+import os
+import subprocess
+import sys
+
+argv = sys.argv[1:]
+
+
+def emit_pr_99999(json_fields):
+    """Return the requested fields for the synthetic PR."""
+    fields = [f.strip() for f in (json_fields or "").split(",") if f.strip()]
+    payload = {
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "",
+        "isDraft": False,
+        "number": 99999,
+        "title": "[REFACTOR] Eval fixture PR — code-simplifier pass",
+        "url": "https://github.com/Adobe-Firefly/firefly-platform/pull/99999",
+        "statusCheckRollup": [
+            {"name": "setup", "conclusion": "SUCCESS"},
+            {"name": "lint", "conclusion": "SUCCESS"},
+            {"name": "tests", "conclusion": "SUCCESS"},
+            {"name": "build-components", "conclusion": "SUCCESS"},
+        ],
+        "reviews": [],
+        "headRefName": "ffp/eval-test",
+        "baseRefName": "main",
+    }
+    if fields:
+        payload = {k: v for k, v in payload.items() if k in fields}
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
+def emit_pr_jq(json_fields, jq_expr):
+    """Mirror `gh pr view ... -q <jq>` for the cases Triage uses."""
+    fields = [f.strip() for f in (json_fields or "").split(",") if f.strip()]
+    full = {
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"name": "setup", "conclusion": "SUCCESS"},
+            {"name": "lint", "conclusion": "SUCCESS"},
+            {"name": "tests", "conclusion": "SUCCESS"},
+        ],
+    }
+    if fields:
+        full = {k: v for k, v in full.items() if k in fields}
+    expr = (jq_expr or "").strip()
+    if expr in (".", ""):
+        print(json.dumps(full))
+    elif expr.startswith(".") and "." not in expr[1:] and expr[1:] in full:
+        v = full[expr[1:]]
+        print(v if isinstance(v, str) else json.dumps(v))
+    else:
+        # Unknown jq expr — print whole object, let Triage cope.
+        print(json.dumps(full))
+    sys.exit(0)
+
+
+# Match `gh pr view 99999 ...`
+if (
+    len(argv) >= 3
+    and argv[0] == "pr"
+    and argv[1] == "view"
+    and argv[2] == "99999"
+):
+    json_fields = ""
+    jq_expr = None
+    i = 3
+    while i < len(argv):
+        a = argv[i]
+        if a == "--json" and i + 1 < len(argv):
+            json_fields = argv[i + 1]
+            i += 2
+        elif a in ("-q", "--jq") and i + 1 < len(argv):
+            jq_expr = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    if jq_expr is not None:
+        emit_pr_jq(json_fields, jq_expr)
+    else:
+        emit_pr_99999(json_fields)
+
+
+# Fall through: defer to real gh on PATH (skipping our shim).
+real_path_entries = [
+    p for p in os.environ.get("PATH", "").split(":") if "fake-gh-bin" not in p
+]
+real_env = dict(os.environ)
+real_env["PATH"] = ":".join(real_path_entries)
+try:
+    rc = subprocess.call(["gh"] + argv, env=real_env)
+    sys.exit(rc)
+except FileNotFoundError:
+    print("gh: real binary not found (fake-gh fall-through)", file=sys.stderr)
+    sys.exit(127)

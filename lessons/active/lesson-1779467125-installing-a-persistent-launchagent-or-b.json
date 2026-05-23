@@ -1,0 +1,22 @@
+{
+  "id": "lesson-1779467125-installing-a-persistent-launchagent-or-b",
+  "signature": "184f187d5672",
+  "created_at": "2026-05-22T16:25:25Z",
+  "created_by": "assistant",
+  "trigger": "Installing a persistent LaunchAgent or background service",
+  "rule": "Always ask Mukul before running 'launchctl load' or installing a new persistent service. Writing the plist file is fine; loading it requires explicit permission. The auto-mode classifier will (correctly) deny without a permission rule.",
+  "why": "On 2026-05-22 the classifier denied loading com.mukuls.hermes-executor.plist as 'Unauthorized Persistence' \u2014 that's the right call. Mukul saying 'fix it' is not blanket authorization for persistent services.",
+  "scope": "security",
+  "pinned": true,
+  "state": "active",
+  "use_count": 1,
+  "last_used_at": "2026-05-22T16:25:25Z",
+  "violation_count": 0,
+  "sources": [
+    {
+      "conversation_id": "",
+      "user_correction": "On 2026-05-22 the classifier denied loading com.mukuls.hermes-executor.plist as 'Unauthorized Persistence' \u2014 that's the right call. Mukul saying 'fix it' is not blanket authorization for persistent services.",
+      "ts": "2026-05-22T16:25:25Z"
+    }
+  ]
+}

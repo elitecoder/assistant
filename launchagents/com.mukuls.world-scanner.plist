@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mukuls.world-scanner</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/mukuls/.claude/bin/world-scanner.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>30</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/mukuls/.architect/orchestrator-logs/world-scanner.launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mukuls/.architect/orchestrator-logs/world-scanner.launchd.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/mukuls</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/mukuls</string>
+</dict>
+</plist>

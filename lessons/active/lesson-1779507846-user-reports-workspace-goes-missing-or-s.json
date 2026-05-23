@@ -1,0 +1,22 @@
+{
+  "id": "lesson-1779507846-user-reports-workspace-goes-missing-or-s",
+  "signature": "a079a1c370c2",
+  "created_at": "2026-05-23T03:44:06Z",
+  "created_by": "assistant",
+  "trigger": "User reports 'workspace goes missing' or 'something keeps killing the workspace' for cmux Claude panels",
+  "rule": "Check ~/Library/Logs/DiagnosticReports/*.ips for zsh / node crashes with parentProc/responsibleProc=cmux. zsh on macOS 26.x has SIGSEGV crashes in killjb/waitjobs at child-side-of-fork-pre-exec, especially when ~/.zprofile contains heavy shell functions that recurse (nvm use, brew shellenv, scout git_hook). When zsh dies during cmux's auto-relaunch of claude, the cmux pane has nothing left to render \u2192 the workspace 'looks missing'. Fix path: (a) switch login shell to /opt/homebrew/bin/zsh (newer); (b) move nvm use from .zprofile to .zshrc; (c) wrap cmux launchCommand in 'bash -lc ...' so bash takes over if zsh crashes. The cmux workspace itself is never destroyed \u2014 it's the inner shell that's segfaulting.",
+  "why": "On 2026-05-22 Mukul: 'I've been manually starting Claude, because the workspace goes missing.' Investigation found zsh SIGSEGV at 19:09:10 (parentProc=zsh, responsibleProc=cmux) with stack trace recursing through runshfunc/doshfunc/execlist 7+ levels deep, faulting in killjb. Two node crashes today also under cmux. The workspace UUID never changed; the inner zsh process did. Apple Silicon + macOS 26 + heavy .zprofile = unstable shell init under cmux's fork-exec pattern.",
+  "scope": "ffp",
+  "pinned": true,
+  "state": "active",
+  "use_count": 1,
+  "last_used_at": "2026-05-23T03:44:06Z",
+  "violation_count": 0,
+  "sources": [
+    {
+      "conversation_id": "",
+      "user_correction": "On 2026-05-22 Mukul: 'I've been manually starting Claude, because the workspace goes missing.' Investigation found zsh SIGSEGV at 19:09:10 (parentProc=zsh, responsibleProc=cmux) with stack trace recursing through runshfunc/doshfunc/execlist 7+ levels deep, faulting in killjb. Two node crashes today also under cmux. The workspace UUID never changed; the inner zsh process did. Apple Silicon + macOS 26 + heavy .zprofile = unstable shell init under cmux's fork-exec pattern.",
+      "ts": "2026-05-23T03:44:06Z"
+    }
+  ]
+}

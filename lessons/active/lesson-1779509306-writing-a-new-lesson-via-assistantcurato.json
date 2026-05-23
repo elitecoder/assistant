@@ -1,0 +1,22 @@
+{
+  "id": "lesson-1779509306-writing-a-new-lesson-via-assistantcurato",
+  "signature": "fc41c8bac290",
+  "created_at": "2026-05-23T04:08:26Z",
+  "created_by": "assistant",
+  "trigger": "Writing a new lesson via assistant-curator.py",
+  "rule": "DO NOT pass --pin by default. Pin only when (a) Mukul explicitly says 'remember this' / 'pin' / 'always' / 'never' or names the rule out loud, or (b) the rule is a security guardrail (refusing destructive ops, classifier bypass, allowlist widening) where decay-via-archive would be unsafe. Everything else gets unpinned by default and the Curator's stale-sweep can archive it after 30 days of disuse. Pinning everything defeats the trim mechanism \u2014 Mukul flagged 32 lessons as too many, and 22 of those got cut because they were just transient design observations, not durable rules.",
+  "why": "On 2026-05-22 Mukul: 'you should really trim your lessons, we are on #35'. Diagnosis: I'd been pinning every lesson out of habit, which made the Curator's 30-day stale-sweep guard refuse to archive any of them. Result: lesson list was a build journal instead of a rules file. Trimmed 32\u219210 by unpinning + archiving anything whose rule was already encoded in production code (Triage prompt / settings.json / Operating Guide / world-scanner). Default pin=False prevents recurrence.",
+  "scope": "global",
+  "pinned": false,
+  "state": "active",
+  "use_count": 1,
+  "last_used_at": "2026-05-23T04:08:26Z",
+  "violation_count": 0,
+  "sources": [
+    {
+      "conversation_id": "",
+      "user_correction": "On 2026-05-22 Mukul: 'you should really trim your lessons, we are on #35'. Diagnosis: I'd been pinning every lesson out of habit, which made the Curator's 30-day stale-sweep guard refuse to archive any of them. Result: lesson list was a build journal instead of a rules file. Trimmed 32\u219210 by unpinning + archiving anything whose rule was already encoded in production code (Triage prompt / settings.json / Operating Guide / world-scanner). Default pin=False prevents recurrence.",
+      "ts": "2026-05-23T04:08:26Z"
+    }
+  ]
+}

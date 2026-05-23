@@ -1,0 +1,18 @@
+# Runtime caches and state — these are derived/regenerated and should never be committed.
+__pycache__/
+*.pyc
+*.pyo
+
+# Eval run artifacts
+evals/*/last-run.json
+evals/*/__pycache__/
+
+# Editor/OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local-only overrides (you can drop a settings.local.json here later)
+**/local.json
+**/*.local
