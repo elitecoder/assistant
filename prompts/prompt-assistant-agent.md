@@ -271,24 +271,28 @@ else
   MODEL_ID="$MODEL_SLUG"
 fi
 
-# Capture origin focus (we MUST restore it — never strand Mukul on a spawn)
-ORIGIN_CTX=$(cmux identify --json)
-ORIGIN_WS_REF=$(printf '%s' "$ORIGIN_CTX" | python3 -c 'import json,sys; print(json.load(sys.stdin)["focused"]["workspace_ref"])')
-ORIGIN_WIN_REF=$(printf '%s' "$ORIGIN_CTX" | python3 -c 'import json,sys; print(json.load(sys.stdin)["focused"]["window_ref"])')
+# IMPORTANT — DO NOT pass --focus true. The Assistant's auto-dispatch must
+# NEVER steal Mukul's foreground focus. Verified 2026-05-23 on current cmux:
+# `--focus false` (the default) creates a fully-functional workspace with a
+# real terminal surface — the old SKILL.md "zero panes" warning is obsolete.
+# The Assistant runs in the background; it does not own the user's screen.
+#
+# We do NOT need to capture/restore origin focus either, because we never
+# took it in the first place.
 
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --model \"$MODEL_ID\""
-WS_REF=$(cmux new-workspace --cwd "$HOME/dev" --name "Auto: $TODO_TITLE" --focus true --command "$CLAUDE_CMD" | grep -oE 'workspace:[0-9]+' | head -n1)
+WS_REF=$(cmux new-workspace --cwd "$HOME/dev" --name "Auto: $TODO_TITLE" --focus false --command "$CLAUDE_CMD" | grep -oE 'workspace:[0-9]+' | head -n1)
 SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:[0-9]+' | head -n1)
 
 # Wait for "Claude Code v" banner (max 30s), then send the short Read instruction
 # (NEVER stream the prompt body — cmux drops middle chunks above ~3-4 KB).
-# See SKILL.md for the full readiness + submission verification loop. After
-# submission lands, restore origin focus.
+# See SKILL.md for the full readiness + submission verification loop. The
+# spawn finishes silently in the background — Mukul stays on whatever tab
+# he was on.
 # ... (full SKILL.md flow) ...
-
-cmux focus-window --window "$ORIGIN_WIN_REF" >/dev/null 2>&1 || true
-cmux select-workspace --workspace "$ORIGIN_WS_REF" >/dev/null
 ```
+
+**Incident reference (2026-05-23):** earlier versions of this prompt passed `--focus true` and tried to "restore" origin focus by reading `cmux identify --json` `.focused.workspace_ref` — but `.focused` returns whatever cmux tab Mukul is on at the moment, NOT the Assistant's own workspace, so the restoration was a no-op and the spawn flashed to the new workspace AND stayed there (or bounced back to Mukul's tab via the bogus restore). Either way, focus was disturbed. The fix above doesn't take focus in the first place.
 
 After spawn lands successfully (transcript shows the user line with the prompt-file path):
 

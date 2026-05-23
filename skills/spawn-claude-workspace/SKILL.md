@@ -11,7 +11,11 @@ Spawn a new cmux workspace **in the background**, launch `claude` inside it, aut
 
 These details override anything you might infer from `cmux --help`. The cmux CLI shortcuts (`cmux send`, `cmux read-screen`, `cmux paste-buffer`) reject terminal surfaces with `Error: invalid_params: Surface is not a terminal` even when the surface is clearly a terminal with a live tty. The RPC path works fine. **Use `cmux rpc surface.*` for every terminal I/O operation.**
 
-**CRITICAL — `new-workspace` now defaults to `--focus false`, and an unfocused workspace has NO terminal surface.** Verified 2026-05-14 against cmux CLI version currently installed: `cmux new-workspace --cwd <path> --name <title>` (without `--focus true`) returns `OK workspace:N` but `workspace:N` has ZERO panes — no terminal materialises until the workspace is focused. Subsequent `cmux rpc surface.read_text` / `send_text` against any surface ref returns `Error: internal_error: ERROR: Terminal surface not found`. **Always pass `--focus true`** or the skill silently produces phantom workspaces and all downstream RPC calls fail. If keeping focus on the origin matters, create the workspace focused, then immediately `focus-window` back to the origin after the surface has been found.
+**CRITICAL — default to `--focus false` to avoid stealing Mukul's foreground.** Re-verified 2026-05-23 on current cmux build: `cmux new-workspace --cwd <path> --name <title> --command "..."` WITHOUT `--focus true` produces a fully functional workspace with a real terminal surface; `--command` runs, `read-screen` and `send-text` all work. The earlier 2026-05-14 calibration note (which insisted `--focus true` was mandatory) is **OBSOLETE** — that build has since been fixed.
+
+**Default rule:** ALL spawn calls pass `--focus false` (or omit the flag — that's the default). Only pass `--focus true` if the user EXPLICITLY says they want to switch to the new workspace, and only when invoking from a human-driven session. Background dispatchers (the Assistant agent, cron-driven spawns, watchdog respawns) MUST NOT steal focus.
+
+If you find yourself wanting to restore origin focus after the fact via `cmux identify --json` + `.focused.workspace_ref`, that's a smell — `.focused` returns whatever tab Mukul is currently on, not the caller's own workspace, so the "restore" hops focus around unpredictably. Don't take focus, and you don't have to restore anything.
 
 **CRITICAL — prefer `new-workspace --command '<text>'` over a separate `surface.send_text` burst for the `claude` launch.** The `--command` flag sends text + Enter atomically on creation, which avoids the burst-timing edge cases that caused the old skill to race the shell. Verified 2026-05-14 — `cmux new-workspace --focus true --cwd ... --command "echo HELLO"` → the terminal is created, the shell runs, and the echo output appears in `surface.read_text`. This replaces the `cmux rpc surface.send_text "claude ..."` step that used to live in Step 5. The prompt body still goes through the file-reference pattern below — only the `claude` launch command itself moves to `--command`.
 
@@ -152,7 +156,7 @@ else
   MODEL_ID="$MODEL_SLUG"
 fi
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --model \"$MODEL_ID\""
-OUT=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus true --command "$CLAUDE_CMD")
+OUT=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$CLAUDE_CMD")
 # OUT is "OK workspace:13"
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 ```
@@ -160,7 +164,7 @@ WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 **Do not use `awk '{print $N}'`** to extract the ref — this SKILL.md gets surfaced to the agent via the Skill tool, which performs shell-style variable expansion on the markdown body. `$2` / `$NF` get substituted to empty (or some stray value) before the agent ever runs the command, and the resulting `awk '{print }'` pipes through unchanged text. Always use an anchored regex extractor (`grep -oE`, `sed -nE`, or `python3 -c`) that contains no `$N` tokens.
 
 Notes:
-- **`--focus true` is required** on current cmux (verified 2026-05-14). Without it the workspace has zero panes and every subsequent RPC call fails with `Terminal surface not found`. Focus is restored to the origin in Step 7 after the skill has finished its work with the new surface.
+- **Default to `--focus false`** (re-verified 2026-05-23). The earlier 2026-05-14 "zero panes without --focus true" claim is OBSOLETE — current cmux creates a fully-functional surface on the unfocused workspace and `read-screen` / `send-text` work normally. Background callers (Assistant agent, watchdog respawns) MUST pass `--focus false` to avoid stealing Mukul's foreground tab. Pass `--focus true` only when a human-driven session has explicitly asked to switch into the new workspace.
 - **`--command "<claude-launch>"` replaces the old "send_text the launch command" step.** The flag sends text + Enter atomically on creation, so the shell spawns AND the claude launch fires without a separate `surface.send_text` burst. Verified 2026-05-14 — eliminates the "early writes get swallowed" race that killed the old Step 5. The claude launch still needs `--dangerously-skip-permissions` + `--add-dir` for unattended work.
 - **Model is selectable via `MODEL` env var (default opus, 1M context)** so the spawned agent has the same context budget as the user's interactive shell. Pass `MODEL=sonnet` for routine/periodic work (Sonnet 4.6 1M); leave unset for Opus 4.7 1M on decision-making tasks. Bedrock IDs are prefixed `us.anthropic.…`; Anthropic-API IDs use the bare slug. cmux's `--command` does not expand shell aliases, so this branch encodes the equivalent of the alias. When you bump the model versions, update both the alias and this skill together.
 - `--cwd` must be absolute.
@@ -382,8 +386,9 @@ list_transcripts() {
 }
 BEFORE=$(list_transcripts)
 
-# --focus true is required on current cmux; without it the workspace has zero panes
-# and every subsequent surface.* RPC call fails with "Terminal surface not found".
+# --focus false (default) is the right choice — current cmux creates a real
+# terminal surface without focus stealing. Background dispatchers MUST stay
+# unfocused to avoid disturbing Mukul's foreground tab.
 # --command runs the claude launch atomically on creation; Step 5 no longer needs
 # to send_text + send_key the launch separately.
 # Pin the 1M-context build of the chosen model. cmux's --command string is NOT
@@ -400,7 +405,7 @@ else
   MODEL_ID="$MODEL_SLUG"
 fi
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --model \"$MODEL_ID\""
-WS_REF=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus true --command "$CLAUDE_CMD" | grep -oE 'workspace:[0-9]+' | head -n1)
+WS_REF=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$CLAUDE_CMD" | grep -oE 'workspace:[0-9]+' | head -n1)
 SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:[0-9]+' | head -n1)
 
 # First-launch-in-cwd gate: Claude Code shows a "Is this a project you trust?"
@@ -490,7 +495,7 @@ Substitute `<<<PROMPT>>>` with the verbatim prompt content. Set `CWD`, `TITLE`, 
 
 ## Guardrails
 
-- **Always pass `--focus true` to `new-workspace`** on current cmux (verified 2026-05-14). Default is `false`, and an unfocused workspace creates zero panes — every subsequent RPC fails with `Terminal surface not found`. Focus is restored to the origin in Step 7 after the skill has finished its work with the new surface.
+- **Default to `--focus false`** (re-verified 2026-05-23). Background dispatchers (Assistant agent, watchdog respawns, cron-driven spawns) MUST pass `--focus false` to avoid stealing Mukul's foreground tab. Current cmux creates a real terminal surface without focus, so `read-screen` / `send-text` all work fine. Pass `--focus true` ONLY when a human-driven session explicitly asked to switch into the new workspace.
 - **Use `--command "<launch>"` to fire the claude launch atomically.** On current cmux, `new-workspace --command` sends text + Enter as part of workspace creation, avoiding the burst-timing race that caused old-skill `send_text` bursts to occasionally drop the launch command. Do NOT additionally `send_text` the claude launch in Step 5 — it would type the command a second time.
 - **Always use RPC for surface I/O** on this cmux build. CLI shortcuts (`cmux send`, `cmux read-screen`, `cmux paste-buffer`) fail with "Surface is not a terminal" and will silently break the flow.
 - **Focus restoration is mandatory.** Even on every failure path, return focus to `$ORIGIN_WS_REF` before reporting.

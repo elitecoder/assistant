@@ -13,7 +13,11 @@
 #   3. Assistant's own prompt routine writes the initial heartbeat on first pulse.
 #
 # Constraints we honor (from the spawn-claude-workspace skill):
-#   - --focus true, otherwise the workspace has no terminal surface.
+#   - --focus false (default) — this script runs in the background (cron-fired
+#     by the pulse watchdog when heartbeat goes stale), so it MUST NOT steal
+#     Mukul's foreground tab. Re-verified 2026-05-23: current cmux creates a
+#     fully-functional surface without focus, the old "zero panes" warning
+#     is obsolete.
 #   - --command "claude ..." for atomic launch (no separate send_text race).
 #   - Bedrock model ID with us.anthropic. prefix when CLAUDE_CODE_USE_BEDROCK=1.
 #   - Resolve cwd via realpath before slugging (macOS /private symlinks).
@@ -91,11 +95,10 @@ if ! "$CMUX_BIN" ping >/dev/null 2>&1; then
     exit 1
 fi
 
-# --- 3. Resolve cwd + capture origin focus ---------------------------------
+# --- 3. Resolve cwd ---------------------------------
+# We don't take/restore focus — `--focus false` on new-workspace below means
+# we never disturb Mukul's foreground tab in the first place.
 CWD_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CWD")
-ORIGIN_CTX=$("$CMUX_BIN" identify --json 2>/dev/null || echo '{}')
-ORIGIN_WS=$(printf '%s' "$ORIGIN_CTX" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("focused",{}).get("workspace_ref","") or "")' 2>/dev/null || echo "")
-ORIGIN_WIN=$(printf '%s' "$ORIGIN_CTX" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("focused",{}).get("window_ref","") or "")' 2>/dev/null || echo "")
 
 # --- 4. Compose the launch command -----------------------------------------
 # Sonnet 1M for routine pulse-driven work. Bedrock prefix when applicable.
@@ -109,7 +112,7 @@ CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.c
 
 # --- 5. Create the workspace ------------------------------------------------
 log "creating Assistant workspace at cwd=$CWD_REAL"
-OUT=$("$CMUX_BIN" new-workspace --cwd "$CWD_REAL" --name "$TITLE" --focus true --command "$CLAUDE_CMD" 2>&1)
+OUT=$("$CMUX_BIN" new-workspace --cwd "$CWD_REAL" --name "$TITLE" --focus false --command "$CLAUDE_CMD" 2>&1)
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 if [ -z "$WS_REF" ]; then
     log "new-workspace failed: $OUT"
@@ -176,13 +179,8 @@ PYEOF
 sleep 1
 "$CMUX_BIN" rpc surface.send_key "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"key":"enter"}))' "$SURFACE_REF")" >/dev/null
 
-# --- 8. Restore origin focus -----------------------------------------------
-if [ -n "$ORIGIN_WIN" ]; then
-    "$CMUX_BIN" focus-window --window "$ORIGIN_WIN" >/dev/null 2>&1 || true
-fi
-if [ -n "$ORIGIN_WS" ]; then
-    "$CMUX_BIN" select-workspace --workspace "$ORIGIN_WS" >/dev/null 2>&1 || true
-fi
+# --- 8. (No focus restore needed — we spawned with --focus false, so we
+#       never took Mukul's foreground in the first place.) ------------------
 
 # --- 9. Write a provisional heartbeat so the next pulse finds the new ws --
 # Assistant will overwrite this with its own heartbeat on first pulse — but if
