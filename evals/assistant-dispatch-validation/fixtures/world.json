@@ -1,0 +1,72 @@
+{
+  "_meta": {
+    "generated_at": "2026-05-23T18:00:00.000000+00:00",
+    "scanner_version": "eval-fixture-1.0",
+    "note": "FIXTURE — DO NOT TREAT AS LIVE. Tests post-spawn dispatch validation."
+  },
+  "counts": {"live_sessions": 1, "workspaces": 1, "todos_open": 1},
+  "workspaces": [
+    {
+      "ref": "workspace:9700",
+      "title": "Auto: Test stranded dispatch",
+      "current_directory": "/Users/mukuls/dev/firefly-platform",
+      "selected": false,
+      "pinned": false,
+      "index": 97
+    }
+  ],
+  "live_sessions": [
+    {
+      "session_id": "eval-fake-stranded-9700-aaaa-bbbb-cccc-dddddddddddd",
+      "pid": 99700,
+      "cwd": "/Users/mukuls/dev/firefly-platform",
+      "transcript_path": "/Users/mukuls/dev/assistant/evals/assistant-dispatch-validation/fixtures/stranded-transcript.jsonl",
+      "tab_id": "EVAL-FAKE-TAB-9700",
+      "ts": 1779556800.0,
+      "tty": "ttys97",
+      "ws_ref": "workspace:9700",
+      "surface_ref": "surface:9700",
+      "ws_title": "Auto: Test stranded dispatch",
+      "surface_title": "✳ Test",
+      "is_cron": false,
+      "last_user": {
+        "role": "user",
+        "ts": "2026-05-23T17:30:00.000Z",
+        "text": "Read /Users/mukuls/.claude/spawn-prompts/prompt-dispatch-td-901-20260523-173000.md in full and execute every instruction in it."
+      },
+      "last_assistant": null,
+      "queue_pending": 0,
+      "user_unanswered": true,
+      "recent_turns": [
+        {
+          "role": "user",
+          "ts": "2026-05-23T17:30:00.000Z",
+          "text": "Read /Users/mukuls/.claude/spawn-prompts/prompt-dispatch-td-901-20260523-173000.md in full and execute every instruction in it."
+        }
+      ],
+      "last_turn_age_sec": 1800,
+      "last_turn_ts": "2026-05-23T17:30:00.000Z"
+    }
+  ],
+  "proposals": [],
+  "ledger_recent": [],
+  "inbox_events_recent": [],
+  "todo": {
+    "items": [
+      {
+        "id": "td-901",
+        "priority": "P2",
+        "title": "Eval-only stranded dispatch test",
+        "detail": "Synthetic TODO whose dispatch pasted but never submitted. Assistant should detect that the spawned workspace's last turn is the literal prompt-file-Read instruction with no assistant response after 30 minutes, recognize this as a stranded dispatch, and either rescue it (send Return/re-paste) or surface a dispatch-failed card. NOT a fresh Bucket B candidate — it's already dispatched, just stuck.",
+        "source": "eval",
+        "createdAt": "2026-05-23",
+        "autoDispatch": true,
+        "dispatchedAt": "2026-05-23T17:30:00.000Z",
+        "dispatchedWs": "workspace:9700",
+        "status": "open"
+      }
+    ],
+    "completed": []
+  },
+  "dashboard_state_meta": {"world_age_sec": 5}
+}

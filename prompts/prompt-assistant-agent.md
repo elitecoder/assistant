@@ -294,9 +294,69 @@ SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:
 
 **Incident reference (2026-05-23):** earlier versions of this prompt passed `--focus true` and tried to "restore" origin focus by reading `cmux identify --json` `.focused.workspace_ref` — but `.focused` returns whatever cmux tab Mukul is on at the moment, NOT the Assistant's own workspace, so the restoration was a no-op and the spawn flashed to the new workspace AND stayed there (or bounced back to Mukul's tab via the bogus restore). Either way, focus was disturbed. The fix above doesn't take focus in the first place.
 
-After spawn lands successfully (transcript shows the user line with the prompt-file path):
+#### MANDATORY post-spawn validation (ABSOLUTE RULE)
+
+After every spawn — BEFORE you log a `assistant:dispatch:td-NNN` action, BEFORE you set `dispatchedAt`, BEFORE you move on to the next TODO — you MUST verify the prompt was actually submitted in the new workspace. Skipping this step is what stranded ws:28 (td-034) and ws:29 (td-035) on 2026-05-23: their prompts pasted into the input box during shell init but never submitted; both workspaces sat at `context -- │ 0↑/0↓ │ $0.00` for hours doing nothing while their dispatch entries logged success.
+
+**The check (run this AFTER the SKILL.md submission loop):**
 
 ```bash
+# 1. Resolve the spawned workspace's transcript path. Project slug uses the
+#    cwd realpath ($HOME/dev for auto-dispatch).
+SPAWN_CWD_SLUG=$(printf '%s' "$HOME/dev" | sed 's|/|-|g')
+SPAWN_PROJECT_DIR="$HOME/.claude/projects/$SPAWN_CWD_SLUG"
+
+# 2. Find the newest jsonl in that dir created within the last 90 sec — that
+#    must be the one our spawn produced.
+LATEST_JSONL=$(find "$SPAWN_PROJECT_DIR" -maxdepth 1 -type f -name '*.jsonl' \
+    -newermt "$(date -u -v-90S +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null \
+    | xargs -r ls -t 2>/dev/null | head -n1)
+
+# 3. Confirm at least one type=user role=user line exists with our prompt
+#    file path in its content. ("Read $PROMPT_FILE in full and execute …")
+SUBMITTED=0
+if [ -n "$LATEST_JSONL" ]; then
+    if python3 - "$LATEST_JSONL" "$PROMPT_FILE" <<'PY'
+import json, sys
+path, sig = sys.argv[1], sys.argv[2]
+sig = sig[:60]
+try:
+    with open(path) as f:
+        for line in f:
+            try: d = json.loads(line)
+            except: continue
+            msg = d.get("message") if isinstance(d.get("message"), dict) else None
+            if d.get("type") == "user" and msg and msg.get("role") == "user":
+                c = msg.get("content","")
+                if isinstance(c, list):
+                    c = " ".join(str(x.get("text","") if isinstance(x, dict) else x) for x in c)
+                if sig in str(c):
+                    sys.exit(0)
+    sys.exit(1)
+except FileNotFoundError:
+    sys.exit(1)
+PY
+    then SUBMITTED=1; fi
+fi
+```
+
+**If SUBMITTED=1:** log the action and update the TODO normally (block below).
+
+**If SUBMITTED=0 (the prompt landed but never submitted):** ONE auto-recovery attempt is allowed:
+1. Re-read the surface to check what's there (`cmux read-screen --workspace $WS_REF --surface $SURFACE_REF --lines 20`).
+2. If you see `❯ Read /Users/mukuls/.claude/spawn-prompts/prompt-...` (the prompt is staged in the input box), send a single `Return` keypress: `cmux send-key --workspace $WS_REF --surface $SURFACE_REF Return`. Wait 5s, re-run the SUBMITTED check.
+3. If the input box is empty (the staged prompt got eaten by something — common when text leaks into shell init before claude is up), re-deliver the prompt: `cmux send --workspace $WS_REF --surface $SURFACE_REF "Read $PROMPT_FILE in full and execute every instruction in it."` then `cmux send-key Return`. Wait 5s, re-run SUBMITTED check.
+4. If still SUBMITTED=0 after recovery: **DO NOT** log a `assistant:dispatch:td-NNN` action. **DO NOT** set `dispatchedAt`. Instead emit:
+   - `actions_taken[]` entry: key `assistant:dispatch-failed:td-NNN`, kind `dispatch-failed`, evidence quoting the surface read, `verified: true`.
+   - `awaiting_input[]` card: key `assistant:needs-you:dispatch-failed:td-NNN`, tier T2, title `Dispatch failed for td-NNN — manual rescue needed`, detail listing the workspace ref, surface ref, prompt file path, and the surface contents.
+   - Leave the workspace alive — don't close it. Mukul can rescue it manually.
+
+**The TODO update step is GATED on SUBMITTED=1.** Move this block AFTER the validation:
+
+After spawn lands successfully (validated transcript user line):
+
+```bash
+if [ "$SUBMITTED" = "1" ]; then
 python3 -c "
 import json, datetime
 p = '/Users/mukuls/.claude/assistant-todo.json'
@@ -309,9 +369,12 @@ for it in d['items']:
         it['statusUpdatedAt'] = now
 open(p, 'w').write(json.dumps(d, indent=2))
 "
+fi
 ```
 
-If the spawn fails (claude_ready=0 or submitted=0), do NOT touch `dispatchedAt`. Add an `awaiting_input` card key `assistant:dispatch-failed:td-NNN` with the diagnostic so Mukul can investigate.
+#### Re-validating older dispatches (Bucket A path)
+
+When you see a workspace that was dispatched in a previous pulse but the world.json shows `last_user.text` matches the literal "Read /Users/mukuls/.claude/spawn-prompts/prompt-dispatch-..." pattern AND `last_turn_age_sec > 600` AND no assistant turns have happened — that's a stranded dispatch from before this rule existed. Same recovery: re-read the surface, send Return or re-paste, then re-validate. Add an `assistant:dispatch-rescued:td-NNN` action_taken entry with evidence.
 
 #### Hard limits on dispatching
 
