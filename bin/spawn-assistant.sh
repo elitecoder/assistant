@@ -141,37 +141,23 @@ CWD_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CW
 # --- 4. Compose the launch command -----------------------------------------
 # Sonnet 1M for routine pulse-driven work. Bedrock prefix when applicable.
 #
-# Bedrock detection: launchd does NOT inherit env from ~/.claude/settings.json,
-# so $CLAUDE_CODE_USE_BEDROCK is empty when this script runs as a LaunchAgent.
-# Read settings.json directly. Also accept the env var (for invocations from
-# inside an active claude session) and the AWS_BEARER_TOKEN_BEDROCK signal.
-USE_BEDROCK=0
-if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ] || [ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]; then
-    USE_BEDROCK=1
-elif [ -f "$HOME/.claude/settings.json" ]; then
-    if python3 -c "
-import json, sys
-try:
-    s = json.load(open('$HOME/.claude/settings.json'))
-    sys.exit(0 if str(s.get('env',{}).get('CLAUDE_CODE_USE_BEDROCK','')) == '1' else 1)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; then
-        USE_BEDROCK=1
-    fi
-fi
+# Backend env (CLAUDE_CODE_USE_BEDROCK, AWS_REGION, AWS_BEARER_TOKEN_BEDROCK)
+# is exported by ~/.zprofile, which cmux-launched claude sources via its login
+# shell. We don't need to re-export those here. We only need to know whether
+# the spawned claude will use Bedrock so we pick a Bedrock-compatible model ID.
+#
+# Detection: launchd-fired bash does NOT source ~/.zprofile, so $CLAUDE_CODE_USE_BEDROCK
+# is empty when this script runs from the LaunchAgent. Source ~/.zprofile (best-effort)
+# to pick up the same exports the cmux-launched claude will see.
+[ -f "$HOME/.zprofile" ] && . "$HOME/.zprofile" >/dev/null 2>&1 || true
 
 MODEL_SLUG="claude-sonnet-4-6[1m]"
-if [ "$USE_BEDROCK" = "1" ]; then
+if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ]; then
     MODEL_ID="us.anthropic.$MODEL_SLUG"
-    # Bedrock SDK in the claude CLI needs AWS_REGION. settings.json sets it for
-    # interactive sessions; LaunchAgents don't inherit that. Default if unset.
-    export AWS_REGION="${AWS_REGION:-us-west-2}"
-    export CLAUDE_CODE_USE_BEDROCK=1
 else
     MODEL_ID="$MODEL_SLUG"
 fi
-log "model_id=$MODEL_ID use_bedrock=$USE_BEDROCK aws_region=${AWS_REGION:-unset}"
+log "model_id=$MODEL_ID use_bedrock=${CLAUDE_CODE_USE_BEDROCK:-0}"
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --add-dir ~/.assistant --add-dir /tmp --model \"$MODEL_ID\""
 
 # --- 5. Create the workspace ------------------------------------------------
