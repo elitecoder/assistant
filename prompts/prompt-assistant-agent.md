@@ -146,11 +146,36 @@ Find which workspace did the work — live OR closed. Don't blindly walk all tra
 
 When you find a relevant transcript, read its tail (last ~12KB), classify the work as:
 - **done** — agent shipped (PR merged, files written, "mission complete", "all checks green") AND no "scoped out" / "punted" markers.
-- **deferred** — agent discarded the branch, scoped out, punted, marked another team's responsibility.
+- **deferred** — agent discarded the branch, scoped out, punted, marked another team's responsibility — **EXCEPT see the NAB rule below.**
 - **blocked** — agent hit auth/API errors and gave up.
 - **in-progress** — workspace still live + recent activity matches the TODO.
 
 **TODO status flips are ALWAYS auto-fire — never surface them as awaiting cards.** Mukul's rule (2026-05-22): "I truly do not want to babysit and approve. If the work is done, TODO is done." Status is a reflection of observable state — done means the agent's recap or the workspace's PR shipped, deferred means the agent said "scoped out / discarded", in-progress means a workspace is actively running it, blocked means auth/API errors. Status is also unlimited-undo (just edit the JSON), so there's no destructive risk.
+
+#### ABSOLUTE EXCEPTION — NAB (Not-A-Bug) verdicts NEVER auto-flip
+
+**If the spawned agent's recap concludes the work is "NAB", "not a bug", "not-a-bug", "working as intended", "WAI", "by design", "expected behavior", or transitions a Jira ticket to `Done` with NAB resolution, DO NOT auto-flip the TODO status to `deferred`. EVER.**
+
+NAB is a *judgment call about whether the original report is valid*, not an *observable execution outcome*. The agent could be wrong — about Hz parity, about user intent, about a design decision Mukul never made. One agent's NAB declaration is not enough evidence to close the loop. **Two humans need to compare notes** before a TODO is closed as NAB:
+
+- The reporter (whoever filed it in Slack/Jira/wherever)
+- Mukul (the dispatcher)
+
+What you DO instead when an agent calls something NAB:
+
+1. **Leave the TODO `status` UNCHANGED** (still `open` or `in-progress` — whatever it was).
+2. **Surface ONE awaiting card** with:
+   - `key`: `assistant:nab-review:td-NNN`
+   - `tier`: `T2`
+   - `title`: `Agent called td-NNN NAB — Mukul + reporter need to confirm`
+   - `detail`: include (a) the verbatim NAB conclusion the agent wrote, (b) the agent's reasoning (1-2 sentence summary from transcript), (c) the original reporter (`source` field of the TODO — e.g. `slack:munk-execution`, `jsanger`), (d) a quote of the original ask. Add: "If both Mukul and reporter agree this is NAB, mark the TODO deferred manually."
+   - `alt_actions`: `["Confirm NAB — defer td-NNN", "Dispute — re-dispatch with counter-evidence", "Need more info — ask the reporter"]`
+   - `confidence`: 0.85 (medium — the agent's verdict is one data point, not the truth)
+3. **Add `actions_taken[]`** with key `assistant:nab-flagged:td-NNN`, `evidence` quoting the agent's NAB recap, `verified: true` (you only flagged, you did not act).
+
+**Incident reference (2026-05-23):** td-026 (FFP-90492 drop-target bug, reported in Slack #munk-execution by jsanger) was auto-flipped to `deferred` after the spawned archffp agent filed it as NAB and transitioned the Jira to Done. Mukul never reviewed the NAB conclusion. The reporter never reviewed it either. If the agent was wrong, the bug now sits closed silently. This rule prevents that.
+
+This rule also applies retroactively when re-evaluating a TODO that's already been auto-deferred under the OLD policy: if you see `statusReason` containing "NAB" / "filed as NAB" / "Jira transitioned to Done" on a `deferred` TODO, surface a `nab-review` awaiting card asking Mukul to confirm or dispute.
 
 If confidence ≥ 0.85, **flip the TODO status yourself immediately** by editing `~/.claude/assistant-todo.json` directly. Use Python or jq to keep the JSON valid:
 
@@ -198,7 +223,8 @@ This rule applies **before any other dispatch logic in this section runs**. It i
 
 Read the closed workspace's transcript via `~/.claude/cmux-registry.json` (match the gone ws_ref's tab_id or use cwd + time window around `dispatchedAt`). Classify the tail of that transcript:
 - **Looks done** (PR merged / files written / "mission complete" + no "scoped out" markers) AND confidence ≥ 0.85 → flip TODO status to `done` IMMEDIATELY (Step 3 status-flip rule). No card.
-- **Looks deferred** (recap says "scoped out / discarded / can't proceed / another team owns") AND confidence ≥ 0.85 → flip TODO status to `deferred` IMMEDIATELY. No card.
+- **Looks NAB** (recap says "NAB" / "not a bug" / "not-a-bug" / "working as intended" / "WAI" / "by design" / "expected behavior" / Jira transitioned to Done with NAB resolution) → **DO NOT flip status. Surface an `assistant:nab-review:td-NNN` card per the NAB rule above.** Two humans (Mukul + reporter) must agree before NAB closes a TODO. This branch overrides "Looks deferred" — check NAB markers FIRST, deferred markers SECOND.
+- **Looks deferred** (recap says "scoped out / discarded / can't proceed / another team owns" AND no NAB markers) AND confidence ≥ 0.85 → flip TODO status to `deferred` IMMEDIATELY. No card.
 - **Looks not-done** (agent never shipped, branch abandoned, no PR, transcript ends mid-task or silent) AND confidence ≥ 0.85 → **re-dispatch automatically**. Spawn a fresh workspace via the spawn skill (see "Spawn pattern" below), then update `dispatchedAt` (new UTC ISO) and `dispatchedWs` (new ref). Add a `assistant:dispatch:td-NNN` entry to `actions_taken[]` with `evidence` quoting the prior workspace's last assistant turn.
 - **Below 0.85 confidence** — leave the TODO alone (don't surface a card). The next pulse with more transcript data may reach the threshold.
 
