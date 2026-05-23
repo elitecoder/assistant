@@ -29,22 +29,16 @@ You communicate with the LaunchAgent pulse script via two filesystem points:
 ### Step 0 — Drain the inbox + identify yourself
 
 ```bash
-# 0a. Identify your own workspace + surface — use `cmux identify --json`'s
-# CALLER context, NOT the FOCUSED context. The env vars CMUX_WORKSPACE_ID
-# and CMUX_SURFACE_ID hold UUIDs (e.g. D197E581-...), not the short refs
-# (e.g. workspace:126) that the pulse script needs. `cmux identify --json`
-# returns BOTH:
-#   .focused.workspace_ref  — whatever cmux tab is on screen right now (WRONG;
-#                             changes when Mukul clicks tabs or focus restores)
-#   .caller.workspace_ref   — the workspace whose shell ran this command (CORRECT;
-#                             always points to YOUR own workspace because the
-#                             env vars CMUX_WORKSPACE_ID / CMUX_SURFACE_ID are
-#                             inherited at shell creation and used by `cmux identify`
-#                             to look up the caller)
-# Use `.caller.*` — it's UUID-based under the hood but cmux returns the short
-# ref form. Incident 2026-05-22: an earlier version used `.focused.*`, wrote
-# workspace:130 (the user's currently-focused tab) into the heartbeat, and the
-# pulse script woke the wrong workspace.
+# 0a. Identify your own workspace + surface — use `.caller.*` from
+# `cmux identify --json`, NOT `.focused.*`. The canonical rule lives in
+# the cmux-workspace skill (~/.claude/skills/cmux-workspace/SKILL.md):
+# .caller is the workspace whose shell ran this command (you); .focused
+# is whatever tab Mukul is currently looking at (could be anything).
+# Inlined here because this prompt is delivered to the Sonnet agent as
+# a literal instruction set; skills aren't auto-loaded into pulses.
+# Incident 2026-05-22: an earlier version used `.focused.*`, wrote
+# workspace:130 (Mukul's focused tab) into the heartbeat, pulse script
+# woke the wrong workspace.
 MY_CTX=$(cmux identify --json)
 MY_WS=$(printf '%s' "$MY_CTX" | python3 -c '
 import json, sys
@@ -271,14 +265,11 @@ else
   MODEL_ID="$MODEL_SLUG"
 fi
 
-# IMPORTANT — DO NOT pass --focus true. The Assistant's auto-dispatch must
-# NEVER steal Mukul's foreground focus. Verified 2026-05-23 on current cmux:
-# `--focus false` (the default) creates a fully-functional workspace with a
-# real terminal surface — the old SKILL.md "zero panes" warning is obsolete.
-# The Assistant runs in the background; it does not own the user's screen.
-#
-# We do NOT need to capture/restore origin focus either, because we never
-# took it in the first place.
+# --focus false is mandatory. Canonical rule: ~/.claude/skills/cmux-workspace/SKILL.md
+# ("Pass --focus false whenever the verb supports it"). Don't take focus, don't
+# restore focus — both are smells. Incident 2026-05-23: an earlier version
+# passed --focus true and tried to .focused-restore — the restoration was a
+# no-op AND it disturbed Mukul's foreground tab.
 
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --model \"$MODEL_ID\""
 WS_REF=$(cmux new-workspace --cwd "$HOME/dev" --name "Auto: $TODO_TITLE" --focus false --command "$CLAUDE_CMD" | grep -oE 'workspace:[0-9]+' | head -n1)
@@ -286,13 +277,11 @@ SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:
 
 # Wait for "Claude Code v" banner (max 30s), then send the short Read instruction
 # (NEVER stream the prompt body — cmux drops middle chunks above ~3-4 KB).
-# See SKILL.md for the full readiness + submission verification loop. The
-# spawn finishes silently in the background — Mukul stays on whatever tab
-# he was on.
-# ... (full SKILL.md flow) ...
+# See ~/.claude/skills/spawn-claude-workspace/SKILL.md for the full readiness +
+# submission verification loop. The spawn finishes silently in the background —
+# Mukul stays on whatever tab he was on.
+# ... (full spawn-claude-workspace flow) ...
 ```
-
-**Incident reference (2026-05-23):** earlier versions of this prompt passed `--focus true` and tried to "restore" origin focus by reading `cmux identify --json` `.focused.workspace_ref` — but `.focused` returns whatever cmux tab Mukul is on at the moment, NOT the Assistant's own workspace, so the restoration was a no-op and the spawn flashed to the new workspace AND stayed there (or bounced back to Mukul's tab via the bogus restore). Either way, focus was disturbed. The fix above doesn't take focus in the first place.
 
 #### MANDATORY post-spawn validation (ABSOLUTE RULE)
 

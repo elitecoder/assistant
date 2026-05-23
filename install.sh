@@ -319,16 +319,31 @@ done
 log ""
 
 # --- 3. Copy LaunchAgent plists + reload only those that changed ----------
+# Plists in the repo may contain `/Users/<user>/...` as a home placeholder.
+# At install time we substitute the live $HOME and stage the result in a
+# temp dir, then copy that to ~/Library/LaunchAgents/. Plists that don't
+# have the placeholder (the original 5 with literal /Users/mukuls) are
+# unchanged by the sed.
 log "[3/4] Copying LaunchAgent plists into ~/Library/LaunchAgents/"
 mkdir -p "$HOME_DIR/Library/LaunchAgents"
+PLIST_STAGE="$(mktemp -d)"
+trap 'rm -rf "$PLIST_STAGE"' EXIT
+
 declare -a CHANGED_LABELS
 for plist in "$REPO_ROOT"/launchagents/*.plist; do
+    base="$(basename "$plist")"
     label="$(basename "$plist" .plist)"
-    target="$HOME_DIR/Library/LaunchAgents/$(basename "$plist")"
-    if [[ -f "$target" ]] && cmp -s "$plist" "$target"; then
+    staged="$PLIST_STAGE/$base"
+    target="$HOME_DIR/Library/LaunchAgents/$base"
+
+    # Substitute /Users/<user>/ → $HOME/ so the staged plist references the
+    # current user's home dir. No-op for plists that don't have the token.
+    sed "s|/Users/<user>/|$HOME_DIR/|g" "$plist" > "$staged"
+
+    if [[ -f "$target" ]] && cmp -s "$staged" "$target"; then
         note "OK   $target (matches repo, no reload needed)"
     else
-        ensure_file_copy "$target" "$plist"
+        ensure_file_copy "$target" "$staged"
         CHANGED_LABELS+=("$label")
     fi
 done

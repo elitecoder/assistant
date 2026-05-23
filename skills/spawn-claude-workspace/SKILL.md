@@ -7,26 +7,32 @@ description: Spawn a new cmux workspace in the background, start a fresh Claude 
 
 Spawn a new cmux workspace **in the background**, launch `claude` inside it, and auto-send the user's prompt. The new workspace is created unfocused — the user stays on their current tab. If they want to switch to the spawned workspace they do it themselves with `cmux select-workspace`.
 
-## Calibration notes (verified empirically on this machine, latest 2026-05-14)
+## Prerequisites
 
-These details override anything you might infer from `cmux --help`. The cmux CLI shortcuts (`cmux send`, `cmux read-screen`, `cmux paste-buffer`) reject terminal surfaces with `Error: invalid_params: Surface is not a terminal` even when the surface is clearly a terminal with a live tty. The RPC path works fine. **Use `cmux rpc surface.*` for every terminal I/O operation.**
+This skill assumes you've also loaded **`/cmux-workspace`**, which is cmux's own canonical reference for caller-targeting and non-disruptive automation. It owns these rules so this skill doesn't duplicate them:
 
-**ABSOLUTE RULE — ALWAYS pass `--focus false`. NEVER `--focus true`.** Re-verified 2026-05-23 on current cmux build: `cmux new-workspace --cwd <path> --name <title> --command "..."` WITHOUT `--focus true` produces a fully functional workspace with a real terminal surface; `--command` runs, `read-screen` and `send-text` all work. The earlier 2026-05-14 calibration note (which insisted `--focus true` was mandatory) is **OBSOLETE** — that build has since been fixed.
+- Use `CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID` env vars (or `cmux identify --json .caller.*`) — never `.focused.*`.
+- Never call focus-changing verbs (`select-workspace`, `focus-pane`, `focus-window`) speculatively.
+- Pass `--focus false` whenever a verb supports it.
 
-**No exceptions.** Even when the caller is a human-driven session that "wants to switch to the new workspace": **don't switch their focus for them**. Mukul's rule (2026-05-23): "If user really wants to switch focus, they can do so manually." A spawn skill that hops the user's foreground around — even by request — gets the request wrong roughly half the time (the user is mid-sentence, the spawn takes 8 seconds to come up, by then they've changed their mind, etc.). Always spawn unfocused; the user can `cmux select-workspace` themselves once they confirm the new workspace is ready.
+This skill builds on top of `/cmux-workspace` and adds the Claude-Code-specific orchestration (write prompt → spawn workspace → wait for banner → submit by file reference → verify via JSONL transcript).
 
-If you find yourself wanting to restore origin focus after the fact via `cmux identify --json` + `.focused.workspace_ref`, that's a smell — `.focused` returns whatever tab Mukul is currently on, not the caller's own workspace, so the "restore" hops focus around unpredictably. Don't take focus, and you don't have to restore anything.
+## Calibration notes (Claude-Code-specific, verified on this machine)
 
-**CRITICAL — prefer `new-workspace --command '<text>'` over a separate `surface.send_text` burst for the `claude` launch.** The `--command` flag sends text + Enter atomically on creation, which avoids the burst-timing edge cases that caused the old skill to race the shell. Verified 2026-05-23 — `cmux new-workspace --focus false --cwd ... --command "echo HELLO"` → the terminal is created, the shell runs, and the echo output appears in `surface.read_text`. This replaces the `cmux rpc surface.send_text "claude ..."` step that used to live in Step 5. The prompt body still goes through the file-reference pattern below — only the `claude` launch command itself moves to `--command`.
+The cmux team owns the `cmux` CLI's general behavior (see `/cmux` and `/cmux-workspace`). The notes below are the *Claude-Code-specific* gotchas you won't find in upstream cmux skills.
 
-**CRITICAL — param name is `surface_id`, not `surface`.** An earlier version of this skill used `{"surface": "surface:N", ...}` which cmux silently ignores (no error), causing every call to operate on the **currently-focused surface** instead of the requested one. That makes `send_text` type into the caller's own terminal and `read_text` return the caller's own screen — producing false-positive "Claude is ready" readings and clobbering the caller's input buffer. Always use `surface_id`. The value can be a ref (`surface:N`), UUID, or index.
+**ALWAYS pass `--focus false` to `cmux new-workspace`.** Mukul's absolute rule (2026-05-23): the spawn never takes the user's foreground, even when they ask. If they want to switch they can run `cmux select-workspace` themselves once the new workspace is ready. Re-verified 2026-05-23: current cmux creates a fully-functional terminal surface without focus, so `read-screen` and `send-text` work normally. The 2026-05-14 "zero panes without --focus true" note is OBSOLETE.
 
-**CRITICAL — `surface.send_text` does NOT use bracketed paste on this build AND drops chunks of long payloads.** The payload is streamed as individual keystrokes. Observed failure 2026-05-12: a ~7 KB prompt paste lost the middle ~60% of the content (only the first and last sections landed in Claude's input box). That is why this skill now never sends the prompt body via keystrokes — it writes the prompt to a persistent file on disk and sends only a short `Read <path> in full and execute it.` instruction. Other consequences of the streaming model that still matter:
-- A trailing `\n` in the short instruction fires Enter = **submits immediately**. Strip the trailing `\n` and press Enter explicitly.
+**`new-workspace --command '<text>'` is the right way to fire the claude launch.** It sends text + Enter atomically on creation, eliminating the burst-timing race where a separate `surface.send_text` could land before the shell was ready. Verified 2026-05-23 with `--focus false`: `--command "claude ..."` → claude starts, banner appears in `surface.read_text` ~3-10 s later.
+
+**`cmux rpc` param name is `surface_id`, not `surface`.** Using `{"surface": "surface:N", ...}` causes cmux to silently fall back to the currently-focused surface — `send_text` types into the caller's own terminal, `read_text` returns the caller's own screen, false-positive "Claude is ready" readings, etc. Always use `surface_id`. The value can be a ref (`surface:N`), UUID, or index.
+
+**`surface.send_text` doesn't use bracketed paste AND drops chunks of long payloads.** Streamed as individual keystrokes; observed failure 2026-05-12 — a ~7 KB prompt lost the middle ~60% of its content. **Never stream the prompt body.** Write it to a file under `~/.claude/spawn-prompts/` and send only a short `Read <path> in full and execute it.` instruction. Consequences of the streaming model that still matter:
+- A trailing `\n` in the short instruction fires Enter = **submits immediately**. Strip the trailing `\n` and press Enter explicitly via `surface.send_key`.
 - Claude Code renders each line as it arrives — there is usually NO `[Pasted text #N +N lines]` marker. The marker only shows up when the terminal emulator (not cmux) announces bracketed paste — which this build does not. **Do not rely on `[Pasted text` for verification.**
 - Short instructions (~100 bytes) ingest in <1 s; skip the long sleep you'd need for a full-prompt paste.
 
-**CRITICAL — terminal-screen scraping is unreliable; don't use it as the primary signal.** A ~6-8 KB prompt fills the terminal scrollback well past any `read_text` window you pick; progress indicators use a rotating pool of hundreds of verbs (`Musing`, `Shimmering`, `Noodling`, `Pondering`, …) that grows every release. Both regex narrowness and window size have produced false-negative `submitted=0` readings even when the spawned agent was actively processing. The transcript-based check below is the correct approach — only fall back to `read_text` as a last-resort "did Claude even start" diagnostic when no transcript ever appears.
+**Terminal-screen scraping is unreliable as a primary signal.** A ~6-8 KB prompt fills the terminal scrollback well past any `read_text` window you pick; progress indicators use a rotating pool of hundreds of verbs (`Musing`, `Shimmering`, `Noodling`, `Pondering`, …) that grows every release. Both regex narrowness and window size have produced false-negative `submitted=0` readings even when the spawned agent was actively processing. The transcript-based check below is the correct approach — fall back to `read_text` only as a last-resort "did Claude even start" diagnostic when no transcript ever appears.
 
 **CRITICAL — resolve the cwd via `realpath` before slugging.** On macOS, `/tmp` is a symlink to `/private/tmp`; Claude Code records the resolved path. `readlink` is not enough (only follows one hop). Use `python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))"` or `cd "$cwd" && pwd -P`. Skipping this puts the project directory at a slug that never receives transcripts and the verification loop times out.
 
@@ -163,7 +169,7 @@ WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 **Do not use `awk '{print $N}'`** to extract the ref — this SKILL.md gets surfaced to the agent via the Skill tool, which performs shell-style variable expansion on the markdown body. `$2` / `$NF` get substituted to empty (or some stray value) before the agent ever runs the command, and the resulting `awk '{print }'` pipes through unchanged text. Always use an anchored regex extractor (`grep -oE`, `sed -nE`, or `python3 -c`) that contains no `$N` tokens.
 
 Notes:
-- **ALWAYS pass `--focus false`** (re-verified 2026-05-23). The earlier 2026-05-14 "zero panes without --focus true" claim is OBSOLETE — current cmux creates a fully-functional surface on the unfocused workspace and `read-screen` / `send-text` work normally. **No spawn ever takes focus.** If the user wants to switch to the new workspace they can do it themselves with `cmux select-workspace`.
+- `--focus false` is mandatory — see the calibration note at the top.
 - **`--command "<claude-launch>"` replaces the old "send_text the launch command" step.** The flag sends text + Enter atomically on creation, so the shell spawns AND the claude launch fires without a separate `surface.send_text` burst. Verified 2026-05-14 — eliminates the "early writes get swallowed" race that killed the old Step 5. The claude launch still needs `--dangerously-skip-permissions` + `--add-dir` for unattended work.
 - **Model is selectable via `MODEL` env var (default opus, 1M context)** so the spawned agent has the same context budget as the user's interactive shell. Pass `MODEL=sonnet` for routine/periodic work (Sonnet 4.6 1M); leave unset for Opus 4.7 1M on decision-making tasks. Bedrock IDs are prefixed `us.anthropic.…`; Anthropic-API IDs use the bare slug. cmux's `--command` does not expand shell aliases, so this branch encodes the equivalent of the alias. When you bump the model versions, update both the alias and this skill together.
 - `--cwd` must be absolute.
@@ -374,11 +380,9 @@ list_transcripts() {
 }
 BEFORE=$(list_transcripts)
 
-# --focus false (default) is the right choice — current cmux creates a real
-# terminal surface without focus stealing. Background dispatchers MUST stay
-# unfocused to avoid disturbing Mukul's foreground tab.
-# --command runs the claude launch atomically on creation; Step 5 no longer needs
-# to send_text + send_key the launch separately.
+# --focus false is mandatory (calibration notes + /cmux-workspace).
+# --command runs the claude launch atomically; Step 5 no longer needs
+# a separate send_text + send_key for the launch.
 # Pin the 1M-context build of the chosen model. cmux's --command string is NOT
 # alias-expanded, so set the model explicitly. MODEL=sonnet for periodic/routine
 # work; default opus for decision-making. Bedrock IDs are prefixed
@@ -482,10 +486,10 @@ Substitute `<<<PROMPT>>>` with the verbatim prompt content. Set `CWD`, `TITLE`, 
 
 ## Guardrails
 
-- **ALWAYS pass `--focus false`** (re-verified 2026-05-23). NEVER pass `--focus true`. Current cmux creates a real terminal surface without focus, so `read-screen` / `send-text` all work fine. If the user wants to switch to the spawned workspace, they can do it themselves with `cmux select-workspace`.
+- See the calibration note at the top: `--focus false` is mandatory; this is also the canonical rule documented in `/cmux-workspace`.
 - **Use `--command "<launch>"` to fire the claude launch atomically.** On current cmux, `new-workspace --command` sends text + Enter as part of workspace creation, avoiding the burst-timing race that caused old-skill `send_text` bursts to occasionally drop the launch command. Do NOT additionally `send_text` the claude launch in Step 5 — it would type the command a second time.
 - **Always use RPC for surface I/O** on this cmux build. CLI shortcuts (`cmux send`, `cmux read-screen`, `cmux paste-buffer`) fail with "Surface is not a terminal" and will silently break the flow.
-- **Never take focus.** With `--focus false` baked into Step 3, the user's foreground is never disturbed — there is nothing to "restore". Don't add any `focus-window` / `select-workspace` calls back into the failure paths or success paths. If the user wants to switch to the spawned workspace, they do it manually.
+- **Never take focus.** Don't add `focus-window` / `select-workspace` calls back into the failure paths or success paths. If the user wants to switch to the spawned workspace, they do it manually. Canonical rule: `/cmux-workspace`.
 - **Verify via the session transcript, not the screen.** Claude Code writes `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` the instant the session starts and appends a `type=user role=user` line the instant a prompt is submitted. Snapshot the existing transcripts before spawning; after, poll for a new file and a user line whose content includes the prompt's signature. Screen scraping verb pools ("Musing…", "Thinking…", etc.) is fragile — there are hundreds of verbs and the list grows every release. Transcripts are the source of truth.
 - **Resolve the cwd via `realpath` before slugging.** On macOS, `/tmp` is a symlink to `/private/tmp`; Claude Code uses the resolved path for the project slug. Without `realpath`, the skill polls the wrong directory forever.
 - **Use `find`, not `ls *.jsonl`**, to enumerate transcripts. In zsh with `set -eu`, an empty glob aborts the script. `find -maxdepth 1 -type f -name '*.jsonl'` returns nothing silently.
