@@ -368,7 +368,7 @@ When you see a workspace that was dispatched in a previous pulse but the world.j
 #### Hard limits on dispatching
 
 - **Never spawn more than 2 new workspaces per pulse.** If 5+ TODOs need dispatch, do the top 2 by priority (P0 > P1 > P2 > P3 > P4) and surface the rest as `awaiting_input` with key `assistant:dispatch-batch:bulk`.
-- **Never dispatch when world.workspaces[] is already saturated** (>15 live non-cron workspaces — RAM pressure). Surface as awaiting_input with explanation.
+- **Never dispatch when there are already 5+ ACTIVE non-cron workspaces.** A workspace counts as "active" iff EITHER its `last_turn_age_sec < 600` (the agent took a turn in the last 10 min) OR its session has an unresolved tool call (`assistant_tool_use_pending: true` in world.live_sessions[]) OR its `agent_status` is `"working"` / `"running"`. Workspaces in `idle` / `awaiting_user` / `blocked` / `done-pending-cleanup` states do NOT count. Rationale: a user who has 12 idle workspaces sitting around (because they queued work yesterday and walked away) should still be able to receive new dispatches when a new TODO arrives — the cap is about parallel cognitive load on the model + RAM pressure from genuinely-running agents, not about how many cmux tabs exist. When the cap is hit, surface a `assistant:dispatch-cap-hit:N-active` awaiting card listing the active workspaces by ws_ref + last activity time, and explain how many additional candidates are queued.
 - **Never dispatch a TODO whose `detail` is shorter than 80 chars** (too vague — risk of an agent flailing). Surface as awaiting_input asking Mukul to flesh it out.
 - **Always restore origin focus** to whichever workspace was focused when you started. Never leave Mukul stranded on the new spawn.
 
