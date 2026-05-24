@@ -53,7 +53,7 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
   - ~/.claude/spawn-prompts/prompt-assistant-agent.md → symlink → $REPO_ROOT/prompts/...
-  - ~/.assistant/lessons/{active,stale,archive}  → mkdir (lessons are runtime state, not repo-tracked)
+  - lessons live in ~/.claude/CLAUDE.md (not in this repo). Curator: bin/assistant-curator.py
   - ~/.claude/skills/{todo,cleanup,spawn-claude-workspace} → COPIES (shareable)
   - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,
        session-context-watcher,assistant-todo-server}.plist → COPIED
@@ -234,19 +234,23 @@ if [[ -L "$LEGACY_PROMPT_LINK" ]]; then
     fi
 fi
 
-# Lessons live at ~/.assistant/lessons/ — runtime state, not in the repo.
-# Each user grows their own lesson library; we just make sure the directories
-# exist so the curator can write into them.
-mkdir -p "$HOME_DIR/.assistant/lessons/active" "$HOME_DIR/.assistant/lessons/stale" "$HOME_DIR/.assistant/lessons/archive"
-
-# Decommission the old ~/.claude/lessons location if it exists (left over
-# from when lessons were tracked in this repo and symlinked into ~/.claude/).
-if [[ -e "$HOME_DIR/.claude/lessons" ]]; then
-    note "REMOVE legacy $HOME_DIR/.claude/lessons (lessons now live at ~/.assistant/lessons/)"
-    if [[ $APPLY -eq 1 ]]; then
-        rm -rf "$HOME_DIR/.claude/lessons"
+# Lessons live inside ~/.claude/CLAUDE.md as a `## Lessons` section. CLAUDE.md
+# is officially auto-loaded by Claude Code into every session, so any agent
+# (this Assistant, an ad-hoc claude session, the judgement subagent) sees the
+# rules without explicit injection. Each user maintains their own. The
+# curator at bin/assistant-curator.py reads/writes that section.
+#
+# Decommission legacy lesson stores if present:
+#   ~/.claude/lessons/        — pre-2026-05-23 location (symlinked into repo)
+#   ~/.assistant/lessons/     — 2026-05-23 location (JSON sidecar)
+for legacy_lessons in "$HOME_DIR/.claude/lessons" "$HOME_DIR/.assistant/lessons"; do
+    if [[ -e "$legacy_lessons" ]]; then
+        note "REMOVE legacy $legacy_lessons (lessons now live in ~/.claude/CLAUDE.md)"
+        if [[ $APPLY -eq 1 ]]; then
+            rm -rf "$legacy_lessons"
+        fi
     fi
-fi
+done
 
 ensure_symlink \
     "$HOME_DIR/.claude/assistant-operating-guide.md" \

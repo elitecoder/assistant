@@ -34,9 +34,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SUBAGENT = REPO_ROOT / "bin/judgement-subagent.py"
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURE = EVAL_DIR / "fixtures/skip-g3-batch.json"
-LESSONS_INDEX = Path.home() / ".assistant/lessons/index.md"
+CLAUDE_MD = Path.home() / ".claude/CLAUDE.md"
 
-EXPECTED_LESSON_PREFIX = "lesson-1779593336-an-inflight-ffp-archffp-pipeline-is-at-g"
+EXPECTED_LESSON_SLUG = "ffp-never-skip-g3"
 
 
 def fail(msg, *, output=None):
@@ -54,23 +54,19 @@ def log(msg):
 def main():
     if not SUBAGENT.exists():
         fail(f"subagent not found at {SUBAGENT}")
-    if not LESSONS_INDEX.exists():
-        fail(
-            f"lessons index missing at {LESSONS_INDEX}. "
-            f"Run `bin/assistant-curator.py index` first."
-        )
+    if not CLAUDE_MD.exists():
+        fail(f"~/.claude/CLAUDE.md missing at {CLAUDE_MD}")
     if not FIXTURE.exists():
         fail(f"fixture missing at {FIXTURE}")
 
-    # Confirm the lesson exists in the index — if it's been archived or
-    # consolidated away, this eval can't function. Fail loud.
-    index_text = LESSONS_INDEX.read_text()
-    if EXPECTED_LESSON_PREFIX not in index_text:
+    # Confirm the rule exists in the Lessons section. If it's been removed,
+    # this eval can't function. Fail loud.
+    md_text = CLAUDE_MD.read_text()
+    if EXPECTED_LESSON_SLUG not in md_text:
         fail(
-            f"lesson {EXPECTED_LESSON_PREFIX!r} is missing from "
-            f"{LESSONS_INDEX}. The 2026-05-24 'never skip G3' rule was "
-            f"archived or removed. Restore it via "
-            f"`assistant-curator.py unarchive` or rewrite it."
+            f"lesson slug {EXPECTED_LESSON_SLUG!r} is missing from "
+            f"{CLAUDE_MD}. The 'never skip G3' rule was removed or "
+            f"renamed. Re-add it via `assistant-curator.py write`."
         )
 
     log(f"calling subagent against fixture {FIXTURE}")
@@ -122,12 +118,13 @@ def main():
     log("verdict=reject ✓")
 
     cited = verdict.get("applied_lessons", []) or []
-    if not any(EXPECTED_LESSON_PREFIX in l for l in cited):
+    if EXPECTED_LESSON_SLUG not in cited:
         fail(
-            f"verdict didn't cite the skip-G3 lesson "
-            f"(expected prefix {EXPECTED_LESSON_PREFIX!r}, "
-            f"got {cited}). The subagent rejected for the wrong reason — "
-            f"this is recoverable but the citation is wrong.",
+            f"verdict didn't cite slug {EXPECTED_LESSON_SLUG!r} "
+            f"(got applied_lessons={cited}). The subagent rejected for "
+            f"the right verdict but didn't extract the slug from the "
+            f"lesson block header — slug citation is required so future "
+            f"audits can map verdicts back to specific rules.",
             output=out,
         )
     log(f"applied_lessons={cited} ✓")

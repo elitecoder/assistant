@@ -31,12 +31,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SUBAGENT = REPO_ROOT / "bin/judgement-subagent.py"
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURE = EVAL_DIR / "fixtures/dispatch-batch.json"
-LESSONS_INDEX = Path.home() / ".assistant/lessons/index.md"
+CLAUDE_MD = Path.home() / ".claude/CLAUDE.md"
 
 # The dispatch lesson the subagent must cite when modifying td-101 (CSS tweak)
 # and approving td-100 (design question). If the curator rewrites the lesson
 # library, update this expectation.
-EXPECTED_LESSON_PREFIX = "lesson-1779489067-spawning-a-workspace"
+EXPECTED_LESSON_SLUG = "spawn-model-policy"
 
 
 def fail(msg, *, output=None):
@@ -54,11 +54,8 @@ def log(msg):
 def main():
     if not SUBAGENT.exists():
         fail(f"subagent not found at {SUBAGENT}")
-    if not LESSONS_INDEX.exists():
-        fail(
-            f"lessons index missing at {LESSONS_INDEX}. "
-            f"Run `bin/assistant-curator.py index` first."
-        )
+    if not CLAUDE_MD.exists():
+        fail(f"~/.claude/CLAUDE.md missing at {CLAUDE_MD}")
     if not FIXTURE.exists():
         fail(f"fixture missing at {FIXTURE}")
 
@@ -117,12 +114,11 @@ def main():
             output=out,
         )
     cited = css.get("applied_lessons", []) or []
-    if not any(EXPECTED_LESSON_PREFIX in l for l in cited):
+    if EXPECTED_LESSON_SLUG not in cited:
         fail(
-            f"td-101 verdict didn't cite the dispatch-model lesson "
-            f"(expected prefix '{EXPECTED_LESSON_PREFIX}', got {cited}). "
-            f"This usually means the subagent hallucinated an ID or skipped "
-            f"the index.",
+            f"td-101 verdict didn't cite slug {EXPECTED_LESSON_SLUG!r} "
+            f"(got applied_lessons={cited}). The subagent should have "
+            f"matched the spawn-model rule in the Lessons section.",
             output=out,
         )
     if "sonnet" not in (css.get("modification") or "").lower():
@@ -146,21 +142,22 @@ def main():
         )
     log("td-100 design question: approve ✓")
 
-    # 6. No hallucinated lesson IDs anywhere.
-    actual_ids = {
-        ln.split("`")[1]
-        for ln in LESSONS_INDEX.read_text().splitlines()
-        if ln.startswith("  - ID `") or "ID `" in ln
-    }
-    actual_ids = {x for x in actual_ids if x.startswith("lesson-")}
-    log(f"index has {len(actual_ids)} known lesson IDs")
+    # 6. No hallucinated lesson slugs anywhere.
+    import re as _re
+    actual_slugs = set(
+        _re.findall(
+            r"<!--\s*lesson:\s*([a-z0-9\-]+),",
+            CLAUDE_MD.read_text(),
+        )
+    )
+    log(f"CLAUDE.md has {len(actual_slugs)} known lesson slugs")
     for cid, v in verdicts.items():
         for cited_id in v.get("applied_lessons", []) or []:
-            if cited_id not in actual_ids:
+            if cited_id not in actual_slugs:
                 fail(
-                    f"verdict for {cid} cited non-existent lesson "
-                    f"'{cited_id}' (hallucination). Known IDs: "
-                    f"{sorted(actual_ids)[:3]}…",
+                    f"verdict for {cid} cited non-existent slug "
+                    f"'{cited_id}' (hallucination). Known slugs: "
+                    f"{sorted(actual_slugs)[:3]}…",
                     output=out,
                 )
     log("no hallucinated lesson IDs ✓")

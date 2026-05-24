@@ -557,7 +557,7 @@ async function openWs(btn) {
 {todos_html}
 </div>
 
-<div class="footer">v3 · Scanner: ~/.claude/cache/world.json · Evaluator: ~/.architect/orchestrator-{{proposals,ledger}}/ · Lessons: ~/.assistant/lessons/index.md · Undo: world-evaluator owns ledger</div>
+<div class="footer">v3 · Scanner: ~/.claude/cache/world.json · Evaluator: ~/.architect/orchestrator-{{proposals,ledger}}/ · Lessons: ~/.claude/CLAUDE.md `## Lessons` · Undo: world-evaluator owns ledger</div>
 </body></html>
 """
     DASHBOARD_HTML.write_text(body)

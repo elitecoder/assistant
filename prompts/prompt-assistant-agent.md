@@ -425,9 +425,11 @@ For confidence ≥ 0.90 AND artifact checks passed, do it now, log to `actions_t
 ### Step 4.5 — Judgement subagent (ABSOLUTE RULE before any non-trivial action)
 
 Before you act on any **non-trivial** candidate from the steps above, send the
-batch to the judgement subagent. Lessons live at `~/.assistant/lessons/`; the
-subagent reads them in a FRESH context every pulse so they actually steer
-behavior (instead of being buried in your accumulating pulse history).
+batch to the judgement subagent. Lessons live inside `~/.claude/CLAUDE.md` under
+a `## Lessons` heading; that file auto-loads into every Claude Code session, so
+the subagent gets the rules for free. The point of using a subagent is FRESH
+CONTEXT — each pulse the rules are at the top of attention rather than buried
+in your accumulating pulse history.
 
 **Non-trivial candidates** are anything in this list:
 - Spawning a workspace (Bucket A re-dispatch, Bucket B initial dispatch)

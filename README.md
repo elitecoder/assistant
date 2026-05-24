@@ -10,7 +10,7 @@ Mukul's personal dispatcher system that manages parallel cmux Claude Code worksp
 | **TODO server** (`bin/todo-server.py`) | HTTP daemon | Powers dashboard buttons (`/focus/<ws>`, `/toggle`, `/remove`) on `127.0.0.1:9876` |
 | **Session-context watcher** (`bin/session-context-watcher.py`) | event-driven (kqueue) | Tails Claude JSONL transcripts → `~/.claude/cache/session-context.json` |
 
-The dispatcher itself (this Claude session) reads `MEMORY.md`, `docs/assistant-operating-guide.md`, and `~/.assistant/lessons/index.md` on boot. Lessons are runtime state — agent-curated rules from past corrections — and live outside the repo at `~/.assistant/lessons/`.
+The dispatcher itself (this Claude session) reads `MEMORY.md`, `docs/assistant-operating-guide.md`, and the `## Lessons` section of `~/.claude/CLAUDE.md` (auto-loaded by Claude Code into every session). Lessons are user-owned runtime state — they live in CLAUDE.md, not in this repo.
 
 ## Repo layout
 
@@ -153,11 +153,24 @@ See `docs/assistant-operating-guide.md` — that's the runbook this dispatcher r
 
 ## Lessons
 
-Lessons are agent-curated rules learned from corrections, stored as JSON under `~/.assistant/lessons/`. They are **not** in this repo — every install grows its own library. Write a new lesson via:
+Lessons are rules. They live inside `~/.claude/CLAUDE.md` under a `## Lessons` heading, in this format:
+
+```markdown
+<!-- lesson: <slug>, scope: <scope>, added: <YYYY-MM-DD> -->
+**<one-line trigger>** <rule body, one paragraph>
+```
+
+CLAUDE.md is auto-loaded by Claude Code into every session, so any agent — this Assistant, an ad-hoc claude session, or the judgement subagent — sees these rules with no extra wiring. The repo doesn't track lessons; each install grows its own.
+
+Write a new lesson:
 
 ```bash
 ~/.claude/bin/assistant-curator.py write \
-  --trigger "<situation>" --rule "<what to do>" --why "<the incident>"
+  --trigger "<one-line situation>" \
+  --rule "<what to do or not do>" \
+  --scope "global|dispatch|dashboard|todo|ffp|security|..."
 ```
 
-The dispatcher does not "read lessons on boot and remember." Each pulse delegates non-trivial decisions to a fresh **judgement subagent** (`bin/judgement-subagent.py`) that reads `~/.assistant/lessons/index.md` first, then the candidate-action batch — so lessons are always at the top of attention, never buried in pulse history. See `docs/assistant-operating-guide.md` for the full pattern.
+Other subcommands: `list`, `rm <slug>`, `trim` (opens CLAUDE.md in `$EDITOR`).
+
+The dispatcher delegates non-trivial decisions to a fresh **judgement subagent** (`bin/judgement-subagent.py`) that re-reads the `## Lessons` section every pulse — so rules stay at the top of attention rather than buried in pulse history.
