@@ -259,11 +259,17 @@ PY
 # Assistant workspace stayed alive in cmux even though we no longer pulse it.
 # After we've successfully spawned the NEW Assistant, find every other ws with
 # the same title and close it. Keep only the freshly spawned $WS_REF.
-"$CMUX_BIN" list-workspaces 2>/dev/null | python3 - "$WS_REF" <<'PY' | while IFS= read -r zombie_ws; do
+#
+# Implementation note: `python3 - <<'PY'` redirects stdin to the heredoc, so
+# we cannot pipe `cmux list-workspaces` into it. Use `python3 -c '...'` so the
+# script comes from argv and stdin stays piped from cmux. Bug fixed 2026-05-24
+# after the previous heredoc form silently failed (IndentationError on cmux
+# output) and let zombies accumulate (ws:43, ws:51, ws:53, ws:54 all alive).
+ZOMBIE_LIST=$("$CMUX_BIN" list-workspaces 2>/dev/null | python3 -c '
 import sys, re
 me = sys.argv[1]
 for line in sys.stdin:
-    m = re.match(r'^\s*\*?\s*(workspace:\d+)\s+(.+?)(?:\s+\[selected\])?\s*$', line)
+    m = re.match(r"^\s*\*?\s*(workspace:\d+)\s+(.+?)(?:\s+\[selected\])?\s*$", line)
     if not m:
         continue
     ws, title = m.group(1), m.group(2).strip()
@@ -271,11 +277,16 @@ for line in sys.stdin:
         continue
     if "Assistant (Sonnet 1M)" in title or title.startswith("Triage Agent"):
         print(ws)
-PY
-    log "closing zombie Assistant workspace $zombie_ws"
-    "$CMUX_BIN" close-workspace --workspace "$zombie_ws" >/dev/null 2>&1 \
-        || log "failed to close $zombie_ws (may already be gone)"
-done
+' "$WS_REF")
+
+if [ -n "$ZOMBIE_LIST" ]; then
+    while IFS= read -r zombie_ws; do
+        [ -z "$zombie_ws" ] && continue
+        log "closing zombie Assistant workspace $zombie_ws"
+        "$CMUX_BIN" close-workspace --workspace "$zombie_ws" >/dev/null 2>&1 \
+            || log "failed to close $zombie_ws (may already be gone)"
+    done <<< "$ZOMBIE_LIST"
+fi
 
 log "Assistant spawned → $WS_REF $SURFACE_REF (heartbeat written)"
 echo "workspace=$WS_REF surface=$SURFACE_REF claude_ready=$CLAUDE_READY"
