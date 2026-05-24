@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.mukuls.assistant-pulse</string>
+    <string>com.assistant.assistant-pulse</string>
     <key>ProgramArguments</key>
     <array>
         <string>/Users/mukuls/dev/assistant/bin/assistant-pulse.sh</string>

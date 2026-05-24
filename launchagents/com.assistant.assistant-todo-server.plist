@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.mukuls.assistant-todo-server</string>
+    <string>com.assistant.assistant-todo-server</string>
 
     <key>ProgramArguments</key>
     <array>

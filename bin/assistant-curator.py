@@ -15,7 +15,7 @@ Subcommands:
   write   --trigger T --rule R --why W [--scope S] [--from-conv ID] [--pin]
   list    [--scope S] [--state active|stale|archived]
   show    <id>
-  index   regenerate ~/.claude/lessons/index.md
+  index   regenerate ~/.assistant/lessons/index.md
   touch   <id>                       bump use_count, mark last_used
   archive <id> --reason ...
   unarchive <id>
@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path(os.environ["HOME"])
-LESSONS_DIR = HOME / ".claude/lessons"
+LESSONS_DIR = HOME / ".assistant/lessons"
 ACTIVE_DIR = LESSONS_DIR / "active"
 STALE_DIR = LESSONS_DIR / "stale"
 ARCHIVE_DIR = LESSONS_DIR / "archive"

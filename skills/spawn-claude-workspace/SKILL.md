@@ -40,7 +40,7 @@ The cmux team owns the `cmux` CLI's general behavior (see `/cmux` and `/cmux-wor
 
 **How to detect submission — use the session transcript (not readiness).**
 
-Claude Code writes sessions to JSONL transcripts at `~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl`. The slug is the absolute working directory with `/` replaced by `-` (e.g. `/Users/mukuls/dev/firefly-platform` → `-Users-mukuls-dev-firefly-platform`). **Verified empirically on Claude Code v2.1.122 (2026-04-28):**
+Claude Code writes sessions to JSONL transcripts at `~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl`. The slug is the absolute working directory with `/` replaced by `-` (e.g. `/Users/mukuls/dev/<your-app-repo>` → `-Users-mukuls-dev-<your-app-repo>`). **Verified empirically on Claude Code v2.1.122 (2026-04-28):**
 
 - The transcript file is **NOT** created at session boot. An idle session with the banner up has zero on-disk presence; the session UUID in the footer exists only in memory.
 - The transcript is created **the instant the first user prompt is submitted** — the line has `{"type":"user","message":{"role":"user","content":"…the prompt…"}}`.

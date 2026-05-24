@@ -53,9 +53,9 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
   - ~/.claude/spawn-prompts/prompt-assistant-agent.md → symlink → $REPO_ROOT/prompts/...
-  - ~/.claude/lessons/active                     → symlink → $REPO_ROOT/lessons/active
+  - ~/.assistant/lessons/{active,stale,archive}  → mkdir (lessons are runtime state, not repo-tracked)
   - ~/.claude/skills/{todo,cleanup,spawn-claude-workspace} → COPIES (shareable)
-  - ~/Library/LaunchAgents/com.mukuls.{world-scanner,assistant-pulse,assistant-page,
+  - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,
        session-context-watcher,assistant-todo-server}.plist → COPIED
   - launchd: kickstart -k each agent (load if not loaded)
 
@@ -234,12 +234,19 @@ if [[ -L "$LEGACY_PROMPT_LINK" ]]; then
     fi
 fi
 
-mkdir -p "$HOME_DIR/.claude/lessons"
-ensure_symlink \
-    "$HOME_DIR/.claude/lessons/active" \
-    "$REPO_ROOT/lessons/active"
-# The curator script also writes index.md and .usage.json under ~/.claude/lessons/.
-# We let those stay in ~/.claude/ as runtime artifacts (not committed).
+# Lessons live at ~/.assistant/lessons/ — runtime state, not in the repo.
+# Each user grows their own lesson library; we just make sure the directories
+# exist so the curator can write into them.
+mkdir -p "$HOME_DIR/.assistant/lessons/active" "$HOME_DIR/.assistant/lessons/stale" "$HOME_DIR/.assistant/lessons/archive"
+
+# Decommission the old ~/.claude/lessons location if it exists (left over
+# from when lessons were tracked in this repo and symlinked into ~/.claude/).
+if [[ -e "$HOME_DIR/.claude/lessons" ]]; then
+    note "REMOVE legacy $HOME_DIR/.claude/lessons (lessons now live at ~/.assistant/lessons/)"
+    if [[ $APPLY -eq 1 ]]; then
+        rm -rf "$HOME_DIR/.claude/lessons"
+    fi
+fi
 
 ensure_symlink \
     "$HOME_DIR/.claude/assistant-operating-guide.md" \
@@ -348,18 +355,30 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     fi
 done
 
-# Tear down the legacy triage-pulse LaunchAgent (renamed → assistant-pulse).
-# If we leave it loaded, two pulse scripts run in parallel: the old one will
-# fail to find triage-pulse.sh on disk (renamed) and spam stderr; or worse,
-# wake the wrong workspace. Always unload + remove the plist on apply.
-LEGACY_PLIST="$HOME_DIR/Library/LaunchAgents/com.mukuls.triage-pulse.plist"
-if [[ -f "$LEGACY_PLIST" ]]; then
-    note "REMOVE legacy LaunchAgent com.mukuls.triage-pulse (renamed → assistant-pulse)"
-    if [[ $APPLY -eq 1 ]]; then
-        launchctl bootout "gui/$UID/com.mukuls.triage-pulse" 2>/dev/null || true
-        rm "$LEGACY_PLIST"
+# Tear down legacy plists (renames + removed services).
+#  - com.mukuls.triage-pulse → com.assistant.assistant-pulse (2026-05-23 rename)
+#  - com.mukuls.{assistant-pulse,assistant-page,assistant-todo-server,
+#    session-context-watcher,world-scanner} → com.assistant.* (2026-05-23 namespacing)
+# Leaving any of these loaded would mean two daemons running the same job in
+# parallel after install. Always unload + remove on apply.
+LEGACY_LABELS=(
+    "com.mukuls.triage-pulse"
+    "com.mukuls.assistant-pulse"
+    "com.mukuls.assistant-page"
+    "com.mukuls.assistant-todo-server"
+    "com.mukuls.session-context-watcher"
+    "com.mukuls.world-scanner"
+)
+for legacy in "${LEGACY_LABELS[@]}"; do
+    legacy_plist="$HOME_DIR/Library/LaunchAgents/${legacy}.plist"
+    if [[ -f "$legacy_plist" ]]; then
+        note "REMOVE legacy LaunchAgent $legacy (renamed → com.assistant.*)"
+        if [[ $APPLY -eq 1 ]]; then
+            launchctl bootout "gui/$UID/$legacy" 2>/dev/null || true
+            rm "$legacy_plist"
+        fi
     fi
-fi
+done
 log ""
 
 # --- 4. Reload only the daemons whose plists actually changed --------------
@@ -379,6 +398,6 @@ if [[ $APPLY -eq 0 ]]; then
 else
     log "✅ Install complete. Verify with:"
     log "   ls -la ~/.claude/bin"
-    log "   launchctl list | grep com.mukuls"
+    log "   launchctl list | grep com.assistant"
     log "   stat -f '%Sm' ~/.claude/cache/world.json   # should refresh within 30s"
 fi

@@ -1,7 +1,7 @@
 #!/bin/bash
 # assistant-pulse.sh — wake the Assistant agent every 2 minutes via inbox + heartbeat.
 #
-# Cron-driven (every 120s via com.mukuls.assistant-pulse LaunchAgent).
+# Cron-driven (every 120s via com.assistant.assistant-pulse LaunchAgent).
 #
 # Architecture:
 #   1. Drop one pulse file in ~/.assistant/inbox/ (Assistant drains these on each pulse).

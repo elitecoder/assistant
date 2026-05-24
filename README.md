@@ -10,16 +10,15 @@ Mukul's personal dispatcher system that manages parallel cmux Claude Code worksp
 | **TODO server** (`bin/todo-server.py`) | HTTP daemon | Powers dashboard buttons (`/focus/<ws>`, `/toggle`, `/remove`) on `127.0.0.1:9876` |
 | **Session-context watcher** (`bin/session-context-watcher.py`) | event-driven (kqueue) | Tails Claude JSONL transcripts → `~/.claude/cache/session-context.json` |
 
-The dispatcher itself (this Claude session) reads `MEMORY.md`, `docs/assistant-operating-guide.md`, and `lessons/active/*.json` on boot.
+The dispatcher itself (this Claude session) reads `MEMORY.md`, `docs/assistant-operating-guide.md`, and `~/.assistant/lessons/index.md` on boot. Lessons are runtime state — agent-curated rules from past corrections — and live outside the repo at `~/.assistant/lessons/`.
 
 ## Repo layout
 
 ```
 assistant/
-├── bin/                   # All five daemons + curator CLI
+├── bin/                   # All five daemons + curator CLI + judgement subagent
 ├── prompts/               # Assistant agent prompt (the policy spec)
 ├── skills/                # /todo, /cleanup, /cmux, /spawn-claude-workspace
-├── lessons/active/        # Curated rules from past corrections (read by dispatcher on boot)
 ├── evals/                 # Regression tests for Assistant policy decisions
 ├── launchagents/          # macOS LaunchAgent plists for the 5 daemons
 └── docs/                  # assistant-operating-guide.md
@@ -40,7 +39,6 @@ After `--apply`:
 |---|---|---|
 | `bin/` | `~/.claude/bin` | symlink |
 | `prompts/prompt-assistant-agent.md` | `~/.claude/spawn-prompts/prompt-assistant-agent.md` | symlink |
-| `lessons/active/` | `~/.claude/lessons/active` | symlink |
 | `docs/assistant-operating-guide.md` | `~/.claude/assistant-operating-guide.md` | symlink |
 | `skills/todo/`, `skills/cleanup/`, `skills/spawn-claude-workspace/` | `~/.claude/skills/<name>/` | **copy** (so they're shareable) |
 | `launchagents/*.plist` | `~/Library/LaunchAgents/*.plist` | copy + launchctl reload |
@@ -56,7 +54,7 @@ After `--apply`:
 ```bash
 # Edit code in the repo — it's live (symlink).
 $EDITOR bin/world-scanner.py
-launchctl kickstart -k gui/$UID/com.mukuls.world-scanner   # reload that one daemon
+launchctl kickstart -k gui/$UID/com.assistant.world-scanner   # reload that one daemon
 
 # Edit Assistant prompt — re-read by assistant-pulse.sh each pulse, no daemon reload needed.
 # But if the Assistant is mid-session, push the policy update directly:
@@ -77,7 +75,7 @@ git diff skills/todo                # review
 git commit -am "..."
 
 # Edit a plist — re-run install to copy + reload that daemon.
-$EDITOR launchagents/com.mukuls.world-scanner.plist
+$EDITOR launchagents/com.assistant.world-scanner.plist
 ./install.sh --apply
 ```
 
@@ -155,10 +153,11 @@ See `docs/assistant-operating-guide.md` — that's the runbook this dispatcher r
 
 ## Lessons
 
-`lessons/active/*.json` are curated rules from past corrections. The dispatcher checks these before any non-trivial proposal. Write a new lesson via:
+Lessons are agent-curated rules learned from corrections, stored as JSON under `~/.assistant/lessons/`. They are **not** in this repo — every install grows its own library. Write a new lesson via:
 
 ```bash
-~/.claude/bin/assistant-curator.py write
+~/.claude/bin/assistant-curator.py write \
+  --trigger "<situation>" --rule "<what to do>" --why "<the incident>"
 ```
 
-(Curator currently writes to `~/.claude/lessons/active/` — sync into this repo with `cp`.)
+The dispatcher does not "read lessons on boot and remember." Each pulse delegates non-trivial decisions to a fresh **judgement subagent** (`bin/judgement-subagent.py`) that reads `~/.assistant/lessons/index.md` first, then the candidate-action batch — so lessons are always at the top of attention, never buried in pulse history. See `docs/assistant-operating-guide.md` for the full pattern.

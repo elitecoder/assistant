@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Lessons are agent-curated runtime memory. They live at ~/.assistant/lessons/
+# and grow per-install; nothing about them belongs in version control. (Repo
+# previously tracked lessons/ before the 2026-05-23 migration.)
+lessons/
+
 # Eval run artifacts
 evals/*/last-run.json
 evals/*/__pycache__/

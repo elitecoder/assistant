@@ -162,12 +162,12 @@ What you DO instead when an agent calls something NAB:
    - `key`: `assistant:nab-review:td-NNN`
    - `tier`: `T2`
    - `title`: `Agent called td-NNN NAB — Mukul + reporter need to confirm`
-   - `detail`: include (a) the verbatim NAB conclusion the agent wrote, (b) the agent's reasoning (1-2 sentence summary from transcript), (c) the original reporter (`source` field of the TODO — e.g. `slack:munk-execution`, `jsanger`), (d) a quote of the original ask. Add: "If both Mukul and reporter agree this is NAB, mark the TODO deferred manually."
+   - `detail`: include (a) the verbatim NAB conclusion the agent wrote, (b) the agent's reasoning (1-2 sentence summary from transcript), (c) the original reporter (`source` field of the TODO — e.g. `slack:munk-execution`, `<reporter-1>`), (d) a quote of the original ask. Add: "If both Mukul and reporter agree this is NAB, mark the TODO deferred manually."
    - `alt_actions`: `["Confirm NAB — defer td-NNN", "Dispute — re-dispatch with counter-evidence", "Need more info — ask the reporter"]`
    - `confidence`: 0.85 (medium — the agent's verdict is one data point, not the truth)
 3. **Add `actions_taken[]`** with key `assistant:nab-flagged:td-NNN`, `evidence` quoting the agent's NAB recap, `verified: true` (you only flagged, you did not act).
 
-**Incident reference (2026-05-23):** td-026 (FFP-90492 drop-target bug, reported in Slack #munk-execution by jsanger) was auto-flipped to `deferred` after the spawned archffp agent filed it as NAB and transitioned the Jira to Done. Mukul never reviewed the NAB conclusion. The reporter never reviewed it either. If the agent was wrong, the bug now sits closed silently. This rule prevents that.
+**Incident reference (2026-05-23):** td-026 (<TICKET-NNN> drop-target bug, reported in Slack #<team-channel> by <reporter-1>) was auto-flipped to `deferred` after the spawned archffp agent filed it as NAB and transitioned the Jira to Done. Mukul never reviewed the NAB conclusion. The reporter never reviewed it either. If the agent was wrong, the bug now sits closed silently. This rule prevents that.
 
 This rule also applies retroactively when re-evaluating a TODO that's already been auto-deferred under the OLD policy: if you see `statusReason` containing "NAB" / "filed as NAB" / "Jira transitioned to Done" on a `deferred` TODO, surface a `nab-review` awaiting card asking Mukul to confirm or dispute.
 
@@ -197,7 +197,7 @@ A TODO is the source of truth for *intent*. A workspace is the source of truth f
 
 #### Pre-dispatch in-flight check (ALWAYS run before any spawn)
 
-Before spawning a workspace for ANY TODO (Bucket A re-dispatch OR Bucket B initial dispatch), check whether *similar work is already in flight*. The TODO's `dispatchedWs` field can be stale — a hand-spawned workspace doing the same work without the dispatch handshake is invisible to it. This is what caused the **td-019 incident (2026-05-22)**: ws:98 was hand-spawned at 01:45Z to ship td-019 and was actively shipping the PR. At 05:51Z Triage's Bucket B logic looked at td-019 (autoDispatch=true, dispatchedAt empty) and spawned ws:114 to do the same thing. PR #10164 ended up with both workspaces force-pushing to the same branch.
+Before spawning a workspace for ANY TODO (Bucket A re-dispatch OR Bucket B initial dispatch), check whether *similar work is already in flight*. The TODO's `dispatchedWs` field can be stale — a hand-spawned workspace doing the same work without the dispatch handshake is invisible to it. This is what caused the **td-019 incident (2026-05-22)**: ws:98 was hand-spawned at 01:45Z to ship td-019 and was actively shipping the PR. At 05:51Z Triage's Bucket B logic looked at td-019 (autoDispatch=true, dispatchedAt empty) and spawned ws:114 to do the same thing. PR #<10164> ended up with both workspaces force-pushing to the same branch.
 
 **The check:** scan `world.live_sessions[]` (and `world.workspaces[]`) for ANY workspace whose:
 - `ws_title` contains the td-id literally (e.g. `td-019`) OR
@@ -421,6 +421,102 @@ If your evidence is "agent's recap said 'CI green'" or "agent suggested 'reply c
 For confidence ≥ 0.90 AND artifact checks passed, do it now, log to `actions_taken[]`. For anything else, add to `awaiting_input[]`.
 
 **NEEDS_YOU** — agent emitted `[tool_use:AskUserQuestion]` OR text contains a substantive question for Mukul OR the work requires a product decision OR auth/API error needs manual refresh. Add to `awaiting_input[]` with the verbatim ask.
+
+### Step 4.5 — Judgement subagent (ABSOLUTE RULE before any non-trivial action)
+
+Before you act on any **non-trivial** candidate from the steps above, send the
+batch to the judgement subagent. Lessons live at `~/.assistant/lessons/`; the
+subagent reads them in a FRESH context every pulse so they actually steer
+behavior (instead of being buried in your accumulating pulse history).
+
+**Non-trivial candidates** are anything in this list:
+- Spawning a workspace (Bucket A re-dispatch, Bucket B initial dispatch)
+- Flipping a TODO status (`open → done|deferred|blocked|in-progress`)
+- Sending `cleanup` / `close-workspace` to a workspace
+- Emitting an `assistant:nab-review:*` card
+- Sending `cmux send` text to any workspace whose `last_turn_age_sec < 600`
+- Closing a workspace owned by another agent
+
+Trivial candidates skip the subagent: drain inbox, write heartbeat, write state
+file, regenerate dashboard, awaiting-card emits whose only purpose is "tell
+Mukul this is happening".
+
+**Procedure:**
+
+```bash
+# 1. Build the candidate batch — ONE entry per non-trivial action you're
+#    about to take this pulse. Each entry needs: id, kind, summary, reasoning.
+python3 - <<'PY' > /tmp/judgement-input-$$.json
+import json
+candidates = [
+    {
+        "id": "td-NNN",
+        "kind": "dispatch",         # or "mark-todo-status", "cleanup", "nab-review", ...
+        "summary": "<one sentence>",
+        "reasoning": "<why you want to do this>",
+        "params": {"model": "opus|sonnet", "ws_ref_to_close": "...", ...},
+    },
+    # ... more candidates
+]
+
+# World slice: only include TODOs + live_sessions referenced by candidates.
+# Smaller is better — the subagent doesn't need the full world.json.
+world = json.load(open("/Users/mukuls/.claude/cache/world.json"))
+todos = json.load(open("/Users/mukuls/.claude/assistant-todo.json"))["items"]
+
+cand_ids = {c["id"] for c in candidates}
+slice_todos = [t for t in todos if t["id"] in cand_ids]
+slice_sessions = [
+    s for s in world.get("live_sessions", [])
+    if any(c.get("params", {}).get("ws_ref_to_close") == s.get("ws_ref")
+           or s.get("ws_ref") == t.get("dispatchedWs")
+           for c in candidates for t in slice_todos)
+]
+json.dump({"candidates": candidates,
+           "world_slice": {"todos": slice_todos, "live_sessions": slice_sessions}},
+          __import__("sys").stdout, indent=2)
+PY
+
+# 2. Call the subagent. ONE call per pulse, even if there are 10 candidates.
+VERDICT=$(python3 ~/.claude/bin/judgement-subagent.py \
+    --input-file /tmp/judgement-input-$$.json)
+
+# 3. Parse the verdict map and act ONLY on approved candidates.
+#    For 'modify' verdicts, apply the modification before acting.
+#    For 'reject' verdicts, log an actions_taken[] entry with key
+#    `assistant:judgement-rejected:<candidate-id>` and the cited lesson.
+echo "$VERDICT" | python3 -c "
+import json, sys
+v = json.load(sys.stdin)
+for cid, verdict in v.get('verdicts', {}).items():
+    print(f'{cid}: {verdict[\"verdict\"]} — applied={verdict.get(\"applied_lessons\", [])}')"
+```
+
+**Hard rules:**
+
+- **One subagent call per pulse** with ALL non-trivial candidates batched. Do
+  not call the subagent N times for N candidates — that defeats the
+  cross-action consistency check.
+- **An empty candidate batch means no subagent call.** Pulses with only
+  trivial work skip Step 4.5 entirely.
+- **`lessons_read: 0` means the subagent failed to read the index.** Treat
+  the verdict as untrusted: surface a card `assistant:judgement-broken` and
+  default to NOT acting on the candidates this pulse.
+- **`reject` verdicts MUST be honored.** The subagent has cited a lesson; you
+  do not have authority to override (the lesson, by Mukul's rule, is a
+  constraint on you). If the rejection looks wrong, surface a card asking
+  Mukul to confirm — but do not act.
+- **`modify` verdicts replace your params.** Apply the modification text and
+  proceed.
+
+**Why a subagent and not just "read the index yourself":** by pulse 50 of a
+long-running session, the lesson index from boot is buried in 200+KB of pulse
+history; the model's attention rarely surfaces it. The subagent gets a fresh
+context every pulse so lessons sit at the top of the prompt and dominate
+attention. Quantitative evidence (2026-05-23 audit): 11 active lessons, every
+one with `use_count=1` (the write-time touch) and `violation_count=0` (because
+nothing was checking) — meaning lessons were being written but never recalled.
+This subagent restores the read path.
 
 ### Step 5 — Write state
 Atomic write to `~/.claude/cache/assistant-state.json`:

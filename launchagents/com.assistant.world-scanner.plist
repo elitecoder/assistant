@@ -3,26 +3,26 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.mukuls.assistant-page</string>
+    <string>com.assistant.world-scanner</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/render-assistant-page.py</string>
+        <string>/Users/mukuls/dev/assistant/bin/world-scanner.py</string>
     </array>
     <key>StartInterval</key>
-    <integer>15</integer>
+    <integer>30</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.architect/orchestrator-logs/assistant-page.launchd.out</string>
+    <string>/Users/mukuls/.architect/orchestrator-logs/world-scanner.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.architect/orchestrator-logs/assistant-page.launchd.err</string>
+    <string>/Users/mukuls/.architect/orchestrator-logs/world-scanner.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
         <string>/Users/mukuls</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin</string>
     </dict>
     <key>WorkingDirectory</key>
     <string>/Users/mukuls</string>

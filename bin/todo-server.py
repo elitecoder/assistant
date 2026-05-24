@@ -15,7 +15,7 @@ On every successful TODO mutation, the JSON file is atomically rewritten and the
 static HTML is re-rendered so the next file:// load reflects the new state.
 /focus is a side-effect-only command (shells out to `cmux select-workspace`).
 
-Stdlib only. Run by LaunchAgent com.mukuls.assistant-todo-server.
+Stdlib only. Run by LaunchAgent com.assistant.assistant-todo-server.
 """
 
 import datetime
