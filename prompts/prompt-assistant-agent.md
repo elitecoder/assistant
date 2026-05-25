@@ -176,28 +176,42 @@ except Exception: print(0)
 ")
 NEXT_PULSE_IDX=$((PRIOR_PULSE_IDX + 1))
 
-OBSERVER_OUT=$(python3 ~/.claude/bin/world-observer-subagent.py --pulse-idx "$NEXT_PULSE_IDX")
+python3 ~/.claude/bin/world-observer-subagent.py --pulse-idx "$NEXT_PULSE_IDX" >/dev/null
 ```
 
-Parse the result. If `_error` is set, write a heartbeat with `status: "observer-failed"` and end your turn — DO NOT try to do the observation yourself, that's exactly the path that bloats context.
+**ABSOLUTE RULE: read the observer's output from `~/.assistant/observer-latest-report.json`, NOT from the subprocess stdout.** The observer's stdout can be 20-50KB; Bash output capture truncates large outputs silently. The 2026-05-24 incident: a 24KB observer report was captured-truncated to 7 of 25 candidate_actions, and the merge-pr for PR #10320 was dropped because it was past the truncation point. The Assistant approved + executed only the visible 7 candidates and missed the merge entirely.
+
+The canonical report file is atomically written by the observer; it always reflects the most recent successful run.
 
 ```bash
-if echo "$OBSERVER_OUT" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('_error') else 1)"; then
-    # Observer failed — write heartbeat noting the failure and end turn
-    # The next pulse will retry. Multiple failures in a row = surface card.
-    LOG_PATH=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('_log',''))")
-    # ... write heartbeat with status=observer-failed and _error reason ...
+REPORT_PATH="$HOME/.assistant/observer-latest-report.json"
+if [ ! -f "$REPORT_PATH" ]; then
+    # Observer has never written a report — write a heartbeat with
+    # status=observer-not-ready and end your turn.
     exit 0
 fi
 ```
 
-Otherwise extract `candidate_actions` and `draft_awaiting_cards` for downstream steps:
+Parse the report file. If `_error` is set, write a heartbeat with `status: "observer-failed"` and end your turn — DO NOT try to do the observation yourself, that's exactly the path that bloats context.
 
 ```bash
-CANDIDATES=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('candidate_actions', [])))")
-DRAFT_CARDS=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('draft_awaiting_cards', [])))")
-TOTAL_WS=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('_meta',{}).get('total_workspace_count', 0))")
+if python3 -c "import json,sys; sys.exit(0 if json.load(open('$REPORT_PATH')).get('_error') else 1)"; then
+    # Observer failed — write heartbeat noting the failure and end turn.
+    exit 0
+fi
 ```
+
+Otherwise extract `candidate_actions` and `draft_awaiting_cards` for downstream steps. **Always read from the file path, not from a captured shell variable** — that's the rule that prevents the truncation incident:
+
+```bash
+CANDIDATES=$(python3 -c "import json; print(json.dumps(json.load(open('$REPORT_PATH')).get('candidate_actions', [])))")
+DRAFT_CARDS=$(python3 -c "import json; print(json.dumps(json.load(open('$REPORT_PATH')).get('draft_awaiting_cards', [])))")
+TOTAL_WS=$(python3 -c "import json; print(json.load(open('$REPORT_PATH')).get('_meta',{}).get('total_workspace_count', 0))")
+N_CANDS=$(python3 -c "import json; print(len(json.load(open('$REPORT_PATH')).get('candidate_actions', [])))")
+echo "Read observer report: $N_CANDS candidate_actions, total_ws=$TOTAL_WS"
+```
+
+The `Read observer report: N candidate_actions` log line is your sanity check. If N drops by half between pulses with similar workspace counts, something truncated the report — re-read the file before continuing.
 
 ### Step 1.5 — Workspace-count cap (cross-check)
 

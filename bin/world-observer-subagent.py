@@ -658,13 +658,26 @@ def main() -> int:
         "draft_awaiting_cards": agg["draft_awaiting_cards"],
     }
 
-    # 6. Log
+    # 6. Log + write the canonical report file
     log_path = LOG_DIR / f"observer-{int(time.time())}.json"
     try:
         log_path.write_text(json.dumps({
             "ts": time.time(), "report": report,
         }, indent=2))
         report["_log"] = str(log_path)
+    except Exception:
+        pass
+
+    # The "latest report" path is the SAFE way for the main pulse to read
+    # observer output. Bash output capture truncates on long stdouts (the
+    # 2026-05-24 incident: 24KB observer output was truncated to 7 of 25
+    # candidate_actions, dropping merge-pr for PR #10320). Atomic write so
+    # readers never see a partial file.
+    latest_path = HOME / ".assistant/observer-latest-report.json"
+    try:
+        tmp = latest_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(report, indent=2))
+        tmp.replace(latest_path)
     except Exception:
         pass
 
