@@ -678,7 +678,7 @@ Action implementations:
 | `status-flip` | atomic edit of `~/.claude/assistant-todo.json` |
 | `cleanup` | `cmux send <ws_ref> cleanup` + Enter |
 | `close-workspace` | `cmux close-workspace --workspace <ws_ref>` |
-| `merge-pr` | `gh pr merge <PR> --auto --squash` (or invoke `/merge-when-ready` if a session is at hand) |
+| `merge-pr` | **`/merge-when-ready <PR>` is the ONLY supported merge path for FFP work.** Do NOT call `gh pr merge` directly — `gh pr merge --auto` skips the skill's validation gates, `!approve` auto-approval flow, and queue-eviction recovery, which is exactly why test-only PRs were sitting `REVIEW_REQUIRED` indefinitely. Implementation: send `/merge-when-ready <PR>` to a live claude session in the target workspace via `cmux send-text <ws_ref> "/merge-when-ready <PR>"` then `cmux press <ws_ref> Enter`. If the workspace's session is dead (no active terminal session, or the claude process exited), surface an awaiting card instead — do not fall back to `gh pr merge`. |
 | `nudge` | `cmux send <ws_ref> "<text>"` + Enter. **For `recover-stranded-*` candidates from the observer**, also increment `recovery_attempts` in the workspace's observer-summary file (the observer reads this on the next pulse to enforce the 3-strike escalation). |
 | `emit-card` | append to `awaiting_input[]` (no external action) |
 | `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` |
@@ -776,7 +776,7 @@ Don't pass `--pin` to the curator by default. Pin only when (a) the user explici
 
 When an Assistant-dispatched workspace produces a PR whose diff touches **ONLY** test files (`e2e/**`, `src/**/__tests__/**`, `src/**/*.{test,spec}.{ts,tsx}`, fixtures, page-objects) AND the new tests pass locally:
 
-Invoke `/merge-when-ready` to queue the PR (or equivalent `gh pr merge --auto --squash <N>` if the skill is impractical from a pulse).
+Invoke `/merge-when-ready <N>` to queue the PR. **This is the only sanctioned merge path for FFP work** — it is mandatory, not a preference. The skill handles validation, `!approve` auto-approval (the bot trigger that flips `reviewDecision: REVIEW_REQUIRED` → `APPROVED`), queueing, and post-queue eviction recovery. `gh pr merge --auto` is FORBIDDEN — it queues the PR but never auto-approves, so test-only PRs stall at `REVIEW_REQUIRED` forever (real incident: PR #10325 sat queued-but-unmerged for 19h+ on 2026-05-25 because the dispatcher took the `gh pr merge` shortcut and skipped `!approve`). If no live session is available to run the skill (workspace's claude process is dead), surface an awaiting card — do not shortcut.
 
 **Required gate checks**:
 - `gh pr view <N> --json files -q '.files[].path'` — every changed file is a test path. **Zero production-code paths.**
@@ -807,6 +807,18 @@ REJECT this rule when ANY of these apply:
 
 The cleanup-gating rule auto-clears once the PR merges via the queue, so the workspace gets torn down on the next pulse without further intervention.
 
+### Workspace close — never discard in-progress work (ABSOLUTE)
+
+**Never close a workspace that has in-progress work** (uncommitted/unpushed changes, a halted pipeline, or a deferred follow-up) without first ensuring the work is safe. Closing a workspace with staged code, a halted archffp pipeline, or code-review violations throws away recoverable work.
+
+The correct sequence before any close:
+1. Check whether the worktree has uncommitted changes or an unpushed branch (`git status`, `git log origin/HEAD..HEAD`).
+2. If the pipeline was halted mid-flight (e.g. code-review CRITICAL findings), **surface an awaiting card** asking the user whether to resume in the same worktree or spawn a fresh archffp — do NOT auto-close.
+3. If there is deferred follow-up work, **create a new TODO** with full context (what was done, what's left, why it was halted, the worktree path) BEFORE closing.
+4. Only close once the branch is pushed or the follow-up TODO exists and the user has acknowledged.
+
+**Incident reference (2026-05-25):** workspace:23 was closed after an archffp pipeline halted at code-review (binding-element.md + lit.md violations). The worktree `archffp-export-progress-modal-runner-factory` contained fully-written implementation, unit tests, and a passing G3 run. All of that work was effectively abandoned when the workspace was closed without capturing a follow-up. The user had to manually identify the worktree and request a resume.
+
 ## Hard rules — never violate
 
 - **Never close workspace:97** (the dispatcher itself).
@@ -817,6 +829,7 @@ The cleanup-gating rule auto-clears once the PR merges via the queue, so the wor
 - **Confidence floor for any action you take yourself: 0.90.** Below that, surface as `awaiting_input` instead.
 - **If `cmux send` returns non-zero, do not log success.** Add a `verification_failure` and try one repair (e.g. clear buffer + retry).
 - **Banned action verbs**: `wait`, `observe`, `monitor`, `watch`, `see`, `check`, `review`, `keep`, `keep-watching`, `no-action`, `noop`, `tbd`. If you can't think of an actionable verb, the right answer is "do nothing" — not "write a 'wait' card".
+- **FFP merges go through `/merge-when-ready` ONLY.** Direct `gh pr merge` invocations (with or without `--auto`, `--squash`, `--rebase`, `--merge`) are FORBIDDEN for any PR in `Adobe-Firefly/firefly-platform`. The skill is the only path that performs the `!approve` auto-approval flow — the shortcut leaves test-only PRs stalled at `REVIEW_REQUIRED` indefinitely. Implementation: `cmux send-text <ws_ref> "/merge-when-ready <PR>"` + Enter into a live session in the PR's workspace. If no live session exists, emit an awaiting card; never shell out to `gh pr merge`. (Read-only `gh pr view` for gate evaluation is fine — only the merge call is banned.)
 
 ## Verification — ALWAYS use the JSONL transcript, NEVER the terminal screen
 
