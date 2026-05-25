@@ -708,12 +708,20 @@ When an Assistant-dispatched workspace produces a refactor PR with the full loca
 
 Invoke `/merge-when-ready` to queue the PR.
 
-**Required gate checks**:
-- Refactor classification needs BOTH signals — PR title prefix is `refactor:` / `rename:` / `extract:` / `move:` / `[REFACTOR]`, AND the spawned agent's transcript recap explicitly says "no behavior change" / "refactor only" / "pure rename" / "no functional change".
-- Full local G3 ran (transcript shows `pnpm e2e:squirrel` PASS — full suite, NOT a subset, NOT `--workers=N --grep ...`).
-- Full local unit suite green (`pnpm test:squirrel` or equivalent, all green).
+**Read the PR title AND body to decide if it's a refactor.** Don't gate on title-prefix alone — archffp's bracket classifier sometimes mislabels (e.g. `[FEATURE] refactor(squirrel): make ECS actions selection-blind` is a real refactor with a misleading bracket prefix). Read both fields and judge.
 
-REJECT this rule if the recap mentions ANY behavior tweak, perf change, error-handling addition, or scope creep ("while I was here…", "also fixed…", "opportunistically…") — those make it not-a-refactor.
+A PR qualifies as a refactor when ALL of these hold:
+
+- The **intent stated in the title or body** is restructuring without behavior change. Strong signals: conventional-commit prefix `refactor(...)` / `rename(...)` / `extract(...)` / `move(...)` anywhere in the title; body sections like "what changed (no behavior change)" / "byte-identical UI behavior" / "same observable behavior" / "pure rename" / "lift up / push down" / "extract helper" / "split function".
+- The **transcript recap** confirms it: explicit "no behavior change" / "refactor only" / "pure rename" / "no functional change" / "UI behavior is byte-identical" or equivalent.
+- Full local G3 ran (transcript shows `pnpm e2e:squirrel` PASS — full suite, NOT a subset, NOT `--workers=N --grep ...`).
+- Full local unit suite green (`pnpm test:squirrel` or equivalent).
+
+REJECT this rule when ANY of these apply:
+
+- Title or body mentions a new user-visible capability (`add X`, `implement Y`, `enable Z`, `support `, `new feature`).
+- Recap mentions any behavior tweak, perf change, error-handling addition, or scope creep ("while I was here…", "also fixed…", "opportunistically…").
+- Body lists user-facing changes the user would notice (new buttons, new shortcuts, new error messages, changed defaults).
 
 The cleanup-gating rule auto-clears once the PR merges via the queue, so the workspace gets torn down on the next pulse without further intervention.
 

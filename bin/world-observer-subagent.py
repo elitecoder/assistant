@@ -282,7 +282,7 @@ def gh_pr_view(pr_num: int, cache: dict) -> dict:
         out = subprocess.check_output(
             ["gh", "pr", "view", str(pr_num),
              "--repo", "Adobe-Firefly/firefly-platform",
-             "--json", "state,title,reviewDecision,mergedAt,statusCheckRollup,files"],
+             "--json", "state,title,body,reviewDecision,mergedAt,statusCheckRollup,files"],
             text=True, timeout=10,
         )
         data = json.loads(out)
