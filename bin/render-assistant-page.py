@@ -366,7 +366,25 @@ def render_decisions_tab(world):
 
 
 def render_todos_tab(world):
-    todo = world.get("todo") or {}
+    # Read TODO state DIRECTLY from assistant-todo.json, not through the
+    # world.json snapshot. world-scanner refreshes world.json every 30s, so
+    # any flag flipped via the dashboard's todo-server endpoints (toggle /
+    # remove / append-detail / dispatch-now) was invisible until the next
+    # scanner tick. This caused the dashboard to look like flips were being
+    # "reset" — the JSON was correct, world.json was stale, the renderer
+    # echoed the stale value, and the auto-refresh re-displayed the stale
+    # page. Reading the live JSON makes the dashboard reflect the truth on
+    # the very next render call (which the server fires synchronously after
+    # every mutation).
+    TODO_PATH = HOME / ".claude/assistant-todo.json"
+    todo = {}
+    try:
+        if TODO_PATH.exists():
+            todo = json.loads(TODO_PATH.read_text())
+    except Exception:
+        todo = world.get("todo") or {}  # fall back to world.json snapshot
+    if not todo:
+        todo = world.get("todo") or {}
     items = todo.get("items") or []
     completed = todo.get("completed") or []
     # Group OPEN items by priority; closed items (done/deferred) shown separately.
