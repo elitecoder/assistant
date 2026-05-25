@@ -72,6 +72,58 @@ If `PULSE_COUNT == 0` AND no other user message asked you to act, you can skip t
 
 If you woke up because of a direct user message (not from a pulse), proceed with the full routine — the user's intent overrides "no inbox files".
 
+### Step 0c — Self-respawn check (ABSOLUTE RULE)
+
+**Long-running Sonnet 1M sessions degrade.** Every pulse you accumulate ~3-5KB of pulse history into your context. By pulse ~150-200 (40-50% of context window), the model starts collapsing the routine — emitting "Pulse N. No actions." one-liners instead of doing Step 1-5. The 2026-05-24 incident: pulse_idx=348 at 51% context, `actions_taken=[]`, awaiting_input was hours-stale, 7 done-shipped workspaces missing cleanup-gated cards. The Assistant wasn't "broken" — its own attention had collapsed.
+
+**Self-check at the start of every pulse, BEFORE Step 1:**
+
+```bash
+# Look at the bottom-status-bar for context utilization. If you can read it
+# from your own session (you can't — you're inside the session), you cannot
+# self-measure. The proxy signal is pulse_idx — once it crosses the threshold,
+# end your turn after writing a final heartbeat with status="respawn-requested".
+# The watchdog will respawn you on the next pulse-script tick (heartbeat older
+# than 10 min triggers spawn-assistant.sh).
+PRIOR_PULSE_IDX=$(python3 -c "
+import json, os
+p = os.path.expanduser('~/.claude/cache/assistant-state.json')
+try:
+    print(json.load(open(p)).get('_meta',{}).get('pulse_idx', 0))
+except Exception:
+    print(0)
+")
+NEXT_PULSE_IDX=$((PRIOR_PULSE_IDX + 1))
+if [ "$NEXT_PULSE_IDX" -ge 150 ]; then
+    # Write a final heartbeat asking the watchdog to respawn us, then end turn.
+    python3 - "$MY_WS" "$MY_SURFACE" <<'PY'
+import json, os, sys, datetime
+ws_ref, surface_ref = sys.argv[1], sys.argv[2]
+hb = {
+    "ws_ref": ws_ref or None,
+    "surface_ref": surface_ref or None,
+    "last_pulse_iso": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "last_pulse_ts": int(datetime.datetime.now(datetime.UTC).timestamp()) - 700,  # back-date so watchdog sees stale
+    "status": "respawn-requested",
+    "model": "sonnet-4-6-1m",
+    "_note": "pulse_idx threshold reached; self-requesting respawn for fresh context",
+}
+path = os.path.expanduser("~/.assistant/heartbeat.json")
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(hb, f, indent=2)
+os.replace(tmp, path)
+PY
+    # Also nudge the user via dashboard awaiting-card so the respawn is visible.
+    # END TURN — do not run the rest of the pulse.
+    exit 0
+fi
+```
+
+The threshold is **150 pulses** — corresponds to ~5 hours of uptime at 2-min cadence, well before the 200-pulse degradation cliff. Once the watchdog respawns you, you reset to pulse_idx=1 (fresh `~/.claude/cache/assistant-state.json` since the new spawn doesn't carry over the old one — you'll create a new state file on first pulse).
+
+**Why back-date the heartbeat?** The pulse script's stale-check is `heartbeat_age > 10min` → spawn-assistant. By writing a heartbeat with `last_pulse_ts` set to ~12 min ago, the next cron tick (within 2 min) sees the heartbeat as stale and fires the respawn. This is faster + more predictable than ending your turn silently and waiting for the watchdog to notice.
+
 ### Step N (last) — Write heartbeat
 
 At the END of every pulse, before you end your turn, write `~/.assistant/heartbeat.json` atomically:
