@@ -253,7 +253,11 @@ For the batch (up to 5 ws):
    Apply the Assistant policies + lessons to decide what to propose:
      - cleanup / close-workspace when work is done + safe to tear down
      - merge-pr when auto-merge-test-only-pr or auto-merge-refactor-pr applies
-       (read PR title AND body, not just title prefix)
+       (read PR title AND body, not just title prefix). Propose `merge-pr`
+       on every pulse the PR is `state: OPEN` and the rule still qualifies —
+       the dispatcher routes by current CI state (green → /merge-when-ready,
+       not-green → /monitor-ffp-ci) and skills are idempotent. Stop
+       proposing only when `state: MERGED` or `state: CLOSED`.
      - status-flip when a TODO should change status
      - nudge when the workspace is stranded (no user/assistant turns)
      - emit-card when the user needs to make a decision
@@ -678,7 +682,7 @@ Action implementations:
 | `status-flip` | atomic edit of `~/.claude/assistant-todo.json` |
 | `cleanup` | `cmux send <ws_ref> cleanup` + Enter |
 | `close-workspace` | `cmux close-workspace --workspace <ws_ref>` |
-| `merge-pr` | **`/merge-when-ready <PR>` is the ONLY supported merge path for FFP work.** Do NOT call `gh pr merge` directly — `gh pr merge --auto` skips the skill's validation gates, `!approve` auto-approval flow, and queue-eviction recovery, which is exactly why test-only PRs were sitting `REVIEW_REQUIRED` indefinitely. Implementation: send `/merge-when-ready <PR>` to a live claude session in the target workspace via `cmux send-text <ws_ref> "/merge-when-ready <PR>"` then `cmux press <ws_ref> Enter`. If the workspace's session is dead (no active terminal session, or the claude process exited), surface an awaiting card instead — do not fall back to `gh pr merge`. |
+| `merge-pr` | **Two-branch router. No dedupe, no `gh pr merge` ever.** Read `gh pr view <PR> --json statusCheckRollup,reviewDecision`. Branch on observable PR state: <br>**(a) CI not all green** (any required check `FAILURE`/`CANCELLED`/`PENDING`/`IN_PROGRESS` — `SKIPPED`/`NEUTRAL` count as pass) → dispatch `/monitor-ffp-ci <PR>` into a live session in `<ws_ref>` via `cmux send-text <ws_ref> "/monitor-ffp-ci <PR>"` + Enter. <br>**(b) CI all green** → dispatch `/merge-when-ready <PR>` into a live session in `<ws_ref>` via `cmux send-text <ws_ref> "/merge-when-ready <PR>"` + Enter. The skill itself handles approvals, queueing, and merge-poll. <br>**No "already done" check.** Both skills are idempotent — `/merge-when-ready` short-circuits to "already merged" or "already queued"; `/monitor-ffp-ci` re-attaches to the same Jenkins job. The observer will stop proposing `merge-pr` once the PR reaches `state: MERGED`, which is the only termination condition. <br>If the workspace has no live session, emit an awaiting card. Never run `gh pr merge` directly. |
 | `nudge` | `cmux send <ws_ref> "<text>"` + Enter. **For `recover-stranded-*` candidates from the observer**, also increment `recovery_attempts` in the workspace's observer-summary file (the observer reads this on the next pulse to enforce the 3-strike escalation). |
 | `emit-card` | append to `awaiting_input[]` (no external action) |
 | `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` |
@@ -927,6 +931,8 @@ Then read the tail and classify.
 - `assistant:needs-you:td-NNN:<short-tag>`
 
 If a key was in `actions_taken[]` last pulse and verified successfully, do NOT repeat it this pulse. The action stays in your local memory of "already done" via the previous state file.
+
+**Exception — `merge-pr` does not dedupe.** Re-dispatch `/merge-when-ready` or `/monitor-ffp-ci` every pulse the observer proposes `merge-pr`, regardless of prior ledger entries. Both skills are idempotent — repeated dispatches against an already-merged PR are no-ops, against an already-queued PR they re-validate, against a re-stuck PR they unstick. The PR's terminal state (`state: MERGED`) is the observer's job to detect; once seen, it stops proposing `merge-pr` and the dispatcher stops firing. **Do not gate `merge-pr` on a previous "verified" outcome — that's how PRs got stuck in REVIEW_REQUIRED indefinitely (PR #10325 / PR #10305 incident, 2026-05-25).**
 
 ## When in doubt
 
