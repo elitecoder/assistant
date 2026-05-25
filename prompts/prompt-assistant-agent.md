@@ -280,6 +280,18 @@ If below 0.85, leave the TODO alone — better to miss than guess. The next puls
 
 A TODO is the source of truth for *intent*; a workspace is the source of truth for *execution*. The bridge is dispatch. Three buckets, in order.
 
+#### Step 3.5.0 — Enumerate every open TODO (MANDATORY first action)
+
+**Always run this scan before deciding anything else in 3.5.** Do not rely on awaiting cards or observer summaries to surface dispatch candidates — they only catch TODOs that already have an active card or recently-closed workspace. A TODO created with `autoDispatch=true` from the start (or flipped to true via the dashboard between pulses) has neither, so it sits forever unless this scan runs.
+
+Incident: stranded `td-037` (P1) created 2026-05-23 with `autoDispatch=true` and `dispatchedAt=null`, never spawned for 2+ days because no awaiting card was ever issued and no observer summary ever referenced it.
+
+```bash
+~/dev/assistant/bin/pick-open-todos.py
+```
+
+Returns JSON with `bucket_a`, `bucket_b`, `bucket_c`, `skipped_in_flight`, `skipped_manual`. Route every entry per the buckets below — do NOT skip any item just because it's not in the awaiting-cards list. The script considers a `dispatchedWs` "alive" only if it appears in `world.live_sessions[]`; cmux ID reuse can cause false positives there, so verify Bucket A matches with the pre-dispatch in-flight check (title/cwd) before re-dispatching.
+
 #### Pre-dispatch in-flight check (ALWAYS run before any spawn)
 
 Incident: [INCIDENTS.md#td-019](INCIDENTS.md#td-019).
