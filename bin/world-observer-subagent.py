@@ -97,38 +97,109 @@ def list_cmux_workspaces() -> list[dict]:
     return rows
 
 
-def find_transcript_for_ws(ws_ref: str, title: str) -> str | None:
-    """Map ws_ref → transcript_path via cmux session-state + cmux-registry.
+def find_transcript_for_ws(ws_ref: str, title: str, cwd: str | None = None) -> str | None:
+    """Map ws_ref → transcript_path.
 
-    cmux state JSON keys workspaces by customTitle (which can dup) and lists
-    panel ids. cmux-registry.json keys by tab_id (== panel UUID) and
-    contains transcript_path. We resolve title → panel_ids → transcripts and
-    return the freshest.
+    PRIMARY: cmux-registry.json keys by panel UUID and contains transcript_path.
+    Resolve title → panel_ids → registry → freshest transcript.
+
+    FALLBACK: when the registry has no entry for a panel (happens for claudes
+    that were started by `cmux send` text rather than by `cmux new-workspace
+    --command claude`), scan ~/.claude/projects/<cwd-slug>/*.jsonl for a
+    transcript whose FIRST user message references this workspace's title or
+    a unique prompt-file substring.
     """
     try:
         state = json.load(open(HOME / "Library/Application Support/cmux/session-com.cmuxterm.app.json"))
     except Exception:
-        return None
+        state = None
     panel_ids = []
-    for w in state.get("windows", []):
-        for ws in w.get("tabManager", {}).get("workspaces", []):
-            if (ws.get("customTitle", "") or "") == title:
-                for p in ws.get("panels", []):
-                    if p.get("id"):
-                        panel_ids.append(p["id"])
+    if state:
+        for w in state.get("windows", []):
+            for ws in w.get("tabManager", {}).get("workspaces", []):
+                if (ws.get("customTitle", "") or "") == title:
+                    for p in ws.get("panels", []):
+                        if p.get("id"):
+                            panel_ids.append(p["id"])
     try:
         reg = json.load(open(HOME / ".claude/cmux-registry.json"))
     except Exception:
-        return None
+        reg = {}
     paths = []
     for tab_id, ent in reg.items():
         if tab_id in panel_ids or ent.get("panel_id") in panel_ids:
             tp = ent.get("transcript_path")
             if tp and os.path.exists(tp):
                 paths.append(tp)
-    if not paths:
+    if paths:
+        return max(paths, key=os.path.getmtime)
+
+    # Fallback: scan project dir by cwd, look for a transcript whose first
+    # user message contains a workspace-unique signature. Useful when claude
+    # was spawned by manual nudge / send-text (registry entry missing).
+    if not cwd:
         return None
-    return max(paths, key=os.path.getmtime)
+    slug = cwd.replace("/", "-")
+    pdir = HOME / ".claude/projects" / slug
+    if not pdir.exists():
+        return None
+
+    # Workspace-unique signatures we can match in the JSONL's first user msg.
+    # Build candidates from the title (case-insensitive — prompt filenames
+    # often lowercase the IDs):
+    #   "Auto: td-074 AC-008 guard tighten" → "td-074", "ac-008"
+    #   "P0-3 export-button tests" → "P0-3", "p0-3"
+    #   "W2B write 5 NAB bodies" → "W2B", "w2b"
+    sig_candidates = set()
+    for m in re.finditer(r"\b(P\d-\d+|W\d[A-Z]?|td-\d+|sq-ws\d+|AC-\d+)\b", title, re.I):
+        s = m.group(1)
+        sig_candidates.add(s)
+        sig_candidates.add(s.lower())
+        sig_candidates.add(s.upper())
+    if not sig_candidates:
+        return None
+
+    for jsonl in sorted(pdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            # Read up to 64KB — covers first ~10 turns reliably. First user
+            # message is sometimes empty (malformed initial paste); the
+            # workspace-unique signature may only show up in a later recovery
+            # paste or in an early assistant turn.
+            with open(jsonl, "rb") as f:
+                head = f.read(65536).decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        n_user_seen = 0
+        for line in head.splitlines():
+            if not line.strip():
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            msg = d.get("message")
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            content = msg.get("content")
+            text = ""
+            if isinstance(content, list):
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        text += c.get("text", "")
+            elif isinstance(content, str):
+                text = content
+            if role == "user":
+                n_user_seen += 1
+            # Match against any user OR assistant turn within the first ~5 user
+            # turns — extends the search so a recovery paste or an early
+            # assistant turn that mentions the workspace marker still wins.
+            if any(sig in text for sig in sig_candidates):
+                return str(jsonl)
+            if n_user_seen >= 5:
+                break
+
+    return None
 
 
 def read_transcript_delta(path: str, since_epoch: int) -> tuple[list[dict], int, dict]:
@@ -294,7 +365,7 @@ def build_summary_for_ws(ws: dict, pr_cache: dict) -> dict:
     """
     ws_ref = ws["ref"]
     title = ws["title"]
-    transcript = find_transcript_for_ws(ws_ref, title)
+    transcript = find_transcript_for_ws(ws_ref, title, ws.get("cwd"))
     prior = load_summary(ws_ref) or {}
     since = int(prior.get("last_seen_ts", 0))
     if not transcript:
