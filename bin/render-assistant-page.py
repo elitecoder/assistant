@@ -414,16 +414,27 @@ def render_todos_tab(world):
             if td_id:
                 ad_state = "true" if ad_flag is True else ("false" if ad_flag is False else "null")
                 detail_text = it.get("detail") or ""
+                # Three explicit segmented-set buttons. The current state is
+                # highlighted via .active. Each click is an absolute set, not
+                # a cycle — eliminates the "did I click once or twice?" ambiguity.
+                t_active = " active" if ad_state == "true" else ""
+                f_active = " active" if ad_state == "false" else ""
+                n_active = " active" if ad_state == "null" else ""
                 tools_html = (
                     f'<div class="todo-tools">'
-                    f'  <button class="tool-btn td-toggle" data-id="{e(td_id)}" data-state="{ad_state}" title="autoDispatch: {ad_state} — click to cycle null → true → false → null">'
-                    f'    autoDispatch={ad_state}'
-                    f'  </button>'
+                    f'  <span class="tool-label">autoDispatch:</span>'
+                    f'  <button class="tool-btn td-set td-set-true{t_active}" data-id="{e(td_id)}" data-value="true" title="Set autoDispatch=true (Assistant will spawn at next pulse)">on</button>'
+                    f'  <button class="tool-btn td-set td-set-false{f_active}" data-id="{e(td_id)}" data-value="false" title="Set autoDispatch=false (manual dispatch only)">off</button>'
+                    f'  <button class="tool-btn td-set td-set-null{n_active}" data-id="{e(td_id)}" data-value="null" title="Set autoDispatch=null (Bucket C — Assistant will surface a card asking what to do)">unset</button>'
+                    f'  <span class="tool-spacer"></span>'
                     f'  <button class="tool-btn td-dispatch" data-id="{e(td_id)}" title="Force Bucket B at next Assistant pulse: sets autoDispatch=true and clears dispatchedAt">'
                     f'    Dispatch now'
                     f'  </button>'
                     f'  <button class="tool-btn td-context-toggle" data-id="{e(td_id)}" title="Append context to detail">'
                     f'    + context'
+                    f'  </button>'
+                    f'  <button class="tool-btn td-remove" data-id="{e(td_id)}" title="Remove this TODO (soft-delete: moved to removed[] in the JSON)">'
+                    f'    remove'
                     f'  </button>'
                     f'</div>'
                     f'<div class="todo-context" data-id="{e(td_id)}" hidden>'
@@ -550,11 +561,19 @@ h1 { font-size:18px; margin:0 0 4px; font-weight:600; }
 .tool-btn.busy { opacity:0.5; }
 .tool-btn.ok { background:#1c3a26; color:var(--green); border-color:#1c3a26; }
 .tool-btn.err { background:#3a1c1c; color:var(--red); border-color:#3a1c1c; }
-.tool-btn.td-toggle[data-state="true"] { color:var(--amber); border-color:#3a2d18; }
-.tool-btn.td-toggle[data-state="false"] { color:var(--muted); }
-.tool-btn.td-toggle[data-state="null"] { color:var(--blue); border-color:#1c2a3a; }
+.tool-label { color:var(--muted); font-size:10px; letter-spacing:0.04em; padding:3px 4px 3px 0; align-self:center; }
+.tool-spacer { flex:0 0 8px; }
+/* Segmented autoDispatch tri-state. The active button shows the CURRENT value;
+   inactive buttons preview what clicking them WILL set. No cycle, no ambiguity. */
+.tool-btn.td-set { padding:3px 10px; }
+.tool-btn.td-set-true.active  { background:#3a2d18; color:var(--amber); border-color:var(--amber); }
+.tool-btn.td-set-false.active { background:#2a2a2a; color:var(--muted); border-color:var(--muted); }
+.tool-btn.td-set-null.active  { background:#1c2a3a; color:var(--blue);  border-color:var(--blue); }
+.tool-btn.td-set:not(.active) { opacity:0.55; }
 .tool-btn.td-dispatch { color:#a78bfa; border-color:#2c1f4a; }
 .tool-btn.td-dispatch:hover { background:#2c1f4a; color:#c4b5fd; }
+.tool-btn.td-remove { color:#e96b6b; border-color:#3a1c1c; opacity:0.7; }
+.tool-btn.td-remove:hover { background:#3a1c1c; color:#ff9090; opacity:1; }
 .row.kind-ledger { background:rgba(95,217,122,0.04); }
 .row.kind-event { opacity:0.65; }
 /* Decision rows: ts · kind · scope · ✓ · evidence · #pulse */
@@ -638,21 +657,46 @@ async function handleTodoToolsClick(ev) {
   const id = btn.dataset.id;
   if (!id) return;
 
-  // ─── autoDispatch toggle: cycle through null → true → false → null ───
-  if (btn.classList.contains('td-toggle')) {
-    const current = btn.dataset.state;
-    let url, msg;
-    if (current === 'null')       { url = `http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=true`;  msg = 'autoDispatch=true'; }
-    else if (current === 'true')  { url = `http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=false`; msg = 'autoDispatch=false'; }
-    else                          { url = `http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=null`;  msg = 'autoDispatch=null'; }
-    btn.classList.add('busy'); btn.textContent = '…';
+  // ─── autoDispatch absolute-set (segmented tri-state) ───
+  if (btn.classList.contains('td-set')) {
+    if (btn.classList.contains('active')) return; // already at this value, no-op
+    const value = btn.dataset.value; // 'true' | 'false' | 'null'
+    const originalText = btn.textContent;
+    btn.classList.add('busy');
     try {
-      const r = await fetch(url, {method: 'POST'});
+      const r = await fetch(`http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=${value}`, {method: 'POST'});
       if (r.ok) {
-        btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ ' + msg;
-        // The next 15s auto-refresh will re-render with the canonical state.
+        // Visually move .active to this button immediately so the user sees
+        // the absolute-set semantics. The 15s auto-refresh will re-render
+        // canonical state too.
+        const group = btn.parentElement.querySelectorAll('.td-set');
+        group.forEach(b => b.classList.remove('active'));
+        btn.classList.remove('busy'); btn.classList.add('active', 'ok');
+        btn.textContent = '✓ ' + originalText;
+        setTimeout(() => { btn.classList.remove('ok'); btn.textContent = originalText; }, 1200);
       } else {
         const t = await r.text();
+        btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (t || 'failed');
+      }
+    } catch (e) {
+      btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (e.message || 'no server');
+    }
+    return;
+  }
+
+  // ─── Remove TODO (soft-delete via /remove/<id>) ───
+  if (btn.classList.contains('td-remove')) {
+    if (!confirm(`Remove ${id}?\n\nSoft-delete: TODO is moved into the 'removed[]' array of assistant-todo.json (recoverable, but disappears from the dashboard).`)) return;
+    btn.classList.add('busy'); btn.textContent = 'Removing…';
+    try {
+      const r = await fetch(`http://127.0.0.1:9876/remove/${id}`, {method: 'POST'});
+      const t = await r.text();
+      if (r.ok) {
+        // Hide the row immediately; auto-refresh will confirm
+        const row = btn.closest('.row.todo-row');
+        if (row) { row.style.opacity = '0.3'; row.style.transition = 'opacity 0.5s'; }
+        btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ removed';
+      } else {
         btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (t || 'failed');
       }
     } catch (e) {
