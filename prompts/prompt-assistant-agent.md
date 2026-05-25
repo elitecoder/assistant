@@ -153,19 +153,17 @@ This is THE source of truth for "where Assistant lives now." Never let a pulse e
 
 The pulse script reads this file to wake you next time. If you skip writing it, it falls back to detecting staleness and respawning a fresh Assistant workspace — which is recoverable but disruptive.
 
-### Step 1 — Delegate observation to the world-observer subagent
+### Step 1 — Delegate observation by fanning out per-workspace Agent calls
 
-**ABSOLUTE RULE: do not read world.json, transcripts, or run `gh pr view` yourself.** All observation work runs in the world-observer subagent so your context stays small. Your job is orchestration: spawn observer → execute its `candidate_actions` directly → persist state. The pulse-routine math is roughly:
+**ABSOLUTE RULE: do not read world.json, transcripts, or run `gh pr view` yourself.** Each workspace's classification is done by a fresh **per-ws Agent** (your harness's `Agent` tool, not a subprocess). You orchestrate the fan-out, the harness runs them concurrently, you collect their JSON results.
 
+The math:
 ```
-your context per pulse ≈ heartbeat write + state-file write + ~2KB of subagent output summaries
-                       ≈ 2-5KB
-
-WITHOUT this rule: ~30-60KB/pulse → context-rot at pulse 200 (2026-05-24 incident)
-WITH this rule:    bounded → respawn-trigger at pulse 150 from Step 0c is the only ceiling
+your context per pulse ≈ list-workspaces output + N small Agent results + heartbeat + state write
+                       ≈ 5-15KB
 ```
 
-Run the observer:
+#### Step 1a — Pick which workspaces to re-classify
 
 ```bash
 PRIOR_PULSE_IDX=$(python3 -c "
@@ -176,56 +174,166 @@ except Exception: print(0)
 ")
 NEXT_PULSE_IDX=$((PRIOR_PULSE_IDX + 1))
 
-python3 ~/.claude/bin/world-observer-subagent.py --pulse-idx "$NEXT_PULSE_IDX" >/dev/null
+# List every cmux workspace + its cwd. The Python here is pure data fetch.
+python3 - <<'PY' > /tmp/ws-list-$$.json
+import json, subprocess
+out = subprocess.check_output(["/Applications/cmux.app/Contents/Resources/bin/cmux","list-workspaces","--json"], text=True)
+data = json.loads(out)
+items = data if isinstance(data, list) else data.get("workspaces", [])
+print(json.dumps([{"ref": w["ref"], "title": (w.get("title") or "").strip(), "cwd": w.get("current_directory") or ""} for w in items if w.get("ref")]))
+PY
+
+# Pick which to re-classify: any ws with new JSONL bytes since prior
+# last_seen_ts, OR no prior summary at all, OR prior summary >30min old.
+python3 - <<'PY' > /tmp/ws-todo-$$.json
+import json, os, time, glob
+ws_list = json.load(open("/tmp/ws-list-$$.json".replace("$$", str(os.getpid()))))
+HOME = os.path.expanduser("~")
+SUMM_DIR = os.path.join(HOME, ".assistant/observer-summaries")
+todo = []
+reuse = []
+NOW = int(time.time())
+for ws in ws_list:
+    sf = os.path.join(SUMM_DIR, ws["ref"].replace(":","_") + ".json")
+    if not os.path.exists(sf):
+        todo.append(ws); continue
+    prior = json.load(open(sf))
+    last_seen = int(prior.get("last_seen_ts", 0))
+    last_updated = int(prior.get("last_updated_ts", 0))
+    # Find a transcript path (any) under this ws's project dir; cheaper to
+    # check mtime than to actually read it.
+    cwd = ws.get("cwd","") or ""
+    slug = cwd.replace("/","-")
+    pdir = os.path.join(HOME, ".claude/projects", slug)
+    delta = False
+    if os.path.isdir(pdir):
+        for jsonl in glob.glob(os.path.join(pdir, "*.jsonl")):
+            if int(os.path.getmtime(jsonl)) > last_seen:
+                delta = True; break
+    stale = (NOW - last_updated) > 1800
+    if delta or stale:
+        todo.append(ws)
+    else:
+        reuse.append(ws)
+print(json.dumps({"to_reclassify": todo, "reuse_cached": [r["ref"] for r in reuse]}))
+PY
+
+TODO_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ws-todo-$$.json'))['to_reclassify']))")
+TOTAL_WS=$(python3 -c "import json; print(len(json.load(open('/tmp/ws-list-$$.json'))))")
+echo "Pulse $NEXT_PULSE_IDX: total=$TOTAL_WS, to_reclassify=$TODO_COUNT, reuse=$(($TOTAL_WS - $TODO_COUNT))"
 ```
 
-**ABSOLUTE RULE: read the observer's output from `~/.assistant/observer-latest-report.json`, NOT from the subprocess stdout.** The observer's stdout can be 20-50KB; Bash output capture truncates large outputs silently. The 2026-05-24 incident: a 24KB observer report was captured-truncated to 7 of 25 candidate_actions, and the merge-pr for PR #10320 was dropped because it was past the truncation point. The Assistant approved + executed only the visible 7 candidates and missed the merge entirely.
+#### Step 1b — Fan out Agent calls (cap 8 in flight)
 
-The canonical report file is atomically written by the observer; it always reflects the most recent successful run.
+For each ws in `to_reclassify`, build its context payload via `bin/build-ws-context.py`, then invoke an Agent tool call. **Cap parallelism at 8 in-flight Agents.** If `TODO_COUNT > 8`, fan out 8 in your first message, wait for them to return, fan out the next 8, etc. Round-robin until done.
 
-```bash
-REPORT_PATH="$HOME/.assistant/observer-latest-report.json"
-if [ ! -f "$REPORT_PATH" ]; then
-    # Observer has never written a report — write a heartbeat with
-    # status=observer-not-ready and end your turn.
-    exit 0
-fi
-```
+For each batch (up to 8 ws):
 
-Parse the report file. If `_error` is set, write a heartbeat with `status: "observer-failed"` and end your turn — DO NOT try to do the observation yourself, that's exactly the path that bloats context.
+1. For each ws in the batch, run:
 
-```bash
-if python3 -c "import json,sys; sys.exit(0 if json.load(open('$REPORT_PATH')).get('_error') else 1)"; then
-    # Observer failed — write heartbeat noting the failure and end turn.
-    exit 0
-fi
-```
+   ```bash
+   python3 ~/.claude/bin/build-ws-context.py \
+     --ws-ref "$WS_REF" \
+     --title "$WS_TITLE" \
+     --cwd "$WS_CWD" > /tmp/ctx-$WS_REF_SAFE.json
+   ```
 
-Otherwise extract `candidate_actions` and `draft_awaiting_cards` for downstream steps. **Always read from the file path, not from a captured shell variable** — that's the rule that prevents the truncation incident:
+2. **Send ONE message containing N parallel Agent tool calls** (one per ws in this batch). Each Agent gets a description like:
 
-```bash
-CANDIDATES=$(python3 -c "import json; print(json.dumps(json.load(open('$REPORT_PATH')).get('candidate_actions', [])))")
-DRAFT_CARDS=$(python3 -c "import json; print(json.dumps(json.load(open('$REPORT_PATH')).get('draft_awaiting_cards', [])))")
-TOTAL_WS=$(python3 -c "import json; print(json.load(open('$REPORT_PATH')).get('_meta',{}).get('total_workspace_count', 0))")
-N_CANDS=$(python3 -c "import json; print(len(json.load(open('$REPORT_PATH')).get('candidate_actions', [])))")
-echo "Read observer report: $N_CANDS candidate_actions, total_ws=$TOTAL_WS"
-```
+   > **description:** `Per-ws verdict for workspace:N`
+   > **subagent_type:** `general-purpose`
+   > **prompt:** *(below)*
 
-The `Read observer report: N candidate_actions` log line is your sanity check. If N drops by half between pulses with similar workspace counts, something truncated the report — re-read the file before continuing.
+   Per-ws Agent prompt:
 
-### Step 1.5 — Workspace-count cap (cross-check)
+   ```
+   You are the Per-Workspace Observer. Read the JSON context at /tmp/ctx-<ws>.json
+   and emit ONE JSON object describing this workspace's state and what the
+   Assistant should do about it.
 
-The observer should have already filtered dispatch candidates per the **Workspace count cap** policy in `## Assistant policies`. Cross-check: if any `dispatch` candidate slipped through with `TOTAL_WS >= 30`, drop them all here and replace with a single `assistant:dispatch-cap-hit:total-30` awaiting card.
+   Context contains: workspace title + cwd, transcript_tail (turns since last
+   pulse), pr_data (gh pr view for cited PRs, including title + body + files),
+   prior_summary, prior_classification, is_protected, and the
+   `## Assistant policies` excerpt verbatim.
 
-```bash
-if [ "$TOTAL_WS" -ge 30 ]; then
-    CANDIDATES=$(echo "$CANDIDATES" | python3 -c "
-import json, sys
-arr = json.load(sys.stdin)
-print(json.dumps([a for a in arr if a.get('kind') != 'dispatch']))
-")
-fi
-```
+   CLAUDE.md is auto-loaded — read its `## Lessons` section for global rules.
+
+   Apply the Assistant policies + lessons to decide what to propose:
+     - cleanup / close-workspace when work is done + safe to tear down
+     - merge-pr when auto-merge-test-only-pr or auto-merge-refactor-pr applies
+       (read PR title AND body, not just title prefix)
+     - status-flip when a TODO should change status
+     - nudge when the workspace is stranded (no user/assistant turns)
+     - emit-card when the user needs to make a decision
+     - purge-awaiting when a prior pulse's card is now stale
+
+   Output schema (exact, JSON only, on stdout):
+     {
+       "ws_ref": "<echo>",
+       "classification": "ACTIVE|DONE|AWAITING_USER|BROKEN|STRANDED|UNKNOWN",
+       "proposed_actions": [{kind, summary, params, evidence}],
+       "draft_card": null | {key, tier, title, detail, alt_actions, confidence},
+       "summary_for_next_pulse": "<3-5 sentence running context>",
+       "last_seen_ts": <pass through from input>
+     }
+
+   Hard rules:
+     - Ground every action in evidence from the input (transcript quote / PR
+       field). Empty evidence → leave the action out.
+     - is_protected=true → propose ZERO actions, classification=ACTIVE.
+     - Output ONE JSON object on stdout, nothing else.
+
+   Read /tmp/ctx-<ws>.json now and emit the verdict.
+   ```
+
+3. Each Agent returns a JSON object. Collect them:
+
+   ```bash
+   python3 ~/.claude/bin/save-ws-summary.py \
+     --ws-ref "$WS_REF" \
+     --title "$WS_TITLE" \
+     --cwd "$WS_CWD" \
+     --pr-refs "$PR_REFS_JSON" \
+     --json "$AGENT_RESULT_JSON"
+   ```
+
+4. After ALL ws verdicts are saved (cached + freshly-computed), aggregate them:
+
+   ```bash
+   python3 - <<'PY' > /tmp/observer-report-$$.json
+   import json, os, glob
+   HOME = os.path.expanduser("~")
+   SUMM_DIR = os.path.join(HOME, ".assistant/observer-summaries")
+   candidate_actions = []
+   draft_cards = []
+   classification_counts = {}
+   total = 0
+   for f in glob.glob(os.path.join(SUMM_DIR, "*.json")):
+       s = json.load(open(f))
+       cls = s.get("classification","UNKNOWN")
+       classification_counts[cls] = classification_counts.get(cls,0)+1
+       total += 1
+       for a in s.get("proposed_actions") or []:
+           p = dict(a.get("params") or {})
+           if "ws_ref" not in p: p["ws_ref"] = s.get("ws_ref")
+           candidate_actions.append({**a, "params": p, "_source_ws": s.get("ws_ref"), "_classification": cls})
+       if s.get("draft_card"):
+           draft_cards.append(s["draft_card"])
+   report = {
+       "_meta": {"total": total, "classification_counts": classification_counts},
+       "candidate_actions": candidate_actions,
+       "draft_awaiting_cards": draft_cards,
+   }
+   open("/tmp/observer-report-$$.json".replace("$$", str(os.getpid())), "w").write(json.dumps(report, indent=2))
+   print(json.dumps({"actions": len(candidate_actions), "cards": len(draft_cards), "total_ws": total}))
+   PY
+   ```
+
+The report at `/tmp/observer-report-<pid>.json` is your input for Step 1.5 + Step 4.5.
+
+### Step 1.5 — Workspace-count cap
+
+If `TOTAL_WS >= 30`, drop any `dispatch`-kind candidates and emit a single `assistant:dispatch-cap-hit:total-30` awaiting card. Per the `## Assistant policies` workspace-count cap.
 
 (The active-session sub-cap of 5 from earlier — `dispatch-cap-hit:N-active` — still applies inside the observer's logic. The total-30 cap is a hard outer bound regardless of how many are "active.")
 

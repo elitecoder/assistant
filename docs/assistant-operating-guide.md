@@ -251,7 +251,7 @@ The line is sharp: **mechanical and reversible → do it. Substantive and lossy 
 
 A rule is a rule. There is no "why" field — git history of CLAUDE.md is the audit trail. There is no pin/use-count/state machine. Remove a block when it's stale; edit when it's wrong.
 
-**How rules get applied:** the per-workspace observer subagent (`bin/world-observer-subagent.py`) is itself a fresh LLM call with CLAUDE.md auto-loaded and the `## Assistant policies` excerpt from the prompt in its user message. It applies lessons inline when proposing actions for each workspace. The main pulse executes the observer's `proposed_actions` directly — there is no separate judgement-vote layer (that was duplicate cost when observer was Python regex; now that observer is itself an LLM, the second vote was redundant).
+**How rules get applied:** the main pulse fans out parallel `Agent` tool calls — one per workspace, capped at 8 in-flight — directly from the harness. Each per-ws Agent has CLAUDE.md auto-loaded (lessons + global rules) and reads a per-ws context payload (built by `bin/build-ws-context.py`) that includes the `## Assistant policies` excerpt verbatim. The Agent applies lessons inline when proposing actions. Verdicts come back as structured Agent results (no subprocess plumbing, no Bash output truncation). The main pulse executes the verdicts' `proposed_actions` directly — there is no separate judgement-vote layer.
 
 **When the user corrects you:** Write a rule **before** responding. Correction-signal tokens to watch for: `no`, `don't`, `stop`, `wrong`, `that's not`, `I told you`, `we discussed`, `you keep`, `again`, `damn`, `actually`.
 
