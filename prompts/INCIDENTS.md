@@ -63,6 +63,12 @@ After the Assistant respawned under the new merge-pr router, pulse 72 dispatched
 
 **Rule:** for any slash-command dispatch into a workspace, use `cmux send` (not `cmux send-text`) — `send` types AND presses Enter. After dispatch, re-read the target's transcript via `transcript-tail.py --ws <ws_ref>` and confirm `last_user.text` matches the literal slash command. cmux exit-code-0 is NOT proof of submission.
 
+## Observer stuck on prior summary (2026-05-25) {#observer-stuck}
+
+After the merge-pr router fix landed, observers for ws:4 (PR #10341), ws:6 (PR #10342), and ws:12 (PR #10305) classified those workspaces as AWAITING_USER / DONE with `proposed_actions: []` for hours, even though the PRs were OPEN+REVIEW_REQUIRED with auto-merge queued — exactly the state the merge-pr rule is supposed to fire on. Routine Sonnet observers were pattern-matching their own prior `summary_for_next_pulse` ("Auto-merge queued. REVIEW_REQUIRED. Close once merged.") instead of re-reading current world state. Other workspaces (ws:11 PR #10320) had correct observers that proposed merge-pr and dispatched cleanly. The bug was non-determinism in the Sonnet observer's verdict: same input, different output across pulses.
+
+**Rule:** track `state_hash` (classification + summary + sorted action kinds) per observer summary. When a workspace's hash has been unchanged for >2h (`state_unchanged_since_ts`), spawn a fresh **Opus** sub-agent to re-classify with explicit "break the stalemate" framing. Cap 3 escalations per pulse.
+
 ## merge-pr safety gate {#merge-pr-safety}
 
 The two-branch router can land a PR without human review. That's fine for test-only PRs and for refactors with full local G3 + unit suite green — both have low blast radius. For feature/bugfix PRs (any production-code touch), human review is mandatory. Without a Step-0 safety gate, an aggressive observer proposing `merge-pr` on any OPEN PR would land production code unreviewed.

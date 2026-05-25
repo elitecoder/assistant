@@ -31,6 +31,7 @@ If you crash/respawn into a new cmux workspace, your new instance writes a new h
 | `pulse-bootstrap.sh` | identify caller ws/surface, drain inbox, compute pulse_idx — emits env-var assignments to eval |
 | `heartbeat-write.py` | atomically write `heartbeat.json`; `--respawn` back-dates so watchdog respawns next tick |
 | `pick-ws-batch.py` | list workspaces, return LRU 5 to re-classify + the rest to reuse cached |
+| `find-stuck-workspaces.py` | list workspaces whose observer state_hash hasn't changed in N seconds (default 2h) |
 | `build-ws-context.py` | per-ws context payload (transcript tail + pr_data + prior summary) for the observer Agent |
 | `save-ws-summary.py` | persist a per-ws Agent verdict to `~/.assistant/observer-summaries/` |
 | `aggregate-observer.py` | fold every per-ws summary into one report (candidate_actions + draft_cards) |
@@ -148,7 +149,56 @@ After all batch verdicts are saved, aggregate:
 # writes /tmp/observer-report-<pid>.json and prints a one-line summary
 ```
 
-The report is your input for Step 1.5 + Step 4.5.
+The report is your input for Step 1.5 + Step 1.6 + Step 4.5.
+
+### Step 1.55 — Stuck-state escalation (Opus override)
+
+A workspace's observer state is "stuck" when its `state_hash` (classification + summary_for_next_pulse + sorted proposed_action kinds) has been unchanged for **more than 2 hours**. `save-ws-summary.py` tracks this automatically via `state_unchanged_since_ts`.
+
+When a workspace is stuck, the routine Sonnet observer is producing the same verdict every pulse — usually because it's pattern-matching on its own prior summary instead of re-reading the world. That's exactly when an **Opus** sub-agent earns its keep.
+
+```bash
+~/dev/assistant/bin/find-stuck-workspaces.py --threshold-sec 7200 > /tmp/stuck-$$.json
+# returns [{ws_ref, title, cwd, classification, stuck_for_sec, state_hash, summary, pr_refs}, ...]
+```
+
+For each stuck workspace (cap: top 3 most-stuck per pulse to bound cost), spawn ONE Opus Agent with the per-ws context PLUS an explicit "break-the-stalemate" framing:
+
+> **subagent_type:** `general-purpose`
+> **model:** `claude-opus-4-7[1m]` (override Sonnet default)
+> **description:** `Stuck-workspace escalation for <ws_ref>`
+> **prompt:**
+>
+> ```
+> You are the Stuck-Workspace Tiebreaker. Workspace <ws_ref> ("<title>") has been
+> reporting the same observer verdict for <stuck_for_sec/3600>h+. The routine
+> Sonnet observer is stuck in a pattern. Read the per-ws context at
+> /tmp/ctx-<ws>.json (transcript_tail, pr_data, prior_summary, etc.), CLAUDE.md
+> Lessons section, and the `## Assistant policies` excerpt — then propose a
+> CONCRETE forward action that will change observable state.
+>
+> Hard rules:
+>   - Banned action verbs: wait, observe, monitor, watch, see, check, review,
+>     keep, keep-watching, no-action, noop, tbd. If you can't think of an
+>     actionable verb, propose ZERO actions and classification=AWAITING_USER
+>     with a draft_card explaining what specifically blocks progress.
+>   - Repeating the prior summary's action set is NOT allowed — you exist
+>     because that set is stuck. If the only safe action IS the prior set
+>     (e.g. merge-pr on a PR still OPEN+REVIEW_REQUIRED), STILL propose it
+>     — the dispatcher's idempotent skills will re-fire and may unstick it
+>     (e.g. by re-posting !approve). Prior staleness != don't act.
+>   - Output the same JSON schema as the routine observer: ws_ref,
+>     classification, proposed_actions[], draft_card, summary_for_next_pulse,
+>     last_seen_ts.
+>
+> Read /tmp/ctx-<ws>.json now and emit the verdict.
+> ```
+
+Persist the Opus verdict via `save-ws-summary.py` exactly like the Sonnet path. The state_hash will update on the next pulse if the verdict differs; if it's identical, `state_unchanged_since_ts` is preserved (the workspace is genuinely stuck — that's signal for an awaiting card next pulse, not for another Opus call).
+
+Cost control: at ~3 Opus calls per pulse cap and 2-hour threshold, the worst case is ~36 Opus calls/day on a fully-saturated workspace set. Opus 4.7 is flat-priced; the cost is bounded.
+
+If `find-stuck-workspaces.py` returns an empty array, skip this step.
 
 ### Step 1.5 — Workspace-count cap
 
