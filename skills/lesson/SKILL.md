@@ -37,7 +37,7 @@ There is **no "why" field**. A rule is a rule — the body should be self-contai
 ~/.claude/bin/assistant-curator.py write \
   --trigger "<situation this rule fires in>" \
   --rule    "<what to do or not do — be specific and actionable>" \
-  --scope   "global|dispatch|classification|dashboard|todo|ffp|scout|memory|security"
+  --scope   "global|classification|dashboard|ffp|scout|memory|security"
 ```
 
 The curator picks a slug from the trigger, prepends the scope if non-global, and appends the block under `## Lessons`. It refuses to overwrite an existing slug.
@@ -46,16 +46,17 @@ The curator picks a slug from the trigger, prepends the scope if non-global, and
 
 1. **Identify the trigger and rule.** Re-read the user's last 1–2 messages. The user's words are usually the rule itself; your job is to extract the *condition* (trigger) and the *constraint* (rule) and phrase them in the third person so future sessions can apply them.
 
-2. **Choose a scope.** One of:
+2. **Decide where the rule belongs.** Lessons in CLAUDE.md auto-load into EVERY Claude Code session, so they should only be rules that genuinely apply to every session. If the rule is **dispatcher-specific** (about how the Assistant agent in `~/dev/assistant/` decides when to spawn workspaces, what model to use, when to flip TODO status, etc.), it does NOT go in CLAUDE.md — it goes in the Assistant's own prompt at `~/dev/assistant/prompts/prompt-assistant-agent.md` under `## Assistant policies`. The curator refuses scopes `dispatch` and `todo` for this reason. If the rule applies to any user, any session, in any context — proceed; it belongs in CLAUDE.md. Otherwise tell the user "this looks dispatcher-specific; should it go in the Assistant prompt instead?"
+
+3. **Choose a scope.** One of:
    - `global` — applies to any session
-   - `dispatch` — auto-spawning, model selection, workspace lifecycle
    - `classification` — categorizing TODOs, PRs, sessions
    - `dashboard` — UI rendering, widget behavior
-   - `todo` — the TODO list / `/todo` skill
-   - `ffp` — anything specific to firefly-platform / Squirrel
+   - `ffp` — anything specific to firefly-platform / Squirrel that ALL FFP-touching sessions need (not just the dispatcher)
    - `scout` — Scout MCP usage
    - `memory` — auto-memory and lesson handling itself
    - `security` — destructive ops, credential handling, permission widening
+   - **NOT allowed** (dispatcher-only, go in the Assistant prompt instead): `dispatch`, `todo`
 
 3. **Run the curator.** Quote any user-provided text verbatim where possible. If the user said "always X", the rule should literally start with "Always X".
 

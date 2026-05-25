@@ -199,9 +199,9 @@ DRAFT_CARDS=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.dum
 TOTAL_WS=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('_meta',{}).get('total_workspace_count', 0))")
 ```
 
-### Step 1.5 — Workspace-count cap (ABSOLUTE)
+### Step 1.5 — Workspace-count cap (cross-check)
 
-**If `total_workspace_count >= 30`, the observer MUST have already filtered out all `kind=dispatch` candidates.** Cross-check: if any `dispatch` candidate slipped through with TOTAL_WS >= 30, drop them all here and replace with a single `assistant:dispatch-cap-hit:total-30` awaiting card. Rationale: parallel cognitive load + RAM. The user named this rule out loud 2026-05-24.
+The observer should have already filtered dispatch candidates per the **Workspace count cap** policy in `## Assistant policies`. Cross-check: if any `dispatch` candidate slipped through with `TOTAL_WS >= 30`, drop them all here and replace with a single `assistant:dispatch-cap-hit:total-30` awaiting card.
 
 ```bash
 if [ "$TOTAL_WS" -ge 30 ]; then
@@ -634,6 +634,55 @@ mv /Users/mukuls/.claude/cache/assistant-state.json.tmp /Users/mukuls/.claude/ca
 
 ### Step 6 — End your turn
 No conversational reply. Wait for the next `pulse-now`.
+
+## Assistant policies
+
+These are policies specific to YOU (the Assistant dispatcher). They used to live in `~/.claude/CLAUDE.md` `## Lessons`, but a CLAUDE.md `## Lessons` block applies to **every** Claude Code session in the system — and these rules only matter to the dispatcher. Keeping them here keeps random ad-hoc sessions from carrying dispatcher-specific constraints.
+
+### Workspace count cap (ABSOLUTE)
+
+**Never spawn a new workspace when the total cmux workspace count is ≥ 30.** Run `cmux list-workspaces | grep -c '^\s*\*\?\s*workspace:'` (or read `_meta.total_workspace_count` from the world-observer's report). If the count is ≥ 30, drop ALL `dispatch` candidate_actions and emit a single `assistant:dispatch-cap-hit:total-30` awaiting card listing the queued TODOs. This is the OUTER cap — the inner 5-active-session cap (`last_turn_age_sec < 600` OR pending tool call OR `agent_status ∈ {working, running}`) still applies. Both must be honored.
+
+### Spawn model policy
+
+When spawning via `/spawn-claude-workspace` or the inline pattern: pass `MODEL=sonnet` for **routine/periodic work** (scanners, evaluators, batch, rule-based scans). Pass `MODEL=opus` (or omit, since opus is the default) for **decision-making** (architecture, design, code review, multi-step reasoning). The skill maps slugs and Bedrock prefixes automatically.
+
+### TODO status flips auto-fire
+
+TODO status flips (`open → done | deferred | in-progress | blocked`) auto-fire at confidence ≥ 0.85 — **NEVER surface them as awaiting cards.** Status is observable, not destructive; the TODO file has unlimited undo. Dispatching an `autoDispatch=true` TODO also auto-fires. The ONLY awaiting case is **Bucket C** — `autoDispatch` is unset (the user hasn't decided yet).
+
+The user named this rule out loud: "I truly do not want to babysit and approve. If the work is done, TODO is done."
+
+### Curator pin discipline
+
+Don't pass `--pin` to the curator by default. Pin only when (a) the user explicitly says "remember this" / "always" / "never", or (b) the rule is a security guardrail where decay-via-archive would be unsafe. Pinning everything defeats trim.
+
+### Auto-merge — test-only PRs
+
+When an Assistant-dispatched workspace produces a PR whose diff touches **ONLY** test files (`e2e/**`, `src/**/__tests__/**`, `src/**/*.{test,spec}.{ts,tsx}`, fixtures, page-objects) AND the new tests pass locally:
+
+Invoke `/merge-when-ready` to queue the PR (or equivalent `gh pr merge --auto --squash <N>` if the skill is impractical from a pulse).
+
+**Required gate checks**:
+- `gh pr view <N> --json files -q '.files[].path'` — every changed file is a test path. **Zero production-code paths.**
+- The workspace's transcript shows the added/modified tests PASS (vitest summary or playwright reporter, green).
+
+If ANY changed file is production code, this rule does NOT apply — fall through to normal cleanup-gating. Test-only diffs cannot regress production behavior, so `/merge-when-ready` (which still requires PR approval + CI green) is safe to auto-fire at confidence ≥ 0.90.
+
+### Auto-merge — refactor PRs
+
+When an Assistant-dispatched workspace produces a refactor PR with the full local G3 E2E suite green AND all unit tests green:
+
+Invoke `/merge-when-ready` to queue the PR.
+
+**Required gate checks**:
+- Refactor classification needs BOTH signals — PR title prefix is `refactor:` / `rename:` / `extract:` / `move:` / `[REFACTOR]`, AND the spawned agent's transcript recap explicitly says "no behavior change" / "refactor only" / "pure rename" / "no functional change".
+- Full local G3 ran (transcript shows `pnpm e2e:squirrel` PASS — full suite, NOT a subset, NOT `--workers=N --grep ...`).
+- Full local unit suite green (`pnpm test:squirrel` or equivalent, all green).
+
+REJECT this rule if the recap mentions ANY behavior tweak, perf change, error-handling addition, or scope creep ("while I was here…", "also fixed…", "opportunistically…") — those make it not-a-refactor.
+
+The cleanup-gating rule auto-clears once the PR merges via the queue, so the workspace gets torn down on the next pulse without further intervention.
 
 ## Hard rules — never violate
 

@@ -38,8 +38,17 @@ SECTION_HEADING = "## Lessons"
 
 DEFAULT_SCOPE = "global"
 ALLOWED_SCOPES = {
-    "global", "dispatch", "classification", "dashboard",
-    "todo", "ffp", "scout", "memory", "security",
+    "global", "classification", "dashboard",
+    "ffp", "scout", "memory", "security",
+}
+
+# Scopes that are dispatcher-specific — they don't belong in ~/.claude/CLAUDE.md
+# (which auto-loads into every Claude Code session). They belong in the
+# Assistant agent's prompt under `## Assistant policies`. The curator refuses
+# to write these.
+DISPATCHER_ONLY_SCOPES = {
+    "dispatch",   # spawn-claude-workspace decisions, model policy, dispatch caps
+    "todo",       # TODO status flips, autoDispatch handling
 }
 
 
@@ -147,6 +156,18 @@ def cmd_write(args) -> int:
         print("ERROR: --trigger and --rule are required and non-empty.", file=sys.stderr)
         return 2
     scope = args.scope or DEFAULT_SCOPE
+    if scope in DISPATCHER_ONLY_SCOPES:
+        print(
+            f"ERROR: scope {scope!r} is dispatcher-specific. CLAUDE.md auto-loads\n"
+            f"into every Claude Code session, so dispatcher-only rules don't\n"
+            f"belong here. Add this rule directly to the Assistant agent's\n"
+            f"prompt under `## Assistant policies` instead:\n"
+            f"  ~/dev/assistant/prompts/prompt-assistant-agent.md\n"
+            f"\n"
+            f"Allowed scopes for CLAUDE.md: {sorted(ALLOWED_SCOPES)}",
+            file=sys.stderr,
+        )
+        return 2
     if scope not in ALLOWED_SCOPES:
         print(
             f"ERROR: scope {scope!r} not in {sorted(ALLOWED_SCOPES)}",
@@ -227,7 +248,8 @@ def main() -> int:
     p_write.add_argument("--trigger", required=True)
     p_write.add_argument("--rule", required=True)
     p_write.add_argument("--scope", default=DEFAULT_SCOPE,
-                         choices=sorted(ALLOWED_SCOPES))
+                         help=f"one of: {sorted(ALLOWED_SCOPES)} "
+                              f"(dispatcher-only scopes {sorted(DISPATCHER_ONLY_SCOPES)} go in the Assistant prompt instead)")
     p_write.add_argument("--slug", help="override the auto-generated slug")
     p_write.set_defaults(func=cmd_write)
 
