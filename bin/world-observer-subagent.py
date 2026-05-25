@@ -554,6 +554,24 @@ def aggregate_actions(ws_summaries: list[dict], total_count: int, todos: list[di
                 "alt_actions": ["Review and merge PR", "Skip cleanup"],
                 "confidence": 0.95,
             })
+        elif cls == "DONE" and not pr_states:
+            # Investigative work — agent finished, no PR, just a recap. The
+            # user has said: "needs me to read the output. Do not close such
+            # workspaces." Surface as awaiting-card; user closes manually
+            # after reading the deliverable.
+            draft_cards.append({
+                "key": f"assistant:investigative-done:{ws_ref}",
+                "tier": "T3",
+                "title": f"{ws_ref} done (investigative, no PR) — review recap before close",
+                "detail": (
+                    f"Workspace {ws_ref} ({s.get('title','')[:50]}) finished investigative "
+                    f"work. No PR. Agent self-reported done. Read the recap, then close manually. "
+                    f"Last asst: {(s.get('last_assistant_short','') or '')[:240]}"
+                ),
+                "touches": [{"type": "session", "ref": ws_ref, "name": s.get("title", "")[:50]}],
+                "alt_actions": ["Read recap, close workspace", "Keep open for follow-up", "Re-dispatch as PR work"],
+                "confidence": 0.90,
+            })
         elif cls == "AWAITING_USER":
             draft_cards.append({
                 "key": f"assistant:needs-you:{ws_ref}:awaiting-user",
