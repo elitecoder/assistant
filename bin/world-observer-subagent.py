@@ -511,8 +511,16 @@ def build_summary_for_ws(ws: dict, pr_cache: dict) -> dict:
     return out
 
 
-def aggregate_actions(ws_summaries: list[dict], total_count: int, todos: list[dict]) -> dict:
-    """Build the candidate_actions + draft_awaiting_cards arrays from summaries."""
+def aggregate_actions(ws_summaries: list[dict], total_count: int, todos: list[dict],
+                      prior_state_path: str | None = None) -> dict:
+    """Build the candidate_actions + draft_awaiting_cards arrays from summaries.
+
+    If prior_state_path is provided, read prior pulse's awaiting_input[] and
+    emit purge-awaiting candidates for any cards whose predicates are now
+    invalid (e.g. workspace was STRANDED, now ACTIVE; workspace gone; PR
+    merged). This closes the loop on stale cards from before observer
+    classifications updated.
+    """
     candidate_actions = []
     draft_cards = []
 
@@ -520,6 +528,9 @@ def aggregate_actions(ws_summaries: list[dict], total_count: int, todos: list[di
     cap_hit = total_count >= DISPATCH_CAP
 
     SKIP_CLEANUP_REFS = {"workspace:3", "workspace:108", "workspace:7"}
+
+    # Build a quick ws_ref → classification map for the purge logic
+    cls_by_ws = {s["ws_ref"]: s.get("classification", "") for s in ws_summaries}
 
     active_count = 0
     for s in ws_summaries:
@@ -693,6 +704,73 @@ def aggregate_actions(ws_summaries: list[dict], total_count: int, todos: list[di
         }
         draft_cards.append(cap_card)
 
+    # === Purge stale prior-pulse awaiting cards ===
+    # Read prior assistant_state.json. For each card whose predicate has
+    # been invalidated by current observer state, emit a `purge-awaiting`
+    # candidate so the main pulse drops it and logs assistant:awaiting-purged.
+    if prior_state_path and os.path.exists(prior_state_path):
+        try:
+            prior_state = json.load(open(prior_state_path))
+        except Exception:
+            prior_state = {}
+        prior_cards = prior_state.get("awaiting_input", []) or []
+        # Cards we're emitting THIS pulse — keys we'll re-emit. We won't purge
+        # these (they're still valid).
+        keep_keys = {c.get("key") for c in draft_cards if c.get("key")}
+        for pc in prior_cards:
+            key = pc.get("key", "")
+            if not key:
+                continue
+            if key in keep_keys:
+                # Re-emitting the same card → not stale
+                continue
+            # Predicate logic: a card is stale if it references a workspace
+            # that has changed classification away from the card's premise.
+            stale_reason = None
+            touches = pc.get("touches", []) or []
+            ws_refs_in_card = [
+                t.get("ref") for t in touches
+                if t.get("type") == "session" and t.get("ref", "").startswith("workspace:")
+            ]
+            # Also pull any workspace:N tokens from the card's key/detail
+            detail_blob = (pc.get("detail", "") or "") + " " + key
+            for m in re.finditer(r"workspace:\d+", detail_blob):
+                ws_refs_in_card.append(m.group(0))
+
+            if ws_refs_in_card:
+                # If the card's title/key implies STRANDED but the observer
+                # now says the workspace is ACTIVE/DONE, drop it.
+                card_about_stranded = any(
+                    kw in (key + " " + (pc.get("title", "") or "")).lower()
+                    for kw in ("stranded", "no-transcript", "empty-tab", "broken")
+                )
+                if card_about_stranded:
+                    refs = list(set(ws_refs_in_card))
+                    healthy = [
+                        r for r in refs
+                        if cls_by_ws.get(r) in ("ACTIVE", "DONE")
+                    ]
+                    if healthy and len(healthy) == len(refs):
+                        stale_reason = (
+                            f"all referenced workspaces now classify as "
+                            f"{', '.join(set(cls_by_ws.get(r,'?') for r in refs))}"
+                        )
+                # Workspace-gone check: if any referenced workspace is no
+                # longer in cmux at all, the card is also stale.
+                gone = [r for r in ws_refs_in_card if r not in cls_by_ws]
+                if gone and not stale_reason:
+                    stale_reason = f"referenced workspaces gone from cmux: {gone}"
+
+            if stale_reason:
+                candidate_actions.append({
+                    "id": f"purge-awaiting-{key.replace(':','_')}",
+                    "kind": "purge-awaiting",
+                    "summary": f"Drop stale card {key}",
+                    "reasoning": f"Card predicate invalidated: {stale_reason}",
+                    "params": {"key": key},
+                    "evidence": f"prior_card={(pc.get('title','') or '')[:120]}; current_state={stale_reason}",
+                })
+
     return {"candidate_actions": candidate_actions, "draft_awaiting_cards": draft_cards,
             "active_workspace_count": active_count}
 
@@ -736,7 +814,7 @@ def main() -> int:
         todos = []
 
     # 4. Aggregate
-    agg = aggregate_actions(summaries, total, todos)
+    agg = aggregate_actions(summaries, total, todos, prior_state_path=args.state_path)
 
     duration = round(time.time() - started, 2)
 
