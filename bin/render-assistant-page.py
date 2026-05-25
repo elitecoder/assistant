@@ -134,79 +134,108 @@ def render_awaiting(world):
     return "".join(cards), len(awaiting)
 
 
-def render_activity(world):
-    """Activity feed = Assistant's actions_taken[] + recent ledger entries.
-    Newest first. The actions are already verified by the Assistant on the
-    same pulse, so we display them as ✓ / ✗ based on the verification flag."""
-    triage = load_assistant_state()
-    actions = triage.get("actions_taken") or []
-    ledger = world.get("ledger_recent", [])
-    events = world.get("inbox_events_recent", [])
-    activity = []
-    for a in actions:
-        ts = parse_iso(a.get("ts"))
-        if not ts:
-            continue
-        verified = a.get("verified", False)
-        outcome = "✓ done" if verified else "✗ unverified"
-        scope = ""
-        for t in [a.get("target")] if a.get("target") else []:
-            scope = t.get("name") or t.get("ref") or ""
-        activity.append({
-            "ts": ts, "kind": "ledger", "tier": "T1",
-            "action": (a.get("evidence") or a.get("kind") or "")[:140],
-            "outcome": outcome, "scope": scope,
-        })
-    for l in ledger:
-        ts = parse_iso(l.get("ts"))
-        if not ts:
-            continue
-        if l.get("undone"):
-            outcome = "↶ undone"
-        elif l.get("result", {}).get("ok"):
-            outcome = f"✓ {l.get('execute_via', '')}"
-        else:
-            outcome = f"✗ failed · {l.get('execute_via', '')}"
-        scope = ""
-        for t in l.get("touches") or []:
-            scope = t.get("name") or t.get("ref") or ""
-            if scope:
-                break
-        activity.append({
-            "ts": ts, "kind": "ledger", "tier": (l.get("tier") or "T?").upper(),
-            "action": l.get("action", "")[:180], "outcome": outcome, "scope": scope,
-        })
-    for ev in events:
-        kind = ev.get("kind", "")
-        if kind in {"executor-fired", "executor-fire-failed", "hermes-fired", "hermes-fire-failed"}:
-            continue
-        if kind in NOISE_EVENT_KINDS and ev.get("severity") != "urgent":
-            continue
-        ts = parse_iso(ev.get("ts"))
-        if not ts:
-            continue
-        activity.append({
-            "ts": ts, "kind": "event", "tier": "T0",
-            "action": ev.get("summary", "")[:180],
-            "outcome": f"{ev.get('worker', '')} · {ev.get('severity', '')}",
-            "scope": ev.get("worker", ""),
-        })
-    activity.sort(key=lambda a: a["ts"], reverse=True)
-    activity = activity[:FEED_LIMIT]
-    if not activity:
-        return '<div class="empty">No activity in the last 24h.</div>', 0
-    rows = ['<div class="feed">']
-    for a in activity:
-        tier_lower = a["tier"].lower() if a["tier"] in {"T0", "T1", "T2", "T3"} else "t0"
-        rows.append(f"""
-<div class="row kind-{a['kind']}">
-  <span class="ts">{a['ts'].strftime('%H:%M:%S')}</span>
-  <span class="pill {tier_lower}">{a['tier']}</span>
-  <span class="action-text" title="{e(a['action'])}">{e(a['action'])}</span>
-  <span class="outcome">{e(a['scope'])} · {e(a['outcome'])}</span>
+def render_decisions(world):
+    """Decisions feed — read from the durable action ledger at
+    ~/.assistant/actions-ledger.jsonl. Shows ONLY state-changing decisions
+    (the Assistant did something, didn't just observe). Newest first.
+
+    Bookkeeping kinds (heartbeat, observer-cache writes, no-op pulses) are
+    filtered out. Each row is one decision: what was decided, against what,
+    why (evidence), how it turned out.
+    """
+    LEDGER_PATH = HOME / ".assistant/actions-ledger.jsonl"
+    DECISION_KINDS = {
+        "dispatch", "status-flip", "cleanup", "close-workspace",
+        "merge-pr", "nudge", "emit-card", "purge-awaiting",
+        "judgement-rejected",
+    }
+    # Bookkeeping/internal kinds we explicitly DON'T show
+    SKIP_KINDS = {"test", "heartbeat", "observer-write", "summary-update"}
+
+    rows = []
+    if LEDGER_PATH.exists():
+        # Read tail — last ~500 entries is plenty for a 24h window
+        try:
+            with open(LEDGER_PATH) as f:
+                lines = f.readlines()[-500:]
+        except Exception:
+            lines = []
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=ACTIVITY_HOURS)
+        for line in lines:
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            ts = parse_iso(d.get("ts"))
+            if not ts or ts < cutoff:
+                continue
+            kind = d.get("kind", "")
+            if kind in SKIP_KINDS:
+                continue
+            if DECISION_KINDS and kind not in DECISION_KINDS:
+                # Unknown kind — show it anyway in case it's a new decision
+                # type, but tag T?. Cheap forward-compat.
+                pass
+            rows.append({
+                "ts": ts,
+                "kind": kind,
+                "key": d.get("key", ""),
+                "ws": d.get("ws_ref") or "",
+                "td": d.get("td") or "",
+                "evidence": (d.get("evidence") or "")[:240],
+                "outcome": d.get("outcome", "verified"),
+                "pulse_idx": d.get("pulse_idx", 0),
+                "verdict": d.get("verdict") or {},
+            })
+
+    rows.sort(key=lambda r: r["ts"], reverse=True)
+    rows = rows[:FEED_LIMIT]
+
+    if not rows:
+        return f'<div class="empty">No decisions in the last {ACTIVITY_HOURS}h. (ledger: {LEDGER_PATH})</div>', 0
+
+    # Render
+    out = ['<div class="feed">']
+    for r in rows:
+        outcome_cls = {
+            "verified": "ok",
+            "failed": "fail",
+            "skipped": "skip",
+            "rejected": "fail",
+        }.get(r["outcome"], "ok")
+        outcome_glyph = {
+            "verified": "✓",
+            "failed": "✗",
+            "skipped": "⊘",
+            "rejected": "⊘",
+        }.get(r["outcome"], "·")
+        scope_parts = []
+        if r["ws"]:
+            scope_parts.append(r["ws"])
+        if r["td"]:
+            scope_parts.append(r["td"])
+        scope = " · ".join(scope_parts)
+        # The "decision" line is: kind on scope — outcome
+        # Below: evidence (the WHY)
+        applied = (r["verdict"] or {}).get("applied_lessons") or []
+        applied_html = ""
+        if applied:
+            applied_html = f' <span class="lesson">📖 {e(", ".join(applied))}</span>'
+        out.append(f"""
+<div class="row decision outcome-{outcome_cls}">
+  <span class="ts">{r['ts'].strftime('%H:%M:%S')}</span>
+  <span class="kind kind-{e(r['kind'])}">{e(r['kind'])}</span>
+  <span class="scope">{e(scope) or '—'}</span>
+  <span class="outcome-glyph">{outcome_glyph}</span>
+  <span class="evidence" title="{e(r['evidence'])}">{e(r['evidence'])}{applied_html}</span>
+  <span class="pulse">#p{r['pulse_idx']}</span>
 </div>""")
-    rows.append("</div>")
-    return "".join(rows), len(activity)
+    out.append("</div>")
+    return "".join(out), len(rows)
+
+
+# Back-compat: callers still reference render_activity
+render_activity = render_decisions
 
 
 _ERROR_PATTERNS = (
@@ -321,7 +350,7 @@ def render_decisions_tab(world):
 </div>
 
 <div class="section">
-  <h2>Recent activity <span class="count">{activity_n} · last {ACTIVITY_HOURS}h</span></h2>
+  <h2>Decisions <span class="count">{activity_n} · last {ACTIVITY_HOURS}h</span></h2>
   {activity_html}
 </div>
 """, awaiting_n
@@ -475,6 +504,27 @@ h1 { font-size:18px; margin:0 0 4px; font-weight:600; }
 .row.todo-row .todo-id { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; letter-spacing:0.04em; user-select:all; cursor:text; }
 .row.kind-ledger { background:rgba(95,217,122,0.04); }
 .row.kind-event { opacity:0.65; }
+/* Decision rows: ts · kind · scope · ✓ · evidence · #pulse */
+.row.decision { grid-template-columns:78px max-content max-content 16px minmax(0,1fr) 56px; gap:10px; }
+.row.decision .kind { color:var(--text); font-weight:600; font-size:11px; letter-spacing:0.03em; text-transform:uppercase; }
+.row.decision .kind-dispatch { color:#7ad9ff; }
+.row.decision .kind-status-flip { color:#5fd97a; }
+.row.decision .kind-cleanup { color:#5fd97a; }
+.row.decision .kind-close-workspace { color:#5fd97a; }
+.row.decision .kind-merge-pr { color:#a78bfa; }
+.row.decision .kind-nudge { color:#fbbf77; }
+.row.decision .kind-emit-card { color:var(--muted); }
+.row.decision .kind-purge-awaiting { color:var(--muted); }
+.row.decision .kind-judgement-rejected { color:#ff7a7a; }
+.row.decision .scope { color:var(--muted); font-family:var(--mono); font-size:11px; }
+.row.decision .outcome-glyph { font-size:13px; text-align:center; }
+.row.decision.outcome-ok .outcome-glyph { color:var(--green); }
+.row.decision.outcome-fail .outcome-glyph { color:var(--red); }
+.row.decision.outcome-skip .outcome-glyph { color:var(--muted); }
+.row.decision.outcome-fail { background:rgba(255,107,107,0.06); }
+.row.decision .evidence { color:var(--text); font-size:11px; line-height:1.45; word-break:break-word; opacity:0.85; }
+.row.decision .evidence .lesson { color:#a78bfa; font-size:10px; margin-left:6px; }
+.row.decision .pulse { color:var(--muted); font-size:10px; text-align:right; font-variant-numeric:tabular-nums; }
 .empty { color:var(--muted); font-style:italic; padding:16px 18px; text-align:center; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
 .buttons { margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; }
 .btn { background:var(--line); color:var(--text); border:none; border-radius:6px; padding:5px 12px; font:inherit; font-size:11px; cursor:pointer; letter-spacing:0.04em; }
