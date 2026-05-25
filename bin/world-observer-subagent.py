@@ -131,14 +131,27 @@ def find_transcript_for_ws(ws_ref: str, title: str) -> str | None:
     return max(paths, key=os.path.getmtime)
 
 
-def read_transcript_delta(path: str, since_epoch: int) -> tuple[list[dict], int]:
-    """Read JSONL turns with timestamp > since_epoch. Returns (turns, new_last_seen_ts)."""
+def read_transcript_delta(path: str, since_epoch: int) -> tuple[list[dict], int, dict]:
+    """Read JSONL turns with timestamp > since_epoch.
+
+    Returns (turns, new_last_seen_ts, signals) where signals is a dict
+    with three independent stranded-detection signals (extracted from
+    the WHOLE file, not just delta — STRANDED detection needs lifetime
+    counts not deltas).
+    """
+    signals = {
+        "n_user_turns": 0,
+        "n_assistant_turns": 0,
+        "n_tool_uses": 0,
+        "first_user_text": "",
+        "first_assistant_ts": 0,
+        "last_assistant_ts": 0,
+    }
     if not path or not os.path.exists(path):
-        return [], since_epoch
+        return [], since_epoch, signals
     new_turns = []
     last_ts = since_epoch
     try:
-        # For efficiency: read whole file (transcripts cap around a few MB)
         with open(path, "rb") as f:
             data = f.read().decode("utf-8", errors="replace")
         for line in data.splitlines():
@@ -149,14 +162,13 @@ def read_transcript_delta(path: str, since_epoch: int) -> tuple[list[dict], int]
             except Exception:
                 continue
             ts = iso_to_epoch(d.get("timestamp", ""))
-            if ts <= since_epoch:
-                continue
             msg = d.get("message")
             if not isinstance(msg, dict):
                 continue
             role = msg.get("role")
             content = msg.get("content")
             text = ""
+            tool_uses_in_turn = 0
             if isinstance(content, list):
                 for c in content:
                     if isinstance(c, dict):
@@ -164,16 +176,34 @@ def read_transcript_delta(path: str, since_epoch: int) -> tuple[list[dict], int]
                             text += c.get("text", "")
                         elif c.get("type") == "tool_use":
                             text += f"[tool_use:{c.get('name','')}]"
+                            tool_uses_in_turn += 1
                         elif c.get("type") == "tool_result":
                             text += "[tool_result]"
             elif isinstance(content, str):
                 text = content
+
+            # Lifetime signal counters (count BEFORE the since_epoch filter — these
+            # are about the session as a whole, not just the new delta).
+            if role == "user" and text.strip():
+                signals["n_user_turns"] += 1
+                if not signals["first_user_text"]:
+                    signals["first_user_text"] = text[:300]
+            elif role == "assistant":
+                signals["n_assistant_turns"] += 1
+                if not signals["first_assistant_ts"]:
+                    signals["first_assistant_ts"] = ts
+                signals["last_assistant_ts"] = max(signals["last_assistant_ts"], ts)
+                signals["n_tool_uses"] += tool_uses_in_turn
+
+            # Delta turns for the running summary
+            if ts <= since_epoch:
+                continue
             if role in ("user", "assistant") and text.strip():
                 new_turns.append({"ts": ts, "role": role, "text": text[:1500]})
                 last_ts = max(last_ts, ts)
     except Exception:
         pass
-    return new_turns, last_ts
+    return new_turns, last_ts, signals
 
 
 def load_summary(ws_ref: str) -> dict | None:
@@ -268,21 +298,51 @@ def build_summary_for_ws(ws: dict, pr_cache: dict) -> dict:
     prior = load_summary(ws_ref) or {}
     since = int(prior.get("last_seen_ts", 0))
     if not transcript:
-        # No transcript mapping (no claude session OR registry stale).
-        # Keep the prior classification if any; mark stale.
+        # No transcript mapping. cmux-registry didn't index a transcript for
+        # any of this workspace's panels. Two real situations:
+        #   (a) the workspace has no claude process at all (bare shell — eg.
+        #       a `pnpm dev` shell), OR
+        #   (b) claude was launched but the prompt was never delivered, so
+        #       claude is sitting idle waiting for input (the ws:81 case
+        #       from the cmux-saturation incident).
+        #
+        # Distinguishing (a) from (b) is hard from cmux state alone (the
+        # session-state JSON only marks `agent` for cmux-launched claudes,
+        # not for shells where someone typed `claude` by hand). We err on
+        # the side of recovery: any workspace whose title matches the
+        # Auto:* / W2A / W2B / P0-* / "td-NN ..." dispatch-naming convention
+        # should have had claude launched, so missing transcript = STRANDED.
+        # Workspaces titled like a manual session (not matching dispatch
+        # naming) get NO_TRANSCRIPT and are left alone.
+        DISPATCH_TITLE_RE = re.compile(
+            r"^(Auto:\s*|W\d[A-Z]?\s+|P\d-\d+\s+|sq-ws\d+|sq-w\d+|fix-|squirrel-)",
+            re.I,
+        )
+        is_dispatch_titled = bool(DISPATCH_TITLE_RE.match(title or "")) or "td-" in (title or "").lower()
+        if is_dispatch_titled:
+            cls = "STRANDED"
+            stranded_reason = "no-transcript-mapping"
+        else:
+            cls = "NO_TRANSCRIPT"
+            stranded_reason = None
+
         out = {
             **prior,
             "ws_ref": ws_ref,
             "title": title,
             "cwd": ws.get("cwd", ""),
             "transcript_path": None,
-            "classification": prior.get("classification") or "NO_TRANSCRIPT",
+            "classification": cls,
+            "stranded_reason": stranded_reason,
+            "signals": {"n_user_turns": 0, "n_assistant_turns": 0, "n_tool_uses": 0},
+            "transcript_age_sec": None,
+            "recovery_attempts": int(prior.get("recovery_attempts", 0)),
             "last_updated_ts": now(),
         }
         save_summary(ws_ref, out)
         return out
 
-    new_turns, new_last_ts = read_transcript_delta(transcript, since)
+    new_turns, new_last_ts, signals = read_transcript_delta(transcript, since)
     if not new_turns and (now() - prior.get("last_updated_ts", 0)) < SUMMARY_MAX_AGE_SEC:
         # Cached, fresh, no delta — return as-is.
         return prior
@@ -312,7 +372,50 @@ def build_summary_for_ws(ws: dict, pr_cache: dict) -> dict:
         d = gh_pr_state(pr, pr_cache)
         pr_states[str(pr)] = d.get("state", "UNKNOWN")
 
+    # === Stranded detection (3 transcript-grounded signals) ===
+    #
+    # A workspace is STRANDED when claude is up but no real work has happened.
+    # We check three independent signals, all derived from the JSONL transcript
+    # (no surface scraping):
+    #
+    #   Signal 1: at least one user turn (the prompt was delivered + submitted)
+    #   Signal 2: at least one assistant turn (the model produced output)
+    #   Signal 3: at least one tool_use OR very-recent assistant activity
+    #             (proves the model is actually doing something, not just a
+    #             one-shot text reply that never engaged the agent loop)
+    #
+    # Sub-reasons per failure mode:
+    NOW = now()
+    stranded_reason = None
+    SPAWN_GRACE_SEC = 90  # don't classify a fresh spawn as stranded
+    PROMPT_PATH_RE = re.compile(r"~?/?(?:Users/\w+/)?\.claude/spawn-prompts/")
+    looks_like_dispatched = bool(PROMPT_PATH_RE.search(signals.get("first_user_text", "") or ""))
+
+    # Age of the freshest transcript activity (epoch). For STRANDED detection
+    # we want "how long has the workspace been alive without making progress?"
+    # The transcript file's mtime is a reasonable proxy when no assistant turn
+    # has ever happened.
+    try:
+        transcript_mtime = int(os.path.getmtime(transcript))
+    except Exception:
+        transcript_mtime = NOW
+    transcript_age_sec = NOW - transcript_mtime
+    last_assistant_age_sec = NOW - signals["last_assistant_ts"] if signals["last_assistant_ts"] else None
+
+    if looks_like_dispatched or signals["n_user_turns"] > 0 or transcript_age_sec > SPAWN_GRACE_SEC:
+        if signals["n_user_turns"] == 0 and transcript_age_sec > SPAWN_GRACE_SEC:
+            stranded_reason = "no-user-turn"   # prompt was never delivered
+        elif signals["n_assistant_turns"] == 0 and signals["n_user_turns"] > 0 and transcript_age_sec > 300:
+            stranded_reason = "no-assistant-turn"  # model never started
+        elif (signals["n_tool_uses"] == 0 and signals["n_assistant_turns"] > 0
+              and last_assistant_age_sec is not None and last_assistant_age_sec > 1800):
+            # Model thunked once + did nothing for >30 min. Real "thinking but
+            # not acting" pattern (rare but observed).
+            stranded_reason = "no-tool-use-stale"
+
     classification = classify_from_summary(new_summary, last_assistant)
+    if stranded_reason:
+        classification = "STRANDED"
 
     out = {
         "ws_ref": ws_ref,
@@ -326,6 +429,10 @@ def build_summary_for_ws(ws: dict, pr_cache: dict) -> dict:
         "pr_refs": sorted(prior_prs),
         "pr_states": pr_states,
         "classification": classification,
+        "stranded_reason": stranded_reason,
+        "signals": signals,
+        "transcript_age_sec": transcript_age_sec,
+        "recovery_attempts": int(prior.get("recovery_attempts", 0)),
         "n_summary_updates": int(prior.get("n_summary_updates", 0)) + (1 if new_turns else 0),
         "last_updated_ts": now(),
     }
@@ -396,6 +503,68 @@ def aggregate_actions(ws_summaries: list[dict], total_count: int, todos: list[di
                 "alt_actions": ["Manually fix", "Close the workspace"],
                 "confidence": 0.85,
             })
+        elif cls == "STRANDED":
+            attempts = int(s.get("recovery_attempts", 0))
+            reason = s.get("stranded_reason", "unknown")
+            sigs = s.get("signals", {})
+            sig_summary = (
+                f"signals: n_user={sigs.get('n_user_turns',0)} "
+                f"n_assistant={sigs.get('n_assistant_turns',0)} "
+                f"n_tool_uses={sigs.get('n_tool_uses',0)} "
+                f"transcript_age={s.get('transcript_age_sec',0)}s"
+            )
+            if attempts < 3:
+                # Find the most recent prompt file in ~/.claude/spawn-prompts/
+                # for THIS workspace, by mtime. The first user turn (if any)
+                # gives us the prompt path; otherwise fall back to mtime-newest.
+                prompt_path = None
+                first_user = sigs.get("first_user_text", "") or ""
+                m = re.search(r"(/Users/\w+/\.claude/spawn-prompts/[^\s\"']+)", first_user)
+                if m:
+                    prompt_path = m.group(1)
+                else:
+                    # No-user-turn case — pick the freshest prompt file system-wide
+                    # that's older than the transcript file (i.e. was the intended
+                    # prompt for this spawn).
+                    spawn_dir = HOME / ".claude/spawn-prompts"
+                    if spawn_dir.exists():
+                        candidates = sorted(spawn_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+                        for p in candidates[:10]:
+                            if p.stat().st_mtime <= (now() - 30):  # at least 30s before now
+                                prompt_path = str(p)
+                                break
+                candidate_actions.append({
+                    "id": f"recover-stranded-{ws_ref}-attempt-{attempts+1}",
+                    "kind": "nudge",
+                    "summary": f"Recover stranded {ws_ref} (attempt {attempts+1}/3): {reason}",
+                    "reasoning": f"Workspace classified STRANDED. {sig_summary}. Re-paste prompt + Enter.",
+                    "params": {
+                        "ws_ref": ws_ref,
+                        "send_text": (
+                            f"Read {prompt_path} in full and execute every instruction in it."
+                            if prompt_path
+                            else "Continue."
+                        ),
+                        "send_enter": True,
+                        "increment_recovery_attempts": True,
+                    },
+                    "evidence": f"signals from JSONL transcript: {json.dumps(sigs)}",
+                })
+            else:
+                # 3 strikes — escalate to needs-you and stop trying.
+                draft_cards.append({
+                    "key": f"assistant:needs-you:{ws_ref}:dispatch-broken",
+                    "tier": "T2",
+                    "title": f"{ws_ref} dispatch broken — manual rescue needed",
+                    "detail": (
+                        f"Stranded for {attempts} consecutive recovery attempts. "
+                        f"Reason: {reason}. {sig_summary}. "
+                        f"Title: {s.get('title','')[:60]}"
+                    ),
+                    "touches": [{"type": "session", "ref": ws_ref, "name": s.get("title", "")[:50]}],
+                    "alt_actions": ["Manually paste prompt", "Close the workspace", "Investigate why claude isn't receiving input"],
+                    "confidence": 0.95,
+                })
 
     # Bucket B dispatch — TODOs with autoDispatch=true and no in-flight ws
     if not cap_hit:

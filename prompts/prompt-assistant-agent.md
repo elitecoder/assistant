@@ -572,7 +572,23 @@ VERDICT=$(echo "$SLICE" | python3 ~/.claude/bin/judgement-subagent.py)
 
 ### Step 4.6 — Execute approved actions
 
-For each candidate with `verdict=approve` or `verdict=modify` (after applying the modification), perform the action AND log it to `actions_taken[]`. Action implementations:
+For each candidate with `verdict=approve` or `verdict=modify` (after applying the modification), perform the action AND log it to `actions_taken[]` AND append it to the durable action ledger.
+
+```bash
+# After each action, in addition to actions_taken[]:
+~/.claude/bin/actions-ledger.py append \
+    --pulse-idx "$NEXT_PULSE_IDX" \
+    --key "<action-key>" \
+    --kind "<kind>" \
+    --ws-ref "<ws_ref-or-empty>" \
+    --td "<td-or-empty>" \
+    --evidence "<one-line>" \
+    --outcome "verified|failed|skipped|rejected"
+```
+
+The ledger lives at `~/.assistant/actions-ledger.jsonl` and is **append-only** (never overwritten by `assistant-state.json` rewrites). Use it to audit "what did the Assistant do during pulses N..M?" via `actions-ledger.py tail/grep`.
+
+Action implementations:
 
 | kind | implementation |
 |---|---|
@@ -581,11 +597,28 @@ For each candidate with `verdict=approve` or `verdict=modify` (after applying th
 | `cleanup` | `cmux send <ws_ref> cleanup` + Enter |
 | `close-workspace` | `cmux close-workspace --workspace <ws_ref>` |
 | `merge-pr` | `gh pr merge <PR> --auto --squash` (or invoke `/merge-when-ready` if a session is at hand) |
-| `nudge` | `cmux send <ws_ref> "<text>"` + Enter |
+| `nudge` | `cmux send <ws_ref> "<text>"` + Enter. **For `recover-stranded-*` candidates from the observer**, also increment `recovery_attempts` in the workspace's observer-summary file (the observer reads this on the next pulse to enforce the 3-strike escalation). |
 | `emit-card` | append to `awaiting_input[]` (no external action) |
 | `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` |
 
-For `reject` verdicts, log a `assistant:judgement-rejected:<id>` entry with `applied_lessons[]` so the audit trail names the rule.
+For `reject` verdicts, log a `assistant:judgement-rejected:<id>` entry with `applied_lessons[]` so the audit trail names the rule. Append to ledger with `--outcome rejected`.
+
+#### Stranded-recovery: how `recovery_attempts` works
+
+The observer subagent classifies a workspace as `STRANDED` when its JSONL transcript has too few signals (no user turn, or no assistant turn after >5min, or no tool_use after >30min — see observer code). For each STRANDED workspace, observer emits a `recover-stranded-<ws>-attempt-N` candidate with `kind=nudge`. After you execute the nudge:
+
+```bash
+# Increment the recovery counter so future pulses know we've tried
+python3 - <<PY
+import json, os
+p = os.path.expanduser(f"~/.assistant/observer-summaries/{ws_ref.replace(':','_')}.json")
+d = json.load(open(p))
+d["recovery_attempts"] = int(d.get("recovery_attempts", 0)) + 1
+open(p,"w").write(json.dumps(d, indent=2))
+PY
+```
+
+After 3 failed recoveries, the observer escalates to `assistant:needs-you:<ws>:dispatch-broken` and stops auto-recovering — manual rescue required.
 
 ### Step 5 — Write state
 Atomic write to `~/.claude/cache/assistant-state.json`:
