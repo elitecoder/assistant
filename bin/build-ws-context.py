@@ -15,7 +15,7 @@ Output: one JSON object on stdout containing:
     - workspace ref / title / cwd
     - transcript_path (resolved via cmux-registry, with title-marker fallback)
     - transcript_tail (turns since prior last_seen_ts, ≤30 turns ≤1500ch each)
-    - pr_data (gh pr view {state,title,body,reviewDecision,statusCheckRollup,files})
+    - pr_data (gh pr view {state,title,body,reviewDecision,mergedAt,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup,files})
     - prior_summary + prior_classification (running context)
     - is_protected (workspace:3/108/7 are off-limits)
     - assistant_policies_excerpt (verbatim from prompt)
@@ -218,7 +218,7 @@ def gh_pr_view(pr_num: int, cache: dict) -> dict:
         out = subprocess.check_output(
             ["gh", "pr", "view", str(pr_num),
              "--repo", "Adobe-Firefly/firefly-platform",
-             "--json", "state,title,body,reviewDecision,mergedAt,statusCheckRollup,files"],
+             "--json", "state,title,body,reviewDecision,mergedAt,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup,files"],
             text=True, timeout=10,
         )
         data = json.loads(out)
