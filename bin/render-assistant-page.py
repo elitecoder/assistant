@@ -147,7 +147,6 @@ def render_decisions(world):
     DECISION_KINDS = {
         "dispatch", "status-flip", "cleanup", "close-workspace",
         "merge-pr", "nudge", "emit-card", "purge-awaiting",
-        "judgement-rejected",
     }
     # Bookkeeping/internal kinds we explicitly DON'T show
     SKIP_KINDS = {"test", "heartbeat", "observer-write", "summary-update"}
@@ -515,7 +514,6 @@ h1 { font-size:18px; margin:0 0 4px; font-weight:600; }
 .row.decision .kind-nudge { color:#fbbf77; }
 .row.decision .kind-emit-card { color:var(--muted); }
 .row.decision .kind-purge-awaiting { color:var(--muted); }
-.row.decision .kind-judgement-rejected { color:#ff7a7a; }
 .row.decision .scope { color:var(--muted); font-family:var(--mono); font-size:11px; }
 .row.decision .outcome-glyph { font-size:13px; text-align:center; }
 .row.decision.outcome-ok .outcome-glyph { color:var(--green); }

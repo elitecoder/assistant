@@ -155,7 +155,7 @@ The pulse script reads this file to wake you next time. If you skip writing it, 
 
 ### Step 1 — Delegate observation to the world-observer subagent
 
-**ABSOLUTE RULE: do not read world.json, transcripts, or run `gh pr view` yourself.** All observation work runs in the world-observer subagent so your context stays small. Your job is orchestration: spawn observer → pass its candidate_actions to judgement → execute approved actions → persist state. The pulse-routine math is roughly:
+**ABSOLUTE RULE: do not read world.json, transcripts, or run `gh pr view` yourself.** All observation work runs in the world-observer subagent so your context stays small. Your job is orchestration: spawn observer → execute its `candidate_actions` directly → persist state. The pulse-routine math is roughly:
 
 ```
 your context per pulse ≈ heartbeat write + state-file write + ~2KB of subagent output summaries
@@ -550,43 +550,11 @@ For confidence ≥ 0.90 AND artifact checks passed, do it now, log to `actions_t
 
 **NEEDS_YOU** — agent emitted `[tool_use:AskUserQuestion]` OR text contains a substantive question for Mukul OR the work requires a product decision OR auth/API error needs manual refresh. Add to `awaiting_input[]` with the verbatim ask.
 
-### Step 4.5 — Judgement subagent (ABSOLUTE RULE before any non-trivial action)
+### Step 4.5 — Execute observer's proposed actions
 
-Take the `candidate_actions` array the observer subagent produced (Step 1) and pass it to the judgement subagent. The judgement subagent reads CLAUDE.md `## Lessons` and decides approve/reject/modify per candidate.
+The observer is itself a fresh per-workspace LLM call with CLAUDE.md auto-loaded and the `## Assistant policies` excerpt in its user message — it already applies lessons when proposing actions. Its `proposed_actions` are authorized to execute directly. There is no separate "judgement" pass; that was a duplicate-vote layer when observer was Python regex, and is dead weight now that observer is itself an LLM.
 
-```bash
-# Build a tight world slice — only TODOs + sessions referenced by candidates.
-SLICE=$(python3 -c "
-import json, os
-candidates = json.loads(os.environ['CANDIDATES'])
-world = json.load(open('/Users/mukuls/.claude/cache/world.json'))
-todos = json.load(open('/Users/mukuls/.claude/assistant-todo.json'))['items']
-ids_referenced = set()
-ws_refs_referenced = set()
-for c in candidates:
-    p = c.get('params', {}) or {}
-    if p.get('td'): ids_referenced.add(p['td'])
-    if p.get('ws_ref'): ws_refs_referenced.add(p['ws_ref'])
-slice_todos = [t for t in todos if t.get('id') in ids_referenced]
-slice_sessions = [s for s in world.get('live_sessions', []) if s.get('ws_ref') in ws_refs_referenced]
-print(json.dumps({'candidates': candidates, 'world_slice': {'todos': slice_todos, 'live_sessions': slice_sessions}}))
-")
-
-# ONE judgement call per pulse with ALL candidates batched.
-VERDICT=$(echo "$SLICE" | python3 ~/.claude/bin/judgement-subagent.py)
-```
-
-**Hard rules:**
-
-- **One subagent call per pulse** with ALL candidates batched. Cross-action consistency comes free.
-- **`lessons_read: 0`** = subagent failed to read CLAUDE.md. Treat verdict as untrusted; emit `assistant:judgement-broken` card and skip action this pulse.
-- **`reject` verdicts MUST be honored.** Lessons are constraints. If a rejection looks wrong, surface a card; do not act.
-- **`modify` verdicts replace your params.** Apply the modification before executing.
-- **Empty candidates** = no judgement call needed. Just persist `draft_awaiting_cards` from observer and end the pulse.
-
-### Step 4.6 — Execute approved actions
-
-For each candidate with `verdict=approve` or `verdict=modify` (after applying the modification), perform the action AND log it to `actions_taken[]` AND append it to the durable action ledger.
+For each `candidate_actions` entry from the observer report, perform the action AND log it to `actions_taken[]` AND append it to the durable action ledger.
 
 ```bash
 # After each action, in addition to actions_taken[]:
@@ -615,7 +583,7 @@ Action implementations:
 | `emit-card` | append to `awaiting_input[]` (no external action) |
 | `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` |
 
-For `reject` verdicts, log a `assistant:judgement-rejected:<id>` entry with `applied_lessons[]` so the audit trail names the rule. Append to ledger with `--outcome rejected`.
+If executing an action fails (cmux RPC error, gh failure, etc.), log it to the ledger with `--outcome failed` so the audit trail captures the gap.
 
 #### Stranded-recovery: how `recovery_attempts` works
 

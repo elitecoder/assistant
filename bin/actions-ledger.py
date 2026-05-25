@@ -14,7 +14,7 @@ Format:
      "td": "td-NNN" | null,
      "evidence": "...",
      "outcome": "verified|failed|skipped",
-     "verdict": {applied_lessons, reasoning}     # if from judgement subagent
+     "verdict": {applied_lessons, reasoning}     # optional, observer-emitted
     }
 
 Path: ~/.assistant/actions-ledger.jsonl
@@ -143,7 +143,7 @@ def main() -> int:
     p_append.add_argument("--td", default=None)
     p_append.add_argument("--evidence", default="")
     p_append.add_argument("--outcome", choices=["verified", "failed", "skipped", "rejected"], default="verified")
-    p_append.add_argument("--verdict", default=None, help="JSON-encoded judgement-subagent verdict")
+    p_append.add_argument("--verdict", default=None, help="JSON-encoded observer verdict (optional)")
     p_append.set_defaults(func=cmd_append)
 
     p_tail = sub.add_parser("tail", help="show last N entries")

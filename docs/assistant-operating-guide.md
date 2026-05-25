@@ -240,7 +240,7 @@ The line is sharp: **mechanical and reversible → do it. Substantive and lossy 
 
 ### Lessons — rules that accumulate
 
-**Where they live:** the `## Lessons` section of `~/.claude/CLAUDE.md`. CLAUDE.md is auto-loaded by Claude Code into every session, so any agent (this Assistant, an ad-hoc session, the judgement subagent) sees the rules without extra wiring. No JSON sidecar, no index, no symlinks. The repo doesn't track lessons.
+**Where they live:** the `## Lessons` section of `~/.claude/CLAUDE.md`. CLAUDE.md is auto-loaded by Claude Code into every session, so any agent (this Assistant, an ad-hoc session, the per-workspace observer subagents) sees the rules without extra wiring. No JSON sidecar, no index, no symlinks. The repo doesn't track lessons.
 
 **Block format** — one per rule:
 
@@ -251,7 +251,7 @@ The line is sharp: **mechanical and reversible → do it. Substantive and lossy 
 
 A rule is a rule. There is no "why" field — git history of CLAUDE.md is the audit trail. There is no pin/use-count/state machine. Remove a block when it's stale; edit when it's wrong.
 
-**Before any non-trivial proposal or auto-action:** the Assistant delegates judgement to a fresh **judgement subagent** (`bin/judgement-subagent.py`). The subagent's user message includes the `## Lessons` section verbatim plus the candidate-action batch + a tight world slice. Its verdict is the gate — the main pulse only acts on approved verdicts.
+**How rules get applied:** the per-workspace observer subagent (`bin/world-observer-subagent.py`) is itself a fresh LLM call with CLAUDE.md auto-loaded and the `## Assistant policies` excerpt from the prompt in its user message. It applies lessons inline when proposing actions for each workspace. The main pulse executes the observer's `proposed_actions` directly — there is no separate judgement-vote layer (that was duplicate cost when observer was Python regex; now that observer is itself an LLM, the second vote was redundant).
 
 **When the user corrects you:** Write a rule **before** responding. Correction-signal tokens to watch for: `no`, `don't`, `stop`, `wrong`, `that's not`, `I told you`, `we discussed`, `you keep`, `again`, `damn`, `actually`.
 

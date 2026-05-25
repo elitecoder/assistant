@@ -515,7 +515,7 @@ def merge_per_ws_results(results: list[dict]) -> dict:
         classification_counts[cls] = classification_counts.get(cls, 0) + 1
         for action in r.get("proposed_actions") or []:
             # Stamp ws_ref + classification onto each action so the main
-            # pulse + judgement subagent know the source ws.
+            # pulse knows the source ws (for ledger entries and execution).
             params = dict(action.get("params") or {})
             if "ws_ref" not in params:
                 params["ws_ref"] = r.get("ws_ref")

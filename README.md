@@ -16,7 +16,7 @@ The dispatcher itself (this Claude session) reads `MEMORY.md`, `docs/assistant-o
 
 ```
 assistant/
-├── bin/                   # All five daemons + curator CLI + judgement subagent
+├── bin/                   # All five daemons + curator CLI + world-observer subagent
 ├── prompts/               # Assistant agent prompt (the policy spec)
 ├── skills/                # /todo, /cleanup, /cmux, /spawn-claude-workspace
 ├── evals/                 # Regression tests for Assistant policy decisions
@@ -160,7 +160,7 @@ Lessons are rules. They live inside `~/.claude/CLAUDE.md` under a `## Lessons` h
 **<one-line trigger>** <rule body, one paragraph>
 ```
 
-CLAUDE.md is auto-loaded by Claude Code into every session, so any agent — this Assistant, an ad-hoc claude session, or the judgement subagent — sees these rules with no extra wiring. The repo doesn't track lessons; each install grows its own.
+CLAUDE.md is auto-loaded by Claude Code into every session, so any agent — this Assistant, an ad-hoc claude session, or the per-workspace observer subagents — sees these rules with no extra wiring. The repo doesn't track lessons; each install grows its own.
 
 Write a new lesson:
 
@@ -173,4 +173,4 @@ Write a new lesson:
 
 Other subcommands: `list`, `rm <slug>`, `trim` (opens CLAUDE.md in `$EDITOR`).
 
-The dispatcher delegates non-trivial decisions to a fresh **judgement subagent** (`bin/judgement-subagent.py`) that re-reads the `## Lessons` section every pulse — so rules stay at the top of attention rather than buried in pulse history.
+The dispatcher delegates observation + decisioning to a fresh **per-workspace observer subagent** (`bin/world-observer-subagent.py`) that fans out one Sonnet call per workspace in parallel. Each per-ws call has CLAUDE.md auto-loaded (lessons + global rules) plus the `## Assistant policies` excerpt from the prompt — so rules stay at the top of attention rather than buried in pulse history. The observer's `proposed_actions` are authorized to execute directly; there is no separate judgement pass.

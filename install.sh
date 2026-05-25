@@ -236,7 +236,7 @@ fi
 
 # Lessons live inside ~/.claude/CLAUDE.md as a `## Lessons` section. CLAUDE.md
 # is officially auto-loaded by Claude Code into every session, so any agent
-# (this Assistant, an ad-hoc claude session, the judgement subagent) sees the
+# (this Assistant, an ad-hoc claude session, the per-ws observer subagents) sees the
 # rules without explicit injection. Each user maintains their own. The
 # curator at bin/assistant-curator.py reads/writes that section.
 #
