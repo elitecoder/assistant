@@ -183,51 +183,43 @@ items = data if isinstance(data, list) else data.get("workspaces", [])
 print(json.dumps([{"ref": w["ref"], "title": (w.get("title") or "").strip(), "cwd": w.get("current_directory") or ""} for w in items if w.get("ref")]))
 PY
 
-# Pick which to re-classify: any ws with new JSONL bytes since prior
-# last_seen_ts, OR no prior summary at all, OR prior summary >30min old.
+# Pick the 5 oldest-classified workspaces (LRU). Brand-new ws (no summary)
+# get last_updated_ts=0 and naturally bubble to the front. The remaining
+# workspaces keep their cached verdicts unchanged.
 python3 - <<'PY' > /tmp/ws-todo-$$.json
-import json, os, time, glob
+import json, os
 ws_list = json.load(open("/tmp/ws-list-$$.json".replace("$$", str(os.getpid()))))
 HOME = os.path.expanduser("~")
 SUMM_DIR = os.path.join(HOME, ".assistant/observer-summaries")
-todo = []
-reuse = []
-NOW = int(time.time())
+ranked = []
 for ws in ws_list:
     sf = os.path.join(SUMM_DIR, ws["ref"].replace(":","_") + ".json")
     if not os.path.exists(sf):
-        todo.append(ws); continue
-    prior = json.load(open(sf))
-    last_seen = int(prior.get("last_seen_ts", 0))
-    last_updated = int(prior.get("last_updated_ts", 0))
-    # Find a transcript path (any) under this ws's project dir; cheaper to
-    # check mtime than to actually read it.
-    cwd = ws.get("cwd","") or ""
-    slug = cwd.replace("/","-")
-    pdir = os.path.join(HOME, ".claude/projects", slug)
-    delta = False
-    if os.path.isdir(pdir):
-        for jsonl in glob.glob(os.path.join(pdir, "*.jsonl")):
-            if int(os.path.getmtime(jsonl)) > last_seen:
-                delta = True; break
-    stale = (NOW - last_updated) > 1800
-    if delta or stale:
-        todo.append(ws)
-    else:
-        reuse.append(ws)
-print(json.dumps({"to_reclassify": todo, "reuse_cached": [r["ref"] for r in reuse]}))
+        ranked.append((0, ws))
+        continue
+    try:
+        prior = json.load(open(sf))
+        ranked.append((int(prior.get("last_updated_ts", 0)), ws))
+    except Exception:
+        ranked.append((0, ws))
+ranked.sort(key=lambda x: x[0])  # oldest first
+todo = [ws for _, ws in ranked[:5]]
+reuse = [ws["ref"] for _, ws in ranked[5:]]
+print(json.dumps({"to_reclassify": todo, "reuse_cached": reuse}))
 PY
 
 TODO_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ws-todo-$$.json'))['to_reclassify']))")
 TOTAL_WS=$(python3 -c "import json; print(len(json.load(open('/tmp/ws-list-$$.json'))))")
-echo "Pulse $NEXT_PULSE_IDX: total=$TOTAL_WS, to_reclassify=$TODO_COUNT, reuse=$(($TOTAL_WS - $TODO_COUNT))"
+echo "Pulse $NEXT_PULSE_IDX: total=$TOTAL_WS, picking 5 oldest (LRU), reuse=$(($TOTAL_WS - $TODO_COUNT))"
 ```
 
-#### Step 1b — Fan out Agent calls (cap 8 in flight)
+**Why LRU and not delta-driven**: at 30+ ws every 2 minutes, full delta-detection saturated Bedrock and produced timeouts. Round-robin 5/pulse is steady (~10s of Agent work per pulse) and every workspace is revisited within `(N/5) × 2min` — at 30 ws that's 12 minutes, at 50 ws that's 20. The cached verdicts for the other 25 still drive actions every pulse; we just don't refresh them every cycle.
 
-For each ws in `to_reclassify`, build its context payload via `bin/build-ws-context.py`, then invoke an Agent tool call. **Cap parallelism at 8 in-flight Agents.** If `TODO_COUNT > 8`, fan out 8 in your first message, wait for them to return, fan out the next 8, etc. Round-robin until done.
+#### Step 1b — Fan out Agent calls (single message, up to 5 in parallel)
 
-For each batch (up to 8 ws):
+For each ws in `to_reclassify` (≤5), build its context payload via `bin/build-ws-context.py`, then invoke an Agent tool call. **Send all up-to-5 Agent tool calls in ONE message** — the harness runs them concurrently. No round-robin within a pulse: 5 is the cap, not the budget.
+
+For the batch (up to 5 ws):
 
 1. For each ws in the batch, run:
 
