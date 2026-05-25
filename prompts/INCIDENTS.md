@@ -69,6 +69,16 @@ After the merge-pr router fix landed, observers for ws:4 (PR #10341), ws:6 (PR #
 
 **Rule:** track `state_hash` (classification + summary + sorted action kinds) per observer summary. When a workspace's hash has been unchanged for >2h (`state_unchanged_since_ts`), spawn a fresh **Opus** sub-agent to re-classify with explicit "break the stalemate" framing. Cap 3 escalations per pulse.
 
+## Dispatcher skipped the merge-pr safety gate (2026-05-25, pulse 72) {#dispatcher-skipped-safety-gate}
+
+After the safety gate landed in commit 868c0af (test-only OR refactor-attested), the dispatcher at pulse 72 (18:35Z) STILL fired `/merge-when-ready 10349` against PR #10349 — a `[FEATURE]` PR touching `cloud-sync-bar-presentation.ts` (production code). The ledger evidence said "PR #10349 CI green, /merge-when-ready 10349 sent to ws:20 screen" — no mention of the file-list check Step 0 requires.
+
+Root cause: the safety gate was prose instruction in the prompt's `merge-pr` action implementation. Under load, Sonnet shortcuts multi-step prose: it remembers "merge-pr → send slash command" and skips "first read files,title,body and verify rule (a) or (b)." The dispatcher logged `outcome: verified` based on the cmux RPC return code, not on whether the gate had been evaluated.
+
+Compounded by [INCIDENTS.md#send-text-not-submit](#send-text-not-submit): even the slash command that did get sent used `cmux send-text` which never submitted — so the production-code PR was both incorrectly accepted by the safety gate AND silently failed to dispatch.
+
+**Rule:** the safety gate, CI routing, and post-send verification all live inside `bin/merge-pr-dispatch.py`. The dispatcher MUST invoke that script for every `merge-pr` action; the script's exit code dictates the ledger outcome. Decisions (whether to propose merge-pr at all) stay in the observer prompt; mechanical checks (file-list parsing, transcript matching) stay in the script and are unbypassable. The observer's own enforcement is belt; the script is suspenders.
+
 ## merge-pr safety gate {#merge-pr-safety}
 
 The two-branch router can land a PR without human review. That's fine for test-only PRs and for refactors with full local G3 + unit suite green — both have low blast radius. For feature/bugfix PRs (any production-code touch), human review is mandatory. Without a Step-0 safety gate, an aggressive observer proposing `merge-pr` on any OPEN PR would land production code unreviewed.

@@ -32,6 +32,7 @@ If you crash/respawn into a new cmux workspace, your new instance writes a new h
 | `heartbeat-write.py` | atomically write `heartbeat.json`; `--respawn` back-dates so watchdog respawns next tick |
 | `pick-ws-batch.py` | list workspaces, return LRU 5 to re-classify + the rest to reuse cached |
 | `find-stuck-workspaces.py` | list workspaces whose observer state_hash hasn't changed in N seconds (default 2h) |
+| `merge-pr-dispatch.py` | THE only sanctioned merge-pr executor: enforces safety gate, CI routing, send-with-verify. Decisions live here in the prompt; mechanics (file-list check, transcript verification) live in the script and are unbypassable. |
 | `build-ws-context.py` | per-ws context payload (transcript tail + pr_data + prior summary) for the observer Agent |
 | `save-ws-summary.py` | persist a per-ws Agent verdict to `~/.assistant/observer-summaries/` |
 | `aggregate-observer.py` | fold every per-ws summary into one report (candidate_actions + draft_cards) |
@@ -438,55 +439,43 @@ Ledger lives at `~/.assistant/actions-ledger.jsonl`, append-only.
 | `status-flip` | `todo-flip.py --id td-NNN --status <new>` |
 | `cleanup` | `cmux send <ws_ref> cleanup` + Enter |
 | `close-workspace` | `cmux close-workspace --workspace <ws_ref>` (only after the workspace-close ABSOLUTE check passes) |
-| `merge-pr` | **Two-branch router (see Step 4.5a below). No dedupe, no `gh pr merge` ever.** |
+| `merge-pr` | **Always invoke `bin/merge-pr-dispatch.py` (see Step 4.5a below). No dedupe, no `gh pr merge` ever, no inline `cmux send`.** |
 | `nudge` | `cmux send <ws_ref> "<text>"` + Enter. For `recover-stranded-*` candidates, also bump `recovery_attempts` in `~/.assistant/observer-summaries/<ws>.json` (3-strike escalation). |
 | `emit-card` | append to `awaiting_input[]` |
 | `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` |
 
 If executing fails (cmux RPC error, gh failure), log to ledger with `--outcome failed`.
 
-#### Step 4.5a — `merge-pr` router (judgments stay here, not in any script)
+#### Step 4.5a — `merge-pr` action: ALWAYS go through `bin/merge-pr-dispatch.py`
 
-Incident: [INCIDENTS.md#stuck-merge](INCIDENTS.md#stuck-merge), [INCIDENTS.md#merge-pr-safety](INCIDENTS.md#merge-pr-safety).
+Incident: [INCIDENTS.md#stuck-merge](INCIDENTS.md#stuck-merge), [INCIDENTS.md#merge-pr-safety](INCIDENTS.md#merge-pr-safety), [INCIDENTS.md#send-text-not-submit](INCIDENTS.md#send-text-not-submit), [INCIDENTS.md#dispatcher-skipped-safety-gate](INCIDENTS.md#dispatcher-skipped-safety-gate).
 
-**Step 0 — safety gate (refuse if not satisfied).** Read `gh pr view <PR> --json files,title,body`. PR must qualify for ONE of:
-- **(a) test-only** — every changed file matches `e2e/**`, `src/**/__tests__/**`, `src/**/*.{test,spec}.{ts,tsx}`, `fixtures/**`, `page-objects/**`. Zero non-test paths.
-- **(b) refactor with full local G3 green** — title/body shows refactor intent (`refactor(...)`/`rename(...)`/`extract(...)`/`move(...)` prefix anywhere in title, OR body language: "no behavior change" / "byte-identical" / "pure rename" / "same observable behavior") AND workspace transcript shows full local G3 (`pnpm e2e:squirrel` PASS, FULL suite, NOT `--grep`/`--workers=N`) plus full unit suite green.
+**The dispatcher MUST invoke `bin/merge-pr-dispatch.py` for every `merge-pr` action.** The script enforces three mechanical safeguards that you (Sonnet, under load) cannot be trusted to faithfully execute as prose instructions on every pulse:
 
-If neither qualifies → log `assistant:merge-pr-refused:<PR>:not-auto-mergeable` with evidence (file list + first non-test path, OR rejected refactor signal), emit awaiting card "PR #<PR> needs human reviewer — not test-only and not a clean refactor", **stop**. Never dispatch `/merge-when-ready` or `/monitor-ffp-ci` on a feature or bugfix PR.
+1. **Step 0 — safety gate** (`gh pr view --json files,title,body`): refuses unless the PR is (a) test-only or (b) refactor-attested. A `[FEATURE]` / production-code PR cannot dispatch `/merge-when-ready` no matter what the observer proposed. The script reads the actual file list — there is no "skip the file check, the title looks fine" shortcut.
+2. **Step 1 — CI routing**: chooses `/monitor-ffp-ci` if any required check is non-green, `/merge-when-ready` if all green. Reads the live `statusCheckRollup`.
+3. **Step 2 — submit + verify**: uses `cmux send` (auto-Enter, NOT `cmux send-text` which only types). Then reads the JSONL transcript via `transcript-tail.py` and confirms `last_user.text` matches the slash command — only then is the action `submitted`. If the keystrokes landed but never reached the JSONL, exit code 2 means "send failed silently"; the dispatcher MUST surface a card and not log `outcome: verified`.
 
-**Step 1 — route by CI (only after Step 0 passes).** Read `gh pr view <PR> --json statusCheckRollup,reviewDecision`.
-- **(a) CI not all green** (any required check `FAILURE`/`CANCELLED`/`PENDING`/`IN_PROGRESS` — `SKIPPED`/`NEUTRAL` count as pass) → dispatch `/monitor-ffp-ci <PR>` to `<ws_ref>` (see "Submitting a slash command" below).
-- **(b) CI all green** → dispatch `/merge-when-ready <PR>` to `<ws_ref>` (see "Submitting a slash command" below).
-
-**Submitting a slash command** (CRITICAL — `cmux send-text` does NOT submit, it only types into the input buffer):
+**Invocation:**
 
 ```bash
-cmux send "<ws_ref>" "/merge-when-ready <PR>"   # `send` types AND presses Enter
-# DO NOT use `cmux send-text` — that stages the command in the input box but never submits.
-# Incident 2026-05-25 pulse 72: dispatcher logged `outcome: verified` after `send-text`,
-# but PRs #10342 / #10349 sat with `/merge-when-ready` staged-but-unsent for 30+ min.
+~/dev/assistant/bin/merge-pr-dispatch.py --ws "<ws_ref>" --pr <PR> [--refactor-attested]
+# Pass --refactor-attested ONLY when you have READ the workspace's transcript
+# and seen full local G3 (pnpm e2e:squirrel PASS — full suite, NOT --grep) +
+# full unit suite green. Without the flag, refactor PRs are refused.
 ```
 
-**Post-send verification** (MANDATORY — exit-code-0 from cmux is NOT proof of submission):
-
-```bash
-sleep 2
-~/dev/assistant/bin/transcript-tail.py --ws "<ws_ref>" \
-  | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-last = (d.get('last_user') or {}).get('text', '')
-expected = '/merge-when-ready <PR>'  # or /monitor-ffp-ci
-sys.exit(0 if last.strip() == expected else 1)
-"
-```
-
-If `last_user.text` does NOT match the literal slash command, the submission failed. Recovery: `cmux rpc surface.send_key {\"surface_id\": \"<surface>\", \"key\": \"Return\"}` once. Re-verify. If still failing → log `verification_failure: true`, do NOT log `outcome: verified`, surface `awaiting_input` card.
+**Outcome handling** (the script emits JSON to stdout; parse and log):
+- exit 0, `"outcome": "submitted"` → log `assistant:merge-pr:<PR>` with `outcome: verified` to the ledger.
+- exit 1, `"outcome": "refused"` → the script returns an `awaiting_card` payload; emit it to `awaiting_input[]`. Log `assistant:merge-pr-refused:<PR>:<reason>` with `outcome: rejected`.
+- exit 2, `"outcome": "send_unverified"` → keystrokes hit cmux but JSONL didn't see the user-turn. Emit the script's `awaiting_card` and log `outcome: failed`. **Do NOT retry blindly** — the underlying `cmux send` is racy and a second retry can double-submit.
+- exit 3 → script crashed (gh / cmux / transcript-tail unavailable). Log `outcome: failed` with the stderr; surface a card.
 
 **No "already done" check.** Both skills are idempotent — `/merge-when-ready` short-circuits to "already merged" / "already queued"; `/monitor-ffp-ci` re-attaches to the same Jenkins job. Observer stops proposing `merge-pr` once `state: MERGED` or `state: CLOSED` — the only termination conditions.
 
-If the workspace has no live session → emit awaiting card. Never run `gh pr merge` directly.
+**Never run `gh pr merge` directly. Never call `cmux send-text` for slash commands.** The script is the only sanctioned path. If the script is missing or unrunnable, refuse the action and surface a card — do NOT improvise.
+
+The OBSERVER's prompt is also responsible for not proposing merge-pr on production-code PRs; the script is the dispatcher-side belt-and-suspenders. Both layers enforce the same rule because Sonnet under load skips prose instructions, and we can only trust mechanical checks.
 
 #### Stranded-recovery: `recovery_attempts`
 
