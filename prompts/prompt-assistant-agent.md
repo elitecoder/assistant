@@ -153,9 +153,71 @@ This is THE source of truth for "where Assistant lives now." Never let a pulse e
 
 The pulse script reads this file to wake you next time. If you skip writing it, it falls back to detecting staleness and respawning a fresh Assistant workspace — which is recoverable but disruptive.
 
-### Step 1 — Read the world
-- `cat ~/.claude/cache/world.json` (single source of truth, refreshed every 30s by world-scanner).
-- If the file is missing or older than 5 min, abort the pulse cleanly: write a state file with `_error: "stale world.json"` and end your turn.
+### Step 1 — Delegate observation to the world-observer subagent
+
+**ABSOLUTE RULE: do not read world.json, transcripts, or run `gh pr view` yourself.** All observation work runs in the world-observer subagent so your context stays small. Your job is orchestration: spawn observer → pass its candidate_actions to judgement → execute approved actions → persist state. The pulse-routine math is roughly:
+
+```
+your context per pulse ≈ heartbeat write + state-file write + ~2KB of subagent output summaries
+                       ≈ 2-5KB
+
+WITHOUT this rule: ~30-60KB/pulse → context-rot at pulse 200 (2026-05-24 incident)
+WITH this rule:    bounded → respawn-trigger at pulse 150 from Step 0c is the only ceiling
+```
+
+Run the observer:
+
+```bash
+PRIOR_PULSE_IDX=$(python3 -c "
+import json, os
+p = os.path.expanduser('~/.claude/cache/assistant-state.json')
+try: print(json.load(open(p)).get('_meta',{}).get('pulse_idx', 0))
+except Exception: print(0)
+")
+NEXT_PULSE_IDX=$((PRIOR_PULSE_IDX + 1))
+
+OBSERVER_OUT=$(python3 ~/.claude/bin/world-observer-subagent.py --pulse-idx "$NEXT_PULSE_IDX")
+```
+
+Parse the result. If `_error` is set, write a heartbeat with `status: "observer-failed"` and end your turn — DO NOT try to do the observation yourself, that's exactly the path that bloats context.
+
+```bash
+if echo "$OBSERVER_OUT" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('_error') else 1)"; then
+    # Observer failed — write heartbeat noting the failure and end turn
+    # The next pulse will retry. Multiple failures in a row = surface card.
+    LOG_PATH=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('_log',''))")
+    # ... write heartbeat with status=observer-failed and _error reason ...
+    exit 0
+fi
+```
+
+Otherwise extract `candidate_actions` and `draft_awaiting_cards` for downstream steps:
+
+```bash
+CANDIDATES=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('candidate_actions', [])))")
+DRAFT_CARDS=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('draft_awaiting_cards', [])))")
+TOTAL_WS=$(echo "$OBSERVER_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('_meta',{}).get('total_workspace_count', 0))")
+```
+
+### Step 1.5 — Workspace-count cap (ABSOLUTE)
+
+**If `total_workspace_count >= 30`, the observer MUST have already filtered out all `kind=dispatch` candidates.** Cross-check: if any `dispatch` candidate slipped through with TOTAL_WS >= 30, drop them all here and replace with a single `assistant:dispatch-cap-hit:total-30` awaiting card. Rationale: parallel cognitive load + RAM. The user named this rule out loud 2026-05-24.
+
+```bash
+if [ "$TOTAL_WS" -ge 30 ]; then
+    CANDIDATES=$(echo "$CANDIDATES" | python3 -c "
+import json, sys
+arr = json.load(sys.stdin)
+print(json.dumps([a for a in arr if a.get('kind') != 'dispatch']))
+")
+fi
+```
+
+(The active-session sub-cap of 5 from earlier — `dispatch-cap-hit:N-active` — still applies inside the observer's logic. The total-30 cap is a hard outer bound regardless of how many are "active.")
+
+## Detailed observation rules (the world-observer subagent enforces these on your behalf)
+
+> **Reading note:** Steps 2 / 2.5 / 3 / 3.5 / 4 below describe what gets done DURING the observer subagent's pulse, not what the main pulse executes. Skim them once on boot so you know what behavior to expect from the observer's `candidate_actions`. **Do not run these steps yourself in the main pulse** — that defeats the context-rot fix. They are the spec the observer is held to.
 
 ### Step 2 — Verify your previous actions
 - Read `~/.claude/cache/assistant-state.json` if it exists. Look at `actions_taken[]` from the last 10 minutes.
@@ -476,101 +538,54 @@ For confidence ≥ 0.90 AND artifact checks passed, do it now, log to `actions_t
 
 ### Step 4.5 — Judgement subagent (ABSOLUTE RULE before any non-trivial action)
 
-Before you act on any **non-trivial** candidate from the steps above, send the
-batch to the judgement subagent. Lessons live inside `~/.claude/CLAUDE.md` under
-a `## Lessons` heading; that file auto-loads into every Claude Code session, so
-the subagent gets the rules for free. The point of using a subagent is FRESH
-CONTEXT — each pulse the rules are at the top of attention rather than buried
-in your accumulating pulse history.
-
-**Non-trivial candidates** are anything in this list:
-- Spawning a workspace (Bucket A re-dispatch, Bucket B initial dispatch)
-- Flipping a TODO status (`open → done|deferred|blocked|in-progress`)
-- Sending `cleanup` / `close-workspace` to a workspace
-- Emitting an `assistant:nab-review:*` card
-- Sending `cmux send` text to any workspace whose `last_turn_age_sec < 600`
-- Closing a workspace owned by another agent
-
-Trivial candidates skip the subagent: drain inbox, write heartbeat, write state
-file, regenerate dashboard, awaiting-card emits whose only purpose is "tell
-Mukul this is happening".
-
-**Procedure:**
+Take the `candidate_actions` array the observer subagent produced (Step 1) and pass it to the judgement subagent. The judgement subagent reads CLAUDE.md `## Lessons` and decides approve/reject/modify per candidate.
 
 ```bash
-# 1. Build the candidate batch — ONE entry per non-trivial action you're
-#    about to take this pulse. Each entry needs: id, kind, summary, reasoning.
-python3 - <<'PY' > /tmp/judgement-input-$$.json
-import json
-candidates = [
-    {
-        "id": "td-NNN",
-        "kind": "dispatch",         # or "mark-todo-status", "cleanup", "nab-review", ...
-        "summary": "<one sentence>",
-        "reasoning": "<why you want to do this>",
-        "params": {"model": "opus|sonnet", "ws_ref_to_close": "...", ...},
-    },
-    # ... more candidates
-]
+# Build a tight world slice — only TODOs + sessions referenced by candidates.
+SLICE=$(python3 -c "
+import json, os
+candidates = json.loads(os.environ['CANDIDATES'])
+world = json.load(open('/Users/mukuls/.claude/cache/world.json'))
+todos = json.load(open('/Users/mukuls/.claude/assistant-todo.json'))['items']
+ids_referenced = set()
+ws_refs_referenced = set()
+for c in candidates:
+    p = c.get('params', {}) or {}
+    if p.get('td'): ids_referenced.add(p['td'])
+    if p.get('ws_ref'): ws_refs_referenced.add(p['ws_ref'])
+slice_todos = [t for t in todos if t.get('id') in ids_referenced]
+slice_sessions = [s for s in world.get('live_sessions', []) if s.get('ws_ref') in ws_refs_referenced]
+print(json.dumps({'candidates': candidates, 'world_slice': {'todos': slice_todos, 'live_sessions': slice_sessions}}))
+")
 
-# World slice: only include TODOs + live_sessions referenced by candidates.
-# Smaller is better — the subagent doesn't need the full world.json.
-world = json.load(open("/Users/mukuls/.claude/cache/world.json"))
-todos = json.load(open("/Users/mukuls/.claude/assistant-todo.json"))["items"]
-
-cand_ids = {c["id"] for c in candidates}
-slice_todos = [t for t in todos if t["id"] in cand_ids]
-slice_sessions = [
-    s for s in world.get("live_sessions", [])
-    if any(c.get("params", {}).get("ws_ref_to_close") == s.get("ws_ref")
-           or s.get("ws_ref") == t.get("dispatchedWs")
-           for c in candidates for t in slice_todos)
-]
-json.dump({"candidates": candidates,
-           "world_slice": {"todos": slice_todos, "live_sessions": slice_sessions}},
-          __import__("sys").stdout, indent=2)
-PY
-
-# 2. Call the subagent. ONE call per pulse, even if there are 10 candidates.
-VERDICT=$(python3 ~/.claude/bin/judgement-subagent.py \
-    --input-file /tmp/judgement-input-$$.json)
-
-# 3. Parse the verdict map and act ONLY on approved candidates.
-#    For 'modify' verdicts, apply the modification before acting.
-#    For 'reject' verdicts, log an actions_taken[] entry with key
-#    `assistant:judgement-rejected:<candidate-id>` and the cited lesson.
-echo "$VERDICT" | python3 -c "
-import json, sys
-v = json.load(sys.stdin)
-for cid, verdict in v.get('verdicts', {}).items():
-    print(f'{cid}: {verdict[\"verdict\"]} — applied={verdict.get(\"applied_lessons\", [])}')"
+# ONE judgement call per pulse with ALL candidates batched.
+VERDICT=$(echo "$SLICE" | python3 ~/.claude/bin/judgement-subagent.py)
 ```
 
 **Hard rules:**
 
-- **One subagent call per pulse** with ALL non-trivial candidates batched. Do
-  not call the subagent N times for N candidates — that defeats the
-  cross-action consistency check.
-- **An empty candidate batch means no subagent call.** Pulses with only
-  trivial work skip Step 4.5 entirely.
-- **`lessons_read: 0` means the subagent failed to read the index.** Treat
-  the verdict as untrusted: surface a card `assistant:judgement-broken` and
-  default to NOT acting on the candidates this pulse.
-- **`reject` verdicts MUST be honored.** The subagent has cited a lesson; you
-  do not have authority to override (the lesson, by Mukul's rule, is a
-  constraint on you). If the rejection looks wrong, surface a card asking
-  Mukul to confirm — but do not act.
-- **`modify` verdicts replace your params.** Apply the modification text and
-  proceed.
+- **One subagent call per pulse** with ALL candidates batched. Cross-action consistency comes free.
+- **`lessons_read: 0`** = subagent failed to read CLAUDE.md. Treat verdict as untrusted; emit `assistant:judgement-broken` card and skip action this pulse.
+- **`reject` verdicts MUST be honored.** Lessons are constraints. If a rejection looks wrong, surface a card; do not act.
+- **`modify` verdicts replace your params.** Apply the modification before executing.
+- **Empty candidates** = no judgement call needed. Just persist `draft_awaiting_cards` from observer and end the pulse.
 
-**Why a subagent and not just "read the index yourself":** by pulse 50 of a
-long-running session, the lesson index from boot is buried in 200+KB of pulse
-history; the model's attention rarely surfaces it. The subagent gets a fresh
-context every pulse so lessons sit at the top of the prompt and dominate
-attention. Quantitative evidence (2026-05-23 audit): 11 active lessons, every
-one with `use_count=1` (the write-time touch) and `violation_count=0` (because
-nothing was checking) — meaning lessons were being written but never recalled.
-This subagent restores the read path.
+### Step 4.6 — Execute approved actions
+
+For each candidate with `verdict=approve` or `verdict=modify` (after applying the modification), perform the action AND log it to `actions_taken[]`. Action implementations:
+
+| kind | implementation |
+|---|---|
+| `dispatch` | spawn-claude-workspace via the inline pattern (Step 3.5 spec); requires post-spawn validation |
+| `status-flip` | atomic edit of `~/.claude/assistant-todo.json` |
+| `cleanup` | `cmux send <ws_ref> cleanup` + Enter |
+| `close-workspace` | `cmux close-workspace --workspace <ws_ref>` |
+| `merge-pr` | `gh pr merge <PR> --auto --squash` (or invoke `/merge-when-ready` if a session is at hand) |
+| `nudge` | `cmux send <ws_ref> "<text>"` + Enter |
+| `emit-card` | append to `awaiting_input[]` (no external action) |
+| `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` |
+
+For `reject` verdicts, log a `assistant:judgement-rejected:<id>` entry with `applied_lessons[]` so the audit trail names the rule.
 
 ### Step 5 — Write state
 Atomic write to `~/.claude/cache/assistant-state.json`:
