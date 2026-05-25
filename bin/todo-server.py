@@ -34,8 +34,12 @@ CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bi
 
 HOME = Path(os.path.expanduser("~"))
 JSON_PATH = HOME / ".claude" / "assistant-todo.json"
-RENDER_SCRIPT = HOME / ".claude" / "bin" / "render-todo.py"
-RENDER_DASHBOARD_SCRIPT = HOME / ".claude" / "bin" / "render-dashboard.py"
+# Both rerender targets point at the live single-Renderer script. The legacy
+# render-todo.py / render-dashboard.py paths were retired 2026-05-22; keeping
+# both names so existing call sites still work, both now resolve to the live
+# renderer.
+RENDER_SCRIPT = HOME / "dev" / "assistant" / "bin" / "render-assistant-page.py"
+RENDER_DASHBOARD_SCRIPT = RENDER_SCRIPT
 PROPOSALS_DIR = HOME / ".architect" / "orchestrator-proposals"
 ALLOWED_FLAGS = {"autoDispatch", "closeOnMerge"}
 PORT = 9876
@@ -64,16 +68,61 @@ def rerender():
         pass
 
 
-def toggle_flag(td_id, flag, value):
+def set_flag(td_id, flag, value):
+    """Set a TODO's boolean-ish flag. value is True, False, or None."""
     data = load_json()
     items = data.get("items", []) or []
     target = next((i for i in items if i.get("id") == td_id), None)
     if target is None:
         return False, f"id {td_id!r} not found"
-    target[flag] = bool(value)
+    target[flag] = value  # None means "user hasn't decided" (Bucket C)
     save_json(data)
     rerender()
-    return True, f"{td_id}.{flag} = {bool(value)}"
+    return True, f"{td_id}.{flag} = {value!r}"
+
+
+def append_detail(td_id, text):
+    text = (text or "").strip()
+    if not text:
+        return False, "empty body"
+    data = load_json()
+    items = data.get("items", []) or []
+    target = next((i for i in items if i.get("id") == td_id), None)
+    if target is None:
+        return False, f"id {td_id!r} not found"
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prior = (target.get("detail") or "").rstrip()
+    sep = "\n\n" if prior else ""
+    target["detail"] = f"{prior}{sep}[mukul {now}] {text}"
+    save_json(data)
+    rerender()
+    return True, f"{td_id}: appended {len(text)} chars"
+
+
+def dispatch_now(td_id):
+    """Force the Assistant's Bucket B path to fire on td_id at the next pulse.
+
+    Sets autoDispatch=true and clears dispatchedAt + dispatchedWs so the
+    Assistant treats the TODO as Bucket B (autoDispatch=true, dispatchedAt
+    empty). Also flips status back to 'open' if it was deferred or blocked,
+    because Mukul is explicitly asking for a fresh attempt.
+    """
+    data = load_json()
+    items = data.get("items", []) or []
+    target = next((i for i in items if i.get("id") == td_id), None)
+    if target is None:
+        return False, f"id {td_id!r} not found"
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    target["autoDispatch"] = True
+    target["dispatchedAt"] = None
+    target["dispatchedWs"] = None
+    if target.get("status") in ("deferred", "blocked", "done"):
+        target["status"] = "open"
+        target["statusUpdatedAt"] = now
+        target["statusReason"] = f"Re-opened via dashboard 'Dispatch now' at {now}"
+    save_json(data)
+    rerender()
+    return True, f"{td_id}: queued for next-pulse Bucket B dispatch"
 
 
 def rerender_dashboard():
@@ -223,6 +272,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_body(self, max_bytes=64 * 1024):
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            n = 0
+        n = max(0, min(n, max_bytes))
+        return self.rfile.read(n).decode("utf-8", errors="replace") if n else ""
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
@@ -241,6 +298,19 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(200 if ok else 400, msg)
             return
 
+        # POST /append-detail/<id>  (body = additional context to append)
+        if len(parts) == 2 and parts[0] == "append-detail":
+            body = self._read_body()
+            ok, msg = append_detail(parts[1], body)
+            self._reply(200 if ok else 400, msg)
+            return
+
+        # POST /dispatch-now/<id>  (force Bucket B at next pulse)
+        if len(parts) == 2 and parts[0] == "dispatch-now":
+            ok, msg = dispatch_now(parts[1])
+            self._reply(200 if ok else 404, msg)
+            return
+
         if len(parts) != 2 or parts[0] not in ("toggle", "remove"):
             self._reply(404, "not found")
             return
@@ -251,14 +321,20 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(200 if ok else 404, msg)
             return
 
-        # toggle
+        # toggle: ?flag=autoDispatch&value=true|false|null
         flag = (qs.get("flag", ["autoDispatch"])[0]) or "autoDispatch"
         value_raw = (qs.get("value", ["true"])[0]) or "true"
-        value = value_raw.lower() in ("true", "1", "on", "yes")
+        v = value_raw.lower()
+        if v in ("null", "none", "unset", ""):
+            value = None
+        elif v in ("true", "1", "on", "yes"):
+            value = True
+        else:
+            value = False
         if flag not in ALLOWED_FLAGS:
             self._reply(400, f"flag {flag!r} not allowed")
             return
-        ok, msg = toggle_flag(td_id, flag, value)
+        ok, msg = set_flag(td_id, flag, value)
         self._reply(200 if ok else 404, msg)
 
 

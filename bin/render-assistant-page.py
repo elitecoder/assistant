@@ -67,8 +67,13 @@ def shorten_cwd(cwd, max_len=38):
 
 def first_ws_ref(touches):
     for t in touches or []:
-        ref = t.get("ref", "")
-        if ref.startswith("workspace:"):
+        if isinstance(t, str):
+            ref = t
+        elif isinstance(t, dict):
+            ref = t.get("ref", "")
+        else:
+            ref = ""
+        if isinstance(ref, str) and ref.startswith("workspace:"):
             return ref
     return None
 
@@ -101,7 +106,12 @@ def render_awaiting(world):
         tier_lower = tier.lower()
         scope = ""
         for t in a.get("touches") or []:
-            scope = t.get("name") or t.get("ref") or ""
+            # tolerate {ref, name, type} dicts AND bare ref strings (newer
+            # Assistant prompt sometimes emits the latter)
+            if isinstance(t, str):
+                scope = t
+            elif isinstance(t, dict):
+                scope = t.get("name") or t.get("ref") or ""
             if scope:
                 break
         ws_ref = first_ws_ref(a.get("touches"))
@@ -388,21 +398,50 @@ def render_todos_tab(world):
             url_html = f' <a href="{e(url)}" class="alt-link">[link]</a>' if url else ""
             status = it.get("status", "open")
             status_pill = f'<span class="pill status-{status}">{e(status)}</span>'
+            td_id = it.get("id", "") or ""
+            ad_flag = it.get("autoDispatch")
             # AUTO pill = "this should be auto-dispatched"; once dispatchedAt is set
             # the TODO has already been picked up by a workspace. Show DISPATCHED instead.
-            if it.get("autoDispatch"):
+            if ad_flag:
                 if it.get("dispatchedAt"):
                     ad = ' <span class="pill status-in-progress" title="dispatched at ' + e(it.get("dispatchedAt", "")) + ' to ' + e(it.get("dispatchedWs", "?")) + '">dispatched</span>'
                 else:
                     ad = ' <span class="pill auto-dispatch">auto</span>'
             else:
                 ad = ""
+            # Per-row action toolbar — only on truly editable TODOs
+            # (skip 'closed-in' historical entries shown in "Recently completed").
+            if td_id:
+                ad_state = "true" if ad_flag is True else ("false" if ad_flag is False else "null")
+                detail_text = it.get("detail") or ""
+                tools_html = (
+                    f'<div class="todo-tools">'
+                    f'  <button class="tool-btn td-toggle" data-id="{e(td_id)}" data-state="{ad_state}" title="autoDispatch: {ad_state} — click to cycle null → true → false → null">'
+                    f'    autoDispatch={ad_state}'
+                    f'  </button>'
+                    f'  <button class="tool-btn td-dispatch" data-id="{e(td_id)}" title="Force Bucket B at next Assistant pulse: sets autoDispatch=true and clears dispatchedAt">'
+                    f'    Dispatch now'
+                    f'  </button>'
+                    f'  <button class="tool-btn td-context-toggle" data-id="{e(td_id)}" title="Append context to detail">'
+                    f'    + context'
+                    f'  </button>'
+                    f'</div>'
+                    f'<div class="todo-context" data-id="{e(td_id)}" hidden>'
+                    f'  <textarea class="td-context-text" data-id="{e(td_id)}" rows="3" placeholder="Add context (will be appended to detail with a [mukul ts] marker)"></textarea>'
+                    f'  <button class="tool-btn td-context-save" data-id="{e(td_id)}">Append</button>'
+                    f'</div>'
+                )
+            else:
+                tools_html = ""
             rows.append(f"""
-<div class="row todo-row" title="{e(it.get('detail', ''))}">
-  <span class="pill {it.get('priority', 'P3').lower()}">{e(it.get('priority', 'P3'))}</span>
-  <span class="todo-id">{e(it.get('id', '') or '—')}</span>
-  <span class="action-text">{status_pill}{ad} {e(it.get('title', ''))}{url_html}</span>
-  <span class="outcome">{e(src)}</span>
+<div class="row todo-row" data-detail="{e(detail_text if td_id else '')}">
+  <div class="todo-row-main" title="{e(detail_text)}">
+    <span class="pill {it.get('priority', 'P3').lower()}">{e(it.get('priority', 'P3'))}</span>
+    <span class="todo-id">{e(td_id or '—')}</span>
+    <span class="action-text">{status_pill}{ad} {e(it.get('title', ''))}{url_html}</span>
+    <span class="outcome">{e(src)}</span>
+  </div>
+  {tools_html}
 </div>""")
         sections.append(f"""
 <div class="section">
@@ -497,10 +536,25 @@ h1 { font-size:18px; margin:0 0 4px; font-weight:600; }
 .row .ts { color:var(--muted); font-size:10px; font-variant-numeric:tabular-nums; letter-spacing:0.04em; }
 .row .action-text { white-space:normal; overflow:hidden; min-width:0; line-height:1.45; word-break:break-word; }
 .row .outcome { color:var(--muted); font-size:10px; text-align:right; white-space:normal; overflow:hidden; min-width:0; line-height:1.4; word-break:break-word; }
-/* TODO rows: priority pill · ID · title · source */
-.row.todo-row { grid-template-columns:max-content max-content minmax(0,1fr) 200px; }
+/* TODO rows: stacked block (row-main on top, tools strip + context editor below) */
+.row.todo-row { display:block; padding:8px 10px; }
+.row.todo-row .todo-row-main { display:grid; grid-template-columns:max-content max-content minmax(0,1fr) 200px; gap:10px; align-items:baseline; }
 .row.todo-row .action-text { font-size:13px; }
 .row.todo-row .todo-id { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; letter-spacing:0.04em; user-select:all; cursor:text; }
+.row.todo-row .todo-tools { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
+.row.todo-row .todo-context { display:flex; gap:6px; margin-top:6px; }
+.row.todo-row .todo-context[hidden] { display:none; }
+.row.todo-row .td-context-text { flex:1; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; font-size:12px; resize:vertical; min-height:60px; }
+.tool-btn { background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:3px 8px; font:inherit; font-size:10px; cursor:pointer; letter-spacing:0.03em; }
+.tool-btn:hover { color:var(--text); background:var(--line); }
+.tool-btn.busy { opacity:0.5; }
+.tool-btn.ok { background:#1c3a26; color:var(--green); border-color:#1c3a26; }
+.tool-btn.err { background:#3a1c1c; color:var(--red); border-color:#3a1c1c; }
+.tool-btn.td-toggle[data-state="true"] { color:var(--amber); border-color:#3a2d18; }
+.tool-btn.td-toggle[data-state="false"] { color:var(--muted); }
+.tool-btn.td-toggle[data-state="null"] { color:var(--blue); border-color:#1c2a3a; }
+.tool-btn.td-dispatch { color:#a78bfa; border-color:#2c1f4a; }
+.tool-btn.td-dispatch:hover { background:#2c1f4a; color:#c4b5fd; }
 .row.kind-ledger { background:rgba(95,217,122,0.04); }
 .row.kind-event { opacity:0.65; }
 /* Decision rows: ts · kind · scope · ✓ · evidence · #pulse */
@@ -575,6 +629,101 @@ async function openWs(btn) {
     btn.textContent = '✗ ' + (e.message || 'no server');
   }
 }
+
+// Delegated click handler for TODO row tools.
+// Cycle: null → true → false → null (matches the dispatcher's three buckets).
+async function handleTodoToolsClick(ev) {
+  const btn = ev.target.closest('.tool-btn');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  if (!id) return;
+
+  // ─── autoDispatch toggle: cycle through null → true → false → null ───
+  if (btn.classList.contains('td-toggle')) {
+    const current = btn.dataset.state;
+    let url, msg;
+    if (current === 'null')       { url = `http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=true`;  msg = 'autoDispatch=true'; }
+    else if (current === 'true')  { url = `http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=false`; msg = 'autoDispatch=false'; }
+    else                          { url = `http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=null`;  msg = 'autoDispatch=null'; }
+    btn.classList.add('busy'); btn.textContent = '…';
+    try {
+      const r = await fetch(url, {method: 'POST'});
+      if (r.ok) {
+        btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ ' + msg;
+        // The next 15s auto-refresh will re-render with the canonical state.
+      } else {
+        const t = await r.text();
+        btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (t || 'failed');
+      }
+    } catch (e) {
+      btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (e.message || 'no server');
+    }
+    return;
+  }
+
+  // ─── Dispatch now: force Bucket B at next pulse ───
+  if (btn.classList.contains('td-dispatch')) {
+    if (!confirm(`Force ${id} to dispatch at next Assistant pulse?\n\nThis sets autoDispatch=true and clears dispatchedAt/dispatchedWs.\nIf the TODO was deferred/blocked/done, it will be reopened.`)) return;
+    btn.classList.add('busy'); btn.textContent = 'Queueing…';
+    try {
+      const r = await fetch(`http://127.0.0.1:9876/dispatch-now/${id}`, {method: 'POST'});
+      const t = await r.text();
+      if (r.ok) {
+        btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ queued';
+      } else {
+        btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (t || 'failed');
+      }
+    } catch (e) {
+      btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (e.message || 'no server');
+    }
+    return;
+  }
+
+  // ─── Toggle the inline context textarea ───
+  if (btn.classList.contains('td-context-toggle')) {
+    const box = document.querySelector(`.todo-context[data-id="${CSS.escape(id)}"]`);
+    if (!box) return;
+    const wasHidden = box.hasAttribute('hidden');
+    if (wasHidden) {
+      box.removeAttribute('hidden');
+      const ta = box.querySelector('.td-context-text');
+      if (ta) ta.focus();
+    } else {
+      box.setAttribute('hidden', '');
+    }
+    return;
+  }
+
+  // ─── Append context: POST textarea body to /append-detail/<id> ───
+  if (btn.classList.contains('td-context-save')) {
+    const ta = document.querySelector(`.td-context-text[data-id="${CSS.escape(id)}"]`);
+    if (!ta) return;
+    const body = (ta.value || '').trim();
+    if (!body) { ta.focus(); return; }
+    btn.classList.add('busy'); btn.textContent = 'Saving…';
+    try {
+      const r = await fetch(`http://127.0.0.1:9876/append-detail/${id}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'text/plain; charset=utf-8'},
+        body: body,
+      });
+      const t = await r.text();
+      if (r.ok) {
+        btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ appended';
+        ta.value = '';
+        // Auto-collapse + let the 15s refresh redraw the new detail length.
+        const box = document.querySelector(`.todo-context[data-id="${CSS.escape(id)}"]`);
+        if (box) setTimeout(() => box.setAttribute('hidden', ''), 800);
+      } else {
+        btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (t || 'failed');
+      }
+    } catch (e) {
+      btn.classList.remove('busy'); btn.classList.add('err'); btn.textContent = '✗ ' + (e.message || 'no server');
+    }
+    return;
+  }
+}
+document.addEventListener('click', handleTodoToolsClick);
 """
 
     body = f"""<!doctype html>
