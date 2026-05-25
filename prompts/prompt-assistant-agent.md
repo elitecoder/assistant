@@ -406,8 +406,33 @@ Incident: [INCIDENTS.md#stuck-merge](INCIDENTS.md#stuck-merge), [INCIDENTS.md#me
 If neither qualifies → log `assistant:merge-pr-refused:<PR>:not-auto-mergeable` with evidence (file list + first non-test path, OR rejected refactor signal), emit awaiting card "PR #<PR> needs human reviewer — not test-only and not a clean refactor", **stop**. Never dispatch `/merge-when-ready` or `/monitor-ffp-ci` on a feature or bugfix PR.
 
 **Step 1 — route by CI (only after Step 0 passes).** Read `gh pr view <PR> --json statusCheckRollup,reviewDecision`.
-- **(a) CI not all green** (any required check `FAILURE`/`CANCELLED`/`PENDING`/`IN_PROGRESS` — `SKIPPED`/`NEUTRAL` count as pass) → `cmux send-text <ws_ref> "/monitor-ffp-ci <PR>"` + Enter.
-- **(b) CI all green** → `cmux send-text <ws_ref> "/merge-when-ready <PR>"` + Enter.
+- **(a) CI not all green** (any required check `FAILURE`/`CANCELLED`/`PENDING`/`IN_PROGRESS` — `SKIPPED`/`NEUTRAL` count as pass) → dispatch `/monitor-ffp-ci <PR>` to `<ws_ref>` (see "Submitting a slash command" below).
+- **(b) CI all green** → dispatch `/merge-when-ready <PR>` to `<ws_ref>` (see "Submitting a slash command" below).
+
+**Submitting a slash command** (CRITICAL — `cmux send-text` does NOT submit, it only types into the input buffer):
+
+```bash
+cmux send "<ws_ref>" "/merge-when-ready <PR>"   # `send` types AND presses Enter
+# DO NOT use `cmux send-text` — that stages the command in the input box but never submits.
+# Incident 2026-05-25 pulse 72: dispatcher logged `outcome: verified` after `send-text`,
+# but PRs #10342 / #10349 sat with `/merge-when-ready` staged-but-unsent for 30+ min.
+```
+
+**Post-send verification** (MANDATORY — exit-code-0 from cmux is NOT proof of submission):
+
+```bash
+sleep 2
+~/dev/assistant/bin/transcript-tail.py --ws "<ws_ref>" \
+  | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+last = (d.get('last_user') or {}).get('text', '')
+expected = '/merge-when-ready <PR>'  # or /monitor-ffp-ci
+sys.exit(0 if last.strip() == expected else 1)
+"
+```
+
+If `last_user.text` does NOT match the literal slash command, the submission failed. Recovery: `cmux rpc surface.send_key {\"surface_id\": \"<surface>\", \"key\": \"Return\"}` once. Re-verify. If still failing → log `verification_failure: true`, do NOT log `outcome: verified`, surface `awaiting_input` card.
 
 **No "already done" check.** Both skills are idempotent — `/merge-when-ready` short-circuits to "already merged" / "already queued"; `/monitor-ffp-ci` re-attaches to the same Jenkins job. Observer stops proposing `merge-pr` once `state: MERGED` or `state: CLOSED` — the only termination conditions.
 

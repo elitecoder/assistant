@@ -57,6 +57,12 @@ Dispatcher's `merge-pr` action ran `gh pr merge --auto --squash <PR>` directly, 
 
 **Rule:** `merge-pr` is a dumb router driven by observable PR state — never `gh pr merge` directly. CI green → `/merge-when-ready`; CI not green → `/monitor-ffp-ci`. Skills are idempotent; `merge-pr` is exempt from the dedupe rule. Stops only on `state: MERGED` or `state: CLOSED`.
 
+## send-text vs send — staged-but-unsent slash command (2026-05-25) {#send-text-not-submit}
+
+After the Assistant respawned under the new merge-pr router, pulse 72 dispatched `/merge-when-ready 10342` to ws:6 and `/merge-when-ready 10349` to ws:20 via `cmux send-text`. The slash command was typed into both input prompts but never submitted — `cmux send-text` only types, it does NOT press Enter. The dispatcher logged `outcome: verified` from the cmux exit code (which only meant the keystrokes were accepted, not that the command was submitted). Both PRs sat with the command staged-but-unsent for 30+ minutes.
+
+**Rule:** for any slash-command dispatch into a workspace, use `cmux send` (not `cmux send-text`) — `send` types AND presses Enter. After dispatch, re-read the target's transcript via `transcript-tail.py --ws <ws_ref>` and confirm `last_user.text` matches the literal slash command. cmux exit-code-0 is NOT proof of submission.
+
 ## merge-pr safety gate {#merge-pr-safety}
 
 The two-branch router can land a PR without human review. That's fine for test-only PRs and for refactors with full local G3 + unit suite green — both have low blast radius. For feature/bugfix PRs (any production-code touch), human review is mandatory. Without a Step-0 safety gate, an aggressive observer proposing `merge-pr` on any OPEN PR would land production code unreviewed.
