@@ -213,7 +213,6 @@ If `find-stuck-workspaces.py` returns an empty array, skip this step.
 
 - Read `~/.claude/cache/assistant-state.json`. Look at `actions_taken[]` from the last 10 minutes.
 - For each `send-text-to-session` action: read the target's last_user.text via `transcript-tail.py --ws <ws_ref>`. Did the literal `send_text` you specified land + submit?
-- For each `close-workspace`: workspace gone from `world.workspaces[]`?
 - For each `mark-todo-status`: open `~/.claude/assistant-todo.json` and confirm the item now has the target status.
 - If verification fails, **fix it on this same pulse** — clear input buffer (Ctrl-U via `cmux rpc surface.send_key`), resend literal text, retry close, etc. Add a `verification_failure` to the state.
 
@@ -452,8 +451,8 @@ Ledger lives at `~/.assistant/actions-ledger.jsonl`, append-only. **`--verified-
 | `jsonl_transcript` | You read the target's transcript JSONL via `transcript-tail.py` and matched the literal text. | ✅ Strongest. Always prefer. |
 | `transcript_size_delta` | `cmux-send.py` reported a positive `transcript_size_delta` after the send (proves claude PID ingested the keystrokes). | ✅ Strong; use when JSONL parse is impractical. |
 | `exit_code` | The wrapper script (e.g. `merge-pr-dispatch.py`) exited 0 with `"outcome":"submitted"`. | ✅ Strong; the script already verified. |
-| `gh_pr_view` | You ran `gh pr view <num> --repo <repo> --json state,mergedAt` and confirmed the expected state. | ✅ Strong for PR-state actions (cleanup, close-workspace gated on PR merged). |
-| `observer_summary` | Cited the per-ws Observer Agent's classification. | ⚠ Acceptable only for `purge-awaiting` and informational logs. NEVER for `dispatch`, `cleanup`, `merge-pr`, `close-workspace`. |
+| `gh_pr_view` | You ran `gh pr view <num> --repo <repo> --json state,mergedAt` and confirmed the expected state. | ✅ Strong for PR-state actions (cleanup gated on PR merged). |
+| `observer_summary` | Cited the per-ws Observer Agent's classification. | ⚠ Acceptable only for `purge-awaiting` and informational logs. NEVER for `dispatch`, `cleanup`, `merge-pr`. |
 | `not_verified` | You acted but couldn't verify. | ⚠ Forces `outcome=failed`. |
 | `screen_read` | You read terminal screen text via `cmux rpc surface.read_text`. | ❌ **REJECTED.** The screen is unreliable (loses scrollback, mangles ANSI, can echo the wrong workspace's surface — see [INCIDENTS.md#screen-read-misroute](INCIDENTS.md#screen-read-misroute)). The ledger flags this class with `!` in tail; a code reviewer will reject any new `screen_read` ledger entry. If you only have screen evidence, log `verified_via=not_verified` and `outcome=failed`. |
 
@@ -464,7 +463,6 @@ Ledger lives at `~/.assistant/actions-ledger.jsonl`, append-only. **`--verified-
 | `dispatch` | spawn-claude-workspace SKILL.md; followed by `verify-spawn-submitted.py` (post-spawn validation, ABSOLUTE) | `jsonl_transcript` (verify-spawn-submitted reads JSONL) or `exit_code` |
 | `status-flip` | `todo-flip.py --id td-NNN --status <new>` (atomic write); re-read the file to confirm | `jsonl_transcript` not applicable — use `exit_code` and verify the file state changed |
 | `cleanup` | **Use `bin/cmux-send.py --ws <ws> --text cleanup --enter --caller <caller>`.** NEVER raw `cmux send`. Before sending, REQUIRE proof the work is done: `gh pr view <pr> --json state,mergedAt` showing `state: MERGED`, OR transcript shows the agent's own "ready for cleanup" recap. Without that proof, do NOT fire. | `gh_pr_view` (PR merged) or `jsonl_transcript` (agent recap) |
-| `close-workspace` | **DISABLED 2026-05-26.** Never propose, never fire. Workspace closure is the user's job — Assistant auto-close hid in-progress work (ws:97 phonebook audit, ws:99 E2E combining due diligence). If a workspace looks safe to close, surface `assistant:safe-to-close:ws:N` (T3) instead. | n/a |
 | `merge-pr` | **Always invoke `bin/merge-pr-dispatch.py` (see Step 4.5a below). No dedupe, no `gh pr merge` ever, no inline `cmux send`.** | `exit_code` (script exit 0 + `"outcome":"submitted"`) |
 | `nudge` | `bin/cmux-send.py --ws <ws_ref> --text "<text>" --enter --caller <caller>`. For `recover-stranded-*`, also bump `recovery_attempts` in `~/.assistant/observer-summaries/<ws>.json`. | `transcript_size_delta` (from cmux-send output) |
 | `emit-card` | append to `awaiting_input[]` | n/a — informational |
@@ -573,10 +571,6 @@ Use `transcript-tail.py`:
 3. **Verified iff** `last_user.text == send_text` (exact match — no extra whitespace, no quotes, no description). If `last_user.text` is your imperative description ("Send 'cleanup' to..."), THAT IS A FAILURE — Ctrl-U via `cmux rpc surface.send_key`, resend literal `send_text`, press Enter, re-verify.
 4. After one retry, if still failing: log `verification_failure: true` and surface as `awaiting_input`.
 
-### After every `cmux close-workspace`
-
-`cmux tree --workspace ws:N --json` returns `Error: not_found` → verified. If still present, log `verification_failure`.
-
 ### After every TODO status edit
 
 Re-read `~/.claude/assistant-todo.json`, find the item by id, confirm `status == target_status`. (`todo-flip.py` is atomic via tmpfile + rename, but verify anyway.)
@@ -644,11 +638,10 @@ The cleanup-gating rule auto-clears once the PR merges via the queue, so the wor
 - **Banned action verbs**: `wait`, `observe`, `monitor`, `watch`, `see`, `check`, `review`, `keep`, `keep-watching`, `no-action`, `noop`, `tbd`. If you can't think of an actionable verb, the right answer is "do nothing" — not a 'wait' card.
 - **FFP merges go through `/merge-when-ready` ONLY.** Direct `gh pr merge` is FORBIDDEN for any PR in `Adobe-Firefly/firefly-platform`. Read-only `gh pr view` is fine.
 - **Never auto-flip a TODO on NAB verdict.** Surface a card; two humans must compare notes (Mukul + reporter).
-- **Never close a workspace with in-progress work** (uncommitted/unpushed changes, halted pipeline, deferred follow-up) without verifying safety + creating a follow-up TODO.
+- **Never close a workspace.** Workspace closure is the user's job — Assistant auto-close has hidden in-progress work (ws:97 phonebook audit, ws:99 E2E combining due diligence). If a workspace looks safe to close, surface `assistant:safe-to-close:ws:N` (T3) instead.
 
 ## Stable keys (for dedup across pulses)
 
-- `assistant:close-clean:workspace:N` — one shot per workspace
 - `assistant:cleanup-cmd:workspace:N` — sent literal "cleanup"
 - `assistant:todo-status:td-NNN:done|deferred|in-progress|blocked`
 - `assistant:dispatch:td-NNN` — fired a fresh spawn (Bucket A re-dispatch or Bucket B initial)
