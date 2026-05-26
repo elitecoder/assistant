@@ -143,7 +143,15 @@ def run_one(fixture_dir: Path) -> tuple[bool, str]:
     # needs_user), accept any non-empty value for the keyed field — content
     # is judged loosely (we care that the right verdict shape comes out).
     exp_kind = expected.get("verdict")
+    forbidden = set(expected.get("forbidden_verdicts", []))
     got_kind = verdict.get("verdict")
+
+    # Loud-fail on dangerous-direction failures — these are the bugs we
+    # built this suite to catch. A verdict in `forbidden_verdicts` means
+    # the system did something destructive.
+    if got_kind in forbidden:
+        return False, f"DANGEROUS: verdict={got_kind!r} is FORBIDDEN for this fixture  (full: {verdict})"
+
     if got_kind != exp_kind:
         return False, f"verdict={got_kind!r} expected {exp_kind!r}  (full: {verdict})"
 

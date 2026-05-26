@@ -43,10 +43,29 @@ phrase).
 fixtures/<name>/
   ctx.json              # what build-ws-context.py would emit
   transcript.jsonl      # the Claude session JSONL Observer reads
-  expected.json         # {"verdict": "..."} expected
+  expected.json         # {"verdict": "...", "forbidden_verdicts": [...]}
   fake-gh-bin/gh        # optional: gh shim for cases that need PR data
   notes.md              # what this case proves
 ```
+
+## expected.json schema
+
+```json
+{
+  "verdict": "active",
+  "forbidden_verdicts": ["ready_for_cleanup", "ready_for_merge"]
+}
+```
+
+- `verdict` (required): the verdict kind we expect.
+- `forbidden_verdicts` (optional): verdict kinds that, if emitted, are
+  treated as a DANGEROUS failure (not just a calibration miss). Use this
+  for adversarial / regression-pin fixtures where we care more about the
+  *wrong* answer staying out than the *right* answer landing exactly.
+
+The runner reports `DANGEROUS:` in the failure message when a forbidden
+verdict is emitted, distinguishing destructive bugs from calibration
+disputes.
 
 ## Adding a fixture
 

@@ -78,8 +78,27 @@ Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,ti
 
 1. **Last assistant text is a definitive recap** ("td-NNN COMPLETE", "work is done, no PR needed", "audit complete"), no follow-up turns, `cwd_dirty=false`, `cwd_unpushed=false` → `ready_for_cleanup`.
 2. **Last assistant text asks the user a question** → `needs_user` with the question as the detail.
-3. **Agent paused mid-task** (`last_turn_age_sec > 1800`, `agent_status=idle`, last assistant text is mid-narrative not a recap) → `stranded` with a `nudge_text` grounded in what the transcript shows.
+3. **Stranded — ALL THREE must be true**:
+   - `last_turn_age_sec > 1800` (strictly greater than 30 minutes — verify the number).
+   - `agent_status == "idle"`.
+   - Last assistant text is mid-narrative, NOT a recap.
+
+   If all three hold → `stranded` with `nudge_text` grounded in the transcript.
+
+   If `last_turn_age_sec` is 1800 or less, **do NOT emit `stranded`** even if the agent looks paused. Cron pulses fire every 2 min; an agent between tool calls or composing its next message can easily look idle for 5–25 min. Default to `active` — a working agent doesn't need a nudge.
 4. **Otherwise** → `active`.
+
+### Threshold cheat-sheet
+
+| `last_turn_age_sec` | `agent_status` | Verdict region |
+|---|---|---|
+| any value | `working` | `active` (tool_use in flight) |
+| ≤ 1800 (30 min) | `idle` | `active` — agent may just be between turns |
+| > 1800 + mid-narrative + idle | `idle` | `stranded` |
+| > 1800 + recap + clean cwd | `idle` | `ready_for_cleanup` (rule B1) |
+| > 1800 + question | `idle` | `needs_user` (rule B2) |
+
+The number 1800 is a hard gate, not a guideline. If you're computing the verdict and `last_turn_age_sec` is, say, 600 or 1500 — the verdict is `active`, period.
 
 ## Hard rules
 

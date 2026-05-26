@@ -1,1 +1,4 @@
-{"verdict": "active"}
+{
+  "verdict": "active",
+  "forbidden_verdicts": ["ready_for_cleanup", "ready_for_merge"]
+}
