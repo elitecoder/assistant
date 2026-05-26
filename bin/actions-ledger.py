@@ -63,6 +63,18 @@ def cmd_append(args) -> int:
         "evidence": args.evidence,
         "outcome": args.outcome,
     }
+    # New since 2026-05-26: structured proof. Free-text "evidence" stays for
+    # human reading; verified_via + proof are the greppable, falsifiable
+    # fields. screen_read evidence is rejectable as a class — today's bogus
+    # ledger entries (merge-pr:10362:ws1, cleanup:workspace:90) both used
+    # screen_read and would have been catchable at a glance.
+    if args.verified_via:
+        entry["verified_via"] = args.verified_via
+    if args.proof:
+        try:
+            entry["proof"] = json.loads(args.proof)
+        except Exception:
+            entry["proof"] = args.proof
     if args.verdict:
         try:
             entry["verdict"] = json.loads(args.verdict)
@@ -93,9 +105,12 @@ def cmd_tail(args) -> int:
             d = json.loads(line)
             ws = d.get("ws_ref") or "-"
             td = d.get("td") or "-"
+            via = d.get("verified_via") or "-"
+            # Flag screen_read so it's visually obvious in the tail dump.
+            via_flag = "!" if via == "screen_read" else " "
             print(f"{d.get('ts','')}  pulse={d.get('pulse_idx',0):>4}  "
-                  f"{d.get('outcome','?'):<8}  {ws:<14}  {td:<8}  "
-                  f"{d.get('key','')}")
+                  f"{d.get('outcome','?'):<8}  {via_flag}{via:<22}  "
+                  f"{ws:<14}  {td:<8}  {d.get('key','')}")
         except Exception:
             print(line, end="")
     return 0
@@ -143,6 +158,13 @@ def main() -> int:
     p_append.add_argument("--td", default=None)
     p_append.add_argument("--evidence", default="")
     p_append.add_argument("--outcome", choices=["verified", "failed", "skipped", "rejected"], default="verified")
+    p_append.add_argument(
+        "--verified-via",
+        choices=["jsonl_transcript", "transcript_size_delta", "exit_code", "gh_pr_view", "screen_read", "not_verified", "observer_summary"],
+        default=None,
+        help="HOW the outcome was verified. screen_read is REJECTED as evidence; treat as not_verified.",
+    )
+    p_append.add_argument("--proof", default=None, help="JSON-encoded proof object (transcript_path, last_user_ts, byte_delta, gh_state, etc.)")
     p_append.add_argument("--verdict", default=None, help="JSON-encoded observer verdict (optional)")
     p_append.set_defaults(func=cmd_append)
 
