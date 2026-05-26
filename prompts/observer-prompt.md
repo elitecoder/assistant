@@ -31,41 +31,46 @@ You have bash; if you need PR state to apply rule A1 / A2 / A3, run `gh pr view 
 
 ## Output — exactly one JSON object on stdout
 
-Every output includes a `summary` field — one sentence (~25 words, present tense) describing what the workspace is doing right now. The summary is what the user sees on the dashboard's Workspaces tab; make it concrete enough that they don't have to open the workspace to know what's happening.
+Every output includes TWO required fields:
+
+- `summary` — one sentence (~25 words, present tense) describing **where the workspace is in its arc** right now (state-so-far).
+- `next` — one sentence (~20 words, present/future tense) describing **the immediate next step** the agent (or the system) is going to take. This is a prediction grounded in the transcript, not a guarantee.
+
+Both are dashboard rows; make them concrete enough that the user doesn't have to open the workspace.
 
 Pick ONE of these verdicts:
 
 ```json
-{"verdict": "ready_for_merge", "summary": "PR #N ready — test-only / refactor change with green CI."}
+{"verdict": "ready_for_merge", "summary": "PR #N ready — test-only / refactor change with green CI.", "next": "Assistant will send /merge-when-ready to queue the merge."}
 ```
 The PR for this workspace is ready to auto-merge per the ruleset below.
 
 ```json
-{"verdict": "ready_for_cleanup", "summary": "Audit complete; <one-line of what shipped or what artifact was produced>."}
+{"verdict": "ready_for_cleanup", "summary": "Audit complete; <artifact produced>.", "next": "Assistant will send /cleanup to tear down the workspace."}
 ```
 Work in this workspace is done and the workspace is safe to tear down. Assistant will send `/cleanup` to the workspace.
 
 ```json
-{"verdict": "stranded", "nudge_text": "...", "summary": "Paused mid-<task> after <last narrative checkpoint>."}
+{"verdict": "stranded", "nudge_text": "...", "summary": "Paused mid-<task> after <checkpoint>.", "next": "Resume by <continuing what>."}
 ```
 Agent paused mid-task. Send the literal `nudge_text` to the workspace to wake it. Keep `nudge_text` short and specific to what the transcript shows (e.g. "Please continue with step 3" or "Please retry the failing E2E").
 
 ```json
-{"verdict": "needs_user", "title": "...", "detail": "...", "summary": "<one-line of what's blocking>."}
+{"verdict": "needs_user", "title": "...", "detail": "...", "summary": "<what's blocking>.", "next": "User decides between <option A> and <option B>."}
 ```
 Genuinely needs human input — agent asked a question, hit an auth error, work is shippable but needs human review, etc. `title` is one line, `detail` is a short paragraph the user can read in 5 seconds.
 
 ```json
-{"verdict": "active", "summary": "Currently <doing X> — <where in the work>."}
+{"verdict": "active", "summary": "Currently <doing X> — <where in the arc>.", "next": "<the agent's expected next step>."}
 ```
 Default. Workspace is mid-work, no action needed.
 
-### Summary writing
+### Writing summary and next
 
-- **Concrete and present-tense.** Bad: "Agent is working on tests." Good: "Re-running combined keyboard + zoom suite at workers=6 to verify the 4.8x speedup holds under filter mode."
-- **Reference the latest narrative checkpoint** the transcript shows — the agent's most recent text turn usually has it.
-- **No PR-merge state in the summary unless it's the headline.** "PR #N ready, awaiting human review" is fine if that IS the state. Don't pad an `active` summary with PR status.
-- **Stay under ~30 words.** This is a dashboard row, not a paragraph.
+- **Concrete and grounded in the transcript.** Bad: "Agent is working on tests." Good: "Re-running combined keyboard + zoom suite at workers=6 to verify the 4.8x speedup holds."
+- **Summary = state-so-far. Next = coming step.** Don't paraphrase the same thing in both fields. If summary says "Audited 6 of 14 specs, 3 unique cases found", next should say "Moving to spec 7 (transform-handle-flip)" — not "Continuing the audit."
+- **`next` is a prediction.** The agent might pivot, get blocked, or ask the user something. Make it the agent's *expected* next step based on what they just said or did, not a guarantee.
+- **Stay under ~30 words each.** Both fields are dashboard rows, not paragraphs.
 
 ## Ruleset
 

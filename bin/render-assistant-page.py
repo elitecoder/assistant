@@ -419,20 +419,21 @@ def render_workspaces_tab():
                 return s
         return None
 
-    def last_activity(transcript_path: str | None, max_chars: int = 110) -> tuple[str, str] | None:
-        """Return (kind, snippet) for the most recent meaningful entry in
-        the workspace's transcript. kind is 'tool' (tool_use in flight or
-        recently fired) or 'text' (assistant narrative). None if no
-        transcript or nothing extractable.
+    def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | None:
+        """Return the most recent assistant TEXT turn from the transcript.
+        Skips tool_use blocks entirely — the user cares what the agent is
+        SAYING, not which tool it's invoking. None if no transcript or no
+        text turn found.
 
-        Reads only the tail (~8KB) so per-render cost is bounded across
-        many workspaces."""
+        Reads only the tail (~32KB) — agents can emit many tool_uses
+        between text turns, so we need a bigger window than the 12KB
+        used for tool_use scanning."""
         if not transcript_path or not os.path.exists(transcript_path):
             return None
         try:
             size = os.path.getsize(transcript_path)
             with open(transcript_path, "rb") as f:
-                f.seek(max(0, size - 12288))
+                f.seek(max(0, size - 32768))
                 tail = f.read().decode("utf-8", errors="replace")
         except Exception:
             return None
@@ -455,33 +456,15 @@ def render_workspaces_tab():
             for c in reversed(content):
                 if not isinstance(c, dict):
                     continue
-                t = c.get("type")
-                if t == "tool_use":
-                    name = c.get("name", "?")
-                    inp = c.get("input", {}) or {}
-                    snippet = ""
-                    if isinstance(inp, dict):
-                        for key in ("command", "file_path", "path", "pattern", "query", "url", "prompt"):
-                            v = inp.get(key)
-                            if isinstance(v, str) and v.strip():
-                                snippet = v
-                                break
-                        if not snippet:
-                            for v in inp.values():
-                                if isinstance(v, str) and v.strip():
-                                    snippet = v
-                                    break
-                    snippet = snippet.replace("\n", " ").strip()
-                    if len(snippet) > max_chars:
-                        snippet = snippet[:max_chars - 1] + "…"
-                    return ("tool", f"{name}: {snippet}" if snippet else name)
-                if t == "text":
-                    text = (c.get("text", "") or "").strip()
-                    if text:
-                        text = text.replace("\n", " ")
-                        if len(text) > max_chars:
-                            text = text[:max_chars - 1] + "…"
-                        return ("text", text)
+                if c.get("type") != "text":
+                    continue
+                text = (c.get("text", "") or "").strip()
+                if not text:
+                    continue
+                text = " ".join(text.split())  # collapse whitespace
+                if len(text) > max_chars:
+                    text = text[:max_chars - 1] + "…"
+                return text
         return None
 
     rows = []
@@ -511,6 +494,7 @@ def render_workspaces_tab():
             }.get(classification, "unknown")
 
         summary = data.get("summary") or data.get("summary_for_next_pulse") or "(no summary recorded yet)"
+        next_step = data.get("next") or ""
         ts = data.get("ts") or data.get("last_updated_ts") or 0
         age_sec = max(0, int(now - ts)) if ts else None
 
@@ -525,16 +509,16 @@ def render_workspaces_tab():
 
         pr_refs = data.get("pr_refs") or []
 
-        # NOW line — most recent tool_use or assistant text from transcript.
-        now_line = None
+        # NOW line — most recent assistant text turn from transcript.
+        now_text = None
         if sess and sess.get("transcript_path"):
-            now_line = last_activity(sess["transcript_path"])
+            now_text = last_activity(sess["transcript_path"])
 
         rows.append({
             "ws_ref": ws_ref, "title": title, "cwd": cwd, "verdict": verdict,
-            "summary": summary, "age_sec": age_sec, "ts": ts,
+            "summary": summary, "next": next_step, "age_sec": age_sec, "ts": ts,
             "agent_status": agent_status, "last_turn_age_sec": last_turn_age,
-            "pr_refs": pr_refs, "now_line": now_line,
+            "pr_refs": pr_refs, "now_text": now_text,
         })
 
     rows.sort(key=lambda r: -(r.get("ts") or 0))
@@ -610,24 +594,35 @@ def render_workspaces_tab():
             la_class = "fresh" if la < 600 else ("warm" if la < 1800 else "cold")
             live_age_chip = f'<span class="ws-live-age {la_class}" title="Last turn {la_str} ago">⟳ {la_str}</span>'
 
-        # NOW line — what this workspace is doing right this second.
-        now_html = ""
-        if r["now_line"]:
-            now_kind, now_text = r["now_line"]
-            now_class = "now-tool" if now_kind == "tool" else "now-text"
-            now_glyph = "▸" if now_kind == "tool" else "▪"
+        # NOW line — agent's most recent narrative text.
+        if r["now_text"]:
             now_html = (
-                f'<div class="ws-now {now_class}">'
+                f'<div class="ws-now now-text">'
                 f'<span class="ws-now-label">NOW</span>'
-                f'<span class="ws-now-glyph">{now_glyph}</span>'
-                f'<span class="ws-now-text">{e(now_text)}</span>'
+                f'<span class="ws-now-text">{e(r["now_text"])}</span>'
                 f'</div>'
             )
         else:
             now_html = (
                 '<div class="ws-now now-empty">'
                 '<span class="ws-now-label">NOW</span>'
-                '<span class="ws-now-text">no live session detected</span>'
+                '<span class="ws-now-text">no recent narrative</span>'
+                '</div>'
+            )
+
+        # NEXT line — Observer's prediction of the next step.
+        if r["next"]:
+            next_html = (
+                f'<div class="ws-next">'
+                f'<span class="ws-next-label">NEXT</span>'
+                f'<span class="ws-next-text">{e(r["next"])}</span>'
+                f'</div>'
+            )
+        else:
+            next_html = (
+                '<div class="ws-next next-empty">'
+                '<span class="ws-next-label">NEXT</span>'
+                '<span class="ws-next-text">unknown</span>'
                 '</div>'
             )
 
@@ -644,6 +639,7 @@ def render_workspaces_tab():
             f'    <span class="ws-age{age_class}" title="Summary written {fmt_age(r["age_sec"])} ago">{fmt_age(r["age_sec"])}</span>'
             f'  </div>'
             f'  {now_html}'
+            f'  {next_html}'
             f'  <div class="ws-summary">{e(r["summary"])}</div>'
             f'</div>'
         )
@@ -1194,56 +1190,79 @@ h1 {
   margin-top: 6px;
   opacity: 0.86;
 }
-/* NOW line — what the workspace is doing right this second */
+/* NOW line — agent's most recent narrative text */
 .ws-now {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  margin: 6px 0 0 4px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 11px;
+  margin: 8px 0 0 4px;
   border-radius: 6px;
-  background: rgba(255,255,255,0.025);
+  background: rgba(255,255,255,0.03);
   border: 1px solid var(--line);
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
 }
 .ws-now-label {
-  font: 600 9px/1 var(--mono);
-  letter-spacing: 0.12em;
+  font: 600 9px/1.4 var(--mono);
+  letter-spacing: 0.14em;
   color: var(--muted);
-  padding: 2px 6px;
+  padding: 2px 7px;
   border-radius: 3px;
-  background: rgba(255,255,255,0.04);
+  background: rgba(255,255,255,0.05);
   flex-shrink: 0;
-}
-.ws-now-glyph {
-  font-size: 11px;
-  flex-shrink: 0;
-  opacity: 0.85;
+  margin-top: 1px;
 }
 .ws-now-text {
-  font: 11.5px/1.4 var(--mono);
-  letter-spacing: 0;
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font: 12px/1.5 var(--sans);
+  color: var(--text);
   flex: 1;
+  opacity: 0.88;
 }
-.ws-now.now-tool {
-  background: var(--blue-bg);
-  border-color: rgba(107,190,240,0.16);
-}
-.ws-now.now-tool .ws-now-glyph { color: var(--blue); }
-.ws-now.now-tool .ws-now-text  { color: var(--blue); opacity: 0.92; }
-.ws-now.now-text .ws-now-glyph { color: var(--text-2); }
-.ws-now.now-text .ws-now-text  { color: var(--text); opacity: 0.78; }
 .ws-now.now-empty {
   background: transparent;
   border-style: dashed;
-  border-color: var(--line);
 }
-.ws-now.now-empty .ws-now-text { color: var(--muted); font-style: italic; }
+.ws-now.now-empty .ws-now-text { color: var(--muted); font-style: italic; opacity: 0.7; }
+
+/* NEXT line — Observer's prediction (forward-looking, not a fact) */
+.ws-next {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 11px;
+  margin: 6px 0 0 4px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px dashed var(--line);
+  position: relative;
+}
+.ws-next::before {
+  content: "→";
+  position: absolute;
+  left: -14px;
+  top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0.45;
+}
+.ws-next-label {
+  font: 600 9px/1.4 var(--mono);
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.04);
+  flex-shrink: 0;
+  margin-top: 1px;
+  opacity: 0.75;
+}
+.ws-next-text {
+  font: 12px/1.5 var(--sans);
+  color: var(--text-2);
+  flex: 1;
+  opacity: 0.78;
+  font-style: italic;
+}
+.ws-next.next-empty .ws-next-text { color: var(--muted); opacity: 0.5; }
 
 /* ─── Generic feed (used by Decisions, sessions, TODOs) ─── */
 .feed {
