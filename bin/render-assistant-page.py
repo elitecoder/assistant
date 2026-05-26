@@ -378,16 +378,46 @@ def render_workspaces_tab():
     if not summaries_dir.exists():
         return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
 
-    # Currently open workspace refs from world.json
+    # Pull live signals from world.json: open workspaces + per-workspace
+    # last_turn_age_sec / agent_status / cwd / pr_refs.
     open_ws: set[str] = set()
+    ws_meta: dict[str, dict] = {}
     try:
         world_data = json.loads(WORLD_PATH.read_text())
         for w in world_data.get("workspaces", []) or []:
             ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
             if ref:
                 open_ws.add(ref)
+                ws_meta[ref] = w
+
+        # Index live_sessions by tab_id so we can correlate workspace → session.
+        sess_by_tab: dict[str, dict] = {}
+        for s in world_data.get("live_sessions", []) or []:
+            tab = s.get("tab_id")
+            if tab:
+                sess_by_tab[tab] = s
+        # Stitch session signals into workspace meta.
+        for ref, w in ws_meta.items():
+            for surf in (w.get("surfaces") or []):
+                # In cmux, surface.ref maps to a tab_id elsewhere; we only
+                # have ref on surfaces. The ws_meta panel_id mapping isn't
+                # exposed here. Best we can do: match by cwd of any session
+                # whose tab_id appears in panel_ids — fall back to None.
+                pass
+            # Look up session by matching cwd: world.live_sessions has a cwd
+            # field; ws_meta doesn't carry cwd directly — but the summary file
+            # for this workspace does. We attach session info per-row below.
     except Exception:
-        pass
+        world_data = {}
+
+    def session_for_ws(ws_cwd: str) -> dict | None:
+        """Find live_sessions entry whose cwd matches the workspace cwd. Best-effort."""
+        if not ws_cwd:
+            return None
+        for s in world_data.get("live_sessions", []) or []:
+            if s.get("cwd") == ws_cwd:
+                return s
+        return None
 
     rows = []
     now = utc_now().timestamp()
@@ -397,24 +427,46 @@ def render_workspaces_tab():
         except Exception:
             continue
         ws_ref = data.get("ws_ref") or jf.stem
-        # Skip workspaces no longer open in cmux. If we couldn't read
-        # world.json (open_ws is empty) we render everything — better
-        # to show stale summaries than show nothing.
         if open_ws and ws_ref not in open_ws:
             continue
         title = data.get("title") or ""
-        verdict = data.get("verdict") or "unknown"
-        # New schema: 'summary'. Legacy: 'summary_for_next_pulse'.
+        cwd = data.get("cwd") or ""
+
+        # Verdict: new schema field. Fall back to legacy `classification`.
+        verdict = data.get("verdict")
+        if not verdict:
+            classification = (data.get("classification") or "").upper()
+            verdict = {
+                "ACTIVE":        "active",
+                "DONE":          "ready_for_cleanup",
+                "STRANDED":      "stranded",
+                "AWAITING_USER": "needs_user",
+                "BROKEN":        "needs_user",
+                "UNKNOWN":       "unknown",
+            }.get(classification, "unknown")
+
         summary = data.get("summary") or data.get("summary_for_next_pulse") or "(no summary recorded yet)"
-        # New schema: 'ts'. Legacy: 'last_updated_ts'.
         ts = data.get("ts") or data.get("last_updated_ts") or 0
         age_sec = max(0, int(now - ts)) if ts else None
+
+        # Live signals from the workspace's session (if found).
+        sess = session_for_ws(cwd)
+        last_turn_age = sess.get("last_turn_age_sec") if sess else None
+        # Working = last assistant turn was a tool_use (still in flight).
+        last_assistant_text = (sess or {}).get("last_assistant", {}).get("text", "") or ""
+        agent_status = "working" if last_assistant_text.startswith("[tool_use:") else "idle"
+        if not sess:
+            agent_status = None  # unknown
+
+        pr_refs = data.get("pr_refs") or []
+
         rows.append({
-            "ws_ref": ws_ref, "title": title, "verdict": verdict,
+            "ws_ref": ws_ref, "title": title, "cwd": cwd, "verdict": verdict,
             "summary": summary, "age_sec": age_sec, "ts": ts,
+            "agent_status": agent_status, "last_turn_age_sec": last_turn_age,
+            "pr_refs": pr_refs,
         })
 
-    # Sort: most recently updated first.
     rows.sort(key=lambda r: -(r.get("ts") or 0))
 
     if not rows:
@@ -428,6 +480,20 @@ def render_workspaces_tab():
         if s < 3600:
             return f"{s // 60}m"
         return f"{s // 3600}h"
+
+    # Title-prefix → category tag (gives every row a contextual chip).
+    def category_tag(title: str) -> tuple[str, str] | None:
+        t = (title or "")
+        if t.startswith("Auto:"):       return ("auto",     "category-auto")
+        if t.startswith("Resumed:"):    return ("resumed",  "category-resumed")
+        if "deflake" in t.lower():      return ("deflake",  "category-deflake")
+        if "audit" in t.lower():        return ("audit",    "category-audit")
+        if "phonebook" in t.lower():    return ("phonebook","category-audit")
+        if "Architect" in t:            return ("arch",     "category-arch")
+        if "Assistant" in t:            return ("internal", "category-internal")
+        if "probe" in t.lower():        return ("probe",    "category-internal")
+        if "combine" in t.lower():      return ("combine",  "category-arch")
+        return None
 
     # icon · short label · CSS class suffix (drives tinted bg + glow)
     VERDICT_PILL = {
@@ -444,13 +510,47 @@ def render_workspaces_tab():
         icon, label, vcls = VERDICT_PILL.get(r["verdict"], VERDICT_PILL["unknown"])
         stale = (r["age_sec"] or 0) > 300
         age_class = " stale" if stale else ""
+
+        # Status dot: green pulse when working, dim circle when idle, hollow if unknown.
+        if r["agent_status"] == "working":
+            status_dot = '<span class="status-dot working" title="Agent working — tool_use in flight"></span>'
+        elif r["agent_status"] == "idle":
+            status_dot = '<span class="status-dot idle" title="Agent idle"></span>'
+        else:
+            status_dot = '<span class="status-dot unknown" title="No live session detected"></span>'
+
+        # Category chip
+        cat = category_tag(r["title"])
+        cat_chip = f'<span class="ws-cat {cat[1]}">{cat[0]}</span>' if cat else ''
+
+        # PR chips — small monospace pills.
+        pr_chips = ""
+        if r["pr_refs"]:
+            chips = "".join(
+                f'<span class="ws-pr-chip">PR #{p}</span>'
+                for p in r["pr_refs"][:3]
+            )
+            pr_chips = f'<span class="ws-pr-chips">{chips}</span>'
+
+        # Last-turn age chip — separate from summary-age. Only show if known.
+        live_age_chip = ""
+        if r["last_turn_age_sec"] is not None:
+            la = r["last_turn_age_sec"]
+            la_str = fmt_age(la)
+            la_class = "fresh" if la < 600 else ("warm" if la < 1800 else "cold")
+            live_age_chip = f'<span class="ws-live-age {la_class}" title="Last turn {la_str} ago">⟳ {la_str}</span>'
+
         html_rows.append(
-            f'<div class="ws-row">'
+            f'<div class="ws-row verdict-{vcls}-row">'
             f'  <div class="ws-row-head">'
+            f'    {status_dot}'
             f'    <button class="ws-ref-btn" data-ws="{e(r["ws_ref"])}" onclick="openWs(this)" title="Focus this workspace in cmux">{e(r["ws_ref"])}</button>'
             f'    <span class="ws-title">{e(r["title"])}</span>'
+            f'    {cat_chip}'
+            f'    {pr_chips}'
+            f'    {live_age_chip}'
             f'    <span class="verdict-pill verdict-{vcls}"><span class="vp-icon">{icon}</span>{e(label)}</span>'
-            f'    <span class="ws-age{age_class}">{fmt_age(r["age_sec"])}</span>'
+            f'    <span class="ws-age{age_class}" title="Summary written {fmt_age(r["age_sec"])} ago">{fmt_age(r["age_sec"])}</span>'
             f'  </div>'
             f'  <div class="ws-summary">{e(r["summary"])}</div>'
             f'</div>'
@@ -878,12 +978,88 @@ h1 {
 }
 .ws-row:hover { background: var(--hover); }
 .ws-row-head {
-  display: grid;
-  grid-template-columns: max-content 1fr max-content max-content;
-  gap: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
+.ws-row-head .ws-title {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+.ws-row-head .ws-age { margin-left: auto; }
+/* status dot — pulsing green when working, dim when idle */
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  flex-shrink: 0; display: inline-block;
+}
+.status-dot.working {
+  background: var(--green);
+  box-shadow: 0 0 0 0 rgba(95,217,122,0.5);
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+.status-dot.idle    { background: var(--muted); opacity: 0.4; }
+.status-dot.unknown { background: transparent; border: 1px solid var(--line-strong); }
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(95,217,122,0.45); }
+  50%      { box-shadow: 0 0 0 4px rgba(95,217,122,0);   }
+}
+/* category chip */
+.ws-cat {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font: 500 9.5px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: rgba(255,255,255,0.04);
+  color: var(--text-2);
+  border: 1px solid var(--line);
+}
+.category-auto     { color: var(--amber);  background: var(--amber-bg);  border-color: rgba(240,179,48,0.18); }
+.category-resumed  { color: var(--purple); background: var(--purple-bg); border-color: rgba(176,107,240,0.20); }
+.category-deflake  { color: var(--blue);   background: var(--blue-bg);   border-color: rgba(107,190,240,0.18); }
+.category-audit    { color: #f0b3d5;       background: rgba(240,179,213,0.08); border-color: rgba(240,179,213,0.18); }
+.category-arch     { color: #6be0c8;       background: rgba(107,224,200,0.08); border-color: rgba(107,224,200,0.18); }
+.category-internal { color: var(--muted); }
+/* PR chip group */
+.ws-pr-chips { display: inline-flex; gap: 4px; }
+.ws-pr-chip {
+  font: 500 10px/1.2 var(--mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(107,190,240,0.08);
+  color: var(--blue);
+  border: 1px solid rgba(107,190,240,0.16);
+}
+/* live-age chip — last turn age (separate from summary age) */
+.ws-live-age {
+  font: 500 10px/1.2 var(--mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.ws-live-age.fresh { color: var(--green); background: var(--green-bg); border-color: rgba(95,217,122,0.18); }
+.ws-live-age.warm  { color: var(--amber); background: var(--amber-bg); border-color: rgba(240,179,48,0.18); }
+.ws-live-age.cold  { color: var(--muted); }
+/* faint left border on row tinted to verdict */
+.ws-row { position: relative; }
+.ws-row::before {
+  content: ""; position: absolute; left: -8px; top: 14px; bottom: 16px;
+  width: 2px; border-radius: 1px; opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.ws-row.verdict-active-row::before   { background: var(--blue);   opacity: 0.5; }
+.ws-row.verdict-merge-row::before    { background: var(--green);  opacity: 0.6; }
+.ws-row.verdict-cleanup-row::before  { background: var(--purple); opacity: 0.55; }
+.ws-row.verdict-stranded-row::before { background: var(--amber);  opacity: 0.6; }
+.ws-row.verdict-user-row::before     { background: var(--red);    opacity: 0.6; }
+.ws-row.verdict-unknown-row::before  { background: var(--muted);  opacity: 0.18; }
+.ws-row:hover::before { opacity: 0.85; }
 .ws-ref-btn {
   background: transparent;
   border: 1px solid var(--line);
