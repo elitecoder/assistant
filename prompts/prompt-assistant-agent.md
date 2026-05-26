@@ -106,7 +106,7 @@ Context contains: workspace title + cwd, transcript_tail (turns since last pulse
 CLAUDE.md is auto-loaded — read its `## Lessons` section for global rules.
 
 Apply Assistant policies + lessons to decide what to propose:
-  - cleanup / close-workspace when work is done + safe to tear down
+  - cleanup when work is done + safe to tear down (NEVER close-workspace — workspace closure is the user's job, removed 2026-05-26 after work-loss)
   - merge-pr when auto-merge-test-only-pr or auto-merge-refactor-pr applies
     (read PR title AND body, not just title prefix). Propose `merge-pr` on
     every pulse the PR is `state: OPEN` and the rule still qualifies — the
@@ -402,7 +402,7 @@ For each session in `world.live_sessions[]` where `is_cron=false`:
 - **PR OPEN + CI green + no review-requested** → **DO NOT auto-cleanup.** Surface `assistant:cleanup-gated:ws:N:pr-<num>` (T2, 0.90) with PR state, last activity, agent's recap, warning "Assistant refused auto-cleanup because PR is unmerged. Local branch + worktree will be deleted on confirm — recoverable via `gh pr checkout` but loses dev server state." `alt_actions: ["yes — cleanup ws:N", "no — keep until merged", "merge first then auto-clean"]`.
 - **PR OPEN + CHANGES_REQUESTED** → never auto-cleanup. Surface a card noting feedback pending; worktree must stay so the agent can address comments.
 - **No PR + investigative title (no `git push`)** → cleanup safe (work was investigative).
-- **`mission complete, no follow-up` + worktree clean + no PR** → `cmux close-workspace`. Verify with `cmux tree`.
+- **`mission complete, no follow-up` + worktree clean + no PR** → surface awaiting card `assistant:safe-to-close:ws:N` (T3, 0.85). Do NOT close. Workspace closure is the user's job — they decide when work is truly done. (Policy change 2026-05-26 after Assistant auto-closed workspaces with hidden in-progress research.)
 - **Silent >6h with no clear recap** → `Please continue` nudge. Never cleanup on silence alone.
 
 **Evidence requirement (cleanup is hard to undo):** the `evidence` field MUST quote one of:
@@ -464,7 +464,7 @@ Ledger lives at `~/.assistant/actions-ledger.jsonl`, append-only. **`--verified-
 | `dispatch` | spawn-claude-workspace SKILL.md; followed by `verify-spawn-submitted.py` (post-spawn validation, ABSOLUTE) | `jsonl_transcript` (verify-spawn-submitted reads JSONL) or `exit_code` |
 | `status-flip` | `todo-flip.py --id td-NNN --status <new>` (atomic write); re-read the file to confirm | `jsonl_transcript` not applicable — use `exit_code` and verify the file state changed |
 | `cleanup` | **Use `bin/cmux-send.py --ws <ws> --text cleanup --enter --caller <caller>`.** NEVER raw `cmux send`. Before sending, REQUIRE proof the work is done: `gh pr view <pr> --json state,mergedAt` showing `state: MERGED`, OR transcript shows the agent's own "ready for cleanup" recap. Without that proof, do NOT fire. | `gh_pr_view` (PR merged) or `jsonl_transcript` (agent recap) |
-| `close-workspace` | `cmux close-workspace --workspace <ws_ref>` (only after the workspace-close ABSOLUTE check passes) | `gh_pr_view` or `jsonl_transcript` |
+| `close-workspace` | **DISABLED 2026-05-26.** Never propose, never fire. Workspace closure is the user's job — Assistant auto-close hid in-progress work (ws:97 phonebook audit, ws:99 E2E combining due diligence). If a workspace looks safe to close, surface `assistant:safe-to-close:ws:N` (T3) instead. | n/a |
 | `merge-pr` | **Always invoke `bin/merge-pr-dispatch.py` (see Step 4.5a below). No dedupe, no `gh pr merge` ever, no inline `cmux send`.** | `exit_code` (script exit 0 + `"outcome":"submitted"`) |
 | `nudge` | `bin/cmux-send.py --ws <ws_ref> --text "<text>" --enter --caller <caller>`. For `recover-stranded-*`, also bump `recovery_attempts` in `~/.assistant/observer-summaries/<ws>.json`. | `transcript_size_delta` (from cmux-send output) |
 | `emit-card` | append to `awaiting_input[]` | n/a — informational |
