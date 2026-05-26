@@ -226,15 +226,6 @@ def main():
         return
 
     state["awaiting_input"] = keep
-    actions = state.setdefault("actions_taken", [])
-    for key, reason in dropped:
-        actions.append({
-            "key": f"assistant:awaiting-purged:{key}",
-            "outcome": "purged",
-            "evidence": reason,
-            "verified_via": "purge-stale-awaiting",
-            "ts": time.time(),
-        })
 
     tmp = STATE_PATH.with_suffix(STATE_PATH.suffix + ".tmp")
     tmp.write_text(json.dumps(state, indent=2) + "\n")
