@@ -84,3 +84,22 @@ Compounded by [INCIDENTS.md#send-text-not-submit](#send-text-not-submit): even t
 The two-branch router can land a PR without human review. That's fine for test-only PRs and for refactors with full local G3 + unit suite green — both have low blast radius. For feature/bugfix PRs (any production-code touch), human review is mandatory. Without a Step-0 safety gate, an aggressive observer proposing `merge-pr` on any OPEN PR would land production code unreviewed.
 
 **Rule:** Step 0 of the `merge-pr` router refuses any PR that doesn't qualify for one of: (a) test-only paths, OR (b) refactor + full local G3 + unit suite green. Otherwise log `merge-pr-refused:not-auto-mergeable` and emit awaiting card "PR needs human reviewer."
+
+## /merge-when-ready 10362 sent to wrong workspace (2026-05-26) {#screen-read-misroute}
+
+Pulse 4 of session `f58ccdbb` produced two false-verified ledger entries on the same pulse:
+
+1. `assistant:merge-pr:10362:ws1` — `/merge-when-ready 10362` was supposedly sent to **ws:1 (E2E Reliability)** to merge PR #10362 (the deflake-config-smoke-61 PR, owned by ws:57). Evidence: "confirmed on ws:1 screen ('This is added function/merge-when-ready 10362')". Reality: ws:1's transcript JSONL had ZERO occurrences of `ARGUMENTS: 10362`; the keystrokes never reached the claude PID — they trampled Mukul's in-progress design-doc message in the input box. The "evidence" was a screen-read hallucination concatenating Mukul's actual text "This is added functionality" with another fragment.
+
+2. `assistant:cleanup:workspace:90` — `cleanup` sent to ws:90 (`Auto: td-037`) on the claim that td-037 was complete with PR #54 opened. Reality: td-037 had been dispatched only 17 min earlier; no archffp pipeline can finish that fast, and PR #54 was never validated via `gh pr view`.
+
+**Two distinct bugs:**
+
+- **(a) Workspace target override.** The Observer's verdict for PR #10362 was `params.ws_ref: workspace:57`. The Assistant overrode that to `workspace:1` on its own reasoning ("APPROVED + CLEAN + all CI green — strongest evidence"). There was no rule forbidding the override.
+- **(b) Screen-read evidence accepted as proof of submission.** The cmux RPC return code said "OK" but the keystrokes never reached the claude PID (cmux silently drops sends to unfocused or non-terminal-active panes for some workspace topologies). The Assistant verified by reading `cmux rpc surface.read_text` and finding text patterns it expected. The terminal screen routinely loses scrollback, mangles ANSI, AND can echo a different workspace's surface back when surface refs collide across windows.
+
+**Rules:**
+
+1. **Workspace-target lock.** For every action that targets a workspace (`cleanup`, `nudge`, `merge-pr`, `close-workspace`), the `ws_ref` is inherited verbatim from the per-ws Observer's `params.ws_ref` OR the TODO's `dispatchedWs`. The Assistant prompt MUST NOT override it. If the Assistant believes the Observer's target is wrong, it surfaces a card — it does not "pick a better workspace."
+2. **Screen reads are NOT evidence.** Ledger field `verified_via=screen_read` is rejected as a class. The acceptable evidence types are `jsonl_transcript`, `transcript_size_delta` (from `cmux-send.py`), `exit_code` (from a wrapper script that already verified), `gh_pr_view`, and `observer_summary` (only for informational/purge actions). Anything else logs `verified_via=not_verified` and `outcome=failed`.
+3. **All sends go through `bin/cmux-send.py`.** The script captures `transcript_size_delta` (post-send byte growth). A delta of 0 means cmux returned OK but the keystrokes did not reach claude — fail fast. Logged to `~/.assistant/sends.jsonl`.

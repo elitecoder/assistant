@@ -437,24 +437,42 @@ For each `candidate_actions` entry, perform AND log to `actions_taken[]` AND app
     --pulse-idx "$NEXT_PULSE_IDX" \
     --key "<action-key>" --kind "<kind>" \
     --ws-ref "<ws_ref-or-empty>" --td "<td-or-empty>" \
-    --evidence "<one-line>" \
-    --outcome "verified|failed|skipped|rejected"
+    --evidence "<one-line human description>" \
+    --outcome "verified|failed|skipped|rejected" \
+    --verified-via "<jsonl_transcript|transcript_size_delta|exit_code|gh_pr_view|observer_summary|not_verified>" \
+    --proof '<JSON proof object>'
 ```
 
-Ledger lives at `~/.assistant/actions-ledger.jsonl`, append-only.
+Ledger lives at `~/.assistant/actions-ledger.jsonl`, append-only. **`--verified-via` is required when `--outcome verified`.** It is the structured, falsifiable proof field; `--evidence` is for human reading only.
+
+##### `verified_via` taxonomy (REQUIRED on outcome=verified)
+
+| `verified_via` | Means | Acceptable as proof? |
+|---|---|---|
+| `jsonl_transcript` | You read the target's transcript JSONL via `transcript-tail.py` and matched the literal text. | ✅ Strongest. Always prefer. |
+| `transcript_size_delta` | `cmux-send.py` reported a positive `transcript_size_delta` after the send (proves claude PID ingested the keystrokes). | ✅ Strong; use when JSONL parse is impractical. |
+| `exit_code` | The wrapper script (e.g. `merge-pr-dispatch.py`) exited 0 with `"outcome":"submitted"`. | ✅ Strong; the script already verified. |
+| `gh_pr_view` | You ran `gh pr view <num> --repo <repo> --json state,mergedAt` and confirmed the expected state. | ✅ Strong for PR-state actions (cleanup, close-workspace gated on PR merged). |
+| `observer_summary` | Cited the per-ws Observer Agent's classification. | ⚠ Acceptable only for `purge-awaiting` and informational logs. NEVER for `dispatch`, `cleanup`, `merge-pr`, `close-workspace`. |
+| `not_verified` | You acted but couldn't verify. | ⚠ Forces `outcome=failed`. |
+| `screen_read` | You read terminal screen text via `cmux rpc surface.read_text`. | ❌ **REJECTED.** The screen is unreliable (loses scrollback, mangles ANSI, can echo the wrong workspace's surface — see [INCIDENTS.md#screen-read-misroute](INCIDENTS.md#screen-read-misroute)). The ledger flags this class with `!` in tail; a code reviewer will reject any new `screen_read` ledger entry. If you only have screen evidence, log `verified_via=not_verified` and `outcome=failed`. |
 
 #### Action implementations
 
-| kind | implementation |
-|---|---|
-| `dispatch` | spawn-claude-workspace SKILL.md; followed by `verify-spawn-submitted.py` (post-spawn validation, ABSOLUTE) |
-| `status-flip` | `todo-flip.py --id td-NNN --status <new>` |
-| `cleanup` | `cmux send <ws_ref> cleanup` + Enter |
-| `close-workspace` | `cmux close-workspace --workspace <ws_ref>` (only after the workspace-close ABSOLUTE check passes) |
-| `merge-pr` | **Always invoke `bin/merge-pr-dispatch.py` (see Step 4.5a below). No dedupe, no `gh pr merge` ever, no inline `cmux send`.** |
-| `nudge` | `cmux send <ws_ref> "<text>"` + Enter. For `recover-stranded-*` candidates, also bump `recovery_attempts` in `~/.assistant/observer-summaries/<ws>.json` (3-strike escalation). |
-| `emit-card` | append to `awaiting_input[]` |
-| `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` |
+| kind | implementation | Required `verified_via` |
+|---|---|---|
+| `dispatch` | spawn-claude-workspace SKILL.md; followed by `verify-spawn-submitted.py` (post-spawn validation, ABSOLUTE) | `jsonl_transcript` (verify-spawn-submitted reads JSONL) or `exit_code` |
+| `status-flip` | `todo-flip.py --id td-NNN --status <new>` (atomic write); re-read the file to confirm | `jsonl_transcript` not applicable — use `exit_code` and verify the file state changed |
+| `cleanup` | **Use `bin/cmux-send.py --ws <ws> --text cleanup --enter --caller <caller>`.** NEVER raw `cmux send`. Before sending, REQUIRE proof the work is done: `gh pr view <pr> --json state,mergedAt` showing `state: MERGED`, OR transcript shows the agent's own "ready for cleanup" recap. Without that proof, do NOT fire. | `gh_pr_view` (PR merged) or `jsonl_transcript` (agent recap) |
+| `close-workspace` | `cmux close-workspace --workspace <ws_ref>` (only after the workspace-close ABSOLUTE check passes) | `gh_pr_view` or `jsonl_transcript` |
+| `merge-pr` | **Always invoke `bin/merge-pr-dispatch.py` (see Step 4.5a below). No dedupe, no `gh pr merge` ever, no inline `cmux send`.** | `exit_code` (script exit 0 + `"outcome":"submitted"`) |
+| `nudge` | `bin/cmux-send.py --ws <ws_ref> --text "<text>" --enter --caller <caller>`. For `recover-stranded-*`, also bump `recovery_attempts` in `~/.assistant/observer-summaries/<ws>.json`. | `transcript_size_delta` (from cmux-send output) |
+| `emit-card` | append to `awaiting_input[]` | n/a — informational |
+| `purge-awaiting` | drop a stale prior-pulse card; log `assistant:awaiting-purged:<key>` | `observer_summary` acceptable here |
+
+**Workspace-target validation (ABSOLUTE).** Before any send action (`cleanup`, `nudge`), the prompt MUST verify the target workspace is the right one for the work:
+- For `cleanup`: the `ws_ref` you target must match either the per-ws Observer's `params.ws_ref` for that exact workspace OR the `dispatchedWs` of the TODO claiming this PR. **Never override the Observer's `ws_ref`.** Today's incident: Assistant overrode Observer's `ws:57` for PR #10362 to `ws:1` (E2E Reliability) on hallucinated reasoning. Rule: target_ws is inherited verbatim from the Observer's verdict; if you think it's wrong, don't act — surface a card.
+- For `cleanup` triggered by "PR merged": run `gh pr view <pr> --repo Adobe-Firefly/firefly-platform --json state,mergedAt` and require `state == MERGED`. Without that, refuse.
 
 If executing fails (cmux RPC error, gh failure), log to ledger with `--outcome failed`.
 
