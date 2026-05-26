@@ -50,6 +50,15 @@ cmux_retry() {
     return 1
 }
 
+# --- 0. Mechanically purge stale awaiting cards ---------------------------
+# Runs before the Assistant turn so the cleaned awaiting_input[] is what the
+# next pulse sees. Drops cards whose workspace is closed, PR is merged, or
+# referenced TODO is done. Idempotent. Failure is non-fatal.
+PURGE_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/purge-stale-awaiting.py"
+if [ -x "$PURGE_SCRIPT" ]; then
+    "$PURGE_SCRIPT" >/dev/null 2>&1 || true
+fi
+
 # --- 1. Drop pulse file ----------------------------------------------------
 TS=$(date +%s)
 ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)

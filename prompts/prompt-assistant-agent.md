@@ -221,6 +221,8 @@ If `find-stuck-workspaces.py` returns an empty array, skip this step.
 
 **Awaiting cards from the prior pulse are HYPOTHESES, not facts.** Mukul or another tool may have changed underlying state (flipped `autoDispatch=true`, merged a PR, closed a workspace) that invalidates the card's premise. Never re-emit a card without re-checking its predicate. Incident: [INCIDENTS.md#stale-awaiting](INCIDENTS.md#stale-awaiting).
 
+**Mechanical purge runs before each pulse.** `bin/purge-stale-awaiting.py` (invoked by `assistant-pulse.sh` Step 0) drops cards where the workspace is closed, the PR is merged/closed, the referenced TODO is `done`/`deferred`, or every TODO in an `autodispatch-unset:*` card now has `autoDispatch` set. Each purge appends an `assistant:awaiting-purged:<original-key>` entry to `actions_taken` with `verified_via: purge-stale-awaiting`. Your Step 2.5 work is to catch the predicates the purger doesn't know about — anything semantic, like a `monitor CI` card whose run is now complete.
+
 For every entry in the prior pulse's `awaiting_input[]`, re-validate before keeping:
 
 | Card key pattern | Re-validation predicate (drop if FALSE) |
