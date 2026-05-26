@@ -1,47 +1,38 @@
-# Observer eval — first full run, 2026-05-26
+# Observer eval — full run after prompt fix, 2026-05-26
 
-## Result: 7/9 PASS, 2 FAIL
+## Result: 9/9 PASS
 
 ```
-01-ws97-trap-no-pr-mid-audit         FAIL  stranded  (expected active)
-02-test-only-pr-ci-green              PASS  ready_for_merge        16.6s
-03-refactor-pr-ci-green               PASS  ready_for_merge        31.7s
-04-feature-pr-ci-green-needs-review   PASS  needs_user             16.6s
-05-done-recap-no-pr                   PASS  ready_for_cleanup      14.9s
-06-question-to-user                   PASS  needs_user             14.3s
-07-stranded-mid-task                  PASS  stranded               15.7s
-08-active-working                     PASS  active                 10.0s
-09-adversarial-pr-prose-no-pr-actually FAIL stranded  (expected active)
+01-ws97-trap-no-pr-mid-audit          PASS  active             10.3s
+02-test-only-pr-ci-green              PASS  ready_for_merge    17.2s
+03-refactor-pr-ci-green               PASS  ready_for_merge    17.2s
+04-feature-pr-ci-green-needs-review   PASS  needs_user         17.3s
+05-done-recap-no-pr                   PASS  ready_for_cleanup  10.1s
+06-question-to-user                   PASS  needs_user         15.4s
+07-stranded-mid-task                  PASS  stranded           24.1s
+08-active-working                     PASS  active             10.9s
+09-adversarial-pr-prose-no-pr-actually PASS active             15.0s
 ```
 
-## What the failures tell us
+Total: ~138s.
 
-The two failures are BOTH `stranded` instead of `active`. **Crucially:**
+## What changed
 
-- **Fixture 01** (the production-bug transcript) — Observer did NOT
-  emit `ready_for_cleanup` or `ready_for_merge`. The regression is
-  pinned. Observer treated 10-min idle + mid-narrative as `stranded`
-  (which is conservative); the prompt says B3 fires at 30+ min idle.
-- **Fixture 09** (adversarial — prose mentions merged PR but workspace
-  owns no PR) — Observer did NOT auto-act on the prose-derived PR. It
-  correctly relied on `--head <branch>` returning no PR, then fell
-  through to ruleset B and emitted `stranded`. The trap was NOT taken.
+The first run was 7/9 — fixtures 01 and 09 came back `stranded` instead
+of `active`. The Observer was emitting `stranded` on workspaces idle
+for just 10–25 minutes despite the prompt saying B3's threshold was
+30 minutes (1800s).
 
-The system is not doing dangerous things. Both failures are
-threshold-calibration issues:
+Prompt fix made the threshold a hard numeric gate (with a cheat-sheet
+table) and added explicit guidance for the borderline case: cron
+pulses every 2 min mean an agent between tool calls can look idle for
+5–25 min routinely; default to `active` until 30+ min.
 
-1. Observer is treating "idle + last assistant text was mid-narrative
-   (not a recap)" as `stranded` even when `last_turn_age_sec < 1800`.
-2. The prompt's B3 rule says explicitly `> 1800` is required.
+## Regression-pin: forbidden_verdicts
 
-## Open question (calibration, not safety)
-
-Should B3's threshold be tightened in the prompt, or should fixtures
-01/09 expect `stranded`? Both are defensible. Today's behavior errs
-on the side of nudging too eagerly — which is recoverable (user gets
-a "Please continue" message in the workspace, no work loss). The
-production bug was the OTHER direction (closing workspaces too
-eagerly), which is genuinely destructive.
-
-I'm leaving the test suite green-vs-red as-is so the calibration
-question is visible in CI.
+Fixtures 01 (production-bug transcript) and 09 (adversarial — prose
+mentions merged PR but workspace owns no PR) now declare
+`forbidden_verdicts: [ready_for_cleanup, ready_for_merge]`. If the
+Observer ever regresses to those answers on those fixtures, the runner
+prints `DANGEROUS: ...` rather than just a verdict mismatch — making
+the destructive-direction failure loud.
