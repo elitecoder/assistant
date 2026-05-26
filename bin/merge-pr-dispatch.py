@@ -66,6 +66,7 @@ import time
 CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 REPO = "Adobe-Firefly/firefly-platform"
 TRANSCRIPT_TAIL = os.path.expanduser("~/dev/assistant/bin/transcript-tail.py")
+CMUX_SEND = os.path.expanduser("~/dev/assistant/bin/cmux-send.py")
 
 TEST_PATH_RE = re.compile(
     r"^("
@@ -162,69 +163,40 @@ def step1_ci_route(pr):
     }
 
 
-def resolve_terminal_surface_uuid(ws_ref):
-    """Find the terminal-type surface UUID for a workspace.
-
-    Returns surface UUID (not ref) — the UUID is globally unique and
-    routes unambiguously through cmux RPC. Surface refs (surface:77) are
-    window-scoped and `cmux send` silently misroutes them when the pane
-    isn't focused — observed 2026-05-25 with deflake workspaces that had
-    a browser preview pane on top of the claude PTY pane.
-
-    The fix is to skip the `cmux send` CLI entirely and use the
-    `surface.send_text` + `surface.send_key` RPCs with the surface UUID.
-
-    Returns the surface UUID string, or None if no terminal surface.
-    """
-    try:
-        r = subprocess.run(
-            [CMUX, "--id-format", "both", "tree", "--workspace", ws_ref, "--json"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode != 0:
-            return None
-        d = json.loads(r.stdout)
-    except Exception:
-        return None
-    for win in d.get("windows", []):
-        for ws in win.get("workspaces", []):
-            if ws.get("ref") != ws_ref:
-                continue
-            for pane in ws.get("panes", []):
-                for s in pane.get("surfaces", []):
-                    if s.get("type") == "terminal" and s.get("id"):
-                        return s["id"]
-    return None
-
-
 def step2_send_and_verify(ws_ref, slash_command):
-    """Returns (ok, observed_last_user_text)."""
-    # Resolve the terminal surface UUID — `cmux send --surface <ref>`
-    # silently misroutes to whatever pane cmux thinks is focused (e.g. a
-    # browser preview), so we drive the RPC directly with a UUID instead.
-    surface_uuid = resolve_terminal_surface_uuid(ws_ref)
-    if not surface_uuid:
-        return False, f"no_terminal_surface_in_{ws_ref}"
+    """Returns (ok, observed_last_user_text).
 
-    # surface.send_text — no automatic Enter, so we follow with send_key.
-    text_payload = json.dumps({"surface_id": surface_uuid, "text": slash_command})
-    r1 = subprocess.run(
-        [CMUX, "rpc", "surface.send_text", text_payload],
-        capture_output=True, text=True, timeout=10,
+    Delegates the actual send to bin/cmux-send.py — the single sanctioned
+    send path. cmux-send logs every call to ~/.assistant/sends.jsonl with
+    the post-send transcript byte delta, which is the proof field that
+    distinguishes "cmux returned OK but claude never ingested" from "claude
+    actually saw it".
+    """
+    send = subprocess.run(
+        [
+            CMUX_SEND,
+            "--ws", ws_ref,
+            "--text", slash_command,
+            "--enter",
+            "--caller", "merge-pr-dispatch.py",
+        ],
+        capture_output=True, text=True, timeout=20,
     )
-    if r1.returncode != 0:
-        return False, f"surface_send_text_exit_{r1.returncode}: {r1.stderr[:200]}"
+    try:
+        send_record = json.loads(send.stdout)
+    except Exception:
+        return False, f"cmux_send_bad_output: {send.stdout[:200]}{send.stderr[:200]}"
+    outcome = send_record.get("outcome", "")
+    if send.returncode != 0:
+        return False, f"cmux_send_exit_{send.returncode}_outcome={outcome}: {send_record.get('rpc_send_text',{}).get('body','')[:200]}"
 
-    enter_payload = json.dumps({"surface_id": surface_uuid, "key": "enter"})
-    r = subprocess.run(
-        [CMUX, "rpc", "surface.send_key", enter_payload],
-        capture_output=True, text=True, timeout=10,
-    )
-    if r.returncode != 0:
-        return False, f"surface_send_key_exit_{r.returncode}: {r.stderr[:200]}"
-
-    # Wait for the agent to ingest the keystrokes + flush to JSONL.
-    time.sleep(2.5)
+    # Pre-check: did the transcript actually grow? cmux-send already
+    # waited 2.5s post-send. If size_delta is 0, the keystrokes did not
+    # reach the claude PID — fail fast rather than reading a stale
+    # last_user.text and wrongly claiming submitted.
+    delta = send_record.get("transcript_size_delta") or 0
+    if delta <= 0:
+        return False, f"transcript_delta_zero (sent OK but claude did not ingest): surface={send_record.get('target_surface_id','?')[:8]} ws_title={(send_record.get('target_ws_title') or '')[:50]}"
 
     # Read the transcript tail and confirm last_user.text matches.
     # 200KB budget: a slash-command user message inlines the entire skill
