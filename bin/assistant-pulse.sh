@@ -97,10 +97,56 @@ fi
 if [ -n "$LAST_TS" ] && [ "$LAST_TS" -gt 0 ]; then
     AGE=$((NOW - LAST_TS))
     if [ "$AGE" -gt "$HEARTBEAT_STALE_SEC" ]; then
-        log "heartbeat stale by ${AGE}s (>${HEARTBEAT_STALE_SEC}s) — running spawn-assistant.sh"
-        [ -x "$SPAWN_SCRIPT" ] && "$SPAWN_SCRIPT" 2>>"$LOG" || log "spawn-assistant missing"
-        # Continue and still try to pulse the OLD ws_ref — if the spawn replaced
-        # it, the new heartbeat will be in place by next tick.
+        # Before declaring stale, check if the Assistant's transcript is
+        # actively being written. A long pulse (5-Agent fan-out + processing)
+        # routinely takes 8-12 min, but Sonnet often forgets to re-write the
+        # heartbeat between Step 0's initial write and Step N's final write.
+        # If claude is still producing tool_use / tool_result records, the
+        # session is alive — DON'T respawn; just bump the heartbeat ourselves.
+        TRANSCRIPT_PATH=$(python3 -c "
+import json, os
+ws = '$WS'
+try:
+    w = json.load(open(os.path.expanduser('~/.claude/cache/world.json')))
+    for s in w.get('live_sessions', []):
+        if s.get('ws_ref') == ws:
+            print(s.get('transcript_path', ''))
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+
+        TRANSCRIPT_AGE=99999
+        if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+            TRANSCRIPT_MTIME=$(stat -f %m "$TRANSCRIPT_PATH" 2>/dev/null || echo 0)
+            TRANSCRIPT_AGE=$((NOW - TRANSCRIPT_MTIME))
+        fi
+
+        # If transcript wrote anything in the last 120s, the Assistant is
+        # mid-pulse. Bump heartbeat in-place; do NOT respawn.
+        if [ "$TRANSCRIPT_AGE" -lt 120 ]; then
+            log "heartbeat stale by ${AGE}s but transcript active (mtime ${TRANSCRIPT_AGE}s ago) — refreshing heartbeat in place"
+            python3 -c "
+import json, os, datetime
+p = os.path.expanduser('~/.assistant/heartbeat.json')
+try:
+    hb = json.load(open(p))
+except Exception:
+    hb = {'ws_ref': '$WS', 'status': 'active', 'model': 'sonnet-4-6-1m'}
+hb['last_pulse_ts'] = int(datetime.datetime.now(datetime.UTC).timestamp())
+hb['last_pulse_iso'] = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+hb['_note'] = 'refreshed by assistant-pulse.sh (transcript active, Assistant mid-pulse)'
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(hb, f, indent=2)
+os.replace(tmp, p)
+" 2>/dev/null
+        else
+            log "heartbeat stale by ${AGE}s and transcript idle (mtime ${TRANSCRIPT_AGE}s ago) — running spawn-assistant.sh"
+            [ -x "$SPAWN_SCRIPT" ] && "$SPAWN_SCRIPT" 2>>"$LOG" || log "spawn-assistant missing"
+            # Continue and still try to pulse the OLD ws_ref — if the spawn replaced
+            # it, the new heartbeat will be in place by next tick.
+        fi
     fi
 fi
 
