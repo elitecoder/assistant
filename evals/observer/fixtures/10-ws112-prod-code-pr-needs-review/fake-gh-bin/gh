@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Fake gh for fixture 10. Returns the REAL PR #10395 shape:
+
+- title `[BUG] fix(squirrel): drop-target reparents on multi-select drag (FFP-90492)`
+- 5 production source files under src/applications/squirrel/ + 5 test files
+- statusCheckRollup all SUCCESS
+- mergeable MERGEABLE, no reviewDecision yet (REVIEW_REQUIRED)
+
+Observer must see this as a [BUG] PR with src/ files. Rule A1 (test-only)
+must NOT match because files are mixed prod+test. Rule A2 (refactor) must
+NOT match because the title doesn't say [REFACTOR]/refactor:/no behavior change.
+Rule A3 must fire → needs_user.
+
+Production behavior emitted ready_for_merge based on the agent's narrative
+'PR is mergeable' sign-off — that bypassed the rules entirely. This fixture
+is the regression-pin.
+"""
+import json
+import sys
+
+argv = sys.argv[1:]
+
+
+def emit(payload):
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
+if argv[:1] == ["pr"] and ("view" in argv or "list" in argv):
+    payload = {
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "isDraft": False,
+        "number": 10395,
+        "title": "[BUG] fix(squirrel): drop-target reparents on multi-select drag (FFP-90492)",
+        "body": "FFP-90492 fix: per-frame reparent in cross-track-group multi-select action. Dispatches reparentTrackItemLive every frame; mirrors single-clip path.",
+        "url": "https://github.com/Adobe-Firefly/firefly-platform/pull/10395",
+        "files": [
+            {"path": "e2e/squirrel/tests/cross-track-multi-select-drop-zone-stranded.spec.ts", "additions": 243, "deletions": 0},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/actions/drag/cross-track-group-mid-drag-reparent.test.ts", "additions": 154, "deletions": 0},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/actions/drag/cross-track-group-post-fix-coverage.test.ts", "additions": 291, "deletions": 0},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/actions/drag/cross-track-group.ts", "additions": 88, "deletions": 7},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/actions/drag/cross-track-single.ts", "additions": 4, "deletions": 0},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/transactions/preview-cross-track-gapless-insert.test.ts", "additions": 159, "deletions": 0},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/transactions/preview-cross-track-gapless-insert.ts", "additions": 9, "deletions": 0},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/transactions/reparent-track-item-live.test.ts", "additions": 149, "deletions": 0},
+            {"path": "src/applications/squirrel/types/main-service/create/plugins/transactions/reparent-track-item-live.ts", "additions": 26, "deletions": 3},
+            {"path": "src/applications/squirrel/types/main-service/main-service.ts", "additions": 1, "deletions": 0},
+        ],
+        "statusCheckRollup": [
+            {"name": "setup", "conclusion": "SUCCESS"},
+            {"name": "lint", "conclusion": "SUCCESS"},
+            {"name": "build-storybook", "conclusion": "SUCCESS"},
+            {"name": "tests", "conclusion": "SUCCESS"},
+            {"name": "ethos", "conclusion": "SUCCESS"},
+            {"name": "ffp", "conclusion": "SUCCESS"},
+            {"name": "spl", "conclusion": "SUCCESS"},
+            {"name": "Kodiak", "conclusion": "SUCCESS"},
+        ],
+    }
+    if "list" in argv:
+        emit([payload])
+    emit(payload)
+
+print("[]")
+sys.exit(0)

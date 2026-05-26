@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:112",
+  "title": "Auto: td-026 FFP-90492 drop-target stranded [112]",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-10",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 820,
+  "agent_status": "idle",
+  "cwd_dirty": true,
+  "cwd_unpushed": true,
+  "is_protected": false
+}

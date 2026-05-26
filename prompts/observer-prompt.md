@@ -65,6 +65,11 @@ Genuinely needs human input — agent asked a question, hit an auth error, work 
 ```
 Default. Workspace is mid-work, no action needed.
 
+```json
+{"verdict": "no_action", "summary": "Done — <PR merged + cleanup ran | no work to do>.", "next": "User will close the workspace when ready."}
+```
+The workspace is fully done AND `/cleanup` (or equivalent teardown) has already run. There is nothing the Assistant can usefully send. Use this verdict whenever the transcript shows cleanup has already completed (worktree removed, branch deleted, ledger entry written, "cleanup done" recap), even if a prior pulse keeps the workspace open. The Assistant maps this to a no-op send. Without this verdict, repeated `/cleanup` sends pile up against an idle/dead claude and the workspace appears in an infinite loop on the dashboard.
+
 ### Writing summary and next
 
 - **Concrete and grounded in the transcript.** Bad: "Agent is working on tests." Good: "Re-running combined keyboard + zoom suite at workers=6 to verify the 4.8x speedup holds."
@@ -90,6 +95,24 @@ Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,ti
 
 ### B — workspace has no open PR
 
+0. **Cleanup has already run.** If the transcript contains any of these
+   signals AND no later turn re-opens work, emit `no_action`:
+   - A `<command-name>/cleanup</command-name>` user turn followed by an
+     assistant turn confirming teardown ("cleanup done", "worktree removed",
+     "branch deleted", "ledger cleanup-NNNNNNNN-NNNNNN").
+   - A direct assistant statement of completed teardown ("worktree torn down",
+     "td-NNN flipped", "/cleanup ran ... no-op" — the no-op phrasing means
+     the second invocation found nothing left to do).
+   - Any prior Observer summary you wrote (visible in the transcript via
+     external state) saying "/cleanup ran" or "cleanup confirmed".
+
+   **Do not emit `ready_for_cleanup` if cleanup has already happened.** The
+   Assistant has no way to no-op a `ready_for_cleanup` verdict — it always
+   sends `/cleanup`, and a workspace whose claude has exited (or whose
+   worktree is gone) cannot ingest the slash command, so the send becomes a
+   permanent loop. Use `no_action` instead and let the workspace sit idle
+   until the user closes it.
+
 1. **Last assistant text is a definitive recap** ("td-NNN COMPLETE", "work is done, no PR needed", "audit complete"), no follow-up turns, `cwd_dirty=false`, `cwd_unpushed=false` → `ready_for_cleanup`.
 2. **Last assistant text asks the user a question** → `needs_user` with the question as the detail.
 3. **Stranded — ALL THREE must be true**:
@@ -111,6 +134,7 @@ Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,ti
 | > 1800 + mid-narrative + idle | `idle` | `stranded` |
 | > 1800 + recap + clean cwd | `idle` | `ready_for_cleanup` (rule B1) |
 | > 1800 + question | `idle` | `needs_user` (rule B2) |
+| any + cleanup already ran | `idle` | `no_action` (rule B0 — wins over B1) |
 
 The number 1800 is a hard gate, not a guideline. If you're computing the verdict and `last_turn_age_sec` is, say, 600 or 1500 — the verdict is `active`, period.
 

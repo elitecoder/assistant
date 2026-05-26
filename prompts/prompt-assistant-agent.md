@@ -29,6 +29,7 @@ For each workspace returned by `cmux tree`:
      {"verdict": "stranded",   "nudge_text": "...", "summary": "..."}
      {"verdict": "needs_user", "title": "...", "detail": "...", "summary": "..."}
      {"verdict": "active",            "summary": "..."}
+     {"verdict": "no_action",         "summary": "..."}
 
 3. Persist the verdict to disk (powers the dashboard's Workspaces tab):
      bin/save-ws-summary.py --ws-ref <ref> --title <title> \
@@ -46,6 +47,7 @@ For each workspace returned by `cmux tree`:
 | `stranded` | send `nudge_text` to the workspace | `bin/cmux-send.py --ws <ws> --text "<nudge_text>" --enter --caller assistant-pulse` |
 | `needs_user` | append to `awaiting_input[]` | atomic state-write |
 | `active` | no-op | — |
+| `no_action` | no-op | — (workspace is done + cleanup already ran; user closes it) |
 
 The slash commands (`/merge-when-ready`, `/cleanup`) execute *inside* the workspace — they know their own branch, their own PR, their own TODO. You don't need to pass any parameters; just send the bare slash command.
 
