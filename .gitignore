@@ -25,3 +25,5 @@ evals/*/__pycache__/
 # Observer eval scratch files
 evals/observer/fixtures/*/ctx.runtime.json
 evals/observer/last-run.log
+
+evals/observer/last-run.log
