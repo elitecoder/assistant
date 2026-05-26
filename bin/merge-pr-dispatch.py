@@ -162,22 +162,76 @@ def step1_ci_route(pr):
     }
 
 
+def resolve_terminal_surface_uuid(ws_ref):
+    """Find the terminal-type surface UUID for a workspace.
+
+    Returns surface UUID (not ref) — the UUID is globally unique and
+    routes unambiguously through cmux RPC. Surface refs (surface:77) are
+    window-scoped and `cmux send` silently misroutes them when the pane
+    isn't focused — observed 2026-05-25 with deflake workspaces that had
+    a browser preview pane on top of the claude PTY pane.
+
+    The fix is to skip the `cmux send` CLI entirely and use the
+    `surface.send_text` + `surface.send_key` RPCs with the surface UUID.
+
+    Returns the surface UUID string, or None if no terminal surface.
+    """
+    try:
+        r = subprocess.run(
+            [CMUX, "--id-format", "both", "tree", "--workspace", ws_ref, "--json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0:
+            return None
+        d = json.loads(r.stdout)
+    except Exception:
+        return None
+    for win in d.get("windows", []):
+        for ws in win.get("workspaces", []):
+            if ws.get("ref") != ws_ref:
+                continue
+            for pane in ws.get("panes", []):
+                for s in pane.get("surfaces", []):
+                    if s.get("type") == "terminal" and s.get("id"):
+                        return s["id"]
+    return None
+
+
 def step2_send_and_verify(ws_ref, slash_command):
     """Returns (ok, observed_last_user_text)."""
-    # Use `cmux send` (auto-Enter), NOT `cmux send-text` (no submit).
+    # Resolve the terminal surface UUID — `cmux send --surface <ref>`
+    # silently misroutes to whatever pane cmux thinks is focused (e.g. a
+    # browser preview), so we drive the RPC directly with a UUID instead.
+    surface_uuid = resolve_terminal_surface_uuid(ws_ref)
+    if not surface_uuid:
+        return False, f"no_terminal_surface_in_{ws_ref}"
+
+    # surface.send_text — no automatic Enter, so we follow with send_key.
+    text_payload = json.dumps({"surface_id": surface_uuid, "text": slash_command})
+    r1 = subprocess.run(
+        [CMUX, "rpc", "surface.send_text", text_payload],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r1.returncode != 0:
+        return False, f"surface_send_text_exit_{r1.returncode}: {r1.stderr[:200]}"
+
+    enter_payload = json.dumps({"surface_id": surface_uuid, "key": "enter"})
     r = subprocess.run(
-        [CMUX, "send", "--workspace", ws_ref, slash_command],
+        [CMUX, "rpc", "surface.send_key", enter_payload],
         capture_output=True, text=True, timeout=10,
     )
     if r.returncode != 0:
-        return False, f"cmux_send_exit_{r.returncode}: {r.stderr[:200]}"
+        return False, f"surface_send_key_exit_{r.returncode}: {r.stderr[:200]}"
 
     # Wait for the agent to ingest the keystrokes + flush to JSONL.
     time.sleep(2.5)
 
     # Read the transcript tail and confirm last_user.text matches.
+    # 200KB budget: a slash-command user message inlines the entire skill
+    # body verbatim and can be 30-50KB on its own; smaller budgets read
+    # mid-line and silently fail to parse.
     tail = subprocess.run(
-        ["python3", TRANSCRIPT_TAIL, "--ws", ws_ref, "--bytes", "8000"],
+        ["python3", TRANSCRIPT_TAIL, "--ws", ws_ref, "--bytes", "200000"],
         capture_output=True, text=True, timeout=10,
     )
     if tail.returncode != 0:
@@ -189,16 +243,32 @@ def step2_send_and_verify(ws_ref, slash_command):
 
     last_user = (td.get("last_user") or {}).get("text", "") or ""
     last_user = last_user.strip()
-    # Slash commands are wrapped in <command-message>...<command-name>...</command-name>...
-    # so the literal echo will appear inside that wrapper, not as the bare /cmd.
-    # Match either the bare command OR the wrapper that quotes it.
+    # Slash commands appear in the transcript in one of three shapes:
+    #   1. Bare echo: "/monitor-ffp-ci 10360" (rare — only if the user
+    #      types it raw and it doesn't expand into the skill body).
+    #   2. Wrapped: "<command-name>/foo</command-name>" + args (some
+    #      older claude versions; not seen in current sessions).
+    #   3. Inlined skill body: the full skill markdown gets pasted into
+    #      the user message, ending with "ARGUMENTS: <pr>". Current
+    #      claude (2.1.150) uses this shape.
+    parts = slash_command.split()
+    cmd, args = parts[0], parts[1:]
     bare_match = last_user == slash_command.strip()
     wrapper_match = (
-        f"<command-name>{slash_command.split()[0]}</command-name>" in last_user
-        and (len(slash_command.split()) == 1
-             or " ".join(slash_command.split()[1:]) in last_user)
+        f"<command-name>{cmd}</command-name>" in last_user
+        and (not args or " ".join(args) in last_user)
     )
-    if bare_match or wrapper_match:
+    # Skill-body match: the slash skill name (cmd[1:] strips leading /)
+    # appears in the body, AND the args appear at the trailing ARGUMENTS
+    # line. Belt-and-braces: require both.
+    skill_body_match = False
+    if cmd.startswith("/") and len(cmd) > 1:
+        skill_name = cmd[1:]
+        skill_body_match = (
+            skill_name in last_user
+            and (not args or any(f"ARGUMENTS: {a}" in last_user for a in args))
+        )
+    if bare_match or wrapper_match or skill_body_match:
         return True, last_user[:200]
     return False, last_user[:200]
 

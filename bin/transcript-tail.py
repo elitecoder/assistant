@@ -80,7 +80,17 @@ def read_tail(path, n_bytes):
         else:
             text = ""
         if role == "user":
-            last_user = {"ts": d.get("timestamp"), "text": text}
+            # Only count user messages that have actual TEXT content. Tool
+            # results land as user messages with type=tool_result and no
+            # text part — they overwrite the real last_user (the slash
+            # command or wake message), making submission verification
+            # impossible. Skip empty-text user records.
+            if text.strip():
+                last_user = {"ts": d.get("timestamp"), "text": text}
+            elif last_user is None:
+                # Preserve the timestamp even if we have no real user text
+                # yet, so callers can see staleness.
+                last_user = {"ts": d.get("timestamp"), "text": ""}
         elif role == "assistant":
             last_assistant = {"ts": d.get("timestamp"), "text": text}
     return last_user, last_assistant
