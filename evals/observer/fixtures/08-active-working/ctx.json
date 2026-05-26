@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:60",
+  "title": "deflake-ct-drag-rep-124",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-08",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 45,
+  "agent_status": "working",
+  "cwd_dirty": true,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

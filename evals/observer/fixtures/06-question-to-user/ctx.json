@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:91",
+  "title": "Auto: td-079 archffp blast-radius E2E mode",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-06",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 1200,
+  "agent_status": "idle",
+  "cwd_dirty": true,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

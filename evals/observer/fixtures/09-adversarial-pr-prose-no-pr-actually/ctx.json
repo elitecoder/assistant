@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:119",
+  "title": "phonebook-audit-w2",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-09",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 1500,
+  "agent_status": "idle",
+  "cwd_dirty": true,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

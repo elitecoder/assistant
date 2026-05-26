@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Fake gh for fixture 04. Feature PR with all-green CI — should NOT auto-merge."""
+import json
+import sys
+
+argv = sys.argv[1:]
+
+
+def emit(payload):
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
+if argv[:1] == ["pr"] and ("view" in argv or "list" in argv):
+    payload = {
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "reviewDecision": "",
+        "isDraft": False,
+        "number": 10351,
+        "title": "[FEATURE] feat(squirrel): timeline resize handle parity phase 2 — persistence + viewer min-height + tolerance (FFP-88023)",
+        "body": "Adds persistence layer for resize state, min-height clamp, and tolerance band. Hz parity for phase 2 of resize-handle work.",
+        "url": "https://github.com/Adobe-Firefly/firefly-platform/pull/10351",
+        "files": [
+            {"path": "src/applications/squirrel/timeline/resize-handle.ts", "additions": 142, "deletions": 28},
+            {"path": "src/applications/squirrel/timeline/__tests__/resize-handle.test.ts", "additions": 67, "deletions": 4},
+            {"path": "src/applications/squirrel/state/timeline-state.ts", "additions": 23, "deletions": 5},
+            {"path": "e2e/squirrel/timeline-resize.spec.ts", "additions": 18, "deletions": 0}
+        ],
+        "statusCheckRollup": [
+            {"name": "setup", "conclusion": "SUCCESS"},
+            {"name": "lint", "conclusion": "SUCCESS"},
+            {"name": "test:unit", "conclusion": "SUCCESS"},
+            {"name": "test:e2e", "conclusion": "SUCCESS"},
+            {"name": "build", "conclusion": "SUCCESS"}
+        ]
+    }
+    if "list" in argv:
+        emit([payload])
+    emit(payload)
+
+print("[]")
+sys.exit(0)

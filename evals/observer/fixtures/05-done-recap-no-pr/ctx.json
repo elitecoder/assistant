@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:95",
+  "title": "probe-20260526-031844",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-05",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 600,
+  "agent_status": "idle",
+  "cwd_dirty": false,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

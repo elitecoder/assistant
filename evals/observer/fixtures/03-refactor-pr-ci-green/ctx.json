@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:73",
+  "title": "code-simplifier: track-item-presentation",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-03",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 200,
+  "agent_status": "idle",
+  "cwd_dirty": false,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

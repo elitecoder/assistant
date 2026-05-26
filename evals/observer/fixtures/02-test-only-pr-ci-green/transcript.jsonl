@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-05-26T14:00:00Z","message":{"role":"user","content":[{"type":"text","text":"Deflake cross-feature-viewport-678 spec — current failure rate ~12%."}]}}
+{"type":"assistant","timestamp":"2026-05-26T14:00:30Z","message":{"role":"assistant","content":[{"type":"text","text":"Will reproduce the flake locally, identify the race condition, and harden the spec."}]}}
+{"type":"assistant","timestamp":"2026-05-26T14:30:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Reproduced flake — race between snap-target collision and viewport scroll. Fix: poll dropzone-count before assertion. PR #10364 opened."}]}}
+{"type":"assistant","timestamp":"2026-05-26T14:55:00Z","message":{"role":"assistant","content":[{"type":"text","text":"PR #10364 CI all green. Test-only change — no production code touched. Ready to merge."}]}}

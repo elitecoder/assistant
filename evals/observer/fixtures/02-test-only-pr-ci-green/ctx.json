@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:60",
+  "title": "deflake-cross-feat-vp-678",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-02",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 120,
+  "agent_status": "idle",
+  "cwd_dirty": false,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

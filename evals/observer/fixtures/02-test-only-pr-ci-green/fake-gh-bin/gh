@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Fake gh for fixture 02. Returns test-only PR with all-green CI."""
+import json
+import sys
+
+argv = sys.argv[1:]
+
+
+def emit(payload):
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
+# `gh pr view --head <branch> --json ...`
+if argv[:1] == ["pr"] and ("view" in argv or "list" in argv):
+    payload = {
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "reviewDecision": "",
+        "isDraft": False,
+        "number": 10364,
+        "title": "[BUG] test(squirrel): de-flake cross-feature-viewport-678",
+        "body": "Race between snap-target collision detection and viewport scroll. Poll dropzone-count before asserting. Test-only — no production code touched.",
+        "url": "https://github.com/Adobe-Firefly/firefly-platform/pull/10364",
+        "files": [
+            {"path": "e2e/squirrel/cross-feature-viewport.spec.ts", "additions": 14, "deletions": 8},
+            {"path": "e2e/squirrel/__fixtures__/snap-target.ts", "additions": 3, "deletions": 0}
+        ],
+        "statusCheckRollup": [
+            {"name": "setup", "conclusion": "SUCCESS"},
+            {"name": "lint", "conclusion": "SUCCESS"},
+            {"name": "test:unit", "conclusion": "SUCCESS"},
+            {"name": "test:e2e", "conclusion": "SUCCESS"},
+            {"name": "build", "conclusion": "SUCCESS"}
+        ]
+    }
+    # `gh pr list` returns an array
+    if "list" in argv:
+        emit([payload])
+    emit(payload)
+
+# Anything else — return empty so callers see "no data"
+print("[]")
+sys.exit(0)

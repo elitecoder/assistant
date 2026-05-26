@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:21",
+  "title": "Auto: td-060 resize-handle Ph2",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-04",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 300,
+  "agent_status": "idle",
+  "cwd_dirty": false,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

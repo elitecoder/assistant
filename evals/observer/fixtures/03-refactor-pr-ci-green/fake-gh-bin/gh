@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Fake gh for fixture 03. Refactor PR with all-green CI."""
+import json
+import sys
+
+argv = sys.argv[1:]
+
+
+def emit(payload):
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
+if argv[:1] == ["pr"] and ("view" in argv or "list" in argv):
+    payload = {
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "reviewDecision": "",
+        "isDraft": False,
+        "number": 10371,
+        "title": "[REFACTOR] code-simplifier: track-item-presentation",
+        "body": "Pure simplification — no behavior change. Existing unit + E2E tests cover the surface; no test changes needed.",
+        "url": "https://github.com/Adobe-Firefly/firefly-platform/pull/10371",
+        "files": [
+            {"path": "src/applications/squirrel/track-item-presentation.ts", "additions": 18, "deletions": 47}
+        ],
+        "statusCheckRollup": [
+            {"name": "setup", "conclusion": "SUCCESS"},
+            {"name": "lint", "conclusion": "SUCCESS"},
+            {"name": "test:unit", "conclusion": "SUCCESS"},
+            {"name": "test:e2e", "conclusion": "SUCCESS"},
+            {"name": "build", "conclusion": "SUCCESS"}
+        ]
+    }
+    if "list" in argv:
+        emit([payload])
+    emit(payload)
+
+print("[]")
+sys.exit(0)

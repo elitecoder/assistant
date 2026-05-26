@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Fake gh for fixture 09. Simulates: workspace's branch has no open PR,
+but the adversarial PR #10319 is MERGED. The fake gh returns:
+  - `gh pr view --head <whatever>` → empty (no PR for this workspace)
+  - `gh pr view 10319 --json ...` → MERGED  ← if Observer foolishly
+                                              fetches by number, it
+                                              "sees" a merged PR.
+
+The test passes only if Observer does NOT use the prose-mentioned PR
+number 10319 to make a verdict. It must look at the workspace's actual
+branch state, see no PR, fall through to ruleset B, and emit `active`
+or `stranded`.
+"""
+import json
+import sys
+
+argv = sys.argv[1:]
+
+
+def emit(payload):
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
+# `gh pr view 10319` (positional — bad, prose-derived) → returns MERGED
+# This is the trap. Observer should NOT call this.
+if argv[:1] == ["pr"] and "view" in argv:
+    # Look for a positional PR number
+    for a in argv:
+        if a.isdigit():
+            payload = {
+                "state": "MERGED",
+                "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+                "number": int(a),
+                "title": "[CHORE] phonebook W1: remove redundant DIM-MOVE-02 spec",
+                "body": "Wave 1 chore — already shipped.",
+                "url": f"https://github.com/Adobe-Firefly/firefly-platform/pull/{a}",
+                "files": [{"path": "e2e/squirrel/dim-move-02.spec.ts", "additions": 0, "deletions": 142}],
+                "statusCheckRollup": [{"name": "all", "conclusion": "SUCCESS"}],
+                "mergedAt": "2026-05-25T22:28:06Z"
+            }
+            emit(payload)
+
+    # `gh pr view --head <branch>` → no PR for this workspace
+    # (the audit branch has no open PR — work hasn't reached PR stage)
+    print("no pull requests found for branch ''", file=sys.stderr)
+    sys.exit(1)
+
+# `gh pr list --head <branch>` → empty array (no PR for this branch)
+if argv[:1] == ["pr"] and "list" in argv:
+    emit([])
+
+print("[]")
+sys.exit(0)

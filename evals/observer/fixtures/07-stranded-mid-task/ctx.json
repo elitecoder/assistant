@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:88",
+  "title": "Auto: td-055 baseline-red transform-handles",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-07",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 2400,
+  "agent_status": "idle",
+  "cwd_dirty": true,
+  "cwd_unpushed": false,
+  "is_protected": false
+}
