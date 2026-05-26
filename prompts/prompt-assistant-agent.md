@@ -61,29 +61,16 @@ If a direct user message woke you (not a pulse), proceed with the full routine �
 
 Long-running Sonnet 1M sessions degrade — by `pulse_idx ≈ 150-200` (40-50% context), the model collapses the routine into one-liners (see [INCIDENTS.md#context-collapse](INCIDENTS.md#context-collapse)).
 
-If `NEXT_PULSE_IDX >= 150`, request respawn and end the turn — **but FIRST reset `assistant-state.json`'s `pulse_idx` to 0 so the freshly-spawned Assistant doesn't immediately re-fire this gate on its first pulse.** `pulse_idx` is persisted in `~/.claude/cache/assistant-state.json` and shared across respawns; without the reset, every new Assistant boots, reads `prior=149`, computes `next=150`, exits — perpetual respawn storm.
+If `NEXT_PULSE_IDX >= 150`, request respawn and end the turn:
 
 ```bash
-# Reset pulse_idx in shared state before exiting (else fresh Assistant loops)
-python3 -c "
-import json, os
-p = os.path.expanduser('~/.claude/cache/assistant-state.json')
-d = json.load(open(p))
-d.setdefault('_meta', {})['pulse_idx'] = 0
-d['_meta']['pulse_idx_reset_at'] = '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
-tmp = p + '.tmp'
-open(tmp, 'w').write(json.dumps(d, indent=2))
-os.replace(tmp, p)
-print('pulse_idx reset to 0 for fresh Assistant')
-"
-
 ~/dev/assistant/bin/heartbeat-write.py --ws "$MY_WS" --surface "$MY_SURFACE" \
     --status respawn-requested --respawn \
     --note "pulse_idx threshold reached; self-requesting respawn for fresh context"
 exit 0
 ```
 
-`--respawn` back-dates `last_pulse_ts` so the watchdog (heartbeat>10min) fires `spawn-assistant.sh` on the next cron tick (~2 min) instead of waiting for natural staleness.
+`--respawn` back-dates `last_pulse_ts` so the watchdog (heartbeat>10min) fires `spawn-assistant.sh` on the next cron tick (~2 min) instead of waiting for natural staleness. `spawn-assistant.sh` owns the `pulse_idx` reset — every fresh spawn zeroes the counter in `~/.claude/cache/assistant-state.json` before launching claude, so the new Assistant boots with `prior=0` and won't immediately re-trip this gate.
 
 ### Step 1 — Delegate observation by fanning out per-workspace Agent calls
 

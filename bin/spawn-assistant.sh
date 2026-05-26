@@ -160,6 +160,31 @@ fi
 log "model_id=$MODEL_ID use_bedrock=${CLAUDE_CODE_USE_BEDROCK:-0}"
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --add-dir ~/.assistant --add-dir /tmp --model \"$MODEL_ID\""
 
+# --- 4b. Reset shared pulse_idx so the fresh Assistant doesn't immediately
+#         re-trigger Step 0c's "pulse_idx >= 150 → respawn" gate on its first
+#         pulse. pulse_idx lives in ~/.claude/cache/assistant-state.json, which
+#         is shared across spawns. Without this reset, every freshly-spawned
+#         Assistant inherits the prior Assistant's threshold-tripped counter,
+#         self-respawns, exits, and the watchdog spawns another — perpetual
+#         loop. Observed 2026-05-25: ws:79→80→81→82→83→84 in 11 min, no work.
+python3 -c "
+import json, os, datetime
+p = os.path.expanduser('~/.claude/cache/assistant-state.json')
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+prior = d.get('_meta', {}).get('pulse_idx', 0)
+d.setdefault('_meta', {})['pulse_idx'] = 0
+d['_meta']['pulse_idx_reset_at'] = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+d['_meta']['pulse_idx_reset_reason'] = 'spawn-assistant.sh: fresh Assistant'
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(d, f, indent=2)
+os.replace(tmp, p)
+print(f'pulse_idx reset {prior} -> 0 (fresh spawn)')
+" 2>&1 | while read -r line; do log "$line"; done || true
+
 # --- 5. Create the workspace ------------------------------------------------
 log "creating Assistant workspace at cwd=$CWD_REAL"
 OUT=$("$CMUX_BIN" new-workspace --cwd "$CWD_REAL" --name "$TITLE" --focus false --command "$CLAUDE_CMD" 2>&1)
