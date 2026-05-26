@@ -57,27 +57,20 @@ If `PULSE_COUNT == 0` AND no other user message asked you to act, skip to Step N
 
 If a direct user message woke you (not a pulse), proceed with the full routine — user intent overrides "no inbox files".
 
-### Step 0c — Context-size safety net
+### Step 0c — Self-respawn check (ABSOLUTE)
 
-Context-degradation prevention is owned by **`assistant-pulse.sh`**, not this prompt. Before each pulse, the watchdog `stat`s the live transcript file (resolved via `world.live_sessions[].transcript_path`); if it exceeds `CLEAR_THRESHOLD_BYTES` (default 1.5 MB ≈ 50% of a 1M-context session), it sends `/clear` to your surface, re-delivers this prompt, and skips the pulse — same workspace, same session id, fresh context. `pulse_idx` in shared state is reset to 0 at the same time.
+Long-running Sonnet 1M sessions degrade — by `pulse_idx ≈ 150-200` (40-50% context), the model collapses the routine into one-liners (see [INCIDENTS.md#context-collapse](INCIDENTS.md#context-collapse)).
 
-The watchdog owns this because:
-- The `/clear` decision is event-driven on the real symptom (transcript size), not a pulse-count proxy.
-- Inside the prompt we cannot reliably read our own context size; the watchdog can `stat` the JSONL.
-- It's cheaper than respawn (no `spawn-assistant.sh`, no zombie cleanup, no LaunchAgent target switch).
-
-**No action required from this prompt** for the routine context-clear path. The fallback below exists only as a backstop in case the watchdog ever fails to clear:
-
-If `NEXT_PULSE_IDX >= 300` (well past the auto-clear threshold), force a respawn and end the turn:
+If `NEXT_PULSE_IDX >= 150`, request respawn and end the turn:
 
 ```bash
 ~/dev/assistant/bin/heartbeat-write.py --ws "$MY_WS" --surface "$MY_SURFACE" \
     --status respawn-requested --respawn \
-    --note "pulse_idx 300 fallback — auto-clear watchdog appears stuck"
+    --note "pulse_idx threshold reached; self-requesting respawn for fresh context"
 exit 0
 ```
 
-`spawn-assistant.sh` zeroes `pulse_idx` in `~/.claude/cache/assistant-state.json` before launching claude, so the fresh Assistant boots clean.
+`--respawn` back-dates `last_pulse_ts` so the watchdog (heartbeat>10min) fires `spawn-assistant.sh` on the next cron tick (~2 min) instead of waiting for natural staleness. `spawn-assistant.sh` owns the `pulse_idx` reset — every fresh spawn zeroes the counter in `~/.claude/cache/assistant-state.json` before launching claude, so the new Assistant boots with `prior=0` and won't immediately re-trip this gate.
 
 ### Step 1 — Delegate observation by fanning out per-workspace Agent calls
 
