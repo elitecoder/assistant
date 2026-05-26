@@ -22,15 +22,19 @@ For each workspace returned by `cmux tree`:
 
 2. Spawn Observer subagent. Pass it the JSON. Observer reads
    transcript directly via bash (it has the path) and emits ONE
-   verdict from this vocabulary:
+   verdict from this vocabulary, ALWAYS with a `summary` field:
 
-     {"verdict": "ready_for_merge"}
-     {"verdict": "ready_for_cleanup"}
-     {"verdict": "stranded",   "nudge_text": "..."}
-     {"verdict": "needs_user", "title": "...", "detail": "..."}
-     {"verdict": "active"}
+     {"verdict": "ready_for_merge",   "summary": "..."}
+     {"verdict": "ready_for_cleanup", "summary": "..."}
+     {"verdict": "stranded",   "nudge_text": "...", "summary": "..."}
+     {"verdict": "needs_user", "title": "...", "detail": "...", "summary": "..."}
+     {"verdict": "active",            "summary": "..."}
 
-3. Execute the verdict per the table below. Log to actions-ledger.
+3. Persist the verdict to disk (powers the dashboard's Workspaces tab):
+     bin/save-ws-summary.py --ws-ref <ref> --title <title> \
+                            --cwd <cwd> --json '<verdict-json>'
+
+4. Execute the verdict per the table below. Log to actions-ledger.
 ```
 
 ## Verdict → action mapping

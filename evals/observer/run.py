@@ -162,7 +162,14 @@ def run_one(fixture_dir: Path) -> tuple[bool, str]:
         if not verdict.get("title") or not verdict.get("detail"):
             return False, "needs_user verdict missing title or detail"
 
-    return True, f"verdict={got_kind!r} elapsed={elapsed:.1f}s"
+    # Every verdict must carry a summary for the dashboard's Workspaces tab.
+    summary = verdict.get("summary", "")
+    if not isinstance(summary, str) or not summary.strip():
+        return False, f"verdict missing required 'summary' field (got {summary!r})"
+    if len(summary) > 300:
+        return False, f"summary too long ({len(summary)} chars > 300; should be ~30 words)"
+
+    return True, f"verdict={got_kind!r} summary={summary[:60]!r}... elapsed={elapsed:.1f}s"
 
 
 def main() -> int:

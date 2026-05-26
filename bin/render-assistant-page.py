@@ -365,6 +365,97 @@ def render_decisions_tab(world):
 """, awaiting_n
 
 
+def render_workspaces_tab():
+    """Read ~/.assistant/observer-summaries/<ws>.json (one file per workspace,
+    written each pulse by the Assistant) and render a row per workspace with
+    its current summary + verdict.
+
+    Filtered to workspaces currently open in cmux (via world.json snapshot).
+    Stale summaries for closed workspaces are skipped. The summary is
+    written by the Observer and saved at end-of-pulse — no extra LLM calls
+    happen here."""
+    summaries_dir = HOME / ".assistant/observer-summaries"
+    if not summaries_dir.exists():
+        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
+
+    # Currently open workspace refs from world.json
+    open_ws: set[str] = set()
+    try:
+        world_data = json.loads(WORLD_PATH.read_text())
+        for w in world_data.get("workspaces", []) or []:
+            ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
+            if ref:
+                open_ws.add(ref)
+    except Exception:
+        pass
+
+    rows = []
+    now = utc_now().timestamp()
+    for jf in sorted(summaries_dir.glob("*.json")):
+        try:
+            data = json.loads(jf.read_text())
+        except Exception:
+            continue
+        ws_ref = data.get("ws_ref") or jf.stem
+        # Skip workspaces no longer open in cmux. If we couldn't read
+        # world.json (open_ws is empty) we render everything — better
+        # to show stale summaries than show nothing.
+        if open_ws and ws_ref not in open_ws:
+            continue
+        title = data.get("title") or ""
+        verdict = data.get("verdict") or "unknown"
+        # New schema: 'summary'. Legacy: 'summary_for_next_pulse'.
+        summary = data.get("summary") or data.get("summary_for_next_pulse") or "(no summary recorded yet)"
+        # New schema: 'ts'. Legacy: 'last_updated_ts'.
+        ts = data.get("ts") or data.get("last_updated_ts") or 0
+        age_sec = max(0, int(now - ts)) if ts else None
+        rows.append({
+            "ws_ref": ws_ref, "title": title, "verdict": verdict,
+            "summary": summary, "age_sec": age_sec, "ts": ts,
+        })
+
+    # Sort: most recently updated first.
+    rows.sort(key=lambda r: -(r.get("ts") or 0))
+
+    if not rows:
+        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
+
+    def fmt_age(s):
+        if s is None:
+            return "—"
+        if s < 60:
+            return f"{s}s"
+        if s < 3600:
+            return f"{s // 60}m"
+        return f"{s // 3600}h"
+
+    VERDICT_PILL = {
+        "active":           ('var(--blue)',   'active'),
+        "ready_for_merge":  ('var(--green)',  'merge'),
+        "ready_for_cleanup":('var(--purple)', 'cleanup'),
+        "stranded":         ('var(--amber)',  'stranded'),
+        "needs_user":       ('var(--red)',    'user'),
+        "unknown":          ('var(--muted)',  'unknown'),
+    }
+
+    html_rows = []
+    for r in rows:
+        color, label = VERDICT_PILL.get(r["verdict"], VERDICT_PILL["unknown"])
+        stale = (r["age_sec"] or 0) > 300
+        age_class = " stale" if stale else ""
+        html_rows.append(
+            f'<div class="row ws-row">'
+            f'  <button class="btn" data-ws="{e(r["ws_ref"])}" onclick="openWs(this)">{e(r["ws_ref"])}</button>'
+            f'  <span class="ws-title">{e(r["title"])}</span>'
+            f'  <span class="ws-verdict" style="color:{color}">{e(label)}</span>'
+            f'  <span class="age{age_class}">{fmt_age(r["age_sec"])}</span>'
+            f'  <div class="ws-summary">{e(r["summary"])}</div>'
+            f'</div>'
+        )
+
+    return f'<div class="rows">{"".join(html_rows)}</div>', len(rows)
+
+
 def render_todos_tab(world):
     # Read TODO state DIRECTLY from assistant-todo.json, not through the
     # world.json snapshot. world-scanner refreshes world.json every 30s, so
@@ -506,6 +597,7 @@ def render():
     world = json.loads(WORLD_PATH.read_text())
     decisions_html, awaiting_n = render_decisions_tab(world)
     todos_html, p0_p1 = render_todos_tab(world)
+    workspaces_html, ws_n = render_workspaces_tab()
     counts = world.get("counts", {})
 
     css = """
@@ -555,6 +647,11 @@ h1 { font-size:18px; margin:0 0 4px; font-weight:600; }
 .pill.status-stale { background:transparent; color:var(--muted); border:1px dashed var(--line); }
 .pill.auto-dispatch { background:#3a2d18; color:var(--amber); }
 .age { color:var(--muted); margin-left:auto; font-size:10px; font-variant-numeric:tabular-nums; }
+.age.stale { color:var(--amber); }
+.row.ws-row { display:grid; grid-template-columns: auto 1fr auto auto; gap:8px 12px; align-items:center; padding:10px 14px; border:1px solid var(--line); border-radius:6px; margin:6px 0; background:var(--panel); }
+.row.ws-row .ws-title { color:var(--text); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.row.ws-row .ws-verdict { font-size:10px; letter-spacing:0.06em; text-transform:uppercase; padding:2px 8px; border-radius:9px; background:rgba(255,255,255,0.04); }
+.row.ws-row .ws-summary { grid-column: 1 / -1; color:var(--muted); font-size:12px; line-height:1.55; padding-top:4px; border-top:1px dashed var(--line); margin-top:4px; }
 .action { font-size:14px; font-weight:500; margin:0 0 6px; }
 .reason { color:var(--muted); font-size:12px; line-height:1.6; }
 .alts { font-size:11px; color:var(--muted); margin-top:8px; }
@@ -636,7 +733,7 @@ function showTab(name) {
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#decisions').replace('#', '');
-  showTab(['decisions', 'todos'].includes(initial) ? initial : 'decisions');
+  showTab(['decisions', 'workspaces', 'todos'].includes(initial) ? initial : 'decisions');
   // Auto-refresh every 15s but preserve the current hash. We use location.reload()
   // (not <meta http-equiv="refresh">) because meta-refresh reloads from the original
   // href and drops the fragment on most browsers, snapping the user back to
@@ -803,6 +900,9 @@ document.addEventListener('click', handleTodoToolsClick);
   <button class="tab" data-tab="decisions" onclick="showTab('decisions')">
     Decisions <span class="tab-count">{awaiting_n}</span>
   </button>
+  <button class="tab" data-tab="workspaces" onclick="showTab('workspaces')">
+    Workspaces <span class="tab-count">{ws_n}</span>
+  </button>
   <button class="tab" data-tab="todos" onclick="showTab('todos')">
     TODOs <span class="tab-count">{p0_p1}</span>
   </button>
@@ -810,6 +910,10 @@ document.addEventListener('click', handleTodoToolsClick);
 
 <div class="tab-panel" data-panel="decisions">
 {decisions_html}
+</div>
+
+<div class="tab-panel" data-panel="workspaces">
+{workspaces_html}
 </div>
 
 <div class="tab-panel" data-panel="todos">

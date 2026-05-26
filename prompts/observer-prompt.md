@@ -31,32 +31,41 @@ You have bash; if you need PR state to apply rule A1 / A2 / A3, run `gh pr view 
 
 ## Output — exactly one JSON object on stdout
 
+Every output includes a `summary` field — one sentence (~25 words, present tense) describing what the workspace is doing right now. The summary is what the user sees on the dashboard's Workspaces tab; make it concrete enough that they don't have to open the workspace to know what's happening.
+
 Pick ONE of these verdicts:
 
 ```json
-{"verdict": "ready_for_merge"}
+{"verdict": "ready_for_merge", "summary": "PR #N ready — test-only / refactor change with green CI."}
 ```
 The PR for this workspace is ready to auto-merge per the ruleset below.
 
 ```json
-{"verdict": "ready_for_cleanup"}
+{"verdict": "ready_for_cleanup", "summary": "Audit complete; <one-line of what shipped or what artifact was produced>."}
 ```
 Work in this workspace is done and the workspace is safe to tear down. Assistant will send `/cleanup` to the workspace.
 
 ```json
-{"verdict": "stranded", "nudge_text": "..."}
+{"verdict": "stranded", "nudge_text": "...", "summary": "Paused mid-<task> after <last narrative checkpoint>."}
 ```
 Agent paused mid-task. Send the literal `nudge_text` to the workspace to wake it. Keep `nudge_text` short and specific to what the transcript shows (e.g. "Please continue with step 3" or "Please retry the failing E2E").
 
 ```json
-{"verdict": "needs_user", "title": "...", "detail": "..."}
+{"verdict": "needs_user", "title": "...", "detail": "...", "summary": "<one-line of what's blocking>."}
 ```
 Genuinely needs human input — agent asked a question, hit an auth error, work is shippable but needs human review, etc. `title` is one line, `detail` is a short paragraph the user can read in 5 seconds.
 
 ```json
-{"verdict": "active"}
+{"verdict": "active", "summary": "Currently <doing X> — <where in the work>."}
 ```
 Default. Workspace is mid-work, no action needed.
+
+### Summary writing
+
+- **Concrete and present-tense.** Bad: "Agent is working on tests." Good: "Re-running combined keyboard + zoom suite at workers=6 to verify the 4.8x speedup holds under filter mode."
+- **Reference the latest narrative checkpoint** the transcript shows — the agent's most recent text turn usually has it.
+- **No PR-merge state in the summary unless it's the headline.** "PR #N ready, awaiting human review" is fine if that IS the state. Don't pad an `active` summary with PR status.
+- **Stay under ~30 words.** This is a dashboard row, not a paragraph.
 
 ## Ruleset
 
