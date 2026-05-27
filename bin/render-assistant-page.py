@@ -383,13 +383,16 @@ def render_workspaces_tab():
     # in the Workspaces tab (the Assistant ignores them, so the dashboard
     # row is misleading: stale verdict + stale "NEXT" we'll never act on).
     back_off_path = HOME / ".assistant/back-off.json"
-    backed_off: dict[str, str] = {}
+    backed_off: dict[str, dict] = {}
     if back_off_path.exists():
         try:
             for w in (json.loads(back_off_path.read_text()).get("workspaces") or []):
                 ref = w.get("ws_ref")
                 if ref:
-                    backed_off[ref] = w.get("reason", "")
+                    backed_off[ref] = {
+                        "reason": w.get("reason", ""),
+                        "added_ts": w.get("added_ts", 0),
+                    }
         except Exception:
             pass
 
@@ -659,24 +662,93 @@ def render_workspaces_tab():
             f'</div>'
         )
 
-    # Banner showing backed-off workspaces — they don't appear as rows
-    # (Assistant ignores them, so a stale row would be misleading) but
-    # the user should still see they exist + how to undo.
-    backoff_banner = ""
+    # Backed-off workspaces — show a card per ws with the signals the user
+    # most likely wants while deciding whether to /attend: title (so you
+    # can tell which work you parked), agent's last-turn age (still
+    # working?), open PR refs, when you backed it off, and the reason.
+    # Pulled from world.json (live cmux state) joined with the most recent
+    # observer summary on disk and the back-off list itself.
+    backoff_html = ""
     if backed_off:
-        items = "".join(
-            f'<span class="backoff-chip" title="{e(reason)}">{e(ref)}</span>'
-            for ref, reason in sorted(backed_off.items())
-        )
-        backoff_banner = (
-            f'<div class="backoff-banner">'
-            f'  <span class="backoff-label">Backed off · {len(backed_off)}</span>'
-            f'  {items}'
-            f'  <span class="backoff-hint">run <code>/attend</code> in the workspace to re-enable</span>'
+        # Re-fetch session signals for backed-off workspaces too. We
+        # filtered them out of `open_ws` and `ws_meta` earlier; rebuild
+        # a tiny meta map just for the banner.
+        bo_meta: dict[str, dict] = {}
+        try:
+            for w in world_data.get("workspaces", []) or []:
+                ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
+                if ref and ref in backed_off:
+                    bo_meta[ref] = w
+        except Exception:
+            pass
+
+        cards = []
+        now_ts = utc_now().timestamp()
+        for ref in sorted(backed_off.keys()):
+            entry = backed_off[ref]
+            world_w = bo_meta.get(ref) or {}
+            title = world_w.get("title") or ""
+
+            # Most-recent observer summary (might be stale — that's fine,
+            # it's still the last thing we knew about the ws).
+            summ_path = summaries_dir / f"{ref.replace(':', '_')}.json"
+            sess = None
+            pr_refs = []
+            if summ_path.exists():
+                try:
+                    sd = json.loads(summ_path.read_text())
+                    pr_refs = sd.get("pr_refs") or []
+                    cwd_for_sess = sd.get("cwd") or ""
+                    if cwd_for_sess:
+                        sess = session_for_ws(cwd_for_sess)
+                except Exception:
+                    pass
+
+            # Last-turn age (best effort)
+            la_chip = ""
+            if sess and sess.get("last_turn_age_sec") is not None:
+                la = sess["last_turn_age_sec"]
+                la_str = fmt_age(la)
+                la_class = "fresh" if la < 600 else ("warm" if la < 1800 else "cold")
+                la_chip = f'<span class="ws-live-age {la_class}" title="Last turn {la_str} ago">⟳ {la_str}</span>'
+
+            pr_chips = ""
+            if pr_refs:
+                chips = "".join(f'<span class="ws-pr-chip">PR #{p}</span>' for p in pr_refs[:3])
+                pr_chips = f'<span class="ws-pr-chips">{chips}</span>'
+
+            # When backed off
+            added_ts = int(entry.get("added_ts") or 0)
+            since_chip = ""
+            if added_ts:
+                since = max(0, int(now_ts - added_ts))
+                since_chip = f'<span class="backoff-since" title="Backed off {fmt_age(since)} ago">backed off {fmt_age(since)} ago</span>'
+
+            reason = entry.get("reason") or ""
+            cards.append(
+                f'<div class="backoff-card">'
+                f'  <div class="backoff-card-head">'
+                f'    <button class="ws-ref-btn" data-ws="{e(ref)}" onclick="openWs(this)" title="Focus this workspace in cmux">{e(ref)}</button>'
+                f'    <span class="ws-title">{e(title)}</span>'
+                f'    {pr_chips}'
+                f'    {la_chip}'
+                f'    {since_chip}'
+                f'  </div>'
+                f'  <div class="backoff-card-reason">{e(reason)}</div>'
+                f'</div>'
+            )
+
+        backoff_html = (
+            f'<div class="backoff-section">'
+            f'  <div class="backoff-section-head">'
+            f'    <span class="backoff-label">Backed off · {len(backed_off)}</span>'
+            f'    <span class="backoff-hint">run <code>/attend</code> inside the workspace to re-enable</span>'
+            f'  </div>'
+            f'  {"".join(cards)}'
             f'</div>'
         )
 
-    return f'{backoff_banner}<div class="ws-list">{"".join(html_rows)}</div>', len(rows)
+    return f'{backoff_html}<div class="ws-list">{"".join(html_rows)}</div>', len(rows)
 
 
 def render_todos_tab(world):
@@ -1088,43 +1160,61 @@ h1 {
 }
 
 /* ─── Workspaces tab — divided list, not boxed rows ─── */
-.backoff-banner {
+.backoff-section {
+  margin-bottom: 14px;
+  padding: 10px 12px 4px;
+  background: rgba(255, 184, 108, 0.04);
+  border: 1px solid rgba(255, 184, 108, 0.16);
+  border-radius: 4px;
+}
+.backoff-section-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  background: rgba(255, 184, 108, 0.06);
-  border: 1px solid rgba(255, 184, 108, 0.18);
-  border-radius: 4px;
+  margin-bottom: 8px;
   font-size: 12px;
-  color: var(--muted);
 }
 .backoff-label {
   font-weight: 600;
   color: rgba(255, 184, 108, 0.95);
   letter-spacing: 0.02em;
 }
-.backoff-chip {
-  font-family: 'Geist Mono', 'SF Mono', monospace;
-  font-size: 11px;
-  padding: 2px 6px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  color: var(--text);
-  cursor: help;
-}
 .backoff-hint {
   margin-left: auto;
   font-size: 11px;
   opacity: 0.7;
+  color: var(--muted);
 }
 .backoff-hint code {
   background: rgba(255,255,255,0.06);
   padding: 1px 4px;
   border-radius: 2px;
+  font-family: 'Geist Mono', 'SF Mono', monospace;
+}
+.backoff-card {
+  padding: 8px 0;
+  border-top: 1px dashed rgba(255, 184, 108, 0.14);
+}
+.backoff-card:first-of-type { border-top: none; }
+.backoff-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.backoff-card-reason {
+  margin-top: 4px;
+  margin-left: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+.backoff-since {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .ws-list {
   border-top: 1px solid var(--line);
