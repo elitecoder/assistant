@@ -10,6 +10,7 @@ Reads ~/.claude/cache/world.json (Scanner output) and emits
 Replaces render-decisions-dashboard.py + render-todo.py. One LaunchAgent.
 Tab switch is client-side (URL hash). Auto-refresh meta-tag every 15s.
 """
+from __future__ import annotations
 
 import json
 import os
