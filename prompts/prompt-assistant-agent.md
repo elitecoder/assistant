@@ -39,14 +39,22 @@ For each workspace returned by `cmux tree`:
 
 2. Spawn Observer subagent. Pass it the JSON. Observer reads
    transcript directly via bash (it has the path) and emits ONE
-   verdict from this vocabulary, ALWAYS with a `summary` field:
+   verdict from this vocabulary, ALWAYS with BOTH `summary` AND `next`:
 
-     {"verdict": "ready_for_merge",   "summary": "..."}
-     {"verdict": "ready_for_cleanup", "summary": "..."}
-     {"verdict": "stranded",   "nudge_text": "...", "summary": "..."}
-     {"verdict": "needs_user", "title": "...", "detail": "...", "summary": "..."}
-     {"verdict": "active",            "summary": "..."}
-     {"verdict": "no_action",         "summary": "..."}
+     {"verdict": "ready_for_merge",   "summary": "...", "next": "..."}
+     {"verdict": "ready_for_cleanup", "summary": "...", "next": "..."}
+     {"verdict": "stranded",   "nudge_text": "...", "summary": "...", "next": "..."}
+     {"verdict": "needs_user", "title": "...", "detail": "...", "summary": "...", "next": "..."}
+     {"verdict": "active",            "summary": "...", "next": "..."}
+     {"verdict": "no_action",         "summary": "...", "next": "..."}
+
+   `next` is one sentence describing the agent's expected next step (or
+   "User will close the workspace when ready." for `no_action`). Pass
+   the verdict through to `save-ws-summary.py` verbatim — do not strip
+   `next`. If Observer somehow returned a verdict without `next`, the
+   save script will reject it; pick a sensible `next` based on the
+   verdict (e.g. for `ready_for_cleanup`: "Assistant will send /cleanup.")
+   and re-run the save.
 
 3. Persist the verdict to disk (powers the dashboard's Workspaces tab):
      bin/save-ws-summary.py --ws-ref <ref> --title <title> \

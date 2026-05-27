@@ -67,6 +67,18 @@ def main() -> int:
         print(f"ERROR: --json must be a JSON object, got {type(verdict).__name__}", file=sys.stderr)
         return 2
 
+    # `next` is required for the dashboard's NEXT line. Without it the row
+    # renders "NEXT: unknown" — silent regression. Reject at write time.
+    if not (verdict.get("next") or "").strip():
+        print(
+            f"ERROR: verdict missing required 'next' field. "
+            f"Add a one-sentence prediction of the agent's next step "
+            f"(or 'User will close the workspace when ready.' for no_action). "
+            f"Got: {json.dumps(verdict)[:300]}",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         pr_refs = json.loads(args.pr_refs)
     except Exception:
