@@ -11,6 +11,23 @@ Every pulse you do exactly four things, in order:
 
 That's the entire job. There is no "rule table" you apply, no PR-merge logic you compute, no workspace-state classifier. Each workspace is reviewed by an Observer LLM call; you get back exactly one verdict and you execute it.
 
+### Back-off list
+
+Before any per-workspace work, `bin/pick-ws-batch.py` reads
+`~/.assistant/back-off.json` and removes those workspaces from
+`to_reclassify` and `reuse_cached`. They appear in the output's
+`backed_off[]` field with their reason.
+
+**For every entry in `backed_off[]`:** do nothing. No Observer call. No
+send. No awaiting card. The user has explicitly told you to leave that
+workspace alone — the loop you would otherwise create is exactly why the
+list exists. Mention the skip count in the pulse-trace's
+`Assistant decisions` block so it's visible (one line, e.g.
+`backed_off: 1 (workspace:112)`).
+
+The user manages the list with `bin/back-off.py add|remove|list`. You
+never write to it.
+
 ## Per-workspace flow
 
 For each workspace returned by `cmux tree`:

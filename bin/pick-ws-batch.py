@@ -18,19 +18,39 @@ import sys
 
 CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 SUMM_DIR = os.path.expanduser("~/.assistant/observer-summaries")
+BACK_OFF_PATH = os.path.expanduser("~/.assistant/back-off.json")
 BATCH_SIZE = 5
 
 
+def load_back_off_refs():
+    if not os.path.exists(BACK_OFF_PATH):
+        return {}
+    try:
+        d = json.load(open(BACK_OFF_PATH))
+    except Exception:
+        return {}
+    return {w.get("ws_ref"): w.get("reason", "") for w in d.get("workspaces", []) if w.get("ws_ref")}
+
+
 def main():
+    back_off = load_back_off_refs()
+
     out = subprocess.check_output([CMUX, "list-workspaces", "--json"], text=True)
     data = json.loads(out)
     items = data if isinstance(data, list) else data.get("workspaces", [])
-    ws_list = [
-        {"ref": w["ref"],
-         "title": (w.get("title") or "").strip(),
-         "cwd": w.get("current_directory") or ""}
-        for w in items if w.get("ref")
-    ]
+    ws_list = []
+    backed_off = []
+    for w in items:
+        if not w.get("ref"):
+            continue
+        if w["ref"] in back_off:
+            backed_off.append({"ref": w["ref"], "title": (w.get("title") or "").strip(), "reason": back_off[w["ref"]]})
+            continue
+        ws_list.append({
+            "ref": w["ref"],
+            "title": (w.get("title") or "").strip(),
+            "cwd": w.get("current_directory") or "",
+        })
 
     ranked = []
     for ws in ws_list:
@@ -50,7 +70,8 @@ def main():
     print(json.dumps({
         "to_reclassify": to_reclassify,
         "reuse_cached": reuse_cached,
-        "total_ws": len(ws_list),
+        "backed_off": backed_off,
+        "total_ws": len(ws_list) + len(backed_off),
     }, indent=2))
 
 
