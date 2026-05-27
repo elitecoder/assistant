@@ -102,6 +102,7 @@ Required: **prompt**. Everything else has defaults:
 - **Title** — first 40 chars of the prompt if not provided.
 - **Send mode** — `auto` by default (press Enter after paste). Use `paste` only if the user said "let me review" or the prompt would trigger destructive shell actions.
 - **Model** — set `MODEL=sonnet` for **routine / periodic work** (scanners, evaluators, renderers, batch tasks, anything rule-based), or `MODEL=opus` for **decision-making work** (architecture, design, code review, multi-step reasoning). Default is `opus` — when in doubt, prefer Opus. Mukul's policy 2026-05-22: "Choose Sonnet 1M for routine periodic work. For decision making, use Opus 1M." The skill maps `opus` → `claude-opus-4-7[1m]` and `sonnet` → `claude-sonnet-4-6[1m]` (Bedrock prefixes are added automatically when `CLAUDE_CODE_USE_BEDROCK=1`).
+- **Color** — defaults to **shuffle-without-replacement** against the 16-color cmux palette (Red, Crimson, Orange, Amber, Olive, Green, Teal, Aqua, Blue, Navy, Indigo, Purple, Magenta, Rose, Brown, Charcoal). The picker reads `cmux rpc workspace.list` and excludes any color already in use on an existing workspace, so up to 16 parallel spawns are visually distinct in the sidebar; only after the palette is exhausted does it fall back to a uniform random choice. Override by exporting `COLOR=<name|#hex>`; set `COLOR=none` to skip coloring entirely. Implemented via `cmux workspace-action --action set-color`; failures are non-fatal. The hex map (Red=#C0392B, Crimson=#922B21, …) is hard-coded in the picker — if cmux ever rebrands the palette, re-probe by calling `cmux workspace-action --action set-color --color <name>` for each name and capturing the `color=#…` token from stdout.
 
 ## Execution
 
@@ -164,6 +165,31 @@ CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.c
 OUT=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$CLAUDE_CMD")
 # OUT is "OK workspace:13"
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
+
+# Tag the workspace with a random color so parallel spawns are visually distinct
+# in the sidebar. Picker is shuffle-without-replacement against `cmux rpc
+# workspace.list` — colors already in use are excluded until the 16-color
+# palette is exhausted. COLOR= overrides the random pick; COLOR=none skips.
+# Failure is non-fatal — color is cosmetic.
+if [ "${COLOR:-}" != "none" ]; then
+  PICKED_COLOR="${COLOR:-$(cmux rpc workspace.list '{}' 2>/dev/null | python3 -c '
+import json, random, sys
+# Palette name → hex, probed from `cmux workspace-action set-color` on
+# 2026-05-26. Match against custom_color (returned as #RRGGBB by workspace.list).
+PALETTE = {"Red":"#C0392B","Crimson":"#922B21","Orange":"#A04000","Amber":"#7D6608",
+           "Olive":"#4A5C18","Green":"#196F3D","Teal":"#006B6B","Aqua":"#0E6B8C",
+           "Blue":"#1565C0","Navy":"#1A5276","Indigo":"#283593","Purple":"#6A1B9A",
+           "Magenta":"#AD1457","Rose":"#880E4F","Brown":"#7B3F00","Charcoal":"#3E4B5E"}
+try:
+    used = {w.get("custom_color") for w in json.load(sys.stdin).get("workspaces", [])}
+except Exception:
+    used = set()
+free = [n for n,h in PALETTE.items() if h not in used]
+# Fall back to the full palette only when all 16 are taken.
+print(random.choice(free or list(PALETTE)))
+')}"
+  cmux workspace-action --action set-color --color "$PICKED_COLOR" --workspace "$WS_REF" >/dev/null 2>&1 || true
+fi
 ```
 
 **Do not use `awk '{print $N}'`** to extract the ref — this SKILL.md gets surfaced to the agent via the Skill tool, which performs shell-style variable expansion on the markdown body. `$2` / `$NF` get substituted to empty (or some stray value) before the agent ever runs the command, and the resulting `awk '{print }'` pipes through unchanged text. Always use an anchored regex extractor (`grep -oE`, `sed -nE`, or `python3 -c`) that contains no `$N` tokens.
@@ -399,6 +425,28 @@ fi
 CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --model \"$MODEL_ID\""
 WS_REF=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$CLAUDE_CMD" | grep -oE 'workspace:[0-9]+' | head -n1)
 SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:[0-9]+' | head -n1)
+
+# Random sidebar color so parallel spawns are visually distinct. Shuffle-
+# without-replacement against `cmux rpc workspace.list` (custom_color is the
+# canonical hex on each workspace). Falls back to the full 16-color palette
+# only when every color is already in use. COLOR= overrides; COLOR=none skips.
+# Cosmetic — non-fatal on failure.
+if [ "${COLOR:-}" != "none" ]; then
+  PICKED_COLOR="${COLOR:-$(cmux rpc workspace.list '{}' 2>/dev/null | python3 -c '
+import json, random, sys
+PALETTE = {"Red":"#C0392B","Crimson":"#922B21","Orange":"#A04000","Amber":"#7D6608",
+           "Olive":"#4A5C18","Green":"#196F3D","Teal":"#006B6B","Aqua":"#0E6B8C",
+           "Blue":"#1565C0","Navy":"#1A5276","Indigo":"#283593","Purple":"#6A1B9A",
+           "Magenta":"#AD1457","Rose":"#880E4F","Brown":"#7B3F00","Charcoal":"#3E4B5E"}
+try:
+    used = {w.get("custom_color") for w in json.load(sys.stdin).get("workspaces", [])}
+except Exception:
+    used = set()
+free = [n for n,h in PALETTE.items() if h not in used]
+print(random.choice(free or list(PALETTE)))
+')}"
+  cmux workspace-action --action set-color --color "$PICKED_COLOR" --workspace "$WS_REF" >/dev/null 2>&1 || true
+fi
 
 # First-launch-in-cwd gate: Claude Code shows a "Is this a project you trust?"
 # prompt that --dangerously-skip-permissions does NOT bypass. Peek the screen
