@@ -379,6 +379,20 @@ def render_workspaces_tab():
     if not summaries_dir.exists():
         return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
 
+    # Read the back-off list — those workspaces should NOT appear as rows
+    # in the Workspaces tab (the Assistant ignores them, so the dashboard
+    # row is misleading: stale verdict + stale "NEXT" we'll never act on).
+    back_off_path = HOME / ".assistant/back-off.json"
+    backed_off: dict[str, str] = {}
+    if back_off_path.exists():
+        try:
+            for w in (json.loads(back_off_path.read_text()).get("workspaces") or []):
+                ref = w.get("ws_ref")
+                if ref:
+                    backed_off[ref] = w.get("reason", "")
+        except Exception:
+            pass
+
     # Pull live signals from world.json: open workspaces + per-workspace
     # last_turn_age_sec / agent_status / cwd / pr_refs.
     open_ws: set[str] = set()
@@ -387,7 +401,7 @@ def render_workspaces_tab():
         world_data = json.loads(WORLD_PATH.read_text())
         for w in world_data.get("workspaces", []) or []:
             ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
-            if ref:
+            if ref and ref not in backed_off:
                 open_ws.add(ref)
                 ws_meta[ref] = w
 
@@ -645,7 +659,24 @@ def render_workspaces_tab():
             f'</div>'
         )
 
-    return f'<div class="ws-list">{"".join(html_rows)}</div>', len(rows)
+    # Banner showing backed-off workspaces — they don't appear as rows
+    # (Assistant ignores them, so a stale row would be misleading) but
+    # the user should still see they exist + how to undo.
+    backoff_banner = ""
+    if backed_off:
+        items = "".join(
+            f'<span class="backoff-chip" title="{e(reason)}">{e(ref)}</span>'
+            for ref, reason in sorted(backed_off.items())
+        )
+        backoff_banner = (
+            f'<div class="backoff-banner">'
+            f'  <span class="backoff-label">Backed off · {len(backed_off)}</span>'
+            f'  {items}'
+            f'  <span class="backoff-hint">run <code>/attend</code> in the workspace to re-enable</span>'
+            f'</div>'
+        )
+
+    return f'{backoff_banner}<div class="ws-list">{"".join(html_rows)}</div>', len(rows)
 
 
 def render_todos_tab(world):
@@ -1057,6 +1088,44 @@ h1 {
 }
 
 /* ─── Workspaces tab — divided list, not boxed rows ─── */
+.backoff-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: rgba(255, 184, 108, 0.06);
+  border: 1px solid rgba(255, 184, 108, 0.18);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.backoff-label {
+  font-weight: 600;
+  color: rgba(255, 184, 108, 0.95);
+  letter-spacing: 0.02em;
+}
+.backoff-chip {
+  font-family: 'Geist Mono', 'SF Mono', monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--text);
+  cursor: help;
+}
+.backoff-hint {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.7;
+}
+.backoff-hint code {
+  background: rgba(255,255,255,0.06);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
 .ws-list {
   border-top: 1px solid var(--line);
 }
