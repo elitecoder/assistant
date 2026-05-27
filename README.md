@@ -63,6 +63,7 @@ The Assistant **never** closes cmux workspaces. That's the user's job. Removed 2
 | `bin/render-assistant-page.py` | LaunchAgent every 15s | Renders dashboard HTML |
 | `bin/todo-server.py` | HTTP daemon on 127.0.0.1:9876 | Powers dashboard buttons |
 | `bin/session-context-watcher.py` | event-driven (kqueue) | Tails Claude JSONL transcripts |
+| `bin/cmux-ws-numberer.py` | event-driven (cmux events) | Appends `[N]` workspace-ref suffix to every cmux workspace title |
 
 ## Repo layout
 
