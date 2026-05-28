@@ -42,15 +42,6 @@ ALLOWED_SCOPES = {
     "ffp", "scout", "memory", "security",
 }
 
-# Scopes that are dispatcher-specific — they don't belong in ~/.claude/CLAUDE.md
-# (which auto-loads into every Claude Code session). They belong in the
-# Assistant agent's prompt under `## Assistant policies`. The curator refuses
-# to write these.
-DISPATCHER_ONLY_SCOPES = {
-    "dispatch",   # spawn-claude-workspace decisions, model policy, dispatch caps
-    "todo",       # TODO status flips, autoDispatch handling
-}
-
 
 def today():
     return datetime.now(timezone.utc).date().isoformat()
@@ -156,18 +147,6 @@ def cmd_write(args) -> int:
         print("ERROR: --trigger and --rule are required and non-empty.", file=sys.stderr)
         return 2
     scope = args.scope or DEFAULT_SCOPE
-    if scope in DISPATCHER_ONLY_SCOPES:
-        print(
-            f"ERROR: scope {scope!r} is dispatcher-specific. CLAUDE.md auto-loads\n"
-            f"into every Claude Code session, so dispatcher-only rules don't\n"
-            f"belong here. Add this rule directly to the Assistant agent's\n"
-            f"prompt under `## Assistant policies` instead:\n"
-            f"  ~/dev/assistant/prompts/prompt-assistant-agent.md\n"
-            f"\n"
-            f"Allowed scopes for CLAUDE.md: {sorted(ALLOWED_SCOPES)}",
-            file=sys.stderr,
-        )
-        return 2
     if scope not in ALLOWED_SCOPES:
         print(
             f"ERROR: scope {scope!r} not in {sorted(ALLOWED_SCOPES)}",

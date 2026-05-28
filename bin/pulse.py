@@ -68,7 +68,6 @@ OBSERVER_RUNS_DIR = ASSISTANT_DIR / "observer-runs"
 # Observer-runs are the LLM transcript archive. We never delete them — disk
 # is cheap, the audit trail is not. If this ever grows unmanageable, prune
 # by hand or export to cold storage. The pulse loop does NOT touch it.
-OBSERVER_PROMPT = REPO / "prompts/observer-prompt.md"
 OBSERVER_BATCH_PROMPT = REPO / "prompts/observer-batch-prompt.md"
 SPAWN_SKILL = HOME / ".claude/skills/spawn-claude-workspace/SKILL.md"
 

@@ -85,24 +85,29 @@ class TestNoCloseWorkspace(unittest.TestCase):
             msg = "\n".join(f"  {p.name}:{n}: [{pat}] {line}" for p, n, line, pat in hits)
             self.fail(f"cleanup skill scripts must not call close-workspace:\n{msg}")
 
-    def test_assistant_prompt_does_not_list_close_workspace_action(self):
-        prompt = REPO_ASSISTANT / "prompts/prompt-assistant-agent.md"
-        text = prompt.read_text()
-        # The prompt may MENTION close-workspace in a "do not do this" note.
-        # What we forbid is any TABLE ROW or RULE that treats close-workspace
-        # as an action the Assistant should take. Approximate: forbid the
-        # exact string `close-workspace` appearing in a markdown table row
-        # cell that doesn't also contain "not", "never", or "DISABLED".
-        for line_no, line in enumerate(text.splitlines(), 1):
-            if "close-workspace" not in line.lower():
-                continue
-            ll = line.lower()
-            if any(neg in ll for neg in ("not", "never", "disabled", "removed", "no longer")):
-                continue
-            # Plain mention in narrative is OK if it explains; assert the
-            # line isn't an action-table row.
-            if line.lstrip().startswith("|") and "|" in line[1:]:
-                self.fail(f"prompt-assistant-agent.md:{line_no} appears to list close-workspace in an action table:\n  {line}")
+    def test_no_prompt_lists_close_workspace_action(self):
+        """Walk every prompt under prompts/ and assert none of them lists
+        close-workspace as an action the system should take. Prompts MAY
+        mention it in a 'do not do this' context (those lines contain
+        'not'/'never'/'disabled' and are allowed). What's forbidden is
+        any markdown table row that treats close-workspace as a verdict
+        action."""
+        prompts_dir = REPO_ASSISTANT / "prompts"
+        if not prompts_dir.exists():
+            self.skipTest("no prompts/ dir")
+        for prompt in prompts_dir.glob("*.md"):
+            text = prompt.read_text()
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if "close-workspace" not in line.lower():
+                    continue
+                ll = line.lower()
+                if any(neg in ll for neg in ("not", "never", "disabled", "removed", "no longer")):
+                    continue
+                if line.lstrip().startswith("|") and "|" in line[1:]:
+                    self.fail(
+                        f"{prompt.name}:{line_no} appears to list close-workspace "
+                        f"as an action:\n  {line}"
+                    )
 
 
 if __name__ == "__main__":

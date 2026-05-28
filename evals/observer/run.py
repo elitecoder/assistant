@@ -29,7 +29,7 @@ from pathlib import Path
 
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = EVAL_DIR / "fixtures"
-OBSERVER_PROMPT = Path.home() / "dev/assistant/prompts/observer-prompt.md"
+OBSERVER_PROMPT = Path.home() / "dev/assistant/prompts/observer-batch-prompt.md"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 MODEL = os.environ.get("EVAL_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
@@ -40,33 +40,33 @@ def log(msg: str) -> None:
     print(f"[observer-eval] {msg}", flush=True)
 
 
-def build_eval_prompt(ctx_path: Path, transcript_path: Path) -> str:
-    """Wrap the Observer prompt with eval-specific instructions.
-
-    Real production Observer is invoked via the Agent tool with the workspace
-    ctx as input. Here, we tell the LLM to read ctx + emit one JSON line.
-    """
+def build_eval_prompt(fixture_dir: Path, ctx: dict, verdicts_path: Path) -> str:
+    """Wrap the batch-Observer prompt with a single-fixture ctx and tell
+    the model to write its JSONL output to verdicts_path. Same shape as
+    production — pulse.py invokes the Observer the same way."""
     base = OBSERVER_PROMPT.read_text()
+    ctx_json = json.dumps([ctx], indent=2)
     return (
         base
         + "\n\n---\n\n## EVAL HARNESS\n\n"
-        f"Your input ctx is at: `{ctx_path}`. Read it.\n\n"
-        f"The workspace's transcript JSONL is at: `{transcript_path}`. "
-        "The path in ctx.json points there too.\n\n"
-        "Emit exactly ONE JSON object on stdout. No commentary, no markdown "
-        "fence — just a single line of JSON matching the verdict vocabulary.\n"
+        + "You are judging this batch of 1 workspace.\n\n"
+        + f"**Write your JSONL output to**: `{verdicts_path}`\n\n"
+        + "One JSON object per line, tagged with `ws_ref` and `verdict`. "
+          "Anything you print to stdout is treated as work-trail diagnostic "
+          "and is never parsed for verdicts.\n\n"
+        + "Workspace ctx to judge:\n\n"
+        + "```json\n" + ctx_json + "\n```\n"
     )
 
 
-def extract_verdict(stdout: str) -> dict | None:
-    """Pull the last well-formed JSON object out of stdout."""
-    # The model may emit some prose before the final JSON. Walk lines from
-    # the bottom and try parsing each. Take first that parses to a dict
-    # with a 'verdict' key.
-    lines = [l.strip() for l in stdout.splitlines() if l.strip()]
-    for line in reversed(lines):
-        # Strip code fences if present.
-        if line.startswith("```"):
+def extract_verdict(verdicts_path: Path) -> dict | None:
+    """Read JSONL written by Observer. Returns first verdict object found,
+    or None if file missing/empty/malformed."""
+    if not verdicts_path.exists():
+        return None
+    for raw in verdicts_path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("```"):
             continue
         try:
             obj = json.loads(line)
@@ -74,9 +74,9 @@ def extract_verdict(stdout: str) -> dict | None:
             continue
         if isinstance(obj, dict) and "verdict" in obj:
             return obj
-    # Fall back: try parsing the whole stdout (sometimes a multi-line JSON).
+    # Fall back: try parsing whole file as a single multi-line JSON object.
     try:
-        obj = json.loads(stdout.strip())
+        obj = json.loads(verdicts_path.read_text().strip())
         if isinstance(obj, dict) and "verdict" in obj:
             return obj
     except Exception:
@@ -99,13 +99,19 @@ def run_one(fixture_dir: Path) -> tuple[bool, str]:
     except Exception as e:
         return False, f"expected.json invalid: {e}"
 
-    # Patch the ctx so transcript_path points at the fixture's local file.
+    # Patch the ctx so transcript_path points at the fixture's local file
+    # AND tag with a synthetic ws_ref so the batch prompt can match the
+    # output line back. Production ctxs always have a ws_ref; fixtures that
+    # don't get a deterministic placeholder.
     ctx = json.loads(ctx_path.read_text())
     ctx["transcript_path"] = str(transcript_path.resolve())
-    runtime_ctx = fixture_dir / "ctx.runtime.json"
-    runtime_ctx.write_text(json.dumps(ctx, indent=2))
+    ctx.setdefault("ws_ref", f"workspace:eval-{fixture_dir.name}")
 
-    prompt = build_eval_prompt(runtime_ctx, transcript_path)
+    verdicts_path = fixture_dir / "verdicts.jsonl"
+    if verdicts_path.exists():
+        verdicts_path.unlink()  # fresh slate per run
+
+    prompt = build_eval_prompt(fixture_dir, ctx, verdicts_path)
 
     env = dict(os.environ)
     fake_gh = fixture_dir / "fake-gh-bin"
@@ -115,7 +121,7 @@ def run_one(fixture_dir: Path) -> tuple[bool, str]:
     cmd = [
         CLAUDE_BIN,
         "--model", MODEL,
-        "--permission-mode", "bypassPermissions",
+        "--dangerously-skip-permissions",
         "--print",
         "--add-dir", str(fixture_dir),
         "--add-dir", str(EVAL_DIR),
@@ -135,9 +141,13 @@ def run_one(fixture_dir: Path) -> tuple[bool, str]:
     if proc.returncode != 0:
         return False, f"claude rc={proc.returncode}\nstderr: {proc.stderr[-400:]}"
 
-    verdict = extract_verdict(proc.stdout)
+    verdict = extract_verdict(verdicts_path)
     if verdict is None:
-        return False, f"no JSON verdict found in stdout (got {len(proc.stdout)} bytes)\n  tail: {proc.stdout[-300:]!r}"
+        return False, (
+            f"no verdict in {verdicts_path.name} "
+            f"(stdout {len(proc.stdout)} bytes, stderr {len(proc.stderr)} bytes)\n"
+            f"  stdout tail: {proc.stdout[-300:]!r}"
+        )
 
     # Compare verdict kind exactly. For verdicts with payload (stranded /
     # needs_user), accept any non-empty value for the keyed field — content

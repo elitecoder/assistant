@@ -218,21 +218,20 @@ log "[1/4] Symlinking code into ~/.claude/"
 
 ensure_symlink "$HOME_DIR/.claude/bin" "$REPO_ROOT/bin"
 
-mkdir -p "$HOME_DIR/.claude/spawn-prompts"
-ensure_symlink \
+# Decommission legacy spawn-prompts links from the old LLM-Assistant era
+# (prompt-assistant-agent.md, prompt-triage-agent.md). The mechanical
+# pulse.py orchestrator does not need these — the only prompt it loads is
+# observer-batch-prompt.md, which it reads directly from $REPO_ROOT/prompts/.
+for legacy_prompt in \
     "$HOME_DIR/.claude/spawn-prompts/prompt-assistant-agent.md" \
-    "$REPO_ROOT/prompts/prompt-assistant-agent.md"
-
-# Clean up the legacy symlink from before the Triage→Assistant rename. Eval
-# runners and any in-flight Assistant workspace still reference the old path
-# in their loaded prompt; leaving a dangling symlink would silently fail.
-LEGACY_PROMPT_LINK="$HOME_DIR/.claude/spawn-prompts/prompt-triage-agent.md"
-if [[ -L "$LEGACY_PROMPT_LINK" ]]; then
-    note "REMOVE legacy $LEGACY_PROMPT_LINK (replaced by prompt-assistant-agent.md)"
-    if [[ $APPLY -eq 1 ]]; then
-        rm "$LEGACY_PROMPT_LINK"
+    "$HOME_DIR/.claude/spawn-prompts/prompt-triage-agent.md"; do
+    if [[ -L "$legacy_prompt" || -e "$legacy_prompt" ]]; then
+        note "REMOVE legacy $legacy_prompt (no longer needed; pulse.py reads observer-batch-prompt.md directly)"
+        if [[ $APPLY -eq 1 ]]; then
+            rm -f "$legacy_prompt"
+        fi
     fi
-fi
+done
 
 # Lessons live inside ~/.claude/CLAUDE.md as a `## Lessons` section. CLAUDE.md
 # is officially auto-loaded by Claude Code into every session, so any agent
