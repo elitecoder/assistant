@@ -119,9 +119,58 @@ def utc_ts() -> int:
     return int(time.time())
 
 
+def load_bedrock_env() -> dict:
+    """Read AWS / Bedrock auth vars from ~/.zprofile and merge into our env.
+
+    launchd does NOT source ~/.zprofile, so when pulse.py runs as a
+    LaunchAgent the spawned `claude --print` subprocess sees no
+    CLAUDE_CODE_USE_BEDROCK / AWS_BEARER_TOKEN_BEDROCK / AWS_REGION and
+    fails with a 403 from AWS STS. Parse the zprofile directly for the
+    handful of vars Bedrock needs. Cheap; runs once at process startup.
+    """
+    extracted: dict[str, str] = {}
+    zprofile = HOME / ".zprofile"
+    if not zprofile.exists():
+        return extracted
+    keys = ("CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_PROFILE", "ANTHROPIC_API_KEY")
+    pat = re.compile(r'^\s*export\s+([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*$')
+    for line in zprofile.read_text().splitlines():
+        m = pat.match(line)
+        if not m:
+            continue
+        k, v = m.group(1), m.group(2).strip()
+        if k not in keys:
+            continue
+        # Strip surrounding quotes if present.
+        if (v.startswith('"') and v.endswith('"')) or \
+           (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        extracted[k] = v
+    return extracted
+
+
+# Cache once at module import — re-reading on every Observer call is cheap
+# but pointless.
+_BEDROCK_ENV = load_bedrock_env()
+
+
 def run(cmd: list[str], *, input_text: str | None = None,
-        timeout: int = 30, env: dict | None = None) -> tuple[int, str, str]:
-    """Run a subprocess; return (rc, stdout, stderr). Never raises."""
+        timeout: int = 30, env: dict | None = None,
+        merge_bedrock: bool = False) -> tuple[int, str, str]:
+    """Run a subprocess; return (rc, stdout, stderr). Never raises.
+
+    If merge_bedrock=True, layer the cached zprofile-extracted Bedrock vars
+    onto the subprocess env. Used for `claude --print` which authenticates
+    against AWS Bedrock via these vars (launchd does not source zprofile)."""
+    if merge_bedrock:
+        merged = dict(env if env is not None else os.environ)
+        for k, v in _BEDROCK_ENV.items():
+            # Only inject if not already set, so an explicit override (e.g.
+            # OBSERVER_MODEL=anthropic-direct + ANTHROPIC_API_KEY in plist)
+            # still wins.
+            merged.setdefault(k, v)
+        env = merged
     try:
         proc = subprocess.run(
             cmd, input=input_text, capture_output=True, text=True,
@@ -269,7 +318,8 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int, batch_idx: int) -> dic
             seen_dirs.add(cwd)
 
     t0 = time.time()
-    rc, out, err = run(cmd, input_text=prompt, timeout=OBSERVER_TIMEOUT_SEC)
+    rc, out, err = run(cmd, input_text=prompt, timeout=OBSERVER_TIMEOUT_SEC,
+                       merge_bedrock=True)
     wall_ms = int((time.time() - t0) * 1000)
 
     # Always persist stdout/stderr — these are the LLM work transcript even
