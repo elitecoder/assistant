@@ -885,6 +885,62 @@ def render_todos_tab(world):
     return "".join(sections), p0_p1
 
 
+def render_pulse_health() -> str:
+    """One-line banner showing whether the assistant-pulse cron is alive.
+    Reads ~/.assistant/heartbeat.json and color-codes by age:
+      < 10 min  → green  (healthy)
+      < 30 min  → amber  (slow)
+      >=30 min  → red    (probably broken; user should investigate)
+    Also surfaces last pulse_idx and which orchestrator wrote the heartbeat
+    (python-mechanical = pulse.py, sonnet-4-6-1m = legacy LLM Assistant)."""
+    hb_path = HOME / ".assistant/heartbeat.json"
+    if not hb_path.exists():
+        return ('<div class="pulse-health pulse-bad">'
+                '<span class="pulse-dot"></span>'
+                '<span class="pulse-text">No heartbeat — Assistant has never run</span>'
+                '</div>')
+    try:
+        hb = json.loads(hb_path.read_text())
+    except Exception:
+        return ('<div class="pulse-health pulse-bad">'
+                '<span class="pulse-dot"></span>'
+                '<span class="pulse-text">heartbeat.json unreadable</span>'
+                '</div>')
+    last_ts = int(hb.get("last_pulse_ts") or 0)
+    if not last_ts:
+        return ('<div class="pulse-health pulse-bad">'
+                '<span class="pulse-dot"></span>'
+                '<span class="pulse-text">heartbeat present but no last_pulse_ts</span>'
+                '</div>')
+    age_sec = max(0, int(utc_now().timestamp() - last_ts))
+    if age_sec < 600:
+        cls = "pulse-ok"
+        msg = "Pulse healthy"
+    elif age_sec < 1800:
+        cls = "pulse-warn"
+        msg = "Pulse slow"
+    else:
+        cls = "pulse-bad"
+        msg = "Pulse stale — orchestrator may be down"
+    if age_sec < 60:
+        age_str = f"{age_sec}s"
+    elif age_sec < 3600:
+        age_str = f"{age_sec // 60}m"
+    elif age_sec < 86400:
+        age_str = f"{age_sec // 3600}h{(age_sec % 3600) // 60}m"
+    else:
+        age_str = f"{age_sec // 86400}d"
+    pulse_idx = hb.get("pulse_idx", "?")
+    model = hb.get("model", "?")
+    return (
+        f'<div class="pulse-health {cls}">'
+        f'<span class="pulse-dot"></span>'
+        f'<span class="pulse-text">{msg}</span>'
+        f'<span class="pulse-meta">last pulse {age_str} ago · #{pulse_idx} · {e(str(model))}</span>'
+        f'</div>'
+    )
+
+
 def render():
     if not WORLD_PATH.exists():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
@@ -893,6 +949,7 @@ def render():
     decisions_html, awaiting_n = render_decisions_tab(world)
     todos_html, p0_p1 = render_todos_tab(world)
     workspaces_html, ws_n = render_workspaces_tab()
+    pulse_health_html = render_pulse_health()
     counts = world.get("counts", {})
 
     css = """
@@ -961,6 +1018,60 @@ h1 {
   color: var(--muted);
   margin-bottom: 22px;
   letter-spacing: 0;
+}
+
+/* ─── Pulse-health banner ─── */
+.pulse-health {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 16px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+}
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.pulse-text {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.pulse-meta {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: 'Geist Mono', 'SF Mono', monospace;
+  opacity: 0.75;
+}
+.pulse-ok {
+  background: rgba(46, 160, 67, 0.06);
+  border-color: rgba(46, 160, 67, 0.25);
+  color: #4cd778;
+}
+.pulse-ok .pulse-dot {
+  background: #2ea043;
+  box-shadow: 0 0 6px rgba(46, 160, 67, 0.55);
+}
+.pulse-warn {
+  background: rgba(255, 184, 108, 0.06);
+  border-color: rgba(255, 184, 108, 0.28);
+  color: #ffc471;
+}
+.pulse-warn .pulse-dot {
+  background: #d4a04c;
+}
+.pulse-bad {
+  background: rgba(220, 60, 60, 0.08);
+  border-color: rgba(220, 60, 60, 0.32);
+  color: #ff7777;
+}
+.pulse-bad .pulse-dot {
+  background: #d83a3a;
+  box-shadow: 0 0 6px rgba(220, 60, 60, 0.6);
 }
 
 /* ─── Tab nav: Linear-style underline ─── */
@@ -1814,6 +1925,7 @@ document.addEventListener('click', handleTodoToolsClick);
 
 <h1>Assistant</h1>
 <div class="meta">{e(utc_now().strftime('%H:%M:%S UTC'))} · auto-refresh 15s · v3 (one Scanner, one Evaluator)</div>
+{pulse_health_html}
 
 <div class="tabs">
   <button class="tab" data-tab="decisions" onclick="showTab('decisions')">

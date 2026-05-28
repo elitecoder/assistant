@@ -6,10 +6,11 @@
     <string>com.assistant.assistant-pulse</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/mukuls/dev/assistant/bin/assistant-pulse.sh</string>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/mukuls/dev/assistant/bin/pulse.py</string>
     </array>
     <key>StartInterval</key>
-    <integer>120</integer>
+    <integer>300</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
