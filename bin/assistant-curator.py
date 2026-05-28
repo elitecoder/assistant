@@ -227,8 +227,7 @@ def main() -> int:
     p_write.add_argument("--trigger", required=True)
     p_write.add_argument("--rule", required=True)
     p_write.add_argument("--scope", default=DEFAULT_SCOPE,
-                         help=f"one of: {sorted(ALLOWED_SCOPES)} "
-                              f"(dispatcher-only scopes {sorted(DISPATCHER_ONLY_SCOPES)} go in the Assistant prompt instead)")
+                         help=f"one of: {sorted(ALLOWED_SCOPES)}")
     p_write.add_argument("--slug", help="override the auto-generated slug")
     p_write.set_defaults(func=cmd_write)
 
