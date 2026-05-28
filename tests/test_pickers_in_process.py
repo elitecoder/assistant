@@ -131,6 +131,57 @@ class PickWsBatchTests(unittest.TestCase):
         ])
         self.assertEqual(out["to_reclassify"][0]["ref"], "workspace:1")  # older first
 
+    def test_prune_back_off_drops_dead_refs(self):
+        Path(self.mod.BACK_OFF_PATH).write_text(json.dumps({
+            "workspaces": [
+                {"ws_ref": "workspace:1", "reason": "still live"},
+                {"ws_ref": "workspace:99", "reason": "dead"},
+                {"ws_ref": "workspace:42", "reason": "also dead"},
+            ]
+        }))
+        n = self.mod.prune_back_off({"workspace:1"})
+        self.assertEqual(n, 2)
+        d = json.load(open(self.mod.BACK_OFF_PATH))
+        self.assertEqual([w["ws_ref"] for w in d["workspaces"]], ["workspace:1"])
+
+    def test_prune_back_off_noop_when_all_live(self):
+        Path(self.mod.BACK_OFF_PATH).write_text(json.dumps({
+            "workspaces": [{"ws_ref": "workspace:1", "reason": "x"}]
+        }))
+        mtime = os.path.getmtime(self.mod.BACK_OFF_PATH)
+        n = self.mod.prune_back_off({"workspace:1", "workspace:2"})
+        self.assertEqual(n, 0)
+        # File untouched.
+        self.assertEqual(os.path.getmtime(self.mod.BACK_OFF_PATH), mtime)
+
+    def test_prune_back_off_silent_when_file_missing(self):
+        # No back-off.json — must not crash, must not create one.
+        if os.path.exists(self.mod.BACK_OFF_PATH):
+            os.unlink(self.mod.BACK_OFF_PATH)
+        self.assertEqual(self.mod.prune_back_off({"workspace:1"}), 0)
+        self.assertFalse(os.path.exists(self.mod.BACK_OFF_PATH))
+
+    def test_prune_back_off_silent_on_corrupt_json(self):
+        Path(self.mod.BACK_OFF_PATH).write_text("{ not json")
+        self.assertEqual(self.mod.prune_back_off({"workspace:1"}), 0)
+
+    def test_main_prunes_dead_back_off_entries(self):
+        Path(self.mod.BACK_OFF_PATH).write_text(json.dumps({
+            "workspaces": [
+                {"ws_ref": "workspace:1", "reason": "live"},
+                {"ws_ref": "workspace:999", "reason": "dead"},
+            ]
+        }))
+        out = self._run_main_with_cmux_response([
+            {"ref": "workspace:1", "title": "a"},
+            {"ref": "workspace:2", "title": "b"},
+        ])
+        # workspace:999 is no longer in cmux — must be pruned from the file.
+        d = json.load(open(self.mod.BACK_OFF_PATH))
+        self.assertEqual([w["ws_ref"] for w in d["workspaces"]], ["workspace:1"])
+        # And it must not appear in backed_off output either.
+        self.assertEqual([b["ref"] for b in out["backed_off"]], ["workspace:1"])
+
     def test_main_handles_corrupt_summary(self):
         summ_dir = Path(self.mod.SUMM_DIR)
         summ_dir.mkdir(parents=True, exist_ok=True)

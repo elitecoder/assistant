@@ -32,12 +32,40 @@ def load_back_off_refs():
     return {w.get("ws_ref"): w.get("reason", "") for w in d.get("workspaces", []) if w.get("ws_ref")}
 
 
-def main():
-    back_off = load_back_off_refs()
+def prune_back_off(live_refs):
+    """Drop back-off entries whose workspace is no longer in cmux.
 
+    Returns the count pruned. No-op (and silent) if the file is missing or
+    unparseable, or if every entry is still live.
+    """
+    if not os.path.exists(BACK_OFF_PATH):
+        return 0
+    try:
+        d = json.load(open(BACK_OFF_PATH))
+    except Exception:
+        return 0
+    workspaces = d.get("workspaces") or []
+    kept = [w for w in workspaces if w.get("ws_ref") in live_refs]
+    pruned = len(workspaces) - len(kept)
+    if pruned == 0:
+        return 0
+    d["workspaces"] = kept
+    tmp = BACK_OFF_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2)
+    os.replace(tmp, BACK_OFF_PATH)
+    return pruned
+
+
+def main():
     out = subprocess.check_output([CMUX, "list-workspaces", "--json"], text=True)
     data = json.loads(out)
     items = data if isinstance(data, list) else data.get("workspaces", [])
+    live_refs = {w["ref"] for w in items if w.get("ref")}
+
+    prune_back_off(live_refs)
+    back_off = load_back_off_refs()
+
     ws_list = []
     backed_off = []
     for w in items:
