@@ -197,7 +197,9 @@ class ExecuteVerdictTests(unittest.TestCase):
         self.assertEqual(action["kind"], "skipped")
         self.assertEqual(action["outcome"], "failed")
 
-    def test_ready_for_cleanup_calls_cmux_send_with_cleanup(self):
+    def test_ready_for_cleanup_sends_when_assistant_merged(self):
+        # Pre-seed the merge ledger so the /cleanup gate opens.
+        self.mod.record_assistant_merge("workspace:99", ["10000"])
         seen = {}
         def fake_send(ws_ref, text, **k):
             seen["ws_ref"] = ws_ref
@@ -211,7 +213,45 @@ class ExecuteVerdictTests(unittest.TestCase):
         self.assertEqual(seen, {"ws_ref": "workspace:99", "text": "/cleanup"})
         self.assertEqual(action["outcome"], "verified")
 
-    def test_ready_for_merge_calls_cmux_send_with_merge_when_ready(self):
+    def test_ready_for_cleanup_blocked_when_no_merge_record(self):
+        # No merge ledger entry → /cleanup must NOT fire. The verdict gets
+        # downgraded to an awaiting card so the user can decide.
+        sent = []
+        awaiting = []
+        with mock.patch.object(self.mod, "cmux_send",
+                               lambda *a, **k: sent.append(a) or {}):
+            action = self.mod.execute_verdict(
+                self._ws(),
+                {"verdict": "ready_for_cleanup",
+                 "summary": "audit complete; no PR needed",
+                 "next": "send /cleanup"},
+                awaiting,
+            )
+        self.assertEqual(sent, [], "/cleanup must NOT be sent without merge record")
+        self.assertEqual(action["kind"], "emit-card")
+        self.assertEqual(len(awaiting), 1)
+        self.assertIn("confirm /cleanup", awaiting[0]["title"].lower())
+        self.assertIn("audit complete", awaiting[0]["detail"])
+        self.assertEqual(awaiting[0]["ws_ref"], "workspace:99")
+
+    def test_ready_for_cleanup_per_workspace_merge_record(self):
+        # Merge record for ws:42 must NOT open the gate for ws:99.
+        self.mod.record_assistant_merge("workspace:42", ["1234"])
+        sent = []
+        awaiting = []
+        with mock.patch.object(self.mod, "cmux_send",
+                               lambda *a, **k: sent.append(a) or {}):
+            action = self.mod.execute_verdict(
+                self._ws("workspace:99"),
+                {"verdict": "ready_for_cleanup", "summary": "s", "next": "n"},
+                awaiting,
+            )
+        self.assertEqual(sent, [])
+        self.assertEqual(action["kind"], "emit-card")
+
+    def test_ready_for_merge_records_merge_ledger_on_success(self):
+        # /merge-when-ready dispatch must mark the workspace eligible for
+        # future auto-/cleanup.
         seen = {}
         def fake_send(ws_ref, text, **k):
             seen["text"] = text
@@ -222,6 +262,28 @@ class ExecuteVerdictTests(unittest.TestCase):
                     self._ws(), {"verdict": "ready_for_merge", "summary": "s", "next": "n"}, [],
                 )
         self.assertEqual(seen["text"], "/merge-when-ready")
+        self.assertTrue(self.mod.assistant_merged_workspace("workspace:99"))
+
+    def test_ready_for_merge_does_not_record_on_failure(self):
+        # If cmux_send fails, do NOT poison the merge ledger.
+        with mock.patch.object(self.mod, "cmux_send",
+                               lambda *a, **k: {"outcome": "failed"}):
+            with mock.patch.object(self.mod, "previous_send_ingested", lambda *a: True):
+                action = self.mod.execute_verdict(
+                    self._ws(), {"verdict": "ready_for_merge", "summary": "s", "next": "n"}, [],
+                )
+        self.assertEqual(action["outcome"], "failed")
+        self.assertFalse(self.mod.assistant_merged_workspace("workspace:99"))
+
+    def test_assistant_merged_workspace_silent_on_missing_ledger(self):
+        # No ledger file at all → False, not crash.
+        self.assertFalse(self.mod.assistant_merged_workspace("workspace:99"))
+
+    def test_assistant_merged_workspace_silent_on_corrupt_lines(self):
+        self.mod.MERGE_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.mod.MERGE_LEDGER_PATH.write_text("{ not json\n")
+        # Should NOT raise; just returns False because no valid record matched.
+        self.assertFalse(self.mod.assistant_merged_workspace("workspace:99"))
 
 
 class NoIngestGuardTests(unittest.TestCase):
@@ -269,6 +331,9 @@ class NoIngestGuardTests(unittest.TestCase):
         self.assertTrue(self.mod.previous_send_ingested("workspace:7", "/cleanup"))
 
     def test_execute_verdict_skips_when_guard_fires(self):
+        # Seed merge ledger so the /cleanup gate opens — we want this test to
+        # exercise NO_INGEST_GUARD specifically, not the cleanup gate.
+        self.mod.record_assistant_merge("workspace:7", ["123"])
         self._write_send_log([
             {"target_ws_ref": "workspace:7", "text": "/cleanup",
              "transcript_size_delta": 0, "outcome": "sent"},

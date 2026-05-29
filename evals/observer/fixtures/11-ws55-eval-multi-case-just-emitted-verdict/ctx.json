@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:55",
+  "title": "eval: archffp code-reviewer scaling-costs [55]",
+  "cwd": "/tmp/no-such-cwd-eval-fixture",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 0,
+  "agent_status": "idle",
+  "cwd_dirty": false,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

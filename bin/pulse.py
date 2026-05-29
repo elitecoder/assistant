@@ -64,6 +64,7 @@ LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
 STATE_PATH = HOME / ".claude/cache/assistant-state.json"
 SUMMARIES_DIR = ASSISTANT_DIR / "observer-summaries"
 SENDS_LOG = ASSISTANT_DIR / "sends.jsonl"
+MERGE_LEDGER_PATH = ASSISTANT_DIR / "assistant-merged-prs.jsonl"
 OBSERVER_RUNS_DIR = ASSISTANT_DIR / "observer-runs"
 # Observer-runs are the LLM transcript archive. We never delete them — disk
 # is cheap, the audit trail is not. If this ever grows unmanageable, prune
@@ -186,6 +187,42 @@ def append_ledger(entry: dict) -> None:
     LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LEDGER_PATH, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+def record_assistant_merge(ws_ref: str, pr_refs: list[str]) -> None:
+    """Mark that the Assistant pulse just dispatched /merge-when-ready for
+    this ws_ref. Used by the /cleanup gate: a workspace is only eligible
+    for auto-/cleanup if the Assistant queued its merge."""
+    MERGE_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(MERGE_LEDGER_PATH, "a") as f:
+        f.write(json.dumps({
+            "ws_ref": ws_ref,
+            "pr_refs": list(pr_refs or []),
+            "ts": utc_ts(),
+        }) + "\n")
+
+
+def assistant_merged_workspace(ws_ref: str) -> bool:
+    """True iff the Assistant pulse has dispatched /merge-when-ready for
+    this ws_ref at any point. Read-only; never raises on a missing or
+    corrupt ledger."""
+    if not MERGE_LEDGER_PATH.exists():
+        return False
+    try:
+        with open(MERGE_LEDGER_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("ws_ref") == ws_ref:
+                    return True
+    except Exception:
+        return False
+    return False
 
 
 def load_state() -> dict:
@@ -476,6 +513,31 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
         })
         return {**base, "kind": "emit-card"}
 
+    # /cleanup gate: only send /cleanup to workspaces where the Assistant
+    # itself queued the merge. Every other "looks done" signal — recap +
+    # idle, audit complete, no-PR-needed declaration — gets downgraded
+    # to an awaiting card so the user can decide. Recap-based heuristics
+    # have misfired too many times (eval mid-flight, feature awaiting
+    # review, work-done-awaiting-approval) and the cost of the wrong
+    # /cleanup (destroyed mid-flight session) is much higher than the
+    # cost of an extra awaiting card.
+    if kind == "ready_for_cleanup" and not assistant_merged_workspace(ws_ref):
+        title = f"{ws_ref} looks done — confirm /cleanup"
+        detail = (
+            f"Observer says: {(verdict.get('summary') or '').strip()[:600]}\n\n"
+            "/cleanup will NOT auto-fire because the Assistant did not "
+            "merge a PR for this workspace. Run /cleanup yourself if the "
+            "work is truly done, or close the awaiting card to dismiss."
+        )
+        awaiting.append({
+            "key": f"{ws_ref}:cleanup-needs-confirm",
+            "tier": "T2",
+            "title": title[:120],
+            "detail": detail[:1200],
+            "ws_ref": ws_ref,
+        })
+        return {**base, "kind": "emit-card", "evidence": "downgraded ready_for_cleanup → needs_user (no Assistant-merge record)"}
+
     # Sends. Apply NO_INGEST_GUARD: if the same text was sent last and got
     # delta=0, skip this pulse rather than loop forever.
     if kind == "ready_for_merge":
@@ -501,6 +563,15 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
     base["evidence"] = f"sent {text!r} delta={delta}"
     if rec.get("outcome") not in ("sent", "ok-unparsed"):
         base["outcome"] = "failed"
+        return base
+
+    # On a successful /merge-when-ready dispatch, mark this workspace as
+    # eligible for future auto-/cleanup. This is the *only* path that
+    # creates a merge-ledger entry — by construction, /cleanup can only
+    # fire on workspaces the Assistant itself queued for merge.
+    if kind == "ready_for_merge":
+        record_assistant_merge(ws_ref, ws.get("pr_refs") or [])
+
     return base
 
 

@@ -51,46 +51,27 @@ Every output line includes TWO required fields:
 
 Both are dashboard rows; make them concrete enough that the user doesn't have to open the workspace.
 
-## Verdict vocabulary (per workspace)
+## Verdict vocabulary
 
-Pick ONE of these for each `ws_ref`:
+Pick ONE per workspace. See the ruleset below for which one fires when.
 
-```json
-{"ws_ref": "workspace:N", "verdict": "ready_for_merge", "summary": "PR #N ready — test-only / refactor change with green CI.", "next": "Assistant will send /merge-when-ready to queue the merge."}
+| verdict | extra fields | meaning |
+|---|---|---|
+| `ready_for_merge` | — | PR is auto-mergeable per A1/A2 (test-only or refactor + green CI). |
+| `ready_for_cleanup` | — | Workspace is done, safe to tear down. |
+| `stranded` | `nudge_text` | Agent paused mid-task. `nudge_text` is sent verbatim — keep it short and transcript-specific. |
+| `needs_user` | `title`, `detail` | Needs human input. `title` is one line; `detail` is a 5-second paragraph. |
+| `active` | — | Default — mid-work, no action. |
+| `no_action` | — | Done AND cleanup already ran (worktree gone / branch deleted). |
+
+Examples:
+
 ```
-The PR for this workspace is ready to auto-merge per the ruleset below.
-
-```json
-{"ws_ref": "workspace:N", "verdict": "ready_for_cleanup", "summary": "Audit complete; <artifact produced>.", "next": "Assistant will send /cleanup to tear down the workspace."}
-```
-Work in this workspace is done and the workspace is safe to tear down.
-
-```json
+{"ws_ref": "workspace:N", "verdict": "active", "summary": "Re-running combined keyboard + zoom suite at workers=6 to verify the 4.8x speedup holds.", "next": "Suite finishes; agent assesses whether the speedup regresses any spec."}
 {"ws_ref": "workspace:N", "verdict": "stranded", "nudge_text": "...", "summary": "Paused mid-<task> after <checkpoint>.", "next": "Resume by <continuing what>."}
 ```
-Agent paused mid-task. `nudge_text` is sent to the workspace verbatim. Keep it short and specific to what the transcript shows.
 
-```json
-{"ws_ref": "workspace:N", "verdict": "needs_user", "title": "...", "detail": "...", "summary": "<what's blocking>.", "next": "User decides between <option A> and <option B>."}
-```
-Genuinely needs human input. `title` is one line, `detail` is a short paragraph the user can read in 5 seconds.
-
-```json
-{"ws_ref": "workspace:N", "verdict": "active", "summary": "Currently <doing X> — <where in the arc>.", "next": "<the agent's expected next step>."}
-```
-Default. Workspace is mid-work, no action needed.
-
-```json
-{"ws_ref": "workspace:N", "verdict": "no_action", "summary": "Done — <PR merged + cleanup ran | no work to do>.", "next": "User will close the workspace when ready."}
-```
-The workspace is fully done AND `/cleanup` (or equivalent teardown) has already run. There is nothing the Assistant can usefully send. Use this whenever the transcript shows cleanup has already completed (worktree removed, branch deleted, ledger entry written).
-
-### Writing summary and next
-
-- **Concrete and grounded in the transcript.** Bad: "Agent is working on tests." Good: "Re-running combined keyboard + zoom suite at workers=6 to verify the 4.8x speedup holds."
-- **Summary = state-so-far. Next = coming step.** Don't paraphrase the same thing in both fields.
-- **`next` is a prediction.** The agent might pivot, get blocked, or ask the user something. Make it the agent's *expected* next step based on what they just said or did, not a guarantee.
-- **Stay under ~30 words each.** Both fields are dashboard rows, not paragraphs.
+`summary` and `next` rules: concrete + grounded in the transcript (no "agent is working on tests"); summary = state-so-far, next = coming step (don't paraphrase one as the other); ~30 words each, hard cap.
 
 ## Ruleset
 
@@ -117,7 +98,12 @@ Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,ti
 
    **Do not emit `ready_for_cleanup` if cleanup has already happened.** A workspace whose claude has exited (or whose worktree is gone) cannot ingest the slash command, so the send becomes a permanent loop. Use `no_action`.
 
-1. **Last assistant text is a definitive recap** ("td-NNN COMPLETE", "work is done, no PR needed", "audit complete"), no follow-up turns, `cwd_dirty=false`, `cwd_unpushed=false` → `ready_for_cleanup`.
+1. **Definitive workspace-level recap + idle >30 min + clean cwd** → `ready_for_cleanup`. ALL must hold:
+   - `last_turn_age_sec > 1800`, `cwd_dirty=false`, `cwd_unpushed=false`. A recent turn (≤1800s, especially 0s) is the agent *talking*, not signing off.
+   - The text declares the **workspace's top-level task** done (e.g. "td-NNN COMPLETE", "audit complete, no PR needed", "all cases run, results filed") — NOT a per-case / per-spec / per-PR sub-result. A `VERDICT: BLOCK` or `case N: PASS` line from a wrapper script is a sub-result even when it looks definitive.
+   - The agent is not inside an enclosing iteration. Read `head -30 <transcript_path>` to learn the workspace's actual scope. Tells of in-flight iteration: original prompt asked for multiple cases/specs/files/PRs/rounds and not all are done; per-item wrapper lines instead of a final tally; agent says "next case", "moving on", "now running…".
+
+   If any fail → `active`. Better to wait one more pulse than fire `/cleanup` on a mid-flight run.
 2. **Last assistant text asks the user a question** → `needs_user` with the question as the detail.
 3. **Stranded — ALL THREE must be true**:
    - `last_turn_age_sec > 1800` (strictly greater than 30 minutes).
