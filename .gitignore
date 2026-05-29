@@ -18,6 +18,11 @@ evals/*/__pycache__/
 .idea/
 .vscode/
 
+# pytest coverage output
+.coverage
+.coverage.*
+htmlcov/
+
 # Local-only overrides (you can drop a settings.local.json here later)
 **/local.json
 **/*.local
