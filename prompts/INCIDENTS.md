@@ -1,7 +1,12 @@
 # Assistant — incident log
 
-Historical incidents that motivated rules in `prompt-assistant-agent.md`.
-Cite by anchor when the rule needs a "why."
+Historical incidents that motivated the Assistant's design. The rules they
+produced now live in code and prompts, not a single agent prompt:
+`bin/pulse.py` (mechanical orchestration: caps, dispatch, send gating,
+merge-pr safety gate), `prompts/observer-batch-prompt.md` (verdict policy),
+and `prompts/dispatch-classification.md` (dispatch routing). Cite an anchor
+here when one of those rules needs a "why." Archival — nothing reads this at
+runtime.
 
 ## td-019 (2026-05-22) — duplicate spawn for in-flight work {#td-019}
 

@@ -46,7 +46,12 @@ The curator picks a slug from the trigger, prepends the scope if non-global, and
 
 1. **Identify the trigger and rule.** Re-read the user's last 1–2 messages. The user's words are usually the rule itself; your job is to extract the *condition* (trigger) and the *constraint* (rule) and phrase them in the third person so future sessions can apply them.
 
-2. **Decide where the rule belongs.** Lessons in CLAUDE.md auto-load into EVERY Claude Code session, so they should only be rules that genuinely apply to every session. If the rule is **dispatcher-specific** (about how the Assistant agent in `~/dev/assistant/` decides when to spawn workspaces, what model to use, when to flip TODO status, etc.), it does NOT go in CLAUDE.md — it goes in the Assistant's own prompt at `~/dev/assistant/prompts/prompt-assistant-agent.md` under `## Assistant policies`. The curator refuses scopes `dispatch` and `todo` for this reason. If the rule applies to any user, any session, in any context — proceed; it belongs in CLAUDE.md. Otherwise tell the user "this looks dispatcher-specific; should it go in the Assistant prompt instead?"
+2. **Decide where the rule belongs.** Lessons in CLAUDE.md auto-load into EVERY Claude Code session, so they should only be rules that genuinely apply to every session. If the rule is **dispatcher-specific** (about how the Assistant orchestrates workspaces), it does NOT go in CLAUDE.md — and note the Assistant is now a mechanical Python orchestrator (`~/dev/assistant/bin/pulse.py`), not an LLM prompt, so there is no longer a single "Assistant prompt" to edit. Route by sub-domain:
+   - **Dispatch classification / routing** (FFP→archffp, what kind of work goes where) → `~/dev/assistant/prompts/dispatch-classification.md` (the spawned worker reads it).
+   - **Verdict policy** (how the Observer classifies a workspace state) → `~/dev/assistant/prompts/observer-batch-prompt.md`.
+   - **Mechanical orchestration** (caps, dispatch picking, send gating) → it's code; change `bin/pulse.py` directly, don't write a lesson.
+
+   The curator refuses scopes `dispatch` and `todo` for this reason. If the rule applies to any user, any session, in any context — proceed; it belongs in CLAUDE.md. Otherwise tell the user "this looks dispatcher-specific; it belongs in the Assistant's prompts/code, not CLAUDE.md — which sub-domain?"
 
 3. **Choose a scope.** One of:
    - `global` — applies to any session

@@ -52,7 +52,8 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
-  - ~/.claude/spawn-prompts/prompt-assistant-agent.md → symlink → $REPO_ROOT/prompts/...
+  - legacy ~/.claude/spawn-prompts/prompt-{assistant,triage}-agent.md → REMOVED
+    (old LLM-Assistant era; the mechanical pulse.py reads prompts/ directly)
   - lessons live in ~/.claude/CLAUDE.md (not in this repo). Curator: bin/assistant-curator.py
   - ~/.claude/skills/{todo,cleanup,spawn-claude-workspace} → COPIES (shareable)
   - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,

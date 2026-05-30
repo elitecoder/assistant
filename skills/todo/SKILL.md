@@ -1,6 +1,6 @@
 ---
 name: todo
-description: Add, list, and update items in Mukul's persistent TODO list at ~/.claude/assistant-todo.json. Use when the user types /todo, asks to "add a todo", "mark td-NNN done", "defer td-NNN", "remove td-NNN", or wants to see the current TODO list. Single source of truth — the Assistant agent reads from the same file. After any mutation, the dashboard auto-refreshes within ~15s; nudge the Assistant with a pulse for sub-minute freshness.
+description: Add, list, and update items in Mukul's persistent TODO list at ~/.claude/assistant-todo.json. Use when the user types /todo, asks to "add a todo", "mark td-NNN done", "defer td-NNN", "remove td-NNN", or wants to see the current TODO list. Single source of truth — the mechanical orchestrator (bin/pulse.py) reads from the same file. After any mutation, the dashboard auto-refreshes within ~15s; kick the assistant-pulse LaunchAgent to dispatch a new autoDispatch TODO immediately instead of waiting for the 5-min pulse.
 ---
 
 # /todo — TODO management
@@ -201,15 +201,15 @@ for p in ("P0","P1","P2","P3","P4"):
         print(f"  {it['id']}  [{it.get('status','open'):<11}]  {it.get('title','')[:80]}{flags}")
 ```
 
-### Step 4 — nudge the Assistant so the new TODO surfaces in <2 min
+### Step 4 — surfacing the change
 
-For `add` / `done` / `defer` / `rm` (any mutation), run:
+No nudge needed. `todo-server.py` re-renders the dashboard on every mutation, and the page LaunchAgent re-renders every 15s regardless — so the TODOs tab reflects the change within ~15s.
+
+Dispatch of a new `autoDispatch` TODO happens on the next pulse of the mechanical orchestrator (`bin/pulse.py`, every 5 min via `com.assistant.assistant-pulse`). To pick it up immediately instead of waiting for the interval, kick the pulse once:
 
 ```bash
-~/.claude/bin/assistant-pulse.sh 2>/dev/null || true
+launchctl kickstart -k gui/$(id -u)/com.assistant.assistant-pulse 2>/dev/null || true
 ```
-
-Don't block on output. The pulse fires `pulse-now` to the Assistant workspace; the Assistant's next emission will reflect the change. Dashboard auto-refreshes the tab within 15s.
 
 For `list` / `show` (read-only), skip the pulse.
 

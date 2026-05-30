@@ -1067,8 +1067,8 @@ def main() -> int:
 
 def write_heartbeat(pulse_idx: int, drained: int) -> None:
     """The mechanical pulse has no cmux workspace of its own — it runs as a
-    LaunchAgent. We still write heartbeat.json so existing watchers (e.g.
-    spawn-assistant.sh's staleness check) see the pulse is alive."""
+    LaunchAgent. We still write heartbeat.json so the dashboard's pulse-health
+    banner (render-assistant-page.py) can show the pulse is alive and fresh."""
     payload = {
         "ws_ref": "(launchd)",
         "surface_ref": None,

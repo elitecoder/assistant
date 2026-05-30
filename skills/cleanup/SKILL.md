@@ -268,11 +268,11 @@ json.dump(d, open('$LEDGER','w'), indent=2)
 fi
 ```
 
-### Step 10 — nudge Assistant and report
+### Step 10 — report
+
+The mechanical orchestrator (`bin/pulse.py`) picks up the cleaned-up workspace on its next 5-min pulse; the dashboard re-renders within 15s. No nudge call is needed.
 
 ```bash
-~/.claude/bin/assistant-pulse.sh 2>/dev/null || true
-
 # Single-line summary
 echo "✓ cleanup $LEDGER_ID — ws=$WS_REF branch=${BRANCH:-none} worktree=$([ "$IS_WORKTREE" = "1" ] && echo "removed" || echo "n/a") todo=${RELATED_TID:-none} stash=${STASH_REF:-none}"
 echo "  undo: /cleanup --undo $LEDGER_ID"
