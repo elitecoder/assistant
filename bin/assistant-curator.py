@@ -33,14 +33,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HOME = Path(os.environ["HOME"])
-CLAUDE_MD = HOME / ".claude/CLAUDE.md"
 SECTION_HEADING = "## Lessons"
 
-DEFAULT_SCOPE = "global"
-ALLOWED_SCOPES = {
-    "global", "classification", "dashboard",
-    "ffp", "scout", "memory", "security",
+# Two lesson stores, picked by --target:
+#   claude    → ~/.claude/CLAUDE.md — rules EVERY Claude Code session must obey.
+#   assistant → a `## Lessons` section appended to the Observer batch prompt.
+#               The Observer already loads that prompt every pulse, so an
+#               orchestrator-specific rule ("never send /cleanup to a session
+#               awaiting my review") takes effect with no extra wiring — and
+#               does NOT pollute CLAUDE.md, which every unrelated coding session
+#               loads. These are verdict-policy rules; the Observer is what acts
+#               on them.
+ASSISTANT_REPO = Path(__file__).resolve().parent.parent
+TARGETS = {
+    "claude": {
+        "path": HOME / ".claude/CLAUDE.md",
+        "scopes": {"global", "classification", "dashboard",
+                   "ffp", "scout", "memory", "security"},
+        "default_scope": "global",
+    },
+    "assistant": {
+        "path": ASSISTANT_REPO / "prompts/observer-batch-prompt.md",
+        # Sub-domains of the Observer's verdict judgment.
+        "scopes": {"verdict", "merge", "cleanup", "stranded", "general"},
+        "default_scope": "general",
+    },
 }
+DEFAULT_TARGET = "claude"
 
 
 def today():
@@ -54,16 +73,16 @@ def slugify(text: str, n: int = 5) -> str:
     return "-".join(words) or "lesson"
 
 
-def read_claude_md() -> str:
-    if not CLAUDE_MD.exists():
+def read_store(path: Path) -> str:
+    if not path.exists():
         return ""
-    return CLAUDE_MD.read_text()
+    return path.read_text()
 
 
-def write_claude_md(text: str) -> None:
-    tmp = CLAUDE_MD.with_suffix(".md.tmp")
+def write_store(path: Path, text: str) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text)
-    tmp.replace(CLAUDE_MD)
+    tmp.replace(path)
 
 
 def find_section_bounds(text: str) -> tuple[int, int] | None:
@@ -78,16 +97,16 @@ def find_section_bounds(text: str) -> tuple[int, int] | None:
     return (start, end)
 
 
-def ensure_section(text: str) -> str:
+def ensure_section(text: str, blurb: str | None = None) -> str:
     """Append an empty `## Lessons` section if missing."""
     if find_section_bounds(text) is not None:
         return text
-    sep = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
-    return text + sep + (
-        f"{SECTION_HEADING}\n\n"
+    blurb = blurb or (
         "Rules learned from past incidents. Each block is a rule. Edit / delete freely.\n"
-        "Curator: `~/.claude/bin/assistant-curator.py write|trim|list`.\n\n"
+        "Curator: `~/.claude/bin/assistant-curator.py write|trim|list`.\n"
     )
+    sep = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+    return text + sep + f"{SECTION_HEADING}\n\n{blurb}\n"
 
 
 # Block format: HTML comment header, then a paragraph that starts with a
@@ -141,22 +160,25 @@ def iter_lessons(text: str):
 
 
 def cmd_write(args) -> int:
+    tgt = TARGETS[args.target]
     trigger = args.trigger.strip()
     rule = args.rule.strip()
     if not trigger or not rule:
         print("ERROR: --trigger and --rule are required and non-empty.", file=sys.stderr)
         return 2
-    scope = args.scope or DEFAULT_SCOPE
-    if scope not in ALLOWED_SCOPES:
+    default_scope = tgt["default_scope"]
+    scope = args.scope or default_scope
+    if scope not in tgt["scopes"]:
         print(
-            f"ERROR: scope {scope!r} not in {sorted(ALLOWED_SCOPES)}",
+            f"ERROR: scope {scope!r} not valid for target {args.target!r}; "
+            f"one of {sorted(tgt['scopes'])}",
             file=sys.stderr,
         )
         return 2
-    slug = args.slug or slugify(f"{scope}-{trigger}" if scope != DEFAULT_SCOPE else trigger)
+    slug = args.slug or slugify(f"{scope}-{trigger}" if scope != default_scope else trigger)
 
-    text = read_claude_md()
-    text = ensure_section(text)
+    text = read_store(tgt["path"])
+    text = ensure_section(text, tgt.get("blurb"))
 
     # Reject duplicate slug.
     for L in iter_lessons(text):
@@ -173,73 +195,93 @@ def cmd_write(args) -> int:
     assert bounds is not None
     insert_at = bounds[1]
     new_text = text[:insert_at] + block + text[insert_at:]
-    write_claude_md(new_text)
-    print(f"wrote lesson: {slug}")
+    write_store(tgt["path"], new_text)
+    print(f"wrote lesson: {slug} → {tgt['path']}")
     return 0
 
 
 def cmd_list(args) -> int:
-    text = read_claude_md()
-    lessons = list(iter_lessons(text))
-    if args.scope:
-        lessons = [L for L in lessons if L["scope"] == args.scope]
-    if not lessons:
+    # List across both stores (or just one if --target given).
+    names = [args.target] if args.target else list(TARGETS)
+    total = 0
+    for name in names:
+        text = read_store(TARGETS[name]["path"])
+        lessons = list(iter_lessons(text))
+        if args.scope:
+            lessons = [L for L in lessons if L["scope"] == args.scope]
+        if not lessons:
+            continue
+        print(f"[{name}] {TARGETS[name]['path']}")
+        for L in lessons:
+            print(f"  [{L['scope']:14}] {L['slug']:50} {L['added']}")
+            print(f"           {L['trigger'][:90]}")
+        total += len(lessons)
+    if total == 0:
         print("(no lessons)")
-        return 0
-    for L in lessons:
-        print(f"  [{L['scope']:8}] {L['slug']:50} {L['added']}")
-        print(f"           {L['trigger'][:90]}")
-    print(f"\n{len(lessons)} lesson(s)")
+    else:
+        print(f"\n{total} lesson(s)")
     return 0
 
 
 def cmd_rm(args) -> int:
-    text = read_claude_md()
-    target = None
-    for L in iter_lessons(text):
-        if L["slug"] == args.slug:
-            target = L
-            break
-    if target is None:
-        print(f"ERROR: no lesson with slug {args.slug!r}", file=sys.stderr)
-        return 2
-    new_text = text[:target["body_offset"]] + text[target["body_end"]:]
-    # Collapse extra blank lines created by the deletion.
-    new_text = re.sub(r"\n{3,}", "\n\n", new_text)
-    write_claude_md(new_text)
-    print(f"removed lesson: {args.slug}")
-    return 0
+    # Search both stores; remove from whichever holds the slug.
+    names = [args.target] if args.target else list(TARGETS)
+    for name in names:
+        path = TARGETS[name]["path"]
+        text = read_store(path)
+        match = next((L for L in iter_lessons(text) if L["slug"] == args.slug), None)
+        if match is None:
+            continue
+        new_text = text[:match["body_offset"]] + text[match["body_end"]:]
+        new_text = re.sub(r"\n{3,}", "\n\n", new_text)
+        write_store(path, new_text)
+        print(f"removed lesson: {args.slug} (from {name})")
+        return 0
+    print(f"ERROR: no lesson with slug {args.slug!r}", file=sys.stderr)
+    return 2
 
 
 def cmd_trim(args) -> int:
-    """Open ~/.claude/CLAUDE.md in $EDITOR. The user is the trim mechanism."""
+    """Open the chosen store in $EDITOR. The user is the trim mechanism."""
+    path = TARGETS[args.target]["path"]
     editor = os.environ.get("EDITOR", "vi")
-    print(f"opening {CLAUDE_MD} in {editor}...")
+    print(f"opening {path} in {editor}...")
     print(f"(go to '{SECTION_HEADING}' section. Delete blocks you don't want anymore.)")
-    os.execvp(editor, [editor, str(CLAUDE_MD)])
+    os.execvp(editor, [editor, str(path)])
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="assistant-curator")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    target_help = ("which lesson store: 'claude' (~/.claude/CLAUDE.md, every "
+                   "session) or 'assistant' (Observer prompt, orchestrator only)")
+
     p_write = sub.add_parser("write", help="add a new lesson")
     p_write.add_argument("--trigger", required=True)
     p_write.add_argument("--rule", required=True)
-    p_write.add_argument("--scope", default=DEFAULT_SCOPE,
-                         help=f"one of: {sorted(ALLOWED_SCOPES)}")
+    p_write.add_argument("--target", default=DEFAULT_TARGET, choices=sorted(TARGETS),
+                         help=target_help)
+    p_write.add_argument("--scope", default=None,
+                         help="sub-domain within the target (see --target's allowed scopes)")
     p_write.add_argument("--slug", help="override the auto-generated slug")
     p_write.set_defaults(func=cmd_write)
 
     p_list = sub.add_parser("list", help="list lessons")
+    p_list.add_argument("--target", default=None, choices=sorted(TARGETS),
+                        help=target_help + " (default: both)")
     p_list.add_argument("--scope")
     p_list.set_defaults(func=cmd_list)
 
     p_rm = sub.add_parser("rm", help="remove a lesson by slug")
     p_rm.add_argument("slug")
+    p_rm.add_argument("--target", default=None, choices=sorted(TARGETS),
+                      help=target_help + " (default: search both)")
     p_rm.set_defaults(func=cmd_rm)
 
-    p_trim = sub.add_parser("trim", help="open CLAUDE.md in $EDITOR for triage")
+    p_trim = sub.add_parser("trim", help="open a lesson store in $EDITOR for triage")
+    p_trim.add_argument("--target", default=DEFAULT_TARGET, choices=sorted(TARGETS),
+                        help=target_help)
     p_trim.set_defaults(func=cmd_trim)
 
     args = ap.parse_args()

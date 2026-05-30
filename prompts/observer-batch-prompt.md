@@ -134,3 +134,7 @@ Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,ti
 - **Never propose status-flipping a TODO.** Assistant handles that mechanically.
 - **Never propose dispatching a new TODO.** You can't see the TODO list.
 - **One JSONL line per ws_ref. No markdown. No commentary.**
+
+## Lessons
+
+Operator-authored verdict rules, captured via `/lesson` (target: assistant). **These are binding and override the Ruleset and cheat-sheet above when they conflict.** Each block is one rule: a bolded trigger (the situation it applies to) followed by the constraint. Apply any whose trigger matches the workspace you're judging. Curator: `~/.claude/bin/assistant-curator.py write|list|rm|trim --target assistant`.

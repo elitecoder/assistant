@@ -1,11 +1,11 @@
 ---
 name: lesson
-description: Capture a rule into ~/.claude/CLAUDE.md so every future Claude Code session sees it. Use this whenever the user corrects you ("no", "don't", "stop", "wrong", "that's not", "I told you", "you keep", "again", "actually"), names a rule out loud ("always X", "never Y", "from now on Z", "remember this", "this needs to be a lesson", "make this an enforced lesson"), or you discover a non-obvious constraint that future sessions should respect. Also use when the user explicitly types /lesson. The skill writes a block to the `## Lessons` section of ~/.claude/CLAUDE.md via the assistant-curator CLI; CLAUDE.md auto-loads into every session so the rule propagates immediately.
+description: Capture a rule so future sessions or the Assistant's Observer obey it. Use whenever the user corrects you ("no", "don't", "stop", "wrong", "that's not", "I told you", "you keep", "again", "actually"), names a rule out loud ("always X", "never Y", "from now on Z", "remember this", "this needs to be a lesson", "make this an enforced lesson"), or you discover a non-obvious constraint. Also use when the user explicitly types /lesson. The skill writes a block via the assistant-curator CLI to one of two stores: ~/.claude/CLAUDE.md (every session) or the Assistant's Observer prompt (orchestration / verdict rules like "never send /cleanup to a session awaiting my review").
 ---
 
-# /lesson — capture a rule into ~/.claude/CLAUDE.md
+# /lesson — capture a rule into the right store
 
-The mechanism by which Claude Code agents learn from corrections. Lessons live inside the `## Lessons` section of `~/.claude/CLAUDE.md`. CLAUDE.md is officially auto-loaded by Claude Code into every session, so a rule captured here is enforced everywhere from the next conversation forward.
+The mechanism by which the system learns from corrections. A lesson is a `## Lessons` block written into ONE of two stores: `~/.claude/CLAUDE.md` (auto-loaded into every Claude Code session) or `~/dev/assistant/prompts/observer-batch-prompt.md` (read only by the Assistant's Observer each pulse). Pick the store by what the rule governs — see "Two targets" below.
 
 ## When this skill MUST fire (auto-trigger, not just on `/lesson`)
 
@@ -17,13 +17,26 @@ If the conversation contains any of these signals, capture a lesson **before con
 
 Do NOT silently absorb the correction and move on. The user has named a rule; future sessions need to see it. Capture the rule first, then continue the original task.
 
+## Two targets — pick first
+
+A lesson goes into ONE of two stores, chosen with `--target`:
+
+- **`claude`** (default) → `## Lessons` in `~/.claude/CLAUDE.md`. Auto-loaded into **every** Claude Code session. Use ONLY for rules that genuinely apply to any session, any repo, any context.
+- **`assistant`** → `## Lessons` in `~/dev/assistant/prompts/observer-batch-prompt.md`. Read **only by the Assistant's Observer** each pulse. Use for rules about how the Assistant orchestrates workspaces — verdict policy, when to merge/cleanup/nudge. These are binding overrides on the Observer's ruleset and must NOT pollute CLAUDE.md.
+
+**Litmus test:** would a random coding session in an unrelated repo need this rule? Yes → `claude`. No, it's about how the Assistant judges/acts on workspaces → `assistant`.
+
+Example of an `assistant` rule: *"Never send /cleanup to a session awaiting my review."* That's the Observer's verdict call — it belongs in the Observer prompt, not CLAUDE.md.
+
 ## What a lesson looks like
 
-A lesson is a markdown block under `## Lessons` in `~/.claude/CLAUDE.md`:
+A lesson is a markdown block under `## Lessons` in the target store:
 
 ```markdown
 <!-- lesson: <slug>, scope: <scope>, added: <YYYY-MM-DD> -->
-**<one-line trigger sentence>** <rule body, one paragraph, specific and actionable>
+**<one-line trigger sentence>**
+
+<rule body, one paragraph, specific and actionable>
 ```
 
 There is **no "why" field**. A rule is a rule — the body should be self-contained.
@@ -34,56 +47,73 @@ There is **no "why" field**. A rule is a rule — the body should be self-contai
 ## How to invoke
 
 ```bash
+# Every-session rule → CLAUDE.md (default target)
 ~/.claude/bin/assistant-curator.py write \
   --trigger "<situation this rule fires in>" \
   --rule    "<what to do or not do — be specific and actionable>" \
   --scope   "global|classification|dashboard|ffp|scout|memory|security"
+
+# Assistant orchestration rule → Observer prompt
+~/.claude/bin/assistant-curator.py write --target assistant \
+  --trigger "<workspace situation the Observer judges>" \
+  --rule    "<what verdict to emit / not emit>" \
+  --scope   "verdict|merge|cleanup|stranded|general"
 ```
 
-The curator picks a slug from the trigger, prepends the scope if non-global, and appends the block under `## Lessons`. It refuses to overwrite an existing slug.
+The curator picks a slug from the trigger, prepends the scope if non-default, and appends the block under `## Lessons` in the chosen target. It refuses to overwrite an existing slug, and refuses a scope that isn't valid for the target.
 
 ## Procedure
 
 1. **Identify the trigger and rule.** Re-read the user's last 1–2 messages. The user's words are usually the rule itself; your job is to extract the *condition* (trigger) and the *constraint* (rule) and phrase them in the third person so future sessions can apply them.
 
-2. **Decide where the rule belongs.** Lessons in CLAUDE.md auto-load into EVERY Claude Code session, so they should only be rules that genuinely apply to every session. If the rule is **dispatcher-specific** (about how the Assistant orchestrates workspaces), it does NOT go in CLAUDE.md — and note the Assistant is now a mechanical Python orchestrator (`~/dev/assistant/bin/pulse.py`), not an LLM prompt, so there is no longer a single "Assistant prompt" to edit. Route by sub-domain:
-   - **Dispatch classification / routing** (FFP→archffp, what kind of work goes where) → `~/dev/assistant/prompts/dispatch-classification.md` (the spawned worker reads it).
-   - **Verdict policy** (how the Observer classifies a workspace state) → `~/dev/assistant/prompts/observer-batch-prompt.md`.
-   - **Mechanical orchestration** (caps, dispatch picking, send gating) → it's code; change `bin/pulse.py` directly, don't write a lesson.
+2. **Decide where the rule belongs.** Use the litmus test: would a random coding session in an unrelated repo need this rule?
+   - **Yes → `--target claude`** (CLAUDE.md, every session).
+   - **No, it's about how the Assistant orchestrates workspaces:**
+     - **Verdict policy** (when to merge / cleanup / nudge / wait — what the Observer decides) → `--target assistant`. This is the common case and what `/lesson` writes.
+     - **Dispatch classification / routing** (FFP→archffp, what kind of work goes where) → not a lesson; edit `~/dev/assistant/prompts/dispatch-classification.md` directly.
+     - **Mechanical orchestration** (caps, dispatch picking, send gating) → not a lesson; it's code, edit `~/dev/assistant/bin/pulse.py`.
 
-   The curator refuses scopes `dispatch` and `todo` for this reason. If the rule applies to any user, any session, in any context — proceed; it belongs in CLAUDE.md. Otherwise tell the user "this looks dispatcher-specific; it belongs in the Assistant's prompts/code, not CLAUDE.md — which sub-domain?"
+   If you're unsure whether a rule is every-session or Assistant-only, ask the user which, naming the consequence: a `claude` rule loads into every coding session; an `assistant` rule only steers the Observer.
 
-3. **Choose a scope.** One of:
+3. **Choose a scope.** For `--target claude`:
    - `global` — applies to any session
    - `classification` — categorizing TODOs, PRs, sessions
    - `dashboard` — UI rendering, widget behavior
-   - `ffp` — anything specific to firefly-platform / Squirrel that ALL FFP-touching sessions need (not just the dispatcher)
+   - `ffp` — firefly-platform / Squirrel rules ALL FFP-touching sessions need
    - `scout` — Scout MCP usage
    - `memory` — auto-memory and lesson handling itself
    - `security` — destructive ops, credential handling, permission widening
-   - **NOT allowed** (dispatcher-only, go in the Assistant prompt instead): `dispatch`, `todo`
 
-3. **Run the curator.** Quote any user-provided text verbatim where possible. If the user said "always X", the rule should literally start with "Always X".
+   For `--target assistant`:
+   - `verdict` — general verdict-selection rule
+   - `merge` — when to emit / withhold `ready_for_merge`
+   - `cleanup` — when to emit / withhold `ready_for_cleanup`
+   - `stranded` — when to emit `stranded` / what nudge to send
+   - `general` — orchestration rule that doesn't fit the above
 
-4. **Confirm to the user.** Output the captured block (slug + trigger + rule) so they can correct the wording before the conversation moves on.
+4. **Run the curator.** Quote any user-provided text verbatim where possible. If the user said "always X", the rule should literally start with "Always X".
 
-5. **Resume the original task.** The lesson is now in CLAUDE.md and applies to every future session — including the next turn of the current session if you re-read CLAUDE.md.
+5. **Confirm to the user.** Output the captured block (slug + trigger + rule + which target) so they can correct the wording before the conversation moves on.
+
+6. **Resume the original task.** A `claude` lesson applies to every future session (and this one if you re-read CLAUDE.md); an `assistant` lesson takes effect on the Observer's next pulse.
 
 ## Other curator subcommands
 
 ```bash
-~/.claude/bin/assistant-curator.py list                 # show all lessons
-~/.claude/bin/assistant-curator.py list --scope ffp     # filter by scope
-~/.claude/bin/assistant-curator.py rm <slug>            # remove a stale lesson
-~/.claude/bin/assistant-curator.py trim                 # open CLAUDE.md in $EDITOR for triage
+~/.claude/bin/assistant-curator.py list                      # all lessons, both stores
+~/.claude/bin/assistant-curator.py list --target assistant   # just the Observer's rules
+~/.claude/bin/assistant-curator.py list --scope ffp          # filter by scope
+~/.claude/bin/assistant-curator.py rm <slug>                 # remove (searches both stores)
+~/.claude/bin/assistant-curator.py trim --target assistant   # open a store in $EDITOR for triage
 ```
 
 ## Anti-patterns
 
 - **Silently absorbing the correction.** "Sorry, I'll do better next time" without writing a lesson means the next session repeats the mistake. Always capture.
 - **Capturing the conversation, not the rule.** A lesson is timeless. "Don't tell ws:9001 to skip G3" is not a lesson; "Never tell any session to skip the local G3 E2E suite — Jenkins runs a subset" is the lesson.
+- **Putting an Assistant rule in CLAUDE.md.** "Never send /cleanup to a session awaiting my review" is the Observer's verdict policy — it belongs in `--target assistant`, not CLAUDE.md. Loading it into every coding session is noise; loading it into the Observer is the point.
 - **Adding a why.** The format has no `--why` flag. The rule body should explain itself; if it doesn't, rewrite the rule, don't add justification.
-- **Pinning everything.** There is no `--pin` flag. Rules trim manually via the user invoking `/lesson trim` (which opens CLAUDE.md in `$EDITOR`).
+- **Pinning everything.** There is no `--pin` flag. Rules trim manually via the user invoking `/lesson trim` (which opens the store in `$EDITOR`).
 
 ## Examples
 
@@ -96,11 +126,11 @@ User says: *"Jenkins does not run the full suite. This needs to be an enforced l
   --rule "Never tell a session to skip, abort, or bypass the local G3 E2E suite. Jenkins runs a SUBSET of the firefly-platform Squirrel E2E suite, not the full suite. Test-only PR / unit-writer-green / Jenkins-will-catch-it are not valid reasons. If the local suite is over-saturated, wait; never skip."
 ```
 
-User says: *"Always pass --focus false when spawning a workspace from a background script."*
+User says: *"Never send /cleanup to a session that's awaiting my review."* — this is the Observer's verdict policy, so it goes to the assistant store, not CLAUDE.md:
 
 ```bash
-~/.claude/bin/assistant-curator.py write \
-  --scope dispatch \
-  --trigger "Spawning a workspace from a background script (cron, watchdog, hook)" \
-  --rule "Always pass --focus false. Background spawns must never steal the user's foreground tab. The cmux flag is mandatory; there is no per-call exception."
+~/.claude/bin/assistant-curator.py write --target assistant \
+  --scope cleanup \
+  --trigger "A workspace is awaiting Mukul's review (needs_user emitted, or the agent's last turn asks him a question / requests review)" \
+  --rule "Never emit ready_for_cleanup for it. A session waiting on the operator must stay open until he acts; cleanup would discard work he hasn't seen. Prefer needs_user or active."
 ```
