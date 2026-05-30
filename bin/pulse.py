@@ -81,9 +81,9 @@ TODO_PATH = HOME / ".claude/assistant-todo.json"
 DISPATCH_CLASSIFICATION_PROMPT = REPO / "prompts/dispatch-classification.md"
 SPAWN_PROMPT_DIR = HOME / ".claude/spawn-prompts"
 CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
-# Default subagent model — 1M-context Opus for decision/coding work (operating
-# guide default). Bedrock prefix added at spawn time when CLAUDE_CODE_USE_BEDROCK=1.
-DISPATCH_MODEL_SLUG = os.environ.get("DISPATCH_MODEL", "claude-opus-4-7[1m]")
+# Model + launch flags are NOT set here — the dispatched workspace runs `claude`,
+# which expands the ~/.zprofile alias (model, --dangerously-skip-permissions,
+# --add-dir). That alias is the single source of truth; see step 2 in dispatch_todo.
 # cwd for dispatched work. ~/dev keeps the spawn inside Mukul's permission roots;
 # FFP work re-homes itself into a fresh firefly-platform worktree via archffp.
 DISPATCH_CWD = Path(os.environ.get("DISPATCH_CWD", str(HOME / "dev")))
@@ -769,16 +769,12 @@ def dispatch_todo(todo_id: str) -> bool:
     prompt_file.write_text(_build_dispatch_prompt(item))
 
     # 2. Create the workspace with claude baked into --command (atomic launch).
-    model_slug = DISPATCH_MODEL_SLUG
-    if os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1":
-        model_id = f"us.anthropic.{model_slug}"
-    else:
-        model_id = model_slug
-    claude_cmd = (
-        f'claude --dangerously-skip-permissions '
-        f'--add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect '
-        f'--model "{model_id}"'
-    )
+    #    Just invoke `claude` — cmux runs --command in an interactive login
+    #    shell, so the `claude` alias in ~/.zprofile expands (verified: it
+    #    resolves to the model + --dangerously-skip-permissions + --add-dir
+    #    flags). That alias is the single source of truth for model/flags; do
+    #    NOT re-specify --model or --add-dir here or it will drift from it.
+    claude_cmd = "claude"
     cwd = str(DISPATCH_CWD)
     title = f"{todo_id}: {item.get('title','')}"[:40]
     rc, out, err = run(
