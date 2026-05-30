@@ -7,7 +7,7 @@ description: Tear down the current workspace — kill dev servers, stash uncommi
 
 The user typed `/cleanup` for a reason. **Do not confirm. Do not ask. Execute.**
 
-The user is inside a cmux workspace they want to dismiss. This skill kills the dev servers, discards uncommitted changes (with a stash safety net), deletes the branch and worktree, marks the linked TODO done, and closes the cmux workspace. One ledger entry captures the whole operation for `/cleanup --undo`.
+The user is inside a cmux workspace they want to dismiss. This skill kills the dev servers, discards uncommitted changes (with a stash safety net), deletes the branch and worktree, marks the linked TODO done (or synthesizes a done TODO if none matched, so the list stays a complete ledger of shipped work), and closes the cmux workspace. One ledger entry captures the whole operation for `/cleanup --undo`.
 
 ## Flags
 
@@ -220,37 +220,77 @@ json.dump(d, open('$LEDGER','w'), indent=2)
 fi
 ```
 
-### Step 8 — mark TODO done (unless --keep-todo)
+### Step 8 — mark TODO done, or synthesize one (unless --keep-todo)
 
-If `$RELATED_TID` is non-empty and `--keep-todo` is off, invoke the `/todo` skill subcommand internally:
+If `--keep-todo` is off:
+- **Matched** (`$RELATED_TID` non-empty) → flip that item's status to `done`.
+- **No match** → synthesize a new `done` item from the workspace so the TODO
+  list stays a complete ledger of shipped work. The synthesized item is born
+  `done` with `autoDispatch:false` (never re-dispatched) and `dispatchedWs`
+  set to this workspace, and the ledger records a `todo-synthesized` step so
+  `--undo` can remove it.
 
 ```bash
-if [ "$KEEP_TODO" = "0" ] && [ -n "$RELATED_TID" ]; then
-  # Apply the same atomic JSON mutation /todo done does
+if [ "$KEEP_TODO" = "0" ]; then
   python3 <<PYEOF
 import json, os
 from datetime import datetime, timezone
 PATH = os.path.expanduser("~/.claude/assistant-todo.json")
+LEDGER = "$LEDGER"
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
 data = json.load(open(PATH))
-for it in data.get("items", []):
-    if it.get("id") == "$RELATED_TID":
-        it["status"] = "done"
-        it["statusUpdatedAt"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
-        it["doneBy"] = "cleanup:$LEDGER_ID"
-        break
-data["_lastUpdated"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
+
+ledger = json.load(open(LEDGER))
+tid = "$RELATED_TID"
+
+if tid:
+    # Matched an existing TODO — flip it done (same mutation /todo done does).
+    for it in data.get("items", []):
+        if it.get("id") == tid:
+            it["status"] = "done"
+            it["statusUpdatedAt"] = now
+            it["doneBy"] = "cleanup:$LEDGER_ID"
+            break
+    ledger["steps"].append({"kind": "todo-done", "tid": tid, "ok": True})
+else:
+    # No match — synthesize a done item so we have a record of this work.
+    used = set()
+    for bucket in ("items", "completed", "removed"):
+        for it in data.get(bucket, []) or []:
+            try: used.add(int((it.get("id") or "").lstrip("td-")))
+            except ValueError: pass
+    tid = "td-%03d" % ((max(used) + 1) if used else 1)
+    title = ("$WS_TITLE".strip() or "$BRANCH".strip()
+             or "work in $WS_REF")[:120]
+    item = {
+        "id": tid,
+        "priority": "P3",
+        "title": title,
+        "source": "cleanup-synthesized:$WS_REF",
+        "createdAt": now,
+        "status": "done",
+        "statusUpdatedAt": now,
+        "completedAt": now,
+        "doneBy": "cleanup:$LEDGER_ID",
+        "autoDispatch": False,
+        "dispatchedWs": "$WS_REF",
+        "detail": ("Reconstructed at cleanup — no matching TODO existed. "
+                   "branch=$BRANCH cwd=$CWD_REAL"),
+    }
+    data.setdefault("items", []).append(item)
+    ledger["steps"].append({"kind": "todo-synthesized", "tid": tid, "ok": True})
+
+data["_lastUpdated"] = now
 tmp = PATH + ".tmp"
 open(tmp, "w").write(json.dumps(data, indent=2))
 os.replace(tmp, PATH)
+json.dump(ledger, open(LEDGER, "w"), indent=2)
+print("RELATED_TID=" + tid)
 PYEOF
-  python3 -c "
-import json
-d = json.load(open('$LEDGER'))
-d['steps'].append({'kind':'todo-done','tid':'$RELATED_TID','ok':True})
-json.dump(d, open('$LEDGER','w'), indent=2)
-"
 fi
 ```
+
+The synthesized id is echoed as `RELATED_TID=td-NNN`; capture it if you want the Step 10 summary to show the real id rather than `none`.
 
 ### Step 9 — close cmux workspace (unless --keep-ws)
 
@@ -282,7 +322,9 @@ echo "  undo: /cleanup --undo $LEDGER_ID"
 
 Walk the ledger steps in reverse. The order:
 
-1. **Reopen TODO** — flip `status` back to `open` (or whatever it was; ledger could record prior status if you care)
+1. **Reopen or remove TODO** —
+   - `todo-done` step → flip `status` back to `open` (or whatever it was; ledger could record prior status if you care).
+   - `todo-synthesized` step → the item was created by this cleanup and never existed before, so **remove it** (soft-move to `removed[]`, matching `/todo rm`). Reopening it would leave a phantom open TODO for work that's already shipped.
 2. **Recreate worktree** — `git worktree add <path> <branch>` (only works if branch still exists or you preserved it)
 3. **Restore branch** — only possible if recently deleted (use reflog: `git reflog show <branch>` if entries still exist)
 4. **Pop the stash** — `git stash pop <stash_ref>`
