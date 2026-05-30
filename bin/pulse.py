@@ -76,6 +76,9 @@ SPAWN_SKILL = HOME / ".claude/skills/spawn-claude-workspace/SKILL.md"
 # cmux CLI. The staged-prompt dir + 7-day sweep mirror the spawn-claude-workspace
 # skill, ported here so the orchestrator owns dispatch end-to-end (no LLM).
 TODO_PATH = HOME / ".claude/assistant-todo.json"
+# Single source of truth for dispatch classification/routing. Appended to every
+# dispatched TODO's prompt; the spawned Claude is the classifier that acts on it.
+DISPATCH_CLASSIFICATION_PROMPT = REPO / "prompts/dispatch-classification.md"
 SPAWN_PROMPT_DIR = HOME / ".claude/spawn-prompts"
 CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
 # Default subagent model — 1M-context Opus for decision/coding work (operating
@@ -660,11 +663,13 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
 def _build_dispatch_prompt(item: dict) -> str:
     """Self-contained prompt for a dispatched TODO.
 
-    The spawned Claude is a full LLM, so it classifies the work itself:
-    FFP Squirrel work routes through /architect-ffp:archffp (absolute rule —
-    operating guide §"FFP Squirrel work"); everything else runs directly.
-    The prompt carries the TODO id, title, detail, and any URL/tags so the
-    session is fully grounded without this orchestrator's context.
+    Two halves: the work description (this TODO's fields) followed by the
+    classification + routing rules from prompts/dispatch-classification.md.
+    That file is the SINGLE source of truth for how dispatched work is
+    classified (FFP Squirrel → /architect-ffp:archffp, else direct) — the
+    spawned Claude is the classifier and acts on it. The rules are NOT
+    duplicated in the operating guide (which no automated component reads);
+    edit the template to change dispatch behavior.
     """
     tid = item.get("id", "")
     title = item.get("title", "")
@@ -674,35 +679,33 @@ def _build_dispatch_prompt(item: dict) -> str:
     lines = [
         f"You are picking up TODO {tid} from Mukul's Assistant dispatch queue.",
         "",
-        f"# Title",
+        "# Title",
         title,
         "",
     ]
     if detail:
         lines += ["# Detail", detail, ""]
     if url:
-        lines += [f"# Reference", url, ""]
+        lines += ["# Reference", url, ""]
     if tags:
-        lines += [f"# Tags", tags, ""]
-    lines += [
-        "# How to proceed",
-        "1. Classify this work. If it touches FFP Squirrel (firefly-platform "
-        "timeline editor — trim, playhead, ruler, tracks, clips, gapless/"
-        "freeform, keyboard shortcuts, any Squirrel UI/behavior), you MUST "
-        "dispatch it via `/architect-ffp:archffp` with this work description. "
-        "Do NOT touch git/test/PR steps directly — archffp enforces the "
-        "fresh-worktree / Horizon-parity / full-E2E / CI-green gates.",
-        "2. For non-FFP work (Scout, infra, dotfiles, docs, the Assistant repo "
-        "itself), do it directly in this workspace. Create a branch off main, "
-        "implement, validate end-to-end (not just unit tests), and open a PR.",
-        "3. When the work is shipped (PR open / merged) or you hit a blocker "
-        "that needs Mukul, say so plainly — the Assistant observes this "
-        "workspace and will surface your state.",
-        "",
-        f"This work is tracked as {tid}; reference it in your branch name / PR "
-        "body so the Assistant can correlate.",
-    ]
-    return "\n".join(lines)
+        lines += ["# Tags", tags, ""]
+    work = "\n".join(lines)
+    try:
+        rules = DISPATCH_CLASSIFICATION_PROMPT.read_text().strip()
+    except Exception as e:
+        # Fail loud in the prompt rather than silently dropping routing rules:
+        # a worker with no classification guidance could ship FFP work raw.
+        log.error("dispatch %s: cannot read %s: %s", tid,
+                  DISPATCH_CLASSIFICATION_PROMPT, e)
+        rules = (
+            "# How to proceed\n"
+            "Classification rules file is missing. If this work touches FFP "
+            "Squirrel (firefly-platform timeline editor), you MUST route it "
+            "via `/architect-ffp:archffp` and NOT touch git/test/PR directly. "
+            "Otherwise implement directly, validate end-to-end, open a PR. "
+            f"Reference {tid} in your branch / PR."
+        )
+    return f"{work}\n{rules}\n"
 
 
 def _cmux_rpc(method: str, params: dict, timeout: int = 15) -> dict | None:

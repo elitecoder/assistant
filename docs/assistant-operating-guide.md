@@ -513,6 +513,14 @@ Examples that stay in **background subagents**: rendering a JSON to HTML, buildi
 
 ### FFP Squirrel work — always via /architect-ffp:archffp
 
+> **Canonical source:** the mechanical dispatch path (`bin/pulse.py` →
+> `prompts/dispatch-classification.md`) is the single source of truth for how
+> dispatched work is classified and routed. The spawned worker LLM reads that
+> template and acts as the classifier. This guide section is human-facing
+> documentation of the same policy — when the rule changes, edit
+> `prompts/dispatch-classification.md`; `pulse.py` reads it, this guide does
+> not. Keep the two in sync by hand.
+
 **ABSOLUTE.** Every piece of FFP Squirrel work — feature, bug, test additions, refactor, anything touching `<your-app-repo>` Squirrel code — dispatches via the `/architect-ffp:archffp` skill, not via a raw `Read $PROMPT_FILE` flow.
 
 **Why:** archffp enforces every gate Mukul cares about — fresh worktree, fresh Horizon parity check, full E2E suite, CI green, PR opening with correct tag. Skipping it means shipping FFP work that bypasses these gates.
