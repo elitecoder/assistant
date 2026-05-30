@@ -973,10 +973,21 @@ def main() -> int:
             ws = ws_by_ref[ws_ref]
             verdict = verdicts_by_ref.get(ws_ref)
             if not verdict:
+                # Old-prompt behavior: an Observer failure (timeout / no verdict
+                # for this ws) defaults to `active` — a benign no-op send-wise.
+                # Save a synthesized summary so the dashboard's Workspaces tab
+                # stays fresh instead of going stale on the prior verdict.
+                synth = {
+                    "verdict": "active",
+                    "summary": "Observer returned no verdict this pulse "
+                               "(timeout or batch error); defaulted to active.",
+                    "next": "Assistant will re-observe next pulse.",
+                }
+                save_summary(ws, synth)
                 actions_taken.append({
                     "key": f"{ws_ref}-observer-failed",
-                    "kind": "skipped", "ws_ref": ws_ref, "outcome": "failed",
-                    "evidence": "observer call returned no verdict for this ws",
+                    "kind": "noop", "ws_ref": ws_ref, "outcome": "verified",
+                    "evidence": "observer returned no verdict; defaulted to active",
                 })
                 continue
             v_for_save = {k: v for k, v in verdict.items() if k != "ws_ref"}
@@ -1006,6 +1017,18 @@ def main() -> int:
     n_active = count_active(ws_meta)
     n_total = batch.get("total_ws", 0)
     if bucket_b and (n_active >= ACTIVE_WS_CAP or n_total >= TOTAL_WS_CAP):
+        # Old-prompt behavior: surface the cap hit as an awaiting card so Mukul
+        # knows dispatchable work is being held back, not just a trace line.
+        held = ", ".join(t["id"] for t in bucket_b[:5])
+        more = f" (+{len(bucket_b) - 5} more)" if len(bucket_b) > 5 else ""
+        awaiting_input.append({
+            "key": "dispatch-cap-hit",
+            "tier": "T3",
+            "title": f"Dispatch capped — {len(bucket_b)} TODO(s) waiting",
+            "detail": (f"active={n_active}/{ACTIVE_WS_CAP}, "
+                       f"total={n_total}/{TOTAL_WS_CAP}. Holding: {held}{more}. "
+                       f"Reclaim a workspace or raise the cap to dispatch."),
+        })
         actions_taken.append({
             "key": f"dispatch-cap-hit-{n_active}-active",
             "kind": "skipped", "outcome": "verified",
