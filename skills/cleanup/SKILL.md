@@ -55,7 +55,9 @@ UNCOMMITTED=$(git -C "$CWD_REAL" status --porcelain 2>/dev/null | wc -l | tr -d 
 # Dev server pids in this cwd subtree
 DEV_PIDS=$(pgrep -laf -- "$CWD_REAL" | grep -E "(vite|storybook|tsc -w|next dev|webpack|esbuild|jest --watch)" | awk '{print $1}' | tr '\n' ' ')
 
-# Related TODO — title-fuzzy-match against workspace title and current branch
+# Related TODO — DETERMINISTIC resolution only. No fuzzy / semantic matching.
+# dispatch_todo (bin/pulse.py) stamps the TODO with dispatchedWs=<ws_ref> AND
+# names the workspace "td-NNN: <title>", so cleanup has two exact signals.
 WS_TITLE=$(cmux tree --workspace "$WS_REF" --json 2>/dev/null | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -66,27 +68,26 @@ for win in d.get('windows', []):
             sys.exit(0)
 " "$WS_REF")
 
+# Signal 1 (preferred): a TODO whose dispatchedWs == this workspace ref.
+# Signal 2 (fallback): an exact td-NNN id parsed from the workspace title.
+# Both are exact lookups — if neither hits, RELATED_TID is empty and Step 8
+# synthesizes a done item. No scoring, no thresholds, no guessing.
 RELATED_TID=$(python3 <<PYEOF
 import json, os, re
 todo = json.load(open(os.path.expanduser("~/.claude/assistant-todo.json")))
-title_low = "$WS_TITLE".lower()
-branch_low = "$BRANCH".lower()
-def keywords(s):
-    return set(w for w in re.findall(r"[a-z0-9]{4,}", s.lower()) if w not in {"auto","fix","squirrel","ffp","claude"})
-ws_kw = keywords(title_low + " " + branch_low)
-best = (None, 0)
-for it in todo.get("items", []):
-    if it.get("status") in ("done","deferred"): continue
-    # Direct dispatchedWs match wins
+items = todo.get("items", [])
+
+# Signal 1: exact dispatchedWs match.
+for it in items:
     if it.get("dispatchedWs") == "$WS_REF":
-        print(it["id"]); exit()
-    it_kw = keywords(it.get("title","") + " " + (it.get("detail") or ""))
-    if not it_kw or not ws_kw: continue
-    overlap = len(it_kw & ws_kw) / min(len(it_kw), len(ws_kw))
-    if overlap > best[1]:
-        best = (it["id"], overlap)
-if best[1] >= 0.5:
-    print(best[0])
+        print(it["id"]); raise SystemExit
+
+# Signal 2: exact td-NNN from the workspace title, verified to exist as an item.
+m = re.search(r"\b(td-\d{3,4})\b", "$WS_TITLE")
+if m:
+    tid = m.group(1)
+    if any(it.get("id") == tid for it in items):
+        print(tid)
 PYEOF
 )
 ```
