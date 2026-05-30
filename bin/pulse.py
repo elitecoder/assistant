@@ -72,6 +72,19 @@ OBSERVER_RUNS_DIR = ASSISTANT_DIR / "observer-runs"
 OBSERVER_BATCH_PROMPT = REPO / "prompts/observer-batch-prompt.md"
 SPAWN_SKILL = HOME / ".claude/skills/spawn-claude-workspace/SKILL.md"
 
+# TODO dispatch: where the source list lives, where staged prompts go, and the
+# cmux CLI. The staged-prompt dir + 7-day sweep mirror the spawn-claude-workspace
+# skill, ported here so the orchestrator owns dispatch end-to-end (no LLM).
+TODO_PATH = HOME / ".claude/assistant-todo.json"
+SPAWN_PROMPT_DIR = HOME / ".claude/spawn-prompts"
+CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
+# Default subagent model — 1M-context Opus for decision/coding work (operating
+# guide default). Bedrock prefix added at spawn time when CLAUDE_CODE_USE_BEDROCK=1.
+DISPATCH_MODEL_SLUG = os.environ.get("DISPATCH_MODEL", "claude-opus-4-7[1m]")
+# cwd for dispatched work. ~/dev keeps the spawn inside Mukul's permission roots;
+# FFP work re-homes itself into a fresh firefly-platform worktree via archffp.
+DISPATCH_CWD = Path(os.environ.get("DISPATCH_CWD", str(HOME / "dev")))
+
 DEFAULT_OBSERVER_MODEL = os.environ.get(
     "OBSERVER_MODEL",
     "us.anthropic.claude-sonnet-4-6[1m]",
@@ -602,19 +615,265 @@ def pick_open_todos() -> dict:
         return {"bucket_a": [], "bucket_b": [], "bucket_c": [], "totals": {}}
 
 
-def dispatch_todo(todo_id: str) -> bool:
-    """Spawn a workspace for one TODO via the spawn skill. Returns True on success.
+def _load_todo_item(todo_id: str) -> dict | None:
+    """Return the items[] entry for todo_id, or None."""
+    try:
+        data = json.loads(TODO_PATH.read_text())
+    except Exception:
+        return None
+    for it in data.get("items", []):
+        if it.get("id") == todo_id:
+            return it
+    return None
 
-    The skill is bash inside SKILL.md; we invoke it by piping the spawn-claude-workspace
-    skill body verbatim isn't appropriate for a python harness. Instead, we shell out
-    to the wrapper script the existing prompt uses. If no wrapper exists, log + skip.
+
+def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
+    """Stamp dispatchedAt + dispatchedWs on the TODO so it leaves bucket_b.
+
+    Atomic read-modify-write of assistant-todo.json. Without this the TODO
+    stays in bucket_b and every pulse re-spawns a duplicate workspace.
+    Matches the field names todo-server.py's dispatch_now() clears.
     """
-    # Conservative: skip dispatch from the orchestrator if no wrapper exists.
-    # The skill is designed to be invoked by an LLM agent that handles all the
-    # cmux RPC steps. Re-implementing it here is out of scope for the swap.
-    log.info("dispatch_todo %s — orchestrator dispatch not implemented (skipping)",
-             todo_id)
-    return False
+    try:
+        data = json.loads(TODO_PATH.read_text())
+    except Exception as e:
+        log.warning("dispatch %s: cannot read todo file to stamp: %s", todo_id, e)
+        return False
+    target = next((i for i in data.get("items", []) if i.get("id") == todo_id), None)
+    if target is None:
+        return False
+    target["dispatchedAt"] = utc_iso()
+    target["dispatchedWs"] = ws_ref
+    target["status"] = "in-progress"
+    target["statusReason"] = f"dispatched to {ws_ref}"
+    target["statusUpdatedAt"] = utc_iso()
+    tmp = TODO_PATH.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, TODO_PATH)
+    except Exception as e:
+        log.warning("dispatch %s: cannot write todo stamp: %s", todo_id, e)
+        return False
+    return True
+
+
+def _build_dispatch_prompt(item: dict) -> str:
+    """Self-contained prompt for a dispatched TODO.
+
+    The spawned Claude is a full LLM, so it classifies the work itself:
+    FFP Squirrel work routes through /architect-ffp:archffp (absolute rule —
+    operating guide §"FFP Squirrel work"); everything else runs directly.
+    The prompt carries the TODO id, title, detail, and any URL/tags so the
+    session is fully grounded without this orchestrator's context.
+    """
+    tid = item.get("id", "")
+    title = item.get("title", "")
+    detail = (item.get("detail") or "").strip()
+    url = item.get("url") or ""
+    tags = ", ".join(item.get("tags") or [])
+    lines = [
+        f"You are picking up TODO {tid} from Mukul's Assistant dispatch queue.",
+        "",
+        f"# Title",
+        title,
+        "",
+    ]
+    if detail:
+        lines += ["# Detail", detail, ""]
+    if url:
+        lines += [f"# Reference", url, ""]
+    if tags:
+        lines += [f"# Tags", tags, ""]
+    lines += [
+        "# How to proceed",
+        "1. Classify this work. If it touches FFP Squirrel (firefly-platform "
+        "timeline editor — trim, playhead, ruler, tracks, clips, gapless/"
+        "freeform, keyboard shortcuts, any Squirrel UI/behavior), you MUST "
+        "dispatch it via `/architect-ffp:archffp` with this work description. "
+        "Do NOT touch git/test/PR steps directly — archffp enforces the "
+        "fresh-worktree / Horizon-parity / full-E2E / CI-green gates.",
+        "2. For non-FFP work (Scout, infra, dotfiles, docs, the Assistant repo "
+        "itself), do it directly in this workspace. Create a branch off main, "
+        "implement, validate end-to-end (not just unit tests), and open a PR.",
+        "3. When the work is shipped (PR open / merged) or you hit a blocker "
+        "that needs Mukul, say so plainly — the Assistant observes this "
+        "workspace and will surface your state.",
+        "",
+        f"This work is tracked as {tid}; reference it in your branch name / PR "
+        "body so the Assistant can correlate.",
+    ]
+    return "\n".join(lines)
+
+
+def _cmux_rpc(method: str, params: dict, timeout: int = 15) -> dict | None:
+    """Call `cmux rpc <method> <json>` and return parsed JSON, or None."""
+    rc, out, _ = run([CMUX_BIN, "rpc", method, json.dumps(params)], timeout=timeout)
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out)
+    except Exception:
+        return None
+
+
+def _surface_read_text(surface_ref: str, lines: int = 40) -> str:
+    d = _cmux_rpc("surface.read_text", {"surface_id": surface_ref, "lines": lines})
+    if not d or d.get("surface_ref") != surface_ref:
+        return ""
+    return d.get("text", "") or ""
+
+
+def dispatch_todo(todo_id: str) -> bool:
+    """Spawn a background cmux workspace for one TODO and deliver its prompt.
+
+    Ports the spawn-claude-workspace skill into Python so the orchestrator owns
+    dispatch end-to-end (no LLM in the loop). Steps mirror the skill:
+      1. Stage the full prompt on disk (never stream the body through cmux —
+         it drops middle chunks above ~3-4 KB).
+      2. Create an UNFOCUSED workspace with the claude launch baked into
+         --command (--focus false is mandatory; never take Mukul's foreground).
+      3. Answer the first-launch trust prompt if it appears.
+      4. Wait for the `Claude Code v` banner (readiness).
+      5. Send a short `Read <prompt-file>` instruction + Enter.
+      6. Confirm submission via the session transcript (a new *.jsonl with a
+         user line carrying the prompt-file path).
+      7. Stamp dispatchedAt/dispatchedWs on the TODO so it leaves bucket_b.
+
+    Returns True only when submission is confirmed AND the TODO was stamped.
+    """
+    item = _load_todo_item(todo_id)
+    if item is None:
+        log.warning("dispatch %s: not found in todo file", todo_id)
+        return False
+
+    # cmux must be up.
+    rc, _, _ = run([CMUX_BIN, "ping"], timeout=10)
+    if rc != 0:
+        log.warning("dispatch %s: cmux not running — skipping", todo_id)
+        return False
+
+    # 1. Stage the prompt on disk. 7-day sweep, then a per-todo stamped file.
+    SPAWN_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        cutoff = time.time() - 7 * 86400
+        for p in SPAWN_PROMPT_DIR.glob("prompt-*.md"):
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+    except Exception:
+        pass
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    prompt_file = SPAWN_PROMPT_DIR / f"prompt-dispatch-{todo_id}-{stamp}.md"
+    prompt_file.write_text(_build_dispatch_prompt(item))
+
+    # 2. Create the workspace with claude baked into --command (atomic launch).
+    model_slug = DISPATCH_MODEL_SLUG
+    if os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1":
+        model_id = f"us.anthropic.{model_slug}"
+    else:
+        model_id = model_slug
+    claude_cmd = (
+        f'claude --dangerously-skip-permissions '
+        f'--add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect '
+        f'--model "{model_id}"'
+    )
+    cwd = str(DISPATCH_CWD)
+    title = f"{todo_id}: {item.get('title','')}"[:40]
+    rc, out, err = run(
+        [CMUX_BIN, "new-workspace", "--cwd", cwd, "--name", title,
+         "--focus", "false", "--command", claude_cmd],
+        timeout=30,
+    )
+    if rc != 0:
+        log.warning("dispatch %s: new-workspace failed rc=%d: %s", todo_id, rc, err.strip())
+        return False
+    m = re.search(r"workspace:\d+", out)
+    if not m:
+        log.warning("dispatch %s: no workspace ref in: %s", todo_id, out.strip())
+        return False
+    ws_ref = m.group(0)
+
+    rc, out, _ = run([CMUX_BIN, "list-pane-surfaces", "--workspace", ws_ref], timeout=15)
+    sm = re.search(r"surface:\d+", out)
+    if not sm:
+        log.warning("dispatch %s: no surface for %s", todo_id, ws_ref)
+        return False
+    surface_ref = sm.group(0)
+
+    # 3. Snapshot transcripts before, so a new one confirms submission.
+    cwd_real = os.path.realpath(cwd)
+    project_dir = HOME / ".claude/projects" / cwd_real.replace("/", "-")
+    project_dir.mkdir(parents=True, exist_ok=True)
+    before = {p.name for p in project_dir.glob("*.jsonl")}
+
+    # 4. Trust prompt (first launch in a never-used cwd). --dangerously-skip
+    #    does NOT bypass it; the transcript never appears until it's answered.
+    time.sleep(2)
+    if "1. Yes, I trust this folder" in _surface_read_text(surface_ref):
+        _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": "1"})
+        _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+
+    # 5. Wait for readiness banner (the only pre-submission screen marker).
+    ready = False
+    for _ in range(30):
+        if re.search(r"Claude Code v", _surface_read_text(surface_ref)):
+            ready = True
+            break
+        time.sleep(1)
+    if not ready:
+        log.warning("dispatch %s: claude never ready in %s/%s", todo_id, ws_ref, surface_ref)
+        return False
+
+    # 6. Deliver by reference. Strip the trailing newline (send_text streams
+    #    keystrokes; a trailing \n auto-submits mid-paste), then Enter explicitly.
+    instruction = f"Read {prompt_file} in full and execute every instruction in it."
+    _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": instruction.rstrip("\n")})
+    time.sleep(1)
+    _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+
+    # 7. Confirm submission via the transcript (authoritative, no screen-scraping).
+    sig = str(prompt_file)[:60]
+    submitted = False
+    for _ in range(30):
+        new = {p.name for p in project_dir.glob("*.jsonl")} - before
+        for name in new:
+            try:
+                for line in (project_dir / name).read_text().splitlines():
+                    try:
+                        d = json.loads(line)
+                    except Exception:
+                        continue
+                    msg = d.get("message") if isinstance(d.get("message"), dict) else None
+                    if d.get("type") == "user" and msg and msg.get("role") == "user":
+                        c = msg.get("content", "")
+                        if isinstance(c, list):
+                            c = " ".join(
+                                str(x.get("text", "") if isinstance(x, dict) else x)
+                                for x in c
+                            )
+                        if sig in str(c):
+                            submitted = True
+                            break
+            except Exception:
+                continue
+            if submitted:
+                break
+        if submitted:
+            break
+        time.sleep(1)
+
+    if not submitted:
+        log.warning("dispatch %s: spawned %s but submission unconfirmed (prompt staged at %s)",
+                    todo_id, ws_ref, prompt_file)
+        return False
+
+    if not _mark_todo_dispatched(todo_id, ws_ref):
+        log.warning("dispatch %s: submitted to %s but TODO stamp failed — "
+                    "will re-dispatch next pulse", todo_id, ws_ref)
+        return False
+
+    log.info("dispatch %s → %s (surface %s, prompt %s)",
+             todo_id, ws_ref, surface_ref, prompt_file)
+    return True
 
 
 # ─── main ───────────────────────────────────────────────────────────────────
@@ -740,8 +999,10 @@ def main() -> int:
             "evidence": (bo.get("reason") or "")[:200],
         })
 
-    # 5. TODO dispatch (best-effort; orchestrator-side spawn not implemented).
-    todos = pick_open_todos()
+    # 5. TODO dispatch — spawn an unfocused cmux workspace per bucket_b TODO,
+    #    capped at MAX_DISPATCH_PER_PULSE and gated on the active/total caps.
+    #    Skipped entirely in dry-run (dispatch_todo creates real workspaces).
+    todos = pick_open_todos() if not dry_run else {"bucket_b": []}
     bucket_b = todos.get("bucket_b", [])
     n_active = count_active(ws_meta)
     n_total = batch.get("total_ws", 0)
