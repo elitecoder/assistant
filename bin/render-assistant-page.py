@@ -1773,7 +1773,7 @@ async function openWs(btn) {
   btn.classList.add('busy');
   btn.textContent = 'opening…';
   try {
-    const r = await fetch('http://127.0.0.1:9876/focus/' + ws, {method: 'POST'});
+    const r = await fetch('/focus/' + ws, {method: 'POST'});
     if (r.ok) {
       btn.classList.remove('busy');
       btn.classList.add('ok');
@@ -1809,7 +1809,7 @@ async function handleTodoToolsClick(ev) {
     const originalText = btn.textContent;
     btn.classList.add('busy');
     try {
-      const r = await fetch(`http://127.0.0.1:9876/toggle/${id}?flag=autoDispatch&value=${value}`, {method: 'POST'});
+      const r = await fetch(`/toggle/${id}?flag=autoDispatch&value=${value}`, {method: 'POST'});
       if (r.ok) {
         // Visually move .active to this button immediately so the user sees
         // the absolute-set semantics. The 15s auto-refresh will re-render
@@ -1834,7 +1834,7 @@ async function handleTodoToolsClick(ev) {
     if (!confirm(`Remove ${id}?\n\nSoft-delete: TODO is moved into the 'removed[]' array of assistant-todo.json (recoverable, but disappears from the dashboard).`)) return;
     btn.classList.add('busy'); btn.textContent = 'Removing…';
     try {
-      const r = await fetch(`http://127.0.0.1:9876/remove/${id}`, {method: 'POST'});
+      const r = await fetch(`/remove/${id}`, {method: 'POST'});
       const t = await r.text();
       if (r.ok) {
         // Hide the row immediately; auto-refresh will confirm
@@ -1855,7 +1855,7 @@ async function handleTodoToolsClick(ev) {
     if (!confirm(`Force ${id} to dispatch at next Assistant pulse?\n\nThis sets autoDispatch=true and clears dispatchedAt/dispatchedWs.\nIf the TODO was deferred/blocked/done, it will be reopened.`)) return;
     btn.classList.add('busy'); btn.textContent = 'Queueing…';
     try {
-      const r = await fetch(`http://127.0.0.1:9876/dispatch-now/${id}`, {method: 'POST'});
+      const r = await fetch(`/dispatch-now/${id}`, {method: 'POST'});
       const t = await r.text();
       if (r.ok) {
         btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ queued';
@@ -1891,7 +1891,7 @@ async function handleTodoToolsClick(ev) {
     if (!body) { ta.focus(); return; }
     btn.classList.add('busy'); btn.textContent = 'Saving…';
     try {
-      const r = await fetch(`http://127.0.0.1:9876/append-detail/${id}`, {
+      const r = await fetch(`/append-detail/${id}`, {
         method: 'POST',
         headers: {'Content-Type': 'text/plain; charset=utf-8'},
         body: body,
@@ -1918,6 +1918,8 @@ document.addEventListener('click', handleTodoToolsClick);
     body = f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
 <title>Assistant</title>
 <style>{css}</style>
 <script>{js}</script>

@@ -34,6 +34,7 @@ CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bi
 
 HOME = Path(os.path.expanduser("~"))
 JSON_PATH = HOME / ".claude" / "assistant-todo.json"
+DASHBOARD_HTML_PATH = HOME / ".claude" / "assistant-dashboard.html"
 # Both rerender targets point at the live single-Renderer script. The legacy
 # render-todo.py / render-dashboard.py paths were retired 2026-05-22; keeping
 # both names so existing call sites still work, both now resolve to the live
@@ -250,7 +251,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/":
+        if parsed.path in ("/", "/index.html"):
+            try:
+                body = DASHBOARD_HTML_PATH.read_bytes()
+            except FileNotFoundError:
+                self._reply(503, "dashboard not yet rendered — wait for next pulse")
+                return
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/healthz":
             body = b"ok"
             self.send_response(200)
             self._cors()
