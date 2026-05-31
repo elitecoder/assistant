@@ -1,0 +1,4 @@
+{
+  "verdict": "needs_user",
+  "forbidden_verdicts": ["ready_for_cleanup", "stranded"]
+}

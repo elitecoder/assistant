@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:90",
+  "title": "Auto: td-098 coalesce/undo granularity audit",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-12",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 9000,
+  "agent_status": "idle",
+  "cwd_dirty": false,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

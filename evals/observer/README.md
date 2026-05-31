@@ -36,6 +36,9 @@ phrase).
 | 07 | stranded-mid-task | Rule B3: idle >30min mid-narrative → stranded with nudge. |
 | 08 | active-working | Rule B4 default: working / recent → active. |
 | 09 | adversarial-pr-prose-no-pr-actually | Adversarial: prose mentions a merged PR but workspace owns no PR. Must NOT auto-act on the prose-derived PR. |
+| 10 | ws112-prod-code-pr-needs-review | Regression pin: production-code PR + green CI must NOT auto-merge → needs_user. |
+| 11 | ws55-eval-multi-case-just-emitted-verdict | Regression pin: per-case `VERDICT: BLOCK` at idle 0s is a sub-result, NOT a workspace recap → active. |
+| 12 | work-delivered-awaiting-review | Rule B1: deliverable produced + agent awaiting review/go-ahead → needs_user (NOT cleanup, NOT stranded). |
 
 ## Fixture layout
 

@@ -60,7 +60,7 @@ Pick ONE per workspace. See the ruleset below for which one fires when.
 | `ready_for_merge` | — | PR is auto-mergeable per A1/A2 (test-only or refactor + green CI). |
 | `ready_for_cleanup` | — | Workspace is done, safe to tear down. |
 | `stranded` | `nudge_text` | Agent paused mid-task. `nudge_text` is sent verbatim — keep it short and transcript-specific. |
-| `needs_user` | `title`, `detail` | Needs human input. `title` is one line; `detail` is a 5-second paragraph. |
+| `needs_user` | `title`, `detail` | Needs the human. Two flavors: (a) a pending question/blocker, OR (b) the agent **finished a deliverable** (plan, audit, investigation, design, draft rule, recommendation) and is **awaiting your review or go-ahead**. `title` is one line; `detail` is a 5-second paragraph. |
 | `active` | — | Default — mid-work, no action. |
 | `no_action` | — | Done AND cleanup already ran (worktree gone / branch deleted). |
 
@@ -98,21 +98,34 @@ Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,ti
 
    **Do not emit `ready_for_cleanup` if cleanup has already happened.** A workspace whose claude has exited (or whose worktree is gone) cannot ingest the slash command, so the send becomes a permanent loop. Use `no_action`.
 
-1. **Definitive workspace-level recap + idle >30 min + clean cwd** → `ready_for_cleanup`. ALL must hold:
+1. **Work delivered, awaiting human review or a go-ahead** → `needs_user`. This is the most-missed state, so check it BEFORE B2/B3/B4. It fires when the agent has produced something for **you to look at or decide on** and has correctly stopped to wait — it is neither stranded (it didn't trail off mid-step) nor cleanup-ready (the work-product is the whole point; tearing it down would discard it). Signals (any one is enough):
+   - The recap hands back a **reviewable artifact and stops**: a written plan/design/audit/investigation, a draft rule/lint/proposal, a recommendation with options, a "ready for your review" / "awaiting your review" / "say the word and I'll…" / "want me to…" / "your call" close.
+   - The agent reached a **decision gate it cannot self-clear**: a pipeline paused at a gate "awaiting your go-ahead", a question with options, "should I proceed with X or Y", "let me know which".
+   - The work is done **but the next step is the user's** to authorize (activate the rule, land the PR, pick an option, approve the dispatch).
+
+   `title` = the decision/artifact in one line; `detail` = enough that the user can act without opening the workspace (what's ready, where it lives, what the choices are). Quote the artifact path if the recap names one.
+
+   Idle time does NOT gate this verdict — a recap that ends with "want me to…?" is awaiting you whether it landed 10 seconds or 10 hours ago. Do NOT downgrade a fresh awaiting-review recap to `active` just because `last_turn_age_sec` is small; the agent has stopped and will not move without you.
+
+   **B1 vs B2 (cleanup vs awaiting-review) — the dividing line:** cleanup is for work that is *finished and disposable* — the deliverable was an action already taken (probe ran, PR merged, test executed) and nothing is left to look at. Awaiting-review is for work whose *deliverable is a thing you must still consume or authorize*. When a recap says "done" AND names something for you to read/decide/approve/activate/merge, it is B2 (`needs_user`), not B1. When in doubt between cleanup and awaiting-review, choose `needs_user` — an extra card is cheap; a wrongly-sent `/cleanup` destroys the deliverable.
+
+2. **Definitive workspace-level recap + idle >30 min + clean cwd + nothing left for the user** → `ready_for_cleanup`. ALL must hold:
+   - B1 did NOT fire — the recap is not handing back an artifact, decision, or go-ahead. If the recap names anything for you to review, decide, approve, activate, land, or pick, it is B1, not this.
    - `last_turn_age_sec > 1800`, `cwd_dirty=false`, `cwd_unpushed=false`. A recent turn (≤1800s, especially 0s) is the agent *talking*, not signing off.
    - The text declares the **workspace's top-level task** done (e.g. "td-NNN COMPLETE", "audit complete, no PR needed", "all cases run, results filed") — NOT a per-case / per-spec / per-PR sub-result. A `VERDICT: BLOCK` or `case N: PASS` line from a wrapper script is a sub-result even when it looks definitive.
    - The agent is not inside an enclosing iteration. Read `head -30 <transcript_path>` to learn the workspace's actual scope. Tells of in-flight iteration: original prompt asked for multiple cases/specs/files/PRs/rounds and not all are done; per-item wrapper lines instead of a final tally; agent says "next case", "moving on", "now running…".
 
    If any fail → `active`. Better to wait one more pulse than fire `/cleanup` on a mid-flight run.
-2. **Last assistant text asks the user a question** → `needs_user` with the question as the detail.
-3. **Stranded — ALL THREE must be true**:
+3. **Last assistant text asks the user a question** → `needs_user` with the question as the detail. (B1 usually catches this first; this is the fallback for a bare question with no surrounding recap.)
+4. **Stranded — ALL FOUR must be true**:
+   - B1 did NOT fire — the agent did not hand back a deliverable or a question. A recap awaiting your review is `needs_user`, never `stranded`; nudging "please continue" on top of finished work that's waiting on YOU is exactly the misfire we're avoiding.
    - `last_turn_age_sec > 1800` (strictly greater than 30 minutes).
    - `agent_status == "idle"`.
-   - Last assistant text is mid-narrative, NOT a recap.
+   - Last assistant text is **mid-narrative** — it trailed off inside a step ("now running…", "checking X", "moving to spec 5") with no handoff to the user, NOT a recap and NOT a question.
 
-   If all three hold → `stranded` with `nudge_text` grounded in the transcript. Otherwise → `active`.
+   If all four hold → `stranded` with `nudge_text` grounded in the transcript. Otherwise → `active`.
 
-4. **Otherwise** → `active`.
+5. **Otherwise** → `active`.
 
 ### Threshold cheat-sheet
 
@@ -120,11 +133,14 @@ Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,ti
 |---|---|
 | `transcript_path` is null | `active` (session likely starting up) |
 | `agent_status == working` | `active` (tool_use in flight) |
-| idle ≤ 1800s | `active` (between turns) |
-| idle > 1800s + mid-narrative | `stranded` |
-| idle > 1800s + recap + clean cwd | `ready_for_cleanup` |
-| idle > 1800s + question | `needs_user` |
+| recap hands back a deliverable / decision / go-ahead (any idle time) | `needs_user` (B1 — awaiting your review) |
+| idle ≤ 1800s AND not an awaiting-review recap | `active` (between turns) |
+| idle > 1800s + mid-narrative (trailed off, no handoff) | `stranded` |
+| idle > 1800s + recap + clean cwd + nothing left for the user | `ready_for_cleanup` |
+| idle > 1800s + bare question | `needs_user` |
 | cleanup already ran | `no_action` (wins over `ready_for_cleanup`) |
+
+Note: an awaiting-review recap is `needs_user` regardless of idle time — it is NOT `active` while fresh, NOT `stranded` once old, NOT `ready_for_cleanup` ever. Sending `/cleanup` or a "please continue" nudge to such a workspace is the exact misfire this row guards against.
 
 ## Hard rules
 
