@@ -103,7 +103,7 @@ Required: **prompt**. Everything else has defaults:
 - **Working directory** — defaults to `~/dev` (NOT `$PWD`). Mukul's Claude Code permissions are scoped to `~/dev/**`, `~/.claude/**`, `~/.architect/**` — spawning at `~` (which is `$PWD` when Mukul runs from his login shell) puts the cwd outside those allow-rules and quietly hits permission walls on any file write at the project root. The `--add-dir ~/.claude --add-dir ~/.architect` flags baked into Step 3 still let the spawn touch those subdirs, but the cwd itself must be inside one of the allowed roots. Verified 2026-05-22 — defaulting to `~/dev` eliminates the entire class of "why is my builder silently blocked" failures. Override by passing an explicit absolute path if the work genuinely lives elsewhere (e.g. an active worktree under `~/dev/<repo>/worktrees/...`). Pass absolute paths only.
 - **Title** — first 40 chars of the prompt if not provided.
 - **Send mode** — `auto` by default (press Enter after paste). Use `paste` only if the user said "let me review" or the prompt would trigger destructive shell actions.
-- **Model** — set `MODEL=sonnet` for **routine / periodic work** (scanners, evaluators, renderers, batch tasks, anything rule-based), or `MODEL=opus` for **decision-making work** (architecture, design, code review, multi-step reasoning). Default is `opus` — when in doubt, prefer Opus. Mukul's policy 2026-05-22: "Choose Sonnet 1M for routine periodic work. For decision making, use Opus 1M." The skill maps `opus` → `claude-opus-4-7[1m]` and `sonnet` → `claude-sonnet-4-6[1m]` (Bedrock prefixes are added automatically when `CLAUDE_CODE_USE_BEDROCK=1`).
+- **Model + launch flags** — by default this skill invokes the user's bare `claude` alias (sourced from `~/.zprofile` via `zsh -ilc`), which carries the user's chosen default model AND every other launch flag (`--dangerously-skip-permissions`, every `--add-dir` root). Per the global CLAUDE.md rule: *"When you spawn a `claude` process … invoke the bare `claude` alias. Never hardcode `--model`, `--dangerously-skip-permissions`, or `--add-dir` — the `~/.zprofile` alias owns them."* If the user explicitly asks for a different tier (typically `MODEL=sonnet` for routine periodic / scanner work — Mukul's policy 2026-05-22: "Choose Sonnet 1M for routine periodic work. For decision making, use Opus 1M."), append `--model "<id>"` AFTER the bare alias so it overrides — e.g. `zsh -ilc 'claude --model "us.anthropic.claude-sonnet-4-6[1m]"'`. **Never** copy the alias's full flag set yourself: flags drift the moment the user bumps the model or adds an `--add-dir` root, and that drift is silent. (Earlier revisions of this skill did exactly that — pinned `claude-opus-4-7[1m]` after the user's alias had already moved to `opus-4-8`, and missed the `/tmp` add-dir entirely. Drift caught 2026-05-31.)
 - **Color** — defaults to **shuffle-without-replacement** against the 16-color cmux palette (Red, Crimson, Orange, Amber, Olive, Green, Teal, Aqua, Blue, Navy, Indigo, Purple, Magenta, Rose, Brown, Charcoal). The picker reads `cmux rpc workspace.list` and excludes any color already in use on an existing workspace, so up to 16 parallel spawns are visually distinct in the sidebar; only after the palette is exhausted does it fall back to a uniform random choice. Override by exporting `COLOR=<name|#hex>`; set `COLOR=none` to skip coloring entirely. Implemented via `cmux workspace-action --action set-color`; failures are non-fatal. The hex map (Red=#C0392B, Crimson=#922B21, …) is hard-coded in the picker — if cmux ever rebrands the palette, re-probe by calling `cmux workspace-action --action set-color --color <name>` for each name and capturing the `color=#…` token from stdout.
 
 ## Execution
@@ -146,24 +146,37 @@ Quoted `'PROMPT_EOF'` sentinel — literal `$`, backticks, and `!` are preserved
 `new-workspace` has no `--json`. It returns a single line `OK workspace:N`. Pass the `claude` launch command via `--command` so the terminal surface materialises with claude already starting.
 
 ```bash
-# Pin the 1M-context build of the chosen model — same family the user's
-# interactive shell alias picks. cmux's --command string is NOT alias-expanded,
-# so set the model explicitly. Bedrock IDs are prefixed `us.anthropic.…`; the
-# Anthropic-API path uses the bare slug.
+# Invoke the user's `claude` alias (~/.zprofile), which carries model +
+# --dangerously-skip-permissions + every --add-dir root. Per the global
+# CLAUDE.md rule we NEVER hardcode --model / --dangerously-skip-permissions /
+# --add-dir here — the alias is the single source of truth on this machine.
+# Hardcoding silently drifts whenever the user bumps their model or adds an
+# --add-dir root (caught 2026-05-31: this skill had pinned opus-4-7 long after
+# the alias moved to opus-4-8, and missed the /tmp add-dir entirely).
 #
-# MODEL selection (default: opus):
-#   sonnet → claude-sonnet-4-6[1m]   periodic / routine / rule-based work
-#   opus   → claude-opus-4-7[1m]     decision-making / architecture / reasoning
-case "${MODEL:-opus}" in
-  sonnet) MODEL_SLUG="claude-sonnet-4-6[1m]" ;;
-  opus|*) MODEL_SLUG="claude-opus-4-7[1m]" ;;
-esac
-if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ]; then
-  MODEL_ID="us.anthropic.$MODEL_SLUG"
-else
-  MODEL_ID="$MODEL_SLUG"
+# cmux's --command runs through `bash -c` by default — that does NOT source
+# ~/.zprofile and so does NOT see the alias. Wrapping in `zsh -ilc` forces a
+# login interactive zsh that DOES source ~/.zprofile and resolves the alias
+# at spawn time. Verified empirically: the alias expands to the full claude
+# command line under `zsh -ilc 'whence claude'`.
+#
+# Override only when the user explicitly asks for a different model tier
+# (typically MODEL=sonnet for routine periodic work — Mukul's policy
+# 2026-05-22). The override is appended AFTER the bare alias so it wins,
+# leaving every other launch flag (DSP, every --add-dir) coming from the
+# alias itself.
+INNER="claude"
+if [ "${MODEL:-}" = "sonnet" ]; then
+  if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ]; then
+    SONNET_ID="us.anthropic.claude-sonnet-4-6[1m]"
+  else
+    SONNET_ID="claude-sonnet-4-6[1m]"
+  fi
+  INNER="claude --model \"$SONNET_ID\""
 fi
-CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --model \"$MODEL_ID\""
+# Single-quote the inner so $… inside it (none today, but future-proof) is
+# not expanded by the outer shell before zsh sees it.
+CLAUDE_CMD="zsh -ilc '$INNER'"
 OUT=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$CLAUDE_CMD")
 # OUT is "OK workspace:13"
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
@@ -198,8 +211,9 @@ fi
 
 Notes:
 - `--focus false` is mandatory — see the calibration note at the top.
-- **`--command "<claude-launch>"` replaces the old "send_text the launch command" step.** The flag sends text + Enter atomically on creation, so the shell spawns AND the claude launch fires without a separate `surface.send_text` burst. Verified 2026-05-14 — eliminates the "early writes get swallowed" race that killed the old Step 5. The claude launch still needs `--dangerously-skip-permissions` + `--add-dir` for unattended work.
-- **Model is selectable via `MODEL` env var (default opus, 1M context)** so the spawned agent has the same context budget as the user's interactive shell. Pass `MODEL=sonnet` for routine/periodic work (Sonnet 4.6 1M); leave unset for Opus 4.7 1M on decision-making tasks. Bedrock IDs are prefixed `us.anthropic.…`; Anthropic-API IDs use the bare slug. cmux's `--command` does not expand shell aliases, so this branch encodes the equivalent of the alias. When you bump the model versions, update both the alias and this skill together.
+- **`--command "<claude-launch>"` replaces the old "send_text the launch command" step.** The flag sends text + Enter atomically on creation, so the shell spawns AND the claude launch fires without a separate `surface.send_text` burst. Verified 2026-05-14 — eliminates the "early writes get swallowed" race that killed the old Step 5.
+- **The launch command MUST go through `zsh -ilc 'claude …'`**, not bare `claude` or `bash -c 'claude'`. cmux's `--command` runs through `bash -c` by default, which does NOT source `~/.zprofile` and so does NOT see the user's `claude` alias. `zsh -ilc` forces a login interactive zsh that DOES. The alias is the single source of truth for `--model`, `--dangerously-skip-permissions`, and every `--add-dir` root — per the global CLAUDE.md rule, NEVER hardcode any of those flags here. (Earlier revisions did, then drifted: pinned opus-4-7 long after the alias moved to opus-4-8, missed the /tmp add-dir entirely. Caught 2026-05-31.)
+- **Model override:** when the user asks for a different tier (typically `MODEL=sonnet` for routine/periodic work — Mukul's 2026-05-22 policy: "Sonnet 1M for routine periodic work; Opus 1M for decision-making"), append `--model "<id>"` AFTER the bare alias inside the inner string — `zsh -ilc 'claude --model "us.anthropic.claude-sonnet-4-6[1m]"'`. Every other flag still comes from the alias.
 - `--cwd` must be absolute.
 - `--name` is the workspace title; keep under 40 chars.
 
@@ -223,11 +237,11 @@ The first surface in a fresh workspace is always the initial terminal.
 
 ### Step 5 — wait for claude readiness (launch is already firing from Step 3 --command)
 
-The `claude --dangerously-skip-permissions --add-dir …` command was already sent by Step 3's `--command` flag. **Do NOT issue another `send_text` with the launch command here** — that would type it a second time on top of the already-running shell and mangle both invocations.
+The `zsh -ilc 'claude'` command was already sent by Step 3's `--command` flag, and the user's `~/.zprofile` alias supplies model + `--dangerously-skip-permissions` + every `--add-dir` root at expansion time. **Do NOT issue another `send_text` with the launch command here** — that would type it a second time on top of the already-running shell and mangle both invocations.
 
 All I/O targets the surface by ref via RPC — **the plain `cmux send` / `send-key` shortcuts return "Surface is not a terminal" even when it is** on the current cmux build. Always use `rpc`.
 
-The three `--add-dir` paths baked into Step 3's `--command` (`~/dev`, `~/.claude`, `~/.architect`) cover 97.5% of observed out-of-cwd writes across ~400 sessions. Without them, cross-worktree or cross-repo writes prompt for approval even under `--dangerously-skip-permissions`, which silently stalls the headless run.
+The `--add-dir` roots that come from the user's alias (today: `~/dev`, `~/.claude`, `~/.architect`, `/tmp`) cover the observed out-of-cwd write paths. Without them, cross-worktree / cross-repo writes prompt for approval even under `--dangerously-skip-permissions`, which silently stalls the headless run. The exact set will track whatever the user has in `~/.zprofile` — that's the point of going through the alias rather than baking the list in here.
 
 **Answer the trust prompt if it appears, then poll for the `Claude Code v` banner on the screen.** The transcript does NOT exist yet (Claude Code doesn't write the `.jsonl` until the first user prompt lands) — readiness is a screen check, submission is a transcript check.
 
@@ -414,20 +428,24 @@ BEFORE=$(list_transcripts)
 # --focus false is mandatory (calibration notes + /cmux-workspace).
 # --command runs the claude launch atomically; Step 5 no longer needs
 # a separate send_text + send_key for the launch.
-# Pin the 1M-context build of the chosen model. cmux's --command string is NOT
-# alias-expanded, so set the model explicitly. MODEL=sonnet for periodic/routine
-# work; default opus for decision-making. Bedrock IDs are prefixed
-# `us.anthropic.…`, Anthropic-API IDs use the bare slug.
-case "${MODEL:-opus}" in
-  sonnet) MODEL_SLUG="claude-sonnet-4-6[1m]" ;;
-  opus|*) MODEL_SLUG="claude-opus-4-7[1m]" ;;
-esac
-if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ]; then
-  MODEL_ID="us.anthropic.$MODEL_SLUG"
-else
-  MODEL_ID="$MODEL_SLUG"
+#
+# Invoke the user's `claude` alias via `zsh -ilc` so ~/.zprofile is sourced
+# and the alias resolves (model + --dangerously-skip-permissions + every
+# --add-dir root). NEVER hardcode any of those flags here — the alias is
+# the single source of truth on this machine, per the global CLAUDE.md rule.
+# (The hardcoded form here drifted to opus-4-7 long after the alias moved
+# to opus-4-8 and missed /tmp; caught 2026-05-31.) Override the model only
+# when the user explicitly asks (MODEL=sonnet for routine periodic work).
+INNER="claude"
+if [ "${MODEL:-}" = "sonnet" ]; then
+  if [ "${CLAUDE_CODE_USE_BEDROCK:-}" = "1" ]; then
+    SONNET_ID="us.anthropic.claude-sonnet-4-6[1m]"
+  else
+    SONNET_ID="claude-sonnet-4-6[1m]"
+  fi
+  INNER="claude --model \"$SONNET_ID\""
 fi
-CLAUDE_CMD="claude --dangerously-skip-permissions --add-dir ~/dev --add-dir ~/.claude --add-dir ~/.architect --model \"$MODEL_ID\""
+CLAUDE_CMD="zsh -ilc '$INNER'"
 WS_REF=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$CLAUDE_CMD" | grep -oE 'workspace:[0-9]+' | head -n1)
 SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:[0-9]+' | head -n1)
 
