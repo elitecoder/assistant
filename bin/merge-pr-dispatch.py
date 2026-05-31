@@ -253,6 +253,10 @@ def main():
                    help="Dispatcher claims the workspace transcript shows full local G3 + unit suite green")
     args = p.parse_args()
 
+    if not re.fullmatch(r"workspace:\d+", args.ws):
+        print(json.dumps({"error": f"invalid --ws: {args.ws!r}"}), file=sys.stderr)
+        sys.exit(3)
+
     out = {"ws_ref": args.ws, "pr": args.pr, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     # Step 0 — safety gate

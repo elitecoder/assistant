@@ -113,8 +113,9 @@ def run(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
 
 def notify(title: str, message: str, sound: str = "Sosumi") -> None:
     """Fire macOS Notification Center alert via osascript."""
-    safe_title = title.replace('"', "'")
-    safe_msg = message.replace('"', "'")
+    # Escape backslashes first, then double-quotes, to prevent AppleScript injection.
+    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
     script = (
         f'display notification "{safe_msg}" '
         f'with title "{safe_title}" '
