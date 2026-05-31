@@ -1,0 +1,11 @@
+{
+  "ws_ref": "workspace:89",
+  "title": "td-099: Replicate Auto-pilot knowledge-c [89]",
+  "cwd": "/tmp/no-such-cwd-eval-fixture-13",
+  "transcript_path": "REPLACED-AT-RUNTIME",
+  "last_turn_age_sec": 13576,
+  "agent_status": "idle",
+  "cwd_dirty": false,
+  "cwd_unpushed": false,
+  "is_protected": false
+}

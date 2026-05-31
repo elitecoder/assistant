@@ -38,7 +38,8 @@ phrase).
 | 09 | adversarial-pr-prose-no-pr-actually | Adversarial: prose mentions a merged PR but workspace owns no PR. Must NOT auto-act on the prose-derived PR. |
 | 10 | ws112-prod-code-pr-needs-review | Regression pin: production-code PR + green CI must NOT auto-merge → needs_user. |
 | 11 | ws55-eval-multi-case-just-emitted-verdict | Regression pin: per-case `VERDICT: BLOCK` at idle 0s is a sub-result, NOT a workspace recap → active. |
-| 12 | work-delivered-awaiting-review | Rule B1: deliverable produced + agent awaiting review/go-ahead → needs_user (NOT cleanup, NOT stranded). |
+| 12 | work-delivered-awaiting-review | Rule B1: deliverable produced + agent awaiting review/go-ahead → needs_user (NOT cleanup, NOT stranded). REAL ws:90 transcript. |
+| 13 | ws89-answered-oneshot-not-stranded | Tightened B3: one-shot question fully answered must NOT be nudged "resume" → cleanup (forbidden: stranded). REAL ws:89 transcript. |
 
 ## Fixture layout
 
