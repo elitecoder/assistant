@@ -719,7 +719,15 @@ def _cmux_rpc(method: str, params: dict, timeout: int = 15) -> dict | None:
         return None
 
 
-def _surface_read_text(surface_ref: str, lines: int = 40) -> str:
+# Default read window must capture the WHOLE TUI screen, not just the bottom.
+# In cmux fullscreen (`/tui`) mode a freshly-spawned claude renders the
+# `Claude Code v…` banner and the trust prompt pinned to the TOP of a tall
+# (~70-line) screen, with the input box pinned to the bottom and dozens of
+# blank rows between. A 40-line bottom window misses both markers, so the
+# readiness poll times out and the prompt is never sent — the workspace spawns
+# but sits idle with no transcript (td-101, 2026-05-30). 200 lines covers the
+# top of any realistic terminal height while staying cheap.
+def _surface_read_text(surface_ref: str, lines: int = 200) -> str:
     d = _cmux_rpc("surface.read_text", {"surface_id": surface_ref, "lines": lines})
     if not d or d.get("surface_ref") != surface_ref:
         return ""
@@ -811,10 +819,19 @@ def dispatch_todo(todo_id: str) -> bool:
         _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": "1"})
         _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
-    # 5. Wait for readiness banner (the only pre-submission screen marker).
+    # 5. Wait for readiness. Match EITHER pre-submission marker so the gate is
+    #    independent of `/tui` mode and terminal height:
+    #      - "Claude Code v…" — the boot banner. Top-pinned, so in fullscreen it
+    #        can sit above a short read window (see _surface_read_text note).
+    #      - "⏵⏵ bypass permissions on" — the bottom status bar. Present in both
+    #        default-inline and fullscreen /tui, and in both idle and working
+    #        states, so it's always inside a bottom-anchored read window even
+    #        when the banner has scrolled off the top.
+    #    Either marker means claude is up and accepting input.
     ready = False
     for _ in range(30):
-        if re.search(r"Claude Code v", _surface_read_text(surface_ref)):
+        screen = _surface_read_text(surface_ref)
+        if re.search(r"Claude Code v|⏵⏵ bypass permissions on", screen):
             ready = True
             break
         time.sleep(1)

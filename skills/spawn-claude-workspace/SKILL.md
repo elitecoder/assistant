@@ -32,6 +32,8 @@ The cmux team owns the `cmux` CLI's general behavior (see `/cmux` and `/cmux-wor
 - Claude Code renders each line as it arrives — there is usually NO `[Pasted text #N +N lines]` marker. The marker only shows up when the terminal emulator (not cmux) announces bracketed paste — which this build does not. **Do not rely on `[Pasted text` for verification.**
 - Short instructions (~100 bytes) ingest in <1 s; skip the long sleep you'd need for a full-prompt paste.
 
+**Read the WHOLE screen for top-pinned markers — `lines:40` misses the banner in `/tui` fullscreen.** The two pre-submission markers (the `Claude Code v…` readiness banner and the `1. Yes, I trust this folder` trust prompt) render at the **top** of the screen. In cmux fullscreen (`/tui`) mode the terminal is ~70 lines tall: the banner sits at line 1, the input box is pinned to the bottom, and dozens of blank rows separate them. A 40-line *bottom* window therefore sees only blank padding + the `❯` prompt and never matches `Claude Code v` — the readiness poll times out and the prompt is never sent. The workspace spawns, Claude sits idle with an empty input box, no transcript is ever written, and the TODO is never stamped. Observed 2026-05-30 (td-101: two workspaces spawned, both `claude never ready`, work never started — the operator had switched the spawn target into `/tui`). **Fix: read `lines:200` for every readiness/trust screen scrape** so the top of any realistic terminal height is captured. This is independent of the submission check below, which is transcript-based and unaffected by screen height.
+
 **Terminal-screen scraping is unreliable as a primary signal.** A ~6-8 KB prompt fills the terminal scrollback well past any `read_text` window you pick; progress indicators use a rotating pool of hundreds of verbs (`Musing`, `Shimmering`, `Noodling`, `Pondering`, …) that grows every release. Both regex narrowness and window size have produced false-negative `submitted=0` readings even when the spawned agent was actively processing. The transcript-based check below is the correct approach — fall back to `read_text` only as a last-resort "did Claude even start" diagnostic when no transcript ever appears.
 
 **CRITICAL — resolve the cwd via `realpath` before slugging.** On macOS, `/tmp` is a symlink to `/private/tmp`; Claude Code records the resolved path. `readlink` is not enough (only follows one hop). Use `python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))"` or `cd "$cwd" && pwd -P`. Skipping this puts the project directory at a slug that never receives transcripts and the verification loop times out.
@@ -49,13 +51,13 @@ That means we need two different signals:
 
 | Signal | Source | Why |
 |---|---|---|
-| `CLAUDE_READY` (did claude start OK?) | terminal screen: match `Claude Code v` | Only screen-visible marker prior to submission. Version-stable banner. |
+| `CLAUDE_READY` (did claude start OK?) | terminal screen: match `Claude Code v` **OR** `⏵⏵ bypass permissions on` | Screen-visible markers prior to submission. The banner is top-pinned (scrolls off the top in tall fullscreen `/tui`); the status bar is bottom-pinned and present in every `/tui` mode + state. Matching either makes readiness height- and mode-independent. |
 | `SUBMITTED` (did our prompt land?) | transcript diff: new `*.jsonl` with a `type=user` line containing the prompt's first-40-char signature | Definitive on-disk record. No verb-scraping. |
 
 **Submission-detection algorithm:**
 
 1. Before spawning, snapshot the set of existing `*.jsonl` files under the resolved project directory.
-2. Check readiness via the terminal screen (single `Claude Code v` match).
+2. Check readiness via the terminal screen (`Claude Code v` OR `⏵⏵ bypass permissions on` — see the dual-marker note above).
 3. Stream the prompt, press Enter.
 4. Poll for a new `*.jsonl` file (or an mtime bump) containing a `type=user` line whose content includes the prompt's signature. 30-second budget.
 5. If `CLAUDE_READY=0`, dump the screen (bad permission flag, missing npm dep, unknown trust-prompt variant).
@@ -65,7 +67,7 @@ Working RPC methods (confirmed via `cmux capabilities`):
 
 | Need | RPC call |
 |---|---|
-| Read terminal screen | `cmux rpc surface.read_text '{"surface_id":"surface:N","lines":40}'` → JSON with `.text` |
+| Read terminal screen | `cmux rpc surface.read_text '{"surface_id":"surface:N","lines":200}'` → JSON with `.text` |
 | Send text | `cmux rpc surface.send_text '{"surface_id":"surface:N","text":"…"}'` |
 | Send a named key | `cmux rpc surface.send_key '{"surface_id":"surface:N","key":"enter"}'` |
 
@@ -233,7 +235,7 @@ The three `--add-dir` paths baked into Step 3's `--command` (`~/dev`, `~/.claude
 # First-launch-in-cwd guard: the "Is this a project you trust?" prompt.
 # --dangerously-skip-permissions does NOT bypass it. Answer with "1" if seen.
 sleep 2
-TRUST=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":40}))' "$SURFACE_REF")" \
+TRUST=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":200}))' "$SURFACE_REF")" \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("surface_ref")==sys.argv[1]; print(d.get("text",""))' "$SURFACE_REF")
 if printf '%s' "$TRUST" | grep -q '1\. Yes, I trust this folder'; then
   cmux rpc surface.send_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"text":"1"}))' "$SURFACE_REF")" >/dev/null
@@ -242,9 +244,12 @@ fi
 
 CLAUDE_READY=0
 for i in $(seq 1 30); do
-  TEXT=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":40}))' "$SURFACE_REF")" \
+  TEXT=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":200}))' "$SURFACE_REF")" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("surface_ref")==sys.argv[1]; print(d.get("text",""))' "$SURFACE_REF")
-  if printf '%s' "$TEXT" | grep -qE 'Claude Code v'; then
+  # Match EITHER marker so readiness is independent of /tui mode + height:
+  #   "Claude Code v"            — boot banner (top-pinned; off-screen in tall fullscreen)
+  #   "⏵⏵ bypass permissions on" — status bar (bottom-pinned; always in a bottom window)
+  if printf '%s' "$TEXT" | grep -qE 'Claude Code v|⏵⏵ bypass permissions on'; then
     CLAUDE_READY=1
     break
   fi
@@ -453,21 +458,23 @@ fi
 # briefly; if we see option 1, answer it. The decision is remembered per cwd
 # so subsequent spawns skip straight to the banner.
 sleep 2
-TRUST_SCREEN=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":40}))' "$SURFACE_REF")" \
+TRUST_SCREEN=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":200}))' "$SURFACE_REF")" \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("surface_ref")==sys.argv[1]; print(d.get("text",""))' "$SURFACE_REF")
 if printf '%s' "$TRUST_SCREEN" | grep -q '1\. Yes, I trust this folder'; then
   cmux rpc surface.send_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"text":"1"}))' "$SURFACE_REF")" >/dev/null
   cmux rpc surface.send_key "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"key":"enter"}))' "$SURFACE_REF")" >/dev/null
 fi
 
-# Readiness = `Claude Code v` on the screen. The transcript file is NOT created
-# until the first user prompt is submitted, so we can't use it here (verified on
-# Claude Code v2.1.122, 2026-04-28).
+# Readiness = `Claude Code v` (boot banner) OR `⏵⏵ bypass permissions on`
+# (status bar) on the screen — match either so it works in both /tui modes at
+# any height. The transcript file is NOT created until the first user prompt is
+# submitted, so we can't use it here (verified on Claude Code v2.1.122,
+# 2026-04-28).
 CLAUDE_READY=0
 for i in $(seq 1 30); do
-  TEXT=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":40}))' "$SURFACE_REF")" \
+  TEXT=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":200}))' "$SURFACE_REF")" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("surface_ref")==sys.argv[1]; print(d.get("text",""))' "$SURFACE_REF")
-  if printf '%s' "$TEXT" | grep -qE 'Claude Code v'; then CLAUDE_READY=1; break; fi
+  if printf '%s' "$TEXT" | grep -qE 'Claude Code v|⏵⏵ bypass permissions on'; then CLAUDE_READY=1; break; fi
   sleep 1
 done
 

@@ -26,6 +26,14 @@ td-034 (ws:28) and td-035 (ws:29) had their prompts pasted into the input box du
 
 **Rule:** mandatory post-spawn validation — search the spawned cwd's project directory for a fresh jsonl with a `type: user` line containing the prompt-file signature. Implementation: `bin/verify-spawn-submitted.py`. If validation fails, ONE recovery attempt (Return keypress, then re-paste); if still failing, log `dispatch-failed`, do NOT log `dispatch:`, do NOT set `dispatchedAt`. Surface awaiting card.
 
+## td-101 readiness banner missed in /tui fullscreen (2026-05-30) {#tui-readiness-miss}
+
+td-101 (`autoDispatch=true`) was dispatched twice (ws:99 at 20:14:58, ws:100 at 20:22:22 local) and both failed identically: `WARNING pulse.py dispatch td-101: claude never ready`. Both workspaces sat at `context -- │ 0↑/0↓ │ $0.00` with zero transcripts — the prompt was never sent, so step 5's readiness gate failed *before* step 6's delivery. Distinct from [#stranded-dispatch](#stranded-dispatch) (where the prompt WAS pasted but unsubmitted); here nothing was typed at all.
+
+Root cause: the operator had switched the spawn target into cmux `/tui` fullscreen. In fullscreen the terminal is ~70 lines tall, so the `Claude Code v…` banner renders at line 1 (top) while the input box is pinned to the bottom with ~63 blank rows between. `dispatch_todo`'s readiness poll (`_surface_read_text`, default `lines=40`) reads only the *bottom* 40 lines — it saw blank padding + the `❯` prompt, never matched `Claude Code v`, timed out after 30s, and bailed. Same blind spot would hit the trust-prompt check. The transcript-based submission check was never reached. Because the TODO was never stamped (`dispatchedAt` stayed empty) it remained in bucket_b and every pulse re-spawned another idle workspace.
+
+**Rule:** every pre-submission screen scrape (readiness banner, trust prompt) reads `lines:200`, not 40 — both markers are pinned to the TOP of the screen and a bottom window misses them at any large terminal height. Fixed in `bin/pulse.py` (`_surface_read_text` default) and the 4 readiness/trust reads in `skills/spawn-claude-workspace/SKILL.md`. The submission check stays transcript-based (screen-height-independent). Recovery for the live orphans: re-deliver the staged prompt to one workspace (readiness is trivially satisfied once the banner is read in full), confirm the transcript, stamp `dispatchedWs`, and surface the duplicate for the operator to close — never auto-close a workspace.
+
 ## pulse 122 stale awaiting cards (2026-05-23) {#stale-awaiting}
 
 Pulse 122 inherited an `assistant:autodispatch-unset:bulk` card listing td-003/005/006/007/008/010/011 as `autoDispatch=null`. Between pulses, Mukul ran a bulk-flip script setting all of them to `true`. Pulse 122 re-emitted the card without re-checking and failed to dispatch any of the now-eligible TODOs. 7 dispatchable items sat idle ~30 min until Mukul nudged manually.
