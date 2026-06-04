@@ -1,0 +1,41 @@
+{
+  "_comment": "Per-machine Slack app for slack-reactor. ONE app per machine: a Slack app has exactly one Events Request URL, which points at exactly one machine's tunnel. Name the app per host (e.g. 'reactor-mukuls-mbp') so they're distinguishable in the workspace. The no-invite behavior comes from user_events + scopes.user (NOT bot_events): user-token events fire for every channel the authorizing user can see, with no bot in the channel. Set request_url to this machine's cloudflared hostname + /slack/events.",
+  "display_information": {
+    "name": "reactor-REPLACE-HOSTNAME",
+    "description": "React an emoji on a thread to capture it as a /todo on one machine",
+    "background_color": "#1a1a2e"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "reactor",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "user": [
+        "reactions:read",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "channels:read",
+        "groups:read",
+        "users:read"
+      ],
+      "bot": ["reactions:write"]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://REPLACE-WITH-TUNNEL-HOSTNAME/slack/events",
+      "user_events": ["reaction_added"]
+    },
+    "interactivity": {
+      "is_enabled": false
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

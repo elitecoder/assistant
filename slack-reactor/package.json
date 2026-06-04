@@ -1,0 +1,20 @@
+{
+  "name": "slack-reactor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "React :mukuls2: on any Slack thread → capture it as a /todo on this machine. User-token Events API (works in every channel YOU can see, no bot invites).",
+  "type": "module",
+  "bin": {
+    "slack-reactor": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "manifest": "node src/manifest.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

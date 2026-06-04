@@ -33,3 +33,7 @@ evals/observer/fixtures/*/verdicts.jsonl
 evals/observer/last-run.log
 
 evals/observer/last-run.log
+
+# slack-reactor Node deps (reinstalled by spawn-slack-reactor.sh)
+slack-reactor/node_modules/
+slack-reactor/package-lock.json
