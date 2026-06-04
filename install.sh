@@ -58,6 +58,9 @@ After --apply:
   - ~/.claude/skills/{todo,cleanup,spawn-claude-workspace} → COPIES (shareable)
   - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,
        session-context-watcher,assistant-todo-server}.plist → COPIED
+  - cmux session-restore (vendored): hooks/ → ~/.claude/hooks/ (symlinks),
+       bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
+       and ~/.claude/settings.json SessionStart/SessionEnd hooks patched in
   - launchd: kickstart -k each agent (load if not loaded)
 
 Skills are copied (not symlinked) so they're standalone shareable artifacts.
@@ -215,7 +218,7 @@ launchctl_reload() {
 }
 
 # --- 1. Symlink code into ~/.claude/ ----------------------------------------
-log "[1/4] Symlinking code into ~/.claude/"
+log "[1/5] Symlinking code into ~/.claude/"
 
 ensure_symlink "$HOME_DIR/.claude/bin" "$REPO_ROOT/bin"
 
@@ -269,7 +272,7 @@ log ""
 # ~/.claude/skills/, because Claude Code auto-discovers ANY directory under
 # ~/.claude/skills/ as a skill — leaving .bak entries there pollutes the
 # registry.
-log "[2/4] Copying skills into ~/.claude/skills/"
+log "[2/5] Copying skills into ~/.claude/skills/"
 mkdir -p "$HOME_DIR/.claude/skills" "$HOME_DIR/.claude/skills-backups"
 for skill_dir in "$REPO_ROOT"/skills/*/; do
     skill_name="$(basename "$skill_dir")"
@@ -335,7 +338,7 @@ log ""
 # temp dir, then copy that to ~/Library/LaunchAgents/. Plists that don't
 # have the placeholder (the original 5 with literal /Users/mukuls) are
 # unchanged by the sed.
-log "[3/4] Copying LaunchAgent plists into ~/Library/LaunchAgents/"
+log "[3/5] Copying LaunchAgent plists into ~/Library/LaunchAgents/"
 mkdir -p "$HOME_DIR/Library/LaunchAgents"
 PLIST_STAGE="$(mktemp -d)"
 trap 'rm -rf "$PLIST_STAGE"' EXIT
@@ -385,8 +388,32 @@ for legacy in "${LEGACY_LABELS[@]}"; do
 done
 log ""
 
-# --- 4. Reload only the daemons whose plists actually changed --------------
-log "[4/4] Reloading launchd agents that changed"
+# --- 4. cmux session-restore (vendored) -------------------------------------
+# Three layers that make Claude panes survive cmux restart/reboot:
+#   Layer 1+2  hooks/cmux-auto-resume.py + cmux-session-ledger.py
+#              → symlinked into ~/.claude/hooks/ (a MIXED dir — symlink the
+#                files individually, never the directory)
+#   Layer 3    bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions
+#   settings   install/patch-settings.py registers the SessionStart/SessionEnd
+#              hook commands in ~/.claude/settings.json (idempotent, self-backs-up)
+# Vendored from the former elitecoder/cmux-session-restore repo so a single
+# `assistant install --apply` rebuilds all three layers from git on any machine
+# — claude.tgz-style home backups only capture ~/.claude and silently drop the
+# ~/.local/bin CLI, leaving a deceptive half-working state.
+log "[4/5] Wiring cmux session-restore (hooks + CLI + settings)"
+ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hooks/cmux-auto-resume.py"
+ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
+ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
+if [[ $APPLY -eq 1 ]]; then
+    python3 "$REPO_ROOT/install/patch-settings.py" "$HOME_DIR/.claude/settings.json" \
+        | sed 's/^/  /'
+else
+    note "would patch ~/.claude/settings.json (SessionStart: cmux-auto-resume + ledger start; SessionEnd: ledger end)"
+fi
+log ""
+
+# --- 5. Reload only the daemons whose plists actually changed --------------
+log "[5/5] Reloading launchd agents that changed"
 if [[ ${#CHANGED_LABELS[@]} -eq 0 ]]; then
     note "no plists changed — nothing to reload"
 else
