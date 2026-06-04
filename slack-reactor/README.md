@@ -16,8 +16,7 @@ The trade-off this buys: Socket Mode delivers **bot** events, and a bot only
 receives `reaction_added` for channels it is a **member** of. **So you must
 `/invite` the bot to each channel** you want capture to work in. (The
 alternative — user-token events that fire for every channel you can see, no
-invites — needs a public HTTPS Request URL, which we don't currently have. See
-"History" below.)
+invites — needs a public HTTPS Request URL. See "History" below.)
 
 ## Per-machine routing
 
@@ -92,8 +91,7 @@ HOME=/tmp/reactor-home node --input-type=module -e "
 The first cut used **user-token events** (`user_events` + `scopes.user`) to avoid
 per-channel invites — events fire for every channel the authorizing user can
 see. That requires a public HTTPS **Request URL** (Socket Mode does not deliver
-user events). We intended to reuse the assistant repo's cloudflared tunnel, but
-it was crash-looping with a missing `~/.cloudflared/config.yml`, so there was no
-working endpoint. We switched to Socket Mode + bot events, accepting the
-per-channel `/invite` requirement in exchange for needing no public URL. If a
-durable tunnel is set up later, the user-events design (no invites) can return.
+user events), and we had no working public endpoint to host it. We switched to
+Socket Mode + bot events, accepting the per-channel `/invite` requirement in
+exchange for needing no public URL. If a durable public endpoint is set up
+later, the user-events design (no invites) can return.
