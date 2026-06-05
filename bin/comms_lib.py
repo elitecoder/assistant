@@ -371,6 +371,82 @@ def read_conversation_window(paths: Paths, chat_id: int, max_turns: int = 20,
     return rows[-max_turns:]
 
 
+# --------------------------------------------------------------------------- context measurement
+#
+# Phase 2 keeps a warm cmux Claude session and /clears it at 50% context. The
+# only reliable size signal is the per-turn `usage` block Claude Code records
+# in the session transcript JSONL. The live context = the last assistant turn's
+#   input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+# (cache_read is the bulk — the prompt-cached conversation so far).
+
+CONTEXT_WINDOW_TOKENS = 1_000_000
+
+
+def read_context_tokens(transcript_path: str | Path) -> int | None:
+    """Return the live context size in tokens from the last assistant turn's
+    usage block, or None if the transcript has no usage data yet."""
+    p = Path(transcript_path)
+    if not p.exists():
+        return None
+    last: dict[str, Any] | None = None
+    with open(p) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = rec.get("message")
+            if not isinstance(msg, dict):
+                continue
+            usage = msg.get("usage")
+            if isinstance(usage, dict):
+                last = usage
+    if last is None:
+        return None
+    return (int(last.get("input_tokens") or 0)
+            + int(last.get("cache_creation_input_tokens") or 0)
+            + int(last.get("cache_read_input_tokens") or 0))
+
+
+def context_fraction(tokens: int | None, window: int = CONTEXT_WINDOW_TOKENS) -> float:
+    """Fraction of the context window in use (0.0–…). None tokens → 0.0."""
+    if not tokens or window <= 0:
+        return 0.0
+    return tokens / window
+
+
+# --------------------------------------------------------------------------- bedrock env
+
+def load_bedrock_env(home: Path | None = None) -> dict[str, str]:
+    """Parse the Bedrock auth vars out of ~/.zprofile. launchd does not source
+    it, so a headless `claude --print` spawned from a LaunchAgent would 403
+    against AWS STS without these. Same approach as bin/pulse.py."""
+    home = home or Path(os.environ["HOME"])
+    zprofile = home / ".zprofile"
+    if not zprofile.exists():
+        return {}
+    keys = ("CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_PROFILE", "ANTHROPIC_API_KEY")
+    import re
+    pat = re.compile(r'^\s*export\s+([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*$')
+    out: dict[str, str] = {}
+    for line in zprofile.read_text().splitlines():
+        m = pat.match(line)
+        if not m:
+            continue
+        k, v = m.group(1), m.group(2).strip()
+        if k not in keys:
+            continue
+        if (v.startswith('"') and v.endswith('"')) or \
+           (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        out[k] = v
+    return out
+
+
 # --------------------------------------------------------------------------- subprocess
 
 def run_cmd(argv: list[str], timeout: int = 30) -> tuple[int, str, str]:

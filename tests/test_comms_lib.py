@@ -417,6 +417,101 @@ class TestConversation:
         assert rows and rows[0]["epoch"] > 0
 
 
+# --------------------------------------------------------------------------- context measurement
+
+class TestReadContextTokens:
+    def _write(self, tmp_path, *usages):
+        """Write a transcript with one assistant turn per usage dict."""
+        p = tmp_path / "t.jsonl"
+        lines = []
+        for u in usages:
+            lines.append(json.dumps({"type": "assistant", "message": {"usage": u}}))
+        p.write_text("\n".join(lines) + ("\n" if lines else ""))
+        return p
+
+    def test_real_usage_shape(self, tmp_path):
+        # The exact shape captured from a live transcript.
+        u = {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 1579,
+            "cache_read_input_tokens": 414223,
+            "output_tokens": 779,
+        }
+        p = self._write(tmp_path, u)
+        assert cl.read_context_tokens(p) == 2 + 1579 + 414223
+
+    def test_last_turn_wins(self, tmp_path):
+        p = self._write(tmp_path,
+                        {"input_tokens": 1, "cache_read_input_tokens": 100},
+                        {"input_tokens": 5, "cache_read_input_tokens": 900})
+        assert cl.read_context_tokens(p) == 5 + 900
+
+    def test_missing_file(self, tmp_path):
+        assert cl.read_context_tokens(tmp_path / "nope.jsonl") is None
+
+    def test_no_usage_blocks(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_text(json.dumps({"type": "user", "message": {"role": "user"}}) + "\n")
+        assert cl.read_context_tokens(p) is None
+
+    def test_empty_file(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_text("")
+        assert cl.read_context_tokens(p) is None
+
+    def test_skips_malformed_and_blank(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_text("not-json\n\n" +
+                     json.dumps({"message": {"usage": {"input_tokens": 7}}}) + "\n")
+        assert cl.read_context_tokens(p) == 7
+
+    def test_message_not_dict_skipped(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_text(json.dumps({"message": "a string"}) + "\n" +
+                     json.dumps({"message": {"usage": {"input_tokens": 3}}}) + "\n")
+        assert cl.read_context_tokens(p) == 3
+
+    def test_partial_usage_fields_default_zero(self, tmp_path):
+        p = self._write(tmp_path, {"cache_read_input_tokens": 500})  # no input/creation
+        assert cl.read_context_tokens(p) == 500
+
+
+class TestContextFraction:
+    def test_basic(self):
+        assert cl.context_fraction(500_000) == 0.5
+
+    def test_none_is_zero(self):
+        assert cl.context_fraction(None) == 0.0
+
+    def test_zero_tokens(self):
+        assert cl.context_fraction(0) == 0.0
+
+    def test_custom_window(self):
+        assert cl.context_fraction(100, window=400) == 0.25
+
+    def test_zero_window_guard(self):
+        assert cl.context_fraction(100, window=0) == 0.0
+
+
+class TestLoadBedrockEnv:
+    def test_extracts_known_keys(self, tmp_path):
+        (tmp_path / ".zprofile").write_text(
+            'export CLAUDE_CODE_USE_BEDROCK=1\n'
+            'export AWS_REGION="us-west-2"\n'
+            "export AWS_PROFILE='default'\n"
+            'export UNRELATED=ignoreme\n'
+            'alias claude="claude --foo"\n'
+        )
+        env = cl.load_bedrock_env(home=tmp_path)
+        assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert env["AWS_REGION"] == "us-west-2"   # quotes stripped
+        assert env["AWS_PROFILE"] == "default"    # single quotes stripped
+        assert "UNRELATED" not in env
+
+    def test_missing_zprofile(self, tmp_path):
+        assert cl.load_bedrock_env(home=tmp_path) == {}
+
+
 # --------------------------------------------------------------------------- run_cmd
 
 class TestRunCmd:
