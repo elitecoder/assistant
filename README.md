@@ -99,22 +99,28 @@ The orchestration layer that decides *what to do* has **no LLM in it at all**. T
 | `bin/assistant-curator.py` | CLI | Manages `## Lessons` block in `~/.claude/CLAUDE.md` |
 | `bin/merge-pr-dispatch.py` | called by `/merge-when-ready` skill | Safety-gated PR merge dispatcher |
 
-### 📱 assistant-comms — text-channel watcher over Assistant
+### 📱 assistant-comms — event-driven text channel over Assistant
 
-A **second Claude session in Terminal.app** (not cmux) that watches Assistant and converses with you over Telegram. It reports Assistant's actions, pages you when Assistant's heartbeat goes stale, and gives you a recovery surface (`lesson` / `restart` / `respawn`) — all gated on a human `y`. It **reads** Assistant's state, never mutates it except through three confirmed CLIs.
+Text Assistant from your phone. An **event-driven daemon** (`comms-listen.py`, a KeepAlive LaunchAgent) bridges Telegram to a **warm cmux Claude session** that answers as your assistant — grounded in Assistant's live state, conversationally, in **~2.6s**. It also pings you when Assistant takes a verified action and pages you if Assistant's heartbeat goes stale. Mutations to Assistant (`lesson` / `restart` / `respawn`) are gated on a human `y`.
+
+**Three event loops, no polling-for-the-sake-of-it:**
+- **Inbound** — Telegram long-poll (`getUpdates`) returns the instant you message (no 5-min queue). The daemon feeds it to the warm session, which replies in seconds.
+- **Outbound pings** — watches `actions-ledger.jsonl`; formats + sends each new verified/failed action. No LLM, ~4s.
+- **Heartbeat page** — 60s stale-check, templated, 30-min dedup. No LLM.
 
 | File | Role |
 |---|---|
-| `prompts/prompt-assistant-comms-agent.md` | Boot prompt: 5-step pulse, conversation-first inbound, confirm-back on mutations |
-| `bin/comms_lib.py` | Pure helpers — Paths, Config, formatting, ledger/TG cursors, threads, **conversation memory**, comms heartbeat |
-| `bin/tg-send.py` / `bin/tg-poll.py` | Telegram send (threaded replies, mute-aware) / long-poll inbound (stdlib urllib) |
-| `bin/conversation.py` | Durable chat memory (`conversation.jsonl`) — `append` a turn, `window` to rebuild recent thread |
-| `bin/link-msg.py` / `bin/lookup-thread.py` | Link a sent message to the ledger entry it reported on / resolve a reply back to it |
-| `bin/spawn-comms.sh` | Opens the Terminal.app window, launches `claude` with the boot prompt, records the tab id |
-| `bin/assistant-comms-setup.sh` | One-time: BotFather token + chat_id capture → `~/.assistant/comms/config.json` (chmod 600) |
-| `launchagents/com.assistant.assistant-comms-spawn.plist` | RunAtLoad + crash-only KeepAlive; respawns the Terminal session |
+| `bin/comms-listen.py` | The daemon: long-poll inbound + ledger watch + heartbeat timer. Singleton via `flock`. |
+| `bin/comms_session.py` | Warm cmux session lifecycle: spawn (Sonnet, scoped `--add-dir`), feed, read reply from transcript, **clear-and-resume at 50% context**, no-leak respawn. |
+| `prompts/prompt-assistant-comms-warm.md` | The warm session's identity — your assistant, judgment over formatting, survives a clear-and-resume. |
+| `bin/comms_lib.py` | Pure helpers — Paths, Config, formatting, ledger/TG cursors, threads, conversation memory, context-token measure, Bedrock env. |
+| `bin/tg-send.py` / `bin/tg-poll.py` | Telegram send (threaded, mute-aware) / long-poll inbound (stdlib urllib). |
+| `bin/conversation.py` | Durable chat memory (`conversation.jsonl`) — `append` a turn, `window` to rebuild recent thread. |
+| `bin/link-msg.py` / `bin/lookup-thread.py` | Link a sent message to the ledger entry it reported on / resolve a reply back to it. |
+| `bin/assistant-comms-setup.sh` | One-time: BotFather token + chat_id capture → `~/.assistant/comms/config.json` (chmod 600). |
+| `launchagents/com.assistant.assistant-comms.plist` | KeepAlive daemon (listens; no `StartInterval`). |
 
-**Disposable context by design:** the comms session treats its context window as scratch. Every turn it reconstructs the recent thread from `conversation.jsonl` (bounded to the last 20 turns / 2h), reasons, replies, and writes both turns back. A crash, `/clear`, or auto-compact loses nothing. Setup + troubleshooting: [`docs/assistant-comms-onboarding.md`](docs/assistant-comms-onboarding.md).
+**Warm but disposable:** the session stays hot for fast replies, but its memory is `conversation.jsonl`, never its context window. At 50% of the 1M window the daemon **clears-and-resumes** it — re-reads its boot prompt for identity, reconstructs the thread from disk — so a long conversation never bloats and a crash loses nothing. **Scoped writes:** the session can edit its *own* surface (`~/dev/assistant`) — intended self-improvement — but not `~/.claude` global rules; it can't widen its own permissions. Setup + troubleshooting: [`docs/assistant-comms-onboarding.md`](docs/assistant-comms-onboarding.md).
 
 > [!TIP]
 > **Companion service:** [`slack-reactor/`](slack-reactor/README.md) lets you react with this machine's emoji on any Slack thread to capture the whole thread as a `/todo` — which the pulse then auto-dispatches into a fresh workspace.
@@ -249,7 +255,8 @@ Regenerated continuously under `~/.claude/cache/` and `~/.assistant/`:
 - `~/.architect/orchestrator-ledger/cleanup-*.json` — `/cleanup --undo` history
 - `~/.assistant/comms/config.json` — comms bot token + chat_ids (chmod 600; **never committed**)
 - `~/.assistant/comms/conversation.jsonl` — comms durable chat memory (rebuilt into context each turn)
-- `~/.assistant/comms/{threads.jsonl,ledger.cursor,tg.cursor,heartbeat.json}` — comms threading + cursors + own heartbeat
+- `~/.assistant/comms/session.json` — warm cmux session registry (ws_ref / surface_ref / transcript)
+- `~/.assistant/comms/{threads.jsonl,ledger.cursor,tg.cursor,heartbeat.json,comms-listen.pid}` — threading + cursors + own heartbeat + singleton lock
 
 ## 📓 Lessons
 
