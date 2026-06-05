@@ -44,7 +44,7 @@ class TestPathsFromEnv:
         assert p.home == Path("/tmp/x")
         assert p.ledger == Path("/tmp/x/.assistant/actions-ledger.jsonl")
         assert p.curator == Path("/tmp/x/dev/assistant/bin/assistant-curator.py")
-        assert p.spawn_comms == Path("/tmp/x/dev/assistant/bin/spawn-comms.sh")
+        assert p.spawn_assistant == Path("/tmp/x/dev/assistant/bin/spawn-assistant.sh")
 
     def test_overrides(self):
         env = {"HOME": "/h", "COMMS_HOME": "/h2",

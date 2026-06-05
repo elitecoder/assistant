@@ -38,7 +38,6 @@ class Paths:
     curator: Path
     heartbeat_write: Path
     spawn_assistant: Path
-    spawn_comms: Path
     cmux_bin: Path
 
     @classmethod
@@ -66,7 +65,6 @@ class Paths:
             curator=bin_dir / "assistant-curator.py",
             heartbeat_write=bin_dir / "heartbeat-write.py",
             spawn_assistant=bin_dir / "spawn-assistant.sh",
-            spawn_comms=bin_dir / "spawn-comms.sh",
             cmux_bin=Path(env.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")),
         )
 
