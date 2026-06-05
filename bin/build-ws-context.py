@@ -16,8 +16,17 @@ Output JSON to stdout:
     "agent_status": "working" | "idle",
     "cwd_dirty": <bool>,
     "cwd_unpushed": <bool>,
-    "is_protected": <bool>
+    "is_protected": <bool>,
+    "screen_text": "<live terminal viewport+scrollback>",
+    "screen_shows_error": <bool>
   }
+
+`screen_text` is the live cmux terminal of the workspace, read by ws_ref —
+it cannot be misattributed the way `transcript_path` can (the transcript
+picker has resolved to the WRONG session when a workspace hosts both an
+interactive session and a headless-pulse jsonl; ws:12, 2026-06-05). It is
+the ground-truth of what the agent is showing RIGHT NOW. The Observer is
+told to trust it over transcript-derived signals on conflict.
 """
 from __future__ import annotations
 
@@ -32,6 +41,66 @@ from pathlib import Path
 
 HOME = Path(os.environ["HOME"])
 PROTECTED_REFS = {"workspace:3", "workspace:108", "workspace:7"}
+CMUX_BIN = os.environ.get(
+    "CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
+
+# How many lines of live terminal to hand the Observer. The visible viewport
+# plus enough scrollback to capture the last recap/error and a few turns of
+# context, without bloating the batch prompt. A stuck agent's tell (API error
+# banner, "esc to interrupt", a half-finished tool call) lives in the last
+# ~40 lines; 120 gives margin for a recap that scrolled up a little.
+SCREEN_LINES = 120
+
+# Markers that mean "the live screen is showing a halted/error state the
+# transcript may not reflect". Matched case-insensitively against screen_text.
+# Kept deliberately tight — these are unambiguous halt states, not normal
+# mid-work output, so a true hit is strong evidence the agent is stranded
+# regardless of what transcript_path resolved to.
+_ERROR_SCREEN_MARKERS = (
+    "API Error",
+    "The system encountered an unexpected error",
+    "Request timed out",
+    "overloaded_error",
+    "rate_limit",
+    "Connection error",
+    "fatal:",          # surfaced git failure left on screen
+    "Traceback (most recent call last)",
+)
+
+
+def read_screen_text(ws_ref: str, lines: int = SCREEN_LINES) -> str:
+    """Read the live cmux terminal for ws_ref as plain text.
+
+    Targets the workspace by ref — this is the one ground-truth that can't be
+    misattributed to the wrong session. Returns '' on any failure (cmux down,
+    workspace gone, RPC error); an empty screen is never treated as evidence.
+    """
+    if not ws_ref:
+        return ""
+    try:
+        r = subprocess.run(
+            [CMUX_BIN, "read-screen", "--workspace", ws_ref,
+             "--scrollback", "--lines", str(lines)],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    text = (r.stdout or "").strip()
+    # Bound the payload: 120 lines of terminal is plenty for state detection,
+    # but a wide terminal can still be large, and 5 of these go inline into the
+    # Observer batch prompt. Keep the TAIL (most recent output — where the
+    # recap / error / spinner lives) if it's oversized.
+    MAX_CHARS = 12000
+    if len(text) > MAX_CHARS:
+        text = "…[earlier screen truncated]…\n" + text[-MAX_CHARS:]
+    return text
+
+
+def screen_shows_error(screen_text: str) -> bool:
+    low = (screen_text or "").lower()
+    return any(m.lower() in low for m in _ERROR_SCREEN_MARKERS)
 
 
 def find_transcript(ws_ref: str, title: str, cwd: str | None) -> str | None:
@@ -194,6 +263,7 @@ def main() -> int:
     transcript = find_transcript(args.ws_ref, args.title, args.cwd or None)
     age, agent_status = transcript_signals(transcript)
     dirty, unpushed = cwd_state(args.cwd)
+    screen = read_screen_text(args.ws_ref)
 
     payload = {
         "ws_ref": args.ws_ref,
@@ -205,6 +275,8 @@ def main() -> int:
         "cwd_dirty": dirty,
         "cwd_unpushed": unpushed,
         "is_protected": args.ws_ref in PROTECTED_REFS,
+        "screen_text": screen,
+        "screen_shows_error": screen_shows_error(screen),
     }
     print(json.dumps(payload, indent=2))
     return 0

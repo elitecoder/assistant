@@ -27,6 +27,10 @@ def write_transcript(path: Path, entries: list[dict]) -> None:
 def run_ctx_builder(env_home: Path, ws_ref: str, title: str, cwd: str) -> dict:
     env = dict(os.environ)
     env["HOME"] = str(env_home)
+    # Keep hermetic: point the screen reader at a binary that can't exist so
+    # read_screen_text() fails fast and returns "" instead of touching a live
+    # cmux. (The live-screen path is exercised by the in-process tests.)
+    env["CMUX_BIN"] = "/nonexistent/cmux-for-tests"
     r = subprocess.run(
         ["python3", str(SCRIPT), "--ws-ref", ws_ref, "--title", title, "--cwd", cwd],
         env=env, capture_output=True, text=True, timeout=10,

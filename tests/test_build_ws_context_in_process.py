@@ -287,6 +287,86 @@ class CwdStateTests(unittest.TestCase):
         self.assertTrue(d)
 
 
+class ReadScreenTests(unittest.TestCase):
+    """The screen read is the ws:12 fix: a workspace-ref-keyed signal that
+    can't be misattributed to the wrong session the way transcript_path can."""
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_empty_ws_ref_returns_empty_without_shelling_out(self):
+        with mock.patch.object(self.mod.subprocess, "run") as run:
+            self.assertEqual(self.mod.read_screen_text(""), "")
+            run.assert_not_called()
+
+    def test_returns_stripped_stdout_on_success(self):
+        fake = mock.Mock(returncode=0, stdout="  hello screen  \n")
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            self.assertEqual(self.mod.read_screen_text("workspace:1"), "hello screen")
+
+    def test_nonzero_rc_returns_empty(self):
+        fake = mock.Mock(returncode=1, stdout="garbage")
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            self.assertEqual(self.mod.read_screen_text("workspace:1"), "")
+
+    def test_exception_returns_empty(self):
+        with mock.patch.object(self.mod.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired("cmux", 15)):
+            self.assertEqual(self.mod.read_screen_text("workspace:1"), "")
+
+    def test_oversized_screen_keeps_tail(self):
+        big = "X" * 20000 + "TAIL_MARKER"
+        fake = mock.Mock(returncode=0, stdout=big)
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            out = self.mod.read_screen_text("workspace:1")
+        self.assertLess(len(out), 13000)
+        self.assertIn("TAIL_MARKER", out)
+        self.assertIn("earlier screen truncated", out)
+
+    def test_targets_workspace_ref_with_scrollback(self):
+        fake = mock.Mock(returncode=0, stdout="ok")
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake) as run:
+            self.mod.read_screen_text("workspace:12")
+        argv = run.call_args[0][0]
+        self.assertIn("read-screen", argv)
+        self.assertIn("--workspace", argv)
+        self.assertIn("workspace:12", argv)
+        self.assertIn("--scrollback", argv)
+
+
+class ScreenShowsErrorTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_detects_api_error(self):
+        # The literal ws:12 banner that the transcript tail did NOT show.
+        self.assertTrue(self.mod.screen_shows_error(
+            "⏺ API Error: The system encountered an unexpected error during processing."))
+
+    def test_detects_timeout_and_traceback(self):
+        self.assertTrue(self.mod.screen_shows_error("Request timed out after 240s"))
+        self.assertTrue(self.mod.screen_shows_error(
+            "Traceback (most recent call last):\n  File ..."))
+
+    def test_clean_recap_is_not_error(self):
+        self.assertFalse(self.mod.screen_shows_error(
+            "All 5 tasks done. Ready for your review — want me to land the PR?"))
+
+    def test_empty_screen_is_not_error(self):
+        self.assertFalse(self.mod.screen_shows_error(""))
+        self.assertFalse(self.mod.screen_shows_error(None))
+
+
 class MainTests(unittest.TestCase):
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
@@ -302,7 +382,9 @@ class MainTests(unittest.TestCase):
                     "--title", "title",
                     "--cwd", "/no/such-dir"]
         captured = io.StringIO()
-        with mock.patch("sys.stdout", captured):
+        # Keep main() hermetic — never read a live cmux screen in tests.
+        with mock.patch.object(self.mod, "read_screen_text", return_value=""), \
+                mock.patch("sys.stdout", captured):
             rc = self.mod.main()
         self.assertEqual(rc, 0)
         d = json.loads(captured.getvalue())
@@ -312,6 +394,26 @@ class MainTests(unittest.TestCase):
         # cwd doesn't exist → dirty/unpushed both false.
         self.assertFalse(d["cwd_dirty"])
         self.assertFalse(d["cwd_unpushed"])
+        # New fields always present.
+        self.assertEqual(d["screen_text"], "")
+        self.assertFalse(d["screen_shows_error"])
+
+    def test_main_surfaces_screen_error_flag(self):
+        # The ws:12 regression: transcript_path is null/wrong, but the live
+        # screen shows an API error → screen_shows_error must reach the Observer.
+        sys.argv = ["build-ws-context.py",
+                    "--ws-ref", "workspace:12",
+                    "--title", "telegram-comms (resumed) [12]",
+                    "--cwd", ""]
+        captured = io.StringIO()
+        with mock.patch.object(self.mod, "read_screen_text",
+                               return_value="⏺ API Error: unexpected error"), \
+                mock.patch("sys.stdout", captured):
+            rc = self.mod.main()
+        self.assertEqual(rc, 0)
+        d = json.loads(captured.getvalue())
+        self.assertTrue(d["screen_shows_error"])
+        self.assertIn("API Error", d["screen_text"])
 
     def test_unprotected_ref_marked_correctly(self):
         sys.argv = ["build-ws-context.py",
@@ -319,7 +421,8 @@ class MainTests(unittest.TestCase):
                     "--title", "title",
                     "--cwd", ""]
         captured = io.StringIO()
-        with mock.patch("sys.stdout", captured):
+        with mock.patch.object(self.mod, "read_screen_text", return_value=""), \
+                mock.patch("sys.stdout", captured):
             rc = self.mod.main()
         self.assertEqual(rc, 0)
         d = json.loads(captured.getvalue())
