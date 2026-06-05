@@ -2,14 +2,18 @@
 
 Existing test_build_ws_context.py runs the CLI via subprocess (good for
 end-to-end CLI shape, but coverage shows 0%). This file imports the
-module directly and exercises every code path:
+module directly and exercises every code path, with heavy emphasis on the
+ABSOLUTE INVARIANT: never attach a transcript from an old or wrong workspace.
 
-  - find_transcript: cmux-registry primary lookup, sigil-fallback scan,
-    both-fail null return
-  - transcript_signals: agent_status=working when tool_use pending,
-    agent_status=idle, missing-path return
-  - cwd_state: dirty/clean, unpushed/clean, non-existent cwd
-  - main(): full --ws-ref/--title/--cwd CLI shape
+  - status_bar_session_id: reads the id ONLY from a status-bar-shaped line,
+    not from #<8hex> in conversation content; last-match-wins.
+  - find_agent_pane: picks the Claude pane out of a multi-pane workspace, not
+    the focused shell; falls back to a booting agent.
+  - transcript_from_session_id: glob + internal-sessionId verification.
+  - registry_transcript_for_surface: live-pid gate, screen-agreement gate,
+    internal-sid gate — rejects the stale-registry trap.
+  - resolve_workspace_screen_and_transcript: end-to-end, never-guess priority.
+  - transcript_signals / cwd_state / screen_shows_error / main().
 """
 from __future__ import annotations
 
@@ -43,7 +47,15 @@ def fixture_home(tmp: Path) -> Path:
     return tmp
 
 
-class FindTranscriptTests(unittest.TestCase):
+def _status_bar(sid8: str, branch: str = "main") -> str:
+    """A realistic Claude status-bar line carrying the session stamp."""
+    return f"  assistant {branch} │ ●3 ●1 │ context 39% │ $42.20 │ #{sid8}"
+
+
+class StatusBarSessionIdTests(unittest.TestCase):
+    """The #1 wrong-capture trap: a #<8hex> in CONVERSATION CONTENT must not
+    be mistaken for the agent's own session id. Only the status-bar line counts."""
+
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = fixture_home(Path(self._tmp_obj.name))
@@ -52,145 +64,181 @@ class FindTranscriptTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def _write_cmux_state(self, ws_title: str, panel_id: str):
-        state = {
-            "windows": [{
-                "tabManager": {
-                    "workspaces": [{
-                        "customTitle": ws_title,
-                        "panels": [{"id": panel_id}],
-                    }],
-                },
-            }],
-        }
-        (self._tmp / "Library/Application Support/cmux/session-com.cmuxterm.app.json"
-        ).write_text(json.dumps(state))
+    def test_reads_id_from_status_bar(self):
+        self.assertEqual(
+            self.mod.status_bar_session_id(_status_bar("6fb0c668")), "6fb0c668")
 
-    def _write_registry(self, entries: dict):
-        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(entries))
+    def test_ignores_id_in_conversation_content(self):
+        # The literal ws:5 failure: the screen discusses another session
+        # (#6fb0c668) above, then the real status bar (#e90df8ba) at the bottom.
+        screen = (
+            "⏺ I checked workspace:12 — its session is #6fb0c668 and it is stuck.\n"
+            "  Here is a quote: '… │ $9.55 │ #deadbeef' from the docs.\n"
+            + _status_bar("e90df8ba"))
+        self.assertEqual(self.mod.status_bar_session_id(screen), "e90df8ba")
 
-    def test_primary_lookup_via_panel_id(self):
-        # Create a real transcript file the registry can point at.
-        proj = self._tmp / ".claude/projects/-tmp"
-        proj.mkdir()
-        tp = proj / "abc.jsonl"
-        tp.write_text('{"timestamp":"2026-05-28T00:00:00Z"}\n')
-        self._write_cmux_state("Auto: td-001 my-task", "PANEL-A")
-        self._write_registry({"PANEL-A": {"transcript_path": str(tp)}})
+    def test_none_when_only_content_ids_present(self):
+        # No status-bar line at all → None, never a content id.
+        screen = ("⏺ The session #6fb0c668 had an issue.\n"
+                  "  Another ref: #abcdef12 in prose.")
+        self.assertIsNone(self.mod.status_bar_session_id(screen))
 
-        result = self.mod.find_transcript("workspace:1", "Auto: td-001 my-task", "/tmp")
-        self.assertEqual(result, str(tp))
+    def test_last_status_bar_wins(self):
+        # Scrollback may contain an older bar; the live one is at the bottom.
+        screen = _status_bar("11111111") + "\n…\n" + _status_bar("22222222")
+        self.assertEqual(self.mod.status_bar_session_id(screen), "22222222")
 
-    def test_primary_lookup_picks_most_recent_when_multiple_panels(self):
-        proj = self._tmp / ".claude/projects/-tmp"
-        proj.mkdir()
-        old = proj / "old.jsonl"
-        new = proj / "new.jsonl"
-        old.write_text("{}")
-        new.write_text("{}")
-        # Touch timestamps so new is mtime-newer.
-        os.utime(old, (time.time() - 60, time.time() - 60))
+    def test_empty_and_none(self):
+        self.assertIsNone(self.mod.status_bar_session_id(""))
+        self.assertIsNone(self.mod.status_bar_session_id(None))
+
+
+class TranscriptFromSessionIdTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def _mk(self, project: str, sid_full: str, internal_sid: str | None):
+        proj = self._tmp / ".claude/projects" / project
+        proj.mkdir(parents=True, exist_ok=True)
+        tp = proj / f"{sid_full}.jsonl"
+        line = {"type": "user", "message": {"role": "user", "content": "hi"}}
+        if internal_sid is not None:
+            line["sessionId"] = internal_sid
+        tp.write_text(json.dumps(line) + "\n")
+        return tp
+
+    def test_resolves_and_verifies_internal_sid(self):
+        full = "6fb0c668-7134-4060-bcf1-6c509c9983cd"
+        tp = self._mk("-Users-x-dev", full, full)
+        self.assertEqual(self.mod.transcript_from_session_id("6fb0c668"), str(tp))
+
+    def test_rejects_file_whose_internal_sid_disagrees(self):
+        # Filename starts with the prefix but the file self-identifies as a
+        # DIFFERENT session → must be rejected (defense against a stray/renamed
+        # file). With no other candidate, returns None.
+        self._mk("-Users-x-dev", "6fb0c668-aaaa-bbbb-cccc-dddddddddddd",
+                 "99999999-0000-0000-0000-000000000000")
+        self.assertIsNone(self.mod.transcript_from_session_id("6fb0c668"))
+
+    def test_accepts_legacy_file_with_no_internal_sid(self):
+        full = "6fb0c668-7134-4060-bcf1-6c509c9983cd"
+        tp = self._mk("-Users-x-dev", full, None)  # no sessionId field
+        self.assertEqual(self.mod.transcript_from_session_id("6fb0c668"), str(tp))
+
+    def test_none_when_no_file(self):
+        self.assertIsNone(self.mod.transcript_from_session_id("deadbeef"))
+
+    def test_none_for_null_prefix(self):
+        self.assertIsNone(self.mod.transcript_from_session_id(None))
+
+    def test_newest_verified_match_wins_on_prefix_collision(self):
+        full_old = "abcd1234-1111-1111-1111-111111111111"
+        full_new = "abcd1234-2222-2222-2222-222222222222"
+        old = self._mk("-Users-x-dev", full_old, full_old)
+        new = self._mk("-Users-x-dev-other", full_new, full_new)
+        os.utime(old, (time.time() - 100, time.time() - 100))
         os.utime(new, (time.time(), time.time()))
+        self.assertEqual(self.mod.transcript_from_session_id("abcd1234"), str(new))
 
-        self._write_cmux_state("ws-title", "PANEL-A")
-        self._write_registry({
-            "panel-1": {"panel_id": "PANEL-A", "transcript_path": str(old)},
-            "panel-2": {"panel_id": "PANEL-A", "transcript_path": str(new)},
-        })
-        result = self.mod.find_transcript("workspace:1", "ws-title", "/tmp")
-        self.assertEqual(result, str(new))
 
-    def test_falls_back_to_slug_scan_when_registry_misses(self):
-        # Registry empty but project dir has a JSONL with the title sigil
-        # in its first user turn.
-        proj = self._tmp / ".claude/projects/-Users-x-dev-firefly-platform"
-        proj.mkdir(parents=True)
-        tp = proj / "session.jsonl"
-        tp.write_text('\n'.join([
-            json.dumps({"message": {"role": "user", "content": [
-                {"type": "text", "text": "Run td-007 polish task"},
-            ]}}),
-            "",
-        ]))
-        result = self.mod.find_transcript(
-            "workspace:5", "Auto: td-007 polish",
-            cwd="/Users/x/dev/firefly-platform",
-        )
-        self.assertEqual(result, str(tp))
+class RegistryTranscriptTests(unittest.TestCase):
+    """The stale-registry trap (ws:12): the registry maps surface→session, but
+    a reused surface leaves a DEAD-pid row pointing at the old session."""
 
-    def test_returns_none_when_no_cwd(self):
-        # Both lookups fail; no cwd → None.
-        self.assertIsNone(self.mod.find_transcript("workspace:1", "title", None))
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
 
-    def test_returns_none_when_project_dir_missing(self):
-        self.assertIsNone(self.mod.find_transcript(
-            "workspace:1", "Auto: td-007", "/no/such/dir-doesnotexist"
-        ))
+    def tearDown(self):
+        self._tmp_obj.cleanup()
 
-    def test_returns_none_when_title_has_no_sigil(self):
-        # Project dir exists but title has no Pn-N / Wn / td-N / sq-wsN / AC-N sigil.
+    def _write_registry(self, entries: list[dict]):
+        reg = {f"tab-{i}": e for i, e in enumerate(entries)}
+        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
+
+    def _mk_transcript(self, sid_full: str) -> str:
         proj = self._tmp / ".claude/projects/-Users-x-dev"
-        proj.mkdir(parents=True)
-        (proj / "session.jsonl").write_text("{}")
-        self.assertIsNone(self.mod.find_transcript(
-            "workspace:1", "T3-tier3-polish", "/Users/x/dev",
-        ))
+        proj.mkdir(parents=True, exist_ok=True)
+        tp = proj / f"{sid_full}.jsonl"
+        tp.write_text(json.dumps({"sessionId": sid_full,
+                                  "message": {"role": "user", "content": "hi"}}) + "\n")
+        return str(tp)
 
-    def test_returns_none_when_cmux_state_unreadable(self):
-        # Plant a corrupt cmux state file; lookup should fall through to
-        # the project-dir scan but find no jsonl, return None.
-        (self._tmp / "Library/Application Support/cmux/session-com.cmuxterm.app.json"
-        ).write_text("{ not json")
-        self.assertIsNone(self.mod.find_transcript("workspace:1", "title", "/tmp"))
+    def test_live_pid_entry_resolves(self):
+        full = "11112222-aaaa-bbbb-cccc-dddddddddddd"
+        tp = self._mk_transcript(full)
+        self._write_registry([{
+            "surface_id": "SURF-A", "session_id": full,
+            "claude_pid": str(os.getpid()),  # our own pid → alive
+            "ts": 100, "transcript_path": tp,
+        }])
+        out = self.mod.registry_transcript_for_surface("surf-a")  # case-insensitive
+        self.assertIsNotNone(out)
+        self.assertEqual(out["transcript_path"], tp)
+        self.assertEqual(out["session_id8"], "11112222")
 
-    def test_skips_jsonl_files_that_fail_to_open(self):
-        # Sigil scan should silently skip files it can't read and still
-        # return None when nothing matches.
-        proj = self._tmp / ".claude/projects/-x"
-        proj.mkdir(parents=True)
-        # An "unreadable" file: empty (read_text works, but no signature).
-        (proj / "empty.jsonl").write_text("")
-        # Plus one line with a JSONDecodeError that loop should skip.
-        (proj / "broken.jsonl").write_text("not json\n")
-        # Plus a non-dict message.
-        (proj / "weird.jsonl").write_text(
-            json.dumps({"message": "string-not-dict"}) + "\n"
-        )
-        # Nothing matches sigil td-007.
-        self.assertIsNone(self.mod.find_transcript(
-            "workspace:1", "td-007", "/x",
-        ))
+    def test_dead_pid_entry_rejected(self):
+        # This is the ws:12 trap: a stale row whose process is gone.
+        full = "deadbeef-aaaa-bbbb-cccc-dddddddddddd"
+        tp = self._mk_transcript(full)
+        self._write_registry([{
+            "surface_id": "SURF-A", "session_id": full,
+            "claude_pid": "999999",  # not a live pid
+            "ts": 100, "transcript_path": tp,
+        }])
+        self.assertIsNone(self.mod.registry_transcript_for_surface("SURF-A"))
 
-    def test_sigil_match_in_string_content(self):
-        # Cover the `elif isinstance(content, str)` branch of the parser.
-        proj = self._tmp / ".claude/projects/-x"
-        proj.mkdir(parents=True)
-        tp = proj / "s.jsonl"
-        tp.write_text(
-            json.dumps({"message": {"role": "user", "content": "td-007 marker"}}) + "\n"
-        )
-        result = self.mod.find_transcript("workspace:1", "td-007", "/x")
-        self.assertEqual(result, str(tp))
+    def test_disagreement_with_screen_id_rejected(self):
+        # Live pid, but the registry's session != the live status-bar id →
+        # the screen wins, registry path is NOT used.
+        full = "11112222-aaaa-bbbb-cccc-dddddddddddd"
+        tp = self._mk_transcript(full)
+        self._write_registry([{
+            "surface_id": "SURF-A", "session_id": full,
+            "claude_pid": str(os.getpid()), "ts": 100, "transcript_path": tp,
+        }])
+        self.assertIsNone(self.mod.registry_transcript_for_surface(
+            "SURF-A", expect_sid8="99999999"))
 
-    def test_user_seen_threshold_terminates_scan(self):
-        # 5 user turns without sigil → scan stops.
-        proj = self._tmp / ".claude/projects/-x"
-        proj.mkdir(parents=True)
-        tp = proj / "s.jsonl"
-        lines = []
-        for i in range(6):  # 6 user turns, but no sigil
-            lines.append(json.dumps({
-                "message": {"role": "user", "content": f"non-matching-{i}"},
-            }))
-        # Even if a later line has the sigil, the loop bailed at n=5.
-        lines.append(json.dumps({
-            "message": {"role": "user", "content": "td-007 here"},
-        }))
-        tp.write_text("\n".join(lines))
-        # We only get a hit when sigil is in the FIRST 5 user turns.
-        # With sigil at line 7 (after 6 non-matching user turns), no match.
-        result = self.mod.find_transcript("workspace:1", "td-007", "/x")
-        self.assertIsNone(result)
+    def test_agreement_with_screen_id_accepted(self):
+        full = "11112222-aaaa-bbbb-cccc-dddddddddddd"
+        tp = self._mk_transcript(full)
+        self._write_registry([{
+            "surface_id": "SURF-A", "session_id": full,
+            "claude_pid": str(os.getpid()), "ts": 100, "transcript_path": tp,
+        }])
+        out = self.mod.registry_transcript_for_surface("SURF-A", expect_sid8="11112222")
+        self.assertIsNotNone(out)
+
+    def test_missing_transcript_file_rejected(self):
+        self._write_registry([{
+            "surface_id": "SURF-A", "session_id": "11112222-x",
+            "claude_pid": str(os.getpid()), "ts": 100,
+            "transcript_path": "/no/such/file.jsonl",
+        }])
+        self.assertIsNone(self.mod.registry_transcript_for_surface("SURF-A"))
+
+    def test_no_entry_for_surface(self):
+        self._write_registry([])
+        self.assertIsNone(self.mod.registry_transcript_for_surface("SURF-A"))
+
+    def test_picks_newest_entry_for_surface(self):
+        live = "aaaa1111-1111-1111-1111-111111111111"
+        tp = self._mk_transcript(live)
+        self._write_registry([
+            {"surface_id": "SURF-A", "session_id": "old00000-x",
+             "claude_pid": "999999", "ts": 50, "transcript_path": "/old.jsonl"},
+            {"surface_id": "SURF-A", "session_id": live,
+             "claude_pid": str(os.getpid()), "ts": 200, "transcript_path": tp},
+        ])
+        out = self.mod.registry_transcript_for_surface("SURF-A")
+        self.assertEqual(out["session_id8"], "aaaa1111")
 
 
 class TranscriptSignalsTests(unittest.TestCase):
@@ -287,20 +335,7 @@ class CwdStateTests(unittest.TestCase):
         self.assertTrue(d)
 
 
-class ReadAgentScreenTests(unittest.TestCase):
-    """read_agent_screen picks the CLAUDE pane out of a multi-pane workspace
-    and extracts the on-screen session id — the ws:12 hardening so a split
-    workspace's shell/dev-server pane can't masquerade as the agent, and so
-    the transcript resolves from the id the agent prints, not an mtime guess."""
-
-    # A realistic claude status bar (carries the #<8hex> session stamp).
-    CLAUDE_PANE = (
-        "❯ \n"
-        "  assistant main │ ●3 ●1 │ context 39% │ $42.20 │ #6fb0c668\n"
-        "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
-    )
-    SHELL_PANE = "$ tail -f server.log\n  GET /api 200 12ms\n  GET /api 200 9ms"
-
+class SurfaceHelperTests(unittest.TestCase):
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = fixture_home(Path(self._tmp_obj.name))
@@ -309,67 +344,9 @@ class ReadAgentScreenTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def test_empty_ws_ref_returns_empty_without_shelling_out(self):
-        with mock.patch.object(self.mod.subprocess, "run") as run:
-            self.assertEqual(self.mod.read_agent_screen(""), ("", None))
-            run.assert_not_called()
-
-    def test_picks_claude_pane_over_shell_pane(self):
-        # Two surfaces; the shell pane is listed/selected first, the claude
-        # pane second. The agent pane must still win.
-        with mock.patch.object(self.mod, "_list_surfaces",
-                               return_value=["surface:1", "surface:2"]):
-            with mock.patch.object(
-                    self.mod, "_read_surface",
-                    side_effect=lambda s, w, lines=120: (
-                        self.SHELL_PANE if s == "surface:1" else self.CLAUDE_PANE)):
-                text, sid = self.mod.read_agent_screen("workspace:9")
-        self.assertIn("bypass permissions", text)
-        self.assertEqual(sid, "6fb0c668")
-
-    def test_no_claude_pane_falls_back_to_first_nonempty(self):
-        # No pane self-identifies as claude → first non-empty text, no sid.
-        with mock.patch.object(self.mod, "_list_surfaces",
-                               return_value=["surface:1", "surface:2"]):
-            with mock.patch.object(
-                    self.mod, "_read_surface",
-                    side_effect=lambda s, w, lines=120: (
-                        "" if s == "surface:1" else self.SHELL_PANE)):
-                text, sid = self.mod.read_agent_screen("workspace:9")
-        self.assertEqual(text, self.SHELL_PANE)
-        self.assertIsNone(sid)
-
-    def test_no_surfaces_falls_back_to_workspace_read(self):
-        with mock.patch.object(self.mod, "_list_surfaces", return_value=[]):
-            with mock.patch.object(self.mod, "_read_surface_via_workspace",
-                                   return_value=self.CLAUDE_PANE) as wsread:
-                text, sid = self.mod.read_agent_screen("workspace:12")
-        wsread.assert_called_once()
-        self.assertEqual(sid, "6fb0c668")
-
-    def test_oversized_agent_pane_keeps_tail(self):
-        big = "X" * 20000 + "\n#6fb0c668 TAIL"
-        with mock.patch.object(self.mod, "_list_surfaces", return_value=["surface:1"]):
-            with mock.patch.object(self.mod, "_read_surface", return_value=big):
-                text, sid = self.mod.read_agent_screen("workspace:9")
-        self.assertLess(len(text), 13000)
-        self.assertIn("TAIL", text)
-        self.assertIn("earlier screen truncated", text)
-        self.assertEqual(sid, "6fb0c668")
-
-
-class ReadSurfaceTests(unittest.TestCase):
-    def setUp(self):
-        self._tmp_obj = TemporaryDirectory()
-        self._tmp = fixture_home(Path(self._tmp_obj.name))
-        self.mod = load_module(self._tmp)
-
-    def tearDown(self):
-        self._tmp_obj.cleanup()
-
-    def test_passes_window_context_and_scrollback(self):
-        # A surface ref needs --workspace as window context, or cmux can't
-        # resolve it ("Surface is not a terminal" without it).
+    def test_read_surface_passes_window_context_and_scrollback(self):
+        # A surface ref needs --workspace as window context, or cmux errors
+        # "Surface is not a terminal".
         fake = mock.Mock(returncode=0, stdout="ok")
         with mock.patch.object(self.mod.subprocess, "run", return_value=fake) as run:
             self.mod._read_surface("surface:15", "workspace:12")
@@ -380,26 +357,42 @@ class ReadSurfaceTests(unittest.TestCase):
         self.assertIn("workspace:12", argv)
         self.assertIn("--scrollback", argv)
 
-    def test_nonterminal_surface_returns_empty(self):
-        # cmux errors rc!=0 for a browser/markdown surface → "".
+    def test_read_surface_nonterminal_returns_empty(self):
         fake = mock.Mock(returncode=1, stdout="Error: Surface is not a terminal")
         with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
             self.assertEqual(self.mod._read_surface("surface:15", "workspace:12"), "")
 
-    def test_list_surfaces_moves_selected_to_front(self):
-        out = ("  surface:1  shell\n"
-               "* surface:2  claude  [selected]\n"
-               "  surface:3  logs\n")
+    def test_list_panes_parses_refs(self):
+        out = ("* pane:20 UUID-A  [1 surface]  [focused]\n"
+               "  pane:21 UUID-B  [1 surface]\n")
         fake = mock.Mock(returncode=0, stdout=out)
         with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
-            refs = self.mod._list_surfaces("workspace:9")
-        self.assertEqual(refs[0], "surface:2")
-        self.assertEqual(set(refs), {"surface:1", "surface:2", "surface:3"})
+            self.assertEqual(self.mod._list_panes("workspace:9"),
+                             ["pane:20", "pane:21"])
+
+    def test_list_panes_empty_on_error(self):
+        fake = mock.Mock(returncode=1, stdout="")
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            self.assertEqual(self.mod._list_panes("workspace:9"), [])
+
+    def test_pane_surfaces_extracts_uuid(self):
+        out = "* surface:21 DE7AC3CD-C1F1-4CA8-82FD-225E12FB6749  title  [selected]\n"
+        fake = mock.Mock(returncode=0, stdout=out)
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            pairs = self.mod._pane_surfaces("workspace:9", "pane:20")
+        self.assertEqual(pairs, [("surface:21", "DE7AC3CD-C1F1-4CA8-82FD-225E12FB6749")])
 
 
-class TranscriptResolutionTests(unittest.TestCase):
-    """The actual ws:12 fix: resolve the transcript from the session id the
-    agent prints, not the mtime/cwd heuristic that picked a stranger's jsonl."""
+class FindAgentPaneTests(unittest.TestCase):
+    """The multi-pane trap: the agent is NOT always the focused/first pane.
+    find_agent_pane must enumerate all panes and pick the Claude one."""
+
+    CLAUDE = ("❯ \n"
+              "  assistant main │ ●3 ●1 │ context 39% │ $42.20 │ #6fb0c668\n"
+              "  ⏵⏵ bypass permissions on (shift+tab to cycle)")
+    BOOTING = ("▝▜█████▛▘  Opus 4.8 (1M context)\n"
+               "  Welcome back\n  ❯ ")   # banner, no status bar yet
+    SHELL = "$ tail -f server.log\n  GET /api 200 12ms"
 
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
@@ -409,28 +402,190 @@ class TranscriptResolutionTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def test_resolves_exact_session_jsonl(self):
-        proj = self._tmp / ".claude/projects/-Users-x-dev"
-        proj.mkdir(parents=True)
-        tp = proj / "6fb0c668-7134-4060-bcf1-6c509c9983cd.jsonl"
-        tp.write_text("{}")
-        # A decoy in another project dir with a different id.
-        proj2 = self._tmp / ".claude/projects/-Users-x-dev-assistant"
-        proj2.mkdir(parents=True)
-        (proj2 / "b5f8d913-aaaa-bbbb-cccc-dddddddddddd.jsonl").write_text("{}")
-        self.assertEqual(self.mod.transcript_from_session_id("6fb0c668"), str(tp))
+    def _patch(self, panes, surfaces_by_pane, screen_by_surface):
+        # surfaces_by_pane: {pane_ref: [(surface_ref, uuid), ...]}
+        # screen_by_surface: {surface_ref: text}
+        return (
+            mock.patch.object(self.mod, "_list_panes", return_value=panes),
+            mock.patch.object(self.mod, "_pane_surfaces",
+                              side_effect=lambda w, p: surfaces_by_pane.get(p, [])),
+            mock.patch.object(self.mod, "_read_surface",
+                              side_effect=lambda s, w, lines=120: screen_by_surface.get(s, "")),
+        )
 
-    def test_none_when_no_match(self):
-        self.assertIsNone(self.mod.transcript_from_session_id("deadbeef"))
+    def test_empty_ws_ref_returns_none_without_shelling_out(self):
+        with mock.patch.object(self.mod.subprocess, "run") as run:
+            self.assertIsNone(self.mod.find_agent_pane(""))
+            run.assert_not_called()
 
-    def test_none_for_null_sid(self):
-        self.assertIsNone(self.mod.transcript_from_session_id(None))
+    def test_picks_agent_pane_not_focused_shell(self):
+        # pane:20 (focused) is a shell; pane:21 is the agent. Agent must win.
+        p = self._patch(
+            panes=["pane:20", "pane:21"],
+            surfaces_by_pane={"pane:20": [("surface:1", "U1")],
+                              "pane:21": [("surface:2", "U2")]},
+            screen_by_surface={"surface:1": self.SHELL, "surface:2": self.CLAUDE})
+        with p[0], p[1], p[2]:
+            res = self.mod.find_agent_pane("workspace:15")
+        self.assertEqual(res["surface_ref"], "surface:2")
+        self.assertEqual(res["surface_uuid"], "U2")
+        self.assertEqual(res["sid8"], "6fb0c668")
+        self.assertIn("bypass permissions", res["screen_text"])
 
-    def test_session_id_from_status_bar(self):
-        self.assertEqual(
-            self.mod._session_id_from("… │ $42.20 │ #6fb0c668\n⏵⏵ bypass"),
-            "6fb0c668")
-        self.assertIsNone(self.mod._session_id_from("no id here"))
+    def test_prefers_status_bar_pane_over_booting_pane(self):
+        # One pane is a booting agent (banner, no sid), another has a live bar.
+        # The live-bar one wins because it carries a verifiable session id.
+        p = self._patch(
+            panes=["pane:1", "pane:2"],
+            surfaces_by_pane={"pane:1": [("surface:1", "U1")],
+                              "pane:2": [("surface:2", "U2")]},
+            screen_by_surface={"surface:1": self.BOOTING, "surface:2": self.CLAUDE})
+        with p[0], p[1], p[2]:
+            res = self.mod.find_agent_pane("workspace:9")
+        self.assertEqual(res["sid8"], "6fb0c668")
+        self.assertEqual(res["surface_ref"], "surface:2")
+
+    def test_booting_agent_returned_when_no_status_bar_anywhere(self):
+        # Only a booting agent + a shell → return the booting agent (sid None),
+        # so we still hand the Observer the agent's screen.
+        p = self._patch(
+            panes=["pane:1", "pane:2"],
+            surfaces_by_pane={"pane:1": [("surface:1", "U1")],
+                              "pane:2": [("surface:2", "U2")]},
+            screen_by_surface={"surface:1": self.SHELL, "surface:2": self.BOOTING})
+        with p[0], p[1], p[2]:
+            res = self.mod.find_agent_pane("workspace:9")
+        self.assertEqual(res["surface_ref"], "surface:2")
+        self.assertIsNone(res["sid8"])
+
+    def test_no_agent_pane_returns_none(self):
+        # All shells → None. No agent ⇒ no transcript attached (the invariant).
+        p = self._patch(
+            panes=["pane:1"],
+            surfaces_by_pane={"pane:1": [("surface:1", "U1")]},
+            screen_by_surface={"surface:1": self.SHELL})
+        with p[0], p[1], p[2]:
+            self.assertIsNone(self.mod.find_agent_pane("workspace:9"))
+
+    def test_falls_back_to_focused_surfaces_when_list_panes_empty(self):
+        # Old cmux: list-panes returns nothing → fall back to focused pane's
+        # surfaces via the workspace-level list-pane-surfaces.
+        out = "* surface:6 709C2DC8-703B-4F7C-BBE6-47F46FB69B22  title  [selected]\n"
+        def fake_run(args, **kw):
+            if "list-panes" in args:
+                return mock.Mock(returncode=0, stdout="")
+            if "list-pane-surfaces" in args:
+                return mock.Mock(returncode=0, stdout=out)
+            return mock.Mock(returncode=1, stdout="")
+        with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(self.mod, "_read_surface", return_value=self.CLAUDE):
+                res = self.mod.find_agent_pane("workspace:9")
+        self.assertEqual(res["sid8"], "6fb0c668")
+        self.assertEqual(res["surface_ref"], "surface:6")
+
+    def test_oversized_screen_keeps_tail(self):
+        big = "X" * 20000 + "\n" + self.CLAUDE
+        p = self._patch(
+            panes=["pane:1"],
+            surfaces_by_pane={"pane:1": [("surface:1", "U1")]},
+            screen_by_surface={"surface:1": big})
+        with p[0], p[1], p[2]:
+            res = self.mod.find_agent_pane("workspace:9")
+        self.assertLess(len(res["screen_text"]), 13000)
+        self.assertIn("earlier screen truncated", res["screen_text"])
+        self.assertEqual(res["sid8"], "6fb0c668")
+
+
+class ResolveWorkspaceTests(unittest.TestCase):
+    """End-to-end resolution priority — and the central guarantee: a wrong
+    transcript is never emitted; the worst case is transcript_path=None."""
+
+    CLAUDE = ("  assistant main │ ●3 ●1 │ context 39% │ $42.20 │ #6fb0c668\n"
+              "  ⏵⏵ bypass permissions on")
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def _mk_transcript(self, sid_full, project="-Users-x-dev"):
+        proj = self._tmp / ".claude/projects" / project
+        proj.mkdir(parents=True, exist_ok=True)
+        tp = proj / f"{sid_full}.jsonl"
+        tp.write_text(json.dumps({"sessionId": sid_full,
+                                  "message": {"role": "user", "content": "hi"}}) + "\n")
+        return str(tp)
+
+    def test_screen_session_id_is_primary(self):
+        full = "6fb0c668-7134-4060-bcf1-6c509c9983cd"
+        tp = self._mk_transcript(full)
+        with mock.patch.object(self.mod, "find_agent_pane", return_value={
+                "surface_ref": "surface:2", "surface_uuid": "U2",
+                "screen_text": self.CLAUDE, "sid8": "6fb0c668"}):
+            res = self.mod.resolve_workspace_screen_and_transcript("workspace:12")
+        self.assertEqual(res["transcript_source"], "screen_session_id")
+        self.assertEqual(res["transcript_path"], tp)
+        self.assertEqual(res["session_id8"], "6fb0c668")
+
+    def test_falls_back_to_registry_when_no_screen_id_but_pid_alive(self):
+        # Booting agent: status bar not rendered yet (sid None), but the
+        # registry has a LIVE-pid row for its surface UUID.
+        full = "1d27a528-aaaa-bbbb-cccc-dddddddddddd"
+        tp = self._mk_transcript(full)
+        reg = {"tab-0": {"surface_id": "U2", "session_id": full,
+                         "claude_pid": str(os.getpid()), "ts": 100,
+                         "transcript_path": tp}}
+        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
+        with mock.patch.object(self.mod, "find_agent_pane", return_value={
+                "surface_ref": "surface:2", "surface_uuid": "U2",
+                "screen_text": "booting…", "sid8": None}):
+            res = self.mod.resolve_workspace_screen_and_transcript("workspace:9")
+        self.assertEqual(res["transcript_source"], "registry_live_pid")
+        self.assertEqual(res["transcript_path"], tp)
+        self.assertEqual(res["session_id8"], "1d27a528")
+
+    def test_stale_registry_never_wins_over_live_screen(self):
+        # THE ws:12 SCENARIO: live screen says 6fb0c668, but the registry's
+        # surface row is a DEAD-pid pointer at a different (old) session. The
+        # screen id resolves; the stale registry path is never emitted.
+        live = "6fb0c668-7134-4060-bcf1-6c509c9983cd"
+        stale = "b5f8d913-a9cb-433e-989d-63df9e14c253"
+        live_tp = self._mk_transcript(live)
+        stale_tp = self._mk_transcript(stale, project="-Users-x-dev-assistant")
+        reg = {"tab-0": {"surface_id": "U2", "session_id": stale,
+                         "claude_pid": "999999",  # dead
+                         "ts": 100, "transcript_path": stale_tp}}
+        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
+        with mock.patch.object(self.mod, "find_agent_pane", return_value={
+                "surface_ref": "surface:2", "surface_uuid": "U2",
+                "screen_text": self.CLAUDE, "sid8": "6fb0c668"}):
+            res = self.mod.resolve_workspace_screen_and_transcript("workspace:12")
+        self.assertEqual(res["transcript_path"], live_tp)
+        self.assertNotIn("assistant", res["transcript_path"])  # not the stale dir
+        self.assertEqual(res["transcript_source"], "screen_session_id")
+
+    def test_no_verified_signal_yields_null_transcript(self):
+        # Agent found, but no transcript on disk yet and no registry row →
+        # transcript_path MUST be None (never a guess). screen still provided.
+        with mock.patch.object(self.mod, "find_agent_pane", return_value={
+                "surface_ref": "surface:2", "surface_uuid": "U2",
+                "screen_text": self.CLAUDE, "sid8": "6fb0c668"}):
+            res = self.mod.resolve_workspace_screen_and_transcript("workspace:9")
+        self.assertIsNone(res["transcript_path"])
+        self.assertIsNone(res["transcript_source"])
+        self.assertEqual(res["session_id8"], "6fb0c668")  # surfaced for later
+        self.assertIn("bypass permissions", res["screen_text"])
+
+    def test_no_agent_pane_yields_everything_null(self):
+        with mock.patch.object(self.mod, "find_agent_pane", return_value=None):
+            res = self.mod.resolve_workspace_screen_and_transcript("workspace:9")
+        self.assertIsNone(res["transcript_path"])
+        self.assertIsNone(res["session_id8"])
+        self.assertEqual(res["screen_text"], "")
+        self.assertFalse(res["screen_shows_error"])
 
 
 class ScreenShowsErrorTests(unittest.TestCase):
@@ -488,12 +643,20 @@ class MainTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def _run_main(self, ws_ref, title, cwd, screen=("", None)):
+    @staticmethod
+    def _resolved(screen_text="", screen_shows_error=False, session_id8=None,
+                  transcript_path=None, transcript_source=None, agent_surface=None):
+        return {"screen_text": screen_text, "screen_shows_error": screen_shows_error,
+                "session_id8": session_id8, "transcript_path": transcript_path,
+                "transcript_source": transcript_source, "agent_surface": agent_surface}
+
+    def _run_main(self, ws_ref, title, cwd, resolved=None):
         sys.argv = ["build-ws-context.py", "--ws-ref", ws_ref,
                     "--title", title, "--cwd", cwd]
         captured = io.StringIO()
-        # Keep main() hermetic — never read a live cmux screen in tests.
-        with mock.patch.object(self.mod, "read_agent_screen", return_value=screen), \
+        # Keep main() hermetic — never touch a live cmux in tests.
+        with mock.patch.object(self.mod, "resolve_workspace_screen_and_transcript",
+                               return_value=resolved or self._resolved()), \
                 mock.patch("sys.stdout", captured):
             rc = self.mod.main()
         return rc, json.loads(captured.getvalue())
@@ -506,52 +669,52 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(d["transcript_path"])
         self.assertIsNone(d["transcript_source"])
         self.assertIsNone(d["session_id8"])
+        self.assertIsNone(d["agent_surface"])
         # cwd doesn't exist → dirty/unpushed both false.
         self.assertFalse(d["cwd_dirty"])
         self.assertFalse(d["cwd_unpushed"])
-        # New fields always present.
         self.assertEqual(d["screen_text"], "")
         self.assertFalse(d["screen_shows_error"])
 
     def test_main_surfaces_screen_error_flag(self):
-        # The live screen shows an API error → screen_shows_error must reach
-        # the Observer even though no session id / transcript was found.
         rc, d = self._run_main(
             "workspace:12", "telegram-comms (resumed) [12]", "",
-            screen=("⏺ API Error: unexpected error", None))
+            resolved=self._resolved(screen_text="⏺ API Error: unexpected error",
+                                    screen_shows_error=True))
         self.assertEqual(rc, 0)
         self.assertTrue(d["screen_shows_error"])
         self.assertIn("API Error", d["screen_text"])
 
-    def test_main_prefers_screen_session_id_over_heuristic(self):
-        # The core ws:12 fix end-to-end: the agent's on-screen session id
-        # resolves the transcript exactly; the mtime/cwd heuristic is NOT used.
-        proj = self._tmp / ".claude/projects/-Users-x-dev"
-        proj.mkdir(parents=True)
-        tp = proj / "6fb0c668-7134-4060-bcf1-6c509c9983cd.jsonl"
-        tp.write_text('{"message":{"content":[{"type":"text","text":"hi"}]}}\n')
-        with mock.patch.object(self.mod, "find_transcript") as heuristic:
-            heuristic.return_value = "/should/not/be/used.jsonl"
-            rc, d = self._run_main(
-                "workspace:12", "telegram-comms (resumed) [12]", "/Users/x/dev",
-                screen=("… │ $42.20 │ #6fb0c668\n⏵⏵ bypass permissions on", "6fb0c668"))
-        self.assertEqual(rc, 0)
-        self.assertEqual(d["transcript_path"], str(tp))
+    def test_main_passes_through_verified_transcript(self):
+        # main() emits exactly what the resolver verified — and computes
+        # signals off that transcript.
+        tp = str(self._tmp / "6fb0c668-x.jsonl")
+        Path(tp).write_text(json.dumps({"message": {"content": [
+            {"type": "text", "text": "hi"}]}}) + "\n")
+        rc, d = self._run_main(
+            "workspace:12", "x", "/Users/x/dev",
+            resolved=self._resolved(
+                screen_text="… │ #6fb0c668", session_id8="6fb0c668",
+                transcript_path=tp, transcript_source="screen_session_id",
+                agent_surface="surface:2"))
+        self.assertEqual(d["transcript_path"], tp)
         self.assertEqual(d["transcript_source"], "screen_session_id")
         self.assertEqual(d["session_id8"], "6fb0c668")
-        heuristic.assert_not_called()  # screen id won; heuristic never consulted
+        self.assertEqual(d["agent_surface"], "surface:2")
+        self.assertEqual(d["agent_status"], "idle")  # computed from the file
 
-    def test_main_falls_back_to_heuristic_when_no_session_id(self):
-        with mock.patch.object(self.mod, "find_transcript",
-                               return_value="/tmp/guessed.jsonl") as heuristic:
-            with mock.patch.object(self.mod, "transcript_signals",
-                                   return_value=(10, "idle")):
-                rc, d = self._run_main(
-                    "workspace:9", "td-007 task", "/Users/x/dev",
-                    screen=("some shell output, no claude id", None))
-        self.assertEqual(d["transcript_path"], "/tmp/guessed.jsonl")
-        self.assertEqual(d["transcript_source"], "heuristic")
-        heuristic.assert_called_once()
+    def test_main_null_transcript_when_unverified(self):
+        # The invariant at the CLI boundary: an agent screen with a session id
+        # but NO verified transcript → transcript_path stays null.
+        rc, d = self._run_main(
+            "workspace:9", "x", "",
+            resolved=self._resolved(screen_text="… │ #6fb0c668",
+                                    session_id8="6fb0c668"))
+        self.assertIsNone(d["transcript_path"])
+        self.assertIsNone(d["transcript_source"])
+        self.assertEqual(d["session_id8"], "6fb0c668")
+        self.assertIsNone(d["last_turn_age_sec"])
+        self.assertEqual(d["agent_status"], "idle")
 
     def test_unprotected_ref_marked_correctly(self):
         rc, d = self._run_main("workspace:42", "title", "")

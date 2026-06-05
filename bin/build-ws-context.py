@@ -11,9 +11,10 @@ Output JSON to stdout:
     "ws_ref": "workspace:N",
     "title": "...",
     "cwd": "...",
-    "transcript_path": "/Users/.../<session>.jsonl",
-    "transcript_source": "screen_session_id" | "heuristic" | null,
+    "transcript_path": "/Users/.../<session>.jsonl" | null,
+    "transcript_source": "screen_session_id" | "registry_live_pid" | null,
     "session_id8": "<8hex>" | null,
+    "agent_surface": "surface:N" | null,
     "last_turn_age_sec": <int|null>,
     "agent_status": "working" | "idle",
     "cwd_dirty": <bool>,
@@ -23,19 +24,23 @@ Output JSON to stdout:
     "screen_shows_error": <bool>
   }
 
-Two signals harden this against the ws:12 (2026-06-05) misattribution bug,
-where a workspace hosting both an interactive session and a headless comms
-pulse made find_transcript()'s mtime/cwd heuristic pick a different stranger's
-jsonl every pulse:
+ABSOLUTE INVARIANT (operator, 2026-06-05): never attach a transcript from an
+old or wrong workspace — a wrong transcript is worse than none. `transcript_path`
+is emitted ONLY when its identity is VERIFIED against this workspace's live
+agent; otherwise it is `null` and the Observer falls back to `screen_text`.
 
-  - `screen_text` is the live terminal of the CLAUDE AGENT pane (selected by
-    its status-bar signature, not just whatever pane is focused), so a split
-    workspace's shell/dev-server pane can't masquerade as the agent.
-  - `transcript_path` is resolved FIRST from the session-id the agent stamps
-    on its own status bar (`#<8hex>`) — exact, no guessing — and only falls
-    back to the old heuristic when that id isn't on screen. `transcript_source`
-    records which path was used so the Observer (and audits) can see when a
-    verdict rests on a guessed transcript.
+How identity is established (no guessing — the old mtime/cwd/title heuristic
+that caused the ws:12 misattribution has been DELETED):
+
+  - The CLAUDE AGENT pane is found by enumerating ALL panes (not the focused
+    one — a split workspace's focused pane is often a shell) and picking the
+    one carrying a Claude status bar / boot banner. Its screen is `screen_text`.
+  - `transcript_path` resolves from the session-id the agent stamps on its OWN
+    status bar (`… │ #<8hex>`), then confirms the file's internal `sessionId`
+    matches — exact, self-verifying. Fallback: a cmux-registry row for the
+    agent pane's surface UUID, but ONLY when its `claude_pid` is still alive
+    AND it agrees with the live screen (the registry goes stale on surface
+    reuse — the ws:12 trap). `transcript_source` records which gate passed.
 
 The Observer is still told to trust the screen over transcript-derived signals
 on conflict — the screen is what the agent is showing RIGHT NOW.
@@ -89,81 +94,55 @@ _ERROR_LINE_RE = re.compile(
 )
 
 
-# The Claude Code status bar prints the running session-id prefix as `#<8hex>`
-# (e.g. `… │ $9.55 │ #6fb0c668`). This is the agent telling us its OWN session,
-# so it's the ground truth for (a) which pane in a split workspace is the agent
-# and (b) which transcript on disk is really this session's — both of which the
-# mtime/cwd heuristics in find_transcript() get wrong when a workspace has more
-# than one jsonl in scope (ws:12, 2026-06-05: a headless comms pulse kept
-# writing transcripts into the same project dir, so find_transcript() picked a
-# different stranger's jsonl every pulse). We trust the on-screen id over the
-# heuristic whenever it's present.
-_SESSION_ID_RE = re.compile(r"#([0-9a-f]{8})\b")
-# A pane is the Claude agent if its screen carries any of these. The session-id
-# stamp is the strongest (present idle AND working); the others catch a pane
-# that's still booting or whose status bar scrolled off the read window.
+# ─── Agent-pane + transcript identification ──────────────────────────────────
+#
+# INVARIANT (operator, 2026-06-05): never attach a transcript from an old or
+# wrong workspace. A wrong transcript is worse than none. So transcript_path is
+# emitted ONLY when its identity is VERIFIED to belong to this workspace's live
+# agent. Every signal below is either verified or discarded — never guessed.
+#
+# Empirically-confirmed traps this guards against (all reproduced on live/test
+# workspaces 2026-06-05):
+#   - `rpc surface.list {workspace:N}` IGNORES the param and returns the CALLER's
+#     workspace → never used for targeting. CLI `--workspace` flags target right.
+#   - A naive `#<8hex>` search matches session ids printed in CONVERSATION
+#     CONTENT, not just the status bar (a session discussing other sessions —
+#     like this one — self-misattributes). The id is read ONLY from a status-bar
+#     -shaped line (`… │ #<8hex>` at end-of-line).
+#   - `read-screen --workspace` reads only the FOCUSED pane; in a split
+#     workspace the focused pane is often a shell, not the agent. We enumerate
+#     ALL panes and pick the agent.
+#   - The cmux registry's surface→session map goes STALE when a surface is
+#     reused (ws:12: registry pointed at a dead headless pulse's session while
+#     the live agent ran a different one). Registry entries are trusted only
+#     when their claude_pid is still alive AND they agree with the live screen.
+
+# The Claude Code status bar's last cell is the running session-id prefix,
+# rendered as `… │ #<8hex>` at the END of a box-drawing line. Anchoring to that
+# shape (not a bare `#<8hex>`) is what stops content/quote false matches.
+_STATUS_BAR_SID_RE = re.compile(r"│[^│\n]*#([0-9a-f]{8})\b\s*$")
+# A pane is the Claude agent if its screen carries any of these. The status-bar
+# sid is strongest; the others catch a pane still booting (banner up, status bar
+# not yet rendered) so we still identify the agent pane and read its screen.
 _CLAUDE_PANE_MARKERS = (
     "bypass permissions on",
     "Claude Code v",
     "esc to interrupt",
     "⏵⏵",
+    "Opus 4",          # boot banner model line
+    "Sonnet 4",
+    "Haiku 4",
 )
+_SURFACE_LINE_RE = re.compile(r"(surface:\d+)\s+([0-9A-Fa-f-]{36})")
 
 
-def _read_surface(surface_ref: str, ws_ref: str, lines: int = SCREEN_LINES) -> str:
-    """Read one surface. A surface ref needs a window context to resolve, and
-    the workspace ref supplies it (`read-screen --surface S --workspace W`).
-    Returns '' for a non-terminal surface (browser/markdown pane) or any error
-    — those carry no agent signal."""
-    if not surface_ref:
-        return ""
+def _cmux(args: list[str], timeout: int = 15):
+    """Run a cmux CLI command, return CompletedProcess or None on failure."""
     try:
-        r = subprocess.run(
-            [CMUX_BIN, "read-screen", "--surface", surface_ref,
-             "--workspace", ws_ref, "--scrollback", "--lines", str(lines)],
-            capture_output=True, text=True, timeout=15,
-        )
+        return subprocess.run([CMUX_BIN, *args], capture_output=True,
+                              text=True, timeout=timeout)
     except Exception:
-        return ""
-    return (r.stdout or "").strip() if r.returncode == 0 else ""
-
-
-def _list_surfaces(ws_ref: str) -> list[str]:
-    """Surface refs for a workspace, in cmux's listing order. The
-    `[selected]`-marked one (if any) is moved to the front so single-read
-    callers and tie-breaks prefer the focused pane."""
-    if not ws_ref:
-        return []
-    try:
-        r = subprocess.run(
-            [CMUX_BIN, "list-pane-surfaces", "--workspace", ws_ref],
-            capture_output=True, text=True, timeout=15,
-        )
-    except Exception:
-        return []
-    if r.returncode != 0:
-        return []
-    surfaces, selected = [], None
-    for line in r.stdout.splitlines():
-        m = re.search(r"surface:\d+", line)
-        if not m:
-            continue
-        ref = m.group(0)
-        surfaces.append(ref)
-        if "[selected]" in line:
-            selected = ref
-    if selected and surfaces and surfaces[0] != selected:
-        surfaces.remove(selected)
-        surfaces.insert(0, selected)
-    return surfaces
-
-
-def _is_claude_pane(text: str) -> bool:
-    if not text:
-        return False
-    if _SESSION_ID_RE.search(text):
-        return True
-    return any(m in text for m in _CLAUDE_PANE_MARKERS)
+        return None
 
 
 def _bound(text: str) -> str:
@@ -177,76 +156,246 @@ def _bound(text: str) -> str:
     return text
 
 
-def read_agent_screen(ws_ref: str, lines: int = SCREEN_LINES) -> tuple[str, str | None]:
-    """Read the live terminal of the CLAUDE AGENT pane for ws_ref.
+def status_bar_session_id(screen_text: str) -> str | None:
+    """The 8-hex session id from the agent's status bar, or None.
 
-    A workspace can hold more than one pane (agent + a shell/dev-server). We
-    enumerate surfaces and return the one that looks like a Claude session, so
-    the screen we hand the Observer is the AGENT's, not whatever pane happens
-    to be selected. Returns (screen_text, session_id8):
+    Reads ONLY status-bar-shaped lines (`… │ #<8hex>` at end of line) and
+    returns the LAST one — the live bar is rendered at the bottom of the
+    screen. A `#<8hex>` appearing in conversation text or a quoted log does
+    not match, because it isn't in that line shape."""
+    if not screen_text:
+        return None
+    found = None
+    for line in screen_text.splitlines():
+        m = _STATUS_BAR_SID_RE.search(line)
+        if m:
+            found = m.group(1)  # keep walking → last match wins
+    return found
 
-      - screen_text: bounded agent-pane text, or '' if no pane could be read.
-      - session_id8: the 8-hex session-id prefix the agent stamps on its
-        status bar, or None if not visible (e.g. headless / booting).
 
-    Falls back to the first/selected surface when no pane self-identifies as
-    Claude, so a still-booting agent (banner not yet rendered) isn't dropped.
+def _is_claude_pane(text: str) -> bool:
+    if not text:
+        return False
+    if status_bar_session_id(text):
+        return True
+    return any(m in text for m in _CLAUDE_PANE_MARKERS)
+
+
+def _list_panes(ws_ref: str) -> list[str]:
+    """All pane refs in a workspace (NOT just the focused one — that's the
+    split-pane trap). `list-pane-surfaces` defaults to the focused pane, so we
+    must enumerate panes explicitly and read each."""
+    r = _cmux(["list-panes", "--workspace", ws_ref])
+    if not r or r.returncode != 0:
+        return []
+    return re.findall(r"\bpane:\d+\b", r.stdout)
+
+
+def _pane_surfaces(ws_ref: str, pane_ref: str) -> list[tuple[str, str]]:
+    """[(surface_ref, surface_uuid), …] for one pane, UUIDs included."""
+    r = _cmux(["--id-format", "both", "list-pane-surfaces",
+               "--workspace", ws_ref, "--pane", pane_ref])
+    if not r or r.returncode != 0:
+        return []
+    return [(m.group(1), m.group(2).upper())
+            for line in r.stdout.splitlines()
+            for m in [_SURFACE_LINE_RE.search(line)] if m]
+
+
+def _read_surface(surface_ref: str, ws_ref: str, lines: int = SCREEN_LINES) -> str:
+    """Read one surface. A surface ref needs a window context to resolve, and
+    the workspace ref supplies it (`read-screen --surface S --workspace W`).
+    Returns '' for a non-terminal surface (browser/markdown) or any error."""
+    if not surface_ref:
+        return ""
+    r = _cmux(["read-screen", "--surface", surface_ref, "--workspace", ws_ref,
+               "--scrollback", "--lines", str(lines)])
+    return (r.stdout or "").strip() if (r and r.returncode == 0) else ""
+
+
+def find_agent_pane(ws_ref: str, lines: int = SCREEN_LINES) -> dict | None:
+    """Locate the Claude AGENT pane in a (possibly multi-pane) workspace.
+
+    Enumerates every pane → every surface, reads each, and returns the surface
+    that is the Claude agent — preferring one whose status bar carries a live
+    session id, falling back to a pane that self-identifies as Claude (e.g.
+    still booting). A shell / dev-server / browser pane is never returned.
+
+    Returns {surface_ref, surface_uuid, screen_text, sid8} or None when no
+    agent pane is found (headless one-shot already exited, cmux down, etc.) —
+    None is the safe answer: no agent ⇒ no transcript attached.
     """
     if not ws_ref:
-        return "", None
-    surfaces = _list_surfaces(ws_ref)
-    if not surfaces:
-        # cmux too old for list-pane-surfaces, or no panes: fall back to the
-        # workspace-level read (the original behavior).
-        text = _read_surface_via_workspace(ws_ref, lines)
-        return _bound(text), _session_id_from(text)
+        return None
+    panes = _list_panes(ws_ref)
+    pairs: list[tuple[str, str]] = []
+    if panes:
+        for p in panes:
+            pairs.extend(_pane_surfaces(ws_ref, p))
+    if not pairs:
+        # Older cmux / no pane enumeration: fall back to the focused pane's
+        # surfaces (still correct for the common single-pane workspace).
+        r = _cmux(["--id-format", "both", "list-pane-surfaces",
+                   "--workspace", ws_ref])
+        if r and r.returncode == 0:
+            pairs = [(m.group(1), m.group(2).upper())
+                     for line in r.stdout.splitlines()
+                     for m in [_SURFACE_LINE_RE.search(line)] if m]
 
-    first_text = ""
-    for ref in surfaces:
-        text = _read_surface(ref, ws_ref, lines)
-        if not first_text and text:
-            first_text = text
-        if _is_claude_pane(text):
-            return _bound(text), _session_id_from(text)
-    # No pane self-identified as Claude — use the first non-empty (selected
-    # is already at index 0). Better a maybe-wrong screen than none, but it
-    # won't carry a session id, so transcript resolution falls back too.
-    return _bound(first_text), _session_id_from(first_text)
+    booting: dict | None = None
+    for sref, suuid in pairs:
+        text = _read_surface(sref, ws_ref, lines)
+        if not text:
+            continue
+        sid = status_bar_session_id(text)
+        if sid:
+            return {"surface_ref": sref, "surface_uuid": suuid,
+                    "screen_text": _bound(text), "sid8": sid}
+        if booting is None and _is_claude_pane(text):
+            booting = {"surface_ref": sref, "surface_uuid": suuid,
+                       "screen_text": _bound(text), "sid8": None}
+    return booting
 
 
-def _read_surface_via_workspace(ws_ref: str, lines: int = SCREEN_LINES) -> str:
-    """Workspace-scoped read (selected surface) — fallback when surface
-    enumeration is unavailable."""
+def _pid_alive(pid) -> bool:
     try:
-        r = subprocess.run(
-            [CMUX_BIN, "read-screen", "--workspace", ws_ref,
-             "--scrollback", "--lines", str(lines)],
-            capture_output=True, text=True, timeout=15,
-        )
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _transcript_internal_sid(path: str) -> str | None:
+    """The sessionId recorded INSIDE the transcript (Claude Code writes it on
+    every line). Used to confirm a file's identity matches the id we resolved
+    from — the last verification gate before we trust a path."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(65536).decode("utf-8", errors="replace")
     except Exception:
-        return ""
-    return (r.stdout or "").strip() if r.returncode == 0 else ""
-
-
-def _session_id_from(screen_text: str) -> str | None:
-    m = _SESSION_ID_RE.search(screen_text or "")
-    return m.group(1) if m else None
+        return None
+    for line in head.splitlines():
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        sid = d.get("sessionId") or d.get("session_id")
+        if sid:
+            return sid
+    return None
 
 
 def transcript_from_session_id(sid8: str | None) -> str | None:
-    """Resolve a session-id prefix to its transcript jsonl by globbing every
-    project dir. This is exact: the agent printed this id, so the file named
-    <sid>*.jsonl IS its transcript — no mtime/cwd guessing. Newest match wins
-    on the (vanishingly rare) 8-hex prefix collision."""
+    """Resolve an 8-hex session-id prefix to its transcript jsonl, VERIFIED.
+
+    Globs `*/{sid}*.jsonl` across project dirs, then confirms the file's own
+    internal sessionId starts with the prefix — so a coincidental filename
+    can't slip through. Returns None unless a file both matches the name and
+    self-identifies as that session. Newest verified match wins on the
+    (astronomically unlikely) 8-hex prefix collision."""
     if not sid8:
         return None
     projects = HOME / ".claude/projects"
     if not projects.is_dir():
         return None
-    matches = [str(p) for p in projects.glob(f"*/{sid8}*.jsonl")]
-    if not matches:
+    candidates = sorted(
+        (str(p) for p in projects.glob(f"*/{sid8}*.jsonl")),
+        key=os.path.getmtime, reverse=True,
+    )
+    for path in candidates:
+        internal = _transcript_internal_sid(path)
+        # Verified iff the file's own sessionId agrees with the prefix. If the
+        # file carries no sessionId at all (legacy), accept the filename match
+        # — the glob already constrained it to <sid>*.jsonl.
+        if internal is None or internal.startswith(sid8):
+            return path
+    return None
+
+
+def registry_transcript_for_surface(surface_uuid: str, expect_sid8: str | None = None) -> dict | None:
+    """Transcript for a surface via the cmux registry — SAFE variant.
+
+    The registry maps surface UUID → {session_id, claude_pid, transcript_path},
+    but the mapping goes stale when a surface is reused. We therefore return an
+    entry ONLY when its claude_pid is still ALIVE (a dead pid means the entry
+    describes a session that no longer occupies the surface — the ws:12 trap).
+    When `expect_sid8` is given (a live status-bar id), the registry must AGREE
+    with it; on disagreement we trust the screen and return None here.
+
+    Returns {transcript_path, session_id8} or None.
+    """
+    if not surface_uuid:
         return None
-    return max(matches, key=os.path.getmtime)
+    try:
+        reg = json.load(open(HOME / ".claude/cmux-registry.json"))
+    except Exception:
+        return None
+    want = surface_uuid.upper()
+    entries = [e for e in reg.values()
+               if (e.get("surface_id") or "").upper() == want]
+    if not entries:
+        return None
+    entry = max(entries, key=lambda e: e.get("ts", 0))
+    if not _pid_alive(entry.get("claude_pid")):
+        return None  # stale registry row — do NOT trust
+    sid = (entry.get("session_id") or "")
+    sid8 = sid[:8] if sid else None
+    if expect_sid8 and sid8 and sid8 != expect_sid8:
+        return None  # registry disagrees with the live screen → screen wins
+    tp = entry.get("transcript_path")
+    if not tp or not os.path.exists(tp):
+        return None
+    # Final identity gate: the file must self-identify as this session.
+    internal = _transcript_internal_sid(tp)
+    if internal and sid8 and not internal.startswith(sid8):
+        return None
+    return {"transcript_path": tp, "session_id8": sid8}
+
+
+def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
+    """Single entry point: find the agent pane, read its screen, and resolve
+    its transcript ONLY via verified signals. Returns the dict of screen/
+    transcript fields for the payload. transcript_path is None unless verified.
+
+    Resolution priority (first verified wins; otherwise None):
+      1. screen_session_id — id from the agent's own status bar, glob+verified.
+         Strongest: it's what the running agent says about itself, right now.
+      2. registry_live_pid — registry row for the agent pane's surface UUID,
+         but only with a LIVE pid and agreement with the screen. Covers a
+         booting agent whose status bar hasn't rendered yet.
+      3. None — no verified signal. The Observer falls back to screen_text.
+         (We deliberately do NOT guess by mtime/cwd/title — that was the bug.)
+    """
+    pane = find_agent_pane(ws_ref)
+    screen = pane["screen_text"] if pane else ""
+    sid8 = pane["sid8"] if pane else None
+    surface_uuid = pane["surface_uuid"] if pane else None
+
+    transcript = None
+    source = None
+
+    if sid8:
+        transcript = transcript_from_session_id(sid8)
+        if transcript:
+            source = "screen_session_id"
+
+    if transcript is None and surface_uuid:
+        reg = registry_transcript_for_surface(surface_uuid, expect_sid8=sid8)
+        if reg:
+            transcript = reg["transcript_path"]
+            sid8 = sid8 or reg["session_id8"]
+            source = "registry_live_pid"
+
+    return {
+        "screen_text": screen,
+        "screen_shows_error": screen_shows_error(screen),
+        "session_id8": sid8,
+        "transcript_path": transcript,
+        "transcript_source": source,
+        "agent_surface": pane["surface_ref"] if pane else None,
+    }
 
 
 def screen_shows_error(screen_text: str) -> bool:
@@ -257,82 +406,6 @@ def screen_shows_error(screen_text: str) -> bool:
     if not screen_text:
         return False
     return any(_ERROR_LINE_RE.match(line) for line in screen_text.splitlines())
-
-
-def find_transcript(ws_ref: str, title: str, cwd: str | None) -> str | None:
-    """Resolve ws_ref → transcript_path via cmux-registry (primary) + a
-    title-marker scan of the cwd's project dir (fallback)."""
-    try:
-        state = json.load(open(HOME / "Library/Application Support/cmux/session-com.cmuxterm.app.json"))
-    except Exception:
-        state = None
-    panel_ids = []
-    if state:
-        for w in state.get("windows", []):
-            for ws in w.get("tabManager", {}).get("workspaces", []):
-                if (ws.get("customTitle", "") or "") == title:
-                    for p in ws.get("panels", []):
-                        if p.get("id"):
-                            panel_ids.append(p["id"])
-    try:
-        reg = json.load(open(HOME / ".claude/cmux-registry.json"))
-    except Exception:
-        reg = {}
-    paths = []
-    for tab_id, ent in reg.items():
-        if tab_id in panel_ids or ent.get("panel_id") in panel_ids:
-            tp = ent.get("transcript_path")
-            if tp and os.path.exists(tp):
-                paths.append(tp)
-    if paths:
-        return max(paths, key=os.path.getmtime)
-
-    if not cwd:
-        return None
-    slug = cwd.replace("/", "-")
-    pdir = HOME / ".claude/projects" / slug
-    if not pdir.exists():
-        return None
-
-    sig_candidates = set()
-    for m in re.finditer(r"\b(P\d-\d+|W\d[A-Z]?|td-\d+|sq-ws\d+|AC-\d+)\b", title or "", re.I):
-        s = m.group(1)
-        sig_candidates.update({s, s.lower(), s.upper()})
-    if not sig_candidates:
-        return None
-
-    for jsonl in sorted(pdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            with open(jsonl, "rb") as f:
-                head = f.read(65536).decode("utf-8", errors="replace")
-        except Exception:
-            continue
-        n_user_seen = 0
-        for line in head.splitlines():
-            if not line.strip():
-                continue
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-            msg = d.get("message")
-            if not isinstance(msg, dict):
-                continue
-            content = msg.get("content")
-            text = ""
-            if isinstance(content, list):
-                for c in content:
-                    if isinstance(c, dict) and c.get("type") == "text":
-                        text += c.get("text", "")
-            elif isinstance(content, str):
-                text = content
-            if msg.get("role") == "user":
-                n_user_seen += 1
-            if any(sig in text for sig in sig_candidates):
-                return str(jsonl)
-            if n_user_seen >= 5:
-                break
-    return None
 
 
 def transcript_signals(path: str | None) -> tuple[int | None, str]:
@@ -416,20 +489,12 @@ def main() -> int:
     ap.add_argument("--cwd", default="")
     args = ap.parse_args()
 
-    # Read the AGENT pane's screen first — it carries the session-id stamp,
-    # which is the ground truth for which transcript is really this session's.
-    screen, sid8 = read_agent_screen(args.ws_ref)
-
-    # Transcript resolution, best signal first:
-    #   1. the session id the agent printed on its own status bar (exact), then
-    #   2. the registry/cwd heuristic (mtime-guessing — wrong when a workspace
-    #      has multiple jsonls in scope, which is exactly the ws:12 bug).
-    transcript = transcript_from_session_id(sid8)
-    transcript_source = "screen_session_id" if transcript else None
-    if not transcript:
-        transcript = find_transcript(args.ws_ref, args.title, args.cwd or None)
-        transcript_source = "heuristic" if transcript else None
-
+    # Find the agent pane, read its screen, and resolve its transcript using
+    # ONLY verified signals (status-bar session id, or a live-pid registry row
+    # that agrees with the screen). transcript_path is None when nothing
+    # verifies — by design: a wrong transcript is worse than none.
+    resolved = resolve_workspace_screen_and_transcript(args.ws_ref)
+    transcript = resolved["transcript_path"]
     age, agent_status = transcript_signals(transcript)
     dirty, unpushed = cwd_state(args.cwd)
 
@@ -438,15 +503,16 @@ def main() -> int:
         "title": args.title,
         "cwd": args.cwd,
         "transcript_path": transcript,
-        "transcript_source": transcript_source,
-        "session_id8": sid8,
+        "transcript_source": resolved["transcript_source"],
+        "session_id8": resolved["session_id8"],
+        "agent_surface": resolved["agent_surface"],
         "last_turn_age_sec": age,
         "agent_status": agent_status,
         "cwd_dirty": dirty,
         "cwd_unpushed": unpushed,
         "is_protected": args.ws_ref in PROTECTED_REFS,
-        "screen_text": screen,
-        "screen_shows_error": screen_shows_error(screen),
+        "screen_text": resolved["screen_text"],
+        "screen_shows_error": resolved["screen_shows_error"],
     }
     print(json.dumps(payload, indent=2))
     return 0
