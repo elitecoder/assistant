@@ -205,8 +205,8 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
             # surfaced by the warm session when asked. This keeps the channel
             # owned by the warm responder, not the daemon.
             kind = entry.get("kind", "")
-            if kind in ("noop",):
-                log(f"suppressed noop broadcast key={key}")
+            if kind in ("noop", "emit-card"):
+                log(f"suppressed routine broadcast kind={kind} key={key}")
                 continue
             body = comms_lib.fmt_action_line(entry)
             rc, out, err = cli(
