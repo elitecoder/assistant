@@ -184,6 +184,26 @@ def cmux_alive(paths: comms_lib.Paths, ws_ref: str) -> bool:  # pragma: no cover
     return rc == 0
 
 
+def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
+    """Close a warm workspace THIS daemon spawned (tracked in session.json).
+
+    Only ever called on comms's own throwaway warm sessions when replacing them
+    — never on an arbitrary workspace. Without this, every respawn (daemon
+    restart, session death) leaked a live Claude process; 6 piled up during
+    2026-06-05 testing. Verifies the title is the warm-session title before
+    closing, as a guard against a reissued ref pointing somewhere else."""
+    rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
+    if rc != 0:
+        return
+    is_warm = any(ws_ref in line and SESSION_TITLE in line for line in out.splitlines())
+    if not is_warm:
+        log(f"skip close {ws_ref}: not a '{SESSION_TITLE}' workspace (ref reissued?)")
+        return
+    rc, _, err = comms_lib.run_cmd(
+        [str(paths.cmux_bin), "workspace", "close", "--workspace", ws_ref], timeout=15)
+    log(f"closed prior warm workspace {ws_ref}" if rc == 0 else f"close {ws_ref} rc={rc}: {err.strip()[:120]}")
+
+
 def feed(paths: comms_lib.Paths, surface_ref: str, text: str) -> None:  # pragma: no cover - live cmux I/O
     """Type text into the warm session and submit. Strip trailing newline first
     (send_text streams keystrokes; a trailing \\n auto-submits mid-paste), then
@@ -193,12 +213,69 @@ def feed(paths: comms_lib.Paths, surface_ref: str, text: str) -> None:  # pragma
     _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
 
-def clear_session(paths: comms_lib.Paths, surface_ref: str) -> None:  # pragma: no cover - live cmux I/O
-    """Send /clear to reset the session's context window. conversation.jsonl is
-    the durable memory, so this is lossless."""
+def clear_session(paths: comms_lib.Paths, surface_ref: str, boot_prompt: Path) -> None:  # pragma: no cover - live cmux I/O
+    """Clear-AND-resume: reset the context window, then immediately re-deliver
+    the boot prompt so the fresh session reloads its identity + tools.
+
+    A bare /clear would wipe the warm session's briefing (it was delivered as a
+    conversation turn at spawn), leaving a generic un-briefed Claude that no
+    longer knows it's the assistant. We always resume with the SAME prompt —
+    per-message thread continuity comes from conversation.jsonl, which the boot
+    prompt tells it to reconstruct. So this is lossless: identity from the
+    re-read prompt, memory from the log.
+
+    Send /clear as text, then an explicit Enter keystroke (the same two-step
+    feed() uses). A trailing newline inside send_text does NOT reliably submit
+    a slash command — it leaves "/clear" sitting in the input box (observed
+    2026-06-05). The separate send_key is what actually fires it.
+
+    Then POLL for the post-clear "Welcome back" screen before re-feeding the
+    boot prompt. Feeding during the ~2s reset window gets the keystrokes
+    swallowed — leaving an un-briefed session (observed 2026-06-05). We verify
+    readiness rather than sleep-and-hope.
+    """
     _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "/clear"})
     time.sleep(0.5)
     _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+
+    # Wait for the reset to land: the post-/clear screen shows "Welcome back"
+    # and the prior conversation is gone. Poll up to ~15s.
+    for _ in range(15):
+        time.sleep(1)
+        screen = _surface_read_text(paths, surface_ref)
+        if "Welcome back" in screen or "Tips for getting started" in screen:
+            break
+
+    # Small extra beat so the input box is interactive, then re-brief.
+    time.sleep(1)
+    instruction = f"Read {boot_prompt} in full and execute every instruction in it."
+    feed(paths, surface_ref, instruction)
+
+
+def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cover - live cmux I/O
+    """All workspace refs whose title is the warm-session title."""
+    rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
+    if rc != 0:
+        return []
+    import re
+    refs = []
+    for line in out.splitlines():
+        if SESSION_TITLE in line:
+            m = re.search(r"workspace:\d+", line)
+            if m:
+                refs.append(m.group(0))
+    return refs
+
+
+def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
+    """Close every warm-titled workspace except `keep`. The daemon is a
+    singleton, so at most one warm session should exist; any others are orphans
+    from a prior daemon that died without cleanup. Called on startup and after
+    each spawn so leaks self-heal."""
+    for ws in list_warm_workspaces(paths):
+        if ws == keep:
+            continue
+        close_own_workspace(paths, ws, log=log)
 
 
 def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None) -> dict | None:  # pragma: no cover - live cmux I/O
@@ -215,10 +292,20 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None)
     # Explicit binary + flags (NOT the bare `claude` alias, which is Opus). The
     # full path means the login shell's alias doesn't apply. Quote the model
     # slug — the [1m] brackets are shell glob chars.
+    # Scope to its OWN surface: ~/dev/assistant (its code + boot prompt — so it
+    # can evolve its own behavior, which Mukul wants) + ~/.assistant (runtime
+    # state it writes: conversation.jsonl, session.json) + ~/.architect (reads
+    # Assistant's proposals/ledger) + /tmp. Deliberately NOT ~/.claude (global
+    # CLAUDE.md rules + settings.json — a session must not be able to widen its
+    # own rules/permissions; per Mukul's "never self-modify the allowlist") and
+    # NOT all of ~/dev (other repos). The lesson-writing path still works: it
+    # shells out to assistant-curator.py, a subprocess that writes CLAUDE.md
+    # itself, gated by an explicit human `y`.
     launch = (
         f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(WARM_MODEL)} "
         f"--dangerously-skip-permissions "
-        f"--add-dir ~/dev --add-dir ~/.assistant --add-dir ~/.claude --add-dir /tmp"
+        f"--add-dir ~/dev/assistant --add-dir ~/.assistant "
+        f"--add-dir ~/.architect --add-dir /tmp"
     )
     rc, out, err = comms_lib.run_cmd(
         [cmux, "new-workspace", "--cwd", cwd, "--name", SESSION_TITLE,
@@ -287,4 +374,6 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None)
 
     write_session(paths, ws_ref, surface_ref, cwd, transcript)
     log(f"warm session ready: {ws_ref} / {surface_ref} (transcript={transcript})")
+    # Sweep any other warm-titled workspaces (orphans from a prior daemon).
+    reconcile_warm_workspaces(paths, keep=ws_ref, log=log)
     return read_session(paths)

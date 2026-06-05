@@ -92,12 +92,18 @@ def cli(argv: list[str], timeout: int = 30, env: dict | None = None) -> tuple[in
 # session.json; the inbound loop holds it in memory and re-ensures it as needed.
 
 def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
-    """Return a live warm-session record, spawning one if none is alive."""
+    """Return a live warm-session record, spawning one if none is alive.
+
+    On respawn, close the prior warm workspace first so we never leak Claude
+    processes — without this, daemon restarts / session deaths piled up 6 live
+    warm workspaces during 2026-06-05 testing. close_own_workspace only touches
+    a workspace this daemon spawned (title-verified), never an arbitrary one."""
     sess = comms_session.read_session(paths)
     if sess and comms_session.cmux_alive(paths, sess["ws_ref"]):
         return sess
     if sess:
-        log(f"warm session {sess['ws_ref']} gone — respawning")
+        log(f"warm session {sess['ws_ref']} gone — closing it and respawning")
+        comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
         comms_session.clear_session_registry(paths)
     return comms_session.spawn_session(paths, WARM_PROMPT, log=log)
 
@@ -142,10 +148,20 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
             transcript = comms_session.newest_transcript(sess["cwd"])
     log(f"reply chat={chat_id} msg={msg_id} grew={grew} wall_ms={int((time.time()-t0)*1000)}")
 
-    # Context management: /clear at >= 50% so the next reply stays fast.
+    # Context management: clear-and-resume at >= 50% so the next reply stays
+    # fast. The session re-reads its boot prompt (identity) and reconstructs
+    # the thread from conversation.jsonl (memory) — lossless.
     if transcript and comms_session.should_clear(transcript):
-        log(f"context >= {int(comms_session.CLEAR_THRESHOLD*100)}% — /clear")
-        comms_session.clear_session(paths, sess["surface_ref"])
+        log(f"context >= {int(comms_session.CLEAR_THRESHOLD*100)}% — clear-and-resume")
+        comms_session.clear_session(paths, sess["surface_ref"], WARM_PROMPT)
+        # After /clear the transcript resets — re-resolve so we don't measure
+        # the cleared session against the old (now-stale) transcript path.
+        new_t = comms_session.newest_transcript(sess["cwd"])
+        if new_t:
+            comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
+                                        sess["cwd"], new_t)
+            sess = comms_session.read_session(paths) or sess
+            return sess
 
     if transcript and transcript != sess.get("transcript_path"):
         comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
@@ -158,6 +174,11 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
     log("inbound loop started (long-poll, warm session)")
     paths = comms_lib.Paths.from_env()
     sess = ensure_warm_session(paths)
+    # Startup sweep: close any warm workspaces that aren't the one we just
+    # ensured. Covers the case where a prior daemon died leaving live orphans
+    # (the singleton lock stops two daemons, but not stale workspaces).
+    if sess:
+        comms_session.reconcile_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
     while not stop.is_set():
         rc, out, err = cli([str(TG_POLL), "--timeout", str(LONGPOLL_TIMEOUT)],
                            timeout=LONGPOLL_TIMEOUT + 15, env=env)
