@@ -12,21 +12,33 @@ Output JSON to stdout:
     "title": "...",
     "cwd": "...",
     "transcript_path": "/Users/.../<session>.jsonl",
+    "transcript_source": "screen_session_id" | "heuristic" | null,
+    "session_id8": "<8hex>" | null,
     "last_turn_age_sec": <int|null>,
     "agent_status": "working" | "idle",
     "cwd_dirty": <bool>,
     "cwd_unpushed": <bool>,
     "is_protected": <bool>,
-    "screen_text": "<live terminal viewport+scrollback>",
+    "screen_text": "<live AGENT-pane viewport+scrollback>",
     "screen_shows_error": <bool>
   }
 
-`screen_text` is the live cmux terminal of the workspace, read by ws_ref —
-it cannot be misattributed the way `transcript_path` can (the transcript
-picker has resolved to the WRONG session when a workspace hosts both an
-interactive session and a headless-pulse jsonl; ws:12, 2026-06-05). It is
-the ground-truth of what the agent is showing RIGHT NOW. The Observer is
-told to trust it over transcript-derived signals on conflict.
+Two signals harden this against the ws:12 (2026-06-05) misattribution bug,
+where a workspace hosting both an interactive session and a headless comms
+pulse made find_transcript()'s mtime/cwd heuristic pick a different stranger's
+jsonl every pulse:
+
+  - `screen_text` is the live terminal of the CLAUDE AGENT pane (selected by
+    its status-bar signature, not just whatever pane is focused), so a split
+    workspace's shell/dev-server pane can't masquerade as the agent.
+  - `transcript_path` is resolved FIRST from the session-id the agent stamps
+    on its own status bar (`#<8hex>`) — exact, no guessing — and only falls
+    back to the old heuristic when that id isn't on screen. `transcript_source`
+    records which path was used so the Observer (and audits) can see when a
+    verdict rests on a guessed transcript.
+
+The Observer is still told to trust the screen over transcript-derived signals
+on conflict — the screen is what the agent is showing RIGHT NOW.
 """
 from __future__ import annotations
 
@@ -51,32 +63,160 @@ CMUX_BIN = os.environ.get(
 # ~40 lines; 120 gives margin for a recap that scrolled up a little.
 SCREEN_LINES = 120
 
-# Markers that mean "the live screen is showing a halted/error state the
-# transcript may not reflect". Matched case-insensitively against screen_text.
-# Kept deliberately tight — these are unambiguous halt states, not normal
-# mid-work output, so a true hit is strong evidence the agent is stranded
-# regardless of what transcript_path resolved to.
-_ERROR_SCREEN_MARKERS = (
-    "API Error",
-    "The system encountered an unexpected error",
-    "Request timed out",
-    "overloaded_error",
-    "rate_limit",
-    "Connection error",
-    "fatal:",          # surfaced git failure left on screen
-    "Traceback (most recent call last)",
+# Patterns that mean "the live screen is showing a halted/error state the
+# transcript may not reflect" — a Claude turn that ENDED on an error.
+#
+# These MUST be anchored to how Claude Code renders a halt, not loose
+# substrings: an agent that is merely *discussing* or *editing* the words
+# "API Error" / "Traceback" (e.g. this very session, debugging the detector)
+# would otherwise trip a spurious `stranded` nudge. The real tell is the
+# assistant-turn bullet `⏺ ` immediately followed by the error text — that's
+# the agent's OWN last output being an error, which is what strands it.
+# Matched per-line, case-insensitive, against screen_text.
+_ERROR_LINE_RE = re.compile(
+    r"""^\s*               # leading indent cmux may render
+        [⏺·∙•*]\s*         # the assistant-turn bullet glyph
+        (?:                # …immediately followed by an error envelope:
+            api\ error\b
+          | request\ timed\ out\b
+          | (?:the\ )?system\ encountered\ an\ unexpected\ error
+          | overloaded(?:_error)?\b
+          | rate[\ _]limit(?:_error)?\b
+          | connection\ error\b
+        )
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
-def read_screen_text(ws_ref: str, lines: int = SCREEN_LINES) -> str:
-    """Read the live cmux terminal for ws_ref as plain text.
+# The Claude Code status bar prints the running session-id prefix as `#<8hex>`
+# (e.g. `… │ $9.55 │ #6fb0c668`). This is the agent telling us its OWN session,
+# so it's the ground truth for (a) which pane in a split workspace is the agent
+# and (b) which transcript on disk is really this session's — both of which the
+# mtime/cwd heuristics in find_transcript() get wrong when a workspace has more
+# than one jsonl in scope (ws:12, 2026-06-05: a headless comms pulse kept
+# writing transcripts into the same project dir, so find_transcript() picked a
+# different stranger's jsonl every pulse). We trust the on-screen id over the
+# heuristic whenever it's present.
+_SESSION_ID_RE = re.compile(r"#([0-9a-f]{8})\b")
+# A pane is the Claude agent if its screen carries any of these. The session-id
+# stamp is the strongest (present idle AND working); the others catch a pane
+# that's still booting or whose status bar scrolled off the read window.
+_CLAUDE_PANE_MARKERS = (
+    "bypass permissions on",
+    "Claude Code v",
+    "esc to interrupt",
+    "⏵⏵",
+)
 
-    Targets the workspace by ref — this is the one ground-truth that can't be
-    misattributed to the wrong session. Returns '' on any failure (cmux down,
-    workspace gone, RPC error); an empty screen is never treated as evidence.
+
+def _read_surface(surface_ref: str, ws_ref: str, lines: int = SCREEN_LINES) -> str:
+    """Read one surface. A surface ref needs a window context to resolve, and
+    the workspace ref supplies it (`read-screen --surface S --workspace W`).
+    Returns '' for a non-terminal surface (browser/markdown pane) or any error
+    — those carry no agent signal."""
+    if not surface_ref:
+        return ""
+    try:
+        r = subprocess.run(
+            [CMUX_BIN, "read-screen", "--surface", surface_ref,
+             "--workspace", ws_ref, "--scrollback", "--lines", str(lines)],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return ""
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
+def _list_surfaces(ws_ref: str) -> list[str]:
+    """Surface refs for a workspace, in cmux's listing order. The
+    `[selected]`-marked one (if any) is moved to the front so single-read
+    callers and tie-breaks prefer the focused pane."""
+    if not ws_ref:
+        return []
+    try:
+        r = subprocess.run(
+            [CMUX_BIN, "list-pane-surfaces", "--workspace", ws_ref],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return []
+    if r.returncode != 0:
+        return []
+    surfaces, selected = [], None
+    for line in r.stdout.splitlines():
+        m = re.search(r"surface:\d+", line)
+        if not m:
+            continue
+        ref = m.group(0)
+        surfaces.append(ref)
+        if "[selected]" in line:
+            selected = ref
+    if selected and surfaces and surfaces[0] != selected:
+        surfaces.remove(selected)
+        surfaces.insert(0, selected)
+    return surfaces
+
+
+def _is_claude_pane(text: str) -> bool:
+    if not text:
+        return False
+    if _SESSION_ID_RE.search(text):
+        return True
+    return any(m in text for m in _CLAUDE_PANE_MARKERS)
+
+
+def _bound(text: str) -> str:
+    # Bound the payload: 120 lines of terminal is plenty for state detection,
+    # but a wide terminal can still be large, and several go inline into the
+    # Observer batch prompt. Keep the TAIL (most recent output — where the
+    # recap / error / spinner lives) if it's oversized.
+    MAX_CHARS = 12000
+    if len(text) > MAX_CHARS:
+        return "…[earlier screen truncated]…\n" + text[-MAX_CHARS:]
+    return text
+
+
+def read_agent_screen(ws_ref: str, lines: int = SCREEN_LINES) -> tuple[str, str | None]:
+    """Read the live terminal of the CLAUDE AGENT pane for ws_ref.
+
+    A workspace can hold more than one pane (agent + a shell/dev-server). We
+    enumerate surfaces and return the one that looks like a Claude session, so
+    the screen we hand the Observer is the AGENT's, not whatever pane happens
+    to be selected. Returns (screen_text, session_id8):
+
+      - screen_text: bounded agent-pane text, or '' if no pane could be read.
+      - session_id8: the 8-hex session-id prefix the agent stamps on its
+        status bar, or None if not visible (e.g. headless / booting).
+
+    Falls back to the first/selected surface when no pane self-identifies as
+    Claude, so a still-booting agent (banner not yet rendered) isn't dropped.
     """
     if not ws_ref:
-        return ""
+        return "", None
+    surfaces = _list_surfaces(ws_ref)
+    if not surfaces:
+        # cmux too old for list-pane-surfaces, or no panes: fall back to the
+        # workspace-level read (the original behavior).
+        text = _read_surface_via_workspace(ws_ref, lines)
+        return _bound(text), _session_id_from(text)
+
+    first_text = ""
+    for ref in surfaces:
+        text = _read_surface(ref, ws_ref, lines)
+        if not first_text and text:
+            first_text = text
+        if _is_claude_pane(text):
+            return _bound(text), _session_id_from(text)
+    # No pane self-identified as Claude — use the first non-empty (selected
+    # is already at index 0). Better a maybe-wrong screen than none, but it
+    # won't carry a session id, so transcript resolution falls back too.
+    return _bound(first_text), _session_id_from(first_text)
+
+
+def _read_surface_via_workspace(ws_ref: str, lines: int = SCREEN_LINES) -> str:
+    """Workspace-scoped read (selected surface) — fallback when surface
+    enumeration is unavailable."""
     try:
         r = subprocess.run(
             [CMUX_BIN, "read-screen", "--workspace", ws_ref,
@@ -85,22 +225,38 @@ def read_screen_text(ws_ref: str, lines: int = SCREEN_LINES) -> str:
         )
     except Exception:
         return ""
-    if r.returncode != 0:
-        return ""
-    text = (r.stdout or "").strip()
-    # Bound the payload: 120 lines of terminal is plenty for state detection,
-    # but a wide terminal can still be large, and 5 of these go inline into the
-    # Observer batch prompt. Keep the TAIL (most recent output — where the
-    # recap / error / spinner lives) if it's oversized.
-    MAX_CHARS = 12000
-    if len(text) > MAX_CHARS:
-        text = "…[earlier screen truncated]…\n" + text[-MAX_CHARS:]
-    return text
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
+def _session_id_from(screen_text: str) -> str | None:
+    m = _SESSION_ID_RE.search(screen_text or "")
+    return m.group(1) if m else None
+
+
+def transcript_from_session_id(sid8: str | None) -> str | None:
+    """Resolve a session-id prefix to its transcript jsonl by globbing every
+    project dir. This is exact: the agent printed this id, so the file named
+    <sid>*.jsonl IS its transcript — no mtime/cwd guessing. Newest match wins
+    on the (vanishingly rare) 8-hex prefix collision."""
+    if not sid8:
+        return None
+    projects = HOME / ".claude/projects"
+    if not projects.is_dir():
+        return None
+    matches = [str(p) for p in projects.glob(f"*/{sid8}*.jsonl")]
+    if not matches:
+        return None
+    return max(matches, key=os.path.getmtime)
 
 
 def screen_shows_error(screen_text: str) -> bool:
-    low = (screen_text or "").lower()
-    return any(m.lower() in low for m in _ERROR_SCREEN_MARKERS)
+    """True when a LINE of the screen is an assistant turn that ended on an
+    error banner (`⏺ API Error: …`). Deliberately does NOT match the words
+    appearing inside prose or edited code — only the rendered halt — so a
+    session discussing errors isn't flagged as stranded on one."""
+    if not screen_text:
+        return False
+    return any(_ERROR_LINE_RE.match(line) for line in screen_text.splitlines())
 
 
 def find_transcript(ws_ref: str, title: str, cwd: str | None) -> str | None:
@@ -260,16 +416,30 @@ def main() -> int:
     ap.add_argument("--cwd", default="")
     args = ap.parse_args()
 
-    transcript = find_transcript(args.ws_ref, args.title, args.cwd or None)
+    # Read the AGENT pane's screen first — it carries the session-id stamp,
+    # which is the ground truth for which transcript is really this session's.
+    screen, sid8 = read_agent_screen(args.ws_ref)
+
+    # Transcript resolution, best signal first:
+    #   1. the session id the agent printed on its own status bar (exact), then
+    #   2. the registry/cwd heuristic (mtime-guessing — wrong when a workspace
+    #      has multiple jsonls in scope, which is exactly the ws:12 bug).
+    transcript = transcript_from_session_id(sid8)
+    transcript_source = "screen_session_id" if transcript else None
+    if not transcript:
+        transcript = find_transcript(args.ws_ref, args.title, args.cwd or None)
+        transcript_source = "heuristic" if transcript else None
+
     age, agent_status = transcript_signals(transcript)
     dirty, unpushed = cwd_state(args.cwd)
-    screen = read_screen_text(args.ws_ref)
 
     payload = {
         "ws_ref": args.ws_ref,
         "title": args.title,
         "cwd": args.cwd,
         "transcript_path": transcript,
+        "transcript_source": transcript_source,
+        "session_id8": sid8,
         "last_turn_age_sec": age,
         "agent_status": agent_status,
         "cwd_dirty": dirty,

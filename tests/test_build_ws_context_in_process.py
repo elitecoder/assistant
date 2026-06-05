@@ -287,9 +287,19 @@ class CwdStateTests(unittest.TestCase):
         self.assertTrue(d)
 
 
-class ReadScreenTests(unittest.TestCase):
-    """The screen read is the ws:12 fix: a workspace-ref-keyed signal that
-    can't be misattributed to the wrong session the way transcript_path can."""
+class ReadAgentScreenTests(unittest.TestCase):
+    """read_agent_screen picks the CLAUDE pane out of a multi-pane workspace
+    and extracts the on-screen session id — the ws:12 hardening so a split
+    workspace's shell/dev-server pane can't masquerade as the agent, and so
+    the transcript resolves from the id the agent prints, not an mtime guess."""
+
+    # A realistic claude status bar (carries the #<8hex> session stamp).
+    CLAUDE_PANE = (
+        "❯ \n"
+        "  assistant main │ ●3 ●1 │ context 39% │ $42.20 │ #6fb0c668\n"
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    )
+    SHELL_PANE = "$ tail -f server.log\n  GET /api 200 12ms\n  GET /api 200 9ms"
 
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
@@ -301,42 +311,126 @@ class ReadScreenTests(unittest.TestCase):
 
     def test_empty_ws_ref_returns_empty_without_shelling_out(self):
         with mock.patch.object(self.mod.subprocess, "run") as run:
-            self.assertEqual(self.mod.read_screen_text(""), "")
+            self.assertEqual(self.mod.read_agent_screen(""), ("", None))
             run.assert_not_called()
 
-    def test_returns_stripped_stdout_on_success(self):
-        fake = mock.Mock(returncode=0, stdout="  hello screen  \n")
-        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
-            self.assertEqual(self.mod.read_screen_text("workspace:1"), "hello screen")
+    def test_picks_claude_pane_over_shell_pane(self):
+        # Two surfaces; the shell pane is listed/selected first, the claude
+        # pane second. The agent pane must still win.
+        with mock.patch.object(self.mod, "_list_surfaces",
+                               return_value=["surface:1", "surface:2"]):
+            with mock.patch.object(
+                    self.mod, "_read_surface",
+                    side_effect=lambda s, w, lines=120: (
+                        self.SHELL_PANE if s == "surface:1" else self.CLAUDE_PANE)):
+                text, sid = self.mod.read_agent_screen("workspace:9")
+        self.assertIn("bypass permissions", text)
+        self.assertEqual(sid, "6fb0c668")
 
-    def test_nonzero_rc_returns_empty(self):
-        fake = mock.Mock(returncode=1, stdout="garbage")
-        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
-            self.assertEqual(self.mod.read_screen_text("workspace:1"), "")
+    def test_no_claude_pane_falls_back_to_first_nonempty(self):
+        # No pane self-identifies as claude → first non-empty text, no sid.
+        with mock.patch.object(self.mod, "_list_surfaces",
+                               return_value=["surface:1", "surface:2"]):
+            with mock.patch.object(
+                    self.mod, "_read_surface",
+                    side_effect=lambda s, w, lines=120: (
+                        "" if s == "surface:1" else self.SHELL_PANE)):
+                text, sid = self.mod.read_agent_screen("workspace:9")
+        self.assertEqual(text, self.SHELL_PANE)
+        self.assertIsNone(sid)
 
-    def test_exception_returns_empty(self):
-        with mock.patch.object(self.mod.subprocess, "run",
-                               side_effect=subprocess.TimeoutExpired("cmux", 15)):
-            self.assertEqual(self.mod.read_screen_text("workspace:1"), "")
+    def test_no_surfaces_falls_back_to_workspace_read(self):
+        with mock.patch.object(self.mod, "_list_surfaces", return_value=[]):
+            with mock.patch.object(self.mod, "_read_surface_via_workspace",
+                                   return_value=self.CLAUDE_PANE) as wsread:
+                text, sid = self.mod.read_agent_screen("workspace:12")
+        wsread.assert_called_once()
+        self.assertEqual(sid, "6fb0c668")
 
-    def test_oversized_screen_keeps_tail(self):
-        big = "X" * 20000 + "TAIL_MARKER"
-        fake = mock.Mock(returncode=0, stdout=big)
-        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
-            out = self.mod.read_screen_text("workspace:1")
-        self.assertLess(len(out), 13000)
-        self.assertIn("TAIL_MARKER", out)
-        self.assertIn("earlier screen truncated", out)
+    def test_oversized_agent_pane_keeps_tail(self):
+        big = "X" * 20000 + "\n#6fb0c668 TAIL"
+        with mock.patch.object(self.mod, "_list_surfaces", return_value=["surface:1"]):
+            with mock.patch.object(self.mod, "_read_surface", return_value=big):
+                text, sid = self.mod.read_agent_screen("workspace:9")
+        self.assertLess(len(text), 13000)
+        self.assertIn("TAIL", text)
+        self.assertIn("earlier screen truncated", text)
+        self.assertEqual(sid, "6fb0c668")
 
-    def test_targets_workspace_ref_with_scrollback(self):
+
+class ReadSurfaceTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_passes_window_context_and_scrollback(self):
+        # A surface ref needs --workspace as window context, or cmux can't
+        # resolve it ("Surface is not a terminal" without it).
         fake = mock.Mock(returncode=0, stdout="ok")
         with mock.patch.object(self.mod.subprocess, "run", return_value=fake) as run:
-            self.mod.read_screen_text("workspace:12")
+            self.mod._read_surface("surface:15", "workspace:12")
         argv = run.call_args[0][0]
-        self.assertIn("read-screen", argv)
+        self.assertIn("--surface", argv)
+        self.assertIn("surface:15", argv)
         self.assertIn("--workspace", argv)
         self.assertIn("workspace:12", argv)
         self.assertIn("--scrollback", argv)
+
+    def test_nonterminal_surface_returns_empty(self):
+        # cmux errors rc!=0 for a browser/markdown surface → "".
+        fake = mock.Mock(returncode=1, stdout="Error: Surface is not a terminal")
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            self.assertEqual(self.mod._read_surface("surface:15", "workspace:12"), "")
+
+    def test_list_surfaces_moves_selected_to_front(self):
+        out = ("  surface:1  shell\n"
+               "* surface:2  claude  [selected]\n"
+               "  surface:3  logs\n")
+        fake = mock.Mock(returncode=0, stdout=out)
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            refs = self.mod._list_surfaces("workspace:9")
+        self.assertEqual(refs[0], "surface:2")
+        self.assertEqual(set(refs), {"surface:1", "surface:2", "surface:3"})
+
+
+class TranscriptResolutionTests(unittest.TestCase):
+    """The actual ws:12 fix: resolve the transcript from the session id the
+    agent prints, not the mtime/cwd heuristic that picked a stranger's jsonl."""
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_resolves_exact_session_jsonl(self):
+        proj = self._tmp / ".claude/projects/-Users-x-dev"
+        proj.mkdir(parents=True)
+        tp = proj / "6fb0c668-7134-4060-bcf1-6c509c9983cd.jsonl"
+        tp.write_text("{}")
+        # A decoy in another project dir with a different id.
+        proj2 = self._tmp / ".claude/projects/-Users-x-dev-assistant"
+        proj2.mkdir(parents=True)
+        (proj2 / "b5f8d913-aaaa-bbbb-cccc-dddddddddddd.jsonl").write_text("{}")
+        self.assertEqual(self.mod.transcript_from_session_id("6fb0c668"), str(tp))
+
+    def test_none_when_no_match(self):
+        self.assertIsNone(self.mod.transcript_from_session_id("deadbeef"))
+
+    def test_none_for_null_sid(self):
+        self.assertIsNone(self.mod.transcript_from_session_id(None))
+
+    def test_session_id_from_status_bar(self):
+        self.assertEqual(
+            self.mod._session_id_from("… │ $42.20 │ #6fb0c668\n⏵⏵ bypass"),
+            "6fb0c668")
+        self.assertIsNone(self.mod._session_id_from("no id here"))
 
 
 class ScreenShowsErrorTests(unittest.TestCase):
@@ -348,15 +442,33 @@ class ScreenShowsErrorTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def test_detects_api_error(self):
-        # The literal ws:12 banner that the transcript tail did NOT show.
+    def test_detects_api_error_banner(self):
+        # The literal ws:12 banner: an assistant turn (⏺) that ended on the error.
         self.assertTrue(self.mod.screen_shows_error(
             "⏺ API Error: The system encountered an unexpected error during processing."))
 
-    def test_detects_timeout_and_traceback(self):
-        self.assertTrue(self.mod.screen_shows_error("Request timed out after 240s"))
-        self.assertTrue(self.mod.screen_shows_error(
-            "Traceback (most recent call last):\n  File ..."))
+    def test_detects_banner_amid_other_lines(self):
+        screen = ("  some earlier output\n"
+                  "⏺ Request timed out after 240s\n"
+                  "❯ ")
+        self.assertTrue(self.mod.screen_shows_error(screen))
+
+    def test_detects_overloaded_and_rate_limit_banners(self):
+        self.assertTrue(self.mod.screen_shows_error("⏺ overloaded_error: try again"))
+        self.assertTrue(self.mod.screen_shows_error("· Rate limit reached"))
+
+    def test_prose_mentioning_errors_is_not_flagged(self):
+        # The false-positive this anchoring fixes: an agent DISCUSSING errors
+        # (e.g. this very session, or a recap) must not look stranded.
+        self.assertFalse(self.mod.screen_shows_error(
+            "I think the API Error we saw earlier was transient — retried fine."))
+        self.assertFalse(self.mod.screen_shows_error(
+            "  - screen_shows_error: true when the screen shows an API error banner"))
+
+    def test_edited_code_with_error_strings_is_not_flagged(self):
+        # A diff/editor view containing the literal strings must not trip it.
+        self.assertFalse(self.mod.screen_shows_error(
+            '    raise RuntimeError("API Error")\n    # Traceback (most recent call last)'))
 
     def test_clean_recap_is_not_error(self):
         self.assertFalse(self.mod.screen_shows_error(
@@ -376,21 +488,24 @@ class MainTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def test_main_emits_full_payload(self):
-        sys.argv = ["build-ws-context.py",
-                    "--ws-ref", "workspace:3",  # in PROTECTED_REFS
-                    "--title", "title",
-                    "--cwd", "/no/such-dir"]
+    def _run_main(self, ws_ref, title, cwd, screen=("", None)):
+        sys.argv = ["build-ws-context.py", "--ws-ref", ws_ref,
+                    "--title", title, "--cwd", cwd]
         captured = io.StringIO()
         # Keep main() hermetic — never read a live cmux screen in tests.
-        with mock.patch.object(self.mod, "read_screen_text", return_value=""), \
+        with mock.patch.object(self.mod, "read_agent_screen", return_value=screen), \
                 mock.patch("sys.stdout", captured):
             rc = self.mod.main()
+        return rc, json.loads(captured.getvalue())
+
+    def test_main_emits_full_payload(self):
+        rc, d = self._run_main("workspace:3", "title", "/no/such-dir")  # protected
         self.assertEqual(rc, 0)
-        d = json.loads(captured.getvalue())
         self.assertEqual(d["ws_ref"], "workspace:3")
         self.assertTrue(d["is_protected"])
         self.assertIsNone(d["transcript_path"])
+        self.assertIsNone(d["transcript_source"])
+        self.assertIsNone(d["session_id8"])
         # cwd doesn't exist → dirty/unpushed both false.
         self.assertFalse(d["cwd_dirty"])
         self.assertFalse(d["cwd_unpushed"])
@@ -399,33 +514,48 @@ class MainTests(unittest.TestCase):
         self.assertFalse(d["screen_shows_error"])
 
     def test_main_surfaces_screen_error_flag(self):
-        # The ws:12 regression: transcript_path is null/wrong, but the live
-        # screen shows an API error → screen_shows_error must reach the Observer.
-        sys.argv = ["build-ws-context.py",
-                    "--ws-ref", "workspace:12",
-                    "--title", "telegram-comms (resumed) [12]",
-                    "--cwd", ""]
-        captured = io.StringIO()
-        with mock.patch.object(self.mod, "read_screen_text",
-                               return_value="⏺ API Error: unexpected error"), \
-                mock.patch("sys.stdout", captured):
-            rc = self.mod.main()
+        # The live screen shows an API error → screen_shows_error must reach
+        # the Observer even though no session id / transcript was found.
+        rc, d = self._run_main(
+            "workspace:12", "telegram-comms (resumed) [12]", "",
+            screen=("⏺ API Error: unexpected error", None))
         self.assertEqual(rc, 0)
-        d = json.loads(captured.getvalue())
         self.assertTrue(d["screen_shows_error"])
         self.assertIn("API Error", d["screen_text"])
 
-    def test_unprotected_ref_marked_correctly(self):
-        sys.argv = ["build-ws-context.py",
-                    "--ws-ref", "workspace:42",
-                    "--title", "title",
-                    "--cwd", ""]
-        captured = io.StringIO()
-        with mock.patch.object(self.mod, "read_screen_text", return_value=""), \
-                mock.patch("sys.stdout", captured):
-            rc = self.mod.main()
+    def test_main_prefers_screen_session_id_over_heuristic(self):
+        # The core ws:12 fix end-to-end: the agent's on-screen session id
+        # resolves the transcript exactly; the mtime/cwd heuristic is NOT used.
+        proj = self._tmp / ".claude/projects/-Users-x-dev"
+        proj.mkdir(parents=True)
+        tp = proj / "6fb0c668-7134-4060-bcf1-6c509c9983cd.jsonl"
+        tp.write_text('{"message":{"content":[{"type":"text","text":"hi"}]}}\n')
+        with mock.patch.object(self.mod, "find_transcript") as heuristic:
+            heuristic.return_value = "/should/not/be/used.jsonl"
+            rc, d = self._run_main(
+                "workspace:12", "telegram-comms (resumed) [12]", "/Users/x/dev",
+                screen=("… │ $42.20 │ #6fb0c668\n⏵⏵ bypass permissions on", "6fb0c668"))
         self.assertEqual(rc, 0)
-        d = json.loads(captured.getvalue())
+        self.assertEqual(d["transcript_path"], str(tp))
+        self.assertEqual(d["transcript_source"], "screen_session_id")
+        self.assertEqual(d["session_id8"], "6fb0c668")
+        heuristic.assert_not_called()  # screen id won; heuristic never consulted
+
+    def test_main_falls_back_to_heuristic_when_no_session_id(self):
+        with mock.patch.object(self.mod, "find_transcript",
+                               return_value="/tmp/guessed.jsonl") as heuristic:
+            with mock.patch.object(self.mod, "transcript_signals",
+                                   return_value=(10, "idle")):
+                rc, d = self._run_main(
+                    "workspace:9", "td-007 task", "/Users/x/dev",
+                    screen=("some shell output, no claude id", None))
+        self.assertEqual(d["transcript_path"], "/tmp/guessed.jsonl")
+        self.assertEqual(d["transcript_source"], "heuristic")
+        heuristic.assert_called_once()
+
+    def test_unprotected_ref_marked_correctly(self):
+        rc, d = self._run_main("workspace:42", "title", "")
+        self.assertEqual(rc, 0)
         self.assertFalse(d["is_protected"])
 
 
