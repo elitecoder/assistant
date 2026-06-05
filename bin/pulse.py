@@ -758,9 +758,10 @@ def dispatch_todo(todo_id: str) -> bool:
         return False
 
     # cmux must be up.
-    rc, _, _ = run([CMUX_BIN, "ping"], timeout=10)
+    rc, _pout, _perr = run([CMUX_BIN, "ping"], timeout=10)
     if rc != 0:
-        log.warning("dispatch %s: cmux not running — skipping", todo_id)
+        log.warning("dispatch %s: cmux not running — skipping (ping rc=%s bin=%s stderr=%r)",
+                    todo_id, rc, CMUX_BIN, (_perr or "")[:300])
         return False
 
     # 1. Stage the prompt on disk. 7-day sweep, then a per-todo stamped file.
