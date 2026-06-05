@@ -39,19 +39,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import comms_lib  # noqa: E402
+import comms_session  # noqa: E402
 
 HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
-BOOT_PROMPT = REPO / "prompts" / "prompt-assistant-comms-agent.md"
+WARM_PROMPT = REPO / "prompts" / "prompt-assistant-comms-warm.md"
+
+REPLY_WAIT_SEC = int(os.environ.get("COMMS_REPLY_WAIT_SEC", "120"))
 
 TG_POLL = BIN / "tg-poll.py"
 TG_SEND = BIN / "tg-send.py"
 CONVERSATION = BIN / "conversation.py"
-
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
-REPLY_MODEL = os.environ.get("COMMS_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
-REPLY_TIMEOUT_SEC = int(os.environ.get("COMMS_REPLY_TIMEOUT_SEC", "180"))
 
 LONGPOLL_TIMEOUT = int(os.environ.get("COMMS_LONGPOLL_SEC", "25"))
 LEDGER_POLL_SEC = float(os.environ.get("COMMS_LEDGER_POLL_SEC", "2"))
@@ -89,16 +88,30 @@ def cli(argv: list[str], timeout: int = 30, env: dict | None = None) -> tuple[in
 
 # --------------------------------------------------------------------------- inbound
 
-def reply_to_message(rec: dict, env: dict) -> None:
-    """Phase 1 reply engine: cold-spawn claude --print to answer one message.
-    Records the inbound turn first (so even if claude dies, the message is in
-    the conversation log), then the reply."""
+# The warm session record (ws_ref/surface_ref/cwd/transcript) lives on disk in
+# session.json; the inbound loop holds it in memory and re-ensures it as needed.
+
+def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
+    """Return a live warm-session record, spawning one if none is alive."""
+    sess = comms_session.read_session(paths)
+    if sess and comms_session.cmux_alive(paths, sess["ws_ref"]):
+        return sess
+    if sess:
+        log(f"warm session {sess['ws_ref']} gone — respawning")
+        comms_session.clear_session_registry(paths)
+    return comms_session.spawn_session(paths, WARM_PROMPT, log=log)
+
+
+def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
+    """Warm reply: record inbound, feed the message to the warm session, wait
+    for its reply turn in the transcript, then /clear if context >= 50%.
+    Returns the (possibly refreshed) session record."""
     chat_id = rec["chat_id"]
     text = rec.get("text", "")
     msg_id = rec.get("msg_id")
     reply_to = rec.get("reply_to_msg_id")
 
-    # Record inbound turn.
+    # Record the inbound turn first — survives even if the session stalls.
     in_args = [str(CONVERSATION), "append", "--chat", str(chat_id),
                "--direction", "in", "--text", text]
     if msg_id is not None:
@@ -107,39 +120,44 @@ def reply_to_message(rec: dict, env: dict) -> None:
         in_args += ["--reply-to", str(reply_to)]
     cli(in_args, timeout=10)
 
-    prompt = (
-        f"You are assistant-comms answering ONE inbound Telegram message, "
-        f"conversationally. Read {BOOT_PROMPT} for your role and tools. The "
-        f"message (chat_id={chat_id}, msg_id={msg_id}, reply_to={reply_to}):\n\n"
-        f"{text}\n\n"
-        f"Reconstruct context with `{CONVERSATION} window --chat {chat_id}`. "
-        f"If reply_to is set, resolve it with `{BIN}/lookup-thread.py --tg-msg "
-        f"{reply_to} --include-ledger`. Then send your reply with "
-        f"`{TG_SEND} --text \"...\" --chat {chat_id} --kind reply "
-        f"--reply-to {msg_id}`, and record it with `{CONVERSATION} append "
-        f"--chat {chat_id} --direction out --text \"...\" --kind reply "
-        f"--reply-to {msg_id} --msg-id <the message_id tg-send printed>`. "
-        f"Do exactly that, then stop."
+    transcript = sess.get("transcript_path") or comms_session.newest_transcript(sess["cwd"])
+    before_lines = comms_session.transcript_line_count(transcript) if transcript else 0
+
+    # Feed the message as a user turn. The warm session's boot prompt tells it
+    # how to reconstruct context, reply via tg-send, and record the out turn.
+    feed_text = (
+        f"[telegram chat_id={chat_id} msg_id={msg_id} reply_to={reply_to}] {text}"
     )
-    cmd = [
-        CLAUDE_BIN, "--model", REPLY_MODEL, "--dangerously-skip-permissions",
-        "--print", "--add-dir", str(REPO), "--add-dir", str(HOME / ".assistant"),
-        "--add-dir", str(HOME / ".claude"), "--add-dir", "/tmp",
-    ]
     t0 = time.time()
-    try:
-        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                             timeout=REPLY_TIMEOUT_SEC, env=env)
-        rc = proc.returncode
-    except subprocess.TimeoutExpired:
-        rc = 124
-    except Exception:  # noqa: BLE001
-        rc = 1
-    log(f"reply chat={chat_id} msg={msg_id} rc={rc} wall_ms={int((time.time()-t0)*1000)}")
+    comms_session.feed(paths, sess["surface_ref"], feed_text)
+
+    # Wait for the session to produce a new assistant turn (transcript grows).
+    grew = False
+    while time.time() - t0 < REPLY_WAIT_SEC:
+        time.sleep(2)
+        if transcript and comms_session.transcript_line_count(transcript) > before_lines:
+            grew = True
+            break
+        if not transcript:
+            transcript = comms_session.newest_transcript(sess["cwd"])
+    log(f"reply chat={chat_id} msg={msg_id} grew={grew} wall_ms={int((time.time()-t0)*1000)}")
+
+    # Context management: /clear at >= 50% so the next reply stays fast.
+    if transcript and comms_session.should_clear(transcript):
+        log(f"context >= {int(comms_session.CLEAR_THRESHOLD*100)}% — /clear")
+        comms_session.clear_session(paths, sess["surface_ref"])
+
+    if transcript and transcript != sess.get("transcript_path"):
+        comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
+                                    sess["cwd"], transcript)
+        sess = comms_session.read_session(paths) or sess
+    return sess
 
 
 def inbound_loop(stop: threading.Event, env: dict) -> None:
-    log("inbound loop started (long-poll)")
+    log("inbound loop started (long-poll, warm session)")
+    paths = comms_lib.Paths.from_env()
+    sess = ensure_warm_session(paths)
     while not stop.is_set():
         rc, out, err = cli([str(TG_POLL), "--timeout", str(LONGPOLL_TIMEOUT)],
                            timeout=LONGPOLL_TIMEOUT + 15, env=env)
@@ -157,7 +175,11 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
                 break
             log(f"inbound chat={rec.get('chat_id')} msg={rec.get('msg_id')} "
                 f"text={rec.get('text','')[:80]!r}")
-            reply_to_message(rec, env)
+            sess = ensure_warm_session(paths)
+            if not sess:
+                log("no warm session available — cannot reply this message")
+                continue
+            sess = reply_to_message(paths, sess, rec)
 
 
 # --------------------------------------------------------------------------- outbound pings
@@ -179,6 +201,13 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
             if outcome == "skipped":
                 continue  # no work happened
             key = entry.get("key", "")
+            # Only broadcast urgent events — routine noops and emit-cards are
+            # surfaced by the warm session when asked. This keeps the channel
+            # owned by the warm responder, not the daemon.
+            kind = entry.get("kind", "")
+            if kind in ("noop",):
+                log(f"suppressed noop broadcast key={key}")
+                continue
             body = comms_lib.fmt_action_line(entry)
             rc, out, err = cli(
                 [str(TG_SEND), "--text", body, "--kind", "action",
@@ -237,14 +266,39 @@ def heartbeat_loop(stop: threading.Event, env: dict) -> None:
 
 # --------------------------------------------------------------------------- main
 
+def acquire_singleton(paths: comms_lib.Paths):
+    """flock a pidfile so only ONE daemon runs. Two long-pollers against the
+    same bot token collide with Telegram 409 'terminated by other getUpdates'
+    and neither works (observed 2026-06-05). flock auto-releases when the
+    holder dies, so a crash never leaves a stuck lock. Returns the open file
+    handle (keep it alive for the process lifetime) or None if held."""
+    import fcntl
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    lockfile = paths.comms_dir / "comms-listen.pid"
+    fh = open(lockfile, "w")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
 def main() -> int:
     paths = comms_lib.Paths.from_env()
     if not paths.config.exists():
         log(f"no config at {paths.config} — run assistant-comms-setup.sh first")
         return 1
-    if not BOOT_PROMPT.exists():
-        log(f"missing boot prompt at {BOOT_PROMPT}")
+    if not WARM_PROMPT.exists():
+        log(f"missing warm responder prompt at {WARM_PROMPT}")
         return 1
+
+    lock = acquire_singleton(paths)
+    if lock is None:
+        log("another comms-listen already holds the lock — exiting")
+        return 0
 
     env = dict(os.environ)
     for k, v in comms_lib.load_bedrock_env().items():
