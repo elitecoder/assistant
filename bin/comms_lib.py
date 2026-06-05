@@ -32,6 +32,7 @@ class Paths:
     tg_cursor: Path              # Telegram update_id offset
     daemon_hb: Path              # comms session's own heartbeat (Claude writes this)
     threads: Path                # threads.jsonl (sent_msg_id <-> ledger_key)
+    conversation: Path           # conversation.jsonl (durable chat memory, both directions)
     free_text_log: Path          # any inbound TG text Claude couldn't classify
     terminal_tab: Path           # records osascript tab id of the comms Terminal window
     curator: Path
@@ -59,6 +60,7 @@ class Paths:
             tg_cursor=comms_dir / "tg.cursor",
             daemon_hb=comms_dir / "heartbeat.json",
             threads=comms_dir / "threads.jsonl",
+            conversation=comms_dir / "conversation.jsonl",
             free_text_log=comms_dir / "free-text.log",
             terminal_tab=comms_dir / "terminal-tab.txt",
             curator=bin_dir / "assistant-curator.py",
@@ -303,6 +305,72 @@ def lookup_thread_by_ledger_key(paths: Paths, ledger_key: str) -> list[dict[str,
             if rec.get("ledger_key") == ledger_key:
                 out.append(rec)
     return out
+
+
+# --------------------------------------------------------------------------- conversation.jsonl
+#
+# Durable chat memory. The comms Claude session treats its context window as
+# disposable scratch — every turn it reconstructs the recent thread from this
+# file. So a crash, /clear, or auto-compact loses nothing: the conversation
+# picks up exactly where it left off. One JSONL row per turn, both directions.
+
+def append_conversation_turn(paths: Paths, chat_id: int, msg_id: int | None,
+                             direction: str, text: str,
+                             reply_to: int | None = None,
+                             kind: str | None = None, clock=None) -> None:
+    """Append one turn (inbound or outbound) to conversation.jsonl.
+
+    direction: "in" (from the user) or "out" (from comms).
+    msg_id:    the Telegram message_id, or None if not yet known.
+    reply_to:  the message_id this turn was a reply to, if any.
+    kind:      optional tag (e.g. action/urgent/reply/info for outbound).
+    """
+    if direction not in ("in", "out"):
+        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    epoch = clock() if clock else int(time.time())
+    rec = {
+        "ts": now_iso(clock),
+        "epoch": epoch,
+        "chat_id": chat_id,
+        "msg_id": msg_id,
+        "reply_to": reply_to,
+        "direction": direction,
+        "text": text,
+        "kind": kind,
+    }
+    with open(paths.conversation, "a") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def read_conversation_window(paths: Paths, chat_id: int, max_turns: int = 20,
+                             max_age_sec: int = 7200, now=None) -> list[dict[str, Any]]:
+    """Return the recent conversation for one chat, oldest-first, bounded by
+    BOTH max_turns AND max_age_sec (whichever is tighter wins).
+
+    Rebuilt every pulse to give the Claude session continuity without trusting
+    its context window. Malformed / blank lines are skipped."""
+    if not paths.conversation.exists():
+        return []
+    now_epoch = now() if now else int(time.time())
+    floor = now_epoch - max_age_sec
+    rows: list[dict[str, Any]] = []
+    with open(paths.conversation) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("chat_id") != chat_id:
+                continue
+            if int(rec.get("epoch") or 0) < floor:
+                continue
+            rows.append(rec)
+    # Tightest of the two bounds: keep the last `max_turns` of the age-filtered set.
+    return rows[-max_turns:]
 
 
 # --------------------------------------------------------------------------- subprocess

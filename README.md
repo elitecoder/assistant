@@ -99,6 +99,23 @@ The orchestration layer that decides *what to do* has **no LLM in it at all**. T
 | `bin/assistant-curator.py` | CLI | Manages `## Lessons` block in `~/.claude/CLAUDE.md` |
 | `bin/merge-pr-dispatch.py` | called by `/merge-when-ready` skill | Safety-gated PR merge dispatcher |
 
+### 📱 assistant-comms — text-channel watcher over Assistant
+
+A **second Claude session in Terminal.app** (not cmux) that watches Assistant and converses with you over Telegram. It reports Assistant's actions, pages you when Assistant's heartbeat goes stale, and gives you a recovery surface (`lesson` / `restart` / `respawn`) — all gated on a human `y`. It **reads** Assistant's state, never mutates it except through three confirmed CLIs.
+
+| File | Role |
+|---|---|
+| `prompts/prompt-assistant-comms-agent.md` | Boot prompt: 5-step pulse, conversation-first inbound, confirm-back on mutations |
+| `bin/comms_lib.py` | Pure helpers — Paths, Config, formatting, ledger/TG cursors, threads, **conversation memory**, comms heartbeat |
+| `bin/tg-send.py` / `bin/tg-poll.py` | Telegram send (threaded replies, mute-aware) / long-poll inbound (stdlib urllib) |
+| `bin/conversation.py` | Durable chat memory (`conversation.jsonl`) — `append` a turn, `window` to rebuild recent thread |
+| `bin/link-msg.py` / `bin/lookup-thread.py` | Link a sent message to the ledger entry it reported on / resolve a reply back to it |
+| `bin/spawn-comms.sh` | Opens the Terminal.app window, launches `claude` with the boot prompt, records the tab id |
+| `bin/assistant-comms-setup.sh` | One-time: BotFather token + chat_id capture → `~/.assistant/comms/config.json` (chmod 600) |
+| `launchagents/com.assistant.assistant-comms-spawn.plist` | RunAtLoad + crash-only KeepAlive; respawns the Terminal session |
+
+**Disposable context by design:** the comms session treats its context window as scratch. Every turn it reconstructs the recent thread from `conversation.jsonl` (bounded to the last 20 turns / 2h), reasons, replies, and writes both turns back. A crash, `/clear`, or auto-compact loses nothing. Setup + troubleshooting: [`docs/assistant-comms-onboarding.md`](docs/assistant-comms-onboarding.md).
+
 > [!TIP]
 > **Companion service:** [`slack-reactor/`](slack-reactor/README.md) lets you react with this machine's emoji on any Slack thread to capture the whole thread as a `/todo` — which the pulse then auto-dispatches into a fresh workspace.
 
@@ -171,6 +188,7 @@ python3 -m unittest discover tests -v        # ~8s
 | `test_writers_in_process.py` | `state-write`, actions-ledger, transcript-tail, curator |
 | `test_renderer_in_process.py` | dashboard HTML renderer |
 | `test_comms_lib.py` / `test_tg_poll.py` / `test_tg_send.py` | comms helpers + Telegram poll/send |
+| `test_conversation.py` / `test_threading_tools.py` | comms durable chat memory (append/window bounds); message↔ledger threading |
 | `test_no_close_workspace.py` | **regression-pin:** no production code path shells out `cmux close-workspace` |
 
 ### Observer eval (LLM, real fixtures)
@@ -229,6 +247,9 @@ Regenerated continuously under `~/.claude/cache/` and `~/.assistant/`:
 - `~/.assistant/observer-runs/<pulse_idx>/batch-<batch_idx>/` — full Observer call audit (kept forever)
 - `~/.assistant/pulse-trace/pulse-<idx>-<ts>.md` — per-pulse trace
 - `~/.architect/orchestrator-ledger/cleanup-*.json` — `/cleanup --undo` history
+- `~/.assistant/comms/config.json` — comms bot token + chat_ids (chmod 600; **never committed**)
+- `~/.assistant/comms/conversation.jsonl` — comms durable chat memory (rebuilt into context each turn)
+- `~/.assistant/comms/{threads.jsonl,ledger.cursor,tg.cursor,heartbeat.json}` — comms threading + cursors + own heartbeat
 
 ## 📓 Lessons
 

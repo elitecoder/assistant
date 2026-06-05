@@ -348,6 +348,75 @@ class TestThreads:
         assert len(rows) == 1
 
 
+# --------------------------------------------------------------------------- conversation
+
+class TestConversation:
+    def test_append_then_window(self, tmp_paths):
+        cl.append_conversation_turn(tmp_paths, 42, 100, "in", "hi", clock=lambda: 1000)
+        cl.append_conversation_turn(tmp_paths, 42, 101, "out", "hey", kind="reply", clock=lambda: 1001)
+        rows = cl.read_conversation_window(tmp_paths, 42, now=lambda: 1002)
+        assert [r["text"] for r in rows] == ["hi", "hey"]
+        assert rows[0]["direction"] == "in" and rows[1]["direction"] == "out"
+        assert rows[1]["kind"] == "reply"
+
+    def test_append_records_reply_to(self, tmp_paths):
+        cl.append_conversation_turn(tmp_paths, 42, 100, "in", "q", reply_to=88, clock=lambda: 1)
+        rows = cl.read_conversation_window(tmp_paths, 42, now=lambda: 2)
+        assert rows[0]["reply_to"] == 88
+
+    def test_append_rejects_bad_direction(self, tmp_paths):
+        with pytest.raises(ValueError):
+            cl.append_conversation_turn(tmp_paths, 42, 1, "sideways", "x")
+
+    def test_window_missing_file(self, tmp_paths):
+        assert cl.read_conversation_window(tmp_paths, 42, now=lambda: 1) == []
+
+    def test_window_isolates_by_chat(self, tmp_paths):
+        cl.append_conversation_turn(tmp_paths, 42, 1, "in", "for-42", clock=lambda: 10)
+        cl.append_conversation_turn(tmp_paths, 99, 2, "in", "for-99", clock=lambda: 11)
+        rows = cl.read_conversation_window(tmp_paths, 42, now=lambda: 12)
+        assert [r["text"] for r in rows] == ["for-42"]
+
+    def test_window_turn_cap(self, tmp_paths):
+        for i in range(30):
+            cl.append_conversation_turn(tmp_paths, 42, i, "in", f"t{i}", clock=lambda: 1000 + i)
+        rows = cl.read_conversation_window(tmp_paths, 42, max_turns=5, now=lambda: 2000)
+        assert [r["text"] for r in rows] == ["t25", "t26", "t27", "t28", "t29"]
+
+    def test_window_age_cap(self, tmp_paths):
+        # turns at epoch 100..104; "now" is 10000, age window only keeps recent.
+        cl.append_conversation_turn(tmp_paths, 42, 1, "in", "old", clock=lambda: 100)
+        cl.append_conversation_turn(tmp_paths, 42, 2, "in", "recent", clock=lambda: 9500)
+        rows = cl.read_conversation_window(tmp_paths, 42, max_age_sec=1000, now=lambda: 10000)
+        assert [r["text"] for r in rows] == ["recent"]
+
+    def test_window_age_and_turn_tightest_wins(self, tmp_paths):
+        # 10 recent turns, but max_turns=3 → keep last 3 despite all being in-age.
+        for i in range(10):
+            cl.append_conversation_turn(tmp_paths, 42, i, "in", f"m{i}", clock=lambda: 5000 + i)
+        rows = cl.read_conversation_window(tmp_paths, 42, max_turns=3,
+                                          max_age_sec=100000, now=lambda: 5009)
+        assert [r["text"] for r in rows] == ["m7", "m8", "m9"]
+
+    def test_window_skips_malformed_and_blank(self, tmp_paths):
+        good = json.dumps({"chat_id": 42, "epoch": 500, "text": "ok", "direction": "in"})
+        tmp_paths.conversation.write_text("not-json\n\n" + good + "\n")
+        rows = cl.read_conversation_window(tmp_paths, 42, now=lambda: 600)
+        assert len(rows) == 1 and rows[0]["text"] == "ok"
+
+    def test_window_missing_epoch_treated_as_zero(self, tmp_paths):
+        # A row with no epoch is treated as epoch 0 → filtered out by any age window.
+        rec = json.dumps({"chat_id": 42, "text": "ancient", "direction": "in"})
+        tmp_paths.conversation.write_text(rec + "\n")
+        rows = cl.read_conversation_window(tmp_paths, 42, max_age_sec=1000, now=lambda: 10000)
+        assert rows == []
+
+    def test_append_uses_default_clock(self, tmp_paths):
+        cl.append_conversation_turn(tmp_paths, 42, 1, "in", "x")
+        rows = cl.read_conversation_window(tmp_paths, 42, max_age_sec=10**9)
+        assert rows and rows[0]["epoch"] > 0
+
+
 # --------------------------------------------------------------------------- run_cmd
 
 class TestRunCmd:
