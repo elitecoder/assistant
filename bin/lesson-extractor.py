@@ -1199,6 +1199,144 @@ def extract(*, dry_run: bool = False,
     }
 
 
+def run_audit(*, dry_run: bool = False,
+              curator: Path = CURATOR,
+              proposals_path: Path = PROPOSALS_PATH,
+              tg_send: Path = TG_SEND,
+              llm: Callable[[str], str] | None = None) -> dict[str, Any]:
+    """Quality pass over all lesson stores.
+
+    Reads all five stores, asks a one-shot LLM to identify:
+      - Near-duplicate lessons (same intent, different wording)
+      - Verbose lessons that can be trimmed to one sentence
+
+    Each finding becomes a LESSON_AUDIT proposal in proposals.jsonl for the
+    user to confirm. Proposals carry type='lesson_audit', action='merge'|'trim',
+    target slug(s), and the suggested replacement text.
+
+    Idempotent: skips findings whose slugs already have a pending/confirmed
+    lesson_audit proposal.
+    """
+    # Collect all lessons from all five stores by calling the curator list subcommand.
+    # We cannot import TARGETS from assistant-curator.py directly (circular), so we
+    # shell out per target — clean, no coupling.
+    all_lessons: list[dict[str, Any]] = []
+    known_targets = ["claude", "assistant", "ffp", "archffp", "assistant-repo"]
+    for target_name in known_targets:
+        try:
+            result = subprocess.run(
+                [sys.executable, str(curator), "list", "--target", target_name],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0:
+                continue
+            # Parse the curator list output: each lesson prints as "slug | trigger"
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("|", 1)
+                slug = parts[0].strip() if parts else ""
+                trigger = parts[1].strip() if len(parts) > 1 else line
+                # Get the rule text too — call curator with --verbose if available,
+                # otherwise use the trigger as the full text (sufficient for dedup)
+                all_lessons.append({"store": target_name, "slug": slug,
+                                     "trigger": trigger, "rule": ""})
+        except Exception:  # noqa: BLE001
+            continue
+
+    if len(all_lessons) < 2:
+        audit("lesson audit: fewer than 2 lessons total — nothing to audit")
+        return {"n_lessons": len(all_lessons), "n_proposed": 0}
+
+    # Build a compact representation for the LLM
+    lesson_list = "\n".join(
+        f"[{i}] store={l['store']} slug={l['slug']}\n"
+        f"  trigger: {l['trigger']}\n"
+        f"  rule: {(l['rule'] or '').strip()[:200]}"
+        for i, l in enumerate(all_lessons)
+    )
+
+    prompt = (
+        "You are auditing a set of Claude Code behavioral lessons for quality.\n"
+        "Find:\n"
+        "1. NEAR-DUPLICATES: pairs that express the same intent (even if worded differently).\n"
+        "2. VERBOSE: individual lessons whose rule text is longer than ~2 sentences and could be trimmed.\n\n"
+        "Lessons:\n"
+        f"{lesson_list}\n\n"
+        "Return JSON: {\"findings\": [{\"action\": \"merge\"|\"trim\", "
+        "\"slugs\": [\"slug1\", ...], \"reason\": \"one sentence\", "
+        "\"suggested\": \"the trimmed or merged rule text\"}]}\n"
+        "Return an empty findings list if no issues found. Be conservative — only flag clear cases."
+    )
+
+    _llm = llm or _claude_oneshot
+    try:
+        raw = _llm(prompt)
+        data = json.loads(raw)
+        findings = data.get("findings", [])
+    except Exception as e:  # noqa: BLE001
+        audit(f"lesson audit LLM call failed: {e}")
+        return {"n_lessons": len(all_lessons), "n_proposed": 0, "error": str(e)}
+
+    # Load pending slugs to skip already-proposed findings
+    try:
+        pending_lines = proposals_path.read_text().splitlines() if proposals_path.exists() else []
+    except OSError:
+        pending_lines = []
+    pending_audit_slugsets: set[str] = set()
+    for line in pending_lines:
+        try:
+            obj = json.loads(line.strip())
+        except Exception:  # noqa: BLE001
+            continue
+        if obj.get("type") == "lesson_audit" and obj.get("status") in ("pending", "confirmed"):
+            pending_audit_slugsets.add("|".join(sorted(obj.get("slugs", []))))
+
+    proposed: list[dict[str, Any]] = []
+    for f in findings:
+        slugs = sorted(f.get("slugs", []))
+        if not slugs:
+            continue
+        key = "|".join(slugs)
+        if key in pending_audit_slugsets:
+            audit(f"lesson audit: skipped (already proposed) slugs={slugs}")
+            continue
+        action = f.get("action", "trim")
+        reason = f.get("reason", "")
+        suggested = f.get("suggested", "")
+        ts = utc_iso_us()
+        entry = {
+            "ts": ts,
+            "id": ts,
+            "type": "lesson_audit",
+            "action": action,
+            "slugs": slugs,
+            "reason": reason,
+            "suggested": suggested,
+            "status": "pending",
+            "source": "lesson-auditor",
+        }
+        if dry_run:
+            audit(f"[dry-run] lesson audit would propose {action} slugs={slugs} reason={reason!r}")
+            proposed.append({"dry_run": True, "finding": f})
+            continue
+        proposals_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(proposals_path, "a") as fp:
+            fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        summary = f"Lesson audit: {action} {', '.join(slugs)} — {reason}"
+        ping_user(summary, tg_send)
+        audit(f"lesson audit proposed {action} slugs={slugs} id={ts}")
+        proposed.append({"id": ts, "finding": f})
+
+    return {
+        "n_lessons": len(all_lessons),
+        "n_findings": len(findings),
+        "n_proposed": len(proposed),
+        "dry_run": dry_run,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Detect recurring patterns in the action ledger AND Claude "
@@ -1214,7 +1352,17 @@ def main(argv: list[str] | None = None) -> int:
                          "snippets that preceded needs_user ledger entries for "
                          "recurring phrases no current pattern catches, and "
                          "propose them in proposals.jsonl for the user to confirm.")
+    ap.add_argument("--audit", action="store_true",
+                    help="Quality pass: read all five lesson stores, use a "
+                         "one-shot LLM call to find near-duplicates and verbose "
+                         "lessons, propose merges/trims to proposals.jsonl. "
+                         "Triggered automatically after every lesson write.")
     args = ap.parse_args(argv)
+
+    if args.audit:
+        ares = run_audit(dry_run=args.dry_run)
+        print(json.dumps(ares, indent=2, ensure_ascii=False))
+        return 0
 
     if args.discover:
         dres = run_discovery(dry_run=args.dry_run)

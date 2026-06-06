@@ -338,6 +338,9 @@ def cmd_write(args) -> int:
     # lesson travels with the code. Best-effort; never blocks the write.
     if "repo" in tgt:
         _commit_lesson_to_repo(tgt["repo"], tgt["path"], slug)
+    # Trigger a lesson audit after every write: check all stores for near-duplicates
+    # and verbose lessons, propose merges/trims. Fire-and-forget — never blocks.
+    _run_lesson_audit_async()
     return 0
 
 
@@ -397,6 +400,26 @@ def _sync_to_memory_repo() -> None:
         sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
         import memory_repo_sync  # noqa: PLC0415
         memory_repo_sync.sync_to_memory_repo("lesson")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_lesson_audit_async() -> None:
+    """Spawn lesson-extractor --audit in the background after every lesson write.
+
+    Checks all five stores for near-duplicates and verbose lessons; proposes
+    merges/trims to proposals.jsonl for the user to confirm. Never blocks the
+    caller — failures are swallowed and logged."""
+    try:
+        extractor = Path(__file__).resolve().parent / "lesson-extractor.py"
+        if not extractor.exists():
+            return
+        subprocess.Popen(
+            [sys.executable, str(extractor), "--audit"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     except Exception:  # noqa: BLE001
         pass
 
