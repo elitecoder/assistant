@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.mukul.assistant-daemon — the single-process Assistant daemon.
+
+  Collapses the two existing LaunchAgents (com.assistant.assistant-pulse, a
+  5-min timer, and com.assistant.assistant-comms, a KeepAlive daemon) into ONE
+  process: `python -m assistant`, run via bin/assistant-daemon.py. The daemon
+  owns the pulse loop, the ledger watch + Telegram broadcasts, the heartbeat
+  page, and tool dispatch — each in its own thread of one process. No
+  StartInterval: the daemon does not tick, it runs; KeepAlive relaunches it if
+  it ever exits.
+
+  THIS PLIST IS NOT LOADED BY THE INSTALLER. The migration is additive — the
+  existing pulse + comms agents keep running until you switch over by hand.
+
+  To activate (hand off pulse + comms to the single daemon):
+    launchctl unload ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
+    launchctl unload ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
+    launchctl load   ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
+
+  To roll back:
+    launchctl unload ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
+    launchctl load   ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
+    launchctl load   ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
+
+  NOTE: the daemon's CommsSubsystem only does OUTBOUND comms (ledger broadcasts
+  + heartbeat paging). It does NOT run comms-listen.py's inbound warm-session
+  reply loop. If you want inbound replies too after switching, keep
+  com.assistant.assistant-comms loaded for inbound only, OR fold inbound into
+  the daemon first. Two long-pollers on the same bot token collide (Telegram
+  409), so do not run comms-listen.py's inbound loop AND a second poller.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mukul.assistant-daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/mukuls/dev/assistant/bin/assistant-daemon.py</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/mukuls/.architect/orchestrator-logs/assistant-daemon.launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mukuls/.architect/orchestrator-logs/assistant-daemon.launchd.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/mukuls</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/mukuls</string>
+</dict>
+</plist>

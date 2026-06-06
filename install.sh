@@ -342,12 +342,32 @@ mkdir -p "$HOME_DIR/Library/LaunchAgents"
 PLIST_STAGE="$(mktemp -d)"
 trap 'rm -rf "$PLIST_STAGE"' EXIT
 
+# Opt-in plists the installer must NEVER copy or load. The single-process
+# daemon (com.mukul.assistant-daemon) is additive: it replaces the pulse +
+# comms agents, so auto-loading it alongside them would run both the daemon's
+# pulse loop AND the legacy pulse timer at once, and two Telegram pollers would
+# collide. It is activated by hand (see the plist's header comment). The pulse
+# self-update runs `install.sh --apply` on any launchagents/ change, so this
+# skip is what keeps a committed plist from auto-starting on the running box.
+PLIST_SKIP=(
+    "com.mukul.assistant-daemon.plist"
+)
+
 declare -a CHANGED_LABELS
 for plist in "$REPO_ROOT"/launchagents/*.plist; do
     base="$(basename "$plist")"
     label="$(basename "$plist" .plist)"
     staged="$PLIST_STAGE/$base"
     target="$HOME_DIR/Library/LaunchAgents/$base"
+
+    skip=0
+    for skip_base in "${PLIST_SKIP[@]}"; do
+        [[ "$base" == "$skip_base" ]] && skip=1 && break
+    done
+    if [[ $skip -eq 1 ]]; then
+        note "SKIP $base (opt-in daemon — activate by hand, see plist header)"
+        continue
+    fi
 
     # Substitute /Users/<user>/ → $HOME/ so the staged plist references the
     # current user's home dir. No-op for plists that don't have the token.
