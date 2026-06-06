@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from html import escape as e
 from pathlib import Path
@@ -22,6 +23,7 @@ HOME = Path(os.environ["HOME"])
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
 LEGACY_TRIAGE_STATE = HOME / ".claude/cache/triage-state.json"
+OBSERVER_REPORT = HOME / ".assistant/observer-latest-report.json"
 DASHBOARD_HTML = HOME / ".claude/assistant-dashboard.html"
 TODO_HTML = HOME / ".claude/assistant-todo.html"  # legacy redirect
 
@@ -885,6 +887,198 @@ def render_todos_tab(world):
     return "".join(sections), p0_p1
 
 
+def _cmux_workspaces() -> dict[str, dict]:
+    """Run `cmux list-workspaces --json` and return a {ws_ref: {title, color}}
+    map. Graceful: any failure (cmux not running, bad JSON, timeout) returns an
+    empty dict so the Fleet tab falls back to ws_ref-as-title with no color."""
+    try:
+        out = subprocess.run(
+            ["cmux", "list-workspaces", "--json"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return {}
+        data = json.loads(out.stdout)
+    except Exception:
+        return {}
+    result: dict[str, dict] = {}
+    for w in data.get("workspaces", []) or []:
+        ref = w.get("ref")
+        if not ref:
+            continue
+        result[ref] = {
+            "title": w.get("title") or "",
+            "color": w.get("custom_color"),  # '#RRGGBB' or None
+        }
+    return result
+
+
+def _first_sentence(text: str, max_len: int = 120) -> str:
+    """First sentence of `text` (split on '. '), capped at max_len."""
+    s = (text or "").strip()
+    if not s:
+        return ""
+    for sep in (". ", ".\n", "\n"):
+        idx = s.find(sep)
+        if 0 < idx < max_len:
+            s = s[:idx + 1] if sep.startswith(".") else s[:idx]
+            break
+    s = s.strip()
+    if len(s) > max_len:
+        s = s[:max_len - 1].rstrip() + "…"
+    return s
+
+
+def render_fleet_tab():
+    """Kanban board of every workspace the Observer reported a candidate action
+    for, grouped into four columns by classification:
+
+      ACTIVE     — ACTIVE classification or kind=noop (running, no action yet)
+      NEEDS YOU  — AWAITING_USER classification or kind=emit-card (your decision)
+      STRANDED   — STRANDED or BROKEN classification (manual intervention)
+      DONE       — DONE classification (finished, may need cleanup)
+
+    Data: observer-latest-report.json -> candidate_actions[] (classification +
+    evidence + summary), merged by ws_ref with `cmux list-workspaces --json`
+    (title + custom_color). cmux unavailable -> ws_ref as title, no color.
+
+    Returns (html, total_card_count). Degrades gracefully if the report is
+    missing/malformed — never raises."""
+    COLUMNS = [
+        ("active",    "ACTIVE",    "Running · no action yet"),
+        ("needs_you", "NEEDS YOU", "Waiting on your decision"),
+        ("stranded",  "STRANDED",  "Needs manual intervention"),
+        ("done",      "DONE",      "Finished · may need cleanup"),
+    ]
+
+    # ─── Load observer report; degrade gracefully on any failure ───
+    if not OBSERVER_REPORT.exists():
+        return (
+            '<div class="fleet-unavailable">Observer data unavailable — '
+            'report file not found (last updated: unknown)</div>'
+        ), 0
+    try:
+        report = json.loads(OBSERVER_REPORT.read_text())
+    except Exception:
+        try:
+            mtime = datetime.fromtimestamp(
+                OBSERVER_REPORT.stat().st_mtime, timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            mtime = "unknown"
+        return (
+            f'<div class="fleet-unavailable">Observer data unavailable — '
+            f'report malformed (last updated: {e(mtime)})</div>'
+        ), 0
+
+    cmux = _cmux_workspaces()
+
+    # Classification → column key. ACTIVE/noop → active, AWAITING_USER/emit-card
+    # → needs_you, STRANDED/BROKEN → stranded, DONE → done.
+    CLASS_TO_COL = {
+        "ACTIVE": "active",
+        "AWAITING_USER": "needs_you",
+        "STRANDED": "stranded",
+        "BROKEN": "stranded",
+        "DONE": "done",
+    }
+
+    # Merge candidate_actions by ws_ref. A workspace can appear in several
+    # actions (e.g. status-flip + cleanup for the same stranded slot); keep the
+    # first action seen for each ws_ref so each workspace is one card.
+    cards: dict[str, dict] = {}
+    for a in report.get("candidate_actions", []) or []:
+        params = a.get("params") or {}
+        ws_ref = params.get("ws_ref") or a.get("_source_ws")
+        if not ws_ref:
+            continue
+        classification = (a.get("_classification") or "").upper()
+        kind = a.get("kind") or ""
+        # Column: classification first, then kind as a fallback signal.
+        col = CLASS_TO_COL.get(classification)
+        if col is None:
+            if kind == "noop":
+                col = "active"
+            elif kind == "emit-card":
+                col = "needs_you"
+            else:
+                col = "stranded"  # unknown → safest bucket for attention
+        if ws_ref in cards:
+            continue
+        ws_info = cmux.get(ws_ref) or {}
+        evidence = a.get("evidence") or ""
+        summary = a.get("summary") or ""
+        cards[ws_ref] = {
+            "ws_ref": ws_ref,
+            "title": ws_info.get("title") or ws_ref,
+            "color": ws_info.get("color"),
+            "col": col,
+            "summary": summary,
+            "evidence": evidence,
+        }
+
+    # Bucket cards into columns.
+    buckets: dict[str, list] = {key: [] for key, _, _ in COLUMNS}
+    for c in cards.values():
+        buckets.setdefault(c["col"], []).append(c)
+
+    total = len(cards)
+
+    # ─── Render each column ───
+    col_html = []
+    for key, label, subtitle in COLUMNS:
+        items = buckets.get(key, [])
+        # Stable order: by ws_ref number, so the board doesn't reshuffle.
+        def _ws_num(c):
+            try:
+                return int(str(c["ws_ref"]).split(":")[-1])
+            except Exception:
+                return 1 << 30
+        items.sort(key=_ws_num)
+
+        card_html = []
+        for c in items:
+            color = c["color"] or "#888"
+            # First sentence of evidence = "what the work is".
+            what = _first_sentence(c["evidence"] or c["summary"], 120)
+            # Action needed = summary trimmed (only for NEEDS YOU / STRANDED).
+            action_html = ""
+            if key in ("needs_you", "stranded") and c["summary"]:
+                act = c["summary"]
+                if len(act) > 100:
+                    act = act[:99].rstrip() + "…"
+                action_html = (
+                    f'<div class="fleet-card-action">{e(act)}</div>'
+                )
+            what_html = (
+                f'<div class="fleet-card-what">{e(what)}</div>' if what else ""
+            )
+            card_html.append(
+                f'<div class="fleet-card fleet-card-{key}" '
+                f'style="border-left-color:{e(color)}">'
+                f'  <div class="fleet-card-title" title="{e(c["title"])}">{e(c["title"])}</div>'
+                f'  {what_html}'
+                f'  {action_html}'
+                f'  <div class="fleet-card-ref">{e(c["ws_ref"])}</div>'
+                f'</div>'
+            )
+        body = "".join(card_html) if card_html else (
+            '<div class="fleet-col-empty">Nothing here</div>'
+        )
+        col_html.append(
+            f'<div class="fleet-col fleet-col-{key}">'
+            f'  <div class="fleet-col-head">'
+            f'    <span class="fleet-col-label">{e(label)}</span>'
+            f'    <span class="fleet-col-count">{len(items)}</span>'
+            f'  </div>'
+            f'  <div class="fleet-col-sub">{e(subtitle)}</div>'
+            f'  <div class="fleet-col-body">{body}</div>'
+            f'</div>'
+        )
+
+    return f'<div class="fleet-board">{"".join(col_html)}</div>', total
+
+
 def render_pulse_health() -> str:
     """One-line banner showing whether the assistant-pulse cron is alive.
     Reads ~/.assistant/heartbeat.json and color-codes by age:
@@ -949,6 +1143,7 @@ def render():
     decisions_html, awaiting_n = render_decisions_tab(world)
     todos_html, p0_p1 = render_todos_tab(world)
     workspaces_html, ws_n = render_workspaces_tab()
+    fleet_html, fleet_n = render_fleet_tab()
     pulse_health_html = render_pulse_health()
     counts = world.get("counts", {})
 
@@ -1747,6 +1942,126 @@ h1 {
   font: 10px/1.6 var(--mono);
   letter-spacing: 0;
 }
+
+/* ─── Fleet tab — kanban board ─── */
+.fleet-board {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+.fleet-col {
+  flex: 1 1 0;
+  min-width: 240px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 12px 14px;
+}
+.fleet-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.fleet-col-label {
+  font: 600 11px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.fleet-col-count {
+  margin-left: auto;
+  font: 600 10px/1.5 var(--mono);
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  color: var(--text-2);
+}
+.fleet-col-sub {
+  font: 10px/1.4 var(--sans);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  margin-bottom: 12px;
+}
+/* Column accents — match the verdict palette used on the Workspaces tab. */
+.fleet-col-active   .fleet-col-label { color: var(--blue); }
+.fleet-col-active   .fleet-col-count { background: var(--blue-bg);  color: var(--blue); }
+.fleet-col-needs_you .fleet-col-label { color: var(--red); }
+.fleet-col-needs_you .fleet-col-count { background: var(--red-bg);   color: var(--red); }
+.fleet-col-stranded .fleet-col-label { color: var(--amber); }
+.fleet-col-stranded .fleet-col-count { background: var(--amber-bg); color: var(--amber); }
+.fleet-col-done     .fleet-col-label { color: var(--green); }
+.fleet-col-done     .fleet-col-count { background: var(--green-bg); color: var(--green); }
+.fleet-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fleet-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid #888;
+  border-radius: 8px;
+  padding: 10px 11px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.fleet-card:hover { border-color: var(--line-strong); background: var(--hover); }
+/* NEEDS YOU cards get a subtle warm highlight so they stand out. */
+.fleet-card-needs_you {
+  background: rgba(233,107,107,0.06);
+}
+.fleet-card-needs_you:hover { background: rgba(233,107,107,0.09); }
+.fleet-card-title {
+  font: 500 12.5px/1.4 var(--sans);
+  color: var(--text);
+  letter-spacing: -0.005em;
+  margin-bottom: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.fleet-card-what {
+  font: 11.5px/1.5 var(--sans);
+  color: var(--text-2);
+  opacity: 0.82;
+  margin-bottom: 6px;
+}
+.fleet-card-action {
+  font: 11px/1.5 var(--sans);
+  color: var(--text-2);
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.fleet-card-ref {
+  font: 500 10px/1.3 var(--mono);
+  color: var(--muted);
+  letter-spacing: 0;
+}
+.fleet-col-empty {
+  font: 12px/1.5 var(--sans);
+  font-style: italic;
+  color: var(--muted);
+  text-align: center;
+  padding: 18px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.fleet-unavailable {
+  color: var(--muted);
+  font-style: italic;
+  padding: 18px 20px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
 """
 
     js = """
@@ -1759,7 +2074,7 @@ function showTab(name) {
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#decisions').replace('#', '');
-  showTab(['decisions', 'workspaces', 'todos'].includes(initial) ? initial : 'decisions');
+  showTab(['decisions', 'workspaces', 'fleet', 'todos'].includes(initial) ? initial : 'decisions');
   // Auto-refresh every 15s but preserve the current hash. We use location.reload()
   // (not <meta http-equiv="refresh">) because meta-refresh reloads from the original
   // href and drops the fragment on most browsers, snapping the user back to
@@ -1936,6 +2251,9 @@ document.addEventListener('click', handleTodoToolsClick);
   <button class="tab" data-tab="workspaces" onclick="showTab('workspaces')">
     Workspaces <span class="tab-count">{ws_n}</span>
   </button>
+  <button class="tab" data-tab="fleet" onclick="showTab('fleet')">
+    Fleet <span class="tab-count">{fleet_n}</span>
+  </button>
   <button class="tab" data-tab="todos" onclick="showTab('todos')">
     TODOs <span class="tab-count">{p0_p1}</span>
   </button>
@@ -1947,6 +2265,10 @@ document.addEventListener('click', handleTodoToolsClick);
 
 <div class="tab-panel" data-panel="workspaces">
 {workspaces_html}
+</div>
+
+<div class="tab-panel" data-panel="fleet">
+{fleet_html}
 </div>
 
 <div class="tab-panel" data-panel="todos">
