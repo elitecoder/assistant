@@ -432,11 +432,21 @@ fi
 log ""
 
 # --- 5. Reload only the daemons whose plists actually changed --------------
+# When invoked by the pulse's own self-update (ASSISTANT_SELF_UPDATE=1), never
+# reload the pulse's OWN plist: launchctl bootout would SIGTERM the running
+# pulse.py mid-update and abort the install. The new plist still got copied;
+# it applies on the next manual install or reboot. Plist changes are rare;
+# code changes (symlinked bin/, no reload needed) are the common case.
+SELF_PLIST_LABEL="com.assistant.assistant-pulse"
 log "[5/5] Reloading launchd agents that changed"
 if [[ ${#CHANGED_LABELS[@]} -eq 0 ]]; then
     note "no plists changed — nothing to reload"
 else
     for label in "${CHANGED_LABELS[@]}"; do
+        if [[ "${ASSISTANT_SELF_UPDATE:-0}" == "1" && "$label" == "$SELF_PLIST_LABEL" ]]; then
+            note "skip reload of $label (self-update can't bootout its own pulse; applies on next reboot/manual install)"
+            continue
+        fi
         launchctl_reload "$label" "$HOME_DIR/Library/LaunchAgents/${label}.plist"
     done
 fi
@@ -481,6 +491,90 @@ fi
 note "cmux-watcher is OPT-IN — NOT loaded automatically."
 note "To activate it yourself:"
 note "    launchctl load $WATCHER_PLIST"
+log ""
+
+# --- 7. Memory setup -----------------------------------------------------------
+# Two paths:
+#   A) Owner machine (Mukul): clone the private mukul-memory repo and run its
+#      install.sh to sync all memories, lessons, and Obsidian notes across machines.
+#   B) Other user: set up local-only memory (Mem0 with local fastembed, no cross-machine
+#      sync). Lessons stay in ~/.claude/CLAUDE.md; semantic memory lives at
+#      ~/.assistant/mem0/ on this machine only.
+#
+# The installer asks interactively only when --apply is set; in dry-run it explains
+# what each path would do.
+log "[7/7] Memory setup"
+
+MEMORY_CONFIG="$HOME_DIR/.assistant/memory-repo-config.json"
+
+if [[ -f "$MEMORY_CONFIG" ]]; then
+    note "OK   memory already configured ($MEMORY_CONFIG exists)"
+else
+    if [[ $APPLY -eq 0 ]]; then
+        note "(dry-run) Would ask: is this the owner's machine or a new user's?"
+        note "  Owner path: clone git@github-personal:elitecoder/mukul-memory + run scripts/install.sh"
+        note "  Other user path: initialize local-only memory at ~/.assistant/mem0/"
+    else
+        log ""
+        log "Memory is not configured on this machine. Choose a setup:"
+        log "  1) Owner machine (Mukul) — sync memories, lessons, Obsidian notes from the private mukul-memory repo"
+        log "  2) New user — set up local-only memory (no cross-machine sync)"
+        log "  3) Skip — set up memory manually later"
+        log ""
+        read -r -p "Choice [1/2/3]: " MEM_CHOICE
+
+        case "$MEM_CHOICE" in
+            1)
+                MEMORY_REPO_DIR="$HOME_DIR/dev/mukul-memory"
+                if [[ -d "$MEMORY_REPO_DIR/.git" ]]; then
+                    note "mukul-memory already cloned at $MEMORY_REPO_DIR"
+                else
+                    log "  Cloning mukul-memory…"
+                    git clone "git@github-personal:elitecoder/mukul-memory.git" "$MEMORY_REPO_DIR" \
+                        && note "cloned to $MEMORY_REPO_DIR" \
+                        || { warn "clone failed — check your git@github-personal SSH key"; }
+                fi
+                if [[ -d "$MEMORY_REPO_DIR/.git" ]]; then
+                    log "  Running memory install (sync-pull: lessons + mem0 + Obsidian)…"
+                    bash "$MEMORY_REPO_DIR/scripts/install.sh" \
+                        && note "memory synced from mukul-memory repo" \
+                        || warn "memory install had errors — check $MEMORY_REPO_DIR/scripts/install.sh"
+                fi
+                ;;
+            2)
+                log "  Initializing local-only memory…"
+                mkdir -p "$HOME_DIR/.assistant/mem0"
+                # Write a minimal config that disables cross-machine sync
+                cat > "$MEMORY_CONFIG" <<LOCAL_CFG
+{
+  "memory_repo": null,
+  "sync": {
+    "push_on_lesson_confirm": false,
+    "push_on_memory_add": false,
+    "pull_interval_seconds": 0
+  },
+  "stores": {
+    "lessons_file": null,
+    "memories_file": null,
+    "chroma_dir": "~/.assistant/mem0/chroma",
+    "claude_md": "~/.claude/CLAUDE.md"
+  }
+}
+LOCAL_CFG
+                note "wrote $MEMORY_CONFIG (local-only mode)"
+                note "Semantic memory will build up locally as you use the assistant."
+                note "To enable cross-machine sync later: set up a private git repo,"
+                note "then update $MEMORY_CONFIG with the repo URL."
+                ;;
+            3)
+                note "Skipped. Run install.sh --apply again when ready to configure memory."
+                ;;
+            *)
+                warn "Unknown choice '$MEM_CHOICE' — skipping memory setup."
+                ;;
+        esac
+    fi
+fi
 log ""
 
 # --- summary ----------------------------------------------------------------
