@@ -107,10 +107,16 @@ MAX_DISPATCH_PER_PULSE = 2
 # surviving candidate triggers an LLM draft call, so we throttle: run it once
 # every N pulses (~hourly at the current interval) rather than every pulse.
 LESSON_EXTRACT_EVERY = int(os.environ.get("LESSON_EXTRACT_EVERY", "12"))
+# Transcript mining is heavier (reads up to 500 session files). Run it ~daily
+# rather than every ledger pass — every 144th pulse (12× the ledger cadence).
+# Every other extractor run passes --ledger-only.
+LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 # Hard bound on the extractor subprocess so a hung LLM draft can never stall the
 # orchestrator. It runs AFTER state-write + heartbeat, so even a timeout here
-# leaves the dashboard and the heartbeat fresh.
+# leaves the dashboard and the heartbeat fresh. The transcript pass gets a
+# longer leash since it reads many files before any LLM draft.
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
+LESSON_TRANSCRIPT_TIMEOUT_SEC = int(os.environ.get("LESSON_TRANSCRIPT_TIMEOUT_SEC", "600"))
 
 # Cap concurrent active workspaces (matches old prompt's rule).
 ACTIVE_WS_CAP = 5
@@ -903,26 +909,34 @@ def dispatch_todo(todo_id: str) -> bool:
 
 
 def run_lesson_extractor(pulse_idx: int) -> None:
-    """Step 8 (throttled): mine the ledger for recurring patterns and draft
-    lesson proposals. Runs as a bounded subprocess so a slow/hung LLM draft
-    can never stall the pulse. Invoked AFTER state-write + heartbeat, so a
-    timeout here leaves the dashboard and heartbeat fresh. Failures are logged
-    and swallowed — extraction is a nice-to-have, never load-bearing."""
+    """Step 8 (throttled): mine recurring patterns and draft lesson proposals.
+    The fast ledger pass runs every LESSON_EXTRACT_EVERY pulses; the heavier
+    transcript pass only every LESSON_TRANSCRIPT_EVERY pulses (~daily), all
+    other runs pass --ledger-only. Runs as a bounded subprocess so a slow/hung
+    LLM draft can never stall the pulse. Invoked AFTER state-write + heartbeat,
+    so a timeout here leaves the dashboard and heartbeat fresh. Failures are
+    logged and swallowed — extraction is a nice-to-have, never load-bearing."""
     extractor = BIN / "lesson-extractor.py"
     if not extractor.exists():
         return
-    rc, out, err = run(
-        [sys.executable, str(extractor)],
-        timeout=LESSON_EXTRACT_TIMEOUT_SEC, merge_bedrock=True,
-    )
+    transcript_pass = (LESSON_TRANSCRIPT_EVERY > 0
+                       and pulse_idx % LESSON_TRANSCRIPT_EVERY == 0)
+    cmd = [sys.executable, str(extractor)]
+    if not transcript_pass:
+        cmd.append("--ledger-only")
+    timeout = (LESSON_TRANSCRIPT_TIMEOUT_SEC if transcript_pass
+               else LESSON_EXTRACT_TIMEOUT_SEC)
+    rc, out, err = run(cmd, timeout=timeout, merge_bedrock=True)
     if rc != 0:
         log.warning("lesson-extractor rc=%d: %s", rc, (err or "").strip()[-200:])
         return
     try:
         summary = json.loads(out)
         if summary.get("n_proposed"):
-            log.info("lesson-extractor: proposed %d lesson(s) from %d candidate(s)",
-                     summary.get("n_proposed"), summary.get("n_candidates"))
+            log.info("lesson-extractor: proposed %d lesson(s) from %d candidate(s) "
+                     "(transcript_pass=%s, transcript_candidates=%d)",
+                     summary.get("n_proposed"), summary.get("n_candidates"),
+                     transcript_pass, summary.get("n_transcript_candidates", 0))
     except Exception:  # noqa: BLE001 — extractor output is diagnostic only
         pass
 

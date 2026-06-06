@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
-"""lesson-extractor — surface recurring action patterns as lesson proposals.
+"""lesson-extractor — surface recurring patterns as lesson proposals.
 
-The Assistant's action ledger is a record of what it actually did. When the
-same kind of thing happens over and over (same verdict kind + same evidence
-shape), that repetition is a candidate rule: either a behavior to encode or a
-mistake to stop making. This script detects those patterns and drafts a lesson
-proposal the user can confirm with a single `y`.
+Two signal sources feed one proposal pipeline:
 
-Pipeline:
-  1. Tail the last 200 ledger entries.
-  2. Group by (kind, evidence_stem), where evidence_stem = first 8 words of
-     the evidence, lowercased, stripped of workspace refs / PR numbers.
-  3. A group with >= 3 verified outcomes inside a 72h window is a candidate.
-  4. Drop candidates whose stem matches an existing lesson trigger (curator
-     list, both targets) OR a still-pending proposal in proposals.jsonl
-     (idempotency — running twice produces no duplicates).
-  5. For each surviving candidate, ask Claude (one-shot `claude -p`) to write a
-     {trigger, rule, target, scope}.
-  6. Append the proposal to proposals.jsonl (atomic single-line append).
-  7. Ping the user via tg-send.py so they can reply `y`.
+  Pass 1 — the action ledger. A record of what the Assistant actually did. When
+  the same kind of thing happens over and over (same verdict kind + same
+  evidence shape), that repetition is a candidate rule.
+
+  Pass 2 — Claude Code session transcripts (~/.claude/projects/*/*.jsonl). Every
+  correction, confirmation, and repeated question the user ever made lives
+  there — the richest lesson signal available. The TranscriptScanner reads a
+  bounded, recency-prioritized slice, isolates genuine human turns (stripping
+  tool results, harness reminders, and spawn prompts), and emits candidates in
+  the same shape the ledger pass produces. Skipped with --ledger-only.
+
+Both passes drop candidates already covered by an existing lesson or a pending
+proposal (idempotency — running twice produces no duplicates), ask Claude
+(one-shot `claude -p`) to write a {trigger, rule, target, scope}, append it to
+proposals.jsonl (atomic single-line append), and ping the user via tg-send.py so
+they can reply `y`.
 
 Every proposal written OR skipped logs one line to assistant-audit.log. Safe to
-run from pulse.py (hourly) or standalone. --dry-run prints what it would
-propose and writes nothing.
+run from pulse.py or standalone. --dry-run prints what it would propose and
+writes nothing; --ledger-only skips the transcript scan for fast pulse runs.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +57,9 @@ TAIL_N = 200
 MIN_OCCURRENCES = 3
 WINDOW_SEC = 72 * 3600
 STEM_WORDS = 8
+
+# Where Claude Code writes one JSONL transcript per session.
+CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 
 # Strip these noise tokens out of evidence before computing the stem so the
 # grouping keys on the SHAPE of the evidence, not its per-workspace specifics.
@@ -240,6 +244,315 @@ def is_duplicate(candidate: dict[str, Any], triggers: list[str],
     return False
 
 
+# ─── transcript scanning ─────────────────────────────────────────────────────
+
+# A user turn carries a correction when it opens with / contains one of these.
+# Patterns are deliberately specific: bare "no"/"don't" anywhere over-matches
+# normal instructions, so "no" is anchored to message start and the rest target
+# correction-shaped phrasing. The user still confirms every proposal, so a stray
+# match costs one ignorable ping, not a bad rule.
+_CORRECTION_PATTERNS = [
+    re.compile(r"^\s*no\b[,.\s]", re.I),
+    re.compile(r"^\s*nope\b", re.I),
+    re.compile(r"\bdon'?t\b", re.I),
+    re.compile(r"\bdo not\b", re.I),
+    re.compile(r"\bstop\b", re.I),
+    re.compile(r"\bwrong\b", re.I),
+    re.compile(r"\bthat'?s not\b", re.I),
+    re.compile(r"\bthat is not\b", re.I),
+    re.compile(r"\bnot what i (asked|meant|wanted|said)\b", re.I),
+    re.compile(r"\bi told you\b", re.I),
+    re.compile(r"\byou keep\b", re.I),
+    re.compile(r"\byou (keep|always) \w+ing\b", re.I),
+    re.compile(r"\bnever (do|send|run|use|touch) that\b", re.I),
+    re.compile(r"\bnever do that\b", re.I),
+    re.compile(r"\bi said\b", re.I),
+    re.compile(r"\bwhy (did|are) you\b", re.I),
+    re.compile(r"\bactually,", re.I),
+]
+
+# A user turn confirms a behavior when it contains praise / explicit assent.
+_CONFIRMATION_PATTERNS = [
+    re.compile(r"\byes,?\s+(exactly|perfect|please|that)\b", re.I),
+    re.compile(r"\bexactly\b", re.I),
+    re.compile(r"\bperfect\b", re.I),
+    re.compile(r"\bkeep doing\b", re.I),
+    re.compile(r"\blove (it|that|this)\b", re.I),
+    re.compile(r"\bthat'?s right\b", re.I),
+    re.compile(r"\bnailed it\b", re.I),
+    re.compile(r"\b(great|good) (job|work|call|catch|idea|point)\b", re.I),
+    re.compile(r"\bawesome\b", re.I),
+    re.compile(r"\bbeautiful\b", re.I),
+    re.compile(r"^\s*(yes|yep|yeah)[!.]", re.I),
+    re.compile(r"\bthat'?s perfect\b", re.I),
+]
+
+# Telegram-relayed user turns are prefixed with routing metadata; strip it to
+# recover the human's actual words.
+_TELEGRAM_PREFIX_RE = re.compile(r"^\[telegram[^\]]*\]\s*", re.I)
+
+# System-injected "user" turns we must NOT mistake for the human: tool results,
+# harness reminders, spawn prompts (JSON context blobs starting with { or [),
+# local-command echoes, interrupts, and "Read <path>.md and execute it" prompts.
+_SYSTEM_TURN_RE = re.compile(
+    r"^\s*(?:[<{\[]|caveat:|\[request interrupted|api error|"
+    r"read /users/\S+\.md|read the file|you are |your task|"
+    r"this session is being continued|please continue|"
+    r"the user(?:'s)? (?:sent|previous|original))",
+    re.I,
+)
+
+
+def signal_stem(text: str, words: int = 10) -> str:
+    """First `words` normalized words of a correction/confirmation — the key
+    used to collapse the same human signal across sessions and to fuzzy-match
+    against existing lessons."""
+    return " ".join(_norm(text).split()[:words])
+
+
+class TranscriptScanner:
+    """Scans Claude Code session transcripts for correction/confirmation signals.
+
+    Claude Code writes one JSONL transcript per session under
+    ~/.claude/projects/<slug>/<uuid>.jsonl. Every correction, confirmation, and
+    repeated question the user ever made lives there — a far richer lesson signal
+    than the action ledger. This scanner reads a bounded, recency-prioritized
+    slice of those transcripts, isolates genuine human turns (stripping tool
+    results, harness reminders, and spawn prompts), and emits candidate lessons
+    in the same shape the ledger extractor produces, so they flow through the
+    identical dedup → draft → propose pipeline.
+    """
+
+    # Bounds — keep a single run fast and memory-safe. Tuned, not magic.
+    MAX_FILES = 500            # newest-by-mtime cap across all scanned dirs
+    MAX_FILE_BYTES = 5 * 1024 * 1024  # skip huge transcripts (CI/build logs)
+    MTIME_WINDOW_DAYS = 90     # only recent sessions carry current behavior
+    PER_FILE_TIMEOUT_SEC = 5.0  # abort a file that parses too slowly
+    MAX_CANDIDATES = 8         # cap proposals per run — each one pings the user
+    MIN_RECURRING_SESSIONS = 3  # a question must recur in N distinct sessions
+    LINE_TIME_CHECK_EVERY = 500  # re-check the per-file deadline this often
+
+    # Highest-signal project dirs. The assistant's own sessions lead; work
+    # sessions follow. Everything else (eval sweeps, worktrees) is skipped.
+    PRIORITY_DIRS = (
+        "-Users-mukuls-dev-assistant",
+        "-Users-mukuls-dev-firefly-platform",
+    )
+
+    def __init__(self, roots: list[Path] | None = None,
+                 projects_dir: Path = CLAUDE_PROJECTS,
+                 existing: list[str] | None = None,
+                 now: float | None = None):
+        if roots is None:
+            roots = [projects_dir / d for d in self.PRIORITY_DIRS
+                     if (projects_dir / d).is_dir()]
+        self.roots = roots
+        self.now = now if now is not None else time.time()
+        # Existing lesson triggers for fuzzy dedup. Fetched lazily by the caller
+        # and injected; default empty (dedup degrades to allow, still gated).
+        self._existing_stems = {signal_stem(t) for t in (existing or []) if t}
+
+    # ── file selection ──────────────────────────────────────────────────────
+
+    def _gather_files(self) -> list[Path]:
+        """Recency-sorted, filtered transcript paths under the scan roots."""
+        cutoff = self.now - self.MTIME_WINDOW_DAYS * 86400
+        scored: list[tuple[float, Path]] = []
+        for root in self.roots:
+            if not root.is_dir():
+                continue
+            for p in root.glob("*.jsonl"):
+                sp = str(p)
+                if "/tmp" in sp or "spawn-prompts" in sp:
+                    continue
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                if st.st_size > self.MAX_FILE_BYTES:
+                    continue
+                if st.st_mtime < cutoff:
+                    continue
+                scored.append((st.st_mtime, p))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [p for _, p in scored[:self.MAX_FILES]]
+
+    # ── turn-text extraction ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _user_text(content: Any) -> str | None:
+        """The human's words from a user turn, or None if it's a tool result or
+        a system-injected turn (harness reminder, spawn prompt, interrupt)."""
+        if isinstance(content, list):
+            parts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+            text = " ".join(p for p in parts if p).strip()
+            if not text:  # tool_result-only / image-only turn
+                return None
+        elif isinstance(content, str):
+            text = content
+        else:
+            return None
+        text = _TELEGRAM_PREFIX_RE.sub("", text).replace("\r", " ").strip()
+        if not text or _SYSTEM_TURN_RE.match(text):
+            return None
+        return text
+
+    @staticmethod
+    def _assistant_text(content: Any) -> str | None:
+        """The assistant's visible reply (text blocks only — thinking and
+        tool_use are dropped)."""
+        if isinstance(content, str):
+            return content.strip() or None
+        if isinstance(content, list):
+            parts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+            text = " ".join(p for p in parts if p).strip()
+            return text or None
+        return None
+
+    def _conversation(self, path: Path) -> list[tuple[str, str]]:
+        """Ordered (role, text) turns from one transcript, human/assistant only.
+        Aborts (returns what it has) if parsing blows the per-file deadline."""
+        deadline = time.monotonic() + self.PER_FILE_TIMEOUT_SEC
+        turns: list[tuple[str, str]] = []
+        try:
+            f = open(path, "r", errors="replace")
+        except OSError:
+            return turns
+        with f:
+            for i, line in enumerate(f):
+                if i % self.LINE_TIME_CHECK_EVERY == 0 and time.monotonic() > deadline:
+                    audit(f"transcript scan: aborted slow file {path.name} "
+                          f"after {self.PER_FILE_TIMEOUT_SEC}s")
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # malformed line — skip, never crash
+                if not isinstance(obj, dict):
+                    continue
+                # isMeta: harness-injected content (slash-command skill bodies,
+                # local-command echoes) — never the human's words.
+                # isSidechain: a Task-tool subagent conversation, whose "user"
+                # turn is an orchestrator prompt, not the operator.
+                if obj.get("isMeta") or obj.get("isSidechain"):
+                    continue
+                role = obj.get("type")
+                if role not in ("user", "assistant"):
+                    continue
+                msg = obj.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                text = (self._user_text(content) if role == "user"
+                        else self._assistant_text(content))
+                if text:
+                    turns.append((role, text))
+        return turns
+
+    # ── signal detection ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _classify(text: str) -> str | None:
+        """'correction' | 'confirmation' | None. Correction wins ties."""
+        for rx in _CORRECTION_PATTERNS:
+            if rx.search(text):
+                return "correction"
+        for rx in _CONFIRMATION_PATTERNS:
+            if rx.search(text):
+                return "confirmation"
+        return None
+
+    @staticmethod
+    def _prev_assistant(turns: list[tuple[str, str]], i: int) -> str:
+        """Nearest assistant turn before index i (what was corrected/confirmed)."""
+        for j in range(i - 1, -1, -1):
+            if turns[j][0] == "assistant":
+                return turns[j][1]
+        return ""
+
+    # ── scan ────────────────────────────────────────────────────────────────
+
+    def scan(self) -> list[dict[str, Any]]:
+        """Return up to MAX_CANDIDATES transcript candidates, recurrence-first,
+        deduped against existing lessons. Logs one audit summary line."""
+        files = self._gather_files()
+        # Aggregate correction/confirmation by (signal, stem) so the same human
+        # signal across many sessions becomes one high-count candidate.
+        agg: dict[tuple[str, str], dict[str, Any]] = {}
+        # Recurring questions: stem → set of distinct session files.
+        q_files: dict[str, set[str]] = defaultdict(set)
+        q_repr: dict[str, str] = {}
+        n_signals = 0
+
+        for path in files:
+            turns = self._conversation(path)
+            for i, (role, text) in enumerate(turns):
+                if role != "user":
+                    continue
+                if text.rstrip().endswith("?") and len(text) <= 200:
+                    qstem = signal_stem(text, words=8)
+                    if qstem:
+                        q_files[qstem].add(path.name)
+                        q_repr.setdefault(qstem, text)
+                sig = self._classify(text)
+                if not sig:
+                    continue
+                n_signals += 1
+                stem = signal_stem(text)
+                if not stem:
+                    continue
+                key = (sig, stem)
+                rec = agg.get(key)
+                if rec is None:
+                    agg[key] = {
+                        "type": "transcript",
+                        "signal": sig,
+                        "source_file": path.name,
+                        "assistant_context": self._prev_assistant(turns, i)[:200],
+                        "user_signal": text[:150],
+                        "stem": stem,
+                        "kind": f"transcript:{sig}",
+                        "count": 1,
+                    }
+                else:
+                    rec["count"] += 1
+
+        candidates = list(agg.values())
+        # Recurring-question candidates: same stem in >= N distinct sessions.
+        for qstem, sessions in q_files.items():
+            if len(sessions) < self.MIN_RECURRING_SESSIONS:
+                continue
+            candidates.append({
+                "type": "transcript",
+                "signal": "recurring_question",
+                "source_file": sorted(sessions)[0],
+                "assistant_context": "",
+                "user_signal": q_repr[qstem][:150],
+                "stem": qstem,
+                "kind": "transcript:recurring_question",
+                "count": len(sessions),
+            })
+
+        # Drop anything a current lesson already covers (fuzzy first-10-words).
+        kept: list[dict[str, Any]] = []
+        for c in candidates:
+            cs = c["stem"]
+            if any(cs and (cs in es or es in cs) for es in self._existing_stems):
+                continue
+            kept.append(c)
+
+        kept.sort(key=lambda c: c["count"], reverse=True)
+        kept = kept[:self.MAX_CANDIDATES]
+        audit(f"transcript scan: scanned {len(files)} files, found {n_signals} "
+              f"signals, emitted {len(kept)} candidates")
+        return kept
+
+
 # ─── LLM draft ──────────────────────────────────────────────────────────────
 
 DRAFT_PROMPT = """\
@@ -264,7 +577,110 @@ Return ONLY a single JSON object, no prose, no code fences:
 """
 
 
+TRANSCRIPT_CORRECTION_PROMPT = """\
+You are mining a developer's Claude Code session transcripts for rules worth \
+encoding so the assistant stops repeating mistakes.
+
+In {count} session turn(s) the user pushed back on the assistant. A \
+representative exchange:
+
+  ASSISTANT DID: {assistant_context}
+  USER SAID: {user_signal}
+
+Write ONE durable rule the assistant should follow so this correction never \
+needs repeating. State what to do (and what to stop doing) and why. Generalize \
+from the specific exchange — capture the underlying rule, not this one instance.
+
+Pick the target store:
+  - "claude": rules EVERY coding session must obey (general coding/workflow \
+behavior). Valid scopes: global, classification, dashboard, ffp, scout, memory, \
+security.
+  - "assistant": rules ONLY for the orchestrator that decides what to do with \
+each workspace (merge/cleanup/verdict policy). Valid scopes: verdict, merge, \
+cleanup, stranded, general.
+
+If the correction is about general coding or tool behavior, prefer "claude". \
+If it is about orchestration/workspace verdicts, use "assistant".
+
+Return ONLY a single JSON object, no prose, no code fences:
+{{"trigger": "<one short line naming when the rule fires>", \
+"rule": "<one paragraph, imperative, what to do and why>", \
+"target": "<claude|assistant>", \
+"scope": "<a valid scope for the chosen target>"}}
+
+If the exchange is too vague to yield a real rule, return {{"skip": true}}.
+"""
+
+TRANSCRIPT_CONFIRMATION_PROMPT = """\
+You are mining a developer's Claude Code session transcripts for behaviors \
+worth reinforcing.
+
+In {count} session turn(s) the user explicitly approved how the assistant \
+worked. A representative exchange:
+
+  ASSISTANT DID: {assistant_context}
+  USER SAID: {user_signal}
+
+Write ONE rule that reinforces this behavior so the assistant keeps doing it. \
+Generalize the underlying good practice, not this one instance.
+
+Pick the target store:
+  - "claude": rules EVERY coding session must obey. Valid scopes: global, \
+classification, dashboard, ffp, scout, memory, security.
+  - "assistant": rules ONLY for the orchestrator (merge/cleanup/verdict \
+policy). Valid scopes: verdict, merge, cleanup, stranded, general.
+
+Return ONLY a single JSON object, no prose, no code fences:
+{{"trigger": "<one short line naming when the rule fires>", \
+"rule": "<one paragraph, imperative, what to do and why>", \
+"target": "<claude|assistant>", \
+"scope": "<a valid scope for the chosen target>"}}
+
+If the exchange is too vague to yield a real rule, return {{"skip": true}}.
+"""
+
+TRANSCRIPT_QUESTION_PROMPT = """\
+You are mining a developer's Claude Code session transcripts. The user asked \
+the SAME question in {count} different sessions:
+
+  QUESTION: {user_signal}
+
+A question asked this often signals missing context the assistant should record \
+once so it never has to be re-answered. Write ONE rule capturing the answer or \
+the standing context, targeting "claude" (scope: global) unless it is clearly \
+orchestration policy (target "assistant").
+
+Return ONLY a single JSON object, no prose, no code fences:
+{{"trigger": "<one short line naming when this comes up>", \
+"rule": "<one paragraph stating the standing answer/context and what to do>", \
+"target": "<claude|assistant>", \
+"scope": "<a valid scope for the chosen target>"}}
+
+If you cannot state a real answer, return {{"skip": true}}.
+"""
+
+# Valid scopes per target, mirrored from assistant-curator.py. Used to coerce an
+# LLM scope choice onto something the curator will accept at confirm time.
+_TARGET_SCOPES = {
+    "claude": ({"global", "classification", "dashboard", "ffp", "scout",
+                "memory", "security"}, "global"),
+    "assistant": ({"verdict", "merge", "cleanup", "stranded", "general"},
+                  "general"),
+}
+
+
 def build_draft_prompt(candidate: dict[str, Any]) -> str:
+    if candidate.get("type") == "transcript":
+        sig = candidate.get("signal")
+        tmpl = {
+            "correction": TRANSCRIPT_CORRECTION_PROMPT,
+            "confirmation": TRANSCRIPT_CONFIRMATION_PROMPT,
+            "recurring_question": TRANSCRIPT_QUESTION_PROMPT,
+        }.get(sig, TRANSCRIPT_CORRECTION_PROMPT)
+        return tmpl.format(
+            count=candidate.get("count", 1),
+            assistant_context=candidate.get("assistant_context", "") or "(none)",
+            user_signal=candidate.get("user_signal", ""))
     samples = "\n".join(f"  - {s[:200]}" for s in candidate["samples"])
     return DRAFT_PROMPT.format(
         kind=candidate["kind"], count=candidate["count"], samples=samples)
@@ -308,16 +724,20 @@ def draft_lesson(candidate: dict[str, Any],
     obj = _extract_json(raw)
     if not obj:
         return None
+    if obj.get("skip"):  # LLM judged the signal too vague to encode.
+        return None
     trigger = (obj.get("trigger") or "").strip()
     rule = (obj.get("rule") or "").strip()
     if not trigger or not rule:
         return None
-    return {
-        "trigger": trigger,
-        "rule": rule,
-        "target": (obj.get("target") or "assistant").strip() or "assistant",
-        "scope": (obj.get("scope") or "general").strip() or "general",
-    }
+    target = (obj.get("target") or "assistant").strip() or "assistant"
+    scope = (obj.get("scope") or "").strip()
+    if target not in _TARGET_SCOPES:
+        target = "assistant"
+    valid_scopes, default_scope = _TARGET_SCOPES[target]
+    if scope not in valid_scopes:
+        scope = default_scope
+    return {"trigger": trigger, "rule": rule, "target": target, "scope": scope}
 
 
 def _claude_oneshot(prompt: str) -> str:
@@ -370,6 +790,11 @@ def write_proposal(draft: dict[str, Any], candidate: dict[str, Any],
         "pattern_kind": candidate["kind"],
         "pattern_count": candidate["count"],
     }
+    # Transcript candidates carry which signal + source session they came from.
+    if candidate.get("type") == "transcript":
+        entry["source"] = "extractor-transcript"
+        entry["pattern_signal"] = candidate.get("signal")
+        entry["source_file"] = candidate.get("source_file")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -389,15 +814,20 @@ def ping_user(trigger: str, tg_send: Path = TG_SEND,
 # ─── orchestration ───────────────────────────────────────────────────────────
 
 def extract(*, dry_run: bool = False,
+            ledger_only: bool = False,
             llm: Callable[[str], str] | None = None,
             ledger_path: Path = LEDGER_PATH,
             proposals_path: Path = PROPOSALS_PATH,
             curator: Path = CURATOR,
             tg_send: Path = TG_SEND,
+            scanner_factory: Callable[[list[str]], Any] | None = None,
             now: int | None = None) -> dict[str, Any]:
     """Run one extraction pass. Returns a summary dict.
 
-    Designed for both pulse.py (defaults) and tests (inject llm + paths + now).
+    Pass 1 mines the action ledger; Pass 2 (unless ledger_only) mines Claude
+    session transcripts. Both feed the same dedup → draft → propose pipeline.
+    Designed for both pulse.py (defaults) and tests (inject llm + paths + now +
+    scanner_factory).
     """
     now = now if now is not None else now_epoch()
     entries = read_ledger_tail(ledger_path)
@@ -405,6 +835,22 @@ def extract(*, dry_run: bool = False,
 
     triggers = existing_triggers(curator)
     pending = pending_proposal_stems(proposals_path)
+
+    # Pass 2: transcript signals. The scanner dedups against existing lessons
+    # itself (fuzzy first-10-words) and is bounded; ledger candidates lead so
+    # the strongest recurring actions still propose first.
+    n_transcripts = 0
+    if not ledger_only:
+        if scanner_factory is not None:
+            scanner = scanner_factory(triggers)
+        else:
+            scanner = TranscriptScanner(existing=triggers, now=float(now))
+        try:
+            transcript_cands = scanner.scan()
+            n_transcripts = len(transcript_cands)
+            candidates = candidates + transcript_cands
+        except Exception as e:  # noqa: BLE001 — a scan failure must not abort Pass 1
+            audit(f"transcript scan failed: {e}")
 
     proposed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -444,35 +890,44 @@ def extract(*, dry_run: bool = False,
     return {
         "n_entries": len(entries),
         "n_candidates": len(candidates),
+        "n_transcript_candidates": n_transcripts,
         "n_proposed": len(proposed),
         "n_skipped": len(skipped),
         "proposed": proposed,
         "skipped": skipped,
         "dry_run": dry_run,
+        "ledger_only": ledger_only,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Detect recurring patterns in the action ledger and draft "
-                    "lesson proposals the user can confirm.")
+        description="Detect recurring patterns in the action ledger AND Claude "
+                    "session transcripts, and draft lesson proposals the user "
+                    "can confirm.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print proposals without writing them or pinging.")
+    ap.add_argument("--ledger-only", action="store_true",
+                    help="Skip the (slower) transcript scan; mine only the "
+                         "action ledger. Used for fast pulse-driven runs.")
     args = ap.parse_args(argv)
 
-    result = extract(dry_run=args.dry_run)
+    result = extract(dry_run=args.dry_run, ledger_only=args.ledger_only)
 
     if args.dry_run:
         # Human-readable summary to stdout in dry-run.
         print(json.dumps({
             "n_entries": result["n_entries"],
             "n_candidates": result["n_candidates"],
+            "n_transcript_candidates": result["n_transcript_candidates"],
             "would_propose": [
                 {"trigger": p["draft"]["trigger"], "rule": p["draft"]["rule"],
                  "target": p["draft"]["target"], "scope": p["draft"]["scope"],
                  "pattern": {"kind": p["candidate"]["kind"],
                              "count": p["candidate"]["count"],
-                             "stem": p["candidate"]["stem"]}}
+                             "stem": p["candidate"]["stem"],
+                             "signal": p["candidate"].get("signal"),
+                             "source_file": p["candidate"].get("source_file")}}
                 for p in result["proposed"]
             ],
             "skipped": [{"reason": s["reason"], "kind": s["kind"],
@@ -481,7 +936,8 @@ def main(argv: list[str] | None = None) -> int:
         }, indent=2, ensure_ascii=False))
     else:
         print(json.dumps({k: result[k] for k in
-                          ("n_entries", "n_candidates", "n_proposed", "n_skipped")}))
+                          ("n_entries", "n_candidates", "n_transcript_candidates",
+                           "n_proposed", "n_skipped")}))
     return 0
 
 
