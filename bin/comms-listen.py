@@ -229,6 +229,9 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
             if kind in ("noop", "emit-card"):
                 log(f"suppressed routine broadcast kind={kind} key={key}")
                 continue
+            if kind == "self-update" and "skip" in key:
+                log(f"suppressed self-update-skip broadcast key={key}")
+                continue
             body = comms_lib.fmt_action_line(entry)
             rc, out, err = cli(
                 [str(TG_SEND), "--text", body, "--kind", "action",
