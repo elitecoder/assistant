@@ -1,0 +1,51 @@
+[
+  {
+    "name": "fleet_status",
+    "description": "Current state of all workspaces — classifications, what needs attention, pulse age",
+    "args": [],
+    "script": "bin/tools/fleet-status.py"
+  },
+  {
+    "name": "workspace_peek",
+    "description": "Live terminal screen for a specific workspace",
+    "args": [
+      {"name": "ws", "type": "string", "required": true, "help": "workspace ref e.g. workspace:45"}
+    ],
+    "script": "bin/tools/workspace-peek.py"
+  },
+  {
+    "name": "recent_actions",
+    "description": "Last N verified actions from the ledger",
+    "args": [
+      {"name": "n", "type": "int", "required": false, "default": 10, "help": "how many recent actions to return"},
+      {"name": "ws", "type": "string", "required": false, "help": "filter to one workspace ref"}
+    ],
+    "script": "bin/tools/recent-actions.py"
+  },
+  {
+    "name": "thread_context",
+    "description": "Recent Telegram conversation thread",
+    "args": [
+      {"name": "chat", "type": "string", "required": true, "help": "chat_id"}
+    ],
+    "script": "bin/tools/thread-context.py"
+  },
+  {
+    "name": "propose_lesson",
+    "description": "Record a lesson proposal for the user to confirm",
+    "args": [
+      {"name": "trigger", "type": "string", "required": true, "help": "one-line trigger the rule fires on"},
+      {"name": "rule", "type": "string", "required": true, "help": "one-paragraph rule body"},
+      {"name": "target", "type": "string", "required": false, "default": "assistant", "choices": ["assistant", "claude"], "help": "lesson store"},
+      {"name": "scope", "type": "string", "required": false, "default": "general", "help": "sub-domain within the target"},
+      {"name": "source", "type": "string", "required": false, "default": "manual", "help": "manual|extractor"}
+    ],
+    "script": "bin/tools/propose-lesson.py"
+  },
+  {
+    "name": "system_health",
+    "description": "Heartbeat age, pulse index, launchd status",
+    "args": [],
+    "script": "bin/tools/system-health.py"
+  }
+]

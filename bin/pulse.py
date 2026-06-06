@@ -103,6 +103,15 @@ OBSERVER_TIMEOUT_SEC = int(os.environ.get("OBSERVER_TIMEOUT_SEC", "600"))
 # Cap dispatched TODO spawns. We don't hammer the user's machine on a single pulse.
 MAX_DISPATCH_PER_PULSE = 2
 
+# Lesson extraction cadence. Pattern detection over the ledger is cheap, but a
+# surviving candidate triggers an LLM draft call, so we throttle: run it once
+# every N pulses (~hourly at the current interval) rather than every pulse.
+LESSON_EXTRACT_EVERY = int(os.environ.get("LESSON_EXTRACT_EVERY", "12"))
+# Hard bound on the extractor subprocess so a hung LLM draft can never stall the
+# orchestrator. It runs AFTER state-write + heartbeat, so even a timeout here
+# leaves the dashboard and the heartbeat fresh.
+LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
+
 # Cap concurrent active workspaces (matches old prompt's rule).
 ACTIVE_WS_CAP = 5
 TOTAL_WS_CAP = 30
@@ -893,6 +902,31 @@ def dispatch_todo(todo_id: str) -> bool:
     return True
 
 
+def run_lesson_extractor(pulse_idx: int) -> None:
+    """Step 8 (throttled): mine the ledger for recurring patterns and draft
+    lesson proposals. Runs as a bounded subprocess so a slow/hung LLM draft
+    can never stall the pulse. Invoked AFTER state-write + heartbeat, so a
+    timeout here leaves the dashboard and heartbeat fresh. Failures are logged
+    and swallowed — extraction is a nice-to-have, never load-bearing."""
+    extractor = BIN / "lesson-extractor.py"
+    if not extractor.exists():
+        return
+    rc, out, err = run(
+        [sys.executable, str(extractor)],
+        timeout=LESSON_EXTRACT_TIMEOUT_SEC, merge_bedrock=True,
+    )
+    if rc != 0:
+        log.warning("lesson-extractor rc=%d: %s", rc, (err or "").strip()[-200:])
+        return
+    try:
+        summary = json.loads(out)
+        if summary.get("n_proposed"):
+            log.info("lesson-extractor: proposed %d lesson(s) from %d candidate(s)",
+                     summary.get("n_proposed"), summary.get("n_candidates"))
+    except Exception:  # noqa: BLE001 — extractor output is diagnostic only
+        pass
+
+
 # ─── main ───────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -1101,6 +1135,12 @@ def main() -> int:
 
     # 7. Heartbeat.
     write_heartbeat(pulse_idx, n_drained)
+
+    # 8. Lesson extraction (throttled, ~hourly). Lightweight pattern detection;
+    #    only spends an LLM call when a candidate survives dedup. Runs last and
+    #    bounded so it can never stall the dashboard or the heartbeat above.
+    if pulse_idx % LESSON_EXTRACT_EVERY == 0:
+        run_lesson_extractor(pulse_idx)
 
     log.info("=== pulse %d done in %.1fs ===", pulse_idx, time.time() - t0)
     return 0
