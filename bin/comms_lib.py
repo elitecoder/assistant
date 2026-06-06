@@ -183,6 +183,32 @@ def fmt_heartbeat_alert(hb: dict[str, Any], age_sec: int) -> str:
     )
 
 
+def fmt_workspace_signal(item: dict[str, Any]) -> str:
+    """Render a cmux-watcher inbox item (written by bin/cmux-watcher.py) for
+    chat. The watcher drops these the instant cmux reports a workspace needs
+    input or finished a notable turn — so the phone ping arrives in seconds.
+
+    Lead with the outcome (what the workspace needs / did), then the workspace
+    ref, then the screen snippet — per the morning-status-update lesson, the
+    work comes first and the infra label second."""
+    signal_type = item.get("signal_type", "?")
+    ws_ref = item.get("ws_ref") or "?"
+    pattern = item.get("pattern_matched") or "?"
+    snippet = (item.get("screen_snippet") or "").strip()
+    headline = {
+        "needs_input": "needs your input",
+        "work_complete": "work looks complete",
+        "pattern_match": "hit a watched signal",
+    }.get(signal_type, signal_type)
+    body = (
+        f"<b>{escape_html(ws_ref)} {escape_html(headline)}</b>\n"
+        f"signal=<code>{escape_html(pattern)}</code>"
+    )
+    if snippet:
+        body += f"\n<i>{escape_html(snippet[:400])}</i>"
+    return body
+
+
 # --------------------------------------------------------------------------- cursor (ledger byte offset)
 
 def read_ledger_cursor(paths: Paths) -> int:

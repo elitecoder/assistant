@@ -442,6 +442,47 @@ else
 fi
 log ""
 
+# --- 6. cmux-watcher LaunchAgent (opt-in: written, NEVER auto-loaded) -------
+# The cmux-watcher taps `cmux events --category agent --reconnect` and drops
+# inbox signals comms-listen.py pings to the phone in seconds. Per the global
+# CLAUDE.md lesson ("Always ask before running launchctl load"), this installer
+# WRITES the plist but never loads it — it prints the load command for Mukul to
+# run by hand. The watcher is additive to comms-listen.py (which grows the inbox
+# kqueue loop that consumes these signals); both can run together.
+log "[6/6] Writing cmux-watcher LaunchAgent plist (NOT loaded)"
+WATCHER_PLIST="$HOME_DIR/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
+WATCHER_PY="/opt/homebrew/bin/python3"
+[[ -x "$WATCHER_PY" ]] || WATCHER_PY="/usr/bin/python3"
+WATCHER_PLIST_BODY="$(cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.mukul.assistant-cmux-watcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$WATCHER_PY</string>
+        <string>$REPO_ROOT/bin/cmux-watcher.py</string>
+    </array>
+    <key>KeepAlive</key><true/>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>$HOME_DIR/.assistant/cmux-watcher.log</string>
+    <key>StandardErrorPath</key><string>$HOME_DIR/.assistant/cmux-watcher-error.log</string>
+</dict>
+</plist>
+PLIST
+)"
+if [[ $APPLY -eq 1 ]]; then
+    printf '%s\n' "$WATCHER_PLIST_BODY" > "$WATCHER_PLIST"
+    note "wrote $WATCHER_PLIST"
+else
+    note "would write $WATCHER_PLIST"
+fi
+note "cmux-watcher is OPT-IN — NOT loaded automatically."
+note "To activate it yourself:"
+note "    launchctl load $WATCHER_PLIST"
+log ""
+
 # --- summary ----------------------------------------------------------------
 if [[ $APPLY -eq 0 ]]; then
     log "✅ Dry-run complete. Re-run with --apply to make changes."

@@ -811,6 +811,294 @@ def ping_user(trigger: str, tg_send: Path = TG_SEND,
     return rc == 0
 
 
+# ─── cmux-watcher pattern feedback + discovery ───────────────────────────────
+#
+# The cmux-watcher (bin/cmux-watcher.py) pings the phone the instant a workspace
+# needs input or finishes a notable turn, matching pattern_bank.json. Two
+# learning loops close around it, both wired through this extractor:
+#
+#   1. Noise feedback — when a transcript correction is about notification
+#      behavior ("that wasn't worth pinging me for", "stop sending me X"), call
+#      pattern-feedback.py with feedback=noise for the matching pattern, so a
+#      noisy pattern eventually mutes itself.
+#
+#   2. New-pattern discovery (--discover) — scan terminal-output snippets logged
+#      around "needs_user" ledger entries for recurring phrases that aren't yet
+#      a pattern, and propose them as pattern candidates in proposals.jsonl for
+#      the user to confirm.
+
+PATTERN_FEEDBACK = BIN / "tools" / "pattern-feedback.py"
+PATTERN_BANK_PATH = HOME / ".assistant" / "pattern_bank.json"
+FIRED_PATTERNS_LOG = HOME / ".assistant" / "cmux-fired-patterns.jsonl"
+
+# A correction is about notification behavior when it names pinging/notifying.
+_NOTIFICATION_CORRECTION_RE = re.compile(
+    r"\b(ping\w*|notif\w*|alert\w*|messag\w*|telegram)\b", re.I)
+# …and carries a negative/stop sentiment (so neutral mentions of "ping" don't fire).
+_NOTIFICATION_NEGATIVE_RE = re.compile(
+    r"\b(stop|don'?t|do not|wasn'?t worth|not worth|too many|quit|no more|"
+    r"useless|noise|noisy|annoying|spam\w*)\b", re.I)
+
+
+def load_pattern_ids(bank_path: Path = PATTERN_BANK_PATH) -> list[dict[str, Any]]:
+    """The patterns currently in the bank, or [] if it's missing/corrupt."""
+    try:
+        data = json.loads(bank_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    pats = data.get("patterns", [])
+    return [p for p in pats if isinstance(p, dict) and p.get("id")]
+
+
+def is_notification_correction(text: str) -> bool:
+    """True if a user correction is specifically about notification/ping noise."""
+    return bool(_NOTIFICATION_CORRECTION_RE.search(text or "")
+                and _NOTIFICATION_NEGATIVE_RE.search(text or ""))
+
+
+def match_pattern_for_correction(text: str,
+                                 patterns: list[dict[str, Any]]) -> str | None:
+    """Best-effort map a noise correction to a pattern id: the pattern whose id
+    or signal words appear in the correction text. Returns None if no pattern is
+    clearly implicated (then we don't guess — a wrong mute is worse than none)."""
+    low = (text or "").lower()
+    for p in patterns:
+        pid = (p.get("id") or "").lower()
+        if not pid:
+            continue
+        # id is kebab-case; match on any of its words appearing in the text.
+        words = [w for w in re.split(r"[-_]", pid) if len(w) >= 3]
+        if words and all(w in low for w in words):
+            return p.get("id")
+    for p in patterns:
+        # Fall back to a single distinctive word from the id.
+        for w in re.split(r"[-_]", (p.get("id") or "").lower()):
+            if len(w) >= 5 and w in low:
+                return p.get("id")
+    return None
+
+
+def send_noise_feedback(pattern_id: str,
+                        feedback_cli: Path = PATTERN_FEEDBACK,
+                        runner: Callable[[list[str]], tuple[int, str, str]] | None = None
+                        ) -> bool:
+    """Invoke pattern-feedback.py with feedback=noise for pattern_id."""
+    runner = runner or _run
+    rc, _out, _err = runner([
+        sys.executable, str(feedback_cli),
+        "--pattern-id", pattern_id, "--feedback", "noise",
+    ])
+    return rc == 0
+
+
+def apply_notification_feedback(candidates: list[dict[str, Any]], *,
+                                dry_run: bool = False,
+                                bank_path: Path = PATTERN_BANK_PATH,
+                                feedback_cli: Path = PATTERN_FEEDBACK,
+                                runner: Callable[[list[str]], tuple[int, str, str]] | None = None
+                                ) -> list[dict[str, Any]]:
+    """For every transcript correction that's about notification noise, downgrade
+    the implicated cmux-watcher pattern via pattern-feedback.py. Returns the list
+    of {pattern_id, candidate} pairs acted on. Never raises."""
+    patterns = load_pattern_ids(bank_path)
+    if not patterns:
+        return []
+    acted: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for cand in candidates:
+        if cand.get("type") != "transcript" or cand.get("signal") != "correction":
+            continue
+        text = cand.get("user_signal", "")
+        if not is_notification_correction(text):
+            continue
+        pid = match_pattern_for_correction(text, patterns)
+        if not pid or pid in seen_ids:
+            continue
+        seen_ids.add(pid)
+        if dry_run:
+            audit(f"[dry-run] would mark pattern {pid!r} noise from correction "
+                  f"{text[:80]!r}")
+            acted.append({"pattern_id": pid, "candidate": cand, "dry_run": True})
+            continue
+        ok = send_noise_feedback(pid, feedback_cli, runner)
+        audit(f"notification-feedback: pattern={pid!r} noise ok={ok} "
+              f"from correction {text[:80]!r}")
+        acted.append({"pattern_id": pid, "candidate": cand, "ok": ok})
+    return acted
+
+
+def read_fired_snippets(path: Path = FIRED_PATTERNS_LOG,
+                        n: int = 500) -> list[dict[str, Any]]:
+    """Last n rows of the cmux-watcher fired-patterns log (best effort)."""
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines[-n:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+# A candidate phrase from a needs_user terminal snippet: a short, content-bearing
+# line. We strip box-drawing, prompts, and timestamps, then key on the stem.
+_SNIPPET_NOISE_RE = re.compile(r"[│─╭╮╰╯▔▕>·•⏵]+")
+
+
+def discover_patterns(*, ledger_path: Path = LEDGER_PATH,
+                      bank_path: Path = PATTERN_BANK_PATH,
+                      proposals_path: Path = PROPOSALS_PATH,
+                      min_occurrences: int = 2,
+                      now: int | None = None) -> list[dict[str, Any]]:
+    """Scan terminal-output snippets that preceded needs_user ledger entries for
+    recurring phrases NOT yet covered by a bank pattern, and return proposal
+    candidates. Pure of side effects beyond reading; the caller writes proposals.
+
+    Signal source: the cmux-watcher logs each fired pattern + ws_ref to
+    cmux-fired-patterns.jsonl, and pulse.py logs needs_user emit-card entries to
+    the action ledger with the workspace's screen evidence. We mine the ledger's
+    needs_user evidence for phrases that recur but match no existing pattern —
+    those are the gaps the bank should grow to cover."""
+    now = now if now is not None else now_epoch()
+    existing = load_pattern_ids(bank_path)
+    compiled: list[re.Pattern] = []
+    for p in existing:
+        try:
+            compiled.append(re.compile(p.get("regex", ""), re.I))
+        except re.error:
+            continue
+
+    entries = read_ledger_tail(ledger_path, n=1000)
+    # Phrases tied to needs_user / emit-card outcomes — that's the signal that a
+    # human got pulled in, i.e. exactly what a new pattern should catch earlier.
+    phrase_counts: dict[str, int] = defaultdict(int)
+    phrase_repr: dict[str, str] = {}
+    for e in entries:
+        kind = e.get("kind") or ""
+        if kind not in ("emit-card", "needs_user"):
+            continue
+        evidence = (e.get("evidence") or "").strip()
+        if not evidence:
+            continue
+        for raw_line in evidence.splitlines():
+            line = _SNIPPET_NOISE_RE.sub(" ", raw_line).strip()
+            if len(line) < 12 or len(line) > 160:
+                continue
+            # Already covered by a bank pattern? Then it's not a gap.
+            if any(rx.search(line) for rx in compiled):
+                continue
+            stem = signal_stem(line, words=8)
+            if not stem:
+                continue
+            phrase_counts[stem] += 1
+            phrase_repr.setdefault(stem, line)
+
+    # Stems already proposed as a pattern (don't re-propose every run).
+    proposed_stems = _pending_pattern_stems(proposals_path)
+
+    candidates: list[dict[str, Any]] = []
+    for stem, count in sorted(phrase_counts.items(), key=lambda kv: kv[1], reverse=True):
+        if count < min_occurrences:
+            continue
+        if _norm(stem) in proposed_stems:
+            continue
+        candidates.append({
+            "type": "pattern",
+            "stem": stem,
+            "sample": phrase_repr[stem],
+            "count": count,
+        })
+    return candidates
+
+
+def _pending_pattern_stems(path: Path = PROPOSALS_PATH) -> set[str]:
+    """Stems already represented by a pending/confirmed PATTERN proposal."""
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        return set()
+    out: set[str] = set()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "pattern":
+            continue
+        if obj.get("status") not in ("pending", "confirmed"):
+            continue
+        stem = obj.get("pattern_stem") or ""
+        if stem:
+            out.add(_norm(stem))
+    return out
+
+
+def write_pattern_proposal(candidate: dict[str, Any],
+                           path: Path = PROPOSALS_PATH) -> str:
+    """Append one pending PATTERN proposal (distinct from lesson proposals so
+    the confirm flow can tell them apart). Returns its id."""
+    ts = utc_iso_us()
+    # Derive a kebab id + a literal-substring regex from the representative line.
+    sample = candidate.get("sample", "")
+    pid = "-".join(re.findall(r"[a-z0-9]+", sample.lower())[:4]) or "discovered"
+    entry = {
+        "ts": ts,
+        "id": ts,
+        "type": "pattern",
+        "proposed_pattern": {
+            "id": pid,
+            "regex": re.escape(sample.strip())[:200],
+            "signal": "needs_input",
+            "priority": "medium",
+        },
+        "pattern_stem": candidate["stem"],
+        "sample": sample,
+        "count": candidate["count"],
+        "source": "extractor-discover",
+        "status": "pending",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return ts
+
+
+def run_discovery(*, dry_run: bool = False,
+                  ledger_path: Path = LEDGER_PATH,
+                  bank_path: Path = PATTERN_BANK_PATH,
+                  proposals_path: Path = PROPOSALS_PATH,
+                  tg_send: Path = TG_SEND,
+                  now: int | None = None) -> dict[str, Any]:
+    """Discover + propose new patterns. Returns a summary dict."""
+    cands = discover_patterns(ledger_path=ledger_path, bank_path=bank_path,
+                              proposals_path=proposals_path, now=now)
+    proposed: list[dict[str, Any]] = []
+    for c in cands:
+        if dry_run:
+            audit(f"[dry-run] would propose pattern stem={c['stem']!r} "
+                  f"count={c['count']} sample={c['sample'][:80]!r}")
+            proposed.append({"dry_run": True, "candidate": c})
+            continue
+        pid = write_pattern_proposal(c, proposals_path)
+        pinged = ping_user(f"new watcher pattern: {c['sample'][:60]}", tg_send)
+        audit(f"proposed pattern id={pid} stem={c['stem']!r} count={c['count']} "
+              f"pinged={pinged}")
+        proposed.append({"id": pid, "candidate": c, "pinged": pinged})
+    return {"n_candidates": len(cands), "n_proposed": len(proposed),
+            "proposed": proposed, "dry_run": dry_run}
+
+
 # ─── orchestration ───────────────────────────────────────────────────────────
 
 def extract(*, dry_run: bool = False,
@@ -852,6 +1140,16 @@ def extract(*, dry_run: bool = False,
         except Exception as e:  # noqa: BLE001 — a scan failure must not abort Pass 1
             audit(f"transcript scan failed: {e}")
 
+    # Notification noise feedback: any transcript correction about pinging gets
+    # routed to pattern-feedback.py so a noisy cmux-watcher pattern self-mutes.
+    # Best-effort — never aborts extraction.
+    n_feedback = 0
+    try:
+        acted = apply_notification_feedback(candidates, dry_run=dry_run)
+        n_feedback = len(acted)
+    except Exception as e:  # noqa: BLE001
+        audit(f"notification feedback failed: {e}")
+
     proposed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
 
@@ -891,6 +1189,7 @@ def extract(*, dry_run: bool = False,
         "n_entries": len(entries),
         "n_candidates": len(candidates),
         "n_transcript_candidates": n_transcripts,
+        "n_notification_feedback": n_feedback,
         "n_proposed": len(proposed),
         "n_skipped": len(skipped),
         "proposed": proposed,
@@ -910,7 +1209,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ledger-only", action="store_true",
                     help="Skip the (slower) transcript scan; mine only the "
                          "action ledger. Used for fast pulse-driven runs.")
+    ap.add_argument("--discover", action="store_true",
+                    help="Discover NEW cmux-watcher patterns: scan terminal "
+                         "snippets that preceded needs_user ledger entries for "
+                         "recurring phrases no current pattern catches, and "
+                         "propose them in proposals.jsonl for the user to confirm.")
     args = ap.parse_args(argv)
+
+    if args.discover:
+        dres = run_discovery(dry_run=args.dry_run)
+        print(json.dumps({
+            "mode": "discover",
+            "n_candidates": dres["n_candidates"],
+            "n_proposed": dres["n_proposed"],
+            "proposed": [
+                {"stem": p["candidate"]["stem"],
+                 "sample": p["candidate"]["sample"],
+                 "count": p["candidate"]["count"]}
+                for p in dres["proposed"]
+            ],
+        }, indent=2, ensure_ascii=False))
+        return 0
 
     result = extract(dry_run=args.dry_run, ledger_only=args.ledger_only)
 

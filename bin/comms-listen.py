@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -256,6 +257,110 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
         stop.wait(LEDGER_POLL_SEC)
 
 
+# --------------------------------------------------------------------------- inbox watcher (cmux-watcher signals)
+
+INBOX_DIR = HOME / ".assistant" / "inbox"
+# Cmux-watcher (bin/cmux-watcher.py) drops cmux-*.json signals here the instant
+# a workspace needs input or finishes a notable turn. We ping the phone within
+# seconds instead of waiting for the next pulse. pulse-*.json belongs to the
+# mechanical pulse and is NOT ours — we only consume cmux-*.json.
+INBOX_GLOB = "cmux-*.json"
+INBOX_POLL_FALLBACK_SEC = float(os.environ.get("COMMS_INBOX_POLL_SEC", "2"))
+
+
+def _drain_inbox_once(env: dict) -> int:
+    """Read every cmux-*.json in the inbox, ping the phone, delete it. Returns
+    the number of items processed. A malformed file is logged and removed so it
+    never wedges the loop. Atomic-write on the producer side (tmp+rename) means
+    we never read a half-written file."""
+    if not INBOX_DIR.exists():
+        return 0
+    n = 0
+    for p in sorted(INBOX_DIR.glob(INBOX_GLOB)):
+        try:
+            raw = p.read_text()
+        except OSError:
+            continue
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            log(f"inbox: dropping malformed {p.name}")
+            try:
+                p.unlink()
+            except OSError:
+                pass
+            continue
+        body = comms_lib.fmt_workspace_signal(item)
+        ledger_key = f"{item.get('ws_ref') or 'ws'}:{item.get('signal_type') or 'signal'}"
+        rc, _out, err = cli(
+            [str(TG_SEND), "--text", body, "--kind", "action",
+             "--ledger-key", ledger_key],
+            timeout=30, env=env)
+        if rc != 0:
+            log(f"inbox: tg-send rc={rc} for {p.name} err={err.strip()[:160]}")
+            # Leave the file in place so the next pass retries rather than
+            # silently losing the signal.
+            continue
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        n += 1
+        log(f"inbox: pinged {item.get('signal_type')} ws={item.get('ws_ref')} "
+            f"({p.name})")
+    return n
+
+
+def inbox_loop(stop: threading.Event, env: dict) -> None:
+    """Watch ~/.assistant/inbox for cmux-watcher signals and ping the phone.
+
+    Event-driven on macOS via select.kqueue (NOTE_WRITE/NOTE_EXTEND on the inbox
+    directory) — instant wake on a new file, no 2s poll latency. Linux (no
+    kqueue) falls back to a short stat-poll. We always drain once on entry to
+    catch anything dropped before we started watching, and re-drain on every
+    wake. The kqueue timeout doubles as a safety net so a missed vnode event
+    can never strand a signal."""
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    log("inbox loop started (cmux-watcher signals)")
+    # Drain whatever is already queued before we start blocking.
+    _drain_inbox_once(env)
+
+    kq = getattr(select, "kqueue", None)
+    if kq is None:
+        # Linux / no kqueue: stat-poll fallback.
+        log("inbox loop: kqueue unavailable — stat-poll fallback")
+        while not stop.is_set():
+            _drain_inbox_once(env)
+            stop.wait(INBOX_POLL_FALLBACK_SEC)
+        return
+
+    inbox_fd = os.open(str(INBOX_DIR), os.O_RDONLY)
+    try:
+        kqueue = select.kqueue()
+        kevent = select.kevent(
+            inbox_fd,
+            filter=select.KQ_FILTER_VNODE,
+            flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+            fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND,
+        )
+        kqueue.control([kevent], 0)
+        while not stop.is_set():
+            # Block up to 5s for a vnode change; the timeout is the safety-net
+            # re-drain so a missed event never strands a file.
+            events = kqueue.control(None, 1, 5)
+            if stop.is_set():
+                break
+            if events:
+                # Coalesce a burst of writes into one drain.
+                time.sleep(0.05)
+            _drain_inbox_once(env)
+    finally:
+        try:
+            os.close(inbox_fd)
+        except OSError:
+            pass
+
+
 # --------------------------------------------------------------------------- heartbeat page
 
 def heartbeat_loop(stop: threading.Event, env: dict) -> None:
@@ -339,9 +444,10 @@ def main() -> int:
     threads = [
         threading.Thread(target=inbound_loop, args=(stop, env), name="inbound", daemon=True),
         threading.Thread(target=ledger_loop, args=(stop, env), name="ledger", daemon=True),
+        threading.Thread(target=inbox_loop, args=(stop, env), name="inbox", daemon=True),
         threading.Thread(target=heartbeat_loop, args=(stop, env), name="heartbeat", daemon=True),
     ]
-    log(f"comms-listen starting (pid={os.getpid()}) — 3 loops")
+    log(f"comms-listen starting (pid={os.getpid()}) — 4 loops")
     for t in threads:
         t.start()
     # Block until a signal sets stop; daemon threads exit with the process.
