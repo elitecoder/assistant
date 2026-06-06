@@ -273,6 +273,69 @@ def load_state() -> dict:
 
 # ─── steps ──────────────────────────────────────────────────────────────────
 
+def self_update_pulse(pulse_idx: int) -> None:
+    """Step 0: pull + re-install the running system from git (throttled).
+
+    Imported lazily so a broken/absent self_update module can never stop the
+    pulse from doing its real job. Every outcome that did real work (a pull, a
+    skip-because-dirty, a failure) lands on the actions-ledger so it shows on
+    the dashboard and pings the phone via comms. A plain throttle (None) or a
+    clean already-up-to-date result is silent — no ledger spam every pulse."""
+    try:
+        sys.path.insert(0, str(BIN))
+        import self_update  # noqa: PLC0415
+        result = self_update.maybe_update(REPO, log=log)
+    except Exception as e:  # noqa: BLE001 — self-update must never break the pulse
+        log.exception("self-update raised (ignored): %s", e)
+        return
+
+    if result is None:
+        return  # throttled — nothing to report
+
+    reason = result.get("skipped_reason")
+    changed = result.get("changed")
+    # Silent path: attempted, nothing to do, no problem.
+    if not changed and reason is None and not result.get("error"):
+        return
+
+    if changed:
+        files = result.get("files_changed", [])
+        installed = result.get("installed")
+        outcome = "verified"
+        evidence = (f"pulled {result.get('from_sha')}..{result.get('to_sha')} "
+                    f"({len(files)} file(s)); install={'ran' if installed else 'not-needed'}")
+        if result.get("install_rc") not in (None, 0):
+            outcome = "failed"
+            evidence += f" install_rc={result.get('install_rc')}"
+        if result.get("self_plist_reload_deferred"):
+            evidence += "; pulse-plist reload deferred"
+        key = f"self-update-{result.get('to_sha', pulse_idx)}"
+    elif reason in ("dirty", "ahead"):
+        # Operator has local state we won't clobber — surface it, don't fail.
+        outcome = "verified"
+        n = result.get("ahead") if reason == "ahead" else None
+        evidence = (f"skipped self-update: repo is {reason}"
+                    + (f" ({n} commit(s) ahead — unpushed work)" if n else "")
+                    + " — pull deferred until clean")
+        key = f"self-update-skip-{reason}-p{pulse_idx}"
+    else:
+        outcome = "failed"
+        evidence = f"self-update {reason or 'error'}: {result.get('error', '')}"[:300]
+        key = f"self-update-fail-p{pulse_idx}"
+
+    append_ledger({
+        "ts": utc_iso(),
+        "epoch": utc_ts(),
+        "pulse_idx": pulse_idx,
+        "key": key,
+        "kind": "self-update",
+        "ws_ref": "(launchd)",
+        "outcome": outcome,
+        "evidence": evidence,
+    })
+    log.info("self-update: %s", evidence)
+
+
 def drain_inbox() -> int:
     if not INBOX_DIR.exists():
         return 0
@@ -1078,6 +1141,15 @@ def main() -> int:
     pulse_idx = int(state.get("_meta", {}).get("pulse_idx", 0)) + 1
     t0 = time.time()
     log.info("=== pulse %d start (dry_run=%s) ===", pulse_idx, dry_run)
+
+    # 0. Self-update: keep the running system current with its git remote
+    #    (throttled hourly). bin/ + prompts/ are symlinked, so a pull alone
+    #    makes code + Observer-prompt changes live on the very next pulse;
+    #    skills/plists/hooks go through install.sh --apply. Refuses to touch a
+    #    dirty or ahead repo — it surfaces, never discards. Logged to the
+    #    actions-ledger so comms can ping the phone on a self-update.
+    if not dry_run:
+        self_update_pulse(pulse_idx)
 
     # 1. Drain inbox.
     n_drained = 0 if dry_run else drain_inbox()

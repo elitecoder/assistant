@@ -28,6 +28,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mem0_backend as mb  # noqa: E402
 import memory_seeds as seeds  # noqa: E402
+import memory_repo_sync  # noqa: E402
 
 CATEGORIES = ("lesson", "working_style", "project", "work_history", "decision")
 
@@ -59,6 +60,41 @@ def seed_all(backend: mb.MemoryBackend) -> dict[str, Any]:
     return out
 
 
+def import_from(backend: mb.MemoryBackend, src: Path) -> dict[str, Any]:
+    """Bulk-add every record in a memories.jsonl into the backend, idempotently.
+
+    Used by the memory-repo sync: after `git pull` brings a newer memories.jsonl,
+    this replays it through `backend.add()` so the local chroma index (tier 1/2)
+    is rebuilt to match — on a brand-new machine the index starts empty and every
+    record is "added"; on a machine that already has them, each is "exists" and
+    the call is a no-op. Records are added verbatim (the backend hashes
+    content+metadata for its id, so re-import never duplicates).
+
+    Skips blank lines, malformed JSON, and records with no content.
+    """
+    counts = {"added": 0, "exists": 0, "skipped": 0}
+    if not src.exists():
+        return {"error": f"no such file: {src}", **counts}
+    for line in src.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            counts["skipped"] += 1
+            continue
+        content = (rec.get("content") or "").strip() if isinstance(rec, dict) else ""
+        if not content:
+            counts["skipped"] += 1
+            continue
+        metadata = rec.get("metadata") or {}
+        user_id = rec.get("user_id") or mb.USER_ID
+        res = backend.add(content, metadata, user_id=user_id)
+        counts["added" if res.get("status") == "added" else "exists"] += 1
+    return counts
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Add a memory to the mem0 store.")
     ap.add_argument("--content", default=None, help="memory text")
@@ -70,10 +106,18 @@ def main(argv: list[str] | None = None) -> int:
                     help="seed all confirmed lessons (idempotent)")
     ap.add_argument("--seed-all", action="store_true",
                     help="seed every category (idempotent)")
+    ap.add_argument("--import-from", dest="import_from", default=None,
+                    help="bulk-import every record from a memories.jsonl file "
+                         "(idempotent; used by memory-repo sync-pull)")
     args = ap.parse_args(argv)
 
     mb.ensure_venv()  # hop into .venv-mem0 for real semantic store if needed
     backend = mb.MemoryBackend()
+
+    if args.import_from:
+        counts = import_from(backend, Path(args.import_from).expanduser())
+        print(json.dumps({"imported": counts, "provider": backend.provider}))
+        return 0 if "error" not in counts else 1
 
     if args.seed_all or args.seed_lessons:
         result = seed_all(backend) if args.seed_all else seed_lessons(backend)
@@ -103,6 +147,9 @@ def main(argv: list[str] | None = None) -> int:
     res = backend.add(args.content, metadata, user_id=args.user_id)
     res.setdefault("provider", backend.provider)
     print(json.dumps(res, ensure_ascii=False))
+    # Sync to the cross-machine memory repo (fire-and-forget; only on a real add).
+    if res.get("status") == "added":
+        memory_repo_sync.sync_to_memory_repo("memory")
     return 0
 
 
