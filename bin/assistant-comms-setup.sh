@@ -128,11 +128,11 @@ echo
 echo "Setup complete."
 echo
 echo "Next steps:"
-echo "  1. Test the daemon in foreground:"
-echo "       ${VENV_DIR}/bin/python /Users/mukuls/dev/assistant/bin/assistant-comms.py"
+echo "  1. Test the daemon in foreground (Ctrl-C to stop):"
+echo "       /opt/homebrew/bin/python3 /Users/mukuls/dev/assistant/bin/comms-listen.py"
 echo "     Send 'ping' to your bot; expect a 'pong' reply."
 echo
-echo "  2. When happy, load the LaunchAgent so it runs on boot:"
+echo "  2. When happy, load the KeepAlive LaunchAgent so it runs on boot:"
 echo "       launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist"
 echo
 echo "  Logs: ${LOG_DIR}/assistant-comms.launchd.{out,err}"
