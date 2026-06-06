@@ -75,7 +75,7 @@ class Paths:
 class Config:
     bot_token: str
     chat_ids: set[int]
-    stale_heartbeat_sec: int = 600
+    stale_heartbeat_sec: int = 1200
     mute_until_epoch: int = 0
     _path: Path | None = None
 
@@ -88,7 +88,7 @@ class Config:
         return cls(
             bot_token=tg["bot_token"],
             chat_ids={int(x) for x in tg.get("chat_ids", [])},
-            stale_heartbeat_sec=int(raw.get("stale_heartbeat_sec", 600)),
+            stale_heartbeat_sec=int(raw.get("stale_heartbeat_sec", 1200)),
             mute_until_epoch=int(raw.get("mute_until_epoch", 0)),
             _path=path,
         )
