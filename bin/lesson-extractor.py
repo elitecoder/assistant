@@ -807,7 +807,7 @@ def ping_user(trigger: str, tg_send: Path = TG_SEND,
     body = (f"Lesson proposal from pattern: {trigger}. "
             "Reply y in the main chat to add it.")
     rc, _, _ = runner([sys.executable, str(tg_send), "--text", body,
-                       "--kind", "action"])
+                       "--kind", "reply"])
     return rc == 0
 
 
