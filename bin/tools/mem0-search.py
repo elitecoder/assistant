@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="restrict to one category")
     args = ap.parse_args(argv)
 
+    mb.ensure_venv()  # hop into .venv-mem0 for real semantic search if needed
     backend = mb.MemoryBackend()
     try:
         results = backend.search(args.query, limit=args.limit,

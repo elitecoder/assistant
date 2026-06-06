@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="seed every category (idempotent)")
     args = ap.parse_args(argv)
 
+    mb.ensure_venv()  # hop into .venv-mem0 for real semantic store if needed
     backend = mb.MemoryBackend()
 
     if args.seed_all or args.seed_lessons:

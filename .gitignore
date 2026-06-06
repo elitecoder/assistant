@@ -37,3 +37,9 @@ evals/observer/last-run.log
 # slack-reactor Node deps (reinstalled by spawn-slack-reactor.sh)
 slack-reactor/node_modules/
 slack-reactor/package-lock.json
+
+# mem0 semantic-memory venv (Python 3.12; mem0ai + chroma + boto3 + fastembed).
+# Rebuilt by bin/tools/install-mem0-venv.sh — 380MB of deps, never committed.
+# mem0_backend.ensure_venv() re-execs into it; absent it, tools fall back to
+# the dependency-free local-jsonl store.
+.venv-mem0/
