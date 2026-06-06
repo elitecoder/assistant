@@ -174,3 +174,33 @@ Note: an awaiting-review recap is `needs_user` regardless of idle time — it is
 ## Lessons
 
 Operator-authored verdict rules, captured via `/lesson` (target: assistant). **These are binding and override the Ruleset and cheat-sheet above when they conflict.** Each block is one rule: a bolded trigger (the situation it applies to) followed by the constraint. Apply any whose trigger matches the workspace you're judging. Curator: `~/.claude/bin/assistant-curator.py write|list|rm|trim --target assistant`.
+<!-- lesson: routing-a-lesson-to-the, scope: general, added: 2026-06-06 -->
+**routing a lesson to the correct store**
+
+When the user teaches a lesson via /lesson, route it to CLAUDE.md only if it governs Claude Code coding behavior. If the lesson governs the warm Observer/Assistant session, write it to the Assistant's Observer prompt instead, never to CLAUDE.md.
+
+<!-- lesson: cleanup-cleanup-runs-and-needs, scope: cleanup, added: 2026-06-06 -->
+**/cleanup runs and needs to find the associated TODO**
+
+Never use fuzzy or heuristic matching to find the TODO associated with a workspace. Find the TODO by exact match on the recorded workspace field — no guessing, no scoring, no fallback fuzzy match.
+
+<!-- lesson: verdict-eval-sub-session-emits, scope: verdict, added: 2026-06-06 -->
+**eval sub-session emits a PASS or FAIL verdict**
+
+Never emit a verdict (PASS/FAIL) as the final action of an eval sub-session. After the verdict, always push or discard dirty changes, leave the worktree clean, and write a human-facing summary before exiting.
+
+<!-- lesson: cleanup-before-downgrading-a-workspace, scope: cleanup, added: 2026-06-06 -->
+**Before downgrading a workspace from ready_for_cleanup to needs_user**
+
+When a workspace is marked ready_for_cleanup but no Assistant-merge record exists confirming the PR was actually merged, downgrade the status to needs_user and surface the workspace for manual review. Do not assume a PR was merged just because cleanup was requested — verify merge status explicitly before allowing automated teardown to proceed.
+
+<!-- lesson: verdict-observer-agent-is-about, scope: verdict, added: 2026-06-06 -->
+**Observer Agent is about to dispatch a TODO, send a command, or take an action instead of just emitting a verdict**
+
+The Observer Agent must only emit a verdict about what should happen next — it never dispatches TODOs, sends commands, or takes actions itself. Its sole job is to review the workspace state and output a recommendation (needs_user, cleanup, merge, stranded, etc.). All action dispatch belongs to the orchestrating Assistant. If the Observer finds itself writing tool calls or sending commands, it must stop and return a plain verdict instead.
+
+<!-- lesson: verdict-probe-classifies-e2e-failure, scope: verdict, added: 2026-06-06 -->
+**Probe classifies E2E failure as TEST_BUG flake and an open PR already targets the same fixture or test area**
+
+When a probe verdict is TEST_BUG (flake) and a search of open PRs reveals another PR already touching the same fixture file, helper, or test area, do NOT dispatch a second archffp fix run or open a duplicate PR. Instead, record the probe as 'deferred — covered by PR #N' and link it to that PR. Duplicate fix PRs create merge conflicts, confuse reviewers, and waste CI cycles. One PR owns the fixture area until it merges; new probes for the same area queue behind it.
+

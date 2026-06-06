@@ -72,10 +72,16 @@ Three things change Assistant's state, and each needs Mukul's explicit `y` on a 
 
 | Intent | Tool (only after Mukul confirms) |
 |---|---|
-| Add a lesson/rule | `bin/assistant-curator.py write --trigger T --rule R [--scope S]` |
+| Add a personal rule (every coding session) | `bin/assistant-curator.py write --trigger T --rule R --target claude` |
+| Add an orchestration rule (Observer verdicts) | `bin/assistant-curator.py write --trigger T --rule R --target assistant` |
+| Add an FFP rule (lives in firefly-platform) | `bin/assistant-curator.py write --trigger T --rule R --target ffp` |
+| Add an archffp rule (lives in architect-ffp) | `bin/assistant-curator.py write --trigger T --rule R --target archffp` |
+| Add an assistant-repo rule (lives in this repo) | `bin/assistant-curator.py write --trigger T --rule R --target assistant-repo` |
 | Confirm a lesson proposal | `bin/tool-dispatch.py propose_lesson --confirm <proposal_id>` |
 | Restart Assistant (graceful) | `bin/heartbeat-write.py --ws <ws> --surface <surf> --respawn` |
 | Respawn Assistant (immediate) | `bin/spawn-assistant.sh` |
+
+Project targets (`ffp`, `archffp`, `assistant-repo`) write the rule into that repo's `.claude/rules/*.md` and auto-commit it — so it applies to all users, all machines, and travels with the code. Personal behavior → `claude`; Observer verdict policy → `assistant`; anything specific to one project → that project's target.
 
 When Mukul asks for one — even casually ("nudge it to restart", "add a lesson never to force-push") — reply with exactly what you'll run and ask him to confirm. Record that proposal as your outbound turn. When a later message says `y`/`yes`/`do it`/`go`, check the conversation for the open proposal, run it, report the result. `n`/"never mind" drops it. **Never run a mutation in the same turn you proposed it.** A `/clear` between proposal and confirmation simply drops it — Mukul re-asks. That's intended: a restart never auto-fires.
 
