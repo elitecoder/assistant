@@ -70,6 +70,7 @@ OBSERVER_RUNS_DIR = ASSISTANT_DIR / "observer-runs"
 # is cheap, the audit trail is not. If this ever grows unmanageable, prune
 # by hand or export to cold storage. The pulse loop does NOT touch it.
 OBSERVER_BATCH_PROMPT = REPO / "prompts/observer-batch-prompt.md"
+AGENT_TOOLS_MCP_CONFIG = REPO / "config/agent-tools-mcp.json"
 SPAWN_SKILL = HOME / ".claude/skills/spawn-claude-workspace/SKILL.md"
 
 # Work-receipt gate: pulse.py consults pre-cleanup-check.py before sending
@@ -382,6 +383,8 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int, batch_idx: int) -> dic
         "--add-dir", str(HOME / ".claude/projects"),
         "--add-dir", str(run_dir),  # so the model can write verdicts.jsonl
     ]
+    if AGENT_TOOLS_MCP_CONFIG.exists():
+        cmd += ["--mcp-config", str(AGENT_TOOLS_MCP_CONFIG), "--strict-mcp-config"]
     seen_dirs = {str(REPO / "prompts"), str(HOME / ".claude/projects"), str(run_dir)}
     for c in ctxs:
         cwd = c.get("cwd")
