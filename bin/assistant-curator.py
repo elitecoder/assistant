@@ -334,25 +334,25 @@ def cmd_write(args) -> int:
     # there (the 'assistant' target lives in the Observer prompt, not CLAUDE.md).
     if args.target == "claude":
         _sync_to_memory_repo()
-    # Project targets live inside a repo — auto-commit the rules file so the
-    # lesson travels with the code. Best-effort; never blocks the write.
+    # Project targets live inside a repo — stage the rules file only (no commit,
+    # no push). The lesson travels with the code when the developer's next PR
+    # includes the rules file. Auto-committing to main on repos that require
+    # admin merge (e.g. firefly-platform) would bypass branch protection.
     if "repo" in tgt:
-        _commit_lesson_to_repo(tgt["repo"], tgt["path"], slug)
+        _stage_lesson_in_repo(tgt["repo"], tgt["path"], slug)
     # Trigger a lesson audit after every write: check all stores for near-duplicates
     # and verbose lessons, propose merges/trims. Fire-and-forget — never blocks.
     _run_lesson_audit_async()
     return 0
 
 
-def _commit_lesson_to_repo(repo_path: Path, rules_file: Path, slug: str) -> None:
-    """Stage ONLY the rules file and commit it to its project repo.
+def _stage_lesson_in_repo(repo_path: Path, rules_file: Path, slug: str) -> None:
+    """Stage ONLY the rules file in its project repo — no commit, no push.
 
-    Best-effort and non-blocking: a failure (not a git repo, nothing to commit,
-    pre-existing dirty tree elsewhere) is logged to the audit log and swallowed
-    — the lesson is already written to disk; the commit is a convenience. We
-    stage only `rules_file` so unrelated dirty changes in the repo are never
-    swept into the lesson commit. `--no-verify` skips hooks (a lesson write must
-    not be gated on the repo's pre-commit suite)."""
+    Repos like firefly-platform require admin merge / branch protection; an
+    auto-commit to main would bypass that. The lesson travels with the code when
+    the developer's next PR naturally includes the staged rules file change.
+    Best-effort: logs failures but never raises."""
     try:
         rel = str(rules_file.relative_to(repo_path))
     except ValueError:
@@ -363,20 +363,12 @@ def _commit_lesson_to_repo(repo_path: Path, rules_file: Path, slug: str) -> None
             capture_output=True, text=True,
         )
         if add.returncode != 0:
-            _audit(f"commit-lesson {slug}: git add failed: {add.stderr.strip()}")
+            _audit(f"stage-lesson {slug}: git add failed: {add.stderr.strip()}")
             return
-        commit = subprocess.run(
-            ["git", "-C", str(repo_path), "commit", "-m", f"lesson: {slug}",
-             "--no-verify", "--", rel],
-            capture_output=True, text=True,
-        )
-        if commit.returncode != 0:
-            _audit(f"commit-lesson {slug}: git commit failed: "
-                   f"{(commit.stderr or commit.stdout).strip()}")
-            return
-        _audit(f"commit-lesson {slug}: committed {rel} to {repo_path}")
+        _audit(f"stage-lesson {slug}: staged {rel} in {repo_path} (commit in your next PR)")
+        print(f"  staged {rel} in {repo_path} — include in your next PR")
     except OSError as e:
-        _audit(f"commit-lesson {slug}: {e}")
+        _audit(f"stage-lesson {slug}: {e}")
 
 
 def _audit(msg: str) -> None:
