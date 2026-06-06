@@ -38,6 +38,7 @@ from typing import Any
 HOME = Path.home()
 RECEIPTS_DIR = HOME / ".assistant" / "receipts"
 LOG_PATH = HOME / "dev" / "generated-docs" / "work-receipts.jsonl"
+OBSIDIAN_WRITE = Path(__file__).resolve().parent / "obsidian-write.py"
 
 # FFP is the only repo whose PRs we link; the receipt's pr_number is an FFP PR.
 PR_URL_TEMPLATE = "https://git.corp.adobe.com/Adobe-Firefly/firefly-platform/pull/{pr}"
@@ -96,6 +97,52 @@ def cmux_title(ws_ref: str) -> str | None:
     return None
 
 
+def mirror_receipt_to_vault(receipt: dict[str, Any]) -> str | None:
+    """Best-effort: mirror a work receipt into the Obsidian vault as a
+    work_history note under Work Log/<YYYY-MM>. Returns the note path, or None
+    on any failure — a vault hiccup must never break a receipt write."""
+    if not OBSIDIAN_WRITE.exists():
+        return None
+    project = receipt.get("project") or receipt.get("ws_ref") or "work"
+    outcome = receipt.get("outcome") or "shipped"
+    date = (receipt.get("ts") or utc_iso())[:10]
+    month = date[:7]  # YYYY-MM
+    title = f"{project} — {outcome} {date}"
+    tag = "shipped" if outcome == "shipped" else "abandoned"
+
+    lines = [f"- **Outcome:** {outcome}",
+             f"- **CI:** {receipt.get('ci_status', 'unknown')}",
+             f"- **Reviewer approved:** {receipt.get('reviewer_approved')}",
+             f"- **Quality:** {receipt.get('quality_score', 'unknown')}"]
+    if receipt.get("test_count") is not None:
+        lines.append(f"- **Tests:** {receipt['test_count']}")
+    if receipt.get("pr_url"):
+        lines.append(f"- **PR:** [{receipt.get('pr_number')}]({receipt['pr_url']})")
+    if receipt.get("summary"):
+        lines.append(f"\n{receipt['summary']}")
+    body = "\n".join(lines)
+
+    fm = {"project": project, "outcome": outcome,
+          "quality": receipt.get("quality_score", "unknown")}
+    if receipt.get("pr_number") is not None:
+        fm["pr"] = receipt["pr_number"]
+    cmd = [sys.executable, str(OBSIDIAN_WRITE),
+           "--title", title,
+           "--category", "work_history",
+           "--folder", f"Work Log/{month}",
+           "--body", body,
+           "--tags", tag, "work-log",
+           "--frontmatter", json.dumps(fm),
+           "--date", date]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if p.returncode == 0 and p.stdout.strip():
+            return json.loads(p.stdout).get("path")
+    except Exception:  # noqa: BLE001 — never raise into the receipt path
+        return None
+    return None
+
+
 def write_receipt(*, ws_ref: str, project: str | None, pr: int | None,
                   ci_status: str, reviewer_approved: bool | None,
                   test_count: int | None, summary: str,
@@ -135,6 +182,11 @@ def write_receipt(*, ws_ref: str, project: str | None, pr: int | None,
         f.write(json.dumps(receipt) + "\n")
 
     receipt["_receipt_path"] = str(out_path)
+
+    # 3. Mirror into the Obsidian vault (best-effort, never fatal).
+    vault_path = mirror_receipt_to_vault(receipt)
+    if vault_path:
+        receipt["_obsidian_note"] = vault_path
     return receipt
 
 

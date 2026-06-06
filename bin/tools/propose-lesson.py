@@ -38,8 +38,45 @@ REPO = Path(__file__).resolve().parent.parent.parent
 HOME = Path.home()
 PROPOSALS_PATH = HOME / ".assistant" / "comms" / "proposals.jsonl"
 CURATOR = REPO / "bin" / "assistant-curator.py"
+OBSIDIAN_WRITE = REPO / "bin" / "tools" / "obsidian-write.py"
 
 VALID_TARGETS = ("assistant", "claude")
+
+
+def mirror_lesson_to_vault(entry: dict[str, Any]) -> str | None:
+    """Best-effort: mirror a just-confirmed lesson into the Obsidian vault as a
+    note under Assistant/Lessons. Returns the note path, or None on any failure
+    — a vault hiccup must never break a lesson confirm. Idempotency is handled
+    upstream (only first-confirm reaches here) and by obsidian-write's
+    never-overwrite suffixing."""
+    if not OBSIDIAN_WRITE.exists():
+        return None
+    trigger = entry.get("trigger", "") or "lesson"
+    scope = entry.get("scope") or "general"
+    target = entry.get("target") or "assistant"
+    confirmed = entry.get("confirmed_at") or entry.get("ts") or ""
+    body = (
+        f"**Rule:** {entry.get('rule', '')}\n\n"
+        f"- **Trigger:** {trigger}\n"
+        f"- **Target store:** {target}\n"
+        f"- **Scope:** {scope}\n"
+        f"- **Confirmed:** {confirmed}\n"
+        f"- **Source:** {entry.get('source', 'manual')}\n"
+    )
+    cmd = [sys.executable, str(OBSIDIAN_WRITE),
+           "--title", trigger[:120],
+           "--category", "lesson",
+           "--body", body,
+           "--tags", "lesson", scope, target,
+           "--frontmatter", json.dumps({"target": target, "scope": scope,
+                                        "source": entry.get("source", "manual")})]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if p.returncode == 0 and p.stdout.strip():
+            return json.loads(p.stdout).get("path")
+    except Exception:  # noqa: BLE001 — never raise into the confirm path
+        return None
+    return None
 
 
 def utc_iso_us() -> str:
@@ -139,6 +176,10 @@ def confirm_proposal(proposal_id: str,
               "curator_stdout": (p.stdout or "").strip()}
     if already:
         result["note"] = "lesson slug already existed in store; marked confirmed"
+    # Mirror into the Obsidian vault (best-effort, never fatal).
+    vault_path = mirror_lesson_to_vault(target_entry)
+    if vault_path:
+        result["obsidian_note"] = vault_path
     return result
 
 

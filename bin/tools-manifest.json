@@ -70,5 +70,51 @@
       {"name": "ws", "type": "string", "required": true, "help": "workspace ref e.g. workspace:43"}
     ],
     "script": "bin/pre-cleanup-check.py"
+  },
+  {
+    "name": "obsidian_write",
+    "description": "Write a structured markdown note into the Obsidian vault",
+    "args": [
+      {"name": "title", "type": "string", "required": true, "help": "note title (also the H1)"},
+      {"name": "body", "type": "string", "required": false, "help": "markdown body"},
+      {"name": "category", "type": "string", "required": false, "choices": ["lesson", "working_style", "project", "work_history", "decision"], "help": "category -> default subfolder + frontmatter"},
+      {"name": "folder", "type": "string", "required": false, "help": "explicit subfolder, overrides --category placement"},
+      {"name": "vault", "type": "string", "required": false, "help": "vault root (default ~/dev/obs-elitecoder)"}
+    ],
+    "script": "bin/tools/obsidian-write.py"
+  },
+  {
+    "name": "obsidian_search",
+    "description": "Keyword/frontmatter search over the Obsidian vault",
+    "args": [
+      {"name": "query", "type": "string", "required": false, "help": "case-insensitive substring"},
+      {"name": "field", "type": "string", "required": false, "help": "frontmatter field to filter on (e.g. category)"},
+      {"name": "value", "type": "string", "required": false, "help": "required value for --field"},
+      {"name": "limit", "type": "int", "required": false, "default": 5, "help": "max results"},
+      {"name": "vault", "type": "string", "required": false, "help": "vault root (default ~/dev/obs-elitecoder)"}
+    ],
+    "script": "bin/tools/obsidian-search.py"
+  },
+  {
+    "name": "mem0_add",
+    "description": "Add a memory to the Assistant's semantic store (category-tagged)",
+    "args": [
+      {"name": "content", "type": "string", "required": false, "help": "memory text (omit when using --seed-all/--seed-lessons)"},
+      {"name": "category", "type": "string", "required": false, "choices": ["lesson", "working_style", "project", "work_history", "decision"], "help": "category tag stored in metadata.category"},
+      {"name": "metadata", "type": "string", "required": false, "help": "extra metadata as a JSON object"},
+      {"name": "user-id", "type": "string", "required": false, "default": "mukul", "help": "memory owner"}
+    ],
+    "script": "bin/tools/mem0-add.py"
+  },
+  {
+    "name": "mem0_search",
+    "description": "Semantic search over past decisions, lessons, working style, and projects",
+    "args": [
+      {"name": "query", "type": "string", "required": true, "help": "natural-language query"},
+      {"name": "category", "type": "string", "required": false, "choices": ["lesson", "working_style", "project", "work_history", "decision"], "help": "restrict to one category"},
+      {"name": "limit", "type": "int", "required": false, "default": 5, "help": "max results"},
+      {"name": "user-id", "type": "string", "required": false, "default": "mukul", "help": "memory owner"}
+    ],
+    "script": "bin/tools/mem0-search.py"
   }
 ]

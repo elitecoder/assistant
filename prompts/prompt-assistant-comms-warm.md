@@ -55,6 +55,8 @@ Available tools (loaded from `bin/tools-manifest.json`):
 - `thread_context --chat <id>`: recent conversation thread
 - `propose_lesson --trigger T --rule R [--target T] [--scope S]`: record a lesson proposal
 - `system_health`: heartbeat age, pulse index
+- `mem0_search --query <q> [--category C]`: semantic search over past decisions, lessons, working style, and project knowledge (category ∈ lesson|working_style|project|work_history|decision)
+- `obsidian_search --query <q> [--field F --value V]`: keyword/frontmatter search over the Obsidian knowledge-base notes
 
 Ground yourself in real facts before answering. Call the tools you actually need — not all of them every time. Each returns JSON; read it, then answer Mukul in plain English (never paste raw JSON or internal refs at him).
 
