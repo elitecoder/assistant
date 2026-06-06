@@ -5,12 +5,15 @@
 # Idempotent: re-run it freely. Default is --dry-run; pass --apply to mutate.
 #
 # Strategy:
-#   - Code (bin/, prompts/, lessons/, skills/) is symlinked from ~/.claude/* to
-#     this repo, so edits go live without copying.
+#   - Code (bin/, prompts/, lessons/) is symlinked from ~/.claude/* to this
+#     repo, so edits go live without copying.
 #   - LaunchAgent plists are COPIED into ~/Library/LaunchAgents/ (launchd does
 #     not follow symlinks reliably) and then unloaded + reloaded.
-#   - Skills are symlinked per-name into ~/.claude/skills/<name> → repo's
-#     skills/<name>/. Other skills under ~/.claude/skills/ are left untouched.
+#   - Skills are SYMLINKED per-name into ~/.claude/skills/<name> → repo's
+#     skills/<name>/. The repo is the single source of truth: a pull is live
+#     immediately, and the pulse self-update can never clobber a live edit by
+#     re-copying (it used to — see Section 2). Other skills under
+#     ~/.claude/skills/ are left untouched.
 #   - Runtime state stays where it is (~/.claude/cache/, ~/.claude/projects/,
 #     ~/.claude/assistant-todo.json, ~/.claude/assistant-dashboard.html). This
 #     install never touches those.
@@ -44,9 +47,11 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
   --dry-run         (default) Show what would change. No mutation.
   --apply           Actually create symlinks/copies, copy plists, reload launchd.
-  --pull-skills     Pull edits from the live ~/.claude/skills/<name>/ directories
-                    BACK into the repo (inverse of the install copy step).
-                    Use this if you edited a skill in place and want to commit it.
+  --pull-skills     Pull edits from a live ~/.claude/skills/<name>/ directory
+                    BACK into the repo. Only needed to recover edits made while
+                    a skill was still a real directory (e.g. backups left by the
+                    copy→symlink migration). Once a skill is symlinked, live
+                    edits ARE repo edits, so this becomes a no-op for it.
                     Prints a unified diff in dry-run; run with --apply to copy.
   -h, --help        This help.
 
@@ -55,7 +60,7 @@ After --apply:
   - legacy ~/.claude/spawn-prompts/prompt-{assistant,triage}-agent.md → REMOVED
     (old LLM-Assistant era; the mechanical pulse.py reads prompts/ directly)
   - lessons live in ~/.claude/CLAUDE.md (not in this repo). Curator: bin/assistant-curator.py
-  - ~/.claude/skills/{todo,cleanup,spawn-claude-workspace} → COPIES (shareable)
+  - ~/.claude/skills/<name> → SYMLINK → $REPO_ROOT/skills/<name> (repo is truth)
   - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,
        session-context-watcher,assistant-todo-server}.plist → COPIED
   - cmux session-restore (vendored): hooks/ → ~/.claude/hooks/ (symlinks),
@@ -63,10 +68,11 @@ After --apply:
        and ~/.claude/settings.json SessionStart/SessionEnd hooks patched in
   - launchd: kickstart -k each agent (load if not loaded)
 
-Skills are copied (not symlinked) so they're standalone shareable artifacts.
-The trade-off: in-place edits to ~/.claude/skills/<name>/ don't auto-sync to
-the repo. install.sh detects drift on dry-run and warns. To bring live edits
-into the repo, use --pull-skills.
+Skills are symlinked (not copied), so the repo is the single source of truth:
+in-place edits to a skill ARE repo edits, a pull is live immediately, and the
+pulse self-update can never revert a live edit by re-copying. A pre-existing
+real directory at the target is backed up to ~/.claude/skills-backups/ before
+the symlink replaces it; recover edits from there with --pull-skills.
 
 What is NOT touched:
   - ~/.claude/cache/, ~/.claude/projects/, ~/.claude/cmux-registry.json
@@ -261,73 +267,66 @@ ensure_symlink \
 
 log ""
 
-# --- 2. Copy skills ---------------------------------------------------------
-# Skills are COPIED (not symlinked) so they're standalone artifacts you can
-# `cp -r` to share with someone else. The trade-off: edits to the live copy
-# at ~/.claude/skills/<name>/ don't auto-sync back to the repo. We detect
-# this drift on dry-run and warn so you can either pull edits into the repo
-# or re-run --apply to overwrite them.
+# --- 2. Symlink skills ------------------------------------------------------
+# Skills are SYMLINKED (not copied) into ~/.claude/skills/<name> → the repo's
+# skills/<name>/. A copy-based install silently reverted live edits: the pulse
+# self-update runs `install.sh --apply` after any pull touching skills/, and
+# the copy path overwrote ~/.claude/skills/<name>/ with the repo version,
+# clobbering uncommitted in-place edits (this is exactly how the cleanup
+# skill's no-close-workspace edit came back on 2026-06-05). Symlinks make the
+# repo the single source of truth: a `git pull` is live immediately, with
+# nothing to re-copy and nothing to clobber.
 #
 # Backups of pre-existing live skills go to ~/.claude/skills-backups/, NOT
 # ~/.claude/skills/, because Claude Code auto-discovers ANY directory under
 # ~/.claude/skills/ as a skill — leaving .bak entries there pollutes the
-# registry.
-log "[2/5] Copying skills into ~/.claude/skills/"
+# registry. (ensure_symlink's default <target>.bak-<ts> would land inside
+# ~/.claude/skills/, so we back up by hand here before symlinking.)
+log "[2/5] Symlinking skills into ~/.claude/skills/"
 mkdir -p "$HOME_DIR/.claude/skills" "$HOME_DIR/.claude/skills-backups"
 for skill_dir in "$REPO_ROOT"/skills/*/; do
     skill_name="$(basename "$skill_dir")"
     target="$HOME_DIR/.claude/skills/$skill_name"
     expected="$REPO_ROOT/skills/$skill_name"
 
-    # Stale symlink from a prior symlink-based install — remove and replace
-    # with a copy. The symlinked content was the repo content, so no data
-    # loss; we go straight to copy.
+    # Already the correct symlink — nothing to do.
     if [[ -L "$target" ]]; then
-        note "MIGRATE $target was a symlink — replacing with a copy"
-        if [[ $APPLY -eq 1 ]]; then
-            rm "$target"
-            cp -R "$expected" "$target"
+        current="$(readlink "$target")"
+        if [[ "$current" == "$expected" ]]; then
+            note "OK   $target → $expected"
+        else
+            note "FIX  $target → was: $current   now: $expected"
+            if [[ $APPLY -eq 1 ]]; then
+                rm "$target"
+                ln -s "$expected" "$target"
+            fi
         fi
         continue
     fi
 
-    # Live directory exists.
-    if [[ -d "$target" ]]; then
-        if diff -rq "$expected" "$target" >/dev/null 2>&1; then
-            note "OK   $target (matches repo)"
-            continue
-        fi
-        # Drift: live differs from repo. Warn loudly.
-        backup="$HOME_DIR/.claude/skills-backups/${skill_name}.bak-${TS}"
-        warn "DRIFT $target differs from $expected"
-        note "       backing up live copy to $backup, then overwriting with repo version"
-        note "       diff summary:"
-        # `diff -rq` returns rc=1 when files differ — that's expected and not an
-        # error. Combined with `head`'s early-close SIGPIPE, the pipeline returns
-        # nonzero, and under `set -euo pipefail` that aborts the loop iteration
-        # BEFORE the mv+cp can run. Wrap with `|| true` to swallow the expected
-        # nonzero exit while keeping the diff output visible.
-        (diff -rq "$expected" "$target" 2>&1 | sed 's/^/         /' | head -10) || true
-        if [[ $APPLY -eq 1 ]]; then
-            mv "$target" "$backup"
-            cp -R "$expected" "$target"
-        fi
-        continue
-    fi
-
-    # Live doesn't exist (or is a stray file).
+    # A real directory (copy from a prior copy-based install, or live edits).
+    # Back it up out of the skills tree before replacing with a symlink so we
+    # never destroy uncommitted work and never pollute the skill registry.
     if [[ -e "$target" ]]; then
         backup="$HOME_DIR/.claude/skills-backups/${skill_name}.bak-${TS}"
-        note "BACKUP $target → $backup, then copy from repo"
+        if [[ -d "$target" ]] && diff -rq "$expected" "$target" >/dev/null 2>&1; then
+            note "MIGRATE $target (copy matches repo) → symlink"
+        else
+            warn "MIGRATE $target differs from repo — backing up to $backup before symlinking"
+            note "       (any uncommitted live edits are preserved in the backup;"
+            note "        bring them into the repo with: install.sh --pull-skills)"
+        fi
         if [[ $APPLY -eq 1 ]]; then
             mv "$target" "$backup"
-            cp -R "$expected" "$target"
+            ln -s "$expected" "$target"
         fi
-    else
-        note "NEW  $target ← $expected (copy)"
-        if [[ $APPLY -eq 1 ]]; then
-            cp -R "$expected" "$target"
-        fi
+        continue
+    fi
+
+    # Nothing there — fresh symlink.
+    note "NEW  $target → $expected (symlink)"
+    if [[ $APPLY -eq 1 ]]; then
+        ln -s "$expected" "$target"
     fi
 done
 log ""

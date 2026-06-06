@@ -1,24 +1,26 @@
 ---
 name: cleanup
-description: Tear down the current workspace — kill dev servers, stash uncommitted changes, delete branch, remove worktree, mark related TODO done, close cmux workspace. Use when user types /cleanup, says "clean up this workspace", "I'm done here", "tear this down", or "wrap up". The user typed the command — DO NOT confirm, DO NOT ask, just execute. Writes a ledger entry so /cleanup --undo can recover.
+description: Tear down the current workspace — kill dev servers, stash uncommitted changes, delete branch, remove worktree, mark related TODO done. Use when user types /cleanup, says "clean up this workspace", "I'm done here", "tear this down", or "wrap up". The user typed the command — DO NOT confirm, DO NOT ask, just execute. Does NOT close the cmux workspace — the user closes it manually after confirming the work shipped. Writes a ledger entry so /cleanup --undo can recover.
 ---
 
 # /cleanup — workspace teardown
 
 The user typed `/cleanup` for a reason. **Do not confirm. Do not ask. Execute.**
 
-The user is inside a cmux workspace they want to dismiss. This skill kills the dev servers, discards uncommitted changes (with a stash safety net), deletes the branch and worktree, marks the linked TODO done (or synthesizes a done TODO if none matched, so the list stays a complete ledger of shipped work), and closes the cmux workspace. One ledger entry captures the whole operation for `/cleanup --undo`.
+The user is inside a cmux workspace they want to dismiss. This skill kills the dev servers, discards uncommitted changes (with a stash safety net), deletes the branch and worktree, and marks the linked TODO done (or synthesizes a done TODO if none matched, so the list stays a complete ledger of shipped work). One ledger entry captures the whole operation for `/cleanup --undo`.
+
+**It does NOT close the cmux workspace.** That capability was removed 2026-05-26 after work-loss incidents — with the workspace gone, the user could no longer tell whether their session had finished cleanly or been interrupted. The user now closes the workspace manually once they have confirmed the work shipped. (Re-introduced and re-removed 2026-06-05 — see Step 9 below for why it stays out.)
 
 ## Flags
 
-- (none) — full default cleanup (stash · delete branch · remove worktree · mark TODO done · close ws)
+- (none) — full default cleanup (stash · delete branch · remove worktree · mark TODO done)
 - `--keep-branch` — skip `git branch -D`
 - `--keep-worktree` — skip `git worktree remove`
 - `--keep-todo` — skip the TODO status flip
-- `--keep-ws` — skip `cmux close-workspace`
+- `--keep-ws` — accepted for backward compat but a no-op (workspace closure is always skipped now)
 - `--discard` — use `git reset --hard` instead of `git stash` (truly throws away — required for the ABSOLUTE RULE on destructive actions)
 - `--dry-run` — print what would happen, write nothing, kill nothing
-- `--undo <ledger-id>` — reverse a previous cleanup (recreate worktree, pop stash, mark TODO open, **note: cmux workspace closure is irreversible**)
+- `--undo <ledger-id>` — reverse a previous cleanup (recreate worktree, pop stash, mark TODO open)
 
 ## Execution
 
@@ -116,7 +118,6 @@ ledger = {
         "keep_branch": $KEEP_BRANCH,
         "keep_worktree": $KEEP_WORKTREE,
         "keep_todo": $KEEP_TODO,
-        "keep_ws": $KEEP_WS,
         "discard": $DISCARD,
         "dry_run": $DRY_RUN,
     },
@@ -293,21 +294,19 @@ fi
 
 The synthesized id is echoed as `RELATED_TID=td-NNN`; capture it if you want the Step 10 summary to show the real id rather than `none`.
 
-### Step 9 — close cmux workspace (unless --keep-ws)
+### Step 9 — do NOT close the cmux workspace
 
-This is the only **irreversible** step. Do it last.
+**`/cleanup` never closes the cmux workspace.** Stop after the teardown above
+and leave the workspace open. Removed 2026-05-26 after work-loss incidents:
+once the workspace was gone, the user could not tell a clean finish from an
+interrupted one, and an auto-fired `/cleanup` on a misclassified session
+destroyed live work. The user closes the workspace manually — `/close-workspace`
+or the cmux UI — once they have confirmed the work shipped.
 
-```bash
-if [ "$KEEP_WS" = "0" ]; then
-  cmux close-workspace --workspace "$WS_REF" 2>/dev/null && OK=1 || OK=0
-  python3 -c "
-import json
-d = json.load(open('$LEDGER'))
-d['steps'].append({'kind':'close-workspace','ws':'$WS_REF','ok':bool($OK),'irreversible':True})
-json.dump(d, open('$LEDGER','w'), indent=2)
-"
-fi
-```
+Do not run `cmux close-workspace` here under any circumstances, including when
+the caller is the orchestrator. If a workspace genuinely needs to be closed
+programmatically, that is the Observer's separate `close-workspace` action, not
+this skill.
 
 ### Step 10 — report
 
@@ -332,7 +331,6 @@ Walk the ledger steps in reverse. The order:
 5. **Mark ledger as `undone: true`**
 
 **Cannot undo:**
-- The cmux workspace closure (cmux gives the next workspace a new ref number)
 - `--discard`'d changes (no stash exists)
 - Any step where `recovery: NOT_RECOVERABLE` was written
 
@@ -345,7 +343,7 @@ The undo path prints exactly which steps it could and could not reverse, with fi
 - **Refuse to delete `main` or `master` branch** — guardrail in step 6.
 - **`cwd` must be inside `~/dev/**` or `~/.claude/worktrees/**`** — refuse otherwise to avoid running cleanup outside intended scope.
 - **One ledger entry per cleanup** — even partial cleanups (some steps fail) write a complete ledger so undo knows what was done.
-- **No subprocess on the cmux origin** — never run `cmux close-workspace` against a workspace that isn't the one the user invoked from. `WS_REF` comes from `cmux identify --json` (caller), never from arguments.
+- **Never closes the cmux workspace** — `/cleanup` performs the teardown only; the user closes the workspace by hand after confirming the work shipped (see Step 9). This skill must never run `cmux close-workspace`.
 - **Idempotent on failure** — each step's `ok: bool` is recorded. Re-running `/cleanup` after a partial failure picks up where the last one left off (steps with `ok:true` skip).
 
 ## Examples
@@ -354,20 +352,20 @@ The undo path prints exactly which steps it could and could not reverse, with fi
 /cleanup
 → ✓ cleanup cleanup-20260522-211530 — ws=workspace:117 branch=ffp/multi-select-speed-bugs
    worktree=removed todo=td-024 stash=stash@{0}
+   workspace left open — close it yourself once you've confirmed the work shipped
    undo: /cleanup --undo cleanup-20260522-211530
 
 /cleanup --keep-branch
 → ✓ cleanup cleanup-... — ws=workspace:118 branch=preserved worktree=removed todo=td-025 stash=stash@{0}
 
 /cleanup --discard
-→ ✓ cleanup cleanup-... — uncommitted changes RESET (NOT recoverable). ws closed.
+→ ✓ cleanup cleanup-... — uncommitted changes RESET (NOT recoverable). workspace left open.
 
 /cleanup --dry-run
 → would: kill 3 dev pids · stash 12 uncommitted lines · delete branch ffp/foo · remove worktree at ~/dev/.../foo
-        · mark td-031 done · close workspace:120
+        · mark td-031 done  (workspace:120 left open — not closed)
    ledger written but no side effects.
 
 /cleanup --undo cleanup-20260522-211530
 → ✓ undone cleanup-20260522-211530 — popped stash · recreated worktree · marked td-024 open
-   ⚠ workspace:117 cannot be reopened (cmux closure is irreversible — open a new workspace if you need to resume)
 ```
