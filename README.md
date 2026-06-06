@@ -2,14 +2,10 @@
 
 # 🛰️ Assistant
 
-**A mechanical fleet manager for a swarm of parallel Claude Code workspaces — with memory, learning, and event-driven delivery.**
-
-*One LLM call per pulse — for judgment only. Everything else is Python you can unit-test.*
+**Your AI chief of staff — watches a fleet of Claude Code workspaces, keeps you in the loop, and gets smarter the longer you use it.**
 
 <br/>
 
-[![orchestration](https://img.shields.io/badge/orchestration-zero%20LLM-2ea44f?style=flat-square)](#-design-notes)
-[![observer](https://img.shields.io/badge/observer-1%20LLM%20call%20%2F%20pulse-3b82f6?style=flat-square)](#-control-loop)
 [![python](https://img.shields.io/badge/python-3.x-3776AB?style=flat-square&logo=python&logoColor=white)](#-testing)
 [![platform](https://img.shields.io/badge/platform-macOS-lightgrey?style=flat-square&logo=apple)](#-where-the-live-system-reads-from)
 [![daemons](https://img.shields.io/badge/LaunchAgents-8-f97316?style=flat-square)](#-components)
@@ -20,21 +16,18 @@
 
 ---
 
-You start a dozen Claude Code workspaces in [cmux](https://github.com/cmuxterm/cmux) and walk away. **Assistant watches them for you.** Every five minutes it reads each workspace's transcript, asks one Observer LLM "what state is this in?", and dispatches the right slash command — merge the PR, clean up the worktree, nudge a stalled agent, or flag the ones that genuinely need *you*.
+Spin up a dozen Claude Code agents in parallel and walk away. **Assistant watches them while you're gone** — merging PRs, cleaning up finished work, nudging stalled agents — and texts you the moment something needs your attention. When you reply from your phone, a warm Claude session answers in seconds with a full picture of what's going on.
 
-What began as a workspace dispatcher has grown into a **personal AI fleet manager**: it texts you from your phone, pings you the instant a workspace needs input, mines your own sessions for rules worth keeping, and carries a cross-machine memory of how you like to work — all on the same mechanical spine.
+The longer you use it, the smarter it gets. It reads your own session history to find patterns — every time you corrected it, every time you said "perfect, keep doing that" — turns those into rules, and asks if you want to keep them. Confirmed rules sync across all your machines automatically.
 
-The orchestration layer that decides *what to do* has **no LLM in it at all**. The only model call is the Observer, and its only job is to emit a verdict. Turning a verdict into an action is a Python dictionary, not a prompt the model can drift away from. That's the whole design: **judgment is fuzzy and lives in one auditable place; everything mechanical is code you can pin with a unit test.**
+## ✨ What it does for you
 
-## ✨ Why it's powerful
-
-- **🤖 Hands-off fleet management.** Spin up N parallel agents, close the laptop. Merges, cleanups, and nudges happen on a 5-minute pulse without you in the loop.
-- **🧠 LLM isolated to a single decision.** The model judges; Python acts. Verdict → action is a lookup table — no prompt-injection of behavior, no drift, no "the model decided to close my workspace."
-- **📱 In your pocket.** Text Assistant from Telegram; a warm Claude session answers in ~2.6s, grounded in live fleet state. It pings you on every verified action and pages you if the heartbeat goes stale.
-- **📚 It learns your rules.** A lesson extractor mines the action ledger *and* your real session transcripts for corrections, confirmations, and recurring questions, drafts a rule, and pings you to confirm — then routes it to the right store and syncs it across machines.
-- **🛟 Structurally can't run away.** The orchestrator *never* closes a workspace. A `NO_INGEST_GUARD` kills resend loops. A back-off list excludes any workspace from every step. A receipt gate blocks `/cleanup` on undocumented work. Safety is in the control flow, not in a careful prompt.
-- **🔍 Every action is auditable forever.** Each Observer call, every keystroke sent, and every dispatched action lands on disk with a `verified_via` proof field. "I sent it" is never unverifiable.
-- **🧪 Behavior is testable.** Bugs are diffs + unit tests, not prompt rewrites and restart cycles. 13 real-transcript fixtures pin the Observer; a 29-file Python suite pins the mechanics.
+- **🤖 Runs your fleet hands-free.** PR ready? Merged. Work done? Cleaned up. Agent stuck? Nudged or escalated to you. All while you're doing something else.
+- **📱 Texts you like an assistant, not a dashboard.** Ask "what needs me?" from Telegram and get a ranked list — easiest items first, hardest last. No walls of status output.
+- **⚡ Pings you in seconds, not minutes.** The moment a workspace finishes something important or gets stuck, you hear about it — no waiting for the next scheduled check.
+- **📚 Learns your rules from real sessions.** It mines your actual Claude conversations for corrections and preferences, drafts the rule, and asks if you want to keep it. Rules land in the right place — personal rules stay personal, project rules travel with the code.
+- **🧠 Remembers how you work.** A semantic memory store tracks your working style, past decisions, and project context. Ask it "what did we decide about X?" and it actually knows.
+- **🛟 Can't go rogue.** It never closes a workspace without a work receipt. It never sends a message without your confirmation. It can't widen its own permissions. Safety is in the structure, not a prompt.
 
 > [!NOTE]
 > The orchestrator never closes cmux workspaces — that's the operator's job. Slash commands run **inside** each workspace and own their own state (branch, PR number, TODO id). Assistant only ever *sends* commands; it never reaches in and mutates a workspace's git or filesystem.
