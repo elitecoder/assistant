@@ -84,6 +84,17 @@ def project_update(u: dict, clock=None) -> dict | None:
         "reply_to_msg_id": int(msg["reply_to_message"]["message_id"]) if msg.get("reply_to_message") else None,
         "ts": comms_lib.now_iso(clock),
     }
+    # Photo messages carry no `text` field — Telegram puts the caption (if any)
+    # in `caption` and the image in a `photo` array of escalating resolutions.
+    # Without this branch a photo arrives as an empty string and the warm
+    # session sees nothing. We don't download the binary (future work); we just
+    # flag that a photo was attached and carry the caption + largest file_id.
+    photos = msg.get("photo")
+    if photos:
+        caption = msg.get("caption", "")
+        out["text"] = caption or "[photo]"
+        out["has_photo"] = True
+        out["photo_file_id"] = photos[-1].get("file_id", "")
     return out
 
 

@@ -132,8 +132,13 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
 
     # Feed the message as a user turn. The warm session's boot prompt tells it
     # how to reconstruct context, reply via tg-send, and record the out turn.
+    # A photo message has no text of its own — tg-poll fills `text` with the
+    # caption (or "[photo]"). Prefix with [Photo attached] so the warm session
+    # knows an image was sent even when there is no caption, rather than seeing
+    # what looks like an empty turn.
+    body = f"[Photo attached] {text}" if rec.get("has_photo") else text
     feed_text = (
-        f"[telegram chat_id={chat_id} msg_id={msg_id} reply_to={reply_to}] {text}"
+        f"[telegram chat_id={chat_id} msg_id={msg_id} reply_to={reply_to}] {body}"
     )
     t0 = time.time()
     comms_session.feed(paths, sess["surface_ref"], feed_text)

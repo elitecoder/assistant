@@ -63,6 +63,25 @@ def make_update(update_id: int, chat_id: int, msg_id: int, text: str,
     return {"update_id": update_id, "message": msg}
 
 
+def make_photo_update(update_id: int, chat_id: int, msg_id: int,
+                      caption: str | None = None, username: str = "mukul") -> dict:
+    """A Telegram photo update: a `photo` array of escalating resolutions and
+    no `text` field. The largest size is last in the array."""
+    msg = {
+        "message_id": msg_id,
+        "chat": {"id": chat_id},
+        "from": {"id": chat_id, "username": username},
+        "photo": [
+            {"file_id": "small", "width": 320, "height": 240},
+            {"file_id": "medium", "width": 800, "height": 600},
+            {"file_id": "large", "width": 1200, "height": 900},
+        ],
+    }
+    if caption is not None:
+        msg["caption"] = caption
+    return {"update_id": update_id, "message": msg}
+
+
 def run(args: list[str], paths: cl.Paths, http=None, clock=None) -> tuple[int, list[dict]]:
     real = sys.stdout
     sys.stdout = io.StringIO()
@@ -133,6 +152,40 @@ def test_message_without_text(paths):
     http = FakeGetUpdates([upd])
     rc, out = run([], paths, http=http)
     assert rc == 0 and out[0]["text"] == ""
+
+
+def test_photo_message_parsed(paths):
+    # A photo with a caption: text is the caption, photo flags are set, and the
+    # largest (last) file_id is carried for future use.
+    http = FakeGetUpdates([make_photo_update(100, 42, 222, caption="look at this")])
+    rc, out = run([], paths, http=http)
+    assert rc == 0 and len(out) == 1
+    assert out[0]["text"] == "look at this"
+    assert out[0]["has_photo"] is True
+    assert out[0]["photo_file_id"] == "large"
+    assert out[0]["msg_id"] == 222
+    assert cl.read_tg_cursor(paths) == 101
+
+
+def test_photo_message_no_caption(paths):
+    # A photo with no caption falls back to the "[photo]" placeholder so the
+    # warm session never sees an empty turn.
+    http = FakeGetUpdates([make_photo_update(100, 42, 223)])
+    rc, out = run([], paths, http=http)
+    assert rc == 0 and len(out) == 1
+    assert out[0]["text"] == "[photo]"
+    assert out[0]["has_photo"] is True
+    assert out[0]["photo_file_id"] == "large"
+
+
+def test_text_message_unchanged(paths):
+    # Regular text messages still carry no photo fields at all.
+    http = FakeGetUpdates([make_update(100, 42, 1, "ping")])
+    rc, out = run([], paths, http=http)
+    assert rc == 0 and len(out) == 1
+    assert out[0]["text"] == "ping"
+    assert "has_photo" not in out[0]
+    assert "photo_file_id" not in out[0]
 
 
 def test_username_fallback_to_first_name(paths):
