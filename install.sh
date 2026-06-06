@@ -516,12 +516,24 @@ else
         note "  Other user path: initialize local-only memory at ~/.assistant/mem0/"
     else
         log ""
+        # Non-interactive (self-update, CI, pipe): skip memory setup silently.
+        # Memory config is a one-time human decision — auto-update must never
+        # block waiting for input or overwrite an existing choice.
+        if [[ ! -t 0 ]]; then
+            note "non-interactive run — skipping memory setup (run install.sh --apply manually to configure)"
+            log ""
+            # Jump to summary by skipping the case block
+            MEM_CHOICE=3
+        else
+
         log "Memory is not configured on this machine. Choose a setup:"
         log "  1) Owner machine (Mukul) — sync memories, lessons, Obsidian notes from the private mukul-memory repo"
         log "  2) New user — set up local-only memory (no cross-machine sync)"
         log "  3) Skip — set up memory manually later"
         log ""
         read -r -p "Choice [1/2/3]: " MEM_CHOICE
+
+        fi  # end interactive block
 
         case "$MEM_CHOICE" in
             1)
