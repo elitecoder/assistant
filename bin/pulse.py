@@ -72,6 +72,11 @@ OBSERVER_RUNS_DIR = ASSISTANT_DIR / "observer-runs"
 OBSERVER_BATCH_PROMPT = REPO / "prompts/observer-batch-prompt.md"
 SPAWN_SKILL = HOME / ".claude/skills/spawn-claude-workspace/SKILL.md"
 
+# Work-receipt gate: pulse.py consults pre-cleanup-check.py before sending
+# /cleanup, and pings the phone via tg-send.py when the gate blocks.
+PRE_CLEANUP_CHECK = BIN / "pre-cleanup-check.py"
+TG_SEND = BIN / "tg-send.py"
+
 # TODO dispatch: where the source list lives, where staged prompts go, and the
 # cmux CLI. The staged-prompt dir + 7-day sweep mirror the spawn-claude-workspace
 # skill, ported here so the orchestrator owns dispatch end-to-end (no LLM).
@@ -509,6 +514,87 @@ def previous_send_ingested(ws_ref: str, text: str) -> bool:
     return True
 
 
+# ─── work-receipt gate ────────────────────────────────────────────────────
+
+CLEANUP_PING_LEDGER = ASSISTANT_DIR / "cleanup-pings.jsonl"
+# Don't re-ping the phone for the same un-receipted workspace every 2-min
+# pulse. Once per workspace per cooldown window is plenty; the awaiting card
+# keeps the ask visible on the dashboard in between.
+CLEANUP_PING_COOLDOWN_SEC = int(os.environ.get("CLEANUP_PING_COOLDOWN_SEC", str(6 * 3600)))
+
+
+def pre_cleanup_check(ws_ref: str) -> dict:
+    """Run pre-cleanup-check.py for ws_ref; return its gate dict.
+
+    The gate tool always exits 0 (result is in the JSON), and fails safe to
+    block on its own internal errors. We mirror that here: any failure to run
+    or parse the tool returns a block, so a broken gate can never let an
+    un-receipted /cleanup through."""
+    rc, out, err = run([sys.executable, str(PRE_CLEANUP_CHECK), "--ws", ws_ref])
+    if rc != 0:
+        log.warning("pre-cleanup-check %s rc=%d: %s", ws_ref, rc, err.strip()[-200:])
+        return {"gate": "block", "reason": "gate failed to run",
+                "evidence": err.strip()[-200:], "ws_ref": ws_ref}
+    try:
+        return json.loads(out)
+    except Exception as e:
+        log.warning("pre-cleanup-check %s bad json: %s", ws_ref, e)
+        return {"gate": "block", "reason": "gate bad output",
+                "evidence": (out or "")[:200], "ws_ref": ws_ref}
+
+
+def _cleanup_ping_recent(ws_ref: str, now: int) -> bool:
+    """True iff we pinged for this ws_ref within the cooldown window. Read-only;
+    never raises on a missing/corrupt ledger."""
+    if not CLEANUP_PING_LEDGER.exists():
+        return False
+    try:
+        for line in reversed(CLEANUP_PING_LEDGER.read_text().splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if rec.get("ws_ref") == ws_ref:
+                return (now - int(rec.get("ts", 0))) < CLEANUP_PING_COOLDOWN_SEC
+    except Exception:
+        return False
+    return False
+
+
+def send_cleanup_confirmation_ping(ws: dict, verdict: dict, evidence: str) -> bool:
+    """Ping the phone (tg-send.py) that an un-receipted workspace looks done and
+    needs the user's call before /cleanup. Cooldown-guarded so the same
+    workspace pings at most once per CLEANUP_PING_COOLDOWN_SEC. Returns True iff
+    a ping was actually sent. Never raises — comms is best-effort."""
+    ws_ref = ws["ref"]
+    now = utc_ts()
+    if _cleanup_ping_recent(ws_ref, now):
+        return False
+    project = (ws.get("title") or "").strip() or ws_ref
+    ev = (evidence or (verdict.get("summary") or "")).strip()
+    text = (f"{project} is ready to close. {ev} "
+            "Reply y to close or n to keep open.").strip()
+    rc, _out, err = run([
+        sys.executable, str(TG_SEND),
+        "--text", text,
+        "--kind", "action",
+        "--ledger-key", f"{ws_ref}:cleanup-no-receipt",
+    ])
+    if rc != 0:
+        log.warning("cleanup-ping %s tg-send rc=%d: %s", ws_ref, rc, err.strip()[-200:])
+        return False
+    try:
+        CLEANUP_PING_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(CLEANUP_PING_LEDGER, "a") as f:
+            f.write(json.dumps({"ws_ref": ws_ref, "ts": now}) + "\n")
+    except Exception as e:
+        log.warning("cleanup-ping %s ledger write failed: %s", ws_ref, e)
+    return True
+
+
 # ─── verdict execution ──────────────────────────────────────────────────────
 
 def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
@@ -568,6 +654,33 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
             "ws_ref": ws_ref,
         })
         return {**base, "kind": "emit-card", "evidence": "downgraded ready_for_cleanup → needs_user (no Assistant-merge record)"}
+
+    # Work-receipt gate: even a merge-eligible /cleanup must NOT fire until a
+    # work receipt exists for this workspace (the audit trail of what shipped).
+    # No receipt → downgrade to an awaiting card AND ping the phone so the user
+    # can confirm the close (or write the receipt) before the session is torn
+    # down. A receipt destroyed alongside the workspace is unrecoverable.
+    if kind == "ready_for_cleanup":
+        gate = pre_cleanup_check(ws_ref)
+        if gate.get("gate") == "block":
+            send_cleanup_confirmation_ping(ws, verdict, gate.get("evidence", ""))
+            title = f"{ws_ref} ready to close — confirm /cleanup"
+            detail = (
+                f"Observer says: {(verdict.get('summary') or '').strip()[:600]}\n\n"
+                f"No work receipt on file ({gate.get('reason', 'no receipt')}). "
+                "/cleanup is held until you confirm. Reply y to the phone ping "
+                "to close, or close this card to dismiss."
+            )
+            awaiting.append({
+                "key": f"{ws_ref}:cleanup-no-receipt",
+                "tier": "T2",
+                "title": title[:120],
+                "detail": detail[:1200],
+                "ws_ref": ws_ref,
+            })
+            return {**base, "kind": "emit-card",
+                    "evidence": f"blocked /cleanup — {gate.get('reason', 'no receipt')}"}
+        base["receipt_path"] = gate.get("receipt_path")
 
     # Sends. Apply NO_INGEST_GUARD: if the same text was sent last and got
     # delta=0, skip this pulse rather than loop forever.

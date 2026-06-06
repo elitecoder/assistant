@@ -24,6 +24,7 @@ WORLD_PATH = HOME / ".claude/cache/world.json"
 ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
 LEGACY_TRIAGE_STATE = HOME / ".claude/cache/triage-state.json"
 OBSERVER_REPORT = HOME / ".assistant/observer-latest-report.json"
+RECEIPTS_DIR = HOME / ".assistant/receipts"
 DASHBOARD_HTML = HOME / ".claude/assistant-dashboard.html"
 TODO_HTML = HOME / ".claude/assistant-todo.html"  # legacy redirect
 
@@ -929,6 +930,67 @@ def _first_sentence(text: str, max_len: int = 120) -> str:
     return s
 
 
+def _latest_receipt(ws_ref: str) -> dict | None:
+    """Newest work receipt for ws_ref (by mtime), parsed, or None. Mirrors
+    write-receipt.py's slug convention (workspace:43 -> workspace-43)."""
+    import glob
+    slug = ws_ref.replace(":", "-")
+    matches = glob.glob(str(RECEIPTS_DIR / f"{slug}-*.json"))
+    if not matches:
+        return None
+    try:
+        latest = max(matches, key=os.path.getmtime)
+        return json.loads(Path(latest).read_text())
+    except Exception:
+        return None
+
+
+def _receipt_badge_html(receipt: dict | None) -> str:
+    """Quality badge + PR link + reviewer status for a DONE card.
+
+    Dot rules (match the build spec):
+      green  : ci_status=green AND reviewer_approved=true
+      red    : ci_status=red   OR  outcome=abandoned
+      yellow : ci_status=green OR  reviewer_approved=true (partial)
+      grey   : no receipt
+    Order matters: red (a known-bad signal) wins over a partial-green.
+    """
+    if not receipt:
+        return ('<div class="receipt-badge receipt-none">'
+                '<span class="receipt-dot grey"></span>'
+                '<span class="receipt-label">no receipt</span></div>')
+
+    ci = receipt.get("ci_status")
+    approved = receipt.get("reviewer_approved")
+    outcome = receipt.get("outcome")
+    if ci == "red" or outcome == "abandoned":
+        dot = "red"
+    elif ci == "green" and approved is True:
+        dot = "green"
+    elif ci == "green" or approved is True:
+        dot = "yellow"
+    else:
+        dot = "grey"
+
+    parts = [f'<span class="receipt-dot {dot}"></span>']
+    # PR link, if any.
+    pr_url = receipt.get("pr_url")
+    pr_number = receipt.get("pr_number")
+    if pr_url and pr_number:
+        parts.append(
+            f'<a class="receipt-pr" href="{e(pr_url)}" target="_blank" '
+            f'rel="noopener">PR #{e(str(pr_number))}</a>')
+    # Reviewer status.
+    if approved is True:
+        parts.append('<span class="receipt-rev approved">approved</span>')
+    elif approved is False:
+        parts.append('<span class="receipt-rev pending">not approved</span>')
+    # CI status word, when known.
+    if ci in ("green", "red"):
+        parts.append(f'<span class="receipt-ci ci-{ci}">CI {ci}</span>')
+    return f'<div class="receipt-badge">{"".join(parts)}</div>'
+
+
 def render_fleet_tab():
     """Kanban board of every workspace the Observer reported a candidate action
     for, grouped into four columns by classification:
@@ -1053,12 +1115,18 @@ def render_fleet_tab():
             what_html = (
                 f'<div class="fleet-card-what">{e(what)}</div>' if what else ""
             )
+            # DONE cards carry a work-receipt quality badge: green/yellow/red
+            # dot + PR link + reviewer status, or muted "no receipt" if none.
+            receipt_html = ""
+            if key == "done":
+                receipt_html = _receipt_badge_html(_latest_receipt(c["ws_ref"]))
             card_html.append(
                 f'<div class="fleet-card fleet-card-{key}" '
                 f'style="border-left-color:{e(color)}">'
                 f'  <div class="fleet-card-title" title="{e(c["title"])}">{e(c["title"])}</div>'
                 f'  {what_html}'
                 f'  {action_html}'
+                f'  {receipt_html}'
                 f'  <div class="fleet-card-ref">{e(c["ws_ref"])}</div>'
                 f'</div>'
             )
@@ -2062,6 +2130,40 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 10px;
 }
+
+/* ─── Work-receipt quality badge (DONE column) ─── */
+.receipt-badge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 6px;
+  font: 500 10px/1.4 var(--mono);
+}
+.receipt-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.receipt-dot.green  { background: var(--green); box-shadow: 0 0 5px var(--green-glow); }
+.receipt-dot.yellow { background: var(--amber); box-shadow: 0 0 5px var(--amber-glow); }
+.receipt-dot.red    { background: var(--red);   box-shadow: 0 0 5px var(--red-glow); }
+.receipt-dot.grey   { background: transparent; border: 1px solid var(--line-strong); }
+.receipt-none .receipt-label { color: var(--muted-2); font-style: italic; }
+.receipt-pr {
+  color: var(--blue);
+  text-decoration: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(107,190,240,0.08);
+  border: 1px solid rgba(107,190,240,0.16);
+}
+.receipt-pr:hover { text-decoration: underline; }
+.receipt-rev.approved { color: var(--green); }
+.receipt-rev.pending  { color: var(--amber); }
+.receipt-ci.ci-green  { color: var(--green); }
+.receipt-ci.ci-red    { color: var(--red); }
 """
 
     js = """

@@ -47,5 +47,28 @@
     "description": "Heartbeat age, pulse index, launchd status",
     "args": [],
     "script": "bin/tools/system-health.py"
+  },
+  {
+    "name": "write_receipt",
+    "description": "Write a work receipt for a workspace before cleanup",
+    "args": [
+      {"name": "ws", "type": "string", "required": true, "help": "workspace ref e.g. workspace:43"},
+      {"name": "project", "type": "string", "required": false, "help": "project name (default: cmux title, else ws_ref)"},
+      {"name": "pr", "type": "int", "required": false, "help": "PR number, if any"},
+      {"name": "ci-status", "type": "string", "required": false, "default": "unknown", "choices": ["green", "red", "unknown"], "help": "CI status from PR checks"},
+      {"name": "reviewer-approved", "type": "string", "required": false, "default": "unknown", "choices": ["true", "false", "unknown"], "help": "reviewer approval state"},
+      {"name": "test-count", "type": "int", "required": false, "help": "number of tests, if known"},
+      {"name": "summary", "type": "string", "required": false, "help": "1-2 sentence evidence summary"},
+      {"name": "outcome", "type": "string", "required": false, "default": "shipped", "choices": ["shipped", "closed-no-pr", "abandoned"], "help": "how the work ended"}
+    ],
+    "script": "bin/tools/write-receipt.py"
+  },
+  {
+    "name": "pre_cleanup_check",
+    "description": "Gate /cleanup on a work receipt existing for a workspace",
+    "args": [
+      {"name": "ws", "type": "string", "required": true, "help": "workspace ref e.g. workspace:43"}
+    ],
+    "script": "bin/pre-cleanup-check.py"
   }
 ]

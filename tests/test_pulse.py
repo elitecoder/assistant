@@ -44,6 +44,20 @@ def fixture_home(tmp: Path) -> Path:
     return tmp
 
 
+def seed_receipt(home: Path, ws_ref: str, summary: str = "shipped, CI green") -> Path:
+    """Drop a work receipt for ws_ref so the pre-cleanup gate passes. Matches
+    write-receipt.py's slug + filename convention (workspace:N -> workspace-N)."""
+    rdir = home / ".assistant/receipts"
+    rdir.mkdir(parents=True, exist_ok=True)
+    p = rdir / f"{ws_ref.replace(':', '-')}-1700000000.json"
+    p.write_text(json.dumps({
+        "ts": "2026-06-06T00:00:00Z", "ws_ref": ws_ref, "summary": summary,
+        "ci_status": "green", "reviewer_approved": True, "outcome": "shipped",
+        "quality_score": "high",
+    }))
+    return p
+
+
 class DrainInboxTests(unittest.TestCase):
     def test_drains_pulse_files_only(self):
         with TemporaryDirectory() as tmp:
@@ -198,8 +212,10 @@ class ExecuteVerdictTests(unittest.TestCase):
         self.assertEqual(action["outcome"], "failed")
 
     def test_ready_for_cleanup_sends_when_assistant_merged(self):
-        # Pre-seed the merge ledger so the /cleanup gate opens.
+        # Pre-seed the merge ledger AND a work receipt so both /cleanup gates
+        # open (Assistant-merged + receipt-exists).
         self.mod.record_assistant_merge("workspace:99", ["10000"])
+        seed_receipt(self._tmp, "workspace:99")
         seen = {}
         def fake_send(ws_ref, text, **k):
             seen["ws_ref"] = ws_ref
@@ -331,9 +347,10 @@ class NoIngestGuardTests(unittest.TestCase):
         self.assertTrue(self.mod.previous_send_ingested("workspace:7", "/cleanup"))
 
     def test_execute_verdict_skips_when_guard_fires(self):
-        # Seed merge ledger so the /cleanup gate opens — we want this test to
-        # exercise NO_INGEST_GUARD specifically, not the cleanup gate.
+        # Seed merge ledger + receipt so both /cleanup gates open — we want this
+        # test to exercise NO_INGEST_GUARD specifically, not the cleanup gates.
         self.mod.record_assistant_merge("workspace:7", ["123"])
+        seed_receipt(self._tmp, "workspace:7")
         self._write_send_log([
             {"target_ws_ref": "workspace:7", "text": "/cleanup",
              "transcript_size_delta": 0, "outcome": "sent"},
