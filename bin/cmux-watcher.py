@@ -483,12 +483,18 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
 
 # ─── stream loop ───────────────────────────────────────────────────────────────
 
-def stream_events(stop_flag=None):
+def stream_events(stop_flag=None, on_proc=None):
     """Yield parsed event dicts from `cmux events --category agent --reconnect`.
 
     Reconnects with exponential backoff (max 60s) on EOF/crash. Malformed lines
     are skipped (logged sparsely). Stops when stop_flag() returns True. Exits
-    the generator if the cmux binary cannot be spawned at all."""
+    the generator if the cmux binary cannot be spawned at all.
+
+    `on_proc(proc_or_None)` is called with the live Popen as soon as it spawns
+    (and with None when it exits). The signal handler uses this to terminate the
+    subprocess on SIGTERM/SIGINT, which unblocks the `for line in proc.stdout`
+    read instantly — otherwise shutdown waits for the next event line to arrive
+    (a stuck watcher on a quiet stream, observed 2026-06-06)."""
     backoff = 1.0
     while not (stop_flag and stop_flag()):
         try:
@@ -500,6 +506,8 @@ def stream_events(stop_flag=None):
         except FileNotFoundError:
             log(f"cmux binary not found at {CMUX_BIN}; exiting")
             return
+        if on_proc:
+            on_proc(proc)
         log("listening on cmux events --category agent --reconnect")
         backoff = 1.0  # reset on a successful connect
         try:
@@ -521,6 +529,8 @@ def stream_events(stop_flag=None):
                 proc.wait(timeout=5)
             except Exception:  # noqa: BLE001
                 pass
+            if on_proc:
+                on_proc(None)
         if stop_flag and stop_flag():
             return
         log(f"event stream ended; reconnecting in {backoff:.0f}s")
@@ -537,10 +547,20 @@ def main() -> int:
         return 0
 
     stopping = {"v": False}
+    live_proc: dict = {"p": None}
 
     def handle_sig(signum, frame):  # noqa: ARG001
         log(f"signal {signum} — shutting down")
         stopping["v"] = True
+        # Terminate the running `cmux events` subprocess so the blocking
+        # `for line in proc.stdout` read returns immediately, instead of waiting
+        # for the next event line on a quiet stream.
+        proc = live_proc.get("p")
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
     signal.signal(signal.SIGTERM, handle_sig)
     signal.signal(signal.SIGINT, handle_sig)
 
@@ -552,7 +572,8 @@ def main() -> int:
 
     n_seen = 0
     n_dropped = 0
-    for evt in stream_events(stop_flag=lambda: stopping["v"]):
+    for evt in stream_events(stop_flag=lambda: stopping["v"],
+                             on_proc=lambda p: live_proc.__setitem__("p", p)):
         n_seen += 1
         try:
             result = handle_event(evt, bank, state, resolver)
