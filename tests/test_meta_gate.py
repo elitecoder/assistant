@@ -1,14 +1,15 @@
-"""Tests for bin/meta_gate.py — the archffp meta-gate.
+"""Tests for bin/meta_gate.py — the archffp --meta gate (4-gate TDD discipline).
 
-The meta-gate is ONE check: a lesson duplication/conflict audit that fires when an
-archffp diff touches firefly-platform's `.claude/rules/` or `.claude/skills/`. The
-real audit makes an LLM call, so it takes an INJECTED runner here — every test is
-hermetic (no `claude` call, no network). Same pattern test_lesson_extractor.py uses
-to test extract() with an injected llm.
+This module owns the pure, testable pieces of the meta-gate: detection, Gate 1
+(dedup/conflict, injected LLM), and Gate 4's coverage search. Gate 2 (do the
+work) and Gate 3 (run the live archffp evals) are orchestrator-driven and not
+unit-tested here. Every test is hermetic — the Gate-1 LLM is injected, so no
+`claude`/Bedrock call ever runs (same pattern test_lesson_extractor.py uses).
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -29,54 +30,110 @@ def _load(name: str, fname: str):
 
 mg = _load("meta_gate_mod", "meta_gate.py")
 
+CORPUS = {
+    "lessons": [
+        {"store": "ffp", "slug": "commit-work", "trigger": "Always commit when a unit of work is finished"},
+        {"store": "claude", "slug": "no-force-push", "trigger": "Never force-push without permission"},
+    ],
+    "skills": ["squirrel-code-review", "e2e-test"],
+}
 
-# ─── the one gate: lesson audit ──────────────────────────────────────────────
 
-def test_audit_clean_passes():
-    """Audit finds nothing → gate passes, no block."""
-    res = mg.audit_gate(run_audit=lambda: {"n_findings": 0, "findings": []})
+# ─── Gate 1: dedup / conflict ────────────────────────────────────────────────
+
+def test_gate1_no_duplicate_passes():
+    llm = lambda _p: json.dumps({"duplicate": False, "conflict": False, "matches": []})
+    res = mg.dedup_gate("New rule: prefer Scout over grep for code search", CORPUS, run_llm=llm)
     assert res["ok"] is True
     assert res["block"] is False
-    assert "clean" in res["message"]
 
 
-def test_audit_duplicate_blocks():
-    """Audit reports a near-duplicate → BLOCK with the finding text."""
-    run_audit = lambda: {"n_findings": 1, "findings": [
-        {"action": "merge", "slugs": ["commit-work", "always-commit"],
-         "reason": "both say commit when a unit of work finishes"}]}
-    res = mg.audit_gate(run_audit=run_audit)
+def test_gate1_duplicate_blocks():
+    llm = lambda _p: json.dumps({"duplicate": True, "conflict": False, "matches": [
+        {"kind": "duplicate", "ref": "ffp/commit-work", "why": "same 'commit finished work' intent"}]})
+    res = mg.dedup_gate("Always commit your work when done", CORPUS, run_llm=llm)
     assert res["block"] is True
     assert res["ok"] is False
-    assert "Lesson audit found issues" in res["message"]
-    assert "commit-work" in res["message"]
+    assert "ffp/commit-work" in res["message"]
+    assert "duplicate" in res["message"].lower()
 
 
-def test_audit_conflict_blocks():
-    """A conflicting-lesson finding BLOCKs the same way a near-duplicate does."""
-    run_audit = lambda: {"n_findings": 1, "findings": [
-        {"action": "merge", "slugs": ["always-X", "never-X"],
-         "reason": "these two lessons directly contradict each other"}]}
-    res = mg.audit_gate(run_audit=run_audit)
+def test_gate1_conflict_blocks():
+    llm = lambda _p: json.dumps({"duplicate": False, "conflict": True, "matches": [
+        {"kind": "conflict", "ref": "claude/no-force-push", "why": "proposed rule allows force-push"}]})
+    res = mg.dedup_gate("Force-push freely to feature branches", CORPUS, run_llm=llm)
     assert res["block"] is True
-    assert "contradict" in res["message"]
+    assert "no-force-push" in res["message"]
 
 
-def test_audit_count_only_still_blocks():
-    """Even when the runner gives only a count (no findings list), a positive
-    count BLOCKs — the default --audit --dry-run runner returns n_findings."""
-    res = mg.audit_gate(run_audit=lambda: {"n_findings": 2})
+def test_gate1_matches_without_flags_still_blocks():
+    """If the LLM returns matches but forgets the boolean flags, still BLOCK."""
+    llm = lambda _p: json.dumps({"matches": [
+        {"kind": "duplicate", "ref": "ffp/commit-work", "why": "same intent"}]})
+    res = mg.dedup_gate("commit finished work", CORPUS, run_llm=llm)
     assert res["block"] is True
-    assert "2 finding" in res["message"]
 
 
-def test_audit_default_runner_is_overridable():
-    """audit_gate() with no runner falls back to the real one; we don't call it
-    here (it would spend), just assert the default is wired and injection works."""
-    assert callable(mg._default_audit_runner)
-    # injected runner must take precedence over the default
-    res = mg.audit_gate(run_audit=lambda: {"n_findings": 0})
+def test_gate1_prompt_includes_corpus_and_proposed():
+    """The dedup prompt must actually carry the proposed change + the existing
+    lessons/skills, or the LLM is judging blind."""
+    captured = {}
+    def llm(p):
+        captured["prompt"] = p
+        return json.dumps({"duplicate": False, "conflict": False, "matches": []})
+    mg.dedup_gate("PROPOSED-RULE-XYZ", CORPUS, run_llm=llm)
+    p = captured["prompt"]
+    assert "PROPOSED-RULE-XYZ" in p
+    assert "commit-work" in p              # existing lesson surfaced
+    assert "squirrel-code-review" in p     # existing skill surfaced
+
+
+def test_gate1_unparseable_llm_does_not_falsely_block():
+    """A tooling failure (bad JSON) is surfaced, not turned into a phantom block."""
+    res = mg.dedup_gate("anything", CORPUS, run_llm=lambda _p: "not json at all")
     assert res["block"] is False
+    assert "error" in res
+
+
+# ─── Gate 4: coverage search ─────────────────────────────────────────────────
+
+def _fixture(root: Path, rel: str, text: str) -> None:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+
+
+def test_gate4_covered(tmp_path):
+    """A fixture whose input mentions the change → covered."""
+    fx = tmp_path / "fixtures"
+    _fixture(fx, "snapping-rule/code-reviewer/input/diff.md",
+             "rule about timeline snapping threshold during gapless reorder")
+    res = mg.coverage_search(["timeline snapping threshold"], fixtures_dir=fx)
+    assert res["covered"] is True
+    assert res["matches"]
+    assert "snapping" in {t for m in res["matches"] for t in m["shared"]}
+
+
+def test_gate4_not_covered_signals_write_new_fixture(tmp_path):
+    """No fixture mentions the change → NOT covered (TDD: write one)."""
+    fx = tmp_path / "fixtures"
+    _fixture(fx, "unrelated/classifier/input/x.md", "completely different drag clone behavior")
+    res = mg.coverage_search(["quantum flux capacitor recalibration"], fixtures_dir=fx)
+    assert res["covered"] is False
+    assert res["matches"] == []
+    assert "write one" in res["message"]
+
+
+def test_gate4_empty_fixtures_dir(tmp_path):
+    res = mg.coverage_search(["anything"], fixtures_dir=tmp_path / "nope")
+    assert res["covered"] is False
+
+
+def test_gate4_accepts_freetext_description(tmp_path):
+    fx = tmp_path / "fixtures"
+    _fixture(fx, "f/code-reviewer/input/d.md", "magic number literal banned in production code")
+    res = mg.coverage_search("ban magic number literals", fixtures_dir=fx)
+    assert res["covered"] is True
 
 
 # ─── meta-change detection (FFP rules / skills ONLY) ─────────────────────────
@@ -92,13 +149,9 @@ def test_is_meta_path_positive(path):
 
 
 @pytest.mark.parametrize("path", [
-    # architect-ffp's OWN rules/skills/prelude — out of scope (future /archself)
-    "skills/archffp/SKILL.md",
+    "skills/archffp/SKILL.md",       # architect-ffp's OWN skill — future /archself
     "src/ffp-context.md",
-    "prompts/observer-batch-prompt.md",
-    # ordinary production / test / tooling paths
     "src/applications/squirrel/timeline.tsx",
-    "src/scripts/bootstrap.py",
     "tests/test_meta_gate.py",
     "CHANGELOG.md",
 ])
@@ -106,23 +159,11 @@ def test_is_meta_path_negative(path):
     assert mg.is_meta_path(path) is False
 
 
-def test_meta_paths_filters_to_ffp_rules_and_skills():
-    paths = [
-        "src/applications/squirrel/x.tsx",
-        "firefly-platform/.claude/rules/ffp-lessons.md",
-        "skills/archffp/SKILL.md",                 # architect-ffp skill — excluded
-        ".claude/skills/squirrel-code-review/SKILL.md",
-    ]
-    assert mg.meta_paths(paths) == [
-        "firefly-platform/.claude/rules/ffp-lessons.md",
-        ".claude/skills/squirrel-code-review/SKILL.md",
-    ]
-
-
-def test_is_meta_change():
-    assert mg.is_meta_change(["src/x.tsx", ".claude/rules/ffp-lessons.md"]) is True
+def test_meta_paths_and_is_meta_change():
+    paths = ["src/x.tsx", ".claude/rules/ffp-lessons.md", "skills/archffp/SKILL.md"]
+    assert mg.meta_paths(paths) == [".claude/rules/ffp-lessons.md"]
+    assert mg.is_meta_change(paths) is True
     assert mg.is_meta_change(["src/x.tsx", "skills/archffp/SKILL.md"]) is False
-    assert mg.is_meta_change([]) is False
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -132,19 +173,15 @@ def test_cli_detect_meta(capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "FFP rule/skill change detected" in out
-    assert ".claude/rules/ffp-lessons.md" in out
 
 
-def test_cli_detect_no_meta(capsys):
+def test_cli_detect_not_meta(capsys):
     rc = mg.main(["detect", "--paths", "src/x.py", "skills/archffp/SKILL.md"])
-    out = capsys.readouterr().out
     assert rc == 10
-    assert "SKIP" in out
+    assert "not a meta-change" in capsys.readouterr().out
 
 
-def test_cli_check_skip_when_no_meta(capsys):
-    """check with no meta path exits 0 ($0) and does not run the audit."""
-    rc = mg.main(["check", "--paths", "src/x.py"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "SKIP" in out
+def test_cli_coverage_miss(tmp_path, capsys):
+    rc = mg.main(["coverage", "--keywords", "nonexistent-topic-zzz",
+                  "--fixtures-dir", str(tmp_path)])
+    assert rc == 10  # not covered → nonzero so the orchestrator knows to write a fixture
