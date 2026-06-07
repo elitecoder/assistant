@@ -801,11 +801,12 @@ def write_proposal(draft: dict[str, Any], candidate: dict[str, Any],
     return ts
 
 
-def ping_user(trigger: str, tg_send: Path = TG_SEND,
+def ping_user(trigger: str, proposal_id: str = "", tg_send: Path = TG_SEND,
               runner: Callable[[list[str]], tuple[int, str, str]] | None = None) -> bool:
     runner = runner or _run
-    body = (f"Lesson proposal from pattern: {trigger}. "
-            "Reply y in the main chat to add it.")
+    pid_hint = f"\nProposal ID: {proposal_id}" if proposal_id else ""
+    body = (f"Lesson proposal from pattern: {trigger}.{pid_hint}\n"
+            "Reply to me here to confirm or ignore.")
     rc, _, _ = runner([sys.executable, str(tg_send), "--text", body,
                        "--kind", "reply"])
     return rc == 0
@@ -1177,7 +1178,7 @@ def extract(*, dry_run: bool = False,
             continue
 
         pid = write_proposal(draft, cand, proposals_path)
-        pinged = ping_user(draft["trigger"], tg_send)
+        pinged = ping_user(draft["trigger"], proposal_id=pid, tg_send=tg_send)
         audit(f"proposed id={pid} trigger={draft['trigger']!r} "
               f"from kind={cand['kind']!r} stem={cand['stem']!r} "
               f"count={cand['count']} pinged={pinged}")
@@ -1325,7 +1326,7 @@ def run_audit(*, dry_run: bool = False,
         with open(proposals_path, "a") as fp:
             fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
         summary = f"Lesson audit: {action} {', '.join(slugs)} — {reason}"
-        ping_user(summary, tg_send)
+        ping_user(summary, proposal_id=ts, tg_send=tg_send)
         audit(f"lesson audit proposed {action} slugs={slugs} id={ts}")
         proposed.append({"id": ts, "finding": f})
 
