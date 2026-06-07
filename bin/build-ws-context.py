@@ -498,6 +498,25 @@ def main() -> int:
     age, agent_status = transcript_signals(transcript)
     dirty, unpushed = cwd_state(args.cwd)
 
+    # When transcript is null (no verified session found), age is None and the
+    # Observer can't tell if the workspace is fresh or stale. Fall back to the
+    # observer-summary's state_unchanged_since_ts so the Observer knows how long
+    # this workspace has been sitting without a readable transcript — a key signal
+    # for escalating silent/stuck workspaces to needs_user.
+    if age is None:
+        summary_path = (
+            Path(os.environ.get("ASSISTANT_DIR", os.path.expanduser("~/.assistant")))
+            / "observer-summaries"
+            / f"workspace_{args.ws_ref.replace(':', '_')}.json"
+        )
+        try:
+            summary = json.loads(summary_path.read_text())
+            unchanged_since = summary.get("state_unchanged_since_ts")
+            if isinstance(unchanged_since, (int, float)) and unchanged_since > 0:
+                age = max(0, int(time.time() - unchanged_since))
+        except (OSError, json.JSONDecodeError, KeyError):
+            pass
+
     payload = {
         "ws_ref": args.ws_ref,
         "title": args.title,

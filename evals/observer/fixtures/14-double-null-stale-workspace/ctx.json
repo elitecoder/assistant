@@ -1,0 +1,12 @@
+{
+  "ws_ref": "workspace:105",
+  "title": "archffp: meta-gate for rules/skills",
+  "cwd": "/Users/mukuls/dev/architect-ffp",
+  "transcript_path": null,
+  "screen_text": "",
+  "last_turn_age_sec": 10800,
+  "agent_status": "idle",
+  "cwd_dirty": true,
+  "cwd_unpushed": true,
+  "is_protected": false
+}
