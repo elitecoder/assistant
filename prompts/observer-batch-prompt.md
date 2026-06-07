@@ -219,3 +219,8 @@ Auto-close the workspace only when ALL of: (1) /cleanup completed and produced a
 
 NEVER auto-close when: CI is still running or pending; PR is open but not merged; the assistant's last message contained 'waiting for', 'your turn', 'open for you', or explicit action items addressed to the user; uncommitted changes exist without a ledger stash entry; or the session spawned sub-workspaces that are still running.
 
+<!-- lesson: verdict-work-is-built-and, scope: verdict, added: 2026-06-07 -->
+**Work is built and running but live-validation is still in-progress**
+
+Never report a task as done or standing-by-complete when a live-validation gap has been acknowledged. If the implementation is built and running but a full end-to-end cycle has not been validated, hold the workspace open and surface the specific unvalidated path. Only close or mark complete after the live-validation step has been executed and the result observed.
+
