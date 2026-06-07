@@ -238,6 +238,9 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
             if kind == "self-update" and "skip" in key:
                 log(f"suppressed self-update-skip broadcast key={key}")
                 continue
+            if kind in ("lesson-proposal", "lesson_proposal") or key.startswith("lesson-proposal"):
+                log(f"suppressed lesson-proposal broadcast key={key} (delivered via warm session)")
+                continue
             body = comms_lib.fmt_action_line(entry)
             rc, out, err = cli(
                 [str(TG_SEND), "--text", body, "--kind", "action",
