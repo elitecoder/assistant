@@ -37,7 +37,11 @@ def get_chat_id() -> int | None:
     comms_cfg = HOME / ".assistant" / "comms" / "config.json"
     if comms_cfg.exists():
         try:
-            return json.loads(comms_cfg.read_text()).get("chat_id")
+            cfg = json.loads(comms_cfg.read_text())
+            chat_ids = cfg.get("telegram", {}).get("chat_ids") or []
+            if chat_ids:
+                return chat_ids[0]
+            return cfg.get("chat_id") or None
         except Exception:
             pass
     return None

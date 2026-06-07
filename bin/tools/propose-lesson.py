@@ -111,9 +111,13 @@ def _ping_proposal(entry: dict[str, Any]) -> None:
         comms_cfg = HOME / ".assistant" / "comms" / "config.json"
         if not tg_send.exists() or not comms_cfg.exists():
             return
-        chat_id = json.loads(comms_cfg.read_text()).get("chat_id")
-        if not chat_id:
+        cfg = json.loads(comms_cfg.read_text())
+        chat_ids = cfg.get("telegram", {}).get("chat_ids") or []
+        if not chat_ids:
+            chat_ids = [cfg.get("chat_id")] if cfg.get("chat_id") else []
+        if not chat_ids:
             return
+        chat_id = chat_ids[0]
         trigger = entry.get("trigger", "")[:80]
         rule = entry.get("rule", "")[:120]
         source = entry.get("source", "manual")
