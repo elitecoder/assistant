@@ -104,6 +104,38 @@ def _read_proposals(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _ping_proposal(entry: dict[str, Any]) -> None:
+    """Best-effort Telegram ping when a new proposal is recorded. Never raises."""
+    try:
+        tg_send = REPO / "bin" / "tg-send.py"
+        comms_cfg = HOME / ".assistant" / "comms" / "config.json"
+        if not tg_send.exists() or not comms_cfg.exists():
+            return
+        cfg = json.loads(comms_cfg.read_text())
+        chat_ids = cfg.get("telegram", {}).get("chat_ids") or []
+        if not chat_ids:
+            chat_ids = [cfg.get("chat_id")] if cfg.get("chat_id") else []
+        if not chat_ids:
+            return
+        chat_id = chat_ids[0]
+        trigger = entry.get("trigger", "")[:80]
+        rule = entry.get("rule", "")[:120]
+        source = entry.get("source", "manual")
+        pid = entry.get("id", "")
+        text = (
+            f"New lesson proposal ({source}):\n"
+            f"Trigger: {trigger}\n"
+            f"Rule: {rule}...\n"
+            f"Reply 'confirm {pid}' to apply, or ignore to skip."
+        )
+        subprocess.run(
+            [sys.executable, str(tg_send), "--text", text, "--chat", str(chat_id)],
+            capture_output=True, timeout=10,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def record_proposal(trigger: str, rule: str, target: str, scope: str,
                     source: str, path: Path = PROPOSALS_PATH) -> dict[str, Any]:
     ts = utc_iso_us()
@@ -121,6 +153,7 @@ def record_proposal(trigger: str, rule: str, target: str, scope: str,
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    _ping_proposal(entry)
     return {"status": "recorded", "proposal_id": ts}
 
 
