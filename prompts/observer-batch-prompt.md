@@ -204,3 +204,18 @@ The Observer Agent must only emit a verdict about what should happen next — it
 
 When a probe verdict is TEST_BUG (flake) and a search of open PRs reveals another PR already touching the same fixture file, helper, or test area, do NOT dispatch a second archffp fix run or open a duplicate PR. Instead, record the probe as 'deferred — covered by PR #N' and link it to that PR. Duplicate fix PRs create merge conflicts, confuse reviewers, and waste CI cycles. One PR owns the fixture area until it merges; new probes for the same area queue behind it.
 
+<!-- lesson: stranded-work-is-validated-and, scope: stranded, added: 2026-06-07 -->
+**Work is validated and complete but left uncommitted awaiting user's branch/PR decision**
+
+When code is fully implemented, tested, and live-validated but sits uncommitted because the user has not yet decided on a branch or PR strategy, emit a card surfacing the uncommitted state with a concrete prompt: list the file count and line count, confirm tests are green, and ask the user to decide — new branch, existing branch, or direct commit to main. Do not leave validated work silently uncommitted; surface it so the user can act before context is lost or the working tree drifts.
+
+<!-- lesson: cleanup-observer-is-deciding-whether, scope: cleanup, added: 2026-06-07 -->
+**Observer is deciding whether to send /close-workspace after a /cleanup**
+
+Auto-close the workspace only when ALL of: (1) /cleanup completed and produced a ledger entry with worktree removed + branch deleted, (2) no uncommitted changes exist, (3) no dev servers running, (4) the assistant's last message was a terminal receipt — not 'waiting for', 'your turn', or an open action item addressed to the user.
+
+<!-- lesson: cleanup-observer-is-about-to, scope: cleanup, added: 2026-06-07 -->
+**Observer is about to send /close-workspace to any workspace**
+
+NEVER auto-close when: CI is still running or pending; PR is open but not merged; the assistant's last message contained 'waiting for', 'your turn', 'open for you', or explicit action items addressed to the user; uncommitted changes exist without a ledger stash entry; or the session spawned sub-workspaces that are still running.
+
