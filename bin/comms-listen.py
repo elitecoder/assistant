@@ -156,7 +156,7 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict,
     """Warm reply: record inbound, feed the message to the warm session, wait
     for its reply turn in the transcript, then /clear if context >= 50%.
     Returns the (possibly refreshed) session record."""
-    chat_id = rec["chat_id"]
+    chat_id = rec.get("chat_id") or rec.get("channel_id")
     text = rec.get("text", "")
     msg_id = rec.get("msg_id")
     # Telegram uses reply_to_msg_id; Discord uses reply_to.
