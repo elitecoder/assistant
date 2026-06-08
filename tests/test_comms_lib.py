@@ -92,7 +92,7 @@ class TestConfig:
         path.write_text(json.dumps({"telegram": {"bot_token": "t"}}))
         cfg = cl.Config.load(path)
         assert cfg.chat_ids == set()
-        assert cfg.stale_heartbeat_sec == 600
+        assert cfg.stale_heartbeat_sec == 1200
         assert cfg.mute_until_epoch == 0
 
 

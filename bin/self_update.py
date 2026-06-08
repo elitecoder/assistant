@@ -143,8 +143,13 @@ def _write_marker(path: Path, payload: dict) -> None:
 
 
 def should_attempt(marker: dict, now: float, interval_sec: int) -> bool:
-    """True if enough time has elapsed since the last attempt."""
+    """True if enough time has elapsed since the last attempt.
+
+    A fresh install (last_attempt_ts absent or zero) always attempts,
+    regardless of the current timestamp."""
     last = marker.get("last_attempt_ts", 0)
+    if not last:
+        return True
     return (now - last) >= interval_sec
 
 

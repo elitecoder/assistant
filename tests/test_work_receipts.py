@@ -166,6 +166,37 @@ class PreCleanupCheckTests(unittest.TestCase):
         self.assertEqual(result["gate"], "pass")
         self.assertEqual(result["evidence"], "new")
 
+    def test_pre_cleanup_check_gate_error_on_latest_receipt_exception(self):
+        # If latest_receipt raises (e.g. glob explodes), fail safe to block.
+        from unittest import mock
+        with mock.patch.object(self.gate, "latest_receipt",
+                               side_effect=OSError("disk error")):
+            result = self.gate.pre_cleanup_check("workspace:99")
+        self.assertEqual(result["gate"], "block")
+        self.assertEqual(result["reason"], "gate error")
+        self.assertIn("disk error", result["evidence"])
+
+    def test_pre_cleanup_check_malformed_receipt_still_passes(self):
+        # A receipt file that isn't valid JSON still lets the gate pass —
+        # the evidence is just empty.
+        rdir = self._home / ".assistant/receipts"
+        rdir.mkdir(parents=True, exist_ok=True)
+        (rdir / "workspace-55-1234567890.json").write_text("{ not json")
+        result = self.gate.pre_cleanup_check("workspace:55")
+        self.assertEqual(result["gate"], "pass")
+        self.assertEqual(result["evidence"], "")
+
+    def test_main_returns_zero_and_emits_json(self):
+        # main() always exits 0 and emits valid JSON.
+        import io, sys
+        from unittest import mock
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = self.gate.main(["--ws", "workspace:999"])
+        self.assertEqual(rc, 0)
+        data = json.loads(out.getvalue())
+        self.assertIn("gate", data)
+
 
 if __name__ == "__main__":
     unittest.main()

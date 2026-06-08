@@ -721,6 +721,164 @@ class MainTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(d["is_protected"])
 
+    def test_main_age_from_observer_summary_when_no_transcript(self):
+        # When transcript=None, age falls back to observer-summary stale time.
+        summary_dir = self._tmp / ".assistant/observer-summaries"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time()) - 300
+        (summary_dir / "workspace_workspace_99.json").write_text(
+            json.dumps({"state_unchanged_since_ts": ts}))
+        with mock.patch.dict(os.environ, {"ASSISTANT_DIR": str(self._tmp / ".assistant")}):
+            rc, d = self._run_main("workspace:99", "t", "",
+                                   resolved=self._resolved(session_id8="abc12345"))
+        self.assertEqual(rc, 0)
+        # age should be ~300 (from summary)
+        self.assertIsNotNone(d["last_turn_age_sec"])
+        self.assertGreater(d["last_turn_age_sec"], 200)
+
+
+class TranscriptSignalsEdgeCaseTests(unittest.TestCase):
+    """Cover transcript_signals edge cases: OSError on getmtime, bad JSON,
+    non-dict message, content not list — and cwd_state exception paths."""
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_getmtime_oserror_returns_idle(self):
+        with mock.patch("os.path.getmtime", side_effect=OSError("no stat")):
+            with mock.patch("os.path.exists", return_value=True):
+                age, status = self.mod.transcript_signals("/fake/path.jsonl")
+        self.assertIsNone(age)
+        self.assertEqual(status, "idle")
+
+    def test_open_oserror_returns_age_idle(self):
+        # When open() fails after getmtime succeeds, age is the mtime-based age,
+        # and status is "idle" (can't read the file to detect pending tool_use).
+        path = str(self._tmp / "t.jsonl")
+        Path(path).write_text("")
+        with mock.patch("builtins.open", side_effect=OSError("io error")):
+            age, status = self.mod.transcript_signals(path)
+        self.assertIsNotNone(age)  # mtime was read before the open failed
+        self.assertEqual(status, "idle")
+
+    def test_malformed_json_lines_skipped(self):
+        path = str(self._tmp / "t.jsonl")
+        Path(path).write_text("not json\n")
+        age, status = self.mod.transcript_signals(path)
+        self.assertIsNotNone(age)
+        self.assertEqual(status, "idle")
+
+    def test_message_not_dict_skipped(self):
+        path = str(self._tmp / "t.jsonl")
+        Path(path).write_text(json.dumps({"message": "string not dict"}) + "\n")
+        age, status = self.mod.transcript_signals(path)
+        self.assertEqual(status, "idle")
+
+    def test_content_not_list_skipped(self):
+        path = str(self._tmp / "t.jsonl")
+        Path(path).write_text(json.dumps({"message": {"content": "not a list"}}) + "\n")
+        age, status = self.mod.transcript_signals(path)
+        self.assertEqual(status, "idle")
+
+    def test_content_item_not_dict_skipped(self):
+        path = str(self._tmp / "t.jsonl")
+        Path(path).write_text(json.dumps({"message": {"content": ["string"]}}) + "\n")
+        age, status = self.mod.transcript_signals(path)
+        self.assertEqual(status, "idle")
+
+    def test_cwd_state_git_exception_returns_false_false(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(self.mod.subprocess, "run",
+                                   side_effect=OSError("no git")):
+                dirty, unpushed = self.mod.cwd_state(d)
+        self.assertFalse(dirty)
+        self.assertFalse(unpushed)
+
+
+class CmuxHelperEdgeCases(unittest.TestCase):
+    """Test the _cmux / _is_claude_pane / _pane_surfaces / _read_surface edge
+    cases that the higher-level tests don't exercise."""
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_cmux_returns_none_on_exception(self):
+        with mock.patch.object(self.mod.subprocess, "run",
+                               side_effect=Exception("cmux missing")):
+            result = self.mod._cmux(["list-panes"])
+        self.assertIsNone(result)
+
+    def test_is_claude_pane_empty_string_returns_false(self):
+        self.assertFalse(self.mod._is_claude_pane(""))
+
+    def test_is_claude_pane_with_status_bar_returns_true(self):
+        text = "  assistant main │ ●1 │ context 50% │ $1.00 │ #aabbccdd"
+        self.assertTrue(self.mod._is_claude_pane(text))
+
+    def test_pane_surfaces_returns_empty_on_cmux_failure(self):
+        with mock.patch.object(self.mod.subprocess, "run",
+                               return_value=mock.Mock(returncode=1, stdout="")):
+            result = self.mod._pane_surfaces("workspace:1", "pane:1")
+        self.assertEqual(result, [])
+
+    def test_read_surface_returns_empty_for_empty_ref(self):
+        result = self.mod._read_surface("", "workspace:1")
+        self.assertEqual(result, "")
+
+    def test_find_agent_pane_skips_empty_surface_text(self):
+        # When _read_surface returns "" for a surface, it is skipped.
+        # The agent pane with non-empty text still wins.
+        CLAUDE = "  assistant main │ ●1 │ context 50% │ $1.00 │ #aabbccdd"
+        surface_texts = {"surface:1": "", "surface:2": CLAUDE}
+        with mock.patch.object(self.mod, "_list_panes", return_value=["pane:1", "pane:2"]):
+            with mock.patch.object(self.mod, "_pane_surfaces",
+                                   side_effect=lambda w, p: [
+                                       ("surface:1", "U1")] if p == "pane:1" else [("surface:2", "U2")]):
+                with mock.patch.object(self.mod, "_read_surface",
+                                       side_effect=lambda s, w, lines=120: surface_texts.get(s, "")):
+                    res = self.mod.find_agent_pane("workspace:9")
+        self.assertIsNotNone(res)
+        self.assertEqual(res["surface_ref"], "surface:2")
+
+    def test_transcript_internal_sid_exception_returns_none(self):
+        with mock.patch("builtins.open", side_effect=OSError("no file")):
+            result = self.mod._transcript_internal_sid("/fake/path.jsonl")
+        self.assertIsNone(result)
+
+    def test_transcript_from_session_id_no_projects_dir(self):
+        # When ~/.claude/projects doesn't exist, returns None.
+        import shutil
+        shutil.rmtree(self._tmp / ".claude/projects")
+        result = self.mod.transcript_from_session_id("aabbccdd")
+        self.assertIsNone(result)
+
+    def test_registry_transcript_empty_uuid_returns_none(self):
+        result = self.mod.registry_transcript_for_surface("")
+        self.assertIsNone(result)
+
+    def test_registry_transcript_internal_sid_disagreement(self):
+        # Registry entry has a live pid, but transcript's own sid disagrees.
+        tp = str(self._tmp / ".claude/projects/-p/aabbccdd-t.jsonl")
+        Path(tp).parent.mkdir(parents=True, exist_ok=True)
+        Path(tp).write_text(json.dumps({"sessionId": "11223344-diff"}) + "\n")
+        reg = {"S1": {"surface_id": "AAAA-BBBB", "claude_pid": os.getpid(),
+                      "ts": 1, "session_id": "aabbccdd", "transcript_path": tp}}
+        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
+        result = self.mod.registry_transcript_for_surface("AAAA-BBBB")
+        # Internal sid "11223344" doesn't start with "aabbccdd" → rejected.
+        self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()

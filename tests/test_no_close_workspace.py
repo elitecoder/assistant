@@ -54,16 +54,38 @@ class TestNoCloseWorkspace(unittest.TestCase):
                 text = p.read_text(errors="replace")
             except Exception:
                 continue
+            in_docstring = False
+            docstring_delim = None
             for line_no, line in enumerate(text.splitlines(), 1):
                 stripped = line.strip()
-                # Skip pure comments/docstrings
-                if stripped.startswith("#") or stripped.startswith("//"):
-                    continue
-                if stripped.startswith('"""') or stripped.startswith("'''"):
-                    continue
-                for pat in self.FORBIDDEN_INVOCATIONS:
-                    if pat.search(line):
-                        hits.append((p, line_no, line.rstrip(), pat.pattern))
+                # Track multi-line triple-quoted strings so interior lines
+                # (e.g. module-level docstrings listing historical commands)
+                # are not flagged as actual invocations.
+                if not in_docstring:
+                    for delim in ('"""', "'''"):
+                        if delim in stripped:
+                            count = stripped.count(delim)
+                            if count % 2 == 1:
+                                # Odd number of delimiters → we've entered a
+                                # multi-line string that isn't closed on this line.
+                                in_docstring = True
+                                docstring_delim = delim
+                            break
+                    # Skip pure single-line comments
+                    if stripped.startswith("#") or stripped.startswith("//"):
+                        continue
+                    # Skip lines that ARE the docstring delimiter (opening or
+                    # closing standalone triple-quote lines).
+                    if stripped.startswith('"""') or stripped.startswith("'''"):
+                        continue
+                    for pat in self.FORBIDDEN_INVOCATIONS:
+                        if pat.search(line):
+                            hits.append((p, line_no, line.rstrip(), pat.pattern))
+                else:
+                    # Inside a multi-line string — skip but watch for closing.
+                    if docstring_delim in stripped:
+                        in_docstring = False
+                        docstring_delim = None
         return hits
 
     def test_assistant_repo_has_no_close_workspace_invocation(self):

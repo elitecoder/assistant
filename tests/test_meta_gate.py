@@ -185,3 +185,86 @@ def test_cli_coverage_miss(tmp_path, capsys):
     rc = mg.main(["coverage", "--keywords", "nonexistent-topic-zzz",
                   "--fixtures-dir", str(tmp_path)])
     assert rc == 10  # not covered → nonzero so the orchestrator knows to write a fixture
+
+
+def test_cli_coverage_hit_json(tmp_path, capsys):
+    """--json flag emits JSON rather than human text."""
+    fx = tmp_path / "fixtures"
+    fx.mkdir()
+    (fx / "f.md").write_text("snapping threshold coverage text")
+    rc = mg.main(["coverage", "--keywords", "snapping", "--fixtures-dir", str(fx), "--json"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data["covered"] is True
+
+
+def test_cli_coverage_hit_text(tmp_path, capsys):
+    """Without --json flag, text output includes fixture paths."""
+    fx = tmp_path / "fixtures"
+    fx.mkdir()
+    (fx / "x.md").write_text("timeline ruler coverage text")
+    rc = mg.main(["coverage", "--keywords", "timeline", "--fixtures-dir", str(fx)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "x.md" in out
+
+
+def test_cli_detect_with_repo(tmp_path, capsys, monkeypatch):
+    """--repo flag calls _git_changed_paths and appends to the explicit path list."""
+    monkeypatch.setattr(mg, "_git_changed_paths",
+                        lambda repo, base: [".claude/rules/ffp-lessons.md"])
+    rc = mg.main(["detect", "--repo", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "FFP rule/skill change" in out
+
+
+def test_git_changed_paths_returns_sorted(tmp_path, monkeypatch):
+    """_git_changed_paths unions diff, unstaged, and staged output."""
+    import subprocess as sp
+
+    class _CP:
+        returncode = 0
+
+    def fake_run(cmd, *a, **kw):
+        r = _CP()
+        if "--staged" in cmd:
+            r.stdout = ".claude/rules/ffp-lessons.md\n"
+        elif cmd[-1] == "HEAD..HEAD":  # never matches, but exercises the loop
+            r.stdout = ""
+        else:
+            r.stdout = ".claude/rules/ffp-lessons.md\nsrc/x.tsx\n"
+        return r
+
+    monkeypatch.setattr(mg.subprocess, "run", fake_run)
+    paths = mg._git_changed_paths(tmp_path, "origin/main")
+    assert ".claude/rules/ffp-lessons.md" in paths
+    assert paths == sorted(paths)
+
+
+def test_gather_existing_corpus_subprocess_ok(monkeypatch):
+    """gather_existing_corpus parses curator list output."""
+    import subprocess as sp
+
+    class _CP:
+        returncode = 0
+        stdout = "  [global         ] commit-work                                          2026-01-01\n"
+
+    monkeypatch.setattr(mg.subprocess, "run", lambda *a, **k: _CP())
+    corpus = mg.gather_existing_corpus()
+    assert "lessons" in corpus
+    assert "skills" in corpus
+
+
+def test_gather_existing_corpus_subprocess_error(monkeypatch):
+    """gather_existing_corpus handles subprocess error gracefully."""
+    import subprocess as sp
+
+    class _CP:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(mg.subprocess, "run", lambda *a, **k: _CP())
+    corpus = mg.gather_existing_corpus()
+    assert corpus["lessons"] == []

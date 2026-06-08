@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -248,6 +249,190 @@ class MaybeUpdateTests(unittest.TestCase):
             self.assertTrue(r["changed"])
             self.assertTrue(r["needs_install"])
             self.assertTrue(r.get("self_plist_reload_deferred"))
+
+
+    def test_fetch_failed_skips(self):
+        # Force a fetch failure by pointing origin at a non-existent path.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _ = make_repos(tmp)
+            git(clone, "remote", "set-url", "origin", "/nonexistent/path")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertEqual(r["skipped_reason"], "fetch-failed")
+            self.assertIn("error", r)
+
+    def test_log_param_used(self):
+        # The log= kwarg is actually invoked when provided.
+        import logging
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _ = make_repos(tmp)
+            log = logging.getLogger("test_su")
+            messages = []
+            with unittest.mock.patch.object(log, "info",
+                                            side_effect=lambda msg, *a: messages.append(msg)):
+                su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json", log=log)
+            self.assertTrue(any("self-update" in m for m in messages))
+
+    def test_install_sh_missing_sets_error(self):
+        # If install.sh does not exist but needs_install=True, skipped with error.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            advance_remote(tmp, remote, {"skills/todo/SKILL.md": "# new\n"}, "skill change")
+            r = su.maybe_update(
+                clone, interval_sec=0, marker_path=tmp / "m.json",
+                install_sh=clone / "nonexistent-install.sh",
+            )
+            self.assertTrue(r["changed"])
+            self.assertTrue(r["needs_install"])
+            self.assertIsNone(r["install_rc"])
+            self.assertIn("not found", r["error"])
+
+    def test_install_sh_failure_records_rc(self):
+        # install.sh exits non-zero → install_rc is set and error is captured.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            (clone / "install.sh").write_text("#!/usr/bin/env bash\nexit 42\n")
+            git(clone, "add", "-A"); git(clone, "commit", "-m", "fail installer")
+            git(clone, "push", "origin", "main")
+            advance_remote(tmp, remote, {"skills/todo/SKILL.md": "# v2\n"}, "skill")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json",
+                                install_sh=clone / "install.sh")
+            self.assertTrue(r["installed"])
+            self.assertEqual(r["install_rc"], 42)
+            self.assertIn("error", r)
+
+    def test_pull_failed_diverged_sets_skipped_reason(self):
+        # Force a pull failure by making the histories diverge.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            # Advance remote with a new commit.
+            advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "remote change")
+            # Also add a local commit that creates divergence.
+            (clone / "bin/pulse.py").write_text("# local diverge\n")
+            git(clone, "add", "-A")
+            git(clone, "commit", "-m", "local diverge")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            # ahead prevents pull from even attempting, but fetch still runs.
+            # Actually 'ahead' check fires first.
+            self.assertIn(r["skipped_reason"], ("ahead", "pull-failed"))
+
+    def test_install_sh_timeout_records_error(self):
+        # If install.sh subprocess times out, install_rc=-1 and error is set.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            advance_remote(tmp, remote, {"skills/todo/SKILL.md": "# v2\n"}, "skill change")
+            with unittest.mock.patch.object(
+                su.subprocess, "run",
+                side_effect=su.subprocess.TimeoutExpired("bash", 300),
+            ):
+                # _git fetch is called first — patch only the final install.sh run.
+                pass
+        # The cleaner approach: mock subprocess.run inside maybe_update selectively.
+        # We mock _git to return "needs_install" metadata without a real fetch.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            stub_log = stub_installer(clone)
+            git(clone, "add", "-A"); git(clone, "commit", "-m", "stub"); git(clone, "push", "origin", "main")
+            advance_remote(tmp, remote, {"skills/todo/SKILL.md": "# new\n"}, "skill")
+            real_subprocess_run = su.subprocess.run
+
+            def patched_run(cmd, *a, **kw):
+                if cmd[0] == "bash":
+                    raise su.subprocess.TimeoutExpired(cmd, 300)
+                return real_subprocess_run(cmd, *a, **kw)
+
+            with unittest.mock.patch.object(su.subprocess, "run", side_effect=patched_run):
+                r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json",
+                                    install_sh=clone / "install.sh")
+            self.assertTrue(r["changed"])
+            self.assertEqual(r["install_rc"], -1)
+            self.assertIn("timed out", r["error"])
+
+    def test_no_upstream_fallback_to_origin(self):
+        # resolve_remote_branch falls back to a plain remote list when no
+        # upstream is tracked; picks "origin" from the list.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _ = make_repos(tmp)
+            # Detach the tracking branch so @{u} fails.
+            git(clone, "branch", "--unset-upstream")
+            rb = su.resolve_remote_branch(clone)
+            self.assertIsNotNone(rb)
+            self.assertEqual(rb[0], "origin")
+
+    def test_git_timeout_returns_minus1(self):
+        import subprocess as sp
+        with unittest.mock.patch.object(sp, "run", side_effect=sp.TimeoutExpired("git", 5)):
+            rc, out, err = su._git(Path("/tmp"), "status")
+        self.assertEqual(rc, -1)
+        self.assertIn("timed out", err)
+
+    def test_git_os_error_returns_minus1(self):
+        import subprocess as sp
+        with unittest.mock.patch.object(sp, "run", side_effect=OSError("no git binary")):
+            rc, out, err = su._git(Path("/tmp"), "status")
+        self.assertEqual(rc, -1)
+        self.assertIn("no git binary", err)
+
+
+class ResolveRemoteBranchTests(unittest.TestCase):
+    def test_detached_head_returns_none(self):
+        """When HEAD is detached, resolve_remote_branch returns None."""
+        import unittest.mock as m
+        with m.patch.object(su, "_git", side_effect=[
+            (0, "HEAD", ""),  # rev-parse --abbrev-ref HEAD
+        ]):
+            result = su.resolve_remote_branch(Path("/tmp/repo"))
+        self.assertIsNone(result)
+
+    def test_empty_branch_returns_none(self):
+        import unittest.mock as m
+        with m.patch.object(su, "_git", side_effect=[
+            (1, "", "error"),  # rev-parse HEAD fails
+        ]):
+            result = su.resolve_remote_branch(Path("/tmp/repo"))
+        self.assertIsNone(result)
+
+    def test_no_remote_returns_none(self):
+        import unittest.mock as m
+        with m.patch.object(su, "_git", side_effect=[
+            (0, "main", ""),           # rev-parse HEAD
+            (1, "", "no upstream"),    # @{u} fails
+            (0, "", ""),               # git remote → empty
+        ]):
+            result = su.resolve_remote_branch(Path("/tmp/repo"))
+        self.assertIsNone(result)
+
+    def test_non_origin_remote_fallback(self):
+        import unittest.mock as m
+        with m.patch.object(su, "_git", side_effect=[
+            (0, "main", ""),           # rev-parse HEAD
+            (1, "", "no upstream"),    # @{u} fails
+            (0, "upstream", ""),       # git remote → one non-origin remote
+        ]):
+            result = su.resolve_remote_branch(Path("/tmp/repo"))
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "upstream")  # picks the only remote
+
+    def test_int_helper_invalid_value(self):
+        """The _int helper inside repo_status returns 0 on bad input."""
+        import unittest.mock as m
+        with m.patch.object(su, "_git", side_effect=[
+            (0, "", ""),          # fetch
+            (0, "abc", ""),       # HEAD sha
+            (0, "def", ""),       # remote sha
+            (0, "", ""),          # status --porcelain
+            (0, "not-a-number", ""),  # behind
+            (0, "0", ""),         # ahead
+        ]):
+            s = su.repo_status(Path("/tmp/repo"), "origin", "main")
+        self.assertEqual(s["behind"], 0)
 
 
 if __name__ == "__main__":

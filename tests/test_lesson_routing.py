@@ -94,7 +94,7 @@ def _write_args(target, trigger, rule, scope=None, slug=None, added=None):
 # ─── Part 1: project targets write to their rules file ───────────────────────
 
 def test_ffp_target_writes_to_ffp_rules(tmp_targets, monkeypatch):
-    monkeypatch.setattr(cur, "_commit_lesson_to_repo", lambda *a, **k: None)
+    monkeypatch.setattr(cur, "_stage_lesson_in_repo", lambda *a, **k: None)
     rc = cur.cmd_write(_write_args(
         "ffp", "About to run E2E in a spawned workspace",
         "Pin --project=chromium-headless.", scope="e2e", slug="ffp-e2e-pin"))
@@ -116,7 +116,7 @@ def test_ffp_target_writes_to_ffp_rules(tmp_targets, monkeypatch):
 
 
 def test_archffp_target_writes_to_archffp_rules(tmp_targets, monkeypatch):
-    monkeypatch.setattr(cur, "_commit_lesson_to_repo", lambda *a, **k: None)
+    monkeypatch.setattr(cur, "_stage_lesson_in_repo", lambda *a, **k: None)
     rc = cur.cmd_write(_write_args(
         "archffp", "About to run archffp cleanup teardown",
         "Reconcile the header port against the real listening PID.",
@@ -132,7 +132,7 @@ def test_archffp_target_writes_to_archffp_rules(tmp_targets, monkeypatch):
 
 def test_added_date_is_preserved_on_migration(tmp_targets, monkeypatch):
     """A migrated lesson keeps its original date via --added."""
-    monkeypatch.setattr(cur, "_commit_lesson_to_repo", lambda *a, **k: None)
+    monkeypatch.setattr(cur, "_stage_lesson_in_repo", lambda *a, **k: None)
     rc = cur.cmd_write(_write_args(
         "ffp", "trigger", "rule", scope="ffp", slug="dated", added="2026-05-22"))
     assert rc == 0
@@ -143,7 +143,7 @@ def test_added_date_is_preserved_on_migration(tmp_targets, monkeypatch):
 def test_scope_with_digit_parses(tmp_targets, monkeypatch):
     """Scopes like `e2e` (a digit in the middle) must round-trip — the header
     regex was widened from [a-z]+ to [a-z0-9]+ to allow them."""
-    monkeypatch.setattr(cur, "_commit_lesson_to_repo", lambda *a, **k: None)
+    monkeypatch.setattr(cur, "_stage_lesson_in_repo", lambda *a, **k: None)
     cur.cmd_write(_write_args("ffp", "t", "r", scope="e2e", slug="digit-scope"))
     lessons = list(cur.iter_lessons(tmp_targets["ffp"]["path"].read_text()))
     assert lessons[0]["scope"] == "e2e"
@@ -154,7 +154,7 @@ def test_scope_with_digit_parses(tmp_targets, monkeypatch):
 def test_wrong_target_audit(tmp_targets, monkeypatch):
     """A project-scoped lesson (scope=ffp) sitting in CLAUDE.md is detected as
     misrouted and pointed at the ffp store."""
-    monkeypatch.setattr(cur, "_commit_lesson_to_repo", lambda *a, **k: None)
+    monkeypatch.setattr(cur, "_stage_lesson_in_repo", lambda *a, **k: None)
     # Allow the ffp scope into the claude store only for this fixture, to model
     # the legacy state where ffp lessons lived in CLAUDE.md.
     tmp_targets["claude"]["scopes"].add("ffp")
@@ -172,7 +172,7 @@ def test_wrong_target_audit(tmp_targets, monkeypatch):
 
 def test_audit_clean_when_project_lessons_in_project_store(tmp_targets, monkeypatch):
     """A correctly-routed project lesson is NOT flagged."""
-    monkeypatch.setattr(cur, "_commit_lesson_to_repo", lambda *a, **k: None)
+    monkeypatch.setattr(cur, "_stage_lesson_in_repo", lambda *a, **k: None)
     cur.cmd_write(_write_args("ffp", "t", "r", scope="ffp", slug="ok"))
     # And a genuinely personal lesson in claude is fine too.
     cur.cmd_write(_write_args("claude", "t2", "r2", scope="global", slug="personal"))
@@ -182,7 +182,12 @@ def test_audit_clean_when_project_lessons_in_project_store(tmp_targets, monkeypa
 # ─── Part 1: auto-commit to the project repo ─────────────────────────────────
 
 def test_commit_to_repo(tmp_targets, monkeypatch):
-    """Writing to a project target invokes git to commit ONLY the rules file."""
+    """Writing to a project target stages ONLY the rules file (git add, no commit).
+
+    Project repos like firefly-platform require admin merge / branch protection;
+    an auto-commit would bypass that. The lesson travels with the code when the
+    developer's next PR includes the staged rules file change.
+    """
     calls = []
 
     class _CP:
@@ -200,17 +205,13 @@ def test_commit_to_repo(tmp_targets, monkeypatch):
         "ffp", "trigger here", "rule here", scope="ffp", slug="committed"))
     assert rc == 0
 
-    # Exactly one add and one commit, in order.
-    assert len(calls) == 2
-    add, commit = calls
+    # Exactly one git add (staging only — no commit in this loop).
+    assert len(calls) == 1
+    add = calls[0]
     assert add[:4] == ["git", "-C", str(tmp_targets["ffp"]["repo"]), "add"]
-    assert commit[:4] == ["git", "-C", str(tmp_targets["ffp"]["repo"]), "commit"]
-    assert "-m" in commit and "lesson: committed" in commit
-    assert "--no-verify" in commit
-    # The committed pathspec is ONLY the rules file (relative), never `.` or -A.
+    # The staged pathspec is ONLY the rules file (relative), never `.` or -A.
     rel = ".claude/rules/ffp-lessons.md"
     assert rel in add
-    assert rel in commit
     assert "." not in add and "-A" not in add
 
 

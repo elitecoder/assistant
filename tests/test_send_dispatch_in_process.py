@@ -228,87 +228,101 @@ class CmuxWsNumbererTests(unittest.TestCase):
                          "My Workspace [7]")
 
     def test_desired_title_handles_trailing_whitespace(self):
-        self.assertEqual(self.mod.desired_title("  Title  ", 1), "  Title [1]")
+        # Trailing whitespace is stripped before the suffix is appended.
+        self.assertEqual(self.mod.desired_title("  Title  ", 1), "Title [1]")
 
     def test_list_workspaces_parses_output(self):
-        out = (
-            "* workspace:5  ABCDEF12-3456-7890-ABCD-EF1234567890  My Title\n"
-            "  workspace:6  FEDCBA98-7654-3210-FEDC-BA9876543210  Second Title  [selected]\n"
-        )
+        # list_workspaces uses `cmux workspace list --json` → JSON payload.
+        import json as _json
+        data = {"workspaces": [
+            {"ref": "workspace:5", "title": "My Title"},
+            {"ref": "workspace:6", "title": "Second Title"},
+        ]}
         with mock.patch.object(self.mod.subprocess, "run",
-                               return_value=mock.Mock(returncode=0, stdout=out)):
+                               return_value=mock.Mock(returncode=0,
+                                                      stdout=_json.dumps(data))):
             rows = self.mod.list_workspaces()
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["ref"], 5)
-        self.assertEqual(rows[0]["uuid"], "ABCDEF12-3456-7890-ABCD-EF1234567890")
         self.assertEqual(rows[0]["title"], "My Title")
-        self.assertEqual(rows[1]["title"], "Second Title")  # [selected] stripped
+        self.assertEqual(rows[1]["title"], "Second Title")
 
     def test_list_workspaces_skips_non_matching_lines(self):
-        out = (
-            "header\n"
-            "* not-a-workspace-line\n"
-            "  workspace:1  ABCDEF12-3456-7890-ABCD-EF1234567890  Title\n"
-        )
+        # Entries whose "ref" field does not match "workspace:N" are skipped.
+        import json as _json
+        data = {"workspaces": [
+            {"ref": "not-a-workspace", "title": "Bad"},
+            {"ref": "workspace:1", "title": "Title"},
+        ]}
         with mock.patch.object(self.mod.subprocess, "run",
-                               return_value=mock.Mock(returncode=0, stdout=out)):
+                               return_value=mock.Mock(returncode=0,
+                                                      stdout=_json.dumps(data))):
             rows = self.mod.list_workspaces()
-        # Only the third line parses (one workspace).
+        # Only the entry with a valid workspace ref is returned.
         self.assertEqual(len(rows), 1)
 
     def test_ensure_numbered_no_op_when_already_numbered(self):
+        # reconcile() skips a workspace that already has the correct [N] suffix.
         with mock.patch.object(self.mod, "list_workspaces", return_value=[
-            {"ref": 7, "uuid": "U-7", "title": "Title [7]"}
+            {"ref": 7, "title": "Title [7]"},
         ]):
             with mock.patch.object(self.mod.subprocess, "run") as run_mock:
-                self.mod.ensure_numbered("U-7")
+                self.mod.reconcile()
         run_mock.assert_not_called()
 
     def test_ensure_numbered_renames_when_mismatched(self):
+        # reconcile() renames a workspace that lacks or has a wrong suffix.
         with mock.patch.object(self.mod, "list_workspaces", return_value=[
-            {"ref": 7, "uuid": "U-7", "title": "Title"}
+            {"ref": 7, "title": "Title"},
         ]):
             calls = []
             def fake_run(cmd, **k):
                 calls.append(cmd)
                 return mock.Mock(returncode=0, stdout="", stderr="")
             with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
-                self.mod.ensure_numbered("U-7")
-        # Look for the rename call.
-        rename_call = next((c for c in calls if "rename-workspace" in c), None)
+                self.mod.reconcile()
+        # Look for the rename call: ["cmux", "workspace", "rename", ref, "--title", title]
+        rename_call = next(
+            (c for c in calls if len(c) >= 3 and c[1] == "workspace" and c[2] == "rename"),
+            None,
+        )
         self.assertIsNotNone(rename_call)
         # Last positional should be "Title [7]"
         self.assertEqual(rename_call[-1], "Title [7]")
 
     def test_ensure_numbered_logs_rename_failure(self):
+        # reconcile() does not raise when the rename command fails.
         with mock.patch.object(self.mod, "list_workspaces", return_value=[
-            {"ref": 7, "uuid": "U-7", "title": "Title"}
+            {"ref": 7, "title": "Title"},
         ]):
             with mock.patch.object(self.mod.subprocess, "run",
                                    return_value=mock.Mock(returncode=1, stdout="",
                                                           stderr="rename failed")):
                 # Should not raise.
-                self.mod.ensure_numbered("U-7")
+                self.mod.reconcile()
 
     def test_ensure_numbered_warns_when_uuid_missing(self):
+        # reconcile() with an empty list is a no-op (nothing to rename).
         with mock.patch.object(self.mod, "list_workspaces", return_value=[]):
-            self.mod.ensure_numbered("U-not-found")  # silent warning, no crash
+            self.mod.reconcile()  # no crash
 
     def test_backfill_renames_each_unnumbered(self):
+        # reconcile() renames all workspaces that lack the correct suffix.
         ws_list = [
-            {"ref": 7, "uuid": "U-7", "title": "Already [7]"},  # skip
-            {"ref": 8, "uuid": "U-8", "title": "Plain"},  # rename
-            {"ref": 9, "uuid": "U-9", "title": "Wrong [99]"},  # rename
+            {"ref": 7, "title": "Already [7]"},   # skip
+            {"ref": 8, "title": "Plain"},          # rename
+            {"ref": 9, "title": "Wrong [99]"},     # rename
         ]
         with mock.patch.object(self.mod, "list_workspaces", return_value=ws_list):
             calls = []
             def fake_run(cmd, **k):
                 calls.append(cmd)
-                return mock.Mock(returncode=0, stdout="")
+                return mock.Mock(returncode=0, stdout="", stderr="")
             with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
-                self.mod.backfill()
-        # Expect 2 rename calls (U-8 and U-9).
-        renames = [c for c in calls if "rename-workspace" in c]
+                self.mod.reconcile()
+        # Expect 2 rename calls (for refs 8 and 9).
+        # Command shape: ["cmux", "workspace", "rename", ref, "--title", title]
+        renames = [c for c in calls if len(c) >= 3 and c[1] == "workspace" and c[2] == "rename"]
         self.assertEqual(len(renames), 2)
 
 

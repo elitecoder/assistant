@@ -76,6 +76,13 @@ class StateWriteTests(unittest.TestCase):
         # Record kept since epoch is None → "no filter" branch.
         self.assertEqual(len(out), 1)
 
+    def test_read_jsonl_tail_os_error_on_open_returns_empty(self):
+        path = Path(self._tmp / "log.jsonl")
+        path.write_text("")
+        with mock.patch("builtins.open", side_effect=OSError("permission denied")):
+            out = self.mod.read_jsonl_tail(str(path), 0)
+        self.assertEqual(out, [])
+
     def test_load_observer_summaries_parses_files(self):
         d = Path(self.mod.SUMMARIES_DIR)
         d.mkdir(parents=True, exist_ok=True)
@@ -185,6 +192,31 @@ class StateWriteTests(unittest.TestCase):
     def test_cleanup_old_traces_handles_missing_dir(self):
         self.mod.TRACE_DIR = "/no/such/dir"
         self.mod.cleanup_old_traces()  # no-op, no crash
+
+    def test_write_trace_action_with_payload_and_verification_note(self):
+        # Ensures "payload:" and "note:" lines render in the trace.
+        state = {
+            "_meta": {"pulse_idx": 8, "generated_at": "2026-05-28T12:00:00Z"},
+            "actions_taken": [
+                {"key": "k", "kind": "send", "outcome": "verified",
+                 "evidence": "delta=1",
+                 "payload": {"msg": "cleanup"},
+                 "verification_note": "confirmed via transcript",
+                 "target": {"ws": "workspace:1"}},
+            ],
+        }
+        Path(self.mod.SENDS_LOG).write_text("")
+        Path(self.mod.LEDGER_PATH).write_text(json.dumps({
+            "epoch": int(time.time()), "pulse_idx": 8, "key": "k",
+            "kind": "send", "outcome": "verified",
+            "evidence": "delta=1", "ws_ref": "workspace:1",
+        }) + "\n")
+        self.mod.write_trace(state, pulse_started_epoch=int(time.time()) - 10)
+        traces = list(Path(self.mod.TRACE_DIR).glob("pulse-*.md"))
+        body = traces[0].read_text()
+        self.assertIn("payload:", body)
+        self.assertIn("note:", body)
+        self.assertIn("evidence:", body)
 
     def test_main_writes_state_and_trace(self):
         payload = {"_meta": {"pulse_idx": 3, "generated_at": "2026-05-28T12:00:00Z"}}
@@ -524,7 +556,8 @@ class AssistantCuratorTests(unittest.TestCase):
             "--slug", "test-rule",
         ])
         self.assertEqual(rc, 0, err)
-        text = self.mod.CLAUDE_MD.read_text()
+        claude_md = self.mod.TARGETS["claude"]["path"]
+        text = claude_md.read_text()
         self.assertIn("test-rule", text)
         self.assertIn("Do Y", text)
 
@@ -536,7 +569,7 @@ class AssistantCuratorTests(unittest.TestCase):
             "--scope", "made-up-scope",
         ])
         self.assertEqual(rc, 2)
-        self.assertIn("not in", err)
+        self.assertIn("made-up-scope", err)
 
     def test_write_rejects_blank_trigger(self):
         rc, _, err = self._capture_main([
@@ -568,12 +601,112 @@ class AssistantCuratorTests(unittest.TestCase):
         ])
         rc, out, _ = self._capture_main(["rm", "to-remove"])
         self.assertEqual(rc, 0)
-        text = self.mod.CLAUDE_MD.read_text()
+        claude_md = self.mod.TARGETS["claude"]["path"]
+        text = claude_md.read_text()
         self.assertNotIn("to-remove", text)
 
     def test_rm_unknown_slug(self):
         rc, out, err = self._capture_main(["rm", "no-such-slug"])
         self.assertNotEqual(rc, 0)
+
+    def test_write_rejects_bad_added_date(self):
+        rc, _, err = self._capture_main([
+            "write", "--trigger", "x", "--rule", "y",
+            "--added", "not-a-date",
+        ])
+        self.assertEqual(rc, 2)
+        self.assertIn("YYYY-MM-DD", err)
+
+    def test_write_rejects_duplicate_slug(self):
+        self._capture_main(["write", "--trigger", "T", "--rule", "R", "--slug", "dup"])
+        rc, _, err = self._capture_main(["write", "--trigger", "T2", "--rule", "R2",
+                                         "--slug", "dup"])
+        self.assertEqual(rc, 2)
+        self.assertIn("already exists", err)
+
+    def test_audit_cmd_no_misrouted(self):
+        # cmd_audit when nothing is misrouted prints the clean message.
+        rc, out, _ = self._capture_main(["audit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("no misrouted", out)
+
+    def test_audit_cmd_reports_misrouted(self):
+        # Write a lesson with a project scope into the claude store, then audit.
+        # We need to temporarily allow the scope first so cmd_write accepts it.
+        self.mod.TARGETS["claude"]["scopes"].add("ffp")
+        self._capture_main(["write", "--trigger", "T", "--rule", "R",
+                             "--scope", "ffp", "--slug", "misrouted-ffp"])
+        self.mod.TARGETS["claude"]["scopes"].discard("ffp")
+        rc, out, _ = self._capture_main(["audit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("misrouted-ffp", out)
+
+    def test_list_scope_filter(self):
+        self._capture_main(["write", "--trigger", "T1", "--rule", "R1",
+                             "--scope", "global", "--slug", "g-one"])
+        self._capture_main(["write", "--trigger", "T2", "--rule", "R2",
+                             "--scope", "security", "--slug", "s-one"])
+        rc, out, _ = self._capture_main(["list", "--scope", "security"])
+        self.assertEqual(rc, 0)
+        self.assertIn("s-one", out)
+        self.assertNotIn("g-one", out)
+
+    def test_list_target_filter(self):
+        self._capture_main(["write", "--trigger", "T", "--rule", "R",
+                             "--scope", "global", "--slug", "single"])
+        rc, out, _ = self._capture_main(["list", "--target", "claude"])
+        self.assertEqual(rc, 0)
+        self.assertIn("single", out)
+
+    def test_stage_lesson_git_add_failure(self):
+        # _stage_lesson_in_repo logs and does not raise when git add fails.
+        import subprocess as sp
+        class _CP:
+            returncode = 1
+            stderr = "not a git repo"
+        with mock.patch.object(self.mod.subprocess, "run", return_value=_CP()):
+            # Should not raise.
+            self.mod._stage_lesson_in_repo(
+                self._tmp / "nonexistent-repo",
+                self._tmp / "nonexistent-repo" / ".claude/rules/x.md",
+                "test-slug",
+            )
+
+    def test_stage_lesson_os_error(self):
+        # _stage_lesson_in_repo handles OSError from subprocess.run gracefully.
+        with mock.patch.object(self.mod.subprocess, "run", side_effect=OSError("no git")):
+            self.mod._stage_lesson_in_repo(
+                self._tmp / "repo",
+                self._tmp / "repo" / ".claude/rules/x.md",
+                "slug",
+            )
+
+    def test_iter_lessons_malformed_block_no_newline(self):
+        # A block where the header comment lacks the closing -->\n is skipped.
+        text = (
+            "## Lessons\n\n"
+            "<!-- lesson: bad, scope: global, added: 2026-01-01 -->**Trigger**\n\nRule\n\n"
+        )
+        lessons = list(self.mod.iter_lessons(text))
+        # Malformed block (no newline after -->) has no `-->\n` to split on;
+        # iter_lessons yields nothing for it.
+        self.assertEqual(len(lessons), 0)
+
+    def test_iter_lessons_non_bold_start(self):
+        # A block whose content after --> doesn't start with ** is skipped.
+        text = (
+            "## Lessons\n\n"
+            "<!-- lesson: s1, scope: global, added: 2026-01-01 -->\n"
+            "Not bold content\n\n"
+        )
+        lessons = list(self.mod.iter_lessons(text))
+        self.assertEqual(len(lessons), 0)
+
+    def test_ensure_section_already_exists(self):
+        # ensure_section is a no-op when the section heading is already present.
+        text = "## Lessons\n\nsome content\n"
+        result = self.mod.ensure_section(text, None, None)
+        self.assertEqual(result, text)
 
 
 if __name__ == "__main__":

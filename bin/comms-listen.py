@@ -390,7 +390,7 @@ INBOX_GLOB = "cmux-*.json"
 INBOX_POLL_FALLBACK_SEC = float(os.environ.get("COMMS_INBOX_POLL_SEC", "2"))
 
 
-def _drain_inbox_once(env: dict, transport: str) -> int:
+def _drain_inbox_once(env: dict, transport: str = "telegram") -> int:
     """Read every cmux-*.json in the inbox, ping the phone, delete it. Returns
     the number of items processed. A malformed file is logged and removed so it
     never wedges the loop. Atomic-write on the producer side (tmp+rename) means
