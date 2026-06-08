@@ -8,6 +8,14 @@
 
 ---
 
+## Install
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
+```
+
+Prerequisites: `git`, `python3`, and the [`claude` CLI](https://claude.ai/code). The script clones the repo to `~/dev/assistant`, wires up symlinks and LaunchAgent plists, and walks you through Telegram or Discord setup. One manual step at the end: `launchctl load` the two plists.
+
 ## What it is
 
 Spin up a dozen Claude Code agents in parallel and walk away. Assistant watches them while you're gone — merging PRs, cleaning up finished work, nudging stalled agents — and texts you the moment something needs your attention. When you reply from your phone, a warm Claude session answers in seconds with a full picture of what's going on.
@@ -24,34 +32,6 @@ The longer you use it, the smarter it gets. It reads your own session history to
 - `bin/assistant-curator.py` — lesson/rule management across all five stores
 - `bin/tool-dispatch.py` — named tool dispatcher (`bin/tools-manifest.json`)
 - `install.sh --apply` — wires everything up; symlinks skills; writes plists (never loads them)
-
-## Setup (new machine)
-
-```bash
-# 1. Clone and wire symlinks/plists
-git clone git@github-personal:elitecoder/assistant.git ~/dev/assistant
-cd ~/dev/assistant && ./install.sh --apply
-
-# 2. Configure your messaging transport (Telegram or Discord)
-bin/assistant-comms-setup.sh
-```
-
-The setup script walks you through choosing **Telegram** or **Discord** and captures the
-credentials it needs. Each machine should use a **separate channel** so you can tell
-which machine a message is coming from.
-
-**Telegram:** create a bot via @BotFather, paste the token, then send your bot `/start`
-— the script auto-captures your `chat_id`.
-
-**Discord:** create a bot at discord.com/developers, enable the Message Content intent,
-invite it to your server, then paste the bot token and the DM/channel ID (right-click
-→ Copy Channel ID with Developer Mode on).
-
-```bash
-# 3. Test the daemon in foreground, then load it
-python3 bin/comms-listen.py          # Ctrl-C to stop
-launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
-```
 
 ## Architecture decisions (the why, not the what)
 
