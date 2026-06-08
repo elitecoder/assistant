@@ -47,6 +47,7 @@ def _real_post(token: str, channel_id: int, payload: dict) -> dict:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bot {token}",
+            "User-Agent": "DiscordBot (https://github.com/assistant, 1.0)",
         })
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

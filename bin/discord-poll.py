@@ -85,7 +85,8 @@ def _real_get_messages(token: str, channel_id: int, after: int,
     url = f"{API_BASE}/channels/{channel_id}/messages?{qs}"
     req = urllib.request.Request(
         url,
-        headers={"Authorization": f"Bot {token}"},
+        headers={"Authorization": f"Bot {token}",
+                  "User-Agent": "DiscordBot (https://github.com/assistant, 1.0)"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
