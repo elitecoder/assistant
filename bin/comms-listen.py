@@ -181,8 +181,19 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict,
     # knows an image was sent even when there is no caption, rather than seeing
     # what looks like an empty turn.
     body = f"[Photo attached] {text}" if rec.get("has_photo") else text
+    send_cli = str(_send_cli(transport))
+    channel_flag = ""
+    if transport == "discord":
+        try:
+            raw = json.loads(paths.config.read_text())
+            cid = raw.get("discord", {}).get("channel_id")
+            if cid:
+                channel_flag = f" --channel {cid}"
+        except Exception:  # noqa: BLE001
+            pass
     feed_text = (
-        f"[{transport} chat_id={chat_id} msg_id={msg_id} reply_to={reply_to}] {body}"
+        f"[{transport} chat_id={chat_id} msg_id={msg_id} reply_to={reply_to}"
+        f" send_cli={send_cli}{channel_flag}] {body}"
     )
     t0 = time.time()
     comms_session.feed(paths, sess["surface_ref"], feed_text)

@@ -35,10 +35,11 @@ Each turn, the daemon gives you a message with its `chat_id`, `msg_id`, and (if 
 
 3. **Send the reply and record it.** Both, always — a reply you don't record is lost to your future self after a `/clear`:
    ```
-   bin/tg-send.py --text "<reply>" --chat <chat_id> --kind reply --reply-to <msg_id>
+   <send_cli> --text "<reply>" --chat <chat_id> --kind reply --reply-to <msg_id>
    # note the message_id it prints, then:
    bin/conversation.py append --chat <chat_id> --direction out --text "<reply>" --kind reply --reply-to <msg_id> --msg-id <printed message_id>
    ```
+   The message header tells you which `send_cli` to use (e.g. `bin/tg-send.py` for Telegram, `bin/discord-send.py --channel <id>` for Discord). Use exactly what the header says — never hardcode `tg-send.py`.
    (The daemon already recorded the inbound turn before handing it to you — you only record your outbound reply.)
 
 ## Tools
