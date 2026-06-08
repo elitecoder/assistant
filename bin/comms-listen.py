@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import select
 import signal
 import subprocess
@@ -231,27 +232,23 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict,
     return sess
 
 
-def inbound_loop(stop: threading.Event, env: dict) -> None:
+def _poll_thread(stop: threading.Event, env: dict, msg_queue: queue.Queue) -> None:
+    """Continuously poll for inbound messages and enqueue them.
+
+    Runs independently of the consumer so messages are never dropped while a
+    warm-session reply is in flight (the previous serial design missed messages
+    that arrived during the up-to-120s REPLY_WAIT_SEC window)."""
     paths = comms_lib.Paths.from_env()
     transport = _transport(paths)
-    log(f"inbound loop started (transport={transport}, warm session)")
-    sess = ensure_warm_session(paths)
-    # Startup sweep: close any warm workspaces that aren't the one we just
-    # ensured. Covers the case where a prior daemon died leaving live orphans
-    # (the singleton lock stops two daemons, but not stale workspaces).
-    if sess:
-        comms_session.reconcile_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
+    poll_cli = _poll_cli(transport)
     while not stop.is_set():
-        poll_cli = _poll_cli(transport)
         if transport == "discord":
-            # Discord REST poll: call once, sleep between iterations.
             rc, out, err = cli([str(poll_cli)], timeout=35, env=env)
             poll_wait = DISCORD_POLL_INTERVAL_SEC
         else:
-            # Telegram long-poll: Telegram holds the connection for up to LONGPOLL_TIMEOUT.
             rc, out, err = cli([str(poll_cli), "--timeout", str(LONGPOLL_TIMEOUT)],
                                timeout=LONGPOLL_TIMEOUT + 15, env=env)
-            poll_wait = 0  # Telegram returns immediately when there are messages
+            poll_wait = 0
         if rc != 0:
             log(f"{poll_cli.name} rc={rc} err={err.strip()[:200]}")
             stop.wait(5)
@@ -264,17 +261,39 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
                 stop.wait(poll_wait)
             continue
         for rec in msgs:
-            if stop.is_set():
-                break
-            log(f"inbound chat={rec.get('channel_id') or rec.get('chat_id')} "
-                f"msg={rec.get('msg_id')} text={rec.get('text','')[:80]!r}")
-            sess = ensure_warm_session(paths)
-            if not sess:
-                log("no warm session available — cannot reply this message")
-                continue
-            sess = reply_to_message(paths, sess, rec, transport=transport)
+            msg_queue.put(rec)
         if poll_wait and not stop.is_set():
             stop.wait(poll_wait)
+
+
+def inbound_loop(stop: threading.Event, env: dict) -> None:
+    paths = comms_lib.Paths.from_env()
+    transport = _transport(paths)
+    log(f"inbound loop started (transport={transport}, warm session)")
+    sess = ensure_warm_session(paths)
+    # Startup sweep: close any warm workspaces that aren't the one we just
+    # ensured. Covers the case where a prior daemon died leaving live orphans
+    # (the singleton lock stops two daemons, but not stale workspaces).
+    if sess:
+        comms_session.reconcile_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
+
+    msg_queue: queue.Queue = queue.Queue()
+    poller = threading.Thread(target=_poll_thread, args=(stop, env, msg_queue),
+                              name="inbound-poller", daemon=True)
+    poller.start()
+
+    while not stop.is_set():
+        try:
+            rec = msg_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+        log(f"inbound chat={rec.get('channel_id') or rec.get('chat_id')} "
+            f"msg={rec.get('msg_id')} text={rec.get('text','')[:80]!r}")
+        sess = ensure_warm_session(paths)
+        if not sess:
+            log("no warm session available — cannot reply this message")
+            continue
+        sess = reply_to_message(paths, sess, rec, transport=transport)
 
 
 # --------------------------------------------------------------------------- outbound pings
