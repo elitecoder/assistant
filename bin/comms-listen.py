@@ -266,16 +266,36 @@ def _poll_thread(stop: threading.Event, env: dict, msg_queue: queue.Queue) -> No
             stop.wait(poll_wait)
 
 
+def _channel_worker(channel_id: str, ch_queue: queue.Queue, stop: threading.Event,
+                    env: dict, transport: str) -> None:
+    """Per-channel worker: serializes replies for one channel while other channels
+    run concurrently — same pattern as OpenClaw's KeyedAsyncQueue."""
+    paths = comms_lib.Paths.from_env()
+    sess = ensure_warm_session(paths)
+    while not stop.is_set():
+        try:
+            rec = ch_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+        log(f"inbound chat={channel_id} msg={rec.get('msg_id')} "
+            f"text={rec.get('text','')[:80]!r}")
+        sess = ensure_warm_session(paths)
+        if not sess:
+            log(f"no warm session — skipping msg={rec.get('msg_id')}")
+            continue
+        sess = reply_to_message(paths, sess, rec, transport=transport)
+
+
 def inbound_loop(stop: threading.Event, env: dict) -> None:
     paths = comms_lib.Paths.from_env()
     transport = _transport(paths)
-    log(f"inbound loop started (transport={transport}, warm session)")
+    log(f"inbound loop started (transport={transport}, keyed-per-channel)")
     sess = ensure_warm_session(paths)
-    # Startup sweep: close any warm workspaces that aren't the one we just
-    # ensured. Covers the case where a prior daemon died leaving live orphans
-    # (the singleton lock stops two daemons, but not stale workspaces).
     if sess:
         comms_session.reconcile_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
+
+    # channel_id → (Queue, Thread) — created on first message for that channel.
+    channel_workers: dict[str, tuple[queue.Queue, threading.Thread]] = {}
 
     msg_queue: queue.Queue = queue.Queue()
     poller = threading.Thread(target=_poll_thread, args=(stop, env, msg_queue),
@@ -287,13 +307,18 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
             rec = msg_queue.get(timeout=1)
         except queue.Empty:
             continue
-        log(f"inbound chat={rec.get('channel_id') or rec.get('chat_id')} "
-            f"msg={rec.get('msg_id')} text={rec.get('text','')[:80]!r}")
-        sess = ensure_warm_session(paths)
-        if not sess:
-            log("no warm session available — cannot reply this message")
-            continue
-        sess = reply_to_message(paths, sess, rec, transport=transport)
+        channel_id = str(rec.get("channel_id") or rec.get("chat_id") or "default")
+        if channel_id not in channel_workers:
+            ch_q: queue.Queue = queue.Queue()
+            t = threading.Thread(
+                target=_channel_worker,
+                args=(channel_id, ch_q, stop, env, transport),
+                name=f"inbound-{channel_id}",
+                daemon=True,
+            )
+            t.start()
+            channel_workers[channel_id] = (ch_q, t)
+        channel_workers[channel_id][0].put(rec)
 
 
 # --------------------------------------------------------------------------- outbound pings
