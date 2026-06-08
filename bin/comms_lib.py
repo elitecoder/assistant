@@ -85,8 +85,11 @@ class Config:
             raise SystemExit(f"missing config at {path}; run assistant-comms-setup.sh first")
         raw = json.loads(path.read_text())
         tg = raw.get("telegram", {})
+        # When transport="discord" the telegram key may be absent; use empty
+        # sentinel values so callers that only need stale_heartbeat_sec still work.
+        bot_token = tg.get("bot_token", "")
         return cls(
-            bot_token=tg["bot_token"],
+            bot_token=bot_token,
             chat_ids={int(x) for x in tg.get("chat_ids", [])},
             stale_heartbeat_sec=int(raw.get("stale_heartbeat_sec", 1200)),
             mute_until_epoch=int(raw.get("mute_until_epoch", 0)),
