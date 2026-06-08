@@ -2,13 +2,13 @@
 # assistant-comms-setup.sh — first-run bootstrap for assistant-comms.
 #
 # 1. Create the uv-managed venv at ~/.assistant/comms-venv/.
-# 2. Install python-telegram-bot.
-# 3. Prompt for the bot token (BotFather), capture chat_id by waiting for /start.
+# 2. Install python-telegram-bot (Telegram path only).
+# 3. Prompt for transport choice (Telegram or Discord), collect credentials.
 # 4. Write ~/.assistant/comms/config.json (chmod 600).
 #
 # Idempotent. Safe to re-run.
 #
-# Does NOT load the LaunchAgent — Mukul does that himself:
+# Does NOT load the LaunchAgent — you do that yourself:
 #   launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
 
 set -euo pipefail
@@ -18,10 +18,11 @@ VENV_DIR="${HOME_DIR}/.assistant/comms-venv"
 CONFIG_DIR="${HOME_DIR}/.assistant/comms"
 CONFIG_PATH="${CONFIG_DIR}/config.json"
 LOG_DIR="${HOME_DIR}/.architect/orchestrator-logs"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 mkdir -p "${CONFIG_DIR}" "${LOG_DIR}"
 
-# --- venv ---------------------------------------------------------------------
+# --- venv (always created; Telegram path needs python-telegram-bot) -----------
 if [ ! -x "${VENV_DIR}/bin/python" ]; then
     echo "[1/4] creating venv at ${VENV_DIR}"
     if command -v uv >/dev/null 2>&1; then
@@ -33,48 +34,79 @@ else
     echo "[1/4] venv already exists at ${VENV_DIR}"
 fi
 
-# --- python-telegram-bot ------------------------------------------------------
-echo "[2/4] installing python-telegram-bot into venv"
-if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "${VENV_DIR}/bin/python" 'python-telegram-bot>=21,<22'
-else
-    "${VENV_DIR}/bin/pip" install --upgrade pip
-    "${VENV_DIR}/bin/pip" install 'python-telegram-bot>=21,<22'
-fi
-
-# --- bot token ----------------------------------------------------------------
-existing_token=""
-existing_chats=""
+# --- transport choice ---------------------------------------------------------
+existing_transport=""
 if [ -f "${CONFIG_PATH}" ]; then
-    existing_token=$("${VENV_DIR}/bin/python" -c "import json,sys; print(json.load(open('${CONFIG_PATH}')).get('telegram',{}).get('bot_token',''))" 2>/dev/null || echo "")
-    existing_chats=$("${VENV_DIR}/bin/python" -c "import json,sys; print(','.join(str(x) for x in json.load(open('${CONFIG_PATH}')).get('telegram',{}).get('chat_ids',[])))" 2>/dev/null || echo "")
+    existing_transport=$("${VENV_DIR}/bin/python" -c \
+        "import json,sys; print(json.load(open('${CONFIG_PATH}')).get('transport',''))" \
+        2>/dev/null || echo "")
 fi
 
 echo
-echo "[3/4] Telegram bot token"
-echo "  Open @BotFather on Telegram, run /newbot, follow prompts."
-echo "  BotFather will give you a token like  1234567:AAAA-...."
-if [ -n "${existing_token}" ]; then
-    echo "  (a token is already configured; press Enter to keep it)"
+echo "[2/4] Transport"
+echo "  Which messaging platform should this machine use?"
+echo "    1) Telegram  — bot token + chat_id auto-captured"
+echo "    2) Discord   — bot token + DM channel ID (manual)"
+if [ -n "${existing_transport}" ]; then
+    echo "  (currently configured: ${existing_transport}; press Enter to keep)"
 fi
-read -r -p "  Paste token (or Enter to keep existing): " token_input
-token="${token_input:-${existing_token}}"
-if [ -z "${token}" ]; then
-    echo "no token supplied; aborting"
-    exit 1
+read -r -p "  Choice [1/2, or Enter to keep existing]: " transport_input
+
+if [ -z "${transport_input}" ] && [ -n "${existing_transport}" ]; then
+    transport="${existing_transport}"
+elif [ "${transport_input}" = "2" ]; then
+    transport="discord"
+else
+    transport="telegram"
 fi
+echo "  Using transport: ${transport}"
 
-# --- chat_id capture ----------------------------------------------------------
-echo
-echo "[4/4] chat_id capture"
-echo "  On Telegram, find your bot and send it /start (any message works)."
-echo "  Polling getUpdates for up to 120s..."
+# --- Telegram setup -----------------------------------------------------------
+if [ "${transport}" = "telegram" ]; then
+    echo
+    echo "[3/4] installing python-telegram-bot into venv"
+    if command -v uv >/dev/null 2>&1; then
+        uv pip install --python "${VENV_DIR}/bin/python" 'python-telegram-bot>=21,<22'
+    else
+        "${VENV_DIR}/bin/pip" install --upgrade pip
+        "${VENV_DIR}/bin/pip" install 'python-telegram-bot>=21,<22'
+    fi
 
-chat_id=""
-end_ts=$(( $(date +%s) + 120 ))
-while [ "$(date +%s)" -lt "${end_ts}" ]; do
-    resp=$(curl -fsS "https://api.telegram.org/bot${token}/getUpdates?limit=10&timeout=5" 2>/dev/null || echo "")
-    chat_id=$(echo "${resp}" | "${VENV_DIR}/bin/python" -c "
+    existing_token=""
+    existing_chats=""
+    if [ -f "${CONFIG_PATH}" ]; then
+        existing_token=$("${VENV_DIR}/bin/python" -c \
+            "import json,sys; print(json.load(open('${CONFIG_PATH}')).get('telegram',{}).get('bot_token',''))" \
+            2>/dev/null || echo "")
+        existing_chats=$("${VENV_DIR}/bin/python" -c \
+            "import json,sys; print(','.join(str(x) for x in json.load(open('${CONFIG_PATH}')).get('telegram',{}).get('chat_ids',[])))" \
+            2>/dev/null || echo "")
+    fi
+
+    echo
+    echo "  Open @BotFather on Telegram, run /newbot, follow prompts."
+    echo "  BotFather will give you a token like  1234567:AAAA-...."
+    if [ -n "${existing_token}" ]; then
+        echo "  (a token is already configured; press Enter to keep it)"
+    fi
+    read -r -p "  Paste token (or Enter to keep existing): " token_input
+    tg_token="${token_input:-${existing_token}}"
+    if [ -z "${tg_token}" ]; then
+        echo "no token supplied; aborting"
+        exit 1
+    fi
+
+    echo
+    echo "[4/4] chat_id capture"
+    echo "  On Telegram, find your bot and send it /start (any message works)."
+    echo "  Polling getUpdates for up to 120s..."
+
+    chat_id=""
+    end_ts=$(( $(date +%s) + 120 ))
+    while [ "$(date +%s)" -lt "${end_ts}" ]; do
+        resp=$(curl -fsS "https://api.telegram.org/bot${tg_token}/getUpdates?limit=10&timeout=5" \
+            2>/dev/null || echo "")
+        chat_id=$(echo "${resp}" | "${VENV_DIR}/bin/python" -c "
 import json,sys
 try:
     data = json.load(sys.stdin)
@@ -83,27 +115,26 @@ try:
 except Exception:
     print('')
 ")
-    if [ -n "${chat_id}" ]; then
-        break
-    fi
-    sleep 2
-done
+        if [ -n "${chat_id}" ]; then
+            break
+        fi
+        sleep 2
+    done
 
-if [ -z "${chat_id}" ]; then
-    if [ -n "${existing_chats}" ]; then
-        echo "  no new message detected; keeping existing chat_ids: ${existing_chats}"
-        chat_ids_json="[$(echo "${existing_chats}" | sed 's/,/, /g')]"
+    if [ -z "${chat_id}" ]; then
+        if [ -n "${existing_chats}" ]; then
+            echo "  no new message detected; keeping existing chat_ids: ${existing_chats}"
+            chat_ids_json="[$(echo "${existing_chats}" | sed 's/,/, /g')]"
+        else
+            echo "  no message captured. Send /start to your bot, then re-run this script."
+            exit 1
+        fi
     else
-        echo "  no message captured. Send /start to your bot, then re-run this script."
-        exit 1
+        echo "  captured chat_id=${chat_id}"
+        chat_ids_json="[${chat_id}]"
     fi
-else
-    echo "  captured chat_id=${chat_id}"
-    chat_ids_json="[${chat_id}]"
-fi
 
-# --- write config -------------------------------------------------------------
-"${VENV_DIR}/bin/python" - "${CONFIG_PATH}" "${token}" "${chat_ids_json}" <<'PY'
+    "${VENV_DIR}/bin/python" - "${CONFIG_PATH}" "${tg_token}" "${chat_ids_json}" <<'PY'
 import json, os, sys
 path, token, chats_json = sys.argv[1:4]
 chats = json.loads(chats_json)
@@ -116,6 +147,7 @@ if os.path.exists(path):
 existing.setdefault("telegram", {})
 existing["telegram"]["bot_token"] = token
 existing["telegram"]["chat_ids"] = chats
+existing["transport"] = "telegram"
 existing.setdefault("stale_heartbeat_sec", 600)
 existing.setdefault("mute_until_epoch", 0)
 with open(path, "w") as f:
@@ -124,13 +156,88 @@ os.chmod(path, 0o600)
 print(f"wrote {path} (chmod 600)")
 PY
 
+# --- Discord setup ------------------------------------------------------------
+else
+    echo
+    echo "[3/4] Discord bot token"
+    echo "  Go to https://discord.com/developers/applications, create an application,"
+    echo "  add a Bot, and copy its token."
+    echo "  The bot needs the Message Content intent enabled under Bot → Privileged"
+    echo "  Gateway Intents, and must be invited to your server with 'Read Messages'"
+    echo "  and 'Send Messages' permissions."
+    if [ -f "${CONFIG_PATH}" ]; then
+        existing_dc_token=$("${VENV_DIR}/bin/python" -c \
+            "import json,sys; print(json.load(open('${CONFIG_PATH}')).get('discord',{}).get('bot_token',''))" \
+            2>/dev/null || echo "")
+        if [ -n "${existing_dc_token}" ]; then
+            echo "  (a token is already configured; press Enter to keep it)"
+        fi
+    else
+        existing_dc_token=""
+    fi
+    read -r -p "  Paste bot token (or Enter to keep existing): " dc_token_input
+    dc_token="${dc_token_input:-${existing_dc_token}}"
+    if [ -z "${dc_token}" ]; then
+        echo "no token supplied; aborting"
+        exit 1
+    fi
+
+    echo
+    echo "[4/4] Discord DM channel ID"
+    echo "  Each machine needs its own dedicated channel — typically a DM to your bot"
+    echo "  (or a private channel). To get the ID:"
+    echo "    1. Enable Developer Mode in Discord: Settings → Advanced → Developer Mode."
+    echo "    2. Right-click the DM or channel → Copy Channel ID."
+    echo "  Use a different channel for each machine so you can tell them apart."
+    existing_dc_channel=""
+    if [ -f "${CONFIG_PATH}" ]; then
+        existing_dc_channel=$("${VENV_DIR}/bin/python" -c \
+            "import json,sys; print(json.load(open('${CONFIG_PATH}')).get('discord',{}).get('channel_id',''))" \
+            2>/dev/null || echo "")
+        if [ -n "${existing_dc_channel}" ]; then
+            echo "  (currently configured: ${existing_dc_channel}; press Enter to keep)"
+        fi
+    fi
+    read -r -p "  Paste channel ID (or Enter to keep existing): " dc_channel_input
+    dc_channel="${dc_channel_input:-${existing_dc_channel}}"
+    if [ -z "${dc_channel}" ]; then
+        echo "no channel ID supplied; aborting"
+        exit 1
+    fi
+
+    "${VENV_DIR}/bin/python" - "${CONFIG_PATH}" "${dc_token}" "${dc_channel}" <<'PY'
+import json, os, sys
+path, token, channel_id = sys.argv[1:4]
+existing = {}
+if os.path.exists(path):
+    try:
+        existing = json.load(open(path))
+    except Exception:
+        existing = {}
+existing.setdefault("discord", {})
+existing["discord"]["bot_token"] = token
+existing["discord"]["channel_id"] = int(channel_id)
+existing["transport"] = "discord"
+existing.setdefault("stale_heartbeat_sec", 600)
+existing.setdefault("mute_until_epoch", 0)
+with open(path, "w") as f:
+    json.dump(existing, f, indent=2)
+os.chmod(path, 0o600)
+print(f"wrote {path} (chmod 600)")
+PY
+fi
+
 echo
 echo "Setup complete."
 echo
 echo "Next steps:"
 echo "  1. Test the daemon in foreground (Ctrl-C to stop):"
-echo "       /opt/homebrew/bin/python3 /Users/mukuls/dev/assistant/bin/comms-listen.py"
-echo "     Send 'ping' to your bot; expect a 'pong' reply."
+echo "       python3 ${REPO_DIR}/bin/comms-listen.py"
+if [ "${transport}" = "telegram" ]; then
+    echo "     Send 'ping' to your bot on Telegram; expect a reply."
+else
+    echo "     Send 'ping' in your Discord channel; expect a reply."
+fi
 echo
 echo "  2. When happy, load the KeepAlive LaunchAgent so it runs on boot:"
 echo "       launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist"

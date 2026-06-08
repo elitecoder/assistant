@@ -19,11 +19,39 @@ The longer you use it, the smarter it gets. It reads your own session history to
 ## Entry points
 
 - `bin/pulse.py` — the main orchestrator loop, runs every 5 min via LaunchAgent
-- `bin/comms-listen.py` — the Telegram daemon (inbound + outbound pings + heartbeat page)
+- `bin/comms-listen.py` — the comms daemon (inbound + outbound pings + heartbeat page; supports Telegram and Discord)
 - `bin/cmux-watcher.py` — event-driven workspace signal delivery (opt-in LaunchAgent)
 - `bin/assistant-curator.py` — lesson/rule management across all five stores
 - `bin/tool-dispatch.py` — named tool dispatcher (`bin/tools-manifest.json`)
 - `install.sh --apply` — wires everything up; symlinks skills; writes plists (never loads them)
+
+## Setup (new machine)
+
+```bash
+# 1. Clone and wire symlinks/plists
+git clone git@github-personal:elitecoder/assistant.git ~/dev/assistant
+cd ~/dev/assistant && ./install.sh --apply
+
+# 2. Configure your messaging transport (Telegram or Discord)
+bin/assistant-comms-setup.sh
+```
+
+The setup script walks you through choosing **Telegram** or **Discord** and captures the
+credentials it needs. Each machine should use a **separate channel** so you can tell
+which machine a message is coming from.
+
+**Telegram:** create a bot via @BotFather, paste the token, then send your bot `/start`
+— the script auto-captures your `chat_id`.
+
+**Discord:** create a bot at discord.com/developers, enable the Message Content intent,
+invite it to your server, then paste the bot token and the DM/channel ID (right-click
+→ Copy Channel ID with Developer Mode on).
+
+```bash
+# 3. Test the daemon in foreground, then load it
+python3 bin/comms-listen.py          # Ctrl-C to stop
+launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
+```
 
 ## Architecture decisions (the why, not the what)
 
@@ -46,7 +74,7 @@ These are structural, not just conventions — violating them will cause real pr
 - **Never close a cmux workspace.** The orchestrator sends slash commands into workspaces; it never reaches in and closes them. That's the user's call. `/cleanup` is additionally gated on a work receipt existing.
 - **Never `launchctl load` automatically.** `install.sh` writes plists but never loads them. The cmux-watcher and single-process daemon plists are opt-in and always loaded by hand.
 - **Never widen your own permissions.** The warm comms session can edit `~/dev/assistant` (self-improvement) but not `~/.claude` global rules. `/update-config` from an agent is blocked.
-- **Never send Telegram messages without confirmation.** All Telegram sends go through `bin/tg-send.py`. Mutations (lesson add, restart, respawn) require a human `y` on a separate message.
+- **Never send messages without confirmation.** All sends go through `bin/tg-send.py` (Telegram) or `bin/discord-send.py` (Discord). Mutations (lesson add, restart, respawn) require a human `y` on a separate message.
 - **Never trust the header port for archffp teardown.** When two archffp worktrees run concurrently, vite falls back to PORT+1 but the header still shows the original port. Always reconcile against the real listening PID before killing anything.
 
 ## Gotchas
