@@ -70,6 +70,7 @@ def main(argv: list[str] | None = None, http=None,
     ap.add_argument("--kind", default="reply",
                     choices=["action", "urgent", "reply", "info"])
     ap.add_argument("--dry-run", action="store_true", dest="dry_run")
+    ap.add_argument("--ledger-key", default=None, dest="ledger_key")
     args = ap.parse_args(argv)
 
     paths = paths or comms_lib.Paths.from_env()
