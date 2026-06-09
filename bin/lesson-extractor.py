@@ -801,13 +801,23 @@ def write_proposal(draft: dict[str, Any], candidate: dict[str, Any],
 
 
 def ping_user(trigger: str, proposal_id: str = "",
+              rule: str = "", target: str = "", scope: str = "",
               runner: Callable[[list[str]], tuple[int, str, str]] | None = None) -> bool:
-    """Send a lesson-proposal ping via whatever transport is configured. Never raises."""
+    """Send a lesson-proposal ping via whatever transport is configured.
+
+    Format: [target:scope] trigger — what changes (rule summary). Reply y to add.
+    Never raises."""
     try:
         import comms_lib  # noqa: PLC0415
+        prefix = f"[{target}:{scope}] " if target and scope else ""
+        # One-line rule summary (first sentence, max 120 chars)
+        rule_summary = ""
+        if rule:
+            first_sentence = rule.split(".")[0].strip()
+            rule_summary = f"\nWhat changes: {first_sentence[:120]}{'…' if len(first_sentence) > 120 else '.'}"
         pid_hint = f"\nProposal ID: {proposal_id}" if proposal_id else ""
-        body = (f"Lesson proposal from pattern: {trigger}.{pid_hint}\n"
-                "Reply to me here to confirm or ignore.")
+        body = (f"Lesson proposal: {prefix}{trigger}.{rule_summary}{pid_hint}\n"
+                "Reply y to add it.")
         config_path = HOME / ".assistant" / "comms" / "config.json"
         if not config_path.exists():
             return False
@@ -1190,7 +1200,10 @@ def extract(*, dry_run: bool = False,
             continue
 
         pid = write_proposal(draft, cand, proposals_path)
-        pinged = ping_user(draft["trigger"], proposal_id=pid)
+        pinged = ping_user(draft["trigger"], proposal_id=pid,
+                           rule=draft.get("rule", ""),
+                           target=draft.get("target", ""),
+                           scope=draft.get("scope", ""))
         audit(f"proposed id={pid} trigger={draft['trigger']!r} "
               f"from kind={cand['kind']!r} stem={cand['stem']!r} "
               f"count={cand['count']} pinged={pinged}")
@@ -1337,7 +1350,7 @@ def run_audit(*, dry_run: bool = False,
         with open(proposals_path, "a") as fp:
             fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
         summary = f"Lesson audit: {action} {', '.join(slugs)} — {reason}"
-        ping_user(summary, proposal_id=ts)
+        ping_user(summary, proposal_id=ts, rule=suggested)
         audit(f"lesson audit proposed {action} slugs={slugs} id={ts}")
         proposed.append({"id": ts, "finding": f})
 
