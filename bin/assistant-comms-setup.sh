@@ -160,11 +160,12 @@ PY
 else
     echo
     echo "[3/4] Discord bot token"
-    echo "  Go to https://discord.com/developers/applications, create an application,"
-    echo "  add a Bot, and copy its token."
-    echo "  The bot needs the Message Content intent enabled under Bot → Privileged"
-    echo "  Gateway Intents, and must be invited to your server with 'Read Messages'"
-    echo "  and 'Send Messages' permissions."
+    echo "  Before running this step, complete the one-time bot setup:"
+    echo "    1. Go to https://discord.com/developers/applications → New Application → add a Bot"
+    echo "    2. Bot tab → Privileged Gateway Intents → enable Message Content Intent → Save"
+    echo "    3. OAuth2 → URL Generator → scope: bot → permissions: Send Messages,"
+    echo "       Read Messages/View Channels, Read Message History → copy URL → invite bot to server"
+    echo "  Then: Bot tab → Reset Token → copy the token."
     if [ -f "${CONFIG_PATH}" ]; then
         existing_dc_token=$("${VENV_DIR}/bin/python" -c \
             "import json,sys; print(json.load(open('${CONFIG_PATH}')).get('discord',{}).get('bot_token',''))" \
@@ -183,12 +184,12 @@ else
     fi
 
     echo
-    echo "[4/4] Discord DM channel ID"
-    echo "  Each machine needs its own dedicated channel — typically a DM to your bot"
-    echo "  (or a private channel). To get the ID:"
-    echo "    1. Enable Developer Mode in Discord: Settings → Advanced → Developer Mode."
-    echo "    2. Right-click the DM or channel → Copy Channel ID."
-    echo "  Use a different channel for each machine so you can tell them apart."
+    echo "[4/4] Discord channel ID for this machine"
+    echo "  Each machine gets its own dedicated channel in your server (e.g. #macbook-pro)."
+    echo "  To get the channel ID:"
+    echo "    1. Discord Settings → Advanced → enable Developer Mode"
+    echo "    2. In your server, right-click the channel for this machine → Copy Channel ID"
+    echo "  The bot must have Send Messages + Read Messages permissions in that channel."
     existing_dc_channel=""
     if [ -f "${CONFIG_PATH}" ]; then
         existing_dc_channel=$("${VENV_DIR}/bin/python" -c \
