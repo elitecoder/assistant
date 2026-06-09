@@ -14,7 +14,11 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
 ```
 
-Prerequisites: `git`, `python3`, and the [`claude` CLI](https://claude.ai/code). The script clones the repo to `~/dev/assistant`, wires up symlinks and LaunchAgent plists, and walks you through Telegram or Discord setup. One manual step at the end: `launchctl load` the two plists.
+Prerequisites: `git`, `python3`, and the [`claude` CLI](https://claude.ai/code). The script clones the repo to `~/dev/assistant`, wires up symlinks and LaunchAgent plists, and walks you through transport setup. One manual step at the end: `launchctl load` the two plists.
+
+**Telegram:** create a bot via [@BotFather](https://t.me/BotFather), copy the token, start a chat with the bot to get your chat ID.
+
+**Discord:** create a bot at discord.com/developers/applications, enable the Message Content Intent, invite it to your server (OAuth2 → URL Generator → `bot` scope + Send/Read Messages permissions). Create one text channel per machine (e.g. `#macbook-pro`) — each machine's assistant is given that channel's ID so messages from each machine arrive in their own dedicated channel.
 
 ## What it is
 
