@@ -816,11 +816,11 @@ def render_todos_tab(world):
                     ad = ' <span class="pill auto-dispatch">auto</span>'
             else:
                 ad = ""
+            detail_text = it.get("detail") or ""
             # Per-row action toolbar — only on truly editable TODOs
             # (skip 'closed-in' historical entries shown in "Recently completed").
             if td_id:
                 ad_state = "true" if ad_flag is True else ("false" if ad_flag is False else "null")
-                detail_text = it.get("detail") or ""
                 # Three explicit segmented-set buttons. The current state is
                 # highlighted via .active. Each click is an absolute set, not
                 # a cycle — eliminates the "did I click once or twice?" ambiguity.
