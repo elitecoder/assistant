@@ -203,6 +203,15 @@ def escape_html(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+import re as _re
+_HTML_TAG_RE = _re.compile(r"<[^>]+>")
+
+def strip_html(s: str) -> str:
+    """Remove HTML tags and unescape entities — for transports that don't render HTML."""
+    s = _HTML_TAG_RE.sub("", s)
+    return s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+
 def fmt_action_line(entry: dict[str, Any]) -> str:
     """Render one ledger entry for chat. screen_read evidence is flagged
     because Assistant itself rejects it — the flag travels with the message."""
