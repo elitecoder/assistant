@@ -199,6 +199,105 @@ class MaybeUpdateTests(unittest.TestCase):
             # The remote change must NOT have been pulled.
             self.assertIn("locally edited", (clone / "bin/pulse.py").read_text())
 
+    def test_dirty_clock_stamped_then_cleared(self):
+        # First dirty observation stamps dirty_since_ts; once the tree is clean
+        # again the clock is reset (so an intermittent edit never ages out).
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            marker = tmp / "m.json"
+            advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "remote change")
+            (clone / "untracked.txt").write_text("scratch\n")
+            r1 = su.maybe_update(clone, interval_sec=0, marker_path=marker, now=1000.0)
+            self.assertEqual(r1["skipped_reason"], "dirty")
+            self.assertEqual(r1["dirty_since_ts"], 1000.0)
+            self.assertEqual(json.loads(marker.read_text())["dirty_since_ts"], 1000.0)
+            # Tree goes clean → clock cleared on next pass.
+            (clone / "untracked.txt").unlink()
+            r2 = su.maybe_update(clone, interval_sec=0, marker_path=marker, now=2000.0)
+            self.assertTrue(r2["changed"])  # clean → the pending update pulls
+            self.assertNotIn("dirty_since_ts", json.loads(marker.read_text()))
+
+    def test_dirty_under_window_still_refuses(self):
+        # Dirty for less than the stash window → still refuse, no stash.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            marker = tmp / "m.json"
+            advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "remote change")
+            (clone / "bin/pulse.py").write_text("# locally edited\n")
+            su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                            dirty_stash_after_sec=86400, now=1000.0)
+            # 12h later — still inside the 24h window.
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                                dirty_stash_after_sec=86400, now=1000.0 + 12 * 3600)
+            self.assertEqual(r["skipped_reason"], "dirty")
+            self.assertFalse(r["changed"])
+            self.assertEqual(git(clone, "stash", "list"), "")  # nothing stashed
+            self.assertIn("locally edited", (clone / "bin/pulse.py").read_text())
+
+    def test_dirty_past_window_stashes_then_pulls(self):
+        # Dirty past the window AND an update waiting → auto-stash, then pull.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            marker = tmp / "m.json"
+            advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "remote change")
+            (clone / "scratch.txt").write_text("work in progress\n")  # tracked-after-add + untracked
+            git(clone, "add", "scratch.txt")
+            (clone / "untracked.txt").write_text("loose\n")
+            su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                            dirty_stash_after_sec=86400, now=1000.0)
+            # 25h later — past the window.
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                                dirty_stash_after_sec=86400, now=1000.0 + 25 * 3600)
+            self.assertTrue(r["stashed"])
+            self.assertTrue(r["changed"])
+            self.assertIn("bin/pulse.py", r["files_changed"])
+            # The dirty work is recoverable in the stash, not lost.
+            self.assertNotEqual(git(clone, "stash", "list"), "")
+            # Clock cleared post-stash.
+            self.assertNotIn("dirty_since_ts", json.loads(marker.read_text()))
+            # Pop it back and confirm both files return.
+            git(clone, "stash", "pop")
+            self.assertTrue((clone / "scratch.txt").exists())
+            self.assertTrue((clone / "untracked.txt").exists())
+
+    def test_ahead_dirty_past_window_still_refuses(self):
+        # Unpushed commits block the pull even after the dirty window elapses —
+        # stashing can't fast-forward over a local commit, so we never stash.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            marker = tmp / "m.json"
+            advance_remote(tmp, remote, {"docs/x.md": "remote\n"}, "remote change")
+            (clone / "bin/local.py").write_text("# unpushed\n")
+            git(clone, "add", "-A")
+            git(clone, "commit", "-m", "local unpushed commit")
+            (clone / "dirty.txt").write_text("also dirty\n")  # dirty on top of ahead
+            su.maybe_update(clone, interval_sec=0, marker_path=marker, now=1000.0)
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                                now=1000.0 + 48 * 3600)
+            self.assertEqual(r["skipped_reason"], "ahead")
+            self.assertEqual(git(clone, "stash", "list"), "")  # never stashed
+            self.assertIn("also dirty", (clone / "dirty.txt").read_text())
+
+    def test_dirty_but_up_to_date_does_not_stash(self):
+        # A dirty tree with NO pending update is left alone — never stash work
+        # when there's nothing to pull.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _ = make_repos(tmp)
+            marker = tmp / "m.json"
+            (clone / "wip.txt").write_text("in progress\n")
+            su.maybe_update(clone, interval_sec=0, marker_path=marker, now=1000.0)
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                                dirty_stash_after_sec=86400, now=1000.0 + 48 * 3600)
+            self.assertEqual(r["behind"], 0)
+            self.assertFalse(r["changed"])
+            self.assertEqual(git(clone, "stash", "list"), "")  # nothing stashed
+            self.assertIn("in progress", (clone / "wip.txt").read_text())
+
     def test_ahead_refuses_pull(self):
         with TemporaryDirectory() as t:
             tmp = Path(t)

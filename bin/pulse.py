@@ -304,6 +304,10 @@ def self_update_pulse(pulse_idx: int) -> None:
         outcome = "verified"
         evidence = (f"pulled {result.get('from_sha')}..{result.get('to_sha')} "
                     f"({len(files)} file(s)); install={'ran' if installed else 'not-needed'}")
+        if result.get("stashed"):
+            # An aged-out dirty tree was auto-stashed before the pull. Make the
+            # recovery path loud so the operator knows their work is parked.
+            evidence += "; auto-stashed dirty tree (recover: git stash pop)"
         if result.get("install_rc") not in (None, 0):
             outcome = "failed"
             evidence += f" install_rc={result.get('install_rc')}"
@@ -313,11 +317,21 @@ def self_update_pulse(pulse_idx: int) -> None:
     elif reason in ("dirty", "ahead"):
         # Operator has local state we won't clobber — surface it, don't fail.
         outcome = "verified"
-        n = result.get("ahead") if reason == "ahead" else None
-        evidence = (f"skipped self-update: repo is {reason}"
-                    + (f" ({n} commit(s) ahead — unpushed work)" if n else "")
-                    + " — pull deferred until clean")
+        if reason == "ahead":
+            n = result.get("ahead")
+            evidence = (f"skipped self-update: repo is ahead ({n} commit(s) "
+                        "ahead — unpushed work) — pull deferred until clean")
+        else:
+            age_h = (result.get("dirty_age_sec") or 0) / 3600.0
+            evidence = (f"skipped self-update: working tree dirty for {age_h:.1f}h "
+                        "— pull deferred (auto-stash at 24h)")
         key = f"self-update-skip-{reason}-p{pulse_idx}"
+    elif reason == "stash-failed":
+        # Tried to auto-stash an aged-out dirty tree; git refused. The
+        # operator's work is untouched, but the update is blocked.
+        outcome = "failed"
+        evidence = f"self-update auto-stash failed: {result.get('error', '')}"[:300]
+        key = f"self-update-stash-failed-p{pulse_idx}"
     else:
         outcome = "failed"
         evidence = f"self-update {reason or 'error'}: {result.get('error', '')}"[:300]

@@ -12,9 +12,13 @@ location-independent — a user who installed it anywhere, not just
   1. Throttle on a marker file. Return None (no work) if the last attempt
      was < interval_sec ago.
   2. Read repo status: dirty tree? local commits ahead of remote? how many
-     behind? Refuses to touch a repo that is dirty or ahead — it never
-     discards or rewrites the operator's work (no reset / clean / force).
-     It surfaces that state instead.
+     behind? It never discards or rewrites the operator's work (no reset /
+     clean / force). Local commits ahead of the remote always block the pull
+     (surfaced, not touched). A dirty working tree is surfaced too — UNLESS it
+     has stayed continuously dirty past dirty_stash_after_sec (default 1 day,
+     clocked from the first pulse that observed it dirty) AND an update is
+     waiting, in which case the tree is auto-stashed (`git stash push -u`,
+     always recoverable via `git stash pop`) and the pull proceeds.
   3. If behind: `git pull --ff-only <remote> <branch>`. Fast-forward only,
      so a diverged history fails loudly rather than merging blindly.
      bin/ and prompts/ are symlinked / read live, so a pull alone makes
@@ -49,6 +53,14 @@ SELF_PLIST_LABEL = "com.assistant.assistant-pulse"
 
 DEFAULT_INTERVAL_SEC = 3600
 
+# A working tree that stays dirty across this many seconds is auto-stashed so
+# self-update can proceed. Measured from the FIRST throttle-passing pulse that
+# observed it dirty (tracked via dirty_since_ts in the marker), NOT the file
+# mtime — we can't know how long it was dirty before the tracker first saw it,
+# so we err toward waiting longer. The stash is always recoverable
+# (`git stash list` / `git stash pop`); it is never dropped or discarded.
+DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
+
 
 def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
     """Run a git command in `repo`. Returns (rc, stdout, stderr); never raises."""
@@ -62,6 +74,19 @@ def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
         return -1, "", f"git {' '.join(args)} timed out after {timeout}s"
     except Exception as e:  # noqa: BLE001
         return -1, "", str(e)
+
+
+def _stash_dirty(repo: Path, label: str) -> tuple[bool, str]:
+    """Stash the dirty tree (tracked + untracked) under a labeled message.
+
+    Returns (ok, detail). Recoverable by design — uses `git stash push -u`,
+    never drop/clear. On a tree that turns out to have nothing stashable
+    (rare race), git reports "No local changes to save" with rc 0; we treat
+    that as a no-op success."""
+    rc, out, err = _git(repo, "stash", "push", "-u", "-m", label)
+    if rc != 0:
+        return False, err or out
+    return True, out
 
 
 def resolve_remote_branch(repo: Path) -> tuple[str, str] | None:
@@ -158,6 +183,7 @@ def maybe_update(
     *,
     now: float | None = None,
     interval_sec: int = DEFAULT_INTERVAL_SEC,
+    dirty_stash_after_sec: int = DEFAULT_DIRTY_STASH_AFTER_SEC,
     marker_path: Path | None = None,
     install_sh: Path | None = None,
     log=None,
@@ -203,18 +229,60 @@ def maybe_update(
     result.update({k: status[k] for k in ("dirty", "ahead", "behind")})
     result["from_sha"] = (status.get("head") or "")[:12]
 
+    # Track how long the tree has been continuously dirty. The clock lives in
+    # the marker: stamped on the first dirty observation, cleared the moment
+    # the tree is seen clean. Persisted whenever it changes so the window
+    # survives across pulses and restarts. We measure from when the TRACKER
+    # first saw it dirty (not file mtime) — so we always wait at least the
+    # full window after first observation before auto-stashing.
     if status["dirty"]:
-        result["skipped_reason"] = "dirty"
-        _log("working tree is dirty — refusing to pull (surfacing instead)")
-        return result
+        dirty_since = marker.get("dirty_since_ts") or now
+        if marker.get("dirty_since_ts") != dirty_since:
+            marker["dirty_since_ts"] = dirty_since
+            _write_marker(marker_path, marker)
+        result["dirty_since_ts"] = dirty_since
+        result["dirty_age_sec"] = max(0, int(now - dirty_since))
+    elif marker.get("dirty_since_ts"):
+        marker.pop("dirty_since_ts", None)  # clean again — reset the clock
+        _write_marker(marker_path, marker)
+
+    # Unpushed local commits block a fast-forward regardless of tree state;
+    # stashing the working tree wouldn't unblock the pull, so surface 'ahead'
+    # and stop before touching anything.
     if status["ahead"]:
         result["skipped_reason"] = "ahead"
         _log(f"local is {status['ahead']} commit(s) ahead of {remote}/{branch} "
              "— refusing to pull (unpushed work)")
         return result
     if status["behind"] == 0:
+        # Nothing to pull — leave a dirty tree untouched (no reason to stash).
         _log("already up to date")
         return result
+
+    if status["dirty"]:
+        age = result["dirty_age_sec"]
+        if age < dirty_stash_after_sec:
+            result["skipped_reason"] = "dirty"
+            _log(f"working tree dirty for {age / 3600.0:.1f}h "
+                 f"(< {dirty_stash_after_sec / 3600.0:.0f}h) — refusing to pull "
+                 "(surfacing instead)")
+            return result
+        # Dirty past the window AND an update is waiting → stash, then pull.
+        # The stash is recoverable (`git stash list` / `git stash pop`); it is
+        # never dropped.
+        label = f"assistant self-update auto-stash (dirty {age // 3600}h)"
+        ok, detail = _stash_dirty(repo, label)
+        result["stashed"] = ok
+        result["stash_detail"] = detail[:300]
+        if not ok:
+            result["skipped_reason"] = "stash-failed"
+            result["error"] = detail
+            _log(f"auto-stash failed, refusing to pull: {detail}")
+            return result
+        marker.pop("dirty_since_ts", None)  # tree is clean post-stash
+        _write_marker(marker_path, marker)
+        _log(f"auto-stashed dirty tree ({age // 3600}h old) — proceeding with "
+             "pull; recover with `git stash pop`")
 
     # Fast-forward only — a diverged history fails rather than merging blindly.
     old_head = status["head"]
