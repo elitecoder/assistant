@@ -22,7 +22,17 @@ Spin up a dozen Claude Code agents in parallel and walk away. Assistant watches 
 
 The longer you use it, the smarter it gets. It reads your own session history to find patterns, turns corrections and confirmations into rules, and asks if you want to keep them. Confirmed rules sync across all your machines automatically.
 
-**Slack integration:** React to any Slack thread with this machine's emoji and the whole thread is captured as a TODO, which the next pulse auto-dispatches into a fresh workspace. See [`slack-reactor/`](slack-reactor/README.md).
+## What it can do
+
+**📥 Capture work from a Slack emoji.** React to any Slack thread with this machine's emoji (`TODO_EMOJI`, default `mukuls2`) and the whole thread — every message, plus a link back — is captured as a TODO in `~/.claude/assistant-todo.json`, the same store the `/todo` skill, the pulse, and the dashboard read. Per-machine emoji routing means a shared bot can fan reactions out to whichever laptop owns that emoji. See [`slack-reactor/`](slack-reactor/README.md).
+
+**🚀 Dispatch TODOs while keeping the fleet from overloading.** A TODO flagged `autoDispatch=true` that's never been spawned gets picked up by the next pulse and dropped into a *fresh* cmux workspace — prompt staged on disk, delivered to the surface, confirmed by watching the transcript grow. Load is bounded by hard caps: at most `ACTIVE_WS_CAP=5` busy workspaces, `TOTAL_WS_CAP=30` total, and `MAX_DISPATCH_PER_PULSE=2` new spawns per cycle. Hit a cap and dispatch waits — the fleet never runs away from you.
+
+**🧠 Turn corrections into rules, then into memory.** `lesson-extractor.py` scans your recent Claude Code transcripts and the action ledger for corrections, confirmations, and recurring questions, and distills lesson candidates. Each one is pitched to you over Telegram/Discord — reply `confirm <id>` and it's routed to the right store (one of `claude` / `assistant` / `ffp` / `archffp` / `assistant-repo`), then mirrored into the Obsidian vault and synced to the cross-machine memory repo that feeds Mem0 semantic memory. Nothing is added without your `confirm`.
+
+**📱 Reach you on Telegram or Discord.** `comms-listen.py` is one daemon for both transports — it pages you when a workspace needs attention and answers when you reply, with a warm Claude session that already has the fleet's state loaded. Pick your transport during install.
+
+**👋 Nudge stalled work and move the safe stuff forward.** Each pulse the Observer emits one verdict per workspace, and Python — not the model — turns it into an action. `ready_for_merge` queues `/merge-when-ready`; `ready_for_cleanup` sends `/cleanup` (only on workspaces *it* queued the merge for, and only once a work receipt exists); `stranded` nudges the idle agent with what failed and a retry; `needs_user` pages you and does nothing else. Autonomy is fenced by a back-off list, the work-receipt gate, the assistant-merge ledger, and `NO_INGEST_GUARD`.
 
 ## Entry points
 
