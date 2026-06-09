@@ -179,12 +179,12 @@ def test_discover_idempotent_via_pending_proposals():
         # First discovery + write a proposal.
         res1 = le.run_discovery(ledger_path=ledger, bank_path=bank,
                                 proposals_path=proposals,
-                                tg_send=Path("/nonexistent"), now=1000)
+                                now=1000)
         assert res1["n_proposed"] == 1
         # Second run sees the pending pattern proposal and proposes nothing new.
         res2 = le.run_discovery(ledger_path=ledger, bank_path=bank,
                                 proposals_path=proposals,
-                                tg_send=Path("/nonexistent"), now=1000)
+                                now=1000)
         assert res2["n_proposed"] == 0, "discovery must be idempotent"
 
 

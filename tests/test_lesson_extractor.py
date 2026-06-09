@@ -160,7 +160,7 @@ def test_extract_writes_proposal_and_is_idempotent(tmp_path, monkeypatch):
 
     r1 = le.extract(ledger_only=True, llm=stub, ledger_path=ledger,
                     proposals_path=proposals,
-                    tg_send=tmp_path / "tg-send.py", now=2000,
+                    now=2000,
                     curator=tmp_path / "curator.py")
     # Patch the ping runner indirectly: ping_user used the default _run, which
     # would try to exec a nonexistent tg-send — that returns rc!=0 but never
@@ -178,7 +178,7 @@ def test_extract_writes_proposal_and_is_idempotent(tmp_path, monkeypatch):
     # Second pass over the SAME ledger: the pending proposal's stem dedups it.
     r2 = le.extract(ledger_only=True, llm=stub, ledger_path=ledger,
                     proposals_path=proposals,
-                    tg_send=tmp_path / "tg-send.py", now=2000,
+                    now=2000,
                     curator=tmp_path / "curator.py")
     assert r2["n_proposed"] == 0
     assert r2["n_skipped"] == 1
@@ -463,7 +463,6 @@ def test_extract_runs_transcript_pass_through_pipeline(tmp_path, monkeypatch):
     stub = StubLLM()
     r = le.extract(llm=stub, ledger_path=ledger, proposals_path=proposals,
                    now=2000, curator=tmp_path / "curator.py",
-                   tg_send=tmp_path / "tg-send.py",
                    scanner_factory=lambda triggers: FakeScanner())
     assert r["n_transcript_candidates"] == 1
     assert r["n_proposed"] == 1

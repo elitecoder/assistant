@@ -47,7 +47,6 @@ LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
 PROPOSALS_PATH = ASSISTANT_DIR / "comms" / "proposals.jsonl"
 AUDIT_LOG = ASSISTANT_DIR / "assistant-audit.log"
 CURATOR = BIN / "assistant-curator.py"
-TG_SEND = BIN / "tg-send.py"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 EXTRACTOR_MODEL = os.environ.get(
     "EXTRACTOR_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
@@ -801,7 +800,7 @@ def write_proposal(draft: dict[str, Any], candidate: dict[str, Any],
     return ts
 
 
-def ping_user(trigger: str, proposal_id: str = "", tg_send: Path = TG_SEND,
+def ping_user(trigger: str, proposal_id: str = "",
               runner: Callable[[list[str]], tuple[int, str, str]] | None = None) -> bool:
     """Send a lesson-proposal ping via whatever transport is configured. Never raises."""
     try:
@@ -1094,7 +1093,6 @@ def run_discovery(*, dry_run: bool = False,
                   ledger_path: Path = LEDGER_PATH,
                   bank_path: Path = PATTERN_BANK_PATH,
                   proposals_path: Path = PROPOSALS_PATH,
-                  tg_send: Path = TG_SEND,
                   now: int | None = None) -> dict[str, Any]:
     """Discover + propose new patterns. Returns a summary dict."""
     cands = discover_patterns(ledger_path=ledger_path, bank_path=bank_path,
@@ -1107,7 +1105,7 @@ def run_discovery(*, dry_run: bool = False,
             proposed.append({"dry_run": True, "candidate": c})
             continue
         pid = write_pattern_proposal(c, proposals_path)
-        pinged = ping_user(f"new watcher pattern: {c['sample'][:60]}", tg_send)
+        pinged = ping_user(f"new watcher pattern: {c['sample'][:60]}")
         audit(f"proposed pattern id={pid} stem={c['stem']!r} count={c['count']} "
               f"pinged={pinged}")
         proposed.append({"id": pid, "candidate": c, "pinged": pinged})
@@ -1123,7 +1121,6 @@ def extract(*, dry_run: bool = False,
             ledger_path: Path = LEDGER_PATH,
             proposals_path: Path = PROPOSALS_PATH,
             curator: Path = CURATOR,
-            tg_send: Path = TG_SEND,
             scanner_factory: Callable[[list[str]], Any] | None = None,
             now: int | None = None) -> dict[str, Any]:
     """Run one extraction pass. Returns a summary dict.
@@ -1193,7 +1190,7 @@ def extract(*, dry_run: bool = False,
             continue
 
         pid = write_proposal(draft, cand, proposals_path)
-        pinged = ping_user(draft["trigger"], proposal_id=pid, tg_send=tg_send)
+        pinged = ping_user(draft["trigger"], proposal_id=pid)
         audit(f"proposed id={pid} trigger={draft['trigger']!r} "
               f"from kind={cand['kind']!r} stem={cand['stem']!r} "
               f"count={cand['count']} pinged={pinged}")
@@ -1218,7 +1215,6 @@ def extract(*, dry_run: bool = False,
 def run_audit(*, dry_run: bool = False,
               curator: Path = CURATOR,
               proposals_path: Path = PROPOSALS_PATH,
-              tg_send: Path = TG_SEND,
               llm: Callable[[str], str] | None = None) -> dict[str, Any]:
     """Quality pass over all lesson stores.
 
@@ -1341,7 +1337,7 @@ def run_audit(*, dry_run: bool = False,
         with open(proposals_path, "a") as fp:
             fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
         summary = f"Lesson audit: {action} {', '.join(slugs)} — {reason}"
-        ping_user(summary, proposal_id=ts, tg_send=tg_send)
+        ping_user(summary, proposal_id=ts)
         audit(f"lesson audit proposed {action} slugs={slugs} id={ts}")
         proposed.append({"id": ts, "finding": f})
 
