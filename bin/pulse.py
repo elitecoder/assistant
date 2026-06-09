@@ -631,10 +631,11 @@ def _cleanup_ping_recent(ws_ref: str, now: int) -> bool:
 
 
 def send_cleanup_confirmation_ping(ws: dict, verdict: dict, evidence: str) -> bool:
-    """Ping the phone (tg-send.py) that an un-receipted workspace looks done and
+    """Ping the user that an un-receipted workspace looks done and
     needs the user's call before /cleanup. Cooldown-guarded so the same
     workspace pings at most once per CLEANUP_PING_COOLDOWN_SEC. Returns True iff
     a ping was actually sent. Never raises — comms is best-effort."""
+    import comms_lib  # noqa: PLC0415
     ws_ref = ws["ref"]
     now = utc_ts()
     if _cleanup_ping_recent(ws_ref, now):
@@ -643,14 +644,10 @@ def send_cleanup_confirmation_ping(ws: dict, verdict: dict, evidence: str) -> bo
     ev = (evidence or (verdict.get("summary") or "")).strip()
     text = (f"{project} is ready to close. {ev} "
             "Reply y to close or n to keep open.").strip()
-    rc, _out, err = run([
-        sys.executable, str(TG_SEND),
-        "--text", text,
-        "--kind", "action",
-        "--ledger-key", f"{ws_ref}:cleanup-no-receipt",
-    ])
-    if rc != 0:
-        log.warning("cleanup-ping %s tg-send rc=%d: %s", ws_ref, rc, err.strip()[-200:])
+    config_path = HOME / ".assistant" / "comms" / "config.json"
+    ok = comms_lib.send_notification(text, config_path, BIN, kind="action")
+    if not ok:
+        log.warning("cleanup-ping %s send_notification failed", ws_ref)
         return False
     try:
         CLEANUP_PING_LEDGER.parent.mkdir(parents=True, exist_ok=True)

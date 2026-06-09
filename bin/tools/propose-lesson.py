@@ -105,19 +105,13 @@ def _read_proposals(path: Path) -> list[dict[str, Any]]:
 
 
 def _ping_proposal(entry: dict[str, Any]) -> None:
-    """Best-effort Telegram ping when a new proposal is recorded. Never raises."""
+    """Best-effort ping when a new proposal is recorded. Respects transport config. Never raises."""
     try:
-        tg_send = REPO / "bin" / "tg-send.py"
+        sys.path.insert(0, str(REPO / "bin"))
+        import comms_lib  # noqa: PLC0415
         comms_cfg = HOME / ".assistant" / "comms" / "config.json"
-        if not tg_send.exists() or not comms_cfg.exists():
+        if not comms_cfg.exists():
             return
-        cfg = json.loads(comms_cfg.read_text())
-        chat_ids = cfg.get("telegram", {}).get("chat_ids") or []
-        if not chat_ids:
-            chat_ids = [cfg.get("chat_id")] if cfg.get("chat_id") else []
-        if not chat_ids:
-            return
-        chat_id = chat_ids[0]
         trigger = entry.get("trigger", "")[:80]
         rule = entry.get("rule", "")[:120]
         source = entry.get("source", "manual")
@@ -128,10 +122,7 @@ def _ping_proposal(entry: dict[str, Any]) -> None:
             f"Rule: {rule}...\n"
             f"Reply 'confirm {pid}' to apply, or ignore to skip."
         )
-        subprocess.run(
-            [sys.executable, str(tg_send), "--text", text, "--chat", str(chat_id)],
-            capture_output=True, timeout=10,
-        )
+        comms_lib.send_notification(text, comms_cfg, REPO / "bin", kind="reply")
     except Exception:  # noqa: BLE001
         pass
 

@@ -108,6 +108,55 @@ class Config:
         os.chmod(self._path, 0o600)
 
 
+# --------------------------------------------------------------------------- transport-aware send
+
+def send_notification(text: str, config_path: Path, bin_dir: Path,
+                      kind: str = "reply",
+                      runner: Any = None) -> bool:
+    """Send a notification via whatever transport is configured (Telegram or Discord).
+
+    Returns True iff the send succeeded. Never raises.
+    config_path: path to ~/.assistant/comms/config.json
+    bin_dir: path to the bin/ directory (for tg-send.py / discord-send.py)
+    """
+    try:
+        raw = json.loads(config_path.read_text())
+    except Exception:
+        return False
+    transport = str(raw.get("transport", "telegram")).lower()
+    _run = runner or (lambda argv: subprocess.run(
+        argv, capture_output=True, timeout=15))
+
+    import sys as _sys  # noqa: PLC0415
+    if transport == "discord":
+        dc = raw.get("discord", {})
+        channel_id = dc.get("channel_id")
+        if not channel_id:
+            return False
+        script = bin_dir / "discord-send.py"
+        cmd = [
+            _sys.executable, str(script),
+            "--channel", str(channel_id),
+            "--text", text,
+            "--kind", kind,
+        ]
+    else:
+        tg = raw.get("telegram", {})
+        chat_ids = [int(x) for x in tg.get("chat_ids", [])]
+        if not chat_ids:
+            return False
+        cmd = [
+            _sys.executable, str(bin_dir / "tg-send.py"),
+            "--text", text,
+            "--kind", kind,
+            "--chat", str(chat_ids[0]),
+        ]
+
+    result = _run(cmd)
+    rc = result.returncode if hasattr(result, "returncode") else result[0]
+    return rc == 0
+
+
 # --------------------------------------------------------------------------- time
 
 def now_iso(clock=None) -> str:

@@ -803,13 +803,28 @@ def write_proposal(draft: dict[str, Any], candidate: dict[str, Any],
 
 def ping_user(trigger: str, proposal_id: str = "", tg_send: Path = TG_SEND,
               runner: Callable[[list[str]], tuple[int, str, str]] | None = None) -> bool:
-    runner = runner or _run
-    pid_hint = f"\nProposal ID: {proposal_id}" if proposal_id else ""
-    body = (f"Lesson proposal from pattern: {trigger}.{pid_hint}\n"
-            "Reply to me here to confirm or ignore.")
-    rc, _, _ = runner([sys.executable, str(tg_send), "--text", body,
-                       "--kind", "reply"])
-    return rc == 0
+    """Send a lesson-proposal ping via whatever transport is configured. Never raises."""
+    try:
+        import comms_lib  # noqa: PLC0415
+        pid_hint = f"\nProposal ID: {proposal_id}" if proposal_id else ""
+        body = (f"Lesson proposal from pattern: {trigger}.{pid_hint}\n"
+                "Reply to me here to confirm or ignore.")
+        config_path = HOME / ".assistant" / "comms" / "config.json"
+        if not config_path.exists():
+            return False
+        _runner = None
+        if runner is not None:
+            import subprocess as _sp  # noqa: PLC0415
+
+            def _runner(argv):  # noqa: E306
+                rc, out, err = runner(argv)
+                r = _sp.CompletedProcess(argv, rc)
+                r.stdout = out.encode() if isinstance(out, str) else out
+                r.stderr = err.encode() if isinstance(err, str) else err
+                return r
+        return comms_lib.send_notification(body, config_path, BIN, kind="reply", runner=_runner)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ─── cmux-watcher pattern feedback + discovery ───────────────────────────────
