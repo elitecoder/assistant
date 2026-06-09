@@ -5,11 +5,10 @@
 # 2. Install python-telegram-bot (Telegram path only).
 # 3. Prompt for transport choice (Telegram or Discord), collect credentials.
 # 4. Write ~/.assistant/comms/config.json (chmod 600).
+# 5. Send a test message to validate credentials and connectivity.
+# 6. Load the KeepAlive LaunchAgent so the daemon starts now and on every boot.
 #
 # Idempotent. Safe to re-run.
-#
-# Does NOT load the LaunchAgent — you do that yourself:
-#   launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
 
 set -euo pipefail
 
@@ -229,18 +228,55 @@ PY
 fi
 
 echo
-echo "Setup complete."
-echo
-echo "Next steps:"
-echo "  1. Test the daemon in foreground (Ctrl-C to stop):"
-echo "       python3 ${REPO_DIR}/bin/comms-listen.py"
-if [ "${transport}" = "telegram" ]; then
-    echo "     Send 'ping' to your bot on Telegram; expect a reply."
+echo "[3/3] Validating — sending a test message to confirm connectivity..."
+
+SEND_RC=1
+if [ "${transport}" = "discord" ]; then
+    CHANNEL_ID=$("${VENV_DIR}/bin/python" -c \
+        "import json,sys; print(json.load(open('${CONFIG_PATH}')).get('discord',{}).get('channel_id',''))" \
+        2>/dev/null || echo "")
+    if [ -n "${CHANNEL_ID}" ]; then
+        SEND_OUT=$("${VENV_DIR}/bin/python" "${REPO_DIR}/bin/discord-send.py" \
+            --text "✅ assistant setup complete — this machine is connected." \
+            --channel "${CHANNEL_ID}" --kind reply 2>&1)
+        SEND_RC=$?
+    fi
 else
-    echo "     Send 'ping' in your Discord channel; expect a reply."
+    SEND_OUT=$("${VENV_DIR}/bin/python" "${REPO_DIR}/bin/tg-send.py" \
+        --text "✅ assistant setup complete — this machine is connected." \
+        --kind reply 2>&1)
+    SEND_RC=$?
 fi
+
+if [ "${SEND_RC}" -ne 0 ]; then
+    echo "  ✗ Test message failed. Check your credentials and bot permissions."
+    echo "  Output: ${SEND_OUT}"
+    echo "  Fix the issue and re-run this script."
+    exit 1
+fi
+
+echo "  ✓ Test message sent successfully."
 echo
-echo "  2. When happy, load the KeepAlive LaunchAgent so it runs on boot:"
-echo "       launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist"
+
+# --- Load the LaunchAgent so the daemon starts now and on every boot ----------
+PLIST="${HOME_DIR}/Library/LaunchAgents/com.assistant.assistant-comms.plist"
+if [ -f "${PLIST}" ]; then
+    echo "[4/4] Loading LaunchAgent (daemon will start now and on every boot)..."
+    launchctl bootout "gui/${UID}/com.assistant.assistant-comms" 2>/dev/null || true
+    launchctl bootstrap "gui/${UID}" "${PLIST}" 2>/dev/null || launchctl load -w "${PLIST}"
+    sleep 2
+    if launchctl list | grep -q "com.assistant.assistant-comms"; then
+        echo "  ✓ Daemon running (PID $(launchctl list | grep com.assistant.assistant-comms | awk '{print $1}'))."
+    else
+        echo "  ✗ Daemon did not start. Check logs at: ${LOG_DIR}/assistant-comms.launchd.{out,err}"
+        exit 1
+    fi
+else
+    echo "  ⚠ LaunchAgent plist not found at ${PLIST}."
+    echo "  Run: ./install.sh --apply   to install it, then re-run this script."
+    exit 1
+fi
+
 echo
-echo "  Logs: ${LOG_DIR}/assistant-comms.launchd.{out,err}"
+echo "Setup complete. The assistant is running and connected."
+echo "Logs: ${LOG_DIR}/assistant-comms.launchd.{out,err}"
