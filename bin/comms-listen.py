@@ -354,9 +354,7 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
             if kind in ("lesson-proposal", "lesson_proposal") or key.startswith("lesson-proposal"):
                 log(f"suppressed lesson-proposal broadcast key={key} (delivered via warm session)")
                 continue
-            body = comms_lib.fmt_action_line(entry)
-            if transport == "discord":
-                body = comms_lib.strip_html(body)
+            body = comms_lib.fmt_action_line(entry, transport=transport)
             send_argv = _send_args(transport, body, "action", key, paths)
             rc, out, err = cli(send_argv, timeout=30, env=env)
             if rc != 0:
@@ -415,9 +413,7 @@ def _drain_inbox_once(env: dict, transport: str = "telegram") -> int:
             except OSError:
                 pass
             continue
-        body = comms_lib.fmt_workspace_signal(item)
-        if transport == "discord":
-            body = comms_lib.strip_html(body)
+        body = comms_lib.fmt_workspace_signal(item, transport=transport)
         ledger_key = f"{item.get('ws_ref') or 'ws'}:{item.get('signal_type') or 'signal'}"
         send_argv = _send_args(transport, body, "action", ledger_key, paths)
         rc, _out, err = cli(send_argv, timeout=30, env=env)
@@ -509,9 +505,7 @@ def heartbeat_loop(stop: threading.Event, env: dict) -> None:
             bad = hb.get("status") in {"frozen", "stale_world", "respawn-requested"}
             now = int(time.time())
             if (stale or bad) and now - last_alert >= HEARTBEAT_DEDUP_SEC:
-                body = comms_lib.fmt_heartbeat_alert(hb, age)
-                if transport == "discord":
-                    body = comms_lib.strip_html(body)
+                body = comms_lib.fmt_heartbeat_alert(hb, age, transport=transport)
                 send_argv = _send_args(transport, body, "urgent", None, paths)
                 rc, _, err = cli(send_argv, timeout=30, env=env)
                 last_alert = now

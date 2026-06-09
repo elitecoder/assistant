@@ -212,7 +212,7 @@ def strip_html(s: str) -> str:
     return s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
 
 
-def fmt_action_line(entry: dict[str, Any]) -> str:
+def fmt_action_line(entry: dict[str, Any], transport: str = "telegram") -> str:
     """Render one ledger entry for chat. screen_read evidence is flagged
     because Assistant itself rejects it — the flag travels with the message."""
     kind = entry.get("kind", "?")
@@ -227,6 +227,12 @@ def fmt_action_line(entry: dict[str, Any]) -> str:
     outcome_marker = {
         "verified": "ok", "failed": "fail", "skipped": "skip", "rejected": "rej",
     }.get(outcome, outcome)
+    if transport == "discord":
+        return (
+            f"**[{kind}]** {outcome_marker} `{key}`\n"
+            f"ws={ws} td={td} pulse={pulse} via={via_marker}\n"
+            f"*{evidence}*"
+        )
     return (
         f"<b>[{escape_html(kind)}]</b> {outcome_marker} <code>{escape_html(key)}</code>\n"
         f"ws={escape_html(str(ws))} td={escape_html(str(td))} pulse={pulse} via={escape_html(via_marker)}\n"
@@ -234,17 +240,27 @@ def fmt_action_line(entry: dict[str, Any]) -> str:
     )
 
 
-def fmt_heartbeat_alert(hb: dict[str, Any], age_sec: int) -> str:
+def fmt_heartbeat_alert(hb: dict[str, Any], age_sec: int, transport: str = "telegram") -> str:
+    ws = str(hb.get('ws_ref', '?'))
+    status = str(hb.get('status', '?'))
+    last = str(hb.get('last_pulse_iso', '?'))
+    age = fmt_age(age_sec)
+    if transport == "discord":
+        return (
+            f"**Assistant heartbeat stale**\n"
+            f"ws={ws} status={status}\n"
+            f"last pulse {age} ago ({last})"
+        )
     return (
         f"<b>Assistant heartbeat stale</b>\n"
-        f"ws={escape_html(str(hb.get('ws_ref', '?')))} "
-        f"status={escape_html(str(hb.get('status', '?')))}\n"
-        f"last pulse {fmt_age(age_sec)} ago "
-        f"({escape_html(str(hb.get('last_pulse_iso', '?')))})"
+        f"ws={escape_html(ws)} "
+        f"status={escape_html(status)}\n"
+        f"last pulse {age} ago "
+        f"({escape_html(last)})"
     )
 
 
-def fmt_workspace_signal(item: dict[str, Any]) -> str:
+def fmt_workspace_signal(item: dict[str, Any], transport: str = "telegram") -> str:
     """Render a cmux-watcher inbox item (written by bin/cmux-watcher.py) for
     chat. The watcher drops these the instant cmux reports a workspace needs
     input or finished a notable turn — so the phone ping arrives in seconds.
@@ -261,6 +277,11 @@ def fmt_workspace_signal(item: dict[str, Any]) -> str:
         "work_complete": "work looks complete",
         "pattern_match": "hit a watched signal",
     }.get(signal_type, signal_type)
+    if transport == "discord":
+        body = f"**{ws_ref} {headline}**\nsignal=`{pattern}`"
+        if snippet:
+            body += f"\n*{snippet[:400]}*"
+        return body
     body = (
         f"<b>{escape_html(ws_ref)} {escape_html(headline)}</b>\n"
         f"signal=<code>{escape_html(pattern)}</code>"
