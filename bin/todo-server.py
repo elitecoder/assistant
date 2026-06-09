@@ -30,6 +30,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 WORKSPACE_REF_RE = re.compile(r"^workspace:\d+$")
+TD_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+PROPOSAL_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 HOME = Path(os.path.expanduser("~"))
@@ -240,7 +242,17 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[todo-server] " + fmt % args + "\n")
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        # Only allow requests from the local dashboard (file:// or localhost).
+        allowed = (
+            origin.startswith("file://")
+            or origin.startswith("http://127.0.0.1")
+            or origin.startswith("http://localhost")
+            or origin == "null"  # file:// sends Origin: null in many browsers
+            or not origin  # same-origin requests omit the header
+        )
+        if allowed:
+            self.send_header("Access-Control-Allow-Origin", origin or "null")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -303,6 +315,9 @@ class Handler(BaseHTTPRequestHandler):
         # POST /proposal/<id>/<action>
         if len(parts) == 3 and parts[0] == "proposal":
             _, prop_id, action = parts
+            if not PROPOSAL_ID_RE.match(prop_id):
+                self._reply(400, f"invalid proposal id {prop_id!r}")
+                return
             ok, msg = proposal_action(prop_id, action, qs)
             self._reply(200 if ok else 400, msg)
             return
@@ -315,14 +330,22 @@ class Handler(BaseHTTPRequestHandler):
 
         # POST /append-detail/<id>  (body = additional context to append)
         if len(parts) == 2 and parts[0] == "append-detail":
+            td_id = parts[1]
+            if not TD_ID_RE.match(td_id):
+                self._reply(400, f"invalid id {td_id!r}")
+                return
             body = self._read_body()
-            ok, msg = append_detail(parts[1], body)
+            ok, msg = append_detail(td_id, body)
             self._reply(200 if ok else 400, msg)
             return
 
         # POST /dispatch-now/<id>  (force Bucket B at next pulse)
         if len(parts) == 2 and parts[0] == "dispatch-now":
-            ok, msg = dispatch_now(parts[1])
+            td_id = parts[1]
+            if not TD_ID_RE.match(td_id):
+                self._reply(400, f"invalid id {td_id!r}")
+                return
+            ok, msg = dispatch_now(td_id)
             self._reply(200 if ok else 404, msg)
             return
 
@@ -331,6 +354,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         action, td_id = parts[0], parts[1]
+        if not TD_ID_RE.match(td_id):
+            self._reply(400, f"invalid id {td_id!r}")
+            return
         if action == "remove":
             ok, msg = remove_item(td_id)
             self._reply(200 if ok else 404, msg)
