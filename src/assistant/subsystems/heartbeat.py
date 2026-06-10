@@ -1,14 +1,12 @@
 """HeartbeatSubsystem — the daemon's OWN liveness heartbeat.
 
 Distinct from the pulse heartbeat (~/.assistant/heartbeat.json, written by
-bin/pulse.py and READ by CommsSubsystem's pager) and from comms-listen.py's
-comms heartbeat. This one is the *daemon process* saying "I'm alive": it writes
+bin/pulse.py). This one is the *daemon process* saying "I'm alive": it writes
 ~/.assistant/daemon-heartbeat.json every heartbeat_check_sec with pid + the
 per-subsystem status snapshot, so an external watcher (or a future dashboard
 panel) can tell the single-process daemon is up and which subsystems are live.
 
-It does not page anyone — paging on the *pulse* going stale is CommsSubsystem's
-job. This is purely the daemon's self-report.
+It does not page anyone — this is purely the daemon's self-report.
 """
 from __future__ import annotations
 

@@ -343,12 +343,12 @@ PLIST_STAGE="$(mktemp -d)"
 trap 'rm -rf "$PLIST_STAGE"' EXIT
 
 # Opt-in plists the installer must NEVER copy or load. The single-process
-# daemon (com.mukul.assistant-daemon) is additive: it replaces the pulse +
-# comms agents, so auto-loading it alongside them would run both the daemon's
-# pulse loop AND the legacy pulse timer at once, and two Telegram pollers would
-# collide. It is activated by hand (see the plist's header comment). The pulse
-# self-update runs `install.sh --apply` on any launchagents/ change, so this
-# skip is what keeps a committed plist from auto-starting on the running box.
+# daemon (com.mukul.assistant-daemon) is additive: it replaces the pulse
+# agent, so auto-loading it alongside the legacy pulse timer would run two
+# pulse loops at once. It is activated by hand (see the plist's header
+# comment). The pulse self-update runs `install.sh --apply` on any
+# launchagents/ change, so this skip is what keeps a committed plist from
+# auto-starting on the running box.
 PLIST_SKIP=(
     "com.mukul.assistant-daemon.plist"
 )
@@ -454,11 +454,10 @@ log ""
 
 # --- 6. cmux-watcher LaunchAgent (opt-in: written, NEVER auto-loaded) -------
 # The cmux-watcher taps `cmux events --category agent --reconnect` and drops
-# inbox signals comms-listen.py pings to the phone in seconds. Per the global
+# workspace signals into ~/.assistant/inbox within seconds. Per the global
 # CLAUDE.md lesson ("Always ask before running launchctl load"), this installer
 # WRITES the plist but never loads it — it prints the load command for Mukul to
-# run by hand. The watcher is additive to comms-listen.py (which grows the inbox
-# kqueue loop that consumes these signals); both can run together.
+# run by hand.
 log "[6/6] Writing cmux-watcher LaunchAgent plist (NOT loaded)"
 WATCHER_PLIST="$HOME_DIR/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
 WATCHER_PY="/opt/homebrew/bin/python3"

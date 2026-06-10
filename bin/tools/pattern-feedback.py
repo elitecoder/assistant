@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """pattern-feedback — adjust a cmux-watcher pattern's priority from feedback.
 
-The watcher (bin/cmux-watcher.py) drops an inbox item whenever a pattern fires;
-comms-listen.py pings the phone. Whether that ping was worth sending is feedback
-the system can learn from:
+The watcher (bin/cmux-watcher.py) drops an inbox item whenever a pattern fires.
+Whether that signal was worth surfacing is feedback the system can learn from:
 
-  relevant — the ping mattered. Increment hit_count and boost priority one rung
-             (low → medium → high). A pattern that keeps earning its pings rises.
-  noise    — the ping was not worth it. Increment noise_count. Once
+  relevant — the signal mattered. Increment hit_count and boost priority one rung
+             (low → medium → high). A pattern that keeps earning its signals rises.
+  noise    — the signal was not worth it. Increment noise_count. Once
              noise_count > hit_count * 2, downgrade to "muted" so the watcher
              stops dropping items for it (PatternBank.match() skips muted) —
              without deleting the pattern, so it can be revived later.

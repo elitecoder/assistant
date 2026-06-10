@@ -7,7 +7,7 @@ package pip-installed: it puts the repo's src/ on sys.path and delegates to
 assistant.__main__:main.
 
   bin/assistant-daemon.py                 # run the daemon
-  bin/assistant-daemon.py --dry-run       # pulse only, no Telegram egress
+  bin/assistant-daemon.py --dry-run       # pulse only
   bin/assistant-daemon.py --config <path> # use a specific config.json
   bin/assistant-daemon.py status          # print subsystem status and exit
 """

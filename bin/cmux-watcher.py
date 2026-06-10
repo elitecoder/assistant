@@ -4,7 +4,7 @@
 Mukul's assistant polls workspaces every few minutes via pulse.py. cmux already
 emits Claude Code lifecycle events (via its hook wrapper) and streams them over
 `cmux events`. This watcher subscribes to that stream and turns two classes of
-event into inbox items that comms-listen.py pings to the phone within seconds:
+event into inbox items under ~/.assistant/inbox within seconds:
 
   needs_input   — the agent is waiting on the user (a permission Notification or
                   an AskUserQuestion). Always dropped.
@@ -365,10 +365,10 @@ def drop_inbox_item(ws_ref: str | None, signal_type: str,
                     inbox_dir: Path = INBOX_DIR) -> Path:
     """Atomically write one inbox item. Returns the final path.
 
-    The shape matches what comms-listen.py's inbox loop consumes:
+    The shape is:
         {ts, event, ws_ref, signal_type, pattern_matched, screen_snippet}
     Written to a unique temp file then os.replace'd so a reader never sees a
-    half-written file (the kqueue watcher wakes on the rename)."""
+    half-written file (a kqueue watcher wakes on the rename)."""
     inbox_dir.mkdir(parents=True, exist_ok=True)
     item = {
         "ts": utc_iso(),

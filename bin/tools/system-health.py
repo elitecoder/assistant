@@ -4,8 +4,8 @@
 Reads ~/.assistant/heartbeat.json for pulse_idx + freshness, and shells out to
 `launchctl list` to confirm the pulse LaunchAgent is loaded and grab its PID.
 
-"fresh" vs "stale" uses the same 600s threshold comms_lib defaults to for the
-heartbeat-stale page, so this tool and the pager agree on what "stale" means.
+"fresh" vs "stale" uses a 600s threshold — a pulse older than that means the
+orchestrator has likely stalled.
 
 Returns JSON to stdout:
   {"pulse_idx": 1413, "heartbeat_age_seconds": 35, "heartbeat_status": "fresh",
@@ -28,8 +28,7 @@ HOME = Path.home()
 HEARTBEAT_PATH = HOME / ".assistant" / "heartbeat.json"
 PULSE_LABEL = "com.assistant.assistant-pulse"
 
-# Match comms_lib.Config.stale_heartbeat_sec default so "stale" means the same
-# thing here as in the heartbeat pager.
+# A pulse heartbeat older than this is considered stale.
 STALE_THRESHOLD_SEC = 600
 
 

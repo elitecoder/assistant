@@ -678,7 +678,7 @@ class MainTests(unittest.TestCase):
 
     def test_main_surfaces_screen_error_flag(self):
         rc, d = self._run_main(
-            "workspace:12", "telegram-comms (resumed) [12]", "",
+            "workspace:12", "assistant-task (resumed) [12]", "",
             resolved=self._resolved(screen_text="⏺ API Error: unexpected error",
                                     screen_shows_error=True))
         self.assertEqual(rc, 0)

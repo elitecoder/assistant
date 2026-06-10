@@ -16,9 +16,9 @@ Two signal sources feed one proposal pipeline:
 
 Both passes drop candidates already covered by an existing lesson or a pending
 proposal (idempotency — running twice produces no duplicates), ask Claude
-(one-shot `claude -p`) to write a {trigger, rule, target, scope}, append it to
-proposals.jsonl (atomic single-line append), and ping the user via tg-send.py so
-they can reply `y`.
+(one-shot `claude -p`) to write a {trigger, rule, target, scope}, and append it
+to proposals.jsonl (atomic single-line append) where the user can review and
+confirm it.
 
 Every proposal written OR skipped logs one line to assistant-audit.log. Safe to
 run from pulse.py or standalone. --dry-run prints what it would propose and
@@ -286,10 +286,6 @@ _CONFIRMATION_PATTERNS = [
     re.compile(r"\bthat'?s perfect\b", re.I),
 ]
 
-# Telegram-relayed user turns are prefixed with routing metadata; strip it to
-# recover the human's actual words.
-_TELEGRAM_PREFIX_RE = re.compile(r"^\[telegram[^\]]*\]\s*", re.I)
-
 # System-injected "user" turns we must NOT mistake for the human: tool results,
 # harness reminders, spawn prompts (JSON context blobs starting with { or [),
 # local-command echoes, interrupts, and "Read <path>.md and execute it" prompts.
@@ -392,7 +388,7 @@ class TranscriptScanner:
             text = content
         else:
             return None
-        text = _TELEGRAM_PREFIX_RE.sub("", text).replace("\r", " ").strip()
+        text = text.replace("\r", " ").strip()
         if not text or _SYSTEM_TURN_RE.match(text):
             return None
         return text
@@ -698,15 +694,31 @@ def _run(cmd: list[str], timeout: int = 120,
 
 
 def _bedrock_env() -> dict[str, str]:
-    """Merge ~/.zprofile Bedrock vars onto the env for the headless claude call
-    (launchd doesn't source zprofile). Reuses comms_lib's parser."""
+    """Merge ~/.zprofile Bedrock vars onto the env for the headless claude call.
+
+    launchd does NOT source ~/.zprofile, so a headless `claude --print` spawned
+    from a LaunchAgent would 403 against AWS STS without these. Parse the
+    zprofile directly for the handful of vars Bedrock needs."""
     env = dict(os.environ)
+    zprofile = HOME / ".zprofile"
+    if not zprofile.exists():
+        return env
+    keys = ("CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_PROFILE", "ANTHROPIC_API_KEY")
+    pat = re.compile(r'^\s*export\s+([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*$')
     try:
-        sys.path.insert(0, str(BIN))
-        import comms_lib  # noqa: PLC0415
-        for k, v in comms_lib.load_bedrock_env().items():
+        for line in zprofile.read_text().splitlines():
+            m = pat.match(line)
+            if not m:
+                continue
+            k, v = m.group(1), m.group(2).strip()
+            if k not in keys:
+                continue
+            if (v.startswith('"') and v.endswith('"')) or \
+               (v.startswith("'") and v.endswith("'")):
+                v = v[1:-1]
             env.setdefault(k, v)
-    except Exception:  # noqa: BLE001
+    except OSError:
         pass
     return env
 
@@ -800,42 +812,6 @@ def write_proposal(draft: dict[str, Any], candidate: dict[str, Any],
     return ts
 
 
-def ping_user(trigger: str, proposal_id: str = "",
-              rule: str = "", target: str = "", scope: str = "",
-              runner: Callable[[list[str]], tuple[int, str, str]] | None = None) -> bool:
-    """Send a lesson-proposal ping via whatever transport is configured.
-
-    Format: [target:scope] trigger — what changes (rule summary). Reply y to add.
-    Never raises."""
-    try:
-        import comms_lib  # noqa: PLC0415
-        prefix = f"[{target}:{scope}] " if target and scope else ""
-        # One-line rule summary (first sentence, max 120 chars)
-        rule_summary = ""
-        if rule:
-            first_sentence = rule.split(".")[0].strip()
-            rule_summary = f"\nWhat changes: {first_sentence[:120]}{'…' if len(first_sentence) > 120 else '.'}"
-        pid_hint = f"\nProposal ID: {proposal_id}" if proposal_id else ""
-        body = (f"Lesson proposal: {prefix}{trigger}.{rule_summary}{pid_hint}\n"
-                "Reply y to add it.")
-        config_path = HOME / ".assistant" / "comms" / "config.json"
-        if not config_path.exists():
-            return False
-        _runner = None
-        if runner is not None:
-            import subprocess as _sp  # noqa: PLC0415
-
-            def _runner(argv):  # noqa: E306
-                rc, out, err = runner(argv)
-                r = _sp.CompletedProcess(argv, rc)
-                r.stdout = out.encode() if isinstance(out, str) else out
-                r.stderr = err.encode() if isinstance(err, str) else err
-                return r
-        return comms_lib.send_notification(body, config_path, BIN, kind="reply", runner=_runner)
-    except Exception:  # noqa: BLE001
-        return False
-
-
 # ─── cmux-watcher pattern feedback + discovery ───────────────────────────────
 #
 # The cmux-watcher (bin/cmux-watcher.py) pings the phone the instant a workspace
@@ -858,7 +834,7 @@ FIRED_PATTERNS_LOG = HOME / ".assistant" / "cmux-fired-patterns.jsonl"
 
 # A correction is about notification behavior when it names pinging/notifying.
 _NOTIFICATION_CORRECTION_RE = re.compile(
-    r"\b(ping\w*|notif\w*|alert\w*|messag\w*|telegram)\b", re.I)
+    r"\b(ping\w*|notif\w*|alert\w*|messag\w*)\b", re.I)
 # …and carries a negative/stop sentiment (so neutral mentions of "ping" don't fire).
 _NOTIFICATION_NEGATIVE_RE = re.compile(
     r"\b(stop|don'?t|do not|wasn'?t worth|not worth|too many|quit|no more|"
@@ -1115,10 +1091,8 @@ def run_discovery(*, dry_run: bool = False,
             proposed.append({"dry_run": True, "candidate": c})
             continue
         pid = write_pattern_proposal(c, proposals_path)
-        pinged = ping_user(f"new watcher pattern: {c['sample'][:60]}")
-        audit(f"proposed pattern id={pid} stem={c['stem']!r} count={c['count']} "
-              f"pinged={pinged}")
-        proposed.append({"id": pid, "candidate": c, "pinged": pinged})
+        audit(f"proposed pattern id={pid} stem={c['stem']!r} count={c['count']}")
+        proposed.append({"id": pid, "candidate": c})
     return {"n_candidates": len(cands), "n_proposed": len(proposed),
             "proposed": proposed, "dry_run": dry_run}
 
@@ -1200,15 +1174,10 @@ def extract(*, dry_run: bool = False,
             continue
 
         pid = write_proposal(draft, cand, proposals_path)
-        pinged = ping_user(draft["trigger"], proposal_id=pid,
-                           rule=draft.get("rule", ""),
-                           target=draft.get("target", ""),
-                           scope=draft.get("scope", ""))
         audit(f"proposed id={pid} trigger={draft['trigger']!r} "
               f"from kind={cand['kind']!r} stem={cand['stem']!r} "
-              f"count={cand['count']} pinged={pinged}")
-        proposed.append({"id": pid, "draft": draft, "candidate": cand,
-                         "pinged": pinged})
+              f"count={cand['count']}")
+        proposed.append({"id": pid, "draft": draft, "candidate": cand})
         pending.add(_norm(cand["stem"]))
 
     return {
@@ -1349,8 +1318,6 @@ def run_audit(*, dry_run: bool = False,
         proposals_path.parent.mkdir(parents=True, exist_ok=True)
         with open(proposals_path, "a") as fp:
             fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        summary = f"Lesson audit: {action} {', '.join(slugs)} — {reason}"
-        ping_user(summary, proposal_id=ts, rule=suggested)
         audit(f"lesson audit proposed {action} slugs={slugs} id={ts}")
         proposed.append({"id": ts, "finding": f})
 

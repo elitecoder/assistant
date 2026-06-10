@@ -1,5 +1,5 @@
-"""Tests for bin/cmux-watcher.py + bin/tools/pattern-feedback.py + the
-comms-listen inbox loop + lesson-extractor pattern feedback/discovery.
+"""Tests for bin/cmux-watcher.py + bin/tools/pattern-feedback.py +
+lesson-extractor pattern feedback/discovery.
 
 Loaded by file path (the scripts are hyphenated CLIs, not importable modules).
 Everything is exercised against a tmp HOME so no real inbox / pattern bank is
@@ -132,7 +132,7 @@ class TestInboxDrop(unittest.TestCase):
     def test_inbox_filename_prefix(self):
         path = self.mod.drop_inbox_item(
             "workspace:7", "work_complete", "pr-opened", "x", inbox_dir=self.inbox)
-        # comms-listen consumes cmux-*.json (NOT pulse-*.json).
+        # Inbox signals are cmux-*.json (NOT pulse-*.json).
         self.assertTrue(path.name.startswith("cmux-"))
         self.assertTrue(path.name.endswith(".json"))
 
@@ -368,72 +368,6 @@ class TestPatternFeedback(unittest.TestCase):
         self.mod.main(["--pattern-id", "n", "--feedback", "relevant",
                        "--bank", str(self.bank_path)])
         self.assertEqual(list(self.home.glob("*.tmp")), [])
-
-
-# ─── comms-listen inbox loop (the consumer of cmux-watcher signals) ──────────
-
-class TestCommsInboxLoop(unittest.TestCase):
-    def setUp(self):
-        self._tmp = TemporaryDirectory()
-        self.home = Path(self._tmp.name)
-        (self.home / ".assistant" / "inbox").mkdir(parents=True)
-        # comms-listen reads config at import-time main only; we import the module
-        # and exercise _drain_inbox_once with a stubbed cli().
-        self.env = {"HOME": str(self.home)}
-        self.mod = load_module("comms_listen_mod", "bin/comms-listen.py", self.env)
-        # Point the module's INBOX_DIR at our tmp inbox (HOME was already set, but
-        # the constant was computed at import from the patched HOME).
-        self.inbox = self.mod.INBOX_DIR
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_drain_pings_and_deletes(self):
-        self.inbox.mkdir(parents=True, exist_ok=True)
-        item = {"ts": "2026-06-06T00:00:00Z", "event": "workspace_signal",
-                "ws_ref": "workspace:9", "signal_type": "needs_input",
-                "pattern_matched": "awaiting-review", "screen_snippet": "review?"}
-        (self.inbox / "cmux-workspace-9-x.json").write_text(json.dumps(item))
-        sent = []
-        with mock.patch.object(self.mod, "cli",
-                               lambda argv, **kw: (sent.append(argv) or (0, "{}", ""))):
-            n = self.mod._drain_inbox_once(env={})
-        self.assertEqual(n, 1)
-        self.assertEqual(list(self.inbox.glob("cmux-*.json")), [],
-                         "processed inbox item should be deleted")
-        # tg-send was invoked with an action-kind message.
-        self.assertTrue(any("--kind" in a and "action" in a for a in sent))
-
-    def test_drain_keeps_file_on_send_failure(self):
-        self.inbox.mkdir(parents=True, exist_ok=True)
-        (self.inbox / "cmux-ws-1.json").write_text(json.dumps(
-            {"event": "workspace_signal", "ws_ref": "workspace:1",
-             "signal_type": "work_complete", "pattern_matched": "pr-opened",
-             "screen_snippet": "PR #1"}))
-        with mock.patch.object(self.mod, "cli", lambda argv, **kw: (1, "", "boom")):
-            n = self.mod._drain_inbox_once(env={})
-        self.assertEqual(n, 0)
-        self.assertEqual(len(list(self.inbox.glob("cmux-*.json"))), 1,
-                         "failed send must leave the file for retry")
-
-    def test_drain_removes_malformed(self):
-        self.inbox.mkdir(parents=True, exist_ok=True)
-        (self.inbox / "cmux-bad.json").write_text("{ not json")
-        with mock.patch.object(self.mod, "cli", lambda argv, **kw: (0, "{}", "")):
-            n = self.mod._drain_inbox_once(env={})
-        self.assertEqual(n, 0)
-        self.assertEqual(list(self.inbox.glob("cmux-*.json")), [],
-                         "malformed file should be discarded, not retried forever")
-
-    def test_drain_ignores_pulse_files(self):
-        # pulse-*.json belongs to the mechanical pulse, not this loop.
-        self.inbox.mkdir(parents=True, exist_ok=True)
-        (self.inbox / "pulse-123.json").write_text(json.dumps({"x": 1}))
-        with mock.patch.object(self.mod, "cli", lambda argv, **kw: (0, "{}", "")):
-            n = self.mod._drain_inbox_once(env={})
-        self.assertEqual(n, 0)
-        self.assertTrue((self.inbox / "pulse-123.json").exists(),
-                        "pulse-*.json must be left untouched")
 
 
 if __name__ == "__main__":

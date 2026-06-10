@@ -151,20 +151,11 @@ def test_extract_writes_proposal_and_is_idempotent(tmp_path, monkeypatch):
     ])
     stub = StubLLM()
 
-    # tg-send must never actually run — stub the ping runner.
-    sent = []
-
-    def fake_ping_runner(cmd):
-        sent.append(cmd)
-        return (0, "", "")
-
     r1 = le.extract(ledger_only=True, llm=stub, ledger_path=ledger,
                     proposals_path=proposals,
                     now=2000,
                     curator=tmp_path / "curator.py")
-    # Patch the ping runner indirectly: ping_user used the default _run, which
-    # would try to exec a nonexistent tg-send — that returns rc!=0 but never
-    # raises, so the proposal still gets written. Assert on the write.
+    # The proposal is written to proposals.jsonl for the user to review.
     assert r1["n_proposed"] == 1
     assert proposals.exists()
     lines = [json.loads(x) for x in proposals.read_text().splitlines() if x.strip()]
@@ -351,17 +342,6 @@ def test_transcript_scanner_skips_ismeta_and_sidechain(tmp_path):
     ]})
     # Only the genuine confirmation survives; the meta/sidechain corrections drop.
     assert [c["signal"] for c in cands] == ["confirmation"]
-
-
-def test_transcript_scanner_strips_telegram_prefix(tmp_path):
-    cands = _scan_dir(tmp_path, {"e.jsonl": [
-        _turn("assistant", [{"type": "text", "text": "I closed the workspace."}]),
-        _turn("user", "[telegram chat_id=8188685666 msg_id=12 reply_to=None] "
-                      "No, don't close the workspace on cleanup."),
-    ]})
-    corr = [c for c in cands if c["signal"] == "correction"]
-    assert len(corr) == 1
-    assert not corr[0]["user_signal"].startswith("[telegram")
 
 
 def test_transcript_scanner_ignores_tool_result_user_turns(tmp_path):

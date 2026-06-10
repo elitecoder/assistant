@@ -3,7 +3,7 @@
 Usage:
   python -m assistant                       # run the daemon (all subsystems)
   python -m assistant --config <path>       # use a specific config.json
-  python -m assistant --dry-run             # pulse-only style: no Telegram egress
+  python -m assistant --dry-run             # pulse-only style
   python -m assistant status                # print subsystem status JSON and exit
 
 Logging is structured to ~/.assistant/daemon.log (the path comes from Config),
@@ -46,7 +46,6 @@ def _cmd_status(config: Config) -> int:
         "assistant_dir": str(config.assistant_dir),
         "pid_file": pid,
         "running": is_running(pid),
-        "has_telegram": config.has_telegram,
         "pulse_interval_sec": config.pulse_interval_sec,
     }
     hb = config.daemon_heartbeat_path
@@ -62,13 +61,13 @@ def _cmd_status(config: Config) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="assistant",
-        description="Single-process assistant daemon (pulse + comms + heartbeat).")
+        description="Single-process assistant daemon (pulse + heartbeat).")
     ap.add_argument("command", nargs="?", default="run", choices=["run", "status"],
                     help="run the daemon (default) or print status and exit")
     ap.add_argument("--config", default=None,
                     help="path to config.json (default: ~/.assistant/comms/config.json)")
     ap.add_argument("--dry-run", action="store_true",
-                    help="run the pulse but suppress all Telegram egress")
+                    help="run the pulse in dry-run mode")
     args = ap.parse_args(argv)
 
     config = Config.load(args.config)

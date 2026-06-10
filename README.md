@@ -2,7 +2,7 @@
 
 # 🛰️ Assistant
 
-**Your AI chief of staff — watches a fleet of Claude Code workspaces, keeps you in the loop, and gets smarter the longer you use it.**
+**Your AI chief of staff — watches a fleet of Claude Code workspaces, acts on what's safe, and gets smarter the longer you use it.**
 
 </div>
 
@@ -14,15 +14,11 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
 ```
 
-Prerequisites: `git`, `python3`, and the [`claude` CLI](https://claude.ai/code). The script clones the repo to `~/dev/assistant`, wires up symlinks and LaunchAgent plists, and walks you through transport setup. One manual step at the end: `launchctl load` the two plists.
-
-**Telegram:** create a bot via [@BotFather](https://t.me/BotFather), copy the token, start a chat with the bot to get your chat ID.
-
-**Discord:** create a bot at discord.com/developers/applications, enable the Message Content Intent, invite it to your server (OAuth2 → URL Generator → `bot` scope + Send/Read Messages permissions). Create one text channel per machine (e.g. `#macbook-pro`) — each machine's assistant is given that channel's ID so messages from each machine arrive in their own dedicated channel.
+Prerequisites: `git`, `python3`, and the [`claude` CLI](https://claude.ai/code). The script clones the repo to `~/dev/assistant`, wires up symlinks and LaunchAgent plists. One manual step at the end: `launchctl load` the plists.
 
 ## What it is
 
-Spin up a dozen Claude Code agents in parallel and walk away. Assistant watches them while you're gone — merging PRs, cleaning up finished work, nudging stalled agents — and texts you the moment something needs your attention. When you reply from your phone, a warm Claude session answers in seconds with a full picture of what's going on.
+Spin up a dozen Claude Code agents in parallel and walk away. Assistant watches them while you're gone — merging PRs, cleaning up finished work, nudging stalled agents — and surfaces what needs your attention on its dashboard.
 
 The longer you use it, the smarter it gets. It reads your own session history to find patterns, turns corrections and confirmations into rules, and asks if you want to keep them. Confirmed rules sync across all your machines automatically.
 
@@ -32,16 +28,13 @@ The longer you use it, the smarter it gets. It reads your own session history to
 
 **🚀 Dispatch TODOs while keeping the fleet from overloading.** A TODO flagged `autoDispatch=true` that's never been spawned gets picked up by the next pulse and dropped into a *fresh* cmux workspace — prompt staged on disk, delivered to the surface, confirmed by watching the transcript grow. Load is bounded by hard caps: at most `ACTIVE_WS_CAP=5` busy workspaces, `TOTAL_WS_CAP=30` total, and `MAX_DISPATCH_PER_PULSE=2` new spawns per cycle. Hit a cap and dispatch waits — the fleet never runs away from you.
 
-**🧠 Turn corrections into rules, then into memory.** `lesson-extractor.py` scans your recent Claude Code transcripts and the action ledger for corrections, confirmations, and recurring questions, and distills lesson candidates. Each one is pitched to you over Telegram/Discord — reply `confirm <id>` and it's routed to the right store (one of `claude` / `assistant` / `ffp` / `archffp` / `assistant-repo`), then mirrored into the Obsidian vault and synced to the cross-machine memory repo that feeds Mem0 semantic memory. Nothing is added without your `confirm`.
+**🧠 Turn corrections into rules, then into memory.** `lesson-extractor.py` scans your recent Claude Code transcripts and the action ledger for corrections, confirmations, and recurring questions, and distills lesson candidates into a proposals queue for you to review. Confirm one and it's routed to the right store (one of `claude` / `assistant` / `ffp` / `archffp` / `assistant-repo`), then mirrored into the Obsidian vault and synced to the cross-machine memory repo that feeds Mem0 semantic memory. Nothing is added without your confirmation.
 
-**📱 Reach you on Telegram or Discord.** `comms-listen.py` is one daemon for both transports — it pages you when a workspace needs attention and answers when you reply, with a warm Claude session that already has the fleet's state loaded. Pick your transport during install.
-
-**👋 Nudge stalled work and move the safe stuff forward.** Each pulse the Observer emits one verdict per workspace, and Python — not the model — turns it into an action. `ready_for_merge` queues `/merge-when-ready`; `ready_for_cleanup` sends `/cleanup` (only on workspaces *it* queued the merge for, and only once a work receipt exists); `stranded` nudges the idle agent with what failed and a retry; `needs_user` pages you and does nothing else. Autonomy is fenced by a back-off list, the work-receipt gate, the assistant-merge ledger, and `NO_INGEST_GUARD`.
+**👋 Nudge stalled work and move the safe stuff forward.** Each pulse the Observer emits one verdict per workspace, and Python — not the model — turns it into an action. `ready_for_merge` queues `/merge-when-ready`; `ready_for_cleanup` sends `/cleanup` (only on workspaces *it* queued the merge for, and only once a work receipt exists); `stranded` nudges the idle agent with what failed and a retry; `needs_user` surfaces an awaiting card and does nothing else. Autonomy is fenced by a back-off list, the work-receipt gate, the assistant-merge ledger, and `NO_INGEST_GUARD`.
 
 ## Entry points
 
 - `bin/pulse.py` — the main orchestrator loop, runs every 5 min via LaunchAgent
-- `bin/comms-listen.py` — the comms daemon (inbound + outbound pings + heartbeat page; supports Telegram and Discord)
 - `bin/cmux-watcher.py` — event-driven workspace signal delivery (opt-in LaunchAgent)
 - `bin/assistant-curator.py` — lesson/rule management across all five stores
 - `bin/tool-dispatch.py` — named tool dispatcher (`bin/tools-manifest.json`)
@@ -67,22 +60,20 @@ These are structural, not just conventions — violating them will cause real pr
 
 - **Never close a cmux workspace.** The orchestrator sends slash commands into workspaces; it never reaches in and closes them. That's the user's call. `/cleanup` is additionally gated on a work receipt existing.
 - **Never `launchctl load` automatically.** `install.sh` writes plists but never loads them. The cmux-watcher and single-process daemon plists are opt-in and always loaded by hand.
-- **Never widen your own permissions.** The warm comms session can edit `~/dev/assistant` (self-improvement) but not `~/.claude` global rules. `/update-config` from an agent is blocked.
-- **Never send messages without confirmation.** All sends go through `bin/tg-send.py` (Telegram) or `bin/discord-send.py` (Discord). Mutations (lesson add, restart, respawn) require a human `y` on a separate message.
+- **Never widen your own permissions.** Self-improvement edits stay within `~/dev/assistant`, never `~/.claude` global rules. `/update-config` from an agent is blocked.
 - **Never trust the header port for archffp teardown.** When two archffp worktrees run concurrently, vite falls back to PORT+1 but the header still shows the original port. Always reconcile against the real listening PID before killing anything.
 
 ## Gotchas
 
 - **Self-update refuses a dirty or ahead tree.** `self_update.py` does `git pull --ff-only` only. A dirty tree is surfaced, never steamrolled.
 - **NO_INGEST_GUARD:** if the last send to a workspace returned `transcript_size_delta=0` (cmux sent OK but no Claude process was reading), the orchestrator skips the next resend. This breaks the cleanup-resend-loop class of bug structurally.
-- **The single-process daemon (`src/assistant/`) is opt-in.** The legacy two-LaunchAgent model (pulse + comms) keeps running until you explicitly switch over.
+- **The single-process daemon (`src/assistant/`) is opt-in.** The legacy pulse LaunchAgent keeps running until you explicitly switch over.
 - **mem0ai requires Python 3.12.** It lives in `.venv-mem0`; `ensure_venv()` transparently re-execs tools into that interpreter.
-- **The inbox is kqueue-watched, not polled.** `comms-listen.py` uses `select.kqueue()` for instant delivery when `cmux-watcher.py` drops an event. The poll fallback is Linux only.
 
 ## Testing
 
 ```bash
-python3 -m unittest discover tests -v    # 29 test files, no LLM
+python3 -m unittest discover tests -v    # 35 test files, no LLM
 cd evals/observer && ./run.py            # 13 real-transcript fixtures × Observer
 ```
 

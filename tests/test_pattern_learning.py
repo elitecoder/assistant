@@ -36,7 +36,7 @@ le = _load("lesson_extractor_pl", "lesson-extractor.py")
 def test_is_notification_correction_positive():
     assert le.is_notification_correction("stop pinging me about that")
     assert le.is_notification_correction("that ping wasn't worth it")
-    assert le.is_notification_correction("too many telegram alerts, quiet down")
+    assert le.is_notification_correction("too many alerts, quiet down")
 
 
 def test_is_notification_correction_negative():

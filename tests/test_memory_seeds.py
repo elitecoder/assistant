@@ -375,7 +375,7 @@ def test_decision_seeds(ms, tmp_path, monkeypatch):
     f.write_text("\n".join([
         _msg("let's go with mem0"),                          # directive one-liner
         _msg("We decided to use Lit for the timeline"),      # prose pattern
-        _msg("[telegram chat=1] lets ship it"),              # TG prefix stripped
+        _msg("lets ship it"),                                # directive one-liner
         _msg("approving the auto-merge queue config"),       # _DECISION_SKIP noise
         _msg("let's go with mem0"),                          # dup of first -> deduped
         _msg("x"),                                           # too short -> ignored
@@ -390,8 +390,6 @@ def test_decision_seeds(ms, tmp_path, monkeypatch):
     assert any("let's go with mem0" in c for c in fragments)
     assert any("decided to use Lit" in c for c in fragments)
     assert any("lets ship it" in c for c in fragments)
-    # TG prefix removed, not present in any captured fragment
-    assert "[telegram" not in bodies
     # auto-merge noise filtered out
     assert "auto-merge" not in bodies
     # dedup: "let's go with mem0" appears exactly once

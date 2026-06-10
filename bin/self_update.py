@@ -28,10 +28,10 @@ location-independent — a user who installed it anywhere, not just
      ASSISTANT_SELF_UPDATE=1 tells install.sh to skip reloading the pulse's
      OWN plist (reloading it mid-pulse would kill this very process).
 
-Returns a result dict the caller logs to the actions-ledger, so the comms
-daemon pings the phone when Assistant updates itself. Never raises for an
-operational failure — git/install problems come back as a dict the caller
-records; only genuinely unexpected bugs propagate.
+Returns a result dict the caller logs to the actions-ledger, so a self-update
+shows up on the dashboard. Never raises for an operational failure — git/install
+problems come back as a dict the caller records; only genuinely unexpected bugs
+propagate.
 """
 from __future__ import annotations
 

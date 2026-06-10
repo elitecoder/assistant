@@ -86,11 +86,11 @@ def test_load_manifest_bad_json_raises(tmp_path: Path):
         td.load_manifest(p)
 
 
-def test_real_manifest_loads_and_has_six_tools():
+def test_real_manifest_loads_and_has_core_tools():
     manifest = td.load_manifest()
     names = {t["name"] for t in manifest}
     assert {"fleet_status", "workspace_peek", "recent_actions",
-            "thread_context", "propose_lesson", "system_health"} <= names
+            "propose_lesson", "system_health"} <= names
 
 
 # ─── end-to-end dispatch (real subprocess) ───────────────────────────────────

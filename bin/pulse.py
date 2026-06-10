@@ -74,9 +74,8 @@ AGENT_TOOLS_MCP_CONFIG = REPO / "config/agent-tools-mcp.json"
 SPAWN_SKILL = HOME / ".claude/skills/spawn-claude-workspace/SKILL.md"
 
 # Work-receipt gate: pulse.py consults pre-cleanup-check.py before sending
-# /cleanup, and pings the phone via tg-send.py when the gate blocks.
+# /cleanup, and surfaces an awaiting card when the gate blocks.
 PRE_CLEANUP_CHECK = BIN / "pre-cleanup-check.py"
-TG_SEND = BIN / "tg-send.py"
 
 # TODO dispatch: where the source list lives, where staged prompts go, and the
 # cmux CLI. The staged-prompt dir + 7-day sweep mirror the spawn-claude-workspace
@@ -279,8 +278,8 @@ def self_update_pulse(pulse_idx: int) -> None:
     Imported lazily so a broken/absent self_update module can never stop the
     pulse from doing its real job. Every outcome that did real work (a pull, a
     skip-because-dirty, a failure) lands on the actions-ledger so it shows on
-    the dashboard and pings the phone via comms. A plain throttle (None) or a
-    clean already-up-to-date result is silent — no ledger spam every pulse."""
+    the dashboard. A plain throttle (None) or a clean already-up-to-date
+    result is silent — no ledger spam every pulse."""
     try:
         sys.path.insert(0, str(BIN))
         import self_update  # noqa: PLC0415
@@ -596,13 +595,6 @@ def previous_send_ingested(ws_ref: str, text: str) -> bool:
 
 # ─── work-receipt gate ────────────────────────────────────────────────────
 
-CLEANUP_PING_LEDGER = ASSISTANT_DIR / "cleanup-pings.jsonl"
-# Don't re-ping the phone for the same un-receipted workspace every 2-min
-# pulse. Once per workspace per cooldown window is plenty; the awaiting card
-# keeps the ask visible on the dashboard in between.
-CLEANUP_PING_COOLDOWN_SEC = int(os.environ.get("CLEANUP_PING_COOLDOWN_SEC", str(6 * 3600)))
-
-
 def pre_cleanup_check(ws_ref: str) -> dict:
     """Run pre-cleanup-check.py for ws_ref; return its gate dict.
 
@@ -621,55 +613,6 @@ def pre_cleanup_check(ws_ref: str) -> dict:
         log.warning("pre-cleanup-check %s bad json: %s", ws_ref, e)
         return {"gate": "block", "reason": "gate bad output",
                 "evidence": (out or "")[:200], "ws_ref": ws_ref}
-
-
-def _cleanup_ping_recent(ws_ref: str, now: int) -> bool:
-    """True iff we pinged for this ws_ref within the cooldown window. Read-only;
-    never raises on a missing/corrupt ledger."""
-    if not CLEANUP_PING_LEDGER.exists():
-        return False
-    try:
-        for line in reversed(CLEANUP_PING_LEDGER.read_text().splitlines()):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-            if rec.get("ws_ref") == ws_ref:
-                return (now - int(rec.get("ts", 0))) < CLEANUP_PING_COOLDOWN_SEC
-    except Exception:
-        return False
-    return False
-
-
-def send_cleanup_confirmation_ping(ws: dict, verdict: dict, evidence: str) -> bool:
-    """Ping the user that an un-receipted workspace looks done and
-    needs the user's call before /cleanup. Cooldown-guarded so the same
-    workspace pings at most once per CLEANUP_PING_COOLDOWN_SEC. Returns True iff
-    a ping was actually sent. Never raises — comms is best-effort."""
-    import comms_lib  # noqa: PLC0415
-    ws_ref = ws["ref"]
-    now = utc_ts()
-    if _cleanup_ping_recent(ws_ref, now):
-        return False
-    project = (ws.get("title") or "").strip() or ws_ref
-    ev = (evidence or (verdict.get("summary") or "")).strip()
-    text = (f"{project} is ready to close. {ev} "
-            "Reply y to close or n to keep open.").strip()
-    config_path = HOME / ".assistant" / "comms" / "config.json"
-    ok = comms_lib.send_notification(text, config_path, BIN, kind="action")
-    if not ok:
-        log.warning("cleanup-ping %s send_notification failed", ws_ref)
-        return False
-    try:
-        CLEANUP_PING_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-        with open(CLEANUP_PING_LEDGER, "a") as f:
-            f.write(json.dumps({"ws_ref": ws_ref, "ts": now}) + "\n")
-    except Exception as e:
-        log.warning("cleanup-ping %s ledger write failed: %s", ws_ref, e)
-    return True
 
 
 # ─── verdict execution ──────────────────────────────────────────────────────
@@ -734,19 +677,18 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
 
     # Work-receipt gate: even a merge-eligible /cleanup must NOT fire until a
     # work receipt exists for this workspace (the audit trail of what shipped).
-    # No receipt → downgrade to an awaiting card AND ping the phone so the user
-    # can confirm the close (or write the receipt) before the session is torn
-    # down. A receipt destroyed alongside the workspace is unrecoverable.
+    # No receipt → downgrade to an awaiting card so the user can confirm the
+    # close (or write the receipt) before the session is torn down. A receipt
+    # destroyed alongside the workspace is unrecoverable.
     if kind == "ready_for_cleanup":
         gate = pre_cleanup_check(ws_ref)
         if gate.get("gate") == "block":
-            send_cleanup_confirmation_ping(ws, verdict, gate.get("evidence", ""))
             title = f"{ws_ref} ready to close — confirm /cleanup"
             detail = (
                 f"Observer says: {(verdict.get('summary') or '').strip()[:600]}\n\n"
                 f"No work receipt on file ({gate.get('reason', 'no receipt')}). "
-                "/cleanup is held until you confirm. Reply y to the phone ping "
-                "to close, or close this card to dismiss."
+                "/cleanup is held until you confirm. Run /cleanup yourself to "
+                "close, or close this card to dismiss."
             )
             awaiting.append({
                 "key": f"{ws_ref}:cleanup-no-receipt",
@@ -1158,7 +1100,7 @@ def main() -> int:
     #    makes code + Observer-prompt changes live on the very next pulse;
     #    skills/plists/hooks go through install.sh --apply. Refuses to touch a
     #    dirty or ahead repo — it surfaces, never discards. Logged to the
-    #    actions-ledger so comms can ping the phone on a self-update.
+    #    actions-ledger so it shows on the dashboard.
     if not dry_run:
         self_update_pulse(pulse_idx)
 

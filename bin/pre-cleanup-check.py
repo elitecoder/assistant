@@ -10,9 +10,8 @@ was reviewable. So:
   no receipt                      -> {"gate": "block", "reason": "no receipt",
                                       "evidence": "..."}
 
-On a block, pulse.py emits a needs_user card + Telegram ping instead of
-cleaning up. On a pass, cleanup proceeds and the receipt_path is attached to
-the ledger entry.
+On a block, pulse.py emits a needs_user card instead of cleaning up. On a
+pass, cleanup proceeds and the receipt_path is attached to the ledger entry.
 
 Receipt lookup: glob ~/.assistant/receipts/<ws_ref_slug>-*.json, newest by
 mtime wins (a workspace can be receipted more than once across its life — the

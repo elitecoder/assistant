@@ -8,8 +8,7 @@
 #   1. Checks prerequisites (git, python3, claude CLI)
 #   2. Clones the repo to ~/dev/assistant (or pulls if already present)
 #   3. Runs install.sh --apply  (symlinks skills, copies plists)
-#   4. Runs assistant-comms-setup.sh  (configures Telegram or Discord)
-#   5. Prints next steps (manual launchctl load)
+#   4. Prints next steps (manual launchctl load)
 #
 # Idempotent — safe to re-run for updates.
 
@@ -58,26 +57,15 @@ ok "repo ready at ${REPO_DIR}"
 info "Running install.sh --apply"
 bash "${REPO_DIR}/install.sh" --apply
 
-# --------------------------------------------------------------------------- comms setup
-info "Configuring messaging transport (Telegram or Discord)"
-bash "${REPO_DIR}/bin/assistant-comms-setup.sh"
-
 # --------------------------------------------------------------------------- done
 cat <<'DONE'
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Assistant installed.
 
-  One manual step remaining — load the LaunchAgents so
-  everything starts on boot (and right now):
+  One manual step remaining — load the pulse LaunchAgent so
+  the orchestrator starts on boot (and right now):
 
-    launchctl load -w ~/Library/LaunchAgents/com.assistant.pulse.plist
-    launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
-
-  Test comms first in foreground before loading launchd:
-    python3 ~/dev/assistant/bin/comms-listen.py
-
-  Logs:
-    ~/dev/architect/orchestrator-logs/assistant-comms.launchd.{out,err}
+    launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DONE

@@ -23,14 +23,6 @@
     "script": "bin/tools/recent-actions.py"
   },
   {
-    "name": "thread_context",
-    "description": "Recent Telegram conversation thread",
-    "args": [
-      {"name": "chat", "type": "string", "required": true, "help": "chat_id"}
-    ],
-    "script": "bin/tools/thread-context.py"
-  },
-  {
     "name": "propose_lesson",
     "description": "Record a lesson proposal for the user to confirm",
     "args": [

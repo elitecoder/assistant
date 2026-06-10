@@ -30,7 +30,6 @@ from typing import Any, Iterable
 
 HOME = Path.home()
 CLAUDE_MD = HOME / ".claude" / "CLAUDE.md"
-WARM_PROMPT = HOME / "dev" / "assistant" / "prompts" / "prompt-assistant-comms-warm.md"
 PROPOSALS = HOME / ".assistant" / "comms" / "proposals.jsonl"
 LEDGER = HOME / ".assistant" / "actions-ledger.jsonl"
 OBSERVER_REPORT = HOME / ".assistant" / "observer-latest-report.json"
@@ -100,8 +99,8 @@ _WORKING_STYLE = [
      "'let's build' / 'go' / 'proceed' / 'ship it' → execute without "
      "re-summarizing or re-listing options. Stand by silently when nothing is "
      "actionable.", "confirmed proposal"),
-    ("Wants terse Telegram replies, not bullet walls",
-     "The warm assistant texts like someone who respects his time: short by "
+    ("Wants terse replies, not bullet walls",
+     "The assistant writes like someone who respects his time: short by "
      "default, more only when it earns it. Never surface workspace IDs or "
      "internal refs — translate to what actually happened.", "warm prompt"),
     ("Lead status updates with the work, push IDs to the end",
@@ -347,7 +346,7 @@ _DECISION_PATTERNS = [
     re.compile(r"\blet'?s go with\b[^.\n]{0,160}", re.I),
 ]
 # A short, directive user message is itself a decision — these are the
-# telegram-style one-liners ("yes, lets ship this work", "Let's do both").
+# terse one-liners ("yes, lets ship this work", "Let's do both").
 _DECISION_DIRECTIVE = re.compile(
     r"\b(let'?s|lets|go with|i want|i prefer|ship it|merge|stick with|"
     r"switch to|use mem0|do both|fix .* first|forget about|skip the|drop the)\b",
@@ -355,8 +354,6 @@ _DECISION_DIRECTIVE = re.compile(
 # Noise filter — skip matches that are clearly not Mukul's product/arch calls.
 _DECISION_SKIP = ("approved=", "reviewdecision", "auto-merge", "approvals",
                   "the user explicitly approved", "read /users")
-# Strip the daemon's telegram envelope prefix from a captured message.
-_TG_PREFIX = re.compile(r"^\[telegram[^\]]*\]\s*", re.I)
 
 
 def _iter_user_texts(path: Path) -> Iterable[str]:
@@ -398,7 +395,7 @@ def decision_seeds(limit: int = 15, scan_files: int = 50) -> list[dict[str, Any]
 
     def _emit(frag: str, date: str) -> bool:
         """Add a decision seed; return True once the limit is reached."""
-        frag = _TG_PREFIX.sub("", " ".join(frag.split())).strip()
+        frag = " ".join(frag.split()).strip()
         low = frag.lower()
         if not frag or any(s in low for s in _DECISION_SKIP):
             return False
@@ -421,7 +418,7 @@ def decision_seeds(limit: int = 15, scan_files: int = 50) -> list[dict[str, Any]
             if len(text) > 2000:  # skip giant pasted specs
                 continue
             # A short directive one-liner is the decision itself.
-            stripped = _TG_PREFIX.sub("", " ".join(text.split())).strip()
+            stripped = " ".join(text.split()).strip()
             if 5 < len(stripped) < 220 and _DECISION_DIRECTIVE.search(stripped):
                 if _emit(stripped, date):
                     return seeds

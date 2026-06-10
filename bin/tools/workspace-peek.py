@@ -2,7 +2,7 @@
 """workspace-peek — live terminal screen for one workspace.
 
 cmux has no `read-screen --workspace` verb. The sanctioned path (mirrored from
-pulse.py / comms_session.py) is two RPCs:
+pulse.py) is two RPCs:
   1. `cmux list-pane-surfaces --workspace <ws>` → resolve a `surface:N` ref.
   2. `cmux rpc surface.read_text {"surface_id": <surface>, "lines": N}` →
      the rendered screen text.

@@ -1,8 +1,8 @@
 """daemon — the single-process DaemonProcess that owns every subsystem.
 
 One process, one thread per subsystem, one shared Config + shutdown Event.
-Replaces the two-LaunchAgent model (pulse timer + comms KeepAlive daemon) with
-one binary while leaving every file-based interface untouched.
+Replaces the pulse-timer LaunchAgent with one binary while leaving every
+file-based interface untouched.
 
 Lifecycle:
   start()  — write PID file, start each subsystem thread.
@@ -20,7 +20,6 @@ from pathlib import Path
 
 from .config import Config
 from .subsystems import Subsystem
-from .subsystems.comms import CommsSubsystem
 from .subsystems.heartbeat import HeartbeatSubsystem
 from .subsystems.pulse import PulseSubsystem
 from .subsystems.tools import ToolSubsystem
@@ -57,15 +56,13 @@ class DaemonProcess:
     def _build_subsystems(self) -> list[Subsystem]:
         common = (self.config, self.stop_event, self.log)
         pulse = PulseSubsystem(*common, dry_run=self.dry_run)
-        comms = CommsSubsystem(*common, send_enabled=not self.dry_run)
         tools = ToolSubsystem(*common)
         heartbeat = HeartbeatSubsystem(
             *common, status_provider=lambda: self._collect_status(
                 exclude="heartbeat"))
         # Order matters only for the status snapshot; threads run concurrently.
-        self._named = {"pulse": pulse, "comms": comms,
-                       "tools": tools, "heartbeat": heartbeat}
-        return [pulse, comms, tools, heartbeat]
+        self._named = {"pulse": pulse, "tools": tools, "heartbeat": heartbeat}
+        return [pulse, tools, heartbeat]
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 

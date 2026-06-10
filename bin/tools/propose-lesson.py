@@ -104,29 +104,6 @@ def _read_proposals(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _ping_proposal(entry: dict[str, Any]) -> None:
-    """Best-effort ping when a new proposal is recorded. Respects transport config. Never raises."""
-    try:
-        sys.path.insert(0, str(REPO / "bin"))
-        import comms_lib  # noqa: PLC0415
-        comms_cfg = HOME / ".assistant" / "comms" / "config.json"
-        if not comms_cfg.exists():
-            return
-        trigger = entry.get("trigger", "")[:80]
-        rule = entry.get("rule", "")[:120]
-        source = entry.get("source", "manual")
-        pid = entry.get("id", "")
-        text = (
-            f"New lesson proposal ({source}):\n"
-            f"Trigger: {trigger}\n"
-            f"Rule: {rule}...\n"
-            f"Reply 'confirm {pid}' to apply, or ignore to skip."
-        )
-        comms_lib.send_notification(text, comms_cfg, REPO / "bin", kind="reply")
-    except Exception:  # noqa: BLE001
-        pass
-
-
 def record_proposal(trigger: str, rule: str, target: str, scope: str,
                     source: str, path: Path = PROPOSALS_PATH) -> dict[str, Any]:
     ts = utc_iso_us()
@@ -144,7 +121,6 @@ def record_proposal(trigger: str, rule: str, target: str, scope: str,
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    _ping_proposal(entry)
     return {"status": "recorded", "proposal_id": ts}
 
 

@@ -1,14 +1,12 @@
 """Coverage top-up for bin/pulse.py — fills the uncovered branches the existing
 tests/test_pulse.py leaves open: self_update_pulse outcome mapping, the TODO
 dispatch path (dispatch_todo + _mark_todo_dispatched + _build_dispatch_prompt +
-_cmux_rpc + _surface_read_text), the work-receipt cleanup-ping gate
-(pre_cleanup_check, _cleanup_ping_recent, send_cleanup_confirmation_ping),
+_cmux_rpc + _surface_read_text), the work-receipt gate (pre_cleanup_check),
 run_lesson_extractor, and a drain_inbox unlink-failure edge.
 
 Every external boundary is faked: pulse.run / pulse._cmux_rpc /
-pulse._surface_read_text / comms_lib.send_notification are monkeypatched, and
-time.sleep is neutralized in the dispatch tests. No real cmux / claude / git /
-bash / LLM ever runs.
+pulse._surface_read_text are monkeypatched, and time.sleep is neutralized in
+the dispatch tests. No real cmux / claude / git / bash / LLM ever runs.
 """
 from __future__ import annotations
 
@@ -16,7 +14,6 @@ import importlib.util
 import json
 import os
 import sys
-import types
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -321,33 +318,26 @@ def test_mark_todo_dispatched_write_failure_returns_false(mod):
 
 def test_execute_verdict_cleanup_blocked_by_receipt_gate(mod, home):
     """ready_for_cleanup that passes the merge gate but fails the work-receipt
-    gate → ping the phone + emit an awaiting card, never send /cleanup."""
+    gate → emit an awaiting card, never send /cleanup."""
     # Open the merge gate so we reach the receipt gate.
     mod.record_assistant_merge("workspace:9", ["111"])
     sent = []
     awaiting = []
-    fake = _fake_comms(True)
-    sys.modules["comms_lib"] = fake
-    try:
-        with mock.patch.object(mod, "pre_cleanup_check",
-                               return_value={"gate": "block", "reason": "no receipt",
-                                             "evidence": "no receipt on file"}):
-            with mock.patch.object(mod, "cmux_send",
-                                   lambda *a, **k: sent.append(a) or {"outcome": "sent"}):
-                action = mod.execute_verdict(
-                    {"ref": "workspace:9", "title": "Ruler fix", "cwd": "/"},
-                    {"verdict": "ready_for_cleanup", "summary": "looks done", "next": "n"},
-                    awaiting,
-                )
-    finally:
-        sys.modules.pop("comms_lib", None)
+    with mock.patch.object(mod, "pre_cleanup_check",
+                           return_value={"gate": "block", "reason": "no receipt",
+                                         "evidence": "no receipt on file"}):
+        with mock.patch.object(mod, "cmux_send",
+                               lambda *a, **k: sent.append(a) or {"outcome": "sent"}):
+            action = mod.execute_verdict(
+                {"ref": "workspace:9", "title": "Ruler fix", "cwd": "/"},
+                {"verdict": "ready_for_cleanup", "summary": "looks done", "next": "n"},
+                awaiting,
+            )
     assert sent == [], "/cleanup must NOT fire when the receipt gate blocks"
     assert action["kind"] == "emit-card"
     assert "blocked /cleanup" in action["evidence"]
     assert len(awaiting) == 1
     assert awaiting[0]["key"] == "workspace:9:cleanup-no-receipt"
-    # The phone ping was attempted.
-    assert fake._calls, "send_cleanup_confirmation_ping must have pinged"
 
 
 def test_execute_verdict_cleanup_allowed_when_receipt_present(mod, home):
@@ -461,103 +451,6 @@ def test_pre_cleanup_check_blocks_on_bad_json(mod):
     assert out["gate"] == "block"
     assert out["reason"] == "gate bad output"
     assert "garbage-not-json" in out["evidence"]
-
-
-# ─── _cleanup_ping_recent ─────────────────────────────────────────────────────
-
-def test_cleanup_ping_recent_missing_ledger_false(mod):
-    assert mod._cleanup_ping_recent("workspace:1", now=10_000) is False
-
-
-def test_cleanup_ping_recent_true_within_cooldown(mod):
-    mod.CLEANUP_PING_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    mod.CLEANUP_PING_LEDGER.write_text(
-        json.dumps({"ws_ref": "workspace:1", "ts": 9_000}) + "\n")
-    # cooldown default 6h = 21600; 100s after the ping → recent.
-    assert mod._cleanup_ping_recent("workspace:1", now=9_100) is True
-
-
-def test_cleanup_ping_recent_false_when_old(mod):
-    mod.CLEANUP_PING_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    mod.CLEANUP_PING_LEDGER.write_text(
-        json.dumps({"ws_ref": "workspace:1", "ts": 1_000}) + "\n")
-    # 100000s later, well past the 6h cooldown.
-    assert mod._cleanup_ping_recent("workspace:1", now=101_000) is False
-
-
-def test_cleanup_ping_recent_skips_corrupt_lines(mod):
-    mod.CLEANUP_PING_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    mod.CLEANUP_PING_LEDGER.write_text(
-        "{ not json\n"
-        + json.dumps({"ws_ref": "workspace:1", "ts": 9_000}) + "\n")
-    assert mod._cleanup_ping_recent("workspace:1", now=9_100) is True
-
-
-# ─── send_cleanup_confirmation_ping ───────────────────────────────────────────
-
-def _fake_comms(send_result: bool):
-    """Inject a fake comms_lib into sys.modules so the function's
-    `import comms_lib` picks it up rather than the real module."""
-    fake = types.ModuleType("comms_lib")
-    calls = []
-
-    def send_notification(text, config_path, bin_dir, kind="action"):
-        calls.append({"text": text, "kind": kind})
-        return send_result
-
-    fake.send_notification = send_notification
-    fake._calls = calls
-    return fake
-
-
-def test_send_cleanup_ping_sends_and_logs(mod, home):
-    fake = _fake_comms(True)
-    sys.modules["comms_lib"] = fake
-    try:
-        ok = mod.send_cleanup_confirmation_ping(
-            {"ref": "workspace:4", "title": "Ruler fix"},
-            {"summary": "all green"},
-            "no receipt on file",
-        )
-    finally:
-        sys.modules.pop("comms_lib", None)
-    assert ok is True
-    assert fake._calls, "send_notification must be called"
-    assert "Ruler fix" in fake._calls[0]["text"]
-    assert "no receipt on file" in fake._calls[0]["text"]
-    # Ledger line written.
-    lines = mod.CLEANUP_PING_LEDGER.read_text().splitlines()
-    assert json.loads(lines[0])["ws_ref"] == "workspace:4"
-
-
-def test_send_cleanup_ping_skips_when_recent(mod, home):
-    # Pre-seed a recent ping so the cooldown guard fires.
-    mod.CLEANUP_PING_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    mod.CLEANUP_PING_LEDGER.write_text(
-        json.dumps({"ws_ref": "workspace:4", "ts": mod.utc_ts()}) + "\n")
-    fake = _fake_comms(True)
-    sys.modules["comms_lib"] = fake
-    try:
-        ok = mod.send_cleanup_confirmation_ping(
-            {"ref": "workspace:4", "title": "x"}, {"summary": "s"}, "ev")
-    finally:
-        sys.modules.pop("comms_lib", None)
-    assert ok is False
-    assert fake._calls == [], "must not send when within cooldown"
-
-
-def test_send_cleanup_ping_returns_false_when_send_fails(mod, home):
-    fake = _fake_comms(False)
-    sys.modules["comms_lib"] = fake
-    try:
-        ok = mod.send_cleanup_confirmation_ping(
-            {"ref": "workspace:4", "title": "x"}, {"summary": "s"}, "ev")
-    finally:
-        sys.modules.pop("comms_lib", None)
-    assert ok is False
-    assert fake._calls, "send_notification was attempted"
-    # No ledger line written on failure.
-    assert not mod.CLEANUP_PING_LEDGER.exists()
 
 
 # ─── run_lesson_extractor ─────────────────────────────────────────────────────

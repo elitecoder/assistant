@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "assistant-daemon"
 version = "0.1.0"
-description = "Single-process daemon for the mechanical Assistant orchestrator (pulse + comms + heartbeat)."
+description = "Single-process daemon for the mechanical Assistant orchestrator (pulse + heartbeat)."
 requires-python = ">=3.11"
 # No external dependencies — stdlib only. The pulse/observer/tool scripts the
 # daemon supervises live under bin/ and are invoked as subprocesses.

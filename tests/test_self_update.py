@@ -113,7 +113,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertTrue(c["touches_self_plist"])
 
     def test_other_plist_change_not_self(self):
-        c = su.classify_changed_paths(["launchagents/com.assistant.assistant-comms.plist"])
+        c = su.classify_changed_paths(["launchagents/com.assistant.workspace-watcher.plist"])
         self.assertTrue(c["needs_install"])
         self.assertFalse(c["touches_self_plist"])
 

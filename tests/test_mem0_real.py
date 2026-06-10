@@ -77,7 +77,7 @@ def test_mem0_add_is_idempotent(backend):
 def test_mem0_search_returns_relevant(backend):
     backend.add("Squirrel timeline uses Lit web components with MobX state",
                 {"category": "project"})
-    backend.add("Mukul prefers terse Telegram replies, not bullet walls",
+    backend.add("Mukul prefers terse replies, not bullet walls",
                 {"category": "working_style"})
     hits = backend.search("which UI framework does the timeline editor use", limit=1)
     assert len(hits) == 1
