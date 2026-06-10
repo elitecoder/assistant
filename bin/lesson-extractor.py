@@ -44,7 +44,7 @@ HOME = Path.home()
 
 ASSISTANT_DIR = HOME / ".assistant"
 LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
-PROPOSALS_PATH = ASSISTANT_DIR / "comms" / "proposals.jsonl"
+PROPOSALS_PATH = ASSISTANT_DIR / "proposals.jsonl"
 AUDIT_LOG = ASSISTANT_DIR / "assistant-audit.log"
 CURATOR = BIN / "assistant-curator.py"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))

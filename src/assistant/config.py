@@ -3,7 +3,7 @@
 All filesystem paths the daemon touches are derived from a Config instance, so
 a test can root the whole tree at a tmp dir by constructing a Config with a
 sandboxed `assistant_dir` (or by pointing `Config.load` at a config.json under
-a tmp `.../comms/config.json`).
+a tmp `.../.assistant/config.json`).
 
 The on-disk config.json is optional: a missing file yields defaults (so the
 daemon runs with no config at all). When present, we read only the top-level
@@ -82,18 +82,17 @@ class Config:
         """Read a config.json. A missing file yields defaults (so the daemon
         runs with no config); a present file overrides the cadence defaults.
 
-        When `path` lives at `<dir>/comms/config.json` (the historical layout),
-        the whole path tree is rooted at `<dir>` — so a test config under a tmp
-        `.assistant/comms/config.json` sandboxes every derived path.
+        The whole path tree is rooted at the dir that contains config.json — so
+        a test config under a tmp `.assistant/config.json` sandboxes every
+        derived path.
         """
         home = home or HOME
         repo = repo or REPO
-        path = Path(path) if path is not None else (home / ".assistant/comms/config.json")
+        path = Path(path) if path is not None else (home / ".assistant/config.json")
         path = path.expanduser()
 
-        # Root the tree at the dir that contains comms/, i.e. config.json's
-        # grandparent (…/.assistant/comms/config.json → …/.assistant).
-        assistant_dir = path.resolve().parent.parent
+        # Root the tree at config.json's dir (…/.assistant/config.json → …/.assistant).
+        assistant_dir = path.resolve().parent
 
         cfg = cls(home=home, repo=repo, assistant_dir=assistant_dir, config_path=path)
         if not path.exists():

@@ -30,7 +30,7 @@ from typing import Any, Iterable
 
 HOME = Path.home()
 CLAUDE_MD = HOME / ".claude" / "CLAUDE.md"
-PROPOSALS = HOME / ".assistant" / "comms" / "proposals.jsonl"
+PROPOSALS = HOME / ".assistant" / "proposals.jsonl"
 LEDGER = HOME / ".assistant" / "actions-ledger.jsonl"
 OBSERVER_REPORT = HOME / ".assistant" / "observer-latest-report.json"
 TRANSCRIPT_DIR = HOME / ".claude" / "projects" / "-Users-mukuls-dev-assistant"

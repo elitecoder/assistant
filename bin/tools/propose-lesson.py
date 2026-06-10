@@ -2,7 +2,7 @@
 """propose-lesson — record (and optionally confirm) a lesson proposal.
 
 A lesson proposal is a pending rule the user must approve before it lands in a
-lesson store. Proposals live in ~/.assistant/comms/proposals.jsonl, one JSON
+lesson store. Proposals live in ~/.assistant/proposals.jsonl, one JSON
 object per line:
 
   {"ts": "...", "id": "...", "type": "lesson", "target": "assistant",
@@ -36,7 +36,7 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent.parent
 HOME = Path.home()
-PROPOSALS_PATH = HOME / ".assistant" / "comms" / "proposals.jsonl"
+PROPOSALS_PATH = HOME / ".assistant" / "proposals.jsonl"
 CURATOR = REPO / "bin" / "assistant-curator.py"
 OBSIDIAN_WRITE = REPO / "bin" / "tools" / "obsidian-write.py"
 
