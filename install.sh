@@ -407,28 +407,13 @@ for legacy in "${LEGACY_LABELS[@]}"; do
 done
 log ""
 
-# --- 3b. Migrate LaunchAgent logs → ~/.assistant/logs/ ----------------------
-# Assistant launchd captures + the two watchers' app-logs historically landed
-# in ~/.architect/orchestrator-logs/ (the orchestrator's home, a DIFFERENT
-# system). The plists and scripts now point at ~/.assistant/logs/; this ensures
-# the dir exists and migrates any files the old paths left behind. The migration
-# script is idempotent and only moves Assistant-OWNED files (it leaves the
-# orchestrator's own logs in place). It NEVER runs launchctl — Section 5 below
-# reloads the changed agents, so we pass --no-launchctl-hint to suppress its own
-# manual-reload block. In dry-run we ask the migrator to print its plan too.
-log "[3b] Ensuring ~/.assistant/logs/ and migrating stray Assistant logs"
+# --- 3b. Ensure the Assistant log dir exists --------------------------------
+# Every Assistant LaunchAgent writes its launchd stdout/stderr capture (and the
+# two watchers write their app-logs) into ~/.assistant/logs/. launchd will not
+# create a missing StandardOutPath parent, so make sure the dir exists.
+log "[3b] Ensuring ~/.assistant/logs/"
 mkdir -p "$HOME_DIR/.assistant/logs"
 note "ensured $HOME_DIR/.assistant/logs/"
-MIGRATE_SCRIPT="$REPO_ROOT/bin/migrate-logs-to-assistant.sh"
-if [[ -x "$MIGRATE_SCRIPT" ]]; then
-    if [[ $APPLY -eq 1 ]]; then
-        bash "$MIGRATE_SCRIPT" --apply --no-launchctl-hint | sed 's/^/  /'
-    else
-        bash "$MIGRATE_SCRIPT" --no-launchctl-hint | sed 's/^/  /'
-    fi
-else
-    warn "migration script missing or not executable: $MIGRATE_SCRIPT"
-fi
 log ""
 
 # --- 4. cmux session-restore (vendored) -------------------------------------
@@ -535,7 +520,7 @@ if [[ -f "$MEMORY_CONFIG" ]]; then
 else
     if [[ $APPLY -eq 0 ]]; then
         note "(dry-run) Would ask: is this the owner's machine or a new user's?"
-        note "  Owner path: clone git@github-personal:elitecoder/mukul-memory + run scripts/install.sh"
+        note "  Owner path: clone git@github.com:OneAdobe/mukul-memory + run scripts/install.sh"
         note "  Other user path: initialize local-only memory at ~/.assistant/mem0/"
     else
         log ""
@@ -565,9 +550,9 @@ else
                     note "mukul-memory already cloned at $MEMORY_REPO_DIR"
                 else
                     log "  Cloning mukul-memory…"
-                    git clone "git@github-personal:elitecoder/mukul-memory.git" "$MEMORY_REPO_DIR" \
+                    git clone "git@github.com:OneAdobe/mukul-memory.git" "$MEMORY_REPO_DIR" \
                         && note "cloned to $MEMORY_REPO_DIR" \
-                        || { warn "clone failed — check your git@github-personal SSH key"; }
+                        || { warn "clone failed — check your git@github.com (work) SSH key"; }
                 fi
                 if [[ -d "$MEMORY_REPO_DIR/.git" ]]; then
                     log "  Running memory install (sync-pull: lessons + mem0 + Obsidian)…"
