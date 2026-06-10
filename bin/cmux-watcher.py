@@ -93,7 +93,7 @@ DEFAULT_PATTERN_BANK = {
          "signal": "needs_input", "priority": "high"},
         {"id": "ci-green",
          "regex": r"(all CI (checks )?green|CI (is )?green|✓.*CI|Jenkins.*SUCCESS)",
-         "signal": "work_complete", "priority": "medium"},
+         "signal": "work_complete", "priority": "medium", "suppress": True},
         {"id": "ci-red",
          "regex": r"(CI (is )?red|CI fail|Jenkins.*FAIL|OURS.*failure)",
          "signal": "needs_input", "priority": "high"},
@@ -474,6 +474,8 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
     if not hits:
         return None  # plain turn-end with nothing notable — the noise floor
     top = hits[0]
+    if top.get("suppress"):
+        return None
     pat_signal = top.get("signal")
     signal_type = pat_signal if pat_signal in ("needs_input", "work_complete") else "pattern_match"
     if not state.cooled_down(ws_key, signal_type):
