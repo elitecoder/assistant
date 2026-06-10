@@ -133,7 +133,7 @@ jq . ~/.assistant/workspace-watcher/ws-cache.json | head -60
 ls -lt ~/.claude/cmux-crash-events/
 
 # launchd stdout/stderr
-tail ~/.architect/orchestrator-logs/workspace-watcher.launchd.{out,err}
+tail ~/.assistant/logs/workspace-watcher.launchd.{out,err}
 ```
 
 ## How to test

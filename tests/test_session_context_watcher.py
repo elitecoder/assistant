@@ -59,7 +59,7 @@ def tmp_home(tmp_path, monkeypatch):
     cmux_reg = home / ".claude/cmux-registry.json"
     orch_reg = home / ".architect/orchestrator-registry.json"
     out_path = home / ".claude/cache/session-context.json"
-    log_dir = home / ".architect/orchestrator-logs"
+    log_dir = home / ".assistant/logs"
     lock_file = home / ".architect/.session-context-watcher.lock"
     monkeypatch.setattr(scw, "HOME", home)
     monkeypatch.setattr(scw, "PROJECTS_DIR", projects)

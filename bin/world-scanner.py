@@ -42,7 +42,7 @@ TODO_PATH = HOME / ".claude/assistant-todo.json"
 PROPOSALS_DIR = HOME / ".architect/orchestrator-proposals"
 LEDGER_DIR = HOME / ".architect/orchestrator-ledger"
 INBOX_ARCHIVE = HOME / ".architect/orchestrator-inbox-archive"
-LOG_DIR = HOME / ".architect/orchestrator-logs"
+LOG_DIR = HOME / ".assistant/logs"
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 ACTIVITY_HOURS = 24

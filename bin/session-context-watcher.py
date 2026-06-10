@@ -33,7 +33,7 @@ PROJECTS_DIR = HOME / ".claude/projects"
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 ORCHESTRATOR_REGISTRY = HOME / ".architect/orchestrator-registry.json"
 OUT_PATH = HOME / ".claude/cache/session-context.json"
-LOG_DIR = HOME / ".architect/orchestrator-logs"
+LOG_DIR = HOME / ".assistant/logs"
 LOCK_FILE = HOME / ".architect/.session-context-watcher.lock"
 
 ACTIVITY_HOURS = 24

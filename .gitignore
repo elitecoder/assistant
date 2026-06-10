@@ -23,6 +23,13 @@ evals/*/__pycache__/
 .coverage.*
 htmlcov/
 
+# uv ephemeral test-runner artifacts (`uv run --with pytest ...`). The comms
+# venv was removed with the Telegram/Discord teardown; uv is now the de-facto
+# way to run the suite. Neither file is a build input we want under version
+# control — both are regenerated on demand.
+uv.lock
+src/*.egg-info/
+
 # Local-only overrides (you can drop a settings.local.json here later)
 **/local.json
 **/*.local
