@@ -157,6 +157,30 @@ app.event('reaction_added', async ({ event }) => {
   } catch (e) {
     die(`auth.test failed for SLACK_BOT_TOKEN: ${e.data?.error ?? e.message}`)
   }
+  // Exit on WebSocket disconnect so launchd KeepAlive restarts us cleanly.
+  app.receiver.client.on('disconnected', () => {
+    console.error('[reactor] Socket Mode disconnected — exiting for launchd restart')
+    process.exit(1)
+  })
+
+  // Liveness watchdog: if the socket goes zombie (pong timeouts but no crash,
+  // so launchd never restarts), exit after 10 minutes of silence so launchd
+  // KeepAlive kicks a fresh connection. Reset on every received Slack event.
+  const WATCHDOG_MS = 10 * 60 * 1000
+  let watchdog = setTimeout(() => {
+    console.error('[reactor] watchdog: no Slack events in 10 min — exiting for launchd restart')
+    process.exit(1)
+  }, WATCHDOG_MS)
+  watchdog.unref()
+  app.receiver.client.on('slack_event', () => {
+    clearTimeout(watchdog)
+    watchdog = setTimeout(() => {
+      console.error('[reactor] watchdog: no Slack events in 10 min — exiting for launchd restart')
+      process.exit(1)
+    }, WATCHDOG_MS)
+    watchdog.unref()
+  })
+
   await app.start()
   console.error('[reactor] Socket Mode connected — waiting for reactions…')
 })()
