@@ -67,17 +67,25 @@ def main() -> int:
         print(f"ERROR: --json must be a JSON object, got {type(verdict).__name__}", file=sys.stderr)
         return 2
 
-    # `next` is required for the dashboard's NEXT line. Without it the row
-    # renders "NEXT: unknown" — silent regression. Reject at write time.
+    # `next` is required for the dashboard's NEXT line. A missing `next` used
+    # to hard-reject (return 2) — but that DROPPED the whole workspace from the
+    # summaries dir, so a verdict-shape slip silently un-tracked a live ws
+    # (ws:24/ws:4, 2026-06-15). A degraded row beats a vanished one: synthesize
+    # a fallback `next`, warn on stderr (so the pulse log still flags the slip),
+    # and persist. The Observer prompt remains the place that enforces shape.
     if not (verdict.get("next") or "").strip():
+        kind = str(verdict.get("verdict") or verdict.get("classification") or "")
+        if kind == "no_action":
+            verdict["next"] = "User will close the workspace when ready."
+        elif (verdict.get("summary") or "").strip():
+            verdict["next"] = f"(inferred) {verdict['summary'].strip()[:140]}"
+        else:
+            verdict["next"] = "(unknown — Observer emitted no `next`; review workspace directly.)"
         print(
-            f"ERROR: verdict missing required 'next' field. "
-            f"Add a one-sentence prediction of the agent's next step "
-            f"(or 'User will close the workspace when ready.' for no_action). "
-            f"Got: {json.dumps(verdict)[:300]}",
+            f"WARN: verdict missing `next`; synthesized fallback rather than dropping ws. "
+            f"verdict={kind!r} next={verdict['next']!r}",
             file=sys.stderr,
         )
-        return 2
 
     try:
         pr_refs = json.loads(args.pr_refs)

@@ -68,6 +68,19 @@ REPO = "Adobe-Firefly/firefly-platform"
 TRANSCRIPT_TAIL = os.path.expanduser("~/dev/assistant/bin/transcript-tail.py")
 CMUX_SEND = os.path.expanduser("~/dev/assistant/bin/cmux-send.py")
 
+# When main is under code freeze, green PRs do NOT merge to main — they merge
+# into this staging branch. A PR that is BLOCKED on main purely because of the
+# freeze gets retargeted here and proceeds. See operator memory
+# "knowledge_freeze_blocked_prs_merge_to_munk_freeze_queue".
+FREEZE_QUEUE_BRANCH = "munk/main-freeze-queue"
+MAIN_FREEZE_RULESET_ID = 17577517  # MainFreeze ruleset on firefly-platform
+
+# Any path under a Squirrel surface. A PR touching these is gated on the
+# Squirrel E2E suite (pnpm e2e:squirrel), which FFP CI does NOT run — so
+# CI-green is NOT validated-green for Squirrel. See operator memory
+# "feedback_squirrel_pr_green_means_e2e_ran".
+SQUIRREL_PATH_RE = re.compile(r"(^|/)squirrel(/|$)|squirrel", re.IGNORECASE)
+
 TEST_PATH_RE = re.compile(
     r"^("
     r"e2e/"
@@ -91,6 +104,60 @@ def gh_pr_view(pr, fields):
         text=True, timeout=15,
     )
     return json.loads(out)
+
+
+def main_is_frozen():
+    """True iff the MainFreeze ruleset is enforcement=active on the repo."""
+    try:
+        out = subprocess.check_output(
+            ["gh", "api", f"repos/{REPO}/rulesets", "--jq",
+             f'.[] | select(.id=={MAIN_FREEZE_RULESET_ID}) | .enforcement'],
+            text=True, timeout=15,
+        ).strip()
+        return out == "active"
+    except Exception:
+        return False
+
+
+def step_freeze_retarget(pr):
+    """If the PR is BLOCKED on main AND main is frozen, retarget it to the
+    freeze queue so it can proceed. Returns (retargeted, reason, evidence).
+
+    Idempotent: a PR already based on the freeze queue is a no-op pass.
+    """
+    d = gh_pr_view(pr, "baseRefName,mergeStateStatus,state")
+    base = d.get("baseRefName", "")
+    if d.get("state") == "MERGED":
+        return False, "already_merged", {"state": "MERGED"}
+    if base == FREEZE_QUEUE_BRANCH:
+        return False, "already_on_freeze_queue", {"base": base}
+    if base != "main":
+        return False, "base_not_main", {"base": base}
+    # base == main. Only retarget if blocked AND a freeze is actually active.
+    if d.get("mergeStateStatus") != "BLOCKED":
+        return False, "not_blocked", {"base": base, "merge_state": d.get("mergeStateStatus")}
+    if not main_is_frozen():
+        return False, "main_not_frozen", {"base": base, "merge_state": "BLOCKED"}
+    subprocess.run(
+        ["gh", "pr", "edit", str(pr), "--repo", REPO, "--base", FREEZE_QUEUE_BRANCH],
+        capture_output=True, text=True, timeout=20,
+    )
+    return True, "retargeted_to_freeze_queue", {"from": "main", "to": FREEZE_QUEUE_BRANCH}
+
+
+def squirrel_e2e_gate(files, e2e_attested):
+    """A Squirrel PR may not route to merge on CI-green alone — FFP CI does
+    not run pnpm e2e:squirrel. Returns (ok, reason).
+
+    ok=True when: no Squirrel files touched (gate N/A), OR the dispatcher
+    attests the workspace transcript shows pnpm e2e:squirrel passed.
+    """
+    touches_squirrel = any(SQUIRREL_PATH_RE.search(p or "") for p in files)
+    if not touches_squirrel:
+        return True, "no_squirrel_files"
+    if e2e_attested:
+        return True, "squirrel_e2e_attested"
+    return False, "squirrel_pr_needs_e2e_run"
 
 
 def step0_safety_gate(pr, refactor_attested):
@@ -251,6 +318,8 @@ def main():
     p.add_argument("--pr", type=int, required=True)
     p.add_argument("--refactor-attested", action="store_true",
                    help="Dispatcher claims the workspace transcript shows full local G3 + unit suite green")
+    p.add_argument("--e2e-attested", action="store_true",
+                   help="Dispatcher claims the workspace transcript shows pnpm e2e:squirrel passed (required for Squirrel PRs)")
     args = p.parse_args()
 
     if not re.fullmatch(r"workspace:\d+", args.ws):
@@ -272,6 +341,31 @@ def main():
         }
         print(json.dumps(out, indent=2))
         sys.exit(1)
+
+    # Step 0.5 — Squirrel E2E gate. CI-green is NOT validated-green for a
+    # Squirrel PR (FFP CI never runs pnpm e2e:squirrel). Refuse to route to
+    # merge unless the dispatcher attests the E2E suite passed.
+    files = [f.get("path", "") for f in gh_pr_view(args.pr, "files").get("files", [])]
+    e2e_ok, e2e_reason = squirrel_e2e_gate(files, args.e2e_attested)
+    out["step0_5"] = {"ok": e2e_ok, "reason": e2e_reason}
+    if not e2e_ok:
+        out["outcome"] = "refused"
+        out["awaiting_card"] = {
+            "key": f"assistant:merge-pr-needs-e2e:{args.pr}",
+            "tier": "T2",
+            "title": f"PR #{args.pr} is Squirrel — needs pnpm e2e:squirrel before merge",
+            "detail": "Squirrel PR; FFP CI does not run the E2E suite. Run pnpm e2e:squirrel "
+                      "in the workspace and confirm pass; CI-green is not enough.",
+        }
+        print(json.dumps(out, indent=2))
+        sys.exit(1)
+
+    # Step 0.7 — freeze retarget. If main is frozen and this PR is BLOCKED on
+    # main solely for that, point it at the freeze queue so it can proceed.
+    retargeted, retarget_reason, retarget_ev = step_freeze_retarget(args.pr)
+    out["step0_7"] = {"retargeted": retargeted, "reason": retarget_reason, "evidence": retarget_ev}
+    if retargeted:
+        time.sleep(6)  # let GitHub recompute mergeability against the new base
 
     # Step 1 — CI router
     skill, ci_reason, ci_evidence = step1_ci_route(args.pr)
