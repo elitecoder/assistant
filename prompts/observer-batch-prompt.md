@@ -90,15 +90,29 @@ Apply in order **per workspace**. First match wins. Each ws is judged independen
 
 ### A — workspace has an open PR
 
-Run `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable,files,title,body --head <branch>` from `cwd`.
+Run `gh pr view --json state,baseRefName,statusCheckRollup,reviewDecision,mergeable,mergeStateStatus,files,title,body --head <branch>` from `cwd`.
 
-1. **Test/E2E-only PR + CI green** → `ready_for_merge`.
-   Files all match `*.spec.ts`, `*.test.ts`, `e2e/**`, `__tests__/**`, or test fixtures. `statusCheckRollup` is all-green. `mergeable: MERGEABLE`. No `CHANGES_REQUESTED`.
-2. **Refactor PR + CI green** → `ready_for_merge`.
-   Title or body declares the work a refactor: `[REFACTOR]`, `refactor:`, `refactor(`, "no behavior change", or similar verbatim phrase. CI all-green. `mergeable: MERGEABLE`. No `CHANGES_REQUESTED`.
-3. **PR is otherwise ready, CI green, not auto-mergeable per rules 1/2** → `needs_user`.
-4. **PR has CHANGES_REQUESTED** → `needs_user`.
-5. **PR exists, CI not green** → `active`.
+**Freeze is a retarget, not a blocker.** Under a `main` code freeze, green PRs merge to `munk/main-freeze-queue`, not `main`.
+
+- A PR that is `mergeStateStatus: BLOCKED` + `baseRefName: main` ONLY due to the freeze is NOT `needs_user`.
+- The dispatcher retargets such a PR to the freeze queue and proceeds. Judge it by rules 1/2 as if the freeze weren't there.
+- Confirm an active freeze: `gh api repos/Adobe-Firefly/firefly-platform/rulesets --jq '.[]|select(.id==17577517)|.enforcement'` → `active`.
+- The freeze gate, architect-team review requirement, and a non-required `e2e/studio`/`ethos` red do NOT bar `ready_for_merge`.
+- Only a FAILURE on a *required* check, or `CHANGES_REQUESTED`, bars it.
+
+1. **Test/E2E-only PR + required checks green** → `ready_for_merge`.
+   Files all match `*.spec.ts`, `*.test.ts`, `e2e/**`, `__tests__/**`, or test fixtures. No *required* check is FAILURE. No `CHANGES_REQUESTED`. A freeze `BLOCKED` / `mergeable: UNKNOWN` does not disqualify.
+2. **Refactor PR + required checks green** → `ready_for_merge`.
+   Title or body declares a refactor: `[REFACTOR]`, `refactor:`, `refactor(`, "no behavior change", or similar verbatim phrase. No required check is FAILURE. No `CHANGES_REQUESTED`.
+3. **PR ready, CI green, production code, no refactor attestation** → `needs_user`.
+4. **PR has CHANGES_REQUESTED, or a *required* check is FAILURE** → `needs_user`. A non-required `e2e/studio`/`ethos` red does not count.
+5. **PR exists, a *required* check still PENDING/IN_PROGRESS** → `active`.
+
+**Squirrel E2E caveat (binding).** For any PR touching a Squirrel surface (`*/squirrel/*`), "green" means `pnpm e2e:squirrel` ran and passed.
+
+- FFP CI does NOT run the Squirrel E2E suite. A green `statusCheckRollup` is CI-green, not validated-green.
+- Emitting `ready_for_merge` for a Squirrel PR: note in `summary` whether the transcript shows a passing `pnpm e2e:squirrel`.
+- Transcript shows no passing E2E run → emit `needs_user`, or `stranded` with a nudge to run E2E. Never route a Squirrel PR to merge on CI-green alone.
 
 ### B — workspace has no open PR
 

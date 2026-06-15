@@ -225,6 +225,41 @@ def append_ledger(entry: dict) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
+def run_merge_pr_dispatch(ws_ref: str, pr, refactor_attested: bool,
+                          e2e_attested: bool) -> dict:
+    """Invoke bin/merge-pr-dispatch.py and return its parsed JSON result.
+
+    The script owns the safety gate, Squirrel-E2E gate, freeze retarget, CI
+    router, and send-verify. On any failure to run it, return an awaiting
+    card so the workspace surfaces rather than silently stalling."""
+    cmd = ["python3", str(BIN / "merge-pr-dispatch.py"),
+           "--ws", ws_ref, "--pr", str(pr)]
+    if refactor_attested:
+        cmd.append("--refactor-attested")
+    if e2e_attested:
+        cmd.append("--e2e-attested")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        return {"outcome": "dispatch_error",
+                "awaiting_card": {
+                    "key": f"assistant:merge-pr-dispatch-error:{pr}",
+                    "tier": "T2",
+                    "title": f"PR #{pr}: merge-pr-dispatch.py failed to run",
+                    "detail": f"{type(e).__name__}: {e}",
+                }}
+    try:
+        return json.loads(proc.stdout)
+    except Exception:
+        return {"outcome": "dispatch_unparsable",
+                "awaiting_card": {
+                    "key": f"assistant:merge-pr-dispatch-unparsable:{pr}",
+                    "tier": "T2",
+                    "title": f"PR #{pr}: merge-pr-dispatch.py output unparsable",
+                    "detail": f"rc={proc.returncode} stdout={proc.stdout[:200]} stderr={proc.stderr[:200]}",
+                }}
+
+
 def record_assistant_merge(ws_ref: str, pr_refs: list[str]) -> None:
     """Mark that the Assistant pulse just dispatched /merge-when-ready for
     this ws_ref. Used by the /cleanup gate: a workspace is only eligible
@@ -701,11 +736,35 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
                     "evidence": f"blocked /cleanup — {gate.get('reason', 'no receipt')}"}
         base["receipt_path"] = gate.get("receipt_path")
 
+    # ready_for_merge routes through merge-pr-dispatch.py — the unbypassable
+    # mechanical layer (safety gate → Squirrel-E2E gate → freeze retarget →
+    # CI router → send + verify). INCIDENTS.md mandates this; a direct
+    # /merge-when-ready send would skip all of it.
+    if kind == "ready_for_merge":
+        pr_refs = ws.get("pr_refs") or []
+        if not pr_refs:
+            return {**base, "kind": "skipped", "outcome": "failed",
+                    "evidence": "ready_for_merge but no pr_refs on ws"}
+        result = run_merge_pr_dispatch(
+            ws_ref, pr_refs[0],
+            refactor_attested=bool(verdict.get("refactor_attested")),
+            e2e_attested=bool(verdict.get("e2e_attested")),
+        )
+        base["evidence"] = f"merge-pr-dispatch pr=#{pr_refs[0]} outcome={result.get('outcome')}"
+        base["dispatch"] = result
+        card = result.get("awaiting_card")
+        if card:
+            awaiting.append({**card, "ws_ref": ws_ref})
+            return {**base, "kind": "emit-card"}
+        if result.get("outcome") == "submitted":
+            record_assistant_merge(ws_ref, pr_refs)
+            return {**base, "kind": "merge-dispatched"}
+        base["outcome"] = "failed"
+        return base
+
     # Sends. Apply NO_INGEST_GUARD: if the same text was sent last and got
     # delta=0, skip this pulse rather than loop forever.
-    if kind == "ready_for_merge":
-        text = "/merge-when-ready"
-    elif kind == "ready_for_cleanup":
+    if kind == "ready_for_cleanup":
         text = "/cleanup"
     elif kind == "stranded":
         text = (verdict.get("nudge_text") or "").strip()
@@ -727,13 +786,6 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
     if rec.get("outcome") not in ("sent", "ok-unparsed"):
         base["outcome"] = "failed"
         return base
-
-    # On a successful /merge-when-ready dispatch, mark this workspace as
-    # eligible for future auto-/cleanup. This is the *only* path that
-    # creates a merge-ledger entry — by construction, /cleanup can only
-    # fire on workspaces the Assistant itself queued for merge.
-    if kind == "ready_for_merge":
-        record_assistant_merge(ws_ref, ws.get("pr_refs") or [])
 
     return base
 
