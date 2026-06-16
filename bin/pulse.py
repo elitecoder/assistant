@@ -1007,10 +1007,15 @@ def dispatch_todo(todo_id: str) -> bool:
     surface_ref = sm.group(0)
 
     # 3. Snapshot transcripts before, so a new one confirms submission.
+    #    Recursive glob: newer Claude Code writes the main transcript inside a
+    #    per-session subdir (<project>/<session-id>/…), not a flat <id>.jsonl.
+    #    A non-recursive glob missed those and the confirmation in step 7 always
+    #    came back negative — which used to re-spawn the TODO every pulse
+    #    (td-128: 7 duplicate workspaces). Match both layouts by relative path.
     cwd_real = os.path.realpath(cwd)
     project_dir = HOME / ".claude/projects" / cwd_real.replace("/", "-")
     project_dir.mkdir(parents=True, exist_ok=True)
-    before = {p.name for p in project_dir.glob("*.jsonl")}
+    before = {str(p.relative_to(project_dir)) for p in project_dir.rglob("*.jsonl")}
 
     # 4. Trust prompt (first launch in a never-used cwd). --dangerously-skip
     #    does NOT bypass it; the transcript never appears until it's answered.
@@ -1046,11 +1051,30 @@ def dispatch_todo(todo_id: str) -> bool:
     time.sleep(1)
     _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
+    # 6.5. STAMP NOW — a real workspace exists and the prompt has been sent.
+    #    Stamping (dispatchedAt + dispatchedWs + status=in-progress) moves the
+    #    TODO out of bucket_b, so the next pulse cannot re-spawn it. This is the
+    #    load-bearing idempotency guard: the stamp must NOT depend on the
+    #    transcript-confirmation below. Previously confirmation gated the stamp,
+    #    so any false negative (e.g. a Claude Code transcript-layout change)
+    #    left the TODO in bucket_b and every pulse spawned another duplicate
+    #    workspace (td-128: 7 dupes). If the workspace later dies without the
+    #    session flipping status to done, the picker routes it to bucket_a
+    #    (re-classify) — which is NOT auto-spawned — never back to bucket_b.
+    if not _mark_todo_dispatched(todo_id, ws_ref):
+        log.warning("dispatch %s: spawned %s + sent prompt but TODO stamp failed — "
+                    "will re-dispatch next pulse (prompt staged at %s)",
+                    todo_id, ws_ref, prompt_file)
+        return False
+
     # 7. Confirm submission via the transcript (authoritative, no screen-scraping).
+    #    Advisory ONLY — the stamp above already guarantees no re-spawn. A miss
+    #    here is logged as a warning so a genuinely-stuck spawn is still visible,
+    #    but it never reverses the stamp.
     sig = str(prompt_file)[:60]
     submitted = False
     for _ in range(30):
-        new = {p.name for p in project_dir.glob("*.jsonl")} - before
+        new = {str(p.relative_to(project_dir)) for p in project_dir.rglob("*.jsonl")} - before
         for name in new:
             try:
                 for line in (project_dir / name).read_text().splitlines():
@@ -1078,17 +1102,12 @@ def dispatch_todo(todo_id: str) -> bool:
         time.sleep(1)
 
     if not submitted:
-        log.warning("dispatch %s: spawned %s but submission unconfirmed (prompt staged at %s)",
+        log.warning("dispatch %s: stamped to %s but submission unconfirmed within window "
+                    "(prompt staged at %s) — not re-dispatching; check the workspace",
                     todo_id, ws_ref, prompt_file)
-        return False
-
-    if not _mark_todo_dispatched(todo_id, ws_ref):
-        log.warning("dispatch %s: submitted to %s but TODO stamp failed — "
-                    "will re-dispatch next pulse", todo_id, ws_ref)
-        return False
-
-    log.info("dispatch %s → %s (surface %s, prompt %s)",
-             todo_id, ws_ref, surface_ref, prompt_file)
+    else:
+        log.info("dispatch %s → %s (surface %s, prompt %s)",
+                 todo_id, ws_ref, surface_ref, prompt_file)
     return True
 
 
