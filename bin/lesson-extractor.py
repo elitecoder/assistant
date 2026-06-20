@@ -60,6 +60,13 @@ STEM_WORDS = 8
 # Where Claude Code writes one JSONL transcript per session.
 CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 
+# Coexistence seam: also scan Droid sessions (~/.factory/sessions) and normalize
+# the two transcript schemas to one (role, content) shape.
+import sys as _sys
+if str(BIN) not in _sys.path:
+    _sys.path.insert(0, str(BIN))
+import agent_session
+
 # Strip these noise tokens out of evidence before computing the stem so the
 # grouping keys on the SHAPE of the evidence, not its per-workspace specifics.
 _WS_REF_RE = re.compile(r"\b(?:workspace|ws|surface|pane|window):\d+", re.IGNORECASE)
@@ -336,11 +343,14 @@ class TranscriptScanner:
 
     def __init__(self, roots: list[Path] | None = None,
                  projects_dir: Path = CLAUDE_PROJECTS,
+                 droid_dir: Path | None = None,
                  existing: list[str] | None = None,
                  now: float | None = None):
         if roots is None:
-            roots = [projects_dir / d for d in self.PRIORITY_DIRS
-                     if (projects_dir / d).is_dir()]
+            if droid_dir is None:
+                droid_dir = agent_session.DROID_SESSIONS
+            roots = [base / d for base in (projects_dir, droid_dir)
+                     for d in self.PRIORITY_DIRS if (base / d).is_dir()]
         self.roots = roots
         self.now = now if now is not None else time.time()
         # Existing lesson triggers for fuzzy dedup. Fetched lazily by the caller
@@ -436,8 +446,10 @@ class TranscriptScanner:
                 # turn is an orchestrator prompt, not the operator.
                 if obj.get("isMeta") or obj.get("isSidechain"):
                     continue
-                role = obj.get("type")
-                if role not in ("user", "assistant"):
+                # Normalize across Claude (role == top-level type) and Droid
+                # (role on message.role; top-level type == "message").
+                role = agent_session.record_role(obj)
+                if role is None:
                     continue
                 msg = obj.get("message")
                 if not isinstance(msg, dict):
