@@ -370,6 +370,12 @@ PLIST_SKIP=(
     # hand once the OAuth token cache is seeded). KeepAlive={SuccessfulExit:false}
     # so an unconfigured daemon never hot-respawns (F3).
     "com.assistant.connector-outlook.plist"
+    # The machine-config sync daemon PUSHES local config drift to a remote. Copied
+    # by the loop above (D8: copy-but-not-load) but LOADED only by step 8, and step
+    # 8 activates it ONLY behind an explicit interactive opt-in + a durable marker
+    # — so a non-interactive `install.sh --apply` (the pulse self-update path)
+    # NEVER starts the config-pushing daemon. RunAtLoad: full-auto once activated.
+    "com.assistant.machine-config-sync.plist"
 )
 
 declare -a CHANGED_LABELS
@@ -722,12 +728,16 @@ log ""
 log "[8/8] Machine config (Factory/Claude dotfiles)"
 MC_REPO_DIR="$HOME_DIR/dev/machine-config"
 MC_REMOTE="git@github-personal:elitecoder/machine-config.git"
+MC_SYNC_PLIST="com.assistant.machine-config-sync"
 if [[ $APPLY -eq 0 ]]; then
     if [[ -d "$MC_REPO_DIR/.git" ]]; then
-        note "(dry-run) machine-config present — would run $MC_REPO_DIR/scripts/install.sh"
+        note "(dry-run) machine-config present — preview of scripts/install.sh --dry-run:"
+        bash "$MC_REPO_DIR/scripts/install.sh" --dry-run 2>&1 | sed 's/^/    /' || \
+            warn "machine-config dry-run preview failed (continuing)"
     else
         note "(dry-run) would clone $MC_REMOTE → $MC_REPO_DIR, then run scripts/install.sh"
     fi
+    note "(dry-run) would then load $MC_SYNC_PLIST (full-auto hourly push+pull of config drift)"
 else
     if [[ ! -d "$MC_REPO_DIR/.git" ]]; then
         log "  Cloning machine-config…"
@@ -738,9 +748,18 @@ else
         note "machine-config already cloned at $MC_REPO_DIR"
     fi
     if [[ -d "$MC_REPO_DIR/.git" ]]; then
+        log "  Previewing machine-config changes (dry-run) before applying…"
+        bash "$MC_REPO_DIR/scripts/install.sh" --dry-run 2>&1 | sed 's/^/    /' || true
         log "  Applying machine config (symlink Factory/Claude config, reconcile crons)…"
         if bash "$MC_REPO_DIR/scripts/install.sh" 2>&1 | sed 's/^/  /'; then
-            note "machine config applied"
+            note "machine config applied (originals backed up to *.bak-* where present)"
+            # Activate the push+pull sync daemon — only reached after a successful
+            # opt-in apply, never from the generic plist loop (see PLIST_SKIP).
+            log "  Loading $MC_SYNC_PLIST (full-auto hourly sync)…"
+            staged_mc="$PLIST_STAGE/$MC_SYNC_PLIST.plist"
+            sed "s|/Users/<user>/|$HOME_DIR/|g" "$REPO_ROOT/launchagents/$MC_SYNC_PLIST.plist" > "$staged_mc"
+            ensure_file_copy "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist" "$staged_mc"
+            launchctl_reload "$MC_SYNC_PLIST" "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist"
         else
             warn "machine-config install had errors — check $MC_REPO_DIR/scripts/install.sh"
         fi

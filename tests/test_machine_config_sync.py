@@ -75,6 +75,14 @@ def test_skip_when_repo_missing(env, capsys):
     assert "not found" in capsys.readouterr().err
 
 
+def test_loop_guard_short_circuits(env, monkeypatch):
+    # An inherited MACHINE_CONFIG_SYNC_IN_PROGRESS must abort before any work.
+    monkeypatch.setenv("MACHINE_CONFIG_SYNC_IN_PROGRESS", "1")
+    assert mod.main() == 0
+    assert env["fake"].calls == []
+    assert not mod.LAST_RUN_PATH.exists()
+
+
 def test_throttle_skips(env):
     mod.LAST_RUN_PATH.write_text(json.dumps({"ts": time.time()}))
     assert mod.main() == 0
