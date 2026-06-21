@@ -511,7 +511,7 @@ log ""
 #
 # The installer asks interactively only when --apply is set; in dry-run it explains
 # what each path would do.
-log "[7/7] Memory setup"
+log "[7/8] Memory setup"
 
 MEMORY_CONFIG="$HOME_DIR/.assistant/memory-repo-config.json"
 
@@ -593,6 +593,41 @@ LOCAL_CFG
                 warn "Unknown choice '$MEM_CHOICE' — skipping memory setup."
                 ;;
         esac
+    fi
+fi
+log ""
+
+# --- 8. Machine config (Droid/Claude dotfiles) ------------------------------
+# Mirrors the memory model: the canonical Factory + Claude machine config lives
+# in the private machine-config repo, which ships its own scripts/install.sh
+# (apply) plus sync-pull/sync-push. Here we clone it (if needed) and project it
+# onto this box; the com.assistant.machine-config-sync LaunchAgent (copied in
+# step 3) then keeps it in sync hourly. Non-fatal if offline / SSH key missing.
+log "[8/8] Machine config (Factory/Claude dotfiles)"
+MC_REPO_DIR="$HOME_DIR/dev/machine-config"
+MC_REMOTE="git@github-personal:elitecoder/machine-config.git"
+if [[ $APPLY -eq 0 ]]; then
+    if [[ -d "$MC_REPO_DIR/.git" ]]; then
+        note "(dry-run) machine-config present — would run $MC_REPO_DIR/scripts/install.sh"
+    else
+        note "(dry-run) would clone $MC_REMOTE → $MC_REPO_DIR, then run scripts/install.sh"
+    fi
+else
+    if [[ ! -d "$MC_REPO_DIR/.git" ]]; then
+        log "  Cloning machine-config…"
+        git clone "$MC_REMOTE" "$MC_REPO_DIR" \
+            && note "cloned to $MC_REPO_DIR" \
+            || warn "clone failed — check your github-personal SSH key (skipping machine-config)"
+    else
+        note "machine-config already cloned at $MC_REPO_DIR"
+    fi
+    if [[ -d "$MC_REPO_DIR/.git" ]]; then
+        log "  Applying machine config (symlink Factory/Claude config, reconcile crons)…"
+        if bash "$MC_REPO_DIR/scripts/install.sh" 2>&1 | sed 's/^/  /'; then
+            note "machine config applied"
+        else
+            warn "machine-config install had errors — check $MC_REPO_DIR/scripts/install.sh"
+        fi
     fi
 fi
 log ""
