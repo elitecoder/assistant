@@ -27,6 +27,12 @@ DEFAULT_INTERVAL = 3600
 
 
 def main() -> int:
+    # Loop guard: sync-push/sync-pull (and any git hook they trigger) inherit
+    # MACHINE_CONFIG_SYNC_IN_PROGRESS=1. If we're already inside a sync, bail
+    # before doing anything so a re-entrant invocation can't recurse.
+    if os.environ.get("MACHINE_CONFIG_SYNC_IN_PROGRESS") == "1":
+        return 0
+
     if not CONFIG_REPO.exists():
         print(f"machine-config repo not found at {CONFIG_REPO} — skipping", file=sys.stderr)
         return 0  # not an error: machine may not have opted in yet
