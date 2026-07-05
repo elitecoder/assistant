@@ -353,6 +353,16 @@ PLIST_SKIP=(
     "com.mukul.assistant-daemon.plist"
 )
 
+# Opt-in plists the installer COPIES (so a hand-load works from the canonical
+# path) but must NEVER load. The Slack comms daemon SENDS messages, so per the
+# operator's security posture it activates only by explicit hand-load once the
+# token + send-gate allowlist are set (assistant-comms-setup.sh). Copying keeps
+# ~/Library/LaunchAgents/ in sync with the repo without ever egressing on its
+# own — the same discipline as the cmux-watcher agent.
+PLIST_COPY_NO_LOAD=(
+    "com.assistant.assistant-comms.plist"
+)
+
 declare -a CHANGED_LABELS
 for plist in "$REPO_ROOT"/launchagents/*.plist; do
     base="$(basename "$plist")"
@@ -369,6 +379,11 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         continue
     fi
 
+    copy_no_load=0
+    for cnl_base in "${PLIST_COPY_NO_LOAD[@]}"; do
+        [[ "$base" == "$cnl_base" ]] && copy_no_load=1 && break
+    done
+
     # Substitute /Users/<user>/ → $HOME/ so the staged plist references the
     # current user's home dir. No-op for plists that don't have the token.
     sed "s|/Users/<user>/|$HOME_DIR/|g" "$plist" > "$staged"
@@ -377,7 +392,13 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         note "OK   $target (matches repo, no reload needed)"
     else
         ensure_file_copy "$target" "$staged"
-        CHANGED_LABELS+=("$label")
+        # Copy-no-load plists are staged but never added to CHANGED_LABELS, so
+        # Section 5 never reloads them — they wait for a hand-load.
+        if [[ $copy_no_load -eq 1 ]]; then
+            note "     (opt-in comms daemon — copied but NOT loaded; hand-load after setup)"
+        else
+            CHANGED_LABELS+=("$label")
+        fi
     fi
 done
 

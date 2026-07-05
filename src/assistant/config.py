@@ -6,9 +6,14 @@ sandboxed `assistant_dir` (or by pointing `Config.load` at a config.json under
 a tmp `.../.assistant/config.json`).
 
 The on-disk config.json is optional: a missing file yields defaults (so the
-daemon runs with no config at all). When present, we read only the top-level
-`stale_heartbeat_sec` knob and an optional `daemon` block for the
-daemon-specific cadences. We never write it.
+daemon runs with no config at all). When present, we read the top-level
+`stale_heartbeat_sec` / `mute_until_epoch` knobs, an optional `daemon` block for
+the daemon-specific cadences, and an optional `slack` block for the comms
+routing target + send-gate allowlist. We never write it.
+
+The Slack bot token is NEVER read from config.json — it comes from
+$SLACK_BOT_TOKEN in the environment (sourced from ~/.zprofile), matching the
+slack-reactor daemon and the bin/slack-*.py CLIs.
 """
 from __future__ import annotations
 
@@ -29,6 +34,8 @@ ASSISTANT_DIR = HOME / ".assistant"
 DEFAULT_PULSE_INTERVAL_SEC = 300
 DEFAULT_STALE_HEARTBEAT_SEC = 1200
 DEFAULT_HEARTBEAT_CHECK_SEC = 60
+DEFAULT_LEDGER_POLL_SEC = 2.0
+DEFAULT_HEARTBEAT_DEDUP_SEC = 1800
 
 
 @dataclass
@@ -43,6 +50,13 @@ class Config:
     pulse_interval_sec: int = DEFAULT_PULSE_INTERVAL_SEC
     stale_heartbeat_sec: int = DEFAULT_STALE_HEARTBEAT_SEC
     heartbeat_check_sec: int = DEFAULT_HEARTBEAT_CHECK_SEC
+    ledger_poll_sec: float = DEFAULT_LEDGER_POLL_SEC
+    heartbeat_dedup_sec: int = DEFAULT_HEARTBEAT_DEDUP_SEC
+
+    # slack comms (CommsSubsystem). bot_token is a property (env), never a field.
+    target: str = ""
+    allowed_targets: tuple[str, ...] = ()
+    mute_until_epoch: int = 0
 
     # roots — paths below are derived from these, so a test can sandbox the
     # whole tree by overriding assistant_dir.
@@ -59,6 +73,34 @@ class Config:
         return self.assistant_dir / "daemon-heartbeat.json"
 
     @property
+    def heartbeat_path(self) -> Path:
+        """Assistant's pulse heartbeat — CommsSubsystem READS this to page on stale."""
+        return self.assistant_dir / "heartbeat.json"
+
+    @property
+    def comms_dir(self) -> Path:
+        return self.assistant_dir / "comms"
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.assistant_dir / "actions-ledger.jsonl"
+
+    @property
+    def ledger_cursor_path(self) -> Path:
+        """The daemon's OWN ledger byte cursor — deliberately distinct from
+        comms-listen.py's `comms/ledger.cursor` so the two can coexist during
+        migration without fighting over the same offset."""
+        return self.comms_dir / "daemon-ledger.cursor"
+
+    @property
+    def conversation_path(self) -> Path:
+        return self.comms_dir / "conversation.jsonl"
+
+    @property
+    def threads_path(self) -> Path:
+        return self.comms_dir / "threads.jsonl"
+
+    @property
     def pid_path(self) -> Path:
         return self.assistant_dir / "daemon.pid"
 
@@ -73,6 +115,20 @@ class Config:
     @property
     def tool_dispatch_script(self) -> Path:
         return self.repo / "bin" / "tool-dispatch.py"
+
+    # ── slack ─────────────────────────────────────────────────────────────
+
+    @property
+    def bot_token(self) -> str:
+        """The Slack bot token — from $SLACK_BOT_TOKEN, never config.json."""
+        return os.environ.get("SLACK_BOT_TOKEN", "")
+
+    @property
+    def has_slack(self) -> bool:
+        """True when we have everything needed to actually send to Slack: a bot
+        token, a routing target, AND that target on the send-gate allowlist."""
+        return bool(self.bot_token and self.target
+                    and self.target in self.allowed_targets)
 
     # ── loading ───────────────────────────────────────────────────────────
 
@@ -106,13 +162,26 @@ class Config:
             return cfg
 
         daemon = raw.get("daemon", {}) if isinstance(raw.get("daemon"), dict) else {}
+        sl = raw.get("slack", {}) if isinstance(raw.get("slack"), dict) else {}
+
+        # $SLACK_PING_TARGET overrides the configured target (env-configurable
+        # routing, matching bin/comms_lib.Config.load and slack-reactor).
+        target = os.environ.get("SLACK_PING_TARGET") or str(sl.get("target", "") or "")
+        allowed = tuple(str(t) for t in sl.get("allowed_targets", []) or [])
 
         return replace(
             cfg,
             stale_heartbeat_sec=int(raw.get("stale_heartbeat_sec",
                                             DEFAULT_STALE_HEARTBEAT_SEC)),
+            mute_until_epoch=int(raw.get("mute_until_epoch", 0) or 0),
             pulse_interval_sec=int(daemon.get("pulse_interval_sec",
                                               DEFAULT_PULSE_INTERVAL_SEC)),
             heartbeat_check_sec=int(daemon.get("heartbeat_check_sec",
                                                DEFAULT_HEARTBEAT_CHECK_SEC)),
+            ledger_poll_sec=float(daemon.get("ledger_poll_sec",
+                                             DEFAULT_LEDGER_POLL_SEC)),
+            heartbeat_dedup_sec=int(daemon.get("heartbeat_dedup_sec",
+                                               DEFAULT_HEARTBEAT_DEDUP_SEC)),
+            target=target,
+            allowed_targets=allowed,
         )

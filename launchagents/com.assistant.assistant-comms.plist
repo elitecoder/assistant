@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.assistant.assistant-comms — the event-driven Slack comms daemon.
+
+  A single long-running process (bin/comms-listen.py) with four concurrent
+  loops: Slack inbound → warm-session reply, ledger → ping, cmux-watcher inbox →
+  ping, and heartbeat → page. KeepAlive relaunches it if it crashes or exits.
+  No StartInterval — it does not tick, it listens.
+
+  THIS PLIST IS OPT-IN. The installer WRITES it but never loads it (like the
+  cmux-watcher agent) — comms sends Slack messages, so per the operator's
+  security posture it is activated only by explicit hand-load once the token +
+  send-gate allowlist are set. Run assistant-comms-setup.sh first, then:
+
+    launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
+
+  To stop:
+    launchctl bootout gui/$UID/com.assistant.assistant-comms
+
+  The Slack bot token comes from $SLACK_BOT_TOKEN in ~/.zprofile — the launcher
+  script sources it. It is NEVER written into this plist.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.assistant.assistant-comms</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/mukuls/dev/assistant/bin/spawn-comms-listen.sh</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/mukuls/.assistant/logs/assistant-comms.launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mukuls/.assistant/logs/assistant-comms.launchd.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/mukuls</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/mukuls</string>
+</dict>
+</plist>

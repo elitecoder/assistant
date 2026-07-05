@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .config import Config
 from .subsystems import Subsystem
+from .subsystems.comms import CommsSubsystem
 from .subsystems.heartbeat import HeartbeatSubsystem
 from .subsystems.pulse import PulseSubsystem
 from .subsystems.tools import ToolSubsystem
@@ -60,9 +61,19 @@ class DaemonProcess:
         heartbeat = HeartbeatSubsystem(
             *common, status_provider=lambda: self._collect_status(
                 exclude="heartbeat"))
-        # Order matters only for the status snapshot; threads run concurrently.
+        subs: list[Subsystem] = [pulse, tools, heartbeat]
         self._named = {"pulse": pulse, "tools": tools, "heartbeat": heartbeat}
-        return [pulse, tools, heartbeat]
+        # CommsSubsystem is additive: only wire it when Slack is fully
+        # configured (token + allowlisted target). An unconfigured box runs
+        # pulse + tools + heartbeat exactly as before, no dead comms thread.
+        # In --dry-run WITH Slack configured, the watch loops still run but
+        # egress is force-disabled.
+        if self.config.has_slack:
+            comms = CommsSubsystem(*common, send_enabled=not self.dry_run)
+            subs.append(comms)
+            self._named["comms"] = comms
+        # Order matters only for the status snapshot; threads run concurrently.
+        return subs
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
