@@ -116,15 +116,16 @@ def cli(argv: list[str], timeout: int = 30, env: dict | None = None) -> tuple[in
 def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
     """Return a live warm-session record, spawning one if none is alive.
 
-    On respawn, close the prior warm workspace first so we never leak Claude
-    processes. close_own_workspace only touches a workspace this daemon spawned
-    (title-verified), never an arbitrary one."""
+    On respawn we do NOT close the prior warm workspace — production code never
+    shells out `cmux close-workspace` (2026-05-26 work-loss rule). We clear the
+    session registry so a fresh session spawns, and flag the orphan so the
+    operator closes the defunct pane by hand."""
     sess = comms_session.read_session(paths)
     if sess and comms_session.cmux_alive(paths, sess["ws_ref"]):
         return sess
     if sess:
-        log(f"warm session {sess['ws_ref']} gone — closing it and respawning")
-        comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
+        log(f"warm session {sess['ws_ref']} gone — respawning (leaving old pane for manual close)")
+        comms_session.flag_orphan_workspace(paths, sess["ws_ref"], log=log)
         comms_session.clear_session_registry(paths)
     return comms_session.spawn_session(paths, WARM_PROMPT, log=log)
 
@@ -154,9 +155,17 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
     # how to reconstruct context, reply via slack-send.py, and record the out
     # turn. The header carries the routing metadata so the session replies to the
     # right channel/thread.
+    #
+    # thread_root is the ts the reply must thread under. To post INTO a thread,
+    # Slack requires thread_ts = the thread ROOT — so for an in-thread inbound
+    # (reply_to set) we reply under reply_to; for a top-level inbound we root the
+    # thread at the user's own msg_ts. Either way the session uses --reply-to
+    # <thread_root>, keeping the whole exchange in one thread that slack-poll's
+    # conversations.replies pass will then track.
+    thread_root = reply_to or msg_ts
     feed_text = (
         f"[slack channel={channel} msg_ts={msg_ts} reply_to={reply_to} "
-        f"send_cli={SLACK_SEND}] {text}"
+        f"thread_root={thread_root} send_cli={SLACK_SEND}] {text}"
     )
     t0 = time.time()
     comms_session.feed(paths, sess["surface_ref"], feed_text)

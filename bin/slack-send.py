@@ -173,6 +173,14 @@ def main(argv: list[str] | None = None, http=None,
     if args.ledger_key:
         comms_lib.append_thread(paths, args.ledger_key, msg_ts, channel_id,
                                 args.kind, clock=clock)
+    # Register the thread we just posted into so the daemon polls its replies
+    # (conversations.history never returns in-thread replies). The thread ROOT
+    # is --reply-to when replying into an existing thread, else this message's
+    # own ts (a top-level post the user may reply to). Seed the cursor at msg_ts
+    # so our own message is never re-fetched as inbound.
+    thread_root = str(args.reply_to) if args.reply_to else msg_ts
+    comms_lib.register_open_thread(paths, thread_root, channel_id,
+                                   seen_ts=msg_ts, clock=clock)
     print(json.dumps({
         "channel": channel_id,
         "message_id": msg_ts,

@@ -35,11 +35,11 @@ Each turn, the daemon gives you a message with a header carrying its `channel`, 
 
 3. **Send the reply and record it.** Both, always — a reply you don't record is lost to your future self after a `/clear`:
    ```
-   <send_cli> --text "<reply>" --channel <channel> --kind reply --reply-to <msg_ts>
+   <send_cli> --text "<reply>" --channel <channel> --kind reply --reply-to <thread_root>
    # note the message_id (Slack ts) it prints, then:
-   bin/conversation.py append --channel <channel> --direction out --text "<reply>" --kind reply --reply-to <msg_ts> --msg-ts <printed message_id>
+   bin/conversation.py append --channel <channel> --direction out --text "<reply>" --kind reply --reply-to <thread_root> --msg-ts <printed message_id>
    ```
-   The message header tells you which `send_cli` to use (`bin/slack-send.py`) and the `channel` to answer in. Use exactly what the header says — never hardcode a channel. Reply into the thread (`--reply-to <msg_ts>`) so the conversation stays threaded.
+   The message header tells you which `send_cli` to use (`bin/slack-send.py`), the `channel` to answer in, and the `thread_root` to reply under. Use exactly what the header says — never hardcode a channel. **Always reply with `--reply-to <thread_root>`** (NOT `msg_ts`): `thread_root` is the thread's root ts, so every turn stays in one Slack thread — which is also what lets the daemon poll the thread for your follow-ups. Using `msg_ts` for an in-thread message would try to start a new thread and break the conversation.
    (The daemon already recorded the inbound turn before handing it to you — you only record your outbound reply.)
 
 ## The send-gate — you are confined to the one comms channel
