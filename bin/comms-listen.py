@@ -335,18 +335,44 @@ INBOX_DIR = HOME / ".assistant" / "inbox"
 # pulse and is NOT ours — we only consume cmux-*.json.
 INBOX_GLOB = "cmux-*.json"
 INBOX_POLL_FALLBACK_SEC = float(os.environ.get("COMMS_INBOX_POLL_SEC", "2"))
+# A workspace signal is only actionable while it's fresh — a "needs input" from
+# an hour ago (let alone weeks) is noise, not a page. cmux-watcher keeps writing
+# these whether or not comms is running, so on startup we can face a large stale
+# backlog; anything older than this is dropped WITHOUT a ping. Live signals
+# arrive within ~2s, far inside the window.
+INBOX_MAX_AGE_SEC = float(os.environ.get("COMMS_INBOX_MAX_AGE_SEC", "300"))
+
+
+def _signal_age_sec(item: dict, path: Path, now: float) -> float:
+    """Age of a signal in seconds. Prefer the ISO `ts` cmux-watcher stamps;
+    fall back to the file mtime if it's missing/unparseable."""
+    ts = item.get("ts")
+    if isinstance(ts, str) and ts:
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            return now - dt.timestamp()
+        except ValueError:
+            pass
+    try:
+        return now - path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _drain_inbox_once(env: dict) -> int:
     """Read every cmux-*.json in the inbox, ping, delete it. Returns the number
-    of items processed. A malformed file is logged and removed so it never wedges
-    the loop. Atomic-write on the producer side means we never read a half-written
+    of items PINGED. Stale signals (older than INBOX_MAX_AGE_SEC) are deleted
+    without a ping. A malformed file is logged and removed so it never wedges the
+    loop. Atomic-write on the producer side means we never read a half-written
     file. A failed send leaves the file in place so the next pass retries."""
     if not INBOX_DIR.exists():
         return 0
     paths = comms_lib.Paths.from_env()
     target = _target(paths)
+    now = time.time()
     n = 0
+    stale = 0
     for p in sorted(INBOX_DIR.glob(INBOX_GLOB)):
         try:
             raw = p.read_text()
@@ -360,6 +386,15 @@ def _drain_inbox_once(env: dict) -> int:
                 p.unlink()
             except OSError:
                 pass
+            continue
+        # Freshness gate: never ping a stale signal — delete it silently.
+        age = _signal_age_sec(item, p, now)
+        if age > INBOX_MAX_AGE_SEC:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+            stale += 1
             continue
         if not target:
             log(f"inbox: no target configured — leaving {p.name} for retry")
@@ -378,6 +413,8 @@ def _drain_inbox_once(env: dict) -> int:
         n += 1
         log(f"inbox: pinged {item.get('signal_type') or item.get('signal')} "
             f"ws={item.get('ws_ref')} ({p.name})")
+    if stale:
+        log(f"inbox: dropped {stale} stale signal(s) older than {int(INBOX_MAX_AGE_SEC)}s (no ping)")
     return n
 
 
