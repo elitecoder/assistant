@@ -530,30 +530,37 @@ def acquire_singleton(paths: comms_lib.Paths):
     return fh
 
 
-def _announce_misconfig_once(paths: comms_lib.Paths, summary: str, env: dict) -> None:
+def _announce_misconfig_once(paths: comms_lib.Paths, key: str, summary: str, env: dict) -> None:
     """Under KeepAlive+ThrottleInterval=10s an unrecoverable misconfig would
     crash-loop; without a guard, a startup Slack send would spam the operator
-    every ~10s. Dedup on a marker file keyed by the failure summary — announce a
-    given misconfig at most once until it changes or is cleared."""
+    every ~10s. Dedup on a marker file keyed by `key` — a STABLE identifier (the
+    set of failing check NAMES), NOT the human `summary` (which may embed
+    variable network-error text that would defeat the dedup as it flaps).
+
+    Fail CLOSED: if we cannot persist the marker, we do NOT send — a send we
+    can't record would re-fire every 10s, the exact spam we're preventing. So
+    write the marker FIRST; only send if that succeeded."""
     marker = paths.comms_dir / "misconfig-announced.txt"
     try:
-        if marker.exists() and marker.read_text().strip() == summary.strip():
-            return  # already announced this exact failure
+        if marker.exists() and marker.read_text().strip() == key.strip():
+            return  # already announced this failure class
     except OSError:
         pass
-    # Only attempt a send if we have a token + an allowlisted target + chat:write
-    # (checked implicitly by the gate in slack-send). Best-effort; never raises.
+    # Persist the marker BEFORE sending (fail-closed). If we can't, skip the send.
+    try:
+        paths.comms_dir.mkdir(parents=True, exist_ok=True)
+        marker.write_text(key.strip())
+    except OSError:
+        log("could not write misconfig marker — skipping announce to avoid crash-loop spam")
+        return
+    # Only send if we have a token + an allowlisted target (the gate in
+    # slack-send enforces the target too). Best-effort; never raises.
     try:
         cfg = comms_lib.Config.load(paths.config)
         if comms_lib.bot_token() and cfg.target and cfg.is_allowed(cfg.target):
             cli(_send_args(f"⚠️ assistant-comms cannot start: {summary}", "urgent",
                            cfg.target, None), timeout=20, env=env)
     except Exception:  # noqa: BLE001 — announcing must never mask the real exit
-        pass
-    try:
-        paths.comms_dir.mkdir(parents=True, exist_ok=True)
-        marker.write_text(summary.strip())
-    except OSError:
         pass
 
 
@@ -581,11 +588,14 @@ def main() -> int:
         failed = [c for c in dchecks if c.status == assistant_doctor.FAIL]
         if failed:
             summary = "; ".join(f"{c.name}: {c.detail}" for c in failed)
+            # Stable dedup key = the SET of failing check names (sorted), free of
+            # variable detail text — so a flapping network error doesn't re-page.
+            key = "|".join(sorted(c.name for c in failed))
             log(f"preflight FAILED — {summary}")
             for c in failed:
                 if c.remedy:
                     log(f"  fix {c.name}: {c.remedy}")
-            _announce_misconfig_once(paths, summary, env0)
+            _announce_misconfig_once(paths, key, summary, env0)
             return 1
         # cleared: drop any stale announce marker so the next real failure pages.
         try:

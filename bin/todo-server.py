@@ -41,7 +41,10 @@ DASHBOARD_HTML_PATH = HOME / ".claude" / "assistant-dashboard.html"
 # render-todo.py / render-dashboard.py paths were retired 2026-05-22; keeping
 # both names so existing call sites still work, both now resolve to the live
 # renderer.
-RENDER_SCRIPT = HOME / "dev" / "assistant" / "bin" / "render-assistant-page.py"
+# Derive the renderer from THIS file's location, not a hardcoded ~/dev/assistant
+# — the repo is not assumed to live there (portability: a checkout elsewhere
+# must still re-render the dashboard). The renderer is always a sibling in bin/.
+RENDER_SCRIPT = Path(__file__).resolve().parent / "render-assistant-page.py"
 RENDER_DASHBOARD_SCRIPT = RENDER_SCRIPT
 PROPOSALS_DIR = HOME / ".architect" / "orchestrator-proposals"
 ALLOWED_FLAGS = {"autoDispatch", "closeOnMerge"}

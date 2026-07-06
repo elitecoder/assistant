@@ -16,7 +16,7 @@ ASSISTANT_REPO_URL=git@github.com:elitecoder/assistant.git \
   bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
 ```
 
-Prerequisites: `git`, `python3` (3.11+), and the [`claude` CLI](https://claude.ai/code); `cmux.app` for the workspace-driving features. The bootstrap clones to `~/dev/assistant`, runs a **preflight** (`bin/assistant-doctor.py`), then wires symlinks + LaunchAgent plists — but **loads nothing** (opt-in by design). It ends by printing an ordered activation runbook.
+Prerequisites: `git`, `python3` (3.11+), and the [`claude` CLI](https://claude.ai/code); `cmux.app` for the workspace-driving features. The bootstrap clones to `~/dev/assistant`, runs a **preflight** (`bin/assistant-doctor.py`), wires symlinks, and renders the LaunchAgent plists. `install.sh --apply` **(re)loads the always-on set** (pulse orchestrator + dashboard/todo/watcher daemons); the **opt-in** features (cmux-watcher, Slack comms, slack-reactor) are copied but not loaded — you enable those by hand. It ends by printing the activation runbook.
 
 **→ Full step-by-step onboarding, incl. Slack comms: [ONBOARDING.md](ONBOARDING.md).** Run `./bin/assistant-doctor.py` anytime for a health check.
 
@@ -79,8 +79,8 @@ These are structural, not just conventions — violating them will cause real pr
 ## Testing
 
 ```bash
-python3 -m unittest discover tests -v    # 35 test files, no LLM
-cd evals/observer && ./run.py            # 13 real-transcript fixtures × Observer
+python3 -m pytest tests/ -q              # 48 test files, no LLM
+cd evals/observer && ./run.py            # 14 real-transcript fixtures × Observer
 ```
 
 The headline eval fixture (`01-ws97-trap-no-pr-mid-audit`) replays the production bug where an unrelated merged PR in transcript prose drove an auto-close. Run the evals after any change to `prompts/observer-batch-prompt.md` or `bin/build-ws-context.py`.

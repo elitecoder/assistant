@@ -67,14 +67,14 @@ bash "${REPO_DIR}/install.sh" --apply
 cat <<'DONE'
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Assistant installed — code + plists in place, nothing loaded yet.
+  Assistant installed. install.sh (re)loaded the always-on set (pulse
+  orchestrator + dashboard/todo/watcher daemons) — see the runbook above.
 
-  install.sh just printed the ordered activation runbook above:
-  load the CORE pulse agent first, then any optional features
-  (cmux-watcher, Slack comms, slack-reactor) you want.
+  The OPT-IN features (cmux-watcher, Slack comms, slack-reactor) are
+  copied but not loaded — enable the ones you want per the runbook.
 
-  Start core now:
-    launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
+  Verify core is up:
+    launchctl list | grep com.assistant
 
   Full step-by-step guide, incl. Slack comms: ONBOARDING.md
   Health check anytime:                       ./bin/assistant-doctor.py

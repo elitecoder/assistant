@@ -63,7 +63,7 @@ def age_str(seconds):
 
 
 def shorten_cwd(cwd, max_len=38):
-    s = (cwd or "").replace("/Users/mukuls/", "~/")
+    s = (cwd or "").replace(f"{HOME}/", "~/")
     if len(s) > max_len:
         s = "…" + s[-(max_len - 1):]
     return s

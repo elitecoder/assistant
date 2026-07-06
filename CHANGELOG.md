@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.3.1] - 2026-07-06
+
+### Fixed
+Adversarial ship-gate findings from the 0.3.0 productization (all verified
+against the tree before fixing):
+- **Symlink write-through guard (R1/R2)** — `install.sh`'s copy path now refuses
+  to `cp` through a symlinked target: a legacy install left some
+  `~/Library/LaunchAgents/*.plist` as symlinks INTO the repo, so a `--apply`
+  would have written rendered `/Users/mukuls` content back through the link into
+  the committed portable template. Both `ensure_file_copy` and the Section-3
+  loop now replace a symlink with a real rendered file (guard, not follow).
+- **Doctor scope accuracy (D1/D2)** — `_history_scopes()` makes the
+  conversations.history requirement an EITHER/OR set for EVERY target type,
+  closing a false-PASS for a `D…` DM-channel target missing `im:history`; and
+  `users:read`/`groups:read` are no longer required (no daemon calls
+  users.info / conversations.info). Scope docs across
+  ONBOARDING.md / assistant-comms-setup.sh / docs now agree with the doctor.
+- **Crash-loop announce dedup (D3/D4)** — `comms-listen`'s misconfig announce
+  now dedups on a STABLE key (the set of failing check names, not variable
+  error text) and fails CLOSED (writes the marker before sending), so a flapping
+  network can't spam the operator every 10s.
+- **Portability hardcodes (P1/P2/P3/P5/P6)** — `todo-server.py` (renderer path),
+  `comms_session.py` (DISPATCH_CWD + --add-dir), `session-context-watcher.py`
+  and `world-scanner.py` (cron cwd), `merge-pr-dispatch.py` (sibling scripts),
+  and `render-assistant-page.py` (home shortener) now derive from `__file__` /
+  `$HOME` instead of `/Users/mukuls` or a fixed `~/dev/assistant`.
+- **Docs vs behavior (D2/D3/D5/D6)** — corrected the false "installer loads
+  nothing / loading pulse brings up the always-on set" claims (install.sh
+  --apply DOES reload the always-on set; the companion agents are independent),
+  the README test/fixture counts (48 / 14), and the install.sh --help COPIED
+  list.
+
+### Testing
+- `test_plist_portability.py` gains a `bin/*.py` author-literal scan (the
+  durable gate against re-introducing `/Users/mukuls` / `~/dev/assistant`
+  hardcodes). `test_doctor.py` adds D…-target + users:read-not-required cases.
+  Three previously author-pinned tests (renderer, world-scanner, session-context
+  cron) now assert the portable behavior via `$HOME`. Full suite green
+  (1203 passed, 1 skip).
+
 ## [0.3.0] - 2026-07-06
 
 ### Added
@@ -85,6 +125,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   entirely for Adobe-IT security reasons — the direct predecessor of the 0.2.0
   Slack comms above.
 
-[0.3.0]: https://github.com/elitecoder/assistant/compare/v0.2.0...HEAD
+[0.3.1]: https://github.com/elitecoder/assistant/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/elitecoder/assistant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/elitecoder/assistant/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/elitecoder/assistant/releases/tag/v0.1.0

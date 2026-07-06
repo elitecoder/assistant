@@ -617,9 +617,10 @@ def test_find_active_transcripts_missing_file_skipped(tmp_home, tmp_path):
 def test_find_active_transcripts_cron_tagging(tmp_home, tmp_path):
     tfile = tmp_path / "cron.jsonl"
     tfile.write_text(_user_line("cron work") + "\n")
+    # cron cwd is derived from the (patched) module HOME — build it portably
     _write_registry(tmp_home, {
         "tab-c": {"claude_pid": os.getpid(), "session_id": "SC",
-                  "cwd": "/Users/mukuls/.architect",
+                  "cwd": str(tmp_home / ".architect"),
                   "transcript_path": str(tfile), "ts": 1},
     })
     w = scw.Watcher()

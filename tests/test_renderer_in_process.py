@@ -167,8 +167,10 @@ class UtilityTests(unittest.TestCase):
         self.assertEqual(self.mod.shorten_cwd(None), "")
 
     def test_shorten_cwd_replaces_home(self):
-        # ~/Users/mukuls/ → ~/
-        self.assertIn("~/", self.mod.shorten_cwd("/Users/mukuls/dev/x"))
+        # $HOME/… → ~/…  (portable: uses the running user's home, not a literal)
+        import os
+        home = os.environ["HOME"]
+        self.assertIn("~/", self.mod.shorten_cwd(f"{home}/dev/x"))
 
     def test_first_ws_ref_extracts_workspace_ref(self):
         # touches entries are str OR {"ref": "..."} — uses .get("ref"), not "ws_ref".

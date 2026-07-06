@@ -33,7 +33,8 @@ echo "[1/4] Verifying SLACK_BOT_TOKEN via auth.test…"
 AUTH_JSON="$(curl -sS -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" https://slack.com/api/auth.test || true)"
 if ! printf '%s' "$AUTH_JSON" | grep -q '"ok":true'; then
     echo "ERROR: auth.test failed: ${AUTH_JSON}" >&2
-    echo "The bot needs scopes: chat:write, groups:history, groups:read, users:read" >&2
+    echo "The bot needs scopes: chat:write + groups:history (private channel)" >&2
+    echo "or channels:history (public); for a DM target: chat:write + im:write + im:history." >&2
     echo "(add im:write, im:history too if you target a DM instead of a channel)." >&2
     exit 1
 fi

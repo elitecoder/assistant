@@ -22,6 +22,33 @@ PLISTS = sorted((REPO / "launchagents").glob("*.plist"))
 TOKENS = ("__HOME__", "__REPO__", "__PYTHON__", "__PATH__")
 
 
+def test_no_author_literals_in_bin_scripts():
+    """Runtime bin/ scripts must not hardcode the author's home or a fixed
+    ~/dev/assistant checkout — those break on any other machine / relocated
+    checkout (P1/P2/P3/P5/P6). Derive from $HOME, __file__, or an env override
+    instead. This is the durable gate that keeps portability from regressing.
+
+    ALLOWED: comments/docstrings that mention the path illustratively, and the
+    literal inside a .replace()/env-default fallback is NOT allowed (those were
+    the actual bugs). We scan non-comment code lines for the two literals."""
+    bin_dir = REPO / "bin"
+    literal_home = "/Users/mukuls"
+    hardcoded_repo = re.compile(r'["\']~?/?[Uu]sers/mukuls|HOME\s*/\s*["\']dev["\']\s*/\s*["\']assistant["\']')
+    offenders = []
+    for py in sorted(bin_dir.rglob("*.py")):
+        for i, line in enumerate(py.read_text(errors="replace").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            # strip trailing inline comment (rough — good enough for a literal scan)
+            code = line.split("  #")[0]
+            if literal_home in code or re.search(r'HOME\s*/\s*["\']dev["\']\s*/\s*["\']assistant["\']', code):
+                offenders.append(f"{py.relative_to(REPO)}:{i}: {stripped[:90]}")
+    assert not offenders, (
+        "bin/ scripts hardcode an author path (use $HOME / __file__ / env):\n  "
+        + "\n  ".join(offenders))
+
+
 def test_committed_plists_are_templates_not_literals():
     """No committed plist may carry a literal author path or hardcoded
     interpreter — those must be tokens the installer substitutes."""

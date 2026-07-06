@@ -1,9 +1,12 @@
 # Onboarding Assistant
 
 This is the single "start here" for getting Assistant running on a macOS machine
-you have repo access to. The installer copies code and LaunchAgent plists but
-**loads nothing** — activation is opt-in and ordered. Follow the phases below;
-each is independent, so stop after CORE if that's all you want.
+you have repo access to. `install.sh --apply` renders + installs the LaunchAgent
+plists and **(re)loads the always-on set** (the pulse orchestrator + its
+dashboard/todo/watcher daemons). The **opt-in** features below (cmux-watcher,
+Slack comms, slack-reactor) are copied but **not** loaded — you enable the ones
+you want by hand. Each is independent; stop after step 1 if the core is all you
+need.
 
 Run `./bin/assistant-doctor.py` at any point for a preflight health check.
 
@@ -40,21 +43,26 @@ is idempotent and dry-run by default; re-run it freely.
 
 ## Activation runbook (ordered — the installer prints this too)
 
-### CORE — the pulse orchestrator (start here)
+### CORE — the always-on set (loaded by `install.sh --apply`)
 
-```bash
-launchctl load ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
-```
-
-This is the mechanical orchestrator: every ~5 min it observes your cmux
-workspaces and acts on what's safe (merge, cleanup, nudge). Loading the pulse
-agent also brings up the always-on set — the dashboard page renderer, the todo
-server, the session-context watcher, the workspace watcher, and the world
-scanner. Verify:
+`install.sh --apply` already **(re)loaded** the always-on set: the pulse
+orchestrator (every ~5 min it observes your cmux workspaces and acts on what's
+safe — merge, cleanup, nudge) plus its independent companion agents — the
+dashboard page renderer, the todo server, the session-context watcher, the
+workspace watcher, and the world scanner. These are separate LaunchAgents;
+loading one does **not** load the others (the installer loads each). Verify:
 
 ```bash
 launchctl list | grep com.assistant
 stat -f '%Sm' ~/.claude/cache/world.json   # should refresh within ~30s
+```
+
+If any is missing (e.g. you skipped `--apply`), load it directly and idempotently:
+
+```bash
+# `bootout` first makes re-loading safe if it's already registered
+launchctl bootout gui/$UID/com.assistant.assistant-pulse 2>/dev/null || true
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
 ```
 
 ### OPTIONAL — workspace-signal pings
@@ -74,8 +82,10 @@ answers your messages. Requires the cmux-watcher above for workspace pings.
 
 1. Create a **private** Slack channel (e.g. `#assistant-comms`) and `/invite` the bot.
 2. Add bot scopes at api.slack.com/apps → OAuth → Bot Token Scopes:
-   `chat:write`, `groups:history`, `users:read` (add `im:write`, `im:history`
-   if you target a DM instead of a channel). Reinstall the app if scopes changed.
+   `chat:write` + `groups:history` (private channel) or `channels:history`
+   (public); for a DM target instead, `chat:write` + `im:write` + `im:history`.
+   Reinstall the app if scopes changed. (The setup preflight tells you exactly
+   which scope is missing — this list and `bin/assistant-doctor.py` agree.)
 3. `export SLACK_BOT_TOKEN=xoxb-…` in `~/.zprofile` (optionally
    `export SLACK_PING_TARGET=C…` = your channel id).
 4. Run setup — it validates the token, writes `~/.assistant/config.json` (chmod

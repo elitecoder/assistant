@@ -63,10 +63,13 @@ import subprocess
 import sys
 import time
 
-CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+CMUX = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
 REPO = "Adobe-Firefly/firefly-platform"
-TRANSCRIPT_TAIL = os.path.expanduser("~/dev/assistant/bin/transcript-tail.py")
-CMUX_SEND = os.path.expanduser("~/dev/assistant/bin/cmux-send.py")
+# Resolve sibling scripts relative to THIS file, not a hardcoded ~/dev/assistant
+# — so a checkout elsewhere still finds them (portability).
+_BIN = os.path.dirname(os.path.abspath(__file__))
+TRANSCRIPT_TAIL = os.path.join(_BIN, "transcript-tail.py")
+CMUX_SEND = os.path.join(_BIN, "cmux-send.py")
 
 TEST_PATH_RE = re.compile(
     r"^("

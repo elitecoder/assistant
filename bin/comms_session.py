@@ -33,7 +33,11 @@ import comms_lib
 HOME = Path(os.environ["HOME"])
 CLEAR_THRESHOLD = float(os.environ.get("COMMS_CLEAR_FRACTION", "0.5"))
 SESSION_TITLE = "assistant-comms (warm)"
-DISPATCH_CWD = HOME / "dev" / "assistant"
+# The warm session's cwd = this repo checkout (its own code + boot prompt), NOT
+# a hardcoded ~/dev/assistant — derive it from this file (bin/comms_session.py →
+# repo root is parent-of-bin) so a checkout elsewhere still works.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DISPATCH_CWD = REPO_ROOT
 
 # Comms is a narrow conversational role — Sonnet, not the Opus the ~/.zprofile
 # `claude` alias bakes in. We bypass the alias by invoking the binary at its
@@ -299,8 +303,8 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None)
     launch = (
         f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(WARM_MODEL)} "
         f"--dangerously-skip-permissions "
-        f"--add-dir ~/dev/assistant --add-dir ~/.assistant "
-        f"--add-dir ~/.architect --add-dir /tmp"
+        f"--add-dir {shlex.quote(str(REPO_ROOT))} --add-dir {shlex.quote(str(HOME / '.assistant'))} "
+        f"--add-dir {shlex.quote(str(HOME / '.architect'))} --add-dir /tmp"
     )
     rc, out, err = comms_lib.run_cmd(
         [cmux, "new-workspace", "--cwd", cwd, "--name", SESSION_TITLE,

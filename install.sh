@@ -62,7 +62,8 @@ After --apply:
   - lessons live in ~/.claude/CLAUDE.md (not in this repo). Curator: bin/assistant-curator.py
   - ~/.claude/skills/<name> → SYMLINK → $REPO_ROOT/skills/<name> (repo is truth)
   - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,
-       session-context-watcher,assistant-todo-server}.plist → COPIED
+       session-context-watcher,assistant-todo-server,workspace-watcher,memory-sync-pull}.plist
+       → rendered from templates + COPIED (opt-in comms/slack-reactor: copied, NOT loaded)
   - cmux session-restore (vendored): hooks/ → ~/.claude/hooks/ (symlinks),
        bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
        and ~/.claude/settings.json SessionStart/SessionEnd hooks patched in
@@ -185,6 +186,19 @@ ensure_file_copy() {
     if [[ ! -f "$source" ]]; then
         warn "source file missing: $source"
         return 1
+    fi
+    # Symlink guard: NEVER cp through a symlink. A legacy install left some
+    # ~/Library/LaunchAgents/*.plist as symlinks INTO the repo (e.g.
+    # workspace-watcher). macOS cp follows the link and would write the rendered,
+    # /Users/mukuls-substituted content back through it into the committed
+    # template — corrupting the portable template and dirtying the tree. Replace
+    # any such symlink with a real file. (-e is false for a dangling symlink, so
+    # test -L explicitly.)
+    if [[ -L "$target" ]]; then
+        note "REPLACE symlink $target → real rendered file (was → $(readlink "$target"))"
+        if [[ $APPLY -eq 1 ]]; then
+            rm -f "$target"
+        fi
     fi
     if [[ -f "$target" ]] && cmp -s "$source" "$target"; then
         note "OK   $target (matches $source)"
@@ -461,7 +475,10 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         -e "s|__PATH__|$PLIST_PATH_VALUE|g" \
         "$plist" > "$staged"
 
-    if [[ -f "$target" ]] && cmp -s "$staged" "$target"; then
+    # A symlinked target (legacy install pointing into the repo) must be turned
+    # into a real file regardless of content — cmp reads THROUGH the link, so
+    # never trust an "OK match" on a symlink. Force the ensure_file_copy path.
+    if [[ ! -L "$target" && -f "$target" ]] && cmp -s "$staged" "$target"; then
         note "OK   $target (matches repo, no reload needed)"
     else
         ensure_file_copy "$target" "$staged"
@@ -708,36 +725,35 @@ fi
 log ""
 
 # --- summary + NEXT STEPS runbook -------------------------------------------
-# The installer copies code + plists but (by the "never launchctl load
-# automatically" rule) loads NOTHING. So the last thing it prints must be the
-# ordered activation runbook — every opt-in daemon and how to enable each
-# feature, in dependency order — or those features are discovered by accident.
-# The same runbook lives in ONBOARDING.md (linked from the README).
+# On --apply the installer RELOADS the always-on set whose plists changed
+# (phase [5]) — those are on by running the installer. The OPT-IN daemons
+# (cmux-watcher, comms, slack-reactor, the single-process daemon) are
+# copy-no-load / skip and must be hand-loaded. So the summary states what is
+# already running vs. what the user still activates by hand. Same runbook in
+# ONBOARDING.md (linked from the README).
 if [[ $APPLY -eq 0 ]]; then
     log "✅ Dry-run complete. Re-run with --apply to make changes."
     log "   Then follow the activation runbook it prints (also in ONBOARDING.md)."
 else
-    log "✅ Install complete — code + plists are in place, but NOTHING is loaded yet"
-    log "   (opt-in by design). Activate features in this order:"
+    log "✅ Install complete. The always-on set (pulse orchestrator, dashboard"
+    log "   page, todo-server, session-context-watcher, workspace-watcher,"
+    log "   world-scanner) has been (re)loaded by this --apply. Verify:"
+    log "     launchctl list | grep com.assistant"
+    log "     stat -f '%Sm' ~/.claude/cache/world.json   # refreshes within ~30s"
     log ""
-    log "   ── CORE: the pulse orchestrator (start here) ──────────────────────"
-    log "   1. launchctl load ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist"
-    log "      (also loads: assistant-page, todo-server, session-context-watcher,"
-    log "       workspace-watcher, world-scanner — the always-on set)"
-    log "      verify:  launchctl list | grep com.assistant"
-    log "               stat -f '%Sm' ~/.claude/cache/world.json   # refreshes within 30s"
+    log "   OPT-IN features are copied but NOT loaded — enable the ones you want:"
     log ""
-    log "   ── OPTIONAL: workspace-signal pings (needed for comms 'needs input') ─"
-    log "   2. launchctl load ~/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
+    log "   ── workspace-signal pings (needed for comms 'needs input') ────────"
+    log "   • launchctl load ~/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
     log ""
-    log "   ── OPTIONAL: Slack comms (bidirectional; needs step 2 for ws pings) ─"
-    log "   3. Set SLACK_BOT_TOKEN in ~/.zprofile, create a private Slack channel,"
-    log "      /invite the bot, then:  ./bin/assistant-comms-setup.sh"
-    log "      (it runs a preflight and prints the exact launchctl line when green)"
+    log "   ── Slack comms (bidirectional; needs the cmux-watcher above) ──────"
+    log "   • Set SLACK_BOT_TOKEN in ~/.zprofile, create a private Slack channel,"
+    log "     /invite the bot, then:  ./bin/assistant-comms-setup.sh"
+    log "     (it runs a preflight and prints the exact launchctl line when green)"
     log ""
-    log "   ── OPTIONAL: Slack emoji → todo capture ───────────────────────────"
-    log "   4. Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"
-    log "      launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
+    log "   ── Slack emoji → todo capture ─────────────────────────────────────"
+    log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"
+    log "     launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
     log ""
     log "   Re-run anytime:  ./bin/assistant-doctor.py         (preflight health)"
     log "   Full guide:      ONBOARDING.md"

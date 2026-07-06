@@ -121,22 +121,35 @@ def _slack_config() -> tuple[str | None, str]:
 
 
 def _required_scopes(target: str) -> set[str]:
-    """The MINIMUM scopes the daemon's three Slack calls need, by target type:
-      chat.postMessage      → chat:write
-      conversations.history → groups:history (private channel) / channels:history (public)
-      conversations.open    → im:write (DM targets only)
-      users.info            → users:read
-    Deliberately minimal — an over-broad required-set produces false FAILs that
-    are as harmful as false PASSes. `groups:read` is NOT required (no
-    conversations.info/list call). A private-channel id starts C… or G…; a
-    public channel is also C… — so for a C… target we accept EITHER history
-    scope (see check_slack_scopes)."""
-    base = {"chat:write", "users:read"}
-    if target.startswith("U"):          # user id → DM, opened via conversations.open
-        return base | {"im:write", "im:history"}
-    if target.startswith("G"):          # legacy private-group id
-        return base | {"groups:history"}
-    return base                          # C… → history scope checked separately (public OR private)
+    """The MINIMUM *definite* scopes the daemon's Slack calls need, by target
+    type. The history scope is an EITHER/OR set handled separately by
+    _history_scopes() (a channel may be public or private).
+
+    Daemon calls (bin/slack-send.py, bin/slack-poll.py) and their scopes:
+      chat.postMessage      → chat:write        (always)
+      conversations.open    → im:write          (only U… user targets — open a DM)
+      conversations.history → see _history_scopes(target)
+    Deliberately minimal. NOT required: users:read (no daemon users.info call —
+    only the separate slack-reactor Node app calls it, with a graceful fallback),
+    and groups:read (no conversations.info/list call). An over-broad set produces
+    false FAILs, as harmful as false PASSes."""
+    base = {"chat:write"}
+    if target.startswith("U"):          # user id → DM opened via conversations.open
+        return base | {"im:write"}
+    return base                          # C…/G…/D… are already channel ids
+
+
+def _history_scopes(target: str) -> set[str]:
+    """Acceptable scopes for conversations.history on this target — ANY ONE
+    satisfies. Depends on the channel kind the id denotes:
+      U… (→ opened DM) or D… (DM channel id) → im:history
+      G… (legacy private group)              → groups:history
+      C… (public OR private channel)         → channels:history OR groups:history"""
+    if target.startswith(("U", "D")):
+        return {"im:history"}
+    if target.startswith("G"):
+        return {"groups:history"}
+    return {"channels:history", "groups:history"}   # C… — either works
 
 
 def _fetch_scopes(token: str) -> tuple[set[str] | None, str]:
@@ -184,18 +197,17 @@ def check_slack_scopes() -> Check:
         return Check("slack scopes", FAIL, core=False, detail=err, remedy="fix the token first")
     need = set(_required_scopes(target))
     missing = need - scopes
-    # A C… target may be a public OR private channel; conversations.history
-    # accepts EITHER channels:history or groups:history. Only flag it if BOTH
-    # are absent.
-    history_note = ""
-    if target.startswith("C"):
-        if not ({"channels:history", "groups:history"} & scopes):
-            missing.add("channels:history OR groups:history")
-        else:
-            history_note = " + a *:history scope"
+    # The history scope is an EITHER/OR set for EVERY target type (a DM needs
+    # im:history, a C… channel accepts channels:history OR groups:history, etc.).
+    # Flag it only if NONE of the acceptable history scopes is present — this is
+    # what closes the D…-target false-PASS (history was previously enforced only
+    # for C…).
+    hist = _history_scopes(target)
+    if not (hist & scopes):
+        missing.add(" OR ".join(sorted(hist)))
     if not missing:
         return Check("slack scopes", PASS, core=False,
-                     detail=f"target {target}: has {sorted(need)}{history_note}")
+                     detail=f"target {target}: has {sorted(need)} + a history scope ({sorted(hist & scopes)})")
     return Check(
         "slack scopes", FAIL, core=False,
         detail=f"target {target} MISSING {sorted(missing)}",

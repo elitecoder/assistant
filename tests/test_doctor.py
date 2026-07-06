@@ -28,24 +28,29 @@ def _load():
 doctor = _load()
 
 
-# ─── required-scope logic (the H2 fix — minimal, not over-broad) ────────────
+# ─── required-scope logic (minimal, not over-broad; no users:read/groups:read) ──
 
 def test_required_scopes_channel_minimal():
-    # A C… channel target must NOT require groups:read (only history + write + users)
+    # A C… channel target requires only chat:write (history is an OR-set checked
+    # separately) — NOT users:read, NOT groups:read.
     need = doctor._required_scopes("C0ABC")
-    assert need == {"chat:write", "users:read"}
-    assert "groups:read" not in need
+    assert need == {"chat:write"}
+    assert "groups:read" not in need and "users:read" not in need
 
 
-def test_required_scopes_private_group():
-    assert doctor._required_scopes("G0XYZ") == {"chat:write", "users:read", "groups:history"}
+def test_required_scopes_dm_needs_im_write():
+    # A U… user target opens a DM → im:write. Still no users:read.
+    assert doctor._required_scopes("U0MUKUL") == {"chat:write", "im:write"}
 
 
-def test_required_scopes_dm():
-    assert doctor._required_scopes("U0MUKUL") == {"chat:write", "users:read", "im:write", "im:history"}
+def test_history_scopes_by_target_type():
+    assert doctor._history_scopes("C0ABC") == {"channels:history", "groups:history"}
+    assert doctor._history_scopes("G0XYZ") == {"groups:history"}
+    assert doctor._history_scopes("D0DM") == {"im:history"}
+    assert doctor._history_scopes("U0USER") == {"im:history"}
 
 
-# ─── scope check accepts EITHER history scope for a C… target ───────────────
+# ─── scope check: history is an OR-set for EVERY target type ────────────────
 
 def _patch_scopes(monkeypatch, scopes: set[str], target: str = "C0ABC"):
     monkeypatch.setattr(doctor.comms_lib, "bot_token", lambda env=None: "xoxb-fake")
@@ -54,27 +59,48 @@ def _patch_scopes(monkeypatch, scopes: set[str], target: str = "C0ABC"):
 
 
 def test_channel_scopes_pass_with_groups_history(monkeypatch):
-    _patch_scopes(monkeypatch, {"chat:write", "users:read", "groups:history"})
+    _patch_scopes(monkeypatch, {"chat:write", "groups:history"})
     c = doctor.check_slack_scopes()
     assert c.status == doctor.PASS and c.core is False
 
 
 def test_channel_scopes_pass_with_channels_history(monkeypatch):
-    _patch_scopes(monkeypatch, {"chat:write", "users:read", "channels:history"})
+    _patch_scopes(monkeypatch, {"chat:write", "channels:history"})
     assert doctor.check_slack_scopes().status == doctor.PASS
 
 
 def test_channel_scopes_fail_without_any_history(monkeypatch):
-    _patch_scopes(monkeypatch, {"chat:write", "users:read"})
+    _patch_scopes(monkeypatch, {"chat:write"})
     c = doctor.check_slack_scopes()
     assert c.status == doctor.FAIL
     assert "history" in c.detail and c.remedy
 
 
 def test_dm_scopes_fail_without_im_write(monkeypatch):
-    _patch_scopes(monkeypatch, {"chat:write", "users:read", "im:history"}, target="U0X")
+    # U… target with history but no im:write → FAIL (can't open the DM)
+    _patch_scopes(monkeypatch, {"chat:write", "im:history"}, target="U0X")
     c = doctor.check_slack_scopes()
     assert c.status == doctor.FAIL and "im:write" in c.detail
+
+
+def test_dm_channel_id_fails_without_im_history(monkeypatch):
+    # D… DM-channel-id with chat:write but NO im:history → must FAIL (this is the
+    # D1 gap: history was previously enforced only for C… targets).
+    _patch_scopes(monkeypatch, {"chat:write"}, target="D0DM")
+    c = doctor.check_slack_scopes()
+    assert c.status == doctor.FAIL and "im:history" in c.detail
+
+
+def test_dm_channel_id_passes_with_im_history(monkeypatch):
+    _patch_scopes(monkeypatch, {"chat:write", "im:history"}, target="D0DM")
+    assert doctor.check_slack_scopes().status == doctor.PASS
+
+
+def test_users_read_not_required(monkeypatch):
+    # A channel target with chat:write + a history scope PASSes even with NO
+    # users:read (no daemon users.info call).
+    _patch_scopes(monkeypatch, {"chat:write", "groups:history"})
+    assert doctor.check_slack_scopes().status == doctor.PASS
 
 
 def test_scopes_skip_when_no_token(monkeypatch):

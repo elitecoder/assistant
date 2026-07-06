@@ -54,8 +54,8 @@ The bot is the **same Slack app the slack-reactor already uses** (`mukuls_bot`) 
 
 1. **Create a private channel** (e.g. `#assistant-comms`) and **`/invite @mukuls_bot`** to it. This is the bot's one ops channel — where it pings you and where you reply. Copy its channel id (`C…`): channel name → ⌄ → About → scroll to the bottom.
 2. **Scopes** — api.slack.com/apps → your app → OAuth & Permissions → Bot Token Scopes. Add:
-   `chat:write`, `groups:history`, `groups:read`, `users:read`.
-   (If you point the target at a DM instead of a channel, also add `im:write`, `im:history`. `reactions:*` from slack-reactor can stay.) **Reinstall** the app if scopes changed; if the token rotates, update `SLACK_BOT_TOKEN` in `~/.zprofile`.
+   `chat:write` + `groups:history` (private channel) — or `channels:history` for a public one.
+   (For a DM target instead: `chat:write` + `im:write` + `im:history`. `reactions:*` from slack-reactor can stay.) **Reinstall** the app if scopes changed; if the token rotates, update `SLACK_BOT_TOKEN` in `~/.zprofile`. The three scope lists — here, `bin/assistant-comms-setup.sh`, and `bin/assistant-doctor.py` — agree; the setup preflight names any missing one.
 3. **Token** — ensure `~/.zprofile` has `export SLACK_BOT_TOKEN=xoxb-…`. Optionally `export SLACK_PING_TARGET=C…` (your private channel id) to skip the interactive prompt.
 4. **Run setup:**
    ```

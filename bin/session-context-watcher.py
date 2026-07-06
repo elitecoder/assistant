@@ -310,7 +310,7 @@ class Watcher:
         # Simpler approach: read orchestrator-registry → workspace_ref names, but
         # to map workspace_ref → session_id we need cmux tree. Skip the precise
         # mapping; just tag by cwd heuristic for now.
-        cron_cwds = {"/Users/mukuls/.architect"}
+        cron_cwds = {str(HOME / ".architect")}
         out = []
         for sid, meta in live.items():
             tpath = meta.get("transcript_path")
