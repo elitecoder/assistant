@@ -2,11 +2,11 @@
 # assistant-comms-setup.sh — first-run bootstrap for assistant-comms (Slack).
 #
 # 1. Verify $SLACK_BOT_TOKEN is set (from ~/.zprofile) and valid (auth.test).
-# 2. Resolve the routing target: $SLACK_PING_TARGET if set, else prompt for a
-#    Slack user id (U…, DMed) or channel id (C…/D…/G…).
+# 2. Resolve the routing target: $SLACK_PING_TARGET if set, else prompt for the
+#    PRIVATE channel id (C…) the bot was /invite-d to (or a U… user for a DM).
 # 3. Write ~/.assistant/config.json with slack.target + slack.allowed_targets
-#    (the send-gate allowlist). The token is NEVER written to the file.
-# 4. Send a test message via bin/slack-send.py to validate egress + the gate.
+#    (the gate confining the bot to that one channel). Token NEVER written.
+# 4. Post a test message via bin/slack-send.py to validate egress + the gate.
 # 5. Print the exact hand-load command for the opt-in LaunchAgent.
 #
 # zsh (not bash): ~/.zprofile is a zsh file. Idempotent; safe to re-run.
@@ -34,8 +34,8 @@ AUTH_JSON="$(curl -sS -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
     https://slack.com/api/auth.test || true)"
 if ! printf '%s' "$AUTH_JSON" | grep -q '"ok":true'; then
     echo "ERROR: auth.test failed: ${AUTH_JSON}" >&2
-    echo "The bot needs scopes: chat:write, im:write, im:history, channels:history," >&2
-    echo "groups:history, mpim:history, users:read, conversations (open/history)." >&2
+    echo "The bot needs scopes: chat:write, groups:history, groups:read, users:read" >&2
+    echo "(add im:write, im:history too if you target a DM instead of a channel)." >&2
     exit 1
 fi
 BOT_USER_ID="$(printf '%s' "$AUTH_JSON" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("user_id",""))')"
@@ -62,9 +62,9 @@ elif [ -n "${existing_target}" ]; then
     target="${target_input:-$existing_target}"
 else
     echo "     Where should pings + replies go?"
-    echo "       • Your OWN Slack user id (U…) — the bot DMs you (recommended)"
-    echo "       • A channel id (C…/D…/G…) you control"
-    echo "     Find your user id: Slack → your profile → ⋮ → Copy member ID."
+    echo "       • A PRIVATE channel id (C…) you created and /invite-d the bot to (recommended)"
+    echo "       • Your OWN Slack user id (U…) — the bot DMs you instead"
+    echo "     Channel id: the channel → ⌄ → About → bottom. Bot MUST be a member."
     printf '     Target: '
     read -r target
 fi
@@ -114,7 +114,7 @@ fi
 
 echo
 echo "✅ Setup complete. The comms LaunchAgent is OPT-IN and NOT loaded automatically."
-echo "   To start it now and on every boot (this sends Slack messages — load only when ready):"
+echo "   To start it now and on every boot (load when ready):"
 echo "     launchctl bootstrap gui/\$UID ${PLIST}"
 echo "   To stop it:"
 echo "     launchctl bootout gui/\$UID/com.assistant.assistant-comms"

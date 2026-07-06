@@ -11,7 +11,9 @@ the CLI keeps working for the scripts and skills that call it).
 
 The send-gate is enforced HERE too: send() refuses any channel not in the
 `allowed` set with a RuntimeError before any network egress, mirroring
-slack-send.py. Both the CLI path and the in-process daemon path are gated.
+slack-send.py. Both the CLI path and the in-process daemon path are gated so the
+bot stays confined to its one comms channel (the private channel it was invited
+to, or the operator's DM).
 """
 from __future__ import annotations
 

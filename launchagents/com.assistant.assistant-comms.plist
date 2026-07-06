@@ -9,9 +9,10 @@
   No StartInterval — it does not tick, it listens.
 
   THIS PLIST IS OPT-IN. The installer WRITES it but never loads it (like the
-  cmux-watcher agent) — comms sends Slack messages, so per the operator's
-  security posture it is activated only by explicit hand-load once the token +
-  send-gate allowlist are set. Run assistant-comms-setup.sh first, then:
+  cmux-watcher agent) — it is activated only by explicit hand-load once the
+  token + target channel are set. The bot posts to the one private channel it
+  was invited to; the send-gate confines it there. Run assistant-comms-setup.sh
+  first, then:
 
     launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
 

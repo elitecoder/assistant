@@ -10,12 +10,11 @@ TARGET is a Slack user id (U…, opened as a DM) or a channel id (C…/D…/G…
 The bot token comes from $SLACK_BOT_TOKEN (never config.json). Routing target
 + the send-gate allowlist come from ~/.assistant/config.json.
 
-THE SEND-GATE — the mechanical enforcement of the operator's "never send Slack
-on my behalf" rule. A message is sent ONLY if its resolved target is in
-config.slack.allowed_targets. Any other target is refused with NO API call and
-a nonzero exit. This is what makes full-bidirectional comms safe: even a rogue
-warm session physically cannot message anyone but the operator's allowlisted
-DM/channel.
+THE SEND-GATE — confines the bot to its one comms channel. A message is sent
+ONLY if its resolved target is in config.slack.allowed_targets (the one private
+channel the bot was invited to, or the operator's DM). Any other target is
+refused with NO API call and a nonzero exit. Defense-in-depth: even a rogue warm
+session physically cannot post anywhere but that single allowlisted destination.
 
 Stdout JSON (one line):
   {"channel": "C…", "message_id": "1699…", "ts": "ISO", "kind": "...", "muted": false}
@@ -126,7 +125,7 @@ def main(argv: list[str] | None = None, http=None,
     if not cfg.is_allowed(target):
         print(json.dumps({
             "channel": target,
-            "error": "send-gate: target not in slack.allowed_targets",
+            "error": "send-gate: target not in slack.allowed_targets (bot is confined to its comms channel)",
             "ts": comms_lib.now_iso(clock),
             "kind": args.kind,
         }), file=sys.stderr)

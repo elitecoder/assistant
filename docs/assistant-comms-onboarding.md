@@ -11,15 +11,21 @@ It runs as a single **event-driven daemon**, `bin/comms-listen.py`, kept alive b
 
 Durable memory lives entirely on disk (`conversation.jsonl` + cursors + threads), so a crash and `KeepAlive` respawn loses nothing.
 
-## The send-gate — the mechanical enforcement of "never send Slack on my behalf"
+## Delivery model — a private ops channel the bot owns
 
-Your global rule forbids anything sending Slack messages for you. Comms is bidirectional (it *does* send), so the safety is mechanical, not a promise:
+Comms talks over a **private Slack channel you create and invite the bot to**, using the **bot token** (`xoxb-`). A bot posting to its own ops channel is not "sending on your behalf" — it's a bot writing where it was invited, like a webhook. So the "never send Slack on my behalf" rule does not apply here, and no rule change is needed.
 
-- **`slack-send.py` refuses, with no API call, any target not in `config.slack.allowed_targets`.** Setup writes that allowlist as exactly one entry: your own DM (or the one channel you chose). A rogue or confused warm session physically cannot message anyone else — the gate rejects it before egress.
+(DM-to-you is also supported — set the target to your `U…` id and comms opens a DM instead. Either way the target is a single channel/DM.)
+
+## The send-gate — the bot is confined to its one channel
+
+Even though the rule doesn't gate this, the send-gate stays as defense-in-depth so a bug or a confused warm session can't wander:
+
+- **`slack-send.py` refuses, with no API call, any target not in `config.slack.allowed_targets`.** Setup writes that allowlist as exactly one entry: your private ops channel (or your DM). The bot physically cannot post anywhere else — the gate rejects it before egress.
 - The same gate is enforced in the in-process daemon path (`src/assistant/slack.send`), so both code paths are covered.
-- The bot **never** posts into shared channels, `@`-mentions third parties, or DMs anyone but you.
+- The bot **never** posts into any other channel or `@`-mentions third parties — its entire Slack surface is the one channel you set up.
 
-This is the Slack analog of the Telegram/Discord comms that was removed for Adobe-IT security reasons — re-cut so the only reachable destination is *you*.
+This is the Slack analog of the Telegram/Discord comms that was removed for Adobe-IT security reasons — re-cut so the only reachable destination is the one channel the bot lives in.
 
 ## Why a warm session
 
@@ -44,18 +50,19 @@ You can also ask it to change Assistant — add a lesson, restart, respawn. Ever
 
 ## Setup (one-time)
 
-The bot is the **same Slack app the slack-reactor already uses** (`mukuls_bot`) — reuse its `$SLACK_BOT_TOKEN`, just add the send + DM scopes.
+The bot is the **same Slack app the slack-reactor already uses** (`mukuls_bot`) — reuse its `$SLACK_BOT_TOKEN`, just add the send + read scopes below.
 
-1. **Scopes** — api.slack.com/apps → your app → OAuth & Permissions → Bot Token Scopes. Add:
-   `chat:write`, `im:write`, `im:history`, `channels:history`, `groups:history`, `mpim:history`, `users:read`.
-   (`reactions:*` from slack-reactor can stay.) **Reinstall** the app if scopes changed; if the token rotates, update `SLACK_BOT_TOKEN` in `~/.zprofile`.
-2. **Token** — ensure `~/.zprofile` has `export SLACK_BOT_TOKEN=xoxb-…`. Optionally `export SLACK_PING_TARGET=U…` (your user id) to skip the interactive prompt.
-3. **Run setup:**
+1. **Create a private channel** (e.g. `#assistant-comms`) and **`/invite @mukuls_bot`** to it. This is the bot's one ops channel — where it pings you and where you reply. Copy its channel id (`C…`): channel name → ⌄ → About → scroll to the bottom.
+2. **Scopes** — api.slack.com/apps → your app → OAuth & Permissions → Bot Token Scopes. Add:
+   `chat:write`, `groups:history`, `groups:read`, `users:read`.
+   (If you point the target at a DM instead of a channel, also add `im:write`, `im:history`. `reactions:*` from slack-reactor can stay.) **Reinstall** the app if scopes changed; if the token rotates, update `SLACK_BOT_TOKEN` in `~/.zprofile`.
+3. **Token** — ensure `~/.zprofile` has `export SLACK_BOT_TOKEN=xoxb-…`. Optionally `export SLACK_PING_TARGET=C…` (your private channel id) to skip the interactive prompt.
+4. **Run setup:**
    ```
    ./bin/assistant-comms-setup.sh
    ```
-   It validates the token (`auth.test`), writes `~/.assistant/config.json` with `slack.target` + the one-element `slack.allowed_targets` gate (chmod 600, token NOT stored), and sends a test message you should see in Slack.
-4. **Load the daemon** (opt-in — it sends messages, so load it only when you're ready):
+   It validates the token (`auth.test`), writes `~/.assistant/config.json` with `slack.target` (your channel) + the one-element `slack.allowed_targets` gate (chmod 600, token NOT stored), and posts a test message you should see in the channel.
+5. **Load the daemon** (opt-in — load it only when you're ready):
    ```
    launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
    ```
@@ -63,19 +70,21 @@ The bot is the **same Slack app the slack-reactor already uses** (`mukuls_bot`) 
 
 To stop: `launchctl bootout gui/$UID/com.assistant.assistant-comms`.
 
+> The bot only sees messages in channels it's a **member** of, so the `/invite` in step 1 is required. This is the same constraint slack-reactor documents.
+
 ## Environment
 
 | var | required | meaning |
 |---|---|---|
 | `SLACK_BOT_TOKEN` | ✅ | `xoxb-` bot token (from `~/.zprofile`). Never stored in config.json. |
-| `SLACK_PING_TARGET` | optional | `U…` (DMed) or `C…/D…` channel; overrides `config.slack.target`. |
+| `SLACK_PING_TARGET` | optional | `C…` private channel (recommended) or `U…` user (DMed); overrides `config.slack.target`. |
 | `COMMS_MODEL` | optional | warm-session model (default Sonnet 4.6 1M). |
 | `COMMS_SLACK_POLL_SEC` | optional | inbound poll interval (default 3s). |
 | `COMMS_REPLY_WAIT_SEC` | optional | max wait for a warm reply (default 120s). |
 
 ## Files it owns
 
-- `~/.assistant/config.json` — `slack.target` + `slack.allowed_targets` (the gate). chmod 600.
+- `~/.assistant/config.json` — `slack.target` (your private channel) + `slack.allowed_targets` (the gate). chmod 600.
 - `~/.assistant/comms/conversation.jsonl` — durable both-direction chat memory.
 - `~/.assistant/comms/threads.jsonl` — sent-message-ts ↔ ledger-key links.
 - `~/.assistant/comms/slack.cursor` / `ledger.cursor` — poll offsets.

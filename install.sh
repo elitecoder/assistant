@@ -354,11 +354,10 @@ PLIST_SKIP=(
 )
 
 # Opt-in plists the installer COPIES (so a hand-load works from the canonical
-# path) but must NEVER load. The Slack comms daemon SENDS messages, so per the
-# operator's security posture it activates only by explicit hand-load once the
-# token + send-gate allowlist are set (assistant-comms-setup.sh). Copying keeps
-# ~/Library/LaunchAgents/ in sync with the repo without ever egressing on its
-# own — the same discipline as the cmux-watcher agent.
+# path) but must NEVER load. The Slack comms daemon activates only by explicit
+# hand-load once the token + target channel are set (assistant-comms-setup.sh) —
+# same discipline as the cmux-watcher agent. Copying keeps
+# ~/Library/LaunchAgents/ in sync with the repo without starting it on its own.
 PLIST_COPY_NO_LOAD=(
     "com.assistant.assistant-comms.plist"
 )

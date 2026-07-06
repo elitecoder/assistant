@@ -96,10 +96,12 @@ class Config:
     target:          the default send/reply target — a Slack user id (U…, DMed)
                      or channel id (C…/D…). $SLACK_PING_TARGET overrides it.
     allowed_targets: the SEND-GATE allowlist. slack-send.py refuses (no API call)
-                     any target not in this set — the mechanical enforcement of
-                     the operator's "never send Slack on my behalf" rule, scoped
-                     down to exactly the operator's own DM (and any channel the
-                     operator explicitly allows here)."""
+                     any target not in this set. Setup writes it as exactly the
+                     one private channel the bot was invited to (or the
+                     operator's DM), confining the bot to that single
+                     destination — defense-in-depth, not a rule requirement (a
+                     bot posting to its own invited channel is not "sending on
+                     the operator's behalf")."""
     target: str = ""
     allowed_targets: tuple[str, ...] = ()
     stale_heartbeat_sec: int = 1200

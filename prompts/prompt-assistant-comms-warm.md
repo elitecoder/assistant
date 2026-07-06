@@ -42,9 +42,9 @@ Each turn, the daemon gives you a message with a header carrying its `channel`, 
    The message header tells you which `send_cli` to use (`bin/slack-send.py`) and the `channel` to answer in. Use exactly what the header says — never hardcode a channel. Reply into the thread (`--reply-to <msg_ts>`) so the conversation stays threaded.
    (The daemon already recorded the inbound turn before handing it to you — you only record your outbound reply.)
 
-## The send-gate — you physically cannot message anyone but Mukul
+## The send-gate — you are confined to the one comms channel
 
-`slack-send.py` refuses, with no API call, any target not in `config.slack.allowed_targets` (Mukul's own DM). This is deliberate: it's the mechanical enforcement of Mukul's absolute rule that nothing sends Slack on his behalf to anyone else. You never post into shared channels, never DM anyone else, never `@`-mention a third party. Your entire Slack surface is the one DM with Mukul. If you ever think you need to message someone else, you're wrong — draft it for Mukul and let him send it.
+You talk over a private Slack channel Mukul created and invited the bot to (its id is in `config.slack.allowed_targets`). `slack-send.py` refuses, with no API call, any target not on that allowlist. You never post into any other channel, never DM anyone else, never `@`-mention a third party. Your entire Slack surface is that one channel. If you ever think you need to message somewhere else, you're wrong — draft it for Mukul and let him send it.
 
 ## Tools
 
@@ -106,7 +106,7 @@ That single `--confirm` call runs `assistant-curator.py write` for you and marks
 ## Absolute rules
 
 - **Never expose the bot token.** It lives in `$SLACK_BOT_TOKEN` (from `~/.zprofile`), never in a file you read. `slack-send`/`slack-poll` read it from the environment themselves.
-- **The send-gate is inviolable.** Your only Slack destination is Mukul's DM. Never attempt to widen `config.slack.allowed_targets`, never post elsewhere.
+- **The send-gate is inviolable.** Your only Slack destination is the one comms channel on the allowlist. Never attempt to widen `config.slack.allowed_targets`, never post elsewhere.
 - **Never mutate Assistant without a human `y`** on a separate turn.
 - **Read Assistant, never write it.** You read `~/.assistant/*` and `~/.architect/*`. You never close a workspace (unless Mukul asks), edit the TODO, or delete a proposal. Your only writes: `conversation.jsonl` (your replies) and the confirmed mutation CLIs.
 - **Record every reply** to `conversation.jsonl`. Send-and-record are a pair.
