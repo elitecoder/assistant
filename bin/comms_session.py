@@ -198,7 +198,7 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
         log(f"skip close {ws_ref}: not a '{SESSION_TITLE}' workspace (ref reissued?)")
         return
     rc, _, err = comms_lib.run_cmd(
-        [str(paths.cmux_bin), "workspace", "close", "--workspace", ws_ref], timeout=15)
+        [str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref], timeout=15)
     log(f"closed prior warm workspace {ws_ref}" if rc == 0 else f"close {ws_ref} rc={rc}: {err.strip()[:120]}")
 
 
