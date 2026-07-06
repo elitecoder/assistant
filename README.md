@@ -85,6 +85,10 @@ cd evals/observer && ./run.py            # 14 real-transcript fixtures × Observ
 
 The headline eval fixture (`01-ws97-trap-no-pr-mid-audit`) replays the production bug where an unrelated merged PR in transcript prose drove an auto-close. Run the evals after any change to `prompts/observer-batch-prompt.md` or `bin/build-ws-context.py`.
 
+## Changes
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog / SemVer). Current: **0.3.1**.
+
 <div align="center">
 <sub>Personal fleet manager for parallel cmux Claude Code workspaces · macOS</sub>
 </div>
