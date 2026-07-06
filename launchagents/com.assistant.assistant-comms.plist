@@ -29,7 +29,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>/Users/mukuls/dev/assistant/bin/spawn-comms-listen.sh</string>
+        <string>__REPO__/bin/spawn-comms-listen.sh</string>
     </array>
     <key>KeepAlive</key>
     <true/>
@@ -38,17 +38,17 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-comms.launchd.out</string>
+    <string>__HOME__/.assistant/logs/assistant-comms.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-comms.launchd.err</string>
+    <string>__HOME__/.assistant/logs/assistant-comms.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+        <string>__PATH__</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

@@ -223,6 +223,33 @@ launchctl_reload() {
     fi
 }
 
+# --- 0. Preflight (assistant-doctor) ----------------------------------------
+# Run the doctor BEFORE any mutation so a missing prerequisite is a clear,
+# actionable error rather than a half-wired system. CORE failures (python, repo,
+# git, cmux) abort an interactive --apply; optional-feature failures (Slack /
+# warm session) only warn. Under the pulse self-update (ASSISTANT_SELF_UPDATE=1)
+# we report-only and never block — the running box already passed core once.
+log "[0] Preflight — assistant-doctor"
+DOCTOR="$REPO_ROOT/bin/assistant-doctor.py"
+DOCTOR_PY="$(command -v python3 || echo /usr/bin/python3)"
+if [[ -f "$DOCTOR" ]]; then
+    if "$DOCTOR_PY" "$DOCTOR" --only core; then
+        note "core preflight passed"
+    else
+        if [[ "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]]; then
+            warn "core preflight FAILED (self-update: report-only, not blocking)"
+        elif [[ $APPLY -eq 1 ]]; then
+            warn "core preflight FAILED — aborting --apply. Fix the ↳ items above and re-run."
+            exit 1
+        else
+            warn "core preflight FAILED (dry-run: not blocking; --apply would abort)"
+        fi
+    fi
+else
+    warn "assistant-doctor.py not found at $DOCTOR — skipping preflight"
+fi
+log ""
+
 # --- 1. Symlink code into ~/.claude/ ----------------------------------------
 log "[1/5] Symlinking code into ~/.claude/"
 
@@ -331,16 +358,52 @@ for skill_dir in "$REPO_ROOT"/skills/*/; do
 done
 log ""
 
-# --- 3. Copy LaunchAgent plists + reload only those that changed ----------
-# Plists in the repo may contain `/Users/<user>/...` as a home placeholder.
-# At install time we substitute the live $HOME and stage the result in a
-# temp dir, then copy that to ~/Library/LaunchAgents/. Plists that don't
-# have the placeholder (the original 5 with literal /Users/mukuls) are
-# unchanged by the sed.
-log "[3/5] Copying LaunchAgent plists into ~/Library/LaunchAgents/"
+# --- 3. Generate LaunchAgent plists from templates + reload only those that changed ----------
+# The committed launchagents/*.plist files are TEMPLATES: they carry four
+# machine-independent tokens that we substitute with this box's real values at
+# install time, staging the result in a temp dir before copying to
+# ~/Library/LaunchAgents/. This replaced an earlier `/Users/<user>/`+sed scheme
+# that was a silent no-op (the plists held literal /Users/mukuls, which the sed
+# never matched, so every daemon shipped the author's home path and died on any
+# other machine — the P1 onboarding bug).
+#
+# Tokens (see any launchagents/*.plist):
+#   __HOME__    → this user's home ($HOME_DIR)
+#   __REPO__    → this checkout ($REPO_ROOT), NOT assumed to be ~/dev/assistant
+#   __PYTHON__  → an arch-resolved python3 (Apple-Silicon /opt/homebrew vs Intel
+#                 /usr/local vs system /usr/bin) — a literal path would 404 on
+#                 the other arch
+#   __PATH__    → an arch-aware PATH superset incl. the Homebrew bin + cmux
+#
+# The filenames are deliberately UNCHANGED (still <label>.plist): self_update.py
+# keys plist-change detection + its own-reload-defer guard on the exact string
+# `launchagents/<label>.plist`, and its tests hardcode these names. Keeping the
+# templates AT those paths means self-update keeps working.
+log "[3/5] Generating LaunchAgent plists into ~/Library/LaunchAgents/"
 mkdir -p "$HOME_DIR/Library/LaunchAgents"
 PLIST_STAGE="$(mktemp -d)"
 trap 'rm -rf "$PLIST_STAGE"' EXIT
+
+# Resolve this machine's interpreter + PATH ONCE. Probe for a real python3
+# rather than hardcode an arch: Homebrew (arm64 /opt/homebrew, Intel
+# /usr/local), then system. Fail loud if none — a daemon with no interpreter is
+# worse than a clear error.
+BREW_BIN=""
+if command -v brew >/dev/null 2>&1; then
+    BREW_BIN="$(brew --prefix 2>/dev/null)/bin"
+fi
+PLIST_PYTHON=""
+for cand in "$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -n "$cand" && -x "$cand" ]]; then PLIST_PYTHON="$cand"; break; fi
+done
+if [[ -z "$PLIST_PYTHON" ]]; then
+    warn "no python3 found for LaunchAgent plists — install Xcode CLT or Homebrew python3"
+    PLIST_PYTHON="/usr/bin/python3"  # last resort; doctor (phase 0) flags a missing one
+fi
+# PATH superset: real Homebrew bin (if any) first, then the standard dirs + the
+# cmux CLI dir the watchers/comms need.
+PLIST_PATH_VALUE="${BREW_BIN:+$BREW_BIN:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin"
+note "plist interpreter: $PLIST_PYTHON"
 
 # Opt-in plists the installer must NEVER copy or load. The single-process
 # daemon (com.mukul.assistant-daemon) is additive: it replaces the pulse
@@ -360,6 +423,10 @@ PLIST_SKIP=(
 # ~/Library/LaunchAgents/ in sync with the repo without starting it on its own.
 PLIST_COPY_NO_LOAD=(
     "com.assistant.assistant-comms.plist"
+    # slack-reactor: copy but never auto-load. It KeepAlive-crash-loops when
+    # SLACK_APP_TOKEN / SLACK_BOT_TOKEN are unset (a fresh box), so it activates
+    # by hand once the tokens are in ~/.zprofile — same discipline as comms.
+    "com.assistant.slack-reactor.plist"
 )
 
 declare -a CHANGED_LABELS
@@ -383,9 +450,16 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         [[ "$base" == "$cnl_base" ]] && copy_no_load=1 && break
     done
 
-    # Substitute /Users/<user>/ → $HOME/ so the staged plist references the
-    # current user's home dir. No-op for plists that don't have the token.
-    sed "s|/Users/<user>/|$HOME_DIR/|g" "$plist" > "$staged"
+    # Substitute the four machine tokens with this box's real values. Order:
+    # __REPO__ before __HOME__ is irrelevant (distinct tokens), but we do all
+    # four so no placeholder ever reaches launchd. A surviving __TOKEN__ is a
+    # loud plutil/launchd failure, not a silent wrong-path — the opposite of the
+    # old no-op sed.
+    sed -e "s|__PYTHON__|$PLIST_PYTHON|g" \
+        -e "s|__REPO__|$REPO_ROOT|g" \
+        -e "s|__HOME__|$HOME_DIR|g" \
+        -e "s|__PATH__|$PLIST_PATH_VALUE|g" \
+        "$plist" > "$staged"
 
     if [[ -f "$target" ]] && cmp -s "$staged" "$target"; then
         note "OK   $target (matches repo, no reload needed)"
@@ -504,8 +578,9 @@ log ""
 # run by hand.
 log "[6/6] Writing cmux-watcher LaunchAgent plist (NOT loaded)"
 WATCHER_PLIST="$HOME_DIR/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
-WATCHER_PY="/opt/homebrew/bin/python3"
-[[ -x "$WATCHER_PY" ]] || WATCHER_PY="/usr/bin/python3"
+# Reuse the arch-resolved interpreter from Section 3 (falls back if this section
+# is ever reached standalone).
+WATCHER_PY="${PLIST_PYTHON:-/usr/bin/python3}"
 WATCHER_PLIST_BODY="$(cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -632,12 +707,38 @@ LOCAL_CFG
 fi
 log ""
 
-# --- summary ----------------------------------------------------------------
+# --- summary + NEXT STEPS runbook -------------------------------------------
+# The installer copies code + plists but (by the "never launchctl load
+# automatically" rule) loads NOTHING. So the last thing it prints must be the
+# ordered activation runbook — every opt-in daemon and how to enable each
+# feature, in dependency order — or those features are discovered by accident.
+# The same runbook lives in ONBOARDING.md (linked from the README).
 if [[ $APPLY -eq 0 ]]; then
     log "✅ Dry-run complete. Re-run with --apply to make changes."
+    log "   Then follow the activation runbook it prints (also in ONBOARDING.md)."
 else
-    log "✅ Install complete. Verify with:"
-    log "   ls -la ~/.claude/bin"
-    log "   launchctl list | grep com.assistant"
-    log "   stat -f '%Sm' ~/.claude/cache/world.json   # should refresh within 30s"
+    log "✅ Install complete — code + plists are in place, but NOTHING is loaded yet"
+    log "   (opt-in by design). Activate features in this order:"
+    log ""
+    log "   ── CORE: the pulse orchestrator (start here) ──────────────────────"
+    log "   1. launchctl load ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist"
+    log "      (also loads: assistant-page, todo-server, session-context-watcher,"
+    log "       workspace-watcher, world-scanner — the always-on set)"
+    log "      verify:  launchctl list | grep com.assistant"
+    log "               stat -f '%Sm' ~/.claude/cache/world.json   # refreshes within 30s"
+    log ""
+    log "   ── OPTIONAL: workspace-signal pings (needed for comms 'needs input') ─"
+    log "   2. launchctl load ~/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
+    log ""
+    log "   ── OPTIONAL: Slack comms (bidirectional; needs step 2 for ws pings) ─"
+    log "   3. Set SLACK_BOT_TOKEN in ~/.zprofile, create a private Slack channel,"
+    log "      /invite the bot, then:  ./bin/assistant-comms-setup.sh"
+    log "      (it runs a preflight and prints the exact launchctl line when green)"
+    log ""
+    log "   ── OPTIONAL: Slack emoji → todo capture ───────────────────────────"
+    log "   4. Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"
+    log "      launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
+    log ""
+    log "   Re-run anytime:  ./bin/assistant-doctor.py         (preflight health)"
+    log "   Full guide:      ONBOARDING.md"
 fi

@@ -87,8 +87,7 @@ Three things change Assistant's state, and each needs Mukul's explicit `y` on a 
 | Add an archffp rule (lives in architect-ffp) | `bin/assistant-curator.py write --trigger T --rule R --target archffp` |
 | Add an assistant-repo rule (lives in this repo) | `bin/assistant-curator.py write --trigger T --rule R --target assistant-repo` |
 | Confirm a lesson proposal | `bin/tool-dispatch.py propose_lesson --confirm <proposal_id>` |
-| Restart Assistant (graceful) | `bin/heartbeat-write.py --ws <ws> --surface <surf> --respawn` |
-| Respawn Assistant (immediate) | `bin/spawn-assistant.sh` |
+| Restart Assistant (the pulse orchestrator) | `launchctl kickstart -k gui/$UID/com.assistant.assistant-pulse` |
 
 Project targets (`ffp`, `archffp`, `assistant-repo`) write the rule into that repo's `.claude/rules/*.md` and auto-commit it. Personal behavior → `claude`; Observer verdict policy → `assistant`; anything specific to one project → that project's target.
 

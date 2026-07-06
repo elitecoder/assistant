@@ -6,8 +6,8 @@
     <string>com.assistant.session-context-watcher</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/session-context-watcher.py</string>
+        <string>__PYTHON__</string>
+        <string>__REPO__/bin/session-context-watcher.py</string>
         <string>--daemon</string>
     </array>
     <key>RunAtLoad</key>
@@ -22,17 +22,17 @@
     <key>ThrottleInterval</key>
     <integer>30</integer>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/session-context-watcher.launchd.out</string>
+    <string>__HOME__/.assistant/logs/session-context-watcher.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/session-context-watcher.launchd.err</string>
+    <string>__HOME__/.assistant/logs/session-context-watcher.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <string>__PATH__</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

@@ -6,25 +6,25 @@
     <string>com.assistant.assistant-page</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/render-assistant-page.py</string>
+        <string>__PYTHON__</string>
+        <string>__REPO__/bin/render-assistant-page.py</string>
     </array>
     <key>StartInterval</key>
     <integer>15</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-page.launchd.out</string>
+    <string>__HOME__/.assistant/logs/assistant-page.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-page.launchd.err</string>
+    <string>__HOME__/.assistant/logs/assistant-page.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <string>__PATH__</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

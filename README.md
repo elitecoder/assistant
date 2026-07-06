@@ -11,10 +11,14 @@
 ## Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
+# repo-access engineers: clone over your own SSH identity, then run the installer
+ASSISTANT_REPO_URL=git@github.com:elitecoder/assistant.git \
+  bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
 ```
 
-Prerequisites: `git`, `python3`, and the [`claude` CLI](https://claude.ai/code). The script clones the repo to `~/dev/assistant`, wires up symlinks and LaunchAgent plists. One manual step at the end: `launchctl load` the plists.
+Prerequisites: `git`, `python3` (3.11+), and the [`claude` CLI](https://claude.ai/code); `cmux.app` for the workspace-driving features. The bootstrap clones to `~/dev/assistant`, runs a **preflight** (`bin/assistant-doctor.py`), then wires symlinks + LaunchAgent plists — but **loads nothing** (opt-in by design). It ends by printing an ordered activation runbook.
+
+**→ Full step-by-step onboarding, incl. Slack comms: [ONBOARDING.md](ONBOARDING.md).** Run `./bin/assistant-doctor.py` anytime for a health check.
 
 ## What it is
 

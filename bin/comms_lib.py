@@ -46,8 +46,6 @@ class Paths:
     conversation: Path           # conversation.jsonl (durable chat memory, both directions)
     free_text_log: Path          # any inbound Slack text Claude couldn't classify
     curator: Path
-    heartbeat_write: Path
-    spawn_assistant: Path
     cmux_bin: Path
 
     @classmethod
@@ -72,8 +70,6 @@ class Paths:
             conversation=comms_dir / "conversation.jsonl",
             free_text_log=comms_dir / "free-text.log",
             curator=bin_dir / "assistant-curator.py",
-            heartbeat_write=bin_dir / "heartbeat-write.py",
-            spawn_assistant=bin_dir / "spawn-assistant.sh",
             cmux_bin=Path(env.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")),
         )
 

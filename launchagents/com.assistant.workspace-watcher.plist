@@ -6,8 +6,8 @@
     <string>com.assistant.workspace-watcher</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/workspace-watcher.py</string>
+        <string>__PYTHON__</string>
+        <string>__REPO__/bin/workspace-watcher.py</string>
     </array>
     <key>KeepAlive</key>
     <true/>
@@ -16,17 +16,17 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/workspace-watcher.launchd.out</string>
+    <string>__HOME__/.assistant/logs/workspace-watcher.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/workspace-watcher.launchd.err</string>
+    <string>__HOME__/.assistant/logs/workspace-watcher.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+        <string>__PATH__</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

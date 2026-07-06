@@ -109,8 +109,27 @@ else
     exit 1
 fi
 
+# --- 5. preflight: verify the daemon can actually RUN (scopes, claude, auth) --
+# A test-send only proves chat:write. The inbound reply path needs more
+# (conversations.history scope, the warm-session claude binary, model auth).
+# Run the doctor's slack checks and refuse to advertise "load the daemon" if a
+# hard check fails — this is what turns H2's silent runtime failure into a
+# caught setup-time error.
 echo
-echo "✅ Setup complete. The comms LaunchAgent is OPT-IN and NOT loaded automatically."
+echo "[5/5] Preflight (assistant-doctor --only slack)…"
+if "$PYTHON" "$REPO_DIR/bin/assistant-doctor.py" --only slack --strict; then
+    doctor_ok=1
+else
+    doctor_ok=0
+fi
+
+echo
+if [ "$doctor_ok" -eq 1 ]; then
+    echo "✅ Setup complete. The comms LaunchAgent is OPT-IN and NOT loaded automatically."
+else
+    echo "⚠️  Setup wrote config + sent a test message, but a preflight check FAILED above."
+    echo "    Fix the ↳ items, re-run this script, and only THEN load the daemon:"
+fi
 echo "   To start it now and on every boot (load when ready):"
 echo "     launchctl bootstrap gui/\$UID ${PLIST}"
 echo "   To stop it:"

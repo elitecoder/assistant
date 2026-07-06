@@ -530,6 +530,33 @@ def acquire_singleton(paths: comms_lib.Paths):
     return fh
 
 
+def _announce_misconfig_once(paths: comms_lib.Paths, summary: str, env: dict) -> None:
+    """Under KeepAlive+ThrottleInterval=10s an unrecoverable misconfig would
+    crash-loop; without a guard, a startup Slack send would spam the operator
+    every ~10s. Dedup on a marker file keyed by the failure summary — announce a
+    given misconfig at most once until it changes or is cleared."""
+    marker = paths.comms_dir / "misconfig-announced.txt"
+    try:
+        if marker.exists() and marker.read_text().strip() == summary.strip():
+            return  # already announced this exact failure
+    except OSError:
+        pass
+    # Only attempt a send if we have a token + an allowlisted target + chat:write
+    # (checked implicitly by the gate in slack-send). Best-effort; never raises.
+    try:
+        cfg = comms_lib.Config.load(paths.config)
+        if comms_lib.bot_token() and cfg.target and cfg.is_allowed(cfg.target):
+            cli(_send_args(f"⚠️ assistant-comms cannot start: {summary}", "urgent",
+                           cfg.target, None), timeout=20, env=env)
+    except Exception:  # noqa: BLE001 — announcing must never mask the real exit
+        pass
+    try:
+        paths.comms_dir.mkdir(parents=True, exist_ok=True)
+        marker.write_text(summary.strip())
+    except OSError:
+        pass
+
+
 def main() -> int:
     paths = comms_lib.Paths.from_env()
     if not paths.config.exists():
@@ -542,14 +569,38 @@ def main() -> int:
         log("SLACK_BOT_TOKEN not set in the environment — cannot start")
         return 1
 
+    # Preflight: refuse to crash-loop silently. Run the doctor's slack+warm-
+    # session checks; on a hard FAIL, log the specific remedy AND announce it
+    # once to Slack (deduped) before exiting, so a misconfigured box says WHY.
+    env0 = dict(os.environ)
+    for k, v in comms_lib.load_bedrock_env().items():
+        env0.setdefault(k, v)
+    try:
+        import assistant_doctor  # bin/ is on sys.path (added at import time)
+        dchecks = assistant_doctor.run_checks(only="slack")
+        failed = [c for c in dchecks if c.status == assistant_doctor.FAIL]
+        if failed:
+            summary = "; ".join(f"{c.name}: {c.detail}" for c in failed)
+            log(f"preflight FAILED — {summary}")
+            for c in failed:
+                if c.remedy:
+                    log(f"  fix {c.name}: {c.remedy}")
+            _announce_misconfig_once(paths, summary, env0)
+            return 1
+        # cleared: drop any stale announce marker so the next real failure pages.
+        try:
+            (paths.comms_dir / "misconfig-announced.txt").unlink()
+        except OSError:
+            pass
+    except Exception as e:  # noqa: BLE001 — doctor must never itself block startup
+        log(f"preflight doctor error (continuing): {e}")
+
     lock = acquire_singleton(paths)
     if lock is None:
         log("another comms-listen already holds the lock — exiting")
         return 0
 
-    env = dict(os.environ)
-    for k, v in comms_lib.load_bedrock_env().items():
-        env.setdefault(k, v)
+    env = env0  # built above for preflight (os.environ + bedrock vars)
 
     stop = threading.Event()
 
