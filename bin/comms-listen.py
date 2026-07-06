@@ -269,6 +269,29 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
 
 # --------------------------------------------------------------------------- outbound pings
 
+def _suppress_reason(entry: dict) -> str | None:
+    """Return a reason string if this ledger entry should NOT be broadcast to
+    Slack, or None if it should. Pure decision logic (no I/O) — the daemon owns
+    only urgent/actionable events; routine churn is surfaced by the warm session
+    when asked, keeping the channel from becoming a firehose.
+
+    Mirrors CommsSubsystem._broadcast_entry's suppression set exactly. NOTE:
+    self-update FAILURES are intentionally NOT suppressed (only self-update
+    'skip' keys are) — a real recurring fetch failure SHOULD surface. The fix
+    for such a failure is to make it stop failing, not to mute it."""
+    if entry.get("outcome") == "skipped":
+        return "skipped (no work happened)"
+    kind = entry.get("kind", "")
+    key = entry.get("key", "")
+    if kind in ("noop", "emit-card"):
+        return f"routine kind={kind}"
+    if kind == "self-update" and "skip" in key:
+        return "self-update-skip"
+    if kind in ("lesson-proposal", "lesson_proposal") or key.startswith("lesson-proposal"):
+        return "lesson-proposal (delivered via warm session)"
+    return None
+
+
 def ledger_loop(stop: threading.Event, env: dict) -> None:
     """Watch actions-ledger.jsonl; broadcast each new entry to the configured
     target. stat-poll (2s) — simple and dependency-free."""
@@ -283,22 +306,10 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
             log(f"ledger read error: {e}")
             entries = []
         for entry in entries:
-            outcome = entry.get("outcome")
-            if outcome == "skipped":
-                continue  # no work happened
             key = entry.get("key", "")
-            kind = entry.get("kind", "")
-            # Only broadcast urgent events — routine noops/emit-cards are surfaced
-            # by the warm session when asked. Keeps the channel owned by the warm
-            # responder, not the daemon.
-            if kind in ("noop", "emit-card"):
-                log(f"suppressed routine broadcast kind={kind} key={key}")
-                continue
-            if kind == "self-update" and "skip" in key:
-                log(f"suppressed self-update-skip broadcast key={key}")
-                continue
-            if kind in ("lesson-proposal", "lesson_proposal") or key.startswith("lesson-proposal"):
-                log(f"suppressed lesson-proposal broadcast key={key} (delivered via warm session)")
+            reason = _suppress_reason(entry)
+            if reason is not None:
+                log(f"suppressed broadcast key={key}: {reason}")
                 continue
             if not target:
                 log(f"no target configured — skipping broadcast key={key}")
