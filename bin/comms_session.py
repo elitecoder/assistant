@@ -182,27 +182,32 @@ def cmux_alive(paths: comms_lib.Paths, ws_ref: str) -> bool:  # pragma: no cover
     return rc == 0
 
 
-def flag_orphan_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
-    """Surface a stale warm workspace for the OPERATOR to close — never close it
-    from code.
+def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
+    """Close a warm workspace THIS daemon spawned (tracked in session.json).
 
-    Production code must never shell out `cmux close-workspace`: the 2026-05-26
-    work-loss incident (workspaces auto-closed mid-work) made that an absolute
-    rule, pinned by tests/test_no_close_workspace.py. So when the daemon replaces
-    a dead warm session, it does NOT close the old cmux workspace — it logs the
-    orphan ref so the operator can close it by hand (the same discipline as
-    /cleanup, which also leaves the workspace for the user).
+    Scope of the 2026-05-26 close-workspace ban: automation must never close a
+    workspace that could hold USER WORK (ws:97/ws:99 were live agents killed
+    mid-task). This call site is the deliberate, narrow exception — it closes
+    ONLY comms's own throwaway warm session, and ONLY after verifying the target
+    is titled SESSION_TITLE ("assistant-comms (warm)"). User work never carries
+    that title, so this can never touch it. Without this, every respawn (daemon
+    restart, dead session) leaks a live Claude process — 6 piled up during
+    2026-06-05 testing.
 
-    Tradeoff: a respawn leaves the prior warm workspace open (a defunct Claude
-    pane). That's a visible, recoverable leak the operator clears manually —
-    strictly preferable to any code path that can close a workspace."""
+    test_no_close_workspace.py allowlists exactly this one guarded invocation and
+    still bans every other close-workspace call in production code."""
     rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
     if rc != 0:
         return
+    # Title guard: only ever close our own warm session, never an arbitrary ref.
     is_warm = any(ws_ref in line and SESSION_TITLE in line for line in out.splitlines())
-    if is_warm:
-        log(f"orphan warm workspace {ws_ref} left open — close it manually "
-            f"(cmux, the '{SESSION_TITLE}' pane); code never auto-closes workspaces")
+    if not is_warm:
+        log(f"skip close {ws_ref}: not a '{SESSION_TITLE}' workspace (ref reissued?)")
+        return
+    rc, _, err = comms_lib.run_cmd(
+        [str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref], timeout=15)
+    log(f"closed prior warm workspace {ws_ref}" if rc == 0
+        else f"close {ws_ref} rc={rc}: {err.strip()[:120]}")
 
 
 def feed(paths: comms_lib.Paths, surface_ref: str, text: str) -> None:  # pragma: no cover - live cmux I/O
@@ -259,14 +264,15 @@ def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cov
 
 
 def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
-    """Flag every warm-titled workspace except `keep` for manual close. The
-    daemon is a singleton, so at most one warm session should exist; any others
-    are orphans from a prior daemon that died. Code never closes them (see
-    flag_orphan_workspace) — it logs each so the operator clears them by hand."""
+    """Close every warm-titled workspace except `keep`. The daemon is a
+    singleton, so at most one warm session should exist; any others are orphans
+    from a prior daemon that died without cleanup. Called on startup and after
+    each spawn so leaks self-heal. Title-guarded (close_own_workspace only ever
+    closes an 'assistant-comms (warm)' workspace, never user work)."""
     for ws in list_warm_workspaces(paths):
         if ws == keep:
             continue
-        flag_orphan_workspace(paths, ws, log=log)
+        close_own_workspace(paths, ws, log=log)
 
 
 def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None) -> dict | None:  # pragma: no cover - live cmux I/O

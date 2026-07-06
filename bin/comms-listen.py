@@ -116,16 +116,16 @@ def cli(argv: list[str], timeout: int = 30, env: dict | None = None) -> tuple[in
 def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
     """Return a live warm-session record, spawning one if none is alive.
 
-    On respawn we do NOT close the prior warm workspace — production code never
-    shells out `cmux close-workspace` (2026-05-26 work-loss rule). We clear the
-    session registry so a fresh session spawns, and flag the orphan so the
-    operator closes the defunct pane by hand."""
+    On respawn, close the prior warm workspace first so we never leak Claude
+    processes. close_own_workspace is title-guarded — it only ever closes an
+    'assistant-comms (warm)' workspace this daemon spawned, never user work
+    (the narrow, allowlisted exception to the 2026-05-26 close-workspace ban)."""
     sess = comms_session.read_session(paths)
     if sess and comms_session.cmux_alive(paths, sess["ws_ref"]):
         return sess
     if sess:
-        log(f"warm session {sess['ws_ref']} gone — respawning (leaving old pane for manual close)")
-        comms_session.flag_orphan_workspace(paths, sess["ws_ref"], log=log)
+        log(f"warm session {sess['ws_ref']} gone — closing it and respawning")
+        comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
         comms_session.clear_session_registry(paths)
     return comms_session.spawn_session(paths, WARM_PROMPT, log=log)
 
