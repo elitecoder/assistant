@@ -9,7 +9,7 @@ It runs as a single **event-driven daemon**, `bin/comms-listen.py`, kept alive b
 - **Inbox** — watches `~/.assistant/inbox` for cmux-watcher signals ("workspace needs input" / "work complete") and pings within seconds. kqueue-driven on macOS.
 - **Heartbeat page** — every 60s, checks Assistant's heartbeat; pages you (urgent, templated) if it's stale or `status ∈ {frozen, stale_world, respawn-requested}`. No LLM, 30-min dedup.
 
-Durable memory lives entirely on disk (`conversation.jsonl` + cursors + threads), so a crash and `KeepAlive` respawn loses nothing.
+Durable memory lives entirely on disk (`conversation.jsonl` + poll cursors), so a crash and `KeepAlive` respawn loses nothing. The channel is a **flat 1:1 line** — the assistant replies at top level, not in threads.
 
 ## Delivery model — a private ops channel the bot owns
 
@@ -44,7 +44,7 @@ Heartbeat alerts dedupe at 30 min. Messages are Slack `mrkdwn`.
 
 ## What you can text back
 
-It's a conversation, not a verb menu. Write a full sentence ("why did it close that workspace?", "is Assistant healthy?") and comms reconstructs the recent thread from `conversation.jsonl`, reasons over Assistant's real state, and replies. Reply *in the thread* of a specific ping and comms resolves what that ping was about and answers in context.
+It's a **1:1 channel** — your private line to this machine. Every message you post is for the assistant, and it answers. Just type a normal channel message ("why did it close that workspace?", "is Assistant healthy?") — no `@`-mention, no prefix, no threading. Comms reconstructs the recent conversation from `conversation.jsonl`, reasons over Assistant's real state, and replies at top level. To ask about a specific past ping, just quote or describe it; comms resolves what it was about from the ledger and answers in context.
 
 You can also ask it to change Assistant — add a lesson, restart, respawn. Every mutation is **propose → confirm on a later message** (`y`/`yes`/`do it`), never same-turn. See the warm boot prompt (`prompts/prompt-assistant-comms-warm.md`) for the full mutation table.
 
