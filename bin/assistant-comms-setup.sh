@@ -30,8 +30,7 @@ if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
 fi
 
 echo "[1/4] Verifying SLACK_BOT_TOKEN via auth.test…"
-AUTH_JSON="$(curl -sS -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-    https://slack.com/api/auth.test || true)"
+AUTH_JSON="$(curl -sS -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" https://slack.com/api/auth.test || true)"
 if ! printf '%s' "$AUTH_JSON" | grep -q '"ok":true'; then
     echo "ERROR: auth.test failed: ${AUTH_JSON}" >&2
     echo "The bot needs scopes: chat:write, groups:history, groups:read, users:read" >&2
@@ -47,9 +46,7 @@ echo
 echo "[2/4] Routing target"
 existing_target=""
 if [ -f "${CONFIG_PATH}" ]; then
-    existing_target="$("$PYTHON" -c \
-        "import json;print(json.load(open('${CONFIG_PATH}')).get('slack',{}).get('target',''))" \
-        2>/dev/null || echo "")
+    existing_target="$("$PYTHON" -c "import json;print(json.load(open('${CONFIG_PATH}')).get('slack',{}).get('target',''))" 2>/dev/null || echo "")"
 fi
 
 if [ -n "${SLACK_PING_TARGET:-}" ]; then
