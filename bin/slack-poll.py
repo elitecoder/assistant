@@ -111,24 +111,6 @@ def get_history(token: str, channel: str, oldest: str, limit: int, http=None) ->
     return data.get("messages", [])
 
 
-def get_replies(token: str, channel: str, thread_ts: str, oldest: str,
-                limit: int, http=None) -> list[dict]:
-    """conversations.replies returns the thread ROOT + its replies, oldest-first.
-    `oldest` exclusive (inclusive=false) so we only get replies strictly after
-    the per-thread cursor. This is the ONLY endpoint that surfaces in-thread
-    replies — history omits them entirely."""
-    params = {
-        "channel": channel,
-        "ts": str(thread_ts),
-        "limit": limit,
-        "inclusive": "false",
-    }
-    if oldest and oldest != "0":
-        params["oldest"] = oldest
-    data = _api_get(token, "conversations.replies", params, http=http)
-    return data.get("messages", [])
-
-
 # --------------------------------------------------------------------------- projection
 
 def project_message(msg: dict, channel: str, bot_user_id: str | None,
@@ -204,7 +186,10 @@ def main(argv: list[str] | None = None, http=None, clock=None,
 
     out: list[dict] = []
 
-    # ── 1. channel-level history (top-level messages + thread roots) ────────
+    # This is a 1:1 channel: the assistant replies at top level (no threading),
+    # so every human message is a top-level message that conversations.history
+    # returns. That's the whole inbound surface — no per-thread replies polling
+    # is needed (and a shared-channel thread model would only add friction).
     cursor = comms_lib.read_slack_cursor(paths)
     try:
         msgs = get_history(token, channel, oldest=cursor, limit=args.limit, http=http)
@@ -212,7 +197,7 @@ def main(argv: list[str] | None = None, http=None, clock=None,
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         return 1
 
-    # Slack returns newest-first; reverse to oldest-first so replies arrive in order.
+    # Slack returns newest-first; reverse to oldest-first so messages arrive in order.
     msgs = list(reversed(msgs))
     max_seen = cursor
     for msg in msgs:
@@ -232,59 +217,6 @@ def main(argv: list[str] | None = None, http=None, clock=None,
     if msgs:
         comms_lib.write_slack_cursor(paths, max_seen)
 
-    # ── 2. thread replies (history NEVER returns in-thread replies) ─────────
-    # For every open thread, fetch replies after its per-thread cursor. Our warm
-    # session replies with thread_ts, so the user's follow-ups live here.
-    open_threads = comms_lib.read_open_threads(paths)
-    for thread_ts, rec in list(open_threads.items()):
-        th_cursor = str(rec.get("cursor") or thread_ts)
-        try:
-            replies = get_replies(token, channel, thread_ts, oldest=th_cursor,
-                                  limit=args.limit, http=http)
-        except RuntimeError as e:
-            # A deleted thread / transient error must not wedge the whole poll;
-            # skip this thread and try again next cycle.
-            print(json.dumps({"warning": f"replies {thread_ts}: {e}"}), file=sys.stderr)
-            continue
-        th_max = th_cursor
-        for msg in replies:
-            ts = msg.get("ts")
-            if not ts:
-                continue
-            # replies includes the root (== thread_ts) — never re-deliver it.
-            if str(ts) == str(thread_ts):
-                continue
-            # Defensive floor: only deliver replies strictly newer than the
-            # per-thread cursor. Slack's oldest+inclusive=false should already
-            # exclude <= cursor, but don't depend on it — a re-delivered reply
-            # would double-feed the warm session.
-            if comms_lib._ts_float(ts) <= comms_lib._ts_float(th_cursor):
-                continue
-            if comms_lib._ts_float(ts) > comms_lib._ts_float(th_max):
-                th_max = str(ts)
-            proj = project_message(msg, channel, args.bot_user_id, clock=clock)
-            if proj is None:
-                continue
-            # Force reply_to to the thread root even for the first reply (whose
-            # thread_ts Slack may equal the root but ts differs — project already
-            # handles that; this guards the edge where thread_ts is absent).
-            proj["reply_to"] = str(thread_ts)
-            out.append(proj)
-        if comms_lib._ts_float(th_max) > comms_lib._ts_float(th_cursor):
-            comms_lib.set_thread_cursor(paths, thread_ts, th_max, clock=clock)
-
-    # ── 3. register newly-seen thread roots (defensive across restarts) ─────
-    # If a top-level message we just saw is itself a thread root, or an inbound
-    # message carried a thread_ts we don't yet track, start watching it.
-    for rec in out:
-        root = rec.get("reply_to") or rec.get("msg_ts")
-        if root and str(root) not in open_threads:
-            comms_lib.register_open_thread(paths, str(root), channel,
-                                          seen_ts=rec.get("msg_ts"), clock=clock)
-            open_threads[str(root)] = {"channel": channel}
-
-    # Global oldest-first ordering across channel + thread messages.
-    out.sort(key=lambda r: comms_lib._ts_float(r.get("msg_ts")))
     print(json.dumps(out))
     return 0
 

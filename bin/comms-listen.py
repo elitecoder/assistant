@@ -153,19 +153,10 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
 
     # Feed the message as a user turn. The warm session's boot prompt tells it
     # how to reconstruct context, reply via slack-send.py, and record the out
-    # turn. The header carries the routing metadata so the session replies to the
-    # right channel/thread.
-    #
-    # thread_root is the ts the reply must thread under. To post INTO a thread,
-    # Slack requires thread_ts = the thread ROOT — so for an in-thread inbound
-    # (reply_to set) we reply under reply_to; for a top-level inbound we root the
-    # thread at the user's own msg_ts. Either way the session uses --reply-to
-    # <thread_root>, keeping the whole exchange in one thread that slack-poll's
-    # conversations.replies pass will then track.
-    thread_root = reply_to or msg_ts
+    # turn. This is a 1:1 channel — the session replies at TOP LEVEL (no
+    # threading), so the header only needs the channel + send CLI.
     feed_text = (
-        f"[slack channel={channel} msg_ts={msg_ts} reply_to={reply_to} "
-        f"thread_root={thread_root} send_cli={SLACK_SEND}] {text}"
+        f"[slack channel={channel} msg_ts={msg_ts} send_cli={SLACK_SEND}] {text}"
     )
     t0 = time.time()
     comms_session.feed(paths, sess["surface_ref"], feed_text)

@@ -41,7 +41,6 @@ class Paths:
     config: Path
     cursor: Path                 # ledger byte offset (Claude's place in actions-ledger.jsonl)
     slack_cursor: Path           # Slack message-ts offset (the newest inbound ts we've seen)
-    open_threads: Path           # open-threads.json: thread_ts -> {channel, cursor, last_seen}
     daemon_hb: Path              # comms session's own heartbeat (the listen daemon writes this)
     threads: Path                # threads.jsonl (sent_msg_ts <-> ledger_key)
     conversation: Path           # conversation.jsonl (durable chat memory, both directions)
@@ -68,7 +67,6 @@ class Paths:
             config=Path(env.get("COMMS_CONFIG", str(assistant_dir / "config.json"))),
             cursor=comms_dir / "ledger.cursor",
             slack_cursor=comms_dir / "slack.cursor",
-            open_threads=comms_dir / "open-threads.json",
             daemon_hb=comms_dir / "heartbeat.json",
             threads=comms_dir / "threads.jsonl",
             conversation=comms_dir / "conversation.jsonl",
@@ -349,97 +347,13 @@ def write_slack_cursor(paths: Paths, ts: str) -> None:
     paths.slack_cursor.write_text(str(ts))
 
 
-# --------------------------------------------------------------------------- open threads (conversations.replies polling)
-#
-# conversations.history returns only top-level messages + thread ROOTS — never
-# the in-thread replies. Our warm session replies with thread_ts, so every
-# exchange becomes a thread, and the user's follow-ups land as thread replies
-# that history never surfaces. So we track "open" threads (any thread we've
-# posted into or seen a reply in) and poll conversations.replies for each, with
-# a per-thread ts cursor. open-threads.json is a JSON map:
-#   { "<thread_ts>": {"channel": "C…", "cursor": "<ts>", "last_seen": <epoch>} }
-# It is persisted so a daemon restart resumes watching the same threads.
-
-# Bound the number of threads we actively poll — one conversations.replies call
-# per thread per poll cycle, so an unbounded set would hammer Slack. We keep the
-# most-recently-active MAX_OPEN_THREADS and prune anything idle past the TTL.
-MAX_OPEN_THREADS = int(os.environ.get("COMMS_MAX_OPEN_THREADS", "50"))
-OPEN_THREAD_TTL_SEC = int(os.environ.get("COMMS_OPEN_THREAD_TTL_SEC", str(7 * 86400)))
-
-
 def _ts_float(ts: Any) -> float:
     """Slack ts as a float for ordering. Non-numeric (only possible from a
-    corrupted store) sorts as oldest rather than crashing."""
+    corrupted cursor file) sorts as oldest rather than crashing."""
     try:
         return float(ts)
     except (TypeError, ValueError):
         return 0.0
-
-
-def read_open_threads(paths: Paths) -> dict[str, dict[str, Any]]:
-    if not paths.open_threads.exists():
-        return {}
-    try:
-        data = json.loads(paths.open_threads.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def write_open_threads(paths: Paths, threads: dict[str, dict[str, Any]]) -> None:
-    """Persist the open-threads map atomically (tmp + rename)."""
-    paths.comms_dir.mkdir(parents=True, exist_ok=True)
-    tmp = paths.open_threads.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(threads, indent=2))
-    os.replace(tmp, paths.open_threads)
-
-
-def register_open_thread(paths: Paths, thread_ts: str, channel: str,
-                         seen_ts: str | None = None, clock=None) -> None:
-    """Mark a thread as open so the poller watches its replies. Idempotent.
-
-    thread_ts:  the thread ROOT ts (what Slack keys replies under).
-    seen_ts:    the newest ts in this thread we've already handled — becomes the
-                per-thread cursor floor so we never re-deliver it. On first
-                registration we seed the cursor to the root ts itself, so the
-                root message (which history already delivered) is not re-fetched."""
-    epoch = clock() if clock else int(time.time())
-    threads = read_open_threads(paths)
-    rec = threads.get(str(thread_ts)) or {"channel": str(channel), "cursor": str(thread_ts)}
-    rec["channel"] = str(channel)
-    if seen_ts is not None and _ts_float(seen_ts) > _ts_float(rec.get("cursor")):
-        rec["cursor"] = str(seen_ts)
-    rec["last_seen"] = int(epoch)
-    threads[str(thread_ts)] = rec
-    _prune_open_threads(threads, epoch)
-    write_open_threads(paths, threads)
-
-
-def set_thread_cursor(paths: Paths, thread_ts: str, cursor_ts: str, clock=None) -> None:
-    """Advance one thread's reply cursor after delivering its new replies."""
-    threads = read_open_threads(paths)
-    rec = threads.get(str(thread_ts))
-    if rec is None:
-        return
-    if _ts_float(cursor_ts) > _ts_float(rec.get("cursor")):
-        rec["cursor"] = str(cursor_ts)
-    rec["last_seen"] = int(clock() if clock else time.time())
-    threads[str(thread_ts)] = rec
-    write_open_threads(paths, threads)
-
-
-def _prune_open_threads(threads: dict[str, dict[str, Any]], now_epoch: int) -> None:
-    """Drop threads idle past the TTL, then cap to the MAX_OPEN_THREADS most
-    recently active. Mutates `threads` in place."""
-    for tts in [t for t, r in threads.items()
-                if now_epoch - int(r.get("last_seen") or 0) > OPEN_THREAD_TTL_SEC]:
-        threads.pop(tts, None)
-    if len(threads) > MAX_OPEN_THREADS:
-        keep = sorted(threads.items(),
-                      key=lambda kv: int(kv[1].get("last_seen") or 0),
-                      reverse=True)[:MAX_OPEN_THREADS]
-        threads.clear()
-        threads.update(dict(keep))
 
 
 # --------------------------------------------------------------------------- threads.jsonl
