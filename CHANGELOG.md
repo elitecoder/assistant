@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.5.1] - 2026-07-07
+
+### Fixed
+- **Fresh-machine install crash** in `install/patch-settings.py`: it
+  unconditionally `shutil.copy2`'d `~/.claude/settings.json` to a backup, but on
+  a machine that has never run Claude Code that file is absent →
+  `FileNotFoundError`, aborting the install (and the `bash <(curl…)` bootstrap)
+  right after the hooks step. Now it backs up only if the file exists, else
+  creates the parent dir and writes fresh. Caught by a real interactive
+  fresh-install run in a sandboxed cmux workspace (the earlier
+  ASSISTANT_SELF_UPDATE portability test had dodged this path).
+
+### Testing
+- `test_patch_settings.py` (4): fresh-machine create (no crash, no spurious
+  backup), idempotent re-run (no duplicate hooks), and preservation of existing
+  user settings (with backup).
+- Validated the v0.5.0 interactive opt-in prompt **live** in a fresh sandboxed
+  cmux workspace: prompt fired on a real TTY, answered memory=y/crash-resume=n,
+  state persisted, re-run honored it with no re-prompt; the piped/headless path
+  correctly skipped the prompt and persisted nothing.
+
 ## [0.5.0] - 2026-07-07
 
 ### Added
@@ -183,7 +204,8 @@ against the tree before fixing):
   entirely for Adobe-IT security reasons — the direct predecessor of the 0.2.0
   Slack comms above.
 
-[0.5.0]: https://github.com/elitecoder/assistant/compare/v0.4.0...HEAD
+[0.5.1]: https://github.com/elitecoder/assistant/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/elitecoder/assistant/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/elitecoder/assistant/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/elitecoder/assistant/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/elitecoder/assistant/compare/v0.2.0...v0.3.0

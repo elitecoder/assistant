@@ -85,9 +85,17 @@ def main():
         print("  no changes needed")
         return
 
-    bak = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
-    shutil.copy2(path, bak)
-    print(f"  backed up to {bak}")
+    # Back up only if the file already exists — on a fresh machine that has
+    # never run Claude Code, ~/.claude/settings.json is absent and there is
+    # nothing to back up (copying it would FileNotFoundError). Ensure the parent
+    # dir exists before the fresh write.
+    if path.exists():
+        bak = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
+        shutil.copy2(path, bak)
+        print(f"  backed up to {bak}")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"  no existing {path.name} — creating fresh")
     path.write_text(json.dumps(settings, indent=2) + "\n")
     print(f"  wrote {path}")
 
