@@ -63,15 +63,23 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
   Opt-in feature daemons (off by default — a bare --apply installs CORE only:
   the fleet loop pulse/world-scanner/session-context-watcher/assistant-page/
-  todo-server). Each flag turns one feature daemon on:
+  todo-server). On an interactive --apply (a real terminal), install.sh OFFERS
+  each undecided feature with a one-line explanation and a [y/N] prompt, so you
+  discover them without reading docs. Your answer is remembered in
+  ~/.assistant/feature-opt-in, so re-runs never re-ask. Headless runs (pulse
+  self-update, curl|bash, CI) never prompt — they default to OFF.
   --with-memory        cross-machine memory sync (memory-sync-pull). Only useful
                        if you run Assistant on more than one machine.
   --with-crash-resume  auto-resume crashed cmux workspaces (workspace-watcher).
-  --with-all           enable all of the above.
+  --with-all           enable all of the above (and suppress their prompts).
   (Slack comms + slack-reactor are always copied but hand-loaded after their
    token setup — see ONBOARDING.md — never auto-loaded even with a flag.)
-  Flags only affect what gets LOADED on a fresh install; an already-running
-  feature daemon is never torn out.
+  Changed your mind? Declined a feature and want it now: re-run with its --with
+  flag (the flag beats a remembered 'no'). To be re-asked from scratch: delete
+  its line from ~/.assistant/feature-opt-in. To disable a running one:
+  launchctl bootout gui/\$UID/com.assistant.<label>, then set its line to 'no'.
+  Flags/answers only affect what gets LOADED; an already-running feature daemon
+  is never torn out (it's adopted and remembered as enabled).
   -h, --help        This help.
 
 After --apply:
@@ -105,6 +113,119 @@ USAGE
             exit 0 ;;
         *) warn "unknown arg: $arg"; exit 2 ;;
     esac
+done
+
+# --- feature opt-in resolution ----------------------------------------------
+# Turn the WITH_* flags into final load decisions, offering a DISCOVERY PROMPT
+# for undecided features on an interactive --apply. Precedence per feature
+# (first match wins): explicit --with flag > remembered answer > daemon already
+# loaded > interactive prompt > headless default-NO.
+#
+# Guard lineage: mirrors the phase-7 memory step ([[ ! -t 0 ]] skip + a state
+# file for idempotence). A prompt fires ONLY on an interactive --apply that is
+# NOT a self-update; all headless contexts (pulse self-update, curl|bash, CI)
+# fall through to default-NO WITHOUT persisting, so discovery survives to the
+# user's first real interactive run. NEVER hangs: no bare `read` (set -e would
+# abort on EOF), and a walk-away is bounded by read -t.
+STATE_FILE="$HOME_DIR/.assistant/feature-opt-in"
+
+# state_get <feat> → prints yes|no|"" (empty = never decided). `local` masks
+# grep's exit-1-on-no-match so set -e can't abort.
+state_get() {
+    local v
+    v="$(grep "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2)"
+    printf '%s' "$v"
+}
+# state_set <feat> <yes|no> — APPLY-only, atomic last-write-wins. The `|| true`
+# after grep -v is mandatory (no-match exits 1 under set -e).
+state_set() {
+    [[ $APPLY -eq 1 ]] || return 0
+    mkdir -p "$(dirname "$STATE_FILE")"
+    touch "$STATE_FILE"
+    local tmp="$STATE_FILE.tmp.$$"
+    { grep -v "^$1=" "$STATE_FILE" 2>/dev/null || true; printf '%s=%s\n' "$1" "$2"; } > "$tmp" \
+        && mv "$tmp" "$STATE_FILE"
+}
+explicit_flag_for() {
+    case "$1" in
+        memory)        echo "$WITH_MEMORY" ;;
+        crash-resume)  echo "$WITH_CRASH_RESUME" ;;
+        *)             echo 0 ;;
+    esac
+}
+_feat_label() {
+    case "$1" in
+        memory)        echo "com.assistant.memory-sync-pull" ;;
+        crash-resume)  echo "com.assistant.workspace-watcher" ;;
+    esac
+}
+# daemon_loaded <feat> — 0 if the feature's LaunchAgent is loaded. Called ONLY
+# inside a condition (never bare) so its nonzero-when-absent can't trip set -e.
+daemon_loaded() { launchctl print "gui/$UID/$(_feat_label "$1")" >/dev/null 2>&1; }
+feat_desc() {
+    case "$1" in
+        memory)        echo "Memory sync keeps your lessons + semantic memory identical across all your machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N] " ;;
+        crash-resume)  echo "Crash-resume auto-restarts a cmux workspace whose Claude session died, so long jobs survive a crash or reboot. Enable? [y/N] " ;;
+    esac
+}
+# prompt_yn <question> → 0 on yes. Sets PROMPT_TIMED_OUT=1 iff read timed out
+# (exit >128) so the caller can distinguish a walk-away (do NOT persist) from an
+# explicit decline (persist no). The if/else wrapper is mandatory: a bare read
+# returns nonzero on EOF and set -e would abort the whole install.
+PROMPT_TIMED_OUT=0
+prompt_yn() {
+    local q="$1" ans rc
+    PROMPT_TIMED_OUT=0
+    if read -r -t 60 -p "$q" ans; then rc=0; else rc=$?; fi
+    # bash: read exits >128 specifically on -t timeout; EOF exits 1.
+    if [[ ${rc:-0} -gt 128 ]]; then PROMPT_TIMED_OUT=1; ans=""; fi
+    case "$ans" in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        *)                 return 1 ;;
+    esac
+}
+# feature_should_prompt <feat> — the full guard, all terms AND-ed. Each headless
+# context is blocked by ≥2 independent terms (self-update fails both -t 0 AND the
+# env term; curl|bash & CI fail -t 0).
+feature_should_prompt() {
+    [[ $APPLY -eq 1 ]] || return 1
+    [[ -t 0 ]] || return 1
+    [[ "${ASSISTANT_SELF_UPDATE:-0}" != "1" ]] || return 1
+    [[ "$(explicit_flag_for "$1")" != "1" ]] || return 1
+    [[ -z "$(state_get "$1")" ]] || return 1
+    ! daemon_loaded "$1" || return 1
+    return 0
+}
+
+_optin_header_shown=0
+_optin_header() {
+    [[ $_optin_header_shown -eq 1 ]] && return 0
+    _optin_header_shown=1
+    log "[2.5] Optional features (safe to skip; enable later with --with-<name>)"
+}
+for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME'; do
+    _feat="${_pair%%:*}"; _var="${_pair##*:}"
+    if [[ "$(explicit_flag_for "$_feat")" == "1" ]]; then
+        state_set "$_feat" yes                      # (a) explicit flag wins
+        continue
+    fi
+    _saved="$(state_get "$_feat")"
+    if [[ "$_saved" == "yes" ]]; then eval "$_var=1"; continue; fi   # (b) remembered yes
+    if [[ "$_saved" == "no"  ]]; then continue; fi                  # (b) remembered no
+    if daemon_loaded "$_feat"; then                                # (c) adopt already-running
+        eval "$_var=1"; state_set "$_feat" yes; continue
+    fi
+    if feature_should_prompt "$_feat"; then                        # (d) discovery prompt
+        _optin_header
+        if prompt_yn "$(feat_desc "$_feat")"; then
+            eval "$_var=1"; state_set "$_feat" yes
+        elif [[ $PROMPT_TIMED_OUT -eq 1 ]]; then
+            note "$_feat: no response (timed out) — left undecided, will re-ask next time"
+        else
+            state_set "$_feat" no                  # explicit decline → remember, stop nagging
+        fi
+    fi
+    # (e) headless-undecided: leave WITH at 0, DO NOT persist (preserve discovery)
 done
 
 if [[ $PULL_SKILLS -eq 1 ]]; then
@@ -509,7 +630,7 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     feat="$(feature_of "$base")"
     if [[ -n "$feat" ]]; then
         if feature_enabled "$feat"; then
-            note "FEATURE $base — opted in (--with-$feat) → will load"
+            note "FEATURE $base — enabled (flag / prompt / remembered / already-running) → will load"
         else
             copy_no_load=1
             case "$feat" in

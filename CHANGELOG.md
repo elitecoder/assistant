@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.5.0] - 2026-07-07
+
+### Added
+- **Interactive feature discovery.** On an interactive `install.sh --apply` (a
+  real terminal, incl. the `bash <(curl …)` bootstrap), each undecided opt-in
+  feature is now OFFERED with a one-line explanation + `[y/N]` prompt — so users
+  discover memory-sync / crash-resume without reading docs to learn the `--with`
+  flags exist. Answers persist in `~/.assistant/feature-opt-in`, so re-runs
+  never re-ask. Precedence per feature (first match wins): explicit `--with`
+  flag → remembered answer → already-running daemon (adopted) → prompt →
+  headless default-OFF.
+  - **Never hangs the headless paths** (the cardinal rule): the prompt fires
+    only when `--apply` AND stdin is a TTY AND not `ASSISTANT_SELF_UPDATE` AND
+    no explicit flag AND undecided. The pulse self-update, `curl | bash`, and CI
+    each fail ≥2 of those terms and fall through to default-OFF. `read -t 60`
+    bounds a walk-away; a bare `read` is never used (set -e would abort on EOF).
+  - A **timeout** leaves the feature undecided (re-asked next run) — only an
+    explicit decline (`n`/Enter/EOF) is remembered as "no", so a walk-away can't
+    silently suppress future discovery.
+  - Changing your mind: re-run with the `--with` flag (beats a remembered "no"),
+    or delete the line from `~/.assistant/feature-opt-in` to be re-asked. An
+    already-running daemon is adopted, never torn out.
+
+### Testing
+- `test_install_optin_prompt.py` (8 tests): proves the headless paths
+  (self-update, non-tty --apply, dry-run) never prompt or hang, pins the
+  answer→persist mapping (y/yes→yes; n/Enter/EOF→no), and confirms an explicit
+  flag suppresses the prompt.
+
 ## [0.4.0] - 2026-07-07
 
 ### Added
@@ -154,7 +183,8 @@ against the tree before fixing):
   entirely for Adobe-IT security reasons — the direct predecessor of the 0.2.0
   Slack comms above.
 
-[0.4.0]: https://github.com/elitecoder/assistant/compare/v0.3.1...HEAD
+[0.5.0]: https://github.com/elitecoder/assistant/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/elitecoder/assistant/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/elitecoder/assistant/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/elitecoder/assistant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/elitecoder/assistant/compare/v0.1.0...v0.2.0

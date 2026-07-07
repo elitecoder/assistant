@@ -46,6 +46,14 @@ def _dryrun(*flags: str) -> str:
         # existing-but-changed target (→ UPDATE → CHANGED_LABELS → would reload).
         for p in (REPO / "launchagents").glob("com.assistant.*.plist"):
             (la / p.name).write_text("<!-- stale stub to force UPDATE -->\n")
+        # Pin feature answers to "no" via the state file. This isolates the tier
+        # decision from whatever daemons happen to be loaded in the REAL
+        # launchctl user domain (the sandbox HOME can't sandbox launchctl, so
+        # the daemon-adoption backfill would otherwise flip a running feature to
+        # "load" and make the test machine-dependent). An explicit --with flag in
+        # `flags` still wins over this "no" (that's the precedence we assert).
+        (Path(home) / ".assistant" / "feature-opt-in").write_text(
+            "memory=no\ncrash-resume=no\n")
         env = {
             "HOME": home,
             "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:"
@@ -80,7 +88,7 @@ def test_bare_install_loads_core_not_features():
 def test_with_memory_loads_memory_only():
     out = _dryrun("--with-memory")
     assert "would reload com.assistant.memory-sync-pull" in out
-    assert "memory-sync-pull.plist — opted in" in out
+    assert "memory-sync-pull.plist — enabled" in out
     assert "would reload com.assistant.workspace-watcher" not in out
 
 

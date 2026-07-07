@@ -43,8 +43,25 @@ is idempotent and dry-run by default; re-run it freely.
 
 A bare `install.sh --apply` installs **CORE only** — the fleet loop and its
 dashboard (pulse, world-scanner, session-context-watcher, assistant-page,
-todo-server). Feature daemons are **off by default**; add a flag only if the
-feature solves a problem you have:
+todo-server). Feature daemons are **off by default**.
+
+**You'll be asked.** When you run `./install.sh --apply` from a normal terminal
+(including the `bash <(curl …)` bootstrap, which runs on your TTY), it offers
+each undecided feature with a one-line explanation and a `[y/N]` prompt:
+
+```
+[2.5] Optional features (safe to skip; enable later with --with-<name>)
+Memory sync keeps your lessons + semantic memory identical across all your
+machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N]
+Crash-resume auto-restarts a cmux workspace whose Claude session died … Enable? [y/N]
+```
+
+Your answer is remembered in `~/.assistant/feature-opt-in`, so **re-runs never
+re-ask**. A walk-away (60s timeout) leaves it undecided and re-asks next time.
+Headless runs never prompt — the pulse self-update, `curl … | bash` (piped, no
+TTY), and CI all default the features **off**.
+
+You can also decide up front with flags (which skip the prompt):
 
 | Flag | Turns on | Use it if… |
 |---|---|---|
@@ -53,14 +70,17 @@ feature solves a problem you have:
 | `--with-all` | both of the above | — |
 
 ```bash
-./install.sh --apply --with-memory          # core + cross-machine memory
-./install.sh --apply --with-all             # core + every feature timer
+./install.sh --apply --with-memory          # core + cross-machine memory, no prompt
+./install.sh --apply --with-all             # core + every feature timer, no prompt
 ```
 
-Flags only affect a fresh install's *loaded* set — an already-running feature
-daemon is never torn out, and every feature plist is always copied so you can
-enable it later. Slack comms + slack-reactor are separate opt-ins with their own
-token setup (below) — never auto-loaded even with `--with-all`.
+**Changing your mind:** declined a feature and want it now? Re-run with its
+`--with` flag (the flag beats a remembered "no"). To be re-asked from scratch,
+delete its line from `~/.assistant/feature-opt-in`. Flags/answers only affect
+what gets *loaded* — an already-running feature daemon is never torn out (it's
+adopted and remembered as enabled), and every feature plist is always copied so
+you can enable it later. Slack comms + slack-reactor are separate opt-ins with
+their own token setup (below) — never auto-loaded even with `--with-all`.
 
 ---
 
