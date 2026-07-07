@@ -39,6 +39,29 @@ alias; it resolves only on the author's machine.) The bootstrap clones to
 `~/dev/assistant`, runs the preflight, and runs `install.sh --apply`. `install.sh`
 is idempotent and dry-run by default; re-run it freely.
 
+### Choose your daemons (opt-in)
+
+A bare `install.sh --apply` installs **CORE only** — the fleet loop and its
+dashboard (pulse, world-scanner, session-context-watcher, assistant-page,
+todo-server). Feature daemons are **off by default**; add a flag only if the
+feature solves a problem you have:
+
+| Flag | Turns on | Use it if… |
+|---|---|---|
+| `--with-memory` | `memory-sync-pull` | you run Assistant on **more than one machine** and want lessons/memory to sync between them |
+| `--with-crash-resume` | `workspace-watcher` | you want crashed cmux workspaces auto-resumed |
+| `--with-all` | both of the above | — |
+
+```bash
+./install.sh --apply --with-memory          # core + cross-machine memory
+./install.sh --apply --with-all             # core + every feature timer
+```
+
+Flags only affect a fresh install's *loaded* set — an already-running feature
+daemon is never torn out, and every feature plist is always copied so you can
+enable it later. Slack comms + slack-reactor are separate opt-ins with their own
+token setup (below) — never auto-loaded even with `--with-all`.
+
 ---
 
 ## Activation runbook (ordered — the installer prints this too)

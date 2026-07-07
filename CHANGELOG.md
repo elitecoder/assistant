@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.4.0] - 2026-07-07
+
+### Added
+- **Opt-in daemon tiers.** A bare `install.sh --apply` now installs **CORE only**
+  — the fleet loop + dashboard (pulse, world-scanner, session-context-watcher,
+  assistant-page, todo-server). Feature daemons are off by default and enabled
+  per-flag: `--with-memory` (cross-machine memory sync — only useful on >1
+  machine), `--with-crash-resume` (auto-resume crashed cmux workspaces),
+  `--with-all`. Slack comms + slack-reactor remain token-gated (copied,
+  hand-loaded after setup — never auto-loaded even with `--with-all`). Flags
+  only affect a fresh install's loaded set; an already-running feature daemon is
+  never torn out, and every feature plist is always copied so it can be enabled
+  later. Rationale: a usage analysis showed memory-sync had pulled once ever and
+  workspace-watcher fired 3× ever — real features, but not everyone's problem,
+  so they shouldn't be forced on. Documented in ONBOARDING.md + install.sh --help.
+
+### Changed
+- **assistant-page render cadence 15s → 30s** to match world-scanner's output
+  rate — the renderer's only input (world.json) changes every 30s, so rendering
+  at 15s made ~half the renders byte-identical no-ops. The dashboard's own 15s
+  `<meta>` auto-refresh keeps the browser view as fresh as before. (Not made
+  WatchPaths-event-driven: world.json is written non-atomically, so a vnode
+  event could fire mid-write — a cadence match is the safe fix.)
+
+### Testing
+- `test_install_tiers.py` (5 tests): drives `install.sh` dry-run and asserts
+  CORE loads by default, feature daemons are copy-no-load until their `--with`
+  flag, and token-gated daemons never auto-load even under `--with-all`.
+
 ## [0.3.1] - 2026-07-06
 
 ### Fixed
@@ -125,7 +154,8 @@ against the tree before fixing):
   entirely for Adobe-IT security reasons — the direct predecessor of the 0.2.0
   Slack comms above.
 
-[0.3.1]: https://github.com/elitecoder/assistant/compare/v0.3.0...HEAD
+[0.4.0]: https://github.com/elitecoder/assistant/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/elitecoder/assistant/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/elitecoder/assistant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/elitecoder/assistant/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/elitecoder/assistant/releases/tag/v0.1.0

@@ -29,6 +29,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOME_DIR="${HOME}"
 APPLY=0
 PULL_SKILLS=0
+# Opt-in feature daemons: off by default (core-only install). Each --with flag
+# turns one on. See the "Daemon tiers" block in Section 3.
+WITH_MEMORY=0
+WITH_CRASH_RESUME=0
 TS="$(date +%s)"
 
 log() { printf '%s\n' "$*"; }
@@ -41,6 +45,9 @@ for arg in "$@"; do
         --apply) APPLY=1 ;;
         --dry-run) APPLY=0 ;;
         --pull-skills) PULL_SKILLS=1 ;;
+        --with-memory) WITH_MEMORY=1 ;;
+        --with-crash-resume) WITH_CRASH_RESUME=1 ;;
+        --with-all) WITH_MEMORY=1; WITH_CRASH_RESUME=1 ;;
         -h|--help)
             cat <<USAGE
 install.sh — install/update the Assistant system from $REPO_ROOT
@@ -53,6 +60,18 @@ install.sh — install/update the Assistant system from $REPO_ROOT
                     copy→symlink migration). Once a skill is symlinked, live
                     edits ARE repo edits, so this becomes a no-op for it.
                     Prints a unified diff in dry-run; run with --apply to copy.
+
+  Opt-in feature daemons (off by default — a bare --apply installs CORE only:
+  the fleet loop pulse/world-scanner/session-context-watcher/assistant-page/
+  todo-server). Each flag turns one feature daemon on:
+  --with-memory        cross-machine memory sync (memory-sync-pull). Only useful
+                       if you run Assistant on more than one machine.
+  --with-crash-resume  auto-resume crashed cmux workspaces (workspace-watcher).
+  --with-all           enable all of the above.
+  (Slack comms + slack-reactor are always copied but hand-loaded after their
+   token setup — see ONBOARDING.md — never auto-loaded even with a flag.)
+  Flags only affect what gets LOADED on a fresh install; an already-running
+  feature daemon is never torn out.
   -h, --help        This help.
 
 After --apply:
@@ -61,9 +80,11 @@ After --apply:
     (old LLM-Assistant era; the mechanical pulse.py reads prompts/ directly)
   - lessons live in ~/.claude/CLAUDE.md (not in this repo). Curator: bin/assistant-curator.py
   - ~/.claude/skills/<name> → SYMLINK → $REPO_ROOT/skills/<name> (repo is truth)
-  - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,
-       session-context-watcher,assistant-todo-server,workspace-watcher,memory-sync-pull}.plist
-       → rendered from templates + COPIED (opt-in comms/slack-reactor: copied, NOT loaded)
+  - CORE plists loaded: com.assistant.{assistant-pulse,world-scanner,
+       session-context-watcher,assistant-page,assistant-todo-server}
+  - FEATURE plists copied, loaded only with their --with flag: memory-sync-pull
+       (--with-memory), workspace-watcher (--with-crash-resume); comms +
+       slack-reactor copied but hand-loaded after token setup
   - cmux session-restore (vendored): hooks/ → ~/.claude/hooks/ (symlinks),
        bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
        and ~/.claude/settings.json SessionStart/SessionEnd hooks patched in
@@ -430,18 +451,42 @@ PLIST_SKIP=(
     "com.mukul.assistant-daemon.plist"
 )
 
-# Opt-in plists the installer COPIES (so a hand-load works from the canonical
-# path) but must NEVER load. The Slack comms daemon activates only by explicit
-# hand-load once the token + target channel are set (assistant-comms-setup.sh) —
-# same discipline as the cmux-watcher agent. Copying keeps
-# ~/Library/LaunchAgents/ in sync with the repo without starting it on its own.
-PLIST_COPY_NO_LOAD=(
-    "com.assistant.assistant-comms.plist"
-    # slack-reactor: copy but never auto-load. It KeepAlive-crash-loops when
-    # SLACK_APP_TOKEN / SLACK_BOT_TOKEN are unset (a fresh box), so it activates
-    # by hand once the tokens are in ~/.zprofile — same discipline as comms.
-    "com.assistant.slack-reactor.plist"
-)
+# ── Daemon tiers ────────────────────────────────────────────────────────────
+# CORE (everything not listed below) is loaded by default — the fleet loop +
+# its dashboard: pulse, world-scanner, session-context-watcher, assistant-page,
+# todo-server. There is no product without these.
+#
+# FEATURE daemons are always COPIED (so a later hand-load / --with flag works
+# from the canonical path) but loaded ONLY when the user opts in. Each solves a
+# problem not every user has, so none is forced on a fresh install:
+#   memory-sync-pull   cross-machine memory sync   → --with-memory
+#   workspace-watcher  auto-resume crashed cmux ws → --with-crash-resume
+#   assistant-comms    Slack comms (needs token + assistant-comms-setup.sh)
+#   slack-reactor      Slack emoji→todo (needs SLACK_APP_TOKEN/SLACK_BOT_TOKEN)
+# comms/slack-reactor are never auto-loaded even with a flag — they crash-loop
+# without their tokens, so they activate by hand after setup. memory &
+# crash-resume DO auto-load when their flag is passed.
+#
+# feature_of <plist-base> → prints the feature name, or "" if it's core.
+feature_of() {
+    case "$1" in
+        com.assistant.memory-sync-pull.plist)   echo "memory" ;;
+        com.assistant.workspace-watcher.plist)  echo "crash-resume" ;;
+        com.assistant.assistant-comms.plist)    echo "comms" ;;
+        com.assistant.slack-reactor.plist)      echo "slack-reactor" ;;
+        *)                                       echo "" ;;
+    esac
+}
+# feature_enabled <feature> → 0 (load it) / 1 (copy-no-load). comms &
+# slack-reactor are ALWAYS copy-no-load (token-gated); memory & crash-resume
+# load only when their --with flag was passed.
+feature_enabled() {
+    case "$1" in
+        memory)        [[ $WITH_MEMORY -eq 1 ]] ;;
+        crash-resume)  [[ $WITH_CRASH_RESUME -eq 1 ]] ;;
+        *)             return 1 ;;
+    esac
+}
 
 declare -a CHANGED_LABELS
 for plist in "$REPO_ROOT"/launchagents/*.plist; do
@@ -459,10 +504,22 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         continue
     fi
 
+    # Tier: CORE loads; a FEATURE daemon loads only if opted in, else copy-no-load.
     copy_no_load=0
-    for cnl_base in "${PLIST_COPY_NO_LOAD[@]}"; do
-        [[ "$base" == "$cnl_base" ]] && copy_no_load=1 && break
-    done
+    feat="$(feature_of "$base")"
+    if [[ -n "$feat" ]]; then
+        if feature_enabled "$feat"; then
+            note "FEATURE $base — opted in (--with-$feat) → will load"
+        else
+            copy_no_load=1
+            case "$feat" in
+                memory|crash-resume)
+                    note "FEATURE $base — not enabled (copied, NOT loaded; enable with --with-$feat)" ;;
+                *)  # comms / slack-reactor: token-gated, hand-loaded after setup
+                    note "FEATURE $base — token-gated (copied, NOT loaded; hand-load after setup — see ONBOARDING.md)" ;;
+            esac
+        fi
+    fi
 
     # Substitute the four machine tokens with this box's real values. Order:
     # __REPO__ before __HOME__ is irrelevant (distinct tokens), but we do all
