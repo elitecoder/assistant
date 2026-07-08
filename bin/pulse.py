@@ -54,9 +54,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
-HOME = Path.home()
+HOME = Path(os.environ.get("HOME", str(Path.home())))
 
-ASSISTANT_DIR = HOME / ".assistant"
+ASSISTANT_DIR = Path(os.environ.get("ASSISTANT_DIR", str(HOME / ".assistant")))
 INBOX_DIR = ASSISTANT_DIR / "inbox"
 PULSE_LOG = ASSISTANT_DIR / "assistant-pulse.log"
 HEARTBEAT_PATH = ASSISTANT_DIR / "heartbeat.json"
