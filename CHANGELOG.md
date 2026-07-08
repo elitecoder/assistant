@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.3.0] - 2026-07-08
+
+### Fixed
+- **Lesson proposals now actually reach the operator.** The lesson-extractor
+  has always mined recurring patterns and written pending proposals to
+  `~/.assistant/proposals.jsonl`, but nothing delivered them: the comms daemon
+  suppressed a `lesson-proposal` ledger kind that was never emitted, and the
+  warm session (its supposed delivery path) is reactive-only — it wakes on
+  inbound Slack and is `/cleared` at 50% context, so it could never proactively
+  surface a proposal. The queue sat dead for a month (436 pending proposals
+  accumulated, undelivered).
+
+### Added
+- **PROPOSALS delivery loop** in `comms-listen.py` (5th daemon loop). Watches
+  `proposals.jsonl` as a durable queue and delivers each new pending lesson
+  proposal to the comms channel exactly once, asking the operator to confirm.
+  - **Exactly-once via an id high-water-mark cursor** (`proposals.cursor`), not
+    a byte offset — the confirm path rewrites `proposals.jsonl` in place, which
+    would corrupt a byte cursor. Proposal ids are ISO-µs timestamps, so
+    `id > cursor` is a clean, rewrite-safe watermark.
+  - **Backlog skipped on first run** (like the ledger cursor) so the daemon
+    never blasts a stale queue at the operator's phone; recoverable by deleting
+    `proposals.cursor` to replay. Deliveries are capped per drain
+    (`PROPOSALS_MAX_PER_DRAIN`) so one extractor batch can't firehose.
+  - **Halt-and-retry on send failure** — the cursor advances only past a
+    successfully-sent proposal, so a failed send retries next pass and no
+    proposal is ever silently lost.
+  - Each delivery is mirrored into `conversation.jsonl` and carries the
+    proposal **id**, so after a `/clear` the warm session can confirm the
+    *specific* proposal the operator's `y` refers to (fixing the prior
+    `tail -1` bug that confirmed the wrong proposal when several were pending).
+  - `comms_lib`: `read_proposals_cursor` / `write_proposals_cursor` /
+    `initialize_proposals_cursor_if_missing` / `read_all_proposals` /
+    `read_new_proposals` / `fmt_lesson_proposal`.
+- Warm-session prompt updated: the daemon delivers proposals (not the warm
+  session), and confirmation reads the id back out of the conversation window.
+
+### Notes
+- `pattern` and `lesson_audit` proposals are **not** delivered — they have no
+  confirm path yet, so pinging them would be a dead-end. Documented gap.
+
 ## [0.2.0] - 2026-07-06
 
 ### Added

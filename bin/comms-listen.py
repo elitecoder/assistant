@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """comms-listen — event-driven assistant-comms daemon (Slack transport).
 
-A single long-running process (KeepAlive LaunchAgent) with four concurrent jobs,
+A single long-running process (KeepAlive LaunchAgent) with five concurrent jobs,
 one blocking loop per thread joined under a shutdown Event:
 
   1. INBOUND (event) — REST-poll Slack (conversations.history via slack-poll.py)
@@ -16,11 +16,16 @@ one blocking loop per thread joined under a shutdown Event:
      (workspace needs input / work complete) and ping within seconds. kqueue on
      macOS, stat-poll fallback elsewhere.
 
-  4. HEARTBEAT PAGE (timer) — every 60s, check Assistant's heartbeat; if stale
+  4. PROPOSALS (timer) — watch ~/.assistant/proposals.jsonl (the durable queue
+     the lesson-extractor writes). Deliver each new pending lesson proposal to
+     the channel exactly once (id high-water-mark cursor, backlog skipped on
+     first run), asking Mukul to confirm it. No LLM.
+
+  5. HEARTBEAT PAGE (timer) — every 60s, check Assistant's heartbeat; if stale
      or status ∈ {frozen, stale_world, respawn-requested}, send a templated
      urgent page (30-min dedup). No LLM.
 
-All four reuse the tested CLIs and comms_lib. Durable memory stays in
+All five reuse the tested CLIs and comms_lib. Durable memory stays in
 conversation.jsonl, so a crash + KeepAlive respawn loses nothing.
 
 Slack is the sole transport. The bot token comes from $SLACK_BOT_TOKEN; the
@@ -62,6 +67,13 @@ SLACK_POLL_INTERVAL_SEC = int(os.environ.get("COMMS_SLACK_POLL_SEC", "3"))
 LEDGER_POLL_SEC = float(os.environ.get("COMMS_LEDGER_POLL_SEC", "2"))
 HEARTBEAT_CHECK_SEC = int(os.environ.get("COMMS_HEARTBEAT_CHECK_SEC", "60"))
 HEARTBEAT_DEDUP_SEC = 1800
+
+# Proposals are a durable queue, not a live event, so we poll on a slow cadence
+# (they're written at most a few times a day by the pulse-throttled extractor).
+# Each drain delivers at most PROPOSALS_MAX_PER_DRAIN so one big extractor batch
+# can't firehose the channel — the rest follow on later passes.
+PROPOSALS_POLL_SEC = float(os.environ.get("COMMS_PROPOSALS_POLL_SEC", "30"))
+PROPOSALS_MAX_PER_DRAIN = int(os.environ.get("COMMS_PROPOSALS_MAX_PER_DRAIN", "3"))
 
 PYTHON = sys.executable  # use the same interpreter that launched us for the CLIs
 
@@ -288,7 +300,12 @@ def _suppress_reason(entry: dict) -> str | None:
     if kind == "self-update" and "skip" in key:
         return "self-update-skip"
     if kind in ("lesson-proposal", "lesson_proposal") or key.startswith("lesson-proposal"):
-        return "lesson-proposal (delivered via warm session)"
+        # Lesson proposals are delivered by proposals_loop straight from
+        # proposals.jsonl (the durable queue), never as an action-ledger entry.
+        # This branch stays as defense-in-depth: if anything ever writes a
+        # lesson-proposal ledger kind, it must not double-fire through the
+        # ledger broadcast.
+        return "lesson-proposal (delivered via proposals_loop)"
     return None
 
 
@@ -335,6 +352,75 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
                          "--msg-ts", str(sent["message_id"])], timeout=10)
             log(f"broadcast key={key}")
         stop.wait(LEDGER_POLL_SEC)
+
+
+# --------------------------------------------------------------------------- lesson-proposal delivery
+
+def _drain_proposals_once(env: dict, paths: comms_lib.Paths | None = None) -> int:
+    """Deliver each new pending lesson proposal to Slack exactly once, advancing
+    the delivery high-water mark only after a successful send. Returns the number
+    PINGED this pass.
+
+    Mirrors the ledger loop's discipline: read fresh entries (id > cursor)
+    without mutating the cursor, send, then advance. A send failure leaves the
+    cursor untouched so the proposal retries on the next pass — no proposal is
+    ever silently lost. Capped at PROPOSALS_MAX_PER_DRAIN per pass so a burst
+    can't firehose the channel. Each delivery is mirrored into conversation.jsonl
+    as an out turn so the warm session can resolve `y`/`n` after a /clear."""
+    paths = paths or comms_lib.Paths.from_env()
+    target = _target(paths)
+    fresh = comms_lib.read_new_proposals(paths, limit=PROPOSALS_MAX_PER_DRAIN)
+    if not fresh:
+        return 0
+    if not target:
+        log(f"proposals: no target configured — leaving {len(fresh)} for retry")
+        return 0
+    n = 0
+    for entry in fresh:
+        pid = str(entry.get("id") or entry.get("ts") or "")
+        body = comms_lib.fmt_lesson_proposal(entry)
+        send_argv = _send_args(body, "action", target, f"proposal:{pid}")
+        rc, out, err = cli(send_argv, timeout=30, env=env)
+        if rc != 0:
+            # Halt on first failure: advancing past pid would skip it forever.
+            # Everything already delivered kept its cursor; this one retries.
+            log(f"proposals: send rc={rc} id={pid} err={err.strip()[:160]} — halting drain")
+            break
+        # Mirror the sent proposal into conversation.jsonl so the warm session
+        # can find the id when Mukul replies `y` after a /clear.
+        for line in out.strip().splitlines():
+            try:
+                sent = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if sent.get("muted") or not sent.get("message_id"):
+                continue
+            convo_id = sent.get("channel")
+            if convo_id:
+                cli([str(CONVERSATION), "append", "--channel", str(convo_id),
+                     "--direction", "out", "--text", body, "--kind", "action",
+                     "--msg-ts", str(sent["message_id"])], timeout=10)
+        comms_lib.write_proposals_cursor(paths, pid)
+        n += 1
+        log(f"proposals: pinged lesson proposal id={pid}")
+    return n
+
+
+def proposals_loop(stop: threading.Event, env: dict) -> None:
+    """Watch proposals.jsonl; deliver each new pending lesson proposal to the
+    configured target exactly once. slow stat-poll (30s) — proposals are a
+    durable queue written a few times a day, not a live stream."""
+    paths = comms_lib.Paths.from_env()
+    comms_lib.initialize_proposals_cursor_if_missing(paths)
+    backlog = len(comms_lib.read_all_proposals(paths))
+    log(f"proposals loop started (slack) — cursor={comms_lib.read_proposals_cursor(paths)!r} "
+        f"backlog={backlog} skipped (deliver only new; rm proposals.cursor to replay)")
+    while not stop.is_set():
+        try:
+            _drain_proposals_once(env, paths)
+        except Exception as e:  # noqa: BLE001
+            log(f"proposals drain error: {e}")
+        stop.wait(PROPOSALS_POLL_SEC)
 
 
 # --------------------------------------------------------------------------- inbox watcher (cmux-watcher signals)
@@ -563,9 +649,10 @@ def main() -> int:
         threading.Thread(target=inbound_loop, args=(stop, env), name="inbound", daemon=True),
         threading.Thread(target=ledger_loop, args=(stop, env), name="ledger", daemon=True),
         threading.Thread(target=inbox_loop, args=(stop, env), name="inbox", daemon=True),
+        threading.Thread(target=proposals_loop, args=(stop, env), name="proposals", daemon=True),
         threading.Thread(target=heartbeat_loop, args=(stop, env), name="heartbeat", daemon=True),
     ]
-    log(f"comms-listen starting (pid={os.getpid()}, transport=slack) — 4 loops")
+    log(f"comms-listen starting (pid={os.getpid()}, transport=slack) — 5 loops")
     for t in threads:
         t.start()
     while not stop.is_set():
