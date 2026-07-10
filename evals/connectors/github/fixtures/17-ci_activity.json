@@ -1,0 +1,35 @@
+{
+  "name": "gh-ci_activity-17",
+  "raw": {
+    "id": "10017",
+    "reason": "ci_activity",
+    "updated_at": "2026-07-27T17:59:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "OneAdobe/mukul-memory",
+      "owner": {
+        "login": "OneAdobe"
+      }
+    },
+    "subject": {
+      "title": "[ci_activity] item 17 in OneAdobe/mukul-memory",
+      "type": "RepositoryVulnerabilityAlert",
+      "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/17"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "cbd5e98699f0a194d215e73de05d167e4e125d56f1c4b8576d4065993115d154",
+    "ts": "2026-07-27T17:59:00Z",
+    "epoch": 1785175140,
+    "source": "github",
+    "kind": "ci_activity",
+    "external_id": "gh-notif:OneAdobe/mukul-memory:10017:2026-07-27T17:59:00Z",
+    "actor": "OneAdobe",
+    "title": "[ci_activity] item 17 in OneAdobe/mukul-memory",
+    "snippet": "OneAdobe/mukul-memory \u00b7 ci_activity \u00b7 RepositoryVulnerabilityAlert",
+    "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/17",
+    "refs": {},
+    "raw_path": null
+  }
+}

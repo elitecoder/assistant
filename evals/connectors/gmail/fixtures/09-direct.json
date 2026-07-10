@@ -1,0 +1,44 @@
+{
+  "name": "gmail-direct-9",
+  "raw": {
+    "id": "18f0000000000009",
+    "threadId": "t18f0000000000009",
+    "labelIds": [
+      "INBOX",
+      "CATEGORY_PERSONAL"
+    ],
+    "internalDate": "1783000540000",
+    "snippet": "Hey, can you help with 1?",
+    "payload": {
+      "headers": [
+        {
+          "name": "From",
+          "value": "Person1 <p1@corp.example>"
+        },
+        {
+          "name": "Subject",
+          "value": "Question 1"
+        },
+        {
+          "name": "To",
+          "value": "mukul@gmail.com"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "6e3d1ea057be8ff673e5fa397d7713827eaa055f612eb4b1bf9f100a61eb5c1e",
+    "ts": "2026-07-02T13:55:40Z",
+    "epoch": 1783000540,
+    "source": "gmail",
+    "kind": "direct",
+    "external_id": "gmail:18f0000000000009",
+    "actor": "Person1 <p1@corp.example>",
+    "title": "Question 1",
+    "snippet": "Hey, can you help with 1?",
+    "url": "https://mail.google.com/mail/u/0/#all/18f0000000000009",
+    "refs": {},
+    "raw_path": null
+  }
+}

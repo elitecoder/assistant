@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "github",
+  "kind": "mention",
+  "external_id": "gh-notif:elitecoder/assistant:9002:2026-07-10T12:05:00Z",
+  "actor": "octocat",
+  "title": "@elitecoder can you take a look?",
+  "snippet": "elitecoder/assistant \u00b7 mention \u00b7 Issue",
+  "url": null,
+  "refs": {},
+  "raw_path": null
+}

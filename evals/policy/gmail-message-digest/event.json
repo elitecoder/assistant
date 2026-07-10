@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "gmail",
+  "kind": "message",
+  "external_id": "gmail:18f0a1b2c3d4bbbb",
+  "actor": "Facilities <fac@corp.example>",
+  "title": "FYI: office closed Friday",
+  "snippet": "Building maintenance notice",
+  "url": "https://mail.google.com/mail/u/0/#all/18f0a1b2c3d4bbbb",
+  "refs": {},
+  "raw_path": null
+}

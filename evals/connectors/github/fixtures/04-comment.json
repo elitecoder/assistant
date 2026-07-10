@@ -1,0 +1,35 @@
+{
+  "name": "gh-comment-4",
+  "raw": {
+    "id": "10004",
+    "reason": "comment",
+    "updated_at": "2026-07-14T04:28:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/firefly-platform",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[comment] item 4 in elitecoder/firefly-platform",
+      "type": "Release",
+      "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/4"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "06f88b85109e3166cf4c5c3178c2b801df1f08c7dfeb195af774a2a6a9ce59d7",
+    "ts": "2026-07-14T04:28:00Z",
+    "epoch": 1784003280,
+    "source": "github",
+    "kind": "comment",
+    "external_id": "gh-notif:elitecoder/firefly-platform:10004:2026-07-14T04:28:00Z",
+    "actor": "elitecoder",
+    "title": "[comment] item 4 in elitecoder/firefly-platform",
+    "snippet": "elitecoder/firefly-platform \u00b7 comment \u00b7 Release",
+    "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/4",
+    "refs": {},
+    "raw_path": null
+  }
+}

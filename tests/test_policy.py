@@ -275,12 +275,15 @@ class BootstrapTests(HomeTestCase):
         self.assertGreaterEqual(len(rules), 4)
 
     def test_no_forward_looking_sources_in_bootstrap(self):
-        # M2 review: rules for producers that don't exist until M5 (gmail,
-        # github) are a data-hiding hazard against a guessed schema — the
-        # bootstrap may only lane sources that already emit events.
+        # The bootstrap may only lane sources whose PRODUCERS EXIST — a rule
+        # against a guessed schema is a data-hiding hazard. In M2 that was just
+        # {cmux, pulse}; M5 adds github + gmail because their connectors
+        # (bin/connectors/) now ship and their WorldEvent kinds are known. No
+        # forward-looking source (gcal/jira/slack, still wave 2) may appear.
         data = json.loads(policy.bootstrap_path().read_text())
         sources = {r["match"].get("source") for r in data["policies"]}
-        self.assertTrue(sources <= {"cmux", "pulse"}, msg=str(sources))
+        self.assertTrue(sources <= {"cmux", "pulse", "github", "gmail"},
+                        msg=str(sources))
 
     def test_second_install_is_a_noop(self):
         self.assertTrue(policy.ensure_policies_installed())

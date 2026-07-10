@@ -1,0 +1,35 @@
+{
+  "name": "gh-author-6",
+  "raw": {
+    "id": "10006",
+    "reason": "author",
+    "updated_at": "2026-07-16T06:42:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/assistant",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[author] item 6 in elitecoder/assistant",
+      "type": "PullRequest",
+      "url": "https://api.github.com/repos/elitecoder/assistant/pulls/6"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "6f838024f92fa46b274a79c9e4216db795edf41d29b2ecbd21592414b8473c67",
+    "ts": "2026-07-16T06:42:00Z",
+    "epoch": 1784184120,
+    "source": "github",
+    "kind": "author",
+    "external_id": "gh-notif:elitecoder/assistant:10006:2026-07-16T06:42:00Z",
+    "actor": "elitecoder",
+    "title": "[author] item 6 in elitecoder/assistant",
+    "snippet": "elitecoder/assistant \u00b7 author \u00b7 PullRequest",
+    "url": "https://api.github.com/repos/elitecoder/assistant/pulls/6",
+    "refs": {},
+    "raw_path": null
+  }
+}

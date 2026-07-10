@@ -1,0 +1,35 @@
+{
+  "name": "gh-review_requested-0",
+  "raw": {
+    "id": "10000",
+    "reason": "review_requested",
+    "updated_at": "2026-07-10T00:00:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/assistant",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[review_requested] item 0 in elitecoder/assistant",
+      "type": "PullRequest",
+      "url": "https://api.github.com/repos/elitecoder/assistant/pulls/0"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "b56561f76e8f63d256ab3a987c17f03e7e92a87f64fdd912128004079405cc8c",
+    "ts": "2026-07-10T00:00:00Z",
+    "epoch": 1783641600,
+    "source": "github",
+    "kind": "review_requested",
+    "external_id": "gh-notif:elitecoder/assistant:10000:2026-07-10T00:00:00Z",
+    "actor": "elitecoder",
+    "title": "[review_requested] item 0 in elitecoder/assistant",
+    "snippet": "elitecoder/assistant \u00b7 review_requested \u00b7 PullRequest",
+    "url": "https://api.github.com/repos/elitecoder/assistant/pulls/0",
+    "refs": {},
+    "raw_path": null
+  }
+}

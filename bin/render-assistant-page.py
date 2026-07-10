@@ -558,9 +558,23 @@ def _render_brief_tab_inner():
                      f'title="{int(info.get("count_24h") or 0)} events · 24h">'
                      f'{e(src)} · {e(label)}</span>')
     for name, hb in sorted((health.get("connectors") or {}).items()):
-        chips.append(f'<span class="ws-live-age warm" '
-                     f'title="connector heartbeat">{e(name)} · '
-                     f'{e(str(hb.get("last_poll") or "?"))}</span>')
+        # A dead connector (stale last_poll) or an expired OAuth token shows
+        # cold + a reason; a healthy one shows fresh. The verdict is computed
+        # in brief.py; the renderer only colors it (design M5: visible within
+        # one morning).
+        stale = bool(hb.get("stale"))
+        token_expired = bool(hb.get("token_expired"))
+        if token_expired:
+            cls, tail = "cold", "token expired"
+        elif stale:
+            cls, tail = "cold", "stale"
+        else:
+            cls, tail = "fresh", str(hb.get("last_poll") or "?")
+        title = f"connector heartbeat · {name}"
+        if hb.get("token_expiry"):
+            title += f" · token_expiry {hb.get('token_expiry')}"
+        chips.append(f'<span class="ws-live-age {cls}" '
+                     f'title="{e(title)}">{e(name)} · {e(tail)}</span>')
     q_pending = health.get("quarantine_pending")
     if q_pending:
         chips.append(f'<span class="ws-live-age cold">quarantine · {int(q_pending)}</span>')

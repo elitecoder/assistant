@@ -1,0 +1,35 @@
+{
+  "name": "gh-mention-13",
+  "raw": {
+    "id": "10013",
+    "reason": "mention",
+    "updated_at": "2026-07-23T13:31:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/firefly-platform",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[mention] item 13 in elitecoder/firefly-platform",
+      "type": "Issue",
+      "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/13"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "da3166ba93cc77ffd65e995c9163bf7580760c128c915244010d3ae282b38566",
+    "ts": "2026-07-23T13:31:00Z",
+    "epoch": 1784813460,
+    "source": "github",
+    "kind": "mention",
+    "external_id": "gh-notif:elitecoder/firefly-platform:10013:2026-07-23T13:31:00Z",
+    "actor": "elitecoder",
+    "title": "[mention] item 13 in elitecoder/firefly-platform",
+    "snippet": "elitecoder/firefly-platform \u00b7 mention \u00b7 Issue",
+    "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/13",
+    "refs": {},
+    "raw_path": null
+  }
+}

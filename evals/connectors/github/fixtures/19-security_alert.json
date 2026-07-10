@@ -1,0 +1,35 @@
+{
+  "name": "gh-security_alert-19",
+  "raw": {
+    "id": "10019",
+    "reason": "security_alert",
+    "updated_at": "2026-07-11T19:13:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/firefly-platform",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[security_alert] item 19 in elitecoder/firefly-platform",
+      "type": "Issue",
+      "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/19"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "4afb8ef1f83c3c64aa891e6cdf0f61971dd9a0c99f78e78aa6672497e4affe6e",
+    "ts": "2026-07-11T19:13:00Z",
+    "epoch": 1783797180,
+    "source": "github",
+    "kind": "security_alert",
+    "external_id": "gh-notif:elitecoder/firefly-platform:10019:2026-07-11T19:13:00Z",
+    "actor": "elitecoder",
+    "title": "[security_alert] item 19 in elitecoder/firefly-platform",
+    "snippet": "elitecoder/firefly-platform \u00b7 security_alert \u00b7 Issue",
+    "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/19",
+    "refs": {},
+    "raw_path": null
+  }
+}

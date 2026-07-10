@@ -1,0 +1,35 @@
+{
+  "name": "gh-subscribed-20",
+  "raw": {
+    "id": "10020",
+    "reason": "subscribed",
+    "updated_at": "2026-07-12T20:20:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "OneAdobe/mukul-memory",
+      "owner": {
+        "login": "OneAdobe"
+      }
+    },
+    "subject": {
+      "title": "[subscribed] item 20 in OneAdobe/mukul-memory",
+      "type": "CheckSuite",
+      "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/20"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "7b66f78e34ba7eb38f38288984fd8a6e14454b14356792042090361655b961b4",
+    "ts": "2026-07-12T20:20:00Z",
+    "epoch": 1783887600,
+    "source": "github",
+    "kind": "subscribed",
+    "external_id": "gh-notif:OneAdobe/mukul-memory:10020:2026-07-12T20:20:00Z",
+    "actor": "OneAdobe",
+    "title": "[subscribed] item 20 in OneAdobe/mukul-memory",
+    "snippet": "OneAdobe/mukul-memory \u00b7 subscribed \u00b7 CheckSuite",
+    "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/20",
+    "refs": {},
+    "raw_path": null
+  }
+}

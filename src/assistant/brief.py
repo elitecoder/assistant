@@ -472,10 +472,14 @@ def expired_unseen_count(records: list[dict], now: float) -> int:
     return n
 
 
-def _connector_heartbeats() -> dict[str, dict]:
-    """heartbeat.json per connector (M5). Before M5 the directory doesn't
-    exist and this returns {} — only fleet sources ride the spine, and their
-    staleness shows via world.json's events section instead."""
+def _connector_heartbeats(now: float) -> dict[str, dict]:
+    """heartbeat.json per connector (M5), with the health VERDICT derived here
+    (pure function of the heartbeat + `now`, so it is unit-testable and the
+    renderer stays presentation-only). A stale last_poll or a past/near
+    token_expiry marks the connector unhealthy, so a dead connector or an
+    expiring token surfaces in the brief within one morning (design 4/9).
+    Before M5 the directory doesn't exist and this returns {} — fleet sources
+    ride the spine and show staleness via world.json's events section."""
     out: dict[str, dict] = {}
     d = connectors_dir()
     try:
@@ -484,8 +488,24 @@ def _connector_heartbeats() -> dict[str, dict]:
         return out
     for sub in entries:
         hb = _read_json(sub / "heartbeat.json")
-        if isinstance(hb, dict):
-            out[sub.name] = hb
+        if not isinstance(hb, dict):
+            continue
+        last = hb.get("last_poll_epoch")
+        stale_after = hb.get("stale_after_sec") or 900
+        age = int(now - last) if isinstance(last, (int, float)) else None
+        stale = age is None or age > stale_after
+        texp = hb.get("token_expiry_epoch")
+        token_expired = isinstance(texp, (int, float)) and now >= texp
+        out[sub.name] = {
+            "source": hb.get("source"),
+            "last_poll": hb.get("last_poll"),
+            "age_sec": age,
+            "stale": stale,
+            "token_expiry": hb.get("token_expiry"),
+            "token_expired": bool(token_expired),
+            "errors": hb.get("errors") or [],
+            "ok": bool(hb.get("ok", True)) and not stale and not token_expired,
+        }
     return out
 
 
@@ -523,7 +543,7 @@ def _build_health(records: list[dict], now: float) -> dict:
         "interrupts": _interrupt_counts(now),
         "cost": _cost_health(now),
         "expired_unseen_24h": expired_unseen_count(records, now),
-        "connectors": _connector_heartbeats(),
+        "connectors": _connector_heartbeats(now),
     }
 
 

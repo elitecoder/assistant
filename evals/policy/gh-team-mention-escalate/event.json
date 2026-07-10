@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "github",
+  "kind": "team_mention",
+  "external_id": "gh-notif:elitecoder/infra:9003:2026-07-10T12:06:00Z",
+  "actor": "teammate",
+  "title": "@elitecoder/platform heads up",
+  "snippet": "elitecoder/infra \u00b7 team_mention \u00b7 Issue",
+  "url": null,
+  "refs": {},
+  "raw_path": null
+}

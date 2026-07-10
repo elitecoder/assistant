@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "github",
+  "kind": "ci_activity",
+  "external_id": "gh-notif:elitecoder/assistant:9006:2026-07-10T12:09:00Z",
+  "actor": "github-actions",
+  "title": "CI passed on main",
+  "snippet": "elitecoder/assistant \u00b7 ci_activity \u00b7 CheckSuite",
+  "url": null,
+  "refs": {},
+  "raw_path": null
+}

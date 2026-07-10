@@ -1,0 +1,35 @@
+{
+  "name": "gh-assign-15",
+  "raw": {
+    "id": "10015",
+    "reason": "assign",
+    "updated_at": "2026-07-25T15:45:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/assistant",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[assign] item 15 in elitecoder/assistant",
+      "type": "Commit",
+      "url": "https://api.github.com/repos/elitecoder/assistant/pulls/15"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "a444fa21df615915f2280e022b7dde17faa03ab62ddbb4d77d3b65c58382c824",
+    "ts": "2026-07-25T15:45:00Z",
+    "epoch": 1784994300,
+    "source": "github",
+    "kind": "assign",
+    "external_id": "gh-notif:elitecoder/assistant:10015:2026-07-25T15:45:00Z",
+    "actor": "elitecoder",
+    "title": "[assign] item 15 in elitecoder/assistant",
+    "snippet": "elitecoder/assistant \u00b7 assign \u00b7 Commit",
+    "url": "https://api.github.com/repos/elitecoder/assistant/pulls/15",
+    "refs": {},
+    "raw_path": null
+  }
+}

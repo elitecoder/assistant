@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keel M5 Gmail (readonly) connector — an INDEPENDENT KeepAlive daemon that
+  polls users.history.list incrementally and drops WorldEvents into the inbox.
+  Separate process from the pulse (design section 9: never poll inside the
+  pulse budget). OAuth is owned by the connector base: the access token is
+  refreshed in-process from the token cache the ONE time a poll finds it expired
+  — deliberately NOT a static ~/.zprofile token (the Bedrock-under-launchd 403
+  hazard the design rejects).
+
+  OPT-IN: added to install.sh PLIST_SKIP, so the installer copies but never
+  loads it. Activate by hand (after seeding the OAuth token cache):
+      launchctl load ~/Library/LaunchAgents/com.assistant.connector-gmail.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.assistant.connector-gmail</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/mukuls/dev/assistant/bin/connectors/spawn-connector.sh</string>
+        <string>gmail.py</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/mukuls/.assistant/logs/connector-gmail.launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mukuls/.assistant/logs/connector-gmail.launchd.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/mukuls</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/mukuls</string>
+</dict>
+</plist>

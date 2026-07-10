@@ -351,6 +351,14 @@ trap 'rm -rf "$PLIST_STAGE"' EXIT
 # auto-starting on the running box.
 PLIST_SKIP=(
     "com.mukul.assistant-daemon.plist"
+    # Keel M5 connectors are INDEPENDENT KeepAlive daemons that poll external
+    # APIs (GitHub, Gmail) outside the pulse budget. The installer copies their
+    # plists but NEVER loads them: load-bearing because the pulse self-update
+    # re-runs install.sh, and an auto-load would start a network daemon (and,
+    # for Gmail, begin OAuth refreshes) behind Mukul's back. He runs
+    # `launchctl load …` by hand once the connector is configured.
+    "com.assistant.connector-github.plist"
+    "com.assistant.connector-gmail.plist"
 )
 
 declare -a CHANGED_LABELS

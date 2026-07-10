@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "github",
+  "kind": "assign",
+  "external_id": "gh-notif:elitecoder/assistant:9004:2026-07-10T12:07:00Z",
+  "actor": "maintainer",
+  "title": "You were assigned: flaky test",
+  "snippet": "elitecoder/assistant \u00b7 assign \u00b7 Issue",
+  "url": null,
+  "refs": {},
+  "raw_path": null
+}

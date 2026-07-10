@@ -1,0 +1,48 @@
+{
+  "name": "gmail-newsletter-7",
+  "raw": {
+    "id": "18f0000000000007",
+    "threadId": "t18f0000000000007",
+    "labelIds": [
+      "INBOX",
+      "CATEGORY_FORUMS"
+    ],
+    "internalDate": "1783000420000",
+    "snippet": "Top stories 7 \u2014 read more",
+    "payload": {
+      "headers": [
+        {
+          "name": "From",
+          "value": "News7 <news7@list.example>"
+        },
+        {
+          "name": "Subject",
+          "value": "Digest #7"
+        },
+        {
+          "name": "To",
+          "value": "subscribers@list.example"
+        },
+        {
+          "name": "List-Unsubscribe",
+          "value": "<mailto:u@list.example>"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "f7514222e592b59e436ab8eb6b2b1f324cae9a2d67132ce83b1d879016397674",
+    "ts": "2026-07-02T13:53:40Z",
+    "epoch": 1783000420,
+    "source": "gmail",
+    "kind": "newsletter",
+    "external_id": "gmail:18f0000000000007",
+    "actor": "News7 <news7@list.example>",
+    "title": "Digest #7",
+    "snippet": "Top stories 7 \u2014 read more",
+    "url": "https://mail.google.com/mail/u/0/#all/18f0000000000007",
+    "refs": {},
+    "raw_path": null
+  }
+}

@@ -47,6 +47,7 @@ INBOX_ARCHIVE = HOME / ".architect/orchestrator-inbox-archive"
 LOG_DIR = HOME / ".assistant/logs"
 EVENTS_PATH = HOME / ".assistant/events.jsonl"
 EVENTS_QUARANTINE_DIR = HOME / ".assistant/eventspine/quarantine"
+CONNECTORS_DIR = HOME / ".assistant/connectors"
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 ACTIVITY_HOURS = 24
@@ -371,6 +372,43 @@ def build_events_summary(now):
     return out
 
 
+def build_connectors_summary(now):
+    """Join each connector's heartbeat.json into world.json (Keel M5). A stale
+    last_poll or a past token_expiry marks the connector unhealthy so the brief
+    health section (which also reads the heartbeats directly) and the dashboard
+    can flag a dead/expired connector within one morning. Pure read — connectors
+    own their heartbeat files; we only observe."""
+    out = {}
+    if not CONNECTORS_DIR.exists():
+        return out
+    now_epoch = now.timestamp()
+    try:
+        subs = sorted(p for p in CONNECTORS_DIR.iterdir() if p.is_dir())
+    except OSError:
+        return out
+    for sub in subs:
+        hb = load_json(sub / "heartbeat.json", None)
+        if not isinstance(hb, dict):
+            continue
+        last = hb.get("last_poll_epoch")
+        stale_after = hb.get("stale_after_sec") or 900
+        age = int(now_epoch - last) if isinstance(last, (int, float)) else None
+        stale = age is None or age > stale_after
+        texp = hb.get("token_expiry_epoch")
+        token_expired = isinstance(texp, (int, float)) and now_epoch >= texp
+        out[sub.name] = {
+            "source": hb.get("source"),
+            "last_poll": hb.get("last_poll"),
+            "age_sec": age,
+            "stale": stale,
+            "token_expiry": hb.get("token_expiry"),
+            "token_expired": bool(token_expired),
+            "errors": hb.get("errors") or [],
+            "ok": bool(hb.get("ok", True)) and not stale and not token_expired,
+        }
+    return out
+
+
 def build():
     now = utc_now()
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -402,6 +440,7 @@ def build():
     inbox_events = load_inbox_recent(now)
     dashboard_state = load_json(DASHBOARD_STATE, {})
     events_summary = build_events_summary(now)
+    connectors_summary = build_connectors_summary(now)
 
     # Counts for the summary block.
     cron = sum(1 for s in live_sessions.values() if s.get("is_cron"))
@@ -438,6 +477,7 @@ def build():
             "events_24h": events_summary["total_24h"],
         },
         "events": events_summary,
+        "connectors": connectors_summary,
         "workspaces": workspaces,
         "live_sessions": list(live_sessions.values()),
         "proposals": proposals,
