@@ -138,16 +138,23 @@ class PollTests(HomeTestCase):
         self.assertEqual(res["status"], "not_modified")
         self.assertEqual(res["emitted"], 0)
 
-    def test_auth_error_surfaces_in_heartbeat(self):
+    def test_gh_unauthenticated_is_not_configured_quiet(self):
+        # `gh auth token` failing = gh not logged in = the prerequisite for this
+        # OPTIONAL connector is absent. Mirror gmail's not_configured: a QUIET
+        # opted-out heartbeat (distinct status, ok:true, errors empty), a clean
+        # return, and NEVER a call to the API — not an error/alert.
         http = FakeHttp([])
         c = ghc.GitHubNotificationsConnector(
             token_provider=lambda: (_ for _ in ()).throw(RuntimeError("no gh")),
             http=http)
         res = c.poll_once(now=1)
-        self.assertEqual(res["status"], "auth_error")
+        self.assertEqual(res["status"], "not_configured")
+        self.assertEqual(res["emitted"], 0)
+        self.assertEqual(res["errors"], [])
         hb = json.loads(c.heartbeat_path().read_text())
-        self.assertFalse(hb["ok"])
-        self.assertTrue(any("token" in e for e in hb["errors"]))
+        self.assertEqual(hb["status"], "not_configured")
+        self.assertTrue(hb["ok"])          # not_configured is NOT an error
+        self.assertEqual(hb["errors"], [])
         self.assertEqual(http.calls, [])  # never hit the API without a token
 
     def test_403_surfaces_in_heartbeat(self):

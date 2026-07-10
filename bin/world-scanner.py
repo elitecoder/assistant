@@ -34,6 +34,24 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# The canonical connector tri-state (not_configured|ok|error) + the known-
+# connector registry live in the connector base, so world-scanner, the brief
+# and the dashboard never drift on what "connected" means. Import it the way the
+# standalone connectors do (this launchd script must put src/ on the path
+# first); degrade to a None fallback so a broken import can NEVER take down the
+# 30s world snapshot — build_connectors_summary just returns {} in that case.
+_REPO = Path(__file__).resolve().parents[1]
+if str(_REPO / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO / "src"))
+try:
+    from assistant import connector as _connector
+    _classify_connector = _connector.classify_connector
+    _KNOWN_CONNECTORS = _connector.KNOWN_CONNECTORS
+except Exception:  # noqa: BLE001 — snapshot resilience over connector fidelity
+    _connector = None
+    _classify_connector = None
+    _KNOWN_CONNECTORS = ()
+
 HOME = Path(os.environ["HOME"])
 OUT_PATH = HOME / ".claude/cache/world.json"
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
@@ -373,39 +391,39 @@ def build_events_summary(now):
 
 
 def build_connectors_summary(now):
-    """Join each connector's heartbeat.json into world.json (Keel M5). A stale
-    last_poll or a past token_expiry marks the connector unhealthy so the brief
-    health section (which also reads the heartbeats directly) and the dashboard
-    can flag a dead/expired connector within one morning. Pure read — connectors
-    own their heartbeat files; we only observe."""
-    out = {}
-    if not CONNECTORS_DIR.exists():
-        return out
+    """Join each connector's heartbeat into world.json with its canonical
+    tri-state (Keel M5). The status/stale/token verdict is computed by the
+    connector base's classify_connector — the ONE place the not_configured|ok|
+    error model lives, shared with the brief so both agree. We enumerate the
+    UNION of the known-connector registry and whatever heartbeat dirs exist, so:
+
+      * a KNOWN connector that has never run (no heartbeat file at all — fresh
+        install, daemon never started) still appears, as not_configured
+        ("available, not connected"), NOT as an error/stale alarm; and
+      * an unknown/extra connector that DOES have a heartbeat is never dropped.
+
+    So the dashboard Connections panel can render every connector from this one
+    block. Pure read — connectors own their heartbeat files; we only observe. If
+    the connector base could not be imported this degrades to {} (the dashboard
+    then shows its own honest empty state)."""
+    if _classify_connector is None:
+        return {}
     now_epoch = now.timestamp()
-    try:
-        subs = sorted(p for p in CONNECTORS_DIR.iterdir() if p.is_dir())
-    except OSError:
-        return out
-    for sub in subs:
-        hb = load_json(sub / "heartbeat.json", None)
-        if not isinstance(hb, dict):
-            continue
-        last = hb.get("last_poll_epoch")
-        stale_after = hb.get("stale_after_sec") or 900
-        age = int(now_epoch - last) if isinstance(last, (int, float)) else None
-        stale = age is None or age > stale_after
-        texp = hb.get("token_expiry_epoch")
-        token_expired = isinstance(texp, (int, float)) and now_epoch >= texp
-        out[sub.name] = {
-            "source": hb.get("source"),
-            "last_poll": hb.get("last_poll"),
-            "age_sec": age,
-            "stale": stale,
-            "token_expiry": hb.get("token_expiry"),
-            "token_expired": bool(token_expired),
-            "errors": hb.get("errors") or [],
-            "ok": bool(hb.get("ok", True)) and not stale and not token_expired,
-        }
+    names = [c["name"] for c in _KNOWN_CONNECTORS]
+    if CONNECTORS_DIR.exists():
+        try:
+            for p in sorted(CONNECTORS_DIR.iterdir()):
+                if p.is_dir() and p.name not in names:
+                    names.append(p.name)
+        except OSError:
+            pass
+    out = {}
+    for name in names:
+        hb = load_json(CONNECTORS_DIR / name / "heartbeat.json", None)
+        # load_json returns {} (not None) for a missing/broken file; an empty
+        # dict means NO heartbeat → not_configured, never a synthesized "error".
+        out[name] = _classify_connector(
+            hb if isinstance(hb, dict) and hb else None, now_epoch)
     return out
 
 

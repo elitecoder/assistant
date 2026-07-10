@@ -102,6 +102,108 @@ MAX_BACKOFF_SEC = 900
 # triggers backoff. A poll that skipped a poison item still returns "ok".
 _HEALTHY_STATUSES = frozenset({"ok", "not_modified", "seeded"})
 
+# ─── the canonical connector tri-state (defined in ONE place) ────────────────
+#
+# WHY ONE PLACE: three components must agree on what "connected" means — the
+# world-scanner (joins heartbeats into world.json), the morning brief's health
+# section, and the dashboard Connections panel. Each used to re-implement the
+# stale/expired/opted-out logic, which drifted (a not_configured connector read
+# as a stale WARNING). Now every consumer derives from classify_connector() so
+# the three states can never diverge.
+#
+#   not_configured — the connector's prerequisite is absent (Gmail: no
+#                    token.json; GitHub: `gh auth token` fails). The owner has
+#                    simply not opted in. This is QUIET: available, never an
+#                    error/alert, and its last_poll is NEVER allowed to rot into
+#                    "stale" (the daemon writes one beat and exits by design).
+#   ok             — configured AND polling healthily (fresh last_poll, no
+#                    errors, token not expired).
+#   error          — configured but FAILING: an errored poll, a stale last_poll,
+#                    or an expired/expiring OAuth token. The only alarming state.
+STATE_NOT_CONFIGURED = "not_configured"
+STATE_OK = "ok"
+STATE_ERROR = "error"
+
+# The wave-1 connectors, so the Connections panel can enumerate connectors that
+# have NEVER run (no heartbeat file at all) and show them as "available, not
+# connected" rather than hiding them. Each carries a human display name and the
+# one-line "how to connect" hint the panel shows for the not_configured state.
+# A new connector is added here the day it ships so it appears in the panel even
+# before its first poll.
+KNOWN_CONNECTORS = (
+    {"name": "github", "display": "GitHub notifications",
+     "hint": "run: gh auth login"},
+    {"name": "gmail", "display": "Gmail",
+     "hint": "run: bin/connectors/gmail.py --authorize --client-secrets <path>"},
+)
+
+
+def classify_connector(hb: Optional[dict], now: float) -> dict:
+    """Derive the canonical tri-state + health facts for ONE connector from its
+    heartbeat dict (or None when no heartbeat file exists at all). This is the
+    SINGLE place the three states are decided — world-scanner, the brief and the
+    dashboard all call it, so they never drift.
+
+    Rules:
+      * No heartbeat file (fresh install, the daemon never ran) → not_configured
+        (available, NOT a stale/error alarm).
+      * heartbeat status == "not_configured" (opted out; the connector wrote one
+        quiet beat then exited) → not_configured, and its aging last_poll is
+        DELIBERATELY ignored: an opted-out connector must never rot into a
+        "stale" warning just because time passed.
+      * otherwise the connector is CONFIGURED and its liveness is re-derived from
+        the heartbeat facts: error iff the beat carried errors, or last_poll is
+        stale, or the OAuth token has expired; else ok. (The stored ok/status is
+        intentionally NOT trusted for a configured connector — a once-ok beat
+        that has since gone stale must surface as error.)
+    """
+    if not isinstance(hb, dict):
+        return {
+            "status": STATE_NOT_CONFIGURED,
+            "source": None,
+            "last_poll": None,
+            "last_poll_epoch": None,
+            "age_sec": None,
+            "stale": False,
+            "token_expiry": None,
+            "token_expired": False,
+            "errors": [],
+            "ok": False,
+        }
+    last = hb.get("last_poll_epoch")
+    last = last if isinstance(last, (int, float)) else None
+    age = int(now - last) if last is not None else None
+    if hb.get("status") == STATE_NOT_CONFIGURED:
+        return {
+            "status": STATE_NOT_CONFIGURED,
+            "source": hb.get("source"),
+            "last_poll": hb.get("last_poll"),
+            "last_poll_epoch": last,
+            "age_sec": age,
+            "stale": False,          # opted-out: staleness is meaningless
+            "token_expiry": hb.get("token_expiry"),
+            "token_expired": False,
+            "errors": [],
+            "ok": False,
+        }
+    stale_after = hb.get("stale_after_sec") or MIN_STALE_AFTER_SEC
+    stale = age is None or age > stale_after
+    texp = hb.get("token_expiry_epoch")
+    token_expired = isinstance(texp, (int, float)) and now >= texp
+    ok = bool(hb.get("ok", True)) and not stale and not token_expired
+    return {
+        "status": STATE_OK if ok else STATE_ERROR,
+        "source": hb.get("source"),
+        "last_poll": hb.get("last_poll"),
+        "last_poll_epoch": last,
+        "age_sec": age,
+        "stale": stale,
+        "token_expiry": hb.get("token_expiry"),
+        "token_expired": bool(token_expired),
+        "errors": hb.get("errors") or [],
+        "ok": ok,
+    }
+
 
 def _home() -> Path:
     return Path(os.environ.get("HOME", str(Path.home())))

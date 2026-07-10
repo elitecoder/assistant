@@ -54,7 +54,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import decisions, policy, triage
+from . import connector, decisions, policy, triage
 
 BRIEF_SCHEMA = "morning-brief/1"
 
@@ -473,13 +473,16 @@ def expired_unseen_count(records: list[dict], now: float) -> int:
 
 
 def _connector_heartbeats(now: float) -> dict[str, dict]:
-    """heartbeat.json per connector (M5), with the health VERDICT derived here
-    (pure function of the heartbeat + `now`, so it is unit-testable and the
-    renderer stays presentation-only). A stale last_poll or a past/near
-    token_expiry marks the connector unhealthy, so a dead connector or an
-    expiring token surfaces in the brief within one morning (design 4/9).
-    Before M5 the directory doesn't exist and this returns {} — fleet sources
-    ride the spine and show staleness via world.json's events section."""
+    """heartbeat.json per connector (M5), with the tri-state health VERDICT
+    derived by the connector base's canonical classify_connector (the ONE place
+    the not_configured|ok|error model lives, shared with world-scanner and the
+    dashboard so they never drift). A stale last_poll or a past token_expiry on
+    a CONFIGURED connector marks it error, so a dead connector or an expiring
+    token surfaces in the brief within one morning (design 4/9). A
+    not_configured connector (opted out) is QUIET: it is never counted as
+    stale/error — an optional connector nobody set up must not read as a
+    problem. Before M5 the directory doesn't exist and this returns {} — fleet
+    sources ride the spine and show staleness via world.json's events section."""
     out: dict[str, dict] = {}
     d = connectors_dir()
     try:
@@ -490,22 +493,7 @@ def _connector_heartbeats(now: float) -> dict[str, dict]:
         hb = _read_json(sub / "heartbeat.json")
         if not isinstance(hb, dict):
             continue
-        last = hb.get("last_poll_epoch")
-        stale_after = hb.get("stale_after_sec") or 900
-        age = int(now - last) if isinstance(last, (int, float)) else None
-        stale = age is None or age > stale_after
-        texp = hb.get("token_expiry_epoch")
-        token_expired = isinstance(texp, (int, float)) and now >= texp
-        out[sub.name] = {
-            "source": hb.get("source"),
-            "last_poll": hb.get("last_poll"),
-            "age_sec": age,
-            "stale": stale,
-            "token_expiry": hb.get("token_expiry"),
-            "token_expired": bool(token_expired),
-            "errors": hb.get("errors") or [],
-            "ok": bool(hb.get("ok", True)) and not stale and not token_expired,
-        }
+        out[sub.name] = connector.classify_connector(hb, now)
     return out
 
 

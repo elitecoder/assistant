@@ -21,6 +21,7 @@ from html import escape as e
 from pathlib import Path
 
 HOME = Path(os.environ["HOME"])
+REPO = Path(__file__).resolve().parents[1]  # repo root (src/ for the connector base)
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
 LEGACY_TRIAGE_STATE = HOME / ".claude/cache/triage-state.json"
@@ -561,7 +562,11 @@ def _render_brief_tab_inner():
         # A dead connector (stale last_poll) or an expired OAuth token shows
         # cold + a reason; a healthy one shows fresh. The verdict is computed
         # in brief.py; the renderer only colors it (design M5: visible within
-        # one morning).
+        # one morning). A not_configured (opted-out) connector is DELIBERATELY
+        # omitted from the health chips — an optional connector nobody set up is
+        # not a health signal; it lives in the Connections panel as "available".
+        if hb.get("status") == "not_configured":
+            continue
         stale = bool(hb.get("stale"))
         token_expired = bool(hb.get("token_expired"))
         if token_expired:
@@ -1496,6 +1501,126 @@ def render_pulse_health() -> str:
     )
 
 
+def _known_connectors_registry():
+    """The wave-1 connector registry (display name + how-to-connect hint) from
+    the connector base — the SINGLE source, so the panel can list a connector
+    that has never run. Imported the standalone way (put src/ on the path); any
+    failure yields an empty registry and the panel simply renders whatever
+    connectors world.json carries (never breaks)."""
+    try:
+        if str(REPO / "src") not in sys.path:
+            sys.path.insert(0, str(REPO / "src"))
+        from assistant import connector as _c  # noqa: PLC0415
+        return list(_c.KNOWN_CONNECTORS)
+    except Exception:  # noqa: BLE001 — the panel must never break the page
+        return []
+
+
+def render_connections_panel(world):
+    """The Connections panel (Keel M5): every KNOWN connector + its tri-state,
+    so the user sees what they are connected to and what is merely available.
+
+    Reads the SAME world.json `connectors` block the brief health section is
+    derived from (single source of truth — world-scanner already classified each
+    with the connector base's classify_connector; no new polling here). Optional
+    connectors are honest:
+      * Connected (ok)              — green dot, last-poll relative time + token
+                                      expiry if present.
+      * Available, not connected    — muted dot + the how-to-connect hint;
+        (not_configured)             informational, NEVER styled as an error.
+      * Needs attention (error)     — amber dot + the stale/expired/error reason.
+
+    A brand-new install with nothing configured renders EVERY connector as
+    "available, not connected" — an honest empty state, not blank, not an error.
+    Every connector-derived string (name, hint, error text, token expiry) is
+    escaped with html.escape(quote=True) — connector `errors` can carry upstream
+    text and are an XSS vector into the dashboard (M3's F-class lesson). The
+    whole body is fenced: any failure degrades to a small message and never
+    breaks the page (M0/M3), exactly like render_brief_tab / render_fleet_tab.
+    Returns (html, n_connected)."""
+    try:
+        return _render_connections_panel_inner(world)
+    except Exception as exc:  # noqa: BLE001
+        return (f'<div class="empty">Connections unavailable — '
+                f'{e(str(exc)[:200])}.</div>'), 0
+
+
+def _render_connections_panel_inner(world):
+    registry = _known_connectors_registry()
+    meta = {c.get("name"): c for c in registry if isinstance(c, dict)}
+    world_conns = world.get("connectors")
+    if not isinstance(world_conns, dict):
+        world_conns = {}
+
+    # Enumerate the registry FIRST (stable order, so a never-run connector still
+    # shows), then any extra connector world.json carries that isn't registered.
+    names = [c.get("name") for c in registry if isinstance(c, dict) and c.get("name")]
+    for name in sorted(world_conns):
+        if name not in names:
+            names.append(name)
+
+    rows = []
+    n_connected = 0
+    for name in names:
+        view = world_conns.get(name)
+        if not isinstance(view, dict):
+            view = {"status": "not_configured"}  # known but never ran
+        status = view.get("status") or "not_configured"
+        info = meta.get(name) or {}
+        display = info.get("display") or name
+        hint = info.get("hint") or ""
+
+        if status == "ok":
+            n_connected += 1
+            dot_cls, state_cls, state_label = "ok", "ok", "Connected"
+            age = age_str(view.get("age_sec")) if view.get("age_sec") is not None \
+                else (e(str(view.get("last_poll") or "?")))
+            detail = f'last poll {e(age)}'
+            texp = view.get("token_expiry")
+            if texp:
+                detail += f' · token expiry {e(str(texp))}'
+        elif status == "error":
+            dot_cls, state_cls, state_label = "attention", "attention", "Needs attention"
+            if view.get("token_expired"):
+                reason = "OAuth token expired — re-authorize"
+            elif view.get("stale"):
+                reason = "no recent poll — connector may be down"
+            else:
+                reason = "polling error"
+            errs = view.get("errors") or []
+            if errs:
+                # Upstream/API text — escape (quote=True) against XSS (M3 F-class).
+                reason += " · " + "; ".join(e(str(x)) for x in errs[:3])
+            else:
+                reason = e(reason)
+            detail = reason
+        else:  # not_configured — available, NEVER an error
+            dot_cls, state_cls, state_label = "available", "available", "Available"
+            detail = e(hint) if hint else "not connected"
+
+        rows.append(
+            f'<div class="conn-row">'
+            f'<span class="conn-dot {dot_cls}"></span>'
+            f'<span class="conn-name">{e(display)}</span>'
+            f'<span class="conn-state {state_cls}">{state_label}</span>'
+            f'<span class="conn-detail">{detail}</span>'
+            f'</div>')
+
+    if not rows:
+        body = ('<div class="empty">No connectors known yet — the connector '
+                'registry is empty.</div>')
+    else:
+        body = f'<div class="conn-list">{"".join(rows)}</div>'
+    html = f"""
+<div class="section">
+  <h2>Connections <span class="count">{n_connected} connected</span></h2>
+  <div class="meta">optional read-only sources · connect any time · derived from world.json (delete-safe)</div>
+  {body}
+</div>
+"""
+    return html, n_connected
+
+
 def render():
     if not WORLD_PATH.exists():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
@@ -1506,6 +1631,7 @@ def render():
     workspaces_html, ws_n = render_workspaces_tab()
     fleet_html, fleet_n = render_fleet_tab()
     brief_html, brief_n = render_brief_tab()
+    connections_html, connected_n = render_connections_panel(world)
     pulse_health_html = render_pulse_health()
     counts = world.get("counts", {})
 
@@ -2453,6 +2579,28 @@ h1 {
 .brief-health-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .card.brief-dec { border-left: 2px solid var(--line-strong); }
 
+/* ─── Connections panel (Keel M5: optional connector tri-state) ─── */
+.conn-list { display: flex; flex-direction: column; gap: 1px; margin-top: 10px;
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.conn-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: var(--panel); }
+.conn-row:hover { background: var(--hover); }
+.conn-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--muted-2); }
+.conn-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green-glow); }
+.conn-dot.attention { background: var(--amber); box-shadow: 0 0 6px var(--amber-glow); }
+.conn-dot.available { background: var(--muted-2); }
+.conn-name { font-weight: 600; color: var(--text); min-width: 150px; }
+.conn-state { font: 500 11px/1 var(--mono); padding: 2px 7px; border-radius: 5px;
+  border: 1px solid var(--line); color: var(--muted); }
+.conn-state.ok { color: var(--green); background: var(--green-bg);
+  border-color: var(--green-glow); }
+.conn-state.attention { color: var(--amber); background: var(--amber-bg);
+  border-color: var(--amber-glow); }
+.conn-state.available { color: var(--muted); }
+.conn-detail { color: var(--text-2); font-size: 12px; margin-left: auto;
+  text-align: right; font-family: var(--mono); }
+
 /* ─── Work-receipt quality badge (DONE column) ─── */
 .receipt-badge {
   display: flex;
@@ -2518,7 +2666,7 @@ function pingBriefSeen() {
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#decisions').replace('#', '');
-  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'todos'].includes(initial) ? initial : 'decisions');
+  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'decisions');
   // Auto-refresh every 15s but preserve the current hash. We use location.reload()
   // (not <meta http-equiv="refresh">) because meta-refresh reloads from the original
   // href and drops the fragment on most browsers, snapping the user back to
@@ -2735,6 +2883,9 @@ document.addEventListener('click', handleTodoToolsClick);
   <button class="tab" data-tab="fleet" onclick="showTab('fleet')">
     Fleet <span class="tab-count">{fleet_n}</span>
   </button>
+  <button class="tab" data-tab="connections" onclick="showTab('connections')">
+    Connections <span class="tab-count">{connected_n}</span>
+  </button>
   <button class="tab" data-tab="todos" onclick="showTab('todos')">
     TODOs <span class="tab-count">{p0_p1}</span>
   </button>
@@ -2754,6 +2905,10 @@ document.addEventListener('click', handleTodoToolsClick);
 
 <div class="tab-panel" data-panel="fleet">
 {fleet_html}
+</div>
+
+<div class="tab-panel" data-panel="connections">
+{connections_html}
 </div>
 
 <div class="tab-panel" data-panel="todos">

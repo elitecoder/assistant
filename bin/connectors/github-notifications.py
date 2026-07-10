@@ -133,11 +133,19 @@ class GitHubNotificationsConnector(connector.Connector):
             "User-Agent": "assistant-connector-github",
         }
         try:
-            base_headers["Authorization"] = f"Bearer {self._token_provider()}"
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"token: {str(e)[:200]}")
-            self.write_heartbeat(last_poll_epoch=now, errors=errors)
-            return {"status": "auth_error", "emitted": 0, "errors": errors}
+            token = self._token_provider()
+        except Exception:  # noqa: BLE001
+            # GitHub is OPTIONAL. `gh auth token` failing (gh not installed / not
+            # logged in) means the prerequisite for this connector is ABSENT — a
+            # clean opted-out state, exactly like Gmail's missing token.json, NOT
+            # a failure. Mirror gmail.py's not_configured path EXACTLY: write one
+            # QUIET not_configured heartbeat (distinct status, ok:true, errors
+            # empty) and return quietly. Never crash-loop (or alert on) a
+            # `gh auth login` only a human can perform; the exception text is
+            # deliberately NOT surfaced — an absent login is not an error.
+            self._heartbeat_not_configured(now)
+            return {"status": "not_configured", "emitted": 0, "errors": []}
+        base_headers["Authorization"] = f"Bearer {token}"
 
         last_mod = cursor.get("last_modified")
         cap = int(self.config.get("max_events_per_poll",
@@ -245,6 +253,16 @@ class GitHubNotificationsConnector(connector.Connector):
         c["poll_count"] = cursor.get("poll_count", 0) + 1
         self.save_cursor(c)
 
+    def _heartbeat_not_configured(self, now) -> None:
+        """One QUIET opted-out heartbeat: the distinct status the brief-health
+        side + the dashboard Connections panel key off (not_configured →
+        available, never an alert), ok:true, errors empty. Mirrors gmail.py's
+        not_configured heartbeat — there is no OAuth token here, so token_expiry
+        stays null."""
+        self.write_heartbeat(
+            last_poll_epoch=now,
+            extra={"status": connector.STATE_NOT_CONFIGURED})
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -257,6 +275,19 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     c = GitHubNotificationsConnector(dry_run=args.dry_run, record=args.record,
                                      log=lambda m: print(m, file=sys.stderr))
+
+    # OPTIONAL connector: if `gh` isn't logged in there is nothing to poll.
+    # Do the cheap prerequisite check ONCE up front (mirrors gmail.py checking
+    # for token.json): if it fails, write the quiet not_configured heartbeat via
+    # poll_once and exit 0 — never enter run_forever to spin-retry a
+    # `gh auth login` only a human can perform (no crash-loop).
+    try:
+        c._token_provider()
+    except Exception:  # noqa: BLE001
+        c.poll_once()  # writes the not_configured heartbeat (no network)
+        print("GitHub not configured — run: gh auth login", file=sys.stderr)
+        return 0
+
     if args.once or args.dry_run:
         result = c.poll_once()
         print(connector.json.dumps(result), file=sys.stderr)
