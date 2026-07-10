@@ -7,7 +7,10 @@ per-workspace Observer subprocess (claude --print + observer prompt).
 
 Pipeline (in order):
 
-  1. Drain ~/.assistant/inbox/pulse-*.json (delete after reading).
+  1. Drain ~/.assistant/inbox/ through the typed event spine
+     (src/assistant/eventspine.py): every drop becomes a deduplicated
+     WorldEvent in ~/.assistant/events.jsonl; malformed drops are
+     quarantined, never fatal.
   2. Run bin/purge-stale-awaiting.py (mechanical card cleanup).
   3. Pick batch via bin/pick-ws-batch.py — already filters back-off list.
   4. For each ws in batch:
@@ -384,17 +387,38 @@ def self_update_pulse(pulse_idx: int) -> None:
     log.info("self-update: %s", evidence)
 
 
-def drain_inbox() -> int:
-    if not INBOX_DIR.exists():
+def drain_inbox(pulse_idx: int = 0) -> int:
+    """Step 1: typed event-spine drain (Keel M1).
+
+    The old body unlinked pulse-*.json UNREAD and ignored the cmux-watcher
+    signal drops entirely — produced signal was never consumed. Now every
+    inbox file (and any orphaned ~/.claude/cmux-crash-events/ drop) becomes a
+    deduplicated WorldEvent row in ~/.assistant/events.jsonl via
+    src/assistant/eventspine.py: parse → archive raw → dedup → append →
+    unlink, behind a pid-checked single-consumer lock. Malformed files are
+    quarantined + ledgered, never fatal. Imported lazily and fully fenced so
+    a broken spine can never stop the pulse from its real job (a failure
+    leaves the inbox intact for the next pulse — nothing is lost).
+
+    Returns the number of inbox files disposed of (consumed + duplicate +
+    quarantined), the same "how much did we drain" meaning the old count had.
+    """
+    try:
+        src_dir = str(REPO / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from assistant import eventspine  # noqa: PLC0415
+        result = eventspine.drain_typed_inbox(pulse_idx=pulse_idx, log=log)
+    except Exception as e:  # noqa: BLE001 — the spine must never break the pulse
+        log.exception("eventspine drain failed (inbox left intact): %s", e)
         return 0
-    n = 0
-    for p in sorted(INBOX_DIR.glob("pulse-*.json")):
-        try:
-            p.unlink()
-            n += 1
-        except Exception:
-            pass
-    return n
+    if result.get("locked"):
+        return 0
+    if result.get("events_appended") or result.get("inbox_quarantined"):
+        log.info("eventspine: %s", json.dumps(result))
+    return (result.get("inbox_consumed", 0)
+            + result.get("inbox_duplicates", 0)
+            + result.get("inbox_quarantined", 0))
 
 
 def purge_stale_awaiting() -> None:
@@ -1193,8 +1217,8 @@ def main() -> int:
     if not dry_run:
         self_update_pulse(pulse_idx)
 
-    # 1. Drain inbox.
-    n_drained = 0 if dry_run else drain_inbox()
+    # 1. Drain inbox (typed event spine — see drain_inbox docstring).
+    n_drained = 0 if dry_run else drain_inbox(pulse_idx)
 
     # 2. Purge stale awaiting cards.
     if not dry_run:

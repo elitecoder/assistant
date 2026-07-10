@@ -19,6 +19,8 @@ Inputs:
   - ~/.architect/orchestrator-inbox-archive/<today>/*.json (recent worker events,
                                                             for activity feed)
   - vm_stat (memory pressure)
+  - ~/.assistant/events.jsonl (event-spine health: counts + latest-event age
+                               per source, so a stalled spine is visible)
 
 Cadence: 30s via LaunchAgent. Stdlib only.
 """
@@ -43,9 +45,14 @@ PROPOSALS_DIR = HOME / ".architect/orchestrator-proposals"
 LEDGER_DIR = HOME / ".architect/orchestrator-ledger"
 INBOX_ARCHIVE = HOME / ".architect/orchestrator-inbox-archive"
 LOG_DIR = HOME / ".assistant/logs"
+EVENTS_PATH = HOME / ".assistant/events.jsonl"
+EVENTS_QUARANTINE_DIR = HOME / ".assistant/eventspine/quarantine"
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 ACTIVITY_HOURS = 24
+# Tail window for the event-spine health scan — bounded so a fat log can
+# never slow the 30s scanner.
+EVENTS_TAIL_BYTES = 512_000
 
 
 def utc_now():
@@ -313,6 +320,57 @@ def load_inbox_recent(now):
     return out
 
 
+def build_events_summary(now):
+    """Event-spine health: per-source counts + latest-event age (Keel M1).
+
+    A stalled spine (producer alive, consumer dead — the pre-M1 failure mode)
+    is visible here: the source's latest_age_sec grows while the fleet keeps
+    signalling. `latest_*` deliberately ignores the 24h window so a source
+    that went quiet days ago still shows how stale it is. quarantine_pending
+    counts malformed drops awaiting a human look."""
+    out = {"total_24h": 0, "by_source": {}, "quarantine_pending": 0}
+    try:
+        out["quarantine_pending"] = sum(
+            1 for _ in EVENTS_QUARANTINE_DIR.glob("*.json"))
+    except OSError:
+        pass
+    if not EVENTS_PATH.exists():
+        return out
+    try:
+        with open(EVENTS_PATH, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - EVENTS_TAIL_BYTES))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return out
+    now_epoch = now.timestamp()
+    cutoff = now_epoch - ACTIVITY_HOURS * 3600
+    for line in tail.splitlines():
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(d, dict) or not d.get("source"):
+            continue
+        epoch = d.get("epoch")
+        if not isinstance(epoch, (int, float)):
+            ts = parse_iso(d.get("ts"))
+            epoch = ts.timestamp() if ts else None
+        src = out["by_source"].setdefault(
+            d["source"], {"count_24h": 0, "latest_ts": None,
+                          "latest_age_sec": None})
+        if epoch is None:
+            continue
+        if epoch >= cutoff:
+            src["count_24h"] += 1
+            out["total_24h"] += 1
+        if src["latest_age_sec"] is None or epoch > now_epoch - src["latest_age_sec"]:
+            src["latest_ts"] = d.get("ts")
+            src["latest_age_sec"] = max(0, int(now_epoch - epoch))
+    return out
+
+
 def build():
     now = utc_now()
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -343,6 +401,7 @@ def build():
     todo = load_json(TODO_PATH, {"items": [], "completed": []})
     inbox_events = load_inbox_recent(now)
     dashboard_state = load_json(DASHBOARD_STATE, {})
+    events_summary = build_events_summary(now)
 
     # Counts for the summary block.
     cron = sum(1 for s in live_sessions.values() if s.get("is_cron"))
@@ -376,7 +435,9 @@ def build():
             "ledger_24h": len(ledger_recent),
             "todo_open": len(todo.get("items", [])),
             "todo_p0_p1": sum(1 for i in todo.get("items", []) if i.get("priority") in {"P0", "P1"}),
+            "events_24h": events_summary["total_24h"],
         },
+        "events": events_summary,
         "workspaces": workspaces,
         "live_sessions": list(live_sessions.values()),
         "proposals": proposals,

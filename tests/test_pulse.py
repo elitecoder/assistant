@@ -59,24 +59,51 @@ def seed_receipt(home: Path, ws_ref: str, summary: str = "shipped, CI green") ->
 
 
 class DrainInboxTests(unittest.TestCase):
-    def test_drains_pulse_files_only(self):
+    """drain_inbox is the typed event-spine step (Keel M1): inbox drops become
+    WorldEvent rows in ~/.assistant/events.jsonl instead of being unlinked
+    unread. The spine's own behavior (dedup, quarantine, lock, crash events)
+    is covered in test_eventspine.py — here we pin the pulse-facing contract:
+    the count, the unlink, and that a broken spine never breaks the pulse."""
+
+    def test_consumes_inbox_drops_into_events_jsonl(self):
         with TemporaryDirectory() as tmp:
             tmp = fixture_home(Path(tmp))
             inbox = tmp / ".assistant/inbox"
-            (inbox / "pulse-1.json").write_text("{}")
-            (inbox / "pulse-2.json").write_text("{}")
+            (inbox / "pulse-1.json").write_text("{}")   # legacy wake ping
+            (inbox / "cmux-workspace-7-1.json").write_text(json.dumps({
+                "ts": "2026-07-09T12:00:00Z", "event": "workspace_signal",
+                "ws_ref": "workspace:7", "signal_type": "needs_input",
+                "pattern_matched": "Notification", "screen_snippet": "?"}))
             (inbox / "other.txt").write_text("keep")
             mod = load_pulse(tmp)
             self.assertEqual(mod.drain_inbox(), 2)
             self.assertFalse((inbox / "pulse-1.json").exists())
-            self.assertFalse((inbox / "pulse-2.json").exists())
+            self.assertFalse((inbox / "cmux-workspace-7-1.json").exists())
             self.assertTrue((inbox / "other.txt").exists())
+            rows = [json.loads(l) for l in
+                    (tmp / ".assistant/events.jsonl").read_text().splitlines()]
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(r["schema"] == "world-event/1" for r in rows))
 
     def test_missing_inbox_dir_returns_zero(self):
         with TemporaryDirectory() as tmp:
             tmp = Path(tmp)  # no .assistant subdir
             mod = load_pulse(tmp)
             self.assertEqual(mod.drain_inbox(), 0)
+
+    def test_spine_failure_never_breaks_the_pulse(self):
+        # A raising spine is logged and swallowed; the inbox is left intact
+        # for the next pulse.
+        with TemporaryDirectory() as tmp:
+            tmp = fixture_home(Path(tmp))
+            (tmp / ".assistant/inbox/pulse-1.json").write_text("{}")
+            mod = load_pulse(tmp)
+            sys.path.insert(0, str(REPO / "src"))
+            from assistant import eventspine
+            with mock.patch.object(eventspine, "drain_typed_inbox",
+                                   side_effect=RuntimeError("boom")):
+                self.assertEqual(mod.drain_inbox(), 0)
+            self.assertTrue((tmp / ".assistant/inbox/pulse-1.json").exists())
 
 
 class ReadVerdictsFileTests(unittest.TestCase):
