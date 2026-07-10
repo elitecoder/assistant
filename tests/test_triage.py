@@ -61,9 +61,12 @@ class TriageTestCase(unittest.TestCase):
     # ── helpers ──────────────────────────────────────────────────────────
 
     def write_policies(self, policies):
+        # Stamp the bootstrap's own version so the version-upgrade path never
+        # rewrites a test's hand-written policy set underneath it.
+        version = json.loads(policy.bootstrap_path().read_text())["version"]
         p = policy.policies_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"version": 1, "policies": policies}))
+        p.write_text(json.dumps({"version": version, "policies": policies}))
 
     def append_events(self, *events):
         with open(triage.events_path(), "a") as f:
@@ -264,12 +267,54 @@ class UnmatchedTests(TriageTestCase):
         self.assertEqual(summary["triage_suggested"], 1)
         dec = next(iter(self.folded().values()))
         self.assertEqual(dec["status"], "open")     # suggestions NEVER act
-        self.assertEqual(dec["lane"], "digest")
+        # Pure annotation: the effective lane stays the fail-safe escalate;
+        # the suggestion lives only in dec["triage"].
+        self.assertEqual(dec["lane"], "escalate")
         self.assertEqual(dec["triage"]["suggested_lane"], "digest")
         self.assertEqual(dec["triage"]["rationale"], "just FYI")
         disp = self.dispositions()[0]
-        self.assertEqual(disp["lane"], "digest")
+        self.assertEqual(disp["lane"], "escalate")  # lane of record
         self.assertEqual(disp["policy_id"], "triage")
+
+    def test_suggestion_never_removes_the_escalate_card(self):
+        # The reviewers' probe: a staged/digest suggestion used to overwrite
+        # the record lane, vanishing the escalate card while the decision
+        # stayed open and un-expiring — permanent invisible limbo. The card
+        # must survive any suggestion until a human acts.
+        self.write_policies([])
+        self.append_events(make_event(source="github", kind="mystery"))
+        summary = self.run_triage(llm_batch=lambda evs: {
+            "eid-1": {"suggested_lane": "staged", "rationale": "batch later"}})
+        dec = next(iter(self.folded().values()))
+        cards = [c for c in summary["cards"] if c["key"] == dec["id"]]
+        self.assertEqual(len(cards), 1)
+        self.assertIn("triage suggests staged", cards[0]["detail"])
+        # And it persists on the NEXT pulse too (the card is re-derived from
+        # queue state each pulse, not emitted once).
+        summary2 = self.run_triage(now=NOW + 300)
+        self.assertTrue(any(c["key"] == dec["id"] for c in summary2["cards"]))
+
+    def test_suggestion_never_changes_ttl(self):
+        self.write_policies([])
+        self.append_events(make_event(source="github", kind="mystery"))
+        self.run_triage(llm_batch=lambda evs: {
+            "eid-1": {"suggested_lane": "digest", "rationale": "fyi"}})
+        dec = next(iter(self.folded().values()))
+        self.assertIsNone(dec["ttl_h"])  # escalate never expires by default
+        # A year later the decision is still open — the digest suggestion
+        # did not smuggle in digest's 24h TTL.
+        summary = self.run_triage(now=NOW + 365 * 86400)
+        self.assertEqual(summary["expired"], 0)
+        dec = next(iter(self.folded().values()))
+        self.assertEqual(dec["status"], "open")
+
+    def test_digest_suggestion_never_writes_the_digest(self):
+        self.write_policies([])
+        self.append_events(make_event(source="github", kind="mystery"))
+        self.run_triage(llm_batch=lambda evs: {
+            "eid-1": {"suggested_lane": "digest", "rationale": "fyi"}})
+        day_file = triage.digest_dir() / f"{triage.utc_iso(NOW)[:10]}.jsonl"
+        self.assertFalse(day_file.exists())
 
     def test_auto_suggestion_is_structurally_impossible(self):
         # A hostile/buggy LLM answering "auto" (or "drop") is refused by the

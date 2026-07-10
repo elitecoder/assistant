@@ -349,15 +349,16 @@ def render_metering_stats():
             metering.read_metrics(metering.metrics_path()),
             now=int(utc_now().timestamp()),
             window_days=7,
+            cost_rows=metering.read_cost_ledger(),
         )
         if not agg.get("n_pulses"):
             return ""
         return f"""
 <div class="stats">
   <div class="stat"><div class="v">{agg['observer_calls_per_day']:.0f}</div><div class="k">Observer calls/day</div></div>
-  <div class="stat"><div class="v">${agg['cost_per_day_usd']:.2f}</div><div class="k">$/day est · 7d</div></div>
+  <div class="stat"><div class="v">${agg['cost_per_day_usd']:.2f}</div><div class="k">$/day est · 7d (incl. triage ${agg['cost_ledger_per_day_usd']:.2f})</div></div>
   <div class="stat"><div class="v">{agg['verdict_change_rate'] * 100:.0f}%</div><div class="k">Verdict-change rate</div></div>
-  <div class="stat"><div class="v">{agg['skip_rate'] * 100:.0f}%</div><div class="k">Skip rate (no Observer call)</div></div>
+  <div class="stat"><div class="v">{agg['skip_rate'] * 100:.0f}%</div><div class="k">Skip rate (ws carried, no Observer call)</div></div>
 </div>
 """
     except Exception:

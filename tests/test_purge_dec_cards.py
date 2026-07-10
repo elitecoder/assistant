@@ -97,12 +97,44 @@ class DecCardPredicateTests(unittest.TestCase):
         self.assertIsNone(self.mod.card_should_drop(
             card, {"workspace:1"}, {}, statuses))
 
-    def test_unreadable_queue_keeps_cards_fail_safe(self):
+    def test_unreadable_queue_with_no_log_keeps_cards_fail_safe(self):
+        # Corrupt queue.json and NO decisions.jsonl beside it: nothing
+        # trustworthy → None → every dec-* card is kept.
         p = self.write_queue([])
         p.write_text("{torn")
         self.assertIsNone(self.mod.load_decision_statuses())
         self.assertIsNone(self.mod.card_should_drop(
             self.card(DEC_OPEN), {"workspace:1"}, {}, None))
+
+    def write_log(self, records):
+        p = self.home / ".assistant/decisions/decisions.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+        return p
+
+    def test_corrupt_queue_falls_back_to_folding_the_log(self):
+        # The M2 review fix: a truncated queue.json next to a healthy
+        # decisions.jsonl must NOT silently freeze every dec-* card — the
+        # log is the truth; fold it and note the fallback in the purge log.
+        q = self.write_queue(self.STATUSES[DEC_OPEN])
+        q.write_text(q.read_text()[: len(q.read_text()) // 2])  # truncate
+        self.write_log([
+            {"id": DEC_OPEN, "status": "open"},
+            {"id": DEC_DONE, "status": "open"},
+            {"id": DEC_DONE, "status": "accepted"},
+        ])
+        statuses = self.mod.load_decision_statuses()
+        self.assertEqual(statuses, {DEC_OPEN: "open", DEC_DONE: "accepted"})
+        # Cards behave off the folded log: open kept, resolved dropped.
+        self.assertIsNone(self.mod.card_should_drop(
+            self.card(DEC_OPEN), {"workspace:1"}, {}, statuses))
+        self.assertIn("accepted", self.mod.card_should_drop(
+            self.card(DEC_DONE), {"workspace:1"}, {}, statuses))
+        # One log line notes the fallback.
+        purge_log = self.home / ".assistant/awaiting-purge.log"
+        self.assertIn("falling back", purge_log.read_text())
 
     def test_missing_queue_falls_back_to_decisions_log(self):
         p = self.home / ".assistant/decisions/decisions.jsonl"

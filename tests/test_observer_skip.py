@@ -81,11 +81,28 @@ class ObsInputHashTests(unittest.TestCase):
         self.assertEqual(self.mod.obs_input_hash(ctx()),
                          self.mod.obs_input_hash(ctx()))
 
-    def test_age_growth_alone_never_changes_the_hash(self):
-        # last_turn_age_sec grows every pulse with zero state change — if it
-        # fed the hash the skip would never engage.
+    def test_age_growth_within_a_band_never_changes_the_hash(self):
+        # last_turn_age_sec grows every pulse with zero state change — if the
+        # raw value fed the hash the skip would never engage. Growth on the
+        # SAME side of the prompt's 1800s threshold must not change the hash.
         self.assertEqual(self.mod.obs_input_hash(ctx(last_turn_age_sec=100)),
-                         self.mod.obs_input_hash(ctx(last_turn_age_sec=4000)))
+                         self.mod.obs_input_hash(ctx(last_turn_age_sec=1700)))
+        self.assertEqual(self.mod.obs_input_hash(ctx(last_turn_age_sec=1900)),
+                         self.mod.obs_input_hash(ctx(last_turn_age_sec=90000)))
+
+    def test_crossing_the_idle_threshold_changes_the_hash(self):
+        # The Observer prompt's verdict rules flip at idle > 1800s (active →
+        # stranded/ready_for_cleanup/needs_user). A hung-but-idle ws whose
+        # only "change" is crossing that line MUST re-observe — otherwise an
+        # `active` verdict carries forever and the recovery nudge never fires.
+        self.assertNotEqual(
+            self.mod.obs_input_hash(ctx(last_turn_age_sec=1700)),
+            self.mod.obs_input_hash(ctx(last_turn_age_sec=1900)))
+        # Boundary mirrors the prompt exactly: ≤1800 is one band, >1800 the
+        # other ("strictly greater than 30 minutes").
+        self.assertEqual(self.mod.idle_age_band(1800), "le1800")
+        self.assertEqual(self.mod.idle_age_band(1801), "gt1800")
+        self.assertEqual(self.mod.idle_age_band(None), "age-unknown")
 
     def test_each_observable_signal_changes_the_hash(self):
         base = self.mod.obs_input_hash(ctx())
@@ -133,13 +150,17 @@ class SkipWiringTests(unittest.TestCase):
             os.environ["HOME"] = self._old_home
         self._tmp_obj.cleanup()
 
-    def _plant_summary(self, ws_ref, verdict, obs_hash=None):
+    def _plant_summary(self, ws_ref, verdict, obs_hash=None, carry_count=None,
+                       **extra):
         d = {"ws_ref": ws_ref, "verdict": verdict, "summary": "s",
              "next": "n", "title": "t", "cwd": "/", "pr_refs": [],
              "last_updated_ts": 1, "state_hash": "x",
              "state_unchanged_since_ts": 1}
         if obs_hash is not None:
             d["obs_input_hash"] = obs_hash
+        if carry_count is not None:
+            d["carry_count"] = carry_count
+        d.update(extra)
         p = (self._tmp / ".assistant/observer-summaries"
              / f"{ws_ref.replace(':', '_')}.json")
         p.write_text(json.dumps(d))
@@ -230,6 +251,84 @@ class SkipWiringTests(unittest.TestCase):
                                                 observer_result=(verdict, {}))
         self.assertEqual(rc, 0)
         obs_mock.assert_called_once()
+
+    def test_carry_increments_carry_count_in_saved_summary(self):
+        c = ctx()
+        self._plant_summary("workspace:1", "active",
+                            obs_hash=self.mod.obs_input_hash(c),
+                            carry_count=3)
+        rc, obs_mock, save_mock, _, _ = self._run_pulse(c)
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        _, carried = save_mock.call_args[0]
+        self.assertEqual(carried["carry_count"], 4)
+
+    def test_seventh_consecutive_carry_forces_an_observation(self):
+        # The structural defense against ANY hash blind spot: after
+        # MAX_CONSECUTIVE_CARRIES (6) skips, an identical hash no longer
+        # carries — the 7th pulse re-observes for real.
+        c = ctx()
+        self._plant_summary("workspace:1", "active",
+                            obs_hash=self.mod.obs_input_hash(c),
+                            carry_count=self.mod.MAX_CONSECUTIVE_CARRIES)
+        verdict = {"workspace:1": {"ws_ref": "workspace:1",
+                                   "verdict": "active",
+                                   "summary": "s", "next": "n"}}
+        rc, obs_mock, save_mock, _, _ = self._run_pulse(
+            c, observer_result=(verdict, {}))
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()  # force-observed despite matching hash
+        rec = self._metrics()[0]
+        self.assertTrue(rec["observer_called"])
+        self.assertEqual(rec["skipped"], 0)
+        # The fresh real verdict resets the carry counter.
+        _, saved = save_mock.call_args[0]
+        self.assertNotIn("carry_count", saved)
+
+    def test_carried_needs_user_reemits_its_card_without_acting(self):
+        # A carried verdict must keep its human-facing card alive (cards are
+        # rebuilt every pulse) with the SAME key execute_verdict would use —
+        # and provably not re-send anything.
+        c = ctx()
+        self._plant_summary("workspace:1", "needs_user",
+                            obs_hash=self.mod.obs_input_hash(c),
+                            title="t", detail="please review the plan")
+        rc, obs_mock, _, send_mock, run_mock = self._run_pulse(c)
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        send_mock.assert_not_called()          # nudge/cleanup never re-fire
+        payload = self._state_payload(run_mock)
+        cards = {a["key"] for a in payload["awaiting_input"]}
+        self.assertIn("workspace:1:needs_user", cards)  # execute_verdict's key
+
+    def test_carried_ready_for_cleanup_reemits_card_never_sends(self):
+        # ready_for_cleanup without an Assistant-merge record downgrades to a
+        # confirm card; on carry that card must re-emit, and /cleanup must
+        # provably NOT be sent (nor any merge dispatched).
+        c = ctx()
+        self._plant_summary("workspace:1", "ready_for_cleanup",
+                            obs_hash=self.mod.obs_input_hash(c))
+        with mock.patch.object(self.mod, "run_merge_pr_dispatch") as merge_mock:
+            rc, obs_mock, _, send_mock, run_mock = self._run_pulse(c)
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        send_mock.assert_not_called()          # /cleanup never re-fires
+        merge_mock.assert_not_called()         # merge never re-fires
+        payload = self._state_payload(run_mock)
+        cards = {a["key"] for a in payload["awaiting_input"]}
+        self.assertIn("workspace:1:cleanup-needs-confirm", cards)
+
+    def test_carried_ready_for_merge_never_redispatches(self):
+        c = ctx()
+        self._plant_summary("workspace:1", "ready_for_merge",
+                            obs_hash=self.mod.obs_input_hash(c),
+                            pr_refs=[123])
+        with mock.patch.object(self.mod, "run_merge_pr_dispatch") as merge_mock:
+            rc, obs_mock, _, send_mock, _ = self._run_pulse(c)
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        merge_mock.assert_not_called()
+        send_mock.assert_not_called()
 
     def test_observer_failure_saves_synth_without_hash(self):
         # Batch fails → synthesized 'active' is saved WITHOUT a hash so the
@@ -355,16 +454,27 @@ class CallReductionReplayTests(unittest.TestCase):
                    last_turn_age_sec=pulse * 300)
 
     def test_reduction_of_at_least_30_percent(self):
-        store: dict = {}  # ws → hash stored with the last verdict
+        # main()'s exact predicate: carry iff the stored hash matches AND the
+        # verdict hasn't already been carried MAX_CONSECUTIVE_CARRIES times.
+        # With the idle-age band in the hash and the carry cap, the reduction
+        # drops from the pre-review 87.5% to 75% — still far above the 30%
+        # bar, and now threshold crossings + hash blind spots re-observe.
+        store: dict = {}   # ws → hash stored with the last verdict
+        carries: dict = {}  # ws → consecutive carries since last observation
         observed_with_skip = 0
         pulses_with_call = 0
+        gaps: list[int] = []  # consecutive un-observed pulses, per ws stretch
         for pulse in range(self.N_PULSES):
             batch = []
             for ws in range(self.N_WS):
                 h = self.mod.obs_input_hash(self._ctx_at(ws, pulse))
-                if store.get(ws) == h:
-                    continue  # carried forward — main()'s exact predicate
+                if store.get(ws) == h and \
+                        carries.get(ws, 0) < self.mod.MAX_CONSECUTIVE_CARRIES:
+                    carries[ws] = carries.get(ws, 0) + 1
+                    continue  # carried forward
                 batch.append(ws)
+                gaps.append(carries.get(ws, 0))
+                carries[ws] = 0
                 store[ws] = h  # verdict earned against h, hash saved
             observed_with_skip += len(batch)
             if batch:
@@ -379,10 +489,16 @@ class CallReductionReplayTests(unittest.TestCase):
         self.assertGreaterEqual(
             call_reduction, 0.30,
             msg=f"observer-call pulses only fell {call_reduction:.0%}")
-        # And nothing was missed: every state epoch of every ws was observed
-        # exactly once (6 ws × 6 epochs).
-        self.assertEqual(observed_with_skip,
-                         self.N_WS * (self.N_PULSES // self.CHANGE_EVERY))
+        # The recomputed number itself, pinned so a hash/cap change shows up
+        # here: 12 observations per ws over 48 pulses = 75% reduction (6
+        # screen epochs + the 1800s band crossing + one cap-forced observe
+        # per stretch of unchanged pulses).
+        self.assertAlmostEqual(ws_reduction, 0.75)
+        self.assertAlmostEqual(call_reduction, 0.75)
+        # And the cap held everywhere: no workspace ever went more than
+        # MAX_CONSECUTIVE_CARRIES pulses without a real observation.
+        self.assertTrue(all(g <= self.mod.MAX_CONSECUTIVE_CARRIES
+                            for g in gaps + list(carries.values())))
 
 
 if __name__ == "__main__":

@@ -501,6 +501,45 @@ class RunSubprocessTests(unittest.TestCase):
         self.assertEqual(rc, 124)
         self.assertIn("timeout", err)
 
+    def test_timeout_with_pipe_holding_grandchild_returns_promptly(self):
+        # The M2 exposure: a timed-out `claude` subprocess can leave
+        # grandchildren holding the inherited stdout/stderr pipes. run() must
+        # (a) return promptly — no reap blocked on the grandchild's pipe —
+        # and (b) leave NO orphan: start_new_session + the process-GROUP kill
+        # takes the grandchild down with the child. Killing only the direct
+        # child (the old behavior) left the grandchild alive holding pipes.
+        import time as _time
+        pid_file = Path(self._tmp_obj.name) / "grandchild.pid"
+        t0 = _time.time()
+        rc, _, err = self.mod.run(
+            ["/bin/sh", "-c",
+             f"sleep 30 & echo $! > {pid_file}; sleep 30"],
+            timeout=1)
+        wall = _time.time() - t0
+        self.assertEqual(rc, 124)
+        self.assertIn("timeout", err)
+        self.assertLess(wall, 10,
+                        msg=f"run() blocked {wall:.1f}s on a grandchild pipe")
+        # The grandchild (the backgrounded sleep) must be dead, not orphaned.
+        gpid = int(pid_file.read_text().strip())
+        for _ in range(50):  # SIGKILL delivery is async; give it a moment
+            try:
+                os.kill(gpid, 0)
+            except ProcessLookupError:
+                break
+            _time.sleep(0.1)
+        else:
+            os.kill(gpid, 9)  # clean up before failing
+            self.fail(f"grandchild {gpid} survived the group kill")
+
+    def test_input_text_still_reaches_stdin(self):
+        # The Popen rewrite must preserve the input_text contract.
+        rc, out, _ = self.mod.run(
+            [sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"],
+            input_text="hello")
+        self.assertEqual(rc, 0)
+        self.assertIn("HELLO", out)
+
     def test_unraisable_subprocess_exception_returns_1(self):
         rc, _, err = self.mod.run(["/no/such/binary/anywhere"])
         self.assertEqual(rc, 1)

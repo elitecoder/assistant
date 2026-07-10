@@ -63,6 +63,14 @@ PROPOSALS_DIR = HOME / ".architect" / "orchestrator-proposals"
 ALLOWED_FLAGS = {"autoDispatch", "closeOnMerge"}
 PORT = 9876
 HOST = "127.0.0.1"
+# CORS origin allowlist: exact scheme://host:port strings only (see _cors).
+ALLOWED_ORIGINS = frozenset({
+    f"http://127.0.0.1:{PORT}",
+    f"http://localhost:{PORT}",
+})
+# /decision/list snippet cap: the list view is a queue overview, not the
+# store — 120 chars is plenty for a row; full content stays in the store.
+LIST_SNIPPET_MAX = 120
 
 
 def load_json():
@@ -238,6 +246,14 @@ def decision_list():
         opens = decisions.open_decisions(view)
     except Exception as e:
         return False, f"decision store unavailable: {e}"
+    # Truncate snippets for the wire: the list response is an overview and
+    # anything embedding it (dashboard HTML, logs) shouldn't ship 500 chars
+    # of raw screen scrape per row. The store keeps the full snippet.
+    opens = [
+        {**d, "snippet": (d.get("snippet") or "")[:LIST_SNIPPET_MAX]}
+        if isinstance(d.get("snippet"), str) else dict(d)
+        for d in opens
+    ]
     return True, json.dumps({
         "open": opens,
         "n_open": len(opens),
@@ -311,13 +327,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cors(self):
         origin = self.headers.get("Origin", "")
-        # Only allow requests from the local dashboard (file:// or localhost).
+        # Only allow requests from the local dashboard. EXACT match on
+        # scheme://host:port — a prefix match would wave through
+        # http://localhost.evil.com (it startswith "http://localhost").
+        # file:// pages send Origin: null; same-origin requests omit it.
         allowed = (
-            origin.startswith("file://")
-            or origin.startswith("http://127.0.0.1")
-            or origin.startswith("http://localhost")
-            or origin == "null"  # file:// sends Origin: null in many browsers
-            or not origin  # same-origin requests omit the header
+            origin in ALLOWED_ORIGINS
+            or origin == "null"
+            or not origin
         )
         if allowed:
             self.send_header("Access-Control-Allow-Origin", origin or "null")

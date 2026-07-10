@@ -55,6 +55,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -215,6 +216,13 @@ def run(cmd: list[str], *, input_text: str | None = None,
         merge_bedrock: bool = False) -> tuple[int, str, str]:
     """Run a subprocess; return (rc, stdout, stderr). Never raises.
 
+    The child starts in its OWN session (start_new_session=True) and a
+    timeout kills the whole process GROUP before the final reap: a timed-out
+    `claude` subprocess can leave grandchildren holding the inherited stdout/
+    stderr pipes, and without the group kill the post-kill communicate()
+    blocks until every pipe-holder exits — a hung Observer/triage call would
+    stall the pulse far past its timeout.
+
     If merge_bedrock=True, layer the cached zprofile-extracted Bedrock vars
     onto the subprocess env. Used for `claude --print` which authenticates
     against AWS Bedrock via these vars (launchd does not source zprofile)."""
@@ -227,14 +235,32 @@ def run(cmd: list[str], *, input_text: str | None = None,
             merged.setdefault(k, v)
         env = merged
     try:
-        proc = subprocess.run(
-            cmd, input=input_text, capture_output=True, text=True,
-            timeout=timeout, env=env,
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env, start_new_session=True,
         )
-        return proc.returncode, proc.stdout, proc.stderr
+    except Exception as e:
+        return 1, "", str(e)
+    try:
+        out, err = proc.communicate(input=input_text, timeout=timeout)
+        return proc.returncode, out, err
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001 — reap is best-effort after SIGKILL
+            pass
         return 124, "", f"timeout after {timeout}s"
     except Exception as e:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
         return 1, "", str(e)
 
 
@@ -515,14 +541,27 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
                        merge_bedrock=True)
     wall_ms = int((time.time() - t0) * 1000)
 
-    # Metering + cost ledger — never load-bearing.
+    # Metering + cost ledger — never load-bearing. A failed subprocess
+    # (rc!=0) or an unparseable result envelope must NOT book phantom spend:
+    # it gets a zero-cost status:"failed" row instead, so failures stay
+    # visible in the ledger without inventing dollars.
     usage: dict = {}
     try:
         sys.path.insert(0, str(BIN))
         import metering  # noqa: PLC0415
-        usage = metering.observer_usage(out, len(prompt), DEFAULT_OBSERVER_MODEL)
-        metering.append_cost_row(caller="triage", model=DEFAULT_OBSERVER_MODEL,
-                                 usage=usage, wall_ms=wall_ms)
+        failed = rc != 0 or metering.parse_cli_result(out) is None
+        if failed:
+            metering.append_cost_row(
+                caller="triage", model=DEFAULT_OBSERVER_MODEL,
+                usage={"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0,
+                       "source": "none"},
+                wall_ms=wall_ms, status="failed")
+        else:
+            usage = metering.observer_usage(out, len(prompt),
+                                            DEFAULT_OBSERVER_MODEL)
+            metering.append_cost_row(caller="triage",
+                                     model=DEFAULT_OBSERVER_MODEL,
+                                     usage=usage, wall_ms=wall_ms)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("triage metering capture failed (ignored): %s", e)
 
@@ -574,13 +613,40 @@ def run_triage_step(pulse_idx: int) -> dict:
 # gets that verdict carried forward and is left OUT of the Observer batch —
 # an unchanged fleet costs zero Observer calls. The hash covers exactly the
 # signals build-ws-context gathers: the transcript tail, the live screen, and
-# the git/cwd state. last_turn_age_sec is deliberately EXCLUDED (it grows
-# every pulse without any state change and would defeat the skip).
+# the git/cwd state. The raw last_turn_age_sec is EXCLUDED (it grows every
+# pulse without any state change and would defeat the skip) — but its BAND
+# relative to the Observer prompt's 1800s idle threshold IS included: the
+# prompt's stranded/ready_for_cleanup/needs_user rules all pivot on
+# idle ≤ 1800s vs > 1800s (observer-batch-prompt.md threshold cheat-sheet),
+# so crossing that line is an observable state change even when no byte of
+# transcript/screen moved. Without the band, a hung-but-idle ws hashes
+# identical forever, its `active` verdict carries forever, and the recovery
+# nudge never fires.
 
 # How much transcript tail feeds the hash. Matches the transcript_signals
 # window in build-ws-context: any appended turn lands in the tail, so any
 # transcript growth changes the digest.
 OBS_HASH_TAIL_BYTES = 65536
+
+# The Observer prompt's ONLY time threshold: idle ≤ 1800s reads active,
+# idle > 1800s unlocks stranded/ready_for_cleanup/needs_user. Mirror exactly.
+OBS_IDLE_THRESHOLD_SEC = 1800
+
+# Hard cap on consecutive carried-forward verdicts: after this many skips
+# the ws is force-observed regardless of hash. Structural defense against
+# ANY hash blind spot (present or future) — no workspace can go unobserved
+# longer than MAX_CONSECUTIVE_CARRIES pulses.
+MAX_CONSECUTIVE_CARRIES = 6
+
+
+def idle_age_band(age) -> str:
+    """Which side of the Observer prompt's 1800s idle threshold `age` is on.
+    The band (never the raw age) feeds obs_input_hash: growth within a band
+    can't defeat the skip; crossing the threshold changes the hash and forces
+    a re-observe, because the prompt's verdict rules flip at that line."""
+    if not isinstance(age, (int, float)):
+        return "age-unknown"
+    return "le1800" if age <= OBS_IDLE_THRESHOLD_SEC else "gt1800"
 
 
 def _transcript_tail_digest(path: str | None) -> str:
@@ -615,6 +681,7 @@ def obs_input_hash(ctx: dict) -> str:
         ctx.get("agent_status"),
         bool(ctx.get("cwd_dirty")),
         bool(ctx.get("cwd_unpushed")),
+        idle_age_band(ctx.get("last_turn_age_sec")),
     ], sort_keys=False)
     return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()
 
@@ -915,9 +982,17 @@ def pre_cleanup_check(ws_ref: str) -> dict:
 
 # ─── verdict execution ──────────────────────────────────────────────────────
 
-def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
+def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
+                    carry: bool = False) -> dict:
     """Execute the action implied by the verdict. Returns an action_taken
-    dict for the state file."""
+    dict for the state file.
+
+    carry=True (no-change skip re-emitting a carried verdict): ONLY the
+    card-emitting paths run — cards are rebuilt every pulse and derive from
+    persisting state, so they must re-emit with the exact same keys/dedup as
+    a fresh verdict. Every acting path (merge dispatch, /cleanup send, nudge
+    send) is refused: those actions already ran when the verdict was first
+    earned, and the whole point of the carry is that nothing changed since."""
     kind = verdict.get("verdict")
     ws_ref = ws["ref"]
     key = f"{ws_ref}-{kind}"
@@ -1004,6 +1079,11 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
     # CI router → send + verify). INCIDENTS.md mandates this; a direct
     # /merge-when-ready send would skip all of it.
     if kind == "ready_for_merge":
+        if carry:
+            # Carried verdicts never act — the dispatch ran when the verdict
+            # was earned; a carry re-running it would re-submit the merge.
+            return {**base, "kind": "skipped",
+                    "evidence": "carried verdict; merge dispatch not re-run"}
         pr_refs = ws.get("pr_refs") or []
         if not pr_refs:
             return {**base, "kind": "skipped", "outcome": "failed",
@@ -1027,6 +1107,12 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict]) -> dict:
 
     # Sends. Apply NO_INGEST_GUARD: if the same text was sent last and got
     # delta=0, skip this pulse rather than loop forever.
+    if carry:
+        # Carried verdicts never send — /cleanup and nudges fired when the
+        # verdict was earned; unchanged state means the send already landed
+        # (or NO_INGEST_GUARD is already holding it).
+        return {**base, "kind": "skipped",
+                "evidence": "carried verdict; send not re-run"}
     if kind == "ready_for_cleanup":
         text = "/cleanup"
     elif kind == "stranded":
@@ -1521,12 +1607,16 @@ def main() -> int:
             })
     else:
         # Phase 1.5 (Keel M2): Observer no-change skip. Hash each workspace's
-        # Observer-visible state (transcript tail + screen + git signals —
-        # everything build-ws-context gathered, minus the always-growing age
-        # counter). A hash equal to the one stored with the last verdict
-        # means the Observer would re-read identical inputs: carry that
-        # verdict forward and leave the ws out of the batch. Fenced per-ws —
-        # a hash failure just means that ws gets observed normally.
+        # Observer-visible state (transcript tail + screen + git signals +
+        # idle-age band — everything build-ws-context gathered, minus the
+        # always-growing raw age counter). A hash equal to the one stored
+        # with the last verdict means the Observer would re-read
+        # threshold-equivalent inputs: carry that verdict forward and leave
+        # the ws out of the batch — UNLESS the verdict has already been
+        # carried MAX_CONSECUTIVE_CARRIES times, in which case the ws is
+        # force-observed (the cap is the defense against any hash blind
+        # spot). Fenced per-ws — a hash failure just means that ws gets
+        # observed normally.
         for ws_ref, ctx in ctxs_by_ref.items():
             try:
                 obs_hashes[ws_ref] = obs_input_hash(ctx)
@@ -1535,9 +1625,20 @@ def main() -> int:
                             ws_ref, e)
                 continue
             prior = load_prior_summary(ws_ref)
-            if prior and prior.get("verdict") \
-                    and prior.get("obs_input_hash") == obs_hashes[ws_ref]:
-                carried[ws_ref] = carry_forward_verdict(prior)
+            if not (prior and prior.get("verdict")
+                    and prior.get("obs_input_hash") == obs_hashes[ws_ref]):
+                continue
+            try:
+                prior_carries = int(prior.get("carry_count") or 0)
+            except (TypeError, ValueError):
+                prior_carries = 0
+            if prior_carries >= MAX_CONSECUTIVE_CARRIES:
+                log.info("carry cap hit for %s (%d consecutive skips) — "
+                         "force-observing", ws_ref, prior_carries)
+                continue
+            v = carry_forward_verdict(prior)
+            v["carry_count"] = prior_carries + 1
+            carried[ws_ref] = v
         if carried:
             log.info("no-change skip: %d/%d ws carried forward (%s)",
                      len(carried), len(ctxs_by_ref),
@@ -1580,20 +1681,31 @@ def main() -> int:
             ws = ws_by_ref[ws_ref]
             if ws_ref in carried:
                 # No-change skip: re-save the prior verdict (refreshes
-                # last_updated_ts so the LRU rotates; the verdict fields are
-                # byte-identical so state_unchanged_since_ts is preserved)
-                # and take NO action — the action already ran when the
-                # verdict was first earned, and re-executing a carried
-                # verdict could re-send /cleanup or re-nudge.
+                # last_updated_ts so the LRU rotates; state_unchanged_since_ts
+                # is preserved because the state-hash fields are byte-
+                # identical) and re-emit any human-facing CARD the verdict
+                # implies — awaiting cards are rebuilt from scratch every
+                # pulse, so a carried needs_user/ready_for_cleanup that
+                # didn't re-emit would vanish while the state persists.
+                # NO action fires: execute_verdict(carry=True) runs only the
+                # card-emitting paths — merge/cleanup/nudge sends already ran
+                # when the verdict was first earned and must not repeat.
                 v = carried[ws_ref]
                 save_summary(ws, v)
                 new_verdicts[ws_ref] = v.get("verdict") or "active"
+                card_action = execute_verdict(ws, v, awaiting_input,
+                                              carry=True)
+                evidence = (f"state unchanged since last verdict "
+                            f"({v.get('verdict')}); Observer call skipped "
+                            f"(carry {v.get('carry_count')}/"
+                            f"{MAX_CONSECUTIVE_CARRIES})")
+                if card_action.get("kind") == "emit-card":
+                    evidence += "; card re-emitted"
                 actions_taken.append({
                     "key": f"{ws_ref}-no-change-skip",
                     "kind": "skipped-no-change", "ws_ref": ws_ref,
                     "outcome": "verified",
-                    "evidence": (f"state unchanged since last verdict "
-                                 f"({v.get('verdict')}); Observer call skipped"),
+                    "evidence": evidence,
                 })
                 continue
             verdict = verdicts_by_ref.get(ws_ref)

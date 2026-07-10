@@ -133,12 +133,16 @@ def gh_pr_state(pr: str) -> str | None:
 def load_decision_statuses():
     """{decision_id: latest status} from the decision queue (Keel M2).
 
-    Prefers the materialized queue.json; falls back to folding the
-    append-only decisions.jsonl (queue.json is delete-safe/derived). Returns
-    None when a store EXISTS but is unreadable — the caller then keeps every
-    dec-* card (fail-safe). Missing stores return {} (no decisions ⇒ no
-    dec-* card is legitimate).
+    Prefers the materialized queue.json; a MISSING **or unreadable/corrupt**
+    queue.json falls back to folding the append-only decisions.jsonl — the
+    healthy truth next door (queue.json is delete-safe/derived, so a torn
+    view must never freeze every dec-* card in place). The fallback is
+    logged. Returns None only when the log ALSO exists-but-unreadable, or
+    when a corrupt queue.json has no log beside it — the caller then keeps
+    every dec-* card (fail-safe). Both stores missing returns {} (no
+    decisions ⇒ no dec-* card is legitimate).
     """
+    queue_unreadable = False
     if DECISIONS_QUEUE_PATH.exists():
         try:
             view = json.loads(DECISIONS_QUEUE_PATH.read_text())
@@ -147,8 +151,10 @@ def load_decision_statuses():
                 if isinstance(d, dict) and d.get("id"):
                     out[d["id"]] = d.get("status")
             return out
-        except Exception:
-            return None
+        except Exception as e:
+            queue_unreadable = True
+            log(f"queue.json unreadable ({e}) — falling back to folding "
+                f"decisions.jsonl")
     if DECISIONS_LOG_PATH.exists():
         try:
             out = {}
@@ -165,7 +171,8 @@ def load_decision_statuses():
             return out
         except Exception:
             return None
-    return {}
+    # Corrupt queue with no log beside it: nothing trustworthy — fail safe.
+    return None if queue_unreadable else {}
 
 
 def card_should_drop(card: dict, open_ws: set[str], todos: dict[str, dict],

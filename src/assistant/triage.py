@@ -417,8 +417,10 @@ def triage_new_events(pulse_idx: int = 0, log=None, now: float | None = None,
                 dec_ids[event["id"]], suggested_lane,
                 str((sug or {}).get("rationale") or ""), now=now)
             summary["triage_suggested"] += 1
-        append_disposition(event["id"],
-                           suggested_lane or "escalate", "triage",
+        # The disposition records the EFFECTIVE lane — always escalate for
+        # unmatched events. A suggestion is a pure annotation on the decision
+        # record; it never becomes the lane of record (design section 5).
+        append_disposition(event["id"], "escalate", "triage",
                            decision_id=dec_ids[event["id"]], now=now)
     for event in unmatched[MAX_TRIAGE_BATCH:]:
         append_disposition(event["id"], "escalate", "triage",

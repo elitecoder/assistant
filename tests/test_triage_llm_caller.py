@@ -113,6 +113,45 @@ class TriageCallerTests(unittest.TestCase):
             out = self.mod.call_triage_batch([make_event(1)], 1)
         self.assertEqual(out, {})  # fail-safe: decisions keep escalate
 
+    def _cost_rows(self):
+        p = self._tmp / ".assistant/cost-ledger.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+
+    def test_failed_subprocess_books_zero_cost_failed_row(self):
+        # rc!=0 must not book phantom spend: one zero-cost status:"failed"
+        # row so the failure is visible in the ledger without inventing $.
+        with mock.patch.object(self.mod, "run",
+                               return_value=(124, "", "timeout after 240s")):
+            self.mod.call_triage_batch([make_event(1)], 1)
+        rows = self._cost_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "failed")
+        self.assertEqual(rows[0]["tokens_in"], 0)
+        self.assertEqual(rows[0]["tokens_out"], 0)
+        self.assertEqual(rows[0]["est_usd"], 0.0)
+
+    def test_unparseable_envelope_books_zero_cost_failed_row(self):
+        # rc==0 but stdout isn't a usage-bearing envelope (killed CLI, plain
+        # text): the chars/4 estimate is phantom spend — failed row instead.
+        with mock.patch.object(self.mod, "run",
+                               return_value=(0, "no json here", "")):
+            self.mod.call_triage_batch([make_event(1)], 1)
+        rows = self._cost_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "failed")
+        self.assertEqual(rows[0]["est_usd"], 0.0)
+
+    def test_successful_call_books_ok_row(self):
+        with mock.patch.object(self.mod, "run",
+                               side_effect=self._fake_run([])):
+            self.mod.call_triage_batch([make_event(1)], 1)
+        rows = self._cost_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["est_usd"], 0.002)
+
     def test_missing_prompt_file_skips_the_call(self):
         with mock.patch.object(self.mod, "TRIAGE_BATCH_PROMPT",
                                self._tmp / "nope.md"):

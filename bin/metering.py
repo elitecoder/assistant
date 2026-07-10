@@ -169,12 +169,14 @@ def sum_usage(usages: list[dict]) -> dict:
 
 
 def append_cost_row(*, caller: str, model: str, usage: dict, wall_ms: int,
-                    path: Path | None = None) -> None:
+                    path: Path | None = None, status: str = "ok") -> None:
     """One per-call row in ~/.assistant/cost-ledger.jsonl (design section 3:
     {ts, caller, model, tokens_in, tokens_out, est_usd, wall_ms}). Every LLM
     caller beyond the Observer (triage, later strategist/drafter) appends here
-    so $/day per caller is derivable. Single-write append like the actions
-    ledger; the read side must tolerate a torn line."""
+    so $/day per caller is derivable. status="failed" rows record a call that
+    produced no usable output — callers append those with ZERO usage so
+    failures stay visible without booking phantom spend. Single-write append
+    like the actions ledger; the read side must tolerate a torn line."""
     p = path if path is not None else cost_ledger_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     row = {
@@ -186,9 +188,32 @@ def append_cost_row(*, caller: str, model: str, usage: dict, wall_ms: int,
         "est_usd": float(usage.get("cost_usd") or 0.0),
         "usage_source": usage.get("source", "estimated"),
         "wall_ms": int(wall_ms),
+        "status": status,
     }
     with open(p, "a") as f:
         f.write(json.dumps(row) + "\n")
+
+
+def read_cost_ledger(path: Path | None = None) -> list[dict]:
+    """All parseable cost-ledger rows, oldest-first. Missing file or corrupt
+    lines are skipped (same tolerance as read_metrics)."""
+    p = path if path is not None else cost_ledger_path()
+    out: list[dict] = []
+    try:
+        lines = p.read_text().splitlines()
+    except (OSError, FileNotFoundError):
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
 
 
 # ─── previous-verdict comparison ────────────────────────────────────────────
@@ -311,8 +336,9 @@ def read_metrics(path: Path | None = None) -> list[dict]:
 
 # ─── dashboard aggregation ──────────────────────────────────────────────────
 
-def aggregate(records: list[dict], now: int, window_days: int = 7) -> dict:
-    """Roll the last `window_days` of records into the four dashboard tiles.
+def aggregate(records: list[dict], now: int, window_days: int = 7,
+              cost_rows: list[dict] | None = None) -> dict:
+    """Roll the last `window_days` of records into the dashboard tiles.
 
     Per-day figures divide by the ACTUAL span the records cover (floored at
     one hour) rather than the full window, so a fleet that's only been
@@ -321,6 +347,18 @@ def aggregate(records: list[dict], now: int, window_days: int = 7) -> dict:
     Records stamped slightly in the future (clock skew, DST weirdness) are
     kept — dropping them would silently hide their cost. The only upper
     bound is a now+1-day sanity cap against absurdly future garbage.
+
+    cost_rows (optional): cost-ledger rows (read_cost_ledger) from LLM
+    callers beyond the Observer — triage today, strategist later. Their
+    windowed spend lands in cost_ledger_per_day_usd AND in cost_per_day_usd,
+    so the $/day tile is the fleet's whole LLM bill, not just the Observer's
+    (pulse records and cost-ledger rows never double-count: observer usage is
+    only ever in metrics.jsonl, other callers only ever in the cost ledger).
+
+    skip_rate is WORKSPACE-level: skipped / (skipped + observed) summed over
+    the window's records — the fraction of per-ws judgments the no-change
+    carry saved. (The old pulse-level observer_called ratio understated
+    mixed pulses: one observed ws out of ten skipped counted as 0% skip.)
     """
     cutoff = now - window_days * 86400
     future_cap = now + 86400  # sanity cap only — tolerate ordinary clock skew
@@ -332,6 +370,7 @@ def aggregate(records: list[dict], now: int, window_days: int = 7) -> dict:
     n = len(recs)
     if n == 0:
         return {"n_pulses": 0, "observer_calls_per_day": 0.0, "cost_per_day_usd": 0.0,
+                "cost_ledger_per_day_usd": 0.0,
                 "verdict_change_rate": 0.0, "skip_rate": 0.0}
     oldest = min(e for e, _ in recs)
     span_days = max((now - oldest) / 86400.0, 1.0 / 24.0)
@@ -339,10 +378,18 @@ def aggregate(records: list[dict], now: int, window_days: int = 7) -> dict:
     total_cost = sum(float(r.get("cost_usd_est") or 0.0) for _, r in recs)
     total_judged = sum(int(r.get("batch_size") or 0) for _, r in recs if r.get("observer_called"))
     total_changes = sum(int(r.get("verdict_changes") or 0) for _, r in recs)
+    total_skipped = sum(int(r.get("skipped") or 0) for _, r in recs)
+    ledger_cost = 0.0
+    for row in cost_rows or []:
+        e = _record_epoch(row)
+        if e is not None and cutoff <= e <= future_cap:
+            ledger_cost += float(row.get("est_usd") or 0.0)
+    denom = total_skipped + total_judged
     return {
         "n_pulses": n,
         "observer_calls_per_day": observer_calls / span_days,
-        "cost_per_day_usd": total_cost / span_days,
+        "cost_per_day_usd": (total_cost + ledger_cost) / span_days,
+        "cost_ledger_per_day_usd": ledger_cost / span_days,
         "verdict_change_rate": (total_changes / total_judged) if total_judged else 0.0,
-        "skip_rate": (n - observer_calls) / n,
+        "skip_rate": (total_skipped / denom) if denom else 0.0,
     }

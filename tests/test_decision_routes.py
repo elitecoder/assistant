@@ -191,6 +191,53 @@ class DecisionRouteTests(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("only open/snoozed", body)
 
+    # ── CORS origin allowlist (exact match) ──────────────────────────────
+
+    def _request_with_origin(self, path, origin, method="POST"):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=b"", method=method)
+        req.add_header("Origin", origin)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, dict(resp.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers)
+
+    def test_evil_origin_prefix_gets_no_acao_echo(self):
+        # The prefix-match hole: "http://localhost.evil.com".startswith(
+        # "http://localhost") is True. Exact matching must refuse it — no
+        # Access-Control-Allow-Origin header at all.
+        for evil in ("http://localhost.evil.com:9876",
+                     "http://localhost.evil.com",
+                     "http://127.0.0.1.evil.com",
+                     "https://evil.example",
+                     "http://localhost:9999"):
+            _, headers = self._request_with_origin("/decision/list", evil)
+            self.assertNotIn("Access-Control-Allow-Origin", headers,
+                             msg=evil)
+
+    def test_allowed_origins_get_exact_acao_echo(self):
+        for good in ("http://127.0.0.1:9876", "http://localhost:9876",
+                     "null"):
+            _, headers = self._request_with_origin("/decision/list", good)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"),
+                             good, msg=good)
+
+    # ── /decision/list snippet cap ───────────────────────────────────────
+
+    def test_list_snippet_capped_at_120_chars(self):
+        rec, _ = decisions.open_decision(
+            event=make_event(1, snippet="S" * 400), lane="escalate",
+            policy_id="r1", urgency="now", now=NOW)
+        code, body = self._request("/decision/list")
+        self.assertEqual(code, 200)
+        row = json.loads(body)["open"][0]
+        self.assertEqual(len(row["snippet"]), self.mod.LIST_SNIPPET_MAX)
+        self.assertEqual(self.mod.LIST_SNIPPET_MAX, 120)
+        # The store keeps the full snippet — only the wire view is capped.
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(len(folded[rec["id"]]["snippet"]), 400)
+
 
 if __name__ == "__main__":
     unittest.main()

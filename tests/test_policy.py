@@ -65,9 +65,12 @@ class HomeTestCase(unittest.TestCase):
         self._tmp_obj.cleanup()
 
     def write_policies(self, policies):
+        # Stamp the bootstrap's own version so the version-upgrade path never
+        # rewrites a test's hand-written policy set underneath it.
+        version = json.loads(policy.bootstrap_path().read_text())["version"]
         p = policy.policies_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"version": 1, "policies": policies}))
+        p.write_text(json.dumps({"version": version, "policies": policies}))
 
 
 # ─── structural invariants ───────────────────────────────────────────────────
@@ -269,18 +272,84 @@ class BootstrapTests(HomeTestCase):
         rules, invalid, error = policy.load_policies()
         self.assertIsNone(error)
         self.assertEqual(invalid, [])
-        self.assertGreaterEqual(len(rules), 8)
+        self.assertGreaterEqual(len(rules), 4)
 
-    def test_never_overwrites_existing_policies(self):
-        p = policy.policies_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"version": 1, "policies": []}))
-        self.assertFalse(policy.ensure_policies_installed())
-        self.assertEqual(json.loads(p.read_text())["policies"], [])
+    def test_no_forward_looking_sources_in_bootstrap(self):
+        # M2 review: rules for producers that don't exist until M5 (gmail,
+        # github) are a data-hiding hazard against a guessed schema — the
+        # bootstrap may only lane sources that already emit events.
+        data = json.loads(policy.bootstrap_path().read_text())
+        sources = {r["match"].get("source") for r in data["policies"]}
+        self.assertTrue(sources <= {"cmux", "pulse"}, msg=str(sources))
 
     def test_second_install_is_a_noop(self):
         self.assertTrue(policy.ensure_policies_installed())
         self.assertFalse(policy.ensure_policies_installed())
+
+    def _bootstrap(self):
+        return json.loads(policy.bootstrap_path().read_text())
+
+    def _ledger_rows(self, kind):
+        p = self.home / ".assistant/actions-ledger.jsonl"
+        if not p.exists():
+            return []
+        rows = [json.loads(l) for l in p.read_text().splitlines()]
+        return [r for r in rows if r.get("kind") == kind]
+
+    def test_same_version_never_touches_user_rules(self):
+        boot = self._bootstrap()
+        p = policy.policies_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        mine = {"version": boot["version"], "policies": []}
+        p.write_text(json.dumps(mine))
+        self.assertFalse(policy.ensure_policies_installed())
+        self.assertEqual(json.loads(p.read_text())["policies"], [])
+
+    def test_version_upgrade_adds_missing_rules_only(self):
+        boot = self._bootstrap()
+        first_boot_rule = boot["policies"][0]
+        # An installed v(N-1) file with one user rule and one user-MODIFIED
+        # copy of a bootstrap rule id.
+        user_rule = rule("my-own-rule", kind="my_kind", lane="digest")
+        modified = dict(first_boot_rule, lane="staged")
+        p = policy.policies_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"version": boot["version"] - 1,
+                                 "policies": [user_rule, modified]}))
+        self.assertTrue(policy.ensure_policies_installed())
+        live = json.loads(p.read_text())
+        self.assertEqual(live["version"], boot["version"])
+        by_id = {r["id"]: r for r in live["policies"]}
+        # User rule untouched, modified bootstrap rule NOT overwritten.
+        self.assertEqual(by_id["my-own-rule"], user_rule)
+        self.assertEqual(by_id[first_boot_rule["id"]]["lane"], "staged")
+        # Every other bootstrap id was added; user rules keep precedence
+        # (added rules append AFTER existing ones — first match wins).
+        for r in boot["policies"][1:]:
+            self.assertIn(r["id"], by_id)
+        self.assertEqual(live["policies"][0]["id"], "my-own-rule")
+        # And the upgrade is ledgered.
+        rows = self._ledger_rows("policy-bootstrap-upgrade")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("added", rows[0]["evidence"])
+
+    def test_version_upgrade_is_idempotent(self):
+        boot = self._bootstrap()
+        p = policy.policies_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"version": boot["version"] - 1,
+                                 "policies": []}))
+        self.assertTrue(policy.ensure_policies_installed())
+        after_first = p.read_text()
+        self.assertFalse(policy.ensure_policies_installed())
+        self.assertEqual(p.read_text(), after_first)
+
+    def test_unreadable_live_file_is_left_alone(self):
+        p = policy.policies_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{torn")
+        self.assertFalse(policy.ensure_policies_installed())
+        self.assertEqual(p.read_text(), "{torn")  # never clobbered
 
 
 class PolicyFixtureCoverageTests(HomeTestCase):

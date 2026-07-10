@@ -27,6 +27,7 @@ sys.modules. Pure stdlib, no LLM, never closes workspaces.
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -37,6 +38,11 @@ from pathlib import Path
 
 SCHEMA = "decision/1"
 QUEUE_SCHEMA = "decision-queue/1"
+
+# Compact decisions.jsonl once it exceeds this: the log is rewritten as its
+# folded snapshot (one record per id, terminal states preserved) and the old
+# log rotates to decisions.jsonl.1 — same idiom as metering's rotation.
+MAX_LOG_BYTES = 5_000_000
 
 OPEN = "open"
 STATUSES = ("open", "accepted", "edited", "rejected", "snoozed", "expired",
@@ -80,6 +86,16 @@ def utc_iso(epoch: float) -> str:
         "%Y-%m-%dT%H:%M:%SZ")
 
 
+def parse_iso(ts) -> float | None:
+    """ISO-8601 ('Z' or offset) → epoch seconds, or None."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def decision_id(source: str, external_id: str, action_class: str = "") -> str:
     """Stable id from (source, external_id, action_class). Timestamp-free by
     design: the same event re-triaged tomorrow folds onto the same id."""
@@ -120,12 +136,72 @@ def read_log(path: Path | None = None) -> list[dict]:
 
 
 def fold(records: list[dict]) -> dict[str, dict]:
-    """Latest record per id, in log order (last write wins — transitions are
-    appended after the create, so the fold IS current state)."""
+    """Latest record per id, ordered by (epoch, file-order): the record with
+    the highest epoch wins, file order breaking ties (transitions are appended
+    after the create, so for a healthy log this IS last-write-wins; a
+    hand-merged or clock-skewed log still folds to the newest state)."""
     out: dict[str, dict] = {}
-    for rec in records:
-        out[rec["id"]] = rec
+    best: dict[str, tuple[int, int]] = {}
+    for i, rec in enumerate(records):
+        epoch = rec.get("epoch")
+        key = (int(epoch) if isinstance(epoch, (int, float)) else 0, i)
+        if rec["id"] not in best or key >= best[rec["id"]]:
+            best[rec["id"]] = key
+            out[rec["id"]] = rec
     return out
+
+
+@contextlib.contextmanager
+def _writer_lock():
+    """The single-writer flock. EVERYTHING that reads-then-appends must do
+    both inside ONE lock hold — a check-then-append with the read outside the
+    lock can validate against a state another writer is about to change
+    (todo-server accept racing pulse expire_open)."""
+    d = decisions_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path()), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
+def _maybe_compact() -> None:
+    """MUST be called under _writer_lock. When the log exceeds MAX_LOG_BYTES,
+    rewrite it as its folded snapshot (one record per id — terminal states
+    are each id's latest record, so fold(before) == fold(after)) and rotate
+    the full history to decisions.jsonl.1 (previous .1 is dropped, same as
+    metering rotation)."""
+    p = decisions_path()
+    try:
+        if not p.exists() or p.stat().st_size <= MAX_LOG_BYTES:
+            return
+    except OSError:
+        return
+    folded = fold(read_log())
+    tmp = p.with_suffix(".jsonl.compact.tmp")
+    with open(tmp, "w") as f:
+        for rec in folded.values():
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    os.replace(p, p.with_name(p.name + ".1"))
+    os.replace(tmp, p)
+
+
+def _append_in_lock(rows: list[dict]) -> None:
+    """MUST be called under _writer_lock: compact if oversized, append rows,
+    rebuild queue.json — one queue rebuild per call however many rows."""
+    if not rows:
+        return
+    _maybe_compact()
+    with open(decisions_path(), "a") as f:
+        for rec in rows:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    _write_queue(fold(read_log()))
 
 
 def _append_locked(rows: list[dict]) -> None:
@@ -133,21 +209,8 @@ def _append_locked(rows: list[dict]) -> None:
     lock is still held (so the view can never interleave two writers)."""
     if not rows:
         return
-    d = decisions_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path()), os.O_CREAT | os.O_RDWR, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        with open(decisions_path(), "a") as f:
-            for rec in rows:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        _write_queue(fold(read_log()))
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        os.close(fd)
+    with _writer_lock():
+        _append_in_lock(rows)
 
 
 def _append_ledger(entry: dict) -> None:
@@ -215,45 +278,73 @@ def open_decision(*, event: dict, lane: str, policy_id, triage=None,
 
     created=False means the stable id already exists in the log — re-triaging
     the same (source, external_id, action_class) can never enqueue twice; the
-    existing latest record is returned untouched."""
+    existing latest record is returned untouched. ONE exception: an EXPIRED
+    decision re-opens when the event is a genuinely NEW sighting (event ts
+    newer than the expiry) — expiry means "nobody acted in time", not "this
+    can never matter again". Rejected/accepted/edited stay dead forever."""
     now = now if now is not None else time.time()
     source = event.get("source") or ""
     external_id = event.get("external_id") or event.get("id") or ""
     action_class = (action or {}).get("class") or ""
     dec_id = decision_id(source, external_id, action_class)
-    existing = fold(read_log()).get(dec_id)
-    if existing is not None:
-        return existing, False
-    recommended = None
-    if isinstance(action, dict) and action.get("class"):
-        recommended = {
-            "class": action.get("class"),
-            "summary": (event.get("title") or "")[:120],
-            "payload_path": event.get("raw_path"),
+    reopened_from = None
+    with _writer_lock():
+        existing = fold(read_log()).get(dec_id)
+        if existing is not None:
+            if existing.get("status") == "expired":
+                res_ts = parse_iso((existing.get("resolution") or {}).get("ts"))
+                if res_ts is None:
+                    res_ts = float(existing.get("epoch") or 0)
+                ev_ts = parse_iso(event.get("ts"))
+                if ev_ts is None:
+                    ev_epoch = event.get("epoch")
+                    ev_ts = float(ev_epoch) if isinstance(
+                        ev_epoch, (int, float)) else None
+                if ev_ts is not None and ev_ts > res_ts:
+                    reopened_from = "expired"
+            if reopened_from is None:
+                return existing, False
+        recommended = None
+        if isinstance(action, dict) and action.get("class"):
+            recommended = {
+                "class": action.get("class"),
+                "summary": (event.get("title") or "")[:120],
+                "payload_path": event.get("raw_path"),
+            }
+        record = {
+            "schema": SCHEMA,
+            "id": dec_id,
+            "ts": utc_iso(now),
+            "epoch": int(now),
+            "event_ref": event.get("id"),
+            "source": source,
+            "kind": event.get("kind"),
+            "title": (event.get("title") or "")[:120],
+            "snippet": (event.get("snippet") or "")[:500],
+            "refs": dict(event.get("refs") or {}),
+            "lane": lane,
+            "policy_id": policy_id,
+            "triage": triage,
+            "recommended": recommended,
+            "goal_refs": [],
+            "score": score_decision(lane, urgency),
+            "urgency": urgency,
+            "ttl_h": ttl_h,
+            "status": status,
+            "resolution": resolution,
         }
-    record = {
-        "schema": SCHEMA,
-        "id": dec_id,
-        "ts": utc_iso(now),
-        "epoch": int(now),
-        "event_ref": event.get("id"),
-        "source": source,
-        "kind": event.get("kind"),
-        "title": (event.get("title") or "")[:120],
-        "snippet": (event.get("snippet") or "")[:500],
-        "refs": dict(event.get("refs") or {}),
-        "lane": lane,
-        "policy_id": policy_id,
-        "triage": triage,
-        "recommended": recommended,
-        "goal_refs": [],
-        "score": score_decision(lane, urgency),
-        "urgency": urgency,
-        "ttl_h": ttl_h,
-        "status": status,
-        "resolution": resolution,
-    }
-    _append_locked([record])
+        _append_in_lock([record])
+    if reopened_from is not None:
+        _append_ledger({
+            "ts": utc_iso(now), "epoch": int(now),
+            "key": f"decision:{dec_id}:{reopened_from}->{record['status']}",
+            "kind": "decision-transition",
+            "ws_ref": (event.get("refs") or {}).get("ws_ref") or "(decisions)",
+            "outcome": "verified",
+            "evidence": (f"{reopened_from}->{record['status']} via re-sighting "
+                         f"of {source}/{event.get('kind')}: "
+                         f"{(event.get('title') or '')[:120]}"),
+        })
     if status == "auto_done":
         _append_ledger({
             "ts": utc_iso(now), "epoch": int(now),
@@ -278,27 +369,32 @@ def transition(dec_id: str, to_status: str, *, via: str, note: str | None = None
     now = now if now is not None else time.time()
     if to_status not in TRANSITION_TARGETS:
         return None, f"invalid target status {to_status!r}"
-    latest = fold(read_log()).get(dec_id)
-    if latest is None:
-        return None, f"decision {dec_id!r} not found"
-    from_status = latest.get("status")
-    if from_status not in (OPEN, "snoozed"):
-        return None, (f"decision {dec_id!r} is {from_status!r} "
-                      "(only open/snoozed can transition)")
-    record = dict(latest)
-    record["ts"] = utc_iso(now)
-    record["epoch"] = int(now)
-    record["status"] = to_status
-    record["resolution"] = {
-        "ts": utc_iso(now),
-        "via": via,
-        "ledger_key": f"decision:{dec_id}:{from_status}->{to_status}",
-    }
-    if note:
-        record["resolution"]["note"] = note[:500]
-    if to_status == "snoozed" and wake_ts is not None:
-        record["wake_ts"] = int(wake_ts)
-    _append_locked([record])
+    # Read-fold-validate-append is ONE critical section: the from_status
+    # guard must see the log as it is at append time, or two concurrent
+    # transitions (dashboard accept vs pulse expire) could both pass the
+    # guard and silently flip each other.
+    with _writer_lock():
+        latest = fold(read_log()).get(dec_id)
+        if latest is None:
+            return None, f"decision {dec_id!r} not found"
+        from_status = latest.get("status")
+        if from_status not in (OPEN, "snoozed"):
+            return None, (f"decision {dec_id!r} is {from_status!r} "
+                          "(only open/snoozed can transition)")
+        record = dict(latest)
+        record["ts"] = utc_iso(now)
+        record["epoch"] = int(now)
+        record["status"] = to_status
+        record["resolution"] = {
+            "ts": utc_iso(now),
+            "via": via,
+            "ledger_key": f"decision:{dec_id}:{from_status}->{to_status}",
+        }
+        if note:
+            record["resolution"]["note"] = note[:500]
+        if to_status == "snoozed" and wake_ts is not None:
+            record["wake_ts"] = int(wake_ts)
+        _append_in_lock([record])
     _append_ledger({
         "ts": utc_iso(now), "epoch": int(now),
         "key": f"decision:{dec_id}:{from_status}->{to_status}",
@@ -314,23 +410,25 @@ def transition(dec_id: str, to_status: str, *, via: str, note: str | None = None
 def annotate_triage(dec_id: str, suggested_lane: str, rationale: str,
                     now: float | None = None) -> dict | None:
     """Land a triage-LLM suggestion ON the decision record — a new appended
-    record carrying triage {suggested_lane, rationale} and the suggested lane
-    (which affects TTL/ranking only). The status is NOT touched: suggestions
-    never act, never resolve, never open the auto lane (the caller has already
-    validated the lane against policy.TRIAGE_LANE_MAP)."""
+    record carrying triage {suggested_lane, rationale} and NOTHING else. The
+    suggestion is a PURE annotation (design section 5: "suggestions land on
+    the decision record, never act"): the effective lane, score, TTL, card
+    mirror, and digest all derive ONLY from policy-confirmed lanes, so an
+    unmatched decision stays escalate — with its fail-safe card — until a
+    human acts or a confirmed policy exists. Status is NOT touched either
+    (the caller has already validated the lane against
+    policy.TRIAGE_LANE_MAP)."""
     now = now if now is not None else time.time()
-    latest = fold(read_log()).get(dec_id)
-    if latest is None or latest.get("status") != OPEN:
-        return None
-    record = dict(latest)
-    record["ts"] = utc_iso(now)
-    record["epoch"] = latest.get("epoch")  # keep creation epoch for TTL/miner
-    record["triage"] = {"suggested_lane": suggested_lane,
-                        "rationale": (rationale or "")[:300]}
-    record["lane"] = suggested_lane
-    record["ttl_h"] = latest.get("ttl_h")
-    record["score"] = score_decision(suggested_lane, latest.get("urgency"))
-    _append_locked([record])
+    with _writer_lock():
+        latest = fold(read_log()).get(dec_id)
+        if latest is None or latest.get("status") != OPEN:
+            return None
+        record = dict(latest)
+        record["ts"] = utc_iso(now)
+        record["epoch"] = latest.get("epoch")  # keep creation epoch for TTL/miner
+        record["triage"] = {"suggested_lane": suggested_lane,
+                            "rationale": (rationale or "")[:300]}
+        _append_in_lock([record])
     return record
 
 
@@ -338,32 +436,68 @@ def expire_open(now: float | None = None) -> list[dict]:
     """TTL sweep: open decisions whose ttl_h has elapsed since creation move
     to expired (a new appended record, ledgered like any transition). Lanes
     with ttl_h null (escalate by default) never expire here. Also wakes
-    snoozed decisions whose wake_ts has passed (back to open)."""
+    snoozed decisions whose wake_ts has passed (back to open, ledgered as
+    ``decision:<id>:snoozed->open``).
+
+    Batched: ONE lock hold, one log read, every expiry/wake appended in one
+    pass, one queue.json rebuild — a big sweep costs one rebuild, not one
+    per decision."""
     now = now if now is not None else time.time()
     expired: list[dict] = []
-    records = read_log()
-    created_epoch: dict[str, int] = {}
-    for rec in records:
-        created_epoch.setdefault(rec["id"], int(rec.get("epoch") or 0))
-    for dec_id, latest in fold(records).items():
-        status = latest.get("status")
-        if status == "snoozed":
-            wake = latest.get("wake_ts")
-            if isinstance(wake, (int, float)) and now >= wake:
+    rows: list[dict] = []
+    ledger_rows: list[dict] = []
+    with _writer_lock():
+        records = read_log()
+        created_epoch: dict[str, int] = {}
+        for rec in records:
+            created_epoch.setdefault(rec["id"], int(rec.get("epoch") or 0))
+        for dec_id, latest in fold(records).items():
+            status = latest.get("status")
+            ws_ref = (latest.get("refs") or {}).get("ws_ref") or "(decisions)"
+            if status == "snoozed":
+                wake = latest.get("wake_ts")
+                if isinstance(wake, (int, float)) and now >= wake:
+                    record = dict(latest)
+                    record["ts"] = utc_iso(now)
+                    record["epoch"] = int(now)
+                    record["status"] = OPEN
+                    record["resolution"] = None
+                    rows.append(record)
+                    ledger_rows.append({
+                        "ts": utc_iso(now), "epoch": int(now),
+                        "key": f"decision:{dec_id}:snoozed->open",
+                        "kind": "decision-transition",
+                        "ws_ref": ws_ref,
+                        "outcome": "verified",
+                        "evidence": "snoozed->open via wake_ts",
+                    })
+                continue
+            if status != OPEN:
+                continue
+            ttl_h = latest.get("ttl_h")
+            if not isinstance(ttl_h, (int, float)):
+                continue
+            if now - created_epoch.get(dec_id, int(now)) > ttl_h * 3600:
                 record = dict(latest)
                 record["ts"] = utc_iso(now)
                 record["epoch"] = int(now)
-                record["status"] = OPEN
-                record["resolution"] = None
-                _append_locked([record])
-            continue
-        if status != OPEN:
-            continue
-        ttl_h = latest.get("ttl_h")
-        if not isinstance(ttl_h, (int, float)):
-            continue
-        if now - created_epoch.get(dec_id, int(now)) > ttl_h * 3600:
-            rec, err = transition(dec_id, "expired", via="ttl", now=now)
-            if rec is not None and err is None:
-                expired.append(rec)
+                record["status"] = "expired"
+                record["resolution"] = {
+                    "ts": utc_iso(now),
+                    "via": "ttl",
+                    "ledger_key": f"decision:{dec_id}:open->expired",
+                }
+                rows.append(record)
+                expired.append(record)
+                ledger_rows.append({
+                    "ts": utc_iso(now), "epoch": int(now),
+                    "key": f"decision:{dec_id}:open->expired",
+                    "kind": "decision-transition",
+                    "ws_ref": ws_ref,
+                    "outcome": "verified",
+                    "evidence": "open->expired via ttl",
+                })
+        _append_in_lock(rows)
+    for entry in ledger_rows:
+        _append_ledger(entry)
     return expired

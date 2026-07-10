@@ -103,21 +103,88 @@ def utc_iso(epoch: float) -> str:
 
 # ─── install ────────────────────────────────────────────────────────────────
 
+def _ledger_path() -> Path:
+    return _home() / ".assistant" / "actions-ledger.jsonl"
+
+
+def _append_ledger(entry: dict) -> None:
+    """Best-effort actions-ledger row (same shape pulse.py appends). A ledger
+    write failure never blocks a policy install/upgrade."""
+    try:
+        p = _ledger_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def _atomic_write_policies(dst: Path, data: dict) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    os.replace(tmp, dst)
+
+
 def ensure_policies_installed() -> bool:
-    """Copy the repo bootstrap into ~/.assistant/policies/ when no live
-    policies.json exists yet. Returns True when the bootstrap was installed
-    this call. Never overwrites an existing file — the live store is Mukul's
-    (confirmation-gated proposals mutate it, not this function)."""
-    dst = policies_path()
-    if dst.exists():
-        return False
+    """Install or version-upgrade the live policies file from the repo
+    bootstrap. Returns True when this call changed the live file.
+
+    - No live policies.json → copy the bootstrap verbatim (first run).
+    - Live file at an older `version` than the bootstrap → ADDITIVE upgrade:
+      append bootstrap rules whose ids are absent from the live file, stamp
+      the new version, ledger the upgrade. User rules are NEVER overwritten
+      or removed, and a user-modified copy of a bootstrap rule id is left
+      alone — the live store is Mukul's (confirmation-gated proposals mutate
+      rules; this function only ever adds).
+    - Unreadable live file → do nothing (load_policies will surface the
+      whole-file error and every event escalates; clobbering a file we can't
+      read would destroy user rules)."""
     src = bootstrap_path()
     if not src.exists():
         return False
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_suffix(".json.tmp")
-    shutil.copyfile(str(src), str(tmp))
-    os.replace(tmp, dst)
+    dst = policies_path()
+    if not dst.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_suffix(".json.tmp")
+        shutil.copyfile(str(src), str(tmp))
+        os.replace(tmp, dst)
+        return True
+
+    try:
+        boot = json.loads(src.read_text())
+        live = json.loads(dst.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(boot, dict) or not isinstance(live, dict) \
+            or not isinstance(boot.get("policies"), list) \
+            or not isinstance(live.get("policies"), list):
+        return False
+    boot_version = boot.get("version")
+    live_version = live.get("version")
+    if not isinstance(boot_version, int):
+        return False
+    if isinstance(live_version, int) and live_version >= boot_version:
+        return False
+
+    live_ids = {r.get("id") for r in live["policies"] if isinstance(r, dict)}
+    added = [r for r in boot["policies"]
+             if isinstance(r, dict) and r.get("id") not in live_ids]
+    live["policies"] = live["policies"] + added
+    live["version"] = boot_version
+    _atomic_write_policies(dst, live)
+    now = datetime.now(timezone.utc).timestamp()
+    _append_ledger({
+        "ts": utc_iso(now), "epoch": int(now),
+        "key": f"policy-bootstrap-upgrade:v{live_version}->v{boot_version}",
+        "kind": "policy-bootstrap-upgrade",
+        "ws_ref": "(policies)",
+        "outcome": "verified",
+        "evidence": (f"bootstrap v{live_version}->v{boot_version}: added "
+                     f"{len(added)} rule(s) "
+                     f"[{', '.join(r['id'] for r in added[:6])}]; "
+                     "user rules untouched"),
+    })
     return True
 
 

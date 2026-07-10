@@ -204,9 +204,25 @@ class AnnotateTriageTests(HomeTestCase):
         new = decisions.annotate_triage(rec["id"], "digest", "just FYI",
                                         now=NOW + 5)
         self.assertEqual(new["status"], "open")       # suggestions never act
-        self.assertEqual(new["lane"], "digest")
         self.assertEqual(new["triage"]["suggested_lane"], "digest")
         self.assertEqual(new["epoch"], rec["epoch"])  # creation epoch kept
+
+    def test_suggestion_is_a_pure_annotation(self):
+        # Design section 5: suggestions land on the record, never act. The
+        # effective lane, TTL, and score stay policy-derived (escalate) — a
+        # digest suggestion must not pull the decision off the fail-safe
+        # escalate surface, change when it expires, or re-rank it.
+        rec, _ = decisions.open_decision(
+            event=make_event(), lane="escalate", policy_id="triage",
+            ttl_h=None, now=NOW)
+        new = decisions.annotate_triage(rec["id"], "digest", "just FYI",
+                                        now=NOW + 5)
+        self.assertEqual(new["lane"], "escalate")
+        self.assertIsNone(new["ttl_h"])
+        self.assertEqual(new["score"], rec["score"])
+        # The annotated decision still never TTL-expires (escalate ttl is
+        # None) — the digest suggestion must not smuggle in digest's 24h.
+        self.assertEqual(decisions.expire_open(now=NOW + 365 * 86400), [])
 
     def test_resolved_decision_not_annotated(self):
         rec, _ = decisions.open_decision(
@@ -300,6 +316,173 @@ class QueueViewTests(HomeTestCase):
         with open(decisions.decisions_path(), "a") as f:
             f.write("{torn json\n")
         self.assertEqual(len(decisions.rebuild_queue()["decisions"]), 3)
+
+
+class ConcurrencyTests(HomeTestCase):
+    def test_concurrent_transitions_exactly_one_wins(self):
+        # The check-then-append race: todo-server accept vs pulse expire.
+        # With read-fold-guard-append inside ONE flock'd critical section,
+        # exactly one transition lands; the loser gets a refused result.
+        import threading
+        rec, _ = decisions.open_decision(
+            event=make_event(), lane="staged", policy_id="r1", ttl_h=72,
+            now=NOW)
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def act(name, to_status):
+            barrier.wait()
+            results[name] = decisions.transition(
+                rec["id"], to_status, via=name, now=NOW + 10)
+
+        t1 = threading.Thread(target=act, args=("accept", "accepted"))
+        t2 = threading.Thread(target=act, args=("expire", "expired"))
+        t1.start(); t2.start(); t1.join(); t2.join()
+        outcomes = {name: (r, err) for name, (r, err) in results.items()}
+        winners = [n for n, (r, err) in outcomes.items() if err is None]
+        losers = [n for n, (r, err) in outcomes.items() if err is not None]
+        self.assertEqual(len(winners), 1, msg=str(outcomes))
+        self.assertEqual(len(losers), 1, msg=str(outcomes))
+        # The loser was refused BECAUSE the winner's state landed first.
+        _, err = outcomes[losers[0]]
+        self.assertIn("only open/snoozed can transition", err)
+        # And the log holds exactly one transition record.
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(len(decisions.read_log()), 2)  # create + one flip
+        self.assertIn(folded[rec["id"]]["status"], ("accepted", "expired"))
+
+
+class FoldOrderTests(HomeTestCase):
+    def test_fold_orders_by_epoch_with_file_order_tiebreak(self):
+        # A record appended out of epoch order (hand merge, clock skew) must
+        # not roll state back: the highest epoch wins; equal epochs fall back
+        # to file order (last write wins).
+        rec, _ = decisions.open_decision(
+            event=make_event(), lane="staged", policy_id="r1", now=NOW)
+        decisions.transition(rec["id"], "accepted", via="t", now=NOW + 100)
+        stale = dict(rec)
+        stale["ts"] = decisions.utc_iso(NOW + 50)
+        stale["epoch"] = int(NOW + 50)   # older than the accepted record
+        with open(decisions.decisions_path(), "a") as f:
+            f.write(json.dumps(stale) + "\n")
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[rec["id"]]["status"], "accepted")
+        # Equal epochs: file order breaks the tie (later line wins).
+        dup = dict(stale)
+        dup["epoch"] = int(NOW + 100)
+        dup["status"] = "rejected"
+        with open(decisions.decisions_path(), "a") as f:
+            f.write(json.dumps(dup) + "\n")
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[rec["id"]]["status"], "rejected")
+
+
+class ReopenTests(HomeTestCase):
+    def test_expired_decision_reopens_on_new_sighting(self):
+        rec, _ = decisions.open_decision(
+            event=make_event(ts=decisions.utc_iso(NOW)), lane="digest",
+            policy_id="r1", ttl_h=24, now=NOW)
+        decisions.expire_open(now=NOW + 25 * 3600)
+        # A NEW sighting of the same stable id (event ts > resolution ts).
+        later = NOW + 30 * 3600
+        rec2, created = decisions.open_decision(
+            event=make_event(ts=decisions.utc_iso(later)), lane="digest",
+            policy_id="r1", ttl_h=24, now=later)
+        self.assertTrue(created)
+        self.assertEqual(rec2["id"], rec["id"])
+        self.assertEqual(rec2["status"], "open")
+        rows = self.ledger_rows("decision-transition")
+        self.assertTrue(any("expired->open" in r.get("key", "")
+                            for r in rows))
+
+    def test_expired_decision_stays_dead_for_old_sighting(self):
+        rec, _ = decisions.open_decision(
+            event=make_event(ts=decisions.utc_iso(NOW)), lane="digest",
+            policy_id="r1", ttl_h=24, now=NOW)
+        decisions.expire_open(now=NOW + 25 * 3600)
+        # Re-triaging the ORIGINAL event (ts before the expiry) is a noop.
+        rec2, created = decisions.open_decision(
+            event=make_event(ts=decisions.utc_iso(NOW)), lane="digest",
+            policy_id="r1", ttl_h=24, now=NOW + 26 * 3600)
+        self.assertFalse(created)
+        self.assertEqual(rec2["status"], "expired")
+
+    def test_rejected_decision_never_reopens(self):
+        rec, _ = decisions.open_decision(
+            event=make_event(ts=decisions.utc_iso(NOW)), lane="staged",
+            policy_id="r1", now=NOW)
+        decisions.transition(rec["id"], "rejected", via="t", now=NOW + 10)
+        rec2, created = decisions.open_decision(
+            event=make_event(ts=decisions.utc_iso(NOW + 86400)), lane="staged",
+            policy_id="r1", now=NOW + 86400)
+        self.assertFalse(created)
+        self.assertEqual(rec2["status"], "rejected")
+
+
+class WakeLedgerTests(HomeTestCase):
+    def test_snooze_wake_gets_a_ledger_row(self):
+        rec, _ = decisions.open_decision(
+            event=make_event(), lane="staged", policy_id="r1", ttl_h=None,
+            now=NOW)
+        decisions.transition(rec["id"], "snoozed", via="t",
+                             wake_ts=NOW + 600, now=NOW + 5)
+        decisions.expire_open(now=NOW + 601)
+        rows = self.ledger_rows("decision-transition")
+        self.assertTrue(any("snoozed->open" in r.get("key", "")
+                            for r in rows), msg=str(rows))
+
+
+class BatchExpiryTests(HomeTestCase):
+    def test_batch_expiry_does_one_queue_rebuild(self):
+        from unittest import mock
+        for i in range(5):
+            decisions.open_decision(
+                event=make_event(id=f"e-{i}", external_id=f"x:{i}"),
+                lane="digest", policy_id="r1", ttl_h=24, now=NOW)
+        with mock.patch.object(decisions, "_write_queue",
+                               wraps=decisions._write_queue) as wq:
+            expired = decisions.expire_open(now=NOW + 25 * 3600)
+        self.assertEqual(len(expired), 5)
+        self.assertEqual(wq.call_count, 1)  # one rebuild for the whole sweep
+        folded = decisions.fold(decisions.read_log())
+        self.assertTrue(all(folded[r["id"]]["status"] == "expired"
+                            for r in expired))
+
+
+class CompactionTests(HomeTestCase):
+    def test_compaction_preserves_fold_equivalence(self):
+        recs = []
+        for i in range(6):
+            rec, _ = decisions.open_decision(
+                event=make_event(id=f"e-{i}", external_id=f"x:{i}"),
+                lane="staged", policy_id="r1", ttl_h=72, now=NOW + i)
+            recs.append(rec)
+        decisions.transition(recs[0]["id"], "accepted", via="t", now=NOW + 10)
+        decisions.transition(recs[1]["id"], "rejected", via="t", now=NOW + 11)
+        before = decisions.fold(decisions.read_log())
+        # Force compaction on the next append by shrinking the threshold.
+        old_max = decisions.MAX_LOG_BYTES
+        decisions.MAX_LOG_BYTES = 1
+        try:
+            rec, _ = decisions.open_decision(
+                event=make_event(id="e-new", external_id="x:new"),
+                lane="digest", policy_id="r1", ttl_h=24, now=NOW + 20)
+        finally:
+            decisions.MAX_LOG_BYTES = old_max
+        after = decisions.fold(decisions.read_log())
+        # fold(before) ⊂ fold(after): every pre-compaction id folds to the
+        # identical record (terminal states preserved); the new append is
+        # the only addition.
+        for dec_id, want in before.items():
+            self.assertEqual(json.dumps(after[dec_id], sort_keys=True),
+                             json.dumps(want, sort_keys=True))
+        self.assertEqual(set(after) - set(before), {rec["id"]})
+        # One line per id in the compacted log (history rotated to .1).
+        log_ids = [r["id"] for r in self.log_lines()]
+        self.assertEqual(len(log_ids), len(set(log_ids)))
+        rotated = decisions.decisions_path().with_name(
+            decisions.decisions_path().name + ".1")
+        self.assertTrue(rotated.exists())
 
 
 class ScoreTests(unittest.TestCase):
