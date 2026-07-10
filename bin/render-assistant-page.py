@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from html import escape as e
 from pathlib import Path
@@ -331,6 +332,38 @@ def render_live_sessions(world):
     return "".join(rows), len(sessions)
 
 
+def render_metering_stats():
+    """Fleet cost/behavior tiles from the last 7 days of the pulse metering
+    log (~/.assistant/metrics.jsonl, written by pulse.py each pulse):
+    Observer calls/day, $/day estimate, verdict-change rate, skip rate.
+    The aggregation math AND the log path live in bin/metering.py (single
+    source of truth, shared with the pulse); any failure — no log yet,
+    module missing, aggregate missing a key — degrades to an empty string,
+    never a broken page. The tile-row f-string subscripts agg, so it MUST
+    stay inside the try: a KeyError here would otherwise kill the whole
+    dashboard render."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import metering  # noqa: PLC0415
+        agg = metering.aggregate(
+            metering.read_metrics(metering.metrics_path()),
+            now=int(utc_now().timestamp()),
+            window_days=7,
+        )
+        if not agg.get("n_pulses"):
+            return ""
+        return f"""
+<div class="stats">
+  <div class="stat"><div class="v">{agg['observer_calls_per_day']:.0f}</div><div class="k">Observer calls/day</div></div>
+  <div class="stat"><div class="v">${agg['cost_per_day_usd']:.2f}</div><div class="k">$/day est · 7d</div></div>
+  <div class="stat"><div class="v">{agg['verdict_change_rate'] * 100:.0f}%</div><div class="k">Verdict-change rate</div></div>
+  <div class="stat"><div class="v">{agg['skip_rate'] * 100:.0f}%</div><div class="k">Skip rate (no Observer call)</div></div>
+</div>
+"""
+    except Exception:
+        return ""
+
+
 def render_decisions_tab(world):
     awaiting_html, awaiting_n = render_awaiting(world)
     activity_html, activity_n = render_activity(world)
@@ -343,6 +376,7 @@ def render_decisions_tab(world):
     gen = parse_iso(triage_meta.get("generated_at"))
     if gen:
         triage_age = age_str((utc_now() - gen).total_seconds())
+    metering_html = render_metering_stats()
     return f"""
 <div class="stats">
   <div class="stat"><div class="v">{awaiting_n}</div><div class="k">Awaiting input</div></div>
@@ -351,6 +385,7 @@ def render_decisions_tab(world):
   <div class="stat"><div class="v">{counts.get('human_sessions', 0)}</div><div class="k">Live · {counts.get('cron_sessions', 0)} cron hidden</div></div>
   <div class="stat"><div class="v">{triage_age}</div><div class="k">Last Assistant pulse</div></div>
 </div>
+{metering_html}
 
 <div class="section">
   <h2>Awaiting your input <span class="count">{awaiting_n}</span></h2>
