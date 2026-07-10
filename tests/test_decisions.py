@@ -485,6 +485,61 @@ class CompactionTests(HomeTestCase):
         self.assertTrue(rotated.exists())
 
 
+class CreatedEpochSurvivesCompactionTests(HomeTestCase):
+    """F15: log compaction preserves each decision's ORIGINAL creation epoch,
+    so ages and TTLs are unaffected by compaction (the create record is gone
+    but created_epoch carries the birth time)."""
+
+    def test_ttl_measured_from_creation_after_compaction(self):
+        rec, _ = decisions.open_decision(
+            event=make_event(id="e-x", external_id="x:x"),
+            lane="staged", policy_id="r1", ttl_h=72, now=NOW)
+        # A snooze→wake cycle advances the latest record's `epoch` well past
+        # creation, so a naive "epoch == creation" read would be wrong.
+        decisions.transition(rec["id"], "snoozed", via="t",
+                             wake_ts=NOW + 10, now=NOW + 5)
+        decisions.expire_open(now=NOW + 10)  # wakes it → open, epoch=NOW+10
+        # Force compaction, discarding the create record.
+        old_max = decisions.MAX_LOG_BYTES
+        decisions.MAX_LOG_BYTES = 1
+        try:
+            decisions.open_decision(
+                event=make_event(id="e-pad", external_id="x:pad"),
+                lane="digest", policy_id="r1", now=NOW + 20)
+        finally:
+            decisions.MAX_LOG_BYTES = old_max
+        # The surviving folded record keeps the true creation epoch …
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[rec["id"]]["created_epoch"], int(NOW))
+        # … so the TTL fires 72h after CREATION, not 72h after the wake. At
+        # 72h+5s the decision has genuinely aged out; a from-transition read
+        # (NOW+10) would still consider it fresh here — this instant is the
+        # discriminator that proves the fix.
+        decisions.expire_open(now=NOW + 72 * 3600 + 5)
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[rec["id"]]["status"], "expired")
+
+
+class LanePartitionOrderingTests(HomeTestCase):
+    """F6: the queue partitions by lane so escalate is always on top, even
+    when a lower lane's urgency would out-score it."""
+
+    def test_escalate_low_outranks_staged_now(self):
+        s, _ = decisions.open_decision(
+            event=make_event(id="e-s", external_id="x:s"),
+            lane="staged", policy_id="r1", urgency="now", now=NOW)
+        e, _ = decisions.open_decision(
+            event=make_event(id="e-e", external_id="x:e"),
+            lane="escalate", policy_id="r2", urgency="low", now=NOW + 1)
+        # staged+now scores 110, escalate+low scores 100 — but the partition
+        # keeps escalate at the top of the open queue.
+        self.assertGreater(decisions.score_decision("staged", "now"),
+                           decisions.score_decision("escalate", "low"))
+        view = decisions.load_queue()
+        open_lanes = [d["lane"] for d in decisions.open_decisions(view)]
+        self.assertEqual(open_lanes[0], "escalate")
+
+
 class ScoreTests(unittest.TestCase):
     def test_deterministic_ordering_weights(self):
         self.assertGreater(decisions.score_decision("escalate", "now"),

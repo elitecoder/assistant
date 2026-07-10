@@ -456,9 +456,15 @@ def _render_brief_tab_inner():
 </div>"""
 
     # ─── 1. decision queue ───
+    # Cap the rendered queue with an "N more" row, consistent with the capped
+    # receipts (:40) and digest (:50) sections — an unbounded queue on an
+    # incident day would blow the page up while the others stay bounded (F18).
+    # The queue is lane-partitioned (escalate first), so the cap always shows
+    # the highest-priority decisions; the overflow lives on the Decisions tab.
+    QUEUE_RENDER_CAP = 40
     if queue:
         rows = []
-        for d in queue:
+        for d in queue[:QUEUE_RENDER_CAP]:
             dec_id = d.get("id") or ""
             lane = (d.get("lane") or "?")
             lane_cls = {"escalate": "t3", "staged": "t2", "digest": "scope"}.get(lane, "scope")
@@ -495,6 +501,10 @@ def _render_brief_tab_inner():
     {ws_btn}
   </div>
 </div>""")
+        if len(queue) > QUEUE_RENDER_CAP:
+            rows.append(
+                f'<div class="row more">… {len(queue) - QUEUE_RENDER_CAP} '
+                f'more decision(s) — see the Decisions tab</div>')
         queue_html = "".join(rows)
     else:
         queue_html = '<div class="empty">Queue clear — nothing needs a decision.</div>'
@@ -2475,8 +2485,11 @@ function showTab(name) {
 }
 // /brief/seen signal (Keel M3): viewing the Brief tab stamps the seen
 // sidecar so the unseen-degradation pass knows the brief was looked at.
-// Fired at most once per page load; failures (file:// page, server down)
-// are swallowed — the signal is best-effort by design.
+// Fired at most once per page load; failures (server down) are swallowed —
+// the signal is best-effort by design. The URL is ABSOLUTE to the todo-server
+// (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
+// as a file:// page — a relative fetch resolves to file:///brief/seen and
+// never arrives, silently arming the destructive unseen-TTL (F19).
 let briefSeenSent = false;
 function pingBriefSeen() {
   if (briefSeenSent) return;
@@ -2484,9 +2497,10 @@ function pingBriefSeen() {
   if (!root) return;
   briefSeenSent = true;
   try {
-    fetch('/brief/seen?date=' + encodeURIComponent(root.dataset.briefDate),
-          {method: 'POST'}).catch(() => {});
-  } catch (e) { /* file:// context — ignore */ }
+    fetch('http://127.0.0.1:9876/brief/seen?date='
+            + encodeURIComponent(root.dataset.briefDate),
+          {method: 'POST', mode: 'cors'}).catch(() => {});
+  } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#decisions').replace('#', '');

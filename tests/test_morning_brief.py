@@ -360,5 +360,246 @@ class PulseStepTests(BriefBase):
         self.assertEqual(brief.wake_hour(), brief.DEFAULT_WAKE_HOUR)
 
 
+# ─── adversarial-review regressions (Keel M3 fix cycle) ──────────────────────
+
+class BadTypedRowTests(BriefBase):
+    """F3: a parseable-but-wrong-typed decisions.jsonl row (ISO-string epoch,
+    unhashable list/dict lane/urgency) must NOT crash build_brief /
+    compute_daily_metrics — one bad line never blanks the whole brief."""
+
+    def _write_raw(self, records):
+        p = decisions.decisions_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+    def test_bad_epoch_and_unhashable_lane_do_not_blank_brief(self):
+        # A good decision that must still surface …
+        good, _ = decisions.open_decision(
+            event=make_event(1), lane="escalate", policy_id="p",
+            urgency="now", now=NOW - 3600)
+        # … alongside two poisoned rows.
+        self._write_raw([
+            {"schema": "decision/1", "id": "dec-badepoch",
+             "epoch": "2026-07-02T10:00:00Z", "status": "open",
+             "lane": "staged", "urgency": "now", "title": "iso epoch"},
+            {"schema": "decision/1", "id": "dec-badlane",
+             "epoch": int(NOW - 1800), "status": "open",
+             "lane": ["not", "a", "str"], "urgency": {"d": 1},
+             "title": "unhashable lane"},
+        ])
+        doc = brief.build_brief(now=NOW)          # must not raise
+        ids = [r["id"] for r in doc["queue"]]
+        self.assertIn(good["id"], ids)            # good row survives
+        self.assertEqual(doc["queue"][0]["lane"], "escalate")  # partition holds
+        row = brief.compute_daily_metrics(doc, now=NOW)  # must not raise
+        self.assertIn("decisions_pending_at_brief", row)
+
+
+class NorthStarMetricTests(BriefBase):
+    """F14: decisions_pending_at_brief excludes the digest lane, and
+    decisions_accepted_unedited is a RATIO, not a raw count."""
+
+    def test_digest_lane_excluded_from_pending(self):
+        decisions.open_decision(event=make_event(1), lane="staged",
+                                policy_id="p", now=NOW - 3600)
+        decisions.open_decision(event=make_event(2), lane="digest",
+                                policy_id="p", ttl_h=24, now=NOW - 3600)
+        doc = brief.build_brief(now=NOW)
+        # Both are OPEN and appear in the rendered queue …
+        self.assertEqual(len(doc["queue"]), 2)
+        # … but the north star counts only the actionable (non-digest) one.
+        row = brief.compute_daily_metrics(doc, now=NOW)
+        self.assertEqual(row["decisions_pending_at_brief"], 1)
+
+    def test_accepted_unedited_is_a_ratio(self):
+        # 1 accepted-with-default + 1 rejected + 1 edited resolved in 24h →
+        # ratio 1/3, which a raw count (1) can never equal.
+        a, _ = decisions.open_decision(event=make_event(1), lane="staged",
+                                       policy_id="p", now=NOW - 3600)
+        b, _ = decisions.open_decision(event=make_event(2), lane="staged",
+                                       policy_id="p", now=NOW - 3600)
+        c, _ = decisions.open_decision(event=make_event(3), lane="staged",
+                                       policy_id="p", now=NOW - 3600)
+        decisions.transition(a["id"], "accepted", via="test", now=NOW - 60)
+        decisions.transition(b["id"], "rejected", via="test", now=NOW - 60)
+        decisions.transition(c["id"], "edited", via="test", now=NOW - 60)
+        doc = brief.build_brief(now=NOW)
+        row = brief.compute_daily_metrics(doc, now=NOW)
+        self.assertAlmostEqual(row["decisions_accepted_unedited"], 1 / 3,
+                               places=3)
+
+    def test_accepted_unedited_day_one_is_zero_not_div_error(self):
+        decisions.open_decision(event=make_event(1), lane="staged",
+                                policy_id="p", now=NOW - 3600)
+        doc = brief.build_brief(now=NOW)
+        row = brief.compute_daily_metrics(doc, now=NOW)  # no resolutions yet
+        self.assertEqual(row["decisions_accepted_unedited"], 0.0)
+
+
+class ReceiptsMergeDispatchedTests(BriefBase):
+    """F16: an overnight PR merge (ledger kind "merge-dispatched", the kind
+    pulse.py actually writes) shows up in the Handled-overnight receipts."""
+
+    def test_merge_dispatched_row_appears_in_receipts(self):
+        decisions.ledger_path().parent.mkdir(parents=True, exist_ok=True)
+        with open(decisions.ledger_path(), "a") as f:
+            f.write(json.dumps({
+                "ts": brief.utc_iso(NOW - 1800), "epoch": int(NOW - 1800),
+                "key": "workspace:7-merge", "kind": "merge-dispatched",
+                "ws_ref": "workspace:7", "outcome": "submitted",
+                "evidence": "merge-pr-dispatch pr=#42 outcome=submitted"}) + "\n")
+        doc = brief.build_brief(now=NOW)
+        kinds = [r["kind"] for r in doc["handled_overnight"]]
+        self.assertIn("merge-dispatched", kinds)
+
+
+class LedgerWindowNoClipTests(BriefBase):
+    """F11: the 24h windowed ledger reads scan to the window boundary — a huge
+    incident day is counted in full, never clipped to a fixed line tail."""
+
+    def test_five_thousand_in_window_denials_all_counted(self):
+        n = 5000  # > LEDGER_TAIL_LINES (4000)
+        decisions.ledger_path().parent.mkdir(parents=True, exist_ok=True)
+        with open(decisions.ledger_path(), "a") as f:
+            for i in range(n):
+                f.write(json.dumps({
+                    "ts": brief.utc_iso(NOW - 600), "epoch": int(NOW - 600),
+                    "key": f"interrupt:denied:notify:k{i}",
+                    "kind": "interrupt-denied", "ws_ref": "(interrupt-gate)",
+                    "outcome": "skipped", "evidence": "denied"}) + "\n")
+        health = brief._build_health(decisions.read_log(), NOW)
+        self.assertEqual(health["interrupts"]["denied_24h"], n)
+
+
+class PerDecisionSeenTests(BriefBase):
+    """F4: seen-ness is per DECISION — a decision viewed in ANY brief is never
+    degraded, even when its own (older) brief's sidecar was never stamped."""
+
+    def test_weekend_view_of_later_brief_protects_earlier_decision(self):
+        # Saturday: a staged decision, and Saturday's brief lists it.
+        sat = NOW
+        rec, _ = decisions.open_decision(
+            event=make_event(1, kind="stale_kind"), lane="staged",
+            policy_id="rule-staged", ttl_h=None, now=sat - 3600)
+        brief.write_brief(brief.build_brief(now=sat))
+        # Monday: same decision still open, Monday's brief lists it too, and
+        # the user VIEWS Monday's brief (only). Saturday's sidecar stays
+        # unstamped (the renderer can only stamp the latest brief).
+        mon = sat + 48 * 3600 + 7200  # Sat's brief is now > 48h old
+        brief.write_brief(brief.build_brief(now=mon))
+        ok, _ = brief.mark_seen(brief.local_date(mon), now=mon + 60)
+        self.assertTrue(ok)
+        # Degrade must NOT expire a decision the user actually reviewed.
+        out = brief.degrade_unseen(now=mon + 120)
+        self.assertNotIn(rec["id"], out["expired"])
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[rec["id"]]["status"], "open")
+
+
+class MetricsConcurrencyTests(BriefBase):
+    """F5: the once-per-date metrics append is flock-guarded — concurrent
+    builders yield exactly one row per date."""
+
+    def test_concurrent_append_yields_one_row(self):
+        import threading
+        decisions.open_decision(event=make_event(1), lane="staged",
+                                policy_id="p", now=NOW - 3600)
+        doc = brief.build_brief(now=NOW)
+        barrier = threading.Barrier(8)
+
+        def worker():
+            barrier.wait()
+            brief.append_daily_metrics(doc, now=NOW)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(brief.read_daily_metrics()), 1)
+
+
+class WriteBriefUniqueTmpTests(BriefBase):
+    """F5b: the brief tmp file is unique per writer, so two builders racing on
+    the same date can't collide on a fixed tmp name (FileNotFoundError)."""
+
+    def test_concurrent_write_brief_same_date_no_error(self):
+        import threading
+        doc = brief.build_brief(now=NOW)
+        errors = []
+
+        def worker():
+            try:
+                brief.write_brief(doc)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertTrue(brief.brief_path(brief.local_date(NOW)).exists())
+
+
+class PulseDegradeOrderingTests(BriefBase):
+    """F9/F10: degradation runs BEFORE the brief is built and on the daily
+    boundary regardless of whether today's brief already exists."""
+
+    def _seed_old_unseen_brief_with_expiring_decision(self):
+        old = NOW - 60 * 3600  # > 48h before NOW
+        rec, _ = decisions.open_decision(
+            event=make_event(1, kind="stale_kind"), lane="staged",
+            policy_id="rule-staged", ttl_h=None, now=old - 3600)
+        brief.write_brief(brief.build_brief(now=old))  # unseen old brief
+        return rec["id"]
+
+    def test_brief_never_lists_a_row_it_is_about_to_expire(self):
+        dec_id = self._seed_old_unseen_brief_with_expiring_decision()
+        out = brief.pulse_step(now=NOW)
+        self.assertTrue(out["built"])
+        # Degrade ran first → the decision is expired → today's brief, built
+        # from the post-degrade state, does NOT list it (no dead one-tap row).
+        today = brief._read_json(brief.brief_path(brief.local_date(NOW)))
+        self.assertNotIn(dec_id, [r["id"] for r in today["queue"]])
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[dec_id]["status"], "expired")
+
+    def test_degrade_runs_even_when_brief_preexists(self):
+        dec_id = self._seed_old_unseen_brief_with_expiring_decision()
+        # A pre-wake CLI build already wrote today's brief …
+        brief.write_brief(brief.build_brief(now=NOW))
+        self.assertTrue(brief.brief_path(brief.local_date(NOW)).exists())
+        # … the pulse must STILL run the day's degradation, not early-return.
+        out = brief.pulse_step(now=NOW)
+        self.assertFalse(out["built"])           # brief already existed
+        self.assertIsNotNone(out["degrade"])     # degrade still ran
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[dec_id]["status"], "expired")
+
+    def test_degrade_gated_once_per_day(self):
+        self._seed_old_unseen_brief_with_expiring_decision()
+        first = brief.pulse_step(now=NOW)
+        self.assertIsNotNone(first["degrade"])
+        second = brief.pulse_step(now=NOW + 300)  # same day, later pulse
+        self.assertIsNone(second["degrade"])      # stamp gates the re-run
+
+
+class QueuePartitionTests(BriefBase):
+    """F6: the escalate lane is always at the top of the queue, even when a
+    lower lane's urgency+freshness would out-score it numerically."""
+
+    def test_escalate_low_outranks_staged_now(self):
+        decisions.open_decision(event=make_event(1), lane="staged",
+                                policy_id="p", urgency="now", now=NOW - 60)
+        decisions.open_decision(event=make_event(2), lane="escalate",
+                                policy_id="p", urgency="low", now=NOW - 60)
+        doc = brief.build_brief(now=NOW)
+        self.assertEqual(doc["queue"][0]["lane"], "escalate")
+
+
 if __name__ == "__main__":
     unittest.main()

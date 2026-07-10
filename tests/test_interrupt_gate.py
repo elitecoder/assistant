@@ -234,5 +234,62 @@ class LadderTests(GateBase):
         self.assertTrue(self.request(key="n1")["delivered"])
 
 
+# ─── adversarial-review regressions (Keel M3 fix cycle) ──────────────────────
+
+class EmptyRequiresFallbackTests(GateBase):
+    """F1: a present-but-empty {"requires": {}} page entry must fall back to
+    the default page gate — config can tighten the ladder, never erase it."""
+
+    def test_empty_requires_page_entry_still_gated(self):
+        self.set_budget({"date": self.gate.local_date(NOW),
+                         "budget": {"page": 5},
+                         "ladder": [{"level": "page", "requires": {}}]})
+        # Wrong lane (default None) → the restored default gate denies it.
+        res = self.request(level="page", key="p1")
+        self.assertFalse(res["delivered"])
+        self.assertIn("ladder", res["reason"])
+        # A fully-qualified page still passes the restored gate.
+        ok = self.request(level="page", key="p2", lane="escalate",
+                          urgency="now", pageable=True)
+        self.assertTrue(ok["delivered"])
+
+
+class DateResetFailsQuietTests(GateBase):
+    """F2: a missing / typo'd / unparseable date must KEEP the used counts
+    (fail toward quieter), never hand back a fresh quota with a raised
+    budget. Only a genuine, valid rollover resets."""
+
+    def test_missing_date_keeps_used(self):
+        self.set_budget({"budget": {"notify": 5}, "used": {"notify": 3}})
+        doc = self.gate.load_budget(NOW)
+        self.assertEqual(doc["used"].get("notify"), 3)
+
+    def test_typo_date_keeps_used(self):
+        self.set_budget({"date": "not-a-date", "budget": {"notify": 5},
+                         "used": {"notify": 3}})
+        doc = self.gate.load_budget(NOW)
+        self.assertEqual(doc["used"].get("notify"), 3)
+
+    def test_valid_older_date_resets_used(self):
+        self.set_budget({"date": "2026-07-01", "budget": {"notify": 5},
+                         "used": {"notify": 3}})
+        doc = self.gate.load_budget(NOW)  # NOW is 2026-07-02 local
+        self.assertEqual(doc["used"], {})
+
+
+class LevelNamespacedDedupTests(GateBase):
+    """F12: dedup is keyed by (level, key) — a delivered notify must not
+    suppress a later PAGE on the same key for 24h."""
+
+    def test_notify_does_not_suppress_later_page(self):
+        self.set_budget({"date": self.gate.local_date(NOW),
+                         "budget": {"page": 1, "notify": 1}})
+        n = self.request(level="notify", key="k")
+        self.assertTrue(n["delivered"])
+        p = self.request(level="page", key="k", lane="escalate",
+                         urgency="now", pageable=True)
+        self.assertTrue(p["delivered"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,7 +31,11 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
   GET  /                                                  health check ("ok")
 
 On every successful TODO mutation, the JSON file is atomically rewritten and the
-static HTML is re-rendered so the next file:// load reflects the new state.
+static HTML is re-rendered so the next dashboard load reflects the new state.
+Live POST signals (the one-tap decision routes, /brief/seen) require THIS running
+server: a dashboard opened as a bare file:// page reaches them only because the
+renderer posts to the absolute http://127.0.0.1:9876 origin — a relative fetch
+from file:// would resolve to file:///… and never arrive (F19).
 /focus is a side-effect-only command (shells out to `cmux select-workspace`).
 
 Stdlib only. Run by LaunchAgent com.assistant.assistant-todo-server.

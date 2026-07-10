@@ -11,9 +11,26 @@ someone shells it differently), terminal-notifier, and Slack's
 chat.postMessage. Docstrings count as hits on purpose — the cheapest way to
 keep the forbidden strings out of copy-pasteable reach is to keep them out
 of the trees entirely.
+
+Two scans run per file (F17 — a bare per-line literal grep is trivially
+evaded):
+  1. a CASE-INSENSITIVE text scan (catches `OSASCRIPT`, `Osascript`, …);
+  2. an AST scan that CONSTANT-FOLDS string expressions before searching, so
+     split-literal / concatenation dodges are caught:
+       "osas" + "cript"          (BinOp folding)
+       ["osa" "script"]          (implicit adjacent-literal concat)
+       "".join(["osa","script"]) (constant str.join)
+       f"osa{''}script"          (f-string constant parts)
+Known residual gap (documented, not closed): fully DYNAMIC construction at
+runtime — getattr on a module, a binary read from a file, bytes.decode of an
+obfuscated blob — still evades a static scan. The AST fold catches the
+literal-splitting a human reaches for first; defeating it now takes
+deliberate obfuscation that would not survive review. The exact-path gate
+exemption below is the one intentional hole.
 """
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -23,8 +40,63 @@ SCAN_DIRS = ("bin", "src")
 # The one permitted push call site.
 ALLOWLIST = {Path("bin") / "interrupt-gate.py"}
 
+# Case-insensitive so `OSASCRIPT` / `Chat.PostMessage` can't slip past.
 PUSH_PATTERN = re.compile(
-    r"osascript|display notification|terminal-notifier|chat\.postMessage")
+    r"osascript|display notification|terminal-notifier|chat\.postMessage",
+    re.IGNORECASE)
+
+
+def _fold_str(node):
+    """Best-effort constant fold of a string-valued AST node → its str value,
+    or None when it isn't a pure constant expression. Handles the literal
+    dodges a human reaches for: `a + b`, implicit adjacent concat (already
+    merged by the parser into one Constant), `"sep".join([...])`, f-strings
+    with constant parts."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_str(node.left)
+        right = _fold_str(node.right)
+        if left is not None and right is not None:
+            return left + right
+        return None
+    if isinstance(node, ast.JoinedStr):  # f-string
+        parts = []
+        for v in node.values:
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                parts.append(v.value)
+        return "".join(parts)
+    if isinstance(node, ast.Call):
+        fn = node.func
+        if isinstance(fn, ast.Attribute) and fn.attr == "join":
+            sep = _fold_str(fn.value)
+            if sep is not None and node.args and isinstance(
+                    node.args[0], (ast.List, ast.Tuple)):
+                elts = [_fold_str(e) for e in node.args[0].elts]
+                if all(e is not None for e in elts):
+                    return sep.join(elts)
+    return None
+
+
+def scan_source(text: str) -> list[str]:
+    """Every distinct forbidden token this source reveals, via the
+    case-insensitive text scan AND the constant-folding AST scan. Empty list
+    means clean. Exposed at module scope so the decoy test can exercise it
+    without planting rogue files under bin/src."""
+    hits: list[str] = []
+    for m in PUSH_PATTERN.finditer(text):
+        hits.append(m.group(0).lower())
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        # A file using syntax this interpreter can't parse (e.g. match/case
+        # under 3.9) still got the text scan above — don't crash the guard.
+        return sorted(set(hits))
+    for node in ast.walk(tree):
+        folded = _fold_str(node)
+        if folded and PUSH_PATTERN.search(folded):
+            hits.append(PUSH_PATTERN.search(folded).group(0).lower())
+    return sorted(set(hits))
 
 
 class NoRogueNotificationsTest(unittest.TestCase):
@@ -44,9 +116,21 @@ class NoRogueNotificationsTest(unittest.TestCase):
                     text = path.read_text(errors="replace")
                 except OSError:
                     continue
+                # Line scan (keeps the precise file:line report) …
                 for n, line in enumerate(text.splitlines(), 1):
                     if PUSH_PATTERN.search(line):
                         offenders.append(f"{rel}:{n}: {line.strip()[:120]}")
+                # … plus the constant-folding scan for split-literal dodges
+                # that no single line reveals.
+                if path.suffix == ".py":
+                    folded_hits = set(scan_source(text))
+                    line_hits = {PUSH_PATTERN.search(l).group(0).lower()
+                                 for l in text.splitlines()
+                                 if PUSH_PATTERN.search(l)}
+                    for extra in sorted(folded_hits - line_hits):
+                        offenders.append(
+                            f"{rel}: split-literal push token {extra!r} "
+                            "(constant-folded)")
         self.assertEqual(
             offenders, [],
             "push-surface call sites outside bin/interrupt-gate.py "
@@ -58,6 +142,35 @@ class NoRogueNotificationsTest(unittest.TestCase):
         otherwise pass the grep while breaking every caller."""
         for rel in ALLOWLIST:
             self.assertTrue((REPO / rel).is_file(), f"{rel} missing")
+
+    def test_split_token_and_concat_decoys_are_caught(self):
+        """The dodges a per-line literal grep misses (F17): mixed case, string
+        concatenation, implicit adjacent-literal concat, constant join, and
+        f-string assembly of the forbidden binaries."""
+        decoys = [
+            'x = "OSASCRIPT"',                              # case
+            'x = "osas" + "cript"',                         # + concat
+            'subprocess.run(["osa" "script", "-e", s])',    # implicit concat
+            'cmd = "".join(["osa", "script"])',             # constant join
+            'name = f"osa{\'\'}script"',                    # f-string parts
+            'y = "terminal-" + "notifier"',                 # + concat, 2nd bin
+            'z = "chat." + "postMessage"',                  # + concat, Slack
+        ]
+        for src in decoys:
+            self.assertTrue(
+                scan_source(src),
+                f"decoy evaded the scan: {src!r}")
+
+    def test_clean_source_is_not_flagged(self):
+        """No false positives on ordinary code that merely mentions unrelated
+        words."""
+        clean = [
+            'x = "join the queue"',
+            'msg = "display the results"',
+            'run(["git", "status"])',
+        ]
+        for src in clean:
+            self.assertEqual(scan_source(src), [], f"false positive: {src!r}")
 
 
 if __name__ == "__main__":

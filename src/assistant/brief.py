@@ -44,10 +44,13 @@ sys.modules. Pure stdlib, no LLM, never closes workspaces.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,10 +81,17 @@ DEFAULT_WAKE_HOUR = 7
 
 # How far back the receipts/digest/metrics windows look.
 WINDOW_SEC = 24 * 3600
-# Ledger tail bound: plenty for a 24h window, bounded against a huge file.
+# Tail bound for the SMALL, latest-wins sidecars (metrics rows, seen files):
+# their last N rows are all a read ever needs. The 24h WINDOWED reads of the
+# shared actions ledger do NOT use this cap — a fixed line tail clips in-window
+# rows on a >LEDGER_TAIL_LINES-event/24h incident day (the 865-denial class)
+# and freezes an undercount into brief-metrics.jsonl forever (F11); they scan
+# to the window boundary by timestamp via _read_jsonl_window instead.
 LEDGER_TAIL_LINES = 4000
-# Receipt kinds that count as "handled overnight".
-RECEIPT_KINDS = ("decision-auto-done", "merge-pr", "event-drop")
+# Receipt kinds that count as "handled overnight". "merge-dispatched" is the
+# kind pulse.py:1131 writes for an overnight PR merge (NOT "merge-pr") — the
+# old name silently dropped every merge from the receipts (F16).
+RECEIPT_KINDS = ("decision-auto-done", "merge-dispatched", "event-drop")
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -190,6 +200,36 @@ def _row_epoch(row: dict):
     return decisions.parse_iso(row.get("ts"))
 
 
+def _read_jsonl_window(path: Path, cutoff: float, now: float) -> list[dict]:
+    """Every parseable dict row whose epoch/ts falls in [cutoff, now], scanned
+    line-by-line with NO fixed line cap (F11). A LEDGER_TAIL_LINES tail taken
+    before the timestamp filter clips in-window rows on a huge incident day
+    (>4000 denials/receipts in 24h) and freezes that undercount into the
+    metrics forever; scanning to the window boundary counts them all. Corrupt
+    lines are skipped — one bad line never blanks a section."""
+    try:
+        fh = path.open()
+    except (OSError, FileNotFoundError):
+        return []
+    out: list[dict] = []
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            epoch = _row_epoch(row)
+            if epoch is None or epoch < cutoff or epoch > now:
+                continue
+            out.append(row)
+    return out
+
+
 # ─── scoring ─────────────────────────────────────────────────────────────────
 
 def brief_score(rec: dict, created_epoch: float, now: float,
@@ -198,8 +238,15 @@ def brief_score(rec: dict, created_epoch: float, now: float,
     record, its creation time and `now` — replayable, no LLM, unit-tested
     against SCORE_CONFIG."""
     cfg = config if config is not None else SCORE_CONFIG
-    lane = cfg["lane_base"].get(rec.get("lane"), 0)
-    urgency = cfg["urgency"].get(rec.get("urgency") or "", 0)
+    # Type-guard the lane/urgency keys: a hand-edited or torn record can carry
+    # an unhashable list/dict where a lane string belongs, and dict.get() on an
+    # unhashable key raises TypeError — one bad row must never blank the whole
+    # brief (F3; the module docstring's "one bad line" contract). A non-string
+    # lane/urgency simply scores 0, the same as a missing one.
+    lane_key = rec.get("lane")
+    urg_key = rec.get("urgency")
+    lane = cfg["lane_base"].get(lane_key if isinstance(lane_key, str) else "", 0)
+    urgency = cfg["urgency"].get(urg_key if isinstance(urg_key, str) else "", 0)
     age_days = max(0.0, (now - created_epoch) / 86400.0)
     freshness = max(0.0, cfg["age_decay_cap"]
                     - cfg["age_decay_per_day"] * age_days)
@@ -209,9 +256,25 @@ def brief_score(rec: dict, created_epoch: float, now: float,
 # ─── section builders (each pure over its store) ─────────────────────────────
 
 def _created_epochs(records: list[dict]) -> dict[str, float]:
+    """The CREATION epoch per decision id — the age/TTL anchor. Prefers the
+    record's `created_epoch` field (stamped at creation and preserved across
+    log compaction, F15) so a compacted log that keeps only the latest
+    transition record still reports the true birth time; falls back to the
+    earliest `epoch` seen for legacy rows. Type-guarded so an ISO-string or
+    otherwise non-numeric epoch defaults to 0 instead of crashing the whole
+    brief (F3)."""
     out: dict[str, float] = {}
     for rec in records:
-        out.setdefault(rec["id"], float(rec.get("epoch") or 0))
+        rid = rec.get("id")
+        if not isinstance(rid, str):
+            continue
+        ce = rec.get("created_epoch")
+        if isinstance(ce, (int, float)):
+            out[rid] = float(ce)
+            continue
+        epoch = rec.get("epoch")
+        out.setdefault(rid, float(epoch) if isinstance(epoch, (int, float))
+                       else 0.0)
     return out
 
 
@@ -221,7 +284,9 @@ def _build_queue(records: list[dict], now: float) -> list[dict]:
     for dec_id, rec in decisions.fold(records).items():
         if rec.get("status") != decisions.OPEN:
             continue
-        c_epoch = created.get(dec_id, float(rec.get("epoch") or now))
+        rec_epoch = rec.get("epoch")
+        c_epoch = created.get(dec_id, float(rec_epoch)
+                              if isinstance(rec_epoch, (int, float)) else now)
         recommended = rec.get("recommended")
         default_action = "accept"
         default_label = "Accept"
@@ -246,8 +311,14 @@ def _build_queue(records: list[dict], now: float) -> list[dict]:
             "ws_ref": (rec.get("refs") or {}).get("ws_ref"),
             "snippet": (rec.get("snippet") or "")[:200],
         })
-    # Deterministic order: score desc, then older first, then id.
-    rows.sort(key=lambda r: (-r["score"], r["created_ts"], r["id"]))
+    # Deterministic order, PARTITIONED BY LANE so the escalate fail-safe lane
+    # is always at the top of the queue (design section 4 invariant). The
+    # partition — not the raw score — enforces it: urgency + freshness can
+    # otherwise lift a staged+now row above an escalate+low one across the
+    # 40-point band and bury the fail-safe lane (F6). Within a lane: score
+    # desc, then older first, then id.
+    rows.sort(key=lambda r: (decisions.lane_rank(r.get("lane")),
+                             -r["score"], r["created_ts"], r["id"]))
     return rows
 
 
@@ -257,11 +328,8 @@ def _build_receipts(now: float) -> list[dict]:
     when the A1 store exists."""
     cutoff = now - WINDOW_SEC
     out: list[dict] = []
-    for row in _read_jsonl_tail(decisions.ledger_path(), LEDGER_TAIL_LINES):
+    for row in _read_jsonl_window(decisions.ledger_path(), cutoff, now):
         if row.get("kind") not in RECEIPT_KINDS:
-            continue
-        epoch = _row_epoch(row)
-        if epoch is None or epoch < cutoff or epoch > now:
             continue
         out.append({
             "ts": row.get("ts"),
@@ -319,12 +387,9 @@ def _interrupt_counts(now: float) -> dict:
     brief can PROVE silence instead of assuming it."""
     cutoff = now - WINDOW_SEC
     delivered = denied = 0
-    for row in _read_jsonl_tail(decisions.ledger_path(), LEDGER_TAIL_LINES):
+    for row in _read_jsonl_window(decisions.ledger_path(), cutoff, now):
         kind = row.get("kind")
         if kind not in ("interrupt-delivered", "interrupt-denied"):
-            continue
-        epoch = _row_epoch(row)
-        if epoch is None or epoch < cutoff or epoch > now:
             continue
         if kind == "interrupt-delivered":
             delivered += 1
@@ -422,7 +487,9 @@ def build_brief(now: float | None = None) -> dict:
     queue = _build_queue(records, now)
     counts_by_lane: dict[str, int] = {}
     for row in queue:
-        lane = row.get("lane") or "?"
+        lane = row.get("lane")
+        if not isinstance(lane, str):  # unhashable/absent lane → bucket (F3)
+            lane = "?"
         counts_by_lane[lane] = counts_by_lane.get(lane, 0) + 1
     goals = _read_json(goals_path())
     if isinstance(goals, dict) and isinstance(goals.get("goals"), list):
@@ -453,10 +520,14 @@ def build_brief(now: float | None = None) -> dict:
 
 
 def write_brief(brief: dict) -> Path:
-    """Atomic write of the brief file (tmp + os.replace, repo idiom)."""
+    """Atomic write of the brief file (tmp + os.replace, repo idiom). The tmp
+    name is unique per writer (pid + uuid) so two builders racing on the same
+    date — a pre-wake CLI rebuild and the pulse step — can't clobber each
+    other's half-written tmp and blow up os.replace with FileNotFoundError
+    (F5b)."""
     p = brief_path(brief["date"])
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
     os.replace(tmp, p)
     return p
@@ -515,24 +586,50 @@ def compute_daily_metrics(brief: dict, records: list[dict] | None = None,
     now = now if now is not None else float(brief.get("epoch") or time.time())
     records = records if records is not None else decisions.read_log()
     cutoff = now - WINDOW_SEC
-    accepted = 0
+    # decisions_accepted_unedited is a RATIO, not a count (design section 11:
+    # "accepted-with-default / all resolved" — the decision-theater detector).
+    # Numerator: decisions accepted at their DEFAULT action (status "accepted",
+    # never "edited") in the last 24h. Denominator: all human-resolved
+    # decisions in the window — accepted, edited, rejected (the states a human
+    # tap produces). auto_done (machine, no human touch) and expired (a
+    # timeout, not a decision) are excluded: the metric measures whether the
+    # human is really deciding or just rubber-stamping. Day-one guard: no
+    # resolutions → 0.0, never a div-by-zero.
+    accepted = edited = rejected = 0
     for rec in decisions.fold(records).values():
-        if rec.get("status") != "accepted":
+        status = rec.get("status")
+        if status not in ("accepted", "edited", "rejected"):
             continue
         epoch = decisions.parse_iso((rec.get("resolution") or {}).get("ts"))
-        if epoch is not None and cutoff <= epoch <= now:
+        if epoch is None or not (cutoff <= epoch <= now):
+            continue
+        if status == "accepted":
             accepted += 1
+        elif status == "edited":
+            edited += 1
+        else:
+            rejected += 1
+    resolved = accepted + edited + rejected
+    accepted_ratio = round(accepted / resolved, 4) if resolved else 0.0
     created = _created_epochs(records)
     folded = decisions.fold(records)
     new_ids = [i for i, e in created.items() if cutoff <= e <= now]
     auto = sum(1 for i in new_ids if folded[i].get("status") == "auto_done")
     interrupts = (brief.get("health") or {}).get("interrupts") or {}
+    # The north star counts only ACTIONABLE open decisions. digest-lane rows
+    # are FYI churn that no human tap reduces (design section 5 keeps FYI a
+    # separate collapsed section); counting them here would inflate the one
+    # number the whole system optimizes downward (F14). They stay in the
+    # rendered queue for actionability but are carved out of THIS metric,
+    # mirroring expired_unseen_count's identical digest carve-out.
+    pending = sum(1 for r in (brief.get("queue") or [])
+                  if r.get("lane") != "digest")
     return {
         "date": brief["date"],
         "ts": utc_iso(now),
         "epoch": int(now),
-        "decisions_pending_at_brief": len(brief.get("queue") or []),
-        "decisions_accepted_unedited": accepted,
+        "decisions_pending_at_brief": pending,
+        "decisions_accepted_unedited": accepted_ratio,
         "auto_coverage_pct": round(100.0 * auto / len(new_ids), 1) if new_ids else 0.0,
         "expired_unseen": int((brief.get("health") or {})
                               .get("expired_unseen_24h") or 0),
@@ -541,17 +638,45 @@ def compute_daily_metrics(brief: dict, records: list[dict] | None = None,
     }
 
 
+def metrics_lock_path() -> Path:
+    return brief_dir() / "brief-metrics.lock"
+
+
+@contextlib.contextmanager
+def _metrics_lock():
+    """The single-writer flock for brief-metrics.jsonl. The once-per-date
+    check-then-append MUST happen inside ONE lock hold or two concurrent
+    builders (a pulse step racing a CLI rebuild) both pass the check and
+    double-book the north-star row (F5) — same idiom as decisions._writer_lock,
+    and delete-safe: the lock file carries no state."""
+    d = brief_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(metrics_lock_path()), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
 def append_daily_metrics(brief: dict, now: float | None = None) -> dict | None:
     """Append the day's row to brief-metrics.jsonl — at most once per date,
-    so on-demand rebuilds never double-book the north star."""
+    so on-demand rebuilds never double-book the north star. The dedup read and
+    the append run under one flock so concurrent builders can't both win the
+    once-per-date race (F5)."""
     p = metrics_path()
-    for row in _read_jsonl_tail(p, LEDGER_TAIL_LINES):
-        if row.get("date") == brief["date"]:
-            return None
-    row = compute_daily_metrics(brief, now=now)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "a") as f:
-        f.write(json.dumps(row) + "\n")
+    with _metrics_lock():
+        for row in _read_jsonl_tail(p, LEDGER_TAIL_LINES):
+            if row.get("date") == brief["date"]:
+                return None
+        row = compute_daily_metrics(brief, now=now)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(json.dumps(row) + "\n")
     return row
 
 
@@ -579,26 +704,46 @@ def degrade_unseen(now: float | None = None,
         briefs = sorted(brief_dir().glob("brief-????-??-??.json"))
     except OSError:
         return out
-    folded = None
+    # Seen-ness is PER DECISION, not per brief-date (F4). A decision seen in
+    # ANY brief the user actually viewed is seen — so neglect of a later brief
+    # can never expire something already reviewed, and an older superseded
+    # brief (whose sidecar the renderer can no longer stamp) can never expire a
+    # decision the user saw in today's brief. The set is derived purely from
+    # the existing stores (brief queues + seen sidecars), so it stays
+    # delete-safe/rebuildable. First pass: collect every decision id that
+    # appeared in a viewed brief's queue.
+    parsed: list[tuple[str, dict, bool]] = []
+    seen_dec_ids: set[str] = set()
     for p in briefs:
         date_str = p.name[len("brief-"):-len(".json")]
         doc = _read_json(p)
         if not isinstance(doc, dict):
             continue
+        seen = _read_json(seen_path(date_str))
+        is_seen = isinstance(seen, dict) and bool(seen.get("seen_ts"))
+        parsed.append((date_str, doc, is_seen))
+        if is_seen:
+            for row in doc.get("queue") or []:
+                did = row.get("id")
+                if isinstance(did, str):
+                    seen_dec_ids.add(did)
+    folded = None
+    for date_str, doc, is_seen in parsed:
         out["briefs_checked"] += 1
         built_epoch = doc.get("epoch")
         if not isinstance(built_epoch, (int, float)):
             continue
         if now - built_epoch <= ttl_h * 3600:
             continue
-        seen = _read_json(seen_path(date_str))
-        if isinstance(seen, dict) and seen.get("seen_ts"):
+        if is_seen:
             continue
         out["briefs_unseen"] += 1
         if folded is None:
             folded = decisions.fold(decisions.read_log())
         for row in doc.get("queue") or []:
             dec_id = row.get("id")
+            if dec_id in seen_dec_ids:
+                continue  # the user viewed this decision in some brief (F4)
             rec = folded.get(dec_id)
             if rec is None or rec.get("status") != decisions.OPEN:
                 continue
@@ -630,18 +775,42 @@ def degrade_unseen(now: float | None = None,
 
 # ─── pulse step ──────────────────────────────────────────────────────────────
 
+def degrade_stamp_path(date_str: str) -> Path:
+    return brief_dir() / f"degrade-{date_str}.done"
+
+
 def pulse_step(now: float | None = None, log=None) -> dict:
     """The pulse's brief step: on the FIRST pulse at/after wake_hour (local
-    time) that has no brief for today, build + write the brief, append the
-    daily metrics row, and run the unseen-degradation pass. Every later pulse
-    that day is a cheap no-op (the file exists). On-demand rebuilds go
-    through bin/build-morning-brief.py instead."""
+    time) it runs the daily unseen-degradation pass and, if today has no brief
+    yet, builds + writes the brief and appends the daily metrics row. Every
+    later pulse that day is a cheap no-op. On-demand rebuilds go through
+    bin/build-morning-brief.py instead.
+
+    Two ordering guarantees (F9/F10):
+      - Degradation runs BEFORE build_brief, so the brief reflects the
+        post-degrade state and never ships a queue row with a live one-tap
+        button that degrade is about to expire out from under the user.
+      - Degradation is gated by its OWN per-date stamp, NOT by the brief file
+        existing. A pre-wake CLI build (or a crash after the brief is written)
+        must not suppress the day's degradation; the two are decoupled. The
+        stamp is delete-safe — degrade_unseen is idempotent, so a lost stamp
+        only costs one harmless re-run."""
     now = now if now is not None else time.time()
     summary = {"built": False, "path": None, "metrics_row": False,
                "degrade": None}
     if datetime.fromtimestamp(now).hour < wake_hour():
         return summary
     date_str = local_date(now)
+    stamp = degrade_stamp_path(date_str)
+    if not stamp.exists():
+        summary["degrade"] = degrade_unseen(now=now)
+        try:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            tmp = stamp.with_name(f"{stamp.name}.{os.getpid()}.tmp")
+            tmp.write_text(utc_iso(now) + "\n")
+            os.replace(tmp, stamp)
+        except OSError:
+            pass
     if brief_path(date_str).exists():
         return summary
     brief = build_brief(now=now)
@@ -650,5 +819,4 @@ def pulse_step(now: float | None = None, log=None) -> dict:
     summary["path"] = str(path)
     summary["open_decisions"] = len(brief.get("queue") or [])
     summary["metrics_row"] = append_daily_metrics(brief, now=now) is not None
-    summary["degrade"] = degrade_unseen(now=now)
     return summary

@@ -23,8 +23,9 @@ config edit) and applies, in order:
   1. ladder requirements — a "page" needs ALL of lane=escalate,
      urgency=now, policy pageable:true (the ladder is config but the page
      entry is restored if missing — config can tighten, not erase);
-  2. 24h same-key dedup — one delivery per key per day, tracked across the
-     midnight rollover;
+  2. 24h same-key dedup — one delivery per (level, key) per day, tracked
+     across the midnight rollover (a louder page is never suppressed by an
+     earlier notify on the same key);
   3. budget headroom — used[level] < budget[level] for the current date
      (used counts reset when the stored date rolls over).
 
@@ -96,6 +97,15 @@ def local_date(epoch: float) -> str:
     return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d")
 
 
+def _is_date(s: str) -> bool:
+    """True iff s is a parseable YYYY-MM-DD calendar date."""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 @contextlib.contextmanager
 def _budget_lock():
     d = budget_path().parent
@@ -150,7 +160,14 @@ def load_budget(now: float) -> dict:
             k: float(v) for k, v in last.items()
             if isinstance(v, (int, float)) and now - float(v) < DEDUP_WINDOW_SEC
         }
-    if doc.get("date") == base["date"]:
+    # Reset the daily counters ONLY on a genuine rollover: a stored date that
+    # is a VALID calendar date and older than today. A missing / typo'd /
+    # unparseable date must NOT hand back a fresh quota while keeping a raised
+    # budget — that would let a hand edit (or corruption) silently re-arm the
+    # push surface. Fail toward quieter: keep the used counts (F2).
+    stored = doc.get("date")
+    date_valid = isinstance(stored, str) and _is_date(stored)
+    if stored == base["date"] or not date_valid:
         if isinstance(doc.get("used"), dict):
             base["used"] = {k: int(v) for k, v in doc["used"].items()
                             if isinstance(v, (int, float))}
@@ -188,11 +205,22 @@ def _ladder_check(doc: dict, level: str, lane, urgency, pageable) -> str | None:
     ladder = doc.get("ladder") or []
     entries = [e for e in ladder
                if isinstance(e, dict) and e.get("level") == level]
+    default_requires = {}
+    for e in DEFAULT_LADDER:
+        if e.get("level") == level:
+            default_requires = e.get("requires") or {}
+            break
     if level == "page" and not entries:
         entries = [dict(e) for e in DEFAULT_LADDER]
     got = {"lane": lane, "urgency": urgency, "pageable": bool(pageable)}
     for entry in entries:
         requires = entry.get("requires") or {}
+        # A ladder entry that omits or EMPTIES its requires falls back to the
+        # default gate — config can TIGHTEN the ladder, never ERASE it. A bare
+        # {"requires":{}} for the page rung must not silently open the page
+        # surface (F1); an absent entries list is already handled above.
+        if not requires and default_requires:
+            requires = default_requires
         for field, want in requires.items():
             if got.get(field) != want:
                 return (f"ladder: {level} requires {field}={want!r}, "
@@ -231,8 +259,13 @@ def request(level: str, key: str, title: str, detail: str = "", *,
         doc = load_budget(now)
         if reason is None:
             reason = _ladder_check(doc, level, lane, urgency, pageable)
+        # Dedup is per (level, key), NOT the bare key (F12): a delivered notify
+        # must not suppress a later PAGE on the same key for 24h — a page is a
+        # strictly louder tier and gets its own dedup slot. (Latent until M4
+        # adds a page caller, but wrong-by-construction to leave.)
+        dedup_key = f"{level}:{key}"
         if reason is None:
-            last = doc["last_delivered"].get(key)
+            last = doc["last_delivered"].get(dedup_key)
             if isinstance(last, (int, float)) and now - last < DEDUP_WINDOW_SEC:
                 reason = (f"same-key delivery within 24h "
                           f"(last at {utc_iso(last)})")
@@ -263,7 +296,7 @@ def request(level: str, key: str, title: str, detail: str = "", *,
         # All checks passed: book the slot BEFORE delivering, so a crash
         # mid-delivery can only under-notify, never over-notify.
         doc["used"][level] = int(doc["used"].get(level, 0)) + 1
-        doc["last_delivered"][key] = float(now)
+        doc["last_delivered"][dedup_key] = float(now)
         save_budget(doc)
     try:
         deliver(title, detail)

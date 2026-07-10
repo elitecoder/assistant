@@ -377,10 +377,33 @@ def valid_triage_lane(suggested) -> str | None:
 
 # ─── policy-proposal miner ──────────────────────────────────────────────────
 
-def _pending_policy_keys(path: Path) -> set[str]:
-    """(source,kind,lane) keys already represented by a pending/confirmed
-    policy proposal — both block a re-propose (mirrors lesson-extractor's
-    pending_proposal_stems)."""
+def _proposal_epoch(obj: dict):
+    """Best epoch for a proposal's most recent decision: prefer the resolution
+    stamp a confirm/reject writes, fall back to creation ts. None if none
+    parse."""
+    for field in ("confirmed_at", "decided_at", "ts", "id"):
+        v = obj.get(field)
+        if not isinstance(v, str):
+            continue
+        try:
+            return datetime.fromisoformat(
+                v.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
+def _pending_policy_keys(path: Path, now: float | None = None,
+                         window_sec: float | None = None) -> set[str]:
+    """(source,kind,lane) keys already represented by a live policy proposal —
+    all block a re-propose (mirrors lesson-extractor's pending_proposal_stems).
+
+    pending/confirmed always block. rejected/vetoed ALSO block, but only within
+    `window_sec` of `now` (F7): without this the miner re-proposes a suggestion
+    the user just rejected on the very next pass — a daily nag. After the
+    window a genuinely recurring signal is allowed to surface again. When
+    now/window_sec are omitted (e.g. the one-tap wrong-lane dedup), only
+    pending/confirmed block, the historical behaviour."""
     try:
         lines = path.read_text().splitlines()
     except (OSError, FileNotFoundError):
@@ -396,7 +419,16 @@ def _pending_policy_keys(path: Path) -> set[str]:
             continue
         if not isinstance(obj, dict) or obj.get("type") != "policy":
             continue
-        if obj.get("status") not in ("pending", "confirmed"):
+        status = obj.get("status")
+        if status in ("pending", "confirmed"):
+            pass
+        elif status in ("rejected", "vetoed") and now is not None \
+                and window_sec is not None:
+            ep = _proposal_epoch(obj)
+            # Unparseable stamp → block (conservative: never nag).
+            if ep is not None and ep < now - window_sec:
+                continue
+        else:
             continue
         pp = obj.get("proposed_policy") or {}
         match = pp.get("match") or {}
@@ -446,7 +478,7 @@ def mine_policy_proposals(decision_records: list[dict], *, now: float,
             continue
         groups.setdefault((source, kind, lane), set()).add(rec.get("id"))
 
-    pending = _pending_policy_keys(p)
+    pending = _pending_policy_keys(p, now=now, window_sec=MINER_WINDOW_SEC)
     written: list[dict] = []
     for (source, kind, lane), dec_ids in sorted(groups.items()):
         if len(dec_ids) < MINER_MIN_SUGGESTIONS:
@@ -521,7 +553,7 @@ def mine_unseen_expiry_proposals(decision_records: list[dict], *, now: float,
         groups.setdefault((source, kind), set()).add(rec.get("id"))
 
     lane = "digest"
-    pending = _pending_policy_keys(p)
+    pending = _pending_policy_keys(p, now=now, window_sec=MINER_WINDOW_SEC)
     written: list[dict] = []
     for (source, kind), dec_ids in sorted(groups.items()):
         if len(dec_ids) < MINER_MIN_SUGGESTIONS:

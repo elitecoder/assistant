@@ -56,6 +56,21 @@ _LANE_SCORE = {"escalate": 100, "staged": 60, "digest": 20, "auto": 0,
                "drop": 0}
 _URGENCY_SCORE = {"now": 50, "high": 20, "low": 0}
 
+# Queue ordering PARTITIONS by lane so the escalate fail-safe lane is always at
+# the top regardless of urgency tuning (design section 4 invariant, F6): the
+# urgency span (50) exceeds the 40-point inter-lane band gap, so a staged+now
+# item can score above an escalate+low one — the partition keeps escalate on
+# top anyway, score only ordering WITHIN a lane.
+_LANE_RANK = {"escalate": 0, "staged": 1, "digest": 2}
+
+
+def lane_rank(lane) -> int:
+    """Sort-partition rank for a lane: escalate < staged < digest < everything
+    else. Lower sorts first (queue top). A non-string lane (unhashable
+    list/dict from a hand-edited row) ranks last rather than crashing the sort
+    (F3)."""
+    return _LANE_RANK.get(lane, 3) if isinstance(lane, str) else 3
+
 
 def _home() -> Path:
     return Path(os.environ.get("HOME", str(Path.home())))
@@ -183,10 +198,25 @@ def _maybe_compact() -> None:
             return
     except OSError:
         return
-    folded = fold(read_log())
+    records = read_log()
+    # This is the ONE moment the full history is in hand — capture each id's
+    # true creation epoch (earliest appended record) and stamp it on the folded
+    # snapshot, so the creation time survives after the create record is
+    # discarded (F15). Without this, _created_epochs and expire_open would read
+    # the surviving latest record's transition `epoch` as the creation and
+    # corrupt ages/auto_coverage and silently restart TTLs.
+    earliest: dict[str, int] = {}
+    for rec in records:
+        e = rec.get("epoch")
+        if isinstance(e, (int, float)):
+            earliest.setdefault(rec.get("id"), int(e))
+    folded = fold(records)
     tmp = p.with_suffix(".jsonl.compact.tmp")
     with open(tmp, "w") as f:
-        for rec in folded.values():
+        for rid, rec in folded.items():
+            rec = dict(rec)
+            rec["created_epoch"] = (rec.get("created_epoch")
+                                    or earliest.get(rid) or rec.get("epoch"))
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     os.replace(p, p.with_name(p.name + ".1"))
     os.replace(tmp, p)
@@ -229,6 +259,7 @@ def _append_ledger(entry: dict) -> None:
 
 def _sort_key(rec: dict):
     return (0 if rec.get("status") == OPEN else 1,
+            lane_rank(rec.get("lane")),
             -int(rec.get("score") or 0),
             -int(rec.get("epoch") or 0),
             rec.get("id") or "")
@@ -316,6 +347,13 @@ def open_decision(*, event: dict, lane: str, policy_id, triage=None,
             "id": dec_id,
             "ts": utc_iso(now),
             "epoch": int(now),
+            # The creation epoch, stamped once and carried forward on every
+            # transition and across log compaction (F15). `epoch` becomes the
+            # latest TRANSITION time; created_epoch is the immutable birth time
+            # the age/TTL math anchors on, so a compacted log (which keeps only
+            # the latest record per id) can't misread a transition as the
+            # creation and corrupt ages/auto_coverage or silently extend TTLs.
+            "created_epoch": int(now),
             "event_ref": event.get("id"),
             "source": source,
             "kind": event.get("kind"),
@@ -384,6 +422,9 @@ def transition(dec_id: str, to_status: str, *, via: str, note: str | None = None
         record = dict(latest)
         record["ts"] = utc_iso(now)
         record["epoch"] = int(now)
+        # Carry the creation epoch forward — `epoch` is now the transition time
+        # (F15). Legacy records lacking the field fall back to their own epoch.
+        record["created_epoch"] = latest.get("created_epoch", latest.get("epoch"))
         record["status"] = to_status
         record["resolution"] = {
             "ts": utc_iso(now),
@@ -426,6 +467,7 @@ def annotate_triage(dec_id: str, suggested_lane: str, rationale: str,
         record = dict(latest)
         record["ts"] = utc_iso(now)
         record["epoch"] = latest.get("epoch")  # keep creation epoch for TTL/miner
+        record["created_epoch"] = latest.get("created_epoch", latest.get("epoch"))
         record["triage"] = {"suggested_lane": suggested_lane,
                             "rationale": (rationale or "")[:300]}
         _append_in_lock([record])
@@ -450,7 +492,15 @@ def expire_open(now: float | None = None) -> list[dict]:
         records = read_log()
         created_epoch: dict[str, int] = {}
         for rec in records:
-            created_epoch.setdefault(rec["id"], int(rec.get("epoch") or 0))
+            # Prefer the preserved creation epoch (survives compaction, F15);
+            # fall back to the earliest raw epoch for legacy rows. Using a
+            # transition epoch here would silently RESTART the TTL clock after
+            # a compaction and extend the decision's life past its ttl_h.
+            ce = rec.get("created_epoch")
+            if isinstance(ce, (int, float)):
+                created_epoch[rec["id"]] = int(ce)
+            else:
+                created_epoch.setdefault(rec["id"], int(rec.get("epoch") or 0))
         for dec_id, latest in fold(records).items():
             status = latest.get("status")
             ws_ref = (latest.get("refs") or {}).get("ws_ref") or "(decisions)"

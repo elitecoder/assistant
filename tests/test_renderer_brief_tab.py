@@ -203,6 +203,36 @@ class BriefTabTests(unittest.TestCase):
         self.assertIn("/brief/seen", page)
         self.assertIn("handleDecisionActClick", page)
 
+    def test_queue_render_is_capped_with_more_row(self):
+        """F18: the queue is capped with an 'N more' row like the receipts
+        and digest sections — an incident-day queue can't render unbounded."""
+        doc = brief_fixture()
+        row = dict(doc["queue"][1])
+        doc["queue"] = []
+        for i in range(45):  # > the 40-row cap
+            r = dict(row)
+            r["id"] = f"dec-{i:016x}"
+            doc["queue"].append(r)
+        self.write_brief(doc)
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 45)                      # count is honest …
+        self.assertEqual(html.count("data-dec-row="), 40)  # … render is capped
+        self.assertIn("more decision", html)
+
+    def test_seen_ping_uses_absolute_server_url(self):
+        """F19: the /brief/seen ping targets the todo-server's absolute origin
+        so it still reaches the server from a file:// dashboard (a relative
+        fetch would resolve to file:///brief/seen and silently arm the
+        destructive unseen-TTL)."""
+        (self.home / ".claude/cache/world.json").write_text(json.dumps(
+            {"counts": {}, "live_sessions": [], "workspaces": [], "todo": {}}))
+        self.write_brief(brief_fixture())
+        self.mod.render()
+        page = (self.home / ".claude/assistant-dashboard.html").read_text()
+        self.assertIn("127.0.0.1:9876/brief/seen", page)
+        # The bare relative form must be gone.
+        self.assertNotIn("fetch('/brief/seen", page)
+
 
 if __name__ == "__main__":
     unittest.main()
