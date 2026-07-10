@@ -1,0 +1,58 @@
+{
+  "version": 2,
+  "_comment": "Bootstrap fleet policies (Keel M2). Installed to ~/.assistant/policies/policies.json on first triage run when no live file exists. On later runs a version bump here ADDs any rule ids missing from the installed file (never overwrites or removes user rules) and ledgers the upgrade. Ordered, first-match-wins. Every id has a fixture in evals/policy/<id>/ enforced by tests/test_policy.py coverage. Rules for sources whose producers don't exist yet (gmail/github, M5) are deliberately ABSENT \u2014 a drop rule against a guessed schema is a data-hiding hazard; their fixtures wait in evals/policy/_pending-m5/. Mutations to the LIVE file go through confirmed `policy` proposals, not hand edits.",
+  "policies": [
+    {
+      "id": "cmux-needs-input-escalate",
+      "match": {
+        "source": "cmux",
+        "kind": "needs_input"
+      },
+      "lane": "escalate",
+      "action": null,
+      "urgency": "now",
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "cmux-crash-event-digest",
+      "match": {
+        "source": "cmux",
+        "kind": "workspace_closed"
+      },
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "cmux-work-complete-digest",
+      "match": {
+        "source": "cmux",
+        "kind": "work_complete"
+      },
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "legacy-pulse-ping-drop",
+      "match": {
+        "source": "pulse",
+        "kind": "ping"
+      },
+      "lane": "drop",
+      "action": null,
+      "urgency": null,
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    }
+  ]
+}

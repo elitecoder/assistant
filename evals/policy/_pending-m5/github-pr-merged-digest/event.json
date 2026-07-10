@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e7",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "github",
+  "kind": "pr_merged",
+  "external_id": "gh-notif:elitecoder/assistant:789:2026-07-09",
+  "actor": "mukul",
+  "title": "Merged: event spine #789",
+  "snippet": "PR was merged",
+  "url": "https://github.com/elitecoder/assistant/pull/789",
+  "refs": {
+    "pr": 789
+  },
+  "raw_path": null
+}

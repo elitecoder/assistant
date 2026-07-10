@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "cmux",
+  "kind": "needs_input",
+  "external_id": "cmux:workspace:7:needs_input:297166:abc",
+  "actor": null,
+  "title": "workspace:7 needs_input (Notification)",
+  "snippet": "approve tool use?",
+  "url": null,
+  "refs": {
+    "ws_ref": "workspace:7"
+  },
+  "raw_path": null
+}

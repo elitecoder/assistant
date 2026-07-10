@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e2",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "cmux",
+  "kind": "workspace_closed",
+  "external_id": "cmux:workspace:12:closed:1783000000",
+  "actor": null,
+  "title": "ws12 closed (crash)",
+  "snippet": "cause=crash resume={}",
+  "url": null,
+  "refs": {
+    "ws_ref": "workspace:12"
+  },
+  "raw_path": null
+}

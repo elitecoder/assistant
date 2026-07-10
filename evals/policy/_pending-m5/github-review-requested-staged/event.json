@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e6",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "github",
+  "kind": "review_requested",
+  "external_id": "gh-notif:elitecoder/assistant:456:2026-07-09",
+  "actor": "teammate",
+  "title": "Review requested: keel M2 #456",
+  "snippet": "teammate requested your review",
+  "url": "https://github.com/elitecoder/assistant/pull/456",
+  "refs": {
+    "pr": 456
+  },
+  "raw_path": null
+}

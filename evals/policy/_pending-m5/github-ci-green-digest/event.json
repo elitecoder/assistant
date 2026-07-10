@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e5",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "github",
+  "kind": "ci_green",
+  "external_id": "gh-notif:elitecoder/assistant:123:2026-07-09",
+  "actor": "github-actions",
+  "title": "CI green on keel-m2 #123",
+  "snippet": "All checks have passed",
+  "url": "https://github.com/elitecoder/assistant/pull/123",
+  "refs": {
+    "pr": 123
+  },
+  "raw_path": null
+}

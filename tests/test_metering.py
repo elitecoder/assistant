@@ -69,12 +69,15 @@ class RecordShapeTests(MeteringBase):
         return self.mod.build_pulse_record(**kwargs)
 
     def test_record_has_exact_contract_keys(self):
+        # "skipped" joined the contract in Keel M2 (Observer no-change skip):
+        # workspaces whose prior verdict was carried forward without a call
+        # this pulse (batch_size already excludes them).
         rec = self._record()
         self.assertEqual(set(rec.keys()), {
             "ts", "epoch", "pulse_idx", "observer_called", "batch_size",
             "model", "duration_s", "tokens_in", "tokens_out", "cost_usd_est",
             "usage_source", "verdicts", "verdict_changes", "synthesized",
-            "actions",
+            "skipped", "actions",
         })
 
     def test_record_values_and_counters(self):
@@ -109,6 +112,10 @@ class RecordShapeTests(MeteringBase):
 
     def test_synthesized_defaults_to_zero(self):
         self.assertEqual(self._record()["synthesized"], 0)
+
+    def test_skipped_defaults_to_zero_and_records_count(self):
+        self.assertEqual(self._record()["skipped"], 0)
+        self.assertEqual(self._record(skipped=4)["skipped"], 4)
 
     def test_synthesized_field_recorded(self):
         rec = self._record(synthesized=3)
@@ -222,24 +229,28 @@ class UsageCaptureTests(MeteringBase):
 class AggregationTests(MeteringBase):
     NOW = 1_700_000_000
 
-    def _rec(self, age_sec: int, *, called=True, batch=10, changes=0, cost=0.0):
+    def _rec(self, age_sec: int, *, called=True, batch=10, changes=0, cost=0.0,
+             skipped=0):
         return {"ts": self.mod.utc_iso(self.NOW - age_sec),
                 "epoch": self.NOW - age_sec, "pulse_idx": 1,
                 "observer_called": called, "batch_size": batch,
-                "cost_usd_est": cost, "verdict_changes": changes}
+                "cost_usd_est": cost, "verdict_changes": changes,
+                "skipped": skipped}
 
     def test_aggregate_math(self):
         records = [
             self._rec(86400, changes=2, cost=0.5),   # oldest → span = 1 day
-            self._rec(43200, changes=1, cost=0.25),
-            self._rec(0, called=False, batch=0, cost=0.0),  # deterministic skip
+            self._rec(43200, changes=1, cost=0.25, skipped=5),
+            self._rec(0, called=False, batch=0, cost=0.0, skipped=10),
         ]
         agg = self.mod.aggregate(records, now=self.NOW, window_days=7)
         self.assertEqual(agg["n_pulses"], 3)
         self.assertAlmostEqual(agg["observer_calls_per_day"], 2.0)
         self.assertAlmostEqual(agg["cost_per_day_usd"], 0.75)
         self.assertAlmostEqual(agg["verdict_change_rate"], 3 / 20)  # changed/total judged
-        self.assertAlmostEqual(agg["skip_rate"], 1 / 3)
+        # WS-level skip rate: sum(skipped) / (sum(skipped) + sum(observed))
+        # = 15 / (15 + 20) — pulse-level observer_called no longer enters.
+        self.assertAlmostEqual(agg["skip_rate"], 15 / 35)
 
     def test_aggregate_excludes_records_outside_window(self):
         records = [self._rec(8 * 86400, cost=99.0),  # 8 days old — outside 7d
@@ -257,10 +268,40 @@ class AggregationTests(MeteringBase):
         self.assertEqual(agg["skip_rate"], 0.0)
 
     def test_aggregate_no_observer_calls_change_rate_zero(self):
-        records = [self._rec(3600, called=False, batch=0)]
+        records = [self._rec(3600, called=False, batch=0, skipped=4)]
         agg = self.mod.aggregate(records, now=self.NOW)
         self.assertEqual(agg["verdict_change_rate"], 0.0)
-        self.assertEqual(agg["skip_rate"], 1.0)
+        self.assertEqual(agg["skip_rate"], 1.0)  # 4 skipped / (4 + 0 observed)
+
+    def test_skip_rate_is_ws_level_not_pulse_level(self):
+        # The reviewers' probe: a pulse that observed 1 ws and skipped 9 used
+        # to count as a 0%-skip pulse. WS-level math credits the 9.
+        records = [self._rec(3600, batch=1, skipped=9)]
+        agg = self.mod.aggregate(records, now=self.NOW)
+        self.assertAlmostEqual(agg["skip_rate"], 0.9)
+        # No judgments at all → 0.0, not a division error.
+        agg = self.mod.aggregate([self._rec(3600, called=False, batch=0)],
+                                 now=self.NOW)
+        self.assertEqual(agg["skip_rate"], 0.0)
+
+    def test_aggregate_includes_cost_ledger_rows(self):
+        records = [self._rec(86400, cost=0.5)]  # span = 1 day
+        cost_rows = [
+            {"ts": self.mod.utc_iso(self.NOW - 3600), "caller": "triage",
+             "est_usd": 0.25, "status": "ok"},
+            {"ts": self.mod.utc_iso(self.NOW - 3600), "caller": "triage",
+             "est_usd": 0.0, "status": "failed"},  # failed rows cost nothing
+            {"ts": self.mod.utc_iso(self.NOW - 9 * 86400), "caller": "triage",
+             "est_usd": 99.0},                     # outside the window
+        ]
+        agg = self.mod.aggregate(records, now=self.NOW, window_days=7,
+                                 cost_rows=cost_rows)
+        self.assertAlmostEqual(agg["cost_ledger_per_day_usd"], 0.25)
+        self.assertAlmostEqual(agg["cost_per_day_usd"], 0.75)  # pulse + ledger
+        # Omitting cost_rows keeps the old pulse-only figure.
+        agg = self.mod.aggregate(records, now=self.NOW, window_days=7)
+        self.assertAlmostEqual(agg["cost_per_day_usd"], 0.5)
+        self.assertEqual(agg["cost_ledger_per_day_usd"], 0.0)
 
     def test_aggregate_includes_future_stamped_records(self):
         # Clock skew: a record stamped an hour in the future must NOT be

@@ -9,6 +9,14 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
   POST /focus/<workspace_ref>                             switch the active
                                                           cmux workspace
                                                           (workspace:N only)
+  POST /decision/list                                     decision queue view
+                                                          (Keel M2; open set +
+                                                          totals as JSON)
+  POST /decision/act/<dec-id>?action=accept|edit|reject|snooze&minutes=N
+                                                          one-tap decision
+                                                          transition (id-regex
+                                                          validated, POST-only;
+                                                          body = optional note)
   GET  /                                                  health check ("ok")
 
 On every successful TODO mutation, the JSON file is atomically rewritten and the
@@ -25,6 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -32,6 +41,13 @@ from pathlib import Path
 WORKSPACE_REF_RE = re.compile(r"^workspace:\d+$")
 TD_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 PROPOSAL_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+# Decision ids are `dec-` + a hex digest prefix (src/assistant/decisions.py).
+DEC_ID_RE = re.compile(r"^dec-[a-f0-9]{8,64}$")
+# Dashboard action → decision status. The vocabulary is closed here AND in
+# decisions.transition (auto_done/open are never reachable via HTTP).
+DECISION_ACTIONS = {"accept": "accepted", "edit": "edited",
+                    "reject": "rejected", "snooze": "snoozed"}
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 HOME = Path(os.path.expanduser("~"))
@@ -47,6 +63,14 @@ PROPOSALS_DIR = HOME / ".architect" / "orchestrator-proposals"
 ALLOWED_FLAGS = {"autoDispatch", "closeOnMerge"}
 PORT = 9876
 HOST = "127.0.0.1"
+# CORS origin allowlist: exact scheme://host:port strings only (see _cors).
+ALLOWED_ORIGINS = frozenset({
+    f"http://127.0.0.1:{PORT}",
+    f"http://localhost:{PORT}",
+})
+# /decision/list snippet cap: the list view is a queue overview, not the
+# store — 120 chars is plenty for a row; full content stays in the store.
+LIST_SNIPPET_MAX = 120
 
 
 def load_json():
@@ -205,6 +229,66 @@ def proposal_action(prop_id, action, params):
     return True, f"{prop_id}.{action} ok"
 
 
+def _decisions_mod():
+    """Import src/assistant/decisions lazily — the decision routes must not
+    keep the whole server from starting if the module is broken/absent."""
+    if str(SRC_DIR) not in sys.path:
+        sys.path.insert(0, str(SRC_DIR))
+    from assistant import decisions  # noqa: PLC0415
+    return decisions
+
+
+def decision_list():
+    """The materialized queue view: open decisions (queue order) + totals."""
+    try:
+        decisions = _decisions_mod()
+        view = decisions.load_queue()
+        opens = decisions.open_decisions(view)
+    except Exception as e:
+        return False, f"decision store unavailable: {e}"
+    # Truncate snippets for the wire: the list response is an overview and
+    # anything embedding it (dashboard HTML, logs) shouldn't ship 500 chars
+    # of raw screen scrape per row. The store keeps the full snippet.
+    opens = [
+        {**d, "snippet": (d.get("snippet") or "")[:LIST_SNIPPET_MAX]}
+        if isinstance(d.get("snippet"), str) else dict(d)
+        for d in opens
+    ]
+    return True, json.dumps({
+        "open": opens,
+        "n_open": len(opens),
+        "n_total": len(view.get("decisions", [])),
+        "ts": view.get("ts"),
+    }, ensure_ascii=False)
+
+
+def decision_act(dec_id, action, params, note):
+    """One-tap transition on a decision. Appends a new record via
+    decisions.transition (append-only log, flock'd, ledgered) — this server
+    never rewrites decision state directly."""
+    status = DECISION_ACTIONS.get(action)
+    if status is None:
+        return False, f"unknown action {action!r} (want one of {sorted(DECISION_ACTIONS)})"
+    wake_ts = None
+    if action == "snooze":
+        try:
+            minutes = int(params.get("minutes", [30])[0])
+        except (ValueError, TypeError):
+            return False, "snooze minutes must be an integer"
+        wake_ts = time.time() + max(1, minutes) * 60
+    try:
+        decisions = _decisions_mod()
+        rec, err = decisions.transition(
+            dec_id, status, via=f"todo-server:{action}",
+            note=(note or "").strip() or None, wake_ts=wake_ts)
+    except Exception as e:
+        return False, f"decision store unavailable: {e}"
+    if err:
+        return False, err
+    rerender_dashboard()
+    return True, f"{dec_id} -> {rec['status']}"
+
+
 def focus_workspace(ws_ref):
     if not WORKSPACE_REF_RE.match(ws_ref):
         return False, f"invalid workspace ref {ws_ref!r}"
@@ -243,13 +327,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cors(self):
         origin = self.headers.get("Origin", "")
-        # Only allow requests from the local dashboard (file:// or localhost).
+        # Only allow requests from the local dashboard. EXACT match on
+        # scheme://host:port — a prefix match would wave through
+        # http://localhost.evil.com (it startswith "http://localhost").
+        # file:// pages send Origin: null; same-origin requests omit it.
         allowed = (
-            origin.startswith("file://")
-            or origin.startswith("http://127.0.0.1")
-            or origin.startswith("http://localhost")
-            or origin == "null"  # file:// sends Origin: null in many browsers
-            or not origin  # same-origin requests omit the header
+            origin in ALLOWED_ORIGINS
+            or origin == "null"
+            or not origin
         )
         if allowed:
             self.send_header("Access-Control-Allow-Origin", origin or "null")
@@ -320,6 +405,33 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ok, msg = proposal_action(prop_id, action, qs)
             self._reply(200 if ok else 400, msg)
+            return
+
+        # POST /decision/list — POST-only like every mutation-adjacent route.
+        if parts == ["decision", "list"]:
+            ok, msg = decision_list()
+            if not ok:
+                self._reply(503, msg)
+                return
+            body = msg.encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # POST /decision/act/<dec-id>?action=...&minutes=N  (body = note)
+        if len(parts) == 3 and parts[0] == "decision" and parts[1] == "act":
+            dec_id = parts[2]
+            if not DEC_ID_RE.match(dec_id):
+                self._reply(400, f"invalid decision id {dec_id!r}")
+                return
+            action = (qs.get("action", [""])[0]) or ""
+            note = self._read_body()
+            ok, msg = decision_act(dec_id, action, qs, note)
+            self._reply(200 if ok else (404 if "not found" in msg else 400), msg)
             return
 
         # POST /focus/<workspace_ref>
