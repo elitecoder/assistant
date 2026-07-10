@@ -336,7 +336,11 @@ def open_decision(*, event: dict, lane: str, policy_id, triage=None,
                     ev_epoch = event.get("epoch")
                     ev_ts = float(ev_epoch) if isinstance(
                         ev_epoch, (int, float)) else None
-                if ev_ts is not None and ev_ts > res_ts:
+                # `>=`, not `>` (m10): a decision that expires and is re-sighted
+                # in the SAME second (whole-second epochs — a fast replay or a
+                # coarse clock) must still reopen; a strict `>` silently swallowed
+                # the re-sighting and stranded the decision dead.
+                if ev_ts is not None and ev_ts >= res_ts:
                     reopened_from = "expired"
             if reopened_from is None:
                 return existing, False

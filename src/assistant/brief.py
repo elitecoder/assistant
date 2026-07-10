@@ -180,6 +180,10 @@ def config_path() -> Path:
     return _home() / ".assistant" / "comms" / "config.json"
 
 
+def proposals_path() -> Path:
+    return _home() / ".assistant" / "comms" / "proposals.jsonl"
+
+
 def utc_iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
@@ -523,6 +527,36 @@ def _build_health(records: list[dict], now: float) -> dict:
     }
 
 
+def _build_proposals(now: float) -> dict:
+    """Confirmation-gated proposals awaiting Mukul (design section 5: "policy-
+    proposal confirmation is itself a one-tap brief item"). Surfaces the
+    low-volume human-confirmation channel — BOTH policy proposals and
+    goal_update proposals (m15: an automation-filed goal status/rank/'looks
+    done' change must be visible and confirmable, mirroring policy proposals —
+    it must never silently apply, nor silently sit unseen). Folded by id so a
+    confirmed/vetoed proposal drops off; only pending survives."""
+    folded: dict = {}
+    for row in _read_jsonl_tail(proposals_path(), 1000):
+        if isinstance(row, dict) and row.get("id"):
+            folded[row["id"]] = row
+    out = {"goal_update": [], "policy": [], "n": 0}
+    for row in folded.values():
+        typ = row.get("type")
+        if typ not in ("goal_update", "policy"):
+            continue
+        if row.get("status") not in ("pending", None):
+            continue
+        item = {"id": row.get("id"), "type": typ,
+                "reason": (row.get("reason") or "")[:200],
+                "source": row.get("source")}
+        if typ == "goal_update":
+            item["goal_id"] = row.get("goal_id")
+            item["changes"] = row.get("changes")
+        out[typ].append(item)
+    out["n"] = len(out["goal_update"]) + len(out["policy"])
+    return out
+
+
 # ─── the brief ───────────────────────────────────────────────────────────────
 
 def build_brief(now: float | None = None) -> dict:
@@ -570,6 +604,7 @@ def build_brief(now: float | None = None) -> dict:
         "digest": digest,
         "health": _build_health(records, now),
         "goals": goals_section,
+        "proposals": _build_proposals(now),
         "counts": {
             "open_decisions": len(queue),
             "by_lane": dict(sorted(counts_by_lane.items())),

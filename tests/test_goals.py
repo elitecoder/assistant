@@ -187,8 +187,10 @@ class ProgressLinkerTests(GoalsBase):
 
     def test_max_over_multiple_artifacts(self):
         goal = {"id": "goal-1", "links": {"repos": ["r"], "prs": [1]}}
+        # PR tokens are repo-qualified now (m17): the merged PR must name its
+        # repo to count via the PR link.
         arts = (goals.ledger_artifacts([{"epoch": NOW - 5000, "repo": "r"}])
-                + goals.pr_artifacts([{"state": "merged",
+                + goals.pr_artifacts([{"state": "merged", "repo": "r",
                                        "merged_epoch": NOW - 100, "number": 1}]))
         self.assertEqual(goals.last_progress_at(goal, arts, now=NOW), NOW - 100)
 
@@ -347,17 +349,64 @@ class MetricsTests(GoalsBase):
 class NoLLMStructuralTests(unittest.TestCase):
     """M4 must add ZERO new LLM spend. The mechanical invariant, proven
     STRUCTURALLY via the AST (not a fragile text grep that a `.claude` path or a
-    docstring would trip): the M4 modules import NO process-spawning or LLM-SDK
-    module — so there is physically no path from goals.py / plan-next-actions.py
-    to a `claude` CLI, an Anthropic/Bedrock SDK, or the metered runner — and make
-    NO os.system/os.popen/exec/eval call."""
+    docstring would trip): NOTHING in the M4 modules' import CLOSURE (goals.py +
+    plan-next-actions.py AND every local assistant.* module they pull in — incl.
+    decisions.py / config.py / todostore.py) imports a process-spawning or
+    LLM-SDK module, and none makes an os.system/popen/exec/eval call or a DYNAMIC
+    import (__import__/importlib.import_module — the escape hatch a plain import
+    scan would miss, m11). So there is physically no path from the planner to a
+    `claude` CLI, an Anthropic/Bedrock SDK, or the metered runner."""
 
-    FILES = [REPO / "src" / "assistant" / "goals.py",
+    ROOTS = [REPO / "src" / "assistant" / "goals.py",
              REPO / "bin" / "plan-next-actions.py"]
+    SRC = REPO / "src" / "assistant"
     FORBIDDEN_IMPORTS = {"subprocess", "anthropic", "boto3", "botocore",
-                         "metering", "metered_llm"}
+                         "metering", "metered_llm", "importlib"}
     FORBIDDEN_CALLS = {"system", "popen", "exec", "eval", "Popen", "spawn",
-                       "spawnv", "execv", "execvp"}
+                       "spawnv", "execv", "execvp",
+                       "__import__", "import_module"}
+
+    def _local_deps(self, tree):
+        """assistant.* sibling modules imported by this tree (to walk the
+        closure): `from . import x`, `from assistant import x`, `import
+        assistant.x`."""
+        import ast
+        out = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if node.level and mod == "":            # from . import a, b
+                    out.update(a.name for a in node.names)
+                elif node.level and mod:                # from .sub import x
+                    out.add(mod.split(".")[0])
+                elif mod.split(".")[0] == "assistant":  # from assistant import x
+                    parts = mod.split(".")
+                    if len(parts) >= 2:
+                        out.add(parts[1])
+                    else:
+                        out.update(a.name for a in node.names)
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    p = a.name.split(".")
+                    if p[0] == "assistant" and len(p) >= 2:
+                        out.add(p[1])
+        return out
+
+    def _closure(self):
+        import ast
+        seen: dict = {}
+        work = [Path(f) for f in self.ROOTS]
+        while work:
+            f = work.pop()
+            if f in seen or not f.exists():
+                continue
+            tree = ast.parse(f.read_text())
+            seen[f] = tree
+            for dep in self._local_deps(tree):
+                cand = self.SRC / f"{dep}.py"
+                if cand.exists():
+                    work.append(cand)
+        return seen
 
     def _imports_and_calls(self, tree):
         import ast
@@ -378,9 +427,12 @@ class NoLLMStructuralTests(unittest.TestCase):
         return imports, calls
 
     def test_no_llm_or_subprocess_call_paths(self):
-        import ast
-        for f in self.FILES:
-            tree = ast.parse(f.read_text())
+        closure = self._closure()
+        # decisions.py MUST be in the closure (goals.py imports it) — prove the
+        # walk actually reached a dependency, not just the two roots.
+        self.assertIn(self.SRC / "decisions.py", closure,
+                      "closure walk did not reach decisions.py")
+        for f, tree in closure.items():
             imports, calls = self._imports_and_calls(tree)
             bad_imp = imports & self.FORBIDDEN_IMPORTS
             self.assertEqual(bad_imp, set(),
@@ -388,6 +440,113 @@ class NoLLMStructuralTests(unittest.TestCase):
             bad_call = calls & self.FORBIDDEN_CALLS
             self.assertEqual(bad_call, set(),
                              f"{f.name} makes forbidden call(s): {bad_call}")
+
+
+# ─── M5: a malformed field never crashes the planner ─────────────────────────
+
+class MalformedGoalTests(GoalsBase):
+    def test_bad_budget_value_defaults_not_crashes(self):
+        # int("abc") used to crash the whole load/plan; now it defaults.
+        self.write_goals({"goals": [
+            {"id": "goal-1", "rank": 1, "title": "a", "outcome": "o",
+             "budget": {"maxActiveWs": "abc"}},
+            {"id": "goal-2", "rank": 2, "title": "b", "outcome": "o"}]})
+        s = goals.load_goals()                    # must not raise
+        self.assertEqual([g["id"] for g in s["goals"]], ["goal-1", "goal-2"])
+        self.assertEqual(s["goals"][0]["budget"]["maxActiveWs"], 2)  # defaulted
+
+    def test_non_dict_container_drops_only_that_goal(self):
+        self.write_goals({"goals": [
+            {"id": "goal-1", "rank": 1, "title": "a", "outcome": "o",
+             "budget": "nope"},                    # wrong shape → drop goal-1
+            {"id": "goal-2", "rank": 2, "title": "b", "outcome": "o"}]})
+        self.assertEqual([g["id"] for g in goals.load_goals()["goals"]],
+                         ["goal-2"])               # others survive
+
+    def test_update_rejects_non_dict_links(self):
+        goals.add_goal(title="a", outcome="o", now=NOW)
+        _, err = goals.update_goal("goal-1", {"links": "notadict"})
+        self.assertIsNotNone(err)
+
+    def test_plan_pass_survives_a_bad_goal(self):
+        self.write_goals({"goals": [
+            {"id": "goal-1", "rank": 1, "title": "a", "outcome": "o",
+             "budget": "BAD"},                     # dropped from view
+            {"id": "goal-2", "rank": 2, "title": "b", "outcome": "o",
+             "createdAt": goals.utc_iso(NOW - 5 * DAY)}]})
+        wp = goals.world_path()
+        wp.parent.mkdir(parents=True, exist_ok=True)
+        wp.write_text(json.dumps({"_meta": {"built_at": goals.utc_iso(NOW - 60)},
+                                  "live_sessions": []}))
+        summary = goals.plan_pass(now=NOW)         # must NOT raise / blank
+        self.assertFalse(summary["unreadable"])
+
+
+# ─── m9: add_goal enforces unique ranks ──────────────────────────────────────
+
+class AddRankUniquenessTests(GoalsBase):
+    def test_add_at_duplicate_rank_reindexes(self):
+        goals.add_goal(title="a", outcome="o", rank=1, now=NOW)
+        goals.add_goal(title="b", outcome="o", rank=1, now=NOW)  # collide
+        by_id = {g["id"]: g["rank"] for g in goals.load_goals()["goals"]}
+        self.assertEqual(sorted(by_id.values()), [1, 2])         # unique
+        self.assertEqual(by_id["goal-2"], 1)                     # new took slot
+        self.assertEqual(by_id["goal-1"], 2)
+
+
+# ─── M17: cross-repo PR number is not progress ───────────────────────────────
+
+class CrossRepoPrTests(GoalsBase):
+    def test_pr_in_unrelated_repo_is_not_progress(self):
+        goal = {"id": "goal-1", "links": {"repos": ["myrepo"], "prs": [101]}}
+        # PR #101 MERGED in a different repo must not reset the stall clock
+        arts = goals.pr_artifacts([{"state": "merged", "merged_epoch": NOW - 5,
+                                    "number": 101, "repo": "otherrepo"}])
+        self.assertIsNone(goals.last_progress_at(goal, arts, now=NOW))
+        # the SAME number in the LINKED repo does count
+        arts2 = goals.pr_artifacts([{"state": "merged", "merged_epoch": NOW - 5,
+                                     "number": 101, "repo": "myrepo"}])
+        self.assertEqual(goals.last_progress_at(goal, arts2, now=NOW), NOW - 5)
+
+    def test_ledger_pr_in_unrelated_repo_is_not_progress(self):
+        goal = {"id": "goal-1", "links": {"repos": ["myrepo"], "prs": [101]}}
+        arts = goals.ledger_artifacts([
+            {"epoch": NOW - 5, "kind": "merge-dispatched", "pr": 101,
+             "repo": "otherrepo"}])
+        self.assertIsNone(goals.last_progress_at(goal, arts, now=NOW))
+
+
+# ─── m8: paused freezes the mechanical progress stamp ────────────────────────
+
+class PausedStampTests(GoalsBase):
+    def test_paused_stamp_is_noop_and_ledgered(self):
+        goals.add_goal(title="a", outcome="o", links={"repos": ["r"]},
+                       now=NOW - 5 * DAY)
+        goals.set_paused(True, now=NOW)
+        lp = goals.ledger_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        with open(lp, "a") as f:
+            f.write(json.dumps({"epoch": int(NOW - 3600), "repo": "r",
+                                "kind": "dispatch"}) + "\n")
+        out = goals.stamp_progress(now=NOW)
+        self.assertEqual(out["n"], 0)
+        self.assertTrue(out.get("paused"))
+        self.assertIsNone(goals.load_goals()["goals"][0]["lastProgressAt"])
+        self.assertTrue(goals.ledger_has_key("planner:stamp-paused"))
+
+
+# ─── M15: goal_update proposals surface in the brief ─────────────────────────
+
+class GoalUpdateProposalSurfacingTests(GoalsBase):
+    def test_proposal_surfaces_in_brief(self):
+        goals.add_goal(title="a", outcome="o", now=NOW)
+        goals.file_goal_update_proposal(
+            "goal-1", {"status": "done"}, reason="looks done", source="planner")
+        doc = brief.build_brief(now=NOW)
+        props = doc["proposals"]
+        self.assertEqual(props["n"], 1)
+        self.assertEqual(props["goal_update"][0]["goal_id"], "goal-1")
+        self.assertEqual(props["goal_update"][0]["changes"], {"status": "done"})
 
 
 if __name__ == "__main__":

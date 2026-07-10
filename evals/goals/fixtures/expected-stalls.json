@@ -1,0 +1,11 @@
+{
+  "note": "HAND-AUTHORED ground truth for the stall-precision/recall harness. A human read ledger-30d.jsonl + seeded-goals.json and listed, per goal, the GENUINE progress days (integer day index N from the first ledger row at base_iso). This is deliberately NOT produced by goals.ledger_artifacts / pr_artifacts / _matches / last_progress_at — those are the code UNDER TEST. The oracle derives truly-stalled days from these genuine days via the mechanical stall definition (now - lastGenuineProgress > stallAfterHours), so an over-matching linker (that treats noise as progress) or an under-matching one (that stops matching merged PRs) DIVERGES from this ground truth and drops recall or precision below its gate.",
+  "base_iso": "2026-06-01T10:00:00Z",
+  "replay_days": 30,
+  "stall_after_hours": 48,
+  "genuine_progress_days": {
+    "goal-1": [0, 5, 10],
+    "goal-2": [0, 2, 4, 6, 8, 10, 12, 22, 24, 26, 28]
+  },
+  "derivation": "goal-1's real artifacts: a dispatch in elitecoder/assistant (day 0), the merge of PR #101 in that repo (day 5), a dispatch in assistant (day 10); nothing after. goal-2's real artifacts: td-500 dispatches on days 0,2,4,6,8,10,12 then a 10-day gap then 22,24,26,28. All other ledger rows are noise (some/other-repo, unrelated PR #999) and are NOT progress for either goal."
+}

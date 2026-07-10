@@ -49,13 +49,26 @@ curl -s -X POST $BASE/goal/rerank -H 'Content-Type: application/json' \
   -d '{"order":["goal-3","goal-1","goal-2"]}'
 ```
 
-`pause`/`resume` set `_paused` via an update-style call:
+`pause`/`resume` hit their OWN routes, which actually flip `_paused` (the
+planner then no-ops, ledgered). This is the REAL kill switch — the old
+`/goal/update -d '{}'` "no-op ping" only stamped `updatedAt` and never paused:
 
 ```bash
-curl -s -X POST $BASE/goal/update/goal-1 -H 'Content-Type: application/json' -d '{}'  # no-op ping
-# The kill switch lives at the store root; edit it via the goals module if the
-# server is down:  python3 -c "import sys;sys.path.insert(0,'~/dev/assistant/src');from assistant import goals;goals.set_paused(True)"
+curl -s -X POST $BASE/goal/pause     # sets _paused:true  → planner no-ops
+curl -s -X POST $BASE/goal/resume    # sets _paused:false
+# If the server is down, edit the store root directly via the goals module:
+#   python3 -c "import sys;sys.path.insert(0,'$HOME/dev/assistant/src');from assistant import goals;goals.set_paused(True)"
 ```
+
+### Automation vs human on `/goal/update`
+
+Editing a goal's **status / links / playbook** is confirmation-gated (m18): the
+dashboard sends an `X-Assistant-Human: 1` header on those edits and they apply
+in place. A request WITHOUT that header (i.e. any automation, including the
+assistant's own LLM sessions curling localhost) does NOT apply the change — it
+files a `goal_update` proposal for Mukul to confirm in the brief. Cross-origin
+mutations are refused outright (403). So automation can never flip a goal to
+`done` or repoint its links directly; it can only propose.
 
 ## Guardrails
 

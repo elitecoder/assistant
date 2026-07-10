@@ -106,8 +106,10 @@ class AcceptanceFixtures(PlannerBase):
 
     def test_caps_saturated_ledgered_skip(self):
         self.set_config(autodispatch=True)
-        # 5 live workspaces == ACTIVE_WS_CAP → zero headroom
-        self.set_world(live=[{"ws_ref": f"workspace:{i}"} for i in range(5)])
+        # 5 ACTIVE workspaces == ACTIVE_WS_CAP → zero headroom (m14: a session
+        # counts only when it's actually active — give each a fresh turn age).
+        self.set_world(live=[{"ws_ref": f"workspace:{i}", "last_turn_age_sec": 0}
+                             for i in range(5)])
         self.add_stalled_goal()
         summary = goals.plan_pass(now=NOW)
         self.assertEqual(len(self.goal_todos()), 0)
@@ -177,7 +179,8 @@ class AcceptanceFixtures(PlannerBase):
         """4 live + 1 pending human TODO == ACTIVE_WS_CAP(5) → no goal headroom
         left, ledgered capacity skip (human work reserved first)."""
         self.set_config(autodispatch=True)
-        self.set_world(live=[{"ws_ref": f"workspace:{i}"} for i in range(4)])
+        self.set_world(live=[{"ws_ref": f"workspace:{i}", "last_turn_age_sec": 0}
+                             for i in range(4)])
         tp = goals.todo_path()
         tp.parent.mkdir(parents=True, exist_ok=True)
         tp.write_text(json.dumps({"_schema": 1, "items": [
@@ -224,8 +227,9 @@ class SafeDefaultAndGatingTests(PlannerBase):
 class RankAndBudgetTests(PlannerBase):
     def test_rank_order_first_goal_claims_headroom(self):
         self.set_config(autodispatch=True)
-        # only ONE unit of headroom (4 live) → only rank-1 goal gets a TODO
-        self.set_world(live=[{"ws_ref": f"workspace:{i}"} for i in range(4)])
+        # only ONE unit of headroom (4 active) → only rank-1 goal gets a TODO
+        self.set_world(live=[{"ws_ref": f"workspace:{i}", "last_turn_age_sec": 0}
+                             for i in range(4)])
         g1 = self.add_stalled_goal("goal one")   # goal-1 rank 1
         g2 = self.add_stalled_goal("goal two")   # goal-2 rank 2
         summary = goals.plan_pass(now=NOW)
@@ -270,6 +274,259 @@ class CliWrapperTests(PlannerBase):
         rc = mod.main(["--now", str(NOW)])
         self.assertEqual(rc, 0)
         self.assertEqual(len(self.goal_todos()), 1)
+
+
+# ─── M1/M6/M12: the control loop advances, and human resolutions are honored ──
+
+class ControlLoopLifecycleTests(PlannerBase):
+    """The BLOCKER (M1) + its unifications (M6 safety inversion, M12 defer/rm
+    wedge). The safe default stages DECISIONS, so advancement must be read from
+    accepted/rejected decisions — not just done TODOs — or the loop fires once
+    per goal and never reaches step 2."""
+
+    def _two_step_goal(self):
+        # A 2-step unattended playbook so we can watch research → doc-draft.
+        return self.add_stalled_goal(
+            playbook={"unattended": ["research", "doc-draft"], "gated": []})
+
+    def _one_step_goal(self):
+        return self.add_stalled_goal(
+            playbook={"unattended": ["research"], "gated": []})
+
+    def _open_research_dec(self):
+        opens = decisions.open_decisions()
+        return next(d for d in opens if d.get("recommended", {}).get("class")
+                    == "research")
+
+    # ── M1a: accept advances to the NEXT playbook step (real shipped path) ──
+    def test_accept_decision_advances_to_step_two(self):
+        self.set_world()                 # safe default (autoDispatch OFF)
+        self._two_step_goal()
+        goals.plan_pass(now=NOW)
+        dec = self._open_research_dec()
+        self.assertEqual(dec["recommended"]["class"], "research")
+        # human accepts the research step
+        decisions.transition(dec["id"], "accepted", via="test", now=NOW)
+        # a later pulse (next ISO week, past the stall window) drives the REAL
+        # path: stamp progress, then plan → advances to doc-draft
+        later = NOW + 8 * DAY
+        self.set_world(built=later - 60)
+        goals.pulse_step(now=later)
+        opens = decisions.open_decisions()
+        classes = {d.get("recommended", {}).get("class") for d in opens}
+        self.assertIn("doc-draft", classes, opens)      # advanced!
+        self.assertNotIn("research", classes)           # not re-nagged
+
+    # ── M1b: reject → no infinite re-nag, and it's ledgered ──
+    def test_reject_decision_no_infinite_renag(self):
+        self.set_world()
+        self._one_step_goal()
+        goals.plan_pass(now=NOW)
+        dec = self._open_research_dec()
+        decisions.transition(dec["id"], "rejected", via="test", now=NOW)
+        later = NOW + 8 * DAY
+        self.set_world(built=later - 60)
+        summary = goals.plan_pass(now=later)
+        # the single (rejected) step is declined → nothing new staged
+        self.assertEqual(len(summary["staged_decisions"]), 0)
+        self.assertEqual(len(decisions.open_decisions()), 0)
+        # and the skip is LEDGERED (M1c: no silent drop)
+        self.assertTrue(any(r.get("key", "").startswith("planner:skip")
+                            and "no-step" in r.get("key", "")
+                            for r in self.ledger_rows()))
+
+    # ── M1d: expire → reopens (unchanged) ──
+    def test_expire_decision_reopens(self):
+        self.set_world()
+        self._one_step_goal()
+        goals.plan_pass(now=NOW)
+        dec = self._open_research_dec()
+        decisions.expire_open(now=NOW + 200 * 3600)     # TTL (72h) elapsed
+        self.assertEqual(len(decisions.open_decisions()), 0)
+        later = NOW + 9 * DAY
+        self.set_world(built=later - 60)
+        goals.plan_pass(now=later)                       # re-sighting → reopen
+        opens = decisions.open_decisions()
+        self.assertEqual(len(opens), 1)
+        self.assertEqual(opens[0]["id"], dec["id"])
+
+    # ── M1c: every dedup/skip reason is ledgered ──
+    def test_week_dedup_is_ledgered(self):
+        # autoDispatch path: a staged TODO (unlike an open decision) does not
+        # block the stall, so the SAME-week re-pulse reaches the week-dedup guard.
+        self.set_config(autodispatch=True)
+        self.set_world()
+        self._two_step_goal()
+        goals.plan_pass(now=NOW)                          # stages, writes wk key
+        self.set_world(built=NOW + 3600 - 60)             # keep world fresh
+        summary = goals.plan_pass(now=NOW + 3600)         # same week → deduped
+        self.assertTrue(any(s["reason"] == "week-deduped"
+                            for s in summary["skipped"]))
+        self.assertTrue(any(r.get("key", "").startswith("planner:skip")
+                            and "week-deduped" in r.get("key", "")
+                            for r in self.ledger_rows()))
+
+    # ── M6: reject on the decision path is NOT dispatched after flag flip ──
+    def test_rejected_step_not_dispatched_after_autodispatch_flip(self):
+        self.set_world()                                 # safe default OFF
+        self._one_step_goal()
+        goals.plan_pass(now=NOW)                          # research DECISION
+        dec = self._open_research_dec()
+        decisions.transition(dec["id"], "rejected", via="test", now=NOW)
+        # operator flips autoDispatch ON — the rejected step must NOT become an
+        # unattended TODO
+        self.set_config(autodispatch=True)
+        later = NOW + 8 * DAY
+        self.set_world(built=later - 60)
+        goals.plan_pass(now=later)
+        self.assertEqual(self.goal_todos(), [])          # nothing dispatched
+        self.assertTrue(goals._human_declined_step("goal-1", "research"))
+
+    # ── M6: a human-removed TODO is NOT resurrected as a decision ──
+    def test_removed_todo_not_resurrected_as_decision(self):
+        self.set_config(autodispatch=True)
+        self.set_world()
+        self._one_step_goal()
+        goals.plan_pass(now=NOW)                          # research TODO
+        self.assertEqual(len(self.goal_todos()), 1)
+        # human removes it (todo-server.remove_item shape: moved to removed[])
+        data = json.loads(goals.todo_path().read_text())
+        it = data["items"].pop(0)
+        it["removedAt"] = goals.utc_iso(NOW)
+        data.setdefault("removed", []).append(it)
+        goals.todo_path().write_text(json.dumps(data))
+        # flip to safe default so the decision path would be the resurrection
+        self.set_config(autodispatch=False)
+        later = NOW + 8 * DAY
+        self.set_world(built=later - 60)
+        goals.plan_pass(now=later)
+        self.assertEqual(decisions.open_decisions(), [])  # not resurrected
+
+    # ── M12: defer advances past the step (no wedge) and is ledgered ──
+    def test_defer_todo_advances_and_ledgers(self):
+        self.set_config(autodispatch=True)
+        self.set_world()
+        self._two_step_goal()
+        goals.plan_pass(now=NOW)                          # research TODO
+        data = json.loads(goals.todo_path().read_text())
+        data["items"][0]["status"] = "deferred"
+        goals.todo_path().write_text(json.dumps(data))
+        later = NOW + 8 * DAY
+        self.set_world(built=later - 60)
+        goals.plan_pass(now=later)
+        steps = {i.get("stepClass") for i in self.goal_todos()}
+        self.assertIn("doc-draft", steps)                # advanced past deferred
+        # exactly one research TODO (the deferred one) — not re-staged
+        self.assertEqual(sum(1 for i in self.todo_items()
+                             if i.get("stepClass") == "research"), 1)
+        self.assertTrue(any(r.get("kind") == "planner-stage"
+                            and "doc-draft" in r.get("evidence", "")
+                            for r in self.ledger_rows()))
+
+    # ── M12: rm advances past the step (no wedge) and is ledgered ──
+    def test_removed_todo_advances_and_ledgers(self):
+        self.set_config(autodispatch=True)
+        self.set_world()
+        self._two_step_goal()
+        goals.plan_pass(now=NOW)
+        data = json.loads(goals.todo_path().read_text())
+        it = data["items"].pop(0)
+        it["removedAt"] = goals.utc_iso(NOW)
+        data.setdefault("removed", []).append(it)
+        goals.todo_path().write_text(json.dumps(data))
+        later = NOW + 8 * DAY
+        self.set_world(built=later - 60)
+        goals.plan_pass(now=later)
+        steps = {i.get("stepClass") for i in self.goal_todos()}
+        self.assertIn("doc-draft", steps)
+        self.assertTrue(any(r.get("kind") == "planner-stage"
+                            for r in self.ledger_rows()))
+
+
+# ─── select_next_step unit-level advancement ─────────────────────────────────
+
+class SelectNextStepTests(PlannerBase):
+    def test_accepted_decision_counts_as_done_advances(self):
+        goal = {"id": "goal-1", "title": "t",
+                "playbook": {"unattended": ["research", "doc-draft"], "gated": []}}
+        dec_id = goals._goal_step_decision_id("goal-1", "research")
+        folded = {dec_id: {"status": "accepted"}}
+        step = goals.select_next_step(goal, {}, folded)
+        self.assertIsNotNone(step)
+        self.assertEqual(step[0], "doc-draft")
+
+    def test_open_decision_blocks_new_step(self):
+        goal = {"id": "goal-1", "title": "t",
+                "playbook": {"unattended": ["research"], "gated": []}}
+        dec_id = goals._goal_step_decision_id("goal-1", "research")
+        folded = {dec_id: {"status": "open"}}
+        self.assertIsNone(goals.select_next_step(goal, {}, folded))
+
+    def test_rejected_decision_advances_past(self):
+        goal = {"id": "goal-1", "title": "t",
+                "playbook": {"unattended": ["research", "doc-draft"], "gated": []}}
+        dec_id = goals._goal_step_decision_id("goal-1", "research")
+        folded = {dec_id: {"status": "rejected"}}
+        step = goals.select_next_step(goal, {}, folded)
+        self.assertEqual(step[0], "doc-draft")
+
+
+# ─── M13/M14/M16 ─────────────────────────────────────────────────────────────
+
+class SuppressionAndHeadroomTests(PlannerBase):
+    def test_open_decision_matching_links_suppresses_stall(self):
+        g = self.add_stalled_goal(links={"repos": ["myrepo"]})
+        self.assertTrue(goals.is_stalled(g, now=NOW))    # stalled with nothing open
+        # an OPEN triage decision about the goal's repo (NO goal_refs) is the
+        # human already being asked — it must suppress the stall nag (m13)
+        ev = {"id": "tri1", "source": "github", "external_id": "gh:1",
+              "kind": "review_requested", "title": "review",
+              "ts": goals.utc_iso(NOW), "refs": {"repo": "myrepo"}}
+        decisions.open_decision(event=ev, lane="staged", policy_id="p",
+                                action={"class": "todo.create"}, now=NOW)
+        self.assertFalse(goals.is_stalled(g, now=NOW))
+
+    def test_idle_fleet_leaves_headroom(self):
+        self.set_config(autodispatch=True)
+        # five LIVE but idle (or cron) sessions — the dispatcher would count zero
+        # active, so the planner must see full headroom (m14), not zero.
+        self.set_world(live=[
+            {"ws_ref": f"workspace:{i}", "last_turn_age_sec": 99999,
+             "is_cron": True} for i in range(5)])
+        self.add_stalled_goal()
+        goals.plan_pass(now=NOW)
+        self.assertEqual(len(self.goal_todos()), 1)      # staged despite 5 live
+        # tied to the SHARED predicate the dispatcher uses
+        from assistant import config
+        self.assertFalse(config.ws_is_active(None, 99999))
+
+    def test_unreadable_store_is_ledgered_skip(self):
+        self.set_world()
+        p = goals.goals_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{ this is corrupt ]")             # present but unparseable
+        summary = goals.plan_pass(now=NOW)               # must NOT crash
+        self.assertTrue(summary["unreadable"])
+        self.assertTrue(any(r.get("key") == "planner:goals-unreadable"
+                            for r in self.ledger_rows()))
+
+
+class CapSingleSourceTests(unittest.TestCase):
+    """m14: ACTIVE_WS_CAP has ONE source (config.py). goals imports it (no
+    divergent copy), and pulse.py's canonical literal must not drift from it."""
+
+    def test_goals_cap_is_the_config_cap(self):
+        from assistant import config
+        self.assertIs(goals.ACTIVE_WS_CAP, config.ACTIVE_WS_CAP)
+        self.assertEqual(config.ACTIVE_WS_CAP, 5)
+
+    def test_pulse_cap_matches_config(self):
+        import re
+        from assistant import config
+        txt = (REPO / "bin" / "pulse.py").read_text()
+        m = re.search(r"^ACTIVE_WS_CAP\s*=\s*(\d+)", txt, re.M)
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), config.ACTIVE_WS_CAP)
 
 
 if __name__ == "__main__":
