@@ -45,7 +45,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import decisions, policy
+from . import decisions, policy, todostore
 
 EVENT_SCHEMA = "world-event/1"
 DISPOSITION_KIND = "triage.disposition"
@@ -247,38 +247,42 @@ def create_todo(event: dict, policy_id: str, params: dict,
     now = now if now is not None else time.time()
     source_key = f"policy:{policy_id}:{event.get('id')}"
     p = todo_path()
-    try:
-        data = json.loads(p.read_text())
-    except (OSError, FileNotFoundError, json.JSONDecodeError, ValueError):
-        data = {"items": []}
-    if not isinstance(data, dict):
-        data = {"items": []}
-    items = data.setdefault("items", [])
-    for it in items:
-        if isinstance(it, dict) and it.get("source") == source_key:
-            return it.get("id"), False
-    todo_id = f"td-auto-{(event.get('id') or '')[:8] or int(now)}"
-    if any(isinstance(it, dict) and it.get("id") == todo_id for it in items):
-        todo_id = f"{todo_id}-{int(now)}"
-    items.append({
-        "id": todo_id,
-        "title": (params.get("title") or event.get("title") or "")[:120],
-        "detail": (params.get("detail")
-                   or f"Auto-created by policy {policy_id} from "
-                      f"{event.get('source')}/{event.get('kind')} event "
-                      f"{event.get('id')}.\n\n{(event.get('snippet') or '')[:500]}"),
-        "status": "open",
-        "priority": params.get("priority") or "P3",
-        "tags": list(params.get("tags") or ["auto-policy"]),
-        "autoDispatch": bool(params.get("autoDispatch", False)),
-        "source": source_key,
-        "createdAt": utc_iso(now),
-        "createdBy": f"policy:{policy_id}",
-    })
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    os.replace(tmp, p)
+    # Read AND write under the ONE shared todo-file lock (M3): the pulse dispatch
+    # stamp, the goals planner, and the todo-server all write this file — an
+    # unlocked read-modify-write here loses whichever update lands second.
+    with todostore.todo_lock():
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, FileNotFoundError, json.JSONDecodeError, ValueError):
+            data = {"items": []}
+        if not isinstance(data, dict):
+            data = {"items": []}
+        items = data.setdefault("items", [])
+        for it in items:
+            if isinstance(it, dict) and it.get("source") == source_key:
+                return it.get("id"), False
+        todo_id = f"td-auto-{(event.get('id') or '')[:8] or int(now)}"
+        if any(isinstance(it, dict) and it.get("id") == todo_id for it in items):
+            todo_id = f"{todo_id}-{int(now)}"
+        items.append({
+            "id": todo_id,
+            "title": (params.get("title") or event.get("title") or "")[:120],
+            "detail": (params.get("detail")
+                       or f"Auto-created by policy {policy_id} from "
+                          f"{event.get('source')}/{event.get('kind')} event "
+                          f"{event.get('id')}.\n\n{(event.get('snippet') or '')[:500]}"),
+            "status": "open",
+            "priority": params.get("priority") or "P3",
+            "tags": list(params.get("tags") or ["auto-policy"]),
+            "autoDispatch": bool(params.get("autoDispatch", False)),
+            "source": source_key,
+            "createdAt": utc_iso(now),
+            "createdBy": f"policy:{policy_id}",
+        })
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, p)
     return todo_id, True
 
 

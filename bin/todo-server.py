@@ -21,6 +21,23 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
                                                           wrong_lane also files
                                                           a confirmation-gated
                                                           type=policy proposal)
+  POST /goal/list                                        goals store, rank order
+                                                          (Keel M4)
+  POST /goal/add                                          add a goal (body=JSON;
+                                                          HUMAN edit path)
+  POST /goal/update/<goal-id>                             edit a goal directly
+                                                          (id-regex validated;
+                                                          HUMAN edit path —
+                                                          automation files a
+                                                          confirmation-gated
+                                                          goal_update proposal
+                                                          instead)
+  POST /goal/rerank                                       reassign ranks
+                                                          (body={order:[...]})
+  POST /goal/pause | /goal/resume                         flip the _paused kill
+                                                          switch (Keel M4; the
+                                                          REAL switch, not a
+                                                          no-op ping)
   POST /brief/seen?date=YYYY-MM-DD                        Brief-tab view signal
                                                           (Keel M3): stamps the
                                                           seen sidecar next to
@@ -58,6 +75,10 @@ TD_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 PROPOSAL_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 # Decision ids are `dec-` + a hex digest prefix (src/assistant/decisions.py).
 DEC_ID_RE = re.compile(r"^dec-[a-f0-9]{8,64}$")
+# Goal ids are `goal-` + a bounded integer (src/assistant/goals.GOAL_ID_RE).
+# Mirrored here so the /goal/update route validates the path segment BEFORE any
+# store read, exactly like DEC_ID_RE gates /decision/act.
+GOAL_ID_RE = re.compile(r"^goal-[0-9]{1,6}$")
 # Dashboard action → decision status. The vocabulary is closed here AND in
 # decisions.transition (auto_done/open are never reachable via HTTP).
 # wrong_lane (Keel M3) resolves the decision as rejected AND files a
@@ -104,6 +125,21 @@ def save_json(data):
     os.replace(tmp, JSON_PATH)
 
 
+def _todo_lock():
+    """The ONE shared todo-file lock (M3). Every route that read-modify-writes
+    assistant-todo.json wraps its load_json()+save_json() in this so a concurrent
+    pulse dispatch stamp / triage create / goals stage can't lose an update. A
+    broken import degrades to a null context (never block a dashboard edit)."""
+    try:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        from assistant import todostore  # noqa: PLC0415
+        return todostore.todo_lock()
+    except Exception:
+        import contextlib
+        return contextlib.nullcontext()
+
+
 def rerender():
     try:
         subprocess.run(
@@ -118,13 +154,14 @@ def rerender():
 
 def set_flag(td_id, flag, value):
     """Set a TODO's boolean-ish flag. value is True, False, or None."""
-    data = load_json()
-    items = data.get("items", []) or []
-    target = next((i for i in items if i.get("id") == td_id), None)
-    if target is None:
-        return False, f"id {td_id!r} not found"
-    target[flag] = value  # None means "user hasn't decided" (Bucket C)
-    save_json(data)
+    with _todo_lock():
+        data = load_json()
+        items = data.get("items", []) or []
+        target = next((i for i in items if i.get("id") == td_id), None)
+        if target is None:
+            return False, f"id {td_id!r} not found"
+        target[flag] = value  # None means "user hasn't decided" (Bucket C)
+        save_json(data)
     rerender()
     return True, f"{td_id}.{flag} = {value!r}"
 
@@ -133,16 +170,17 @@ def append_detail(td_id, text):
     text = (text or "").strip()
     if not text:
         return False, "empty body"
-    data = load_json()
-    items = data.get("items", []) or []
-    target = next((i for i in items if i.get("id") == td_id), None)
-    if target is None:
-        return False, f"id {td_id!r} not found"
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    prior = (target.get("detail") or "").rstrip()
-    sep = "\n\n" if prior else ""
-    target["detail"] = f"{prior}{sep}[mukul {now}] {text}"
-    save_json(data)
+    with _todo_lock():
+        data = load_json()
+        items = data.get("items", []) or []
+        target = next((i for i in items if i.get("id") == td_id), None)
+        if target is None:
+            return False, f"id {td_id!r} not found"
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        prior = (target.get("detail") or "").rstrip()
+        sep = "\n\n" if prior else ""
+        target["detail"] = f"{prior}{sep}[mukul {now}] {text}"
+        save_json(data)
     rerender()
     return True, f"{td_id}: appended {len(text)} chars"
 
@@ -155,20 +193,21 @@ def dispatch_now(td_id):
     empty). Also flips status back to 'open' if it was deferred or blocked,
     because Mukul is explicitly asking for a fresh attempt.
     """
-    data = load_json()
-    items = data.get("items", []) or []
-    target = next((i for i in items if i.get("id") == td_id), None)
-    if target is None:
-        return False, f"id {td_id!r} not found"
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    target["autoDispatch"] = True
-    target["dispatchedAt"] = None
-    target["dispatchedWs"] = None
-    if target.get("status") in ("deferred", "blocked", "done"):
-        target["status"] = "open"
-        target["statusUpdatedAt"] = now
-        target["statusReason"] = f"Re-opened via dashboard 'Dispatch now' at {now}"
-    save_json(data)
+    with _todo_lock():
+        data = load_json()
+        items = data.get("items", []) or []
+        target = next((i for i in items if i.get("id") == td_id), None)
+        if target is None:
+            return False, f"id {td_id!r} not found"
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        target["autoDispatch"] = True
+        target["dispatchedAt"] = None
+        target["dispatchedWs"] = None
+        if target.get("status") in ("deferred", "blocked", "done"):
+            target["status"] = "open"
+            target["statusUpdatedAt"] = now
+            target["statusReason"] = f"Re-opened via dashboard 'Dispatch now' at {now}"
+        save_json(data)
     rerender()
     return True, f"{td_id}: queued for next-pulse Bucket B dispatch"
 
@@ -325,6 +364,138 @@ def decision_act(dec_id, action, params, note):
     return True, f"{dec_id} -> {rec['status']}{proposal_note}"
 
 
+def _goals_mod():
+    """Import src/assistant/goals lazily — the goal routes must not keep the
+    whole server from starting if the module is broken/absent (mirrors
+    _decisions_mod)."""
+    if str(SRC_DIR) not in sys.path:
+        sys.path.insert(0, str(SRC_DIR))
+    from assistant import goals  # noqa: PLC0415
+    return goals
+
+
+def goal_list():
+    """The goals store in rank order (the /goal skill's `list` + dashboard)."""
+    try:
+        goals = _goals_mod()
+        store = goals.load_goals()
+        rows = goals.list_goals()
+    except Exception as e:
+        return False, f"goals store unavailable: {e}"
+    return True, json.dumps({
+        "goals": rows,
+        "n": len(rows),
+        "paused": bool(store.get("_paused", False)),
+    }, ensure_ascii=False)
+
+
+def _parse_json_body(body):
+    try:
+        obj = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return None, "body must be JSON"
+    if not isinstance(obj, dict):
+        return None, "body must be a JSON object"
+    return obj, None
+
+
+def goal_add(body):
+    """POST /goal/add — HUMAN path (localhost only, like every route). Body is a
+    JSON object {title, outcome, rank?, horizon?, links?, playbook?, budget?}.
+    Automation NEVER hits this; it files a goal_update proposal instead."""
+    obj, err = _parse_json_body(body)
+    if err:
+        return False, err
+    try:
+        goals = _goals_mod()
+        goal, gerr = goals.add_goal(
+            title=obj.get("title") or "", outcome=obj.get("outcome") or "",
+            rank=obj.get("rank"), horizon=obj.get("horizon"),
+            links=obj.get("links"), playbook=obj.get("playbook"),
+            budget=obj.get("budget"),
+            stall_after_hours=obj.get("stallAfterHours"))
+    except Exception as e:
+        return False, f"goals store unavailable: {e}"
+    if gerr:
+        return False, gerr
+    return True, json.dumps({"added": goal.get("id"), "rank": goal.get("rank")},
+                            ensure_ascii=False)
+
+
+# The design's central automation invariant: automation CANNOT directly flip a
+# goal's status, repoint its links, or widen its playbook (m18). A direct edit
+# of these fields is applied ONLY with an explicit human-origin assertion (the
+# dashboard sets X-Assistant-Human; automation's localhost curl does not).
+# Without it, the edit is FILED as a confirmation-gated goal_update proposal
+# (m15 wires the producer) instead of applied.
+_GOAL_SENSITIVE_FIELDS = {"status", "links", "playbook"}
+
+
+def goal_update(goal_id, body, is_human=True):
+    """POST /goal/update/<id>. A direct edit of a SENSITIVE field
+    (status/links/playbook) requires the human-origin assertion; otherwise the
+    change is filed as a confirmation-gated goal_update proposal, never applied
+    (m18/m15). Non-sensitive human edits apply in place."""
+    obj, err = _parse_json_body(body)
+    if err:
+        return False, err
+    try:
+        goals = _goals_mod()
+    except Exception as e:
+        return False, f"goals store unavailable: {e}"
+    sensitive = set(obj) & _GOAL_SENSITIVE_FIELDS
+    if sensitive and not is_human:
+        # Automation-shaped request touching a gated field → file a proposal,
+        # do NOT apply. This is the ONLY way automation reaches status/links/
+        # playbook, and it never auto-applies.
+        try:
+            entry = goals.file_goal_update_proposal(
+                goal_id, {k: obj[k] for k in obj},
+                reason="automation /goal/update without human assertion",
+                source="todo-server")
+        except Exception as e:
+            return False, f"goals store unavailable: {e}"
+        if entry is None:
+            return True, f"{goal_id}: goal_update proposal already pending (not applied)"
+        return True, f"{goal_id}: filed goal_update proposal {entry.get('id')} (not applied)"
+    try:
+        goal, gerr = goals.update_goal(goal_id, obj)
+    except Exception as e:
+        return False, f"goals store unavailable: {e}"
+    if gerr:
+        return False, gerr
+    return True, f"{goal_id} updated"
+
+
+def goal_set_paused(paused):
+    """POST /goal/pause | /goal/resume — the REAL kill switch (m7). The skill
+    used to advertise pause but only ever sent a no-op /goal/update ping that
+    returned success WITHOUT setting _paused (fail-open). This actually flips
+    goals._paused so the planner then no-ops (ledgered)."""
+    try:
+        goals = _goals_mod()
+        goals.set_paused(bool(paused))
+    except Exception as e:
+        return False, f"goals store unavailable: {e}"
+    return True, json.dumps({"paused": bool(paused)}, ensure_ascii=False)
+
+
+def goal_rerank(body):
+    """POST /goal/rerank — HUMAN direct edit. Body {order:[goal-id,...]}."""
+    obj, err = _parse_json_body(body)
+    if err:
+        return False, err
+    order = obj.get("order")
+    try:
+        goals = _goals_mod()
+        ok, gerr = goals.rerank(order if isinstance(order, list) else [])
+    except Exception as e:
+        return False, f"goals store unavailable: {e}"
+    if not ok:
+        return False, gerr or "rerank failed"
+    return True, "reranked"
+
+
 def brief_seen(params):
     """POST /brief/seen: stamp the seen sidecar for a brief (Keel M3). The
     sidecar — not the brief file — carries seen_ts, so the brief stays a
@@ -357,18 +528,19 @@ def focus_workspace(ws_ref):
 
 
 def remove_item(td_id):
-    data = load_json()
-    items = data.get("items", []) or []
-    idx = next((n for n, i in enumerate(items) if i.get("id") == td_id), None)
-    if idx is None:
-        return False, f"id {td_id!r} not found"
-    item = items.pop(idx)
-    item["removedAt"] = datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
-    data.setdefault("removed", []).append(item)
-    data["items"] = items
-    save_json(data)
+    with _todo_lock():
+        data = load_json()
+        items = data.get("items", []) or []
+        idx = next((n for n, i in enumerate(items) if i.get("id") == td_id), None)
+        if idx is None:
+            return False, f"id {td_id!r} not found"
+        item = items.pop(idx)
+        item["removedAt"] = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        data.setdefault("removed", []).append(item)
+        data["items"] = items
+        save_json(data)
     rerender()
     return True, f"{td_id} removed"
 
@@ -392,6 +564,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", origin or "null")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _origin_allowed_for_mutation(self) -> bool:
+        """A state-changing POST is refused outright (403) when it carries a
+        FOREIGN Origin (m4/CSRF) — withholding the ACAO header is not enough, a
+        no-cors form/fetch ignores the missing header and the write still lands.
+        A same-origin request omits Origin; the file:// dashboard sends 'null';
+        both are allowed, an explicit cross-site origin is not."""
+        origin = self.headers.get("Origin", "")
+        return origin in ALLOWED_ORIGINS or origin in ("null", "")
+
+    def _is_human(self) -> bool:
+        """The human-origin assertion (m18): the dashboard sets X-Assistant-Human
+        on its goal-mutation fetches; automation's localhost curl does not. Used
+        to gate direct edits of a goal's status/links/playbook."""
+        return (self.headers.get("X-Assistant-Human", "") or "").strip() not in ("", "0", "false")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -449,6 +636,21 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in parsed.path.split("/") if p]
         qs = urllib.parse.parse_qs(parsed.query)
 
+        # CSRF chokepoint (m4): refuse any FOREIGN-origin state-changing POST —
+        # the /goal mutations (which now drive the autonomous planner), the
+        # /decision transitions, and /brief/seen. Reads (/goal/list, /decision/
+        # list) are unaffected.
+        _mutation = (
+            parts[:2] in (["goal", "add"], ["goal", "rerank"],
+                          ["goal", "pause"], ["goal", "resume"])
+            or (len(parts) == 3 and parts[0] == "goal" and parts[1] == "update")
+            or (len(parts) == 3 and parts[0] == "decision" and parts[1] == "act")
+            or parts == ["brief", "seen"]
+        )
+        if _mutation and not self._origin_allowed_for_mutation():
+            self._reply(403, "cross-origin mutation refused")
+            return
+
         # POST /proposal/<id>/<action>
         if len(parts) == 3 and parts[0] == "proposal":
             _, prop_id, action = parts
@@ -483,6 +685,55 @@ class Handler(BaseHTTPRequestHandler):
             action = (qs.get("action", [""])[0]) or ""
             note = self._read_body()
             ok, msg = decision_act(dec_id, action, qs, note)
+            self._reply(200 if ok else (404 if "not found" in msg else 400), msg)
+            return
+
+        # POST /goal/list — POST-only like the other list routes (Keel M4).
+        if parts == ["goal", "list"]:
+            ok, msg = goal_list()
+            if not ok:
+                self._reply(503, msg)
+                return
+            body = msg.encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # POST /goal/add  (body = goal JSON)  — HUMAN edit path.
+        if parts == ["goal", "add"]:
+            ok, msg = goal_add(self._read_body())
+            self._reply(200 if ok else 400, msg)
+            return
+
+        # POST /goal/rerank  (body = {order:[...]}) — HUMAN edit path.
+        if parts == ["goal", "rerank"]:
+            ok, msg = goal_rerank(self._read_body())
+            self._reply(200 if ok else 400, msg)
+            return
+
+        # POST /goal/pause | /goal/resume — the REAL kill switch (m7).
+        if parts == ["goal", "pause"]:
+            ok, msg = goal_set_paused(True)
+            self._reply(200 if ok else 503, msg)
+            return
+        if parts == ["goal", "resume"]:
+            ok, msg = goal_set_paused(False)
+            self._reply(200 if ok else 503, msg)
+            return
+
+        # POST /goal/update/<goal-id>  (body = changes JSON). Sensitive-field
+        # edits require the human-origin assertion (m18) or they file a proposal.
+        if len(parts) == 3 and parts[0] == "goal" and parts[1] == "update":
+            goal_id = parts[2]
+            if not GOAL_ID_RE.match(goal_id):
+                self._reply(400, f"invalid goal id {goal_id!r}")
+                return
+            ok, msg = goal_update(goal_id, self._read_body(),
+                                  is_human=self._is_human())
             self._reply(200 if ok else (404 if "not found" in msg else 400), msg)
             return
 

@@ -235,7 +235,9 @@ class SeenAndMetricsTests(BriefBase):
                 "date", "ts", "epoch", "decisions_pending_at_brief",
                 "decisions_accepted_unedited", "auto_coverage_pct",
                 "expired_unseen", "interrupts_delivered",
-                "interrupts_denied"]))
+                "interrupts_denied",
+                # Keel M4 extended the row (design section 3):
+                "goals_progressed_overnight", "staged_accept_rate"]))
         self.assertEqual(row["decisions_pending_at_brief"], 1)
         # Rebuild same date → no double-booking.
         self.assertIsNone(brief.append_daily_metrics(doc, now=NOW + 60))

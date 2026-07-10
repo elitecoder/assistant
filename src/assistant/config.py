@@ -30,6 +30,38 @@ DEFAULT_PULSE_INTERVAL_SEC = 300
 DEFAULT_STALE_HEARTBEAT_SEC = 1200
 DEFAULT_HEARTBEAT_CHECK_SEC = 60
 
+# ─── fleet dispatch caps — THE single source of truth (Keel M4/M14) ──────────
+#
+# pulse.py owns the dispatch loop and historically hard-coded these; the goals
+# planner (goals.py) then kept its OWN copy for the leftover-headroom math, and
+# the two could silently diverge. They live here now so both import the SAME
+# numbers. The VALUES are unchanged from pulse.py's originals (design section 2:
+# "existing dispatch caps untouched: ACTIVE_WS_CAP=5 / TOTAL_WS_CAP=30 /
+# MAX_DISPATCH_PER_PULSE=2"); a regression test asserts pulse.py and config
+# agree so a future edit to one is caught.
+ACTIVE_WS_CAP = 5
+TOTAL_WS_CAP = 30
+MAX_DISPATCH_PER_PULSE = 2
+
+# A workspace counts as "active" for cap math when its agent is working OR it
+# had a turn within this window. The dispatcher (pulse.count_active) and the
+# planner's headroom (goals) MUST use the same rule, or the planner can think
+# there is headroom the dispatcher will refuse (m14: the planner counted ALL
+# live sessions incl. long-idle cron workers). This predicate is that rule.
+ACTIVE_WS_WINDOW_SEC = 600
+
+
+def ws_is_active(agent_status, last_turn_age_sec) -> bool:
+    """One shared "is this workspace active?" predicate (m14). A workspace is
+    active if its agent is working, else if it had a turn within
+    ACTIVE_WS_WINDOW_SEC. An unknown age (never a turn) is NOT active — the same
+    call pulse.count_active makes, so the planner's headroom can never disagree
+    with the dispatcher's active count on the same fleet."""
+    if agent_status == "working":
+        return True
+    return isinstance(last_turn_age_sec, (int, float)) \
+        and last_turn_age_sec < ACTIVE_WS_WINDOW_SEC
+
 
 @dataclass
 class Config:

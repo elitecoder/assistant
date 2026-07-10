@@ -22,6 +22,11 @@ Pipeline (in order):
      over the decision queue/ledger/digest/health stores), appends the daily
      north-star metrics row, and TTLs >48h-unseen briefs' non-escalate
      decisions to digest (feeding the policy-proposal miner).
+  1.7. Goals planner (src/assistant/goals.py, Keel M4): stamp mechanical goal
+     progress, then in rank order stage the next playbook step for any stalled
+     goal with leftover ACTIVE_WS_CAP headroom — an autoDispatch TODO when the
+     planner.autoDispatch flag is on (SAFE DEFAULT off → a brief decision), a
+     gated step always a decision. No LLM (R3: zero new spend).
   2. Run bin/purge-stale-awaiting.py (mechanical card cleanup; `dec-*`
      cards derive from decision-queue state).
   3. Pick batch via bin/pick-ws-batch.py — already filters back-off list.
@@ -634,6 +639,37 @@ def run_brief_step(pulse_idx: int) -> None:
         log.info("brief: %s", json.dumps(summary))
 
 
+def run_planner_step(pulse_idx: int) -> None:
+    """Step 1.7 (Keel M4): the deterministic goals planner. goals.pulse_step()
+    stamps each goal's mechanical progress, then — in goal RANK order — stages
+    the next playbook step for any stalled goal that has leftover ACTIVE_WS_CAP
+    headroom: an unattended step as an autoDispatch TODO (only when the
+    planner.autoDispatch config flag is on — SAFE DEFAULT is off, staging a
+    decision instead), a gated step as a brief decision. Runs BEFORE the TODO
+    dispatch (step 5) so a freshly-staged goal TODO can be picked up THIS pulse,
+    and BEFORE purge so nothing it stages is immediately swept. NO LLM anywhere
+    (R3: zero new LLM spend). Imported lazily and fully fenced, same contract as
+    the brief: a broken planner costs one pulse's planning, never the pulse."""
+    try:
+        src_dir = str(REPO / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from assistant import goals  # noqa: PLC0415
+        summary = goals.pulse_step()
+    except Exception as e:  # noqa: BLE001 — the planner must never break the pulse
+        log.exception("planner step failed (retried next pulse): %s", e)
+        return
+    plan = summary.get("plan") or {}
+    # Surface a dedup-only / all-skipped pass too (M1c): a pass that only
+    # week-deduped or hit dedup used to log nothing, hiding a wedged loop. Any
+    # stage, guard, OR skip now leaves a line.
+    if plan.get("staged_todos") or plan.get("staged_decisions") \
+            or plan.get("paused") or plan.get("stale_world") \
+            or plan.get("unreadable") or plan.get("dedup_only") \
+            or plan.get("skipped"):
+        log.info("planner: %s", json.dumps(summary))
+
+
 # ─── Observer no-change skip (Keel M2) ───────────────────────────────────────
 #
 # A workspace whose observable state hasn't changed since its last verdict
@@ -1169,15 +1205,20 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
 # ─── TODO dispatch ──────────────────────────────────────────────────────────
 
 def count_active(ws_meta: list[dict]) -> int:
-    """Count workspaces with last_turn_age_sec < 600 OR agent_status=working."""
+    """Count workspaces with last_turn_age_sec < 600 OR agent_status=working.
+
+    The predicate lives in config.ws_is_active — THE single source (m14) — so the
+    goals planner's headroom math (which reads world.json) can never disagree
+    with this dispatcher count on the same fleet."""
+    src_dir = str(REPO / "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    from assistant import config as _appconfig  # noqa: PLC0415
     n = 0
     for w in ws_meta:
         ctx = w.get("ctx") or {}
-        age = ctx.get("last_turn_age_sec")
-        if ctx.get("agent_status") == "working":
-            n += 1
-            continue
-        if age is not None and age < 600:
+        if _appconfig.ws_is_active(ctx.get("agent_status"),
+                                   ctx.get("last_turn_age_sec")):
             n += 1
     return n
 
@@ -1208,30 +1249,42 @@ def _load_todo_item(todo_id: str) -> dict | None:
 def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
     """Stamp dispatchedAt + dispatchedWs on the TODO so it leaves bucket_b.
 
-    Atomic read-modify-write of assistant-todo.json. Without this the TODO
-    stays in bucket_b and every pulse re-spawns a duplicate workspace.
-    Matches the field names todo-server.py's dispatch_now() clears.
+    Read-modify-write of assistant-todo.json under the ONE shared todo-file lock
+    (M3): the goals planner, triage.create_todo, and the todo-server all write
+    this file — an unlocked stamp here could lose a concurrent staged TODO or
+    flag flip. Matches the field names todo-server.py's dispatch_now() clears.
     """
+    src_dir = str(REPO / "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
     try:
-        data = json.loads(TODO_PATH.read_text())
-    except Exception as e:
-        log.warning("dispatch %s: cannot read todo file to stamp: %s", todo_id, e)
-        return False
-    target = next((i for i in data.get("items", []) if i.get("id") == todo_id), None)
-    if target is None:
-        return False
-    target["dispatchedAt"] = utc_iso()
-    target["dispatchedWs"] = ws_ref
-    target["status"] = "in-progress"
-    target["statusReason"] = f"dispatched to {ws_ref}"
-    target["statusUpdatedAt"] = utc_iso()
-    tmp = TODO_PATH.with_suffix(".json.tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        os.replace(tmp, TODO_PATH)
-    except Exception as e:
-        log.warning("dispatch %s: cannot write todo stamp: %s", todo_id, e)
-        return False
+        from assistant import todostore  # noqa: PLC0415
+        lock_cm = todostore.todo_lock()
+    except Exception as e:  # noqa: BLE001 — never let a lock import break dispatch
+        log.warning("dispatch %s: todo lock unavailable, proceeding: %s", todo_id, e)
+        import contextlib
+        lock_cm = contextlib.nullcontext()
+    with lock_cm:
+        try:
+            data = json.loads(TODO_PATH.read_text())
+        except Exception as e:
+            log.warning("dispatch %s: cannot read todo file to stamp: %s", todo_id, e)
+            return False
+        target = next((i for i in data.get("items", []) if i.get("id") == todo_id), None)
+        if target is None:
+            return False
+        target["dispatchedAt"] = utc_iso()
+        target["dispatchedWs"] = ws_ref
+        target["status"] = "in-progress"
+        target["statusReason"] = f"dispatched to {ws_ref}"
+        target["statusUpdatedAt"] = utc_iso()
+        tmp = TODO_PATH.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            os.replace(tmp, TODO_PATH)
+        except Exception as e:
+            log.warning("dispatch %s: cannot write todo stamp: %s", todo_id, e)
+            return False
     return True
 
 
@@ -1566,6 +1619,14 @@ def main() -> int:
     #      never load-bearing (see run_brief_step docstring).
     if not dry_run:
         run_brief_step(pulse_idx)
+
+    # 1.7. Goals planner (Keel M4): stamp mechanical goal progress + stage the
+    #      next playbook step for stalled goals into leftover ACTIVE_WS_CAP
+    #      headroom (autoDispatch TODO when the config flag is on, else a brief
+    #      decision). Runs before dispatch so a staged goal TODO can go out this
+    #      pulse; NO LLM. Fenced, never load-bearing (see run_planner_step).
+    if not dry_run:
+        run_planner_step(pulse_idx)
 
     # 2. Purge stale awaiting cards.
     if not dry_run:

@@ -124,6 +124,24 @@ class OpenDecisionTests(HomeTestCase):
         self.assertFalse(created)
         self.assertEqual(rec2["status"], "rejected")
 
+    def test_expired_reopens_on_same_second_resighting(self):
+        # m10: a decision that expires and is re-sighted in the SAME second must
+        # reopen (whole-second epochs); a strict `>` used to swallow it.
+        rec, _ = decisions.open_decision(
+            event=make_event(), lane="staged", policy_id="r1",
+            action={"class": "todo.create"}, ttl_h=1, now=NOW)
+        expire_ts = NOW + 2 * 3600            # past the 1h TTL
+        decisions.expire_open(now=expire_ts)
+        self.assertEqual(len(decisions.open_decisions()), 0)
+        # re-sight with event ts EXACTLY at the expiry second
+        rec2, created = decisions.open_decision(
+            event=make_event(ts=decisions.utc_iso(expire_ts)), lane="staged",
+            policy_id="r1", action={"class": "todo.create"}, ttl_h=1,
+            now=expire_ts)
+        self.assertTrue(created)               # reopened, not stranded
+        self.assertEqual(rec2["id"], rec["id"])
+        self.assertEqual(rec2["status"], "open")
+
     def test_title_capped_at_120(self):
         rec, _ = decisions.open_decision(
             event=make_event(title="x" * 500), lane="staged", policy_id="r1",
