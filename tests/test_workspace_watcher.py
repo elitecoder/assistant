@@ -112,20 +112,55 @@ def test_run_timeout(monkeypatch):
 
 
 # --------------------------------------------------------------------------- notify()
+# Keel M3: notify() no longer touches the push surface itself — it routes
+# every alert through bin/interrupt-gate.py (the fleet's only push
+# chokepoint; tests/test_no_rogue_notifications.py greps for strays). The
+# escaping test that used to live here moved to the gate's own suite.
 
-def test_notify_escapes_quotes_and_backslashes(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(WW, "run", lambda cmd, timeout=10: captured.setdefault("argv", cmd))
-    WW.notify('ti"tle\\x', 'mes"sage\\y')
-    argv = captured["argv"]
-    assert argv[0] == "osascript"
-    assert argv[1] == "-e"
-    script = argv[2]
-    # backslash escaped to \\ and double-quote escaped to \" — injection-safe.
-    assert 'ti\\"tle\\\\x' in script
-    assert 'mes\\"sage\\\\y' in script
-    # No raw unescaped user double-quote can break out of the AppleScript string.
-    assert 'sound name "Sosumi"' in script
+class _FakeGate:
+    def __init__(self):
+        self.calls = []
+
+    def request(self, level, key, title, detail, **kw):
+        self.calls.append((level, key, title, detail))
+        return {"delivered": False,
+                "reason": "budget exhausted (0/0 notify today)"}
+
+
+def test_notify_routes_through_the_gate(monkeypatch):
+    gate = _FakeGate()
+    monkeypatch.setattr(WW, "_interrupt_gate", lambda: gate)
+    WW.notify('ti"tle', "message", key="ws-crash:workspace:7")
+    assert gate.calls == [("notify", "ws-crash:workspace:7", 'ti"tle', "message")]
+
+
+def test_notify_derives_a_stable_key_from_title(monkeypatch):
+    gate = _FakeGate()
+    monkeypatch.setattr(WW, "_interrupt_gate", lambda: gate)
+    WW.notify("cmux: thing crashed", "detail")
+    assert gate.calls[0][1] == "ws-watcher:cmux: thing crashed"
+
+
+def test_notify_swallows_gate_failure(monkeypatch):
+    def broken_gate():
+        raise RuntimeError("gate unavailable")
+    monkeypatch.setattr(WW, "_interrupt_gate", broken_gate)
+    WW.notify("t", "m")  # must not raise — an alert is never load-bearing
+
+
+def test_notify_denied_by_default_budget_is_silent(tmp_path, monkeypatch):
+    """End-to-end through the REAL gate module: default budget 0/day means
+    the watcher's alert is suppressed (and ledgered), never delivered."""
+    monkeypatch.setenv("HOME", str(tmp_path))  # the gate resolves $HOME per call
+    WW._gate_mod = None  # force a fresh gate load
+    try:
+        WW.notify("cmux: ws crashed", "workspace:9", key="ws-crash:workspace:9")
+        ledger = tmp_path / ".assistant" / "actions-ledger.jsonl"
+        rows = [json.loads(l) for l in ledger.read_text().splitlines()]
+        assert [r["kind"] for r in rows] == ["interrupt-denied"]
+        assert "ws-crash:workspace:9" in rows[0]["key"]
+    finally:
+        WW._gate_mod = None
 
 
 # --------------------------------------------------------------------------- json_quote()

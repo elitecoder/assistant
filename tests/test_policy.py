@@ -468,5 +468,43 @@ class MinerTests(HomeTestCase):
             policy.mine_policy_proposals(recs, now=1783000100, rules=[]), [])
 
 
+class RejectedProposalDedupTests(HomeTestCase):
+    """F7: a rejected/vetoed proposal blocks a re-propose WITHIN the window —
+    otherwise the same suggestion is re-mined every pass (a daily nag). After
+    the window the recurring signal may surface again."""
+
+    def _write_proposal(self, status, ts_epoch):
+        from datetime import datetime, timezone
+        ts = datetime.fromtimestamp(ts_epoch, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+        entry = {"ts": ts, "id": ts, "type": "policy", "status": status,
+                 "proposed_policy": {
+                     "id": "mined-gcal-event_upcoming-digest",
+                     "match": {"source": "gcal", "kind": "event_upcoming"},
+                     "lane": "digest"}}
+        p = policy.proposals_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def test_recently_rejected_is_not_remined(self):
+        self._write_proposal("rejected", 1783000050)  # within window
+        recs = [triage_record(f"dec-{i:016x}") for i in range(3)]
+        self.assertEqual(
+            policy.mine_policy_proposals(recs, now=1783000100, rules=[]), [])
+
+    def test_recently_vetoed_is_not_remined(self):
+        self._write_proposal("vetoed", 1783000050)
+        recs = [triage_record(f"dec-{i:016x}") for i in range(3)]
+        self.assertEqual(
+            policy.mine_policy_proposals(recs, now=1783000100, rules=[]), [])
+
+    def test_rejected_outside_window_may_resurface(self):
+        self._write_proposal("rejected", 1783000100 - 8 * 86400)  # pre-window
+        recs = [triage_record(f"dec-{i:016x}") for i in range(3)]
+        written = policy.mine_policy_proposals(recs, now=1783000100, rules=[])
+        self.assertEqual(len(written), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

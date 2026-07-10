@@ -1,0 +1,16 @@
+{
+  "_comment": "Shape fixture (Keel M3): yesterday exhausted its notify budget and accumulated denials; date + last_delivered are stamped by the loading test (date=yesterday, one dedup entry >24h old). Expected on today's first request: used counts / denied_today / suppressed_today reset, budget + ladder survive, stale dedup entries pruned, request delivered.",
+  "date": "STAMPED-AT-LOAD",
+  "budget": {"page": 0, "notify": 1},
+  "used": {"notify": 1},
+  "ladder": [
+    {"level": "page",
+     "requires": {"lane": "escalate", "urgency": "now", "pageable": true}}
+  ],
+  "last_delivered": {"STAMPED": 0},
+  "denied_today": 41,
+  "suppressed_today": [
+    {"ts": "1970-01-01T00:00:00Z", "level": "notify", "key": "old",
+     "title": "yesterday's denial", "reason": "budget exhausted (1/1 notify today)"}
+  ]
+}

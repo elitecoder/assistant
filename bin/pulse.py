@@ -17,6 +17,11 @@ Pipeline (in order):
      fail-safe escalate decisions plus ONE suggestion-only triage LLM call
      per pulse max (its lane vocabulary structurally lacks `auto`). Open
      escalate decisions mirror to awaiting cards keyed `dec-<id>`.
+  1.6. Morning brief (src/assistant/brief.py, Keel M3): first pulse at/after
+     wake_hour builds ~/.assistant/brief/brief-<date>.json (pure derivation
+     over the decision queue/ledger/digest/health stores), appends the daily
+     north-star metrics row, and TTLs >48h-unseen briefs' non-escalate
+     decisions to digest (feeding the policy-proposal miner).
   2. Run bin/purge-stale-awaiting.py (mechanical card cleanup; `dec-*`
      cards derive from decision-queue state).
   3. Pick batch via bin/pick-ws-batch.py — already filters back-off list.
@@ -605,6 +610,28 @@ def run_triage_step(pulse_idx: int) -> dict:
         log.info("triage: %s", json.dumps(
             {k: v for k, v in summary.items() if k != "cards"}))
     return summary
+
+
+def run_brief_step(pulse_idx: int) -> None:
+    """Step 1.6 (Keel M3): morning brief. brief.pulse_step() builds
+    ~/.assistant/brief/brief-<date>.json on the FIRST pulse at/after the
+    configured wake_hour (default 7, local) — every later pulse that day is
+    a cheap file-exists no-op — appends the daily north-star metrics row and
+    runs the unseen-brief degradation pass. Imported lazily and fully
+    fenced, same contract as drain_inbox: the brief is a pure derivation, so
+    a broken builder costs one morning's brief, never a pulse."""
+    try:
+        src_dir = str(REPO / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from assistant import brief  # noqa: PLC0415
+        summary = brief.pulse_step()
+    except Exception as e:  # noqa: BLE001 — the brief must never break the pulse
+        log.exception("brief step failed (rebuild on demand via "
+                      "bin/build-morning-brief.py): %s", e)
+        return
+    if summary.get("built"):
+        log.info("brief: %s", json.dumps(summary))
 
 
 # ─── Observer no-change skip (Keel M2) ───────────────────────────────────────
@@ -1533,6 +1560,12 @@ def main() -> int:
     #      plus at most ONE suggestion-only LLM call. Open escalate decisions
     #      mirror to awaiting cards (keyed `dec-<id>`), seeded below.
     triage_summary = {"cards": []} if dry_run else run_triage_step(pulse_idx)
+
+    # 1.6. Morning brief (Keel M3): first pulse at/after wake_hour builds the
+    #      day's brief + daily metrics row + unseen-degradation pass. Fenced,
+    #      never load-bearing (see run_brief_step docstring).
+    if not dry_run:
+        run_brief_step(pulse_idx)
 
     # 2. Purge stale awaiting cards.
     if not dry_run:

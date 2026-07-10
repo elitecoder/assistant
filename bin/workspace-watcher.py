@@ -111,17 +111,44 @@ def run(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
         return -1, "", str(e)
 
 
-def notify(title: str, message: str, sound: str = "Sosumi") -> None:
-    """Fire macOS Notification Center alert via osascript."""
-    # Escape backslashes first, then double-quotes, to prevent AppleScript injection.
-    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
-    safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
-    script = (
-        f'display notification "{safe_msg}" '
-        f'with title "{safe_title}" '
-        f'sound name "{sound}"'
-    )
-    run(["osascript", "-e", script], timeout=5)
+GATE_PATH = Path(__file__).resolve().parent / "interrupt-gate.py"
+_gate_mod = None
+
+
+def _interrupt_gate():
+    """Load bin/interrupt-gate.py once (dashed filename → importlib, same
+    loader idiom the test suite uses for bin scripts)."""
+    global _gate_mod
+    if _gate_mod is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "interrupt_gate", str(GATE_PATH))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _gate_mod = mod
+    return _gate_mod
+
+
+def notify(title: str, message: str, sound: str = "Sosumi",
+           key: str | None = None) -> None:
+    """Request a push alert THROUGH the interrupt gate — the fleet's only
+    push chokepoint (Keel M3). This watcher no longer touches the push
+    surface itself: the gate consults ~/.assistant/noise-budget.json
+    (default budget 0/day — silent by design) plus 24h same-key dedup, and
+    either delivers or ledgers an auditable ``interrupt:denied`` row that
+    surfaces in the morning brief's health section. `sound` is accepted for
+    call-site compatibility but the gate owns delivery details now. Any gate
+    failure degrades to a log line — an alert is never load-bearing."""
+    del sound  # the gate owns delivery; param kept so call sites read naturally
+    try:
+        gate = _interrupt_gate()
+        res = gate.request("notify", key or f"ws-watcher:{title[:80]}",
+                           title, message)
+        log.info("notify gate: delivered=%s reason=%s title=%r",
+                 res.get("delivered"), res.get("reason"), title)
+    except Exception:
+        log.exception("interrupt gate unavailable — alert dropped "
+                      "(silent by design)")
 
 
 # ---------- workspace registry ----------
@@ -589,13 +616,13 @@ def handle_close(evt: dict, registry: WorkspaceRegistry,
 
     notify(f"cmux: {title} crashed",
            f"{ws_ref} — auto-resuming…",
-           sound="Sosumi")
+           key=f"ws-crash:{ws_ref}")
 
     # Resume policy.
     if not meta.get("resume_command"):
         notify(f"cmux: {title} auto-resume blocked",
                "no resumeBinding.command captured",
-               sound="Funk")
+               key=f"ws-resume-blocked:{ws_ref}")
         drop["resume"] = {"attempted": False, "reason": "no resume_command"}
         drop_path.write_text(json.dumps(drop, indent=2))
         return
@@ -603,7 +630,7 @@ def handle_close(evt: dict, registry: WorkspaceRegistry,
     if not ok:
         notify(f"cmux: {title} auto-resume blocked",
                f"{why} — needs you",
-               sound="Funk")
+               key=f"ws-resume-blocked:{ws_ref}")
         drop["resume"] = {"attempted": False, "reason": why}
         drop_path.write_text(json.dumps(drop, indent=2))
         return
@@ -614,11 +641,11 @@ def handle_close(evt: dict, registry: WorkspaceRegistry,
     if result.get("ok"):
         notify(f"cmux: {title} resumed",
                f"→ {result.get('new_ref') or 'new workspace'}",
-               sound="Glass")
+               key=f"ws-resumed:{ws_ref}")
     else:
         notify(f"cmux: {title} auto-resume failed",
                f"{result.get('error', '?')} — needs you",
-               sound="Funk")
+               key=f"ws-resume-failed:{ws_ref}")
     drop["resume"] = result | {"attempted": True, "attempt_no": 1, "used_bash_lc": False}
     drop_path.write_text(json.dumps(drop, indent=2))
 
