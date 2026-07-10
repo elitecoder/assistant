@@ -46,10 +46,12 @@ if str(_REPO / "src") not in sys.path:
 try:
     from assistant import connector as _connector
     _classify_connector = _connector.classify_connector
+    _read_and_classify = _connector.read_and_classify
     _KNOWN_CONNECTORS = _connector.KNOWN_CONNECTORS
 except Exception:  # noqa: BLE001 — snapshot resilience over connector fidelity
     _connector = None
     _classify_connector = None
+    _read_and_classify = None
     _KNOWN_CONNECTORS = ()
 
 HOME = Path(os.environ["HOME"])
@@ -419,11 +421,17 @@ def build_connectors_summary(now):
             pass
     out = {}
     for name in names:
-        hb = load_json(CONNECTORS_DIR / name / "heartbeat.json", None)
-        # load_json returns {} (not None) for a missing/broken file; an empty
-        # dict means NO heartbeat → not_configured, never a synthesized "error".
-        out[name] = _classify_connector(
-            hb if isinstance(hb, dict) and hb else None, now_epoch)
+        # F5: read_and_classify distinguishes an ABSENT heartbeat (never ran →
+        # not_configured) from a PRESENT-but-corrupt one (ran before, now broken
+        # → error) — the SAME verdict the brief derives, so a corrupt beat can
+        # never read "available" here while the brief drops it. F1: fence per
+        # connector so one bad heartbeat can never take down the whole snapshot
+        # (world.json must still be written — the M3 one-bad-row contract).
+        try:
+            out[name] = _read_and_classify(
+                CONNECTORS_DIR / name / "heartbeat.json", now_epoch)
+        except Exception:  # noqa: BLE001 — one bad row degrades only itself
+            out[name] = _connector._corrupt_connector_view(now_epoch)
     return out
 
 

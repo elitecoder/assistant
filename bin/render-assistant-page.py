@@ -573,6 +573,17 @@ def _render_brief_tab_inner():
             cls, tail = "cold", "token expired"
         elif stale:
             cls, tail = "cold", "stale"
+        elif hb.get("status") == "error" or not hb.get("ok", True):
+            # F2: a connector that ERRORS every poll refreshes last_poll on each
+            # failed poll, so it is never "stale" — but classify_connector (the
+            # single source of truth) already marked it error/ok:false. Alarm on
+            # THAT, else an errored-but-polling connector reads "fresh" forever
+            # and never surfaces as needing attention.
+            errs = hb.get("errors") or []
+            tail = "error"
+            if errs:
+                tail = "error · " + "; ".join(str(x) for x in errs[:2])
+            cls = "cold"
         else:
             cls, tail = "fresh", str(hb.get("last_poll") or "?")
         title = f"connector heartbeat · {name}"
@@ -1587,7 +1598,13 @@ def _render_connections_panel_inner(world):
                 reason = "no recent poll — connector may be down"
             else:
                 reason = "polling error"
-            errs = view.get("errors") or []
+            errs = view.get("errors")
+            if not isinstance(errs, list):
+                # F4 defense-in-depth: a wrong-typed errors field must degrade
+                # THIS row, never crash errs[:3] and let the fence blank the
+                # WHOLE panel (healthy rows included). classify_connector already
+                # coerces to a list; the panel never trusts its input either.
+                errs = [] if errs in (None, "") else [str(errs)]
             if errs:
                 # Upstream/API text — escape (quote=True) against XSS (M3 F-class).
                 reason += " · " + "; ".join(e(str(x)) for x in errs[:3])

@@ -22,8 +22,15 @@
         <string>/Users/mukuls/dev/assistant/bin/connectors/spawn-connector.sh</string>
         <string>github-notifications.py</string>
     </array>
+    <!-- F3 defense-in-depth: restart ONLY on a non-zero (unsuccessful)
+         exit, never on a clean exit. The daemon now stays resident and
+         re-checks config on a long cadence when unconfigured, so it does
+         not exit(0) under KeepAlive=<true/> and hot-respawn every 10s. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>ThrottleInterval</key>

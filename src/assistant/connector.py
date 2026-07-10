@@ -86,6 +86,11 @@ MIN_STALE_AFTER_SEC = 900
 # Refresh an OAuth access token this many seconds BEFORE it actually expires,
 # so an in-flight poll never races the expiry boundary.
 DEFAULT_TOKEN_SKEW_SEC = 300
+# F3: how long an UNCONFIGURED daemon sleeps between config re-checks. Long
+# enough that an optional connector nobody set up never becomes a hot respawn
+# loop, short enough that a later `--authorize` / `gh auth login` is picked up
+# automatically without a manual relaunch. Config-overridable.
+DEFAULT_NOT_CONFIGURED_RECHECK_SEC = 300
 # Default OAuth token endpoint (Google). Overridable per connector / per token
 # cache so the same base serves any refresh-token provider.
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -186,11 +191,44 @@ def classify_connector(hb: Optional[dict], now: float) -> dict:
             "errors": [],
             "ok": False,
         }
-    stale_after = hb.get("stale_after_sec") or MIN_STALE_AFTER_SEC
+    # F1/F4: a heartbeat field of the WRONG TYPE is corruption evidence — never a
+    # value to trust, and never a reason to crash. Before this, a non-numeric
+    # stale_after_sec (e.g. "900") raised TypeError in the `age > stale_after`
+    # compare, and BOTH unfenced call sites (world-scanner + brief) then failed
+    # WHOLE: world.json was never written (the 30s dashboard snapshot froze) and
+    # the morning brief never built — one bad heartbeat took down everything,
+    # violating M3's one-bad-row contract. A non-list `errors` (e.g. {"a":1})
+    # likewise blew up the Connections panel's errs[:3]. Coerce each defensively;
+    # a malformed field degrades THIS connector to error — never raises, and
+    # never silently reads healthy.
+    malformed: list = []
+    sa = hb.get("stale_after_sec")
+    if isinstance(sa, bool) or not isinstance(sa, (int, float)) or sa <= 0:
+        if sa is not None:
+            malformed.append("stale_after_sec")
+        stale_after = MIN_STALE_AFTER_SEC
+    else:
+        stale_after = sa
+    raw_errors = hb.get("errors")
+    if isinstance(raw_errors, list):
+        errors = [str(x) for x in raw_errors]
+    elif raw_errors in (None, ""):
+        errors = []
+    else:  # a wrong-typed errors field (dict/str/int) — coerce, never crash
+        errors = [str(raw_errors)]
+        malformed.append("errors")
+    if malformed:
+        errors = errors + [
+            f"malformed heartbeat field(s): {', '.join(malformed)}"]
     stale = age is None or age > stale_after
     texp = hb.get("token_expiry_epoch")
-    token_expired = isinstance(texp, (int, float)) and now >= texp
-    ok = bool(hb.get("ok", True)) and not stale and not token_expired
+    token_expired = (isinstance(texp, (int, float)) and not isinstance(texp, bool)
+                     and now >= texp)
+    # errors present ⇒ not ok (write_heartbeat already ties ok=not errors; making
+    # it explicit here means a hand-written / corrupt beat carrying errors can
+    # never read healthy, and a malformed field always surfaces as error).
+    ok = (bool(hb.get("ok", True)) and not stale and not token_expired
+          and not errors)
     return {
         "status": STATE_OK if ok else STATE_ERROR,
         "source": hb.get("source"),
@@ -200,9 +238,57 @@ def classify_connector(hb: Optional[dict], now: float) -> dict:
         "stale": stale,
         "token_expiry": hb.get("token_expiry"),
         "token_expired": bool(token_expired),
-        "errors": hb.get("errors") or [],
+        "errors": errors,
         "ok": ok,
     }
+
+
+def _corrupt_connector_view(now: float) -> dict:
+    """The classify verdict for a connector whose heartbeat file EXISTS but is
+    unreadable/corrupt: error (configured-but-broken), never not_configured. A
+    connector that has written a heartbeat before has RUN — a file that is now
+    garbage means it broke, not that the owner opted out (F5)."""
+    return {
+        "status": STATE_ERROR,
+        "source": None,
+        "last_poll": None,
+        "last_poll_epoch": None,
+        "age_sec": None,
+        "stale": False,
+        "token_expiry": None,
+        "token_expired": False,
+        "errors": ["heartbeat unreadable or corrupt — configured but broken"],
+        "ok": False,
+    }
+
+
+def read_and_classify(heartbeat_path, now: float) -> dict:
+    """Read ONE connector's heartbeat file at `heartbeat_path` and classify it,
+    distinguishing an ABSENT heartbeat (the daemon never ran → not_configured,
+    quiet) from a PRESENT-but-corrupt one (it ran before and the file is now
+    unreadable/malformed → error, configured-but-broken).
+
+    WHY THIS EXISTS: world-scanner AND the brief must classify an identical
+    on-disk input identically (F5). Before this, a corrupt heartbeat masqueraded
+    as opted-out in world.json (world-scanner mapped the empty read to
+    not_configured) while the brief DROPPED the connector entirely — the two
+    consumers disagreed on the very same broken file. Both now call THIS, so a
+    corrupt beat is error on both sides and only a genuinely absent heartbeat
+    (+ no other config evidence) is not_configured."""
+    p = Path(heartbeat_path)
+    try:
+        text = p.read_text()
+    except FileNotFoundError:
+        return classify_connector(None, now)  # genuinely absent → not_configured
+    except OSError:
+        return _corrupt_connector_view(now)   # present but unreadable → error
+    try:
+        hb = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return _corrupt_connector_view(now)   # present but corrupt → error
+    if not isinstance(hb, dict):
+        return _corrupt_connector_view(now)
+    return classify_connector(hb, now)
 
 
 def _home() -> Path:
@@ -238,6 +324,7 @@ def load_connector_config(name: str) -> dict:
         "raw_retention_days": DEFAULT_RAW_RETENTION_DAYS,
         "stale_factor": DEFAULT_STALE_FACTOR,
         "token_skew_sec": DEFAULT_TOKEN_SKEW_SEC,
+        "not_configured_recheck_sec": DEFAULT_NOT_CONFIGURED_RECHECK_SEC,
     }
     try:
         raw = json.loads(config_path().read_text())
@@ -511,6 +598,34 @@ DEFAULT_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 # How long the loopback server waits for the human to finish consent before it
 # gives up, so an abandoned flow can never wedge a terminal forever.
 DEFAULT_CONSENT_TIMEOUT_SEC = 180
+# Per-ACCEPTED-connection read timeout on the loopback callback server (A3). The
+# listening-socket select is bounded by server.timeout, but WITHOUT this a slow
+# local client that connects and dribbles (or never sends) bytes hangs
+# handle_request past the consent deadline. Capped by the remaining consent
+# budget so a stuck client can never wedge the flow beyond it.
+DEFAULT_LOOPBACK_READ_TIMEOUT_SEC = 30
+
+# A1: the ONLY OAuth endpoints we will ever talk to. token_uri/auth_uri read
+# from a user-supplied client-secrets (or token) file are NOT trusted — a
+# poisoned token_uri would redirect the code-exchange POST (which carries the
+# authorization code + PKCE verifier + client_id + client_secret) to an attacker
+# who then redeems the victim's refresh_token for durable Gmail access. A
+# legitimate Cloud Console desktop client ALWAYS uses Google's own endpoints, so
+# any host not on this allowlist is silently replaced with the pinned Google
+# constant (see _pin_google_endpoint).
+_GOOGLE_OAUTH_HOSTS = frozenset({"accounts.google.com", "oauth2.googleapis.com"})
+
+
+def _pin_google_endpoint(uri: Optional[str], default: str) -> str:
+    """Return `uri` iff its host is a known Google OAuth host, else the pinned
+    `default` (A1). This neutralizes a poisoned token_uri/auth_uri from an
+    untrusted client-secrets/token file without aborting the flow — a real
+    Google desktop client is unaffected because it already uses these hosts."""
+    try:
+        host = (urllib.parse.urlparse(uri or "").hostname or "").lower()
+    except (ValueError, TypeError):
+        host = ""
+    return uri if host in _GOOGLE_OAUTH_HOSTS else default
 
 
 def _pkce_pair() -> tuple:
@@ -542,18 +657,36 @@ class _LoopbackCodeGetter:
         holder: dict = {}
 
         class _Handler(http.server.BaseHTTPRequestHandler):
+            # A3: a per-connection read timeout. StreamRequestHandler applies
+            # this to the accepted socket, so a client that connects and dribbles
+            # (or sends nothing) is dropped instead of hanging handle_request past
+            # the consent deadline. Re-set each loop below to the remaining budget.
+            timeout = DEFAULT_LOOPBACK_READ_TIMEOUT_SEC
+
             def do_GET(self):  # noqa: N802 (BaseHTTPRequestHandler API)
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                holder["code"] = (q.get("code") or [None])[0]
-                holder["state"] = (q.get("state") or [None])[0]
-                holder["error"] = (q.get("error") or [None])[0]
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(
-                    b"<html><body><h3>Authorization received.</h3>"
-                    b"<p>You may close this tab and return to the terminal."
-                    b"</p></body></html>")
+                code = (q.get("code") or [None])[0]
+                err = (q.get("error") or [None])[0]
+                # A2: ONLY a callback actually carrying a code or an error is
+                # terminal. A stray GET (favicon/prefetch/local probe) with
+                # neither must NOT record code=None — the wait loop would then
+                # trip the state check and abort with a spurious "possible CSRF"
+                # (a trivial local DoS of setup). Answer 204 and keep waiting for
+                # the real redirect.
+                if code or err:
+                    holder["code"] = code
+                    holder["error"] = err
+                    holder["state"] = (q.get("state") or [None])[0]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(
+                        b"<html><body><h3>Authorization received.</h3>"
+                        b"<p>You may close this tab and return to the terminal."
+                        b"</p></body></html>")
+                else:
+                    self.send_response(204)
+                    self.end_headers()
 
             def log_message(self, *_a):  # SILENCE: the request line holds ?code=
                 return
@@ -561,6 +694,9 @@ class _LoopbackCodeGetter:
         # 127.0.0.1 ONLY — never 0.0.0.0; the callback (and thus the code) must
         # never be reachable off-host.
         server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        # A read timeout (or any socket error) on an accepted connection must not
+        # spill a traceback to stderr — it carries no code, so silence it.
+        server.handle_error = lambda *_a: None
         try:
             port = server.server_address[1]
             redirect_uri = f"http://127.0.0.1:{port}/"
@@ -574,7 +710,9 @@ class _LoopbackCodeGetter:
             except Exception:  # noqa: BLE001 — headless: printing already covered
                 pass
             deadline = time.time() + self._timeout
-            while "code" not in holder and "error" not in holder:
+            # A2: gate on a non-None VALUE (not key presence) so only a real
+            # code/error ends the wait.
+            while not holder.get("code") and not holder.get("error"):
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     raise OAuthError(
@@ -582,6 +720,10 @@ class _LoopbackCodeGetter:
                         "complete the consent screen within "
                         f"{int(self._timeout)}s")
                 server.timeout = remaining
+                # A3: bound the accepted-connection read to the remaining budget
+                # (capped at the default) so a stuck client cannot wedge the flow
+                # past the consent deadline.
+                _Handler.timeout = min(remaining, DEFAULT_LOOPBACK_READ_TIMEOUT_SEC)
                 server.handle_request()  # one request or the timeout, bounded
         finally:
             server.server_close()
@@ -613,6 +755,14 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
     """
     if not client_id or not client_secret:
         raise OAuthError("client_id and client_secret are required to authorize")
+    # A1: PIN the endpoints. Whatever token_uri/auth_uri the caller passed
+    # through from the client-secrets file is only honored if it is a genuine
+    # Google host; otherwise the pinned Google constant is used. This is the
+    # single chokepoint for BOTH the consent redirect (auth_uri — a poisoned one
+    # phishes the victim's consent) and the code exchange (token_uri — a poisoned
+    # one exfiltrates the code + verifier + client_secret).
+    auth_uri = _pin_google_endpoint(auth_uri, DEFAULT_AUTH_URI)
+    token_uri = _pin_google_endpoint(token_uri, DEFAULT_TOKEN_URI)
     scope_str = scopes if isinstance(scopes, str) else " ".join(scopes)
     # PKCE verifier + a random state are minted here and closed over by
     # build_auth_url so the consent URL, the CSRF check and the code exchange all
@@ -907,27 +1057,45 @@ class Connector:
         fixed cadence (OP1): it honors a ``retry_after_sec`` the poll surfaces
         from Retry-After/X-RateLimit-Reset, and otherwise applies a bounded
         exponential backoff, resetting to the cadence on the first healthy poll.
+
+        F3: an OPTIONAL connector nobody set up (poll_once returns
+        ``not_configured``) is NOT an error and must NOT hot-respawn. The old
+        code exit(0)'d here, which under the shipped KeepAlive=<true/> +
+        ThrottleInterval=10 plists respawned the daemon every ~10s (~8600 log
+        lines/day). Instead we stay resident and re-check config on a LONG
+        ``not_configured_recheck_sec`` cadence — so running ``--authorize`` /
+        ``gh auth login`` later is picked up AUTOMATICALLY (the next poll returns
+        ok) with no manual relaunch, and no hot spin in the meantime.
         """
         cadence = float(self.config.get("cadence_sec", DEFAULT_CADENCE_SEC))
+        nc_recheck = float(self.config.get(
+            "not_configured_recheck_sec", DEFAULT_NOT_CONFIGURED_RECHECK_SEC))
         i = 0
         backoff = 0.0
         while max_iterations is None or i < max_iterations:
             i += 1
             errored = True
+            not_configured = False
             retry_after = None
             try:
                 result = self.poll_once() or {}
                 self.prune_raw()
                 retry_after = result.get("retry_after_sec")
-                errored = (str(result.get("status", "")) not in
-                           _HEALTHY_STATUSES) or bool(retry_after)
+                status = str(result.get("status", ""))
+                not_configured = status == STATE_NOT_CONFIGURED
+                errored = ((status not in _HEALTHY_STATUSES) or
+                           bool(retry_after)) and not not_configured
             except Exception as e:  # noqa: BLE001 — never kill the daemon
                 self._log(f"{self.name}: poll failed: {e}")
                 try:
                     self.write_heartbeat(errors=[str(e)[:300]])
                 except OSError:
                     pass
-            if errored:
+            if not_configured:
+                # Quiet, long re-check — never an error backoff, never a hot spin.
+                backoff = 0.0
+                delay = nc_recheck
+            elif errored:
                 backoff = min(MAX_BACKOFF_SEC,
                               (backoff * 2) if backoff else cadence)
                 delay = max(cadence, float(retry_after or 0.0), backoff)

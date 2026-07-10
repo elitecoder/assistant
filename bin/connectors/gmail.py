@@ -466,19 +466,21 @@ def main(argv=None) -> int:
     c = GmailConnector(dry_run=args.dry_run, record=args.record,
                        log=lambda m: print(m, file=sys.stderr))
 
-    # OPTIONAL connector: with no token cache the owner simply hasn't connected
-    # Gmail. Emit ONE quiet not_configured heartbeat and exit 0 — never enter
-    # run_forever to spin-retry a consent only a human can perform.
-    if not c.token_path().exists():
-        c.poll_once()  # writes the not_configured heartbeat (no network)
-        print("Gmail not configured — run: bin/connectors/gmail.py "
-              "--authorize --client-secrets <path>", file=sys.stderr)
-        return 0
-
     if args.once or args.dry_run:
         result = c.poll_once()
         print(connector.json.dumps(result), file=sys.stderr)
         return 0
+
+    # OPTIONAL connector. With no token cache the owner simply hasn't connected
+    # Gmail; poll_once writes a quiet not_configured heartbeat. Do NOT exit(0)
+    # here — under the shipped KeepAlive plists that respawned the daemon every
+    # ~10s (F3). run_forever stays resident and re-checks config on a LONG
+    # not_configured cadence, so running `--authorize` later is picked up
+    # AUTOMATICALLY (the next poll returns ok) with no manual relaunch.
+    if not c.token_path().exists():
+        print("Gmail not configured — run: bin/connectors/gmail.py "
+              "--authorize --client-secrets <path> "
+              "(daemon will keep re-checking)", file=sys.stderr)
     c.run_forever()
     return 0
 

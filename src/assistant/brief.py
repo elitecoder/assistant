@@ -490,10 +490,18 @@ def _connector_heartbeats(now: float) -> dict[str, dict]:
     except (OSError, FileNotFoundError):
         return out
     for sub in entries:
-        hb = _read_json(sub / "heartbeat.json")
-        if not isinstance(hb, dict):
-            continue
-        out[sub.name] = connector.classify_connector(hb, now)
+        # F5: read_and_classify distinguishes an ABSENT heartbeat (never ran →
+        # not_configured) from a PRESENT-but-corrupt one (ran before, now broken
+        # → error). Before this the brief DROPPED a connector whose heartbeat was
+        # unreadable while world-scanner rendered it not_configured — the two
+        # consumers disagreed on the same broken file. Now both derive the SAME
+        # verdict. F1: fence per connector so one bad heartbeat can never take
+        # down the whole brief build.
+        try:
+            out[sub.name] = connector.read_and_classify(
+                sub / "heartbeat.json", now)
+        except Exception:  # noqa: BLE001 — one bad row degrades only itself
+            out[sub.name] = connector._corrupt_connector_view(now)
     return out
 
 

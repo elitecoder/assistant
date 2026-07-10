@@ -500,5 +500,46 @@ class BackoffLoopTests(HomeTestCase):
         self.assertEqual(sleeps, [60.0])
 
 
+class NotConfiguredReCheckTests(HomeTestCase):
+    """F3: an OPTIONAL connector nobody set up (poll returns not_configured)
+    must re-check on a LONG cadence — never the old exit(0) that hot-respawned
+    every ~10s under the KeepAlive plists, and never the error backoff — and
+    must auto-recover to ok the moment the owner configures it."""
+
+    def _stub(self, results):
+        class _Stub(connector.Connector):
+            def __init__(s):
+                super().__init__("x", "x",
+                                 config={"cadence_sec": 60,
+                                         "not_configured_recheck_sec": 300})
+                s._q = list(results)
+                s._i = 0
+
+            def poll_once(s, now=None):
+                r = s._q[s._i]
+                s._i += 1
+                return r
+
+        return _Stub()
+
+    def test_f3_unconfigured_uses_long_recheck_not_hot_spin(self):
+        # not_configured sleeps the long recheck (300), never the 60s cadence and
+        # never the ~10s KeepAlive respawn the old exit(0) caused.
+        c = self._stub([{"status": "not_configured"},
+                        {"status": "not_configured"}])
+        sleeps = []
+        c.run_forever(max_iterations=2, sleep=lambda s: sleeps.append(s))
+        self.assertEqual(sleeps, [300.0])
+
+    def test_f3_auto_recovers_to_ok_on_next_recheck(self):
+        # Once the owner runs --authorize / gh auth login, the next poll returns
+        # ok and the daemon transitions to the normal cadence — NO relaunch.
+        c = self._stub([{"status": "not_configured"}, {"status": "ok"},
+                        {"status": "ok"}])
+        sleeps = []
+        c.run_forever(max_iterations=3, sleep=lambda s: sleeps.append(s))
+        self.assertEqual(sleeps, [300.0, 60.0])
+
+
 if __name__ == "__main__":
     unittest.main()

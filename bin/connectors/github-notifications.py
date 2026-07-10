@@ -276,22 +276,22 @@ def main(argv=None) -> int:
     c = GitHubNotificationsConnector(dry_run=args.dry_run, record=args.record,
                                      log=lambda m: print(m, file=sys.stderr))
 
-    # OPTIONAL connector: if `gh` isn't logged in there is nothing to poll.
-    # Do the cheap prerequisite check ONCE up front (mirrors gmail.py checking
-    # for token.json): if it fails, write the quiet not_configured heartbeat via
-    # poll_once and exit 0 — never enter run_forever to spin-retry a
-    # `gh auth login` only a human can perform (no crash-loop).
-    try:
-        c._token_provider()
-    except Exception:  # noqa: BLE001
-        c.poll_once()  # writes the not_configured heartbeat (no network)
-        print("GitHub not configured — run: gh auth login", file=sys.stderr)
-        return 0
-
     if args.once or args.dry_run:
         result = c.poll_once()
         print(connector.json.dumps(result), file=sys.stderr)
         return 0
+
+    # OPTIONAL connector. If `gh` isn't logged in there is nothing to poll;
+    # poll_once writes a quiet not_configured heartbeat. Do NOT exit(0) here —
+    # under the shipped KeepAlive plists that respawned the daemon every ~10s
+    # (F3). run_forever stays resident and re-checks config on a LONG
+    # not_configured cadence, so a later `gh auth login` is picked up
+    # AUTOMATICALLY (the next poll returns ok) with no manual relaunch.
+    try:
+        c._token_provider()
+    except Exception:  # noqa: BLE001 — absent login is not an error, just a hint
+        print("GitHub not configured — run: gh auth login "
+              "(daemon will keep re-checking)", file=sys.stderr)
     c.run_forever()
     return 0
 

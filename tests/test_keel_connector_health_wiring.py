@@ -209,5 +209,83 @@ class WorldScannerJoinTests(HomeTestCase):
             {"github": "not_configured", "gmail": "not_configured"})
 
 
+class MalformedHeartbeatFieldTests(HomeTestCase):
+    """F1: ONE malformed heartbeat field must not crash the world-scan OR the
+    brief (M3's one-bad-row contract). A non-numeric stale_after_sec once raised
+    TypeError in classify_connector's `age > stale_after` compare, and BOTH
+    unfenced call sites then failed WHOLE — world.json was never written and the
+    morning brief never built. A malformed field now degrades that ONE connector
+    to error, never raises."""
+
+    def _summary(self):
+        from datetime import datetime, timezone
+        ws = _load("world_scanner_f1", "bin/world-scanner.py")
+        return ws.build_connectors_summary(
+            datetime.fromtimestamp(NOW, tz=timezone.utc))
+
+    def test_classify_does_not_raise_on_string_stale_after(self):
+        v = connector.classify_connector({
+            "source": "gmail", "last_poll_epoch": NOW - 10,
+            "stale_after_sec": "900", "ok": True}, NOW)  # string, not a number
+        self.assertEqual(v["status"], connector.STATE_ERROR)  # degraded, not ok
+        self.assertFalse(v["ok"])
+
+    def test_classify_coerces_wrong_typed_errors_to_list(self):
+        # F4: a non-list errors ({"a":1}) must be coerced (never left to blow up
+        # the panel's errs[:3]) and mark the connector degraded.
+        v = connector.classify_connector({
+            "source": "gmail", "last_poll_epoch": NOW - 10,
+            "stale_after_sec": 900, "ok": True, "errors": {"a": 1}}, NOW)
+        self.assertIsInstance(v["errors"], list)
+        self.assertEqual(v["status"], connector.STATE_ERROR)
+
+    def test_world_scan_and_brief_survive_malformed_field(self):
+        self.write_hb("gmail", {
+            "source": "gmail", "last_poll": "x", "last_poll_epoch": NOW - 10,
+            "stale_after_sec": "900", "ok": True})       # malformed field
+        self.write_hb("github", {                        # healthy sibling
+            "source": "github", "last_poll_epoch": NOW - 10,
+            "stale_after_sec": 900, "ok": True})
+        summary = self._summary()                     # world.json — must not raise
+        brief_conns = brief._connector_heartbeats(NOW)  # brief — must not raise
+        self.assertEqual(summary["gmail"]["status"], "error")
+        self.assertEqual(brief_conns["gmail"]["status"], "error")
+        self.assertEqual(summary["github"]["status"], "ok")     # sibling intact
+        self.assertEqual(brief_conns["github"]["status"], "ok")
+
+
+class CorruptHeartbeatConsistencyTests(HomeTestCase):
+    """F5: a corrupt/unreadable heartbeat for a connector that HAS RUN is
+    configured-but-broken → error, classified IDENTICALLY by world-scanner and
+    the brief. Before this it masqueraded as not_configured in world.json while
+    the brief DROPPED it — the two consumers disagreed on the same broken file.
+    A genuinely ABSENT heartbeat stays the quiet not_configured state."""
+
+    def _summary(self):
+        from datetime import datetime, timezone
+        ws = _load("world_scanner_f5", "bin/world-scanner.py")
+        return ws.build_connectors_summary(
+            datetime.fromtimestamp(NOW, tz=timezone.utc))
+
+    def _write_corrupt(self, name):
+        d = self.home / ".assistant" / "connectors" / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "heartbeat.json").write_text("{ torn write — not valid json")
+
+    def test_corrupt_heartbeat_is_error_in_both_consumers(self):
+        self._write_corrupt("gmail")
+        summary = self._summary()
+        brief_conns = brief._connector_heartbeats(NOW)
+        self.assertEqual(summary["gmail"]["status"], "error")     # not opted-out
+        self.assertIn("gmail", brief_conns)                       # not dropped
+        self.assertEqual(brief_conns["gmail"]["status"], "error")
+
+    def test_absent_heartbeat_stays_not_configured(self):
+        # A genuinely absent heartbeat (never ran) is still quietly opted-out —
+        # only a corrupt one is error.
+        summary = self._summary()
+        self.assertEqual(summary["gmail"]["status"], "not_configured")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,9 +15,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socket
 import sys
+import threading
+import time
 import unittest
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -150,15 +154,65 @@ class FlowTests(unittest.TestCase):
 
         tok = conn.run_installed_app_flow(
             client_id="CID", client_secret="SEC", scopes=[READONLY],
-            token_uri="https://tok/endpoint", code_getter=getter,
-            exchange_transport=exchange, now=1000.0)
+            code_getter=getter, exchange_transport=exchange, now=1000.0)
         self.assertEqual(tok["client_id"], "CID")
         self.assertEqual(tok["client_secret"], "SEC")
-        self.assertEqual(tok["token_uri"], "https://tok/endpoint")
+        # A1: token_uri is PINNED to Google's endpoint (never trusted from a
+        # file), so the returned dict carries the pinned Google constant.
+        self.assertEqual(tok["token_uri"], conn.DEFAULT_TOKEN_URI)
         self.assertEqual(tok["refresh_token"], "REFRESH")
         self.assertEqual(tok["access_token"], "ACCESS")
         self.assertEqual(tok["expiry_epoch"], 1000.0 + 1234)
         self.assertEqual(tok["scopes"], READONLY)
+
+    # ── A1: never trust token_uri/auth_uri from an untrusted file ────────────
+
+    def test_a1_poisoned_token_uri_is_pinned_to_google(self):
+        # The core A1 exploit: a client-secrets token_uri pointing at an attacker
+        # would make the code-exchange POST send code + PKCE verifier +
+        # client_secret to the attacker (who redeems the victim's refresh_token).
+        # It MUST be pinned to Google's real endpoint instead.
+        getter = _CaptureGetter()
+        seen = {}
+
+        def exchange(uri, form):
+            seen["uri"] = uri
+            return _canned_tokens()
+
+        conn.run_installed_app_flow(
+            client_id="CID", client_secret="SEC", scopes=[READONLY],
+            token_uri="https://attacker.example/steal",
+            code_getter=getter, exchange_transport=exchange)
+        self.assertEqual(seen["uri"], conn.DEFAULT_TOKEN_URI)
+        self.assertNotIn("attacker", seen["uri"])
+
+    def test_a1_poisoned_auth_uri_is_pinned_to_google(self):
+        # A poisoned auth_uri phishes the victim's consent on the attacker's
+        # page. The consent URL must be built on Google's real auth endpoint.
+        getter = _CaptureGetter()
+        conn.run_installed_app_flow(
+            client_id="CID", client_secret="SEC", scopes=[READONLY],
+            auth_uri="https://attacker.example/auth",
+            code_getter=getter,
+            exchange_transport=lambda u, f: _canned_tokens())
+        self.assertTrue(getter.auth_url.startswith(conn.DEFAULT_AUTH_URI))
+        self.assertNotIn("attacker", getter.auth_url)
+
+    def test_a1_legit_google_endpoints_pass_through(self):
+        # A genuine Google desktop client's own endpoints are unaffected.
+        getter = _CaptureGetter()
+        seen = {}
+
+        def exchange(uri, form):
+            seen["uri"] = uri
+            return _canned_tokens()
+
+        conn.run_installed_app_flow(
+            client_id="CID", client_secret="SEC", scopes=[READONLY],
+            token_uri=conn.DEFAULT_TOKEN_URI, auth_uri=conn.DEFAULT_AUTH_URI,
+            code_getter=getter, exchange_transport=exchange)
+        self.assertEqual(seen["uri"], conn.DEFAULT_TOKEN_URI)
+        self.assertTrue(getter.auth_url.startswith(conn.DEFAULT_AUTH_URI))
 
 
 # ─── seed via the base's atomic 0600 writer ──────────────────────────────────
@@ -307,6 +361,27 @@ class AuthorizeIntegrationTests(HomeTestCase):
         self.assertEqual(gm.GmailConnector().tokens.load()["refresh_token"],
                          "SECOND")
 
+    def test_a1_poisoned_client_secrets_token_uri_pinned_to_google(self):
+        # The finding's exact end-to-end scenario: a tampered client-secrets file
+        # with auth_uri=real Google (the victim consents to their OWN Gmail and a
+        # real code is issued) but token_uri=attacker. The code exchange must
+        # STILL POST to Google's real endpoint, never the attacker.
+        p = self.home / "cs.json"
+        p.write_text(json.dumps({"installed": {
+            "client_id": "CID", "client_secret": "SEC",
+            "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
+            "token_uri": "https://attacker.example/steal"}}))
+        seen = {}
+
+        def exchange(uri, form):
+            seen["uri"] = uri
+            return _canned_tokens()
+
+        gm.authorize(p, code_getter=_CaptureGetter(),
+                     exchange_transport=exchange)
+        self.assertEqual(seen["uri"], conn.DEFAULT_TOKEN_URI)
+        self.assertNotIn("attacker", seen["uri"])
+
     def test_no_secret_in_authorize_output(self):
         # The success message must never echo a token or the client_secret.
         path = gm.authorize(
@@ -340,10 +415,25 @@ class NotConfiguredTests(HomeTestCase):
         self.assertEqual(self._read_heartbeat(c)["status"], "not_configured")
 
     def test_main_run_forever_default_without_token_does_not_spin(self):
-        # Default (no --once) must NOT enter run_forever to retry a human-only
-        # consent; it short-circuits to not_configured + rc 0.
-        rc = gm.main([])
+        # F3: default (no --once) with no token must NOT exit(0) (which under the
+        # shipped KeepAlive plists respawned every ~10s). It now stays resident
+        # in run_forever, re-checking config on a long cadence. Patch run_forever
+        # to a bounded stub so the test observes: main ENTERED the resident loop
+        # (did not exit-short-circuit) and wrote the quiet not_configured beat.
+        entered = {"n": 0}
+
+        def fake_run_forever(inner_self, **_kw):
+            entered["n"] += 1
+            inner_self.poll_once()  # writes the not_configured heartbeat
+
+        orig = gm.GmailConnector.run_forever
+        gm.GmailConnector.run_forever = fake_run_forever
+        try:
+            rc = gm.main([])
+        finally:
+            gm.GmailConnector.run_forever = orig
         self.assertEqual(rc, 0)
+        self.assertEqual(entered["n"], 1)  # entered the resident daemon loop
         self.assertEqual(
             self._read_heartbeat(gm.GmailConnector())["status"],
             "not_configured")
@@ -367,6 +457,75 @@ class NotConfiguredTests(HomeTestCase):
         res = c.poll_once()
         self.assertEqual(res["status"], "seeded")
         self.assertEqual(self._read_heartbeat(c)["status"], "ok")
+
+
+class LoopbackServerTests(unittest.TestCase):
+    """The REAL loopback callback server (A2/A3). Binds 127.0.0.1 only — this is
+    loopback, not external network — and drives it with real local requests to
+    prove: (A2) a stray request carrying neither code nor error does NOT abort
+    the flow, and (A3) a stuck connection cannot wedge it past the timeout."""
+
+    def _start(self, timeout_sec):
+        port_holder: dict = {}
+        result: dict = {}
+        getter = conn._LoopbackCodeGetter(timeout_sec=timeout_sec,
+                                          open_url=lambda u: None)
+
+        def build_auth_url(redirect_uri):
+            port_holder["uri"] = redirect_uri
+            return "http://example.invalid/consent"
+
+        def run():
+            try:
+                result["ret"] = getter(build_auth_url, "STATE123")
+            except Exception as ex:  # noqa: BLE001
+                result["err"] = ex
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        for _ in range(1000):  # wait until the server has bound + published port
+            if port_holder.get("uri"):
+                break
+            time.sleep(0.005)
+        self.assertIn("uri", port_holder, "loopback server never bound")
+        return t, result, port_holder["uri"].rstrip("/")
+
+    def test_a2_stray_get_does_not_abort_then_real_callback_completes(self):
+        t, result, base = self._start(timeout_sec=10)
+        # A2: a stray GET carrying NEITHER code nor error (favicon / prefetch /
+        # local probe) must NOT end the wait with code=None — which tripped a
+        # spurious "state mismatch possible CSRF" abort (and a trivial local DoS
+        # of setup). The flow keeps waiting.
+        urllib.request.urlopen(base + "/favicon.ico", timeout=5).read()
+        time.sleep(0.1)
+        self.assertNotIn("ret", result)   # still waiting — not aborted
+        self.assertNotIn("err", result)
+        # The real ?code=&state= callback then completes it.
+        urllib.request.urlopen(base + "/?code=REALCODE&state=STATE123",
+                               timeout=5).read()
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+        self.assertNotIn("err", result)
+        code, state, _redir = result["ret"]
+        self.assertEqual(code, "REALCODE")
+        self.assertEqual(state, "STATE123")
+
+    def test_a3_stuck_connection_does_not_hang_past_timeout(self):
+        t, result, base = self._start(timeout_sec=1.5)
+        parsed = urllib.parse.urlparse(base)
+        # A3: connect but send NO request bytes. Without a per-connection read
+        # timeout this dribbling client wedged handle_request forever, past the
+        # consent deadline. It must instead time out and the flow must give up.
+        s = socket.create_connection((parsed.hostname, parsed.port))
+        try:
+            start = time.time()
+            t.join(timeout=10)
+            elapsed = time.time() - start
+        finally:
+            s.close()
+        self.assertFalse(t.is_alive(), "flow wedged past the consent timeout")
+        self.assertLess(elapsed, 9)
+        self.assertIsInstance(result.get("err"), conn.OAuthError)
 
 
 if __name__ == "__main__":

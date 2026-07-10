@@ -97,6 +97,21 @@ class ConnectionsPanelTests(unittest.TestCase):
         self.assertNotIn("<img src=x onerror=alert(1)>", html)
         self.assertIn("&lt;img", html)
 
+    def test_f4_wrong_typed_errors_degrades_only_its_row(self):
+        # A non-list `errors` ({"a":1}) once made the panel's errs[:3] throw, and
+        # the fence replaced the WHOLE panel (healthy rows included) with
+        # "Connections unavailable". Now one bad row degrades only itself.
+        world = {"connectors": {
+            "gmail": {"status": "ok", "age_sec": 5, "last_poll": "T"},
+            "github": {"status": "error", "errors": {"a": 1}},  # wrong type
+        }}
+        html, n = self.mod.render_connections_panel(world)
+        self.assertNotIn("Connections unavailable", html)   # panel NOT killed
+        self.assertIn("GitHub notifications", html)          # bad row still shown
+        self.assertIn("Gmail", html)                         # healthy row intact
+        self.assertIn("Connected", html)                     # gmail still connected
+        self.assertEqual(n, 1)                               # only gmail counted
+
     def test_build_failure_degrades_to_message(self):
         # world is None → world.get raises inside; the fence degrades to a small
         # message tuple instead of propagating (the page still renders).
