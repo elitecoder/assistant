@@ -60,17 +60,57 @@ BRIEF_SCHEMA = "morning-brief/1"
 
 # Deterministic queue-ranking weights (design section 5: "lane base +
 # urgency + goal_boost + age decay, weights in config, unit-tested").
-# goal_boost is 0 until M4 ships the goals store. age_decay is a FRESHNESS
-# term: a new decision gets +age_decay_cap, decaying age_decay_per_day
-# points per day to 0 — capped below the 40-point lane bands so age can
-# never promote a decision across lanes.
+# `goal_boost` stays a flat baseline term (0) added unconditionally; the
+# RANK-BASED boost (Keel M4) is a per-decision term computed from the goal a
+# decision links to, via goal_boost_by_rank below and passed into brief_score.
+# age_decay is a FRESHNESS term: a new decision gets +age_decay_cap, decaying
+# age_decay_per_day points per day to 0.
+#
+# Both the freshness cap AND the goal-boost cap sit BELOW the 40-point lane
+# bands, and — decisively — the queue ORDER is partitioned by lane_rank
+# (_build_queue), so no urgency/freshness/goal_boost combination can ever lift
+# a staged+goal decision above an escalate one. goal_boost tunes order WITHIN a
+# lane only; it can never cross a band (design M4 item 8; M3 invariant F6).
 SCORE_CONFIG = {
     "lane_base": {"escalate": 100, "staged": 60, "digest": 20},
     "urgency": {"now": 50, "high": 20, "low": 0},
     "goal_boost": 0,
+    "goal_boost_by_rank": {"top": 12.0, "per_rank": 3.0, "floor": 3.0,
+                           "cap": 20.0},
     "age_decay_per_day": 5.0,
     "age_decay_cap": 20.0,
 }
+
+
+def goal_boost_for_rank(rank, config: dict | None = None) -> float:
+    """f(rank) → the deterministic goal-boost term (design M4 item 8). Rank 1
+    (top goal) gets the most; each lower rank sheds per_rank points down to a
+    floor; the whole thing is capped BELOW the 40-point lane band so a
+    goal-linked staged decision can never out-band an escalate one. A non-int
+    rank (no goal / malformed) → 0.0."""
+    if not isinstance(rank, int):
+        return 0.0
+    cfg = (config or SCORE_CONFIG).get("goal_boost_by_rank") or {}
+    top = cfg.get("top", 12.0)
+    per = cfg.get("per_rank", 3.0)
+    floor = cfg.get("floor", 3.0)
+    cap = cfg.get("cap", 20.0)
+    val = max(floor, top - max(0, rank - 1) * per)
+    return float(min(val, cap))
+
+
+def _record_goal_boost(rec: dict, goal_ranks: dict | None,
+                       config: dict | None = None) -> float:
+    """Goal boost for one decision: the BEST (lowest rank number) goal it links
+    to. No goal_refs / no rank known → 0.0."""
+    if not goal_ranks:
+        return 0.0
+    best_rank = None
+    for gid in (rec.get("goal_refs") or []):
+        r = goal_ranks.get(gid)
+        if isinstance(r, int) and (best_rank is None or r < best_rank):
+            best_rank = r
+    return goal_boost_for_rank(best_rank, config) if best_rank is not None else 0.0
 
 # Briefs unseen for longer than this have their non-escalate open decisions
 # TTL'd to digest (and mined into policy proposals).
@@ -233,10 +273,12 @@ def _read_jsonl_window(path: Path, cutoff: float, now: float) -> list[dict]:
 # ─── scoring ─────────────────────────────────────────────────────────────────
 
 def brief_score(rec: dict, created_epoch: float, now: float,
-                config: dict | None = None) -> float:
+                config: dict | None = None, goal_boost: float = 0.0) -> float:
     """Deterministic brief rank for one open decision. Pure function of the
     record, its creation time and `now` — replayable, no LLM, unit-tested
-    against SCORE_CONFIG."""
+    against SCORE_CONFIG. goal_boost (Keel M4) is the per-decision rank-based
+    term the caller precomputes via _record_goal_boost; it defaults to 0.0 so
+    every M3 caller scores identically."""
     cfg = config if config is not None else SCORE_CONFIG
     # Type-guard the lane/urgency keys: a hand-edited or torn record can carry
     # an unhashable list/dict where a lane string belongs, and dict.get() on an
@@ -250,7 +292,7 @@ def brief_score(rec: dict, created_epoch: float, now: float,
     age_days = max(0.0, (now - created_epoch) / 86400.0)
     freshness = max(0.0, cfg["age_decay_cap"]
                     - cfg["age_decay_per_day"] * age_days)
-    return round(lane + urgency + cfg["goal_boost"] + freshness, 3)
+    return round(lane + urgency + cfg["goal_boost"] + goal_boost + freshness, 3)
 
 
 # ─── section builders (each pure over its store) ─────────────────────────────
@@ -278,7 +320,8 @@ def _created_epochs(records: list[dict]) -> dict[str, float]:
     return out
 
 
-def _build_queue(records: list[dict], now: float) -> list[dict]:
+def _build_queue(records: list[dict], now: float,
+                 goal_ranks: dict | None = None) -> list[dict]:
     created = _created_epochs(records)
     rows: list[dict] = []
     for dec_id, rec in decisions.fold(records).items():
@@ -292,6 +335,7 @@ def _build_queue(records: list[dict], now: float) -> list[dict]:
         default_label = "Accept"
         if isinstance(recommended, dict) and recommended.get("class"):
             default_label = f"Accept: {recommended['class']}"
+        gboost = _record_goal_boost(rec, goal_ranks)
         rows.append({
             "id": dec_id,
             "title": rec.get("title") or dec_id,
@@ -301,9 +345,11 @@ def _build_queue(records: list[dict], now: float) -> list[dict]:
             "policy_id": rec.get("policy_id"),
             "urgency": rec.get("urgency"),
             "ttl_h": rec.get("ttl_h"),
+            "goal_refs": rec.get("goal_refs") or [],
+            "goal_boost": gboost,
             "created_ts": utc_iso(c_epoch),
             "age_h": round((now - c_epoch) / 3600.0, 1),
-            "score": brief_score(rec, c_epoch, now),
+            "score": brief_score(rec, c_epoch, now, goal_boost=gboost),
             "recommended": recommended,
             "default_action": default_action,
             "default_label": default_label,
@@ -484,16 +530,30 @@ def build_brief(now: float | None = None) -> dict:
     the same stores + the same `now` produce the identical document."""
     now = now if now is not None else time.time()
     records = decisions.read_log()
-    queue = _build_queue(records, now)
+    # Goal ranks feed the deterministic goal_boost ranking term. Read straight
+    # from the store file (not an import of goals.py) so the brief stays a pure
+    # derivation with no dependency on the planner module; a malformed/absent
+    # store simply yields no boosts.
+    goals = _read_json(goals_path())
+    goal_ranks: dict = {}
+    if isinstance(goals, dict) and isinstance(goals.get("goals"), list):
+        for g in goals["goals"]:
+            if isinstance(g, dict) and isinstance(g.get("id"), str) \
+                    and isinstance(g.get("rank"), int):
+                goal_ranks[g["id"]] = g["rank"]
+    queue = _build_queue(records, now, goal_ranks=goal_ranks)
     counts_by_lane: dict[str, int] = {}
     for row in queue:
         lane = row.get("lane")
         if not isinstance(lane, str):  # unhashable/absent lane → bucket (F3)
             lane = "?"
         counts_by_lane[lane] = counts_by_lane.get(lane, 0) + 1
-    goals = _read_json(goals_path())
     if isinstance(goals, dict) and isinstance(goals.get("goals"), list):
-        goals_section = {"available": True, "n_goals": len(goals["goals"])}
+        active = sum(1 for g in goals["goals"]
+                     if isinstance(g, dict) and g.get("status") == "active")
+        goals_section = {"available": True, "n_goals": len(goals["goals"]),
+                         "n_active": active,
+                         "paused": bool(goals.get("_paused", False))}
     else:
         goals_section = {"available": False,
                          "note": "goals store absent until M4"}
@@ -616,6 +676,17 @@ def compute_daily_metrics(brief: dict, records: list[dict] | None = None,
     new_ids = [i for i, e in created.items() if cutoff <= e <= now]
     auto = sum(1 for i in new_ids if folded[i].get("status") == "auto_done")
     interrupts = (brief.get("health") or {}).get("interrupts") or {}
+    # Goal metrics (Keel M4). Fenced import: a broken/absent goals module must
+    # never blank the north-star row (the row predates M4). goals.py is pure
+    # stdlib and imports decisions (already loaded), so this cannot cycle.
+    goals_progressed = 0
+    staged_accept = 0.0
+    try:
+        from . import goals as _goals  # noqa: PLC0415
+        goals_progressed = _goals.goals_progressed_overnight(now)
+        staged_accept = _goals.staged_accept_rate(records, now)
+    except Exception:  # noqa: BLE001 — never load-bearing
+        pass
     # The north star counts only ACTIONABLE open decisions. digest-lane rows
     # are FYI churn that no human tap reduces (design section 5 keeps FYI a
     # separate collapsed section); counting them here would inflate the one
@@ -635,6 +706,8 @@ def compute_daily_metrics(brief: dict, records: list[dict] | None = None,
                               .get("expired_unseen_24h") or 0),
         "interrupts_delivered": int(interrupts.get("delivered_24h") or 0),
         "interrupts_denied": int(interrupts.get("denied_24h") or 0),
+        "goals_progressed_overnight": int(goals_progressed),
+        "staged_accept_rate": float(staged_accept),
     }
 
 

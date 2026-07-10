@@ -1,0 +1,25 @@
+{"ts": "2026-06-01T10:00:00Z", "epoch": 1780333200, "outcome": "verified", "key": "dispatch:g1", "kind": "dispatch", "repo": "elitecoder/assistant"}
+{"ts": "2026-06-01T10:00:00Z", "epoch": 1780333200, "outcome": "verified", "key": "todo:g2:0", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-01T10:00:00Z", "epoch": 1780333200, "outcome": "verified", "key": "noise:0", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-03T10:00:00Z", "epoch": 1780506000, "outcome": "verified", "key": "todo:g2:2", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-04T10:00:00Z", "epoch": 1780592400, "outcome": "verified", "key": "noise:3", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-05T10:00:00Z", "epoch": 1780678800, "outcome": "verified", "key": "todo:g2:4", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-06T10:00:00Z", "epoch": 1780765200, "outcome": "verified", "key": "merge:101", "kind": "merge-dispatched", "pr": 101, "repo": "elitecoder/assistant"}
+{"ts": "2026-06-07T10:00:00Z", "epoch": 1780851600, "outcome": "verified", "key": "todo:g2:6", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-07T10:00:00Z", "epoch": 1780851600, "outcome": "verified", "key": "noise:6", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-08T10:00:00Z", "epoch": 1780938000, "outcome": "verified", "key": "merge:999", "kind": "merge-dispatched", "pr": 999, "repo": "unrelated"}
+{"ts": "2026-06-09T10:00:00Z", "epoch": 1781024400, "outcome": "verified", "key": "todo:g2:8", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-10T10:00:00Z", "epoch": 1781110800, "outcome": "verified", "key": "noise:9", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-11T10:00:00Z", "epoch": 1781197200, "outcome": "verified", "key": "dispatch:g1b", "kind": "dispatch", "repo": "assistant"}
+{"ts": "2026-06-11T10:00:00Z", "epoch": 1781197200, "outcome": "verified", "key": "todo:g2:10", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-13T10:00:00Z", "epoch": 1781370000, "outcome": "verified", "key": "todo:g2:12", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-13T10:00:00Z", "epoch": 1781370000, "outcome": "verified", "key": "noise:12", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-16T10:00:00Z", "epoch": 1781629200, "outcome": "verified", "key": "noise:15", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-19T10:00:00Z", "epoch": 1781888400, "outcome": "verified", "key": "noise:18", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-22T10:00:00Z", "epoch": 1782147600, "outcome": "verified", "key": "noise:21", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-23T10:00:00Z", "epoch": 1782234000, "outcome": "verified", "key": "todo:g2:22", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-25T10:00:00Z", "epoch": 1782406800, "outcome": "verified", "key": "todo:g2:24", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-25T10:00:00Z", "epoch": 1782406800, "outcome": "verified", "key": "noise:24", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-27T10:00:00Z", "epoch": 1782579600, "outcome": "verified", "key": "todo:g2:26", "kind": "dispatch", "td": "td-500"}
+{"ts": "2026-06-28T10:00:00Z", "epoch": 1782666000, "outcome": "verified", "key": "noise:27", "kind": "dispatch", "repo": "some/other-repo"}
+{"ts": "2026-06-29T10:00:00Z", "epoch": 1782752400, "outcome": "verified", "key": "todo:g2:28", "kind": "dispatch", "td": "td-500"}

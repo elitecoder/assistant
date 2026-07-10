@@ -1,0 +1,48 @@
+{
+  "_schema": 1,
+  "_paused": false,
+  "goals": [
+    {
+      "id": "goal-1",
+      "rank": 1,
+      "title": "Land the assistant refactor",
+      "outcome": "refactor merged, tests green in elitecoder/assistant",
+      "status": "active",
+      "stallAfterHours": 48,
+      "createdAt": "2026-06-01T09:00:00Z",
+      "links": {
+        "repos": [
+          "elitecoder/assistant"
+        ],
+        "prs": [
+          101
+        ],
+        "channels": [],
+        "senders": [],
+        "todos": [],
+        "jql": null
+      }
+    },
+    {
+      "id": "goal-2",
+      "rank": 2,
+      "title": "Ship the fleet dashboard",
+      "outcome": "fleet dashboard live, td-500 done",
+      "status": "active",
+      "stallAfterHours": 48,
+      "createdAt": "2026-06-01T09:00:00Z",
+      "links": {
+        "repos": [
+          "fleet"
+        ],
+        "prs": [],
+        "channels": [],
+        "senders": [],
+        "todos": [
+          "td-500"
+        ],
+        "jql": null
+      }
+    }
+  ]
+}

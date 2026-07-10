@@ -304,8 +304,13 @@ def open_decisions(view: dict | None = None) -> list[dict]:
 
 def open_decision(*, event: dict, lane: str, policy_id, triage=None,
                   action=None, urgency=None, ttl_h=None, status: str = OPEN,
-                  resolution=None, now: float | None = None) -> tuple[dict, bool]:
+                  resolution=None, goal_refs=None,
+                  now: float | None = None) -> tuple[dict, bool]:
     """Create (or find) the decision for one event. Returns (record, created).
+
+    goal_refs (Keel M4) links the decision to the goals that produced/relate to
+    it, so the brief's goal_boost ranking term and staged_accept_rate metric can
+    see it; default [] preserves every M2/M3 caller's behavior unchanged.
 
     created=False means the stable id already exists in the log — re-triaging
     the same (source, external_id, action_class) can never enqueue twice; the
@@ -364,7 +369,7 @@ def open_decision(*, event: dict, lane: str, policy_id, triage=None,
             "policy_id": policy_id,
             "triage": triage,
             "recommended": recommended,
-            "goal_refs": [],
+            "goal_refs": list(goal_refs or []),
             "score": score_decision(lane, urgency),
             "urgency": urgency,
             "ttl_h": ttl_h,

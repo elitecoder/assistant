@@ -22,6 +22,11 @@ Pipeline (in order):
      over the decision queue/ledger/digest/health stores), appends the daily
      north-star metrics row, and TTLs >48h-unseen briefs' non-escalate
      decisions to digest (feeding the policy-proposal miner).
+  1.7. Goals planner (src/assistant/goals.py, Keel M4): stamp mechanical goal
+     progress, then in rank order stage the next playbook step for any stalled
+     goal with leftover ACTIVE_WS_CAP headroom — an autoDispatch TODO when the
+     planner.autoDispatch flag is on (SAFE DEFAULT off → a brief decision), a
+     gated step always a decision. No LLM (R3: zero new spend).
   2. Run bin/purge-stale-awaiting.py (mechanical card cleanup; `dec-*`
      cards derive from decision-queue state).
   3. Pick batch via bin/pick-ws-batch.py — already filters back-off list.
@@ -632,6 +637,32 @@ def run_brief_step(pulse_idx: int) -> None:
         return
     if summary.get("built"):
         log.info("brief: %s", json.dumps(summary))
+
+
+def run_planner_step(pulse_idx: int) -> None:
+    """Step 1.7 (Keel M4): the deterministic goals planner. goals.pulse_step()
+    stamps each goal's mechanical progress, then — in goal RANK order — stages
+    the next playbook step for any stalled goal that has leftover ACTIVE_WS_CAP
+    headroom: an unattended step as an autoDispatch TODO (only when the
+    planner.autoDispatch config flag is on — SAFE DEFAULT is off, staging a
+    decision instead), a gated step as a brief decision. Runs BEFORE the TODO
+    dispatch (step 5) so a freshly-staged goal TODO can be picked up THIS pulse,
+    and BEFORE purge so nothing it stages is immediately swept. NO LLM anywhere
+    (R3: zero new LLM spend). Imported lazily and fully fenced, same contract as
+    the brief: a broken planner costs one pulse's planning, never the pulse."""
+    try:
+        src_dir = str(REPO / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from assistant import goals  # noqa: PLC0415
+        summary = goals.pulse_step()
+    except Exception as e:  # noqa: BLE001 — the planner must never break the pulse
+        log.exception("planner step failed (retried next pulse): %s", e)
+        return
+    plan = summary.get("plan") or {}
+    if plan.get("staged_todos") or plan.get("staged_decisions") \
+            or plan.get("paused") or plan.get("stale_world"):
+        log.info("planner: %s", json.dumps(summary))
 
 
 # ─── Observer no-change skip (Keel M2) ───────────────────────────────────────
@@ -1566,6 +1597,14 @@ def main() -> int:
     #      never load-bearing (see run_brief_step docstring).
     if not dry_run:
         run_brief_step(pulse_idx)
+
+    # 1.7. Goals planner (Keel M4): stamp mechanical goal progress + stage the
+    #      next playbook step for stalled goals into leftover ACTIVE_WS_CAP
+    #      headroom (autoDispatch TODO when the config flag is on, else a brief
+    #      decision). Runs before dispatch so a staged goal TODO can go out this
+    #      pulse; NO LLM. Fenced, never load-bearing (see run_planner_step).
+    if not dry_run:
+        run_planner_step(pulse_idx)
 
     # 2. Purge stale awaiting cards.
     if not dry_run:
