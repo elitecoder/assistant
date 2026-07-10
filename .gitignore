@@ -50,3 +50,12 @@ slack-reactor/package-lock.json
 # mem0_backend.ensure_venv() re-execs into it; absent it, tools fall back to
 # the dependency-free local-jsonl store.
 .venv-mem0/
+
+# Local git worktrees (feature branches checked out under the repo). If left
+# untracked, the deployed fleet's self_update.py sees a perpetually-dirty tree,
+# does `git stash push -u`, and loops a 24h-delay cycle forever.
+.worktrees/
+
+# Runtime state dir when an install keeps it inside the repo instead of ~
+# (metrics.jsonl, observer-summaries/, heartbeat.json — never committed).
+/.assistant/

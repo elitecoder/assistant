@@ -13,10 +13,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 METERING_PATH = REPO / "bin/metering.py"
@@ -71,7 +73,8 @@ class RecordShapeTests(MeteringBase):
         self.assertEqual(set(rec.keys()), {
             "ts", "epoch", "pulse_idx", "observer_called", "batch_size",
             "model", "duration_s", "tokens_in", "tokens_out", "cost_usd_est",
-            "usage_source", "verdicts", "verdict_changes", "actions",
+            "usage_source", "verdicts", "verdict_changes", "synthesized",
+            "actions",
         })
 
     def test_record_values_and_counters(self):
@@ -103,6 +106,23 @@ class RecordShapeTests(MeteringBase):
         self.assertEqual(rec["cost_usd_est"], 0.0)
         self.assertEqual(rec["verdicts"], {})
         self.assertEqual(rec["actions"], {})
+
+    def test_synthesized_defaults_to_zero(self):
+        self.assertEqual(self._record()["synthesized"], 0)
+
+    def test_synthesized_field_recorded(self):
+        rec = self._record(synthesized=3)
+        self.assertEqual(rec["synthesized"], 3)
+        self.assertEqual(json.loads(json.dumps(rec))["synthesized"], 3)
+
+    def test_verdict_changes_none_serializes_as_null(self):
+        # Degraded prev-verdict snapshot: comparison is null, NOT dropped —
+        # cost/usage fields in the same record stay populated.
+        rec = self._record(verdict_changes=None)
+        self.assertIsNone(rec["verdict_changes"])
+        self.assertEqual(rec["tokens_in"], 91000)
+        self.assertEqual(rec["cost_usd_est"], 0.3)
+        self.assertIn('"verdict_changes": null', json.dumps(rec))
 
 
 # ─── verdict-change computation ──────────────────────────────────────────────
@@ -242,6 +262,33 @@ class AggregationTests(MeteringBase):
         self.assertEqual(agg["verdict_change_rate"], 0.0)
         self.assertEqual(agg["skip_rate"], 1.0)
 
+    def test_aggregate_includes_future_stamped_records(self):
+        # Clock skew: a record stamped an hour in the future must NOT be
+        # silently dropped — its cost is real and belongs in the total.
+        records = [self._rec(86400, cost=0.5),        # oldest → span = 1 day
+                   self._rec(-3600, cost=1.0)]        # 1h in the future
+        agg = self.mod.aggregate(records, now=self.NOW, window_days=7)
+        self.assertEqual(agg["n_pulses"], 2)
+        self.assertAlmostEqual(agg["cost_per_day_usd"], 1.5)
+
+    def test_aggregate_caps_absurdly_future_records(self):
+        # Sanity cap: beyond now+1 day is garbage, not skew — still dropped.
+        records = [self._rec(-2 * 86400, cost=99.0),  # 2 days in the future
+                   self._rec(3600, cost=0.5)]
+        agg = self.mod.aggregate(records, now=self.NOW, window_days=7)
+        self.assertEqual(agg["n_pulses"], 1)
+
+    def test_aggregate_tolerates_null_verdict_changes(self):
+        # Degraded-comparison record (verdict_changes null) aggregates as 0
+        # changes but its cost still counts.
+        rec = self._rec(86400, cost=0.5)
+        rec["verdict_changes"] = None
+        agg = self.mod.aggregate([rec, self._rec(3600, changes=1, cost=0.5)],
+                                 now=self.NOW, window_days=7)
+        self.assertEqual(agg["n_pulses"], 2)
+        self.assertAlmostEqual(agg["cost_per_day_usd"], 1.0)
+        self.assertAlmostEqual(agg["verdict_change_rate"], 1 / 20)
+
     def test_aggregate_epoch_fallback_to_iso_ts(self):
         rec = self._rec(3600, cost=1.0)
         del rec["epoch"]  # older/foreign record — ts only
@@ -279,8 +326,30 @@ class MetricsFileTests(MeteringBase):
         self.mod.append_metric({"pulse_idx": 2}, p, max_bytes=10)
         rotated = p.with_name(p.name + ".1")
         self.assertTrue(rotated.exists())
-        self.assertEqual([r["pulse_idx"] for r in self.mod.read_metrics(rotated)], [1])
-        self.assertEqual([r["pulse_idx"] for r in self.mod.read_metrics(p)], [2])
+        self.assertEqual(
+            [json.loads(l)["pulse_idx"] for l in rotated.read_text().splitlines()], [1])
+        # read_metrics on the active path spans BOTH files, oldest-first, so
+        # the dashboard window survives the rotation without truncating.
+        self.assertEqual([r["pulse_idx"] for r in self.mod.read_metrics(p)], [1, 2])
+
+    def test_read_spans_rotated_and_active_files(self):
+        p = self._path()
+        rotated = p.with_name(p.name + ".1")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        rotated.write_text('{"pulse_idx": 1}\n{"pulse_idx": 2}\n')
+        p.write_text('{"pulse_idx": 3}\n')
+        self.assertEqual([r["pulse_idx"] for r in self.mod.read_metrics(p)],
+                         [1, 2, 3])
+
+    def test_read_tolerates_missing_or_corrupt_rotated_file(self):
+        p = self._path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('{"pulse_idx": 5}\n')
+        # No .1 file at all — active file alone still reads fine.
+        self.assertEqual([r["pulse_idx"] for r in self.mod.read_metrics(p)], [5])
+        # Corrupt .1 file — its bad lines are skipped, active file still read.
+        p.with_name(p.name + ".1").write_text("{ total garbage\n")
+        self.assertEqual([r["pulse_idx"] for r in self.mod.read_metrics(p)], [5])
 
     def test_no_rotation_under_limit(self):
         p = self._path()
@@ -332,6 +401,34 @@ class RendererMeteringTilesTests(unittest.TestCase):
             html = self.renderer.render_metering_stats()
         except Exception:
             self.fail("render_metering_stats must swallow corrupt metrics")
+        self.assertEqual(html, "")
+
+    def test_tiles_read_only_rotated_file_after_rotation(self):
+        # Right after a rotation the recent records live in metrics.jsonl.1 —
+        # the tiles must still render (path + spanning via metering module).
+        now = int(time.time())
+        p = self.home / ".assistant/metrics.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.with_name(p.name + ".1").write_text(json.dumps(
+            {"ts": "x", "epoch": now - 3600, "pulse_idx": 1, "observer_called": True,
+             "batch_size": 4, "cost_usd_est": 0.5, "verdict_changes": 1}) + "\n")
+        p.write_text("")
+        html = self.renderer.render_metering_stats()
+        self.assertIn("Observer calls/day", html)
+
+    def test_aggregate_missing_keys_degrades_to_empty(self):
+        # Adversarial: aggregate() returning a dict WITHOUT the tile keys must
+        # degrade the section to "" — a KeyError in the f-string previously
+        # sat outside the try/except and killed the whole dashboard render.
+        self._plant_metrics()
+        sys.path.insert(0, str(REPO / "bin"))
+        import metering as metering_mod  # same module object the renderer imports
+        with mock.patch.object(metering_mod, "aggregate",
+                               return_value={"n_pulses": 5}):
+            try:
+                html = self.renderer.render_metering_stats()
+            except Exception:
+                self.fail("render_metering_stats must swallow a partial aggregate")
         self.assertEqual(html, "")
 
 

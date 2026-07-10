@@ -1233,17 +1233,25 @@ def main() -> int:
     # BEFORE phase 3's save_summary overwrites them (the summary on disk IS
     # last pulse's verdict — no extra state file needed). Never load-bearing:
     # a broken metering module degrades to an un-metered pulse, nothing else.
-    prev_verdicts: dict[str, str] = {}
+    prev_verdicts: dict[str, str] | None = {}
     observer_usages: list[dict] = []
     observer_duration_s = 0.0
     new_verdicts: dict[str, str] = {}
+    synthesized_refs: set[str] = set()
     try:
         sys.path.insert(0, str(BIN))
         import metering  # noqa: PLC0415
-        prev_verdicts = metering.load_prev_verdicts(list(ctxs_by_ref.keys()))
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         metering = None
-        log.warning("metering prev-verdict snapshot failed (ignored): %s", e)
+        log.warning("metering module unavailable (ignored): %s", e)
+    if metering is not None:
+        try:
+            prev_verdicts = metering.load_prev_verdicts(list(ctxs_by_ref.keys()))
+        except Exception as e:  # noqa: BLE001 — metering must never break the pulse
+            # Degrade ONLY the comparison: verdict_changes becomes null in the
+            # record but cost/usage for this pulse is still written.
+            prev_verdicts = None
+            log.warning("metering prev-verdict snapshot failed (ignored): %s", e)
 
     if dry_run:
         for ws_ref, ctx in ctxs_by_ref.items():
@@ -1302,6 +1310,10 @@ def main() -> int:
                 }
                 save_summary(ws, synth)
                 new_verdicts[ws_ref] = "active"
+                # A synthesized verdict is a failure artifact, not a real
+                # judgment — it must never count as a verdict change (it would
+                # inflate the rate once now and again on recovery next pulse).
+                synthesized_refs.add(ws_ref)
                 actions_taken.append({
                     "key": f"{ws_ref}-observer-failed",
                     "kind": "noop", "ws_ref": ws_ref, "outcome": "verified",
@@ -1412,6 +1424,15 @@ def main() -> int:
     if metering is not None:
         try:
             observer_called = bool(ctxs_by_ref)
+            if prev_verdicts is None:
+                # Snapshot failed earlier — comparison degraded, cost still real.
+                verdict_changes = None
+            else:
+                # Synthesized fallback verdicts are failure artifacts, not
+                # judgments — exclude them from the change count.
+                real_verdicts = {ws: v for ws, v in new_verdicts.items()
+                                 if ws not in synthesized_refs}
+                verdict_changes = metering.count_verdict_changes(prev_verdicts, real_verdicts)
             metering.append_metric(metering.build_pulse_record(
                 epoch=utc_ts(),
                 pulse_idx=pulse_idx,
@@ -1421,7 +1442,8 @@ def main() -> int:
                 duration_s=observer_duration_s,
                 usage=metering.sum_usage(observer_usages),
                 new_verdicts=new_verdicts,
-                verdict_changes=metering.count_verdict_changes(prev_verdicts, new_verdicts),
+                verdict_changes=verdict_changes,
+                synthesized=len(synthesized_refs),
                 actions=actions_taken,
             ))
         except Exception as e:  # noqa: BLE001 — metering must never break the pulse

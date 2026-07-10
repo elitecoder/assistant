@@ -17,6 +17,9 @@ One JSONL record is appended to ~/.assistant/metrics.jsonl per pulse:
       "usage_source": "cli",            # "cli" (real) | "estimated" | "mixed"
       "verdicts": {"active": 6, "needs_user": 2},
       "verdict_changes": 1,             # ws whose verdict differs from last pulse
+                                        # (null when the prev-verdict snapshot failed)
+      "synthesized": 0,                 # ws given a fallback 'active' verdict this
+                                        # pulse (Observer timeout/batch error)
       "actions": {"noop": 6, "emit-card": 2}
     }
 
@@ -45,8 +48,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Rotate metrics.jsonl once it exceeds this (one ~350-byte record per 5-min
-# pulse ≈ 100KB/day, so 5MB is years of history). Old file is kept as
-# metrics.jsonl.1 — enough for the 7-day dashboard window with huge margin.
+# pulse ≈ 100KB/day, so 5MB is ~50 days of history). Old file is kept as
+# metrics.jsonl.1 and read_metrics() reads both, so the 7-day dashboard
+# window survives a rotation with margin to spare.
 MAX_METRICS_BYTES = 5_000_000
 
 # $ per 1M tokens (input, output), matched by substring against the model id.
@@ -190,7 +194,14 @@ def count_verdict_changes(prev: dict[str, str], new: dict[str, str]) -> int:
 def build_pulse_record(*, epoch: int, pulse_idx: int, observer_called: bool,
                        batch_size: int, model: str | None, duration_s: float,
                        usage: dict, new_verdicts: dict[str, str],
-                       verdict_changes: int, actions: list[dict]) -> dict:
+                       verdict_changes: int | None, actions: list[dict],
+                       synthesized: int = 0) -> dict:
+    """One metrics.jsonl record. `verdict_changes` is None when the
+    previous-verdict snapshot failed — the comparison is degraded but the
+    cost/usage numbers are still real and still recorded. `synthesized`
+    counts workspaces whose verdict this pulse was a synthesized 'active'
+    fallback (Observer timeout/batch error), so failure pulses are visible
+    in the data; synthesized verdicts never count as verdict changes."""
     return {
         "ts": utc_iso(epoch),
         "epoch": epoch,
@@ -204,7 +215,8 @@ def build_pulse_record(*, epoch: int, pulse_idx: int, observer_called: bool,
         "cost_usd_est": float(usage.get("cost_usd") or 0.0),
         "usage_source": usage.get("source", "estimated"),
         "verdicts": dict(Counter(new_verdicts.values())),
-        "verdict_changes": int(verdict_changes),
+        "verdict_changes": None if verdict_changes is None else int(verdict_changes),
+        "synthesized": int(synthesized),
         "actions": dict(Counter(a.get("kind", "unknown") for a in actions)),
     }
 
@@ -239,26 +251,30 @@ def _record_epoch(rec: dict) -> int | None:
 
 
 def read_metrics(path: Path | None = None) -> list[dict]:
-    """All parseable records, oldest-first. Corrupt lines (torn append,
-    manual edit) are skipped — one bad line never blanks the dashboard."""
+    """All parseable records, oldest-first, spanning BOTH the rotated file
+    (<name>.1, read first — it holds the older records) and the active file,
+    so a rotation never truncates the dashboard's 7-day window. A missing or
+    unreadable file is skipped; corrupt lines (torn append, manual edit) are
+    skipped — one bad line never blanks the dashboard."""
     p = path if path is not None else metrics_path()
-    if not p.exists():
-        return []
     out: list[dict] = []
-    try:
-        lines = p.read_text().splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        line = line.strip()
-        if not line:
+    for f in (p.with_name(p.name + ".1"), p):
+        if not f.exists():
             continue
         try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
+            lines = f.read_text().splitlines()
+        except OSError:
             continue
-        if isinstance(rec, dict):
-            out.append(rec)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
     return out
 
 
@@ -270,12 +286,17 @@ def aggregate(records: list[dict], now: int, window_days: int = 7) -> dict:
     Per-day figures divide by the ACTUAL span the records cover (floored at
     one hour) rather than the full window, so a fleet that's only been
     metered for a day still shows a truthful calls/day the next morning.
+
+    Records stamped slightly in the future (clock skew, DST weirdness) are
+    kept — dropping them would silently hide their cost. The only upper
+    bound is a now+1-day sanity cap against absurdly future garbage.
     """
     cutoff = now - window_days * 86400
+    future_cap = now + 86400  # sanity cap only — tolerate ordinary clock skew
     recs = []
     for r in records:
         e = _record_epoch(r)
-        if e is not None and cutoff <= e <= now:
+        if e is not None and cutoff <= e <= future_cap:
             recs.append((e, r))
     n = len(recs)
     if n == 0:

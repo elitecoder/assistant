@@ -766,6 +766,34 @@ class CallObserverBatchTests(unittest.TestCase):
         finally:
             self.mod.OBSERVER_BATCH_PROMPT = original
 
+    def test_observer_cmd_requests_json_output_format(self):
+        # Adversarial pin: if `--output-format json` is ever dropped from the
+        # Observer cmd, stdout stops being a usage envelope and real token/cost
+        # capture silently dies while every other test stays green.
+        prompt_file = self._tmp / "obs.md"
+        prompt_file.write_text("# fake\n")
+        original = self.mod.OBSERVER_BATCH_PROMPT
+        self.mod.OBSERVER_BATCH_PROMPT = prompt_file
+        try:
+            captured = {}
+
+            def fake_run(cmd, *, input_text=None, timeout=None, env=None,
+                         merge_bedrock=False):
+                captured["cmd"] = cmd
+                return (0, "", "")
+
+            with mock.patch.object(self.mod, "run", side_effect=fake_run):
+                self.mod.call_observer_batch(
+                    [{"ws_ref": "workspace:1", "title": "t", "cwd": str(self._tmp)}],
+                    pulse_idx=1, batch_idx=0,
+                )
+            cmd = captured["cmd"]
+            self.assertIn("--output-format", cmd)
+            self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
+            self.assertIn("--print", cmd)
+        finally:
+            self.mod.OBSERVER_BATCH_PROMPT = original
+
     def test_persists_artifacts_even_when_subprocess_fails(self):
         prompt_file = self._tmp / "obs.md"
         prompt_file.write_text("# fake\n")
@@ -1004,6 +1032,110 @@ class MainPipelineTests(unittest.TestCase):
         payload = json.loads(saved[-1].kwargs.get("input_text", "{}"))
         kinds = {a.get("kind") for a in payload.get("actions_taken", [])}
         self.assertIn("dispatch", kinds)
+
+    # ── metering wiring ──────────────────────────────────────────────────
+    # These read the ACTUAL metrics.jsonl the pulse appended — pinning the
+    # main() wiring, not just the metering module's unit behavior.
+
+    CTX_WS1 = {"ws_ref": "workspace:1", "transcript_path": None,
+               "agent_status": "idle", "last_turn_age_sec": 0,
+               "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+               "title": "t", "cwd": "/"}
+
+    def _metrics_records(self):
+        p = self._tmp / ".assistant/metrics.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+
+    def _plant_summary(self, ws_ref, verdict):
+        p = (self._tmp / ".assistant/observer-summaries"
+             / f"{ws_ref.replace(':', '_')}.json")
+        p.write_text(json.dumps({"ws_ref": ws_ref, "verdict": verdict}))
+
+    def _run_metered_pulse(self, observer_result):
+        """One real (non-dry-run) pulse with subprocesses mocked and the
+        Observer batch returning `observer_result` = (verdicts_by_ref, usage)."""
+        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/"}],
+                "reuse_cached": [], "backed_off": [], "total_ws": 1,
+            }), \
+             mock.patch.object(self.mod, "purge_stale_awaiting"), \
+             mock.patch.object(self.mod, "build_ctx", return_value=dict(self.CTX_WS1)), \
+             mock.patch.object(self.mod, "call_observer_batch",
+                               return_value=observer_result), \
+             mock.patch.object(self.mod, "save_summary"), \
+             mock.patch.object(self.mod, "pick_open_todos",
+                               return_value={"bucket_b": []}), \
+             mock.patch.object(self.mod, "run", return_value=(0, "", "")):
+            return self._run_main([])
+
+    def test_pulse_appends_metrics_record(self):
+        # The existing pipeline tests never read metrics.jsonl — this one does.
+        usage = {"tokens_in": 100, "tokens_out": 10, "cost_usd": 0.01, "source": "cli"}
+        rc = self._run_metered_pulse((
+            {"workspace:1": {"ws_ref": "workspace:1", "verdict": "active",
+                             "summary": "s", "next": "n"}}, usage))
+        self.assertEqual(rc, 0)
+        recs = self._metrics_records()
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
+        self.assertTrue(rec["observer_called"])
+        self.assertEqual(rec["batch_size"], 1)
+        self.assertEqual(rec["pulse_idx"], 1)
+        self.assertEqual(rec["verdicts"], {"active": 1})
+        self.assertEqual(rec["verdict_changes"], 0)  # no prior summary on disk
+        self.assertEqual(rec["synthesized"], 0)
+        self.assertEqual(rec["usage_source"], "cli")
+        self.assertEqual(rec["tokens_in"], 100)
+        self.assertEqual(rec["cost_usd_est"], 0.01)
+
+    def test_synthesized_verdict_not_counted_as_change(self):
+        # Prior verdict on disk is needs_user; Observer batch fails → pulse
+        # synthesizes "active". That is a failure artifact, NOT a change:
+        # verdict_changes stays 0 and the synthesized counter records it.
+        self._plant_summary("workspace:1", "needs_user")
+        rc = self._run_metered_pulse(({}, {}))
+        self.assertEqual(rc, 0)
+        recs = self._metrics_records()
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
+        self.assertEqual(rec["verdicts"], {"active": 1})
+        self.assertEqual(rec["verdict_changes"], 0)
+        self.assertEqual(rec["synthesized"], 1)
+
+    def test_real_verdict_change_still_counted(self):
+        # Non-vacuous counterpart: a REAL Observer verdict that differs from
+        # the prior one still counts, and synthesized stays 0.
+        self._plant_summary("workspace:1", "needs_user")
+        rc = self._run_metered_pulse((
+            {"workspace:1": {"ws_ref": "workspace:1", "verdict": "active",
+                             "summary": "s", "next": "n"}}, {}))
+        self.assertEqual(rc, 0)
+        rec = self._metrics_records()[0]
+        self.assertEqual(rec["verdict_changes"], 1)
+        self.assertEqual(rec["synthesized"], 0)
+
+    def test_prev_snapshot_failure_degrades_comparison_only(self):
+        # load_prev_verdicts blowing up must null the comparison, not drop the
+        # whole record — cost/usage for the pulse is still written.
+        sys.path.insert(0, str(REPO / "bin"))
+        import metering as metering_mod  # same module object main() imports
+        usage = {"tokens_in": 100, "tokens_out": 10, "cost_usd": 0.01, "source": "cli"}
+        with mock.patch.object(metering_mod, "load_prev_verdicts",
+                               side_effect=OSError("summaries dir unreadable")):
+            with self.assertLogs("pulse", level="WARNING"):
+                rc = self._run_metered_pulse((
+                    {"workspace:1": {"ws_ref": "workspace:1", "verdict": "active",
+                                     "summary": "s", "next": "n"}}, usage))
+        self.assertEqual(rc, 0)
+        recs = self._metrics_records()
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
+        self.assertIsNone(rec["verdict_changes"])
+        self.assertTrue(rec["observer_called"])
+        self.assertEqual(rec["tokens_in"], 100)
+        self.assertEqual(rec["cost_usd_est"], 0.01)
 
     def test_state_write_failure_logged_but_pulse_continues(self):
         # state-write returns rc=1; main should still write heartbeat + return 0.

@@ -336,25 +336,23 @@ def render_metering_stats():
     """Fleet cost/behavior tiles from the last 7 days of the pulse metering
     log (~/.assistant/metrics.jsonl, written by pulse.py each pulse):
     Observer calls/day, $/day estimate, verdict-change rate, skip rate.
-    The aggregation math lives in bin/metering.py (single source of truth,
-    shared with the pulse); any failure — no log yet, module missing —
-    degrades to an empty string, never a broken page."""
-    metrics_file = HOME / ".assistant/metrics.jsonl"
-    if not metrics_file.exists():
-        return ""
+    The aggregation math AND the log path live in bin/metering.py (single
+    source of truth, shared with the pulse); any failure — no log yet,
+    module missing, aggregate missing a key — degrades to an empty string,
+    never a broken page. The tile-row f-string subscripts agg, so it MUST
+    stay inside the try: a KeyError here would otherwise kill the whole
+    dashboard render."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import metering  # noqa: PLC0415
         agg = metering.aggregate(
-            metering.read_metrics(metrics_file),
+            metering.read_metrics(metering.metrics_path()),
             now=int(utc_now().timestamp()),
             window_days=7,
         )
-    except Exception:
-        return ""
-    if not agg.get("n_pulses"):
-        return ""
-    return f"""
+        if not agg.get("n_pulses"):
+            return ""
+        return f"""
 <div class="stats">
   <div class="stat"><div class="v">{agg['observer_calls_per_day']:.0f}</div><div class="k">Observer calls/day</div></div>
   <div class="stat"><div class="v">${agg['cost_per_day_usd']:.2f}</div><div class="k">$/day est · 7d</div></div>
@@ -362,6 +360,8 @@ def render_metering_stats():
   <div class="stat"><div class="v">{agg['skip_rate'] * 100:.0f}%</div><div class="k">Skip rate (no Observer call)</div></div>
 </div>
 """
+    except Exception:
+        return ""
 
 
 def render_decisions_tab(world):
