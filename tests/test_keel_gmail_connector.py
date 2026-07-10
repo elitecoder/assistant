@@ -388,14 +388,19 @@ class CursorDisciplineTests(HomeTestCase):
         self.assertFalse(hb["ok"])
 
     def test_o1_once_writes_heartbeat_on_failure_not_crash(self):
-        # `--once` with no token cache must exit cleanly WITH a heartbeat
-        # (unhandled traceback + no heartbeat was the O1 hazard under launchd).
+        # `--once` with no token cache must exit cleanly (rc 0) WITH a heartbeat
+        # and never an unhandled traceback — that (traceback + no heartbeat) was
+        # the O1 hazard under launchd. Gmail is OPTIONAL, so no cache is now the
+        # QUIET not_configured state (ok:true, a distinct status the brief
+        # renders as available-not-alarming), NOT an error. The full
+        # not_configured contract is proven in test_keel_gmail_authorize.
         rc = gm.main(["--once"])
         self.assertEqual(rc, 0)
         hb_path = (self.home / ".assistant/connectors/gmail/heartbeat.json")
         self.assertTrue(hb_path.exists())
         hb = json.loads(hb_path.read_text())
-        self.assertFalse(hb["ok"])
+        self.assertEqual(hb["status"], "not_configured")
+        self.assertTrue(hb["ok"])  # not_configured is not an error
 
 
 if __name__ == "__main__":

@@ -19,8 +19,20 @@ explicitly REJECTED as the Bedrock-under-launchd 403 hazard):
     grant and the new expiry is surfaced in heartbeat.json, so a dead token is
     visible in the morning brief within one poll.
   - The refresh_token + client credentials live ONLY in the token cache file
-    (~/.assistant/connectors/gmail/token.json, mode 0600), seeded once by an
-    out-of-band consent flow on the owner's hardware — never in a plist/config.
+    (~/.assistant/connectors/gmail/token.json, mode 0600), seeded once by the
+    one-time consent flow run as ``gmail.py --authorize --client-secrets <path>``
+    on the owner's hardware — never in a plist/config.
+
+First-time setup (once, on the owner's machine):
+  1. In Google Cloud Console, ENABLE the Gmail API for a project.
+  2. Create an OAuth client of type "Desktop app" and DOWNLOAD its
+     client-secrets JSON (the ``{"installed": {...}}`` file).
+  3. Run ``bin/connectors/gmail.py --authorize --client-secrets <that.json>``.
+     A browser opens the Google consent screen (the URL is also printed to
+     stderr for headless/SSH use); approve the READ-ONLY Gmail scope. The flow
+     seeds token.json at ~/.assistant/connectors/gmail/token.json and the
+     connector can authenticate from then on (add ``--force`` to replace an
+     existing cache). No secret is ever printed.
 
 Cursor = Gmail's ``historyId`` (users.history.list incremental). A first run
 with no cursor SEEDS the historyId from the profile and emits nothing (never
@@ -46,6 +58,9 @@ from assistant import connector  # noqa: E402
 SOURCE = "gmail"
 NAME = "gmail"
 API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+# READ-ONLY scope only — this is a producer connector; it never sends, deletes,
+# or modifies. The consent flow requests exactly this and nothing more.
+GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 METADATA_HEADERS = ("From", "To", "Cc", "Subject", "List-Unsubscribe")
 # Gmail's own category labels — objective source metadata, not a lane judgment.
 NEWSLETTER_LABELS = frozenset({
@@ -134,14 +149,34 @@ class GmailConnector(connector.Connector):
             "User-Agent": "assistant-connector-gmail",
         })
 
-    def _heartbeat(self, now, errors=None, event_count=None, poll_count=None):
+    def _heartbeat(self, now, errors=None, event_count=None, poll_count=None,
+                   status=None):
+        # An EXPLICIT tri-state status the brief-health side keys off, so the
+        # three connector conditions render differently: not_configured (opted
+        # out / not set up → quiet, never an alert), ok (polling), error
+        # (configured but failing → the only alarming one). Default is derived
+        # from errors; the not_configured path passes it explicitly. Crucially
+        # not_configured is NOT an error — errors stays empty and ok stays true.
+        if status is None:
+            status = "error" if errors else "ok"
         self.write_heartbeat(
             last_poll_epoch=now,
             token_expiry_epoch=self.tokens.expiry_epoch(),
-            errors=errors, event_count=event_count, poll_count=poll_count)
+            errors=errors, event_count=event_count, poll_count=poll_count,
+            extra={"status": status})
 
     def poll_once(self, now=None) -> dict:
         now = now if now is not None else connector.time.time()
+
+        # Gmail is OPTIONAL. If the owner never ran `--authorize` there is no
+        # token cache — a CLEAN opted-out state, not a failure. Never crash-loop
+        # (or alert on) a consent only a human can grant: heartbeat it as
+        # not_configured (ok:true, distinct status) and return quietly. A stale
+        # token that once existed still goes through the oauth_error path below.
+        if not self.token_path().exists():
+            self._heartbeat(now, status="not_configured")
+            return {"status": "not_configured", "emitted": 0, "errors": []}
+
         cursor = self.load_cursor()
         errors: list = []
 
@@ -356,6 +391,44 @@ def _safe_json(body) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _load_client_secrets(path) -> tuple:
+    """Parse a Google OAuth client-secrets JSON → (client_id, client_secret,
+    token_uri, auth_uri). Google wraps the fields under ``"installed"`` (Desktop
+    / native app) or ``"web"``; accept BOTH shapes (and a bare object) so the
+    file downloaded from the Cloud Console works unmodified. NEVER logs/returns
+    the secret to any print site — only the flow consumes it."""
+    raw = connector.json.loads(Path(path).read_text())
+    if not isinstance(raw, dict):
+        raise ValueError("client-secrets JSON is not an object")
+    block = raw.get("installed") or raw.get("web") or raw
+    if not isinstance(block, dict):
+        raise ValueError("client-secrets JSON 'installed'/'web' is malformed")
+    cid = block.get("client_id")
+    secret = block.get("client_secret")
+    if not cid or not secret:
+        raise ValueError("client-secrets JSON missing client_id/client_secret")
+    token_uri = block.get("token_uri") or connector.DEFAULT_TOKEN_URI
+    auth_uri = block.get("auth_uri") or connector.DEFAULT_AUTH_URI
+    return cid, secret, token_uri, auth_uri
+
+
+def authorize(client_secrets_path, *, force=False, open_url=None,
+              code_getter=None, exchange_transport=None) -> Path:
+    """The one-time consent flow that MOVES the connector from not_configured →
+    ok. Reads the Desktop client-secrets JSON, runs the base's loopback+PKCE
+    installed-app flow for the READ-ONLY Gmail scope, and seeds token.json at the
+    connector's token_path() through OAuthTokenManager.seed (atomic 0600, the
+    same writer refresh uses). Returns the cache path; prints NO secret. The two
+    injection points make it fully unit-testable with no browser/network."""
+    cid, secret, token_uri, auth_uri = _load_client_secrets(client_secrets_path)
+    c = GmailConnector()  # resolves token_path() under the current $HOME
+    tok = connector.run_installed_app_flow(
+        client_id=cid, client_secret=secret, scopes=[GMAIL_READONLY_SCOPE],
+        token_uri=token_uri, auth_uri=auth_uri, open_url=open_url,
+        code_getter=code_getter, exchange_transport=exchange_transport)
+    return c.tokens.seed(tok, force=force)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dry-run", action="store_true",
@@ -364,9 +437,44 @@ def main(argv=None) -> int:
                     help="also write sanitized {raw,expected} replay fixtures")
     ap.add_argument("--once", action="store_true",
                     help="one poll then exit (default: KeepAlive loop)")
+    ap.add_argument("--authorize", action="store_true",
+                    help="run the one-time OAuth consent flow to seed "
+                         "token.json, then exit (needs --client-secrets)")
+    ap.add_argument("--client-secrets",
+                    help="path to the Google Desktop OAuth client-secrets JSON "
+                         "(used with --authorize)")
+    ap.add_argument("--force", action="store_true",
+                    help="with --authorize, overwrite an existing token.json "
+                         "(REPLACES the stored refresh_token)")
     args = ap.parse_args(argv)
+
+    if args.authorize:
+        if not args.client_secrets:
+            print("--authorize requires --client-secrets <path>",
+                  file=sys.stderr)
+            return 2
+        try:
+            path = authorize(args.client_secrets, force=args.force)
+        except (connector.OAuthError, OSError, ValueError) as e:
+            # str(e) is our own message / a parse error — it never contains a
+            # secret (client_secret is never interpolated into any message).
+            print(f"authorization failed: {e}", file=sys.stderr)
+            return 1
+        print(f"authorized — token cache seeded at {path}", file=sys.stderr)
+        return 0
+
     c = GmailConnector(dry_run=args.dry_run, record=args.record,
                        log=lambda m: print(m, file=sys.stderr))
+
+    # OPTIONAL connector: with no token cache the owner simply hasn't connected
+    # Gmail. Emit ONE quiet not_configured heartbeat and exit 0 — never enter
+    # run_forever to spin-retry a consent only a human can perform.
+    if not c.token_path().exists():
+        c.poll_once()  # writes the not_configured heartbeat (no network)
+        print("Gmail not configured — run: bin/connectors/gmail.py "
+              "--authorize --client-secrets <path>", file=sys.stderr)
+        return 0
+
     if args.once or args.dry_run:
         result = c.poll_once()
         print(connector.json.dumps(result), file=sys.stderr)

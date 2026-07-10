@@ -53,12 +53,17 @@ no LLM, never closes a workspace.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
+import secrets
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -364,6 +369,213 @@ class OAuthTokenManager:
         if not tok.get("access_token") or self.is_expired(now):
             tok = self.refresh(now)
         return tok["access_token"]
+
+    def seed(self, token_dict: dict, *, force: bool = False) -> Path:
+        """Persist a FRESHLY-AUTHORIZED token cache (from the one-time consent
+        flow) through the very same atomic os.open(0600) writer the refresh path
+        uses — there is deliberately NO second secret-writing code path, so the
+        SEC3a/SEC3b hardening applies to the initial seed too. Refuses to
+        clobber an existing cache unless ``force``: a stray re-consent must never
+        silently overwrite (and thereby destroy) a working refresh_token."""
+        if not isinstance(token_dict, dict) or not token_dict.get("refresh_token"):
+            raise OAuthError("cannot seed a token cache without a refresh_token")
+        if self.token_path.exists() and not force:
+            raise OAuthError(
+                f"token cache already exists at {self.token_path} — pass "
+                "force=True to overwrite (this REPLACES the stored refresh_token)")
+        self._save(token_dict)
+        return self.token_path
+
+
+# ─── one-time installed-app consent flow (seeds the token cache) ─────────────
+#
+# WHY THIS LIVES IN THE BASE: OAuthTokenManager.refresh() can only run once a
+# token.json holding a refresh_token exists, but NOTHING in the repo created
+# that file — the Gmail connector documented "seeded once by an out-of-band
+# consent flow" that did not exist. This is that flow, owned by the base (design
+# section 9, Gmail row: "Full OAuth refresh-token flow owned by connector base")
+# so GCal/JIRA/any future refresh-token connector reuses ONE audited code path.
+#
+# It is Google's loopback "installed app" pattern: bind an ephemeral 127.0.0.1
+# port, send the browser to the consent screen with that loopback redirect_uri,
+# receive ?code= on the callback, and exchange it for {refresh,access}_token.
+# Both side-effect boundaries — the browser (open_url / code_getter) and the
+# token exchange (exchange_transport) — are dependency-injected, so the whole
+# flow is unit-provable with NO browser and NO network, exactly like the refresh
+# path's injectable transport. Stdlib only (urllib/http.server/webbrowser/
+# hashlib/base64/secrets); no google-auth.
+
+DEFAULT_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
+# How long the loopback server waits for the human to finish consent before it
+# gives up, so an abandoned flow can never wedge a terminal forever.
+DEFAULT_CONSENT_TIMEOUT_SEC = 180
+
+
+def _pkce_pair() -> tuple:
+    """A PKCE (RFC 7636) code_verifier + S256 code_challenge. Google's installed
+    apps support PKCE and reviewers expect it: it binds the authorization code
+    to THIS client so an intercepted code on the loopback interface is useless
+    without the verifier. base64url, no padding (the spec forbids '=')."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+class _LoopbackCodeGetter:
+    """Default `code_getter`: run a one-shot loopback HTTP server that receives
+    Google's redirect and returns (code, returned_state, redirect_uri). Binds
+    127.0.0.1:0 (an EPHEMERAL free port, never a fixed one that could collide or
+    be pre-claimed by another local process) and reads the OS-assigned port to
+    form the redirect_uri. Never logs the request line (it carries the code)."""
+
+    def __init__(self, *, timeout_sec: float = DEFAULT_CONSENT_TIMEOUT_SEC,
+                 open_url: Optional[Callable[[str], Any]] = None):
+        self._timeout = float(timeout_sec)
+        self._open_url = open_url if open_url is not None else webbrowser.open
+
+    def __call__(self, build_auth_url: Callable[[str], str], state: str) -> tuple:
+        import http.server
+
+        holder: dict = {}
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 (BaseHTTPRequestHandler API)
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                holder["code"] = (q.get("code") or [None])[0]
+                holder["state"] = (q.get("state") or [None])[0]
+                holder["error"] = (q.get("error") or [None])[0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h3>Authorization received.</h3>"
+                    b"<p>You may close this tab and return to the terminal."
+                    b"</p></body></html>")
+
+            def log_message(self, *_a):  # SILENCE: the request line holds ?code=
+                return
+
+        # 127.0.0.1 ONLY — never 0.0.0.0; the callback (and thus the code) must
+        # never be reachable off-host.
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        try:
+            port = server.server_address[1]
+            redirect_uri = f"http://127.0.0.1:{port}/"
+            auth_url = build_auth_url(redirect_uri)
+            # ALWAYS print the URL to stderr so a headless/SSH user (no browser
+            # to auto-open) can copy-paste it. This is the URL, never a secret.
+            print("Open this URL in a browser to authorize (must be the "
+                  "account owner):\n" + auth_url, file=sys.stderr)
+            try:
+                self._open_url(auth_url)
+            except Exception:  # noqa: BLE001 — headless: printing already covered
+                pass
+            deadline = time.time() + self._timeout
+            while "code" not in holder and "error" not in holder:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise OAuthError(
+                        "timed out waiting for the OAuth redirect — re-run and "
+                        "complete the consent screen within "
+                        f"{int(self._timeout)}s")
+                server.timeout = remaining
+                server.handle_request()  # one request or the timeout, bounded
+        finally:
+            server.server_close()
+        if holder.get("error"):
+            raise OAuthError(f"authorization denied: {holder['error']}")
+        return holder.get("code"), holder.get("state"), redirect_uri
+
+
+def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
+                           token_uri: str = DEFAULT_TOKEN_URI,
+                           auth_uri: str = DEFAULT_AUTH_URI,
+                           open_url: Optional[Callable[[str], Any]] = None,
+                           code_getter: Optional[Callable[..., tuple]] = None,
+                           exchange_transport: Optional[Callable[..., dict]] = None,
+                           timeout_sec: float = DEFAULT_CONSENT_TIMEOUT_SEC,
+                           now: Optional[float] = None) -> dict:
+    """Run the OAuth 2.0 installed-app authorization-code flow (loopback + PKCE)
+    and return a token dict ready for OAuthTokenManager.seed():
+    ``{client_id, client_secret, token_uri, refresh_token, access_token,
+    expiry_epoch, scopes}``.
+
+    ``code_getter(build_auth_url, state) -> (code, returned_state, redirect_uri)``
+    and ``exchange_transport(token_uri, form) -> resp_dict`` are BOTH injectable
+    so a unit test drives the entire flow with no browser and no network: inject
+    a code_getter returning a canned (code, state, redirect_uri) and an
+    exchange_transport returning canned tokens, then assert the token dict and
+    that OAuthTokenManager can load()/refresh() it. The defaults are the real
+    loopback server and the base's `_urllib_token_post`.
+    """
+    if not client_id or not client_secret:
+        raise OAuthError("client_id and client_secret are required to authorize")
+    scope_str = scopes if isinstance(scopes, str) else " ".join(scopes)
+    # PKCE verifier + a random state are minted here and closed over by
+    # build_auth_url so the consent URL, the CSRF check and the code exchange all
+    # agree on the same values.
+    verifier, challenge = _pkce_pair()
+    state = secrets.token_urlsafe(24)
+
+    def build_auth_url(redirect_uri: str) -> str:
+        # access_type=offline AND prompt=consent are BOTH required to GUARANTEE
+        # Google returns a refresh_token (offline alone is silently dropped on a
+        # re-consent — the classic footgun) rather than only an access token.
+        params = {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": scope_str,
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
+        return auth_uri + "?" + urllib.parse.urlencode(params)
+
+    getter = code_getter or _LoopbackCodeGetter(timeout_sec=timeout_sec,
+                                                open_url=open_url)
+    code, returned_state, redirect_uri = getter(build_auth_url, state)
+    # CSRF: a callback whose state does not match the one we minted is not our
+    # flow — abort rather than exchange an attacker-supplied code.
+    if returned_state != state:
+        raise OAuthError("state mismatch on the OAuth callback — possible CSRF; "
+                         "aborting without exchanging the code")
+    if not code:
+        raise OAuthError("no authorization code returned on the callback")
+
+    exchange = exchange_transport or _urllib_token_post
+    resp = exchange(token_uri, {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "code_verifier": verifier,
+    })
+    if not isinstance(resp, dict) or not resp.get("access_token"):
+        raise OAuthError("token endpoint returned no access_token")
+    if not resp.get("refresh_token"):
+        # The classic footgun: a re-consent that returns only an access token.
+        # Without a refresh_token the cache is useless the moment it expires.
+        raise OAuthError(
+            "token endpoint returned NO refresh_token — revoke this app's prior "
+            "grant at https://myaccount.google.com/permissions and re-run "
+            "(prompt=consent must issue a fresh refresh_token)")
+    now = now if now is not None else time.time()
+    expires_in = resp.get("expires_in")
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "token_uri": token_uri,
+        "refresh_token": resp["refresh_token"],
+        "access_token": resp["access_token"],
+        "expiry_epoch": now + (int(expires_in) if isinstance(
+            expires_in, (int, float)) else 3600),
+        "scopes": scope_str,
+    }
 
 
 # ─── the connector base ──────────────────────────────────────────────────────
