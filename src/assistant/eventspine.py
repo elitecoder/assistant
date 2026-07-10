@@ -12,23 +12,29 @@ promotion) can read and replay.
 
 Pipeline per inbox file — ordering is load-bearing for crash safety:
 
-    parse → archive raw copy → dedup → append events.jsonl → unlink
+    parse → dedup → archive raw copy → append events.jsonl → unlink
 
   - A file is NEVER unlinked before its content is safely elsewhere. Killed
     between archive and append? The inbox file is still there; the next drain
     reprocesses it (archive overwrite is idempotent, dedup is checked before
     append). Killed between append and unlink? The next drain sees the id in
     the dedup set (the index PLUS a tail scan of events.jsonl, which catches
-    an append whose index write never landed) and just unlinks.
+    an append whose index write never landed) and just unlinks. A duplicate's
+    content is already in events.jsonl by definition, so duplicates are
+    unlinked without archiving — raw/ never accumulates dedup copies, and
+    raw/<day>/ dirs older than RAW_RETENTION_DAYS are pruned each drain.
   - Malformed files are MOVED to a quarantine dir and ledgered — they never
     crash the pulse and never silently vanish.
   - Dedup key: sha256(source + ":" + external_id), retained 30 days.
 
 Fleet-as-connector (connector #0, no producer changes):
   - cmux-watcher signal drops (`{event: "workspace_signal", ...}`) →
-    external_id `cmux:<ws_ref>:<signal>:<ts-bucket>` (10-min bucket, wider
-    than the watcher's 120s re-ping cooldown, so a still-blocked workspace
-    is one event per bucket, not a ping storm).
+    external_id `cmux:<ws_ref>:<signal>:<ts-bucket>:<content-hash>`. The
+    10-min bucket collapses identical re-pings for one blocked state; the
+    content hash (pattern + snippet) keeps two genuinely different signals
+    in the same bucket distinct — the watcher is edge-triggered, so a
+    swallowed signal is never re-sent. A null ws_ref keeps the drop filename
+    stem in the id so distinct unresolved workspaces never collapse.
   - Orphaned ~/.claude/cmux-crash-events/*.json drops from workspace-watcher
     → external_id `cmux:<ws_ref>:closed:<epoch>`. We do NOT own that dir
     (workspace-watcher writes it, the dashboard reads it), so those files are
@@ -37,10 +43,12 @@ Fleet-as-connector (connector #0, no producer changes):
     an old file.
   - Already-normalized `world-event/1` drops (future connectors) pass through.
 
-Exactly one consumer: `drain_typed_inbox` takes a pid-checked lockfile
-(O_CREAT|O_EXCL). A lock whose pid is dead is reclaimed via rename — only one
-contender's rename can succeed, so two processes can't both steal a stale
-lock. If the lock is held by a live pid the drain is skipped, never blocked.
+Exactly one consumer: `drain_typed_inbox` holds fcntl.flock(LOCK_EX|LOCK_NB)
+on a persistent lock file. The kernel releases the lock the instant the
+holder dies (including SIGKILL), so there is no pid heuristic, no staleness
+window, and no reclaim path to race. The lock file's {pid, ts} content is
+observability only — the kernel lock is the sole authority. If another live
+consumer holds it the drain is skipped, never blocked.
 
 Paths are computed per-call (not module constants) so tests that point $HOME
 at a tmp dir see fresh paths even when this module stays cached in
@@ -48,6 +56,7 @@ sys.modules. Pure stdlib, no LLM, never closes workspaces.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -66,8 +75,18 @@ DEDUP_RETENTION_SEC = 30 * 86400
 
 # ts-bucket width for cmux workspace signals. Must exceed cmux-watcher's
 # 120s per-(ws, signal) cooldown so repeated pings for the same blocked state
-# collapse into one WorldEvent instead of one per ping.
+# collapse into one WorldEvent instead of one per ping. Distinct signals in
+# the same bucket stay distinct via the content hash in the external_id.
 SIGNAL_TS_BUCKET_SEC = 600
+
+# raw/<YYYY-MM-DD>/ archive dirs older than this are pruned each drain.
+RAW_RETENTION_DAYS = 30
+
+# A crash-event drop that fails to parse is skipped SILENTLY while younger
+# than this — workspace-watcher rewrites those files non-atomically, so a
+# fresh JSONDecodeError is usually a healthy file caught mid-write. Only a
+# persistently-unparseable (old) file earns its once-ledger row.
+CRASH_SKIP_GRACE_SEC = 120
 
 # Snippet cap from the world-event/1 store schema (≤2KB).
 SNIPPET_MAX_CHARS = 2048
@@ -162,10 +181,20 @@ def _append_ledger(entry: dict) -> None:
 
 def _append_event(path: Path, event: dict) -> None:
     """Append one WorldEvent row. Module-level (not inlined) so tests can
-    inject a failure between archive and append to prove replay safety."""
+    inject a failure between archive and append to prove replay safety.
+
+    Repairs a torn tail first: a crash mid-append can leave a partial line
+    with no trailing newline; appending straight onto it would glue two rows
+    together, making BOTH unreadable (and invisible to the tail-scan dedup).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
-        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    with open(path, "a+b") as f:  # a+: writes always append, reads may seek
+        f.seek(0, os.SEEK_END)
+        if f.tell() > 0:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+        f.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
 # ─── normalization ──────────────────────────────────────────────────────────
@@ -225,12 +254,23 @@ def normalize_inbox_item(name: str, data, received_epoch: float) -> dict:
         ts_epoch = parse_iso(data.get("ts")) or received_epoch
         bucket = int(ts_epoch) // SIGNAL_TS_BUCKET_SEC
         pattern = data.get("pattern_matched") or ""
+        snippet = data.get("screen_snippet") or ""
+        # Content hash: identical re-pings (same pattern + screen) in one
+        # bucket still collapse, but two genuinely different signals in the
+        # same bucket (e.g. two different questions 8 min apart) stay
+        # distinct. The producer is edge-triggered — it never re-sends a
+        # signal the bucket swallowed, so over-dedup here loses events.
+        content_h = hashlib.sha256(
+            f"{pattern}\n{snippet}".encode("utf-8", "replace")).hexdigest()[:12]
+        # An unresolved ws_ref must not collapse different workspaces into
+        # one "unknown" identity — key those on the drop filename instead.
+        id_ws = ws_ref if data.get("ws_ref") else f"unknown/{Path(name).stem}"
         refs = {"ws_ref": ws_ref} if ws_ref != "unknown" else {}
         return _base_event(
             ts_epoch=ts_epoch, source="cmux", kind=signal,
-            external_id=f"cmux:{ws_ref}:{signal}:{bucket}",
+            external_id=f"cmux:{id_ws}:{signal}:{bucket}:{content_h}",
             title=f"{ws_ref} {signal}" + (f" ({pattern})" if pattern else ""),
-            snippet=data.get("screen_snippet") or "", refs=refs,
+            snippet=snippet, refs=refs,
         )
 
     # Legacy wake-up ping (`pulse-*.json`). No live producer writes these any
@@ -259,8 +299,14 @@ def normalize_crash_event(path: Path, data) -> dict:
         raise ValueError("crash event is not a JSON object")
     ws_ref = data.get("workspace_ref") or "workspace:?"
     m = _CRASH_NAME_EPOCH_RE.search(path.name)
-    ts_epoch = float(m.group(1)) if m else (
-        parse_iso(data.get("died_at")) or time.time())
+    ts_epoch = float(m.group(1)) if m else parse_iso(data.get("died_at"))
+    if ts_epoch is None:
+        # No filename epoch AND no parseable died_at: there is no stable
+        # identity to mint. A time.time() fallback would create a fresh id
+        # (= one duplicate row) EVERY drain, forever. Raise so the caller
+        # routes the file to the ledger-once skip path instead.
+        raise ValueError("crash event has no filename epoch or died_at "
+                         "(no stable identity)")
     cause = data.get("cause") or "unknown"
     resume = data.get("resume") or {}
     refs = {"ws_ref": ws_ref} if "?" not in ws_ref else {}
@@ -328,68 +374,58 @@ def _recent_event_ids(path: Path, max_bytes: int = EVENTS_TAIL_BYTES) -> set:
 
 
 # ─── consumer lock ──────────────────────────────────────────────────────────
+#
+# fcntl.flock on a persistent lock file. The kernel owns liveness: the lock
+# vanishes with the holder's fd on ANY death (clean exit, crash, SIGKILL), so
+# there is no pid heuristic to fool (pid reuse) and no reclaim path to race
+# (the old O_EXCL + pid-check + rename scheme let a contender steal a LIVE
+# lock between its pid check and its rename). The file itself is never
+# unlinked — unlink would let two contenders lock two different inodes of the
+# same path. Its {pid, ts} content is observability only.
 
-def _pid_alive(pid) -> bool:
-    """True iff pid plausibly belongs to a live process. Unknown/permission
-    cases count as alive — we only reclaim a lock on positive evidence of
-    death, never on uncertainty."""
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except (PermissionError, OverflowError):
-        return True
-    return True
-
-
-def _read_lock_pid(path: Path):
-    try:
-        return json.loads(path.read_text()).get("pid")
-    except (OSError, json.JSONDecodeError, ValueError, AttributeError):
-        return None
+_lock_fd: int | None = None  # held open (and flocked) while we own the lock
 
 
 def acquire_consumer_lock() -> bool:
-    """Take the single-consumer lock. Returns False when a live consumer
-    holds it. A lock left by a dead pid (crashed drain) is reclaimed: we
-    rename it aside first — os.rename on an already-stolen path raises, so
-    exactly one of two simultaneous reclaimers wins; the loser loops back to
-    O_EXCL and finds the winner's fresh, live lock."""
+    """Take the single-consumer lock. Returns False when another live
+    consumer holds it — never blocks, never steals."""
+    global _lock_fd
     path = lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    for _ in range(2):
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            pid = _read_lock_pid(path)
-            if _pid_alive(pid):
-                return False
-            grave = f"{path}.stale.{os.getpid()}"
-            try:
-                os.rename(str(path), grave)
-            except OSError:
-                continue  # another contender reclaimed first; retry O_EXCL
-            try:
-                os.unlink(grave)
-            except OSError:
-                pass
-            continue
-        with os.fdopen(fd, "w") as f:
-            json.dump({"pid": os.getpid(), "ts": utc_iso(time.time())}, f)
-        return True
-    return False
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    try:  # who-holds-it breadcrumb; the kernel lock is the authority
+        os.ftruncate(fd, 0)
+        os.write(fd, json.dumps(
+            {"pid": os.getpid(), "ts": utc_iso(time.time())}).encode())
+    except OSError:
+        pass
+    _lock_fd = fd
+    return True
 
 
 def release_consumer_lock() -> None:
-    """Release only a lock we own — never clobber another consumer's."""
-    path = lock_path()
-    if _read_lock_pid(path) == os.getpid():
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    """Drop the flock we hold (no-op when we don't). The lock file stays —
+    only the kernel lock is released."""
+    global _lock_fd
+    if _lock_fd is None:
+        return
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(_lock_fd)
+    except OSError:
+        pass
+    _lock_fd = None
 
 
 # ─── the drain ──────────────────────────────────────────────────────────────
@@ -418,6 +454,7 @@ def drain_typed_inbox(pulse_idx: int = 0, log=None, now=None) -> dict:
         _drain_inbox_files(summary, index, seen, pulse_idx, now, log)
         _drain_crash_events(summary, index, seen, pulse_idx, now, log)
         _write_dedup_index(index)
+        _prune_raw_archive(now, log)
     finally:
         release_consumer_lock()
     return summary
@@ -433,15 +470,51 @@ def _archive_raw(src: Path, now: float) -> Path:
     return dst
 
 
-def _quarantine(src: Path, err: str, pulse_idx: int, now: float, log) -> None:
+_RAW_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _prune_raw_archive(now: float, log) -> None:
+    """Delete raw/<YYYY-MM-DD>/ day dirs older than RAW_RETENTION_DAYS.
+    Cheap lexicographic dirname compare (the names are ISO dates); raw/ is a
+    crash-forensics buffer, not a permanent archive."""
+    root = raw_archive_dir()
+    if not root.is_dir():
+        return
+    cutoff = utc_iso(now - RAW_RETENTION_DAYS * 86400)[:10]
+    for d in root.iterdir():
+        if d.is_dir() and _RAW_DAY_RE.match(d.name) and d.name < cutoff:
+            try:
+                shutil.rmtree(str(d))
+            except OSError as e:
+                log.warning("eventspine: raw-archive prune of %s failed: %s",
+                            d.name, e)
+
+
+def _quarantine(src: Path, err: str, pulse_idx: int, now: float, log) -> bool:
+    """Move a malformed drop to quarantine + ledger it. Returns False when
+    even the copy-fallback failed (file left in the inbox for the next
+    drain) — a quarantine failure must never abort the whole drain."""
     qdir = quarantine_dir()
     qdir.mkdir(parents=True, exist_ok=True)
     dst = qdir / f"{int(now)}-{src.name}"
     try:
         os.replace(str(src), str(dst))
     except OSError:
-        shutil.copy2(str(src), str(dst))
-        src.unlink()
+        try:
+            shutil.copy2(str(src), str(dst))
+            src.unlink()
+        except OSError as e2:
+            _append_ledger({
+                "ts": utc_iso(now), "epoch": int(now), "pulse_idx": pulse_idx,
+                "key": f"eventspine-quarantine-{src.name}",
+                "kind": "eventspine-quarantine", "ws_ref": "(inbox)",
+                "outcome": "failed",
+                "evidence": f"quarantine of {src.name} itself failed "
+                            f"(left in inbox): {str(e2)[:200]}",
+            })
+            log.warning("eventspine: quarantine of %s failed (left in "
+                        "inbox): %s", src.name, e2)
+            return False
     _append_ledger({
         "ts": utc_iso(now), "epoch": int(now), "pulse_idx": pulse_idx,
         "key": f"eventspine-quarantine-{src.name}",
@@ -450,6 +523,7 @@ def _quarantine(src: Path, err: str, pulse_idx: int, now: float, log) -> None:
         "evidence": f"quarantined {src.name} → {dst}: {err[:200]}",
     })
     log.warning("eventspine: quarantined %s: %s", src.name, err)
+    return True
 
 
 def _drain_inbox_files(summary: dict, index: dict, seen: set,
@@ -462,8 +536,10 @@ def _drain_inbox_files(summary: dict, index: dict, seen: set,
             data = json.loads(p.read_text())
             event = normalize_inbox_item(p.name, data, received_epoch=now)
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
-            _quarantine(p, str(e), pulse_idx, now, log)
-            summary["inbox_quarantined"] += 1
+            if _quarantine(p, str(e), pulse_idx, now, log):
+                summary["inbox_quarantined"] += 1
+            else:
+                summary["inbox_deferred"] += 1
             continue
         except OSError as e:
             # Read failure (vanished mid-drain, permissions): leave in place.
@@ -471,16 +547,25 @@ def _drain_inbox_files(summary: dict, index: dict, seen: set,
             summary["inbox_deferred"] += 1
             continue
         try:
-            event["raw_path"] = str(_archive_raw(p, now))
             if event["id"] in seen:
+                # Refresh the index even on a duplicate sighting: a mid-drain
+                # crash may have left this id protected only by the 512KB
+                # tail scan, and never-unlinked producers re-drop after tail
+                # rollover — the refresh restores the 30-day protection.
+                index[event["id"]] = now
+                # Content already lives in events.jsonl (that is what a
+                # duplicate id means) — dispose without archiving so raw/
+                # never accumulates dedup copies.
+                p.unlink()
                 summary["inbox_duplicates"] += 1
             else:
+                event["raw_path"] = str(_archive_raw(p, now))
                 _append_event(events_path(), event)
                 seen.add(event["id"])
                 index[event["id"]] = now
                 summary["events_appended"] += 1
                 summary["inbox_consumed"] += 1
-            p.unlink()
+                p.unlink()
         except OSError as e:
             # Archive/append/unlink failed on a well-formed item. The inbox
             # file stays; dedup makes the next pulse's retry safe.
@@ -504,6 +589,15 @@ def _drain_crash_events(summary: dict, index: dict, seen: set,
         try:
             event = normalize_crash_event(p, json.loads(p.read_text()))
         except (ValueError, json.JSONDecodeError, OSError) as e:
+            # workspace-watcher rewrites these files non-atomically, so a
+            # parse failure on a FRESH file is usually a healthy file caught
+            # mid-write: skip silently and retry next pulse. Only a
+            # persistently-broken file earns its once-ledger row.
+            try:
+                if now - p.stat().st_mtime < CRASH_SKIP_GRACE_SEC:
+                    continue
+            except OSError:
+                continue
             # Not ours to move — ledger once (keyed into the dedup index so
             # a broken file doesn't re-ledger every pulse) and skip.
             skip_id = event_id("cmux-crash-skip", p.name)
@@ -523,6 +617,12 @@ def _drain_crash_events(summary: dict, index: dict, seen: set,
                             p.name, e)
             continue
         if event["id"] in seen:
+            # Refresh the index on every duplicate sighting: crash files are
+            # never unlinked, so once the row rolls out of the events.jsonl
+            # tail window only the index stands between this file and a
+            # duplicate append — and workspace-watcher keeps bumping the
+            # file's mtime past any first-seen boundary.
+            index[event["id"]] = now
             continue
         try:
             _append_event(events_path(), event)

@@ -54,6 +54,7 @@ class SpineTestCase(unittest.TestCase):
         self.inbox.mkdir(parents=True)
 
     def tearDown(self):
+        eventspine.release_consumer_lock()  # never leak a held flock across tests
         if self._old_home is not None:
             os.environ["HOME"] = self._old_home
         self._tmp_obj.cleanup()
@@ -63,7 +64,8 @@ class SpineTestCase(unittest.TestCase):
     def drop_signal(self, name="cmux-workspace-7-a.json", ws_ref="workspace:7",
                     signal="needs_input", ts="2026-07-09T12:00:00Z",
                     pattern="Notification", snippet="approve?") -> Path:
-        """A cmux-watcher-shaped inbox drop (the real producer's schema)."""
+        """A cmux-watcher-shaped inbox drop (the real producer's schema).
+        ws_ref=None mirrors the watcher's unresolved-workspace drops."""
         p = self.inbox / name
         p.write_text(json.dumps({
             "ts": ts, "event": "workspace_signal", "ws_ref": ws_ref,
@@ -104,6 +106,33 @@ class NormalizeTests(SpineTestCase):
         self.assertNotEqual(a["external_id"], c["external_id"])
         self.assertTrue(a["external_id"].startswith(
             "cmux:workspace:3:needs_input:"))
+
+    def test_distinct_content_same_bucket_stays_distinct(self):
+        # Two genuinely different signals 8 min apart share the ts bucket but
+        # differ in content → different external_ids. The watcher is
+        # edge-triggered: a swallowed signal is never re-sent, so bucket-only
+        # dedup would lose the second question forever.
+        base = {"event": "workspace_signal", "ws_ref": "workspace:3",
+                "signal_type": "needs_input", "pattern_matched": "Notification"}
+        a = eventspine.normalize_inbox_item(
+            "a.json", dict(base, ts="2026-07-09T12:01:00Z",
+                           screen_snippet="Question ONE?"), 0)
+        b = eventspine.normalize_inbox_item(
+            "b.json", dict(base, ts="2026-07-09T12:09:00Z",
+                           screen_snippet="Question TWO (different!)"), 0)
+        self.assertNotEqual(a["external_id"], b["external_id"])
+
+    def test_null_ws_ref_drops_do_not_collapse(self):
+        # Two unresolved-workspace drops must not fuse into one "unknown"
+        # identity — the filename stem keeps them apart.
+        base = {"event": "workspace_signal", "ws_ref": None,
+                "signal_type": "needs_input", "screen_snippet": "same"}
+        a = eventspine.normalize_inbox_item(
+            "cmux-unknown-1.json", dict(base, ts="2026-07-09T12:01:00Z"), 0)
+        b = eventspine.normalize_inbox_item(
+            "cmux-unknown-2.json", dict(base, ts="2026-07-09T12:02:00Z"), 0)
+        self.assertNotEqual(a["external_id"], b["external_id"])
+        self.assertIn("cmux-unknown-1", a["external_id"])
 
     def test_id_is_sha256_of_source_and_external_id(self):
         ev = eventspine.normalize_inbox_item(
@@ -147,6 +176,15 @@ class NormalizeTests(SpineTestCase):
         self.assertEqual(ev["external_id"], "cmux:workspace:5:closed:1712345678")
         self.assertEqual(ev["kind"], "workspace_closed")
         self.assertEqual(ev["refs"], {"ws_ref": "workspace:5"})
+
+    def test_crash_event_without_identity_raises(self):
+        # No filename epoch AND no parseable died_at → no stable identity.
+        # Minting time.time() here meant one duplicate row per drain forever;
+        # the caller must route these to the ledger-once skip path instead.
+        with self.assertRaises(ValueError):
+            eventspine.normalize_crash_event(
+                Path("/x/workspace-9.json"),
+                {"workspace_ref": "workspace:9", "cause": "crash"})
 
 
 # ─── the drain: well-formed / malformed / duplicate / legacy ────────────────
@@ -192,8 +230,8 @@ class DrainTests(SpineTestCase):
         self.assertEqual(len(self.ledger_rows("eventspine-quarantine")), 2)
 
     def test_duplicate_external_id_yields_single_row(self):
-        # Same ws/signal/ts-bucket dropped twice (watcher re-ping) → one row,
-        # both files disposed of.
+        # Same ws/signal/ts-bucket AND same content dropped twice (watcher
+        # re-ping of one blocked state) → one row, both files disposed of.
         a = self.drop_signal(name="cmux-a.json", ts="2026-07-09T12:00:01Z")
         b = self.drop_signal(name="cmux-b.json", ts="2026-07-09T12:01:30Z")
         s = eventspine.drain_typed_inbox()
@@ -203,16 +241,106 @@ class DrainTests(SpineTestCase):
         self.assertFalse(b.exists())
         self.assertEqual(len(self.events()), 1)
 
+    def test_distinct_signals_in_one_bucket_both_consumed(self):
+        # Two different questions 8 min apart (same 10-min bucket) → 2 rows.
+        self.drop_signal(name="cmux-a.json", ts="2026-07-09T12:01:00Z",
+                         snippet="Question ONE?")
+        self.drop_signal(name="cmux-b.json", ts="2026-07-09T12:09:00Z",
+                         snippet="Question TWO (different!)")
+        s = eventspine.drain_typed_inbox()
+        self.assertEqual(s["events_appended"], 2)
+        self.assertEqual(s["inbox_duplicates"], 0)
+        self.assertEqual(len(self.events()), 2)
+
+    def test_null_ws_ref_distinct_files_both_consumed(self):
+        self.drop_signal(name="cmux-unknown-a.json", ws_ref=None,
+                         ts="2026-07-09T12:01:00Z")
+        self.drop_signal(name="cmux-unknown-b.json", ws_ref=None,
+                         ts="2026-07-09T12:02:00Z")
+        s = eventspine.drain_typed_inbox()
+        self.assertEqual(s["events_appended"], 2)
+
     def test_duplicate_detected_across_drains_without_index(self):
         # Crash window: row appended but the dedup-index write never landed.
-        # The tail scan of events.jsonl must still catch the replay.
+        # The tail scan of events.jsonl must still catch the replay — and the
+        # duplicate sighting must BACKFILL the index, so the id is protected
+        # by the full 30-day memory again, not just the 512KB tail window.
         self.drop_signal(name="cmux-a.json")
         eventspine.drain_typed_inbox()
+        ev_id = self.events()[0]["id"]
         eventspine.dedup_index_path().unlink()
-        self.drop_signal(name="cmux-a2.json")  # same bucket → same id
+        self.drop_signal(name="cmux-a2.json")  # same bucket+content → same id
         s = eventspine.drain_typed_inbox()
         self.assertEqual(s["inbox_duplicates"], 1)
         self.assertEqual(len(self.events()), 1)
+        index = json.loads(eventspine.dedup_index_path().read_text())
+        self.assertIn(ev_id, index, "duplicate sighting must refresh the index")
+
+    def test_torn_tail_repaired_before_append(self):
+        # A crash mid-append leaves a partial line without a newline. The next
+        # append must repair it, not glue on and corrupt both rows.
+        ev_path = self.home / ".assistant/events.jsonl"
+        ev_path.write_text('{"schema":"world-event/1","id":"aaaa')  # torn
+        self.drop_signal()
+        s = eventspine.drain_typed_inbox()
+        self.assertEqual(s["events_appended"], 1)
+        lines = ev_path.read_text().splitlines()
+        self.assertEqual(len(lines), 2, "repair newline must separate the rows")
+        new_row = json.loads(lines[1])  # parses → not glued to the torn tail
+        self.assertEqual(new_row["kind"], "needs_input")
+        # …and the tail-scan dedup can see the new id again.
+        self.assertIn(new_row["id"], eventspine._recent_event_ids(ev_path))
+
+    def test_quarantine_failure_defers_file_and_drain_continues(self):
+        # If quarantining itself fails (move AND copy fallback), the drain
+        # must ledger it and keep going — never abort on the except path.
+        bad = self.inbox / "cmux-broken.json"
+        bad.write_text("{ not json at all")
+        good = self.drop_signal()
+        real_replace, real_copy2 = os.replace, eventspine.shutil.copy2
+
+        def replace_fails_for_quarantine(src, dst, *a, **k):
+            if "quarantine" in str(dst):
+                raise OSError("simulated EXDEV")
+            return real_replace(src, dst, *a, **k)
+
+        def copy2_fails_for_quarantine(src, dst, *a, **k):
+            if "quarantine" in str(dst):
+                raise OSError("simulated ENOSPC")
+            return real_copy2(src, dst, *a, **k)
+
+        with mock.patch.object(eventspine.os, "replace",
+                               side_effect=replace_fails_for_quarantine), \
+             mock.patch.object(eventspine.shutil, "copy2",
+                               side_effect=copy2_fails_for_quarantine):
+            s = eventspine.drain_typed_inbox()
+        self.assertEqual(s["events_appended"], 1, "good drop still consumed")
+        self.assertEqual(s["inbox_quarantined"], 0)
+        self.assertEqual(s["inbox_deferred"], 1)
+        self.assertTrue(bad.exists(), "unquarantinable file left for retry")
+        self.assertFalse(good.exists())
+        self.assertEqual(len(self.ledger_rows("eventspine-quarantine")), 1)
+
+    def test_duplicate_drop_is_not_archived(self):
+        # raw/ must not accumulate copies of dedup-duplicates.
+        self.drop_signal(name="cmux-a.json")
+        eventspine.drain_typed_inbox()
+        self.drop_signal(name="cmux-b.json")  # same id (bucket+content)
+        s = eventspine.drain_typed_inbox()
+        self.assertEqual(s["inbox_duplicates"], 1)
+        archived = [p.name for p in eventspine.raw_archive_dir().rglob("*.json")]
+        self.assertIn("cmux-a.json", archived)
+        self.assertNotIn("cmux-b.json", archived)
+
+    def test_raw_archive_day_dirs_pruned_after_30_days(self):
+        old_dir = eventspine.raw_archive_dir() / "2020-01-01"
+        old_dir.mkdir(parents=True)
+        (old_dir / "x.json").write_text("{}")
+        self.drop_signal()
+        eventspine.drain_typed_inbox()
+        self.assertFalse(old_dir.exists(), "expired raw day dir must be pruned")
+        # Today's archive (just written by this drain) survives.
+        self.assertTrue(any(eventspine.raw_archive_dir().rglob("*.json")))
 
     def test_legacy_pulse_ping_drained(self):
         p = self.inbox / "pulse-1751234567.json"
@@ -251,10 +379,35 @@ class ReplaySafetyTests(SpineTestCase):
 
 # ─── consumer lock ──────────────────────────────────────────────────────────
 
+# Child process that takes the flock via the real acquire path, reports, and
+# (optionally) holds it until killed. argv: <src-path> [hold]
+_LOCK_CHILD = """\
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from assistant import eventspine
+ok = eventspine.acquire_consumer_lock()
+print(json.dumps({"acquired": ok, "pid": os.getpid()}), flush=True)
+if ok and "hold" in sys.argv[2:]:
+    time.sleep(60)
+"""
+
+
 class LockTests(SpineTestCase):
+    """The consumer lock is fcntl.flock on a persistent fd: the kernel
+    releases it on ANY holder death (SIGKILL included), so there is no pid
+    heuristic to fool and no reclaim path for two contenders to race."""
+
+    def spawn_holder(self, *args):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _LOCK_CHILD, str(REPO / "src"), *args],
+            stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.kill)
+        line = json.loads(proc.stdout.readline())
+        return proc, line
+
     def test_two_consumers_armed_exactly_one_drains(self):
         p = self.drop_signal()
-        # Consumer A holds the lock (live pid — our own).
+        # Consumer A holds the lock (this process).
         self.assertTrue(eventspine.acquire_consumer_lock())
         # Consumer B arms and must yield: nothing consumed, inbox untouched.
         s = eventspine.drain_typed_inbox()
@@ -274,35 +427,60 @@ class LockTests(SpineTestCase):
         finally:
             eventspine.release_consumer_lock()
 
-    def test_stale_lock_from_dead_pid_is_reclaimed(self):
-        proc = subprocess.Popen([sys.executable, "-c", "pass"])
-        proc.wait()  # reaped → the pid is positively dead
-        lock = eventspine.lock_path()
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        lock.write_text(json.dumps({"pid": proc.pid, "ts": "x"}))
+    def test_two_contenders_exactly_one_wins(self):
+        proc, info = self.spawn_holder("hold")
+        self.assertTrue(info["acquired"])
+        # A live holder in another process → we must lose, without stealing.
+        self.assertFalse(eventspine.acquire_consumer_lock())
+        s = eventspine.drain_typed_inbox()
+        self.assertTrue(s["locked"])
+
+    def test_clean_holder_exit_releases_lock(self):
+        proc, info = self.spawn_holder()  # acquires, prints, exits
+        self.assertTrue(info["acquired"])
+        proc.wait()
         p = self.drop_signal()
         s = eventspine.drain_typed_inbox()
         self.assertFalse(s["locked"])
         self.assertEqual(s["events_appended"], 1)
         self.assertFalse(p.exists())
-        # Lock released after the drain.
-        self.assertFalse(lock.exists())
 
-    def test_garbage_lock_content_is_reclaimed(self):
+    def test_sigkilled_holder_releases_lock(self):
+        # The kernel drops the flock the instant the holder dies — a SIGKILLed
+        # drain can never stall the spine (the old pid-file scheme could,
+        # forever, when the dead pid got recycled to a long-lived process).
+        proc, info = self.spawn_holder("hold")
+        self.assertTrue(info["acquired"])
+        self.assertFalse(eventspine.acquire_consumer_lock())
+        proc.kill()  # SIGKILL: no cleanup code runs in the child
+        proc.wait()
+        p = self.drop_signal()
+        s = eventspine.drain_typed_inbox()
+        self.assertFalse(s["locked"])
+        self.assertEqual(s["events_appended"], 1)
+        self.assertFalse(p.exists())
+
+    def test_lock_file_content_is_observability_only(self):
+        # Garbage content / a scary-looking live pid in the file mean nothing:
+        # only the kernel flock decides. No content can wedge the spine.
         lock = eventspine.lock_path()
         lock.parent.mkdir(parents=True, exist_ok=True)
-        lock.write_text("not json")
+        lock.write_text(json.dumps({"pid": 1, "ts": "2026-06-01T00:00:00Z"}))
         self.drop_signal()
         s = eventspine.drain_typed_inbox()
         self.assertFalse(s["locked"])
         self.assertEqual(s["events_appended"], 1)
+        lock.write_text("not json")
+        self.drop_signal(name="cmux-second.json", ts="2026-07-09T13:00:00Z")
+        s2 = eventspine.drain_typed_inbox()
+        self.assertFalse(s2["locked"])
 
-    def test_release_never_clobbers_another_consumers_lock(self):
-        lock = eventspine.lock_path()
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        lock.write_text(json.dumps({"pid": 1, "ts": "x"}))  # launchd: alive
-        eventspine.release_consumer_lock()
-        self.assertTrue(lock.exists())
+    def test_release_without_ownership_never_disturbs_holder(self):
+        proc, info = self.spawn_holder("hold")
+        self.assertTrue(info["acquired"])
+        eventspine.release_consumer_lock()  # we hold nothing — must be a no-op
+        self.assertFalse(eventspine.acquire_consumer_lock())
+        self.assertTrue(eventspine.lock_path().exists())
 
 
 # ─── fleet-as-connector: orphaned crash events ──────────────────────────────
@@ -332,16 +510,73 @@ class CrashEventTests(SpineTestCase):
         self.assertEqual(s2["crash_appended"], 0)
         self.assertEqual(len(self.events()), 1)
 
+    def age_file(self, p: Path, sec: float) -> None:
+        old = time.time() - sec
+        os.utime(p, (old, old))
+
     def test_malformed_crash_event_ledgered_once_and_left_in_place(self):
         cdir = self.home / ".claude/cmux-crash-events"
         cdir.mkdir(parents=True, exist_ok=True)
         bad = cdir / "workspace-9-1712345679.json"
         bad.write_text("{ broken")
+        self.age_file(bad, eventspine.CRASH_SKIP_GRACE_SEC + 60)  # persistent
         eventspine.drain_typed_inbox()
         eventspine.drain_typed_inbox()
         self.assertTrue(bad.exists())
         # One ledger row, not one per pulse.
         self.assertEqual(len(self.ledger_rows("eventspine-crash-skip")), 1)
+
+    def test_fresh_unparseable_crash_file_skipped_silently(self):
+        # workspace-watcher rewrites these files non-atomically: a fresh
+        # parse failure is usually a healthy file caught mid-write. No
+        # ledger noise until it stays broken past the grace window.
+        cdir = self.home / ".claude/cmux-crash-events"
+        cdir.mkdir(parents=True, exist_ok=True)
+        bad = cdir / "workspace-9-1712345679.json"
+        bad.write_text("{ mid-rewrite")
+        s = eventspine.drain_typed_inbox()
+        self.assertEqual(s["crash_appended"], 0)
+        self.assertEqual(self.ledger_rows("eventspine-crash-skip"), [])
+        # Still broken after the grace window → NOW it earns its one row.
+        self.age_file(bad, eventspine.CRASH_SKIP_GRACE_SEC + 60)
+        eventspine.drain_typed_inbox()
+        self.assertEqual(len(self.ledger_rows("eventspine-crash-skip")), 1)
+
+    def test_crash_file_without_identity_never_mints_time_ids(self):
+        # No filename epoch, no died_at → previously a fresh time.time()
+        # identity per drain = one duplicate row per pulse, forever.
+        cdir = self.home / ".claude/cmux-crash-events"
+        cdir.mkdir(parents=True, exist_ok=True)
+        p = cdir / "workspace-9.json"
+        p.write_text(json.dumps({"workspace_ref": "workspace:9",
+                                 "cause": "crash"}))
+        self.age_file(p, eventspine.CRASH_SKIP_GRACE_SEC + 60)
+        for _ in range(3):
+            s = eventspine.drain_typed_inbox()
+            self.assertEqual(s["crash_appended"], 0)
+        self.assertEqual(self.events(), [])
+        self.assertTrue(p.exists())
+        # Ledgered once via the skip path — visible, but never a row storm.
+        self.assertEqual(len(self.ledger_rows("eventspine-crash-skip")), 1)
+
+    def test_duplicate_crash_sighting_backfills_index(self):
+        # Crash files are never unlinked: once the row leaves the events tail
+        # window, only the index protects against a re-append. A duplicate
+        # sighting must therefore refresh the index entry.
+        self.crash_drop()
+        eventspine.drain_typed_inbox()
+        ev_id = self.events()[0]["id"]
+        eventspine.dedup_index_path().unlink()  # index write "never landed"
+        s2 = eventspine.drain_typed_inbox()  # tail scan catches the dup…
+        self.assertEqual(s2["crash_appended"], 0)
+        index = json.loads(eventspine.dedup_index_path().read_text())
+        self.assertIn(ev_id, index, "…and must backfill the index")
+        # Even with the tail scan blinded (rollover), no duplicate row.
+        with mock.patch.object(eventspine, "_recent_event_ids",
+                               return_value=set()):
+            s3 = eventspine.drain_typed_inbox()
+        self.assertEqual(s3["crash_appended"], 0)
+        self.assertEqual(len(self.events()), 1)
 
     def test_crash_events_older_than_dedup_window_are_skipped(self):
         p = self.crash_drop()
@@ -402,9 +637,10 @@ class PickWsBatchPromotionTests(unittest.TestCase):
     def test_event_priority_beats_lru(self):
         # ws:2 was observed most recently (last in LRU order), but it carries
         # a WorldEvent newer than its summary → it jumps the queue.
-        self.seed_summary("workspace:1", 1000)
-        self.seed_summary("workspace:2", 2000)
-        self.seed_event("workspace:2", 3000)
+        now = int(time.time())
+        self.seed_summary("workspace:1", now - 3600)
+        self.seed_summary("workspace:2", now - 1800)
+        self.seed_event("workspace:2", now - 60)
         out = self.run_main(self.WS)
         refs = [w["ref"] for w in out["to_reclassify"]]
         self.assertEqual(refs, ["workspace:2", "workspace:1"])
@@ -414,12 +650,74 @@ class PickWsBatchPromotionTests(unittest.TestCase):
     def test_already_observed_event_does_not_promote(self):
         # The summary is NEWER than the event → the event was already seen by
         # an Observer pass; plain LRU applies.
-        self.seed_summary("workspace:1", 1000)
-        self.seed_summary("workspace:2", 2000)
-        self.seed_event("workspace:2", 1500)
+        now = int(time.time())
+        self.seed_summary("workspace:1", now - 7200)
+        self.seed_summary("workspace:2", now - 3600)
+        self.seed_event("workspace:2", now - 5000)
         out = self.run_main(self.WS)
         refs = [w["ref"] for w in out["to_reclassify"]]
         self.assertEqual(refs, ["workspace:1", "workspace:2"])
+
+    def test_promotions_capped_to_reserve_one_lru_slot(self):
+        # 6 promoted candidates + 1 starving pure-LRU ws → promoted may take
+        # at most BATCH_SIZE-1 slots; the last slot goes to the LRU ws. This
+        # is the anti-starvation guarantee: chatty blocked workspaces can
+        # never fill the whole batch every pulse.
+        now = int(time.time())
+        ws = [{"ref": f"workspace:{i}", "title": f"w{i}",
+               "current_directory": "/x"} for i in range(1, 8)]
+        for i in range(1, 7):  # ws1..ws6: fresh events, hour-old summaries
+            self.seed_summary(f"workspace:{i}", now - 3600)
+            self.seed_event(f"workspace:{i}", now - 100 + i)
+        self.seed_summary("workspace:7", now - 2 * 86400)  # LRU rank 1
+        out = self.run_main(ws)
+        batch = [w["ref"] for w in out["to_reclassify"]]
+        self.assertEqual(len(batch), self.mod.BATCH_SIZE)
+        self.assertIn("workspace:7", batch, "reserved LRU slot")
+        promoted_in_batch = [w for w in out["to_reclassify"]
+                             if w.get("event_priority")]
+        self.assertEqual(len(promoted_in_batch), self.mod.BATCH_SIZE - 1)
+        # The two overflow promoted candidates wait in reuse_cached.
+        self.assertEqual(len(out["reuse_cached"]), 2)
+
+    def test_promotion_cooldown_skips_just_observed_ws(self):
+        # ws:2 was in the previous batch (summary refreshed minutes ago); a
+        # newer event must NOT re-promote it until the cooldown lapses —
+        # otherwise a chatty blocked ws re-promotes every single pulse.
+        now = int(time.time())
+        self.seed_summary("workspace:1", now - 3600)
+        self.seed_summary("workspace:2", now - 120)  # just observed
+        self.seed_event("workspace:2", now - 60)
+        out = self.run_main(self.WS)
+        refs = [w["ref"] for w in out["to_reclassify"]]
+        self.assertEqual(refs, ["workspace:1", "workspace:2"])
+        self.assertNotIn("event_priority", out["to_reclassify"][1])
+
+    def test_stale_event_does_not_promote(self):
+        # An event older than 24h is history, not a signal — plain LRU.
+        now = int(time.time())
+        self.seed_summary("workspace:1", now - 3600)
+        self.seed_summary("workspace:2", now - 40 * 3600)
+        self.seed_event("workspace:2", now - 30 * 3600)  # newer than summary…
+        out = self.run_main(self.WS)
+        # …but too old to promote: ws:2 leads on LRU age, without the flag.
+        self.assertNotIn("event_priority", out["to_reclassify"][0])
+        self.assertNotIn("event_priority", out["to_reclassify"][1])
+
+    def test_back_off_beats_promotion(self):
+        # A backed-off ws never enters the batch, fresh event or not.
+        now = int(time.time())
+        with open(self.home / ".assistant/back-off.json", "w") as f:
+            json.dump({"workspaces": [
+                {"ws_ref": "workspace:2", "reason": "loop"}]}, f)
+        self.seed_summary("workspace:1", now - 3600)
+        self.seed_summary("workspace:2", now - 7200)
+        self.seed_event("workspace:2", now - 60)
+        out = self.run_main(self.WS)
+        refs = [w["ref"] for w in out["to_reclassify"]]
+        self.assertEqual(refs, ["workspace:1"])
+        self.assertEqual([b["ref"] for b in out["backed_off"]],
+                         ["workspace:2"])
 
     def test_corrupt_events_log_falls_back_to_lru(self):
         self.seed_summary("workspace:1", 1000)
