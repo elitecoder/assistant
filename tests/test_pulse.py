@@ -704,7 +704,8 @@ class CallObserverBatchTests(unittest.TestCase):
         self._tmp_obj.cleanup()
 
     def test_empty_batch_returns_empty(self):
-        self.assertEqual(self.mod.call_observer_batch([], pulse_idx=1, batch_idx=0), {})
+        self.assertEqual(self.mod.call_observer_batch([], pulse_idx=1, batch_idx=0),
+                         ({}, {}))
 
     def test_missing_prompt_returns_empty_and_logs(self):
         # Point the prompt path at something that doesn't exist.
@@ -717,7 +718,7 @@ class CallObserverBatchTests(unittest.TestCase):
                         [{"ws_ref": "workspace:1", "title": "t", "cwd": "/"}],
                         pulse_idx=1, batch_idx=0,
                     ),
-                    {},
+                    ({}, {}),
                 )
         finally:
             self.mod.OBSERVER_BATCH_PROMPT = original
@@ -745,9 +746,13 @@ class CallObserverBatchTests(unittest.TestCase):
                 return (0, "stdout-trail", "")
 
             with mock.patch.object(self.mod, "run", side_effect=fake_run):
-                out = self.mod.call_observer_batch(ctxs, pulse_idx=99, batch_idx=0)
+                out, usage = self.mod.call_observer_batch(ctxs, pulse_idx=99, batch_idx=0)
             self.assertEqual(set(out.keys()), {"workspace:1", "workspace:2"})
             self.assertEqual(out["workspace:1"]["verdict"], "active")
+            # stdout isn't a --output-format json envelope here, so metering
+            # falls back to the chars/4 estimate and says so.
+            self.assertEqual(usage["source"], "estimated")
+            self.assertGreater(usage["tokens_in"], 0)
 
             run_dir = self._tmp / ".assistant/observer-runs/0099/batch-0"
             self.assertTrue((run_dir / "prompt.md").exists())
@@ -769,7 +774,7 @@ class CallObserverBatchTests(unittest.TestCase):
         try:
             with mock.patch.object(self.mod, "run", return_value=(1, "out", "boom")):
                 with self.assertLogs("pulse", level="WARNING"):
-                    out = self.mod.call_observer_batch(
+                    out, _usage = self.mod.call_observer_batch(
                         [{"ws_ref": "workspace:1", "title": "t", "cwd": str(self._tmp)}],
                         pulse_idx=1, batch_idx=0,
                     )
@@ -840,9 +845,9 @@ class MainPipelineTests(unittest.TestCase):
                         "title": "t", "cwd": "/"}):
                     with mock.patch.object(
                             self.mod, "call_observer_batch",
-                            return_value={"workspace:1": {
+                            return_value=({"workspace:1": {
                                 "ws_ref": "workspace:1", "verdict": "active",
-                                "summary": "s", "next": "n"}}):
+                                "summary": "s", "next": "n"}}, {})):
                         with mock.patch.object(self.mod, "save_summary"):
                             with mock.patch.object(self.mod, "pick_open_todos",
                                                    return_value={"bucket_b": []}):
@@ -880,7 +885,7 @@ class MainPipelineTests(unittest.TestCase):
             with mock.patch.object(self.mod, "purge_stale_awaiting"):
                 with mock.patch.object(self.mod, "build_ctx", return_value=None):
                     with mock.patch.object(self.mod, "call_observer_batch",
-                                           return_value={}) as obs_mock:
+                                           return_value=({}, {})) as obs_mock:
                         with mock.patch.object(self.mod, "pick_open_todos",
                                                return_value={"bucket_b": []}):
                             with mock.patch.object(self.mod, "run",
@@ -905,7 +910,7 @@ class MainPipelineTests(unittest.TestCase):
                         "title": "t", "cwd": "/"}):
                     # Observer returns empty dict — no verdict for ws:1.
                     with mock.patch.object(self.mod, "call_observer_batch",
-                                           return_value={}):
+                                           return_value=({}, {})):
                         with mock.patch.object(self.mod, "save_summary") as save_mock:
                             with mock.patch.object(self.mod, "pick_open_todos",
                                                    return_value={"bucket_b": []}):
@@ -934,9 +939,9 @@ class MainPipelineTests(unittest.TestCase):
                         "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
                         "title": "t", "cwd": "/"}):
                     with mock.patch.object(self.mod, "call_observer_batch",
-                                           return_value={"workspace:1": {
+                                           return_value=({"workspace:1": {
                                                "ws_ref": "workspace:1", "verdict": "active",
-                                               "summary": "s", "next": "n"}}):
+                                               "summary": "s", "next": "n"}}, {})):
                         with mock.patch.object(self.mod, "save_summary"):
                             with mock.patch.object(self.mod, "pick_open_todos",
                                                    return_value={"bucket_b": [

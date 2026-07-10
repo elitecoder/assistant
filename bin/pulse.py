@@ -433,23 +433,26 @@ def build_ctx(ws: dict) -> dict | None:
         return None
 
 
-def call_observer_batch(ctxs: list[dict], pulse_idx: int, batch_idx: int) -> dict[str, dict]:
+def call_observer_batch(ctxs: list[dict], pulse_idx: int,
+                        batch_idx: int) -> tuple[dict[str, dict], dict]:
     """Spawn ONE Observer subprocess to judge a batch of workspaces.
 
     The Observer writes its structured output to <run_dir>/verdicts.jsonl.
-    pulse.py reads that file. We do NOT parse stdout for verdicts — stdout
-    is captured to <run_dir>/stdout.txt as the LLM work transcript (tool
-    calls, intermediate reasoning, the final result envelope).
+    pulse.py reads that file. We do NOT parse stdout for verdicts — with
+    `--output-format json`, stdout is the CLI's single result envelope
+    (captured to <run_dir>/stdout.txt), which carries the REAL token usage
+    and total_cost_usd for metering.
 
-    Returns {ws_ref: verdict-dict}. Missing ws_refs in the result mean the
-    Observer didn't emit a line for them; the caller treats that as a
-    skipped action.
+    Returns ({ws_ref: verdict-dict}, usage-dict). Missing ws_refs in the
+    result mean the Observer didn't emit a line for them; the caller treats
+    that as a skipped action. usage-dict is metering.observer_usage() shape
+    (falls back to a chars/4 estimate when the envelope is unparsable).
     """
     if not ctxs:
-        return {}
+        return {}, {}
     if not OBSERVER_BATCH_PROMPT.exists():
         log.error("observer batch prompt missing: %s", OBSERVER_BATCH_PROMPT)
-        return {}
+        return {}, {}
 
     run_dir = OBSERVER_RUNS_DIR / f"{pulse_idx:04d}" / f"batch-{batch_idx}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -490,6 +493,9 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int, batch_idx: int) -> dic
         "--model", DEFAULT_OBSERVER_MODEL,
         "--dangerously-skip-permissions",
         "--print",
+        # Single JSON result envelope on stdout — carries real token usage +
+        # total_cost_usd for metering. Verdicts still come from verdicts.jsonl.
+        "--output-format", "json",
         "--add-dir", str(REPO / "prompts"),
         "--add-dir", str(HOME / ".claude/projects"),
         "--add-dir", str(run_dir),  # so the model can write verdicts.jsonl
@@ -508,6 +514,17 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int, batch_idx: int) -> dic
                        merge_bedrock=True)
     wall_ms = int((time.time() - t0) * 1000)
 
+    # Token/cost capture: real numbers from the CLI result envelope when it
+    # parses, chars/4 estimate otherwise. Never load-bearing — a broken
+    # metering module degrades to an empty usage dict, not a failed batch.
+    usage: dict = {}
+    try:
+        sys.path.insert(0, str(BIN))
+        import metering  # noqa: PLC0415
+        usage = metering.observer_usage(out, len(prompt), DEFAULT_OBSERVER_MODEL)
+    except Exception as e:  # noqa: BLE001 — metering must never break the pulse
+        log.warning("metering usage capture failed (ignored): %s", e)
+
     # Always persist stdout/stderr — these are the LLM work transcript even
     # if the run failed.
     stdout_path.write_text(out or "")
@@ -518,6 +535,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int, batch_idx: int) -> dic
         "model": DEFAULT_OBSERVER_MODEL,
         "cmd": cmd,
         "ws_refs": [c.get("ws_ref") for c in ctxs],
+        "usage": usage,
         "ts": utc_iso(),
     }, indent=2))
 
@@ -525,7 +543,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int, batch_idx: int) -> dic
         log.warning("observer batch (size=%d) rc=%d: %s",
                     len(ctxs), rc, err.strip()[-300:])
 
-    return read_verdicts_file(verdicts_path)
+    return read_verdicts_file(verdicts_path), usage
 
 
 def read_verdicts_file(path: Path) -> dict[str, dict]:
@@ -1211,6 +1229,22 @@ def main() -> int:
             continue
         ctxs_by_ref[ws_ref] = ctx
 
+    # Metering: snapshot the previous verdict per ws from observer-summaries
+    # BEFORE phase 3's save_summary overwrites them (the summary on disk IS
+    # last pulse's verdict — no extra state file needed). Never load-bearing:
+    # a broken metering module degrades to an un-metered pulse, nothing else.
+    prev_verdicts: dict[str, str] = {}
+    observer_usages: list[dict] = []
+    observer_duration_s = 0.0
+    new_verdicts: dict[str, str] = {}
+    try:
+        sys.path.insert(0, str(BIN))
+        import metering  # noqa: PLC0415
+        prev_verdicts = metering.load_prev_verdicts(list(ctxs_by_ref.keys()))
+    except Exception as e:  # noqa: BLE001 — metering must never break the pulse
+        metering = None
+        log.warning("metering prev-verdict snapshot failed (ignored): %s", e)
+
     if dry_run:
         for ws_ref, ctx in ctxs_by_ref.items():
             actions_taken.append({
@@ -1228,6 +1262,7 @@ def main() -> int:
                  len(ctxs_to_observe), len(batches), WS_BATCH_SIZE)
 
         verdicts_by_ref: dict[str, dict] = {}
+        t_obs = time.time()
         if batches:
             # Spawn one subprocess per batch in parallel. ThreadPoolExecutor is
             # fine here: each subprocess is fully isolated and we're I/O-bound
@@ -1240,9 +1275,13 @@ def main() -> int:
                 }
                 for fut in as_completed(futures):
                     try:
-                        verdicts_by_ref.update(fut.result())
+                        verdicts, usage = fut.result()
+                        verdicts_by_ref.update(verdicts)
+                        if usage:
+                            observer_usages.append(usage)
                     except Exception as e:
                         log.exception("observer batch crashed: %s", e)
+        observer_duration_s = time.time() - t_obs
 
         # Phase 3: save + execute per ws. Drop the synthetic `ws_ref` field
         # from the verdict before save (save-ws-summary writes it back from
@@ -1262,6 +1301,7 @@ def main() -> int:
                     "next": "Assistant will re-observe next pulse.",
                 }
                 save_summary(ws, synth)
+                new_verdicts[ws_ref] = "active"
                 actions_taken.append({
                     "key": f"{ws_ref}-observer-failed",
                     "kind": "noop", "ws_ref": ws_ref, "outcome": "verified",
@@ -1270,6 +1310,9 @@ def main() -> int:
                 continue
             v_for_save = {k: v for k, v in verdict.items() if k != "ws_ref"}
             save_summary(ws, v_for_save)
+            # Effective verdict for metering — mirrors what was just saved
+            # (a verdict-less line defaults to active, same as the synth path).
+            new_verdicts[ws_ref] = v_for_save.get("verdict") or "active"
             action = execute_verdict(ws, v_for_save, awaiting_input)
             actions_taken.append(action)
             append_ledger({
@@ -1361,6 +1404,28 @@ def main() -> int:
 
     # 7. Heartbeat.
     write_heartbeat(pulse_idx, n_drained)
+
+    # 7.5. Metering: one record per pulse to ~/.assistant/metrics.jsonl so
+    #      cost/cadence regressions show on the dashboard the next morning.
+    #      Runs AFTER state-write + heartbeat and swallows every failure —
+    #      observability must never break the pulse.
+    if metering is not None:
+        try:
+            observer_called = bool(ctxs_by_ref)
+            metering.append_metric(metering.build_pulse_record(
+                epoch=utc_ts(),
+                pulse_idx=pulse_idx,
+                observer_called=observer_called,
+                batch_size=len(ctxs_by_ref),
+                model=DEFAULT_OBSERVER_MODEL if observer_called else None,
+                duration_s=observer_duration_s,
+                usage=metering.sum_usage(observer_usages),
+                new_verdicts=new_verdicts,
+                verdict_changes=metering.count_verdict_changes(prev_verdicts, new_verdicts),
+                actions=actions_taken,
+            ))
+        except Exception as e:  # noqa: BLE001 — metering must never break the pulse
+            log.warning("metering append failed (ignored): %s", e)
 
     # 8. Lesson extraction (throttled, ~hourly). Lightweight pattern detection;
     #    only spends an LLM call when a candidate survives dedup. Runs last and
