@@ -365,6 +365,239 @@ def render_metering_stats():
         return ""
 
 
+BRIEF_DIR = HOME / ".assistant/brief"
+BRIEF_METRICS_PATH = BRIEF_DIR / "brief-metrics.jsonl"
+
+
+def _brief_trend_svg(width=140, height=30, n=14):
+    """Inline-SVG sparkline of decisions_pending_at_brief over the last n
+    daily north-star rows. Empty string when fewer than 2 rows exist (or on
+    any read problem) — the tile just shows the number alone."""
+    try:
+        lines = BRIEF_METRICS_PATH.read_text().splitlines()[-n:]
+    except Exception:
+        return ""
+    vals = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        v = row.get("decisions_pending_at_brief")
+        if isinstance(v, (int, float)):
+            vals.append(float(v))
+    if len(vals) < 2:
+        return ""
+    vmax = max(max(vals), 1.0)
+    step = (width - 4) / (len(vals) - 1)
+    pts = " ".join(
+        f"{2 + i * step:.1f},{height - 3 - (v / vmax) * (height - 6):.1f}"
+        for i, v in enumerate(vals))
+    return (f'<svg class="brief-spark" width="{width}" height="{height}" '
+            f'viewBox="0 0 {width} {height}">'
+            f'<polyline points="{pts}" fill="none" stroke="currentColor" '
+            f'stroke-width="1.5" stroke-linejoin="round"/></svg>')
+
+
+def render_brief_tab():
+    """The Brief tab (Keel M3): the latest ~/.assistant/brief/brief-<date>.json
+    rendered as the design's four sections — ranked decision queue with
+    one-tap action buttons (POSTing the existing /decision/act route),
+    handled-overnight receipts, collapsed FYI digest, health tiles — plus the
+    north-star trend from brief-metrics.jsonl. Returns (html, n_open).
+
+    The WHOLE body is fenced: any failure (no brief yet, corrupt JSON,
+    unexpected shape) degrades to a message div and never breaks the page —
+    M0's lesson, same contract as render_fleet_tab."""
+    try:
+        return _render_brief_tab_inner()
+    except Exception as exc:
+        return (f'<div class="empty">Brief unavailable — {e(str(exc)[:200])}.'
+                f' Rebuild on demand: <code>bin/build-morning-brief.py</code>'
+                f'</div>'), 0
+
+
+def _render_brief_tab_inner():
+    briefs = sorted(BRIEF_DIR.glob("brief-????-??-??.json"))
+    if not briefs:
+        return ('<div class="empty">No brief yet — the first pulse after '
+                'wake_hour builds one, or run '
+                '<code>bin/build-morning-brief.py</code>.</div>'), 0
+    path = briefs[-1]
+    date_str = path.name[len("brief-"):-len(".json")]
+    try:
+        brief = json.loads(path.read_text())
+    except Exception:
+        return (f'<div class="empty">Brief {e(date_str)} unreadable — '
+                f'rebuild with <code>bin/build-morning-brief.py</code> '
+                f'(the brief is a pure derivation; nothing is lost).</div>'), 0
+
+    queue = brief.get("queue") or []
+    receipts = brief.get("handled_overnight") or []
+    digest = brief.get("digest") or {}
+    health = brief.get("health") or {}
+    interrupts = health.get("interrupts") or {}
+    cost = health.get("cost") or {}
+
+    # ─── stats strip + north-star trend ───
+    spark = _brief_trend_svg()
+    trend_tile = (
+        f'<div class="stat brief-trend"><div class="v">{len(queue)}'
+        f'{spark}</div>'
+        f'<div class="k">Decisions pending (north star)</div></div>')
+    stats = f"""
+<div class="stats">
+  {trend_tile}
+  <div class="stat"><div class="v">{len(receipts)}</div><div class="k">Handled overnight</div></div>
+  <div class="stat"><div class="v">{sum(len(v) for v in digest.values())}</div><div class="k">FYI digest rows</div></div>
+  <div class="stat"><div class="v">${float(cost.get('cost_per_day_usd') or 0.0):.2f}</div><div class="k">$/day · 7d</div></div>
+  <div class="stat"><div class="v">{int(interrupts.get('delivered_24h') or 0)} / {int(interrupts.get('denied_24h') or 0)}</div><div class="k">Interrupts delivered / denied</div></div>
+  <div class="stat"><div class="v">{int(health.get('expired_unseen_24h') or 0)}</div><div class="k">Expired unseen · 24h</div></div>
+</div>"""
+
+    # ─── 1. decision queue ───
+    if queue:
+        rows = []
+        for d in queue:
+            dec_id = d.get("id") or ""
+            lane = (d.get("lane") or "?")
+            lane_cls = {"escalate": "t3", "staged": "t2", "digest": "scope"}.get(lane, "scope")
+            urgency = d.get("urgency")
+            urgency_pill = (f'<span class="pill held">{e(str(urgency))}</span>'
+                            if urgency else "")
+            prov = d.get("policy_id") or "triage"
+            triage_info = d.get("triage") or {}
+            triage_html = ""
+            if triage_info.get("suggested_lane"):
+                triage_html = (f'<div class="alts">triage suggests '
+                               f'<code>{e(str(triage_info["suggested_lane"]))}</code>'
+                               f' — {e(str(triage_info.get("rationale") or "")[:160])}</div>')
+            ws_ref = d.get("ws_ref")
+            ws_btn = (f'<button class="btn" data-ws="{e(ws_ref)}" '
+                      f'onclick="openWs(this)">Open {e(ws_ref)}</button>'
+                      if ws_ref else "")
+            rows.append(f"""
+<div class="card brief-dec" data-dec-row="{e(dec_id)}">
+  <div class="pills">
+    <span class="pill {lane_cls}">{e(lane)}</span>
+    {urgency_pill}
+    <span class="pill scope">via {e(str(prov))}</span>
+    <span class="age">score {float(d.get('score') or 0):.0f} · {float(d.get('age_h') or 0):.1f}h old</span>
+  </div>
+  <div class="action">{e(d.get('title') or dec_id)}</div>
+  <div class="reason">{e(d.get('snippet') or '')}</div>
+  {triage_html}
+  <div class="buttons">
+    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="accept">{e(d.get('default_label') or 'Accept')}</button>
+    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="snooze" data-minutes="60">Snooze 1h</button>
+    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="reject">Reject</button>
+    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="wrong_lane" title="Reject AND file a policy proposal to re-lane this (source, kind)">Wrong lane</button>
+    {ws_btn}
+  </div>
+</div>""")
+        queue_html = "".join(rows)
+    else:
+        queue_html = '<div class="empty">Queue clear — nothing needs a decision.</div>'
+
+    # ─── 2. handled overnight ───
+    if receipts:
+        rrows = []
+        for r in receipts[:40]:
+            rrows.append(f"""
+<div class="row">
+  <span class="ts">{e((r.get('ts') or '')[11:19])}</span>
+  <span class="pill scope">{e(r.get('kind') or '')}</span>
+  <span class="action-text" title="{e(r.get('evidence') or '')}">{e(r.get('evidence') or r.get('key') or '')}</span>
+  <span class="outcome">{e(r.get('ws_ref') or '')}</span>
+</div>""")
+        receipts_html = f'<div class="feed">{"".join(rrows)}</div>'
+    else:
+        receipts_html = '<div class="empty">Nothing auto-handled in the last 24h.</div>'
+
+    # ─── 3. FYI digest (grouped by source, collapsed) ───
+    if digest:
+        groups = []
+        for src, items in digest.items():
+            lis = "".join(
+                f'<div class="row"><span class="ts">{e((it.get("ts") or "")[11:19])}</span>'
+                f'<span class="pill scope">{e(it.get("kind") or "")}</span>'
+                f'<span class="action-text">{e(it.get("title") or "")}</span>'
+                f'<span class="outcome">{e(it.get("policy_id") or "")}</span></div>'
+                for it in items)
+            groups.append(
+                f'<details class="digest-group"><summary>{e(src)} '
+                f'<span class="count">{len(items)}</span></summary>'
+                f'<div class="feed">{lis}</div></details>')
+        digest_html = "".join(groups)
+    else:
+        digest_html = '<div class="empty">No FYI items in the last 24h.</div>'
+
+    # ─── 4. health ───
+    chips = []
+    for src, info in sorted((health.get("event_sources") or {}).items()):
+        age = info.get("latest_age_sec")
+        if age is None:
+            cls, label = "cold", "never"
+        elif age < 3600:
+            cls, label = "fresh", age_str(age)
+        elif age < 6 * 3600:
+            cls, label = "warm", age_str(age)
+        else:
+            cls, label = "cold", age_str(age)
+        chips.append(f'<span class="ws-live-age {cls}" '
+                     f'title="{int(info.get("count_24h") or 0)} events · 24h">'
+                     f'{e(src)} · {e(label)}</span>')
+    for name, hb in sorted((health.get("connectors") or {}).items()):
+        chips.append(f'<span class="ws-live-age warm" '
+                     f'title="connector heartbeat">{e(name)} · '
+                     f'{e(str(hb.get("last_poll") or "?"))}</span>')
+    q_pending = health.get("quarantine_pending")
+    if q_pending:
+        chips.append(f'<span class="ws-live-age cold">quarantine · {int(q_pending)}</span>')
+    health_html = (
+        f'<div class="brief-health-chips">{"".join(chips)}</div>'
+        if chips else
+        '<div class="empty">No event-source health data (world.json has no events section yet).</div>')
+
+    budget = interrupts.get("budget") or {}
+    budget_note = (
+        f'<div class="meta" style="margin-top:8px;">noise budget: '
+        f'page {int(budget.get("page") or 0)}/day · '
+        f'notify {int(budget.get("notify") or 0)}/day — denials are ledgered, '
+        f'silence is verified, not assumed</div>')
+
+    seen = (BRIEF_DIR / f"brief-{date_str}.seen.json").exists()
+    seen_note = "seen" if seen else "unseen — viewing this tab records it"
+    html = f"""
+<div class="brief-root" data-brief-date="{e(date_str)}">
+<div class="meta">brief {e(date_str)} · built {e(brief.get('ts') or '?')} · {e(seen_note)} · pure derivation — delete-safe, rebuild via <code>bin/build-morning-brief.py</code></div>
+{stats}
+
+<div class="section">
+  <h2>Decide <span class="count">{len(queue)}</span></h2>
+  {queue_html}
+</div>
+
+<div class="section">
+  <h2>Handled overnight <span class="count">{len(receipts)}</span></h2>
+  {receipts_html}
+</div>
+
+<div class="section">
+  <h2>FYI digest <span class="count">{sum(len(v) for v in digest.values())} · grouped by source</span></h2>
+  {digest_html}
+</div>
+
+<div class="section">
+  <h2>Health</h2>
+  {health_html}
+  {budget_note}
+</div>
+</div>
+"""
+    return html, len(queue)
+
+
 def render_decisions_tab(world):
     awaiting_html, awaiting_n = render_awaiting(world)
     activity_html, activity_n = render_activity(world)
@@ -1248,6 +1481,7 @@ def render():
     todos_html, p0_p1 = render_todos_tab(world)
     workspaces_html, ws_n = render_workspaces_tab()
     fleet_html, fleet_n = render_fleet_tab()
+    brief_html, brief_n = render_brief_tab()
     pulse_health_html = render_pulse_health()
     counts = world.get("counts", {})
 
@@ -2167,6 +2401,34 @@ h1 {
   border-radius: 10px;
 }
 
+/* ─── Brief tab (Keel M3) ─── */
+.brief-trend .v { display: flex; align-items: flex-end; gap: 10px; }
+.brief-spark { color: var(--blue); opacity: 0.85; margin-bottom: 2px; }
+.digest-group {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.digest-group summary {
+  cursor: pointer;
+  padding: 10px 16px;
+  font: 500 12px/1.4 var(--sans);
+  color: var(--text-2);
+  list-style: none;
+}
+.digest-group summary::-webkit-details-marker { display: none; }
+.digest-group summary .count {
+  color: var(--muted);
+  font: 500 11px/1 var(--mono);
+  margin-left: 8px;
+}
+.digest-group[open] summary { border-bottom: 1px solid var(--line); }
+.digest-group .feed { border: none; border-radius: 0; }
+.brief-health-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.card.brief-dec { border-left: 2px solid var(--line-strong); }
+
 /* ─── Work-receipt quality badge (DONE column) ─── */
 .receipt-badge {
   display: flex;
@@ -2209,10 +2471,26 @@ function showTab(name) {
   if (window.location.hash !== '#' + name) {
     history.replaceState(null, '', '#' + name);
   }
+  if (name === 'brief') pingBriefSeen();
+}
+// /brief/seen signal (Keel M3): viewing the Brief tab stamps the seen
+// sidecar so the unseen-degradation pass knows the brief was looked at.
+// Fired at most once per page load; failures (file:// page, server down)
+// are swallowed — the signal is best-effort by design.
+let briefSeenSent = false;
+function pingBriefSeen() {
+  if (briefSeenSent) return;
+  const root = document.querySelector('[data-brief-date]');
+  if (!root) return;
+  briefSeenSent = true;
+  try {
+    fetch('/brief/seen?date=' + encodeURIComponent(root.dataset.briefDate),
+          {method: 'POST'}).catch(() => {});
+  } catch (e) { /* file:// context — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#decisions').replace('#', '');
-  showTab(['decisions', 'workspaces', 'fleet', 'todos'].includes(initial) ? initial : 'decisions');
+  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'todos'].includes(initial) ? initial : 'decisions');
   // Auto-refresh every 15s but preserve the current hash. We use location.reload()
   // (not <meta http-equiv="refresh">) because meta-refresh reloads from the original
   // href and drops the fragment on most browsers, snapping the user back to
@@ -2246,6 +2524,40 @@ async function openWs(btn) {
     setTimeout(() => { btn.classList.remove('err'); btn.textContent = original; }, 2500);
   }
 }
+
+// Delegated click handler for Brief-tab decision buttons (Keel M3): one tap
+// POSTs the existing /decision/act route; the 15s auto-refresh re-renders
+// canonical queue state afterwards.
+async function handleDecisionActClick(ev) {
+  const btn = ev.target.closest('.dec-act');
+  if (!btn) return;
+  const dec = btn.dataset.dec;
+  const action = btn.dataset.action;
+  if (!dec || !action) return;
+  let url = `/decision/act/${dec}?action=${action}`;
+  if (btn.dataset.minutes) url += `&minutes=${btn.dataset.minutes}`;
+  const originalText = btn.textContent;
+  btn.classList.add('busy');
+  try {
+    const r = await fetch(url, {method: 'POST'});
+    const t = await r.text();
+    if (r.ok) {
+      btn.classList.remove('busy'); btn.classList.add('ok');
+      btn.textContent = '✓ ' + originalText;
+      const row = btn.closest('[data-dec-row]');
+      if (row) { row.style.opacity = '0.35'; row.style.transition = 'opacity 0.5s'; }
+    } else {
+      btn.classList.remove('busy'); btn.classList.add('err');
+      btn.textContent = '✗ ' + (t || 'failed');
+      setTimeout(() => { btn.classList.remove('err'); btn.textContent = originalText; }, 2500);
+    }
+  } catch (e) {
+    btn.classList.remove('busy'); btn.classList.add('err');
+    btn.textContent = '✗ ' + (e.message || 'no server');
+    setTimeout(() => { btn.classList.remove('err'); btn.textContent = originalText; }, 2500);
+  }
+}
+document.addEventListener('click', handleDecisionActClick);
 
 // Delegated click handler for TODO row tools.
 // Cycle: null → true → false → null (matches the dispatcher's three buckets).
@@ -2383,6 +2695,9 @@ document.addEventListener('click', handleTodoToolsClick);
 {pulse_health_html}
 
 <div class="tabs">
+  <button class="tab" data-tab="brief" onclick="showTab('brief')">
+    Brief <span class="tab-count">{brief_n}</span>
+  </button>
   <button class="tab" data-tab="decisions" onclick="showTab('decisions')">
     Decisions <span class="tab-count">{awaiting_n}</span>
   </button>
@@ -2395,6 +2710,10 @@ document.addEventListener('click', handleTodoToolsClick);
   <button class="tab" data-tab="todos" onclick="showTab('todos')">
     TODOs <span class="tab-count">{p0_p1}</span>
   </button>
+</div>
+
+<div class="tab-panel" data-panel="brief">
+{brief_html}
 </div>
 
 <div class="tab-panel" data-panel="decisions">

@@ -1,0 +1,13 @@
+{
+  "_comment": "Shape fixture (Keel M3): the notify budget was raised to 1 and already spent this morning; the date field is stamped to 'today' by the loading test. Expected: every further request this day is denied with 'budget exhausted (1/1 notify today)' and ledgered interrupt:denied.",
+  "date": "STAMPED-AT-LOAD",
+  "budget": {"page": 0, "notify": 1},
+  "used": {"notify": 1},
+  "ladder": [
+    {"level": "page",
+     "requires": {"lane": "escalate", "urgency": "now", "pageable": true}}
+  ],
+  "last_delivered": {},
+  "denied_today": 0,
+  "suppressed_today": []
+}

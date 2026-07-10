@@ -12,11 +12,22 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
   POST /decision/list                                     decision queue view
                                                           (Keel M2; open set +
                                                           totals as JSON)
-  POST /decision/act/<dec-id>?action=accept|edit|reject|snooze&minutes=N
+  POST /decision/act/<dec-id>?action=accept|edit|reject|snooze|wrong_lane
+                                                          &minutes=N
                                                           one-tap decision
                                                           transition (id-regex
                                                           validated, POST-only;
-                                                          body = optional note)
+                                                          body = optional note;
+                                                          wrong_lane also files
+                                                          a confirmation-gated
+                                                          type=policy proposal)
+  POST /brief/seen?date=YYYY-MM-DD                        Brief-tab view signal
+                                                          (Keel M3): stamps the
+                                                          seen sidecar next to
+                                                          the brief file so the
+                                                          unseen-degradation
+                                                          pass knows the brief
+                                                          was looked at
   GET  /                                                  health check ("ok")
 
 On every successful TODO mutation, the JSON file is atomically rewritten and the
@@ -45,8 +56,14 @@ PROPOSAL_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 DEC_ID_RE = re.compile(r"^dec-[a-f0-9]{8,64}$")
 # Dashboard action → decision status. The vocabulary is closed here AND in
 # decisions.transition (auto_done/open are never reachable via HTTP).
+# wrong_lane (Keel M3) resolves the decision as rejected AND files a
+# confirmation-gated type=policy proposal for its (source, kind) — the tap
+# that teaches the policy engine instead of just dismissing the row.
 DECISION_ACTIONS = {"accept": "accepted", "edit": "edited",
-                    "reject": "rejected", "snooze": "snoozed"}
+                    "reject": "rejected", "snooze": "snoozed",
+                    "wrong_lane": "rejected"}
+# /brief/seen date param: strict ISO date only.
+BRIEF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
@@ -265,7 +282,10 @@ def decision_list():
 def decision_act(dec_id, action, params, note):
     """One-tap transition on a decision. Appends a new record via
     decisions.transition (append-only log, flock'd, ledgered) — this server
-    never rewrites decision state directly."""
+    never rewrites decision state directly. wrong_lane additionally files a
+    confirmation-gated type=policy proposal (design section 5: the tap
+    teaches the policy engine); the proposal is best-effort — the decision
+    transition is the authoritative outcome either way."""
     status = DECISION_ACTIONS.get(action)
     if status is None:
         return False, f"unknown action {action!r} (want one of {sorted(DECISION_ACTIONS)})"
@@ -285,8 +305,36 @@ def decision_act(dec_id, action, params, note):
         return False, f"decision store unavailable: {e}"
     if err:
         return False, err
+    proposal_note = ""
+    if action == "wrong_lane":
+        try:
+            if str(SRC_DIR) not in sys.path:
+                sys.path.insert(0, str(SRC_DIR))
+            from assistant import policy  # noqa: PLC0415
+            entry = policy.file_wrong_lane_proposal(rec)
+            proposal_note = ("; policy proposal filed"
+                             if entry is not None
+                             else "; policy proposal already pending")
+        except Exception as e:
+            proposal_note = f"; policy proposal failed: {e}"
     rerender_dashboard()
-    return True, f"{dec_id} -> {rec['status']}"
+    return True, f"{dec_id} -> {rec['status']}{proposal_note}"
+
+
+def brief_seen(params):
+    """POST /brief/seen: stamp the seen sidecar for a brief (Keel M3). The
+    sidecar — not the brief file — carries seen_ts, so the brief stays a
+    pure, delete-safe derivation. Missing ?date targets the latest brief."""
+    date = (params.get("date", [""])[0]) or None
+    if date is not None and not BRIEF_DATE_RE.match(date):
+        return False, f"invalid date {date!r} (want YYYY-MM-DD)"
+    try:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        from assistant import brief  # noqa: PLC0415
+        return brief.mark_seen(date)
+    except Exception as e:
+        return False, f"brief store unavailable: {e}"
 
 
 def focus_workspace(ws_ref):
@@ -432,6 +480,12 @@ class Handler(BaseHTTPRequestHandler):
             note = self._read_body()
             ok, msg = decision_act(dec_id, action, qs, note)
             self._reply(200 if ok else (404 if "not found" in msg else 400), msg)
+            return
+
+        # POST /brief/seen?date=YYYY-MM-DD — Brief-tab view signal (Keel M3).
+        if parts == ["brief", "seen"]:
+            ok, msg = brief_seen(qs)
+            self._reply(200 if ok else (404 if "no brief" in msg else 400), msg)
             return
 
         # POST /focus/<workspace_ref>

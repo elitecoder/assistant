@@ -22,10 +22,13 @@ cannot weaken them:
     structurally lacks an ``auto`` key (and a ``drop`` key), so no LLM output
     string can ever mint an auto action. A structural unit test pins this.
 
-Also home to the policy-proposal miner: >=3 identical triage suggestions for
+Also home to the policy-proposal miners: >=3 identical triage suggestions for
 the same (source, kind) within 7 days auto-generate a confirmation-gated
 ``policy`` proposal into the existing proposals queue (mirrors
-lesson-extractor's write_proposal pattern). Never auto-applied.
+lesson-extractor's write_proposal pattern), and — Keel M3 — repeat
+brief-unseen expiries mine a digest-lane proposal
+(mine_unseen_expiry_proposals) while the dashboard's one-tap "wrong lane"
+files one via file_wrong_lane_proposal. Never auto-applied.
 
 Paths are computed per-call (not module constants) so tests that point $HOME
 at a tmp dir see fresh paths even when this module stays cached in
@@ -481,3 +484,121 @@ def mine_policy_proposals(decision_records: list[dict], *, now: float,
         written.append(entry)
         pending.add(f"{source}|{kind}|{lane}")
     return written
+
+
+def _append_proposal(entry: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def mine_unseen_expiry_proposals(decision_records: list[dict], *, now: float,
+                                 rules: list[dict],
+                                 path: Path | None = None) -> list[dict]:
+    """Keel M3's second miner: >=MINER_MIN_SUGGESTIONS decisions for one
+    (source, kind) that EXPIRED VIA BRIEF NEGLECT (resolution.via ==
+    "brief-unseen") within the window → ONE confirmation-gated ``policy``
+    proposal to lane that (source, kind) straight to digest. An expired
+    decision is a triage bug (design section 5); repeat unseen expiries mean
+    the item never deserved a queue row — the pressure valve is a rule, not
+    another tap. Same dedup gates as mine_policy_proposals: pending/confirmed
+    proposals and enabled predicate-free rules both block a re-propose.
+    Never auto-applied."""
+    p = path if path is not None else proposals_path()
+    cutoff = now - MINER_WINDOW_SEC
+    groups: dict[tuple[str, str], set[str]] = {}
+    for rec in decision_records:
+        if not isinstance(rec, dict) or rec.get("status") != "expired":
+            continue
+        if (rec.get("resolution") or {}).get("via") != "brief-unseen":
+            continue
+        epoch = rec.get("epoch")
+        if not isinstance(epoch, (int, float)) or epoch < cutoff:
+            continue
+        source, kind = rec.get("source"), rec.get("kind")
+        if not source or not kind:
+            continue
+        groups.setdefault((source, kind), set()).add(rec.get("id"))
+
+    lane = "digest"
+    pending = _pending_policy_keys(p)
+    written: list[dict] = []
+    for (source, kind), dec_ids in sorted(groups.items()):
+        if len(dec_ids) < MINER_MIN_SUGGESTIONS:
+            continue
+        if f"{source}|{kind}|{lane}" in pending:
+            continue
+        if _covered_by_rule(source, kind, rules):
+            continue
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        entry = {
+            "ts": ts,
+            "id": ts,
+            "type": "policy",
+            "status": "pending",
+            "source": "unseen-miner",
+            "proposed_policy": {
+                "id": f"unseen-{source}-{kind}-{lane}",
+                "match": {"source": source, "kind": kind},
+                "lane": lane,
+                "action": None,
+                "urgency": None,
+                "ttl_h": DEFAULT_TTL_H.get(lane),
+                "pageable": False,
+                "enabled": True,
+            },
+            "evidence": {
+                "expired_unseen_count": len(dec_ids),
+                "decision_ids": sorted(d for d in dec_ids if d)[:10],
+                "window_days": MINER_WINDOW_SEC // 86400,
+            },
+        }
+        _append_proposal(entry, p)
+        written.append(entry)
+        pending.add(f"{source}|{kind}|{lane}")
+    return written
+
+
+def file_wrong_lane_proposal(decision: dict,
+                             path: Path | None = None) -> dict | None:
+    """One-tap "wrong lane" (design section 5): the tap files a
+    confirmation-gated ``policy`` proposal for the decision's (source, kind)
+    — lane deliberately null, because the tap says only "not THIS lane";
+    Mukul picks the right one at confirm time. Dedup: a pending/confirmed
+    wrong-lane proposal for the same (source, kind) blocks a re-file (the
+    null lane is part of the pending key). Returns the entry, or None when
+    deduped/unfileable. Never auto-applied — same contract as the miners."""
+    if not isinstance(decision, dict):
+        return None
+    source, kind = decision.get("source"), decision.get("kind")
+    if not source or not kind:
+        return None
+    p = path if path is not None else proposals_path()
+    if f"{source}|{kind}|None" in _pending_policy_keys(p):
+        return None
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    entry = {
+        "ts": ts,
+        "id": ts,
+        "type": "policy",
+        "status": "pending",
+        "source": "wrong-lane-tap",
+        "proposed_policy": {
+            "id": f"wrong-lane-{source}-{kind}",
+            "match": {"source": source, "kind": kind},
+            "lane": None,
+            "action": None,
+            "urgency": None,
+            "ttl_h": None,
+            "pageable": False,
+            "enabled": True,
+        },
+        "evidence": {
+            "decision_id": decision.get("id"),
+            "previous_lane": decision.get("lane"),
+            "policy_id": decision.get("policy_id"),
+            "title": (decision.get("title") or "")[:120],
+        },
+    }
+    _append_proposal(entry, p)
+    return entry
