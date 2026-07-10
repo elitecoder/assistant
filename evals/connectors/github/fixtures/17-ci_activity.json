@@ -28,8 +28,11 @@
     "actor": "OneAdobe",
     "title": "[ci_activity] item 17 in OneAdobe/mukul-memory",
     "snippet": "OneAdobe/mukul-memory \u00b7 ci_activity \u00b7 RepositoryVulnerabilityAlert",
-    "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/17",
-    "refs": {},
+    "url": "https://github.com/OneAdobe/mukul-memory/pull/17",
+    "refs": {
+      "repo": "OneAdobe/mukul-memory",
+      "pr": "17"
+    },
     "raw_path": null
   }
 }

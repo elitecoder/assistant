@@ -68,6 +68,10 @@ from . import eventspine
 
 DEFAULT_CADENCE_SEC = 60
 DEFAULT_MAX_EVENTS_PER_POLL = 200
+# Max upstream pages to walk per poll before stopping early. A stop-early is a
+# TRUNCATION: the connector must then re-fetch the remainder next poll rather
+# than advance its cursor past the un-emitted tail (E1/E3).
+DEFAULT_MAX_PAGES = 10
 DEFAULT_RAW_RETENTION_DAYS = 7
 # A poll older than cadence * this factor (floored at MIN) marks the connector
 # stale in the brief health section. Written INTO the heartbeat so consumers
@@ -82,6 +86,16 @@ DEFAULT_TOKEN_SKEW_SEC = 300
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 HTTP_TIMEOUT_SEC = 30
+# Cap every response body read so a hostile/broken upstream cannot exhaust
+# memory with an unbounded stream (OP2). Metadata reads are tiny; 8 MiB is a
+# generous ceiling that never truncates a legitimate notifications/history page.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# Bounded exponential backoff ceiling for run_forever when a poll reports an
+# error / rate-limit (OP1) — never hammer the fixed cadence under a 429/5xx.
+MAX_BACKOFF_SEC = 900
+# Poll statuses that mean "healthy, keep the normal cadence"; anything else
+# triggers backoff. A poll that skipped a poison item still returns "ok".
+_HEALTHY_STATUSES = frozenset({"ok", "not_modified", "seeded"})
 
 
 def _home() -> Path:
@@ -113,6 +127,7 @@ def load_connector_config(name: str) -> dict:
     cfg = {
         "cadence_sec": DEFAULT_CADENCE_SEC,
         "max_events_per_poll": DEFAULT_MAX_EVENTS_PER_POLL,
+        "max_pages": DEFAULT_MAX_PAGES,
         "raw_retention_days": DEFAULT_RAW_RETENTION_DAYS,
         "stale_factor": DEFAULT_STALE_FACTOR,
         "token_skew_sec": DEFAULT_TOKEN_SKEW_SEC,
@@ -174,9 +189,37 @@ def urllib_transport(method: str, url: str, *, headers: Optional[dict] = None,
                                  headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, dict(r.headers.items()), r.read()
+            return r.status, dict(r.headers.items()), r.read(MAX_RESPONSE_BYTES)
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers.items() if e.headers else {}), e.read()
+        return (e.code, dict(e.headers.items() if e.headers else {}),
+                e.read(MAX_RESPONSE_BYTES))
+
+
+def parse_retry_after(headers: dict, now: float) -> Optional[float]:
+    """Seconds to wait before retrying, from a rate-limited response's
+    ``Retry-After`` (delta-seconds OR an HTTP-date) or GitHub's
+    ``X-RateLimit-Reset`` (epoch seconds). Returns None when neither is present
+    or parseable. Used to honor the server's backoff instead of hammering the
+    fixed cadence (OP1)."""
+    if not isinstance(headers, dict):
+        return None
+    ci = {str(k).lower(): v for k, v in headers.items()}
+    ra = ci.get("retry-after")
+    if ra is not None:
+        s = str(ra).strip()
+        if s.isdigit():
+            return float(s)
+        try:  # HTTP-date form
+            import email.utils
+            dt = email.utils.parsedate_to_datetime(s)
+            if dt is not None:
+                return max(0.0, dt.timestamp() - now)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    reset = ci.get("x-ratelimit-reset")
+    if reset is not None and str(reset).strip().isdigit():
+        return max(0.0, float(str(reset).strip()) - now)
+    return None
 
 
 # ─── OAuth refresh-token flow (owned by the base, injectable transport) ──────
@@ -194,12 +237,22 @@ def _urllib_token_post(token_uri: str, form: dict,
     req = urllib.request.Request(
         token_uri, data=body, method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"})
+    # EVERY refresh failure must become an OAuthError (O1). Network-down under
+    # launchd — URLError/timeout — is the ROUTINE failure, and if it escaped
+    # here it would blow past poll_once's `except OAuthError`, nulling the
+    # token-expiry signal (and crashing --once with no heartbeat). A malformed
+    # body (JSONDecodeError ⊂ ValueError) is likewise wrapped.
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
+            raw = r.read(MAX_RESPONSE_BYTES)  # OP2: bounded read
+        return json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:300]
+        detail = e.read(MAX_RESPONSE_BYTES).decode("utf-8", "replace")[:300]
         raise OAuthError(f"token endpoint {e.code}: {detail}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise OAuthError(f"token endpoint unreachable: {str(e)[:200]}") from e
+    except (ValueError, UnicodeDecodeError) as e:
+        raise OAuthError(f"token endpoint bad response: {str(e)[:200]}") from e
 
 
 class OAuthTokenManager:
@@ -238,11 +291,28 @@ class OAuthTokenManager:
         return tok
 
     def _save(self, tok: dict) -> None:
+        import secrets
         self.token_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.token_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(tok, indent=2, sort_keys=True))
-        os.chmod(tmp, 0o600)  # secrets: owner-only
-        os.replace(tmp, self.token_path)
+        # Create the tmp 0600 ATOMICALLY via os.open — never the write_text-then
+        # -chmod window that leaves the secret group/other-readable (0644) until
+        # the chmod lands, and a leftover 0644 .tmp if the chmod ever fails
+        # (SEC3a). The tmp name is per-writer unique (pid+rand) so two
+        # concurrent refreshes never share or clobber one tmp (SEC3b). 0o600 is
+        # umask-proof: umask can only clear bits, and 0600 has none to clear.
+        tmp = self.token_path.parent / (
+            f".{self.token_path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        data = json.dumps(tok, indent=2, sort_keys=True)
+        fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(data)
+            os.replace(tmp, self.token_path)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     def expiry_epoch(self) -> Optional[float]:
         try:
@@ -351,7 +421,13 @@ class Connector:
     def save_cursor(self, cursor: dict) -> None:
         """Atomic tmp+replace. The watermark advances ONLY after the batch it
         covers is safely dropped — a crash mid-batch leaves the old cursor, so
-        the next run re-emits (at-least-once; the spine dedups)."""
+        the next run re-emits (at-least-once; the spine dedups).
+
+        In --dry-run this is a NO-OP: a debug/inspection run must never advance
+        the durable cursor (that would destroy the very events it is used to
+        investigate — D1)."""
+        if self.dry_run:
+            return
         p = self.cursor_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".json.tmp")
@@ -411,7 +487,10 @@ class Connector:
         writes a sanitized {raw, expected} fixture."""
         now = now if now is not None else time.time()
         ext = event.get("external_id") or event.get("id") or "unknown"
-        if raw is not None:
+        # The raw archive is a real side effect (writes raw/<day>/…). In
+        # --dry-run we skip it so a dry run is side-effect-free except printing
+        # (D1) — the raw archive ran BEFORE the dry_run guard before this fix.
+        if raw is not None and not self.dry_run:
             try:
                 event = dict(event)
                 event["raw_path"] = str(self.archive_raw(ext, raw, now))
@@ -508,19 +587,38 @@ class Connector:
         NEVER runs inside the pulse — this is the connector's own process. A
         poll exception is logged into the heartbeat and the loop continues
         (a transient API blip must not kill the daemon). `max_iterations` and
-        an injected `sleep` make the loop unit-testable without real waiting."""
+        an injected `sleep` make the loop unit-testable without real waiting.
+
+        Under a rate-limit / error the loop backs off instead of hammering the
+        fixed cadence (OP1): it honors a ``retry_after_sec`` the poll surfaces
+        from Retry-After/X-RateLimit-Reset, and otherwise applies a bounded
+        exponential backoff, resetting to the cadence on the first healthy poll.
+        """
         cadence = float(self.config.get("cadence_sec", DEFAULT_CADENCE_SEC))
         i = 0
+        backoff = 0.0
         while max_iterations is None or i < max_iterations:
             i += 1
+            errored = True
+            retry_after = None
             try:
-                self.poll_once()
+                result = self.poll_once() or {}
                 self.prune_raw()
+                retry_after = result.get("retry_after_sec")
+                errored = (str(result.get("status", "")) not in
+                           _HEALTHY_STATUSES) or bool(retry_after)
             except Exception as e:  # noqa: BLE001 — never kill the daemon
                 self._log(f"{self.name}: poll failed: {e}")
                 try:
                     self.write_heartbeat(errors=[str(e)[:300]])
                 except OSError:
                     pass
+            if errored:
+                backoff = min(MAX_BACKOFF_SEC,
+                              (backoff * 2) if backoff else cadence)
+                delay = max(cadence, float(retry_after or 0.0), backoff)
+            else:
+                backoff = 0.0
+                delay = cadence
             if max_iterations is None or i < max_iterations:
-                sleep(cadence)
+                sleep(delay)

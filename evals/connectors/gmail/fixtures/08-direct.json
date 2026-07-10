@@ -42,7 +42,9 @@
     "title": "Question 0",
     "snippet": "Hey, can you help with 0?",
     "url": "https://mail.google.com/mail/u/0/#all/18f0000000000008",
-    "refs": {},
+    "refs": {
+      "sender": "p0@corp.example"
+    },
     "raw_path": null
   }
 }

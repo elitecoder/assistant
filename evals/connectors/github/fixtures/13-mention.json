@@ -28,8 +28,11 @@
     "actor": "elitecoder",
     "title": "[mention] item 13 in elitecoder/firefly-platform",
     "snippet": "elitecoder/firefly-platform \u00b7 mention \u00b7 Issue",
-    "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/13",
-    "refs": {},
+    "url": "https://github.com/elitecoder/firefly-platform/pull/13",
+    "refs": {
+      "repo": "elitecoder/firefly-platform",
+      "pr": "13"
+    },
     "raw_path": null
   }
 }

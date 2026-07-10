@@ -28,8 +28,11 @@
     "actor": "elitecoder",
     "title": "[assign] item 15 in elitecoder/assistant",
     "snippet": "elitecoder/assistant \u00b7 assign \u00b7 Commit",
-    "url": "https://api.github.com/repos/elitecoder/assistant/pulls/15",
-    "refs": {},
+    "url": "https://github.com/elitecoder/assistant/pull/15",
+    "refs": {
+      "repo": "elitecoder/assistant",
+      "pr": "15"
+    },
     "raw_path": null
   }
 }

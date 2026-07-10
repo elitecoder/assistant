@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -123,6 +124,29 @@ class NormalizeTests(unittest.TestCase):
             ACCT)
         self.assertEqual(ev["kind"], "message")
 
+    def test_sec2_directly_addressed_security_mail_is_direct_not_newsletter(self):
+        # SEC2: an SSH-key-added / unusual-sign-in alert carries a
+        # List-Unsubscribe header yet is addressed straight To:me. It must NOT
+        # be tagged newsletter (which the policy drops) — direct-addressed wins.
+        ev = gm.message_to_event(_msg(
+            "sec", {"From": "GitHub <noreply@github.com>", "To": ACCT,
+                    "Subject": "[GitHub] A new SSH key was added",
+                    "List-Unsubscribe": "<mailto:u@github.com>"}), ACCT)
+        self.assertEqual(ev["kind"], "direct")
+
+    def test_sec2_newsletter_still_newsletter_when_not_addressed_to_me(self):
+        ev = gm.message_to_event(_msg(
+            "nl", {"From": "N <n@x.com>", "To": "list@x.com",
+                   "Subject": "Digest", "List-Unsubscribe": "<mailto:u>"}),
+            ACCT)
+        self.assertEqual(ev["kind"], "newsletter")
+
+    def test_n1_sender_ref_populated(self):
+        ev = gm.message_to_event(_msg(
+            "r", {"From": "Alice <alice@corp.example>", "To": "t@x.com",
+                  "Subject": "hi"}), ACCT)
+        self.assertEqual(ev["refs"], {"sender": "alice@corp.example"})
+
     def test_internaldate_becomes_ts(self):
         ev = gm.message_to_event(_msg(
             "f", {"From": "x", "Subject": "y"}, internal="1783000000000"), ACCT)
@@ -212,6 +236,166 @@ class PollTests(HomeTestCase):
         hb = json.loads(c.heartbeat_path().read_text())
         self.assertFalse(hb["ok"])
         self.assertEqual(http.calls, [])  # never hit Gmail without a token
+
+
+# ─── cursor-discipline: at-least-once, no event loss (BLOCKER E1/E2 + E4/E5) ──
+
+class HistoryHttp:
+    """A history-aware fake: users.history.list returns the records whose
+    per-change id is > startHistoryId (Gmail's real semantics), so a cursor
+    that advanced to record R re-fetches ONLY R+1… next poll. messages.get is
+    controllable per-id: transient failures (429), 404-gone, poison payloads."""
+    def __init__(self, records, *, msg_status=None, poison=(), gone=(),
+                 fail_once=()):
+        # records: ordered list of (record_id:int, message_id:str)
+        self.records = list(records)
+        self.newest = str(max((r for r, _ in records), default=0))
+        self.msg_status = dict(msg_status or {})
+        self.poison = set(poison)
+        self.gone = set(gone)
+        self.fail_once = set(fail_once)
+        self._failed = set()
+        self.calls = []
+
+    def __call__(self, method, url, headers=None, data=None):
+        assert method == "GET", f"read-only violated: {method}"
+        self.calls.append(url)
+        if "/history" in url:
+            start = int(re.search(r"startHistoryId=(\d+)", url).group(1))
+            recs = [{"id": str(rid),
+                     "messagesAdded": [{"message": {"id": mid}}]}
+                    for rid, mid in self.records if rid > start]
+            return (200, {}, json.dumps(
+                {"historyId": self.newest, "history": recs}).encode())
+        if "/messages/" in url:
+            mid = url.split("/messages/")[1].split("?")[0]
+            if mid in self.fail_once and mid not in self._failed:
+                self._failed.add(mid)
+                return (429, {"Retry-After": "30"}, b"{}")
+            if mid in self.gone:
+                return (404, {}, b"{}")
+            if mid in self.msg_status:
+                return (self.msg_status[mid], {}, b"{}")
+            if mid in self.poison:
+                return (200, {}, json.dumps(
+                    {"id": mid, "payload": "NOT-A-DICT"}).encode())
+            return (200, {}, json.dumps(_msg(
+                mid, {"From": f"{mid}@x.com", "Subject": mid})).encode())
+
+
+class CursorDisciplineTests(HomeTestCase):
+    def _seed(self, start="0"):
+        self.seed_token(expiry_epoch=10**9)
+        c = gm.GmailConnector()
+        c.save_cursor({"history_id": start, "email": ACCT})
+
+    def _emitted_ids(self):
+        ids = set()
+        for d in (self.home / ".assistant/inbox").glob("evt-gmail-*.json"):
+            ids.add(json.loads(d.read_text())["external_id"])
+        return ids
+
+    def test_e1_burst_over_cap_loses_nothing_across_polls(self):
+        # 250-message burst, cap 200 → first poll emits 200 and parks the
+        # cursor at the last DELIVERED record (never the mailbox head); the
+        # remaining 50 arrive next poll. Zero loss across polls.
+        recs = [(i, f"m{i}") for i in range(1, 251)]
+        self._seed("0")
+        http = HistoryHttp(recs)
+        c1 = gm.GmailConnector(http=http, oauth_transport=lambda u, f: {})
+        c1.config["max_events_per_poll"] = 200
+        r1 = c1.poll_once(now=1)
+        self.assertEqual(r1["emitted"], 200)
+        self.assertTrue(r1["truncated"] or r1["emitted"] == 200)
+        self.assertEqual(len(self._emitted_ids()), 200)
+        # cursor parked at record 200, NOT the newest (250)
+        self.assertEqual(c1.load_cursor()["history_id"], "200")
+
+        c2 = gm.GmailConnector(http=http, oauth_transport=lambda u, f: {})
+        c2.config["max_events_per_poll"] = 200
+        r2 = c2.poll_once(now=2)
+        self.assertEqual(r2["emitted"], 50)
+        self.assertEqual(len(self._emitted_ids()), 250)  # all 250, no loss
+        self.assertEqual(c2.load_cursor()["history_id"], "250")
+
+    def test_e2_transient_per_message_failure_refetches_victim(self):
+        # One 429 mid-batch must NOT advance the cursor past the victim; the
+        # victim is re-fetched and delivered on the next poll.
+        recs = [(1, "m1"), (2, "m2"), (3, "m3")]
+        self._seed("0")
+        http = HistoryHttp(recs, fail_once={"m2"})
+        c1 = gm.GmailConnector(http=http, oauth_transport=lambda u, f: {})
+        r1 = c1.poll_once(now=1)
+        self.assertEqual(r1["emitted"], 1)              # only m1 got through
+        self.assertEqual(self._emitted_ids(), {"gmail:m1"})
+        self.assertEqual(c1.load_cursor()["history_id"], "1")  # parked at m1
+
+        c2 = gm.GmailConnector(http=http, oauth_transport=lambda u, f: {})
+        r2 = c2.poll_once(now=2)
+        self.assertEqual(r2["emitted"], 2)              # m2 (retried) + m3
+        self.assertEqual(self._emitted_ids(),
+                         {"gmail:m1", "gmail:m2", "gmail:m3"})
+        self.assertEqual(c2.load_cursor()["history_id"], "3")
+
+    def test_e4_poison_item_is_skipped_counted_and_does_not_wedge(self):
+        # [good, poison, good] → both goods delivered, poison counted in the
+        # heartbeat (not silent), cursor advances (no wedge behind the poison).
+        recs = [(1, "m1"), (2, "bad"), (3, "m3")]
+        self._seed("0")
+        http = HistoryHttp(recs, poison={"bad"})
+        c = gm.GmailConnector(http=http, oauth_transport=lambda u, f: {})
+        r = c.poll_once(now=1)
+        self.assertEqual(r["emitted"], 2)
+        self.assertEqual(r["malformed"], 1)
+        self.assertEqual(self._emitted_ids(), {"gmail:m1", "gmail:m3"})
+        self.assertEqual(c.load_cursor()["history_id"], "3")  # not wedged
+        hb = json.loads(c.heartbeat_path().read_text())
+        self.assertFalse(hb["ok"])
+        self.assertTrue(any("malformed" in e for e in hb["errors"]))
+
+    def test_e5_history_404_reseed_is_visible_in_heartbeat(self):
+        # The 404-reseed is a real loss window — it must degrade ok/show the
+        # error, not report ok:true/errors:[] like a clean seed.
+        self.seed_token(expiry_epoch=10**9)
+        c0 = self.make(RouterHttp(profile=(
+            200, {}, json.dumps({"historyId": "9",
+                                 "emailAddress": ACCT}).encode())))
+        c0.poll_once(now=1)
+        c = self.make(RouterHttp(
+            history=(404, {}, b"{}"),
+            profile=(200, {}, json.dumps({"historyId": "77",
+                                          "emailAddress": ACCT}).encode())))
+        res = c.poll_once(now=2)
+        self.assertEqual(res["status"], "seeded")
+        hb = json.loads(c.heartbeat_path().read_text())
+        self.assertFalse(hb["ok"])            # E5: NOT ok:true
+        self.assertTrue(any("404" in e for e in hb["errors"]))
+
+    def test_o1_oauth_failure_heartbeat_carries_cached_expiry(self):
+        # A wrapped refresh failure (network-down) must leave the token-expiry
+        # signal intact: the fallback heartbeat carries the CACHED expiry, not
+        # null. (The default transport wraps URLError as OAuthError — see the
+        # base test; here we assert the heartbeat side.)
+        self.seed_token(expiry_epoch=1000)
+
+        def bad_oauth(uri, form):
+            raise gm.connector.OAuthError("token endpoint unreachable")
+
+        c = gm.GmailConnector(http=RouterHttp(), oauth_transport=bad_oauth)
+        c.poll_once(now=1783080000)
+        hb = json.loads(c.heartbeat_path().read_text())
+        self.assertEqual(hb["token_expiry_epoch"], 1000)  # cached, not null
+        self.assertFalse(hb["ok"])
+
+    def test_o1_once_writes_heartbeat_on_failure_not_crash(self):
+        # `--once` with no token cache must exit cleanly WITH a heartbeat
+        # (unhandled traceback + no heartbeat was the O1 hazard under launchd).
+        rc = gm.main(["--once"])
+        self.assertEqual(rc, 0)
+        hb_path = (self.home / ".assistant/connectors/gmail/heartbeat.json")
+        self.assertTrue(hb_path.exists())
+        hb = json.loads(hb_path.read_text())
+        self.assertFalse(hb["ok"])
 
 
 if __name__ == "__main__":

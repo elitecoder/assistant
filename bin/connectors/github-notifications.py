@@ -26,6 +26,7 @@ Stdlib only (urllib via the base's injectable transport). No LLM.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -41,6 +42,39 @@ from assistant import connector  # noqa: E402
 SOURCE = "github"
 NAME = "github"
 API_URL = "https://api.github.com/notifications"
+
+# api.github.com/repos/<owner>/<repo>/(pulls|issues)/<n> → the human html_url.
+_SUBJECT_API_RE = re.compile(
+    r"api\.github\.com/repos/([^/]+)/([^/]+)/(pulls|issues)/(\d+)")
+# Link: <url>; rel="next" pagination (GitHub returns 50 threads/page).
+_NEXT_LINK_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
+
+
+def _human_url_and_refs(repo: str, subject_url) -> tuple:
+    """Map a notification subject to (human html_url, refs). GitHub's
+    notification `subject.url` is the API url (…/pulls/12); downstream wants
+    the clickable html_url (…/pull/12) and typed refs (repo + pr number) so the
+    goal-linker can match a merged PR to its goal (N1). Unmatched subjects keep
+    their original url and just carry the repo ref."""
+    refs: dict = {}
+    if repo and repo != "?/?":
+        refs["repo"] = repo
+    url = subject_url
+    if isinstance(subject_url, str):
+        m = _SUBJECT_API_RE.search(subject_url)
+        if m:
+            owner, name, kind, num = m.groups()
+            path = "pull" if kind == "pulls" else "issues"
+            url = f"https://github.com/{owner}/{name}/{path}/{num}"
+            if kind == "pulls":
+                refs["pr"] = num
+    return url, refs
+
+
+def _next_link(headers: dict):
+    link = headers.get("Link") or headers.get("link") or ""
+    m = _NEXT_LINK_RE.search(link)
+    return m.group(1) if m else None
 
 
 def gh_cli_token() -> str:
@@ -69,6 +103,7 @@ def notification_to_event(notif: dict) -> dict:
     ts_epoch = connector.eventspine.parse_iso(updated_at)
     if ts_epoch is None:
         ts_epoch = connector.time.time()
+    url, refs = _human_url_and_refs(repo, subject.get("url"))
     return connector.build_world_event(
         source=SOURCE,
         kind=reason,
@@ -77,8 +112,8 @@ def notification_to_event(notif: dict) -> dict:
         actor=owner,
         title=title,
         snippet=f"{repo} · {reason}" + (f" · {subj_type}" if subj_type else ""),
-        url=subject.get("url"),
-        refs={},
+        url=url,
+        refs=refs,
     )
 
 
@@ -92,74 +127,118 @@ class GitHubNotificationsConnector(connector.Connector):
         now = now if now is not None else connector.time.time()
         cursor = self.load_cursor()
         errors: list = []
-        emitted = 0
-        headers = {
+        base_headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "assistant-connector-github",
         }
         try:
-            headers["Authorization"] = f"Bearer {self._token_provider()}"
+            base_headers["Authorization"] = f"Bearer {self._token_provider()}"
         except Exception as e:  # noqa: BLE001
             errors.append(f"token: {str(e)[:200]}")
             self.write_heartbeat(last_poll_epoch=now, errors=errors)
             return {"status": "auth_error", "emitted": 0, "errors": errors}
 
         last_mod = cursor.get("last_modified")
-        if last_mod:
-            headers["If-Modified-Since"] = last_mod
-
-        try:
-            status, resp_headers, body = self._http("GET", API_URL,
-                                                    headers=headers)
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"http: {str(e)[:200]}")
-            self.write_heartbeat(last_poll_epoch=now, errors=errors)
-            return {"status": "http_error", "emitted": 0, "errors": errors}
-
-        if status == 304:  # watermark says nothing changed — cheap no-op
-            self.write_heartbeat(last_poll_epoch=now,
-                                 poll_count=cursor.get("poll_count", 0) + 1)
-            self._advance_poll_count(cursor)
-            return {"status": "not_modified", "emitted": 0, "errors": errors}
-        if status != 200:
-            errors.append(f"status {status}")
-            self.write_heartbeat(last_poll_epoch=now, errors=errors)
-            return {"status": f"status_{status}", "emitted": 0,
-                    "errors": errors}
-
-        try:
-            items = connector.json.loads(body.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as e:
-            errors.append(f"parse: {str(e)[:200]}")
-            self.write_heartbeat(last_poll_epoch=now, errors=errors)
-            return {"status": "parse_error", "emitted": 0, "errors": errors}
-        if not isinstance(items, list):
-            items = []
-
         cap = int(self.config.get("max_events_per_poll",
                                   connector.DEFAULT_MAX_EVENTS_PER_POLL))
-        for notif in items[:cap]:
-            if not isinstance(notif, dict):
+        max_pages = int(self.config.get("max_pages",
+                                        connector.DEFAULT_MAX_PAGES))
+
+        # ── fetch ALL pages before emitting or advancing the watermark ──────
+        # E1/E3: reading only page 1 and then advancing the watermark drops
+        # page 2+. Walk Link: rel="next" to the end; if we stop early (cap or
+        # page cap) mark the batch TRUNCATED so the watermark is NOT advanced —
+        # the remainder is re-fetched next poll (never jump past un-emitted
+        # threads).
+        collected: list = []
+        first_last_mod = None
+        truncated = False
+        url = API_URL
+        pages = 0
+        while url:
+            pages += 1
+            headers = dict(base_headers)
+            if pages == 1 and last_mod:
+                headers["If-Modified-Since"] = last_mod
+            try:
+                status, resp_headers, body = self._http("GET", url,
+                                                        headers=headers)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"http: {str(e)[:200]}")
+                self.write_heartbeat(last_poll_epoch=now, errors=errors)
+                return {"status": "http_error", "emitted": 0, "errors": errors}
+
+            if pages == 1 and status == 304:  # nothing changed — cheap no-op
+                self._advance_poll_count(cursor)
+                self.write_heartbeat(
+                    last_poll_epoch=now,
+                    poll_count=cursor.get("poll_count", 0) + 1)
+                return {"status": "not_modified", "emitted": 0,
+                        "errors": errors}
+            if status != 200:
+                errors.append(f"status {status}")
+                res = {"status": f"status_{status}", "emitted": 0,
+                       "errors": errors}
+                if status in (403, 429):  # OP1: honor the server's backoff
+                    ra = connector.parse_retry_after(resp_headers, now)
+                    if ra is not None:
+                        res["retry_after_sec"] = ra
+                self.write_heartbeat(last_poll_epoch=now, errors=errors)
+                return res
+
+            try:
+                items = connector.json.loads(body.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as e:
+                errors.append(f"parse: {str(e)[:200]}")
+                self.write_heartbeat(last_poll_epoch=now, errors=errors)
+                return {"status": "parse_error", "emitted": 0,
+                        "errors": errors}
+            if not isinstance(items, list):
+                items = []
+            if pages == 1:
+                first_last_mod = (resp_headers.get("Last-Modified")
+                                  or resp_headers.get("last-modified"))
+            collected.extend(n for n in items if isinstance(n, dict))
+
+            nxt = _next_link(resp_headers)
+            if not nxt:
+                break  # fully consumed — safe to advance the watermark
+            if len(collected) >= cap or pages >= max_pages:
+                truncated = True
+                break
+            url = nxt
+
+        # ── emit (one poison thread must not wedge or lose the rest — E4) ────
+        emitted = 0
+        malformed = 0
+        for notif in collected[:cap]:
+            try:
+                event = notification_to_event(notif)
+            except Exception as e:  # noqa: BLE001 — upstream schema drift
+                malformed += 1
+                errors.append(f"malformed item: {str(e)[:120]}")
                 continue
-            event = notification_to_event(notif)
             self.emit(event, raw=notif, now=now)
             emitted += 1
+        if len(collected) > cap:  # more collected than we emitted → truncated
+            truncated = True
 
-        # Advance the durable watermark ONLY after the batch is dropped — a
-        # crash before this leaves the old Last-Modified so the next run
-        # re-fetches (at-least-once; the spine dedups the overlap).
+        # Advance the watermark ONLY when the full set was consumed AND emitted
+        # (design connector.py: "the watermark advances ONLY after the batch it
+        # covers is safely dropped"). On truncation keep the old watermark so
+        # the remainder re-fetches next poll.
         new_cursor = dict(cursor)
-        lm = resp_headers.get("Last-Modified") or resp_headers.get(
-            "last-modified")
-        if lm:
-            new_cursor["last_modified"] = lm
+        if not truncated and first_last_mod:
+            new_cursor["last_modified"] = first_last_mod
         new_cursor["poll_count"] = cursor.get("poll_count", 0) + 1
         new_cursor["last_emitted"] = emitted
         self.save_cursor(new_cursor)
         self.write_heartbeat(last_poll_epoch=now, event_count=emitted,
-                             poll_count=new_cursor["poll_count"])
-        return {"status": "ok", "emitted": emitted, "errors": errors}
+                             poll_count=new_cursor["poll_count"],
+                             errors=errors or None)
+        return {"status": "ok", "emitted": emitted, "errors": errors,
+                "malformed": malformed, "truncated": truncated}
 
     def _advance_poll_count(self, cursor: dict) -> None:
         c = dict(cursor)

@@ -37,7 +37,9 @@
     "title": "Notice 3",
     "snippet": "Automated notice 3",
     "url": "https://mail.google.com/mail/u/0/#all/18f0000000000013",
-    "refs": {},
+    "refs": {
+      "sender": "bot3@svc.example"
+    },
     "raw_path": null
   }
 }

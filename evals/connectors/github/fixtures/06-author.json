@@ -28,8 +28,11 @@
     "actor": "elitecoder",
     "title": "[author] item 6 in elitecoder/assistant",
     "snippet": "elitecoder/assistant \u00b7 author \u00b7 PullRequest",
-    "url": "https://api.github.com/repos/elitecoder/assistant/pulls/6",
-    "refs": {},
+    "url": "https://github.com/elitecoder/assistant/pull/6",
+    "refs": {
+      "repo": "elitecoder/assistant",
+      "pr": "6"
+    },
     "raw_path": null
   }
 }

@@ -88,6 +88,25 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(ev["source"], "github")
         self.assertTrue(ev["external_id"].startswith("gh-notif:?/?:1:"))
 
+    def test_n1_pr_subject_yields_html_url_and_refs(self):
+        n = notif(9, "review_requested")
+        n["subject"]["url"] = \
+            "https://api.github.com/repos/elitecoder/assistant/pulls/9"
+        ev = ghc.notification_to_event(n)
+        self.assertEqual(ev["url"],
+                         "https://github.com/elitecoder/assistant/pull/9")
+        self.assertEqual(ev["refs"], {"repo": "elitecoder/assistant",
+                                      "pr": "9"})
+
+    def test_n1_issue_subject_yields_html_url_no_pr_ref(self):
+        n = notif(4, "mention")
+        n["subject"]["url"] = \
+            "https://api.github.com/repos/elitecoder/assistant/issues/4"
+        ev = ghc.notification_to_event(n)
+        self.assertEqual(ev["url"],
+                         "https://github.com/elitecoder/assistant/issues/4")
+        self.assertEqual(ev["refs"], {"repo": "elitecoder/assistant"})
+
 
 class PollTests(HomeTestCase):
     def test_200_emits_events_and_sets_watermark(self):
@@ -146,6 +165,63 @@ class PollTests(HomeTestCase):
         self.assertEqual(hb["source"], "github")
         self.assertEqual(hb["event_count"], 1)
         self.assertTrue(hb["ok"])
+
+
+# ─── cursor-discipline: pagination + watermark (BLOCKER E3/E1 + E4) ───────────
+
+_NEXT = '<https://api.github.com/notifications?page=2>; rel="next"'
+
+
+class PaginationTests(HomeTestCase):
+    def test_e3_follows_link_next_and_delivers_all_pages(self):
+        # 60-thread backlog paginated at 50 → all 60 delivered, and the
+        # watermark advances only ONCE the full set is emitted (page 2 read).
+        page1 = json.dumps([notif(i) for i in range(1, 51)]).encode()
+        page2 = json.dumps([notif(i) for i in range(51, 61)]).encode()
+        c, http = self.make([
+            (200, {"Last-Modified": "LM-final", "Link": _NEXT}, page1),
+            (200, {}, page2)])
+        res = c.poll_once(now=1783080000)
+        self.assertEqual(res["emitted"], 60)
+        self.assertFalse(res["truncated"])
+        drops = list((self.home / ".assistant/inbox").glob("evt-github-*.json"))
+        self.assertEqual(len(drops), 60)
+        self.assertEqual(len(http.calls), 2)          # page 2 WAS fetched
+        self.assertEqual(c.load_cursor()["last_modified"], "LM-final")
+
+    def test_e1_truncation_does_not_advance_watermark(self):
+        # Stop early (cap) while a next page still exists → the watermark is NOT
+        # advanced, so the un-emitted remainder re-fetches next poll (no loss).
+        body = json.dumps([notif(i) for i in range(1, 4)]).encode()
+        c, http = self.make([(200, {"Last-Modified": "LM", "Link": _NEXT},
+                              body)])
+        c.config["max_events_per_poll"] = 2
+        res = c.poll_once(now=1)
+        self.assertEqual(res["emitted"], 2)
+        self.assertTrue(res["truncated"])
+        # watermark NOT persisted → next poll re-fetches from the same point
+        self.assertIsNone(c.load_cursor().get("last_modified"))
+
+    def test_e4_poison_thread_skipped_counted_no_wedge(self):
+        # [good, poison, good] → both goods delivered, poison counted in the
+        # heartbeat (repository is a bare string → AttributeError before fix).
+        good1 = notif(1, "mention")
+        poison = {"id": "2", "reason": "mention", "repository": "NOT-A-DICT",
+                  "updated_at": "2026-07-10T12:02:00Z",
+                  "subject": {"title": "x", "type": "Issue"}}
+        good3 = notif(3, "review_requested")
+        c, _ = self.make([(200, {"Last-Modified": "LM"},
+                           json.dumps([good1, poison, good3]).encode())])
+        res = c.poll_once(now=1)
+        self.assertEqual(res["emitted"], 2)
+        self.assertEqual(res["malformed"], 1)
+        drops = list((self.home / ".assistant/inbox").glob("evt-github-*.json"))
+        self.assertEqual(len(drops), 2)
+        hb = json.loads(c.heartbeat_path().read_text())
+        self.assertFalse(hb["ok"])
+        self.assertTrue(any("malformed" in e for e in hb["errors"]))
+        # fully consumed (one page, no truncation) → watermark still advances
+        self.assertEqual(c.load_cursor()["last_modified"], "LM")
 
 
 if __name__ == "__main__":

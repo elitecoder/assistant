@@ -17,6 +17,7 @@ import os
 import sys
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -74,6 +75,18 @@ class SchemaParityTests(HomeTestCase):
             ts_epoch=1783000000, snippet="z" * 5000)
         self.assertEqual(len(ev["snippet"]), eventspine.SNIPPET_MAX_CHARS)
 
+    def test_n3_snippet_capped_by_utf8_bytes_not_codepoints(self):
+        # A 2000-emoji snippet is 8000 UTF-8 bytes but only 2000 code points —
+        # a code-point cap would let it blow ~4× past the 2KB store budget (N3).
+        ev = connector.build_world_event(
+            source="gmail", kind="message", external_id="gmail:z",
+            ts_epoch=1783000000, snippet="\U0001F600" * 2000)
+        n = len(ev["snippet"].encode("utf-8"))
+        self.assertLessEqual(n, eventspine.SNIPPET_MAX_BYTES)
+        self.assertLessEqual(n, 2048)
+        # …and the truncation leaves valid UTF-8 (no split trailing sequence).
+        ev["snippet"].encode("utf-8").decode("utf-8")
+
 
 # ─── atomic drop + spine round-trip ──────────────────────────────────────────
 
@@ -111,6 +124,28 @@ class EmitTests(HomeTestCase):
         self.assertIsNone(p)
         self.assertFalse(eventspine.inbox_dir().exists()
                          and list(eventspine.inbox_dir().glob("evt-*.json")))
+
+    def test_d1_dry_run_is_side_effect_free(self):
+        # --dry-run must NOT advance/save the cursor and must NOT write the raw
+        # archive — the debug tool must not destroy the events it inspects (D1).
+        c = connector.Connector("github", "github", dry_run=True)
+        c.save_cursor({"history_id": "9"})
+        self.assertFalse(c.cursor_path().exists(), "dry-run wrote cursor.json")
+        c.emit(self.sample_event(), raw={"id": "1", "reason": "mention"})
+        self.assertFalse(c.raw_dir().exists(), "dry-run wrote raw/ archive")
+
+    def test_n2_raw_path_preserved_through_spine_remint(self):
+        # The canonical events.jsonl row's raw_path must resolve to the
+        # connector's raw/ UPSTREAM payload, not a normalized copy (N2).
+        c = connector.Connector("github", "github")
+        c.emit(self.sample_event(), raw={"id": "1", "reason": "mention"})
+        eventspine.drain_typed_inbox()
+        rows = [json.loads(l) for l in
+                eventspine.events_path().read_text().splitlines()]
+        rp = rows[0]["raw_path"]
+        self.assertIn("connectors/github/raw", rp)
+        self.assertTrue(Path(rp).exists())
+        self.assertEqual(json.loads(Path(rp).read_text())["id"], "1")
 
 
 # ─── durable cursor ──────────────────────────────────────────────────────────
@@ -305,6 +340,164 @@ class OAuthTests(HomeTestCase):
             p, transport=lambda u, f: {"access_token": "N", "expires_in": 1})
         mgr.refresh(now=2000)
         self.assertEqual(os.stat(p).st_mode & 0o077, 0)
+
+    def test_sec3a_tmp_never_group_or_other_readable_during_write(self):
+        # Sample the tmp's mode at the instant before os.replace: it must be
+        # 0600 the WHOLE time (created 0600 atomically), never a 0644 window
+        # before a chmod (SEC3a).
+        p = self._seed_token(expiry_epoch=1000)
+        modes = []
+        orig = connector.os.replace
+
+        def spy(src, dst):
+            modes.append(os.stat(src).st_mode & 0o777)
+            return orig(src, dst)
+
+        connector.os.replace = spy
+        try:
+            connector.OAuthTokenManager(
+                p, transport=lambda u, f: {"access_token": "N",
+                                           "expires_in": 1}).refresh(now=2000)
+        finally:
+            connector.os.replace = orig
+        self.assertTrue(modes)
+        for m in modes:
+            self.assertEqual(m & 0o077, 0, f"tmp mode {oct(m)} exposed")
+
+    def test_sec3b_concurrent_saves_use_unique_tmp_names(self):
+        p = self._seed_token(expiry_epoch=1000)
+        names = []
+        orig = connector.os.replace
+
+        def spy(src, dst):
+            names.append(str(src))
+            return orig(src, dst)
+
+        connector.os.replace = spy
+        try:
+            mgr = connector.OAuthTokenManager(
+                p, transport=lambda u, f: {"access_token": "N",
+                                           "expires_in": 1})
+            mgr.refresh(now=2000)
+            mgr.refresh(now=3000)
+        finally:
+            connector.os.replace = orig
+        self.assertEqual(len(names), 2)
+        self.assertNotEqual(names[0], names[1])  # per-writer unique tmp
+
+    def test_o1_urlerror_refresh_becomes_oauth_error(self):
+        # Network-down (URLError/timeout) must be wrapped as OAuthError so the
+        # token-expiry signal survives and --once doesn't crash (O1).
+        orig = connector.urllib.request.urlopen
+
+        def boom(*a, **k):
+            raise urllib.error.URLError("network down")
+
+        connector.urllib.request.urlopen = boom
+        try:
+            with self.assertRaises(connector.OAuthError):
+                connector._urllib_token_post(
+                    "https://x/token", {"grant_type": "refresh_token"})
+        finally:
+            connector.urllib.request.urlopen = orig
+
+    def test_o1_bad_json_refresh_becomes_oauth_error(self):
+        class _R:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=None):
+                return b"<html>not json</html>"
+
+        orig = connector.urllib.request.urlopen
+        connector.urllib.request.urlopen = lambda *a, **k: _R()
+        try:
+            with self.assertRaises(connector.OAuthError):
+                connector._urllib_token_post("https://x/token", {})
+        finally:
+            connector.urllib.request.urlopen = orig
+
+
+# ─── OP2 bounded read / OP1 backoff / retry-after (LOW) ───────────────────────
+
+class BoundedReadTests(HomeTestCase):
+    def test_op2_response_read_is_capped(self):
+        captured = {}
+
+        class _R:
+            status = 200
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=None):
+                captured["n"] = n
+                return b"{}"
+
+        orig = connector.urllib.request.urlopen
+        connector.urllib.request.urlopen = lambda *a, **k: _R()
+        try:
+            connector.urllib_transport("GET", "https://x")
+        finally:
+            connector.urllib.request.urlopen = orig
+        self.assertEqual(captured["n"], connector.MAX_RESPONSE_BYTES)
+
+
+class RetryAfterParseTests(HomeTestCase):
+    def test_delta_seconds(self):
+        self.assertEqual(
+            connector.parse_retry_after({"Retry-After": "45"}, now=1000), 45.0)
+
+    def test_x_ratelimit_reset_epoch(self):
+        self.assertEqual(
+            connector.parse_retry_after({"X-RateLimit-Reset": "1120"},
+                                        now=1000), 120.0)
+
+    def test_none_when_absent(self):
+        self.assertIsNone(connector.parse_retry_after({}, now=1000))
+
+
+class BackoffLoopTests(HomeTestCase):
+    def _stub(self, results):
+        class _Stub(connector.Connector):
+            def __init__(s):
+                super().__init__("x", "x", config={"cadence_sec": 60})
+                s._q = list(results)
+                s._i = 0
+
+            def poll_once(s, now=None):
+                r = s._q[s._i]
+                s._i += 1
+                return r
+
+        return _Stub()
+
+    def test_op1_honors_retry_after(self):
+        c = self._stub([{"status": "status_429", "retry_after_sec": 120},
+                        {"status": "ok"}])
+        sleeps = []
+        c.run_forever(max_iterations=2, sleep=lambda s: sleeps.append(s))
+        self.assertEqual(sleeps, [120.0])  # server backoff beats cadence
+
+    def test_op1_bounded_exponential_backoff_grows(self):
+        c = self._stub([{"status": "http_error"}, {"status": "http_error"},
+                        {"status": "ok"}])
+        sleeps = []
+        c.run_forever(max_iterations=3, sleep=lambda s: sleeps.append(s))
+        self.assertEqual(sleeps, [60.0, 120.0])  # grew under sustained error
+
+    def test_op1_healthy_polls_hold_cadence(self):
+        c = self._stub([{"status": "ok"}, {"status": "ok"}])
+        sleeps = []
+        c.run_forever(max_iterations=2, sleep=lambda s: sleeps.append(s))
+        self.assertEqual(sleeps, [60.0])
 
 
 if __name__ == "__main__":

@@ -38,7 +38,9 @@
     "title": "Digest #4",
     "snippet": "Top stories 4 \u2014 read more",
     "url": "https://mail.google.com/mail/u/0/#all/18f0000000000004",
-    "refs": {},
+    "refs": {
+      "sender": "news4@list.example"
+    },
     "raw_path": null
   }
 }

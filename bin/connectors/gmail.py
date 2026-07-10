@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from email.utils import parseaddr
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -66,9 +67,14 @@ def message_to_event(msg: dict, account_email: str = "") -> dict:
     (the replay fixtures test it directly).
 
     `kind` is derived MECHANICALLY from Gmail's own metadata — never an LLM or a
-    lane decision: a List-Unsubscribe header or a CATEGORY_* label → newsletter;
-    else the account address in To/Cc → direct; else message. Policies do the
-    laning (newsletter→drop, direct→escalate); the connector only labels."""
+    lane decision. DIRECT-ADDRESSED WINS FIRST (SEC2): if the account address is
+    in To/Cc → direct; else a List-Unsubscribe header or a CATEGORY_* label →
+    newsletter; else message. Testing newsletter first (the prior order) tagged
+    security mail — SSH-key-added / unusual-sign-in alerts that carry
+    List-Unsubscribe yet are addressed straight to the owner — as `newsletter`,
+    which the policy drops SILENTLY. Direct mail must never be auto-droppable.
+    Policies do the laning (newsletter→drop, direct→escalate); the connector
+    only labels."""
     msg_id = str(msg.get("id") or "?")
     headers = _headers_map(msg)
     labels = set(msg.get("labelIds") or [])
@@ -76,10 +82,10 @@ def message_to_event(msg: dict, account_email: str = "") -> dict:
     sender = headers.get("from") or ""
     to_cc = f"{headers.get('to','')} {headers.get('cc','')}".lower()
 
-    if "list-unsubscribe" in headers or (labels & NEWSLETTER_LABELS):
-        kind = "newsletter"
-    elif account_email and account_email.lower() in to_cc:
+    if account_email and account_email.lower() in to_cc:
         kind = "direct"
+    elif "list-unsubscribe" in headers or (labels & NEWSLETTER_LABELS):
+        kind = "newsletter"
     else:
         kind = "message"
 
@@ -92,6 +98,9 @@ def message_to_event(msg: dict, account_email: str = "") -> dict:
         ts_epoch = connector.eventspine.parse_iso(headers.get("date")) \
             or connector.time.time()
 
+    # N1: a typed sender ref so the goal-linker can match mail to a goal/person.
+    addr = parseaddr(sender)[1] or sender
+    refs = {"sender": addr} if addr else {}
     return connector.build_world_event(
         source=SOURCE,
         kind=kind,
@@ -101,7 +110,7 @@ def message_to_event(msg: dict, account_email: str = "") -> dict:
         title=subject,
         snippet=msg.get("snippet") or "",
         url=f"https://mail.google.com/mail/u/0/#all/{msg_id}",
-        refs={},
+        refs=refs,
     )
 
 
@@ -172,8 +181,12 @@ class GmailConnector(connector.Connector):
         new_cursor["email"] = prof.get("emailAddress") or cursor.get("email", "")
         new_cursor["poll_count"] = cursor.get("poll_count", 0) + 1
         self.save_cursor(new_cursor)
+        # E5: forward errors — a reseed reached here from the 404 path (history
+        # too old) is a REAL loss window; it must degrade `ok` and show in the
+        # heartbeat, not report ok:true/errors:[] as if it were a clean seed.
         self._heartbeat(now, event_count=0,
-                        poll_count=new_cursor["poll_count"])
+                        poll_count=new_cursor["poll_count"],
+                        errors=errors or None)
         return {"status": "seeded", "emitted": 0,
                 "history_id": new_cursor["history_id"], "errors": errors}
 
@@ -182,10 +195,18 @@ class GmailConnector(connector.Connector):
         start = cursor.get("history_id")
         cap = int(self.config.get("max_events_per_poll",
                                   connector.DEFAULT_MAX_EVENTS_PER_POLL))
-        message_ids: list = []
+        max_pages = int(self.config.get("max_pages",
+                                        connector.DEFAULT_MAX_PAGES))
+
+        # Collect changes as ordered (record_history_id, [message_id,...]). The
+        # per-record historyId is the cursor granularity: advancing to a record
+        # id means "every message up to and including this change is delivered".
+        records: list = []
         newest_history = start
+        total_mids = 0
         page_token = None
         pages = 0
+        truncated = False
         while True:
             pages += 1
             url = (f"{API_BASE}/history?startHistoryId={start}"
@@ -201,62 +222,128 @@ class GmailConnector(connector.Connector):
                         "errors": errors}
             if status == 404:
                 # historyId too old — Gmail expired it. Reseed rather than
-                # backfill the entire mailbox.
+                # backfill the entire mailbox (E5: the reseed is a loss window,
+                # surfaced in the heartbeat via _seed's forwarded errors).
                 errors.append("history 404 — reseeding")
                 return self._seed(now, token,
                                   {k: v for k, v in cursor.items()
                                    if k != "history_id"}, errors)
             if status != 200:
                 errors.append(f"history status {status}")
+                res = {"status": f"status_{status}", "emitted": 0,
+                       "errors": errors}
+                if status in (403, 429):  # OP1: honor the server's backoff
+                    ra = connector.parse_retry_after(_h, now)
+                    if ra is not None:
+                        res["retry_after_sec"] = ra
                 self._heartbeat(now, errors=errors)
-                return {"status": f"status_{status}", "emitted": 0,
-                        "errors": errors}
+                return res
             data = _safe_json(body)
             if data.get("historyId"):
                 newest_history = str(data["historyId"])
             for rec in (data.get("history") or []):
+                rid = str(rec.get("id") or "")
+                mids = []
                 for added in (rec.get("messagesAdded") or []):
                     mid = ((added.get("message") or {}).get("id"))
                     if mid:
-                        message_ids.append(str(mid))
+                        mids.append(str(mid))
+                if mids:
+                    records.append((rid, mids))
+                    total_mids += len(mids)
             page_token = data.get("nextPageToken")
-            if not page_token or len(message_ids) >= cap or pages >= 25:
+            if not page_token:
+                break  # fully consumed
+            if total_mids >= cap or pages >= max_pages:
+                truncated = True  # stopped early → do NOT jump to mailbox head
                 break
 
-        # De-dup ids within this batch (a message can appear in multiple history
-        # records); the spine still dedups across batches.
-        seen = set()
-        ordered_ids = [m for m in message_ids
-                       if not (m in seen or seen.add(m))][:cap]
-
+        # ── emit in order, tracking the safe (fully-delivered) record boundary.
+        # E1/E2: never advance the cursor past a message we did not deliver.
+        #   * a transient per-message fetch failure (429/5xx/timeout) FAILS the
+        #     batch at that point — the cursor stays at the last fully-delivered
+        #     record so the victim (and everything after) re-fetches next poll;
+        #   * a poison item (E4) or a vanished 404 message is skip-and-count —
+        #     it can never succeed, so it must not block the contiguous prefix
+        #     behind it; it is counted into the heartbeat, never silent.
+        emitted_ids: set = set()
         emitted = 0
-        for mid in ordered_ids:
-            url = (f"{API_BASE}/messages/{mid}?format=metadata"
-                   + "".join(f"&metadataHeaders={h}" for h in METADATA_HEADERS))
-            try:
-                status, _h, body = self._get(url, token)
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"msg {mid}: {str(e)[:120]}")
-                continue
-            if status != 200:
-                errors.append(f"msg {mid}: status {status}")
-                continue
-            msg = _safe_json(body)
-            event = message_to_event(msg, email)
-            self.emit(event, raw=msg, now=now)
-            emitted += 1
+        malformed = 0
+        gone = 0
+        failed_transient = False
+        hit_cap = False
+        last_safe = None
+        retry_after = None
+        for rid, mids in records:
+            record_done = True
+            for mid in mids:
+                if mid in emitted_ids:
+                    continue  # de-dup within the batch; already delivered
+                if emitted >= cap:
+                    record_done = False
+                    hit_cap = True
+                    break
+                url = (f"{API_BASE}/messages/{mid}?format=metadata"
+                       + "".join(f"&metadataHeaders={h}"
+                                 for h in METADATA_HEADERS))
+                try:
+                    status, _h, body = self._get(url, token)
+                except Exception as e:  # noqa: BLE001 — transient: fail batch
+                    errors.append(f"msg {mid}: {str(e)[:120]}")
+                    failed_transient = True
+                    record_done = False
+                    break
+                if status == 404:  # message vanished — unrecoverable; skip
+                    errors.append(f"msg {mid}: 404 gone")
+                    gone += 1
+                    emitted_ids.add(mid)
+                    continue
+                if status != 200:  # 429/5xx/403 — transient: fail the batch
+                    errors.append(f"msg {mid}: status {status}")
+                    if status in (403, 429):
+                        ra = connector.parse_retry_after(_h, now)
+                        if ra is not None:
+                            retry_after = ra
+                    failed_transient = True
+                    record_done = False
+                    break
+                msg = _safe_json(body)
+                try:
+                    event = message_to_event(msg, email)
+                except Exception as e:  # noqa: BLE001 — poison: skip-and-count
+                    errors.append(f"msg {mid}: malformed: {str(e)[:120]}")
+                    malformed += 1
+                    emitted_ids.add(mid)
+                    continue
+                self.emit(event, raw=msg, now=now)
+                emitted_ids.add(mid)
+                emitted += 1
+            if not record_done:
+                break
+            last_safe = rid  # every message in this record is delivered
 
-        # Advance the durable cursor ONLY after the batch is dropped.
+        # Advance the cursor ONLY over the delivered contiguous prefix. Full
+        # clean consumption → the newest historyId; otherwise the last fully
+        # delivered record; nothing delivered → keep the old cursor and retry.
+        fully_consumed = (not truncated and not failed_transient
+                          and not hit_cap)
         new_cursor = dict(cursor)
-        if newest_history:
+        if fully_consumed and newest_history:
             new_cursor["history_id"] = str(newest_history)
+        elif last_safe:
+            new_cursor["history_id"] = str(last_safe)
         new_cursor["poll_count"] = cursor.get("poll_count", 0) + 1
         new_cursor["last_emitted"] = emitted
         self.save_cursor(new_cursor)
         self._heartbeat(now, event_count=emitted,
-                        poll_count=new_cursor["poll_count"], errors=errors or None)
-        return {"status": "ok", "emitted": emitted,
-                "history_id": new_cursor.get("history_id"), "errors": errors}
+                        poll_count=new_cursor["poll_count"],
+                        errors=errors or None)
+        res = {"status": "ok", "emitted": emitted,
+               "history_id": new_cursor.get("history_id"), "errors": errors,
+               "malformed": malformed, "gone": gone, "truncated": truncated}
+        if retry_after is not None:
+            res["retry_after_sec"] = retry_after
+        return res
 
 
 def _safe_json(body) -> dict:

@@ -28,8 +28,11 @@
     "actor": "OneAdobe",
     "title": "[team_mention] item 14 in OneAdobe/mukul-memory",
     "snippet": "OneAdobe/mukul-memory \u00b7 team_mention \u00b7 CheckSuite",
-    "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/14",
-    "refs": {},
+    "url": "https://github.com/OneAdobe/mukul-memory/pull/14",
+    "refs": {
+      "repo": "OneAdobe/mukul-memory",
+      "pr": "14"
+    },
     "raw_path": null
   }
 }

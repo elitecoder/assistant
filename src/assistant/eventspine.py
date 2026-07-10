@@ -88,8 +88,13 @@ RAW_RETENTION_DAYS = 30
 # persistently-unparseable (old) file earns its once-ledger row.
 CRASH_SKIP_GRACE_SEC = 120
 
-# Snippet cap from the world-event/1 store schema (≤2KB).
+# Snippet cap from the world-event/1 store schema (≤2KB). The cap is on the
+# ENCODED UTF-8 byte length, not code points (N3): a code-point cap lets a
+# snippet of multi-byte characters (emoji, CJK) blow past 2KB — up to 4× — in
+# the store. SNIPPET_MAX_CHARS is retained as the byte budget (same 2048 value,
+# so an ASCII snippet is unchanged) and named for back-compat with callers.
 SNIPPET_MAX_CHARS = 2048
+SNIPPET_MAX_BYTES = SNIPPET_MAX_CHARS
 
 # How far back into events.jsonl the drain looks for ids whose dedup-index
 # write may not have landed (crash between append and index write). Recent
@@ -164,7 +169,14 @@ def event_id(source: str, external_id: str) -> str:
 
 
 def _snippet(text) -> str:
-    return str(text or "")[:SNIPPET_MAX_CHARS]
+    s = str(text or "")
+    b = s.encode("utf-8")
+    if len(b) <= SNIPPET_MAX_BYTES:
+        return s
+    # Truncate on the encoded bytes, then drop any partial trailing multi-byte
+    # sequence the cut left behind (errors="ignore") so the result is valid
+    # UTF-8 and never exceeds the byte budget.
+    return b[:SNIPPET_MAX_BYTES].decode("utf-8", "ignore")
 
 
 def _append_ledger(entry: dict) -> None:
@@ -243,6 +255,12 @@ def normalize_inbox_item(name: str, data, received_epoch: float) -> dict:
             external_id=external_id, actor=data.get("actor"),
             title=data.get("title") or "", snippet=data.get("snippet") or "",
             url=data.get("url"), refs=data.get("refs") or {},
+            # Preserve the PRODUCER's raw_path (N2): a connector already
+            # archived the real UPSTREAM payload under its own raw/ dir and
+            # pointed raw_path at it. Re-minting must carry that through so the
+            # canonical events.jsonl row references the upstream payload, not a
+            # normalized copy the spine would otherwise mint below.
+            raw_path=data.get("raw_path"),
         )
 
     # cmux-watcher signal drop (fleet-as-connector, zero producer changes).
@@ -559,7 +577,13 @@ def _drain_inbox_files(summary: dict, index: dict, seen: set,
                 p.unlink()
                 summary["inbox_duplicates"] += 1
             else:
-                event["raw_path"] = str(_archive_raw(p, now))
+                # A producer that already archived the real upstream payload
+                # (connector drops) set raw_path in the drop — keep it (N2).
+                # Only self-archive the inbox file when no producer raw_path
+                # exists (cmux signals, legacy pulse pings), where the inbox
+                # file IS the closest thing to a raw payload.
+                if not event.get("raw_path"):
+                    event["raw_path"] = str(_archive_raw(p, now))
                 _append_event(events_path(), event)
                 seen.add(event["id"])
                 index[event["id"]] = now
