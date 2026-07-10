@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e4",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "pulse",
+  "kind": "ping",
+  "external_id": "pulse:pulse-123.json",
+  "actor": null,
+  "title": "legacy pulse ping",
+  "snippet": "{}",
+  "url": null,
+  "refs": {},
+  "raw_path": null
+}

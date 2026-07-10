@@ -11,7 +11,14 @@ Pipeline (in order):
      (src/assistant/eventspine.py): every drop becomes a deduplicated
      WorldEvent in ~/.assistant/events.jsonl; malformed drops are
      quarantined, never fatal.
-  2. Run bin/purge-stale-awaiting.py (mechanical card cleanup).
+  1.5. Triage new WorldEvents (src/assistant/triage.py, Keel M2): the
+     deterministic policy engine lanes each event (auto/staged/escalate/
+     digest/drop); policy hits act mechanically; unmatched events get
+     fail-safe escalate decisions plus ONE suggestion-only triage LLM call
+     per pulse max (its lane vocabulary structurally lacks `auto`). Open
+     escalate decisions mirror to awaiting cards keyed `dec-<id>`.
+  2. Run bin/purge-stale-awaiting.py (mechanical card cleanup; `dec-*`
+     cards derive from decision-queue state).
   3. Pick batch via bin/pick-ws-batch.py — already filters back-off list.
   4. For each ws in batch:
        a. bin/build-ws-context.py → JSON ctx
@@ -41,6 +48,7 @@ The bugs we built this for don't exist here:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -73,6 +81,11 @@ OBSERVER_RUNS_DIR = ASSISTANT_DIR / "observer-runs"
 # is cheap, the audit trail is not. If this ever grows unmanageable, prune
 # by hand or export to cold storage. The pulse loop does NOT touch it.
 OBSERVER_BATCH_PROMPT = REPO / "prompts/observer-batch-prompt.md"
+# Triage LLM (Keel M2): ONE suggestion-only batched call per pulse max, same
+# subprocess + file-side-effect + archived-runs pattern as the Observer. Runs
+# are kept for the same audit-trail reason observer-runs are.
+TRIAGE_BATCH_PROMPT = REPO / "prompts/triage-batch-prompt.md"
+TRIAGE_RUNS_DIR = ASSISTANT_DIR / "triage-runs"
 AGENT_TOOLS_MCP_CONFIG = REPO / "config/agent-tools-mcp.json"
 SPAWN_SKILL = HOME / ".claude/skills/spawn-claude-workspace/SKILL.md"
 
@@ -107,6 +120,9 @@ DEFAULT_CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"
 # context (10 transcripts to read), so timeout scales accordingly.
 WS_BATCH_SIZE = int(os.environ.get("WS_BATCH_SIZE", "10"))
 OBSERVER_TIMEOUT_SEC = int(os.environ.get("OBSERVER_TIMEOUT_SEC", "600"))
+# The triage batch reads inline event JSON only (no transcripts), so it gets a
+# much shorter leash than the Observer.
+TRIAGE_TIMEOUT_SEC = int(os.environ.get("TRIAGE_TIMEOUT_SEC", "240"))
 
 # Cap dispatched TODO spawns. We don't hammer the user's machine on a single pulse.
 MAX_DISPATCH_PER_PULSE = 2
@@ -419,6 +435,211 @@ def drain_inbox(pulse_idx: int = 0) -> int:
     return (result.get("inbox_consumed", 0)
             + result.get("inbox_duplicates", 0)
             + result.get("inbox_quarantined", 0))
+
+
+def read_lane_suggestions(path: Path) -> dict[str, dict]:
+    """Read the JSONL the triage LLM wrote. Each line needs `event_id` and
+    `suggested_lane`; anything else is silently dropped (an event with no
+    usable suggestion keeps its fail-safe escalate default)."""
+    if not path.exists():
+        return {}
+    out: dict[str, dict] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("```"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        ev = obj.get("event_id")
+        if not ev or not obj.get("suggested_lane"):
+            continue
+        out[ev] = {"suggested_lane": obj.get("suggested_lane"),
+                   "rationale": obj.get("rationale") or ""}
+    return out
+
+
+def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
+    """Spawn the ONE suggestion-only triage LLM subprocess for this pulse.
+
+    Observer pattern throughout: the model writes its structured output to
+    <run_dir>/lanes.jsonl (stdout is the CLI's JSON result envelope, kept for
+    metering only); prompt/events/stdout/stderr/meta are archived under
+    ~/.assistant/triage-runs/<pulse>/; usage is captured via metering and
+    appended to the cost ledger as caller="triage".
+
+    Suggestion-only by construction: the caller validates every suggested
+    lane against policy.TRIAGE_LANE_MAP (which structurally lacks `auto` and
+    `drop`), and a suggestion only ever annotates an already-open decision.
+    Returns {event_id: {suggested_lane, rationale}}.
+    """
+    if not events:
+        return {}
+    if not TRIAGE_BATCH_PROMPT.exists():
+        log.error("triage batch prompt missing: %s", TRIAGE_BATCH_PROMPT)
+        return {}
+
+    run_dir = TRIAGE_RUNS_DIR / f"{pulse_idx:04d}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    lanes_path = run_dir / "lanes.jsonl"
+    events_json = json.dumps(events, indent=2)
+    prompt = (
+        TRIAGE_BATCH_PROMPT.read_text()
+        + "\n\n---\n\n## RUNTIME CONTEXT\n\n"
+        + f"You are triaging this batch of {len(events)} event(s).\n\n"
+        + "**Output destination — write your JSONL suggestions to a file, "
+          "not stdout.** Use the Write tool (or `printf > <path>`) to write "
+          f"to:\n\n    {lanes_path}\n\n"
+          "One JSON object per line: {\"event_id\": ..., \"suggested_lane\": "
+          "\"escalate|staged|digest\", \"rationale\": ...}. Anything on "
+          "stdout is diagnostic only and never parsed for lanes.\n\n"
+        + "Events to triage:\n\n"
+        + "```json\n" + events_json + "\n```\n"
+    )
+    (run_dir / "prompt.md").write_text(prompt)
+    (run_dir / "events.json").write_text(events_json)
+
+    cmd = [
+        DEFAULT_CLAUDE_BIN,
+        "--model", DEFAULT_OBSERVER_MODEL,
+        "--dangerously-skip-permissions",
+        "--print",
+        "--output-format", "json",
+        "--add-dir", str(run_dir),  # so the model can write lanes.jsonl
+    ]
+    t0 = time.time()
+    rc, out, err = run(cmd, input_text=prompt, timeout=TRIAGE_TIMEOUT_SEC,
+                       merge_bedrock=True)
+    wall_ms = int((time.time() - t0) * 1000)
+
+    # Metering + cost ledger — never load-bearing.
+    usage: dict = {}
+    try:
+        sys.path.insert(0, str(BIN))
+        import metering  # noqa: PLC0415
+        usage = metering.observer_usage(out, len(prompt), DEFAULT_OBSERVER_MODEL)
+        metering.append_cost_row(caller="triage", model=DEFAULT_OBSERVER_MODEL,
+                                 usage=usage, wall_ms=wall_ms)
+    except Exception as e:  # noqa: BLE001 — metering must never break the pulse
+        log.warning("triage metering capture failed (ignored): %s", e)
+
+    (run_dir / "stdout.txt").write_text(out or "")
+    (run_dir / "stderr.txt").write_text(err or "")
+    (run_dir / "meta.json").write_text(json.dumps({
+        "rc": rc,
+        "wall_ms": wall_ms,
+        "model": DEFAULT_OBSERVER_MODEL,
+        "n_events": len(events),
+        "event_ids": [e.get("id") for e in events],
+        "usage": usage,
+        "ts": utc_iso(),
+    }, indent=2))
+
+    if rc != 0:
+        log.warning("triage batch (size=%d) rc=%d: %s",
+                    len(events), rc, err.strip()[-300:])
+    return read_lane_suggestions(lanes_path)
+
+
+def run_triage_step(pulse_idx: int) -> dict:
+    """Step 1.5: lane new WorldEvents through the deterministic policy engine
+    (src/assistant/triage.py). Imported lazily and fully fenced, same contract
+    as drain_inbox — a broken triage layer can never stop the pulse (events
+    stay un-disposition'd and are retried next pulse). Returns the triage
+    summary; its `cards` list seeds this pulse's awaiting_input."""
+    try:
+        src_dir = str(REPO / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from assistant import triage  # noqa: PLC0415
+        summary = triage.triage_new_events(
+            pulse_idx=pulse_idx, log=log,
+            llm_batch=lambda events: call_triage_batch(events, pulse_idx))
+    except Exception as e:  # noqa: BLE001 — triage must never break the pulse
+        log.exception("triage step failed (events retried next pulse): %s", e)
+        return {"cards": []}
+    if summary.get("events_processed") or summary.get("expired") \
+            or summary.get("proposals"):
+        log.info("triage: %s", json.dumps(
+            {k: v for k, v in summary.items() if k != "cards"}))
+    return summary
+
+
+# ─── Observer no-change skip (Keel M2) ───────────────────────────────────────
+#
+# A workspace whose observable state hasn't changed since its last verdict
+# gets that verdict carried forward and is left OUT of the Observer batch —
+# an unchanged fleet costs zero Observer calls. The hash covers exactly the
+# signals build-ws-context gathers: the transcript tail, the live screen, and
+# the git/cwd state. last_turn_age_sec is deliberately EXCLUDED (it grows
+# every pulse without any state change and would defeat the skip).
+
+# How much transcript tail feeds the hash. Matches the transcript_signals
+# window in build-ws-context: any appended turn lands in the tail, so any
+# transcript growth changes the digest.
+OBS_HASH_TAIL_BYTES = 65536
+
+
+def _transcript_tail_digest(path: str | None) -> str:
+    """Digest of the transcript's size + last OBS_HASH_TAIL_BYTES. Size is
+    included so pathological same-size rewrites still differ. Unreadable or
+    missing → a constant marker (state 'no transcript' is itself hashable)."""
+    if not path:
+        return "no-transcript"
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - OBS_HASH_TAIL_BYTES))
+            return f"{size}:{hashlib.sha256(f.read()).hexdigest()}"
+    except OSError:
+        return "unreadable-transcript"
+
+
+def obs_input_hash(ctx: dict) -> str:
+    """Stable digest of one workspace's Observer-visible state. Equal hashes
+    ⇒ the Observer would see byte-identical inputs ⇒ its prior verdict is
+    still the verdict; carry it forward instead of spending a call."""
+    payload = json.dumps([
+        ctx.get("ws_ref"),
+        ctx.get("title"),
+        ctx.get("cwd"),
+        ctx.get("transcript_path"),
+        ctx.get("session_id8"),
+        _transcript_tail_digest(ctx.get("transcript_path")),
+        ctx.get("screen_text") or "",
+        bool(ctx.get("screen_shows_error")),
+        ctx.get("agent_status"),
+        bool(ctx.get("cwd_dirty")),
+        bool(ctx.get("cwd_unpushed")),
+    ], sort_keys=False)
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()
+
+
+def load_prior_summary(ws_ref: str) -> dict | None:
+    p = SUMMARIES_DIR / f"{ws_ref.replace(':', '_')}.json"
+    try:
+        d = json.loads(p.read_text())
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+# Meta fields save-ws-summary.py adds around the verdict; stripped before a
+# carried-forward verdict is re-saved (save adds them back fresh).
+_SUMMARY_META_KEYS = {"ws_ref", "title", "cwd", "pr_refs", "last_updated_ts",
+                      "state_hash", "state_unchanged_since_ts"}
+
+
+def carry_forward_verdict(prior: dict) -> dict:
+    """The prior summary reduced back to a bare verdict dict, ready for
+    save_summary (which refreshes last_updated_ts so the LRU rotates and
+    preserves state_unchanged_since_ts because the verdict fields are
+    byte-identical)."""
+    return {k: v for k, v in prior.items() if k not in _SUMMARY_META_KEYS}
 
 
 def purge_stale_awaiting() -> None:
@@ -1220,6 +1441,13 @@ def main() -> int:
     # 1. Drain inbox (typed event spine — see drain_inbox docstring).
     n_drained = 0 if dry_run else drain_inbox(pulse_idx)
 
+    # 1.5. Triage new WorldEvents through the deterministic policy engine
+    #      (Keel M2 — see run_triage_step docstring). Policy hits act
+    #      mechanically; unmatched events get fail-safe escalate decisions
+    #      plus at most ONE suggestion-only LLM call. Open escalate decisions
+    #      mirror to awaiting cards (keyed `dec-<id>`), seeded below.
+    triage_summary = {"cards": []} if dry_run else run_triage_step(pulse_idx)
+
     # 2. Purge stale awaiting cards.
     if not dry_run:
         purge_stale_awaiting()
@@ -1234,7 +1462,10 @@ def main() -> int:
     #    Phase 2: chunk into batches, fan out Observer calls in parallel.
     #    Phase 3: per ws, save the returned verdict + execute its action.
     actions_taken: list[dict] = []
-    awaiting_input: list[dict] = []
+    # Cards are rebuilt every pulse; open escalate decisions re-mirror here
+    # each time (and vanish the pulse after they leave `open` — card
+    # existence derives from queue state).
+    awaiting_input: list[dict] = list(triage_summary.get("cards") or [])
     ws_meta: list[dict] = []
     ctxs_by_ref: dict[str, dict] = {}
     ws_by_ref: dict[str, dict] = {}
@@ -1262,6 +1493,8 @@ def main() -> int:
     observer_duration_s = 0.0
     new_verdicts: dict[str, str] = {}
     synthesized_refs: set[str] = set()
+    obs_hashes: dict[str, str] = {}
+    carried: dict[str, dict] = {}  # ws_ref → prior verdict carried forward
     try:
         sys.path.insert(0, str(BIN))
         import metering  # noqa: PLC0415
@@ -1287,9 +1520,34 @@ def main() -> int:
                             f"last_turn_age_sec={ctx.get('last_turn_age_sec')!r})",
             })
     else:
-        # Phase 2: parallel batched Observer calls.
-        ctxs_to_observe = list(ctxs_by_ref.values())
-        batches = chunk(ctxs_to_observe, WS_BATCH_SIZE)
+        # Phase 1.5 (Keel M2): Observer no-change skip. Hash each workspace's
+        # Observer-visible state (transcript tail + screen + git signals —
+        # everything build-ws-context gathered, minus the always-growing age
+        # counter). A hash equal to the one stored with the last verdict
+        # means the Observer would re-read identical inputs: carry that
+        # verdict forward and leave the ws out of the batch. Fenced per-ws —
+        # a hash failure just means that ws gets observed normally.
+        for ws_ref, ctx in ctxs_by_ref.items():
+            try:
+                obs_hashes[ws_ref] = obs_input_hash(ctx)
+            except Exception as e:  # noqa: BLE001 — skip is an optimization only
+                log.warning("obs-input hash failed for %s (observing): %s",
+                            ws_ref, e)
+                continue
+            prior = load_prior_summary(ws_ref)
+            if prior and prior.get("verdict") \
+                    and prior.get("obs_input_hash") == obs_hashes[ws_ref]:
+                carried[ws_ref] = carry_forward_verdict(prior)
+        if carried:
+            log.info("no-change skip: %d/%d ws carried forward (%s)",
+                     len(carried), len(ctxs_by_ref),
+                     ", ".join(sorted(carried))[:200])
+
+        # Phase 2: parallel batched Observer calls (skipped ws excluded — an
+        # unchanged fleet spawns ZERO Observer subprocesses this pulse).
+        ctxs_to_observe = [ctx for ws_ref, ctx in ctxs_by_ref.items()
+                           if ws_ref not in carried]
+        batches = chunk(ctxs_to_observe, WS_BATCH_SIZE) if ctxs_to_observe else []
         log.info("observing %d ws in %d batch(es) of <=%d in parallel",
                  len(ctxs_to_observe), len(batches), WS_BATCH_SIZE)
 
@@ -1320,6 +1578,24 @@ def main() -> int:
         # its --ws-ref flag; we don't want it in the json blob twice).
         for ws_ref, ctx in ctxs_by_ref.items():
             ws = ws_by_ref[ws_ref]
+            if ws_ref in carried:
+                # No-change skip: re-save the prior verdict (refreshes
+                # last_updated_ts so the LRU rotates; the verdict fields are
+                # byte-identical so state_unchanged_since_ts is preserved)
+                # and take NO action — the action already ran when the
+                # verdict was first earned, and re-executing a carried
+                # verdict could re-send /cleanup or re-nudge.
+                v = carried[ws_ref]
+                save_summary(ws, v)
+                new_verdicts[ws_ref] = v.get("verdict") or "active"
+                actions_taken.append({
+                    "key": f"{ws_ref}-no-change-skip",
+                    "kind": "skipped-no-change", "ws_ref": ws_ref,
+                    "outcome": "verified",
+                    "evidence": (f"state unchanged since last verdict "
+                                 f"({v.get('verdict')}); Observer call skipped"),
+                })
+                continue
             verdict = verdicts_by_ref.get(ws_ref)
             if not verdict:
                 # Old-prompt behavior: an Observer failure (timeout / no verdict
@@ -1345,6 +1621,12 @@ def main() -> int:
                 })
                 continue
             v_for_save = {k: v for k, v in verdict.items() if k != "ws_ref"}
+            # Stamp the input hash a REAL verdict was earned against, so the
+            # next pulse can skip an unchanged workspace. Synthesized fallback
+            # verdicts (above) deliberately carry no hash — an Observer
+            # failure must be retried, never carried forward.
+            if ws_ref in obs_hashes:
+                v_for_save["obs_input_hash"] = obs_hashes[ws_ref]
             save_summary(ws, v_for_save)
             # Effective verdict for metering — mirrors what was just saved
             # (a verdict-less line defaults to active, same as the synth path).
@@ -1447,7 +1729,12 @@ def main() -> int:
     #      observability must never break the pulse.
     if metering is not None:
         try:
-            observer_called = bool(ctxs_by_ref)
+            # Skipped (carried-forward) workspaces cost no Observer call and
+            # are excluded from batch_size, so the dashboard's skip rate now
+            # reflects reality: an all-unchanged pulse records
+            # observer_called=false.
+            n_observed = len(ctxs_by_ref) - len(carried)
+            observer_called = n_observed > 0
             if prev_verdicts is None:
                 # Snapshot failed earlier — comparison degraded, cost still real.
                 verdict_changes = None
@@ -1461,13 +1748,14 @@ def main() -> int:
                 epoch=utc_ts(),
                 pulse_idx=pulse_idx,
                 observer_called=observer_called,
-                batch_size=len(ctxs_by_ref),
+                batch_size=n_observed,
                 model=DEFAULT_OBSERVER_MODEL if observer_called else None,
                 duration_s=observer_duration_s,
                 usage=metering.sum_usage(observer_usages),
                 new_verdicts=new_verdicts,
                 verdict_changes=verdict_changes,
                 synthesized=len(synthesized_refs),
+                skipped=len(carried),
                 actions=actions_taken,
             ))
         except Exception as e:  # noqa: BLE001 — metering must never break the pulse

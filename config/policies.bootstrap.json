@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "_comment": "Bootstrap fleet policies (Keel M2). Installed to ~/.assistant/policies/policies.json on first triage run when no live file exists; never overwrites. Ordered, first-match-wins. Every id has a fixture in evals/policy/<id>/ enforced by tests/test_policy.py coverage. Mutations to the LIVE file go through confirmed `policy` proposals, not hand edits.",
+  "policies": [
+    {
+      "id": "cmux-needs-input-escalate",
+      "match": {"source": "cmux", "kind": "needs_input"},
+      "lane": "escalate",
+      "action": null,
+      "urgency": "now",
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "cmux-crash-event-digest",
+      "match": {"source": "cmux", "kind": "workspace_closed"},
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "cmux-work-complete-digest",
+      "match": {"source": "cmux", "kind": "work_complete"},
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "legacy-pulse-ping-drop",
+      "match": {"source": "pulse", "kind": "ping"},
+      "lane": "drop",
+      "action": null,
+      "urgency": null,
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "github-ci-green-digest",
+      "match": {"source": "github", "kind": "ci_green"},
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "github-review-requested-staged",
+      "match": {"source": "github", "kind": "review_requested"},
+      "lane": "staged",
+      "action": null,
+      "urgency": "high",
+      "ttl_h": 72,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "github-pr-merged-digest",
+      "match": {"source": "github", "kind": "pr_merged"},
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "gmail-newsletter-drop",
+      "match": {
+        "source": "gmail",
+        "kind": "email",
+        "predicates": [
+          {"field": "snippet", "op": "contains", "value": "unsubscribe"}
+        ]
+      },
+      "lane": "drop",
+      "action": null,
+      "urgency": null,
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    }
+  ]
+}

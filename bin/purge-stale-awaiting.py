@@ -17,6 +17,14 @@ attention. Triggers a card to be DROPPED if any of:
      in ~/.claude/assistant-todo.json.
   4. autoDispatch all set: `autodispatch-unset:*` cards where every
      referenced td-NNN now has `autoDispatch != null`.
+  0. Decision cards (Keel M2): a card whose key is a `dec-*` decision id
+     exists IFF that decision is still `open` in the decision queue
+     (~/.assistant/decisions/). Open → keep (regardless of every other
+     predicate); anything else (accepted/rejected/snoozed/expired/auto_done/
+     unknown) → drop. Card existence derives from queue state — the
+     865-repeat class is structurally impossible. If the queue stores are
+     unreadable we KEEP the card (fail-safe, same spirit as the cmux-down
+     guard).
 
 Atomically rewrites assistant-state.json (tmpfile + rename) and appends a
 log of every purge to ~/.assistant/awaiting-purge.log.
@@ -39,11 +47,14 @@ from pathlib import Path
 STATE_PATH = Path.home() / ".claude/cache/assistant-state.json"
 TODO_PATH = Path.home() / ".claude/assistant-todo.json"
 LOG_PATH = Path.home() / ".assistant/awaiting-purge.log"
+DECISIONS_QUEUE_PATH = Path.home() / ".assistant/decisions/queue.json"
+DECISIONS_LOG_PATH = Path.home() / ".assistant/decisions/decisions.jsonl"
 CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
 
 WS_RE = re.compile(r"workspace:(\d+)")
 PR_RE = re.compile(r"\bpr-(\d+)\b|PR #(\d+)|pr/(\d+)|pull/(\d+)")
 TD_RE = re.compile(r"\btd-(\d{3,4})\b")
+DEC_KEY_RE = re.compile(r"^dec-[a-f0-9]{8,64}$")
 
 
 def log(msg: str) -> None:
@@ -119,12 +130,63 @@ def gh_pr_state(pr: str) -> str | None:
     return None
 
 
-def card_should_drop(card: dict, open_ws: set[str], todos: dict[str, dict]) -> str | None:
+def load_decision_statuses():
+    """{decision_id: latest status} from the decision queue (Keel M2).
+
+    Prefers the materialized queue.json; falls back to folding the
+    append-only decisions.jsonl (queue.json is delete-safe/derived). Returns
+    None when a store EXISTS but is unreadable — the caller then keeps every
+    dec-* card (fail-safe). Missing stores return {} (no decisions ⇒ no
+    dec-* card is legitimate).
+    """
+    if DECISIONS_QUEUE_PATH.exists():
+        try:
+            view = json.loads(DECISIONS_QUEUE_PATH.read_text())
+            out = {}
+            for d in view.get("decisions", []):
+                if isinstance(d, dict) and d.get("id"):
+                    out[d["id"]] = d.get("status")
+            return out
+        except Exception:
+            return None
+    if DECISIONS_LOG_PATH.exists():
+        try:
+            out = {}
+            for line in DECISIONS_LOG_PATH.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(rec, dict) and rec.get("id"):
+                    out[rec["id"]] = rec.get("status")  # last record wins
+            return out
+        except Exception:
+            return None
+    return {}
+
+
+def card_should_drop(card: dict, open_ws: set[str], todos: dict[str, dict],
+                     dec_statuses=None) -> str | None:
     """Returns a reason string if the card should be dropped, else None."""
     key = card.get("key", "") or ""
     detail = card.get("detail", "") or ""
     title = card.get("title", "") or ""
     haystack = f"{key} {detail} {title}"
+
+    # 0. Decision cards: existence derives SOLELY from queue state. Open →
+    #    keep (no other predicate may drop it — the decision is the truth);
+    #    resolved/expired/unknown → drop; unreadable stores → keep.
+    if DEC_KEY_RE.match(key):
+        if dec_statuses is None:
+            return None  # queue unreadable — fail safe, keep the card
+        status = dec_statuses.get(key)
+        if status == "open":
+            return None
+        return "decision {} is {} (card derives from queue state)".format(
+            key, status if status is not None else "unknown")
 
     # 1. Workspace closed
     ws_matches = WS_RE.findall(key) or WS_RE.findall(detail)
@@ -204,11 +266,12 @@ def main():
         log("cmux tree returned no workspaces — skipping (cmux may be down)")
         return
     todos = load_todos()
+    dec_statuses = load_decision_statuses()
 
     keep = []
     dropped = []
     for card in cards:
-        reason = card_should_drop(card, open_ws, todos)
+        reason = card_should_drop(card, open_ws, todos, dec_statuses)
         if reason:
             dropped.append((card.get("key", "?"), reason))
         else:

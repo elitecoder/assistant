@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,10 @@ def _home() -> Path:
 
 def metrics_path() -> Path:
     return _home() / ".assistant/metrics.jsonl"
+
+
+def cost_ledger_path() -> Path:
+    return _home() / ".assistant/cost-ledger.jsonl"
 
 
 def summaries_dir() -> Path:
@@ -163,6 +168,29 @@ def sum_usage(usages: list[dict]) -> dict:
     }
 
 
+def append_cost_row(*, caller: str, model: str, usage: dict, wall_ms: int,
+                    path: Path | None = None) -> None:
+    """One per-call row in ~/.assistant/cost-ledger.jsonl (design section 3:
+    {ts, caller, model, tokens_in, tokens_out, est_usd, wall_ms}). Every LLM
+    caller beyond the Observer (triage, later strategist/drafter) appends here
+    so $/day per caller is derivable. Single-write append like the actions
+    ledger; the read side must tolerate a torn line."""
+    p = path if path is not None else cost_ledger_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": utc_iso(int(time.time())),
+        "caller": caller,
+        "model": model,
+        "tokens_in": int(usage.get("tokens_in") or 0),
+        "tokens_out": int(usage.get("tokens_out") or 0),
+        "est_usd": float(usage.get("cost_usd") or 0.0),
+        "usage_source": usage.get("source", "estimated"),
+        "wall_ms": int(wall_ms),
+    }
+    with open(p, "a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
 # ─── previous-verdict comparison ────────────────────────────────────────────
 
 def load_prev_verdicts(ws_refs: list[str], directory: Path | None = None) -> dict[str, str]:
@@ -195,13 +223,15 @@ def build_pulse_record(*, epoch: int, pulse_idx: int, observer_called: bool,
                        batch_size: int, model: str | None, duration_s: float,
                        usage: dict, new_verdicts: dict[str, str],
                        verdict_changes: int | None, actions: list[dict],
-                       synthesized: int = 0) -> dict:
+                       synthesized: int = 0, skipped: int = 0) -> dict:
     """One metrics.jsonl record. `verdict_changes` is None when the
     previous-verdict snapshot failed — the comparison is degraded but the
     cost/usage numbers are still real and still recorded. `synthesized`
     counts workspaces whose verdict this pulse was a synthesized 'active'
     fallback (Observer timeout/batch error), so failure pulses are visible
-    in the data; synthesized verdicts never count as verdict changes."""
+    in the data; synthesized verdicts never count as verdict changes.
+    `skipped` counts workspaces the no-change skip carried forward without
+    an Observer call this pulse (batch_size already excludes them)."""
     return {
         "ts": utc_iso(epoch),
         "epoch": epoch,
@@ -217,6 +247,7 @@ def build_pulse_record(*, epoch: int, pulse_idx: int, observer_called: bool,
         "verdicts": dict(Counter(new_verdicts.values())),
         "verdict_changes": None if verdict_changes is None else int(verdict_changes),
         "synthesized": int(synthesized),
+        "skipped": int(skipped),
         "actions": dict(Counter(a.get("kind", "unknown") for a in actions)),
     }
 

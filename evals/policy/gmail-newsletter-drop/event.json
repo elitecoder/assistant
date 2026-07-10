@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e8",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "gmail",
+  "kind": "email",
+  "external_id": "gmail:18abc123",
+  "actor": "news@vendor.example",
+  "title": "Weekly product newsletter",
+  "snippet": "This week in dev tools... unsubscribe anytime",
+  "url": null,
+  "refs": {},
+  "raw_path": null
+}

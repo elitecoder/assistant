@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e3",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "cmux",
+  "kind": "work_complete",
+  "external_id": "cmux:workspace:4:work_complete:297166:def",
+  "actor": null,
+  "title": "workspace:4 work_complete",
+  "snippet": "PR opened, CI running",
+  "url": null,
+  "refs": {
+    "ws_ref": "workspace:4"
+  },
+  "raw_path": null
+}

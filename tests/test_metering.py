@@ -69,12 +69,15 @@ class RecordShapeTests(MeteringBase):
         return self.mod.build_pulse_record(**kwargs)
 
     def test_record_has_exact_contract_keys(self):
+        # "skipped" joined the contract in Keel M2 (Observer no-change skip):
+        # workspaces whose prior verdict was carried forward without a call
+        # this pulse (batch_size already excludes them).
         rec = self._record()
         self.assertEqual(set(rec.keys()), {
             "ts", "epoch", "pulse_idx", "observer_called", "batch_size",
             "model", "duration_s", "tokens_in", "tokens_out", "cost_usd_est",
             "usage_source", "verdicts", "verdict_changes", "synthesized",
-            "actions",
+            "skipped", "actions",
         })
 
     def test_record_values_and_counters(self):
@@ -109,6 +112,10 @@ class RecordShapeTests(MeteringBase):
 
     def test_synthesized_defaults_to_zero(self):
         self.assertEqual(self._record()["synthesized"], 0)
+
+    def test_skipped_defaults_to_zero_and_records_count(self):
+        self.assertEqual(self._record()["skipped"], 0)
+        self.assertEqual(self._record(skipped=4)["skipped"], 4)
 
     def test_synthesized_field_recorded(self):
         rec = self._record(synthesized=3)
