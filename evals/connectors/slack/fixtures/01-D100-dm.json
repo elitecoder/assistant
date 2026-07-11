@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "im",
+      "channel": "D100",
+      "ts": "1783000002.0002",
+      "user": "U2",
+      "text": "hey, quick question"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:42Z",
+    "source": "slack",
+    "kind": "dm",
+    "external_id": "slack:D100:1783000002.0002",
+    "actor": "U2",
+    "title": "hey, quick question",
+    "snippet": "hey, quick question",
+    "url": "https://slack.com/archives/D100/p17830000020002",
+    "refs": {
+      "channel": "D100",
+      "slack_ts": "1783000002.0002",
+      "slack_user": "U2"
+    }
+  }
+}

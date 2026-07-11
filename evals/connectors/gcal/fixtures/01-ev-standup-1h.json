@@ -1,0 +1,30 @@
+{
+  "raw": {
+    "id": "ev-standup",
+    "summary": "Daily standup",
+    "start": {
+      "dateTime": "2026-07-11T09:00:00Z"
+    },
+    "htmlLink": "https://calendar.google.com/event?eid=ev-standup",
+    "organizer": {
+      "email": "boss@corp.example"
+    }
+  },
+  "window": "1h",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-11T09:00:00Z",
+    "source": "gcal",
+    "kind": "event_upcoming",
+    "external_id": "gcal-upcoming:ev-standup:2026-07-11T09:00:00Z:1h",
+    "actor": "boss@corp.example",
+    "title": "Daily standup",
+    "snippet": "starts 2026-07-11T09:00:00Z (in 1h)",
+    "url": "https://calendar.google.com/event?eid=ev-standup",
+    "refs": {
+      "window": "1h",
+      "gcal": "gcal:ev-standup:2026-07-11T09:00:00Z",
+      "event_id": "ev-standup"
+    }
+  }
+}

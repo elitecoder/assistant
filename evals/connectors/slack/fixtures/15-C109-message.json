@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "channel",
+      "channel": "C109",
+      "ts": "1783000016.0016",
+      "user": "U16",
+      "text": "weekly report attached"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:56Z",
+    "source": "slack",
+    "kind": "message",
+    "external_id": "slack:C109:1783000016.0016",
+    "actor": "U16",
+    "title": "weekly report attached",
+    "snippet": "weekly report attached",
+    "url": "https://slack.com/archives/C109/p17830000160016",
+    "refs": {
+      "channel": "C109",
+      "slack_ts": "1783000016.0016",
+      "slack_user": "U16"
+    }
+  }
+}

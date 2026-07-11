@@ -1,0 +1,19 @@
+{
+  "schema": "world-event/1",
+  "id": "c04e5cbae985997a119a9829a04d4bc5e4d2b7b4e5a5a799b062162a4740900b",
+  "ts": "2026-07-03T17:33:21Z",
+  "epoch": 1783100001,
+  "source": "slack",
+  "kind": "app_mention",
+  "external_id": "slack:C200:1783100001.0001",
+  "actor": "U",
+  "title": "@assistant help",
+  "snippet": "@assistant help",
+  "url": "https://slack.com/archives/C200/p17831000010001",
+  "refs": {
+    "channel": "C200",
+    "slack_ts": "1783100001.0001",
+    "slack_user": "U"
+  },
+  "raw_path": null
+}

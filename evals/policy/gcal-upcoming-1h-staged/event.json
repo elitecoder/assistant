@@ -1,0 +1,19 @@
+{
+  "schema": "world-event/1",
+  "id": "1cb7c48cd4149b38ba84c02127b238168cfbf1aece63eba3b93b21504a2fecec",
+  "ts": "2026-08-01T10:00:00Z",
+  "epoch": 1785578400,
+  "source": "gcal",
+  "kind": "event_upcoming",
+  "external_id": "gcal-upcoming:ev-a:2026-08-01T10:00:00Z:1h",
+  "actor": "",
+  "title": "ev-a meeting",
+  "snippet": "starts 2026-08-01T10:00:00Z (in 1h)",
+  "url": "https://calendar.google.com/x",
+  "refs": {
+    "window": "1h",
+    "gcal": "gcal:ev-a:2026-08-01T10:00:00Z",
+    "event_id": "ev-a"
+  },
+  "raw_path": null
+}

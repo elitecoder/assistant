@@ -202,11 +202,17 @@ class WorldScannerJoinTests(HomeTestCase):
         self.assertEqual(summary["gmail"]["status"], "ok")
 
     def test_fresh_install_all_known_connectors_available(self):
-        # Nothing configured at all → every known connector is not_configured.
+        # Nothing configured at all → EVERY known connector is not_configured
+        # (wave-1 github/gmail + wave-2 gcal/jira/slack). Derived from the
+        # registry so it stays correct as connectors are added.
         summary = self._summary()
-        self.assertEqual(
-            {n: v["status"] for n, v in summary.items()},
-            {"github": "not_configured", "gmail": "not_configured"})
+        expected = {c["name"]: "not_configured"
+                    for c in connector.KNOWN_CONNECTORS}
+        self.assertEqual({n: v["status"] for n, v in summary.items()},
+                         expected)
+        # The wave-2 connectors are present in the fresh-install summary.
+        for name in ("gcal", "jira", "slack"):
+            self.assertEqual(summary[name]["status"], "not_configured")
 
 
 class MalformedHeartbeatFieldTests(HomeTestCase):

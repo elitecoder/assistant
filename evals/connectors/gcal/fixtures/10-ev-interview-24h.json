@@ -1,0 +1,32 @@
+{
+  "raw": {
+    "id": "ev-interview",
+    "summary": "Candidate interview",
+    "start": {
+      "dateTime": "2026-07-16T22:15:00Z"
+    },
+    "htmlLink": "https://calendar.google.com/event?eid=ev-interview",
+    "location": "Room 4",
+    "organizer": {
+      "email": "recruiter@corp.example"
+    }
+  },
+  "window": "24h",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-16T22:15:00Z",
+    "source": "gcal",
+    "kind": "event_upcoming",
+    "external_id": "gcal-upcoming:ev-interview:2026-07-16T22:15:00Z:24h",
+    "actor": "recruiter@corp.example",
+    "title": "Candidate interview",
+    "snippet": "starts 2026-07-16T22:15:00Z (in 24h) · Room 4",
+    "url": "https://calendar.google.com/event?eid=ev-interview",
+    "refs": {
+      "window": "24h",
+      "gcal": "gcal:ev-interview:2026-07-16T22:15:00Z",
+      "event_id": "ev-interview",
+      "location": "Room 4"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "raw": {
+    "event": {
+      "type": "app_mention",
+      "channel": "C106",
+      "ts": "1783000012.0012",
+      "user": "U12",
+      "text": "@assistant deploy prod now"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:52Z",
+    "source": "slack",
+    "kind": "app_mention",
+    "external_id": "slack:C106:1783000012.0012",
+    "actor": "U12",
+    "title": "@assistant deploy prod now",
+    "snippet": "@assistant deploy prod now",
+    "url": "https://slack.com/archives/C106/p17830000120012",
+    "refs": {
+      "channel": "C106",
+      "slack_ts": "1783000012.0012",
+      "slack_user": "U12"
+    }
+  }
+}

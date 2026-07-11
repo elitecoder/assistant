@@ -18,6 +18,10 @@
 // Tokens come from the environment (launcher sources ~/.zprofile); never hardcoded.
 import boltPkg from '@slack/bolt'
 import { WebClient } from '@slack/web-api'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import crypto from 'crypto'
 import { addTodo, MACHINE, TODO_PATH } from './todo-store.js'
 
 const { App } = boltPkg
@@ -46,6 +50,10 @@ if (EMOJIS.size === 0) die('TODO_EMOJI resolved to empty')
 const bot = new WebClient(BOT_TOKEN)
 const app = new App({ token: BOT_TOKEN, appToken: APP_TOKEN, socketMode: true })
 
+// The bot's own user id (filled in at boot from auth.test) so the message
+// handler can skip the bot's own messages.
+let BOT_USER_ID = null
+
 // --- helpers ---------------------------------------------------------------
 const userNameCache = new Map()
 async function userName(uid) {
@@ -64,6 +72,50 @@ async function userName(uid) {
 }
 
 const clean = (t) => (t ?? '').replace(/\s+/g, ' ').trim()
+
+// --- Keel M5 wave-2: slack-events connector feed --------------------------
+// The Python slack-events connector (bin/connectors/slack-events.py) is a
+// read-only PRODUCER that normalizes app_mention + DM/channel messages into
+// WorldEvents. It cannot subscribe to Slack directly (that would need a second
+// Socket-Mode connection), so this existing Bolt app SPOOLS each raw event
+// payload into ~/.assistant/connectors/slack/spool/ and the connector consumes
+// it. This is a pure SIDE FILE WRITE — it never sends a Slack message and does
+// not touch the emoji→TODO reactor path (the never-postMessage rule stands).
+const SPOOL_DIR = path.join(os.homedir(), '.assistant', 'connectors', 'slack', 'spool')
+
+function spoolEvent(event) {
+  // Atomic tmp+rename drop, exactly like the connector base's inbox contract,
+  // so the Python consumer never reads a half-written file. Best-effort: a
+  // spool failure must never crash the reactor.
+  try {
+    fs.mkdirSync(SPOOL_DIR, { recursive: true })
+    const ts = String(event?.ts ?? event?.event_ts ?? Date.now())
+    const rand = crypto.randomBytes(4).toString('hex')
+    const base = `evt-${ts}-${rand}.json`
+    const dst = path.join(SPOOL_DIR, base)
+    const tmp = path.join(SPOOL_DIR, `.${base}.tmp`)
+    // Wrap under {event} so the payload shape matches the Slack Events API and
+    // the connector's slack_event_to_event() (which accepts either shape).
+    fs.writeFileSync(tmp, JSON.stringify({ event }), { mode: 0o644 })
+    fs.renameSync(tmp, dst)
+  } catch (e) {
+    console.error(`[slack-events] spool failed: ${e.message}`)
+  }
+}
+
+// app_mention: the bot was @-mentioned in a channel — always a world event.
+app.event('app_mention', async ({ event }) => {
+  spoolEvent(event)
+})
+
+// message: DMs (channel_type==='im') and plain channel messages. Skip the
+// bot's own messages and non-user subtypes (edits, joins, bot posts) so the
+// connector only ever sees genuine human messages.
+app.event('message', async ({ event }) => {
+  if (!event || event.subtype || event.bot_id) return
+  if (event.user && BOT_USER_ID && event.user === BOT_USER_ID) return
+  spoolEvent(event)
+})
 
 async function buildTodo(messages, link) {
   const root = clean(messages[0]?.text ?? '')
@@ -143,6 +195,7 @@ app.event('reaction_added', async ({ event }) => {
 ;(async () => {
   try {
     const auth = await bot.auth.test()
+    BOT_USER_ID = auth.user_id ?? null
     console.error(
       `slack-reactor up (Socket Mode)\n` +
         `  machine:  ${MACHINE}\n` +

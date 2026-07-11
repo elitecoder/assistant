@@ -1,0 +1,30 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "im",
+      "channel": "D104",
+      "ts": "1783000014.0014",
+      "user": "U14",
+      "text": "can we sync?",
+      "thread_ts": "1783000000.9999"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:54Z",
+    "source": "slack",
+    "kind": "dm",
+    "external_id": "slack:D104:1783000014.0014",
+    "actor": "U14",
+    "title": "can we sync?",
+    "snippet": "can we sync?",
+    "url": "https://slack.com/archives/D104/p17830000140014",
+    "refs": {
+      "channel": "D104",
+      "slack_ts": "1783000014.0014",
+      "thread_ts": "1783000000.9999",
+      "slack_user": "U14"
+    }
+  }
+}

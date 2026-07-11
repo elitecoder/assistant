@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "im",
+      "channel": "D102",
+      "ts": "1783000008.0008",
+      "user": "U8",
+      "text": "你好，需要帮助"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:48Z",
+    "source": "slack",
+    "kind": "dm",
+    "external_id": "slack:D102:1783000008.0008",
+    "actor": "U8",
+    "title": "你好，需要帮助",
+    "snippet": "你好，需要帮助",
+    "url": "https://slack.com/archives/D102/p17830000080008",
+    "refs": {
+      "channel": "D102",
+      "slack_ts": "1783000008.0008",
+      "slack_user": "U8"
+    }
+  }
+}

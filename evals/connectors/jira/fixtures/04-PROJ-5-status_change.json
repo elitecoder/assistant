@@ -1,0 +1,52 @@
+{
+  "raw": {
+    "key": "PROJ-5",
+    "fields": {
+      "summary": "PROJ-5 summary",
+      "updated": "2026-07-10T12:20:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Medium"
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "5005",
+          "items": [
+            {
+              "field": "status",
+              "fromString": "To Do",
+              "toString": "In Progress"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T12:20:00Z",
+    "source": "jira",
+    "kind": "status_change",
+    "external_id": "jira:PROJ-5:5005",
+    "actor": "Mukul",
+    "title": "PROJ-5 summary",
+    "snippet": "PROJ-5 · status_change · In Progress · Medium",
+    "url": "https://acme.atlassian.net/browse/PROJ-5",
+    "refs": {
+      "jira": "PROJ-5",
+      "status": "In Progress"
+    }
+  }
+}

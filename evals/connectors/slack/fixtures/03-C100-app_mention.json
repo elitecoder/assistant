@@ -1,0 +1,29 @@
+{
+  "raw": {
+    "event": {
+      "type": "app_mention",
+      "channel": "C100",
+      "ts": "1783000004.0004",
+      "user": "U4",
+      "text": "@assistant thread reply",
+      "thread_ts": "1783000000.0000"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:44Z",
+    "source": "slack",
+    "kind": "app_mention",
+    "external_id": "slack:C100:1783000004.0004",
+    "actor": "U4",
+    "title": "@assistant thread reply",
+    "snippet": "@assistant thread reply",
+    "url": "https://slack.com/archives/C100/p17830000040004",
+    "refs": {
+      "channel": "C100",
+      "slack_ts": "1783000004.0004",
+      "thread_ts": "1783000000.0000",
+      "slack_user": "U4"
+    }
+  }
+}

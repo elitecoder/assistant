@@ -1,0 +1,51 @@
+{
+  "raw": {
+    "key": "OPS-5",
+    "fields": {
+      "summary": "OPS-5 summary",
+      "updated": "2026-07-10T13:20:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Low"
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "6005",
+          "items": [
+            {
+              "field": "priority",
+              "toString": "Low"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T13:20:00Z",
+    "source": "jira",
+    "kind": "priority_change",
+    "external_id": "jira:OPS-5:6005",
+    "actor": "Mukul",
+    "title": "OPS-5 summary",
+    "snippet": "OPS-5 · priority_change · In Progress · Low",
+    "url": "https://acme.atlassian.net/browse/OPS-5",
+    "refs": {
+      "jira": "OPS-5",
+      "status": "In Progress"
+    }
+  }
+}

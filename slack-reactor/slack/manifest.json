@@ -1,5 +1,5 @@
 {
-  "_comment": "slack-reactor app, Socket Mode + bot events. Add this to the existing 'mukuls_bot' app (api.slack.com/apps → that app) rather than creating a new one, so its bot token stays the one in $SLACK_BOT_TOKEN. Socket Mode delivers BOT events, so the bot only receives reaction_added in channels it has been /invite-d to. Per-machine routing is by $TODO_EMOJI (and/or one app per machine).",
+  "_comment": "slack-reactor app, Socket Mode + bot events. Add this to the existing 'mukuls_bot' app (api.slack.com/apps → that app) rather than creating a new one, so its bot token stays the one in $SLACK_BOT_TOKEN. Socket Mode delivers BOT events, so the bot only receives reaction_added / app_mention / message events in channels (or DMs) it has been /invite-d to. Per-machine routing is by $TODO_EMOJI (and/or one app per machine). M5 wave-2: app_mention + message.* events feed the read-only bin/connectors/slack-events.py connector (spooled to ~/.assistant/connectors/slack/spool/); the reactor still never sends a message.",
   "display_information": {
     "name": "mukuls_bot",
     "description": "React an emoji on a thread to capture it as a /todo",
@@ -22,13 +22,20 @@
         "mpim:history",
         "channels:read",
         "groups:read",
-        "users:read"
+        "users:read",
+        "app_mentions:read"
       ]
     }
   },
   "settings": {
     "event_subscriptions": {
-      "bot_events": ["reaction_added"]
+      "bot_events": [
+        "reaction_added",
+        "app_mention",
+        "message.im",
+        "message.channels",
+        "message.groups"
+      ]
     },
     "interactivity": {
       "is_enabled": false

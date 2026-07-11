@@ -1,0 +1,50 @@
+{
+  "raw": {
+    "key": "REL-1",
+    "fields": {
+      "summary": "REL-1 summary",
+      "updated": "2026-07-10T14:00:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Medium"
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "7001",
+          "items": [
+            {
+              "field": "fixVersion"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T14:00:00Z",
+    "source": "jira",
+    "kind": "updated",
+    "external_id": "jira:REL-1:7001",
+    "actor": "Mukul",
+    "title": "REL-1 summary",
+    "snippet": "REL-1 · updated · In Progress · Medium",
+    "url": "https://acme.atlassian.net/browse/REL-1",
+    "refs": {
+      "jira": "REL-1",
+      "status": "In Progress"
+    }
+  }
+}

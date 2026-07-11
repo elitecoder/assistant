@@ -1,0 +1,51 @@
+{
+  "raw": {
+    "key": "OPS-1",
+    "fields": {
+      "summary": "OPS-1 summary",
+      "updated": "2026-07-10T13:00:00.000+0000",
+      "status": {
+        "name": "Blocked"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Medium"
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "6001",
+          "items": [
+            {
+              "field": "status",
+              "toString": "Blocked"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T13:00:00Z",
+    "source": "jira",
+    "kind": "status_change",
+    "external_id": "jira:OPS-1:6001",
+    "actor": "Mukul",
+    "title": "OPS-1 summary",
+    "snippet": "OPS-1 · status_change · Blocked · Medium",
+    "url": "https://acme.atlassian.net/browse/OPS-1",
+    "refs": {
+      "jira": "OPS-1",
+      "status": "Blocked"
+    }
+  }
+}

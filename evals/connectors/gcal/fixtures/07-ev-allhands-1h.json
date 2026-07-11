@@ -1,0 +1,27 @@
+{
+  "raw": {
+    "id": "ev-allhands",
+    "summary": "All hands",
+    "start": {
+      "dateTime": "2026-07-14T20:00:00Z"
+    },
+    "htmlLink": "https://calendar.google.com/event?eid=ev-allhands"
+  },
+  "window": "1h",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-14T20:00:00Z",
+    "source": "gcal",
+    "kind": "event_upcoming",
+    "external_id": "gcal-upcoming:ev-allhands:2026-07-14T20:00:00Z:1h",
+    "actor": "",
+    "title": "All hands",
+    "snippet": "starts 2026-07-14T20:00:00Z (in 1h)",
+    "url": "https://calendar.google.com/event?eid=ev-allhands",
+    "refs": {
+      "window": "1h",
+      "gcal": "gcal:ev-allhands:2026-07-14T20:00:00Z",
+      "event_id": "ev-allhands"
+    }
+  }
+}

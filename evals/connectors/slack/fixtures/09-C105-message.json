@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "channel",
+      "channel": "C105",
+      "ts": "1783000010.0010",
+      "user": "U10",
+      "text": "standup notes posted"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:50Z",
+    "source": "slack",
+    "kind": "message",
+    "external_id": "slack:C105:1783000010.0010",
+    "actor": "U10",
+    "title": "standup notes posted",
+    "snippet": "standup notes posted",
+    "url": "https://slack.com/archives/C105/p17830000100010",
+    "refs": {
+      "channel": "C105",
+      "slack_ts": "1783000010.0010",
+      "slack_user": "U10"
+    }
+  }
+}

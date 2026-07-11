@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "channel",
+      "channel": "C103",
+      "ts": "1783000007.0007",
+      "user": "U7",
+      "text": "emoji 🎉 update ✅"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:47Z",
+    "source": "slack",
+    "kind": "message",
+    "external_id": "slack:C103:1783000007.0007",
+    "actor": "U7",
+    "title": "emoji 🎉 update ✅",
+    "snippet": "emoji 🎉 update ✅",
+    "url": "https://slack.com/archives/C103/p17830000070007",
+    "refs": {
+      "channel": "C103",
+      "slack_ts": "1783000007.0007",
+      "slack_user": "U7"
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "raw": {
+    "key": "PROJ-2",
+    "fields": {
+      "summary": "PROJ-2 summary",
+      "updated": "2026-07-10T12:05:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Medium"
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "5002",
+          "items": [
+            {
+              "field": "Flagged",
+              "toString": "Impediment"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T12:05:00Z",
+    "source": "jira",
+    "kind": "flagged",
+    "external_id": "jira:PROJ-2:5002",
+    "actor": "Mukul",
+    "title": "PROJ-2 summary",
+    "snippet": "PROJ-2 · flagged · In Progress · Medium",
+    "url": "https://acme.atlassian.net/browse/PROJ-2",
+    "refs": {
+      "jira": "PROJ-2",
+      "status": "In Progress"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema": "world-event/1",
+  "id": "96cd62dac40d4b06730a6cdc52305ec74f1b56755641f9c56d97ea41d9c7e5df",
+  "ts": "2026-07-03T17:33:23Z",
+  "epoch": 1783100003,
+  "source": "slack",
+  "kind": "message",
+  "external_id": "slack:C201:1783100003.0003",
+  "actor": "U",
+  "title": "channel msg",
+  "snippet": "channel msg",
+  "url": "https://slack.com/archives/C201/p17831000030003",
+  "refs": {
+    "channel": "C201",
+    "slack_ts": "1783100003.0003",
+    "slack_user": "U"
+  },
+  "raw_path": null
+}

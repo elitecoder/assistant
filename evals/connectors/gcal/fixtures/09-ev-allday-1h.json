@@ -1,0 +1,27 @@
+{
+  "raw": {
+    "id": "ev-allday",
+    "summary": "Company holiday",
+    "start": {
+      "date": "2026-07-15"
+    },
+    "htmlLink": "https://calendar.google.com/event?eid=ev-allday"
+  },
+  "window": "1h",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-15T00:00:00Z",
+    "source": "gcal",
+    "kind": "event_upcoming",
+    "external_id": "gcal-upcoming:ev-allday:2026-07-15:1h",
+    "actor": "",
+    "title": "Company holiday",
+    "snippet": "starts 2026-07-15 (in 1h)",
+    "url": "https://calendar.google.com/event?eid=ev-allday",
+    "refs": {
+      "window": "1h",
+      "gcal": "gcal:ev-allday:2026-07-15",
+      "event_id": "ev-allday"
+    }
+  }
+}

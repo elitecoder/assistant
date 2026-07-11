@@ -1,0 +1,30 @@
+{
+  "raw": {
+    "id": "ev-onsite",
+    "summary": "Onsite sync",
+    "start": {
+      "dateTime": "2026-07-18T16:45:00+00:00"
+    },
+    "htmlLink": "https://calendar.google.com/event?eid=ev-onsite",
+    "organizer": {
+      "email": "ops@corp.example"
+    }
+  },
+  "window": "1h",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-18T16:45:00Z",
+    "source": "gcal",
+    "kind": "event_upcoming",
+    "external_id": "gcal-upcoming:ev-onsite:2026-07-18T16:45:00+00:00:1h",
+    "actor": "ops@corp.example",
+    "title": "Onsite sync",
+    "snippet": "starts 2026-07-18T16:45:00+00:00 (in 1h)",
+    "url": "https://calendar.google.com/event?eid=ev-onsite",
+    "refs": {
+      "window": "1h",
+      "gcal": "gcal:ev-onsite:2026-07-18T16:45:00+00:00",
+      "event_id": "ev-onsite"
+    }
+  }
+}

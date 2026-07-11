@@ -1,0 +1,51 @@
+{
+  "raw": {
+    "key": "PROJ-6",
+    "fields": {
+      "summary": "PROJ-6 summary",
+      "updated": "2026-07-10T12:25:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "High"
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "5006",
+          "items": [
+            {
+              "field": "priority",
+              "toString": "High"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T12:25:00Z",
+    "source": "jira",
+    "kind": "priority_change",
+    "external_id": "jira:PROJ-6:5006",
+    "actor": "Mukul",
+    "title": "PROJ-6 summary",
+    "snippet": "PROJ-6 · priority_change · In Progress · High",
+    "url": "https://acme.atlassian.net/browse/PROJ-6",
+    "refs": {
+      "jira": "PROJ-6",
+      "status": "In Progress"
+    }
+  }
+}

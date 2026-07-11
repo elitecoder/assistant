@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "im",
+      "channel": "D103",
+      "ts": "1783000011.0011",
+      "user": "U11",
+      "text": ""
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:51Z",
+    "source": "slack",
+    "kind": "dm",
+    "external_id": "slack:D103:1783000011.0011",
+    "actor": "U11",
+    "title": "Slack dm",
+    "snippet": "",
+    "url": "https://slack.com/archives/D103/p17830000110011",
+    "refs": {
+      "channel": "D103",
+      "slack_ts": "1783000011.0011",
+      "slack_user": "U11"
+    }
+  }
+}

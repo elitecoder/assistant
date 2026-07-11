@@ -1,0 +1,29 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "im",
+      "channel": "D101",
+      "ts": "1783000005.0005",
+      "user": "U5",
+      "text": "DM with permalink"
+    },
+    "permalink": "https://corp.slack.com/archives/D101/p17830000050005"
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:45Z",
+    "source": "slack",
+    "kind": "dm",
+    "external_id": "slack:D101:1783000005.0005",
+    "actor": "U5",
+    "title": "DM with permalink",
+    "snippet": "DM with permalink",
+    "url": "https://corp.slack.com/archives/D101/p17830000050005",
+    "refs": {
+      "channel": "D101",
+      "slack_ts": "1783000005.0005",
+      "slack_user": "U5"
+    }
+  }
+}

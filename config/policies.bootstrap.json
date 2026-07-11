@@ -1,6 +1,6 @@
 {
-  "version": 3,
-  "_comment": "Bootstrap fleet policies (Keel M2, extended for M5 wave-1 connectors). Installed to ~/.assistant/policies/policies.json on first triage run when no live file exists. On later runs a version bump here ADDs any rule ids missing from the installed file (never overwrites or removes user rules) and ledgers the upgrade. Ordered, first-match-wins. Every id has a fixture in evals/policy/<id>/ enforced by tests/test_policy.py coverage. M5: github + gmail rules are now present because their producers (bin/connectors/github-notifications.py, bin/connectors/gmail.py) exist and their WorldEvent kinds are known (github kind = notification reason; gmail kind = mechanical newsletter|direct|message from Gmail's own labels/headers) — the M2-era data-hiding hazard (guessing a schema before the producer existed) no longer applies. No rule uses the `auto` lane (the triage lane map structurally cannot emit auto; auto is confirmed-policy-only). Mutations to the LIVE file go through confirmed `policy` proposals, not hand edits.",
+  "version": 4,
+  "_comment": "Bootstrap fleet policies (Keel M2, extended for M5 wave-1 AND wave-2 connectors). Installed to ~/.assistant/policies/policies.json on first triage run when no live file exists. On later runs a version bump here ADDs any rule ids missing from the installed file (never overwrites or removes user rules) and ledgers the upgrade. Ordered, first-match-wins. Every id has a fixture in evals/policy/<id>/ enforced by tests/test_policy.py coverage. M5 wave-1: github + gmail rules (kinds are the notification reason / mechanical newsletter|direct|message). M5 wave-2: gcal + jira + slack rules are now present because their producers (bin/connectors/gcal.py, jira.py, slack-events.py) exist and their WorldEvent kinds are known and mechanical (gcal kind=event_upcoming with refs.window horizon; jira kind derived from the changelog = mention|flagged|assigned|comment|status_change|priority_change|updated; slack kind = app_mention|dm|message from Slack's own event metadata) — the M2-era data-hiding hazard (guessing a schema before the producer existed) no longer applies. No rule uses the `auto` lane (the triage lane map structurally cannot emit auto; auto is confirmed-policy-only). Mutations to the LIVE file go through confirmed `policy` proposals, not hand edits.",
   "policies": [
     {
       "id": "cmux-needs-input-escalate",
@@ -188,6 +188,168 @@
       "id": "gmail-message-digest",
       "match": {
         "source": "gmail",
+        "kind": "message"
+      },
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "gcal-upcoming-1h-staged",
+      "match": {
+        "source": "gcal",
+        "kind": "event_upcoming",
+        "predicates": [
+          {"field": "refs.window", "op": "eq", "value": "1h"}
+        ]
+      },
+      "lane": "staged",
+      "action": null,
+      "urgency": "soon",
+      "ttl_h": 4,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "gcal-upcoming-24h-digest",
+      "match": {
+        "source": "gcal",
+        "kind": "event_upcoming",
+        "predicates": [
+          {"field": "refs.window", "op": "eq", "value": "24h"}
+        ]
+      },
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "jira-mention-escalate",
+      "match": {
+        "source": "jira",
+        "kind": "mention"
+      },
+      "lane": "escalate",
+      "action": null,
+      "urgency": "now",
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "jira-flagged-escalate",
+      "match": {
+        "source": "jira",
+        "kind": "flagged"
+      },
+      "lane": "escalate",
+      "action": null,
+      "urgency": "now",
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "jira-assigned-staged",
+      "match": {
+        "source": "jira",
+        "kind": "assigned"
+      },
+      "lane": "staged",
+      "action": null,
+      "urgency": "soon",
+      "ttl_h": 72,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "jira-comment-staged",
+      "match": {
+        "source": "jira",
+        "kind": "comment"
+      },
+      "lane": "staged",
+      "action": null,
+      "urgency": "soon",
+      "ttl_h": 72,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "jira-status-change-digest",
+      "match": {
+        "source": "jira",
+        "kind": "status_change"
+      },
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "jira-priority-change-digest",
+      "match": {
+        "source": "jira",
+        "kind": "priority_change"
+      },
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "jira-updated-digest",
+      "match": {
+        "source": "jira",
+        "kind": "updated"
+      },
+      "lane": "digest",
+      "action": null,
+      "urgency": "low",
+      "ttl_h": 24,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "slack-app-mention-escalate",
+      "match": {
+        "source": "slack",
+        "kind": "app_mention"
+      },
+      "lane": "escalate",
+      "action": null,
+      "urgency": "now",
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "slack-dm-escalate",
+      "match": {
+        "source": "slack",
+        "kind": "dm"
+      },
+      "lane": "escalate",
+      "action": null,
+      "urgency": "now",
+      "ttl_h": null,
+      "pageable": false,
+      "enabled": true
+    },
+    {
+      "id": "slack-channel-noise-digest",
+      "match": {
+        "source": "slack",
         "kind": "message"
       },
       "lane": "digest",

@@ -140,6 +140,13 @@ KNOWN_CONNECTORS = (
      "hint": "run: gh auth login"},
     {"name": "gmail", "display": "Gmail",
      "hint": "run: bin/connectors/gmail.py --authorize --client-secrets <path>"},
+    # ─── M5 wave 2 ───
+    {"name": "gcal", "display": "Google Calendar",
+     "hint": "run: bin/connectors/gcal.py --authorize --client-secrets <path>"},
+    {"name": "jira", "display": "JIRA",
+     "hint": "set JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN in ~/.zprofile"},
+    {"name": "slack", "display": "Slack",
+     "hint": "wire the Slack app (SLACK_BOT_TOKEN in ~/.zprofile)"},
 )
 
 

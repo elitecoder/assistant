@@ -1,0 +1,18 @@
+{
+  "schema": "world-event/1",
+  "id": "dbdb3477330b7d66ab6e3eb3cef99735bc29c1d19dd17c5140f942ba34ef1104",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783684800,
+  "source": "jira",
+  "kind": "updated",
+  "external_id": "jira:PROJ-16:8007",
+  "actor": "Mukul",
+  "title": "PROJ-16 summary",
+  "snippet": "PROJ-16 · updated · In Progress · High",
+  "url": "https://acme.atlassian.net/browse/PROJ-16",
+  "refs": {
+    "jira": "PROJ-16",
+    "status": "In Progress"
+  },
+  "raw_path": null
+}

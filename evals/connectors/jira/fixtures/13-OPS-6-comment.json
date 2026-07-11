@@ -1,0 +1,57 @@
+{
+  "raw": {
+    "key": "OPS-6",
+    "fields": {
+      "summary": "OPS-6 summary",
+      "updated": "2026-07-10T13:25:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Medium"
+      },
+      "comment": {
+        "comments": [
+          {
+            "body": "another comment thread"
+          }
+        ]
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "6006",
+          "items": [
+            {
+              "field": "comment"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T13:25:00Z",
+    "source": "jira",
+    "kind": "comment",
+    "external_id": "jira:OPS-6:6006",
+    "actor": "Mukul",
+    "title": "OPS-6 summary",
+    "snippet": "OPS-6 · comment · In Progress · Medium",
+    "url": "https://acme.atlassian.net/browse/OPS-6",
+    "refs": {
+      "jira": "OPS-6",
+      "status": "In Progress"
+    }
+  }
+}

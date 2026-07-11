@@ -1,0 +1,57 @@
+{
+  "raw": {
+    "key": "OPS-2",
+    "fields": {
+      "summary": "OPS-2 summary",
+      "updated": "2026-07-10T13:05:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Medium"
+      },
+      "comment": {
+        "comments": [
+          {
+            "body": "@mukul@corp.example thoughts?"
+          }
+        ]
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "6002",
+          "items": [
+            {
+              "field": "comment"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T13:05:00Z",
+    "source": "jira",
+    "kind": "mention",
+    "external_id": "jira:OPS-2:6002",
+    "actor": "Mukul",
+    "title": "OPS-2 summary",
+    "snippet": "OPS-2 · mention · In Progress · Medium",
+    "url": "https://acme.atlassian.net/browse/OPS-2",
+    "refs": {
+      "jira": "OPS-2",
+      "status": "In Progress"
+    }
+  }
+}

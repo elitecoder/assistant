@@ -1,0 +1,57 @@
+{
+  "raw": {
+    "key": "PROJ-4",
+    "fields": {
+      "summary": "PROJ-4 summary",
+      "updated": "2026-07-10T12:15:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "displayName": "Reporter"
+      },
+      "priority": {
+        "name": "Medium"
+      },
+      "comment": {
+        "comments": [
+          {
+            "body": "left a note"
+          }
+        ]
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "5004",
+          "items": [
+            {
+              "field": "comment"
+            }
+          ]
+        }
+      ]
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account": "mukul@corp.example",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-10T12:15:00Z",
+    "source": "jira",
+    "kind": "comment",
+    "external_id": "jira:PROJ-4:5004",
+    "actor": "Mukul",
+    "title": "PROJ-4 summary",
+    "snippet": "PROJ-4 · comment · In Progress · Medium",
+    "url": "https://acme.atlassian.net/browse/PROJ-4",
+    "refs": {
+      "jira": "PROJ-4",
+      "status": "In Progress"
+    }
+  }
+}
