@@ -483,6 +483,16 @@ def _render_brief_tab_inner():
             ws_btn = (f'<button class="btn" data-ws="{e(ws_ref)}" '
                       f'onclick="openWs(this)">Open {e(ws_ref)}</button>'
                       if ws_ref else "")
+            # Strategist-prepared decision context (Keel M6 pre-research), inline
+            # when present so the spend actually reaches a human (S-O-1/S-F-2).
+            # This is LLM output authored over attacker-controllable connector
+            # text (PR/Slack titles + snippets), so it MUST be HTML-escaped via
+            # e() — a markdown source does not make it safe (M3's XSS lesson): a
+            # <script> in the context renders as inert text, never executes.
+            strat_ctx = d.get("strategist_context")
+            strat_html = (f'<div class="strat-ctx"><span class="strat-ctx-h">'
+                          f'Strategist context</span>{e(str(strat_ctx))}</div>'
+                          if strat_ctx else "")
             rows.append(f"""
 <div class="card brief-dec" data-dec-row="{e(dec_id)}">
   <div class="pills">
@@ -493,6 +503,7 @@ def _render_brief_tab_inner():
   </div>
   <div class="action">{e(d.get('title') or dec_id)}</div>
   <div class="reason">{e(d.get('snippet') or '')}</div>
+  {strat_html}
   {triage_html}
   <div class="buttons">
     <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="accept">{e(d.get('default_label') or 'Accept')}</button>
@@ -1885,6 +1896,11 @@ h1 {
 .action { font: 500 14px/1.45 var(--sans); margin: 0 0 6px; color: var(--text); letter-spacing: -0.005em; }
 .reason { color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .alts { font: 11px/1.5 var(--sans); color: var(--muted); margin-top: 10px; }
+.strat-ctx { white-space: pre-wrap; font: 11px/1.6 var(--mono); color: var(--text-2);
+  background: rgba(255,255,255,0.03); border-radius: 6px; padding: 8px 10px;
+  margin-top: 10px; max-height: 220px; overflow: auto; }
+.strat-ctx .strat-ctx-h { display: block; font: 10px/1.4 var(--sans); text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); margin-bottom: 6px; }
 .alts code { background: rgba(255,255,255,0.04); padding: 2px 6px; border-radius: 4px; font: 10px/1 var(--mono); color: var(--text-2); }
 
 /* ─── Generic pill ─── */
@@ -2682,12 +2698,12 @@ function pingBriefSeen() {
   } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
-  const initial = (window.location.hash || '#decisions').replace('#', '');
-  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'decisions');
+  const initial = (window.location.hash || '#brief').replace('#', '');
+  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'brief');
   // Auto-refresh every 15s but preserve the current hash. We use location.reload()
   // (not <meta http-equiv="refresh">) because meta-refresh reloads from the original
   // href and drops the fragment on most browsers, snapping the user back to
-  // the default Decisions tab even when they're reading TODOs.
+  // the default Brief tab even when they're reading TODOs.
   setInterval(() => { location.reload(); }, 15000);
 });
 async function openWs(btn) {

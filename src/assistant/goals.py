@@ -130,6 +130,20 @@ DEFAULT_WORLD_STALE_SEC = 1800
 # from the dispatcher's ceiling (m14). Never mutated here.
 ACTIVE_WS_CAP = config.ACTIVE_WS_CAP
 
+# Aggregate per-pulse Strategist budget (Keel M6, C-F-5/C-O-1) — the twin of the
+# dispatcher's MAX_DISPATCH_PER_PULSE. Each Strategist draft is a ≤240s
+# subprocess; N stalled goals × 240s can otherwise exceed PULSE_RUN_TIMEOUT_SEC
+# (1800s) and the supervisor SIGKILLs the pulse mid-run, losing dispatch/
+# heartbeat/metrics. So one planner pass invokes the injected drafter at most
+# MAX_STRATEGIST_CALLS_PER_PULSE times AND for at most STRATEGIST_PULSE_BUDGET_SEC
+# wall-clock; once either is spent, the remaining stalled goals fall back to the
+# deterministic M4 template (which costs nothing). Only the drafter is bounded —
+# WHETHER/what-class is 100% Python and never shed. Sized so the planner budget
+# plus step 1.8 pre-research (bounded by maxContextPerPass) stays well under the
+# 1800s pulse timeout: 4×240 + 1×240 = 1200s.
+MAX_STRATEGIST_CALLS_PER_PULSE = 4
+STRATEGIST_PULSE_BUDGET_SEC = 1200
+
 # Staged goal TODOs get the lowest priority so the untouched dispatcher (which
 # sorts bucket_b by priority) always dispatches human work first (design
 # section 6: "human-originated TODOs dispatch first").
@@ -1395,11 +1409,20 @@ def _ledger_soft_skip(goal_id: str, reason: str, now: float,
     summary["dedup_only"] = True
 
 
-def plan_pass(now: float | None = None) -> dict:
+def plan_pass(now: float | None = None, strategist_draft=None) -> dict:
     """One planner pass (design section 6). Assumes progress is already stamped
     (pulse_step stamps first). Goal RANK order — goal #1 gets first claim on the
     leftover headroom. Returns a summary of everything it did/skipped, ALL of it
-    also ledgered (M1c: no silent skips)."""
+    also ledgered (M1c: no silent skips).
+
+    `strategist_draft` (Keel M6) is an OPTIONAL injected callable
+    `(goal, step_class, template_title, template_detail) -> (title, detail)`.
+    Default None preserves the M4 behavior EXACTLY (pure templates, zero LLM,
+    byte-identical) — the CLI and every M4 test pass nothing. When provided (the
+    pulse path, via bin/strategist.py), the Strategist upgrades ONLY the staged
+    step's TEXT after Python has already decided WHETHER/what class to stage. It
+    returns TEXT ONLY — the staged action class stays the Python-owned
+    `step_class`, never anything the LLM echoed (WHAT-not-WHETHER)."""
     now = now if now is not None else time.time()
     summary = {"paused": False, "stale_world": False, "unreadable": False,
                "staged_todos": [], "staged_decisions": [], "skipped": [],
@@ -1446,6 +1469,40 @@ def plan_pass(now: float | None = None) -> dict:
     headroom = ACTIVE_WS_CAP - active_ws - human_pending
     autodispatch_on = planner_autodispatch()
     todos_staged = 0
+    # Aggregate per-pulse Strategist budget (C-F-5/C-O-1): count drafter
+    # invocations and cap the total wall-clock so N stalled goals can't blow the
+    # 1800s pulse timeout. monotonic() is immune to wall-clock steps.
+    strat_calls = 0
+    strat_deadline = time.monotonic() + STRATEGIST_PULSE_BUDGET_SEC
+
+    def _draft_text(goal: dict, sc: str, title: str,
+                    detail: str) -> tuple[str, str]:
+        """Upgrade the staged step's TEXT via the injected Strategist (M6), or
+        return the M4 template unchanged when no drafter is injected. Called
+        ONLY after the planner has committed to staging (stalled + capacity +
+        class chosen) — WHAT, never WHETHER. The Strategist returns TEXT ONLY;
+        the staged action class stays `sc` (Python-owned). Defensive: any
+        error here falls back to the template so a broken drafter can never
+        crash or block the planner pass.
+
+        Bounded by the aggregate per-pulse Strategist budget: once
+        MAX_STRATEGIST_CALLS_PER_PULSE calls OR STRATEGIST_PULSE_BUDGET_SEC of
+        wall-clock is spent, the remaining goals get the template (no drafter
+        call) so a first-of-day pass with many stalled goals can't SIGKILL."""
+        nonlocal strat_calls
+        if strategist_draft is None:
+            return title, detail
+        if strat_calls >= MAX_STRATEGIST_CALLS_PER_PULSE \
+                or time.monotonic() >= strat_deadline:
+            return title, detail  # per-pulse Strategist budget spent → template
+        strat_calls += 1
+        try:
+            nt, nd = strategist_draft(goal, sc, title, detail, now)
+        except Exception:  # noqa: BLE001 — a broken drafter → template, never crash
+            return title, detail
+        if isinstance(nt, str) and nt.strip() and isinstance(nd, str) and nd.strip():
+            return nt, nd
+        return title, detail
 
     for goal in sorted(store["goals"],
                        key=lambda g: (g.get("rank", 1 << 30), g.get("id"))):
@@ -1488,6 +1545,16 @@ def plan_pass(now: float | None = None) -> dict:
                                   extra=f"headroom={headroom} active={active_ws} "
                                         f"human={human_pending}")
                 continue
+            # SAFETY (S-F-1): an autoDispatch TODO is picked up by an UNATTENDED
+            # --dangerously-skip-permissions worker whose prompt is built
+            # straight from this text. That text must therefore be the TRUSTED
+            # M4 deterministic template — NEVER the Strategist LLM draft, which
+            # is authored over attacker-influenceable goal/connector content and
+            # could smuggle a destructive instruction past the reversibility
+            # class into an agent that acts without a human in the loop. The
+            # drafted text is used ONLY on the human-reviewed staged-decision
+            # path below (the safe default), where a person sees it before
+            # anything runs.
             item, created = _stage_todo(goal, step_class, title, detail,
                                         autodispatch=True, now=now)
             if created and item is not None:
@@ -1506,7 +1573,9 @@ def plan_pass(now: float | None = None) -> dict:
                 # the human declined this step (M6) — either way, ledger it.
                 _ledger_soft_skip(gid, "todo-dedup", now, summary)
         else:
-            rec, created = _stage_decision(goal, step_class, title, detail, now)
+            d_title, d_detail = _draft_text(goal, step_class, title, detail)
+            rec, created = _stage_decision(goal, step_class, d_title, d_detail,
+                                           now)
             if created and rec is not None:
                 summary["staged_decisions"].append({"goal": gid, "dec": rec.get("id"),
                                                     "step": step_class})
@@ -1589,12 +1658,15 @@ def staged_accept_rate(records: list[dict] | None = None,
 
 # ─── pulse step ──────────────────────────────────────────────────────────────
 
-def pulse_step(now: float | None = None, log=None) -> dict:
+def pulse_step(now: float | None = None, log=None, strategist_draft=None) -> dict:
     """The pulse's planner step (Keel M4). Stamp mechanical progress first (so
     stall detection reads a fresh picture), then run one planner pass. Every
     failure mode inside is already a no-op-with-ledger; this wrapper adds no
-    load-bearing behavior of its own — pulse.py fences the whole call anyway."""
+    load-bearing behavior of its own — pulse.py fences the whole call anyway.
+
+    `strategist_draft` (Keel M6) is threaded straight to plan_pass. Default
+    None keeps the M4 behavior byte-identical (pure templates, zero LLM)."""
     now = now if now is not None else time.time()
     stamp = stamp_progress(now=now)
-    plan = plan_pass(now=now)
+    plan = plan_pass(now=now, strategist_draft=strategist_draft)
     return {"stamp": stamp, "plan": plan}
