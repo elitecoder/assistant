@@ -1,0 +1,38 @@
+{
+  "name": "gh-push-10",
+  "raw": {
+    "id": "10010",
+    "reason": "push",
+    "updated_at": "2026-07-20T10:10:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/firefly-platform",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[push] item 10 in elitecoder/firefly-platform",
+      "type": "Release",
+      "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/10"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "593a83636e7e06f351a03f766886e83c868956ca0de9ec915246cdabbb264dd3",
+    "ts": "2026-07-20T10:10:00Z",
+    "epoch": 1784542200,
+    "source": "github",
+    "kind": "push",
+    "external_id": "gh-notif:elitecoder/firefly-platform:10010:2026-07-20T10:10:00Z",
+    "actor": "elitecoder",
+    "title": "[push] item 10 in elitecoder/firefly-platform",
+    "snippet": "elitecoder/firefly-platform \u00b7 push \u00b7 Release",
+    "url": "https://github.com/elitecoder/firefly-platform/pull/10",
+    "refs": {
+      "repo": "elitecoder/firefly-platform",
+      "pr": "10"
+    },
+    "raw_path": null
+  }
+}

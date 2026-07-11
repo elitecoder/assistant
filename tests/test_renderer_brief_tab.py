@@ -126,6 +126,28 @@ class BriefTabTests(unittest.TestCase):
         self.assertEqual(n, 0)
         self.assertIn("Brief unavailable", html)
 
+    def test_f2_errored_but_polling_connector_alarms_in_health(self):
+        # F2: a connector that errors every poll refreshes last_poll on each
+        # failed poll, so it is never "stale" — but classify_connector marked it
+        # error/ok:false. The brief health chip must surface it as a PROBLEM
+        # (cold + reason), not render it "fresh" forever. A not_configured
+        # connector stays quiet (no chip).
+        doc = brief_fixture()
+        doc["health"]["connectors"] = {
+            "github": {"status": "error", "ok": False, "stale": False,
+                       "token_expired": False, "errors": ["boom 500"],
+                       "last_poll": "2026-07-02T13:59:00Z"},
+            "gmail": {"status": "not_configured", "ok": False, "stale": False,
+                      "token_expired": False, "errors": [], "last_poll": None},
+        }
+        self.write_brief(doc)
+        html, _ = self.mod.render_brief_tab()
+        self.assertEqual(html.count("connector heartbeat · github"), 1)  # one chip
+        self.assertIn("github · error", html)                    # alarming
+        self.assertIn("cold", html)                              # not "fresh"
+        self.assertNotIn("github · 2026-07-02T13:59:00Z", html)  # NOT shown fresh
+        self.assertNotIn("connector heartbeat · gmail", html)    # nc stays quiet
+
     def test_full_brief_renders_all_four_sections(self):
         self.write_brief(brief_fixture())
         html, n = self.mod.render_brief_tab()

@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "github",
+  "kind": "comment",
+  "external_id": "gh-notif:elitecoder/assistant:9005:2026-07-10T12:08:00Z",
+  "actor": "reviewer",
+  "title": "New comment on PR #12",
+  "snippet": "elitecoder/assistant \u00b7 comment \u00b7 PullRequest",
+  "url": null,
+  "refs": {},
+  "raw_path": null
+}

@@ -1,0 +1,38 @@
+{
+  "name": "gh-team_mention-2",
+  "raw": {
+    "id": "10002",
+    "reason": "team_mention",
+    "updated_at": "2026-07-12T02:14:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "OneAdobe/mukul-memory",
+      "owner": {
+        "login": "OneAdobe"
+      }
+    },
+    "subject": {
+      "title": "[team_mention] item 2 in OneAdobe/mukul-memory",
+      "type": "CheckSuite",
+      "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/2"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "b175406cd19fa0f7ac06303d6121172cc92fbcd01e1820356885ff3fccd6a5d9",
+    "ts": "2026-07-12T02:14:00Z",
+    "epoch": 1783822440,
+    "source": "github",
+    "kind": "team_mention",
+    "external_id": "gh-notif:OneAdobe/mukul-memory:10002:2026-07-12T02:14:00Z",
+    "actor": "OneAdobe",
+    "title": "[team_mention] item 2 in OneAdobe/mukul-memory",
+    "snippet": "OneAdobe/mukul-memory \u00b7 team_mention \u00b7 CheckSuite",
+    "url": "https://github.com/OneAdobe/mukul-memory/pull/2",
+    "refs": {
+      "repo": "OneAdobe/mukul-memory",
+      "pr": "2"
+    },
+    "raw_path": null
+  }
+}

@@ -34,6 +34,26 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# The canonical connector tri-state (not_configured|ok|error) + the known-
+# connector registry live in the connector base, so world-scanner, the brief
+# and the dashboard never drift on what "connected" means. Import it the way the
+# standalone connectors do (this launchd script must put src/ on the path
+# first); degrade to a None fallback so a broken import can NEVER take down the
+# 30s world snapshot — build_connectors_summary just returns {} in that case.
+_REPO = Path(__file__).resolve().parents[1]
+if str(_REPO / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO / "src"))
+try:
+    from assistant import connector as _connector
+    _classify_connector = _connector.classify_connector
+    _read_and_classify = _connector.read_and_classify
+    _KNOWN_CONNECTORS = _connector.KNOWN_CONNECTORS
+except Exception:  # noqa: BLE001 — snapshot resilience over connector fidelity
+    _connector = None
+    _classify_connector = None
+    _read_and_classify = None
+    _KNOWN_CONNECTORS = ()
+
 HOME = Path(os.environ["HOME"])
 OUT_PATH = HOME / ".claude/cache/world.json"
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
@@ -47,6 +67,7 @@ INBOX_ARCHIVE = HOME / ".architect/orchestrator-inbox-archive"
 LOG_DIR = HOME / ".assistant/logs"
 EVENTS_PATH = HOME / ".assistant/events.jsonl"
 EVENTS_QUARANTINE_DIR = HOME / ".assistant/eventspine/quarantine"
+CONNECTORS_DIR = HOME / ".assistant/connectors"
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 ACTIVITY_HOURS = 24
@@ -371,6 +392,49 @@ def build_events_summary(now):
     return out
 
 
+def build_connectors_summary(now):
+    """Join each connector's heartbeat into world.json with its canonical
+    tri-state (Keel M5). The status/stale/token verdict is computed by the
+    connector base's classify_connector — the ONE place the not_configured|ok|
+    error model lives, shared with the brief so both agree. We enumerate the
+    UNION of the known-connector registry and whatever heartbeat dirs exist, so:
+
+      * a KNOWN connector that has never run (no heartbeat file at all — fresh
+        install, daemon never started) still appears, as not_configured
+        ("available, not connected"), NOT as an error/stale alarm; and
+      * an unknown/extra connector that DOES have a heartbeat is never dropped.
+
+    So the dashboard Connections panel can render every connector from this one
+    block. Pure read — connectors own their heartbeat files; we only observe. If
+    the connector base could not be imported this degrades to {} (the dashboard
+    then shows its own honest empty state)."""
+    if _classify_connector is None:
+        return {}
+    now_epoch = now.timestamp()
+    names = [c["name"] for c in _KNOWN_CONNECTORS]
+    if CONNECTORS_DIR.exists():
+        try:
+            for p in sorted(CONNECTORS_DIR.iterdir()):
+                if p.is_dir() and p.name not in names:
+                    names.append(p.name)
+        except OSError:
+            pass
+    out = {}
+    for name in names:
+        # F5: read_and_classify distinguishes an ABSENT heartbeat (never ran →
+        # not_configured) from a PRESENT-but-corrupt one (ran before, now broken
+        # → error) — the SAME verdict the brief derives, so a corrupt beat can
+        # never read "available" here while the brief drops it. F1: fence per
+        # connector so one bad heartbeat can never take down the whole snapshot
+        # (world.json must still be written — the M3 one-bad-row contract).
+        try:
+            out[name] = _read_and_classify(
+                CONNECTORS_DIR / name / "heartbeat.json", now_epoch)
+        except Exception:  # noqa: BLE001 — one bad row degrades only itself
+            out[name] = _connector._corrupt_connector_view(now_epoch)
+    return out
+
+
 def build():
     now = utc_now()
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -402,6 +466,7 @@ def build():
     inbox_events = load_inbox_recent(now)
     dashboard_state = load_json(DASHBOARD_STATE, {})
     events_summary = build_events_summary(now)
+    connectors_summary = build_connectors_summary(now)
 
     # Counts for the summary block.
     cron = sum(1 for s in live_sessions.values() if s.get("is_cron"))
@@ -438,6 +503,7 @@ def build():
             "events_24h": events_summary["total_24h"],
         },
         "events": events_summary,
+        "connectors": connectors_summary,
         "workspaces": workspaces,
         "live_sessions": list(live_sessions.values()),
         "proposals": proposals,

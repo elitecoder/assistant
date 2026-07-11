@@ -1,0 +1,45 @@
+{
+  "name": "gmail-message-18",
+  "raw": {
+    "id": "18f0000000000012",
+    "threadId": "t18f0000000000012",
+    "labelIds": [
+      "INBOX"
+    ],
+    "internalDate": "1783001080000",
+    "snippet": "Automated notice 2",
+    "payload": {
+      "headers": [
+        {
+          "name": "From",
+          "value": "Bot2 <bot2@svc.example>"
+        },
+        {
+          "name": "Subject",
+          "value": "Notice 2"
+        },
+        {
+          "name": "To",
+          "value": "ops@corp.example"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "ecc667aacf23f52fcfcb31c280f4cffbe8d34b6b16476e14093cfdea43a7311f",
+    "ts": "2026-07-02T14:04:40Z",
+    "epoch": 1783001080,
+    "source": "gmail",
+    "kind": "message",
+    "external_id": "gmail:18f0000000000012",
+    "actor": "Bot2 <bot2@svc.example>",
+    "title": "Notice 2",
+    "snippet": "Automated notice 2",
+    "url": "https://mail.google.com/mail/u/0/#all/18f0000000000012",
+    "refs": {
+      "sender": "bot2@svc.example"
+    },
+    "raw_path": null
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "gh-manual-11",
+  "raw": {
+    "id": "10011",
+    "reason": "manual",
+    "updated_at": "2026-07-21T11:17:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "OneAdobe/mukul-memory",
+      "owner": {
+        "login": "OneAdobe"
+      }
+    },
+    "subject": {
+      "title": "[manual] item 11 in OneAdobe/mukul-memory",
+      "type": "RepositoryVulnerabilityAlert",
+      "url": "https://api.github.com/repos/OneAdobe/mukul-memory/pulls/11"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "c4d69b069a7de8695a38afcca282cef85bb825fa76cc48031879f0026de21c77",
+    "ts": "2026-07-21T11:17:00Z",
+    "epoch": 1784632620,
+    "source": "github",
+    "kind": "manual",
+    "external_id": "gh-notif:OneAdobe/mukul-memory:10011:2026-07-21T11:17:00Z",
+    "actor": "OneAdobe",
+    "title": "[manual] item 11 in OneAdobe/mukul-memory",
+    "snippet": "OneAdobe/mukul-memory \u00b7 manual \u00b7 RepositoryVulnerabilityAlert",
+    "url": "https://github.com/OneAdobe/mukul-memory/pull/11",
+    "refs": {
+      "repo": "OneAdobe/mukul-memory",
+      "pr": "11"
+    },
+    "raw_path": null
+  }
+}

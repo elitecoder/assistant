@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "gmail",
+  "kind": "newsletter",
+  "external_id": "gmail:18f0a1b2c3d4e5f6",
+  "actor": "AI Weekly <news@aiweekly.example>",
+  "title": "This week in AI \u2014 20% off Pro",
+  "snippet": "20% off \u00b7 unsubscribe below",
+  "url": "https://mail.google.com/mail/u/0/#all/18f0a1b2c3d4e5f6",
+  "refs": {},
+  "raw_path": null
+}

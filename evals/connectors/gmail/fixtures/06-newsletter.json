@@ -1,0 +1,46 @@
+{
+  "name": "gmail-newsletter-6",
+  "raw": {
+    "id": "18f0000000000006",
+    "threadId": "t18f0000000000006",
+    "labelIds": [
+      "INBOX",
+      "CATEGORY_SOCIAL"
+    ],
+    "internalDate": "1783000360000",
+    "snippet": "Top stories 6 \u2014 read more",
+    "payload": {
+      "headers": [
+        {
+          "name": "From",
+          "value": "News6 <news6@list.example>"
+        },
+        {
+          "name": "Subject",
+          "value": "Digest #6"
+        },
+        {
+          "name": "To",
+          "value": "subscribers@list.example"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "aa03d012bb7ff9866a2f55e80ce7c23bb2c6c6f9c1446ee7ef972d10fab615b8",
+    "ts": "2026-07-02T13:52:40Z",
+    "epoch": 1783000360,
+    "source": "gmail",
+    "kind": "newsletter",
+    "external_id": "gmail:18f0000000000006",
+    "actor": "News6 <news6@list.example>",
+    "title": "Digest #6",
+    "snippet": "Top stories 6 \u2014 read more",
+    "url": "https://mail.google.com/mail/u/0/#all/18f0000000000006",
+    "refs": {
+      "sender": "news6@list.example"
+    },
+    "raw_path": null
+  }
+}

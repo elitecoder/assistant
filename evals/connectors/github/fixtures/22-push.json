@@ -1,0 +1,38 @@
+{
+  "name": "gh-push-22",
+  "raw": {
+    "id": "10022",
+    "reason": "push",
+    "updated_at": "2026-07-14T22:34:00Z",
+    "unread": true,
+    "repository": {
+      "full_name": "elitecoder/firefly-platform",
+      "owner": {
+        "login": "elitecoder"
+      }
+    },
+    "subject": {
+      "title": "[push] item 22 in elitecoder/firefly-platform",
+      "type": "Release",
+      "url": "https://api.github.com/repos/elitecoder/firefly-platform/pulls/22"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "86812282bdfd4f26274e28c9a9bb067c019482c8a006b467f9775d21b85f65a4",
+    "ts": "2026-07-14T22:34:00Z",
+    "epoch": 1784068440,
+    "source": "github",
+    "kind": "push",
+    "external_id": "gh-notif:elitecoder/firefly-platform:10022:2026-07-14T22:34:00Z",
+    "actor": "elitecoder",
+    "title": "[push] item 22 in elitecoder/firefly-platform",
+    "snippet": "elitecoder/firefly-platform \u00b7 push \u00b7 Release",
+    "url": "https://github.com/elitecoder/firefly-platform/pull/22",
+    "refs": {
+      "repo": "elitecoder/firefly-platform",
+      "pr": "22"
+    },
+    "raw_path": null
+  }
+}

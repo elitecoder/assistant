@@ -54,7 +54,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import decisions, policy, triage
+from . import connector, decisions, policy, triage
 
 BRIEF_SCHEMA = "morning-brief/1"
 
@@ -472,10 +472,17 @@ def expired_unseen_count(records: list[dict], now: float) -> int:
     return n
 
 
-def _connector_heartbeats() -> dict[str, dict]:
-    """heartbeat.json per connector (M5). Before M5 the directory doesn't
-    exist and this returns {} — only fleet sources ride the spine, and their
-    staleness shows via world.json's events section instead."""
+def _connector_heartbeats(now: float) -> dict[str, dict]:
+    """heartbeat.json per connector (M5), with the tri-state health VERDICT
+    derived by the connector base's canonical classify_connector (the ONE place
+    the not_configured|ok|error model lives, shared with world-scanner and the
+    dashboard so they never drift). A stale last_poll or a past token_expiry on
+    a CONFIGURED connector marks it error, so a dead connector or an expiring
+    token surfaces in the brief within one morning (design 4/9). A
+    not_configured connector (opted out) is QUIET: it is never counted as
+    stale/error — an optional connector nobody set up must not read as a
+    problem. Before M5 the directory doesn't exist and this returns {} — fleet
+    sources ride the spine and show staleness via world.json's events section."""
     out: dict[str, dict] = {}
     d = connectors_dir()
     try:
@@ -483,9 +490,18 @@ def _connector_heartbeats() -> dict[str, dict]:
     except (OSError, FileNotFoundError):
         return out
     for sub in entries:
-        hb = _read_json(sub / "heartbeat.json")
-        if isinstance(hb, dict):
-            out[sub.name] = hb
+        # F5: read_and_classify distinguishes an ABSENT heartbeat (never ran →
+        # not_configured) from a PRESENT-but-corrupt one (ran before, now broken
+        # → error). Before this the brief DROPPED a connector whose heartbeat was
+        # unreadable while world-scanner rendered it not_configured — the two
+        # consumers disagreed on the same broken file. Now both derive the SAME
+        # verdict. F1: fence per connector so one bad heartbeat can never take
+        # down the whole brief build.
+        try:
+            out[sub.name] = connector.read_and_classify(
+                sub / "heartbeat.json", now)
+        except Exception:  # noqa: BLE001 — one bad row degrades only itself
+            out[sub.name] = connector._corrupt_connector_view(now)
     return out
 
 
@@ -523,7 +539,7 @@ def _build_health(records: list[dict], now: float) -> dict:
         "interrupts": _interrupt_counts(now),
         "cost": _cost_health(now),
         "expired_unseen_24h": expired_unseen_count(records, now),
-        "connectors": _connector_heartbeats(),
+        "connectors": _connector_heartbeats(now),
     }
 
 

@@ -1,0 +1,15 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "github",
+  "kind": "review_requested",
+  "external_id": "gh-notif:elitecoder/assistant:9001:2026-07-10T12:00:00Z",
+  "actor": "elitecoder",
+  "title": "Keel M5 \u2014 Connector fan-out",
+  "snippet": "elitecoder/assistant \u00b7 review_requested \u00b7 PullRequest",
+  "url": "https://api.github.com/repos/elitecoder/assistant/pulls/12",
+  "refs": {},
+  "raw_path": null
+}

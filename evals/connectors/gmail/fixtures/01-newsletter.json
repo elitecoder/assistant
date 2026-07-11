@@ -1,0 +1,50 @@
+{
+  "name": "gmail-newsletter-1",
+  "raw": {
+    "id": "18f0000000000001",
+    "threadId": "t18f0000000000001",
+    "labelIds": [
+      "INBOX",
+      "CATEGORY_UPDATES"
+    ],
+    "internalDate": "1783000060000",
+    "snippet": "Top stories 1 \u2014 read more",
+    "payload": {
+      "headers": [
+        {
+          "name": "From",
+          "value": "News1 <news1@list.example>"
+        },
+        {
+          "name": "Subject",
+          "value": "Digest #1"
+        },
+        {
+          "name": "To",
+          "value": "subscribers@list.example"
+        },
+        {
+          "name": "List-Unsubscribe",
+          "value": "<mailto:u@list.example>"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "28851360d263f1be0bdb9202c3f2373d09446ac094ee8ec86cf40c3a8824301f",
+    "ts": "2026-07-02T13:47:40Z",
+    "epoch": 1783000060,
+    "source": "gmail",
+    "kind": "newsletter",
+    "external_id": "gmail:18f0000000000001",
+    "actor": "News1 <news1@list.example>",
+    "title": "Digest #1",
+    "snippet": "Top stories 1 \u2014 read more",
+    "url": "https://mail.google.com/mail/u/0/#all/18f0000000000001",
+    "refs": {
+      "sender": "news1@list.example"
+    },
+    "raw_path": null
+  }
+}
