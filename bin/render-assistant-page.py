@@ -400,6 +400,22 @@ def _brief_trend_svg(width=140, height=30, n=14):
             f'stroke-width="1.5" stroke-linejoin="round"/></svg>')
 
 
+def _greeting_for(epoch) -> str:
+    """A time-of-day greeting keyed on the brief's build hour (LOCAL, like the
+    brief's date key). The brief is a morning artifact, so 'Good morning' is the
+    overwhelming case; the fallbacks keep an on-demand afternoon rebuild honest.
+    A non-numeric/absent epoch degrades to the neutral morning greeting."""
+    try:
+        hour = datetime.fromtimestamp(float(epoch)).hour
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "Good morning"
+    if hour < 12:
+        return "Good morning"
+    if hour < 18:
+        return "Good afternoon"
+    return "Good evening"
+
+
 def render_brief_tab():
     """The Brief tab (Keel M3): the latest ~/.assistant/brief/brief-<date>.json
     rendered as the design's four sections — ranked decision queue with
@@ -440,6 +456,46 @@ def _render_brief_tab_inner():
     interrupts = health.get("interrupts") or {}
     cost = health.get("cost") or {}
 
+    # ─── the editorial VOICE (Keel M7 narrator) ───
+    # The narrator is a suggestion-only draft layer OVER this pure brief: a
+    # summary sentence + one recommendation per decision. narrative_for_brief
+    # ALWAYS returns something (a deterministic template floor when no LLM
+    # narrative sidecar exists or it's stale), so the editorial layout ships
+    # even with the narrator never run. Fenced like the connector import: a
+    # broken narrator must never break the Brief tab (M0's lesson). Its summary
+    # is LLM prose authored over attacker-controllable connector text, so every
+    # string is e()-escaped at render (M3's XSS lesson).
+    narrator = None
+    narrative = {"summary": "", "recommendations": {}, "source": "template"}
+    try:
+        if str(REPO / "src") not in sys.path:
+            sys.path.insert(0, str(REPO / "src"))
+        from assistant import narrator as narrator  # noqa: PLC0415
+        narrative = narrator.narrative_for_brief(brief)
+    except Exception:  # noqa: BLE001 — no voice is fine; the floor still renders
+        narrator = None
+    recs = narrative.get("recommendations") or {}
+
+    def _rec_for(d):
+        rid = d.get("id") or ""
+        if rid in recs and isinstance(recs[rid], str):
+            return recs[rid]
+        if narrator is not None:
+            return narrator.deterministic_recommendation(d)
+        label = d.get("default_label") or "Accept"
+        when = {"now": "today", "high": "today"}.get(
+            d.get("urgency") or "", "when you get to it")
+        return f"{label} — {when}."
+
+    def _urgency_badge(d):
+        lane = d.get("lane")
+        urg = d.get("urgency")
+        if lane == "escalate" or urg == "now":
+            return "u1", "today"
+        if urg == "high":
+            return "u2", "today"
+        return "u3", "this week"
+
     # ─── stats strip + north-star trend ───
     spark = _brief_trend_svg()
     trend_tile = (
@@ -465,14 +521,13 @@ def _render_brief_tab_inner():
     QUEUE_RENDER_CAP = 40
     if queue:
         rows = []
-        for d in queue[:QUEUE_RENDER_CAP]:
+        for rank, d in enumerate(queue[:QUEUE_RENDER_CAP], start=1):
             dec_id = d.get("id") or ""
             lane = (d.get("lane") or "?")
-            lane_cls = {"escalate": "t3", "staged": "t2", "digest": "scope"}.get(lane, "scope")
-            urgency = d.get("urgency")
-            urgency_pill = (f'<span class="pill held">{e(str(urgency))}</span>'
-                            if urgency else "")
+            lane_cls = {"escalate": "lane-escalate", "staged": "lane-staged",
+                        "digest": "lane-digest"}.get(lane, "")
             prov = d.get("policy_id") or "triage"
+            urg_cls, urg_label = _urgency_badge(d)
             triage_info = d.get("triage") or {}
             triage_html = ""
             if triage_info.get("suggested_lane"):
@@ -484,34 +539,36 @@ def _render_brief_tab_inner():
                       f'onclick="openWs(this)">Open {e(ws_ref)}</button>'
                       if ws_ref else "")
             # Strategist-prepared decision context (Keel M6 pre-research), inline
-            # when present so the spend actually reaches a human (S-O-1/S-F-2).
-            # This is LLM output authored over attacker-controllable connector
-            # text (PR/Slack titles + snippets), so it MUST be HTML-escaped via
-            # e() — a markdown source does not make it safe (M3's XSS lesson): a
-            # <script> in the context renders as inert text, never executes.
+            # when present. LLM output over attacker-controllable connector text,
+            # so it MUST be e()-escaped (M3's XSS lesson) — a <script> renders as
+            # inert text. The narrator's per-decision recommendation (below) is
+            # the one-line editorial take; this is the fuller research context.
             strat_ctx = d.get("strategist_context")
             strat_html = (f'<div class="strat-ctx"><span class="strat-ctx-h">'
                           f'Strategist context</span>{e(str(strat_ctx))}</div>'
                           if strat_ctx else "")
+            # The recommendation is narrator prose (or a deterministic template)
+            # — same escaping contract as the strategist context.
+            rec_html = (f'<div class="drec">{e(str(_rec_for(d)))}</div>')
             rows.append(f"""
-<div class="card brief-dec" data-dec-row="{e(dec_id)}">
-  <div class="pills">
-    <span class="pill {lane_cls}">{e(lane)}</span>
-    {urgency_pill}
-    <span class="pill scope">via {e(str(prov))}</span>
-    <span class="age">score {float(d.get('score') or 0):.0f} · {float(d.get('age_h') or 0):.1f}h old</span>
+<div class="drow brief-dec {lane_cls}" data-dec-row="{e(dec_id)}">
+  <span class="dn">{rank}</span>
+  <div class="dbody">
+    <div class="dtitle">{e(d.get('title') or dec_id)}</div>
+    <div class="dmeta">{e(lane)} · via {e(str(prov))} · score {float(d.get('score') or 0):.0f} · {float(d.get('age_h') or 0):.1f}h old</div>
+    <div class="ddesc">{e(d.get('snippet') or '')}</div>
+    {strat_html}
+    {triage_html}
+    {rec_html}
+    <div class="dbtns">
+      <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="accept">{e(d.get('default_label') or 'Accept')}</button>
+      <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="snooze" data-minutes="60">Snooze 1h</button>
+      <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="reject">Reject</button>
+      <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="wrong_lane" title="Reject AND file a policy proposal to re-lane this (source, kind)">Wrong lane</button>
+      {ws_btn}
+    </div>
   </div>
-  <div class="action">{e(d.get('title') or dec_id)}</div>
-  <div class="reason">{e(d.get('snippet') or '')}</div>
-  {strat_html}
-  {triage_html}
-  <div class="buttons">
-    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="accept">{e(d.get('default_label') or 'Accept')}</button>
-    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="snooze" data-minutes="60">Snooze 1h</button>
-    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="reject">Reject</button>
-    <button class="btn dec-act" data-dec="{e(dec_id)}" data-action="wrong_lane" title="Reject AND file a policy proposal to re-lane this (source, kind)">Wrong lane</button>
-    {ws_btn}
-  </div>
+  <span class="urg {urg_cls}">{e(urg_label)}</span>
 </div>""")
         if len(queue) > QUEUE_RENDER_CAP:
             rows.append(
@@ -525,12 +582,16 @@ def _render_brief_tab_inner():
     if receipts:
         rrows = []
         for r in receipts[:40]:
+            meta_bits = [b for b in (r.get('kind') or '',
+                                     r.get('ws_ref') or '',
+                                     (r.get('ts') or '')[11:19]) if b]
             rrows.append(f"""
-<div class="row">
-  <span class="ts">{e((r.get('ts') or '')[11:19])}</span>
-  <span class="pill scope">{e(r.get('kind') or '')}</span>
-  <span class="action-text" title="{e(r.get('evidence') or '')}">{e(r.get('evidence') or r.get('key') or '')}</span>
-  <span class="outcome">{e(r.get('ws_ref') or '')}</span>
+<div class="rrow">
+  <span class="rmark">✓</span>
+  <div>
+    <div class="rtitle">{e(r.get('evidence') or r.get('key') or '')}</div>
+    <div class="rev">{e(' · '.join(meta_bits))}</div>
+  </div>
 </div>""")
         receipts_html = f'<div class="feed">{"".join(rrows)}</div>'
     else:
@@ -619,18 +680,36 @@ def _render_brief_tab_inner():
 
     seen = (BRIEF_DIR / f"brief-{date_str}.seen.json").exists()
     seen_note = "seen" if seen else "unseen — viewing this tab records it"
+
+    # ─── editorial header: eyebrow · good morning · voice summary ───
+    hello = _greeting_for(brief.get("epoch"))
+    voice_src = narrative.get("source")
+    summary_txt = narrative.get("summary") or ""
+    voice_tag = ('' if voice_src == "llm"
+                 else '<span class="voice-tag" title="narrator has not run for '
+                      'this brief yet — deterministic summary">auto-summary</span>')
+    summary_cls = "" if voice_src == "llm" else " template-voice"
+    summary_html = (
+        f'<p class="brief-summary{summary_cls}">{e(summary_txt)}{voice_tag}</p>'
+        if summary_txt else "")
+    header_html = (
+        f'<div class="brief-eyebrow">Morning brief · {e(date_str)} · '
+        f'built {e((brief.get("ts") or "?")[11:19])} UTC</div>'
+        f'<h1 class="brief-hello">{e(hello)}</h1>'
+        f'{summary_html}')
+
     html = f"""
 <div class="brief-root" data-brief-date="{e(date_str)}">
-<div class="meta">brief {e(date_str)} · built {e(brief.get('ts') or '?')} · {e(seen_note)} · pure derivation — delete-safe, rebuild via <code>bin/build-morning-brief.py</code></div>
+{header_html}
 {stats}
 
 <div class="section">
-  <h2>Decide <span class="count">{len(queue)}</span></h2>
+  <h2>Decide <span class="count">{len(queue)} · ranked</span></h2>
   {queue_html}
 </div>
 
 <div class="section">
-  <h2>Handled overnight <span class="count">{len(receipts)}</span></h2>
+  <h2>Receipts <span class="count">{len(receipts)} · handled overnight</span></h2>
   {receipts_html}
 </div>
 
@@ -640,10 +719,12 @@ def _render_brief_tab_inner():
 </div>
 
 <div class="section">
-  <h2>Health</h2>
+  <h2>Health <span class="count">notes &amp; watch items</span></h2>
   {health_html}
   {budget_note}
 </div>
+
+<div class="brief-footer">brief {e(date_str)} · built {e(brief.get('ts') or '?')} · {e(seen_note)} · pure derivation — delete-safe, rebuild via <code>bin/build-morning-brief.py</code></div>
 </div>
 """
     return html, len(queue)
@@ -2667,6 +2748,52 @@ h1 {
 .receipt-rev.pending  { color: var(--amber); }
 .receipt-ci.ci-green  { color: var(--green); }
 .receipt-ci.ci-red    { color: var(--red); }
+
+/* ─── Brief tab: editorial layout (Keel M7 narrator) ─── */
+.brief-eyebrow { font: 500 10px/1.5 var(--mono); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--amber); margin-bottom: 6px; }
+.brief-hello { font: 600 26px/1.1 var(--sans); letter-spacing: -0.02em;
+  color: var(--text); margin: 0 0 8px; }
+.brief-summary { font: 400 15px/1.55 var(--sans); color: var(--text);
+  max-width: 74ch; margin: 0 0 4px; }
+.brief-summary .voice-tag { font: 500 9px/1 var(--mono); letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 2px 6px; margin-left: 8px; vertical-align: middle; }
+.brief-summary.template-voice { color: var(--text-2); }
+
+/* Decide — numbered, ranked rows */
+.drow { display: grid; grid-template-columns: 30px 1fr auto; gap: 14px;
+  align-items: start; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+  transition: border-color 0.12s ease; }
+.drow:hover { border-color: var(--line-strong); }
+.drow.lane-escalate { box-shadow: inset 3px 0 0 0 var(--red); }
+.drow.lane-staged   { box-shadow: inset 3px 0 0 0 var(--amber); }
+.drow.lane-digest   { box-shadow: inset 3px 0 0 0 var(--muted-2); }
+.dn { font: 700 20px/1.1 var(--sans); color: var(--amber); text-align: center; }
+.dtitle { font: 600 14.5px/1.4 var(--sans); color: var(--text);
+  letter-spacing: -0.005em; margin-bottom: 3px; }
+.dmeta { font: 400 10.5px/1.4 var(--mono); color: var(--muted); margin-bottom: 6px; }
+.ddesc { color: var(--text-2); font-size: 12px; line-height: 1.6; max-width: 74ch; }
+.drec { margin-top: 8px; font: 500 12.5px/1.5 var(--sans); color: var(--green); }
+.drec::before { content: "recommended → "; font: 500 9.5px/1 var(--mono);
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.dbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.urg { font: 700 9.5px/1 var(--mono); letter-spacing: 0.04em; text-transform: uppercase;
+  border: 1px solid currentColor; border-radius: 4px; padding: 3px 7px; white-space: nowrap; }
+.urg.u1 { color: var(--red); } .urg.u2 { color: var(--amber); } .urg.u3 { color: var(--muted); }
+
+/* Receipts — checkmark rows with an evidence line */
+.rrow { display: grid; grid-template-columns: 22px 1fr; gap: 12px;
+  padding: 11px 16px; border-bottom: 1px solid var(--line); }
+.rrow:last-child { border-bottom: none; }
+.rmark { color: var(--green); font-weight: 700; font-size: 14px; }
+.rtitle { font: 500 13px/1.45 var(--sans); color: var(--text); }
+.rev { font: 400 10.5px/1.5 var(--mono); color: var(--muted); margin-top: 2px; }
+
+/* Footer — contract line */
+.brief-footer { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--line);
+  font: 400 11px/1.6 var(--mono); color: var(--muted); }
 """
 
     js = """

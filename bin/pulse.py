@@ -639,6 +639,35 @@ def run_brief_step(pulse_idx: int) -> None:
         log.info("brief: %s", json.dumps(summary))
 
 
+def run_narrator_step(pulse_idx: int) -> None:
+    """Step 1.6b (Keel M7): the brief's editorial VOICE. Once per day (a per-date
+    spend stamp), after the brief is built, narrate-brief.generate() reads the
+    day's brief and writes a suggestion-only narrative SIDECAR
+    (brief-<date>.narrative.json): a summary sentence + one recommendation per
+    decision. The brief file itself is NEVER touched — it stays a pure
+    derivation; a missing/failed/stale narrative just falls back to the
+    renderer's deterministic template. All governance (the Strategist's
+    active()/ceiling/auto-pause gate, once-per-day stamp, metering as
+    caller='narrator') lives in the pure module + the caller. Imported lazily and
+    fully fenced, same contract as the brief: a broken narrator costs one
+    morning's VOICE, never a pulse (and never the brief itself)."""
+    try:
+        if str(BIN) not in sys.path:
+            sys.path.insert(0, str(BIN))
+        import importlib.util  # noqa: PLC0415
+        spec = importlib.util.spec_from_file_location(
+            "narrate_brief", str(BIN / "narrate-brief.py"))
+        narrate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(narrate)
+        summary = narrate.generate(pulse_idx=pulse_idx)
+    except Exception as e:  # noqa: BLE001 — the voice must never break the pulse
+        log.warning("narrator step failed (brief unaffected; retry next day "
+                    "or bin/narrate-brief.py --force): %s", e)
+        return
+    if summary.get("written"):
+        log.info("narrator: %s", json.dumps(summary))
+
+
 def run_planner_step(pulse_idx: int) -> None:
     """Step 1.7 (Keel M4): the deterministic goals planner. goals.pulse_step()
     stamps each goal's mechanical progress, then — in goal RANK order — stages
@@ -1688,6 +1717,13 @@ def main() -> int:
     #      never load-bearing (see run_brief_step docstring).
     if not dry_run:
         run_brief_step(pulse_idx)
+
+    # 1.6b. Brief narrator (Keel M7): once/day after the brief builds, write the
+    #       suggestion-only narrative sidecar (summary + per-decision voice). The
+    #       brief file stays a pure derivation; a broken/absent narrator degrades
+    #       to the renderer's deterministic template. Fenced, never load-bearing.
+    if not dry_run:
+        run_narrator_step(pulse_idx)
 
     # 1.7. Goals planner (Keel M4): stamp mechanical goal progress + stage the
     #      next playbook step for stalled goals into leftover ACTIVE_WS_CAP
