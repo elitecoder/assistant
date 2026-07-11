@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "outlook",
+  "kind": "cc",
+  "external_id": "outlook:AAMkAGI1cc0003",
+  "actor": "Sam Carter <sam@contoso.com>",
+  "title": "FYI: vendor contract renewal",
+  "snippet": "Looping you in for visibility.",
+  "url": "https://outlook.office365.com/mail/inbox/id/AAMkAGI1cc0003",
+  "refs": {
+    "sender": "sam@contoso.com"
+  },
+  "raw_path": null
+}

@@ -1,0 +1,52 @@
+{
+  "raw": {
+    "id": "d03",
+    "subject": "Subject d03",
+    "bodyPreview": "preview d03",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/d03",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "Sender d03",
+        "address": "s-d03@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "someone@corp.com"
+        }
+      },
+      {
+        "emailAddress": {
+          "address": "me@contoso.com"
+        }
+      },
+      {
+        "emailAddress": {
+          "address": "other@corp.com"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "c18ee39c56120209601943ea777e464dfbb13b44718cc6acd75799b9bdbb1d3f",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "direct",
+    "external_id": "outlook:d03",
+    "actor": "Sender d03 <s-d03@corp.com>",
+    "title": "Subject d03",
+    "snippet": "preview d03",
+    "url": "https://outlook.office365.com/mail/inbox/id/d03",
+    "refs": {
+      "sender": "s-d03@corp.com"
+    },
+    "raw_path": null
+  }
+}

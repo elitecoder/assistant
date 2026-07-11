@@ -1,0 +1,41 @@
+{
+  "raw": {
+    "id": "g10",
+    "subject": "Build passed",
+    "bodyPreview": "pipeline green",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/g10",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "CI Bot",
+        "address": "ci@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "team-dl@corp.com"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "53135e281cacdbaedfaa02d20d281e75764ed0197de0b3548340d8fcf1e8e058",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "message",
+    "external_id": "outlook:g10",
+    "actor": "CI Bot <ci@corp.com>",
+    "title": "Build passed",
+    "snippet": "pipeline green",
+    "url": "https://outlook.office365.com/mail/inbox/id/g10",
+    "refs": {
+      "sender": "ci@corp.com"
+    },
+    "raw_path": null
+  }
+}

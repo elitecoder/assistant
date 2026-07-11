@@ -1,0 +1,42 @@
+{
+  "raw": {
+    "id": "u01",
+    "subject": "Réunion — café ☕ déjeuner 会議",
+    "bodyPreview": "naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 ",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/u01",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "Sender u01",
+        "address": "s-u01@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "me@contoso.com"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "51db06781e53cb2cc8413016e38700ddabb55da2a76a5de8d6075b46a973eb5c",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "direct",
+    "external_id": "outlook:u01",
+    "actor": "Sender u01 <s-u01@corp.com>",
+    "title": "Réunion — café ☕ déjeuner 会議",
+    "snippet": "naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 naïve façade — 日本語 ",
+    "url": "https://outlook.office365.com/mail/inbox/id/u01",
+    "refs": {
+      "sender": "s-u01@corp.com"
+    },
+    "raw_path": null
+  }
+}

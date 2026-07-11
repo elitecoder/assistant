@@ -1,0 +1,39 @@
+{
+  "raw": {
+    "id": "g06",
+    "subject": "Subject g06",
+    "bodyPreview": "preview g06",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/g06",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "System Notifier"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "dl@corp.com"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "d990cf4e7fca920a02f8957d6a7c6c32bed4112208418fac76505ccfe66a9860",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "message",
+    "external_id": "outlook:g06",
+    "actor": "System Notifier",
+    "title": "Subject g06",
+    "snippet": "preview g06",
+    "url": "https://outlook.office365.com/mail/inbox/id/g06",
+    "refs": {},
+    "raw_path": null
+  }
+}

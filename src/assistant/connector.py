@@ -147,6 +147,9 @@ KNOWN_CONNECTORS = (
      "hint": "set JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN in ~/.zprofile"},
     {"name": "slack", "display": "Slack",
      "hint": "wire the Slack app (SLACK_BOT_TOKEN in ~/.zprofile)"},
+    # ─── M5 wave 3 ───
+    {"name": "outlook", "display": "Outlook mail",
+     "hint": "run: bin/connectors/outlook.py --authorize --client-secrets <path>"},
 )
 
 
@@ -471,10 +474,12 @@ class OAuthTokenManager:
     callers.
     """
 
-    def __init__(self, token_path, *, token_uri: str = DEFAULT_TOKEN_URI,
+    def __init__(self, token_path, *, provider: str = "google",
+                 token_uri: str = DEFAULT_TOKEN_URI,
                  skew_sec: int = DEFAULT_TOKEN_SKEW_SEC,
                  transport: Optional[Callable[..., dict]] = None):
         self.token_path = Path(token_path)
+        self.provider = provider
         self._token_uri = token_uri
         self.skew_sec = skew_sec
         self._transport = transport or _urllib_token_post
@@ -542,7 +547,13 @@ class OAuthTokenManager:
             form["client_id"] = tok["client_id"]
         if tok.get("client_secret"):
             form["client_secret"] = tok["client_secret"]
-        uri = tok.get("token_uri") or self._token_uri
+        # A1 defense-in-depth: the token cache's own token_uri is ALSO pinned to
+        # this provider's allowlist before the refresh POST — a token.json whose
+        # token_uri was later tampered to an attacker host must not exfiltrate the
+        # refresh_token grant (client_secret + refresh_token). The seed already
+        # stored a pinned value; this makes a subsequent tamper a no-op too.
+        uri = _pin_endpoint(tok.get("token_uri") or self._token_uri,
+                            provider=self.provider, kind="token")
         resp = self._transport(uri, form)
         if not isinstance(resp, dict) or not resp.get("access_token"):
             raise OAuthError("token endpoint returned no access_token")
@@ -612,27 +623,134 @@ DEFAULT_CONSENT_TIMEOUT_SEC = 180
 # budget so a stuck client can never wedge the flow beyond it.
 DEFAULT_LOOPBACK_READ_TIMEOUT_SEC = 30
 
-# A1: the ONLY OAuth endpoints we will ever talk to. token_uri/auth_uri read
-# from a user-supplied client-secrets (or token) file are NOT trusted — a
-# poisoned token_uri would redirect the code-exchange POST (which carries the
-# authorization code + PKCE verifier + client_id + client_secret) to an attacker
-# who then redeems the victim's refresh_token for durable Gmail access. A
-# legitimate Cloud Console desktop client ALWAYS uses Google's own endpoints, so
-# any host not on this allowlist is silently replaced with the pinned Google
-# constant (see _pin_google_endpoint).
-_GOOGLE_OAUTH_HOSTS = frozenset({"accounts.google.com", "oauth2.googleapis.com"})
+# A1: the ONLY OAuth endpoints we will ever talk to, keyed PER PROVIDER.
+# token_uri/auth_uri read from a user-supplied client-secrets (or token) file are
+# NOT trusted — a poisoned token_uri would redirect the code-exchange POST (which
+# carries the authorization code + PKCE verifier + client_id + client_secret) to
+# an attacker who then redeems the victim's refresh_token for durable mailbox
+# access. A legitimate desktop/native client ALWAYS uses its provider's own
+# endpoints, so any host not on THAT provider's allowlist is silently replaced
+# with the pinned provider default (see _pin_endpoint). The wave-1 fix pinned
+# Google only; this generalizes it so gmail/gcal (provider="google") pin exactly
+# as before and outlook (provider="microsoft") pins to Microsoft — the file value
+# is never trusted for EITHER provider.
+#
+# Each provider entry carries: the auth/token host allowlists (separated so an
+# auth endpoint can never masquerade as a token endpoint or vice-versa), the
+# pinned default auth/token URIs, the extra authorization-request params needed
+# to guarantee a refresh_token, and a provider-specific remediation hint for the
+# "no refresh_token" footgun.
+_OAUTH_PROVIDERS = {
+    "google": {
+        "auth_hosts": frozenset({"accounts.google.com"}),
+        "token_hosts": frozenset({"oauth2.googleapis.com"}),
+        "default_auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
+        "default_token_uri": "https://oauth2.googleapis.com/token",
+        # Google's installed-app registration is a CONFIDENTIAL client: its token
+        # endpoint requires client_secret EVEN WITH PKCE, so a secret is
+        # mandatory here (D3).
+        "requires_client_secret": True,
+        # Google's loopback redirect accepts a 127.0.0.1 host (its docs use it);
+        # keep it EXACTLY as wave-1 shipped so gmail/gcal are unchanged (D3c).
+        "redirect_host": "127.0.0.1",
+        # access_type=offline AND prompt=consent are BOTH required to GUARANTEE
+        # Google returns a refresh_token (offline alone is silently dropped on a
+        # re-consent — the classic footgun) rather than only an access token.
+        "extra_auth_params": {"access_type": "offline", "prompt": "consent"},
+        "revoke_hint": ("revoke this app's prior grant at "
+                        "https://myaccount.google.com/permissions and re-run "
+                        "(prompt=consent must issue a fresh refresh_token)"),
+    },
+    "microsoft": {
+        # Microsoft's `common` tenant (personal Outlook.com AND work/school
+        # M365) uses login.microsoftonline.com for BOTH authorize and token.
+        "auth_hosts": frozenset({"login.microsoftonline.com"}),
+        "token_hosts": frozenset({"login.microsoftonline.com"}),
+        "default_auth_uri":
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "default_token_uri":
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        # Azure "Mobile and desktop applications" is a PUBLIC client — NO secret;
+        # PKCE is the substitute and AAD REJECTS a presented secret
+        # (AADSTS700025). So a secret is optional (D3).
+        "requires_client_secret": False,
+        # AAD's port-agnostic loopback exception is scoped to `http://localhost`,
+        # NOT `http://127.0.0.1` — a 127.0.0.1 redirect fails AADSTS50011. The
+        # loopback server still BINDS 127.0.0.1, but the redirect_uri it
+        # ADVERTISES to AAD must use the `localhost` host (D3c).
+        "redirect_host": "localhost",
+        # Microsoft issues a refresh_token when the `offline_access` SCOPE is
+        # requested (the analog of Google's access_type=offline+prompt=consent);
+        # that lives in the scope list, so no extra auth-request param is needed.
+        "extra_auth_params": {},
+        "revoke_hint": ("ensure the 'offline_access' scope is requested, revoke "
+                        "the app's prior consent for this account, and re-run "
+                        "so a fresh refresh_token is issued"),
+    },
+}
+
+# Microsoft pinned endpoint constants, exported so the Outlook connector can seed
+# its token cache / build its authorize call against the same pinned values.
+MICROSOFT_AUTH_URI = _OAUTH_PROVIDERS["microsoft"]["default_auth_uri"]
+MICROSOFT_TOKEN_URI = _OAUTH_PROVIDERS["microsoft"]["default_token_uri"]
 
 
-def _pin_google_endpoint(uri: Optional[str], default: str) -> str:
-    """Return `uri` iff its host is a known Google OAuth host, else the pinned
-    `default` (A1). This neutralizes a poisoned token_uri/auth_uri from an
-    untrusted client-secrets/token file without aborting the flow — a real
-    Google desktop client is unaffected because it already uses these hosts."""
+def _provider(provider: Optional[str]) -> dict:
+    """The provider registry entry. Defaults to Google ONLY for the literal
+    default (provider is None / the caller passed nothing), so every existing
+    call site behaves exactly as before. An UNKNOWN, non-empty provider key is a
+    programming error (a registry/call-site drift) and FAILS CLOSED with a raise
+    rather than silently falling back to Google's weaker-for-Microsoft pinning
+    (F4) — a misspelled provider must never silently pin a Microsoft flow to
+    Google's endpoints (or vice-versa)."""
+    key = provider or "google"
     try:
-        host = (urllib.parse.urlparse(uri or "").hostname or "").lower()
+        return _OAUTH_PROVIDERS[key]
+    except KeyError:
+        raise OAuthError(
+            f"unknown OAuth provider {provider!r} — known providers: "
+            + ", ".join(sorted(_OAUTH_PROVIDERS)))
+
+
+def _pin_endpoint(uri: Optional[str], *, provider: str, kind: str) -> str:
+    """Return the pinned provider default UNLESS `uri` is EXACTLY an https URL on
+    THIS provider's allowlisted host for THIS endpoint kind ('auth' or 'token')
+    at the expected path — otherwise the pinned default (A1 + F1 + F3).
+
+    This neutralizes a poisoned token_uri/auth_uri from an untrusted
+    client-secrets/token file without aborting the flow (a real provider client
+    already uses these exact endpoints). Three things are checked, all of which
+    must hold, or the file value is discarded for the pinned default:
+
+      * scheme == "https" (F1): a poisoned ``http://<valid-host>/…`` must NOT
+        survive — a cleartext authorize/refresh POST would leak the code +
+        PKCE verifier + client_secret/refresh_token to an on-path attacker.
+        Host-only pinning (the wave-1 shape) let this through for BOTH providers,
+        so this tightening also closes the hole LIVE in the merged gmail/gcal
+        OAuth.
+      * host on THIS provider's allowlist for THIS kind (auth vs token kept
+        separate so a token host can never satisfy an auth check).
+      * path equals the pinned default's path AND no explicit port (F3): a
+        matching host must not smuggle a tampered path/port/query/fragment —
+        we RECONSTRUCT from the pinned default rather than pass the file's URL
+        through, so only the exact canonical endpoint is ever contacted."""
+    prov = _provider(provider)
+    hosts = prov["auth_hosts"] if kind == "auth" else prov["token_hosts"]
+    default = prov["default_auth_uri"] if kind == "auth" \
+        else prov["default_token_uri"]
+    try:
+        parts = urllib.parse.urlparse(uri or "")
+        host = (parts.hostname or "").lower()
+        port = parts.port
     except (ValueError, TypeError):
-        host = ""
-    return uri if host in _GOOGLE_OAUTH_HOSTS else default
+        return default
+    expected_path = urllib.parse.urlparse(default).path
+    if (parts.scheme == "https" and host in hosts
+            and parts.path == expected_path and port is None):
+        # Genuine, canonical endpoint — but return the pinned default anyway so
+        # no query/fragment or other file-controlled fragment is ever honored.
+        return default
+    return default
 
 
 def _pkce_pair() -> tuple:
@@ -648,15 +766,28 @@ def _pkce_pair() -> tuple:
 
 class _LoopbackCodeGetter:
     """Default `code_getter`: run a one-shot loopback HTTP server that receives
-    Google's redirect and returns (code, returned_state, redirect_uri). Binds
-    127.0.0.1:0 (an EPHEMERAL free port, never a fixed one that could collide or
-    be pre-claimed by another local process) and reads the OS-assigned port to
-    form the redirect_uri. Never logs the request line (it carries the code)."""
+    the provider's redirect and returns (code, returned_state, redirect_uri).
+    Binds 127.0.0.1:0 (an EPHEMERAL free port, never a fixed one that could
+    collide or be pre-claimed by another local process) and reads the OS-assigned
+    port to form the redirect_uri. Never logs the request line (it carries the
+    code).
+
+    The socket ALWAYS binds 127.0.0.1 (the callback must never be reachable
+    off-host), but the redirect_uri it ADVERTISES to the provider uses
+    ``redirect_host`` (D3c): Google accepts ``127.0.0.1`` and keeps the wave-1
+    ``http://127.0.0.1:{port}/`` form byte-for-byte; Microsoft/AAD's
+    port-agnostic loopback exception is scoped to ``http://localhost`` (a
+    127.0.0.1 redirect fails AADSTS50011), and its registered redirect is
+    ``http://localhost`` with no path — so localhost advertises
+    ``http://localhost:{port}`` with NO trailing slash to avoid a path
+    mismatch."""
 
     def __init__(self, *, timeout_sec: float = DEFAULT_CONSENT_TIMEOUT_SEC,
-                 open_url: Optional[Callable[[str], Any]] = None):
+                 open_url: Optional[Callable[[str], Any]] = None,
+                 redirect_host: str = "127.0.0.1"):
         self._timeout = float(timeout_sec)
         self._open_url = open_url if open_url is not None else webbrowser.open
+        self._redirect_host = redirect_host or "127.0.0.1"
 
     def __call__(self, build_auth_url: Callable[[str], str], state: str) -> tuple:
         import http.server
@@ -706,7 +837,14 @@ class _LoopbackCodeGetter:
         server.handle_error = lambda *_a: None
         try:
             port = server.server_address[1]
-            redirect_uri = f"http://127.0.0.1:{port}/"
+            # Bind is 127.0.0.1; advertise the provider's redirect_host. Google
+            # (127.0.0.1) keeps the wave-1 trailing slash; localhost (Microsoft)
+            # omits it so it matches AAD's registered `http://localhost` exactly
+            # aside from the loopback-exempt port (D3c).
+            if self._redirect_host == "127.0.0.1":
+                redirect_uri = f"http://{self._redirect_host}:{port}/"
+            else:
+                redirect_uri = f"http://{self._redirect_host}:{port}"
             auth_url = build_auth_url(redirect_uri)
             # ALWAYS print the URL to stderr so a headless/SSH user (no browser
             # to auto-open) can copy-paste it. This is the URL, never a secret.
@@ -739,7 +877,9 @@ class _LoopbackCodeGetter:
         return holder.get("code"), holder.get("state"), redirect_uri
 
 
-def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
+def run_installed_app_flow(*, client_id: str,
+                           client_secret: Optional[str] = None, scopes,
+                           provider: str = "google",
                            token_uri: str = DEFAULT_TOKEN_URI,
                            auth_uri: str = DEFAULT_AUTH_URI,
                            open_url: Optional[Callable[[str], Any]] = None,
@@ -749,8 +889,10 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
                            now: Optional[float] = None) -> dict:
     """Run the OAuth 2.0 installed-app authorization-code flow (loopback + PKCE)
     and return a token dict ready for OAuthTokenManager.seed():
-    ``{client_id, client_secret, token_uri, refresh_token, access_token,
-    expiry_epoch, scopes}``.
+    ``{client_id, token_uri, refresh_token, access_token, expiry_epoch, scopes}``
+    (plus ``client_secret`` ONLY for a confidential client — a Microsoft public
+    client has none, so it is omitted from both the exchange POST and the token,
+    per D3).
 
     ``code_getter(build_auth_url, state) -> (code, returned_state, redirect_uri)``
     and ``exchange_transport(token_uri, form) -> resp_dict`` are BOTH injectable
@@ -760,16 +902,29 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
     that OAuthTokenManager can load()/refresh() it. The defaults are the real
     loopback server and the base's `_urllib_token_post`.
     """
-    if not client_id or not client_secret:
-        raise OAuthError("client_id and client_secret are required to authorize")
-    # A1: PIN the endpoints. Whatever token_uri/auth_uri the caller passed
-    # through from the client-secrets file is only honored if it is a genuine
-    # Google host; otherwise the pinned Google constant is used. This is the
-    # single chokepoint for BOTH the consent redirect (auth_uri — a poisoned one
-    # phishes the victim's consent) and the code exchange (token_uri — a poisoned
-    # one exfiltrates the code + verifier + client_secret).
-    auth_uri = _pin_google_endpoint(auth_uri, DEFAULT_AUTH_URI)
-    token_uri = _pin_google_endpoint(token_uri, DEFAULT_TOKEN_URI)
+    prov = _provider(provider)
+    # D3: client_secret is REQUIRED for a confidential client (Google's installed
+    # apps ship a secret and Google's token endpoint demands it even WITH PKCE),
+    # but a Microsoft Azure "Mobile and desktop applications" registration is a
+    # PUBLIC client with NO secret — PKCE is the substitute. Presenting a secret
+    # to a public client is REJECTED by AAD (AADSTS700025). So: require a secret
+    # only when the provider marks itself confidential; otherwise it is optional
+    # and, when absent, omitted from the exchange POST and the returned token.
+    if not client_id:
+        raise OAuthError("client_id is required to authorize")
+    if prov.get("requires_client_secret") and not client_secret:
+        raise OAuthError(
+            f"client_secret is required to authorize provider {provider!r}")
+    # A1: PIN the endpoints to THIS provider's allowlist. Whatever token_uri/
+    # auth_uri the caller passed through from the client-secrets file is only
+    # honored if it is a genuine host FOR THIS PROVIDER; otherwise the pinned
+    # provider default is used. This is the single chokepoint for BOTH the
+    # consent redirect (auth_uri — a poisoned one phishes the victim's consent)
+    # and the code exchange (token_uri — a poisoned one exfiltrates the code +
+    # verifier + client_secret). The file value is never trusted for gmail/gcal
+    # (google) OR outlook (microsoft).
+    auth_uri = _pin_endpoint(auth_uri, provider=provider, kind="auth")
+    token_uri = _pin_endpoint(token_uri, provider=provider, kind="token")
     scope_str = scopes if isinstance(scopes, str) else " ".join(scopes)
     # PKCE verifier + a random state are minted here and closed over by
     # build_auth_url so the consent URL, the CSRF check and the code exchange all
@@ -778,24 +933,25 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
     state = secrets.token_urlsafe(24)
 
     def build_auth_url(redirect_uri: str) -> str:
-        # access_type=offline AND prompt=consent are BOTH required to GUARANTEE
-        # Google returns a refresh_token (offline alone is silently dropped on a
-        # re-consent — the classic footgun) rather than only an access token.
+        # The provider's extra_auth_params guarantee a refresh_token is issued:
+        # Google needs access_type=offline + prompt=consent (offline alone is
+        # silently dropped on a re-consent — the classic footgun); Microsoft
+        # needs none here because it keys off the `offline_access` scope instead.
         params = {
             "response_type": "code",
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "scope": scope_str,
-            "access_type": "offline",
-            "prompt": "consent",
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
+        params.update(prov.get("extra_auth_params") or {})
         return auth_uri + "?" + urllib.parse.urlencode(params)
 
-    getter = code_getter or _LoopbackCodeGetter(timeout_sec=timeout_sec,
-                                                open_url=open_url)
+    getter = code_getter or _LoopbackCodeGetter(
+        timeout_sec=timeout_sec, open_url=open_url,
+        redirect_host=prov.get("redirect_host", "127.0.0.1"))
     code, returned_state, redirect_uri = getter(build_auth_url, state)
     # CSRF: a callback whose state does not match the one we minted is not our
     # flow — abort rather than exchange an attacker-supplied code.
@@ -806,28 +962,30 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
         raise OAuthError("no authorization code returned on the callback")
 
     exchange = exchange_transport or _urllib_token_post
-    resp = exchange(token_uri, {
+    form = {
         "grant_type": "authorization_code",
         "code": code,
         "client_id": client_id,
-        "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "code_verifier": verifier,
-    })
+    }
+    if client_secret:  # public client (no secret) omits it — AAD rejects one
+        form["client_secret"] = client_secret
+    resp = exchange(token_uri, form)
     if not isinstance(resp, dict) or not resp.get("access_token"):
         raise OAuthError("token endpoint returned no access_token")
     if not resp.get("refresh_token"):
         # The classic footgun: a re-consent that returns only an access token.
         # Without a refresh_token the cache is useless the moment it expires.
+        # The remediation is provider-specific (Google: revoke the prior grant;
+        # Microsoft: ensure offline_access is requested).
         raise OAuthError(
-            "token endpoint returned NO refresh_token — revoke this app's prior "
-            "grant at https://myaccount.google.com/permissions and re-run "
-            "(prompt=consent must issue a fresh refresh_token)")
+            "token endpoint returned NO refresh_token — "
+            + prov["revoke_hint"])
     now = now if now is not None else time.time()
     expires_in = resp.get("expires_in")
-    return {
+    tok = {
         "client_id": client_id,
-        "client_secret": client_secret,
         "token_uri": token_uri,
         "refresh_token": resp["refresh_token"],
         "access_token": resp["access_token"],
@@ -835,6 +993,9 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
             expires_in, (int, float)) else 3600),
         "scopes": scope_str,
     }
+    if client_secret:  # public client stores NO secret (there is none)
+        tok["client_secret"] = client_secret
+    return tok
 
 
 # ─── the connector base ──────────────────────────────────────────────────────

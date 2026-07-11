@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "outlook",
+  "kind": "newsletter",
+  "external_id": "outlook:AAMkAGI1news0002",
+  "actor": "Azure Updates <updates@microsoft.com>",
+  "title": "What's new in Azure this week",
+  "snippet": "New regions, price cuts \u00b7 manage preferences",
+  "url": "https://outlook.office365.com/mail/inbox/id/AAMkAGI1news0002",
+  "refs": {
+    "sender": "updates@microsoft.com"
+  },
+  "raw_path": null
+}

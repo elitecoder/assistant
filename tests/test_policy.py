@@ -277,16 +277,17 @@ class BootstrapTests(HomeTestCase):
     def test_no_forward_looking_sources_in_bootstrap(self):
         # The bootstrap may only lane sources whose PRODUCERS EXIST — a rule
         # against a guessed schema is a data-hiding hazard. In M2 that was just
-        # {cmux, pulse}; M5 wave-1 added github + gmail; M5 wave-2 now admits
-        # gcal + jira + slack because their connectors (bin/connectors/gcal.py,
-        # jira.py, slack-events.py) ship and their WorldEvent kinds are known
-        # and mechanical. The allowlist is WIDENED (producers now exist), never
+        # {cmux, pulse}; M5 wave-1 added github + gmail; M5 wave-2 admitted
+        # gcal + jira + slack; M5 wave-3 now admits outlook because its connector
+        # (bin/connectors/outlook.py) ships and its WorldEvent kind is known and
+        # mechanical (direct|cc|newsletter|message from Microsoft Graph
+        # metadata). The allowlist is WIDENED (producers now exist), never
         # WEAKENED — a source with no producer still may not appear.
         data = json.loads(policy.bootstrap_path().read_text())
         sources = {r["match"].get("source") for r in data["policies"]}
         self.assertTrue(
             sources <= {"cmux", "pulse", "github", "gmail",
-                        "gcal", "jira", "slack"},
+                        "gcal", "jira", "slack", "outlook"},
             msg=str(sources))
 
     def test_second_install_is_a_noop(self):
