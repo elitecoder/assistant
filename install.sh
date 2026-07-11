@@ -364,7 +364,6 @@ PLIST_SKIP=(
     # once each source is configured). KeepAlive={SuccessfulExit:false}, NOT
     # KeepAlive=true, so an unconfigured daemon never hot-respawns (F3).
     "com.assistant.connector-gcal.plist"
-    "com.assistant.connector-jira.plist"
     "com.assistant.connector-slack.plist"
     # M5 wave-3 Outlook (readonly) mail connector — same INDEPENDENT KeepAlive
     # daemon contract (copied, never auto-loaded; Mukul runs `launchctl load` by

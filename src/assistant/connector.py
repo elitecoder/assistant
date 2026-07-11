@@ -5,7 +5,7 @@ inbox`. It never classifies, decides, or writes anywhere but the inbox drop
 dir and its own ~/.assistant/connectors/<name>/ state (design section 9). The
 policy engine lanes; the decision queue holds; the connector produces. Keeping
 that contract in ONE base library means every connector (GitHub, Gmail today;
-GCal/JIRA/Slack next) is atomic-drop-correct, cursor-durable, heartbeat-visible
+GCal/Slack next) is atomic-drop-correct, cursor-durable, heartbeat-visible
 and OAuth-safe by construction instead of by each author's diligence.
 
 The base enforces the mandatory contract (design section 9):
@@ -143,8 +143,6 @@ KNOWN_CONNECTORS = (
     # ─── M5 wave 2 ───
     {"name": "gcal", "display": "Google Calendar",
      "hint": "run: bin/connectors/gcal.py --authorize --client-secrets <path>"},
-    {"name": "jira", "display": "JIRA",
-     "hint": "set JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN in ~/.zprofile"},
     {"name": "slack", "display": "Slack",
      "hint": "wire the Slack app (SLACK_BOT_TOKEN in ~/.zprofile)"},
     # ─── M5 wave 3 ───
@@ -601,7 +599,7 @@ class OAuthTokenManager:
 # that file — the Gmail connector documented "seeded once by an out-of-band
 # consent flow" that did not exist. This is that flow, owned by the base (design
 # section 9, Gmail row: "Full OAuth refresh-token flow owned by connector base")
-# so GCal/JIRA/any future refresh-token connector reuses ONE audited code path.
+# so GCal/any future refresh-token connector reuses ONE audited code path.
 #
 # It is Google's loopback "installed app" pattern: bind an ephemeral 127.0.0.1
 # port, send the browser to the consent screen with that loopback redirect_uri,

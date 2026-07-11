@@ -278,7 +278,7 @@ class BootstrapTests(HomeTestCase):
         # The bootstrap may only lane sources whose PRODUCERS EXIST — a rule
         # against a guessed schema is a data-hiding hazard. In M2 that was just
         # {cmux, pulse}; M5 wave-1 added github + gmail; M5 wave-2 admitted
-        # gcal + jira + slack; M5 wave-3 now admits outlook because its connector
+        # gcal + slack; M5 wave-3 now admits outlook because its connector
         # (bin/connectors/outlook.py) ships and its WorldEvent kind is known and
         # mechanical (direct|cc|newsletter|message from Microsoft Graph
         # metadata). The allowlist is WIDENED (producers now exist), never
@@ -287,7 +287,7 @@ class BootstrapTests(HomeTestCase):
         sources = {r["match"].get("source") for r in data["policies"]}
         self.assertTrue(
             sources <= {"cmux", "pulse", "github", "gmail",
-                        "gcal", "jira", "slack", "outlook"},
+                        "gcal", "slack", "outlook"},
             msg=str(sources))
 
     def test_second_install_is_a_noop(self):
