@@ -22,6 +22,31 @@ Spin up a dozen Claude Code agents in parallel and walk away. Assistant watches 
 
 The longer you use it, the smarter it gets. It reads your own session history to find patterns, turns corrections and confirmations into rules, and asks if you want to keep them. Confirmed rules sync across all your machines automatically.
 
+## The decision spine (what it does now)
+
+Since the original fleet orchestrator, Assistant grew a **decision spine** ("Keel", milestones M0–M5, all merged into this tree). Everything inbound — email, Slack mention, GitHub notification, JIRA change, calendar reminder, a fleet signal, a stalled goal — is normalized into one **WorldEvent** and run through a single deterministic pipeline:
+
+```
+WorldEvent  →  policy engine assigns a lane (deterministic, first-match-wins, pure Python)
+                 auto      pre-declared reversible action via existing channels; ledgered, zero human touch
+                 staged    opens a decision for review + a draft context pack
+                 escalate  opens a decision, queued to the top; the interrupt gate is consulted
+                 digest    daily FYI, collapsed by source
+                 drop      explicit rule only, ledgered as a tombstone
+            →  anything the rules don't match falls through to a suggestion-only triage LLM whose
+               lane map has NO `auto` key — it structurally cannot act, only suggest a lane
+               (any ambiguity / parse failure escalates)
+            →  append-only decision queue  (~/.assistant/decisions/decisions.jsonl)
+            →  the OPEN set of that queue IS your morning brief
+```
+
+Two things sit alongside it:
+
+- **Goals are a control loop.** A deterministic planner (`bin/plan-next-actions.py`) detects stalled goals mechanically and stages playbook-whitelisted, reversible work (research, doc drafts, PR scaffolds, test backfill) through the *existing* capped TODO dispatcher — so progress doesn't wait on you opening a dashboard. Whitelist only; anything outside it becomes a staged decision instead.
+- **Push is silent by construction.** The noise budget defaults to **0/day** behind a single chokepoint (`bin/interrupt-gate.py`); a suppressed page is *ledgered*, not delivered. Outbound to the outside world is **draft-only** in this tree (`email.send` / `slack.send` are registered `forbidden`, not merely absent).
+
+The whole thing optimizes one number downward, computed mechanically each day: **decisions required per morning**. LLMs only ever suggest or draft — Python owns every lane, gate, and send.
+
 ## What it can do
 
 **📥 Capture work from a Slack emoji.** React to any Slack thread with this machine's emoji (`TODO_EMOJI`, default `mukuls2`) and the whole thread — every message, plus a link back — is captured as a TODO in `~/.claude/assistant-todo.json`, the same store the `/todo` skill, the pulse, and the dashboard read. Per-machine emoji routing means a shared bot can fan reactions out to whichever laptop owns that emoji. See [`slack-reactor/`](slack-reactor/README.md).
@@ -32,13 +57,96 @@ The longer you use it, the smarter it gets. It reads your own session history to
 
 **👋 Nudge stalled work and move the safe stuff forward.** Each pulse the Observer emits one verdict per workspace, and Python — not the model — turns it into an action. `ready_for_merge` queues `/merge-when-ready`; `ready_for_cleanup` sends `/cleanup` (only on workspaces *it* queued the merge for, and only once a work receipt exists); `stranded` nudges the idle agent with what failed and a retry; `needs_user` surfaces an awaiting card and does nothing else. Autonomy is fenced by a back-off list, the work-receipt gate, the assistant-merge ledger, and `NO_INGEST_GUARD`.
 
+## Setup — connect your sources (opt-in)
+
+Connectors are **optional, read-only KeepAlive daemons**. Each turns one source into WorldEvents and nothing more — it never sends, replies, merges, or mutates (a grep CI test enforces this). An unconfigured connector is a quiet `not_configured` — shown as **Available, not connected** on the dashboard's Connections tab, never an error. Connect only the ones you want.
+
+`install.sh --apply` **copies** every connector plist into `~/Library/LaunchAgents/` but never loads one (auto-starting a network daemon behind your back is forbidden — and the pulse self-update re-runs install.sh). So the last step for any connector is a manual `launchctl load`.
+
+**GitHub notifications** — uses the `gh` CLI's own token:
+```bash
+gh auth login          # if not already logged in
+launchctl load ~/Library/LaunchAgents/com.assistant.connector-github.plist
+```
+
+**Gmail** (read-only) — one-time Google Cloud OAuth (your own Google account):
+1. Google Cloud Console → enable the Gmail API for a project → create an OAuth client of type **Desktop app** → download its client-secrets JSON (the `{"installed": …}` file).
+2. Seed the token cache (opens the Google consent screen — the URL is also printed for headless use; approve the read-only scope), then load the daemon:
+```bash
+bin/connectors/gmail.py --authorize --client-secrets /path/to/client_secret.json
+launchctl load ~/Library/LaunchAgents/com.assistant.connector-gmail.plist
+```
+The refresh token is stored `0600` at `~/.assistant/connectors/gmail/token.json` and refreshed in-process. Re-run with `--force` to replace an existing cache.
+
+**Google Calendar** (read-only) — the SAME Google Desktop OAuth client as Gmail; emits `event_upcoming` reminders at T-24h and T-1h:
+```bash
+bin/connectors/gcal.py --authorize --client-secrets /path/to/client_secret.json
+launchctl load ~/Library/LaunchAgents/com.assistant.connector-gcal.plist
+```
+
+**Outlook / Microsoft 365** (read-only) — one-time Azure app registration (your own Azure/M365 tenant):
+1. Azure Portal → register an app under **Mobile and desktop applications** (a **public** client — create NO client secret), redirect URI **`http://localhost`** (not `127.0.0.1` — AAD's loopback exception is scoped to `localhost`), "Allow public client flows" **ON**. Scopes: `Mail.Read`, `User.Read`, `offline_access`. The client-secrets JSON needs only `client_id`.
+2. Seed and load (re-run with `--force` if you previously authorized a narrower scope set):
+```bash
+bin/connectors/outlook.py --authorize --client-secrets /path/to/azure_client.json
+launchctl load ~/Library/LaunchAgents/com.assistant.connector-outlook.plist
+```
+
+**JIRA** (read-only) — three env vars in `~/.zprofile` (the launcher sources it, so the token never lands in a plist):
+```bash
+export JIRA_BASE_URL=https://your-org.atlassian.net   # must be https://
+export JIRA_EMAIL=you@example.com                     # for JIRA Cloud basic auth
+export JIRA_API_TOKEN=…                                # Atlassian API token / PAT
+# optional — widen beyond your own issues:
+export JIRA_JQL='project = FOO'
+launchctl load ~/Library/LaunchAgents/com.assistant.connector-jira.plist
+```
+Default scope is your own work (`assignee | reporter | watcher = currentUser()`); `JIRA_JQL` overrides/widens the scope clause.
+
+**Slack** (read-only) — rides the existing Bolt app in [`slack-reactor/`](slack-reactor/README.md):
+1. Add the connector's two read-only handlers by re-uploading `slack-reactor/slack/manifest.json` to your existing app (api.slack.com/apps), then **reinstall** the app (a scope/event change forces OAuth re-consent — skip it and the connector silently produces nothing).
+2. `export SLACK_BOT_TOKEN=xoxb-…` in `~/.zprofile`.
+3. Load the daemon:
+```bash
+launchctl load ~/Library/LaunchAgents/com.assistant.connector-slack.plist
+```
+Default ingestion is **@-mentions + DMs only**. For full channel/group message ingestion, add `message.channels` / `message.groups` to the manifest AND `export SLACK_INGEST_CHANNELS=1`.
+
+## Config knobs you own
+
+| Knob | Default | Where | What it does |
+|---|---|---|---|
+| Noise budget | `page:0, notify:0` (fully silent) | `~/.assistant/noise-budget.json` | Max pushes/day through the interrupt gate. Raising it is a deliberate edit — v1 ships silent by design. |
+| Brief wake hour | `7` (local) | `~/.assistant/comms/config.json` → `{"brief":{"wake_hour":N}}` | First pulse at/after this hour builds the day's brief. |
+| Planner autoDispatch | **OFF** | `~/.assistant/comms/config.json` → `{"planner":{"autoDispatch":true}}` | OFF (safe default) = a stalled goal *stages a decision* for your review. ON = whitelisted steps dispatch unattended overnight. Flip it on only after watching the planner behave. |
+| JIRA scope | your own issues | `JIRA_JQL` env var | Widens the JQL beyond `assignee/reporter/watcher = you`. |
+| Slack channel ingest | mentions + DMs only | `SLACK_INGEST_CHANNELS=1` env (+ manifest edit) | Opts into full-channel message ingestion. |
+| Connector cadence / caps | 60s · 200 events · 10 pages | `~/.assistant/comms/config.json` → `connectors` block | Per-connector poll cadence and batch caps (module constants are only the fallback). |
+
+*Incoming with M6 (PR #15 — not in this branch):* the Strategist LLM drafter adds an enable flag, a daily cost ceiling, and a per-goal/day throttle. Those keys are not present in this tree yet.
+
+## Using it day-to-day
+
+Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/todo-server.py`).
+
+- **Brief tab** — your morning: open decisions ranked by a deterministic score, each with a one-tap **accept / reject / snooze / edit / wrong-lane** button; plus **handled-overnight** receipts (auto-done actions with their rule id, goal work staged/dispatched with workspace links, verified fleet progress), an **FYI digest** grouped by source, and a **health** row (connector staleness, token expiry, interrupts used/denied, $/day). *In this branch the dashboard still lands on the Decisions tab by default; Brief-as-default landing arrives with M6.*
+- **Connections tab** — every connector as **Connected** / **Available, not connected** / **Needs attention**, with the how-to-connect hint inline.
+- **`/goal` skill** — add / list / rerank / pause goals (`/goal add "…" --outcome "…"`). Goals feed the planner and boost decision ranking. Automation can only *propose* goal changes; only you (this skill) edit the store in place.
+- **One-tap accept** on a decision routes through the todo-server, executes the recommended action class (draft-only for any external send in this tree), and ledgers the transition. Reject / snooze do the same.
+- **Nothing pushes or notifies you.** The system is pull-by-design: you go look. Neglected decisions degrade to digest (and mine policy proposals) — they don't nag. A suppressed page is auditable in the brief's health row, never delivered.
+
 ## Entry points
 
 - `bin/pulse.py` — the main orchestrator loop, runs every 5 min via LaunchAgent
+- `bin/assistant-daemon.py` — the opt-in single-process daemon (`python -m assistant`); runs the decision spine + pulse in one process
 - `bin/cmux-watcher.py` — event-driven workspace signal delivery (opt-in LaunchAgent)
+- `bin/connectors/*.py` — read-only source connectors (GitHub / Gmail / GCal / JIRA / Slack / Outlook), opt-in KeepAlive daemons
+- `bin/build-morning-brief.py` — rebuild today's brief on demand; `bin/plan-next-actions.py` — run the goals planner on demand
+- `bin/interrupt-gate.py` — the sole push chokepoint (consulted for every would-be notification)
+- `bin/todo-server.py` — the localhost dashboard + JSON API at http://127.0.0.1:9876
 - `bin/assistant-curator.py` — lesson/rule management across all five stores
 - `bin/tool-dispatch.py` — named tool dispatcher (`bin/tools-manifest.json`)
-- `install.sh --apply` — wires everything up; symlinks skills; writes plists (never loads them)
+- `install.sh --apply` — wires everything up; symlinks skills; writes/copies plists (never loads them)
 
 ## Architecture decisions (the why, not the what)
 
@@ -69,6 +177,18 @@ These are structural, not just conventions — violating them will cause real pr
 - **NO_INGEST_GUARD:** if the last send to a workspace returned `transcript_size_delta=0` (cmux sent OK but no Claude process was reading), the orchestrator skips the next resend. This breaks the cleanup-resend-loop class of bug structurally.
 - **The single-process daemon (`src/assistant/`) is opt-in.** The legacy pulse LaunchAgent keeps running until you explicitly switch over.
 - **mem0ai requires Python 3.12.** It lives in `.venv-mem0`; `ensure_venv()` transparently re-execs tools into that interpreter.
+
+## Milestone map (Keel)
+
+| M | What | Status |
+|---|---|---|
+| M0 | Metering — token/cost capture on every `claude --print` (`bin/metering.py`) | merged |
+| M1 | Event spine — typed WorldEvent inbox consumer (`src/assistant/eventspine.py`) | merged |
+| M2 | Policy engine + decision queue + suggestion-only triage (`policy.py`, `decisions.py`, `triage.py`) | merged |
+| M3 | Morning brief + interrupt gate (`brief.py`, `bin/interrupt-gate.py`; noise budget 0/day) | merged |
+| M4 | Goals + deterministic planner (`goals.py`, `bin/plan-next-actions.py`, the `/goal` skill) | merged |
+| M5 | Connectors — GitHub, Gmail, GCal, JIRA, Slack, Outlook (opt-in, read-only) | merged |
+| M6 | Strategist — throttled LLM drafter for staged goal steps | **in review (PR #15 — not in this branch)** |
 
 ## Testing
 
