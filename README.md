@@ -48,11 +48,11 @@ The longer you use it, the smarter it gets. It reads your own session history to
 
 ## How it works
 
-Everything inbound — email, a Slack mention, a GitHub notification, a JIRA change, a calendar reminder, a fleet signal, a stalled goal — is normalized into one **WorldEvent** and run through a single deterministic pipeline. The open set of the decision queue *is* your morning brief.
+Everything inbound — email, a Slack mention, a GitHub notification, a calendar reminder, a fleet signal, a stalled goal — is normalized into one **WorldEvent** and run through a single deterministic pipeline. The open set of the decision queue *is* your morning brief.
 
 ```mermaid
 flowchart LR
-  S["📥 Email · Slack · GitHub<br/>JIRA · Calendar · Fleet"]:::src --> E([WorldEvent])
+  S["📥 Email · Slack · GitHub<br/>Calendar · Fleet"]:::src --> E([WorldEvent])
   G["🎯 Goals"]:::src --> PL["Planner<br/>stages whitelisted work"]:::py
   E --> P{"Policy engine<br/>deterministic · Python"}:::py
   P -- auto --> AU["Reversible action<br/>ledgered · zero touch"]:::act
@@ -108,7 +108,7 @@ Connectors are **optional, read-only KeepAlive daemons**. Each turns one source 
 `install.sh --apply` **copies** every connector plist into `~/Library/LaunchAgents/` but never loads one (auto-starting a network daemon behind your back is forbidden — and the pulse self-update re-runs install.sh). So the last step for any connector is a manual `launchctl load`.
 
 <details>
-<summary><b>▸ Connector-by-connector setup</b> — GitHub · Gmail · Calendar · Outlook · JIRA · Slack</summary>
+<summary><b>▸ Connector-by-connector setup</b> — GitHub · Gmail · Calendar · Outlook · Slack</summary>
 <br>
 
 **GitHub notifications** — uses the `gh` CLI's own token:
@@ -140,17 +140,6 @@ bin/connectors/outlook.py --authorize --client-secrets /path/to/azure_client.jso
 launchctl load ~/Library/LaunchAgents/com.assistant.connector-outlook.plist
 ```
 
-**JIRA** (read-only) — three env vars in `~/.zprofile` (the launcher sources it, so the token never lands in a plist):
-```bash
-export JIRA_BASE_URL=https://your-org.atlassian.net   # must be https://
-export JIRA_EMAIL=you@example.com                     # for JIRA Cloud basic auth
-export JIRA_API_TOKEN=…                                # Atlassian API token / PAT
-# optional — widen beyond your own issues:
-export JIRA_JQL='project = FOO'
-launchctl load ~/Library/LaunchAgents/com.assistant.connector-jira.plist
-```
-Default scope is your own work (`assignee | reporter | watcher = currentUser()`); `JIRA_JQL` overrides/widens the scope clause.
-
 **Slack** (read-only) — rides the existing Bolt app in [`slack-reactor/`](slack-reactor/README.md):
 1. Add the connector's two read-only handlers by re-uploading `slack-reactor/slack/manifest.json` to your existing app (api.slack.com/apps), then **reinstall** the app (a scope/event change forces OAuth re-consent — skip it and the connector silently produces nothing).
 2. `export SLACK_BOT_TOKEN=xoxb-…` in `~/.zprofile`.
@@ -169,7 +158,6 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 | Noise budget | `page:0, notify:0` (fully silent) | `~/.assistant/noise-budget.json` | Max pushes/day through the interrupt gate. Raising it is a deliberate edit — v1 ships silent by design. |
 | Brief wake hour | `7` (local) | `~/.assistant/comms/config.json` → `{"brief":{"wake_hour":N}}` | First pulse at/after this hour builds the day's brief. |
 | Planner autoDispatch | **OFF** | `~/.assistant/comms/config.json` → `{"planner":{"autoDispatch":true}}` | OFF (safe default) = a stalled goal *stages a decision* for your review. ON = whitelisted steps dispatch unattended overnight. Flip it on only after watching the planner behave. |
-| JIRA scope | your own issues | `JIRA_JQL` env var | Widens the JQL beyond `assignee/reporter/watcher = you`. |
 | Slack channel ingest | mentions + DMs only | `SLACK_INGEST_CHANNELS=1` env (+ manifest edit) | Opts into full-channel message ingestion. |
 | Connector cadence / caps | 60s · 200 events · 10 pages | `~/.assistant/comms/config.json` → `connectors` block | Per-connector poll cadence and batch caps (module constants are only the fallback). |
 
@@ -190,7 +178,7 @@ Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/
 - `bin/pulse.py` — the main orchestrator loop, runs every 5 min via LaunchAgent
 - `bin/assistant-daemon.py` — the opt-in single-process daemon (`python -m assistant`); runs the decision spine + pulse in one process
 - `bin/cmux-watcher.py` — event-driven workspace signal delivery (opt-in LaunchAgent)
-- `bin/connectors/*.py` — read-only source connectors (GitHub / Gmail / GCal / JIRA / Slack / Outlook), opt-in KeepAlive daemons
+- `bin/connectors/*.py` — read-only source connectors (GitHub / Gmail / GCal / Slack / Outlook), opt-in KeepAlive daemons
 - `bin/build-morning-brief.py` — rebuild today's brief on demand; `bin/plan-next-actions.py` — run the goals planner on demand
 - `bin/interrupt-gate.py` — the sole push chokepoint (consulted for every would-be notification)
 - `bin/todo-server.py` — the localhost dashboard + JSON API at http://127.0.0.1:9876
@@ -237,7 +225,7 @@ These are structural, not just conventions — violating them will cause real pr
 | M2 | Policy engine + decision queue + suggestion-only triage (`policy.py`, `decisions.py`, `triage.py`) | merged |
 | M3 | Morning brief + interrupt gate (`brief.py`, `bin/interrupt-gate.py`; noise budget 0/day) | merged |
 | M4 | Goals + deterministic planner (`goals.py`, `bin/plan-next-actions.py`, the `/goal` skill) | merged |
-| M5 | Connectors — GitHub, Gmail, GCal, JIRA, Slack, Outlook (opt-in, read-only) | merged |
+| M5 | Connectors — GitHub, Gmail, GCal, Slack, Outlook (opt-in, read-only) | merged |
 | M6 | Strategist — throttled LLM drafter for staged goal steps (`src/assistant/strategist.py`) | merged |
 
 ## Testing
