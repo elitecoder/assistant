@@ -1395,11 +1395,20 @@ def _ledger_soft_skip(goal_id: str, reason: str, now: float,
     summary["dedup_only"] = True
 
 
-def plan_pass(now: float | None = None) -> dict:
+def plan_pass(now: float | None = None, strategist_draft=None) -> dict:
     """One planner pass (design section 6). Assumes progress is already stamped
     (pulse_step stamps first). Goal RANK order — goal #1 gets first claim on the
     leftover headroom. Returns a summary of everything it did/skipped, ALL of it
-    also ledgered (M1c: no silent skips)."""
+    also ledgered (M1c: no silent skips).
+
+    `strategist_draft` (Keel M6) is an OPTIONAL injected callable
+    `(goal, step_class, template_title, template_detail) -> (title, detail)`.
+    Default None preserves the M4 behavior EXACTLY (pure templates, zero LLM,
+    byte-identical) — the CLI and every M4 test pass nothing. When provided (the
+    pulse path, via bin/strategist.py), the Strategist upgrades ONLY the staged
+    step's TEXT after Python has already decided WHETHER/what class to stage. It
+    returns TEXT ONLY — the staged action class stays the Python-owned
+    `step_class`, never anything the LLM echoed (WHAT-not-WHETHER)."""
     now = now if now is not None else time.time()
     summary = {"paused": False, "stale_world": False, "unreadable": False,
                "staged_todos": [], "staged_decisions": [], "skipped": [],
@@ -1447,6 +1456,25 @@ def plan_pass(now: float | None = None) -> dict:
     autodispatch_on = planner_autodispatch()
     todos_staged = 0
 
+    def _draft_text(goal: dict, sc: str, title: str,
+                    detail: str) -> tuple[str, str]:
+        """Upgrade the staged step's TEXT via the injected Strategist (M6), or
+        return the M4 template unchanged when no drafter is injected. Called
+        ONLY after the planner has committed to staging (stalled + capacity +
+        class chosen) — WHAT, never WHETHER. The Strategist returns TEXT ONLY;
+        the staged action class stays `sc` (Python-owned). Defensive: any
+        error here falls back to the template so a broken drafter can never
+        crash or block the planner pass."""
+        if strategist_draft is None:
+            return title, detail
+        try:
+            nt, nd = strategist_draft(goal, sc, title, detail, now)
+        except Exception:  # noqa: BLE001 — a broken drafter → template, never crash
+            return title, detail
+        if isinstance(nt, str) and nt.strip() and isinstance(nd, str) and nd.strip():
+            return nt, nd
+        return title, detail
+
     for goal in sorted(store["goals"],
                        key=lambda g: (g.get("rank", 1 << 30), g.get("id"))):
         gid = goal.get("id")
@@ -1488,7 +1516,8 @@ def plan_pass(now: float | None = None) -> dict:
                                   extra=f"headroom={headroom} active={active_ws} "
                                         f"human={human_pending}")
                 continue
-            item, created = _stage_todo(goal, step_class, title, detail,
+            d_title, d_detail = _draft_text(goal, step_class, title, detail)
+            item, created = _stage_todo(goal, step_class, d_title, d_detail,
                                         autodispatch=True, now=now)
             if created and item is not None:
                 todos_staged += 1
@@ -1506,7 +1535,9 @@ def plan_pass(now: float | None = None) -> dict:
                 # the human declined this step (M6) — either way, ledger it.
                 _ledger_soft_skip(gid, "todo-dedup", now, summary)
         else:
-            rec, created = _stage_decision(goal, step_class, title, detail, now)
+            d_title, d_detail = _draft_text(goal, step_class, title, detail)
+            rec, created = _stage_decision(goal, step_class, d_title, d_detail,
+                                           now)
             if created and rec is not None:
                 summary["staged_decisions"].append({"goal": gid, "dec": rec.get("id"),
                                                     "step": step_class})
@@ -1589,12 +1620,15 @@ def staged_accept_rate(records: list[dict] | None = None,
 
 # ─── pulse step ──────────────────────────────────────────────────────────────
 
-def pulse_step(now: float | None = None, log=None) -> dict:
+def pulse_step(now: float | None = None, log=None, strategist_draft=None) -> dict:
     """The pulse's planner step (Keel M4). Stamp mechanical progress first (so
     stall detection reads a fresh picture), then run one planner pass. Every
     failure mode inside is already a no-op-with-ledger; this wrapper adds no
-    load-bearing behavior of its own — pulse.py fences the whole call anyway."""
+    load-bearing behavior of its own — pulse.py fences the whole call anyway.
+
+    `strategist_draft` (Keel M6) is threaded straight to plan_pass. Default
+    None keeps the M4 behavior byte-identical (pure templates, zero LLM)."""
     now = now if now is not None else time.time()
     stamp = stamp_progress(now=now)
-    plan = plan_pass(now=now)
+    plan = plan_pass(now=now, strategist_draft=strategist_draft)
     return {"stamp": stamp, "plan": plan}

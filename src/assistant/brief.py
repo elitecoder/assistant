@@ -176,6 +176,30 @@ def connectors_dir() -> Path:
     return _home() / ".assistant" / "connectors"
 
 
+def decision_context_dir() -> Path:
+    return _home() / ".assistant" / "decision-context"
+
+
+# Cap the Strategist-prepared context inlined into a brief decision row so a
+# runaway draft can't bloat the brief payload; the full file stays on disk.
+MAX_DECISION_CONTEXT_CHARS = 4000
+
+
+def _decision_context(dec_id: str) -> str | None:
+    """The Strategist-prepared decision-context markdown (Keel M6) inlined into
+    the brief's decision row when present. Read straight from disk by path (no
+    strategist import — brief must not depend on the drafter, and the file is a
+    pure derivation surfaced draft-only). None when absent/empty."""
+    if not dec_id:
+        return None
+    try:
+        text = (decision_context_dir() / f"{dec_id}.md").read_text()
+    except (OSError, FileNotFoundError):
+        return None
+    text = text.strip()
+    return text[:MAX_DECISION_CONTEXT_CHARS] if text else None
+
+
 def config_path() -> Path:
     return _home() / ".assistant" / "comms" / "config.json"
 
@@ -360,6 +384,9 @@ def _build_queue(records: list[dict], now: float,
             "triage": rec.get("triage"),
             "ws_ref": (rec.get("refs") or {}).get("ws_ref"),
             "snippet": (rec.get("snippet") or "")[:200],
+            # Strategist-prepared context/draft (Keel M6), inline when present.
+            # Draft-only: prose surfaced to the human, never an action.
+            "strategist_context": _decision_context(dec_id),
         })
     # Deterministic order, PARTITIONED BY LANE so the escalate fail-safe lane
     # is always at the top of the queue (design section 4 invariant). The

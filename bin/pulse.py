@@ -647,15 +647,32 @@ def run_planner_step(pulse_idx: int) -> None:
     planner.autoDispatch config flag is on — SAFE DEFAULT is off, staging a
     decision instead), a gated step as a brief decision. Runs BEFORE the TODO
     dispatch (step 5) so a freshly-staged goal TODO can be picked up THIS pulse,
-    and BEFORE purge so nothing it stages is immediately swept. NO LLM anywhere
-    (R3: zero new LLM spend). Imported lazily and fully fenced, same contract as
-    the brief: a broken planner costs one pulse's planning, never the pulse."""
+    and BEFORE purge so nothing it stages is immediately swept. Imported lazily
+    and fully fenced, same contract as the brief: a broken planner costs one
+    pulse's planning, never the pulse.
+
+    Keel M6: WHETHER stays 100% deterministic Python; the Strategist is injected
+    ONLY to upgrade the staged step's TEXT (WHAT). draft_for_planner carries all
+    the governance (≤1/goal/day throttle, daily ceiling shed, auto-pause) inside
+    the pure strategist module and falls back to the M4 template on every gate
+    or invalid draft — so a broken/absent Strategist reduces exactly to M4."""
     try:
         src_dir = str(REPO / "src")
         if src_dir not in sys.path:
             sys.path.insert(0, src_dir)
         from assistant import goals  # noqa: PLC0415
-        summary = goals.pulse_step()
+        strategist_draft = None
+        try:
+            if str(BIN) not in sys.path:
+                sys.path.insert(0, str(BIN))
+            import strategist as strategist_bin  # noqa: PLC0415
+            strategist_draft = (
+                lambda goal, step_class, tt, td, now:
+                strategist_bin.draft_for_planner(
+                    goal, step_class, tt, td, now, pulse_idx))
+        except Exception as e:  # noqa: BLE001 — no drafter → pure-M4 templates
+            log.warning("strategist drafter unavailable (M4 templates): %s", e)
+        summary = goals.pulse_step(strategist_draft=strategist_draft)
     except Exception as e:  # noqa: BLE001 — the planner must never break the pulse
         log.exception("planner step failed (retried next pulse): %s", e)
         return
@@ -668,6 +685,27 @@ def run_planner_step(pulse_idx: int) -> None:
             or plan.get("unreadable") or plan.get("dedup_only") \
             or plan.get("skipped"):
         log.info("planner: %s", json.dumps(summary))
+
+
+def run_strategist_context_step(pulse_idx: int) -> None:
+    """Step 1.8 (Keel M6): nightly decision-context pre-research. On IDLE
+    capacity ONLY (the M4 headroom/world-active/staleness guards — never steals
+    human or goal dispatch capacity), the Strategist pre-researches queued OPEN
+    decisions into ~/.assistant/decision-context/<dec-id>.md, surfaced inline in
+    the brief's decision row. Draft-only (never acts), throttled, metered,
+    ceiling-gated, and auto-pausable exactly like the staging drafts. Imported
+    lazily and fully fenced: a broken pre-research pass costs one pulse's
+    pre-research, never the pulse — and when the fleet is busy it is a no-op."""
+    try:
+        if str(BIN) not in sys.path:
+            sys.path.insert(0, str(BIN))
+        import strategist as strategist_bin  # noqa: PLC0415
+        summary = strategist_bin.pre_research(pulse_idx=pulse_idx)
+    except Exception as e:  # noqa: BLE001 — pre-research must never break the pulse
+        log.exception("strategist pre-research failed (retried next pulse): %s", e)
+        return
+    if summary.get("researched") or summary.get("skipped"):
+        log.info("strategist-context: %s", json.dumps(summary))
 
 
 # ─── Observer no-change skip (Keel M2) ───────────────────────────────────────
@@ -1627,6 +1665,14 @@ def main() -> int:
     #      pulse; NO LLM. Fenced, never load-bearing (see run_planner_step).
     if not dry_run:
         run_planner_step(pulse_idx)
+
+    # 1.8. Strategist decision-context pre-research (Keel M6): on IDLE capacity
+    #      only, pre-research queued OPEN decisions into decision-context/*.md
+    #      (surfaced in the brief). Draft-only, throttled, metered, ceiling-
+    #      gated, auto-pausable; a no-op when the fleet is busy. Fenced, never
+    #      load-bearing (see run_strategist_context_step docstring).
+    if not dry_run:
+        run_strategist_context_step(pulse_idx)
 
     # 2. Purge stale awaiting cards.
     if not dry_run:

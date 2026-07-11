@@ -97,6 +97,19 @@ TARGETS = {
         "scopes": {"verdict", "merge", "cleanup", "stranded", "general"},
         "default_scope": "general",
     },
+    # Keel M6 — Plane 2 (design section 7): drafting-quality lessons injected
+    # into the Strategist prompt ONLY. This is prose for the LLM drafter; it can
+    # never gate or ungate an action. The step's class is fixed by the
+    # deterministic planner and re-validated against the goal's playbook in
+    # code (strategist.validate_draft), so no lesson here can widen the action
+    # set — a structural test asserts the prose-cannot-gate invariant.
+    "strategist": {
+        "path": ASSISTANT_REPO / "prompts/strategist-draft-prompt.md",
+        # Sub-domains of drafting quality (the playbook step classes + general).
+        "scopes": {"research", "doc-draft", "pr-scaffold", "test-backfill",
+                   "general"},
+        "default_scope": "general",
+    },
     "ffp": {
         "path": FFP_REPO / ".claude/rules/ffp-lessons.md",
         "scopes": {"squirrel", "ecs", "e2e", "ci", "jira", "ffp", "general"},

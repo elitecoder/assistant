@@ -1,0 +1,94 @@
+{
+  "_schema": "strategist-eval/1",
+  "_doc": "Keel M6 Strategist acceptance fixtures. Each case: a goal + a fresh world snapshot → the step_class the DETERMINISTIC planner (goals.select_next_step) picks (which MUST be inside the goal's playbook enum), plus a model `draft` that is rubric-scored by tests/test_strategist.py. The rubric is deterministic (no LLM): the draft must validate against strategist.validate_draft (echoed class in playbook, non-empty title+detail), reference the goal, and meet a minimum detail length. `bad_draft` (when present) must be REJECTED → template fallback. NO live LLM anywhere.",
+  "cases": [
+    {
+      "name": "research-first-unattended",
+      "goal": {"id": "goal-1", "rank": 1, "title": "Ship the Keel Strategist", "outcome": "M6 merged with green tests", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": ["research", "doc-draft", "pr-scaffold", "test-backfill"], "gated": ["code-change"]}, "budget": {"maxStrategistCallsPerDay": 1, "maxStagedTodosPerNight": 2, "maxActiveWs": 2}},
+      "expected_step_class": "research",
+      "draft": {"step_class": "research", "title": "[goal-1] research the Strategist metering surface: Ship the Keel Strategist", "detail": "Investigate how the M4 planner stages steps and where the cost-ledger row must be written. Read-only research; write findings to a doc. No code changes, no sends."},
+      "bad_draft": {"step_class": "email.send", "title": "send the update", "detail": "email the team the status"},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "doc-draft-first",
+      "goal": {"id": "goal-2", "rank": 2, "title": "Publish the auth design doc", "outcome": "Design doc reviewed and approved", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": ["doc-draft", "research"], "gated": []}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "doc-draft",
+      "draft": {"step_class": "doc-draft", "title": "[goal-2] draft the auth design doc: Publish the auth design doc", "detail": "Draft the OAuth refresh + token-expiry design section that unblocks review. Document only — no code, no sends. Link the connector base contract."},
+      "bad_draft": {"step_class": "deploy", "title": "deploy auth", "detail": "ship it to prod"},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "pr-scaffold-first",
+      "goal": {"id": "goal-3", "rank": 3, "title": "Add the metrics dashboard tab", "outcome": "Dashboard tab live with 4 tiles", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": ["pr-scaffold", "test-backfill"], "gated": ["code-change"]}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "pr-scaffold",
+      "draft": {"step_class": "pr-scaffold", "title": "[goal-3] scaffold the dashboard-tab PR: Add the metrics dashboard tab", "detail": "Scaffold a reversible draft PR in the owned repo with the tile stubs and render hooks. Draft PR only — never a merge, never a send."},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "test-backfill-first",
+      "goal": {"id": "goal-4", "rank": 4, "title": "Backfill connector tests", "outcome": "All connectors have raw->event golden fixtures", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": ["test-backfill"], "gated": []}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "test-backfill",
+      "draft": {"step_class": "test-backfill", "title": "[goal-4] backfill the JIRA connector golden fixtures: Backfill connector tests", "detail": "Add the missing raw->event golden fixtures for the JIRA connector. Reversible; opens a draft PR with the recorded events."},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "gated-only-code-change",
+      "goal": {"id": "goal-5", "rank": 5, "title": "Refactor the dispatcher", "outcome": "Dispatcher single-writer, no lost updates", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": [], "gated": ["code-change", "config-change"]}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "code-change",
+      "draft": {"step_class": "code-change", "title": "[goal-5] make the next dispatcher change: Refactor the dispatcher", "detail": "Implement the single-writer lock around the dispatch stamp (gated: needs review before it runs unattended). Describe the exact functions touched."},
+      "bad_draft": {"step_class": "research", "title": "research it", "detail": "look into the dispatcher"},
+      "rubric": {"min_detail_chars": 30, "note": "an echoed class INSIDE the playbook (research) is not the CHOSEN class here; the test asserts the staged class stays the Python-chosen code-change regardless of what the LLM echoes"}
+    },
+    {
+      "name": "custom-playbook-order",
+      "goal": {"id": "goal-6", "rank": 6, "title": "Harden the interrupt gate", "outcome": "865-replay stays <=1 delivered", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": ["test-backfill", "research", "doc-draft"], "gated": []}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "test-backfill",
+      "draft": {"step_class": "test-backfill", "title": "[goal-6] backfill gate regression fixtures: Harden the interrupt gate", "detail": "Add the budget-exhausted-mid-day and date-rollover gate fixtures. Reversible; opens a draft PR."},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "single-research-goal",
+      "goal": {"id": "goal-7", "rank": 7, "title": "Investigate token spend regression", "outcome": "Root cause of the cadence spike identified", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": ["research"], "gated": []}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "research",
+      "draft": {"step_class": "research", "title": "[goal-7] research the cadence spike: Investigate token spend regression", "detail": "Read the cost-ledger and metrics.jsonl to find which caller's tokens_in grew. Read-only; write findings to a doc."},
+      "bad_draft": {"title": "", "detail": ""},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "doc-then-pr",
+      "goal": {"id": "goal-8", "rank": 8, "title": "Migrate to sqlite index", "outcome": "Index migration RFC accepted", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": ["doc-draft", "pr-scaffold"], "gated": ["code-change"]}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "doc-draft",
+      "draft": {"step_class": "doc-draft", "title": "[goal-8] draft the migration RFC: Migrate to sqlite index", "detail": "Draft the RFC weighing JSONL vs sqlite for the event index. Document only. No code, no migration run."},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "gated-config-change",
+      "goal": {"id": "goal-9", "rank": 9, "title": "Tune the noise budget", "outcome": "Noise budget config validated", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "playbook": {"unattended": [], "gated": ["config-change"]}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "config-change",
+      "draft": {"step_class": "config-change", "title": "[goal-9] apply the next noise-budget config change: Tune the noise budget", "detail": "Propose the config-change to the ladder thresholds (gated). Describe the exact keys; no send, no page."},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "research-with-repo-links",
+      "goal": {"id": "goal-10", "rank": 10, "title": "Fix the Gmail history cursor", "outcome": "No missed Gmail events over 5-day burn-in", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "links": {"repos": ["assistant"], "prs": ["42"]}, "playbook": {"unattended": ["research", "test-backfill"], "gated": []}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "research",
+      "draft": {"step_class": "research", "title": "[goal-10] research the history_id cursor gap: Fix the Gmail history cursor", "detail": "Investigate how users.history.list paginates and where the cursor can skip. Read-only; findings to a doc. Reference PR 42 in assistant."},
+      "rubric": {"min_detail_chars": 30}
+    },
+    {
+      "name": "doc-draft-long-horizon",
+      "goal": {"id": "goal-11", "rank": 11, "title": "Define the outbound gate schema", "outcome": "action-classes.json schema frozen", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "horizon": "quarter", "playbook": {"unattended": ["doc-draft"], "gated": ["external-comms"]}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "doc-draft",
+      "draft": {"step_class": "doc-draft", "title": "[goal-11] draft the action-classes schema: Define the outbound gate schema", "detail": "Draft the forbidden/draft_only/confirm/standing gate taxonomy doc. Document only; email.send stays forbidden."},
+      "rubric": {"min_detail_chars": 30, "note": "external-comms IS a playbook class here, so the echoed-class validation would accept it; the WHAT-not-WHETHER guard is that the CHOSEN class stays doc-draft regardless of what the LLM echoes (asserted by WhatNotWhetherPlannerTests)"}
+    },
+    {
+      "name": "pr-scaffold-owned-repo",
+      "goal": {"id": "goal-12", "rank": 12, "title": "Add the replay harness", "outcome": "evals/strategist replay green in CI", "status": "active", "stallAfterHours": 1, "createdAt": "2026-07-01T00:00:00Z", "links": {"repos": ["assistant"]}, "playbook": {"unattended": ["pr-scaffold", "test-backfill", "research"], "gated": []}, "budget": {"maxStrategistCallsPerDay": 1}},
+      "expected_step_class": "pr-scaffold",
+      "draft": {"step_class": "pr-scaffold", "title": "[goal-12] scaffold the replay-harness PR: Add the replay harness", "detail": "Scaffold a reversible draft PR wiring evals/strategist/fixtures.json into a rubric-scoring test. Draft PR only; never a merge."},
+      "rubric": {"min_detail_chars": 30}
+    }
+  ]
+}
