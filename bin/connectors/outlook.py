@@ -4,7 +4,7 @@
 WHY: Mukul's inbound mail is not only Gmail — an Outlook.com / work-M365 mailbox
 is the same kind of world-event source. This connector turns newly-arrived mail
 into normalized WorldEvents on the SAME policy/decision spine as Gmail, GitHub,
-GCal, JIRA and Slack, proving the OAuth base generalizes cleanly to a SECOND
+GCal and Slack, proving the OAuth base generalizes cleanly to a SECOND
 provider (Microsoft) after wave-1 pinned it to Google only.
 
 This is a pure PRODUCER: each newly-arrived message becomes a normalized

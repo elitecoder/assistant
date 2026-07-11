@@ -203,7 +203,7 @@ class WorldScannerJoinTests(HomeTestCase):
 
     def test_fresh_install_all_known_connectors_available(self):
         # Nothing configured at all → EVERY known connector is not_configured
-        # (wave-1 github/gmail + wave-2 gcal/jira/slack). Derived from the
+        # (wave-1 github/gmail + wave-2 gcal/slack). Derived from the
         # registry so it stays correct as connectors are added.
         summary = self._summary()
         expected = {c["name"]: "not_configured"
@@ -211,7 +211,7 @@ class WorldScannerJoinTests(HomeTestCase):
         self.assertEqual({n: v["status"] for n, v in summary.items()},
                          expected)
         # The wave-2 connectors are present in the fresh-install summary.
-        for name in ("gcal", "jira", "slack"):
+        for name in ("gcal", "slack"):
             self.assertEqual(summary[name]["status"], "not_configured")
 
 

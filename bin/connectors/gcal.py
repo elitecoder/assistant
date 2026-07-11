@@ -337,7 +337,7 @@ class GCalConnector(connector.Connector):
         so the same window is never emitted twice — even across 60s polls.
 
         A per-item OSError on the drop is caught and PARKED (finding 14) — like
-        jira/slack, a transient inbox-drop failure must not abort the whole poll.
+        slack, a transient inbox-drop failure must not abort the whole poll.
         The key is recorded ONLY after a successful emit, so a parked reminder
         re-fires next poll (no loss); we stop the pass on the first failure so a
         wedged inbox doesn't spin the full set."""

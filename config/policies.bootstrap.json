@@ -1,6 +1,6 @@
 {
   "version": 5,
-  "_comment": "Bootstrap fleet policies (Keel M2, extended for M5 wave-1, wave-2 AND wave-3 connectors). Installed to ~/.assistant/policies/policies.json on first triage run when no live file exists. On later runs a version bump here ADDs any rule ids missing from the installed file (never overwrites or removes user rules) and ledgers the upgrade. Ordered, first-match-wins. Every id has a fixture in evals/policy/<id>/ enforced by tests/test_policy.py coverage. M5 wave-1: github + gmail rules (kinds are the notification reason / mechanical newsletter|direct|message). M5 wave-2: gcal + jira + slack rules are now present because their producers (bin/connectors/gcal.py, jira.py, slack-events.py) exist and their WorldEvent kinds are known and mechanical (gcal kind=event_upcoming with refs.window horizon; jira kind derived from the changelog = mention|flagged|assigned|comment|status_change|priority_change|updated; slack kind = app_mention|dm|message from Slack's own event metadata) — the M2-era data-hiding hazard (guessing a schema before the producer existed) no longer applies. M5 wave-3: outlook rules — the producer (bin/connectors/outlook.py) exists and its WorldEvent kind is mechanical from Microsoft Graph metadata (direct|cc|newsletter|message, DIRECT-ADDRESSED classified before any newsletter signal per SEC2 so a direct message is never auto-dropped). No rule uses the `auto` lane (the triage lane map structurally cannot emit auto; auto is confirmed-policy-only). Mutations to the LIVE file go through confirmed `policy` proposals, not hand edits.",
+  "_comment": "Bootstrap fleet policies (Keel M2, extended for M5 wave-1, wave-2 AND wave-3 connectors). Installed to ~/.assistant/policies/policies.json on first triage run when no live file exists. On later runs a version bump here ADDs any rule ids missing from the installed file (never overwrites or removes user rules) and ledgers the upgrade. Ordered, first-match-wins. Every id has a fixture in evals/policy/<id>/ enforced by tests/test_policy.py coverage. M5 wave-1: github + gmail rules (kinds are the notification reason / mechanical newsletter|direct|message). M5 wave-2: gcal + slack rules are now present because their producers (bin/connectors/gcal.py, slack-events.py) exist and their WorldEvent kinds are known and mechanical (gcal kind=event_upcoming with refs.window horizon; slack kind = app_mention|dm|message from Slack's own event metadata) — the M2-era data-hiding hazard (guessing a schema before the producer existed) no longer applies. M5 wave-3: outlook rules — the producer (bin/connectors/outlook.py) exists and its WorldEvent kind is mechanical from Microsoft Graph metadata (direct|cc|newsletter|message, DIRECT-ADDRESSED classified before any newsletter signal per SEC2 so a direct message is never auto-dropped). No rule uses the `auto` lane (the triage lane map structurally cannot emit auto; auto is confirmed-policy-only). Mutations to the LIVE file go through confirmed `policy` proposals, not hand edits.",
   "policies": [
     {
       "id": "cmux-needs-input-escalate",
@@ -221,97 +221,6 @@
         "predicates": [
           {"field": "refs.window", "op": "eq", "value": "24h"}
         ]
-      },
-      "lane": "digest",
-      "action": null,
-      "urgency": "low",
-      "ttl_h": 24,
-      "pageable": false,
-      "enabled": true
-    },
-    {
-      "id": "jira-mention-escalate",
-      "match": {
-        "source": "jira",
-        "kind": "mention"
-      },
-      "lane": "escalate",
-      "action": null,
-      "urgency": "now",
-      "ttl_h": null,
-      "pageable": false,
-      "enabled": true
-    },
-    {
-      "id": "jira-flagged-escalate",
-      "match": {
-        "source": "jira",
-        "kind": "flagged"
-      },
-      "lane": "escalate",
-      "action": null,
-      "urgency": "now",
-      "ttl_h": null,
-      "pageable": false,
-      "enabled": true
-    },
-    {
-      "id": "jira-assigned-staged",
-      "match": {
-        "source": "jira",
-        "kind": "assigned"
-      },
-      "lane": "staged",
-      "action": null,
-      "urgency": "soon",
-      "ttl_h": 72,
-      "pageable": false,
-      "enabled": true
-    },
-    {
-      "id": "jira-comment-staged",
-      "match": {
-        "source": "jira",
-        "kind": "comment"
-      },
-      "lane": "staged",
-      "action": null,
-      "urgency": "soon",
-      "ttl_h": 72,
-      "pageable": false,
-      "enabled": true
-    },
-    {
-      "id": "jira-status-change-digest",
-      "match": {
-        "source": "jira",
-        "kind": "status_change"
-      },
-      "lane": "digest",
-      "action": null,
-      "urgency": "low",
-      "ttl_h": 24,
-      "pageable": false,
-      "enabled": true
-    },
-    {
-      "id": "jira-priority-change-digest",
-      "match": {
-        "source": "jira",
-        "kind": "priority_change"
-      },
-      "lane": "digest",
-      "action": null,
-      "urgency": "low",
-      "ttl_h": 24,
-      "pageable": false,
-      "enabled": true
-    },
-    {
-      "id": "jira-updated-digest",
-      "match": {
-        "source": "jira",
-        "kind": "updated"
       },
       "lane": "digest",
       "action": null,

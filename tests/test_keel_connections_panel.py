@@ -50,13 +50,13 @@ class ConnectionsPanelTests(unittest.TestCase):
             "gmail": {"status": "ok", "age_sec": 42, "last_poll": "T",
                       "token_expiry": "2026-06-01T00:00:00Z"},
             "github": {"status": "not_configured"},
-            "jira": {"status": "error", "stale": True, "errors": ["boom"]},
+            "slack": {"status": "error", "stale": True, "errors": ["boom"]},
         }}
         html, n = self.mod.render_connections_panel(world)
         self.assertEqual(n, 1)                       # only gmail connected
         self.assertIn("Connected", html)
         self.assertIn("Available", html)             # github not_configured
-        self.assertIn("Needs attention", html)       # jira error
+        self.assertIn("Needs attention", html)       # slack error
         self.assertIn("conn-dot ok", html)
         self.assertIn("conn-dot available", html)
         self.assertIn("conn-dot attention", html)

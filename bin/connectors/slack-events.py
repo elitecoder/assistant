@@ -21,7 +21,7 @@ not_configured: the Slack app is "wired" iff its bot token is present in the
 environment (the spawn-sh sources ~/.zprofile exactly like slack-reactor). When
 it is absent the connector is a QUIET not_configured — the owner has not
 connected Slack. The wiring check is dependency-injected so tests never need a
-real token (mirroring github's token provider / jira's PAT provider).
+real token (mirroring github's token provider).
 
 external_id ``slack:<channel>:<event_ts>`` — the message ts is unique per
 channel, so a re-spool of the same event dedups to one WorldEvent downstream.
@@ -168,7 +168,7 @@ class SlackEventsConnector(connector.Connector):
         now = now if now is not None else connector.time.time()
 
         # Slack is OPTIONAL. If the Bolt app isn't wired there is nothing to
-        # consume — a clean opted-out state, exactly like Gmail/GitHub/JIRA.
+        # consume — a clean opted-out state, exactly like Gmail/GitHub.
         if not self._wired_check():
             self._heartbeat_not_configured(now)
             return {"status": "not_configured", "emitted": 0, "errors": []}

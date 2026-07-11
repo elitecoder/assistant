@@ -33,7 +33,6 @@ SKIP_PLISTS = (
     "com.assistant.connector-github.plist",
     "com.assistant.connector-gmail.plist",
     "com.assistant.connector-gcal.plist",
-    "com.assistant.connector-jira.plist",
     "com.assistant.connector-slack.plist",
     "com.assistant.connector-outlook.plist",
 )

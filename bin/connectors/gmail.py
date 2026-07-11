@@ -4,7 +4,7 @@
 WHY: inbound email is the highest-volume world-event source, and the design
 picked Gmail as the second M5 connector specifically to prove the OAuth
 refresh-token flow AND a history-cursor style (vs GitHub's Last-Modified
-watermark) before fanning out to GCal/JIRA/Slack.
+watermark) before fanning out to GCal/Slack.
 
 This is a pure PRODUCER: each newly-arrived message becomes a normalized
 WorldEvent dropped into the inbox. It NEVER sends, replies, deletes, marks
