@@ -130,6 +130,20 @@ DEFAULT_WORLD_STALE_SEC = 1800
 # from the dispatcher's ceiling (m14). Never mutated here.
 ACTIVE_WS_CAP = config.ACTIVE_WS_CAP
 
+# Aggregate per-pulse Strategist budget (Keel M6, C-F-5/C-O-1) — the twin of the
+# dispatcher's MAX_DISPATCH_PER_PULSE. Each Strategist draft is a ≤240s
+# subprocess; N stalled goals × 240s can otherwise exceed PULSE_RUN_TIMEOUT_SEC
+# (1800s) and the supervisor SIGKILLs the pulse mid-run, losing dispatch/
+# heartbeat/metrics. So one planner pass invokes the injected drafter at most
+# MAX_STRATEGIST_CALLS_PER_PULSE times AND for at most STRATEGIST_PULSE_BUDGET_SEC
+# wall-clock; once either is spent, the remaining stalled goals fall back to the
+# deterministic M4 template (which costs nothing). Only the drafter is bounded —
+# WHETHER/what-class is 100% Python and never shed. Sized so the planner budget
+# plus step 1.8 pre-research (bounded by maxContextPerPass) stays well under the
+# 1800s pulse timeout: 4×240 + 1×240 = 1200s.
+MAX_STRATEGIST_CALLS_PER_PULSE = 4
+STRATEGIST_PULSE_BUDGET_SEC = 1200
+
 # Staged goal TODOs get the lowest priority so the untouched dispatcher (which
 # sorts bucket_b by priority) always dispatches human work first (design
 # section 6: "human-originated TODOs dispatch first").
@@ -1455,6 +1469,11 @@ def plan_pass(now: float | None = None, strategist_draft=None) -> dict:
     headroom = ACTIVE_WS_CAP - active_ws - human_pending
     autodispatch_on = planner_autodispatch()
     todos_staged = 0
+    # Aggregate per-pulse Strategist budget (C-F-5/C-O-1): count drafter
+    # invocations and cap the total wall-clock so N stalled goals can't blow the
+    # 1800s pulse timeout. monotonic() is immune to wall-clock steps.
+    strat_calls = 0
+    strat_deadline = time.monotonic() + STRATEGIST_PULSE_BUDGET_SEC
 
     def _draft_text(goal: dict, sc: str, title: str,
                     detail: str) -> tuple[str, str]:
@@ -1464,9 +1483,19 @@ def plan_pass(now: float | None = None, strategist_draft=None) -> dict:
         class chosen) — WHAT, never WHETHER. The Strategist returns TEXT ONLY;
         the staged action class stays `sc` (Python-owned). Defensive: any
         error here falls back to the template so a broken drafter can never
-        crash or block the planner pass."""
+        crash or block the planner pass.
+
+        Bounded by the aggregate per-pulse Strategist budget: once
+        MAX_STRATEGIST_CALLS_PER_PULSE calls OR STRATEGIST_PULSE_BUDGET_SEC of
+        wall-clock is spent, the remaining goals get the template (no drafter
+        call) so a first-of-day pass with many stalled goals can't SIGKILL."""
+        nonlocal strat_calls
         if strategist_draft is None:
             return title, detail
+        if strat_calls >= MAX_STRATEGIST_CALLS_PER_PULSE \
+                or time.monotonic() >= strat_deadline:
+            return title, detail  # per-pulse Strategist budget spent → template
+        strat_calls += 1
         try:
             nt, nd = strategist_draft(goal, sc, title, detail, now)
         except Exception:  # noqa: BLE001 — a broken drafter → template, never crash
@@ -1516,8 +1545,17 @@ def plan_pass(now: float | None = None, strategist_draft=None) -> dict:
                                   extra=f"headroom={headroom} active={active_ws} "
                                         f"human={human_pending}")
                 continue
-            d_title, d_detail = _draft_text(goal, step_class, title, detail)
-            item, created = _stage_todo(goal, step_class, d_title, d_detail,
+            # SAFETY (S-F-1): an autoDispatch TODO is picked up by an UNATTENDED
+            # --dangerously-skip-permissions worker whose prompt is built
+            # straight from this text. That text must therefore be the TRUSTED
+            # M4 deterministic template — NEVER the Strategist LLM draft, which
+            # is authored over attacker-influenceable goal/connector content and
+            # could smuggle a destructive instruction past the reversibility
+            # class into an agent that acts without a human in the loop. The
+            # drafted text is used ONLY on the human-reviewed staged-decision
+            # path below (the safe default), where a person sees it before
+            # anything runs.
+            item, created = _stage_todo(goal, step_class, title, detail,
                                         autodispatch=True, now=now)
             if created and item is not None:
                 todos_staged += 1

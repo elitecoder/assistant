@@ -272,5 +272,39 @@ class WorkspacesTabBackoffBannerTests(unittest.TestCase):
         self.assertIn("No observer summaries", html)
 
 
+class BriefStrategistContextRenderTests(unittest.TestCase):
+    """S-O-1/S-F-2: the Strategist-prepared decision context (pre-research LLM
+    spend) must actually reach a human in the brief tab, AND be HTML-escaped —
+    it is LLM output over attacker-controllable connector text, so a <script>
+    in it must render inert (M3's stored-XSS lesson)."""
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = Path(self._tmp_obj.name)
+        self._old_home = os.environ.get("HOME")
+        (self._tmp / ".assistant" / "brief").mkdir(parents=True)
+
+    def tearDown(self):
+        if self._old_home is not None:
+            os.environ["HOME"] = self._old_home
+        self._tmp_obj.cleanup()
+
+    def test_strategist_context_rendered_escaped_and_inert(self):
+        brief_doc = {"queue": [{
+            "id": "dec-1", "lane": "staged", "title": "Review PR",
+            "snippet": "please review", "score": 10, "age_h": 1.0,
+            "policy_id": "planner", "default_label": "Accept",
+            "strategist_context":
+                "<script>alert('xss')</script>\nPlan: do the reversible thing"}]}
+        (self._tmp / ".assistant" / "brief" / "brief-2026-01-01.json").write_text(
+            json.dumps(brief_doc))
+        mod = load_module(self._tmp)
+        html, _n = mod.render_brief_tab()
+        self.assertIn("Strategist context", html)          # spend reaches a human
+        self.assertIn("Plan: do the reversible thing", html)
+        self.assertIn("&lt;script&gt;", html)              # escaped …
+        self.assertNotIn("<script>alert('xss')</script>", html)  # … and inert
+
+
 if __name__ == "__main__":
     unittest.main()

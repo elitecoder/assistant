@@ -55,6 +55,8 @@ Pure stdlib; NEVER closes a workspace; no launchctl from code.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -105,6 +107,15 @@ def decision_context_dir() -> Path:
 
 def config_path() -> Path:
     return _home() / ".assistant" / "comms" / "config.json"
+
+
+def lock_path() -> Path:
+    """The single-writer flock for the throttle critical section (check-then-
+    reserve), so two concurrent callers can never both pass a budget of 1
+    (the ≤240s LLM latency makes the TOCTOU window real — a manual pulse
+    overlapping the launchd one, or a daemon+LaunchAgent both loaded during a
+    migration). Same idiom as decisions._writer_lock."""
+    return _home() / ".assistant" / "strategist.lock"
 
 
 def utc_iso(epoch: float) -> str:
@@ -171,16 +182,44 @@ def max_context_per_pass() -> int:
     return _int("maxContextPerPass", DEFAULT_MAX_CONTEXT_PER_PASS)
 
 
-# ─── ledger (best-effort; a ledger failure never blocks the drafter) ─────────
+# ─── the throttle critical section flock (TOCTOU: check-then-reserve) ────────
 
-def _append_ledger(entry: dict) -> None:
+@contextlib.contextmanager
+def _throttle_lock():
+    """Hold the single-writer flock across a read-check-then-append so the
+    throttle can't be raced. Raises OSError when ~/.assistant is unwritable —
+    the caller treats that as FAIL CLOSED (do not spend), never a re-spend."""
+    p = lock_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(p), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
+# ─── ledger (a SPEND-AUTHORIZING write must FAIL CLOSED, not best-effort) ─────
+
+def _append_ledger(entry: dict) -> bool:
+    """Append one ledger row. Returns True when the row is DURABLY written,
+    False on any OSError. The return is load-bearing for the spend gate: a
+    throttle/reservation row we cannot persist means we must NOT spend (a spend
+    we can't record would be re-tried every pulse — the exact invisible
+    recurring spend the token-audit documented). Non-spend rows (skip audit)
+    ignore the bool; the reservation path checks it."""
     try:
         p = ledger_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return True
     except OSError:
-        pass
+        return False
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -214,13 +253,24 @@ def _ledger_has_key_today(key: str) -> bool:
 
 
 def _ledger_skip(reason: str, now: float, *, ref: str = "(goals)",
-                 extra: str = "") -> None:
+                 extra: str = "", dedup_day: bool = False) -> None:
     """A NON-draft outcome (paused / throttled / ceiling-shed / invalid draft)
     on the actions ledger, so every reason the Strategist did NOT upgrade a
-    step is auditable in the brief — never a silent drop."""
+    step is auditable in the brief — never a silent drop.
+
+    dedup_day (C-F-10): the whole-pass pre-research skips (idle/ceiling/disabled)
+    fire on EVERY pulse when the condition holds — ~288 identical rows/day. When
+    dedup_day is set, the key is day-scoped and written at most once per day per
+    reason (the M4 week-key discipline), so the audit trail stays one-row-a-day
+    instead of spamming the ledger."""
+    key = f"strategist:skip:{reason}:{ref}"
+    if dedup_day:
+        key = f"{key}:{_day_key(now)}"
+        if _ledger_has_key_today(key):
+            return
     _append_ledger({
         "ts": utc_iso(now), "epoch": int(now),
-        "key": f"strategist:skip:{reason}:{ref}", "kind": "strategist-skip",
+        "key": key, "kind": "strategist-skip",
         "ws_ref": "(strategist)", "outcome": "skipped",
         "evidence": f"strategist {reason} for {ref}"
                     + (f"; {extra}" if extra else ""),
@@ -237,26 +287,29 @@ def context_key(dec_id: str, now: float) -> str:
     return f"strategist:context:{dec_id}:{_day_key(now)}"
 
 
-def record_call(goal_id: str, now: float, *, drafted: bool) -> None:
-    """Spend one of the goal's daily Strategist calls. Recorded whether or not
-    the draft VALIDATED — a malformed reply still consumed the call, so it must
-    count against the throttle (else a bad LLM could be hammered all day)."""
-    _append_ledger({
+def record_call(goal_id: str, now: float) -> bool:
+    """RESERVE one of the goal's daily Strategist calls BEFORE the LLM spend, so
+    the throttle key is durable even if the LLM/validation/write then fails — a
+    malformed reply still consumed the call and must count against the throttle
+    (else a bad LLM could be hammered all day). Returns True only when the
+    reservation row is DURABLY written; a False return means the caller must
+    FAIL CLOSED and not spend."""
+    return _append_ledger({
         "ts": utc_iso(now), "epoch": int(now),
         "key": call_key(goal_id, now), "kind": "strategist-call",
-        "ws_ref": "(strategist)", "outcome": "verified" if drafted else "skipped",
-        "evidence": f"strategist call for {goal_id} "
-                    f"(draft {'used' if drafted else 'rejected→template'})",
+        "ws_ref": "(strategist)", "outcome": "verified",
+        "evidence": f"strategist call reserved+spent for {goal_id}",
     })
 
 
-def record_context_call(dec_id: str, now: float, *, wrote: bool) -> None:
-    _append_ledger({
+def record_context_call(dec_id: str, now: float) -> bool:
+    """RESERVE one pre-research call for this decision BEFORE the LLM spend (see
+    record_call). Returns True only when durably written; False → FAIL CLOSED."""
+    return _append_ledger({
         "ts": utc_iso(now), "epoch": int(now),
         "key": context_key(dec_id, now), "kind": "strategist-context",
-        "ws_ref": "(strategist)", "outcome": "verified" if wrote else "skipped",
-        "evidence": f"strategist pre-research for {dec_id} "
-                    f"({'wrote context' if wrote else 'no-op'})",
+        "ws_ref": "(strategist)", "outcome": "verified",
+        "evidence": f"strategist pre-research call reserved+spent for {dec_id}",
     })
 
 
@@ -275,7 +328,41 @@ def throttled(goal: dict, now: float) -> bool:
     gid = goal.get("id")
     if gid is None:
         return True
-    return _ledger_count_key(call_key(gid, now)) >= max(1, goal_call_budget(goal))
+    budget = goal_call_budget(goal)
+    # Honor maxStrategistCallsPerDay:0 as a per-goal OFF switch (C-F-6): a 0 is
+    # the operator disabling the drafter for this goal, not a typo to promote to
+    # 1. Any non-positive budget → always throttled → pure M4 template.
+    if budget <= 0:
+        return True
+    return _ledger_count_key(call_key(gid, now)) >= budget
+
+
+def _reserve_call(goal: dict, now: float) -> str:
+    """Atomic throttle-check + reservation for a goal draft under the flock.
+    Returns "throttled" / "reserved" / "unwritable". The LLM call MUST happen
+    only on "reserved", and OUTSIDE the lock."""
+    try:
+        with _throttle_lock():
+            if throttled(goal, now):
+                return "throttled"
+            return "reserved" if record_call(str(goal.get("id")), now) \
+                else "unwritable"
+    except OSError:
+        return "unwritable"
+
+
+def _reserve_context(dec_id: str, now: float) -> str:
+    """Atomic per-decision-per-day throttle-check + reservation for a
+    pre-research call under the flock. Returns "throttled"/"reserved"/
+    "unwritable"; spend only on "reserved", outside the lock."""
+    try:
+        with _throttle_lock():
+            if _ledger_has_key_today(context_key(dec_id, now)):
+                return "throttled"
+            return "reserved" if record_context_call(dec_id, now) \
+                else "unwritable"
+    except OSError:
+        return "unwritable"
 
 
 # ─── daily cost ceiling (sheds Strategist FIRST, never Observer/triage) ──────
@@ -310,10 +397,14 @@ def over_ceiling(now: float) -> bool:
 
 def staged_accept_rate(now: float, records: list[dict] | None = None
                        ) -> tuple[float, int]:
-    """Acceptance rate of goal-linked staged work over the last 24h, counting
-    EXPIRED as a non-accept (design item 4a: 'accepted vs rejected/expired').
-    Returns (rate, resolved_count). resolved_count gates the floor so a tiny
-    sample can't auto-pause."""
+    """Acceptance rate of goal-linked staged work over the last 24h, over the
+    outcomes a HUMAN actually resolved — accepted/edited vs rejected (C-O-4).
+    EXPIRED is deliberately EXCLUDED: an unseen expiry means 'the human didn't
+    look', not 'the draft was bad', so folding it into the accept-rate trigger
+    conflates the two and can auto-pause the drafter for a busy week. The
+    dedicated expired-unseen trigger owns that signal instead. Returns (rate,
+    resolved_count); resolved_count gates the floor so a tiny sample can't
+    auto-pause."""
     now = now if now is not None else 0.0
     records = records if records is not None else decisions.read_log()
     cutoff = now - WINDOW_SEC
@@ -322,7 +413,7 @@ def staged_accept_rate(now: float, records: list[dict] | None = None
         if not (rec.get("goal_refs") or []):
             continue
         status = rec.get("status")
-        if status not in ("accepted", "edited", "rejected", "expired"):
+        if status not in ("accepted", "edited", "rejected"):
             continue
         ep = decisions.parse_iso((rec.get("resolution") or {}).get("ts"))
         if ep is None:
@@ -359,13 +450,38 @@ def auto_pause_reason(now: float, records: list[dict] | None = None
     return None
 
 
+def _maybe_ledger_unpause(now: float) -> None:
+    """When a pause was ledgered earlier today but the metric has since
+    recovered, LEDGER the auto-UN-pause once (C-F-10) — the pause row was
+    visible in the brief, the un-pause was previously silent, so 'both ledgered
+    + reversible' was only half true. Day-keyed dedup like the pause itself."""
+    day = _day_key(now)
+    paused_today = any(
+        _ledger_has_key_today(f"strategist:autopause:{r}:{day}")
+        for r in ("accept-rate", "expired-unseen"))
+    if not paused_today:
+        return
+    unkey = f"strategist:autounpause:{day}"
+    if _ledger_has_key_today(unkey):
+        return
+    _append_ledger({
+        "ts": utc_iso(now), "epoch": int(now),
+        "key": unkey, "kind": "strategist-autounpause",
+        "ws_ref": "(strategist)", "outcome": "verified",
+        "evidence": "strategist auto-UNpaused: metrics recovered "
+                    "(drafting resumes; the earlier pause self-lifted)",
+    })
+
+
 def auto_paused(now: float, records: list[dict] | None = None) -> bool:
     """True when EITHER mechanical twin trips. Ledgers the pause once per day
     per trigger (day-keyed dedup, like the M4 stall week-key) so a persistently
     bad metric doesn't spam the ledger every pulse, while the pause itself is
-    recomputed fresh (reversible)."""
+    recomputed fresh (reversible). When the metric recovers, ledger the
+    un-pause too (C-F-10)."""
     reason = auto_pause_reason(now, records)
     if reason is None:
+        _maybe_ledger_unpause(now)
         return False
     key = f"strategist:autopause:{reason}:{_day_key(now)}"
     if not _ledger_has_key_today(key):
@@ -377,6 +493,20 @@ def auto_paused(now: float, records: list[dict] | None = None) -> bool:
                         f"(drafting off, planner falls back to templates)",
         })
     return True
+
+
+def in_nightly_window(now: float) -> bool:
+    """Pre-research is a NIGHTLY pass (design section 6: it prepares queued
+    decisions overnight so the morning brief has context ready). Gate it to the
+    hours BEFORE the configured wake_hour (M3), so it runs in the overnight
+    window instead of firing on every 5-minute daytime pulse (C-F-9). Reuses
+    brief.wake_hour (imported lazily to keep the import graph acyclic)."""
+    from . import brief  # noqa: PLC0415
+    try:
+        hour = datetime.fromtimestamp(now).hour
+    except (OSError, OverflowError, ValueError):
+        return False
+    return hour < brief.wake_hour()
 
 
 def active(now: float, records: list[dict] | None = None) -> tuple[bool, str | None]:
@@ -462,22 +592,38 @@ def upgrade_step_text(goal: dict, step_class: str,
     if not ok:
         _ledger_skip(reason, now, ref=str(gid))
         return template
-    if throttled(goal, now):
+
+    # Atomic throttle-check + reservation under the single-writer flock, BEFORE
+    # the LLM is invoked (C-F-1/C-F-3/C-F-4). Three outcomes:
+    #   • "throttled"   — budget already spent → template (ledgered skip);
+    #   • "unwritable"  — the reservation could NOT be durably recorded (an
+    #                     unwritable ~/.assistant, a disk-full, a lock failure).
+    #                     FAIL CLOSED: do NOT spend. A spend we can't throttle
+    #                     would re-fire every pulse — the exact invisible
+    #                     recurring spend the token-audit documented;
+    #   • "reserved"    — the throttle key is durable → spend exactly once.
+    state = _reserve_call(goal, now)
+    if state == "throttled":
         _ledger_skip("throttled", now, ref=str(gid))
         return template
+    if state != "reserved":
+        _ledger_skip("ledger-unwritable", now, ref=str(gid),
+                     extra="cannot record the spend → refusing to draft "
+                           "(fail closed)")
+        return template
 
-    # A call is about to be spent — invoke the injected LLM. Any failure is
-    # non-load-bearing: the template is the floor, always.
+    # The call is reserved (durable) — invoke the injected LLM OUTSIDE the lock
+    # (the ≤240s latency must never be held under the flock). Any failure is
+    # non-load-bearing: the template is the floor, always, and the reservation
+    # already counts against the throttle so a bad LLM can't be hammered.
     try:
         raw = llm_draft(goal, step_class, template_title, template_detail)
     except Exception as e:  # noqa: BLE001 — a broken LLM never blocks staging
         log.warning("strategist: llm_draft raised for %s (template): %s", gid, e)
-        record_call(str(gid), now, drafted=False)
         _ledger_skip("draft-error", now, ref=str(gid))
         return template
 
     drafted = validate_draft(raw, goal, step_class)
-    record_call(str(gid), now, drafted=drafted is not None)
     if drafted is None:
         _ledger_skip("invalid-draft", now, ref=str(gid),
                      extra="malformed/out-of-playbook → template")
@@ -549,17 +695,19 @@ def pre_research_pass(now: float, *, llm_context, log=None) -> dict:
     log = log or logging.getLogger("strategist")
     summary = {"researched": [], "skipped": [], "idle": True}
 
+    # Whole-pass gates fire every pulse the condition holds, so day-key-dedup
+    # their ledger rows (C-F-10) — one audit row a day, not ~288.
     ok, reason = active(now)
     if not ok:
         summary["idle"] = False
-        _ledger_skip(reason, now, ref="(pre-research)")
+        _ledger_skip(reason, now, ref="(pre-research)", dedup_day=True)
         summary["skipped"].append({"reason": reason})
         return summary
 
     idle, why = _idle_capacity(now)
     if not idle:
         summary["idle"] = False
-        _ledger_skip(why, now, ref="(pre-research)")
+        _ledger_skip(why, now, ref="(pre-research)", dedup_day=True)
         summary["skipped"].append({"reason": why})
         return summary
 
@@ -571,18 +719,44 @@ def pre_research_pass(now: float, *, llm_context, log=None) -> dict:
         dec_id = dec.get("id")
         if not dec_id or has_context(dec_id):
             continue
-        # Per-decision-per-day throttle (survives pulses/restarts, ledger-based).
-        if _ledger_has_key_today(context_key(dec_id, now)):
+        # Re-check the ceiling PER CALL, not once per pass (C-F-8): with
+        # maxContextPerPass>1 the pass's own spend can cross the ceiling
+        # mid-loop, and the draft path already re-checks per call.
+        if over_ceiling(now):
+            _ledger_skip("ceiling-shed", now, ref="(pre-research)",
+                         dedup_day=True)
+            summary["skipped"].append({"reason": "ceiling-shed"})
+            break
+        # Atomic per-decision throttle-check + reservation BEFORE the spend
+        # (C-F-1/C-F-3/C-F-4): the throttle key is recorded that the SPEND
+        # happened before llm_context is invoked, so a subsequent pulse skips
+        # even if the call/write then fails — never a re-spend.
+        state = _reserve_context(dec_id, now)
+        if state == "throttled":
             continue
+        if state != "reserved":
+            _ledger_skip("ledger-unwritable", now, ref=str(dec_id),
+                         extra="cannot record the spend → refusing to research "
+                               "(fail closed)")
+            continue
+        # Reserved (durable) — spend, then write INSIDE the fence so a write
+        # OSError degrades to a logged skip AFTER the key is recorded (C-F-1),
+        # never a propagated exception that re-spends next pulse.
         try:
             markdown = llm_context(dec)
         except Exception as e:  # noqa: BLE001 — a broken LLM never blocks the pulse
             log.warning("strategist: llm_context raised for %s: %s", dec_id, e)
-            record_context_call(dec_id, now, wrote=False)
             _ledger_skip("context-error", now, ref=str(dec_id))
+            done += 1
             continue
-        wrote = write_context(dec_id, markdown, now) if markdown else False
-        record_context_call(dec_id, now, wrote=wrote)
+        try:
+            wrote = write_context(dec_id, markdown, now) if markdown else False
+        except OSError as e:
+            log.warning("strategist: write_context failed for %s "
+                        "(key already recorded, no re-spend): %s", dec_id, e)
+            _ledger_skip("context-write-failed", now, ref=str(dec_id))
+            done += 1
+            continue
         if wrote:
             summary["researched"].append(dec_id)
             _append_ledger({

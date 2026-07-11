@@ -167,25 +167,30 @@ def read_context_file(path: Path) -> str | None:
 # ─── metering (never load-bearing; mirrors call_triage_batch exactly) ────────
 
 def _meter(out: str, rc: int, prompt_len: int, wall_ms: int) -> dict:
-    """Append one cost-ledger row (caller='strategist'). rc!=0 or an
-    unparseable envelope → a zero-cost status='failed' row (no phantom spend).
-    Returns the usage dict (empty on failure)."""
+    """Append one cost-ledger row (caller='strategist').
+
+    On FAILURE (rc!=0 or an unparseable envelope) we still book an ESTIMATED,
+    NON-ZERO cost (C-F-2/C-O-3), not a $0 row: a 240s timeout (rc=124) or an
+    aborted call was almost certainly billed server-side, and the daily ceiling
+    is the failure-spend backstop — if failures booked $0 the ceiling would be
+    evadable by repeatedly failing, and repeated timeouts would never ratchet
+    it. metering.observer_usage already returns the real CLI numbers when the
+    envelope parses (even on rc!=0) and a chars/4 estimate over the prompt
+    otherwise, so the row reflects the best available spend signal. The row is
+    still stamped status='failed' so failures stay visible; it just no longer
+    hides their cost. Returns the usage dict."""
     usage: dict = {}
     try:
         if str(BIN) not in sys.path:
             sys.path.insert(0, str(BIN))
         import metering  # noqa: PLC0415
         failed = rc != 0 or metering.parse_cli_result(out) is None
-        if failed:
-            metering.append_cost_row(
-                caller="strategist", model=DEFAULT_MODEL,
-                usage={"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0,
-                       "source": "none"},
-                wall_ms=wall_ms, status="failed")
-        else:
-            usage = metering.observer_usage(out, prompt_len, DEFAULT_MODEL)
-            metering.append_cost_row(caller="strategist", model=DEFAULT_MODEL,
-                                     usage=usage, wall_ms=wall_ms)
+        # observer_usage: CLI numbers when the envelope parses, chars/4 estimate
+        # (from the prompt we know we sent) otherwise — never a phantom $0.
+        usage = metering.observer_usage(out, prompt_len, DEFAULT_MODEL)
+        metering.append_cost_row(
+            caller="strategist", model=DEFAULT_MODEL, usage=usage,
+            wall_ms=wall_ms, status="failed" if failed else "ok")
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("strategist metering capture failed (ignored): %s", e)
     return usage
@@ -250,8 +255,11 @@ def call_strategist_draft(goal: dict, step_class: str,
         + "**Output destination — write your ONE JSON object to this file, "
           "not stdout.** Use the Write tool to write to:\n\n"
         + f"    {draft_path}\n\n"
-        + f"The step_class is FIXED at `{step_class}` — echo it exactly or omit "
-          "it; any other value rejects your draft.\n\n"
+        + f"The step_class is FIXED at `{step_class}` and Python-owned — echo it "
+          "exactly or omit it. You are drafting TEXT ONLY; the staged action "
+          "class stays fixed regardless of what you echo, and an echoed class "
+          "OUTSIDE this goal's playbook rejects your draft (falls back to the "
+          "template).\n\n"
         + "Goal + template context:\n\n```json\n"
         + json.dumps(context, indent=2) + "\n```\n"
     )

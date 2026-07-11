@@ -93,9 +93,11 @@ class StrategistDraftCallerTests(unittest.TestCase):
         self.assertEqual(rows[0]["est_usd"], 0.0015)
         self.assertEqual(rows[0]["status"], "ok")
 
-    def test_subprocess_failure_returns_none_and_failed_row(self):
-        # rc!=0 → no draft parsed AND a zero-cost status="failed" row (no
-        # phantom spend), exactly like the triage caller.
+    def test_subprocess_failure_returns_none_and_estimated_failed_row(self):
+        # C-F-2/C-O-3: a 240s timeout (rc=124) was almost certainly billed
+        # server-side. The row is still status="failed" (stays visible) but now
+        # books an ESTIMATED, NON-ZERO cost (chars/4 over the prompt we sent) so
+        # repeated failures RATCHET the daily ceiling instead of evading it.
         with mock.patch.object(self.mod, "run",
                                return_value=(124, "", "timeout after 240s")):
             out = self.mod.call_strategist_draft(GOAL, "research", "TT", "TD", 1)
@@ -103,16 +105,36 @@ class StrategistDraftCallerTests(unittest.TestCase):
         rows = self._cost_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "failed")
-        self.assertEqual(rows[0]["est_usd"], 0.0)
+        self.assertGreater(rows[0]["est_usd"], 0.0)  # NOT a phantom $0 anymore
+        self.assertGreater(rows[0]["tokens_in"], 0)
 
-    def test_unparseable_envelope_books_failed_row(self):
+    def test_unparseable_envelope_books_estimated_failed_row(self):
         with mock.patch.object(self.mod, "run",
                                return_value=(0, "no json here", "")):
             self.mod.call_strategist_draft(GOAL, "research", "TT", "TD", 1)
         rows = self._cost_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "failed")
-        self.assertEqual(rows[0]["est_usd"], 0.0)
+        self.assertGreater(rows[0]["est_usd"], 0.0)
+
+    def test_repeated_failures_ratchet_the_daily_ceiling(self):
+        # The whole point of C-F-2: failures must count toward the ceiling.
+        # Point the pure module's day_spend at the same cost-ledger and prove
+        # that N failed calls push day_spend over a low ceiling → over_ceiling.
+        import time as _t
+        strat = self.mod._load_strategist()
+        # a low ceiling for this goal-less governance check
+        cfgp = self._tmp / ".assistant" / "comms" / "config.json"
+        cfgp.parent.mkdir(parents=True, exist_ok=True)
+        cfgp.write_text(json.dumps({"strategist": {"dailyCostCeilingUsd": 0.01}}))
+        now = _t.time()
+        self.assertFalse(strat.over_ceiling(now))
+        with mock.patch.object(self.mod, "run",
+                               return_value=(124, "", "timeout after 240s")):
+            for _ in range(20):
+                self.mod.call_strategist_draft(GOAL, "research", "TT", "TD", 1)
+        self.assertGreater(strat.day_spend_usd(now), 0.0)
+        self.assertTrue(strat.over_ceiling(now))  # failures tripped the ceiling
 
     def test_missing_draft_file_returns_none(self):
         # rc==0, envelope ok, but the model wrote nothing → None (→ template).
