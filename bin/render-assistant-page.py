@@ -2698,12 +2698,12 @@ function pingBriefSeen() {
   } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
-  const initial = (window.location.hash || '#decisions').replace('#', '');
-  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'decisions');
+  const initial = (window.location.hash || '#brief').replace('#', '');
+  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'brief');
   // Auto-refresh every 15s but preserve the current hash. We use location.reload()
   // (not <meta http-equiv="refresh">) because meta-refresh reloads from the original
   // href and drops the fragment on most browsers, snapping the user back to
-  // the default Decisions tab even when they're reading TODOs.
+  // the default Brief tab even when they're reading TODOs.
   setInterval(() => { location.reload(); }, 15000);
 });
 async function openWs(btn) {
