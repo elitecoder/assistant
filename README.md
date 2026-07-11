@@ -173,13 +173,13 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 | Slack channel ingest | mentions + DMs only | `SLACK_INGEST_CHANNELS=1` env (+ manifest edit) | Opts into full-channel message ingestion. |
 | Connector cadence / caps | 60s · 200 events · 10 pages | `~/.assistant/comms/config.json` → `connectors` block | Per-connector poll cadence and batch caps (module constants are only the fallback). |
 
-*Incoming with M6 (PR #15 — not in this branch):* the Strategist LLM drafter adds an enable flag, a daily cost ceiling, and a per-goal/day throttle. Those keys are not present in this tree yet.
+**Strategist (M6, the LLM drafter).** In `~/.assistant/comms/config.json` → `{"strategist": {…}}`: `enabled` (default `true`), `dailyCostCeilingUsd` (the day's LLM budget — the Strategist is *shed first* when it's hit, never the Observer), plus per-goal `budget.maxStrategistCallsPerDay` (default `1`) in `assistant-goals.json`. It ships enabled, but on the safe `autoDispatch`-off default it only upgrades *staged-decision* text you review — never unattended work.
 
 ## Using it day-to-day
 
 Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/todo-server.py`).
 
-- **Brief tab** — your morning: open decisions ranked by a deterministic score, each with a one-tap **accept / reject / snooze / edit / wrong-lane** button; plus **handled-overnight** receipts (auto-done actions with their rule id, goal work staged/dispatched with workspace links, verified fleet progress), an **FYI digest** grouped by source, and a **health** row (connector staleness, token expiry, interrupts used/denied, $/day). *In this branch the dashboard still lands on the Decisions tab by default; Brief-as-default landing arrives with M6.*
+- **Brief tab** — your morning: open decisions ranked by a deterministic score, each with a one-tap **accept / reject / snooze / edit / wrong-lane** button; plus **handled-overnight** receipts (auto-done actions with their rule id, goal work staged/dispatched with workspace links, verified fleet progress), an **FYI digest** grouped by source, and a **health** row (connector staleness, token expiry, interrupts used/denied, $/day). The dashboard opens **on this tab by default** — the morning brief is the first thing you see.
 - **Connections tab** — every connector as **Connected** / **Available, not connected** / **Needs attention**, with the how-to-connect hint inline.
 - **`/goal` skill** — add / list / rerank / pause goals (`/goal add "…" --outcome "…"`). Goals feed the planner and boost decision ranking. Automation can only *propose* goal changes; only you (this skill) edit the store in place.
 - **One-tap accept** on a decision routes through the todo-server, executes the recommended action class (draft-only for any external send in this tree), and ledgers the transition. Reject / snooze do the same.
@@ -238,7 +238,7 @@ These are structural, not just conventions — violating them will cause real pr
 | M3 | Morning brief + interrupt gate (`brief.py`, `bin/interrupt-gate.py`; noise budget 0/day) | merged |
 | M4 | Goals + deterministic planner (`goals.py`, `bin/plan-next-actions.py`, the `/goal` skill) | merged |
 | M5 | Connectors — GitHub, Gmail, GCal, JIRA, Slack, Outlook (opt-in, read-only) | merged |
-| M6 | Strategist — throttled LLM drafter for staged goal steps | **in review (PR #15 — not in this branch)** |
+| M6 | Strategist — throttled LLM drafter for staged goal steps (`src/assistant/strategist.py`) | merged |
 
 ## Testing
 
