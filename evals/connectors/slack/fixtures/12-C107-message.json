@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "channel",
+      "channel": "C107",
+      "ts": "1783000013.0013",
+      "user": "U13",
+      "text": "FYI lunch moved"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:53Z",
+    "source": "slack",
+    "kind": "message",
+    "external_id": "slack:C107:1783000013.0013",
+    "actor": "U13",
+    "title": "FYI lunch moved",
+    "snippet": "FYI lunch moved",
+    "url": "https://slack.com/archives/C107/p17830000130013",
+    "refs": {
+      "channel": "C107",
+      "slack_ts": "1783000013.0013",
+      "slack_user": "U13"
+    }
+  }
+}

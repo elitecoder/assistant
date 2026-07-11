@@ -1,5 +1,5 @@
 {
-  "_comment": "slack-reactor app, Socket Mode + bot events. Add this to the existing 'mukuls_bot' app (api.slack.com/apps → that app) rather than creating a new one, so its bot token stays the one in $SLACK_BOT_TOKEN. Socket Mode delivers BOT events, so the bot only receives reaction_added in channels it has been /invite-d to. Per-machine routing is by $TODO_EMOJI (and/or one app per machine).",
+  "_comment": "slack-reactor app, Socket Mode + bot events. Add this to the existing 'mukuls_bot' app (api.slack.com/apps → that app) rather than creating a new one, so its bot token stays the one in $SLACK_BOT_TOKEN. Socket Mode delivers BOT events, so the bot only receives events in channels (or DMs) it has been /invite-d to. Per-machine routing is by $TODO_EMOJI (and/or one app per machine). M5 wave-2 SCOPE DECISION (design §9): the DEFAULT ingest is @-mentions (app_mention) + DMs (message.im) ONLY — NOT a channel firehose. app_mention + message.im feed the read-only bin/connectors/slack-events.py connector (spooled to ~/.assistant/connectors/slack/spool/); the reactor still never sends a message. To opt INTO plain channel/group message ingestion, add message.channels/message.groups to bot_events below AND set SLACK_INGEST_CHANNELS=1 for the reactor. REQUIRED after ANY change here: manually re-upload this manifest to the app AND reinstall it (a scope/event change forces OAuth re-consent) — see README 'Re-import the manifest' — else the added scope is never granted and the connector silently produces nothing.",
   "display_information": {
     "name": "mukuls_bot",
     "description": "React an emoji on a thread to capture it as a /todo",
@@ -22,13 +22,18 @@
         "mpim:history",
         "channels:read",
         "groups:read",
-        "users:read"
+        "users:read",
+        "app_mentions:read"
       ]
     }
   },
   "settings": {
     "event_subscriptions": {
-      "bot_events": ["reaction_added"]
+      "bot_events": [
+        "reaction_added",
+        "app_mention",
+        "message.im"
+      ]
     },
     "interactivity": {
       "is_enabled": false

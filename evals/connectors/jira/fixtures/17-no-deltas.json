@@ -1,0 +1,33 @@
+{
+  "raw": {
+    "key": "PROJ-18",
+    "fields": {
+      "summary": "PROJ-18 — investigate the flaky deploy",
+      "updated": "2026-07-10T12:29:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "accountId": "5b10a2844c20165700ede21g",
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+        "displayName": "Dana Dev"
+      },
+      "priority": {
+        "name": "Medium"
+      }
+    },
+    "changelog": {
+      "histories": [],
+      "maxResults": 100,
+      "total": 0,
+      "startAt": 0
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account_id": "5b10a2844c20165700ede21g",
+  "watermark_ms": 0,
+  "expected": []
+}

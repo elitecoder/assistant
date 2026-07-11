@@ -1,0 +1,19 @@
+{
+  "schema": "world-event/1",
+  "id": "de63321319cc090ffe73be2615bb3ca2f6e0a1396b4040f4d4bf0587a7973732",
+  "ts": "2026-07-03T17:33:22Z",
+  "epoch": 1783100002,
+  "source": "slack",
+  "kind": "dm",
+  "external_id": "slack:D200:1783100002.0002",
+  "actor": "U",
+  "title": "dm text",
+  "snippet": "dm text",
+  "url": "https://slack.com/archives/D200/p17831000020002",
+  "refs": {
+    "channel": "D200",
+    "slack_ts": "1783100002.0002",
+    "slack_user": "U"
+  },
+  "raw_path": null
+}

@@ -1,0 +1,27 @@
+{
+  "raw": {
+    "event": {
+      "type": "app_mention",
+      "channel": "C102",
+      "ts": "1783000006.0006",
+      "user": "U6",
+      "text": "@assistant very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long "
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:46Z",
+    "source": "slack",
+    "kind": "app_mention",
+    "external_id": "slack:C102:1783000006.0006",
+    "actor": "U6",
+    "title": "@assistant very long very long very long very long very long very long very lo…",
+    "snippet": "@assistant very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long very long ",
+    "url": "https://slack.com/archives/C102/p17830000060006",
+    "refs": {
+      "channel": "C102",
+      "slack_ts": "1783000006.0006",
+      "slack_user": "U6"
+    }
+  }
+}

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keel M5 wave-2 JIRA connector — an INDEPENDENT KeepAlive daemon that
+  produces WorldEvents into the inbox. A separate process from the pulse ON
+  PURPOSE (design section 9: a connector must never poll inside the pulse's time
+  budget).
+
+  OPT-IN: this plist is added to install.sh PLIST_SKIP, so the installer copies
+  it but NEVER loads it (load-bearing because the pulse self-update re-runs
+  install.sh — an auto-load would start the daemon behind Mukul's back). Mukul
+  activates it by hand:
+      launchctl load ~/Library/LaunchAgents/com.assistant.connector-jira.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.assistant.connector-jira</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/mukuls/dev/assistant/bin/connectors/spawn-connector.sh</string>
+        <string>jira.py</string>
+    </array>
+    <!-- F3 defense-in-depth: restart ONLY on a non-zero (unsuccessful)
+         exit, never on a clean exit. The daemon stays resident and re-checks
+         config on a long cadence when unconfigured, so it does not exit(0)
+         under KeepAlive=<true/> and hot-respawn every 10s. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/mukuls/.assistant/logs/connector-jira.launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mukuls/.assistant/logs/connector-jira.launchd.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/mukuls</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/mukuls</string>
+</dict>
+</plist>

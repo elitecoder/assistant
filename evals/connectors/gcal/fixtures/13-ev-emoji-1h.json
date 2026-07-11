@@ -1,0 +1,29 @@
+{
+  "raw": {
+    "id": "ev-emoji",
+    "summary": "Launch 🚀 party",
+    "start": {
+      "dateTime": "2026-07-17T23:00:00Z"
+    },
+    "htmlLink": "https://calendar.google.com/event?eid=ev-emoji",
+    "location": "Rooftop"
+  },
+  "window": "1h",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-17T23:00:00Z",
+    "source": "gcal",
+    "kind": "event_upcoming",
+    "external_id": "gcal-upcoming:ev-emoji:2026-07-17T23:00:00Z:1h",
+    "actor": "",
+    "title": "Launch 🚀 party",
+    "snippet": "starts 2026-07-17T23:00:00Z (in 1h) · Rooftop",
+    "url": "https://calendar.google.com/event?eid=ev-emoji",
+    "refs": {
+      "window": "1h",
+      "gcal": "gcal:ev-emoji:2026-07-17T23:00:00Z",
+      "event_id": "ev-emoji",
+      "location": "Rooftop"
+    }
+  }
+}

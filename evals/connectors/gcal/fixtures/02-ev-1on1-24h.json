@@ -1,0 +1,32 @@
+{
+  "raw": {
+    "id": "ev-1on1",
+    "summary": "1:1 with Mukul",
+    "start": {
+      "dateTime": "2026-07-12T15:30:00-07:00"
+    },
+    "htmlLink": "https://calendar.google.com/event?eid=ev-1on1",
+    "location": "Zoom",
+    "organizer": {
+      "email": "lead@corp.example"
+    }
+  },
+  "window": "24h",
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-12T22:30:00Z",
+    "source": "gcal",
+    "kind": "event_upcoming",
+    "external_id": "gcal-upcoming:ev-1on1:2026-07-12T15:30:00-07:00:24h",
+    "actor": "lead@corp.example",
+    "title": "1:1 with Mukul",
+    "snippet": "starts 2026-07-12T15:30:00-07:00 (in 24h) · Zoom",
+    "url": "https://calendar.google.com/event?eid=ev-1on1",
+    "refs": {
+      "window": "24h",
+      "gcal": "gcal:ev-1on1:2026-07-12T15:30:00-07:00",
+      "event_id": "ev-1on1",
+      "location": "Zoom"
+    }
+  }
+}

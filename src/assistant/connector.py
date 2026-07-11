@@ -140,6 +140,13 @@ KNOWN_CONNECTORS = (
      "hint": "run: gh auth login"},
     {"name": "gmail", "display": "Gmail",
      "hint": "run: bin/connectors/gmail.py --authorize --client-secrets <path>"},
+    # ─── M5 wave 2 ───
+    {"name": "gcal", "display": "Google Calendar",
+     "hint": "run: bin/connectors/gcal.py --authorize --client-secrets <path>"},
+    {"name": "jira", "display": "JIRA",
+     "hint": "set JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN in ~/.zprofile"},
+    {"name": "slack", "display": "Slack",
+     "hint": "wire the Slack app (SLACK_BOT_TOKEN in ~/.zprofile)"},
 )
 
 
@@ -1007,7 +1014,18 @@ class Connector:
         joins it into world.json and the brief health section renders it, so a
         stale last_poll or a past token_expiry is visible within one morning.
         `stale_after_sec` is written IN so consumers need not know the cadence.
-        """
+
+        In --dry-run this is a NO-OP (finding 16): a debug/inspection run must
+        never refresh last_poll. A dry run that stamped the heartbeat would mask a
+        DEAD daemon as healthy — the brief would read a fresh last_poll from a
+        run that dropped nothing and advanced nothing. Guarding it here (in the
+        base) covers every connector and every call site — the not_configured,
+        error and ok beats alike — so no caller can accidentally re-introduce the
+        side effect. The other dry-run guarantees already hold: emit() skips the
+        drop + raw archive, save_cursor() is a no-op, and each connector's spool/
+        reminder side effects are individually dry-run-guarded."""
+        if self.dry_run:
+            return self.heartbeat_path()
         now = last_poll_epoch if last_poll_epoch is not None else time.time()
         cadence = int(self.config.get("cadence_sec", DEFAULT_CADENCE_SEC))
         factor = int(self.config.get("stale_factor", DEFAULT_STALE_FACTOR))

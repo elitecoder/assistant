@@ -359,6 +359,13 @@ PLIST_SKIP=(
     # `launchctl load …` by hand once the connector is configured.
     "com.assistant.connector-github.plist"
     "com.assistant.connector-gmail.plist"
+    # M5 wave-2 connectors — same INDEPENDENT KeepAlive daemon contract as
+    # wave-1 (copied, never auto-loaded; Mukul runs `launchctl load` by hand
+    # once each source is configured). KeepAlive={SuccessfulExit:false}, NOT
+    # KeepAlive=true, so an unconfigured daemon never hot-respawns (F3).
+    "com.assistant.connector-gcal.plist"
+    "com.assistant.connector-jira.plist"
+    "com.assistant.connector-slack.plist"
 )
 
 declare -a CHANGED_LABELS

@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "event": {
+      "type": "message",
+      "channel_type": "channel",
+      "channel": "C101",
+      "ts": "1783000003.0003",
+      "user": "U3",
+      "text": "deploy finished"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:43Z",
+    "source": "slack",
+    "kind": "message",
+    "external_id": "slack:C101:1783000003.0003",
+    "actor": "U3",
+    "title": "deploy finished",
+    "snippet": "deploy finished",
+    "url": "https://slack.com/archives/C101/p17830000030003",
+    "refs": {
+      "channel": "C101",
+      "slack_ts": "1783000003.0003",
+      "slack_user": "U3"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "raw": {
+    "event": {
+      "type": "app_mention",
+      "channel": "C104",
+      "ts": "1783000009.0009",
+      "user": "U9",
+      "text": "@assistant status?"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:49Z",
+    "source": "slack",
+    "kind": "app_mention",
+    "external_id": "slack:C104:1783000009.0009",
+    "actor": "U9",
+    "title": "@assistant status?",
+    "snippet": "@assistant status?",
+    "url": "https://slack.com/archives/C104/p17830000090009",
+    "refs": {
+      "channel": "C104",
+      "slack_ts": "1783000009.0009",
+      "slack_user": "U9"
+    }
+  }
+}

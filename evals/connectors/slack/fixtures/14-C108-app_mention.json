@@ -1,0 +1,27 @@
+{
+  "raw": {
+    "event": {
+      "type": "app_mention",
+      "channel": "C108",
+      "ts": "1783000015.0015",
+      "user": "U15",
+      "text": "@assistant review PR #42"
+    }
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "ts": "2026-07-02T13:46:55Z",
+    "source": "slack",
+    "kind": "app_mention",
+    "external_id": "slack:C108:1783000015.0015",
+    "actor": "U15",
+    "title": "@assistant review PR #42",
+    "snippet": "@assistant review PR #42",
+    "url": "https://slack.com/archives/C108/p17830000150015",
+    "refs": {
+      "channel": "C108",
+      "slack_ts": "1783000015.0015",
+      "slack_user": "U15"
+    }
+  }
+}

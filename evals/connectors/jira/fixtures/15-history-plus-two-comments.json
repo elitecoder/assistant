@@ -1,0 +1,146 @@
+{
+  "raw": {
+    "key": "PROJ-16",
+    "fields": {
+      "summary": "PROJ-16 — investigate the flaky deploy",
+      "updated": "2026-07-10T12:27:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "accountId": "5b10a2844c20165700ede21g",
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+        "displayName": "Dana Dev"
+      },
+      "priority": {
+        "name": "Medium"
+      },
+      "comment": {
+        "comments": [
+          {
+            "id": "20016",
+            "author": {
+              "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+              "displayName": "Dana Dev"
+            },
+            "body": "starting on this",
+            "created": "2026-07-10T12:25:00.000+0000",
+            "updated": "2026-07-10T12:25:00.000+0000"
+          },
+          {
+            "id": "20017",
+            "author": {
+              "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+              "displayName": "Dana Dev"
+            },
+            "body": {
+              "type": "doc",
+              "version": 1,
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "mention",
+                      "attrs": {
+                        "id": "5b10a2844c20165700ede21g",
+                        "text": "@Mukul"
+                      }
+                    },
+                    {
+                      "type": "text",
+                      "text": " heads up"
+                    }
+                  ]
+                }
+              ]
+            },
+            "created": "2026-07-10T12:27:00.000+0000",
+            "updated": "2026-07-10T12:27:00.000+0000"
+          }
+        ],
+        "maxResults": 2,
+        "total": 2,
+        "startAt": 0
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "10016",
+          "author": {
+            "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+            "displayName": "Dana Dev"
+          },
+          "created": "2026-07-10T12:24:00.000+0000",
+          "items": [
+            {
+              "field": "priority",
+              "fieldtype": "jira",
+              "from": "3",
+              "fromString": "Medium",
+              "to": "1",
+              "toString": "Highest"
+            }
+          ]
+        }
+      ],
+      "maxResults": 100,
+      "total": 1,
+      "startAt": 0
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account_id": "5b10a2844c20165700ede21g",
+  "watermark_ms": 0,
+  "expected": [
+    {
+      "schema": "world-event/1",
+      "ts": "2026-07-10T12:24:00Z",
+      "source": "jira",
+      "kind": "priority_change",
+      "external_id": "jira:PROJ-16:changelog:10016",
+      "actor": "Dana Dev",
+      "title": "PROJ-16 — investigate the flaky deploy",
+      "snippet": "PROJ-16 · priority_change · In Progress · Medium",
+      "url": "https://acme.atlassian.net/browse/PROJ-16",
+      "refs": {
+        "jira": "PROJ-16",
+        "status": "In Progress"
+      }
+    },
+    {
+      "schema": "world-event/1",
+      "ts": "2026-07-10T12:25:00Z",
+      "source": "jira",
+      "kind": "comment",
+      "external_id": "jira:PROJ-16:comment:20016",
+      "actor": "Dana Dev",
+      "title": "PROJ-16 — investigate the flaky deploy",
+      "snippet": "PROJ-16 · comment · In Progress · Medium",
+      "url": "https://acme.atlassian.net/browse/PROJ-16",
+      "refs": {
+        "jira": "PROJ-16",
+        "status": "In Progress"
+      }
+    },
+    {
+      "schema": "world-event/1",
+      "ts": "2026-07-10T12:27:00Z",
+      "source": "jira",
+      "kind": "mention",
+      "external_id": "jira:PROJ-16:comment:20017",
+      "actor": "Dana Dev",
+      "title": "PROJ-16 — investigate the flaky deploy",
+      "snippet": "PROJ-16 · mention · In Progress · Medium",
+      "url": "https://acme.atlassian.net/browse/PROJ-16",
+      "refs": {
+        "jira": "PROJ-16",
+        "status": "In Progress"
+      }
+    }
+  ]
+}

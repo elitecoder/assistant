@@ -1,0 +1,68 @@
+{
+  "raw": {
+    "key": "PROJ-7",
+    "fields": {
+      "summary": "PROJ-7 — investigate the flaky deploy",
+      "updated": "2026-07-10T12:11:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "accountId": "5b10a2844c20165700ede21g",
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+        "displayName": "Dana Dev"
+      },
+      "priority": {
+        "name": "Medium"
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "10007",
+          "author": {
+            "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+            "displayName": "Dana Dev"
+          },
+          "created": "2026-07-10T12:11:00.000+0000",
+          "items": [
+            {
+              "field": "Flagged",
+              "fieldtype": "jira",
+              "from": null,
+              "fromString": null,
+              "to": "[10000]",
+              "toString": "Impediment"
+            }
+          ]
+        }
+      ],
+      "maxResults": 100,
+      "total": 1,
+      "startAt": 0
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account_id": "5b10a2844c20165700ede21g",
+  "watermark_ms": 0,
+  "expected": [
+    {
+      "schema": "world-event/1",
+      "ts": "2026-07-10T12:11:00Z",
+      "source": "jira",
+      "kind": "flagged",
+      "external_id": "jira:PROJ-7:changelog:10007",
+      "actor": "Dana Dev",
+      "title": "PROJ-7 — investigate the flaky deploy",
+      "snippet": "PROJ-7 · flagged · In Progress · Medium",
+      "url": "https://acme.atlassian.net/browse/PROJ-7",
+      "refs": {
+        "jira": "PROJ-7",
+        "status": "In Progress"
+      }
+    }
+  ]
+}
