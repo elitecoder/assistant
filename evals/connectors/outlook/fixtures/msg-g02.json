@@ -1,0 +1,36 @@
+{
+  "raw": {
+    "id": "g02",
+    "subject": "Subject g02",
+    "bodyPreview": "preview g02",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/g02",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "Sender g02",
+        "address": "s-g02@corp.com"
+      }
+    },
+    "toRecipients": [],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "3a8bc7bdd35a96fb470d1b7f2f19b9ea403ae02bebeeac52ebf2f752e1e148ab",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "message",
+    "external_id": "outlook:g02",
+    "actor": "Sender g02 <s-g02@corp.com>",
+    "title": "Subject g02",
+    "snippet": "preview g02",
+    "url": "https://outlook.office365.com/mail/inbox/id/g02",
+    "refs": {
+      "sender": "s-g02@corp.com"
+    },
+    "raw_path": null
+  }
+}

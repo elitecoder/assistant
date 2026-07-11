@@ -1,0 +1,42 @@
+{
+  "raw": {
+    "id": "n01",
+    "subject": "Weekly digest — 30% off",
+    "bodyPreview": "unsubscribe below",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/n01",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "other",
+    "from": {
+      "emailAddress": {
+        "name": "Sender n01",
+        "address": "s-n01@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "list@news.example"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "6a14f47faaea34b8c1bdfa17c7223f65414b2b8cadcc9a17019c96bbff2e4e46",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "newsletter",
+    "external_id": "outlook:n01",
+    "actor": "Sender n01 <s-n01@corp.com>",
+    "title": "Weekly digest — 30% off",
+    "snippet": "unsubscribe below",
+    "url": "https://outlook.office365.com/mail/inbox/id/n01",
+    "refs": {
+      "sender": "s-n01@corp.com"
+    },
+    "raw_path": null
+  }
+}

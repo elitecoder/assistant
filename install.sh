@@ -366,6 +366,11 @@ PLIST_SKIP=(
     "com.assistant.connector-gcal.plist"
     "com.assistant.connector-jira.plist"
     "com.assistant.connector-slack.plist"
+    # M5 wave-3 Outlook (readonly) mail connector — same INDEPENDENT KeepAlive
+    # daemon contract (copied, never auto-loaded; Mukul runs `launchctl load` by
+    # hand once the OAuth token cache is seeded). KeepAlive={SuccessfulExit:false}
+    # so an unconfigured daemon never hot-respawns (F3).
+    "com.assistant.connector-outlook.plist"
 )
 
 declare -a CHANGED_LABELS

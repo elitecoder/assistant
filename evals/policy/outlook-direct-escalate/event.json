@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "outlook",
+  "kind": "direct",
+  "external_id": "outlook:AAMkAGI1direct0001",
+  "actor": "Priya Nadella <priya@contoso.com>",
+  "title": "Re: Q3 board deck \u2014 need your sign-off",
+  "snippet": "Can you approve the deck before 5pm?",
+  "url": "https://outlook.office365.com/mail/inbox/id/AAMkAGI1direct0001",
+  "refs": {
+    "sender": "priya@contoso.com"
+  },
+  "raw_path": null
+}

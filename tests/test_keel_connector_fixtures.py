@@ -38,16 +38,20 @@ def _load(name, rel):
 
 ghc = _load("ghc_fx", "bin/connectors/github-notifications.py")
 gm = _load("gm_fx", "bin/connectors/gmail.py")
+ol = _load("ol_fx", "bin/connectors/outlook.py")
 
 GH_FIX = REPO / "evals" / "connectors" / "github" / "fixtures"
 GMAIL_FIX = REPO / "evals" / "connectors" / "gmail" / "fixtures"
+OUTLOOK_FIX = REPO / "evals" / "connectors" / "outlook" / "fixtures"
+OUTLOOK_ACCT = "me@contoso.com"
 
 
 class GoldenReplayTests(unittest.TestCase):
-    def _replay(self, fixtures_dir, normalize):
+    def _replay(self, fixtures_dir, normalize, minimum=20):
         files = sorted(fixtures_dir.glob("*.json"))
-        self.assertGreaterEqual(len(files), 20,
-                                msg=f"{fixtures_dir} needs >=20 recorded events")
+        self.assertGreaterEqual(
+            len(files), minimum,
+            msg=f"{fixtures_dir} needs >={minimum} recorded events")
         for f in files:
             data = json.loads(f.read_text())
             got = normalize(data["raw"])
@@ -61,8 +65,15 @@ class GoldenReplayTests(unittest.TestCase):
         self._replay(GMAIL_FIX,
                      lambda raw: gm.message_to_event(raw, "mukul@gmail.com"))
 
+    def test_outlook_fixtures_replay(self):
+        # M5 wave-3: >=15 recorded Microsoft Graph message shapes must still
+        # normalize to their committed WorldEvent (direct/cc/newsletter/message).
+        self._replay(OUTLOOK_FIX,
+                     lambda raw: ol.message_to_event(raw, OUTLOOK_ACCT),
+                     minimum=15)
+
     def test_every_expected_is_wellformed_worldevent(self):
-        for d in (GH_FIX, GMAIL_FIX):
+        for d in (GH_FIX, GMAIL_FIX, OUTLOOK_FIX):
             for f in d.glob("*.json"):
                 ev = json.loads(f.read_text())["expected"]
                 self.assertEqual(ev["schema"], "world-event/1")

@@ -1,0 +1,42 @@
+{
+  "raw": {
+    "id": "g09",
+    "subject": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "bodyPreview": "preview g09",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/g09",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "Sender g09",
+        "address": "s-g09@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "dl@corp.com"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "1a4a6ca400a12d954aac2a2accb9b4e75e9a707cd99d4b224056436ce4e77ed9",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "message",
+    "external_id": "outlook:g09",
+    "actor": "Sender g09 <s-g09@corp.com>",
+    "title": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "snippet": "preview g09",
+    "url": "https://outlook.office365.com/mail/inbox/id/g09",
+    "refs": {
+      "sender": "s-g09@corp.com"
+    },
+    "raw_path": null
+  }
+}

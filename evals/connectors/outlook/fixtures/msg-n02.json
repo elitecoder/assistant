@@ -1,0 +1,42 @@
+{
+  "raw": {
+    "id": "n02",
+    "subject": "Subject n02",
+    "bodyPreview": "preview n02",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/n02",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "other",
+    "from": {
+      "emailAddress": {
+        "name": "Sender n02",
+        "address": "s-n02@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "subscribers@news.example"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "3c4a98b3d9227b7aa619fd0ecceeaba073a5829a014747b302a8b7d6eae2cebf",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "newsletter",
+    "external_id": "outlook:n02",
+    "actor": "Sender n02 <s-n02@corp.com>",
+    "title": "Subject n02",
+    "snippet": "preview n02",
+    "url": "https://outlook.office365.com/mail/inbox/id/n02",
+    "refs": {
+      "sender": "s-n02@corp.com"
+    },
+    "raw_path": null
+  }
+}

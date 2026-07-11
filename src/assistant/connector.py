@@ -147,6 +147,9 @@ KNOWN_CONNECTORS = (
      "hint": "set JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN in ~/.zprofile"},
     {"name": "slack", "display": "Slack",
      "hint": "wire the Slack app (SLACK_BOT_TOKEN in ~/.zprofile)"},
+    # ─── M5 wave 3 ───
+    {"name": "outlook", "display": "Outlook mail",
+     "hint": "run: bin/connectors/outlook.py --authorize --client-secrets <path>"},
 )
 
 
@@ -471,10 +474,12 @@ class OAuthTokenManager:
     callers.
     """
 
-    def __init__(self, token_path, *, token_uri: str = DEFAULT_TOKEN_URI,
+    def __init__(self, token_path, *, provider: str = "google",
+                 token_uri: str = DEFAULT_TOKEN_URI,
                  skew_sec: int = DEFAULT_TOKEN_SKEW_SEC,
                  transport: Optional[Callable[..., dict]] = None):
         self.token_path = Path(token_path)
+        self.provider = provider
         self._token_uri = token_uri
         self.skew_sec = skew_sec
         self._transport = transport or _urllib_token_post
@@ -542,7 +547,13 @@ class OAuthTokenManager:
             form["client_id"] = tok["client_id"]
         if tok.get("client_secret"):
             form["client_secret"] = tok["client_secret"]
-        uri = tok.get("token_uri") or self._token_uri
+        # A1 defense-in-depth: the token cache's own token_uri is ALSO pinned to
+        # this provider's allowlist before the refresh POST — a token.json whose
+        # token_uri was later tampered to an attacker host must not exfiltrate the
+        # refresh_token grant (client_secret + refresh_token). The seed already
+        # stored a pinned value; this makes a subsequent tamper a no-op too.
+        uri = _pin_endpoint(tok.get("token_uri") or self._token_uri,
+                            provider=self.provider, kind="token")
         resp = self._transport(uri, form)
         if not isinstance(resp, dict) or not resp.get("access_token"):
             raise OAuthError("token endpoint returned no access_token")
@@ -612,27 +623,84 @@ DEFAULT_CONSENT_TIMEOUT_SEC = 180
 # budget so a stuck client can never wedge the flow beyond it.
 DEFAULT_LOOPBACK_READ_TIMEOUT_SEC = 30
 
-# A1: the ONLY OAuth endpoints we will ever talk to. token_uri/auth_uri read
-# from a user-supplied client-secrets (or token) file are NOT trusted — a
-# poisoned token_uri would redirect the code-exchange POST (which carries the
-# authorization code + PKCE verifier + client_id + client_secret) to an attacker
-# who then redeems the victim's refresh_token for durable Gmail access. A
-# legitimate Cloud Console desktop client ALWAYS uses Google's own endpoints, so
-# any host not on this allowlist is silently replaced with the pinned Google
-# constant (see _pin_google_endpoint).
-_GOOGLE_OAUTH_HOSTS = frozenset({"accounts.google.com", "oauth2.googleapis.com"})
+# A1: the ONLY OAuth endpoints we will ever talk to, keyed PER PROVIDER.
+# token_uri/auth_uri read from a user-supplied client-secrets (or token) file are
+# NOT trusted — a poisoned token_uri would redirect the code-exchange POST (which
+# carries the authorization code + PKCE verifier + client_id + client_secret) to
+# an attacker who then redeems the victim's refresh_token for durable mailbox
+# access. A legitimate desktop/native client ALWAYS uses its provider's own
+# endpoints, so any host not on THAT provider's allowlist is silently replaced
+# with the pinned provider default (see _pin_endpoint). The wave-1 fix pinned
+# Google only; this generalizes it so gmail/gcal (provider="google") pin exactly
+# as before and outlook (provider="microsoft") pins to Microsoft — the file value
+# is never trusted for EITHER provider.
+#
+# Each provider entry carries: the auth/token host allowlists (separated so an
+# auth endpoint can never masquerade as a token endpoint or vice-versa), the
+# pinned default auth/token URIs, the extra authorization-request params needed
+# to guarantee a refresh_token, and a provider-specific remediation hint for the
+# "no refresh_token" footgun.
+_OAUTH_PROVIDERS = {
+    "google": {
+        "auth_hosts": frozenset({"accounts.google.com"}),
+        "token_hosts": frozenset({"oauth2.googleapis.com"}),
+        "default_auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
+        "default_token_uri": "https://oauth2.googleapis.com/token",
+        # access_type=offline AND prompt=consent are BOTH required to GUARANTEE
+        # Google returns a refresh_token (offline alone is silently dropped on a
+        # re-consent — the classic footgun) rather than only an access token.
+        "extra_auth_params": {"access_type": "offline", "prompt": "consent"},
+        "revoke_hint": ("revoke this app's prior grant at "
+                        "https://myaccount.google.com/permissions and re-run "
+                        "(prompt=consent must issue a fresh refresh_token)"),
+    },
+    "microsoft": {
+        # Microsoft's `common` tenant (personal Outlook.com AND work/school
+        # M365) uses login.microsoftonline.com for BOTH authorize and token.
+        "auth_hosts": frozenset({"login.microsoftonline.com"}),
+        "token_hosts": frozenset({"login.microsoftonline.com"}),
+        "default_auth_uri":
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "default_token_uri":
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        # Microsoft issues a refresh_token when the `offline_access` SCOPE is
+        # requested (the analog of Google's access_type=offline+prompt=consent);
+        # that lives in the scope list, so no extra auth-request param is needed.
+        "extra_auth_params": {},
+        "revoke_hint": ("ensure the 'offline_access' scope is requested, revoke "
+                        "the app's prior consent for this account, and re-run "
+                        "so a fresh refresh_token is issued"),
+    },
+}
+
+# Microsoft pinned endpoint constants, exported so the Outlook connector can seed
+# its token cache / build its authorize call against the same pinned values.
+MICROSOFT_AUTH_URI = _OAUTH_PROVIDERS["microsoft"]["default_auth_uri"]
+MICROSOFT_TOKEN_URI = _OAUTH_PROVIDERS["microsoft"]["default_token_uri"]
 
 
-def _pin_google_endpoint(uri: Optional[str], default: str) -> str:
-    """Return `uri` iff its host is a known Google OAuth host, else the pinned
-    `default` (A1). This neutralizes a poisoned token_uri/auth_uri from an
-    untrusted client-secrets/token file without aborting the flow — a real
-    Google desktop client is unaffected because it already uses these hosts."""
+def _provider(provider: Optional[str]) -> dict:
+    """The provider registry entry, defaulting to Google (so every existing
+    call site that passes no provider behaves exactly as before)."""
+    return _OAUTH_PROVIDERS.get(provider or "google", _OAUTH_PROVIDERS["google"])
+
+
+def _pin_endpoint(uri: Optional[str], *, provider: str, kind: str) -> str:
+    """Return `uri` iff its host is on THIS provider's allowlist for THIS
+    endpoint kind ('auth' or 'token'), else the pinned provider default (A1).
+    Neutralizes a poisoned token_uri/auth_uri from an untrusted client-secrets/
+    token file without aborting the flow — a real provider client is unaffected
+    because it already uses these hosts. The auth/token allowlists are kept
+    separate so a token host can never satisfy an auth endpoint check."""
+    prov = _provider(provider)
+    hosts = prov["auth_hosts"] if kind == "auth" else prov["token_hosts"]
+    default = prov["default_auth_uri"] if kind == "auth" \
+        else prov["default_token_uri"]
     try:
         host = (urllib.parse.urlparse(uri or "").hostname or "").lower()
     except (ValueError, TypeError):
         host = ""
-    return uri if host in _GOOGLE_OAUTH_HOSTS else default
+    return uri if host in hosts else default
 
 
 def _pkce_pair() -> tuple:
@@ -740,6 +808,7 @@ class _LoopbackCodeGetter:
 
 
 def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
+                           provider: str = "google",
                            token_uri: str = DEFAULT_TOKEN_URI,
                            auth_uri: str = DEFAULT_AUTH_URI,
                            open_url: Optional[Callable[[str], Any]] = None,
@@ -762,14 +831,17 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
     """
     if not client_id or not client_secret:
         raise OAuthError("client_id and client_secret are required to authorize")
-    # A1: PIN the endpoints. Whatever token_uri/auth_uri the caller passed
-    # through from the client-secrets file is only honored if it is a genuine
-    # Google host; otherwise the pinned Google constant is used. This is the
-    # single chokepoint for BOTH the consent redirect (auth_uri — a poisoned one
-    # phishes the victim's consent) and the code exchange (token_uri — a poisoned
-    # one exfiltrates the code + verifier + client_secret).
-    auth_uri = _pin_google_endpoint(auth_uri, DEFAULT_AUTH_URI)
-    token_uri = _pin_google_endpoint(token_uri, DEFAULT_TOKEN_URI)
+    prov = _provider(provider)
+    # A1: PIN the endpoints to THIS provider's allowlist. Whatever token_uri/
+    # auth_uri the caller passed through from the client-secrets file is only
+    # honored if it is a genuine host FOR THIS PROVIDER; otherwise the pinned
+    # provider default is used. This is the single chokepoint for BOTH the
+    # consent redirect (auth_uri — a poisoned one phishes the victim's consent)
+    # and the code exchange (token_uri — a poisoned one exfiltrates the code +
+    # verifier + client_secret). The file value is never trusted for gmail/gcal
+    # (google) OR outlook (microsoft).
+    auth_uri = _pin_endpoint(auth_uri, provider=provider, kind="auth")
+    token_uri = _pin_endpoint(token_uri, provider=provider, kind="token")
     scope_str = scopes if isinstance(scopes, str) else " ".join(scopes)
     # PKCE verifier + a random state are minted here and closed over by
     # build_auth_url so the consent URL, the CSRF check and the code exchange all
@@ -778,20 +850,20 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
     state = secrets.token_urlsafe(24)
 
     def build_auth_url(redirect_uri: str) -> str:
-        # access_type=offline AND prompt=consent are BOTH required to GUARANTEE
-        # Google returns a refresh_token (offline alone is silently dropped on a
-        # re-consent — the classic footgun) rather than only an access token.
+        # The provider's extra_auth_params guarantee a refresh_token is issued:
+        # Google needs access_type=offline + prompt=consent (offline alone is
+        # silently dropped on a re-consent — the classic footgun); Microsoft
+        # needs none here because it keys off the `offline_access` scope instead.
         params = {
             "response_type": "code",
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "scope": scope_str,
-            "access_type": "offline",
-            "prompt": "consent",
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
+        params.update(prov.get("extra_auth_params") or {})
         return auth_uri + "?" + urllib.parse.urlencode(params)
 
     getter = code_getter or _LoopbackCodeGetter(timeout_sec=timeout_sec,
@@ -819,10 +891,11 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes,
     if not resp.get("refresh_token"):
         # The classic footgun: a re-consent that returns only an access token.
         # Without a refresh_token the cache is useless the moment it expires.
+        # The remediation is provider-specific (Google: revoke the prior grant;
+        # Microsoft: ensure offline_access is requested).
         raise OAuthError(
-            "token endpoint returned NO refresh_token — revoke this app's prior "
-            "grant at https://myaccount.google.com/permissions and re-run "
-            "(prompt=consent must issue a fresh refresh_token)")
+            "token endpoint returned NO refresh_token — "
+            + prov["revoke_hint"])
     now = now if now is not None else time.time()
     expires_in = resp.get("expires_in")
     return {

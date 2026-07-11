@@ -1,0 +1,17 @@
+{
+  "schema": "world-event/1",
+  "id": "e1",
+  "ts": "2026-07-10T12:00:00Z",
+  "epoch": 1783080000,
+  "source": "outlook",
+  "kind": "message",
+  "external_id": "outlook:AAMkAGI1msg0004",
+  "actor": "alerts@status.example",
+  "title": "Deploy pipeline finished",
+  "snippet": "Build 4821 succeeded on main.",
+  "url": "https://outlook.office365.com/mail/inbox/id/AAMkAGI1msg0004",
+  "refs": {
+    "sender": "alerts@status.example"
+  },
+  "raw_path": null
+}

@@ -1,0 +1,48 @@
+{
+  "raw": {
+    "id": "c02",
+    "subject": "Subject c02",
+    "bodyPreview": "preview c02",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/c02",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "other",
+    "from": {
+      "emailAddress": {
+        "name": "Sender c02",
+        "address": "s-c02@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "team@corp.com"
+        }
+      }
+    ],
+    "ccRecipients": [
+      {
+        "emailAddress": {
+          "address": "me@contoso.com"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "e90116808afaa0c18e17d6c89b1d3824225b7959e506e7fd524ea125153c2470",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "cc",
+    "external_id": "outlook:c02",
+    "actor": "Sender c02 <s-c02@corp.com>",
+    "title": "Subject c02",
+    "snippet": "preview c02",
+    "url": "https://outlook.office365.com/mail/inbox/id/c02",
+    "refs": {
+      "sender": "s-c02@corp.com"
+    },
+    "raw_path": null
+  }
+}

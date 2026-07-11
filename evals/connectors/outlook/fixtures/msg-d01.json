@@ -1,0 +1,42 @@
+{
+  "raw": {
+    "id": "d01",
+    "subject": "Subject d01",
+    "bodyPreview": "preview d01",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/d01",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "isRead": false,
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "Sender d01",
+        "address": "s-d01@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "me@contoso.com"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "278fc0bfdea1637d84416c5dd124e3b4e96d89a48d40647bdce316c1697298e3",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "direct",
+    "external_id": "outlook:d01",
+    "actor": "Sender d01 <s-d01@corp.com>",
+    "title": "Subject d01",
+    "snippet": "preview d01",
+    "url": "https://outlook.office365.com/mail/inbox/id/d01",
+    "refs": {
+      "sender": "s-d01@corp.com"
+    },
+    "raw_path": null
+  }
+}
