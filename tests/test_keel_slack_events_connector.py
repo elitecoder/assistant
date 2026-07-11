@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -198,6 +199,92 @@ class SpoolTests(HomeTestCase):
                          ["01.json"])                    # untouched
         self.assertEqual(self._drops(), [])              # nothing dropped
         self.assertFalse(c.cursor_path().exists())       # cursor not saved
+
+
+# ─── transient (park) vs poison (consume) on spool READ (finding 10) ─────────
+
+class TransientVsPoisonTests(HomeTestCase):
+    def test_corrupt_json_is_poison_consumed_and_counted(self):
+        c = self._make()
+        self._spool(c, "01.json", _ev("app_mention", "C1", "1.1"))
+        self._spool(c, "02.json", "{not json")            # corrupt → poison
+        self._spool(c, "03.json", _ev("app_mention", "C3", "3.3"))
+        r = c.poll_once(now=1)
+        self.assertEqual(r["emitted"], 2)
+        self.assertEqual(r["malformed"], 1)               # counted as poison
+        self.assertEqual(list(c.spool_dir().iterdir()), [])  # poison removed
+
+    def test_transient_read_oserror_parks_and_does_not_destroy(self):
+        c = self._make()
+        self._spool(c, "01.json", _ev("app_mention", "C1", "1.1"))
+        self._spool(c, "02.json", _ev("app_mention", "C2", "2.2"))
+        self._spool(c, "03.json", _ev("app_mention", "C3", "3.3"))
+        real_read = Path.read_text
+
+        def flaky(self, *a, **k):
+            if self.name == "02.json":
+                raise OSError("EIO — transient read error")
+            return real_read(self, *a, **k)
+        with mock.patch.object(Path, "read_text", flaky):
+            r = c.poll_once(now=1)
+        self.assertEqual(r["emitted"], 1)                 # only 01 before the stop
+        self.assertEqual(r["malformed"], 0)               # NOT poison
+        self.assertTrue(r["truncated"])
+        remaining = sorted(p.name for p in c.spool_dir().iterdir())
+        # 02 (the transient one) is NOT unlinked — the event is preserved.
+        self.assertEqual(remaining, ["02.json", "03.json"])
+
+
+# ─── spool hygiene: reaper (finding 9) ───────────────────────────────────────
+
+class SpoolReaperTests(HomeTestCase):
+    def test_reap_orphan_tmp_and_age_prune(self):
+        c = self._make()
+        d = c.spool_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        now = 1_000_000
+        stale_tmp = d / ".evt-1.json.tmp"
+        stale_tmp.write_text("x")
+        os.utime(stale_tmp, (now - 600, now - 600))       # >5min → orphan
+        fresh_tmp = d / ".evt-2.json.tmp"
+        fresh_tmp.write_text("x")
+        os.utime(fresh_tmp, (now - 1, now - 1))           # in-flight → kept
+        old_json = d / "old.json"
+        old_json.write_text("{}")
+        os.utime(old_json, (now - 8 * 86400, now - 8 * 86400))  # >7d → pruned
+        new_json = d / "new.json"
+        new_json.write_text("{}")
+        os.utime(new_json, (now - 10, now - 10))
+        c.reap_spool(now=now)
+        names = sorted(p.name for p in d.iterdir())
+        self.assertNotIn(".evt-1.json.tmp", names)
+        self.assertIn(".evt-2.json.tmp", names)
+        self.assertNotIn("old.json", names)
+        self.assertIn("new.json", names)
+
+    def test_reap_caps_file_count_dropping_oldest(self):
+        c = self._make()
+        c.config["spool_max_files"] = 2
+        d = c.spool_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        now = 1_000_000
+        for i in range(5):
+            p = d / f"{i:02d}.json"
+            p.write_text("{}")
+            os.utime(p, (now - 100 + i, now - 100 + i))   # ascending mtime
+        c.reap_spool(now=now)
+        names = sorted(p.name for p in d.iterdir())
+        self.assertEqual(names, ["03.json", "04.json"])   # newest 2 kept
+
+    def test_dry_run_reap_is_noop(self):
+        c = slack.SlackEventsConnector(wired_check=lambda: True, dry_run=True)
+        d = c.spool_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        old = d / "old.json"
+        old.write_text("{}")
+        os.utime(old, (0, 0))
+        self.assertEqual(c.reap_spool(now=1_000_000_000), 0)
+        self.assertTrue(old.exists())                     # nothing destroyed
 
 
 # ─── acceptance: double-delivery → one event ─────────────────────────────────

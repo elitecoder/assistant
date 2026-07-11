@@ -54,6 +54,14 @@ NAME = "slack"
 # wired. We NEVER read its value here (no secret handling); presence is enough.
 ENV_WIRED = "SLACK_BOT_TOKEN"
 
+# Spool hygiene bounds (finding 9). Config-overridable via the connectors block
+# (spool_max_files / spool_max_age_days); the constants are only the fallback.
+DEFAULT_SPOOL_MAX_FILES = 5000
+DEFAULT_SPOOL_MAX_AGE_DAYS = 7
+# An orphaned .tmp (a Node write that crashed between open and rename) older than
+# this is dead and reaped.
+SPOOL_TMP_STALE_SEC = 5 * 60
+
 
 def slack_is_wired() -> bool:
     """Default wiring check: is the Slack Bolt app configured? True iff its bot
@@ -174,19 +182,33 @@ class SlackEventsConnector(connector.Connector):
         last_ts = cursor.get("watermark_ts") or ""
         truncated = False
 
+        # Spool hygiene (finding 9): bound the spool from the consumer side too
+        # (belt-and-suspenders with the Node reaper) — age-prune, cap, reap
+        # orphaned .tmp — so a stalled/failed Node reaper can't leave it unbounded.
+        self.reap_spool(now)
+
         for path in self._spooled_files():
             if emitted >= cap:
                 truncated = True
                 break
             try:
                 payload = connector.json.loads(path.read_text())
-            except (OSError, ValueError) as e:
-                # Unreadable/corrupt spool file — poison. Remove it so it cannot
-                # wedge the queue, count it, surface it. (Not a transient error.)
+            except ValueError as e:
+                # Corrupt JSON — a POISON payload that can never parse. Remove it
+                # so it cannot wedge the queue, count it, surface it.
                 malformed += 1
-                errors.append(f"spool {path.name}: unreadable: {str(e)[:100]}")
+                errors.append(f"spool {path.name}: corrupt json: {str(e)[:100]}")
                 self._consume(path)
                 continue
+            except OSError as e:
+                # A TRANSIENT read error (EACCES/EIO/…) — the bytes may be fine
+                # next poll. PARK exactly like an emit failure: leave the file +
+                # the rest for the next poll and STOP; NEVER unlink (an OSError
+                # here used to destroy a perfectly good event) — finding 10.
+                errors.append(f"spool {path.name}: read error (transient): "
+                              f"{str(e)[:100]}")
+                truncated = True
+                break
             try:
                 event = slack_event_to_event(payload)
             except Exception as e:  # noqa: BLE001 — poison payload: skip+count
@@ -222,6 +244,60 @@ class SlackEventsConnector(connector.Connector):
                              extra={"status": "error" if errors else "ok"})
         return {"status": "ok", "emitted": emitted, "errors": errors,
                 "malformed": malformed, "truncated": truncated}
+
+    def reap_spool(self, now=None) -> int:
+        """Bound the spool (finding 9): reap orphaned ``.tmp`` files, age-prune
+        ``.json`` spool files past the retention window, and cap the file count
+        (drop the OLDEST excess). Best-effort — a reaper failure never aborts the
+        poll. In --dry-run this is a NO-OP (an inspection run must not delete the
+        very events it inspects). Returns the number of files removed."""
+        if self.dry_run:
+            return 0
+        now = now if now is not None else connector.time.time()
+        d = self.spool_dir()
+        if not d.is_dir():
+            return 0
+        max_files = int(self.config.get("spool_max_files",
+                                        DEFAULT_SPOOL_MAX_FILES))
+        max_age = int(self.config.get(
+            "spool_max_age_days", DEFAULT_SPOOL_MAX_AGE_DAYS)) * 86400
+        removed = 0
+        jsons = []
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            return 0
+        for p in entries:
+            try:
+                if not p.is_file():
+                    continue
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            name = p.name
+            if name.startswith(".") and name.endswith(".tmp"):
+                if now - mtime > SPOOL_TMP_STALE_SEC:
+                    removed += self._unlink(p)
+                continue
+            if p.suffix != ".json":
+                continue
+            if now - mtime > max_age:
+                removed += self._unlink(p)
+                continue
+            jsons.append((mtime, p))
+        if len(jsons) > max_files:
+            jsons.sort(key=lambda t: t[0])  # oldest first
+            for _mt, p in jsons[:len(jsons) - max_files]:
+                removed += self._unlink(p)
+        return removed
+
+    @staticmethod
+    def _unlink(p: Path) -> int:
+        try:
+            p.unlink()
+            return 1
+        except OSError:
+            return 0
 
     def _consume(self, path: Path) -> None:
         """Remove a processed spool file. In --dry-run this is a NO-OP so the

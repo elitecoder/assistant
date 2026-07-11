@@ -71,6 +71,47 @@ bot token that's already in `$SLACK_BOT_TOKEN`).
 8. Load the daemon: `./install.sh --apply` (or `launchctl bootstrap gui/$UID
    ~/Library/LaunchAgents/com.assistant.slack-reactor.plist`).
 
+## World-event feed (M5 wave-2) + scope
+
+Besides the emoji→TODO reactor, this app feeds the read-only
+`bin/connectors/slack-events.py` connector: `app_mention` and `message.im`
+events are spooled (atomic, `0600`) into
+`~/.assistant/connectors/slack/spool/`, and the Python connector normalizes them
+into WorldEvents. The reactor still **never** sends a message.
+
+**Default scope = @-mentions + DMs only** (design §9 — privacy, not a channel
+firehose). The manifest subscribes to `app_mention` + `message.im` only. A
+channel @-mention arrives via `app_mention` **only** (no mirror `message`
+event), which is also why there is no nondeterministic escalate-vs-digest
+swallow.
+
+- **Opt into the channel firehose** (not recommended): add `message.channels`
+  and `message.groups` back to `bot_events` in `slack/manifest.json`, **re-import
+  the manifest and reinstall** (see below), and set
+  `export SLACK_INGEST_CHANNELS=1` in `~/.zprofile`.
+- **Spool hygiene:** files are `0600`; both the reactor (hourly + on-write) and
+  the connector reap orphaned `.tmp` files, age-prune past 7 days, and cap the
+  file count — so the spool stays bounded even if only the reactor is running.
+  Tunables: `SLACK_SPOOL_MAX_FILES`, `SLACK_SPOOL_MAX_AGE_MS` (reactor) /
+  `spool_max_files`, `spool_max_age_days` (connector config).
+
+## Re-import the manifest (REQUIRED after any scope/event change)
+
+Editing `slack/manifest.json` (e.g. adding `message.channels`) does **nothing**
+until you push it to Slack and reinstall — otherwise the added scope/event is
+never granted and **the connector silently produces nothing**:
+
+1. api.slack.com/apps → **mukuls_bot** → **App Manifest** → paste the updated
+   `slack/manifest.json` → **Save Changes**.
+2. **Install App** (or **OAuth & Permissions → Reinstall to Workspace**) →
+   approve the **OAuth re-consent** for the added scope.
+3. If the bot token rotated on reinstall, update `SLACK_BOT_TOKEN` in
+   `~/.zprofile` and restart the daemon.
+4. `/invite @mukuls_bot` into any newly-relevant channels.
+
+Skipping step 1–2 is the classic silent failure: the code subscribes to an event
+Slack was never told to deliver.
+
 ## Run manually
 
 ```bash

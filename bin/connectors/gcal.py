@@ -176,7 +176,7 @@ class GCalConnector(connector.Connector):
         cursor = sync["cursor"]
 
         # 2. Fire any reminder windows that have come due, ONCE each.
-        emitted = self._fire_reminders(now, cursor)
+        emitted = self._fire_reminders(now, cursor, errors)
 
         # 3. Prune past events / fired keys, persist the cursor, heartbeat.
         self._prune_cursor(now, cursor)
@@ -225,15 +225,22 @@ class GCalConnector(connector.Connector):
         truncated = False
         while True:
             pages += 1
+            # Google's list pagination requires the continuation request to carry
+            # the SAME query params as the initial one (finding 15) — a bare
+            # pageToken with the timeMin/orderBy (or syncToken) dropped yields
+            # undefined results / a 400 on page 2+. So the base params are ALWAYS
+            # emitted, and pageToken is ADDED for a continuation (never replaces
+            # them): incremental → syncToken (+pageToken); full → orderBy+timeMin
+            # (+pageToken).
             params = ["singleEvents=true", "maxResults=250",
                       "showDeleted=true"]
-            if page_token:
-                params.append(f"pageToken={connector.urllib.parse.quote(page_token)}")
-            elif sync_token:
+            if sync_token:
                 params.append(f"syncToken={connector.urllib.parse.quote(sync_token)}")
             else:
                 params.append("orderBy=startTime")
                 params.append(f"timeMin={connector.urllib.parse.quote(time_min)}")
+            if page_token:
+                params.append(f"pageToken={connector.urllib.parse.quote(page_token)}")
             url = API_BASE + "?" + "&".join(params)
             try:
                 status, hdrs, body = self._get(url, token)
@@ -324,14 +331,23 @@ class GCalConnector(connector.Connector):
 
     # ── reminders (once-per-window, durable dedup) ───────────────────────────
 
-    def _fire_reminders(self, now, cursor) -> int:
+    def _fire_reminders(self, now, cursor, errors=None) -> int:
         """Emit ``event_upcoming`` for each (event, window) whose lead time has
         arrived and whose dedup key has not already been fired. Records the key
-        so the same window is never emitted twice — even across 60s polls."""
+        so the same window is never emitted twice — even across 60s polls.
+
+        A per-item OSError on the drop is caught and PARKED (finding 14) — like
+        jira/slack, a transient inbox-drop failure must not abort the whole poll.
+        The key is recorded ONLY after a successful emit, so a parked reminder
+        re-fires next poll (no loss); we stop the pass on the first failure so a
+        wedged inbox doesn't spin the full set."""
         upcoming = cursor.get("upcoming") or {}
         fired = set(cursor.get("emitted_reminders") or [])
         emitted = 0
+        parked = False
         for eid, ev in sorted(upcoming.items()):
+            if parked:
+                break
             start_epoch = ev.get("start_epoch")
             if not isinstance(start_epoch, (int, float)):
                 continue
@@ -343,8 +359,14 @@ class GCalConnector(connector.Connector):
                 if key in fired:
                     continue
                 if now >= start_epoch - lead:
-                    self.emit(self._reminder_event(ev, window, now), raw=ev,
-                              now=now)
+                    try:
+                        self.emit(self._reminder_event(ev, window, now), raw=ev,
+                                  now=now)
+                    except OSError as e:
+                        if errors is not None:
+                            errors.append(f"emit {key}: {str(e)[:120]}")
+                        parked = True
+                        break
                     fired.add(key)
                     emitted += 1
         # Persist fired keys (bounded); save_cursor is a no-op in --dry-run so a
@@ -365,18 +387,53 @@ class GCalConnector(connector.Connector):
         return event_to_reminder(cal, window, now=now)
 
     def _prune_cursor(self, now, cursor) -> None:
-        """Drop events whose start is in the past (with a small grace) and the
-        fired keys that belong to them, so both structures stay bounded."""
+        """Drop events whose start is in the past (with a small grace), and prune
+        fired-reminder keys by whether the EVENT'S START has passed — NOT by
+        membership in the `upcoming` set (finding 13).
+
+        WHY not upcoming-membership: after a 410 + truncated resync, `upcoming`
+        is rebuilt from scratch and may be PARTIAL (events on not-yet-fetched
+        pages are absent). Dropping a fired key just because its event is not
+        currently in `upcoming` would forget that the reminder already fired, so
+        the next poll (once the event is re-fetched) would RE-FIRE it. Keying the
+        prune on the start time encoded in the key makes the dedup survive a
+        partial resync: a fired key is forgotten only once its event has actually
+        started. An unparseable key is kept conservatively (never re-fire); the
+        MAX_TRACKED cap bounds the set either way."""
         upcoming = cursor.get("upcoming") or {}
         grace = 3600
         keep = {eid: ev for eid, ev in upcoming.items()
                 if isinstance(ev.get("start_epoch"), (int, float))
                 and ev["start_epoch"] > now - grace}
         cursor["upcoming"] = keep
-        live_prefixes = tuple(f"gcal-upcoming:{eid}:" for eid in keep)
-        fired = [k for k in (cursor.get("emitted_reminders") or [])
-                 if any(k.startswith(p) for p in live_prefixes)]
+        fired = []
+        for k in (cursor.get("emitted_reminders") or []):
+            st = _fired_key_start_epoch(k)
+            if st is not None and st <= now - grace:
+                continue  # the event has started — safe to forget this key
+            fired.append(k)
         cursor["emitted_reminders"] = fired[-MAX_TRACKED:]
+
+
+def _fired_key_start_epoch(key: str):
+    """Extract the event START (epoch seconds) encoded in a fired-reminder key
+    ``gcal-upcoming:<event_id>:<start>:<window>`` — or None if it can't be
+    parsed. Used to prune fired keys by start-passed, not upcoming-membership
+    (finding 13). Google event ids carry no ':' so a single split isolates the
+    id; the start segment (which DOES contain ':') is everything up to the
+    trailing window label."""
+    prefix = "gcal-upcoming:"
+    if not key.startswith(prefix):
+        return None
+    rest = key[len(prefix):]
+    body, sep, _window = rest.rpartition(":")
+    if not sep:
+        return None
+    _eid, sep2, start_str = body.partition(":")
+    if not sep2 or not start_str:
+        return None
+    iso = start_str if "T" in start_str else start_str + "T00:00:00Z"
+    return connector.eventspine.parse_iso(iso)
 
 
 def _safe_json(body) -> dict:

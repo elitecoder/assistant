@@ -1,15 +1,26 @@
-"""Tests for bin/connectors/jira.py — the M5 wave-2 JIRA connector.
+"""Tests for bin/connectors/jira.py — the M5 wave-2 JIRA connector (REWORKED).
 
-Proves, against an injected credential provider + HTTP transport (no network):
-mechanical kind derivation from the changelog, the PAT-provider not_configured
-path (mirrors github's gh_cli_token), the JQL builder (minute-floored ``>=`` so
-same-minute siblings are never lost), the watermark cursor discipline (a
-transient mid-batch failure parks the watermark at the last contiguous emitted
-issue — the wave-1 blocker), poison skip, the double-delivery→one-event and
-kill-mid-batch acceptance cases, GET-only read-only discipline, and the ≥15
-golden raw→event replay fixtures.
+The connector was rebuilt from "one event per issue snapshot" to a DELTA model,
+and these tests assert that model against an injected credential provider + HTTP
+transport (no network):
 
-New module, unittest style, tmp $HOME per test.
+  * events come from DELTA objects — one per changelog history
+    (jira:<key>:changelog:<id>) and one per comment (jira:<key>:comment:<id>),
+    never the issue snapshot;
+  * the field-change-then-comment REGRESSION → TWO spine events, never one
+    swallowed (the verifier's repro);
+  * mention detection by accountId — v2 [~accountid:...] markup AND v3 ADF
+    mention nodes — not email substrings;
+  * the epoch-MILLISECONDS watermark + `updated >= <ms>` JQL (TZ-safe), the
+    currentUser() default scope, and $JIRA_JQL override;
+  * nextPageToken pagination (no startAt) with keyset watermark parking;
+  * the https pin (an http:// base is rejected before the PAT is sent);
+  * the wave-1 invariants carried forward — contiguous-prefix watermark
+    discipline, poison skip, double-delivery→one-event, kill-mid-batch, dry-run
+    side-effect-freeness (incl. NO heartbeat write), GET-only read-only;
+  * the >=15 rebuilt golden raw→event replay fixtures.
+
+New module content (same filename), unittest style, tmp $HOME per test.
 """
 from __future__ import annotations
 
@@ -37,18 +48,69 @@ def _load(name, rel):
 
 jira = _load("jira_test", "bin/connectors/jira.py")
 JIRA_FIX = REPO / "evals" / "connectors" / "jira" / "fixtures"
-ACCT = "mukul@corp.example"
-CREDS = ("https://acme.atlassian.net", ACCT, "TOK")
+BASE = "https://acme.atlassian.net"
+ACCT_ID = "5b10a2844c20165700ede21g"
+OTHER_ID = "557058:aa11bb22-cc33-dd44-ee55"
+CREDS = (BASE, "mukul@corp.example", "TOK")
 
 
-def _issue(key, updated, hid, items, comment=None, status="In Progress"):
-    f = {"summary": f"{key} summary", "updated": updated,
-         "status": {"name": status}, "assignee": {"displayName": "Mukul"},
-         "reporter": {"displayName": "R"}, "priority": {"name": "Medium"}}
-    if comment:
-        f["comment"] = {"comments": [{"body": comment}]}
-    return {"key": key, "fields": f,
-            "changelog": {"histories": [{"id": str(hid), "items": items}]}}
+def _author(aid=OTHER_ID, name="Dana"):
+    return {"accountId": aid, "displayName": name}
+
+
+def _hist(hid, created, items, aid=OTHER_ID):
+    return {"id": str(hid), "author": _author(aid), "created": created,
+            "items": items}
+
+
+def _comment(cid, created, body, updated=None, aid=OTHER_ID):
+    return {"id": str(cid), "author": _author(aid), "body": body,
+            "created": created, "updated": updated or created}
+
+
+def _issue(key, updated, *, histories=None, comments=None, status="In Progress"):
+    fields = {"summary": f"{key} summary", "updated": updated,
+              "status": {"name": status},
+              "assignee": {"accountId": ACCT_ID, "displayName": "Mukul"},
+              "reporter": _author(name="Rep"), "priority": {"name": "Medium"}}
+    if comments is not None:
+        fields["comment"] = {"comments": comments}
+    return {"key": key, "fields": fields,
+            "changelog": {"histories": histories or []}}
+
+
+TS = "2026-07-10T12:{:02d}:00.000+0000"
+
+
+class SearchHttp:
+    """A fake JIRA transport, GET-only. Answers /myself with the owner accountId
+    and /rest/api/3/search/jql with a token-paged issue list. `pages` is a list of
+    (issues, nextPageToken) tuples consumed in order across polls/pagination."""
+    def __init__(self, issues=None, pages=None, account_id=ACCT_ID, tz="UTC"):
+        self.single = issues
+        self.pages = pages
+        self.account_id = account_id
+        self.tz = tz
+        self.calls = []
+        self._page_idx = 0
+
+    def __call__(self, method, url, headers=None, data=None):
+        self.calls.append((method, url))
+        assert method == "GET", f"read-only violated: {method}"
+        if url.endswith(jira.MYSELF_PATH):
+            return (200, {}, json.dumps(
+                {"accountId": self.account_id, "emailAddress": "mukul@corp.example",
+                 "timeZone": self.tz, "displayName": "Mukul"}).encode())
+        assert jira.SEARCH_PATH in url, f"unexpected url {url}"
+        if self.pages is not None:
+            issues, nxt = self.pages[min(self._page_idx, len(self.pages) - 1)]
+            self._page_idx += 1
+            body = {"issues": issues, "isLast": not nxt}
+            if nxt:
+                body["nextPageToken"] = nxt
+            return (200, {}, json.dumps(body).encode())
+        return (200, {}, json.dumps(
+            {"issues": self.single or [], "isLast": True}).encode())
 
 
 class HomeTestCase(unittest.TestCase):
@@ -69,76 +131,113 @@ class HomeTestCase(unittest.TestCase):
     def _ids(self):
         return {json.loads(d.read_text())["external_id"] for d in self._drops()}
 
-
-class SearchHttp:
-    """A fake JIRA search transport returning one page of issues, GET-only."""
-    def __init__(self, issues):
-        self.issues = issues
-        self.calls = []
-
-    def __call__(self, method, url, headers=None, data=None):
-        self.calls.append((method, url))
-        assert method == "GET", f"read-only violated: {method}"
-        return (200, {}, json.dumps(
-            {"issues": self.issues, "total": len(self.issues),
-             "startAt": 0, "maxResults": 100}).encode())
+    def _kinds(self):
+        return sorted(json.loads(d.read_text())["kind"] for d in self._drops())
 
 
-def _make(http, account=ACCT, creds=None):
+def _make(http, creds=None, jql_scope="", account_id=None, **kw):
     return jira.JiraConnector(
         credentials_provider=lambda: (creds or CREDS),
-        http=http, account=account, jql_extra="")
+        http=http, jql_scope=jql_scope, account_id=account_id, **kw)
 
 
-# ─── kind derivation ─────────────────────────────────────────────────────────
+# ─── kind derivation from DELTA objects ──────────────────────────────────────
 
-class KindTests(unittest.TestCase):
-    def test_mention_wins(self):
-        iss = _issue("K-1", "2026-07-10T12:00:00.000+0000", 1,
-                     [{"field": "comment"}], comment=f"[~{ACCT}] hi")
-        self.assertEqual(jira.derive_kind(iss, ACCT), "mention")
+class DeltaKindTests(unittest.TestCase):
+    def test_changelog_status(self):
+        h = _hist(1, TS.format(0), [{"field": "status", "toString": "Done"}])
+        ev = jira.changelog_to_event(_issue("K-1", TS.format(0), histories=[h]), h)
+        self.assertEqual(ev["kind"], "status_change")
+        self.assertEqual(ev["external_id"], "jira:K-1:changelog:1")
 
-    def test_flagged(self):
-        iss = _issue("K-2", "2026-07-10T12:00:00.000+0000", 1,
-                     [{"field": "Flagged", "toString": "Impediment"}])
-        self.assertEqual(jira.derive_kind(iss, ACCT), "flagged")
+    def test_changelog_assigned_to_me_by_accountid(self):
+        h = _hist(2, TS.format(0), [{"field": "assignee", "to": ACCT_ID,
+                                     "toString": "Mukul"}])
+        ev = jira.changelog_to_event(_issue("K-2", TS.format(0)), h, ACCT_ID)
+        self.assertEqual(ev["kind"], "assigned")
 
-    def test_assigned_to_me(self):
-        iss = _issue("K-3", "2026-07-10T12:00:00.000+0000", 1,
-                     [{"field": "assignee", "to": "a", "toString": ACCT}])
-        self.assertEqual(jira.derive_kind(iss, ACCT), "assigned")
+    def test_changelog_flagged(self):
+        h = _hist(3, TS.format(0), [{"field": "Flagged", "toString": "Impediment"}])
+        self.assertEqual(jira.changelog_to_event(
+            _issue("K-3", TS.format(0)), h)["kind"], "flagged")
 
-    def test_status_change(self):
-        iss = _issue("K-4", "2026-07-10T12:00:00.000+0000", 1,
-                     [{"field": "status", "toString": "Done"}])
-        self.assertEqual(jira.derive_kind(iss, ACCT), "status_change")
+    def test_comment_plain_is_comment(self):
+        c = _comment(9, TS.format(0), "just a note")
+        ev = jira.comment_to_event(_issue("K-4", TS.format(0)), c, ACCT_ID)
+        self.assertEqual(ev["kind"], "comment")
+        self.assertEqual(ev["external_id"], "jira:K-4:comment:9")
 
-    def test_priority_change(self):
-        iss = _issue("K-5", "2026-07-10T12:00:00.000+0000", 1,
-                     [{"field": "priority", "toString": "High"}])
-        self.assertEqual(jira.derive_kind(iss, ACCT), "priority_change")
+    def test_comment_v2_markup_mention(self):
+        c = _comment(10, TS.format(0), f"cc [~accountid:{ACCT_ID}] please look")
+        self.assertEqual(jira.comment_to_event(
+            _issue("K-5", TS.format(0)), c, ACCT_ID)["kind"], "mention")
 
-    def test_comment(self):
-        iss = _issue("K-6", "2026-07-10T12:00:00.000+0000", 1,
-                     [{"field": "comment"}])
-        self.assertEqual(jira.derive_kind(iss, ACCT), "comment")
+    def test_comment_v3_adf_mention(self):
+        body = {"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "mention", "attrs": {"id": ACCT_ID}},
+            {"type": "text", "text": " ping"}]}]}
+        c = _comment(11, TS.format(0), body)
+        self.assertEqual(jira.comment_to_event(
+            _issue("K-6", TS.format(0)), c, ACCT_ID)["kind"], "mention")
 
-    def test_updated_fallback(self):
-        iss = _issue("K-7", "2026-07-10T12:00:00.000+0000", 1,
-                     [{"field": "labels"}])
-        self.assertEqual(jira.derive_kind(iss, ACCT), "updated")
+    def test_mention_of_someone_else_is_not_a_mention(self):
+        c = _comment(12, TS.format(0), f"cc [~accountid:{OTHER_ID}] fyi")
+        self.assertEqual(jira.comment_to_event(
+            _issue("K-7", TS.format(0)), c, ACCT_ID)["kind"], "comment")
 
-    def test_external_id_key_and_changelog_id(self):
-        iss = _issue("K-8", "2026-07-10T12:00:00.000+0000", 9099,
-                     [{"field": "status"}])
-        ev = jira.issue_to_event(iss, ACCT)
-        self.assertEqual(ev["external_id"], "jira:K-8:9099")
-        self.assertEqual(ev["refs"]["jira"], "K-8")
+    def test_email_substring_no_longer_matches(self):
+        # The dead email-substring path must NOT fire — only accountId does.
+        c = _comment(13, TS.format(0), "cc mukul@corp.example please review")
+        self.assertEqual(jira.comment_to_event(
+            _issue("K-8", TS.format(0)), c, ACCT_ID)["kind"], "comment")
 
-    def test_jql_uses_ge_minute_floor_and_order(self):
-        self.assertEqual(
-            jira.build_jql("2026-07-10 12:05"),
-            'updated >= "2026-07-10 12:05" ORDER BY updated ASC')
+
+# ─── JQL: epoch-ms watermark, currentUser scope, override, https pin ─────────
+
+class JqlTests(unittest.TestCase):
+    def test_default_scope_and_epoch_ms_clause(self):
+        jql = jira.build_jql(1_700_000_000_000)
+        self.assertIn("updated >= 1700000000000", jql)
+        self.assertIn("currentUser()", jql)
+        self.assertTrue(jql.endswith("ORDER BY updated ASC"))
+
+    def test_first_run_uses_relative_window(self):
+        self.assertIn("updated >= -30d", jira.build_jql(0))
+
+    def test_jira_jql_overrides_scope(self):
+        jql = jira.build_jql(5, scope="project = OPS")
+        self.assertIn("(project = OPS)", jql)
+        self.assertNotIn("currentUser()", jql)
+
+    def test_epoch_ms_is_tz_safe(self):
+        # A Pacific-offset stamp and the same instant in UTC map to one ms value.
+        a = jira._epoch_ms("2026-07-10T05:00:00.000-0700")
+        b = jira._epoch_ms("2026-07-10T12:00:00.000+0000")
+        self.assertEqual(a, b)
+
+
+class HttpsPinTests(HomeTestCase):
+    def test_http_base_is_rejected_before_sending_pat(self):
+        http = SearchHttp([])
+        c = _make(http, creds=("http://acme.atlassian.net", "e", "TOK"))
+        res = c.poll_once(now=1)
+        self.assertEqual(res["status"], "config_error")
+        self.assertTrue(any("https" in e for e in res["errors"]))
+        self.assertEqual(http.calls, [])           # no request ever went out
+        hb = json.loads(c.heartbeat_path().read_text())
+        self.assertFalse(hb["ok"])
+
+    def test_credentials_provider_rejects_http(self):
+        for k in ("JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"):
+            os.environ.pop(k, None)
+        os.environ["JIRA_BASE_URL"] = "http://insecure.example"
+        os.environ["JIRA_API_TOKEN"] = "TOK"
+        try:
+            with self.assertRaises(ValueError):
+                jira.jira_credentials()
+        finally:
+            for k in ("JIRA_BASE_URL", "JIRA_API_TOKEN"):
+                os.environ.pop(k, None)
 
 
 # ─── not_configured (PAT absent) ─────────────────────────────────────────────
@@ -147,8 +246,7 @@ class NotConfiguredTests(HomeTestCase):
     def test_absent_pat_is_quiet_not_configured(self):
         def no_creds():
             raise RuntimeError("JIRA not configured")
-        c = jira.JiraConnector(credentials_provider=no_creds,
-                               http=SearchHttp([]))
+        c = jira.JiraConnector(credentials_provider=no_creds, http=SearchHttp([]))
         res = c.poll_once(now=1)
         self.assertEqual(res["status"], "not_configured")
         hb = json.loads(c.heartbeat_path().read_text())
@@ -156,27 +254,72 @@ class NotConfiguredTests(HomeTestCase):
         self.assertTrue(hb["ok"])
         self.assertEqual(hb["errors"], [])
 
-    def test_default_provider_raises_without_env(self):
-        for k in ("JIRA_BASE_URL", "JIRA_API_TOKEN"):
-            os.environ.pop(k, None)
-        with self.assertRaises(RuntimeError):
-            jira.jira_credentials()
+
+# ─── the delta model + the field-change-then-comment REGRESSION ──────────────
+
+class DeltaModelTests(HomeTestCase):
+    def test_field_change_then_comment_yields_two_events(self):
+        # Poll 1: a status change (changelog history), no comment.
+        p1 = _issue("R-1", TS.format(5),
+                    histories=[_hist(500, TS.format(5),
+                                     [{"field": "status", "toString": "Done"}])],
+                    comments=[])
+        _make(SearchHttp([p1])).poll_once(now=1)
+        # Poll 2: SAME issue, `updated` bumped, a comment added, NO new changelog
+        # history (the real-JIRA shape the old model swallowed).
+        p2 = _issue("R-1", TS.format(6),
+                    histories=[_hist(500, TS.format(5),
+                                     [{"field": "status", "toString": "Done"}])],
+                    comments=[_comment(600, TS.format(6),
+                                       f"cc [~accountid:{ACCT_ID}] verify")])
+        _make(SearchHttp([p2])).poll_once(now=2)
+        # Two DISTINCT external_ids reach the spine — nothing swallowed.
+        summ = eventspine.drain_typed_inbox()
+        self.assertEqual(summ["events_appended"], 2)
+        ids = {json.loads(l)["external_id"]
+               for l in eventspine.events_path().read_text().splitlines() if l}
+        self.assertEqual(ids, {"jira:R-1:changelog:500", "jira:R-1:comment:600"})
+
+    def test_multiple_histories_not_coalesced(self):
+        iss = _issue("R-2", TS.format(8), histories=[
+            _hist(1, TS.format(6), [{"field": "assignee", "to": ACCT_ID}]),
+            _hist(2, TS.format(7), [{"field": "status", "toString": "Done"}]),
+            _hist(3, TS.format(8), [{"field": "priority", "toString": "High"}])])
+        r = _make(SearchHttp([iss])).poll_once(now=1)
+        self.assertEqual(r["emitted"], 3)
+        self.assertEqual(self._kinds(),
+                         ["assigned", "priority_change", "status_change"])
+
+    def test_comment_lane_fires_independently(self):
+        iss = _issue("R-3", TS.format(9), histories=[], comments=[
+            _comment(700, TS.format(9), f"[~accountid:{ACCT_ID}] urgent")])
+        r = _make(SearchHttp([iss])).poll_once(now=1)
+        self.assertEqual(r["emitted"], 1)
+        self.assertEqual(self._ids(), {"jira:R-3:comment:700"})
+        self.assertEqual(self._kinds(), ["mention"])
 
 
-# ─── watermark cursor discipline (the blocker) ──────────────────────────────
+# ─── watermark cursor discipline (epoch-ms, contiguous prefix) ───────────────
 
 class WatermarkDisciplineTests(HomeTestCase):
-    def test_transient_failure_parks_watermark_at_contiguous_prefix(self):
+    def test_watermark_is_epoch_ms_of_last_emitted_issue(self):
+        iss = _issue("A-1", TS.format(5), histories=[
+            _hist(1, TS.format(5), [{"field": "status", "toString": "Done"}])])
+        c = _make(SearchHttp([iss]))
+        c.poll_once(now=1)
+        self.assertEqual(c.load_cursor()["watermark_ms"],
+                         jira._epoch_ms(TS.format(5)))
+
+    def test_transient_failure_parks_watermark_before_failed_issue(self):
         issues = [
-            _issue("A-1", "2026-07-10T12:00:00.000+0000", 100,
-                   [{"field": "assignee", "to": "a", "toString": ACCT}]),
-            _issue("A-2", "2026-07-10T12:01:00.000+0000", 101,
-                   [{"field": "status", "toString": "Done"}]),
-            _issue("A-3", "2026-07-10T12:02:00.000+0000", 102,
-                   [{"field": "priority", "toString": "High"}]),
+            _issue("A-1", TS.format(0), histories=[
+                _hist(1, TS.format(0), [{"field": "status"}])]),
+            _issue("A-2", TS.format(1), histories=[
+                _hist(2, TS.format(1), [{"field": "status"}])]),
+            _issue("A-3", TS.format(2), histories=[
+                _hist(3, TS.format(2), [{"field": "status"}])]),
         ]
         c = _make(SearchHttp(issues))
-        # Make the SECOND emit fail transiently.
         orig = c.emit
         n = {"i": 0}
 
@@ -187,54 +330,86 @@ class WatermarkDisciplineTests(HomeTestCase):
             return orig(ev, raw=raw, now=now)
         c.emit = femit  # type: ignore
         r1 = c.poll_once(now=1)
-        self.assertEqual(r1["emitted"], 1)                 # only A-1
-        self.assertEqual(self._ids(), {"jira:A-1:100"})
-        self.assertEqual(c.load_cursor()["watermark"], "2026-07-10 12:00")
+        self.assertEqual(r1["emitted"], 1)                     # only A-1
+        self.assertEqual(self._ids(), {"jira:A-1:changelog:1"})
+        self.assertEqual(c.load_cursor()["watermark_ms"],
+                         jira._epoch_ms(TS.format(0)))          # parked at A-1
 
-        # Restart clean: re-query from the parked minute; A-1 re-appears (>=
-        # boundary) and dedups downstream, A-2/A-3 now emit. No loss.
+        # Restart clean: re-query from the parked ms; A-1 re-appears (>= overlap)
+        # and dedups, A-2/A-3 now emit. No loss.
         c2 = _make(SearchHttp(issues))
-        r2 = c2.poll_once(now=2)
-        self.assertEqual(r2["emitted"], 3)
-        self.assertEqual(self._ids(),
-                         {"jira:A-1:100", "jira:A-2:101", "jira:A-3:102"})
+        c2.poll_once(now=2)
+        self.assertEqual(self._ids(), {"jira:A-1:changelog:1",
+                                       "jira:A-2:changelog:2",
+                                       "jira:A-3:changelog:3"})
 
     def test_poison_issue_skipped_counted_no_wedge(self):
-        good = _issue("G-1", "2026-07-10T12:00:00.000+0000", 1,
-                      [{"field": "status"}])
+        good = _issue("G-1", TS.format(0), histories=[
+            _hist(1, TS.format(0), [{"field": "status"}])])
         poison = {"key": "BAD", "fields": "corrupt",  # str .get → AttributeError
                   "changelog": {"histories": []}}
-        good2 = _issue("G-2", "2026-07-10T12:01:00.000+0000", 2,
-                       [{"field": "priority"}])
+        good2 = _issue("G-2", TS.format(1), histories=[
+            _hist(2, TS.format(1), [{"field": "priority"}])])
         c = _make(SearchHttp([good, poison, good2]))
         r = c.poll_once(now=1)
         self.assertEqual(r["emitted"], 2)
         self.assertEqual(r["malformed"], 1)
-        self.assertEqual(self._ids(), {"jira:G-1:1", "jira:G-2:2"})
+        self.assertEqual(self._ids(), {"jira:G-1:changelog:1",
+                                       "jira:G-2:changelog:2"})
         hb = json.loads(c.heartbeat_path().read_text())
         self.assertFalse(hb["ok"])
         self.assertTrue(any("malformed" in e for e in hb["errors"]))
 
 
-# ─── acceptance: double-delivery → one event; kill-mid-batch → no loss ───────
+# ─── pagination via nextPageToken (no startAt), keyset watermark ─────────────
+
+class PaginationTests(HomeTestCase):
+    def test_nextpagetoken_walks_all_pages(self):
+        p1 = [_issue("P-1", TS.format(0), histories=[
+            _hist(1, TS.format(0), [{"field": "status"}])])]
+        p2 = [_issue("P-2", TS.format(1), histories=[
+            _hist(2, TS.format(1), [{"field": "status"}])])]
+        http = SearchHttp(pages=[(p1, "TKN2"), (p2, None)])
+        r = _make(http).poll_once(now=1)
+        self.assertEqual(r["emitted"], 2)
+        self.assertEqual(self._ids(), {"jira:P-1:changelog:1",
+                                       "jira:P-2:changelog:2"})
+        # the SECOND search call carried the nextPageToken (no startAt anywhere)
+        search_urls = [u for _, u in http.calls if jira.SEARCH_PATH in u]
+        self.assertIn("nextPageToken=TKN2", search_urls[1])
+        self.assertFalse(any("startAt" in u for u in search_urls))
+
+    def test_truncation_parks_watermark_at_last_emitted(self):
+        p1 = [_issue("P-1", TS.format(0), histories=[
+            _hist(1, TS.format(0), [{"field": "status"}])])]
+        # page 1 has a nextPageToken but we cap max_pages=1 → truncate.
+        http = SearchHttp(pages=[(p1, "TKN2")])
+        c = _make(http)
+        c.config["max_pages"] = 1
+        r = c.poll_once(now=1)
+        self.assertTrue(r["truncated"])
+        self.assertEqual(c.load_cursor()["watermark_ms"],
+                         jira._epoch_ms(TS.format(0)))     # parked, not lost
+
+
+# ─── acceptance: double-delivery → one event; kill-mid-batch ─────────────────
 
 class AcceptanceTests(HomeTestCase):
     def test_double_delivery_yields_one_event(self):
-        iss = [_issue("D-1", "2026-07-10T12:00:00.000+0000", 1,
-                      [{"field": "assignee", "to": "a", "toString": ACCT}])]
-        # `>=` boundary means the same issue re-appears each poll.
+        iss = [_issue("D-1", TS.format(0), histories=[
+            _hist(1, TS.format(0), [{"field": "assignee", "to": ACCT_ID}])])]
         _make(SearchHttp(iss)).poll_once(now=1)
-        _make(SearchHttp(iss)).poll_once(now=2)
+        _make(SearchHttp(iss)).poll_once(now=2)   # >= overlap re-delivers
         self.assertEqual(len(self._drops()), 2)   # at-least-once producer
         summ = eventspine.drain_typed_inbox()
         self.assertEqual(summ["events_appended"], 1)
         self.assertEqual(summ["inbox_duplicates"], 1)
 
     def test_kill_before_cursor_save_loses_nothing(self):
-        iss = [_issue("K-1", "2026-07-10T12:00:00.000+0000", 1,
-                      [{"field": "status"}]),
-               _issue("K-2", "2026-07-10T12:01:00.000+0000", 2,
-                      [{"field": "priority"}])]
+        iss = [_issue("K-1", TS.format(0), histories=[
+                   _hist(1, TS.format(0), [{"field": "status"}])]),
+               _issue("K-2", TS.format(1), histories=[
+                   _hist(2, TS.format(1), [{"field": "priority"}])])]
         c = _make(SearchHttp(iss))
 
         def boom(cursor):
@@ -248,32 +423,64 @@ class AcceptanceTests(HomeTestCase):
         c2.poll_once(now=2)
         summ = eventspine.drain_typed_inbox()
         self.assertEqual(summ["events_appended"], 2)
-        ids = {json.loads(l)["external_id"]
-               for l in eventspine.events_path().read_text().splitlines() if l}
-        self.assertEqual(len(ids), 2)
 
 
-# ─── golden raw→event replay (≥15) ───────────────────────────────────────────
+# ─── dry-run side-effect-freeness (incl. NO heartbeat write — finding 16) ────
+
+class DryRunTests(HomeTestCase):
+    def test_dry_run_writes_nothing_and_no_heartbeat(self):
+        iss = [_issue("DR-1", TS.format(0), histories=[
+            _hist(1, TS.format(0), [{"field": "status"}])])]
+        c = _make(SearchHttp(iss), dry_run=True)
+        c.poll_once(now=1)
+        self.assertEqual(self._drops(), [])              # nothing dropped
+        self.assertFalse(c.cursor_path().exists())       # cursor not saved
+        self.assertFalse(c.heartbeat_path().exists())    # NO heartbeat (finding 16)
+
+
+# ─── read-only guarantee ─────────────────────────────────────────────────────
+
+class ReadOnlyTests(unittest.TestCase):
+    def test_only_get_is_issued(self):
+        http = SearchHttp([_issue("X-1", TS.format(0), histories=[
+            _hist(1, TS.format(0), [{"field": "status"}])])])
+        jira.JiraConnector(credentials_provider=lambda: CREDS,
+                           http=http, jql_scope="").poll_once(now=1)
+        self.assertTrue(all(m == "GET" for m, _ in http.calls))
+
+
+# ─── golden raw→event replay (rebuilt, realistic Cloud payloads) ─────────────
 
 class GoldenReplayTests(unittest.TestCase):
-    def test_replay(self):
+    def test_replay_delta_events(self):
         files = sorted(JIRA_FIX.glob("*.json"))
         self.assertGreaterEqual(len(files), 15,
                                 msg=f"{JIRA_FIX} needs >=15 recorded events")
         for f in files:
             data = json.loads(f.read_text())
-            got = jira.issue_to_event(data["raw"], data.get("account", ""))
-            got = {k: v for k, v in got.items()
-                   if k not in ("id", "raw_path", "epoch")}
+            got = jira.issue_deltas(data["raw"], data.get("account_id", ""),
+                                    int(data.get("watermark_ms") or 0))
+            got = [{k: v for k, v in ev.items()
+                    if k not in ("id", "raw_path", "epoch")} for ev in got]
             self.assertEqual(got, data["expected"],
                              msg=f"normalization drift in {f.name}")
 
     def test_expected_are_wellformed_worldevents(self):
         for f in JIRA_FIX.glob("*.json"):
-            ev = json.loads(f.read_text())["expected"]
-            self.assertEqual(ev["schema"], "world-event/1")
-            self.assertTrue(ev["external_id"].startswith("jira:"))
-            self.assertEqual(ev["source"], "jira")
+            for ev in json.loads(f.read_text())["expected"]:
+                self.assertEqual(ev["schema"], "world-event/1")
+                self.assertTrue(ev["external_id"].startswith("jira:"))
+                self.assertEqual(ev["source"], "jira")
+
+    def test_regression_fixture_encodes_two_events(self):
+        data = json.loads(
+            (JIRA_FIX / "10-regression-field-then-comment.json").read_text())
+        kinds = [e["kind"] for e in data["expected"]]
+        ext = [e["external_id"] for e in data["expected"]]
+        self.assertEqual(len(data["expected"]), 2)
+        self.assertTrue(any(":changelog:" in e for e in ext))
+        self.assertTrue(any(":comment:" in e for e in ext))
+        self.assertIn("mention", kinds)
 
 
 if __name__ == "__main__":

@@ -261,6 +261,95 @@ class SyncTests(HomeTestCase):
         c.poll_once(now=START - 100)
         self.assertEqual(self._drops(), [])              # nothing dropped
         self.assertFalse(c.cursor_path().exists())       # cursor not saved
+        # finding 16: a dry run must NOT refresh the heartbeat (that would mask a
+        # dead daemon as healthy).
+        self.assertFalse(c.heartbeat_path().exists())
+
+    # ── finding 15: pageToken continuation carries the original query params ──
+
+    def test_pagetoken_continuation_carries_full_sync_params(self):
+        self.seed_token()
+        http = ListHttp(None, pages=[
+            ([_cal("A", {"dateTime": "2026-08-01T10:00:00Z"})], "PG2", None),
+            ([_cal("B", {"dateTime": "2026-08-02T10:00:00Z"})], None, "SYNC")])
+        self._make(http).poll_once(now=1)
+        urls = [u for m, u in http.calls if "events" in u]
+        self.assertEqual(len(urls), 2)
+        self.assertIn("pageToken=PG2", urls[1])
+        self.assertIn("orderBy=startTime", urls[1])   # identical params required
+        self.assertIn("timeMin=", urls[1])
+
+    def test_pagetoken_continuation_carries_synctoken_when_incremental(self):
+        self.seed_token()
+        self._make(ListHttp([], sync="TOK")).poll_once(now=1)  # seed sync_token
+        http = ListHttp(None, pages=[
+            ([_cal("A", {"dateTime": "2026-08-01T10:00:00Z"})], "PG2", None),
+            ([], None, "TOK2")])
+        self._make(http).poll_once(now=2)
+        urls = [u for m, u in http.calls if "events" in u]
+        self.assertIn("syncToken=TOK", urls[0])
+        self.assertIn("pageToken=PG2", urls[1])
+        self.assertIn("syncToken=TOK", urls[1])       # carried on continuation
+
+
+# ─── gcal minors: fired-key prune (13) + per-item OSError park (14) ──────────
+
+class GcalMinorFixTests(HomeTestCase):
+    def _make(self, items):
+        return gcal.GCalConnector(
+            http=ListHttp(items),
+            oauth_transport=lambda u, f: {"access_token": "A",
+                                          "expires_in": 3600})
+
+    def test_prune_retains_fired_key_when_event_absent_from_upcoming(self):
+        # finding 13: a 410+truncated resync rebuilds `upcoming` PARTIALLY. A
+        # fired key whose event is not (yet) back in `upcoming` but whose start
+        # has NOT passed must be RETAINED, else the reminder re-fires.
+        c = self._make([])
+        key = "gcal-upcoming:EVT:2026-08-01T10:00:00Z:1h"
+        cursor = {"upcoming": {}, "emitted_reminders": [key]}
+        now = eventspine.parse_iso("2026-07-01T00:00:00Z")  # long before start
+        c._prune_cursor(now, cursor)
+        self.assertIn(key, cursor["emitted_reminders"])     # retained
+
+    def test_prune_drops_fired_key_after_start_passed(self):
+        c = self._make([])
+        key = "gcal-upcoming:OLD:2026-01-01T00:00:00Z:1h"
+        cursor = {"upcoming": {}, "emitted_reminders": [key]}
+        now = eventspine.parse_iso("2026-08-01T00:00:00Z")  # after start
+        c._prune_cursor(now, cursor)
+        self.assertEqual(cursor["emitted_reminders"], [])   # forgotten
+
+    def test_no_refire_after_partial_resync_roundtrip(self):
+        self.seed_token()
+        START = 1_000_000
+        ev = _cal("EVT", {"dateTime": eventspine.utc_iso(START)})
+        # Poll 1: both windows fire and are recorded.
+        self._make([ev]).poll_once(now=START - 100)
+        self.assertEqual(len(self._drops()), 2)
+        # Poll 2: the resync returns NOTHING (EVT on an unfetched page) — a
+        # partial upcoming — then EVT reappears. No reminder must re-fire.
+        self._make([]).poll_once(now=START - 90)
+        self._make([ev]).poll_once(now=START - 80)
+        self.assertEqual(len(self._drops()), 2)             # still exactly 2
+
+    def test_fire_reminder_oserror_parks_not_aborts_poll(self):
+        # finding 14: a transient inbox-drop failure on ONE reminder must not
+        # crash the whole poll; it is surfaced and the key is left un-fired.
+        self.seed_token()
+        START = 1_000_000
+        ev = _cal("EVT", {"dateTime": eventspine.utc_iso(START)})
+        c = self._make([ev])
+
+        def boom(event, raw=None, now=None):
+            raise OSError("inbox full")
+        c.emit = boom  # type: ignore
+        res = c.poll_once(now=START - 100)                  # both windows due
+        self.assertEqual(res["status"], "ok")               # poll completed
+        self.assertTrue(any("emit" in e for e in res["errors"]))
+        self.assertEqual(c.load_cursor().get("emitted_reminders", []), [])
+        hb = json.loads(c.heartbeat_path().read_text())
+        self.assertFalse(hb["ok"])
 
 
 # ─── OAuth authorize (reuses the base flow, calendar.readonly scope) ─────────

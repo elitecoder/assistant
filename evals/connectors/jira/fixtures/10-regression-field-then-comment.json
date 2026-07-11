@@ -1,0 +1,100 @@
+{
+  "raw": {
+    "key": "PROJ-11",
+    "fields": {
+      "summary": "PROJ-11 — investigate the flaky deploy",
+      "updated": "2026-07-10T12:17:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "accountId": "5b10a2844c20165700ede21g",
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+        "displayName": "Dana Dev"
+      },
+      "priority": {
+        "name": "Medium"
+      },
+      "comment": {
+        "comments": [
+          {
+            "id": "20011",
+            "author": {
+              "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+              "displayName": "Dana Dev"
+            },
+            "body": "cc [~accountid:5b10a2844c20165700ede21g] done, please verify",
+            "created": "2026-07-10T12:17:00.000+0000",
+            "updated": "2026-07-10T12:17:00.000+0000"
+          }
+        ],
+        "maxResults": 1,
+        "total": 1,
+        "startAt": 0
+      }
+    },
+    "changelog": {
+      "histories": [
+        {
+          "id": "10011",
+          "author": {
+            "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+            "displayName": "Dana Dev"
+          },
+          "created": "2026-07-10T12:16:00.000+0000",
+          "items": [
+            {
+              "field": "status",
+              "fieldtype": "jira",
+              "from": "3",
+              "fromString": "In Progress",
+              "to": "10001",
+              "toString": "Done"
+            }
+          ]
+        }
+      ],
+      "maxResults": 100,
+      "total": 1,
+      "startAt": 0
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account_id": "5b10a2844c20165700ede21g",
+  "watermark_ms": 0,
+  "expected": [
+    {
+      "schema": "world-event/1",
+      "ts": "2026-07-10T12:16:00Z",
+      "source": "jira",
+      "kind": "status_change",
+      "external_id": "jira:PROJ-11:changelog:10011",
+      "actor": "Dana Dev",
+      "title": "PROJ-11 — investigate the flaky deploy",
+      "snippet": "PROJ-11 · status_change · In Progress · Medium",
+      "url": "https://acme.atlassian.net/browse/PROJ-11",
+      "refs": {
+        "jira": "PROJ-11",
+        "status": "In Progress"
+      }
+    },
+    {
+      "schema": "world-event/1",
+      "ts": "2026-07-10T12:17:00Z",
+      "source": "jira",
+      "kind": "mention",
+      "external_id": "jira:PROJ-11:comment:20011",
+      "actor": "Dana Dev",
+      "title": "PROJ-11 — investigate the flaky deploy",
+      "snippet": "PROJ-11 · mention · In Progress · Medium",
+      "url": "https://acme.atlassian.net/browse/PROJ-11",
+      "refs": {
+        "jira": "PROJ-11",
+        "status": "In Progress"
+      }
+    }
+  ]
+}

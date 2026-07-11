@@ -1,0 +1,66 @@
+{
+  "raw": {
+    "key": "PROJ-10",
+    "fields": {
+      "summary": "PROJ-10 — investigate the flaky deploy",
+      "updated": "2026-07-10T12:15:00.000+0000",
+      "status": {
+        "name": "In Progress"
+      },
+      "assignee": {
+        "accountId": "5b10a2844c20165700ede21g",
+        "displayName": "Mukul"
+      },
+      "reporter": {
+        "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+        "displayName": "Dana Dev"
+      },
+      "priority": {
+        "name": "Medium"
+      },
+      "comment": {
+        "comments": [
+          {
+            "id": "20010",
+            "author": {
+              "accountId": "557058:aa11bb22-cc33-dd44-ee55",
+              "displayName": "Dana Dev"
+            },
+            "body": "Adding context: the flake is DNS.",
+            "created": "2026-07-10T12:15:00.000+0000",
+            "updated": "2026-07-10T12:15:00.000+0000"
+          }
+        ],
+        "maxResults": 1,
+        "total": 1,
+        "startAt": 0
+      }
+    },
+    "changelog": {
+      "histories": [],
+      "maxResults": 100,
+      "total": 0,
+      "startAt": 0
+    },
+    "_base_url": "https://acme.atlassian.net"
+  },
+  "account_id": "5b10a2844c20165700ede21g",
+  "watermark_ms": 0,
+  "expected": [
+    {
+      "schema": "world-event/1",
+      "ts": "2026-07-10T12:15:00Z",
+      "source": "jira",
+      "kind": "comment",
+      "external_id": "jira:PROJ-10:comment:20010",
+      "actor": "Dana Dev",
+      "title": "PROJ-10 — investigate the flaky deploy",
+      "snippet": "PROJ-10 · comment · In Progress · Medium",
+      "url": "https://acme.atlassian.net/browse/PROJ-10",
+      "refs": {
+        "jira": "PROJ-10",
+        "status": "In Progress"
+      }
+    }
+  ]
+}
