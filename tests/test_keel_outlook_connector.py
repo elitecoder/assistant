@@ -75,9 +75,11 @@ class RouterHttp:
     def __init__(self, routes):
         self.routes = routes           # list of (substr, response)
         self.calls = []
+        self.headers = []
 
     def __call__(self, method, url, headers=None, data=None):
         self.calls.append((method, url))
+        self.headers.append(headers or {})
         assert method == "GET", f"connector must be read-only, got {method}"
         for sub, resp in self.routes:
             if sub in url:
@@ -118,6 +120,22 @@ class ClassificationTests(unittest.TestCase):
 
     def test_message_when_focused_and_not_addressed(self):
         self.assertEqual(self._kind(_msg("m", to=["dl@corp.com"])), "message")
+
+    def test_alias_in_owner_set_is_direct_not_newsletter(self):
+        # D1: the owner's FULL address set (mail + proxyAddresses aliases) is
+        # passed in; a message to an ALIAS is direct — never mis-laned as a
+        # droppable newsletter — even with the inference=="other" signal.
+        owner = {"me@contoso.com", "alias@contoso.com"}
+        self.assertEqual(
+            ol.message_to_event(_msg("m", to=["alias@contoso.com"], inf="other"),
+                                owner)["kind"], "direct")
+
+    def test_alias_in_owner_set_cc_is_cc(self):
+        owner = {"me@contoso.com", "alias@contoso.com"}
+        self.assertEqual(
+            ol.message_to_event(_msg("m", to=["team@corp.com"],
+                                     cc=["alias@contoso.com"]), owner)["kind"],
+            "cc")
 
     def test_unknown_account_never_newsletter(self):
         # Without the account address we cannot confirm a message is NOT direct,
@@ -303,6 +321,69 @@ class DeltaCursorTests(HomeTestCase):
         self.assertTrue(http.calls)
         for method, _url in http.calls:
             self.assertEqual(method, "GET")
+
+    def test_me_fetch_requests_proxyaddresses_and_stores_owner_set(self):
+        # D2: /me is fetched (needs the User.Read scope) with proxyAddresses in
+        # $select; D1: the owner's full alias set is stored on the cursor.
+        me = (200, {}, json.dumps({
+            "mail": "me@contoso.com",
+            "userPrincipalName": "me@contoso.onmicrosoft.com",
+            "proxyAddresses": ["SMTP:me@contoso.com", "smtp:alias@contoso.com",
+                               "sip:me@contoso.com"]}).encode())
+        seed = _page([], delta=GRAPH + "/delta?$deltatoken=DD")
+        http = RouterHttp([("/me?", me), ("/messages/delta", seed),
+                           ("$deltatoken=DD", seed)])
+        c = self.make(http)
+        c.poll_once(now=1)
+        self.assertTrue(any("proxyAddresses" in u for _m, u in http.calls),
+                        "/me must request proxyAddresses")
+        cur = c.load_cursor()
+        self.assertEqual(cur["email"], "me@contoso.com")
+        self.assertEqual(set(cur["addrs"]),
+                         {"me@contoso.com", "me@contoso.onmicrosoft.com",
+                          "alias@contoso.com"})   # smtp: aliases only; sip: dropped
+
+    def test_alias_addressed_mail_classifies_direct_end_to_end(self):
+        # D1 end-to-end: a message to an ALIAS (from proxyAddresses) with
+        # inference=="other" is emitted as `direct`, NOT a droppable newsletter.
+        me = (200, {}, json.dumps({
+            "mail": "me@contoso.com",
+            "proxyAddresses": ["SMTP:me@contoso.com",
+                               "smtp:alias@contoso.com"]}).encode())
+        page = _page([_msg("a1", to=["alias@contoso.com"], inf="other")],
+                     delta=GRAPH + "/delta?$deltatoken=DA2")
+        c = self.make(RouterHttp([("/me?", me), ("$deltatoken=DA1", page)]),
+                      cursor={"delta_link": GRAPH + "/delta?$deltatoken=DA1"})
+        c.poll_once(now=1)
+        ev = {e["external_id"]: e for e in self.events()}
+        self.assertEqual(ev["outlook:a1"]["kind"], "direct")
+
+    def test_immutable_id_header_sent_on_every_graph_request(self):
+        # D6: Prefer: IdType="ImmutableId" makes ids survive folder moves.
+        me = (200, {}, json.dumps({"mail": ACCT}).encode())
+        seed = _page([], delta=GRAPH + "/delta?$deltatoken=DH")
+        http = RouterHttp([("/me?", me), ("/messages/delta", seed),
+                           ("$deltatoken=DH", seed)])
+        c = self.make(http)
+        c.poll_once(now=1)
+        self.assertTrue(http.headers)
+        for h in http.headers:
+            self.assertEqual(h.get("Prefer"), 'IdType="ImmutableId"')
+
+    def test_persistent_410_is_bounded_one_reseed_no_recursion(self):
+        # D4: a persistent 410 (mailbox migration) must NOT recurse ~1000 GETs
+        # into a RecursionError. It reseeds AT MOST once, then surfaces an error
+        # + heartbeat and backs off. Exactly two GETs: the original + one reseed.
+        gone = (410, {}, b"{}")
+        http = RouterHttp([("delta", gone)])
+        c = self.make(http, cursor={
+            "delta_link": GRAPH + "/delta?$deltatoken=DG", "email": ACCT})
+        res = c.poll_once(now=1)
+        self.assertEqual(res["status"], "status_410")
+        self.assertEqual(len(http.calls), 2)         # bounded — NOT ~1000
+        hb = json.loads(c.heartbeat_path().read_text())
+        self.assertFalse(hb["ok"])
+        self.assertTrue(any("410" in e for e in hb["errors"]))
 
     def test_dry_run_is_side_effect_free(self):
         # A dry run must not drop, advance the cursor, or write a heartbeat.

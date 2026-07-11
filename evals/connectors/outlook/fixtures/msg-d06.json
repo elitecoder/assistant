@@ -1,0 +1,41 @@
+{
+  "raw": {
+    "id": "d06",
+    "subject": "Re: Q3 planning",
+    "bodyPreview": "can you review?",
+    "webLink": "https://outlook.office365.com/mail/inbox/id/d06",
+    "receivedDateTime": "2026-07-10T12:00:00Z",
+    "inferenceClassification": "focused",
+    "from": {
+      "emailAddress": {
+        "name": "Dana Boss",
+        "address": "boss@corp.com"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "me@contoso.com"
+        }
+      }
+    ],
+    "ccRecipients": []
+  },
+  "expected": {
+    "schema": "world-event/1",
+    "id": "2b4eeab050367929fc1b801465cf426aa9239f65ab2db83363e0cc4de70a2a90",
+    "ts": "2026-07-10T12:00:00Z",
+    "epoch": 1783684800,
+    "source": "outlook",
+    "kind": "direct",
+    "external_id": "outlook:d06",
+    "actor": "Dana Boss <boss@corp.com>",
+    "title": "Re: Q3 planning",
+    "snippet": "can you review?",
+    "url": "https://outlook.office365.com/mail/inbox/id/d06",
+    "refs": {
+      "sender": "boss@corp.com"
+    },
+    "raw_path": null
+  }
+}

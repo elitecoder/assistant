@@ -66,11 +66,12 @@ class GoldenReplayTests(unittest.TestCase):
                      lambda raw: gm.message_to_event(raw, "mukul@gmail.com"))
 
     def test_outlook_fixtures_replay(self):
-        # M5 wave-3: >=15 recorded Microsoft Graph message shapes must still
+        # M5 wave-3: >=20 recorded Microsoft Graph message shapes must still
         # normalize to their committed WorldEvent (direct/cc/newsletter/message).
+        # The floor matches github/gmail (>=20) — the coverage convention is NOT
+        # weakened for the new connector (D7).
         self._replay(OUTLOOK_FIX,
-                     lambda raw: ol.message_to_event(raw, OUTLOOK_ACCT),
-                     minimum=15)
+                     lambda raw: ol.message_to_event(raw, OUTLOOK_ACCT))
 
     def test_every_expected_is_wellformed_worldevent(self):
         for d in (GH_FIX, GMAIL_FIX, OUTLOOK_FIX):

@@ -384,20 +384,32 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     for skip_base in "${PLIST_SKIP[@]}"; do
         [[ "$base" == "$skip_base" ]] && skip=1 && break
     done
-    if [[ $skip -eq 1 ]]; then
-        note "SKIP $base (opt-in daemon — activate by hand, see plist header)"
-        continue
-    fi
 
     # Substitute /Users/<user>/ → $HOME/ so the staged plist references the
     # current user's home dir. No-op for plists that don't have the token.
     sed "s|/Users/<user>/|$HOME_DIR/|g" "$plist" > "$staged"
 
+    # D8: ALWAYS stage + copy the plist — even a PLIST_SKIP one — so it actually
+    # LANDS in ~/Library/LaunchAgents and the documented
+    # `launchctl load ~/Library/LaunchAgents/<label>.plist` can succeed. The old
+    # code `continue`d BEFORE the copy, so a skipped plist never landed and the
+    # documented manual load failed for ALL six connector plists AND the
+    # single-process daemon. PLIST_SKIP now suppresses ONLY the auto-reload (the
+    # never-auto-load contract), never the copy: a skipped plist is placed but
+    # NOT appended to CHANGED_LABELS, so launchctl_reload is never called on it.
     if [[ -f "$target" ]] && cmp -s "$staged" "$target"; then
-        note "OK   $target (matches repo, no reload needed)"
+        if [[ $skip -eq 1 ]]; then
+            note "OK   $target (matches repo; opt-in daemon — not loaded, activate by hand)"
+        else
+            note "OK   $target (matches repo, no reload needed)"
+        fi
     else
         ensure_file_copy "$target" "$staged"
-        CHANGED_LABELS+=("$label")
+        if [[ $skip -eq 1 ]]; then
+            note "COPIED $base but NOT loaded (opt-in daemon — activate by hand, see plist header)"
+        else
+            CHANGED_LABELS+=("$label")
+        fi
     fi
 done
 

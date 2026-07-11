@@ -378,10 +378,10 @@
         "source": "outlook",
         "kind": "newsletter"
       },
-      "lane": "drop",
+      "lane": "digest",
       "action": null,
-      "urgency": null,
-      "ttl_h": null,
+      "urgency": "low",
+      "ttl_h": 24,
       "pageable": false,
       "enabled": true
     },

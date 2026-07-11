@@ -23,9 +23,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socket
 import sys
+import threading
+import time
 import unittest
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -92,6 +96,7 @@ class MicrosoftFlowTests(unittest.TestCase):
         # offline_access is how Microsoft issues a refresh_token.
         self.assertIn("offline_access", q["scope"][0])
         self.assertIn("Mail.Read", q["scope"][0])
+        self.assertIn("User.Read", q["scope"][0])  # D2: /me needs User.Read
         # Microsoft keys off the scope, NOT Google's access_type/prompt params.
         self.assertNotIn("access_type", q)
 
@@ -129,7 +134,7 @@ class MicrosoftFlowTests(unittest.TestCase):
         self.assertEqual(tok["token_uri"], MS_TOKEN)
         self.assertEqual(tok["refresh_token"], "REFRESH")
         self.assertEqual(tok["expiry_epoch"], 1000.0 + 1234)
-        self.assertEqual(tok["scopes"], "offline_access Mail.Read")
+        self.assertEqual(tok["scopes"], "offline_access User.Read Mail.Read")
 
     def test_no_refresh_token_raises_offline_access_hint(self):
         getter = _CaptureGetter()
@@ -167,6 +172,33 @@ class MicrosoftFlowTests(unittest.TestCase):
             exchange_transport=lambda u, f: _canned_tokens())
         self.assertTrue(getter.auth_url.startswith(MS_AUTH))
         self.assertNotIn("attacker", getter.auth_url)
+
+    def test_public_client_no_secret_omitted_from_exchange_and_token(self):
+        # D3: a Microsoft PUBLIC client authorizes with NO client_secret — the
+        # exchange POST must omit it (AAD rejects a presented secret) and the
+        # returned token dict must carry none (there is nothing to store).
+        getter = _CaptureGetter()
+        seen = {}
+        tok = conn.run_installed_app_flow(
+            client_id="CID", client_secret=None, provider="microsoft",
+            scopes=list(ol.OUTLOOK_SCOPES), token_uri=MS_TOKEN, auth_uri=MS_AUTH,
+            code_getter=getter,
+            exchange_transport=lambda u, f: seen.update(f) or _canned_tokens())
+        self.assertNotIn("client_secret", seen)      # never POSTed
+        self.assertEqual(seen["code_verifier"], seen.get("code_verifier"))
+        self.assertTrue(seen["code_verifier"])       # PKCE substitutes for it
+        self.assertNotIn("client_secret", tok)       # nothing to persist
+
+    def test_google_still_requires_client_secret(self):
+        # D3: Google's token endpoint needs a secret EVEN with PKCE, so the flow
+        # fails closed for a secret-less google authorize (unchanged confidential
+        # behavior).
+        with self.assertRaises(conn.OAuthError):
+            conn.run_installed_app_flow(
+                client_id="CID", client_secret=None, provider="google",
+                scopes=["s"], token_uri=G_TOKEN, auth_uri=G_AUTH,
+                code_getter=_CaptureGetter(),
+                exchange_transport=lambda u, f: _canned_tokens())
 
     def test_legit_microsoft_endpoints_pass_through(self):
         getter = _CaptureGetter()
@@ -242,6 +274,55 @@ class ProviderPinningRegressionTests(unittest.TestCase):
         self.assertEqual(uri2, G_TOKEN)
         self.assertTrue(aurl2.startswith(G_AUTH))
 
+    def test_http_scheme_is_pinned_to_https_default_for_both_providers(self):
+        # F1: a poisoned http:// token_uri on an OTHERWISE-VALID provider host
+        # must NOT survive — a cleartext POST would leak the code + PKCE verifier
+        # + secret to an on-path attacker. Host-only pinning (wave-1) let this
+        # through; scheme pinning closes it for BOTH providers (incl. the merged
+        # gmail/gcal OAuth).
+        cases = (
+            ("google", "http://oauth2.googleapis.com/token", G_TOKEN, G_AUTH),
+            ("microsoft",
+             "http://login.microsoftonline.com/common/oauth2/v2.0/token",
+             MS_TOKEN, MS_AUTH),
+        )
+        for provider, poisoned_http, pinned, auth in cases:
+            uri, _ = self._exchanged_uri(
+                provider=provider, token_uri=poisoned_http, auth_uri=auth)
+            self.assertEqual(uri, pinned, msg=provider)
+            self.assertTrue(uri.startswith("https://"), msg=provider)
+
+    def test_http_scheme_auth_uri_pinned_to_https_default(self):
+        # F1 for the AUTHORIZE endpoint: a poisoned http:// auth_uri on a valid
+        # host phishes consent over cleartext → pinned to the https default.
+        _, aurl = self._exchanged_uri(
+            provider="microsoft",
+            token_uri=MS_TOKEN,
+            auth_uri="http://login.microsoftonline.com/common/oauth2/v2.0/authorize")
+        self.assertTrue(aurl.startswith("https://"))
+        self.assertTrue(aurl.startswith(MS_AUTH))
+
+    def test_matching_host_with_tampered_port_pinned_to_default(self):
+        # F3: a valid https host but a non-default PORT must not smuggle a
+        # redirect to an attacker-controlled listener — reconstruct from the
+        # pinned default.
+        uri, _ = self._exchanged_uri(
+            provider="microsoft",
+            token_uri="https://login.microsoftonline.com:8443/common/oauth2/v2.0/token",
+            auth_uri=MS_AUTH)
+        self.assertEqual(uri, MS_TOKEN)
+
+    def test_unknown_provider_fails_closed(self):
+        # F4: a misspelled/unknown provider must RAISE (fail closed), never
+        # silently fall back to Google's pinning for a Microsoft flow.
+        with self.assertRaises(conn.OAuthError):
+            conn._provider("microsft")
+        with self.assertRaises(conn.OAuthError):
+            conn.run_installed_app_flow(
+                client_id="C", client_secret="S", provider="nope",
+                scopes=["s"], code_getter=_CaptureGetter(),
+                exchange_transport=lambda u, f: _canned_tokens())
+
     def test_refresh_pins_cache_token_uri_per_provider(self):
         # Defense-in-depth: even a token.json whose token_uri was later tampered
         # must refresh against the PINNED provider endpoint, for both providers.
@@ -299,10 +380,20 @@ class ClientSecretsTests(unittest.TestCase):
         self.assertEqual(tok, MS_TOKEN)   # defaults to Microsoft `common`
         self.assertEqual(auth, MS_AUTH)
 
-    def test_missing_fields_raise(self):
-        p = self._write({"installed": {"client_id": "only_id"}})
+    def test_missing_client_id_raises(self):
+        p = self._write({"installed": {"client_secret": "only_secret"}})
         with self.assertRaises(ValueError):
             ol._load_client_secrets(p)
+
+    def test_public_client_no_secret_is_allowed(self):
+        # D3: an Azure "Mobile and desktop applications" registration is a PUBLIC
+        # client with NO secret — client_id alone must parse, secret → None.
+        p = self._write({"installed": {"client_id": "cid"}})
+        cid, sec, tok, auth = ol._load_client_secrets(p)
+        self.assertEqual(cid, "cid")
+        self.assertIsNone(sec)
+        self.assertEqual(tok, MS_TOKEN)
+        self.assertEqual(auth, MS_AUTH)
 
 
 # ─── outlook.py --authorize end-to-end + OPTIONAL not_configured ─────────────
@@ -338,7 +429,7 @@ class AuthorizeIntegrationTests(HomeTestCase):
         self.assertEqual(c.token_path(), path)
         loaded = c.tokens.load()
         self.assertEqual(loaded["refresh_token"], "REFRESH")
-        self.assertEqual(loaded["scopes"], "offline_access Mail.Read")
+        self.assertEqual(loaded["scopes"], "offline_access User.Read Mail.Read")
         self.assertEqual(loaded["token_uri"], MS_TOKEN)  # pinned at seed time
 
     def test_authorize_poisoned_client_secrets_token_uri_pinned_microsoft(self):
@@ -413,6 +504,62 @@ class NotConfiguredTests(HomeTestCase):
 
     def test_authorize_missing_client_secrets_arg_rc2(self):
         self.assertEqual(ol.main(["--authorize"]), 2)
+
+
+class RedirectHostTests(unittest.TestCase):
+    """D3c: the loopback callback server ALWAYS binds 127.0.0.1, but the
+    redirect_uri it ADVERTISES uses the provider's redirect_host — `localhost`
+    for Microsoft (AAD's port-agnostic loopback exception is scoped to
+    `http://localhost` with NO trailing slash; a 127.0.0.1 redirect fails
+    AADSTS50011) and `127.0.0.1` (with the wave-1 trailing slash) for Google."""
+
+    def _advertised_redirect(self, redirect_host):
+        holder: dict = {}
+        result: dict = {}
+        getter = conn._LoopbackCodeGetter(timeout_sec=10,
+                                          open_url=lambda u: None,
+                                          redirect_host=redirect_host)
+
+        def build_auth_url(redirect_uri):
+            holder["uri"] = redirect_uri
+            return "http://example.invalid/consent"
+
+        def run():
+            try:
+                result["ret"] = getter(build_auth_url, "STATE")
+            except Exception as ex:  # noqa: BLE001
+                result["err"] = ex
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        for _ in range(1000):
+            if holder.get("uri"):
+                break
+            time.sleep(0.005)
+        self.assertIn("uri", holder, "loopback server never bound")
+        advertised = holder["uri"]
+        # The bind is always 127.0.0.1 regardless of the advertised host; hit it
+        # directly by port to complete the callback and let the thread finish.
+        port = urllib.parse.urlparse(advertised).port
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/?code=C&state=STATE", timeout=5).read()
+        t.join(timeout=5)
+        return advertised
+
+    def test_microsoft_advertises_localhost_without_trailing_slash(self):
+        uri = self._advertised_redirect("localhost")
+        parsed = urllib.parse.urlparse(uri)
+        self.assertEqual(parsed.hostname, "localhost")   # NOT 127.0.0.1
+        self.assertEqual(parsed.path, "")                # no trailing slash
+        self.assertTrue(uri.startswith("http://localhost:"))
+        self.assertFalse(uri.endswith("/"))
+
+    def test_google_advertises_127_0_0_1_with_trailing_slash_unchanged(self):
+        uri = self._advertised_redirect("127.0.0.1")
+        parsed = urllib.parse.urlparse(uri)
+        self.assertEqual(parsed.hostname, "127.0.0.1")   # wave-1 behavior kept
+        self.assertEqual(parsed.path, "/")               # trailing slash
+        self.assertTrue(uri.startswith("http://127.0.0.1:"))
 
 
 if __name__ == "__main__":

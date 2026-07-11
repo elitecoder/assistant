@@ -20,16 +20,31 @@ OAuth (design section 9 — the SAME base as Gmail/GCal, now provider="microsoft
     Microsoft allowlist (login.microsoftonline.com) — a poisoned client-secrets
     endpoint can never exfiltrate the code/secret (the wave-1 A1 fix, now
     per-provider).
-  - Scope is ``offline_access Mail.Read`` and nothing more. `offline_access` is
-    how Microsoft issues a refresh_token (the analog of Google's
-    access_type=offline+prompt=consent) — without it the cache would be useless
-    the moment the access token expires. PKCE S256 is sent (the base flow does).
+  - Scopes are ``offline_access User.Read Mail.Read`` and nothing more.
+    `offline_access` is how Microsoft issues a refresh_token (the analog of
+    Google's access_type=offline+prompt=consent) — without it the cache would be
+    useless the moment the access token expires. `User.Read` is REQUIRED for the
+    GET /me owner-address lookup that drives direct/cc classification: Mail.Read
+    alone does NOT grant /me, so without it every /me poll 403s and no mail ever
+    escalates (D2). PKCE S256 is sent (the base flow does).
   - The `common` tenant endpoint works for BOTH personal Outlook.com AND
     work/school M365 accounts.
+
+  AZURE APP REGISTRATION (public client — no secret):
+    Register the app under Azure "Mobile and desktop applications" (a PUBLIC
+    client), set the redirect URI to ``http://localhost`` (NOT 127.0.0.1 — AAD's
+    port-agnostic loopback exception is scoped to `localhost`, and a 127.0.0.1
+    redirect fails AADSTS50011), turn "Allow public client flows" ON, and create
+    NO client secret (a public client has none; PKCE is the substitute and AAD
+    rejects a presented secret with AADSTS700025). The client-secrets JSON needs
+    only ``client_id``.
+
   - Seed the token cache once, on the owner's hardware:
         bin/connectors/outlook.py --authorize --client-secrets <that.json>
     (add --force to replace an existing cache). No secret is ever printed; the
-    cache is written 0600 by the base's atomic writer.
+    cache is written 0600 by the base's atomic writer. If you previously
+    authorized with an older scope set, re-run with --force so the added
+    User.Read scope is consented (a scope change requires re-consent — D2).
 
 Cursor = Microsoft Graph's mail DELTA query. A first run with no cursor SEEDS:
 it walks the delta pages to obtain the durable ``@odata.deltaLink`` but emits
@@ -46,15 +61,22 @@ aborts WITHOUT advancing the cursor at all, so the whole walk re-runs next poll
 and re-emits (deltaLinks/skiptokens are reusable; the spine dedups). A 410 Gone
 on the deltaLink → the token expired → a full resync (emit-nothing reseed to a
 fresh deltaLink), SURFACED in the heartbeat as a loss window (wave-1 E5/E6), not
-reported as a clean seed.
+reported as a clean seed. The 410 handling is a BOUNDED LOOP, not recursion —
+one reseed per poll, so a persistently-gone delta endpoint can never blow the
+stack (D4).
 
 kind is derived MECHANICALLY from Graph metadata, DIRECT-ADDRESSED FIRST (SEC2 —
-never auto-drop a message addressed straight to the owner): the account address
-in toRecipients → direct; in ccRecipients → cc; else Graph's own
-inferenceClassification=="other" → newsletter; else message. When the account
-address is unknown (the /me lookup has not succeeded yet) the newsletter/direct
-branches are SKIPPED and the message is a plain `message` — a message can never
-be auto-dropped as newsletter without first confirming it is not direct.
+never auto-drop a message addressed straight to the owner): ANY of the owner's
+addresses (mail + UPN + smtp: proxyAddresses aliases — D1) in toRecipients →
+direct; in ccRecipients → cc; else Graph's own inferenceClassification=="other"
+→ newsletter; else message. When the owner address set is unknown (the /me
+lookup has not succeeded yet) the newsletter/direct branches are SKIPPED and the
+message is a plain `message`. CRUCIALLY, Outlook's `newsletter` lane is DIGEST,
+NOT drop (D1): inferenceClassification=="other" is Focused-Inbox's soft
+per-user importance guess, not a deterministic bulk marker (unlike Gmail's
+List-Unsubscribe header), and "Other" routinely holds wanted mail (DL traffic,
+first-contact humans, Bcc'd/alias-addressed mail). So Outlook has NO hard-drop
+rule — "other" mail is made VISIBLE in the digest, never silently tombstoned.
 
 Stdlib only (urllib via the base's injectable transports — NO msal/requests/azure
 libs). Both transports are dependency-injected so unit tests prove refresh-on-
@@ -76,14 +98,22 @@ from assistant import connector  # noqa: E402
 SOURCE = "outlook"
 NAME = "outlook"
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-# READ-ONLY scope only — this is a producer; it never sends, drafts, deletes or
+# READ-ONLY scopes — this is a producer; it never sends, drafts, deletes or
 # marks read. offline_access is what makes Microsoft issue a refresh_token.
-OUTLOOK_SCOPES = ("offline_access", "Mail.Read")
+# User.Read (D2) is REQUIRED for the GET /me owner-address lookup: Mail.Read
+# alone does NOT grant /me, so without User.Read every /me poll 403s, the owner
+# address is never learned, and EVERY message degrades to `message` (digest) —
+# direct mail would never escalate. Adding this scope means the owner must re-run
+# `--authorize --force` once to re-consent (see the module setup docstring).
+OUTLOOK_SCOPES = ("offline_access", "User.Read", "Mail.Read")
 # Minimal metadata fields — no message BODY beyond the bodyPreview snippet, and
 # never a token. toRecipients/ccRecipients/inferenceClassification are needed for
-# the mechanical direct/cc/newsletter classification (SEC2 direct-first).
+# the mechanical direct/cc/newsletter classification (SEC2 direct-first). isRead
+# is DELIBERATELY OMITTED (D5): it is unused downstream, and including it in the
+# delta $select makes Graph re-emit a message on a mark-read/flag long after the
+# 30-day dedup spine has pruned it — a needless duplicate decision.
 SELECT_FIELDS = ("id,subject,from,toRecipients,ccRecipients,receivedDateTime,"
-                 "webLink,bodyPreview,isRead,inferenceClassification")
+                 "webLink,bodyPreview,inferenceClassification")
 # $top bounds the delta page size well under max_events_per_poll so the cap is
 # only ever reached at a page BOUNDARY (never mid-page) — which is what keeps the
 # parked nextLink a fully-emitted contiguous prefix.
@@ -102,27 +132,45 @@ def _addrs(recips) -> set:
     return out
 
 
-def message_to_event(msg: dict, account_email: str = "") -> dict:
+def _owner_set(account) -> set:
+    """The owner's address(es) as a lower-cased set. Accepts a single string
+    (the wave-3 shape / the golden fixtures) OR an iterable of addresses (the
+    full proxyAddresses+mail+UPN set — D1): a message addressed to ANY of the
+    owner's aliases counts as addressed to the owner."""
+    if isinstance(account, str):
+        vals = [account]
+    else:
+        vals = list(account or [])
+    return {v.strip().lower() for v in vals
+            if isinstance(v, str) and v.strip()}
+
+
+def message_to_event(msg: dict, account_email="") -> dict:
     """One Microsoft Graph message (delta metadata) → one WorldEvent. Pure
     function (the replay fixtures test it directly).
 
     `kind` is derived MECHANICALLY from Graph's own metadata — never an LLM or a
-    lane decision. DIRECT-ADDRESSED WINS FIRST (SEC2): the account address in
+    lane decision. DIRECT-ADDRESSED WINS FIRST (SEC2): ANY owner address in
     toRecipients → direct; in ccRecipients → cc; else inferenceClassification
-    "other" → newsletter; else message. When account_email is unknown the
-    newsletter/direct/cc branches are skipped (→ message) so a direct message is
-    never auto-droppable as newsletter before we can confirm it is not direct.
-    Policies do the laning (direct→escalate, newsletter→drop, …); the connector
-    only labels."""
+    "other" → newsletter; else message. ``account_email`` is a single address
+    OR the full owner alias set (proxyAddresses + mail + UPN — D1), so a message
+    to an ALIAS still classifies direct and is never mis-laned as newsletter.
+    When it is unknown the newsletter/direct/cc branches are skipped (→ message)
+    so a direct message is never auto-droppable as newsletter before we can
+    confirm it is not direct. Note the Outlook `newsletter` lane is DIGEST, not
+    drop (D1): inferenceClassification=="other" is Focused-Inbox's soft
+    importance guess, NOT a deterministic bulk marker, so "other" mail is made
+    VISIBLE in the digest, never silently tombstoned. Policies do the laning;
+    the connector only labels."""
     msg_id = str(msg.get("id") or "?")
-    acct = (account_email or "").strip().lower()
+    acct = _owner_set(account_email)
     to_addrs = _addrs(msg.get("toRecipients"))
     cc_addrs = _addrs(msg.get("ccRecipients"))
     inference = str(msg.get("inferenceClassification") or "").strip().lower()
 
-    if acct and acct in to_addrs:
+    if acct and (to_addrs & acct):
         kind = "direct"
-    elif acct and acct in cc_addrs:
+    elif acct and (cc_addrs & acct):
         kind = "cc"
     elif acct and inference == "other":
         kind = "newsletter"
@@ -177,6 +225,10 @@ class OutlookConnector(connector.Connector):
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "User-Agent": "assistant-connector-outlook",
+            # D6: ask Graph for IMMUTABLE ids so a message's id survives a folder
+            # move — otherwise a move-out-and-back mints a NEW id, the dedup
+            # spine sees it as new, and the same human message is decided twice.
+            "Prefer": 'IdType="ImmutableId"',
         })
 
     def _heartbeat(self, now, errors=None, event_count=None, poll_count=None,
@@ -221,9 +273,14 @@ class OutlookConnector(connector.Connector):
         return self._delta(now, token, cursor, errors)
 
     def _fetch_account_email(self, now, token, cursor, errors) -> None:
+        # Needs the User.Read scope (D2) — Mail.Read alone 403s here. Fetch the
+        # owner's FULL address set (D1): mail + UPN + every smtp: proxyAddresses
+        # alias, so a message to an alias still classifies `direct` and is never
+        # mis-laned as a droppable newsletter.
         try:
             status, _h, body = self._get(
-                f"{GRAPH_BASE}/me?$select=mail,userPrincipalName", token)
+                f"{GRAPH_BASE}/me?$select=mail,userPrincipalName,proxyAddresses",
+                token)
         except Exception as e:  # noqa: BLE001
             errors.append(f"me: {str(e)[:120]}")
             return
@@ -231,8 +288,21 @@ class OutlookConnector(connector.Connector):
             errors.append(f"me status {status}")
             return
         me = _safe_json(body)
-        cursor["email"] = str(
-            me.get("mail") or me.get("userPrincipalName") or "").strip()
+        primary = str(me.get("mail") or me.get("userPrincipalName") or "").strip()
+        addrs = set()
+        for key in ("mail", "userPrincipalName"):
+            v = str(me.get(key) or "").strip().lower()
+            if v:
+                addrs.add(v)
+        # proxyAddresses look like ["SMTP:me@contoso.com", "smtp:alias@…", "sip:…"];
+        # keep only the smtp: routing aliases (case-insensitive prefix).
+        for pa in (me.get("proxyAddresses") or []):
+            if isinstance(pa, str) and pa[:5].lower() == "smtp:":
+                a = pa[5:].strip().lower()
+                if a:
+                    addrs.add(a)
+        cursor["email"] = primary            # primary, for display/back-compat
+        cursor["addrs"] = sorted(addrs)      # full owner alias set (JSON list)
 
     # ── delta walk (seed | incremental | resume; 410 full resync) ────────────
 
@@ -246,7 +316,11 @@ class OutlookConnector(connector.Connector):
                                   connector.DEFAULT_MAX_EVENTS_PER_POLL))
         max_pages = int(self.config.get("max_pages",
                                         connector.DEFAULT_MAX_PAGES))
-        email = cursor.get("email") or ""
+        # The owner's full alias set (mail + UPN + smtp: proxyAddresses — D1),
+        # falling back to the single primary address for a cursor seeded before
+        # the addrs set was recorded.
+        owner = cursor.get("addrs") or (
+            [cursor["email"]] if cursor.get("email") else [])
 
         # Where to start, and whether this walk emits. A parked resume_link wins
         # (mid-walk continuation); else the idle delta_link (incremental); else a
@@ -276,7 +350,13 @@ class OutlookConnector(connector.Connector):
         new_delta = None
         truncated = False
         failed_transient = False
-        retry_after = None
+        # D4: a persistent 410 must be BOUNDED. We restructure to a LOOP (never
+        # recurse — a mailbox-migration 410 that recurred once per GET blew the
+        # stack with ~1000 live GETs). Exactly ONE reseed is allowed per poll:
+        # the first 410 clears the pointers and restarts the walk from
+        # DELTA_START_URL emitting nothing; a SECOND 410 in the same poll returns
+        # an error status + heartbeat instead of looping again.
+        reseeded = False
 
         while True:
             pages += 1
@@ -289,15 +369,25 @@ class OutlookConnector(connector.Connector):
                         "errors": errors}
             if status == 410:
                 # The delta token expired — we lost the change window. Full
-                # resync: drop the pointers and reseed (emit NOTHING to a fresh
-                # deltaLink), SURFACING the loss (E5) rather than a clean seed.
+                # resync: reseed (emit NOTHING to a fresh deltaLink), SURFACING
+                # the loss (E5) rather than a clean seed. Bounded to ONE reseed.
+                if reseeded:
+                    errors.append("410 gone AGAIN after reseed — delta endpoint "
+                                  "persistently gone this poll; backing off")
+                    self._heartbeat(now, errors=errors)
+                    return {"status": "status_410", "emitted": emitted,
+                            "errors": errors}
                 errors.append("410 gone — delta token expired, full resync "
                               "(loss window)")
-                reset = dict(cursor)
-                reset.pop("delta_link", None)
-                reset.pop("resume_link", None)
-                reset.pop("resume_emitting", None)
-                return self._delta(now, token, reset, errors)
+                reseeded = True
+                url = DELTA_START_URL
+                emitting = False
+                mode = "seed"
+                truncated = False
+                next_link = None
+                new_delta = None
+                seen_ids = set()
+                continue
             if status != 200:
                 errors.append(f"delta status {status}")
                 res = {"status": f"status_{status}", "emitted": emitted,
@@ -333,7 +423,7 @@ class OutlookConnector(connector.Connector):
                 if not emitting:
                     continue              # seed: walk for the deltaLink only
                 try:
-                    event = message_to_event(it, email)
+                    event = message_to_event(it, owner)
                 except Exception as e:  # noqa: BLE001 — poison: skip-and-count
                     malformed += 1
                     errors.append(f"msg {mid[:24]}: malformed: {str(e)[:120]}")
@@ -394,12 +484,9 @@ class OutlookConnector(connector.Connector):
         # skip-and-counted) → report a healthy status so run_forever holds
         # cadence, exactly like Gmail's reseed returns "seeded". The errors (410
         # loss window, poison skips) are SURFACED in the heartbeat (ok=false).
-        res = {"status": "ok", "emitted": emitted, "errors": errors,
-               "mode": mode, "malformed": malformed, "removed": removed,
-               "truncated": truncated}
-        if retry_after is not None:
-            res["retry_after_sec"] = retry_after
-        return res
+        return {"status": "ok", "emitted": emitted, "errors": errors,
+                "mode": mode, "malformed": malformed, "removed": removed,
+                "truncated": truncated}
 
 
 def _safe_json(body) -> dict:
@@ -426,9 +513,13 @@ def _load_client_secrets(path) -> tuple:
     if not isinstance(block, dict):
         raise ValueError("client-secrets JSON 'installed'/'web' is malformed")
     cid = block.get("client_id")
-    secret = block.get("client_secret")
-    if not cid or not secret:
-        raise ValueError("client-secrets JSON missing client_id/client_secret")
+    # D3: an Azure "Mobile and desktop applications" registration is a PUBLIC
+    # client with NO secret — PKCE is the substitute and AAD rejects a presented
+    # secret. So require ONLY the client_id; the secret is optional and returned
+    # as None when absent (the flow then omits it from the exchange).
+    if not cid:
+        raise ValueError("client-secrets JSON missing client_id")
+    secret = block.get("client_secret") or None
     token_uri = block.get("token_uri") or connector.MICROSOFT_TOKEN_URI
     auth_uri = block.get("auth_uri") or connector.MICROSOFT_AUTH_URI
     return cid, secret, token_uri, auth_uri
