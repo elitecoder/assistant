@@ -2,7 +2,23 @@
 
 # 🛰️ Assistant
 
-**Your AI chief of staff — watches a fleet of Claude Code workspaces, acts on what's safe, and gets smarter the longer you use it.**
+### Your AI chief of staff for a fleet of Claude Code agents
+
+**Python owns every gate and every send. The LLM only ever *suggests* and *drafts*. Push is silent by construction, and it learns your rules as you work — driving down the one number that matters: _decisions you have to make each morning._**
+
+<p>
+  <a href="#install">Install</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#setup--connect-your-sources-opt-in">Connect your sources</a> ·
+  <a href="#using-it-day-to-day">The dashboard</a> ·
+  <a href="#architecture-decisions-the-why-not-the-what">Design principles</a>
+</p>
+
+![platform](https://img.shields.io/badge/platform-macOS-111111)
+![python](https://img.shields.io/badge/python-3.9%20%7C%203.12-3572A5)
+![gates](https://img.shields.io/badge/every%20gate-deterministic%20Python-2e7d32)
+![push](https://img.shields.io/badge/push-silent%20by%20default-616161)
+![outbound](https://img.shields.io/badge/outbound-draft--only-8f6e1f)
 
 </div>
 
@@ -22,23 +38,51 @@ Spin up a dozen Claude Code agents in parallel and walk away. Assistant watches 
 
 The longer you use it, the smarter it gets. It reads your own session history to find patterns, turns corrections and confirmations into rules, and asks if you want to keep them. Confirmed rules sync across all your machines automatically.
 
-## The decision spine (what it does now)
+## Why it's different
 
-Since the original fleet orchestrator, Assistant grew a **decision spine** ("Keel", milestones M0–M5, all merged into this tree). Everything inbound — email, Slack mention, GitHub notification, JIRA change, calendar reminder, a fleet signal, a stalled goal — is normalized into one **WorldEvent** and run through a single deterministic pipeline:
+- **Deterministic where it counts.** A Python policy engine — not a prompt — decides every lane, gate, and send. Bugs are diffs and unit tests; behavior can't drift because a model "decided" to do something else.
+- **The LLM can't act, only advise.** The triage model's lane map has no `auto` key, and the Strategist drafts *text* but never an action class. Structural guarantees, tested — not guidelines.
+- **Silent by construction.** The push budget is 0/day behind a single chokepoint; a suppressed alert is *ledgered*, not delivered. You pull when you want to; it never nags.
+- **Draft-only to the outside world.** `email.send` / `slack.send` are registered `forbidden`, not merely absent — enabling one would require a schema change, a new gate, and its own eval.
+- **It learns your rules.** Corrections and confirmations from your own sessions become proposed rules you approve, then sync across your machines.
 
+## How it works
+
+Everything inbound — email, a Slack mention, a GitHub notification, a JIRA change, a calendar reminder, a fleet signal, a stalled goal — is normalized into one **WorldEvent** and run through a single deterministic pipeline. The open set of the decision queue *is* your morning brief.
+
+```mermaid
+flowchart LR
+  S["📥 Email · Slack · GitHub<br/>JIRA · Calendar · Fleet"]:::src --> E([WorldEvent])
+  G["🎯 Goals"]:::src --> PL["Planner<br/>stages whitelisted work"]:::py
+  E --> P{"Policy engine<br/>deterministic · Python"}:::py
+  P -- auto --> AU["Reversible action<br/>ledgered · zero touch"]:::act
+  P -- "staged / escalate" --> Q[("Decision queue<br/>append-only")]:::store
+  P -- digest --> DG["FYI digest"]:::soft
+  P -- drop --> TB["Tombstone"]:::soft
+  P -. "no match" .-> TR["Triage LLM<br/>suggests a lane · cannot act"]:::llm
+  TR --> Q
+  PL --> Q
+  Q --> B["☀️ Morning brief<br/>= the open set"]:::brief
+  B -. "would notify?" .-> IG{"Interrupt gate<br/>budget 0/day"}:::py
+  IG -. "suppressed + ledgered" .-> B
+  classDef src fill:#eef2ff,stroke:#6366f1,color:#1e1b4b;
+  classDef py fill:#e8f5e9,stroke:#2e7d32,color:#14321a;
+  classDef llm fill:#fff4e5,stroke:#8f6e1f,color:#3a2c08;
+  classDef store fill:#f3f4f6,stroke:#6b7280,color:#111827;
+  classDef brief fill:#fef9c3,stroke:#b59005,color:#3f3200;
+  classDef act fill:#e0f2fe,stroke:#0284c7,color:#082f49;
+  classDef soft fill:#f9fafb,stroke:#d1d5db,color:#4b5563;
 ```
-WorldEvent  →  policy engine assigns a lane (deterministic, first-match-wins, pure Python)
-                 auto      pre-declared reversible action via existing channels; ledgered, zero human touch
-                 staged    opens a decision for review + a draft context pack
-                 escalate  opens a decision, queued to the top; the interrupt gate is consulted
-                 digest    daily FYI, collapsed by source
-                 drop      explicit rule only, ledgered as a tombstone
-            →  anything the rules don't match falls through to a suggestion-only triage LLM whose
-               lane map has NO `auto` key — it structurally cannot act, only suggest a lane
-               (any ambiguity / parse failure escalates)
-            →  append-only decision queue  (~/.assistant/decisions/decisions.jsonl)
-            →  the OPEN set of that queue IS your morning brief
-```
+
+The five lanes, assigned first-match-wins in pure Python (`policy.py` + `config/policies.bootstrap.json`):
+
+- **`auto`** — a pre-declared *reversible* action via existing channels; ledgered, zero human touch.
+- **`staged`** — opens a decision for review, with a draft context pack.
+- **`escalate`** — opens a decision, queued to the top; the interrupt gate is consulted.
+- **`digest`** — a daily FYI, collapsed by source.
+- **`drop`** — explicit rule only, ledgered as a tombstone.
+
+Anything the rules don't match falls through to a **suggestion-only triage LLM** whose lane map has no `auto` key — it structurally cannot act, only suggest a lane (any ambiguity or parse failure escalates). Laned items land in an append-only decision queue (`~/.assistant/decisions/decisions.jsonl`).
 
 Two things sit alongside it:
 
@@ -62,6 +106,10 @@ The whole thing optimizes one number downward, computed mechanically each day: *
 Connectors are **optional, read-only KeepAlive daemons**. Each turns one source into WorldEvents and nothing more — it never sends, replies, merges, or mutates (a grep CI test enforces this). An unconfigured connector is a quiet `not_configured` — shown as **Available, not connected** on the dashboard's Connections tab, never an error. Connect only the ones you want.
 
 `install.sh --apply` **copies** every connector plist into `~/Library/LaunchAgents/` but never loads one (auto-starting a network daemon behind your back is forbidden — and the pulse self-update re-runs install.sh). So the last step for any connector is a manual `launchctl load`.
+
+<details>
+<summary><b>▸ Connector-by-connector setup</b> — GitHub · Gmail · Calendar · Outlook · JIRA · Slack</summary>
+<br>
 
 **GitHub notifications** — uses the `gh` CLI's own token:
 ```bash
@@ -111,6 +159,8 @@ Default scope is your own work (`assignee | reporter | watcher = currentUser()`)
 launchctl load ~/Library/LaunchAgents/com.assistant.connector-slack.plist
 ```
 Default ingestion is **@-mentions + DMs only**. For full channel/group message ingestion, add `message.channels` / `message.groups` to the manifest AND `export SLACK_INGEST_CHANNELS=1`.
+
+</details>
 
 ## Config knobs you own
 
@@ -200,5 +250,5 @@ cd evals/observer && ./run.py            # 13 real-transcript fixtures × Observ
 The headline eval fixture (`01-ws97-trap-no-pr-mid-audit`) replays the production bug where an unrelated merged PR in transcript prose drove an auto-close. Run the evals after any change to `prompts/observer-batch-prompt.md` or `bin/build-ws-context.py`.
 
 <div align="center">
-<sub>Personal fleet manager for parallel cmux Claude Code workspaces · macOS</sub>
+<sub>A deterministic decision spine over a fleet of Claude Code agents · Python owns every gate · macOS</sub>
 </div>
