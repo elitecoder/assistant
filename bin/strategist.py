@@ -46,6 +46,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 SRC = REPO / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+from assistant import model_tiers  # noqa: E402
 
 STRATEGIST_DRAFT_PROMPT = REPO / "prompts/strategist-draft-prompt.md"
 
@@ -58,9 +61,11 @@ def strategist_runs_dir() -> Path:
     return _home() / ".assistant" / "strategist-runs"
 
 
-DEFAULT_MODEL = os.environ.get(
-    "STRATEGIST_MODEL", os.environ.get(
-        "OBSERVER_MODEL", "us.anthropic.claude-sonnet-4-6[1m]"))
+# The Strategist drafts staged-step TEXT from inline JSON → BALANCED tier.
+# STRATEGIST_MODEL / OBSERVER_MODEL still win if set (back-compat), else resolve.
+DEFAULT_MODEL = (os.environ.get("STRATEGIST_MODEL")
+                 or os.environ.get("OBSERVER_MODEL")
+                 or model_tiers.model_for("balanced"))
 DEFAULT_CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 # The drafter reads inline goal/decision JSON only (no transcripts), so it gets
 # the same short leash the triage batch does — never the Observer's.

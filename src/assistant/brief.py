@@ -555,6 +555,67 @@ def _cost_health(now: float) -> dict:
                 "n_pulses_7d": 0}
 
 
+def observer_audit_ledger_path() -> Path:
+    return _home() / ".assistant" / "audit" / "observer-drift.jsonl"
+
+
+def observer_audit_status_path() -> Path:
+    return _home() / ".assistant" / "audit" / "observer-audit-status.jsonl"
+
+
+def _observer_audit_health(now: float) -> dict:
+    """The frontier shadow-audit's health over the last 24h (Keel M8). PURE: no
+    LLM — reads two ledgers the pulse appends to and reports agreement.
+
+    Crucially it distinguishes THREE states, so silence is only ever read as
+    agreement when the audit is actually WORKING (M8 review M2):
+      • no comparisons AND no attempts → {"available": False} (never ran /
+        disabled) — the brief omits the card;
+      • attempts exist but produced no comparisons → available + FAILING (a
+        rejected/failing frontier spawn — e.g. a bad model id) so a dead audit
+        can't masquerade as a healthy, agreeing one;
+      • comparisons exist → the agreement rate + recent disagreements; a rising
+        disagreement rate is the 'Sonnet judgment is drifting' alarm.
+    """
+    cutoff = now - WINDOW_SEC
+    rows = _read_jsonl_window(observer_audit_ledger_path(), cutoff, now)
+    status = _read_jsonl_window(observer_audit_status_path(), cutoff, now)
+    if not rows and not status:
+        return {"available": False}
+    compared = len(rows)
+    agreed = sum(1 for r in rows if r.get("agreed"))
+    diffs = [r for r in rows if not r.get("agreed")]
+    diffs.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    failed_attempts = sum(1 for s in status if not s.get("ok"))
+    # FAILING when the audit has been attempting but landing zero comparisons —
+    # the empty-ledger-that-looks-agreeing trap.
+    failing = compared == 0 and failed_attempts > 0
+    last_error = None
+    if status:
+        last = max(status, key=lambda s: s.get("ts") or "")
+        if not last.get("ok"):
+            last_error = last.get("reason") or "frontier produced no verdicts"
+    model_audit = (rows[-1].get("model_audit") if rows
+                   else (status[-1].get("model_audit") if status else None))
+    return {
+        "available": True,
+        "window_h": 24,
+        "compared": compared,
+        "agreed": agreed,
+        "disagreements": len(diffs),
+        "agree_rate": round(agreed / compared, 3) if compared else None,
+        "attempts": len(status),
+        "failed_attempts": failed_attempts,
+        "failing": failing,
+        "last_error": last_error,
+        "model_audit": model_audit,
+        "recent_diffs": [
+            {"ws_ref": d.get("ws_ref"), "sonnet": d.get("sonnet"),
+             "frontier": d.get("frontier"), "ts": d.get("ts")}
+            for d in diffs[:5]],
+    }
+
+
 def _build_health(records: list[dict], now: float) -> dict:
     world = _read_json(world_path()) or {}
     events = world.get("events") or {}
@@ -567,6 +628,7 @@ def _build_health(records: list[dict], now: float) -> dict:
         "cost": _cost_health(now),
         "expired_unseen_24h": expired_unseen_count(records, now),
         "connectors": _connector_heartbeats(now),
+        "observer_audit": _observer_audit_health(now),
     }
 
 

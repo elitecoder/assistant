@@ -51,6 +51,10 @@ from typing import Any
 
 # ── Constants ────────────────────────────────────────────────────────────────
 REPO = Path(__file__).resolve().parent.parent.parent
+SRC = REPO / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+from assistant import model_tiers  # noqa: E402
 VENV_PYTHON = REPO / ".venv-mem0" / "bin" / "python3"
 
 MEM0_DATA_DIR = Path.home() / ".assistant" / "mem0"
@@ -59,9 +63,14 @@ USER_ID = "mukul"
 COLLECTION_NAME = "assistant_memory"
 
 AWS_REGION = os.environ.get("AWS_REGION") or "us-west-2"
-# NB: the [1m] suffix Claude Code puts on harness model ids is NOT a valid
-# Bedrock model id — Bedrock rejects it. Use the bare inference-profile id.
-BEDROCK_LLM_MODEL = "us.anthropic.claude-sonnet-4-6"
+# Keel M8 model-tiering: mem0 fact extraction is mechanical → CHEAP tier. mem0's
+# LLM backend is hardcoded to aws_bedrock (below), INDEPENDENT of how Claude Code
+# routes — so we pin provider_hint="bedrock" rather than let the resolver detect
+# off the CLI's flags; otherwise a host where the CLI uses the direct API would
+# hand this Bedrock backend a bare id it rejects. No long_context → never the
+# [1m] suffix Bedrock rejects on this path. MEM0_LLM_MODEL still wins if set.
+BEDROCK_LLM_MODEL = (os.environ.get("MEM0_LLM_MODEL")
+                     or model_tiers.model_for("cheap", provider_hint="bedrock"))
 BEDROCK_EMBED_MODEL = "amazon.titan-embed-text-v2:0"
 FASTEMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
