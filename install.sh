@@ -516,17 +516,22 @@ log ""
 # the runtime still pre-flights the binary and falls back to Claude if the chosen
 # agent isn't on PATH. Idempotent (never re-prompts once set) and never flipped
 # by a non-interactive self-update.
-CURRENT_AGENT="$(HOME="$HOME_DIR" python3 - <<'PY' 2>/dev/null || true
+# Read the persisted choice via `python3 -c` (NOT a heredoc inside $()) — a
+# heredoc-in-$() with parens in its body confuses bash's paren matching for the
+# command-substitution close. Only report a value the RUNTIME will honor, so a
+# hand-edited junk value (e.g. "gpt") doesn't wedge install into "already set"
+# while the runtime ignores it and dispatches claude — it re-prompts instead.
+CURRENT_AGENT="$(HOME="$HOME_DIR" python3 -c '
 import json, os
 from pathlib import Path
 p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
 try:
     d = json.loads(p.read_text()).get("dispatch") or {}
-    print(d.get("agent") or "")
+    a = d.get("agent") if isinstance(d, dict) else None
+    print(a if a in ("claude", "droid") else "")
 except Exception:
     print("")
-PY
-)"
+' 2>/dev/null || true)"
 if [[ $APPLY -eq 0 ]]; then
     note "(dry-run) Would ask which agent the fleet dispatches (Claude/Droid); current: ${CURRENT_AGENT:-claude (default)}"
 elif [[ -n "$CURRENT_AGENT" ]]; then
@@ -538,7 +543,10 @@ else
     log "Which coding agent should the fleet DISPATCH work to?"
     log "  1) Claude Code (default)"
     log "  2) Factory Droid"
-    read -r -p "Choice [1/2]: " AGENT_CHOICE
+    # `|| AGENT_CHOICE=""` so a Ctrl-D (EOF) at the prompt defaults to Claude
+    # instead of exiting `read` non-zero and killing the whole installer under
+    # `set -euo pipefail` before the memory step ever runs.
+    read -r -p "Choice [1/2]: " AGENT_CHOICE || AGENT_CHOICE=""
     CHOSEN=claude
     [[ "$AGENT_CHOICE" == "2" ]] && CHOSEN=droid
     if [[ "$CHOSEN" == "droid" ]] && ! command -v droid >/dev/null 2>&1; then
@@ -549,13 +557,31 @@ import json, os, sys
 from pathlib import Path
 p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
 p.parent.mkdir(parents=True, exist_ok=True)
+existing = ""
 try:
-    cfg = json.loads(p.read_text())
+    existing = p.read_text()
+except FileNotFoundError:
+    pass
+if existing.strip():
+    try:
+        cfg = json.loads(existing)
+    except Exception:
+        # REFUSE to overwrite a malformed config — clobbering it would silently
+        # drop the operator's other keys (brief/strategist/…). Fail loud instead.
+        sys.stderr.write("config.json is not valid JSON — fix it by hand; not overwriting\n")
+        sys.exit(2)
     if not isinstance(cfg, dict):
-        cfg = {}
-except Exception:
+        sys.stderr.write("config.json is not a JSON object — not overwriting\n")
+        sys.exit(2)
+else:
     cfg = {}
-cfg.setdefault("dispatch", {})["agent"] = sys.argv[1]
+# Coerce a pre-corrupted non-dict `dispatch` (e.g. a bare string) rather than
+# TypeError on setdefault()[...] = …
+disp = cfg.get("dispatch")
+if not isinstance(disp, dict):
+    disp = {}
+disp["agent"] = sys.argv[1]
+cfg["dispatch"] = disp
 tmp = p.with_suffix(".json.tmp")
 tmp.write_text(json.dumps(cfg, indent=2) + "\n")
 os.replace(tmp, p)

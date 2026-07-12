@@ -144,12 +144,22 @@ def test_explicit_env_arg_is_pure_policy_ignores_config(tmp_path, monkeypatch):
     assert ag.dispatch_agent({}) == "claude"
 
 
-def test_agent_available_preflights_only_droid(monkeypatch):
-    # claude is launched via the ~/.zprofile alias (not on PATH) → assumed present.
+def test_agent_available_preflights_only_droid(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(ag.shutil, "which", lambda _b: None)
+    # claude is launched via the ~/.zprofile alias (not on PATH) → assumed present.
     assert ag.agent_available(ag.CLAUDE) is True
-    # droid is pre-flighted: absent binary → not available (caller falls back to
-    # claude instead of spawning a never-ready workspace that storms the fleet).
+    # droid absent from PATH and known install locations → not available (caller
+    # falls back to claude).
     assert ag.agent_available(ag.DROID) is False
-    monkeypatch.setattr(ag.shutil, "which", lambda _b: "/usr/local/bin/droid")
+    # droid at Factory's default ~/.local/bin — INVISIBLE to launchd's pinned
+    # PATH (so shutil.which misses it) but found by the known-location probe, so
+    # a real droid install isn't a false-negative (M8 review PATH fix).
+    d = tmp_path / ".local" / "bin"
+    d.mkdir(parents=True)
+    (d / "droid").write_text("#!/bin/sh\n")
+    assert ag.agent_available(ag.DROID) is True
+    # or resolvable on PATH directly.
+    monkeypatch.setattr(ag.shutil, "which",
+                        lambda b: "/x/droid" if b == "droid" else None)
     assert ag.agent_available(ag.DROID) is True

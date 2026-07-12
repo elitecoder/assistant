@@ -768,6 +768,40 @@ def test_dispatch_todo_happy_path_droid(mod, home, no_sleep, monkeypatch):
     assert any("Read " in (t or "") for t in sent_texts)
 
 
+def test_dispatch_todo_never_ready_parks_no_respawn(mod, home, no_sleep):
+    """Root storm-fix (M8 review): a workspace whose REPL never reaches readiness
+    (missing/misconfigured agent, unanswered trust prompt, banner mismatch) must
+    STILL be stamped — parked to re-classify — so the next pulse can't re-spawn a
+    fresh dead workspace every pulse (the td-128 storm via the readiness path,
+    pronounced on droid). dispatch_todo returns False, but the TODO is stamped."""
+    _seed_todo(mod, [{"id": "td-1", "title": "t"}])
+    mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
+    mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
+    cwd = home / "dev"
+    cwd.mkdir(parents=True, exist_ok=True)
+    mod.DISPATCH_CWD = cwd
+
+    def fake_run(cmd, **k):
+        if cmd[1] == "ping":
+            return (0, "", "")
+        if cmd[1] == "new-workspace":
+            return (0, "workspace:7", "")
+        if cmd[1] == "list-pane-surfaces":
+            return (0, "surface:3", "")
+        return (0, "", "")
+
+    # A boot screen that NEVER matches any ready_re → the workspace never readies.
+    with mock.patch.object(mod, "run", side_effect=fake_run):
+        with mock.patch.object(mod, "_cmux_rpc", side_effect=lambda *a, **k: {}):
+            with mock.patch.object(mod, "_surface_read_text",
+                                   side_effect=lambda *a, **k: "still booting, no repl"):
+                ok = mod.dispatch_todo("td-1")
+
+    assert ok is False  # never-ready → dispatch failed
+    it = json.loads(mod.TODO_PATH.read_text())["items"][0]
+    assert it["status"] == "in-progress"  # …but STAMPED (parked) → no re-storm
+
+
 def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep):
     """Regression for td-128: a spawned workspace whose submission can't be
     confirmed via the transcript (e.g. a Claude Code transcript-layout change)

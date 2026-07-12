@@ -167,14 +167,28 @@ def dispatch_agent(env: dict | None = None) -> str:
 
 
 def agent_available(agent: str) -> bool:
-    """True if `agent`'s launch binary is resolvable on PATH. Claude is launched
-    via the ~/.zprofile `claude` alias (NOT an on-PATH executable), so it is
-    assumed present; only the opt-in `droid` binary is pre-flighted. The caller
-    uses this so a misconfigured ASSISTANT_DISPATCH_AGENT=droid on a box WITHOUT
-    droid degrades to claude instead of spawning a workspace that can never reach
-    readiness — which, because the never-ready return happens BEFORE the
-    idempotency stamp, would re-dispatch a fresh dead workspace every pulse until
-    the fleet caps saturate and block all dispatch (the td-128 storm)."""
+    """Best-effort pre-flight of the opt-in `droid` binary. Claude launches via
+    the ~/.zprofile `claude` alias (not an on-PATH executable) so it is assumed
+    present; only droid is checked. A True lets dispatch spawn droid; a False
+    makes the caller fall back to claude so a droid-less box keeps dispatching
+    instead of spawning a dead workspace.
+
+    IMPORTANT PATH caveat (M8 review): the pulse runs under launchd's PINNED,
+    minimal PATH — NOT the login shell that sources ~/.zprofile and actually
+    launches the agent. So a bare `shutil.which("droid")` false-negatives a droid
+    installed to ~/.local/bin (Factory's default) or a Homebrew path, which the
+    launcher WOULD find. We therefore also probe the common install locations. A
+    residual false-negative is not catastrophic: it only falls back to claude,
+    and the never-ready path now STAMPS (parks) rather than storms, so a wrongly-
+    spawned droid can't loop either way."""
     if agent != DROID:
         return True
-    return shutil.which(DROID) is not None
+    if shutil.which(DROID):
+        return True
+    home = Path(os.environ.get("HOME", str(Path.home())))
+    for cand in (home / ".local" / "bin" / DROID,
+                 Path("/opt/homebrew/bin") / DROID,
+                 Path("/usr/local/bin") / DROID):
+        if cand.exists():
+            return True
+    return False

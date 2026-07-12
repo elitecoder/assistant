@@ -1061,7 +1061,20 @@ def dispatch_todo(todo_id: str) -> bool:
             break
         time.sleep(1)
     if not ready:
-        log.warning("dispatch %s: %s never ready in %s/%s", todo_id, agent, ws_ref, surface_ref)
+        # ROOT storm-fix: STAMP the never-ready workspace before returning. A
+        # workspace exists but its REPL never came up — a missing/misconfigured
+        # agent, an unanswered first-launch trust prompt (droid has no known
+        # trust_marker), or a boot banner that doesn't match ready_re. Stamping
+        # parks the dead workspace to bucket_a (re-classify: human-surfaced, NOT
+        # auto-spawned), exactly like a workspace that dies later. WITHOUT it the
+        # un-stamped TODO stays in bucket_b and every pulse spawns a fresh dead
+        # workspace (the td-128 storm) — pronounced on the less-reliable droid
+        # readiness path, which the binary pre-flight alone does NOT cover. No
+        # prompt was sent, so this dispatch did no work; the re-classify card is
+        # the operator's signal to fix the agent.
+        log.warning("dispatch %s: %s never ready in %s/%s — parking to re-classify",
+                    todo_id, agent, ws_ref, surface_ref)
+        _mark_todo_dispatched(todo_id, ws_ref)
         return False
 
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
