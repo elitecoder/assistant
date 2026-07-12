@@ -48,8 +48,13 @@ PROPOSALS_PATH = ASSISTANT_DIR / "comms" / "proposals.jsonl"
 AUDIT_LOG = ASSISTANT_DIR / "assistant-audit.log"
 CURATOR = BIN / "assistant-curator.py"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
+# Keel M8 model-tiering: the extractor only PHRASES a {trigger, rule, target}
+# over a recurrence already DETECTED in Python (MIN_OCCURRENCES), and every
+# result is written as a HUMAN-CONFIRMED proposal — a hard gate that makes this
+# a Haiku task (a weak draft is reviewed, never auto-applied). Override per fleet
+# if the exact Bedrock Haiku id differs.
 EXTRACTOR_MODEL = os.environ.get(
-    "EXTRACTOR_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
+    "EXTRACTOR_MODEL", "us.anthropic.claude-haiku-4-5")
 
 # Tunables.
 TAIL_N = 200

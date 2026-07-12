@@ -307,8 +307,21 @@ class CeilingTests(_Base):
             self.assertNotIn("over_ceiling", src)
             self.assertNotIn("day_spend_usd", src)
         pulse_src = (REPO / "bin" / "pulse.py").read_text()
-        # the Observer batch caller must not gate on the ceiling either
-        self.assertNotIn("over_ceiling", pulse_src)
+        # The Observer DRIVER + triage never gate on the ceiling. The ONLY
+        # ceiling reference in pulse.py is the Keel-M8 frontier shadow-audit
+        # (run_observer_audit) — a records-only shadow that drives nothing and
+        # SHOULD shed first under budget pressure. So the refined invariant is:
+        # every `over_ceiling` in pulse.py lives inside run_observer_audit, and
+        # nothing on the driver path does. This preserves 'sheds the frontier
+        # audit, never the Observer that keeps the fleet moving.'
+        tree = ast.parse(pulse_src)
+        audit_fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "run_observer_audit")
+        audit_src = ast.get_source_segment(pulse_src, audit_fn)
+        self.assertIn("over_ceiling", audit_src)  # the audit DOES shed
+        self.assertEqual(pulse_src.count("over_ceiling"),
+                         audit_src.count("over_ceiling"))  # …and nothing else
 
 
 # ─── mechanical auto-pause twins ─────────────────────────────────────────────

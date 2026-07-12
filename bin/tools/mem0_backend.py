@@ -61,7 +61,10 @@ COLLECTION_NAME = "assistant_memory"
 AWS_REGION = os.environ.get("AWS_REGION") or "us-west-2"
 # NB: the [1m] suffix Claude Code puts on harness model ids is NOT a valid
 # Bedrock model id — Bedrock rejects it. Use the bare inference-profile id.
-BEDROCK_LLM_MODEL = "us.anthropic.claude-sonnet-4-6"
+# Keel M8 model-tiering: mem0 fact extraction is mechanical, so it defaults to
+# Haiku; override via MEM0_LLM_MODEL per fleet (bare id — no [1m] suffix).
+BEDROCK_LLM_MODEL = os.environ.get(
+    "MEM0_LLM_MODEL", "us.anthropic.claude-haiku-4-5")
 BEDROCK_EMBED_MODEL = "amazon.titan-embed-text-v2:0"
 FASTEMBED_MODEL = "BAAI/bge-small-en-v1.5"
 

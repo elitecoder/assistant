@@ -666,6 +666,29 @@ def _render_brief_tab_inner():
     q_pending = health.get("quarantine_pending")
     if q_pending:
         chips.append(f'<span class="ws-live-age cold">quarantine · {int(q_pending)}</span>')
+    # Frontier shadow-audit (Keel M8): the Opus-vs-Sonnet Observer agreement over
+    # the last 24h. A high agree-rate is the "judgment is NOT drifting" proof; a
+    # low one is the alarm. The tooltip carries the specific disagreements so the
+    # divergence is inspectable, not just a number.
+    audit = health.get("observer_audit") or {}
+    if audit.get("available"):
+        rate = audit.get("agree_rate")
+        dis = int(audit.get("disagreements") or 0)
+        compared = int(audit.get("compared") or 0)
+        agreed = int(audit.get("agreed") or 0)
+        if isinstance(rate, (int, float)):
+            acls = "fresh" if rate >= 0.9 else ("warm" if rate >= 0.75 else "cold")
+            pct = f"{rate * 100:.0f}%"
+        else:
+            acls, pct = "fresh", "n/a"
+        recent = audit.get("recent_diffs") or []
+        tip = "; ".join(
+            f"{d.get('ws_ref')}: sonnet={d.get('sonnet')} vs frontier={d.get('frontier')}"
+            for d in recent[:5]) or "no disagreements in the last 24h"
+        chips.append(
+            f'<span class="ws-live-age {acls}" title="frontier audit · {e(tip)}">'
+            f'frontier audit · {agreed}/{compared} agree ({e(pct)}) · '
+            f'{dis} diff · 24h</span>')
     health_html = (
         f'<div class="brief-health-chips">{"".join(chips)}</div>'
         if chips else

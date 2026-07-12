@@ -32,8 +32,13 @@ FIXTURES = REPO / "evals/observer/fixtures"
 
 def load_pulse(home: Path):
     """Import bin/pulse.py with HOME pointed at a tempdir (same pattern as
-    test_pulse.py — its path constants bind at import)."""
+    test_pulse.py — its path constants bind at import). The Keel-M8 frontier
+    shadow-audit is disabled here: it is an ORTHOGONAL, records-only feature
+    that would spawn a second Observer call per pulse, and this suite counts
+    Observer spawns to prove the no-change-skip wiring. Audit behaviour has its
+    own suite (test_model_tiering.py)."""
     os.environ["HOME"] = str(home)
+    os.environ["OBSERVER_AUDIT"] = "0"
     spec = importlib.util.spec_from_file_location("pulse_skip_mod",
                                                   str(PULSE_PATH))
     mod = importlib.util.module_from_spec(spec)

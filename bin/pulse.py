@@ -88,6 +88,11 @@ SUMMARIES_DIR = ASSISTANT_DIR / "observer-summaries"
 SENDS_LOG = ASSISTANT_DIR / "sends.jsonl"
 MERGE_LEDGER_PATH = ASSISTANT_DIR / "assistant-merged-prs.jsonl"
 OBSERVER_RUNS_DIR = ASSISTANT_DIR / "observer-runs"
+# Frontier shadow-audit (Keel M8): the per-window cadence stamp + the drift
+# ledger the audit appends per-ws Sonnet-vs-frontier verdict diffs to (read by
+# the brief's Health as a pure derivation — silence there is proof of agreement,
+# not assumed).
+AUDIT_DIR = ASSISTANT_DIR / "audit"
 # Observer-runs are the LLM transcript archive. We never delete them — disk
 # is cheap, the audit trail is not. If this ever grows unmanageable, prune
 # by hand or export to cold storage. The pulse loop does NOT touch it.
@@ -124,6 +129,31 @@ DEFAULT_OBSERVER_MODEL = os.environ.get(
     "OBSERVER_MODEL",
     "us.anthropic.claude-sonnet-4-6[1m]",
 )
+# Triage (Keel M2) is a suggestion-only lane classifier over inline event JSON —
+# validated against the policy enum, with a deterministic fail-safe `escalate`
+# already stamped on every event BEFORE the LLM runs. That hard gate makes it a
+# textbook Haiku task (a bad suggestion is caught / harmless), so it no longer
+# rides the Observer's Sonnet (Keel M8 model-tiering). Override on the fleet host
+# if the exact Bedrock Haiku id differs; a wrong id degrades to the escalate
+# fallback, never an unsafe action.
+TRIAGE_MODEL = os.environ.get(
+    "TRIAGE_MODEL", "us.anthropic.claude-haiku-4-5")
+# Periodic Opus shadow-audit of the Observer (Keel M8): every
+# OBSERVER_AUDIT_INTERVAL_HOURS the pulse ALSO runs a FRONTIER model over a
+# SAMPLE of the same workspace ctxs, purely to compare against the Sonnet
+# verdicts it is already acting on — a drift detector so a slowly-degrading
+# Sonnet read never gets silently "strung along." The audit DRIVES NOTHING
+# (records-only): it writes per-ws Sonnet-vs-frontier verdict diffs to the drift
+# ledger, surfaced in the brief's Health. It rides the daily cost ceiling
+# (frontier sheds FIRST) and is cadence-gated + sampled, so its cost is bounded
+# and known. Set OBSERVER_AUDIT=0 to disable; override the model id per fleet.
+OBSERVER_AUDIT_ENABLED = os.environ.get("OBSERVER_AUDIT", "1").lower() not in (
+    "0", "false", "no", "off", "")
+OBSERVER_AUDIT_MODEL = os.environ.get(
+    "OBSERVER_AUDIT_MODEL", "us.anthropic.claude-opus-4-1")
+OBSERVER_AUDIT_INTERVAL_HOURS = float(
+    os.environ.get("OBSERVER_AUDIT_INTERVAL_HOURS", "2"))
+OBSERVER_AUDIT_SAMPLE = int(os.environ.get("OBSERVER_AUDIT_SAMPLE", "6"))
 DEFAULT_CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 
 # One Observer subprocess judges WS_BATCH_SIZE workspaces. With 30 ws and
@@ -540,7 +570,7 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
 
     cmd = [
         DEFAULT_CLAUDE_BIN,
-        "--model", DEFAULT_OBSERVER_MODEL,
+        "--model", TRIAGE_MODEL,
         "--dangerously-skip-permissions",
         "--print",
         "--output-format", "json",
@@ -562,15 +592,14 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
         failed = rc != 0 or metering.parse_cli_result(out) is None
         if failed:
             metering.append_cost_row(
-                caller="triage", model=DEFAULT_OBSERVER_MODEL,
+                caller="triage", model=TRIAGE_MODEL,
                 usage={"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0,
                        "source": "none"},
                 wall_ms=wall_ms, status="failed")
         else:
-            usage = metering.observer_usage(out, len(prompt),
-                                            DEFAULT_OBSERVER_MODEL)
+            usage = metering.observer_usage(out, len(prompt), TRIAGE_MODEL)
             metering.append_cost_row(caller="triage",
-                                     model=DEFAULT_OBSERVER_MODEL,
+                                     model=TRIAGE_MODEL,
                                      usage=usage, wall_ms=wall_ms)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("triage metering capture failed (ignored): %s", e)
@@ -580,7 +609,7 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     (run_dir / "meta.json").write_text(json.dumps({
         "rc": rc,
         "wall_ms": wall_ms,
-        "model": DEFAULT_OBSERVER_MODEL,
+        "model": TRIAGE_MODEL,
         "n_events": len(events),
         "event_ids": [e.get("id") for e in events],
         "usage": usage,
@@ -884,7 +913,9 @@ def build_ctx(ws: dict) -> dict | None:
 
 
 def call_observer_batch(ctxs: list[dict], pulse_idx: int,
-                        batch_idx: int) -> tuple[dict[str, dict], dict]:
+                        batch_idx: int, *,
+                        model: str = DEFAULT_OBSERVER_MODEL,
+                        label: str = "batch") -> tuple[dict[str, dict], dict]:
     """Spawn ONE Observer subprocess to judge a batch of workspaces.
 
     The Observer writes its structured output to <run_dir>/verdicts.jsonl.
@@ -897,6 +928,11 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
     result mean the Observer didn't emit a line for them; the caller treats
     that as a skipped action. usage-dict is metering.observer_usage() shape
     (falls back to a chars/4 estimate when the envelope is unparsable).
+
+    `model`/`label` are parameterised (Keel M8) so the periodic FRONTIER
+    shadow-audit can reuse this exact spawn path on a different model, writing
+    to a distinct <label>-<idx> run dir so it never collides with the real
+    (Sonnet) batch's artifacts.
     """
     if not ctxs:
         return {}, {}
@@ -904,7 +940,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
         log.error("observer batch prompt missing: %s", OBSERVER_BATCH_PROMPT)
         return {}, {}
 
-    run_dir = OBSERVER_RUNS_DIR / f"{pulse_idx:04d}" / f"batch-{batch_idx}"
+    run_dir = OBSERVER_RUNS_DIR / f"{pulse_idx:04d}" / f"{label}-{batch_idx}"
     run_dir.mkdir(parents=True, exist_ok=True)
     verdicts_path = run_dir / "verdicts.jsonl"
     prompt_path = run_dir / "prompt.md"
@@ -940,7 +976,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
 
     cmd = [
         DEFAULT_CLAUDE_BIN,
-        "--model", DEFAULT_OBSERVER_MODEL,
+        "--model", model,
         "--dangerously-skip-permissions",
         "--print",
         # Single JSON result envelope on stdout — carries real token usage +
@@ -971,7 +1007,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
     try:
         sys.path.insert(0, str(BIN))
         import metering  # noqa: PLC0415
-        usage = metering.observer_usage(out, len(prompt), DEFAULT_OBSERVER_MODEL)
+        usage = metering.observer_usage(out, len(prompt), model)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("metering usage capture failed (ignored): %s", e)
 
@@ -982,7 +1018,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
     meta_path.write_text(json.dumps({
         "rc": rc,
         "wall_ms": wall_ms,
-        "model": DEFAULT_OBSERVER_MODEL,
+        "model": model,
         "cmd": cmd,
         "ws_refs": [c.get("ws_ref") for c in ctxs],
         "usage": usage,
@@ -994,6 +1030,141 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
                     len(ctxs), rc, err.strip()[-300:])
 
     return read_verdicts_file(verdicts_path), usage
+
+
+def observer_drift_ledger() -> Path:
+    return AUDIT_DIR / "observer-drift.jsonl"
+
+
+def audit_window_stamp(bucket: int) -> Path:
+    return AUDIT_DIR / f"audit-window-{bucket}.done"
+
+
+def _audit_sample(ctxs: list[dict], sonnet_verdicts: dict[str, dict],
+                  k: int) -> list[dict]:
+    """Pick up to k ctxs to shadow-audit, PREFERRING the consequential
+    (non-`active`) verdicts — a wrong `stranded`/`ready_*` read is what actually
+    drives a bad send, so those earn the frontier model's attention first — then
+    filling with the rest. Deterministic order (by ws_ref) so a replay is
+    stable."""
+    ordered = sorted(ctxs, key=lambda c: str(c.get("ws_ref") or ""))
+
+    def consequential(c):
+        v = (sonnet_verdicts.get(c.get("ws_ref")) or {}).get("verdict")
+        return v not in (None, "active")
+
+    pri = [c for c in ordered if consequential(c)]
+    rest = [c for c in ordered if not consequential(c)]
+    return (pri + rest)[:max(0, k)]
+
+
+def run_observer_audit(ctxs_to_observe: list[dict],
+                       sonnet_verdicts: dict[str, dict], pulse_idx: int,
+                       now: float | None = None) -> dict:
+    """Keel M8: a periodic FRONTIER shadow-audit of the Observer. RECORDS ONLY —
+    it drives no send, no dispatch, no card. Sonnet stays the driver; on the
+    audit cadence a frontier model judges the SAME ctxs and every per-ws verdict
+    diff lands in the drift ledger (surfaced in the brief's Health), so a
+    slowly-degrading Sonnet read is caught before it gets 'strung along'.
+
+    Gates, all fail-safe:
+      • the OBSERVER_AUDIT enable flag;
+      • a once-per-window stamp (interval configurable) — one audit per window,
+        no matter how many pulses fall in it;
+      • the daily cost ceiling — the frontier audit is the FIRST spend shed under
+        budget pressure ('shed the frontier first');
+      • sampling to OBSERVER_AUDIT_SAMPLE workspaces (prefer action-bearing
+        verdicts).
+    The stamp is reserved BEFORE the spend (fail-closed, like the narrator) so a
+    crash can't re-fire it every pulse. Returns a small summary dict; the caller
+    still fences the call so a broken audit can never touch the pulse."""
+    now = now if now is not None else time.time()
+    out: dict = {"ran": False}
+    if not OBSERVER_AUDIT_ENABLED or not ctxs_to_observe:
+        out["reason"] = "disabled-or-empty"
+        return out
+    interval = max(0.1, OBSERVER_AUDIT_INTERVAL_HOURS) * 3600.0
+    bucket = int(now // interval)
+    stamp = audit_window_stamp(bucket)
+    if stamp.exists():
+        out["reason"] = "already-audited-window"
+        return out
+    # Ceiling: the frontier audit sheds FIRST under budget pressure. A broken /
+    # absent gate must NOT spend blindly — fail closed to no-audit.
+    try:
+        if str(REPO / "src") not in sys.path:
+            sys.path.insert(0, str(REPO / "src"))
+        from assistant import strategist  # noqa: PLC0415
+        if strategist.over_ceiling(now):
+            out["reason"] = "ceiling-shed"
+            return out
+    except Exception as e:  # noqa: BLE001 — no gate → no spend
+        log.warning("audit ceiling gate unavailable → skipping audit: %s", e)
+        out["reason"] = "gate-unavailable"
+        return out
+    # Reserve the window stamp BEFORE the spend so a crash mid-audit can't let it
+    # re-fire every pulse this window.
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        tmp = stamp.with_name(f"{stamp.name}.{os.getpid()}.tmp")
+        tmp.write_text(utc_iso() + "\n")
+        os.replace(tmp, stamp)
+    except OSError:
+        pass
+    sample = _audit_sample(ctxs_to_observe, sonnet_verdicts,
+                           OBSERVER_AUDIT_SAMPLE)
+    if not sample:
+        out["reason"] = "no-sample"
+        return out
+    verdicts_frontier, usage = call_observer_batch(
+        sample, pulse_idx, 0, model=OBSERVER_AUDIT_MODEL, label="audit")
+    # Meter the audit as its OWN caller so its $/day is separable + auditable.
+    try:
+        if str(BIN) not in sys.path:
+            sys.path.insert(0, str(BIN))
+        import metering  # noqa: PLC0415
+        metering.append_cost_row(
+            caller="observer-audit", model=OBSERVER_AUDIT_MODEL,
+            usage=usage or {"tokens_in": 0, "tokens_out": 0,
+                            "cost_usd": 0.0, "source": "none"},
+            wall_ms=0, status="ok" if verdicts_frontier else "failed")
+    except Exception as e:  # noqa: BLE001 — metering must never break the pulse
+        log.warning("audit metering failed (ignored): %s", e)
+    # Compare + ledger. A ws the frontier didn't judge (no line) is a FAILURE,
+    # not a disagreement — skip it; never fabricate a diff from a missing read.
+    compared = agreed = 0
+    diff_ws: list[str] = []
+    rows: list[dict] = []
+    for ctx in sample:
+        ws_ref = ctx.get("ws_ref")
+        s = (sonnet_verdicts.get(ws_ref) or {}).get("verdict")
+        o = (verdicts_frontier.get(ws_ref) or {}).get("verdict")
+        if o is None:
+            continue
+        compared += 1
+        is_agree = (s == o)
+        if is_agree:
+            agreed += 1
+        else:
+            diff_ws.append(ws_ref)
+        rows.append({
+            "ts": utc_iso(), "epoch": int(now), "pulse_idx": pulse_idx,
+            "ws_ref": ws_ref, "sonnet": s, "frontier": o, "agreed": is_agree,
+            "model_driver": DEFAULT_OBSERVER_MODEL,
+            "model_audit": OBSERVER_AUDIT_MODEL,
+        })
+    if rows:
+        try:
+            led = observer_drift_ledger()
+            led.parent.mkdir(parents=True, exist_ok=True)
+            with open(led, "a") as f:
+                for r in rows:
+                    f.write(json.dumps(r) + "\n")
+        except OSError as e:
+            log.warning("audit drift ledger append failed (ignored): %s", e)
+    out.update({"ran": True, "compared": compared, "agreed": agreed,
+                "disagreements": len(diff_ws), "diff_ws": diff_ws})
+    return out
 
 
 def read_verdicts_file(path: Path) -> dict[str, dict]:
@@ -1880,6 +2051,20 @@ def main() -> int:
                     except Exception as e:
                         log.exception("observer batch crashed: %s", e)
         observer_duration_s = time.time() - t_obs
+
+        # Phase 2.5 (Keel M8): periodic FRONTIER shadow-audit. Sonnet's verdicts
+        # (verdicts_by_ref) already drive Phase 3 below; on the audit cadence a
+        # frontier model judges the SAME ctxs and its per-ws diffs land in the
+        # drift ledger — RECORDS ONLY, drives nothing. Fully fenced: a broken
+        # audit is a missing drift row, never a disturbed pulse.
+        try:
+            audit = run_observer_audit(ctxs_to_observe, verdicts_by_ref,
+                                       pulse_idx)
+            if audit.get("ran"):
+                log.info("observer-audit: %s", json.dumps(audit))
+        except Exception as e:  # noqa: BLE001 — the audit must never break a pulse
+            log.warning("observer audit failed (records-only; pulse "
+                        "unaffected): %s", e)
 
         # Phase 3: save + execute per ws. Drop the synthetic `ws_ref` field
         # from the verdict before save (save-ws-summary writes it back from

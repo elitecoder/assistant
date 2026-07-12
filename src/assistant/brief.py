@@ -555,6 +555,41 @@ def _cost_health(now: float) -> dict:
                 "n_pulses_7d": 0}
 
 
+def observer_audit_ledger_path() -> Path:
+    return _home() / ".assistant" / "audit" / "observer-drift.jsonl"
+
+
+def _observer_audit_health(now: float) -> dict:
+    """The frontier shadow-audit's agreement over the last 24h, from the drift
+    ledger the pulse's audit appends to (Keel M8). PURE: reads the ledger and
+    computes the agreement rate + the recent disagreements — no LLM. An absent
+    ledger yields {"available": False} and the brief simply omits the card.
+    Silence here is PROVEN agreement (every comparison is ledgered), never
+    assumed — a rising disagreement rate is the 'Sonnet judgment is drifting'
+    alarm the audit exists to raise."""
+    cutoff = now - WINDOW_SEC
+    rows = _read_jsonl_window(observer_audit_ledger_path(), cutoff, now)
+    if not rows:
+        return {"available": False}
+    compared = len(rows)
+    agreed = sum(1 for r in rows if r.get("agreed"))
+    diffs = [r for r in rows if not r.get("agreed")]
+    diffs.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    return {
+        "available": True,
+        "window_h": 24,
+        "compared": compared,
+        "agreed": agreed,
+        "disagreements": len(diffs),
+        "agree_rate": round(agreed / compared, 3) if compared else None,
+        "model_audit": rows[-1].get("model_audit"),
+        "recent_diffs": [
+            {"ws_ref": d.get("ws_ref"), "sonnet": d.get("sonnet"),
+             "frontier": d.get("frontier"), "ts": d.get("ts")}
+            for d in diffs[:5]],
+    }
+
+
 def _build_health(records: list[dict], now: float) -> dict:
     world = _read_json(world_path()) or {}
     events = world.get("events") or {}
@@ -567,6 +602,7 @@ def _build_health(records: list[dict], now: float) -> dict:
         "cost": _cost_health(now),
         "expired_unseen_24h": expired_unseen_count(records, now),
         "connectors": _connector_heartbeats(now),
+        "observer_audit": _observer_audit_health(now),
     }
 
 
