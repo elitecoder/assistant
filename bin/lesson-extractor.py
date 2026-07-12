@@ -41,6 +41,10 @@ from typing import Any, Callable
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 HOME = Path.home()
+SRC = REPO / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+from assistant import model_tiers  # noqa: E402
 
 ASSISTANT_DIR = HOME / ".assistant"
 LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
@@ -50,11 +54,11 @@ CURATOR = BIN / "assistant-curator.py"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 # Keel M8 model-tiering: the extractor only PHRASES a {trigger, rule, target}
 # over a recurrence already DETECTED in Python (MIN_OCCURRENCES), and every
-# result is written as a HUMAN-CONFIRMED proposal — a hard gate that makes this
-# a Haiku task (a weak draft is reviewed, never auto-applied). Override per fleet
-# if the exact Bedrock Haiku id differs.
-EXTRACTOR_MODEL = os.environ.get(
-    "EXTRACTOR_MODEL", "us.anthropic.claude-haiku-4-5")
+# result is a HUMAN-CONFIRMED proposal — a hard gate that makes this a CHEAP-tier
+# task (a weak draft is reviewed, never auto-applied). EXTRACTOR_MODEL still wins
+# if set (back-compat), else the resolver picks the provider's cheap id.
+EXTRACTOR_MODEL = (os.environ.get("EXTRACTOR_MODEL")
+                   or model_tiers.model_for("cheap"))
 
 # Tunables.
 TAIL_N = 200

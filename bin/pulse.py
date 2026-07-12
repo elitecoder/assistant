@@ -78,6 +78,13 @@ REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 HOME = Path.home()
 
+# Semantic model tiers (Keel M8): callers name a TIER, not a provider id — the
+# resolver picks the id the live backend (Bedrock/Anthropic/Vertex) expects.
+SRC = REPO / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+from assistant import model_tiers  # noqa: E402
+
 ASSISTANT_DIR = HOME / ".assistant"
 INBOX_DIR = ASSISTANT_DIR / "inbox"
 PULSE_LOG = ASSISTANT_DIR / "assistant-pulse.log"
@@ -125,10 +132,10 @@ CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources
 # FFP work re-homes itself into a fresh firefly-platform worktree via archffp.
 DISPATCH_CWD = Path(os.environ.get("DISPATCH_CWD", str(HOME / "dev")))
 
-DEFAULT_OBSERVER_MODEL = os.environ.get(
-    "OBSERVER_MODEL",
-    "us.anthropic.claude-sonnet-4-6[1m]",
-)
+# The Observer reads many transcripts → BALANCED tier, long-context. OBSERVER_MODEL
+# still wins if set (back-compat with the fleet's plist), else the resolver.
+DEFAULT_OBSERVER_MODEL = (os.environ.get("OBSERVER_MODEL")
+                          or model_tiers.model_for("balanced", long_context=True))
 # Triage (Keel M2) is a suggestion-only lane classifier over inline event JSON —
 # validated against the policy enum, with a deterministic fail-safe `escalate`
 # already stamped on every event BEFORE the LLM runs. That hard gate makes it a
@@ -136,8 +143,7 @@ DEFAULT_OBSERVER_MODEL = os.environ.get(
 # rides the Observer's Sonnet (Keel M8 model-tiering). Override on the fleet host
 # if the exact Bedrock Haiku id differs; a wrong id degrades to the escalate
 # fallback, never an unsafe action.
-TRIAGE_MODEL = os.environ.get(
-    "TRIAGE_MODEL", "us.anthropic.claude-haiku-4-5")
+TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL") or model_tiers.model_for("cheap")
 # Periodic Opus shadow-audit of the Observer (Keel M8): every
 # OBSERVER_AUDIT_INTERVAL_HOURS the pulse ALSO runs a FRONTIER model over a
 # SAMPLE of the same workspace ctxs, purely to compare against the Sonnet
@@ -149,8 +155,8 @@ TRIAGE_MODEL = os.environ.get(
 # and known. Set OBSERVER_AUDIT=0 to disable; override the model id per fleet.
 OBSERVER_AUDIT_ENABLED = os.environ.get("OBSERVER_AUDIT", "1").lower() not in (
     "0", "false", "no", "off", "")
-OBSERVER_AUDIT_MODEL = os.environ.get(
-    "OBSERVER_AUDIT_MODEL", "us.anthropic.claude-opus-4-1")
+OBSERVER_AUDIT_MODEL = (os.environ.get("OBSERVER_AUDIT_MODEL")
+                        or model_tiers.model_for("frontier", long_context=True))
 OBSERVER_AUDIT_INTERVAL_HOURS = float(
     os.environ.get("OBSERVER_AUDIT_INTERVAL_HOURS", "2"))
 OBSERVER_AUDIT_SAMPLE = int(os.environ.get("OBSERVER_AUDIT_SAMPLE", "6"))

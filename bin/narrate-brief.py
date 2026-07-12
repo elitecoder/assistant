@@ -41,6 +41,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 SRC = REPO / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+from assistant import model_tiers  # noqa: E402
 
 NARRATOR_PROMPT = REPO / "prompts/brief-narrator-prompt.md"
 
@@ -53,9 +56,11 @@ def narrator_runs_dir() -> Path:
     return _home() / ".assistant" / "narrator-runs"
 
 
-DEFAULT_MODEL = os.environ.get(
-    "NARRATOR_MODEL", os.environ.get(
-        "OBSERVER_MODEL", "us.anthropic.claude-sonnet-4-6[1m]"))
+# The narrator phrases the brief (the voice you read) → BALANCED tier.
+# NARRATOR_MODEL / OBSERVER_MODEL still win if set (back-compat), else resolve.
+DEFAULT_MODEL = (os.environ.get("NARRATOR_MODEL")
+                 or os.environ.get("OBSERVER_MODEL")
+                 or model_tiers.model_for("balanced"))
 DEFAULT_CLAUDE_BIN = os.environ.get(
     "CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 # The narrator reads inline brief facts only (no transcripts, no repo) — the
