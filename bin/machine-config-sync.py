@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -24,6 +25,51 @@ SYNC_PUSH = CONFIG_REPO / "scripts" / "sync-push.sh"
 SYNC_PULL = CONFIG_REPO / "scripts" / "sync-pull.sh"
 LAST_RUN_PATH = HOME / ".assistant" / "machine-config-sync-last.json"
 DEFAULT_INTERVAL = 3600
+
+
+def _env_timeout() -> int:
+    """Per-script timeout from MACHINE_CONFIG_SYNC_TIMEOUT, never crashing on a
+    bad value (a non-numeric env would ValueError-traceback every hour and never
+    write the marker) — falls back to 300s."""
+    raw = os.environ.get("MACHINE_CONFIG_SYNC_TIMEOUT", "300")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        print(f"machine-config: bad MACHINE_CONFIG_SYNC_TIMEOUT={raw!r} → 300s",
+              file=sys.stderr)
+        return 300
+
+
+def _run_script(path: Path, label: str, env: dict,
+                timeout_s: int) -> tuple[int, str, str, bool]:
+    """Run one sync script, killing the WHOLE process group on timeout. A plain
+    subprocess.run(timeout=) SIGKILLs only the direct `bash` child and ORPHANS
+    the hung `git`/`ssh` grandchild — the exact process the timeout exists to
+    stop — which could then hold .git/index.lock while the next script runs
+    (review). start_new_session + os.killpg reaps the whole tree. stdin is
+    /dev/null so an SSH host-key/passphrase prompt aborts rather than blocks.
+    Returns (rc, stdout, stderr, timed_out)."""
+    try:
+        proc = subprocess.Popen(
+            ["bash", str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, text=True, env=env, start_new_session=True)
+    except OSError as e:
+        return 127, "", f"spawn failed: {e}", False
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+        return proc.returncode, out or "", err or "", False
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            proc.kill()
+        try:
+            out, err = proc.communicate(timeout=10)
+        except Exception:  # noqa: BLE001
+            out, err = "", ""
+        print(f"machine-config: {label} timed out after {timeout_s}s "
+              f"(process group killed)", file=sys.stderr)
+        return 124, out or "", err or "", True
 
 
 def main() -> int:
@@ -56,41 +102,41 @@ def main() -> int:
               f"— repo present but not syncable; check the config repo", file=sys.stderr)
         return 1
 
-    # GIT_TERMINAL_PROMPT=0 so a credential/host-key prompt aborts instead of
-    # blocking; a per-script timeout so a hung git-over-SSH can't wedge the daemon
-    # forever (launchd won't start a second instance of a running label, so a
-    # hang would stop sync permanently). Both were absent (review).
+    # GIT_TERMINAL_PROMPT=0 so a credential prompt aborts instead of blocking; a
+    # per-script timeout with process-group kill so a hung git-over-SSH can't
+    # wedge the daemon (launchd won't start a second instance of a running
+    # label, so a hang would stop sync permanently). Both were absent (review).
     env = {**os.environ, "MACHINE_CONFIG_SYNC_IN_PROGRESS": "1",
            "GIT_TERMINAL_PROMPT": "0"}
-    timeout_s = int(os.environ.get("MACHINE_CONFIG_SYNC_TIMEOUT", "300"))
+    timeout_s = _env_timeout()
     pushed = pulled = False
-    rc = 0
 
-    try:
-        r = subprocess.run(["bash", str(SYNC_PUSH)], capture_output=True,
-                           text=True, env=env, timeout=timeout_s)
-        if r.returncode != 0:
-            print(r.stderr, file=sys.stderr)
-            rc = r.returncode
-        elif "Nothing to push" not in r.stdout:
-            pushed = True
-            print(r.stdout.strip())
-    except subprocess.TimeoutExpired:
-        print(f"machine-config: sync-push timed out after {timeout_s}s", file=sys.stderr)
-        rc = 124
+    prc, pout, perr, _ptimed = _run_script(SYNC_PUSH, "sync-push", env, timeout_s)
+    if prc != 0:
+        if perr:
+            print(perr, file=sys.stderr)
+    elif "Nothing to push" not in pout:
+        pushed = True
+        print(pout.strip())
+    rc = prc
 
-    try:
-        r = subprocess.run(["bash", str(SYNC_PULL)], capture_output=True,
-                           text=True, env=env, timeout=timeout_s)
-        if r.returncode != 0:
-            print(r.stderr, file=sys.stderr)
-            rc = rc or r.returncode
-        elif "Fast-forward" in r.stdout or "Updating" in r.stdout:
+    # SKIP pull when push failed or timed out. A rejected non-fast-forward push
+    # means the remote moved; a killed push may have left a partial state /
+    # index.lock. Pulling/re-projecting onto that risks an unattended merge over
+    # live-symlinked config — better to retry the whole cycle next hour. This is
+    # also the repo's own rule ("local commits ahead ALWAYS block the pull").
+    if prc == 0:
+        lrc, lout, lerr, _ltimed = _run_script(SYNC_PULL, "sync-pull", env, timeout_s)
+        if lrc != 0:
+            if lerr:
+                print(lerr, file=sys.stderr)
+            rc = lrc
+        elif "Fast-forward" in lout or "Updating" in lout:
             pulled = True
             print("machine-config: pulled config changes from another machine.")
-    except subprocess.TimeoutExpired:
-        print(f"machine-config: sync-pull timed out after {timeout_s}s", file=sys.stderr)
-        rc = rc or 124
+    else:
+        print("machine-config: push failed — skipping pull, retrying next cycle",
+              file=sys.stderr)
 
     LAST_RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
     LAST_RUN_PATH.write_text(json.dumps({"ts": now, "rc": rc, "pushed": pushed, "pulled": pulled}))

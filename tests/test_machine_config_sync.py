@@ -31,19 +31,21 @@ def _load(name: str, filename: str):
 mod = _load("machine_config_sync", "machine-config-sync.py")
 
 
-class MapRun:
-    """Fake subprocess.run that returns a per-script result keyed on whether the
-    invoked script path is sync-push or sync-pull."""
+class FakeRun:
+    """Fake mod._run_script keyed on the label (sync-push / sync-pull). Returns
+    the (rc, stdout, stderr, timed_out) tuple the real helper does; records the
+    labels it was called with so tests can assert pull is SKIPPED after a failed
+    push."""
 
     def __init__(self, results=None):
         self.results = results or {}
-        self.calls: list[list[str]] = []
+        self.calls: list[str] = []
 
-    def __call__(self, argv, *args, **kwargs):
-        self.calls.append(list(argv))
-        key = "push" if "sync-push" in argv[1] else "pull"
+    def __call__(self, path, label, env, timeout_s):
+        self.calls.append(label)
+        key = "push" if label == "sync-push" else "pull"
         rc, out, err = self.results.get(key, (0, "", ""))
-        return subprocess.CompletedProcess(argv, rc, stdout=out, stderr=err)
+        return (rc, out, err, rc == 124)
 
 
 @pytest.fixture
@@ -63,8 +65,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "SYNC_PULL", pull)
     monkeypatch.setattr(mod, "LAST_RUN_PATH", home / ".assistant" / "machine-config-sync-last.json")
 
-    fake = MapRun()
-    monkeypatch.setattr(mod.subprocess, "run", fake)
+    fake = FakeRun()
+    monkeypatch.setattr(mod, "_run_script", fake)
     return {"home": home, "repo": repo, "fake": fake, "monkeypatch": monkeypatch}
 
 
@@ -86,13 +88,14 @@ def test_missing_scripts_fail_loud_no_marker(env, capsys):
     assert not mod.LAST_RUN_PATH.exists()
 
 
-def test_push_timeout_is_survived(env):
-    def boom(argv, *a, **k):
-        if "sync-push" in argv[1]:
-            raise subprocess.TimeoutExpired(argv, 300)
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-    env["monkeypatch"].setattr(mod.subprocess, "run", boom)
-    assert mod.main() == 124  # timeout surfaced, not a hang
+def test_push_timeout_survived_and_pull_skipped(env):
+    # A timed-out push (rc 124) is surfaced, NOT a hang — and pull is SKIPPED so
+    # it can't run/re-project over a repo the killed push may have left mid-
+    # mutation / index.lock'd (review: the timeout must also skip the pull).
+    f = FakeRun({"push": (124, "", "")})
+    env["monkeypatch"].setattr(mod, "_run_script", f)
+    assert mod.main() == 124
+    assert f.calls == ["sync-push"]  # pull skipped
 
 
 def test_loop_guard_short_circuits(env, monkeypatch):
@@ -117,8 +120,8 @@ def test_malformed_last_run_proceeds(env):
 
 def test_clean_run_records_no_movement(env):
     env["monkeypatch"].setattr(
-        mod.subprocess, "run",
-        MapRun({"push": (0, "sync-push: Nothing to push.\n", ""), "pull": (0, "sync-pull: done.\n", "")}),
+        mod, "_run_script",
+        FakeRun({"push": (0, "sync-push: Nothing to push.\n", ""), "pull": (0, "sync-pull: done.\n", "")}),
     )
     assert mod.main() == 0
     data = json.loads(mod.LAST_RUN_PATH.read_text())
@@ -127,8 +130,8 @@ def test_clean_run_records_no_movement(env):
 
 def test_push_detected(env, capsys):
     env["monkeypatch"].setattr(
-        mod.subprocess, "run",
-        MapRun({"push": (0, "sync-push: reclaimed X\nsync-push: pushed.\n", ""), "pull": (0, "sync-pull: done.\n", "")}),
+        mod, "_run_script",
+        FakeRun({"push": (0, "sync-push: reclaimed X\nsync-push: pushed.\n", ""), "pull": (0, "sync-pull: done.\n", "")}),
     )
     assert mod.main() == 0
     assert json.loads(mod.LAST_RUN_PATH.read_text())["pushed"] is True
@@ -137,19 +140,24 @@ def test_push_detected(env, capsys):
 
 def test_pull_detected(env, capsys):
     env["monkeypatch"].setattr(
-        mod.subprocess, "run",
-        MapRun({"push": (0, "sync-push: Nothing to push.\n", ""), "pull": (0, "Updating abc..def\nFast-forward\n", "")}),
+        mod, "_run_script",
+        FakeRun({"push": (0, "sync-push: Nothing to push.\n", ""), "pull": (0, "Updating abc..def\nFast-forward\n", "")}),
     )
     assert mod.main() == 0
     assert json.loads(mod.LAST_RUN_PATH.read_text())["pulled"] is True
     assert "pulled config changes" in capsys.readouterr().out
 
 
-def test_push_nonzero_returncode_propagates(env, capsys):
-    env["monkeypatch"].setattr(
-        mod.subprocess, "run",
-        MapRun({"push": (7, "", "boom"), "pull": (0, "sync-pull: done.\n", "")}),
-    )
+def test_push_failure_skips_pull_and_propagates(env, capsys):
+    f = FakeRun({"push": (7, "", "boom"), "pull": (0, "sync-pull: done.\n", "")})
+    env["monkeypatch"].setattr(mod, "_run_script", f)
     assert mod.main() == 7
-    assert "boom" in capsys.readouterr().err
+    assert f.calls == ["sync-push"]  # pull NOT run after a failed push (review)
+    err = capsys.readouterr().err
+    assert "boom" in err and "skipping pull" in err
     assert json.loads(mod.LAST_RUN_PATH.read_text())["rc"] == 7
+
+
+def test_bad_timeout_env_does_not_crash(env, monkeypatch):
+    monkeypatch.setenv("MACHINE_CONFIG_SYNC_TIMEOUT", "5m")
+    assert mod.main() == 0  # bad value → 300s fallback, not a ValueError traceback
