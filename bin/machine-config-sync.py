@@ -46,27 +46,51 @@ def main() -> int:
         except Exception:
             pass
 
-    env = {**os.environ, "MACHINE_CONFIG_SYNC_IN_PROGRESS": "1"}
+    # The repo is present, so the sync scripts MUST be too. If they're missing
+    # (a config-repo restructure renamed/moved scripts/), FAIL LOUD and do NOT
+    # write the throttle marker — otherwise every box silently stops syncing,
+    # rc=0, logging nothing, forever. The mirrored memory-sync-pull fails loud on
+    # its missing script; this restores that safety (review).
+    if not SYNC_PUSH.exists() or not SYNC_PULL.exists():
+        print(f"machine-config: sync scripts missing under {CONFIG_REPO / 'scripts'} "
+              f"— repo present but not syncable; check the config repo", file=sys.stderr)
+        return 1
+
+    # GIT_TERMINAL_PROMPT=0 so a credential/host-key prompt aborts instead of
+    # blocking; a per-script timeout so a hung git-over-SSH can't wedge the daemon
+    # forever (launchd won't start a second instance of a running label, so a
+    # hang would stop sync permanently). Both were absent (review).
+    env = {**os.environ, "MACHINE_CONFIG_SYNC_IN_PROGRESS": "1",
+           "GIT_TERMINAL_PROMPT": "0"}
+    timeout_s = int(os.environ.get("MACHINE_CONFIG_SYNC_TIMEOUT", "300"))
     pushed = pulled = False
     rc = 0
 
-    if SYNC_PUSH.exists():
-        r = subprocess.run(["bash", str(SYNC_PUSH)], capture_output=True, text=True, env=env)
+    try:
+        r = subprocess.run(["bash", str(SYNC_PUSH)], capture_output=True,
+                           text=True, env=env, timeout=timeout_s)
         if r.returncode != 0:
             print(r.stderr, file=sys.stderr)
             rc = r.returncode
         elif "Nothing to push" not in r.stdout:
             pushed = True
             print(r.stdout.strip())
+    except subprocess.TimeoutExpired:
+        print(f"machine-config: sync-push timed out after {timeout_s}s", file=sys.stderr)
+        rc = 124
 
-    if SYNC_PULL.exists():
-        r = subprocess.run(["bash", str(SYNC_PULL)], capture_output=True, text=True, env=env)
+    try:
+        r = subprocess.run(["bash", str(SYNC_PULL)], capture_output=True,
+                           text=True, env=env, timeout=timeout_s)
         if r.returncode != 0:
             print(r.stderr, file=sys.stderr)
             rc = rc or r.returncode
         elif "Fast-forward" in r.stdout or "Updating" in r.stdout:
             pulled = True
             print("machine-config: pulled config changes from another machine.")
+    except subprocess.TimeoutExpired:
+        print(f"machine-config: sync-pull timed out after {timeout_s}s", file=sys.stderr)
+        rc = rc or 124
 
     LAST_RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
     LAST_RUN_PATH.write_text(json.dumps({"ts": now, "rc": rc, "pushed": pushed, "pulled": pulled}))

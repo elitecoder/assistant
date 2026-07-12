@@ -75,6 +75,26 @@ def test_skip_when_repo_missing(env, capsys):
     assert "not found" in capsys.readouterr().err
 
 
+def test_missing_scripts_fail_loud_no_marker(env, capsys):
+    # Repo present but scripts gone (a config-repo restructure) → FAIL LOUD
+    # (rc=1, stderr) and DON'T write the throttle marker, so it stays visible and
+    # retries — not a silent rc=0-forever no-op (review).
+    env["monkeypatch"].setattr(mod, "SYNC_PUSH", env["repo"] / "scripts" / "gone.sh")
+    assert mod.main() == 1
+    assert env["fake"].calls == []
+    assert "not syncable" in capsys.readouterr().err
+    assert not mod.LAST_RUN_PATH.exists()
+
+
+def test_push_timeout_is_survived(env):
+    def boom(argv, *a, **k):
+        if "sync-push" in argv[1]:
+            raise subprocess.TimeoutExpired(argv, 300)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    env["monkeypatch"].setattr(mod.subprocess, "run", boom)
+    assert mod.main() == 124  # timeout surfaced, not a hang
+
+
 def test_loop_guard_short_circuits(env, monkeypatch):
     # An inherited MACHINE_CONFIG_SYNC_IN_PROGRESS must abort before any work.
     monkeypatch.setenv("MACHINE_CONFIG_SYNC_IN_PROGRESS", "1")
