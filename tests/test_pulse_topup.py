@@ -694,6 +694,12 @@ def test_dispatch_todo_happy_path_droid(mod, home, no_sleep, monkeypatch):
     ~/.factory/sessions, reads the Droid transcript schema, sends no trust
     answer (droid has no known auto-answerable trust gate)."""
     monkeypatch.setenv("ASSISTANT_DISPATCH_AGENT", "droid")
+    # This test exercises the droid-PRESENT path; make the pre-flight see the
+    # binary (the box running tests has no `droid` on PATH, which would otherwise
+    # correctly fall back to claude).
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "which",
+                        lambda b: "/usr/local/bin/droid" if b == "droid" else None)
     _seed_todo(mod, [{"id": "td-1", "title": "Build feature"}])
     mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
     mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"

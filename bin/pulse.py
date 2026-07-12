@@ -989,6 +989,15 @@ def dispatch_todo(todo_id: str) -> bool:
     sys.path.insert(0, str(BIN))
     import agent_session  # noqa: PLC0415
     agent = agent_session.dispatch_agent()
+    # Pre-flight the opt-in droid binary: if ASSISTANT_DISPATCH_AGENT=droid but
+    # droid isn't installed here, degrade to claude rather than spawn a workspace
+    # that can never reach readiness (the never-ready return precedes the
+    # idempotency stamp, so it would re-dispatch a dead workspace every pulse
+    # until the fleet caps saturate). Claude keeps the fleet moving.
+    if agent == agent_session.DROID and not agent_session.agent_available(agent):
+        log.warning("dispatch %s: ASSISTANT_DISPATCH_AGENT=droid but the droid "
+                    "binary is not on PATH — falling back to claude", todo_id)
+        agent = agent_session.CLAUDE
     launch_cmd = agent_session.launch_command(agent)
     cwd = str(DISPATCH_CWD)
     title = f"{todo_id}: {item.get('title','')}"[:40]

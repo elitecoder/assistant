@@ -4,10 +4,16 @@ The fleet historically read Claude Code session transcripts under
 ``~/.claude/projects`` and spawned the bare ``claude`` REPL. Factory Droid is a
 second coding agent on this machine: it writes transcripts under
 ``~/.factory/sessions`` and is launched as ``droid``. This module is the ONE
-place that knows the per-agent differences, so every transcript reader
-(``lesson-extractor``, ``build-ws-context``, ``session-context-watcher``,
-``pulse``, ``tools/memory_seeds``) and the dispatcher (``pulse.dispatch_todo``)
-can stay agent-agnostic.
+place that knows the per-agent differences, so a transcript reader can stay
+agent-agnostic.
+
+Wired consumers today: ``lesson-extractor``, ``tools/memory_seeds`` (ingestion)
+and ``pulse.dispatch_todo`` (spawn). NOT yet droid-aware: ``build-ws-context``
+and ``session-context-watcher`` still resolve transcripts from
+``~/.claude/projects`` only — so a droid-DISPATCHED workspace produces no
+transcript for the Observer to read (it would be judged an Observer failure) and
+no session-context entry. Until those two are wired to this seam, droid dispatch
+is observability-incomplete; keep ASSISTANT_DISPATCH_AGENT=droid experimental.
 
 Two coexisting transcript schemas, normalized to one (role, content) shape:
 
@@ -26,6 +32,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
@@ -126,3 +133,17 @@ def dispatch_agent(env: dict | None = None) -> str:
     e = os.environ if env is None else env
     v = (e.get("ASSISTANT_DISPATCH_AGENT") or "").strip().lower()
     return v if v in AGENTS else CLAUDE
+
+
+def agent_available(agent: str) -> bool:
+    """True if `agent`'s launch binary is resolvable on PATH. Claude is launched
+    via the ~/.zprofile `claude` alias (NOT an on-PATH executable), so it is
+    assumed present; only the opt-in `droid` binary is pre-flighted. The caller
+    uses this so a misconfigured ASSISTANT_DISPATCH_AGENT=droid on a box WITHOUT
+    droid degrades to claude instead of spawning a workspace that can never reach
+    readiness — which, because the never-ready return happens BEFORE the
+    idempotency stamp, would re-dispatch a fresh dead workspace every pulse until
+    the fleet caps saturate and block all dispatch (the td-128 storm)."""
+    if agent != DROID:
+        return True
+    return shutil.which(DROID) is not None

@@ -97,3 +97,14 @@ def test_dispatch_agent_policy_defaults_claude():
 def test_trust_marker():
     assert ag.trust_marker(ag.CLAUDE) == "1. Yes, I trust this folder"
     assert ag.trust_marker(ag.DROID) is None
+
+
+def test_agent_available_preflights_only_droid(monkeypatch):
+    # claude is launched via the ~/.zprofile alias (not on PATH) → assumed present.
+    monkeypatch.setattr(ag.shutil, "which", lambda _b: None)
+    assert ag.agent_available(ag.CLAUDE) is True
+    # droid is pre-flighted: absent binary → not available (caller falls back to
+    # claude instead of spawning a never-ready workspace that storms the fleet).
+    assert ag.agent_available(ag.DROID) is False
+    monkeypatch.setattr(ag.shutil, "which", lambda _b: "/usr/local/bin/droid")
+    assert ag.agent_available(ag.DROID) is True
