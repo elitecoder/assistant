@@ -38,17 +38,17 @@ TIERS = ("frontier", "balanced", "cheap")
 # on an unlisted provider (or a renamed profile) never has to edit this file.
 _DEFAULTS = {
     "bedrock": {
-        "frontier": "us.anthropic.claude-opus-4-1",
+        "frontier": "us.anthropic.claude-opus-4-8",
         "balanced": "us.anthropic.claude-sonnet-4-6",
         "cheap":    "us.anthropic.claude-haiku-4-5",
     },
     "anthropic": {
-        "frontier": "claude-opus-4-1",
+        "frontier": "claude-opus-4-8",
         "balanced": "claude-sonnet-4-6",
         "cheap":    "claude-haiku-4-5",
     },
     "vertex": {
-        "frontier": "claude-opus-4-1",
+        "frontier": "claude-opus-4-8",
         "balanced": "claude-sonnet-4-6",
         "cheap":    "claude-haiku-4-5",
     },
@@ -70,14 +70,18 @@ def _zprofile_flag(key: str) -> str | None:
         text = (home / ".zprofile").read_text()
     except (OSError, FileNotFoundError):
         return None
-    m = re.search(rf'^\s*export\s+{re.escape(key)}\s*=\s*(.+?)\s*$', text, re.M)
-    if not m:
+    matches = re.findall(rf'^\s*export\s+{re.escape(key)}\s*=\s*(.+?)\s*$',
+                         text, re.M)
+    if not matches:
         return None
-    v = m.group(1).strip()
-    if (v.startswith('"') and v.endswith('"')) or \
-       (v.startswith("'") and v.endswith("'")):
-        v = v[1:-1]
-    return v
+    # LAST export wins — matches how the shell (and pulse.load_bedrock_env) reads
+    # a duplicated export, so the resolver can't disagree with the live backend.
+    v = matches[-1].strip()
+    if v[:1] in ("'", '"') and v[0] in v[1:]:
+        v = v[1:v.index(v[0], 1)]          # quoted value → the quoted contents
+    else:
+        v = v.split("#", 1)[0].split()[0] if v.split("#", 1)[0].split() else ""
+    return v or None
 
 
 def _flag(key: str) -> bool:
@@ -104,19 +108,31 @@ def provider() -> str:
     return "anthropic"
 
 
-def model_for(tier: str, *, long_context: bool = False) -> str:
+def model_for(tier: str, *, long_context: bool = False,
+              provider_hint: str | None = None) -> str:
     """Resolve a semantic tier to the concrete model id for the active provider.
 
-    A per-tier override env (ASSISTANT_MODEL_FRONTIER / _BALANCED / _CHEAP) wins,
-    so an operator can pin an exact id without code changes. long_context adds the
-    Bedrock-only `[1m]` 1M-context suffix — opt-in per call because Bedrock
-    rejects it on some paths, so it is never added on any other provider or when
-    not requested (a short-context caller like mem0 stays clean)."""
+    A per-tier override env (ASSISTANT_MODEL_FRONTIER / _BALANCED / _CHEAP) wins
+    and is taken VERBATIM — an operator pinning an exact id gets exactly that id
+    (no [1m] mangling), which is the whole point of the escape hatch.
+
+    `provider_hint` lets a caller whose OWN backend is fixed independently of the
+    CLI's routing pin the id format (mem0's LLM is hardcoded to Bedrock, so it
+    passes provider_hint="bedrock" — otherwise a host where the CLI routes
+    non-Bedrock would hand mem0 a bare id its Bedrock backend rejects). An
+    unknown hint falls back to detection.
+
+    long_context adds the Bedrock-only `[1m]` 1M-context suffix — opt-in per call
+    because Bedrock rejects it on some paths, so it is never added on any other
+    provider, when not requested, or to a verbatim override."""
     if tier not in TIERS:
         raise ValueError(f"unknown model tier {tier!r} (expected {TIERS})")
-    prov = provider()
     override = os.environ.get(f"ASSISTANT_MODEL_{tier.upper()}")
-    base = override or _DEFAULTS.get(prov, _DEFAULTS["anthropic"])[tier]
+    if override:
+        return override  # verbatim — the operator pinned an EXACT id
+    hint = (provider_hint or "").strip().lower()
+    prov = hint if hint in _DEFAULTS else provider()
+    base = _DEFAULTS.get(prov, _DEFAULTS["anthropic"])[tier]
     if long_context and prov == "bedrock" and not base.endswith("[1m]"):
         base = base + "[1m]"
     return base

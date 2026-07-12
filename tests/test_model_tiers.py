@@ -72,6 +72,14 @@ class ProviderDetectionTests(_Base):
         self.assertNotIn("CLAUDE_CODE_USE_BEDROCK", os.environ)
         self.assertEqual(mt.provider(), "bedrock")
 
+    def test_zprofile_last_export_wins_and_trailing_comment_stripped(self):
+        # A duplicated export → the shell (and load_bedrock_env) take the LAST;
+        # a trailing comment must not defeat the flag (M8 review).
+        (Path(self._tmp.name) / ".zprofile").write_text(
+            "export CLAUDE_CODE_USE_BEDROCK=0\n"
+            "export CLAUDE_CODE_USE_BEDROCK=1  # cloud host\n")
+        self.assertEqual(mt.provider(), "bedrock")
+
     def test_falsey_flag_is_not_bedrock(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "0"
         self.assertEqual(mt.provider(), "anthropic")
@@ -80,14 +88,25 @@ class ProviderDetectionTests(_Base):
 class ResolutionTests(_Base):
     def test_bedrock_ids(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
-        self.assertEqual(mt.model_for("frontier"), "us.anthropic.claude-opus-4-1")
+        # frontier is a CURRENT Opus (not the deprecated 4-1 the review flagged)
+        self.assertEqual(mt.model_for("frontier"), "us.anthropic.claude-opus-4-8")
         self.assertEqual(mt.model_for("balanced"), "us.anthropic.claude-sonnet-4-6")
         self.assertEqual(mt.model_for("cheap"), "us.anthropic.claude-haiku-4-5")
 
     def test_anthropic_ids_are_bare(self):
         os.environ["MODEL_PROVIDER"] = "anthropic"
-        self.assertEqual(mt.model_for("frontier"), "claude-opus-4-1")
+        self.assertEqual(mt.model_for("frontier"), "claude-opus-4-8")
         self.assertEqual(mt.model_for("cheap"), "claude-haiku-4-5")
+
+    def test_provider_hint_pins_id_format_independent_of_detection(self):
+        # mem0's LLM is hardcoded Bedrock even when the CLI routes elsewhere → it
+        # passes provider_hint="bedrock" and must get a Bedrock id (M8 review M3).
+        os.environ["MODEL_PROVIDER"] = "anthropic"
+        self.assertEqual(mt.model_for("cheap", provider_hint="bedrock"),
+                         "us.anthropic.claude-haiku-4-5")
+        # an unknown hint falls back to detection
+        self.assertEqual(mt.model_for("cheap", provider_hint="nonsense"),
+                         "claude-haiku-4-5")
 
     def test_long_context_suffix_is_bedrock_only_and_opt_in(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
@@ -99,14 +118,15 @@ class ResolutionTests(_Base):
         os.environ["MODEL_PROVIDER"] = "anthropic"
         self.assertNotIn("[1m]", mt.model_for("balanced", long_context=True))
 
-    def test_per_tier_override_wins(self):
+    def test_per_tier_override_is_verbatim(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
         os.environ["ASSISTANT_MODEL_CHEAP"] = "my-org/tiny-model-v9"
         self.assertEqual(mt.model_for("cheap"), "my-org/tiny-model-v9")
-        # override is taken verbatim — no [1m] appended unless the operator's id
-        # already carries it and long_context is asked
+        # VERBATIM — the operator pinned an exact id, so [1m] is NOT appended even
+        # under long_context (they may have pinned it BECAUSE their path rejects
+        # [1m]); if they want it they include it themselves (M8 review).
         self.assertEqual(mt.model_for("cheap", long_context=True),
-                         "my-org/tiny-model-v9[1m]")
+                         "my-org/tiny-model-v9")
 
     def test_unknown_tier_raises(self):
         with self.assertRaises(ValueError):

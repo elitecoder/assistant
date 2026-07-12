@@ -78,6 +78,24 @@ class RoutingTests(unittest.TestCase):
         pulse = _load_pulse()
         self.assertIn("opus", pulse.OBSERVER_AUDIT_MODEL)
 
+    def test_bad_audit_env_does_not_crash_import(self):
+        # A typo in a numeric audit tunable must fall back to the default, NOT
+        # take the whole pulse down at import (M8 review M1).
+        saved = {k: os.environ.get(k) for k in
+                 ("OBSERVER_AUDIT_SAMPLE", "OBSERVER_AUDIT_INTERVAL_HOURS")}
+        os.environ["OBSERVER_AUDIT_SAMPLE"] = "all"
+        os.environ["OBSERVER_AUDIT_INTERVAL_HOURS"] = "2h"
+        try:
+            pulse = _load_pulse()  # must not raise
+            self.assertEqual(pulse.OBSERVER_AUDIT_SAMPLE, 6)
+            self.assertEqual(pulse.OBSERVER_AUDIT_INTERVAL_HOURS, 2.0)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
 
 class _AuditBase(unittest.TestCase):
     def setUp(self):
@@ -160,6 +178,18 @@ class AuditGateTests(_AuditBase):
             self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 0, now=self.now)
         self.assertFalse(out["ran"])
 
+    def test_unreservable_stamp_fails_closed_no_spend(self):
+        # If the window stamp can't be written durably (here: ~/.assistant/audit
+        # exists as a FILE, so mkdir raises), the audit must SKIP, never spend —
+        # else it'd re-fire every pulse into a frontier-spend loop (M8 review B2).
+        (self._tmp / ".assistant" / "audit").write_text("i am a file not a dir")
+        self._frontier = {"ws:1": "active"}
+        out = self.pulse.run_observer_audit(
+            self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 0, now=self.now)
+        self.assertFalse(out["ran"])
+        self.assertEqual(out["reason"], "stamp-unreservable")
+        self.assertEqual(self._spawn_calls, [])  # never spent
+
     def test_uses_the_frontier_model_and_audit_label(self):
         self._frontier = {"ws:1": "active"}
         self.pulse.run_observer_audit(
@@ -215,6 +245,23 @@ class AuditDriftTests(_AuditBase):
             self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 0, now=self.now)
         self.assertEqual(called, [])
 
+    def test_failing_frontier_writes_ok_false_status_row(self):
+        # Frontier judged nothing (rejected spawn) → zero drift rows, but a
+        # status row with ok=False so the brief can see the audit is FAILING
+        # rather than read the empty drift ledger as agreement (M8 review M2).
+        self._frontier = {}  # frontier returns no verdicts for any ws
+        out = self.pulse.run_observer_audit(
+            self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 0, now=self.now)
+        self.assertTrue(out["ran"])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["compared"], 0)
+        drift = self._tmp / ".assistant" / "audit" / "observer-drift.jsonl"
+        self.assertFalse(drift.exists())  # no fabricated comparisons
+        status = self._tmp / ".assistant" / "audit" / "observer-audit-status.jsonl"
+        rows = [json.loads(x) for x in status.read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["ok"])
+
 
 class BriefHealthDerivationTests(unittest.TestCase):
     def setUp(self):
@@ -253,6 +300,22 @@ class BriefHealthDerivationTests(unittest.TestCase):
 
     def test_absent_ledger_is_unavailable(self):
         self.assertFalse(self.brief._observer_audit_health(self.now)["available"])
+
+    def test_failing_audit_is_surfaced_not_read_as_agreement(self):
+        # Status rows show attempts, but the drift ledger is empty → the audit is
+        # FAILING, not silently agreeing (M8 review M2). available=True so the
+        # dashboard shows a loud FAILING chip instead of omitting the card.
+        status = self._tmp / ".assistant" / "audit" / "observer-audit-status.jsonl"
+        status.write_text(json.dumps({
+            "ts": self.brief.utc_iso(self.now - 60), "epoch": int(self.now - 60),
+            "ok": False, "compared": 0, "agreed": 0, "disagreements": 0,
+            "model_audit": "opus", "reason": "frontier produced no verdicts"}) + "\n")
+        h = self.brief._observer_audit_health(self.now)
+        self.assertTrue(h["available"])
+        self.assertTrue(h["failing"])
+        self.assertEqual(h["compared"], 0)
+        self.assertEqual(h["failed_attempts"], 1)
+        self.assertEqual(h["last_error"], "frontier produced no verdicts")
 
 
 if __name__ == "__main__":

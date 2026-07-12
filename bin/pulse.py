@@ -155,11 +155,30 @@ TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL") or model_tiers.model_for("cheap")
 # and known. Set OBSERVER_AUDIT=0 to disable; override the model id per fleet.
 OBSERVER_AUDIT_ENABLED = os.environ.get("OBSERVER_AUDIT", "1").lower() not in (
     "0", "false", "no", "off", "")
+
+
+def _env_num(key, default, cast):
+    """Parse a numeric env var WITHOUT ever crashing import on a typo. A bad value
+    (e.g. OBSERVER_AUDIT_SAMPLE=all, INTERVAL_HOURS=2h) falls back to the default
+    instead of raising a module-level ValueError that would take the WHOLE pulse
+    daemon down at import — the audit's isolation must cover config errors too,
+    not just runtime (M8 review). Logged so the typo is visible, not silent."""
+    raw = os.environ.get(key, default)
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        # NB: `log` isn't bound yet at import time — use the logging module
+        # directly so this helper is self-contained and can't NameError.
+        logging.getLogger("pulse").warning(
+            "bad %s=%r → using default %r", key, raw, default)
+        return cast(default)
+
+
 OBSERVER_AUDIT_MODEL = (os.environ.get("OBSERVER_AUDIT_MODEL")
                         or model_tiers.model_for("frontier", long_context=True))
-OBSERVER_AUDIT_INTERVAL_HOURS = float(
-    os.environ.get("OBSERVER_AUDIT_INTERVAL_HOURS", "2"))
-OBSERVER_AUDIT_SAMPLE = int(os.environ.get("OBSERVER_AUDIT_SAMPLE", "6"))
+OBSERVER_AUDIT_INTERVAL_HOURS = _env_num(
+    "OBSERVER_AUDIT_INTERVAL_HOURS", "2", float)
+OBSERVER_AUDIT_SAMPLE = _env_num("OBSERVER_AUDIT_SAMPLE", "6", int)
 DEFAULT_CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 
 # One Observer subprocess judges WS_BATCH_SIZE workspaces. With 30 ws and
@@ -1042,6 +1061,14 @@ def observer_drift_ledger() -> Path:
     return AUDIT_DIR / "observer-drift.jsonl"
 
 
+def observer_audit_status_ledger() -> Path:
+    """One row per audit ATTEMPT (ok/failed), so a run that spawned the frontier
+    but got zero verdicts back is VISIBLE — the brief distinguishes 'never ran'
+    from 'ran and failing' instead of reading an empty drift ledger as silent
+    agreement (M8 review M2)."""
+    return AUDIT_DIR / "observer-audit-status.jsonl"
+
+
 def audit_window_stamp(bucket: int) -> Path:
     return AUDIT_DIR / f"audit-window-{bucket}.done"
 
@@ -1109,14 +1136,20 @@ def run_observer_audit(ctxs_to_observe: list[dict],
         out["reason"] = "gate-unavailable"
         return out
     # Reserve the window stamp BEFORE the spend so a crash mid-audit can't let it
-    # re-fire every pulse this window.
+    # re-fire every pulse this window. If the reservation CANNOT be made durable
+    # (a stray ~/.assistant/audit file, a perms problem, disk-full), FAIL CLOSED:
+    # skip the audit rather than spend, because an un-reserved spend would re-fire
+    # every pulse — an unbounded frontier-spend loop, invisible on a full disk
+    # where the cost ledger can't grow to trip the ceiling either (M8 review B2).
     try:
         stamp.parent.mkdir(parents=True, exist_ok=True)
         tmp = stamp.with_name(f"{stamp.name}.{os.getpid()}.tmp")
         tmp.write_text(utc_iso() + "\n")
         os.replace(tmp, stamp)
-    except OSError:
-        pass
+    except OSError as e:
+        log.warning("audit stamp unreservable → skipping (fail-closed): %s", e)
+        out["reason"] = "stamp-unreservable"
+        return out
     sample = _audit_sample(ctxs_to_observe, sonnet_verdicts,
                            OBSERVER_AUDIT_SAMPLE)
     if not sample:
@@ -1168,7 +1201,24 @@ def run_observer_audit(ctxs_to_observe: list[dict],
                     f.write(json.dumps(r) + "\n")
         except OSError as e:
             log.warning("audit drift ledger append failed (ignored): %s", e)
-    out.update({"ran": True, "compared": compared, "agreed": agreed,
+    # Status row per attempt — ok=False when the frontier judged nothing (a
+    # rejected/failed spawn), so the brief can show 'audit FAILING' instead of
+    # silently reading the empty drift ledger as agreement (M8 review M2).
+    ok = compared > 0
+    try:
+        sp = observer_audit_status_ledger()
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        with open(sp, "a") as f:
+            f.write(json.dumps({
+                "ts": utc_iso(), "epoch": int(now), "pulse_idx": pulse_idx,
+                "ok": ok, "compared": compared, "agreed": agreed,
+                "disagreements": len(diff_ws),
+                "model_audit": OBSERVER_AUDIT_MODEL,
+                "reason": None if ok else "frontier produced no verdicts",
+            }) + "\n")
+    except OSError as e:
+        log.warning("audit status append failed (ignored): %s", e)
+    out.update({"ran": True, "ok": ok, "compared": compared, "agreed": agreed,
                 "disagreements": len(diff_ws), "diff_ws": diff_ws})
     return out
 
@@ -2058,20 +2108,6 @@ def main() -> int:
                         log.exception("observer batch crashed: %s", e)
         observer_duration_s = time.time() - t_obs
 
-        # Phase 2.5 (Keel M8): periodic FRONTIER shadow-audit. Sonnet's verdicts
-        # (verdicts_by_ref) already drive Phase 3 below; on the audit cadence a
-        # frontier model judges the SAME ctxs and its per-ws diffs land in the
-        # drift ledger — RECORDS ONLY, drives nothing. Fully fenced: a broken
-        # audit is a missing drift row, never a disturbed pulse.
-        try:
-            audit = run_observer_audit(ctxs_to_observe, verdicts_by_ref,
-                                       pulse_idx)
-            if audit.get("ran"):
-                log.info("observer-audit: %s", json.dumps(audit))
-        except Exception as e:  # noqa: BLE001 — the audit must never break a pulse
-            log.warning("observer audit failed (records-only; pulse "
-                        "unaffected): %s", e)
-
         # Phase 3: save + execute per ws. Drop the synthetic `ws_ref` field
         # from the verdict before save (save-ws-summary writes it back from
         # its --ws-ref flag; we don't want it in the json blob twice).
@@ -2149,6 +2185,22 @@ def main() -> int:
                 "pulse_idx": pulse_idx,
                 **action,
             })
+
+        # Phase 4 (Keel M8): periodic FRONTIER shadow-audit. Runs LAST — AFTER
+        # every Sonnet-driven send/dispatch in Phase 3 has already gone out — so
+        # the records-only frontier batch (which can take up to
+        # OBSERVER_TIMEOUT_SEC) never delays a real action (M8 review M4). It
+        # compares the frontier verdicts to verdicts_by_ref and writes drift
+        # rows; it drives nothing. Fully fenced — a broken audit is a missing
+        # drift row, never a disturbed pulse.
+        try:
+            audit = run_observer_audit(ctxs_to_observe, verdicts_by_ref,
+                                       pulse_idx)
+            if audit.get("ran"):
+                log.info("observer-audit: %s", json.dumps(audit))
+        except Exception as e:  # noqa: BLE001 — the audit must never break a pulse
+            log.warning("observer audit failed (records-only; pulse "
+                        "unaffected): %s", e)
 
     # Note backed-off workspaces in the trace.
     for bo in backed_off:
