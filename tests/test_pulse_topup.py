@@ -689,6 +689,119 @@ def test_dispatch_todo_happy_path(mod, home, no_sleep):
     assert any("Read " in (t or "") for t in sent_texts)
 
 
+def test_dispatch_todo_happy_path_droid(mod, home, no_sleep, monkeypatch):
+    """ASSISTANT_DISPATCH_AGENT=droid: launches `droid`, confirms against
+    ~/.factory/sessions, reads the Droid transcript schema, sends no trust
+    answer (droid has no known auto-answerable trust gate)."""
+    monkeypatch.setenv("ASSISTANT_DISPATCH_AGENT", "droid")
+    # This test exercises the droid-PRESENT path; make the pre-flight see the
+    # binary (the box running tests has no `droid` on PATH, which would otherwise
+    # correctly fall back to claude).
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "which",
+                        lambda b: "/usr/local/bin/droid" if b == "droid" else None)
+    _seed_todo(mod, [{"id": "td-1", "title": "Build feature"}])
+    mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
+    mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
+    cwd = home / "dev"
+    cwd.mkdir(parents=True, exist_ok=True)
+    mod.DISPATCH_CWD = cwd
+    real = os.path.realpath(str(cwd))
+    project_dir = mod.HOME / ".factory/sessions" / real.replace("/", "-")
+
+    rpc_calls = []
+    # Droid readiness banner (no trust prompt) on every read.
+    reads = iter(["Auto (High) · allow all commands     Opus 4.8   ? for help"])
+
+    def fake_surface(ref, lines=200):
+        try:
+            return next(reads)
+        except StopIteration:
+            return "? for help"
+
+    state = {"written": False}
+
+    def fake_rpc(method, params, timeout=15):
+        rpc_calls.append((method, params))
+        if method == "surface.send_key" and params.get("key") == "enter" and not state["written"]:
+            staged = list(mod.SPAWN_PROMPT_DIR.glob("prompt-dispatch-td-1-*.md"))
+            if staged:
+                sig = str(staged[0])
+                project_dir.mkdir(parents=True, exist_ok=True)
+                # DROID schema: top-level type "message", role on message.role.
+                (project_dir / "abc.jsonl").write_text(json.dumps({
+                    "type": "message",
+                    "message": {"role": "user",
+                                "content": [{"type": "text",
+                                             "text": f"Read {sig} in full and execute every instruction in it."}]},
+                }) + "\n")
+                state["written"] = True
+        return {}
+
+    argv_seen = {}
+
+    def fake_run(cmd, **k):
+        if cmd[1] == "ping":
+            return (0, "", "")
+        if cmd[1] == "new-workspace":
+            argv_seen["new"] = cmd
+            return (0, "workspace:7", "")
+        if cmd[1] == "list-pane-surfaces":
+            return (0, "surface:3", "")
+        return (0, "", "")
+
+    with mock.patch.object(mod, "run", side_effect=fake_run):
+        with mock.patch.object(mod, "_cmux_rpc", side_effect=fake_rpc):
+            with mock.patch.object(mod, "_surface_read_text", side_effect=fake_surface):
+                ok = mod.dispatch_todo("td-1")
+
+    assert ok is True
+    # Launched `droid`, not `claude`.
+    new = argv_seen["new"]
+    assert new[new.index("--command") + 1] == "droid"
+    # Stamped in-progress.
+    it = json.loads(mod.TODO_PATH.read_text())["items"][0]
+    assert it["status"] == "in-progress"
+    # No trust answer was sent (droid has no auto-answerable trust gate).
+    sent_texts = [p.get("text") for m, p in rpc_calls if m == "surface.send_text"]
+    assert "1" not in sent_texts
+    assert any("Read " in (t or "") for t in sent_texts)
+
+
+def test_dispatch_todo_never_ready_parks_no_respawn(mod, home, no_sleep):
+    """Root storm-fix (M8 review): a workspace whose REPL never reaches readiness
+    (missing/misconfigured agent, unanswered trust prompt, banner mismatch) must
+    STILL be stamped — parked to re-classify — so the next pulse can't re-spawn a
+    fresh dead workspace every pulse (the td-128 storm via the readiness path,
+    pronounced on droid). dispatch_todo returns False, but the TODO is stamped."""
+    _seed_todo(mod, [{"id": "td-1", "title": "t"}])
+    mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
+    mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
+    cwd = home / "dev"
+    cwd.mkdir(parents=True, exist_ok=True)
+    mod.DISPATCH_CWD = cwd
+
+    def fake_run(cmd, **k):
+        if cmd[1] == "ping":
+            return (0, "", "")
+        if cmd[1] == "new-workspace":
+            return (0, "workspace:7", "")
+        if cmd[1] == "list-pane-surfaces":
+            return (0, "surface:3", "")
+        return (0, "", "")
+
+    # A boot screen that NEVER matches any ready_re → the workspace never readies.
+    with mock.patch.object(mod, "run", side_effect=fake_run):
+        with mock.patch.object(mod, "_cmux_rpc", side_effect=lambda *a, **k: {}):
+            with mock.patch.object(mod, "_surface_read_text",
+                                   side_effect=lambda *a, **k: "still booting, no repl"):
+                ok = mod.dispatch_todo("td-1")
+
+    assert ok is False  # never-ready → dispatch failed
+    it = json.loads(mod.TODO_PATH.read_text())["items"][0]
+    assert it["status"] == "in-progress"  # …but STAMPED (parked) → no re-storm
+
+
 def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep):
     """Regression for td-128: a spawned workspace whose submission can't be
     confirmed via the transcript (e.g. a Claude Code transcript-layout change)

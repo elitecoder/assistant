@@ -540,6 +540,91 @@ log ""
 #      sync). Lessons stay in ~/.claude/CLAUDE.md; semantic memory lives at
 #      ~/.assistant/mem0/ on this machine only.
 #
+# --- Dispatch agent choice (Claude or Droid) --------------------------------
+# The fleet dispatches TODO work to a coding agent. Default is Claude Code; a
+# machine with Factory Droid installed can choose Droid. The choice is persisted
+# to comms/config.json (dispatch.agent) and read by agent_session.dispatch_agent();
+# the runtime still pre-flights the binary and falls back to Claude if the chosen
+# agent isn't on PATH. Idempotent (never re-prompts once set) and never flipped
+# by a non-interactive self-update.
+# Read the persisted choice via `python3 -c` (NOT a heredoc inside $()) — a
+# heredoc-in-$() with parens in its body confuses bash's paren matching for the
+# command-substitution close. Only report a value the RUNTIME will honor, so a
+# hand-edited junk value (e.g. "gpt") doesn't wedge install into "already set"
+# while the runtime ignores it and dispatches claude — it re-prompts instead.
+CURRENT_AGENT="$(HOME="$HOME_DIR" python3 -c '
+import json, os
+from pathlib import Path
+p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
+try:
+    d = json.loads(p.read_text()).get("dispatch") or {}
+    a = d.get("agent") if isinstance(d, dict) else None
+    print(a if a in ("claude", "droid") else "")
+except Exception:
+    print("")
+' 2>/dev/null || true)"
+if [[ $APPLY -eq 0 ]]; then
+    note "(dry-run) Would ask which agent the fleet dispatches (Claude/Droid); current: ${CURRENT_AGENT:-claude (default)}"
+elif [[ -n "$CURRENT_AGENT" ]]; then
+    note "OK   dispatch agent already set: $CURRENT_AGENT (edit comms/config.json dispatch.agent to change)"
+elif [[ ! -t 0 ]]; then
+    note "non-interactive run — leaving dispatch agent at default (claude); run install.sh --apply to choose Droid"
+else
+    log ""
+    log "Which coding agent should the fleet DISPATCH work to?"
+    log "  1) Claude Code (default)"
+    log "  2) Factory Droid"
+    # `|| AGENT_CHOICE=""` so a Ctrl-D (EOF) at the prompt defaults to Claude
+    # instead of exiting `read` non-zero and killing the whole installer under
+    # `set -euo pipefail` before the memory step ever runs.
+    read -r -p "Choice [1/2]: " AGENT_CHOICE || AGENT_CHOICE=""
+    CHOSEN=claude
+    [[ "$AGENT_CHOICE" == "2" ]] && CHOSEN=droid
+    if [[ "$CHOSEN" == "droid" ]] && ! command -v droid >/dev/null 2>&1; then
+        warn "droid is not on PATH — the fleet will FALL BACK to Claude at dispatch until droid is installed"
+    fi
+    if HOME="$HOME_DIR" python3 - "$CHOSEN" <<'PY'
+import json, os, sys
+from pathlib import Path
+p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
+p.parent.mkdir(parents=True, exist_ok=True)
+existing = ""
+try:
+    existing = p.read_text()
+except FileNotFoundError:
+    pass
+if existing.strip():
+    try:
+        cfg = json.loads(existing)
+    except Exception:
+        # REFUSE to overwrite a malformed config — clobbering it would silently
+        # drop the operator's other keys (brief/strategist/…). Fail loud instead.
+        sys.stderr.write("config.json is not valid JSON — fix it by hand; not overwriting\n")
+        sys.exit(2)
+    if not isinstance(cfg, dict):
+        sys.stderr.write("config.json is not a JSON object — not overwriting\n")
+        sys.exit(2)
+else:
+    cfg = {}
+# Coerce a pre-corrupted non-dict `dispatch` (e.g. a bare string) rather than
+# TypeError on setdefault()[...] = …
+disp = cfg.get("dispatch")
+if not isinstance(disp, dict):
+    disp = {}
+disp["agent"] = sys.argv[1]
+cfg["dispatch"] = disp
+tmp = p.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+os.replace(tmp, p)
+PY
+    then
+        note "dispatch agent set to $CHOSEN (comms/config.json)"
+    else
+        warn "could not write dispatch agent choice to comms/config.json"
+    fi
+    log ""
+fi
+
 # The installer asks interactively only when --apply is set; in dry-run it explains
 # what each path would do.
 log "[7/7] Memory setup"

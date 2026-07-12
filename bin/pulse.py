@@ -1730,18 +1730,34 @@ def dispatch_todo(todo_id: str) -> bool:
     prompt_file = SPAWN_PROMPT_DIR / f"prompt-dispatch-{todo_id}-{stamp}.md"
     prompt_file.write_text(_build_dispatch_prompt(item))
 
-    # 2. Create the workspace with claude baked into --command (atomic launch).
-    #    Just invoke `claude` — cmux runs --command in an interactive login
-    #    shell, so the `claude` alias in ~/.zprofile expands (verified: it
-    #    resolves to the model + --dangerously-skip-permissions + --add-dir
-    #    flags). That alias is the single source of truth for model/flags; do
-    #    NOT re-specify --model or --add-dir here or it will drift from it.
-    claude_cmd = "claude"
+    # 2. Create the workspace with the dispatch agent baked into --command
+    #    (atomic launch). Which agent is a POLICY choice — agent_session.
+    #    dispatch_agent() defaults to claude for coexistence; flip the whole
+    #    fleet with ASSISTANT_DISPATCH_AGENT=droid. cmux runs --command in an
+    #    interactive login shell, so the bare binary expands its machine-level
+    #    config: the `claude` ~/.zprofile alias (model +
+    #    --dangerously-skip-permissions + --add-dir) or `droid` (model/autonomy
+    #    from ~/.factory/settings.json). That per-machine config is the single
+    #    source of truth for model/flags; do NOT re-specify them here or they
+    #    will drift from it. Imported lazily (the pulse-robustness convention).
+    sys.path.insert(0, str(BIN))
+    import agent_session  # noqa: PLC0415
+    agent = agent_session.dispatch_agent()
+    # Pre-flight the opt-in droid binary: if ASSISTANT_DISPATCH_AGENT=droid but
+    # droid isn't installed here, degrade to claude rather than spawn a workspace
+    # that can never reach readiness (the never-ready return precedes the
+    # idempotency stamp, so it would re-dispatch a dead workspace every pulse
+    # until the fleet caps saturate). Claude keeps the fleet moving.
+    if agent == agent_session.DROID and not agent_session.agent_available(agent):
+        log.warning("dispatch %s: ASSISTANT_DISPATCH_AGENT=droid but the droid "
+                    "binary is not on PATH — falling back to claude", todo_id)
+        agent = agent_session.CLAUDE
+    launch_cmd = agent_session.launch_command(agent)
     cwd = str(DISPATCH_CWD)
     title = f"{todo_id}: {item.get('title','')}"[:40]
     rc, out, err = run(
         [CMUX_BIN, "new-workspace", "--cwd", cwd, "--name", title,
-         "--focus", "false", "--command", claude_cmd],
+         "--focus", "false", "--command", launch_cmd],
         timeout=30,
     )
     if rc != 0:
@@ -1766,36 +1782,53 @@ def dispatch_todo(todo_id: str) -> bool:
     #    A non-recursive glob missed those and the confirmation in step 7 always
     #    came back negative — which used to re-spawn the TODO every pulse
     #    (td-128: 7 duplicate workspaces). Match both layouts by relative path.
+    #    Root is agent-specific (claude: ~/.claude/projects, droid:
+    #    ~/.factory/sessions); the per-cwd slug convention is shared. Built off
+    #    pulse's HOME (which the tests patch) so the confirm stays hermetic.
     cwd_real = os.path.realpath(cwd)
-    project_dir = HOME / ".claude/projects" / cwd_real.replace("/", "-")
+    transcript_base = (HOME / ".factory/sessions"
+                       if agent == agent_session.DROID
+                       else HOME / ".claude/projects")
+    project_dir = transcript_base / cwd_real.replace("/", "-")
     project_dir.mkdir(parents=True, exist_ok=True)
     before = {str(p.relative_to(project_dir)) for p in project_dir.rglob("*.jsonl")}
 
     # 4. Trust prompt (first launch in a never-used cwd). --dangerously-skip
     #    does NOT bypass it; the transcript never appears until it's answered.
     time.sleep(2)
-    if "1. Yes, I trust this folder" in _surface_read_text(surface_ref):
+    trust = agent_session.trust_marker(agent)
+    if trust and trust in _surface_read_text(surface_ref):
         _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": "1"})
         _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
-    # 5. Wait for readiness. Match EITHER pre-submission marker so the gate is
-    #    independent of `/tui` mode and terminal height:
-    #      - "Claude Code v…" — the boot banner. Top-pinned, so in fullscreen it
-    #        can sit above a short read window (see _surface_read_text note).
-    #      - "⏵⏵ bypass permissions on" — the bottom status bar. Present in both
-    #        default-inline and fullscreen /tui, and in both idle and working
-    #        states, so it's always inside a bottom-anchored read window even
-    #        when the banner has scrolled off the top.
-    #    Either marker means claude is up and accepting input.
+    # 5. Wait for readiness. agent_session.ready_re owns the per-agent markers,
+    #    each chosen to be independent of view mode / terminal height (claude:
+    #    boot banner or the always-present bottom bypass-permissions status bar;
+    #    droid: its help hint / autonomy status bar / model badge). A match
+    #    means the REPL is up and accepting input.
+    ready_re = agent_session.ready_re(agent)
     ready = False
     for _ in range(30):
         screen = _surface_read_text(surface_ref)
-        if re.search(r"Claude Code v|⏵⏵ bypass permissions on", screen):
+        if ready_re.search(screen):
             ready = True
             break
         time.sleep(1)
     if not ready:
-        log.warning("dispatch %s: claude never ready in %s/%s", todo_id, ws_ref, surface_ref)
+        # ROOT storm-fix: STAMP the never-ready workspace before returning. A
+        # workspace exists but its REPL never came up — a missing/misconfigured
+        # agent, an unanswered first-launch trust prompt (droid has no known
+        # trust_marker), or a boot banner that doesn't match ready_re. Stamping
+        # parks the dead workspace to bucket_a (re-classify: human-surfaced, NOT
+        # auto-spawned), exactly like a workspace that dies later. WITHOUT it the
+        # un-stamped TODO stays in bucket_b and every pulse spawns a fresh dead
+        # workspace (the td-128 storm) — pronounced on the less-reliable droid
+        # readiness path, which the binary pre-flight alone does NOT cover. No
+        # prompt was sent, so this dispatch did no work; the re-classify card is
+        # the operator's signal to fix the agent.
+        log.warning("dispatch %s: %s never ready in %s/%s — parking to re-classify",
+                    todo_id, agent, ws_ref, surface_ref)
+        _mark_todo_dispatched(todo_id, ws_ref)
         return False
 
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
@@ -1837,7 +1870,7 @@ def dispatch_todo(todo_id: str) -> bool:
                     except Exception:
                         continue
                     msg = d.get("message") if isinstance(d.get("message"), dict) else None
-                    if d.get("type") == "user" and msg and msg.get("role") == "user":
+                    if msg and agent_session.record_role(d) == "user":
                         c = msg.get("content", "")
                         if isinstance(c, list):
                             c = " ".join(

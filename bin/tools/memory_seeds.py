@@ -33,7 +33,16 @@ CLAUDE_MD = HOME / ".claude" / "CLAUDE.md"
 PROPOSALS = HOME / ".assistant" / "comms" / "proposals.jsonl"
 LEDGER = HOME / ".assistant" / "actions-ledger.jsonl"
 OBSERVER_REPORT = HOME / ".assistant" / "observer-latest-report.json"
-TRANSCRIPT_DIR = HOME / ".claude" / "projects" / "-Users-mukuls-dev-assistant"
+import sys as _sys
+_BIN = Path(__file__).resolve().parent.parent
+if str(_BIN) not in _sys.path:
+    _sys.path.insert(0, str(_BIN))
+import agent_session
+
+_ASSISTANT_SLUG = "-Users-mukuls-dev-assistant"
+TRANSCRIPT_DIR = agent_session.transcript_root(agent_session.CLAUDE) / _ASSISTANT_SLUG
+# Coexistence: also mine this repo's Droid sessions (~/.factory/sessions/...).
+DROID_TRANSCRIPT_DIR = agent_session.transcript_root(agent_session.DROID) / _ASSISTANT_SLUG
 
 
 def _seed(title: str, body: str, category: str, tags: list[str],
@@ -386,9 +395,10 @@ def _iter_user_texts(path: Path) -> Iterable[str]:
 def decision_seeds(limit: int = 15, scan_files: int = 50) -> list[dict[str, Any]]:
     """Scan the most recent transcript files for decision signals in Mukul's
     own turns. De-duped by the normalized decision text."""
-    if not TRANSCRIPT_DIR.exists():
+    dirs = [d for d in (TRANSCRIPT_DIR, DROID_TRANSCRIPT_DIR) if d.exists()]
+    if not dirs:
         return []
-    files = sorted(TRANSCRIPT_DIR.glob("*.jsonl"),
+    files = sorted((p for d in dirs for p in d.glob("*.jsonl")),
                    key=lambda p: p.stat().st_mtime, reverse=True)[:scan_files]
     seen: set[str] = set()
     seeds: list[dict[str, Any]] = []
