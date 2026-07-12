@@ -509,6 +509,65 @@ log ""
 #      sync). Lessons stay in ~/.claude/CLAUDE.md; semantic memory lives at
 #      ~/.assistant/mem0/ on this machine only.
 #
+# --- Dispatch agent choice (Claude or Droid) --------------------------------
+# The fleet dispatches TODO work to a coding agent. Default is Claude Code; a
+# machine with Factory Droid installed can choose Droid. The choice is persisted
+# to comms/config.json (dispatch.agent) and read by agent_session.dispatch_agent();
+# the runtime still pre-flights the binary and falls back to Claude if the chosen
+# agent isn't on PATH. Idempotent (never re-prompts once set) and never flipped
+# by a non-interactive self-update.
+CURRENT_AGENT="$(HOME="$HOME_DIR" python3 - <<'PY' 2>/dev/null || true
+import json, os
+from pathlib import Path
+p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
+try:
+    d = json.loads(p.read_text()).get("dispatch") or {}
+    print(d.get("agent") or "")
+except Exception:
+    print("")
+PY
+)"
+if [[ $APPLY -eq 0 ]]; then
+    note "(dry-run) Would ask which agent the fleet dispatches (Claude/Droid); current: ${CURRENT_AGENT:-claude (default)}"
+elif [[ -n "$CURRENT_AGENT" ]]; then
+    note "OK   dispatch agent already set: $CURRENT_AGENT (edit comms/config.json dispatch.agent to change)"
+elif [[ ! -t 0 ]]; then
+    note "non-interactive run — leaving dispatch agent at default (claude); run install.sh --apply to choose Droid"
+else
+    log ""
+    log "Which coding agent should the fleet DISPATCH work to?"
+    log "  1) Claude Code (default)"
+    log "  2) Factory Droid"
+    read -r -p "Choice [1/2]: " AGENT_CHOICE
+    CHOSEN=claude
+    [[ "$AGENT_CHOICE" == "2" ]] && CHOSEN=droid
+    if [[ "$CHOSEN" == "droid" ]] && ! command -v droid >/dev/null 2>&1; then
+        warn "droid is not on PATH — the fleet will FALL BACK to Claude at dispatch until droid is installed"
+    fi
+    if HOME="$HOME_DIR" python3 - "$CHOSEN" <<'PY'
+import json, os, sys
+from pathlib import Path
+p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
+p.parent.mkdir(parents=True, exist_ok=True)
+try:
+    cfg = json.loads(p.read_text())
+    if not isinstance(cfg, dict):
+        cfg = {}
+except Exception:
+    cfg = {}
+cfg.setdefault("dispatch", {})["agent"] = sys.argv[1]
+tmp = p.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+os.replace(tmp, p)
+PY
+    then
+        note "dispatch agent set to $CHOSEN (comms/config.json)"
+    else
+        warn "could not write dispatch agent choice to comms/config.json"
+    fi
+    log ""
+fi
+
 # The installer asks interactively only when --apply is set; in dry-run it explains
 # what each path would do.
 log "[7/7] Memory setup"

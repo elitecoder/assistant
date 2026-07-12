@@ -99,6 +99,51 @@ def test_trust_marker():
     assert ag.trust_marker(ag.DROID) is None
 
 
+def _write_dispatch_config(home, agent):
+    import json
+    d = home / ".assistant" / "comms"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.json").write_text(json.dumps({"dispatch": {"agent": agent}}))
+
+
+def test_dispatch_agent_uses_install_time_config(tmp_path, monkeypatch):
+    # Production call (env=None) honors the install-time choice in comms/config.json.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASSISTANT_DISPATCH_AGENT", raising=False)
+    _write_dispatch_config(tmp_path, "droid")
+    assert ag.dispatch_agent() == "droid"
+    _write_dispatch_config(tmp_path, "claude")
+    assert ag.dispatch_agent() == "claude"
+
+
+def test_env_override_beats_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _write_dispatch_config(tmp_path, "droid")
+    monkeypatch.setenv("ASSISTANT_DISPATCH_AGENT", "claude")
+    assert ag.dispatch_agent() == "claude"  # env wins over persisted config
+
+
+def test_dispatch_agent_defaults_claude_without_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASSISTANT_DISPATCH_AGENT", raising=False)
+    assert ag.dispatch_agent() == "claude"  # no config, no env → default
+    # malformed config → treated as absent, not a crash
+    d = tmp_path / ".assistant" / "comms"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.json").write_text("{not json")
+    assert ag.dispatch_agent() == "claude"
+    # unknown agent value → ignored
+    _write_dispatch_config(tmp_path, "gpt")
+    assert ag.dispatch_agent() == "claude"
+
+
+def test_explicit_env_arg_is_pure_policy_ignores_config(tmp_path, monkeypatch):
+    # Passing env explicitly (the unit-test shape) must NOT read config.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _write_dispatch_config(tmp_path, "droid")
+    assert ag.dispatch_agent({}) == "claude"
+
+
 def test_agent_available_preflights_only_droid(monkeypatch):
     # claude is launched via the ~/.zprofile alias (not on PATH) → assumed present.
     monkeypatch.setattr(ag.shutil, "which", lambda _b: None)

@@ -126,13 +126,44 @@ def trust_marker(agent: str) -> str | None:
     return _TRUST_MARKER.get(agent)
 
 
+def _config_agent() -> str | None:
+    """The dispatch-agent choice persisted at INSTALL time in
+    ``~/.assistant/comms/config.json`` (``{"dispatch": {"agent": "claude"|
+    "droid"}}``) — how the operator picks Droid or Claude without editing an env
+    var. None when absent / unreadable / not a known agent. Read per-call from
+    $HOME so a tmp-home test sees its own config."""
+    import json  # noqa: PLC0415
+    home = Path(os.environ.get("HOME", str(Path.home())))
+    try:
+        raw = json.loads(
+            (home / ".assistant" / "comms" / "config.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    v = (raw.get("dispatch") or {}).get("agent") if isinstance(
+        raw.get("dispatch"), dict) else None
+    v = v.strip().lower() if isinstance(v, str) else ""
+    return v if v in AGENTS else None
+
+
 def dispatch_agent(env: dict | None = None) -> str:
-    """Which agent the fleet SPAWNS for a dispatch. This is a POLICY choice
-    (not host detection): defaults to claude for coexistence, so live behavior
-    is unchanged until the operator flips ASSISTANT_DISPATCH_AGENT=droid."""
-    e = os.environ if env is None else env
-    v = (e.get("ASSISTANT_DISPATCH_AGENT") or "").strip().lower()
-    return v if v in AGENTS else CLAUDE
+    """Which agent the fleet SPAWNS for a dispatch — a POLICY choice, not host
+    detection. Precedence:
+      1. the ASSISTANT_DISPATCH_AGENT env override (one-off / testing);
+      2. the INSTALL-TIME choice persisted in comms/config.json (dispatch.agent);
+      3. the coexistence default ``claude``.
+    Passing ``env`` explicitly selects PURE env policy (no config read) — the
+    shape the unit tests pin; production calls with no arg, so the operator's
+    install-time Droid/Claude choice takes effect. Live behavior is unchanged
+    until the operator picks droid (at install or via the env)."""
+    if env is not None:
+        v = (env.get("ASSISTANT_DISPATCH_AGENT") or "").strip().lower()
+        return v if v in AGENTS else CLAUDE
+    v = (os.environ.get("ASSISTANT_DISPATCH_AGENT") or "").strip().lower()
+    if v in AGENTS:
+        return v
+    return _config_agent() or CLAUDE
 
 
 def agent_available(agent: str) -> bool:
