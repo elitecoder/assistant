@@ -729,40 +729,53 @@ log "[8/8] Machine config (Factory/Claude dotfiles)"
 MC_REPO_DIR="$HOME_DIR/dev/machine-config"
 MC_REMOTE="git@github-personal:elitecoder/machine-config.git"
 MC_SYNC_PLIST="com.assistant.machine-config-sync"
-if [[ $APPLY -eq 0 ]]; then
-    if [[ -d "$MC_REPO_DIR/.git" ]]; then
-        note "(dry-run) machine-config present — preview of scripts/install.sh --dry-run:"
-        bash "$MC_REPO_DIR/scripts/install.sh" --dry-run 2>&1 | sed 's/^/    /' || \
-            warn "machine-config dry-run preview failed (continuing)"
-    else
-        note "(dry-run) would clone $MC_REMOTE → $MC_REPO_DIR, then run scripts/install.sh"
-    fi
-    note "(dry-run) would then load $MC_SYNC_PLIST (full-auto hourly push+pull of config drift)"
+MC_MARKER="$HOME_DIR/.assistant/machine-config-configured"
+# OPT-IN, exactly like [7] memory: this clones a repo, symlinks dotfiles over the
+# box's live config, and loads a daemon that PUSHES config drift to a shared
+# remote — so it must NEVER activate itself. The gates (marker → skip;
+# non-interactive → skip; else prompt) guarantee a non-interactive
+# `install.sh --apply` (the pulse self-update path) can never headlessly opt a
+# box in. Idempotent: once the marker exists we leave everything as-is.
+if [[ -f "$MC_MARKER" ]]; then
+    note "OK   machine-config sync already opted in ($MC_MARKER) — leaving as-is"
+elif [[ $APPLY -eq 0 ]]; then
+    note "(dry-run) would ASK whether to opt into machine-config sync (clone + symlink dotfiles + hourly push/pull daemon). Not opted in yet."
+elif [[ ! -t 0 ]]; then
+    note "non-interactive run — NOT opting into machine-config sync (a config-pushing daemon is never auto-started; run install.sh --apply by hand to enable)"
 else
-    if [[ ! -d "$MC_REPO_DIR/.git" ]]; then
-        log "  Cloning machine-config…"
-        git clone "$MC_REMOTE" "$MC_REPO_DIR" \
-            && note "cloned to $MC_REPO_DIR" \
-            || warn "clone failed — check your github-personal SSH key (skipping machine-config)"
-    else
-        note "machine-config already cloned at $MC_REPO_DIR"
-    fi
-    if [[ -d "$MC_REPO_DIR/.git" ]]; then
-        log "  Previewing machine-config changes (dry-run) before applying…"
-        bash "$MC_REPO_DIR/scripts/install.sh" --dry-run 2>&1 | sed 's/^/    /' || true
-        log "  Applying machine config (symlink Factory/Claude config, reconcile crons)…"
-        if bash "$MC_REPO_DIR/scripts/install.sh" 2>&1 | sed 's/^/  /'; then
-            note "machine config applied (originals backed up to *.bak-* where present)"
-            # Activate the push+pull sync daemon — only reached after a successful
-            # opt-in apply, never from the generic plist loop (see PLIST_SKIP).
-            log "  Loading $MC_SYNC_PLIST (full-auto hourly sync)…"
-            staged_mc="$PLIST_STAGE/$MC_SYNC_PLIST.plist"
-            sed "s|/Users/<user>/|$HOME_DIR/|g" "$REPO_ROOT/launchagents/$MC_SYNC_PLIST.plist" > "$staged_mc"
-            ensure_file_copy "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist" "$staged_mc"
-            launchctl_reload "$MC_SYNC_PLIST" "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist"
+    log ""
+    log "Set up machine-config sync?"
+    log "  This clones the private machine-config repo, SYMLINKS Factory/Claude"
+    log "  dotfiles onto this box, and loads a daemon that PUSHES local config"
+    log "  drift to a shared remote + pulls other machines' changes hourly."
+    read -r -p "Opt in? [y/N]: " MC_CHOICE || MC_CHOICE=""
+    if [[ "$MC_CHOICE" =~ ^[Yy] ]]; then
+        if [[ ! -d "$MC_REPO_DIR/.git" ]]; then
+            log "  Cloning machine-config…"
+            git clone "$MC_REMOTE" "$MC_REPO_DIR" \
+                && note "cloned to $MC_REPO_DIR" \
+                || warn "clone failed — check your github-personal SSH key (skipping)"
         else
-            warn "machine-config install had errors — check $MC_REPO_DIR/scripts/install.sh"
+            note "machine-config already cloned at $MC_REPO_DIR"
         fi
+        if [[ -d "$MC_REPO_DIR/.git" ]]; then
+            log "  Applying machine config (symlink Factory/Claude config, reconcile crons)…"
+            if bash "$MC_REPO_DIR/scripts/install.sh" 2>&1 | sed 's/^/  /'; then
+                note "machine config applied (originals backed up to *.bak-* where present)"
+                log "  Loading $MC_SYNC_PLIST (full-auto hourly sync)…"
+                staged_mc="$PLIST_STAGE/$MC_SYNC_PLIST.plist"
+                sed "s|/Users/<user>/|$HOME_DIR/|g" "$REPO_ROOT/launchagents/$MC_SYNC_PLIST.plist" > "$staged_mc"
+                ensure_file_copy "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist" "$staged_mc"
+                launchctl_reload "$MC_SYNC_PLIST" "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist"
+                mkdir -p "$(dirname "$MC_MARKER")"
+                date -u +%Y-%m-%dT%H:%M:%SZ > "$MC_MARKER"
+                note "machine-config sync opted in + daemon loaded ($MC_MARKER)"
+            else
+                warn "machine-config install had errors — check $MC_REPO_DIR/scripts/install.sh (daemon NOT loaded, not marked opted-in)"
+            fi
+        fi
+    else
+        note "skipped machine-config sync (re-run install.sh --apply to enable later)"
     fi
 fi
 log ""

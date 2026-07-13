@@ -24,7 +24,11 @@ CONFIG_REPO = HOME / "dev" / "machine-config"
 SYNC_PUSH = CONFIG_REPO / "scripts" / "sync-push.sh"
 SYNC_PULL = CONFIG_REPO / "scripts" / "sync-pull.sh"
 LAST_RUN_PATH = HOME / ".assistant" / "machine-config-sync-last.json"
-DEFAULT_INTERVAL = 3600
+# Below the plist's StartInterval (3600) so launchd's timer jitter — a fire a
+# few seconds early — can't trip `now - last < INTERVAL` and skip the cycle,
+# which would drift the effective cadence toward 2h (review). The throttle only
+# guards against a manual run racing the timer; the hourly fires always pass.
+DEFAULT_INTERVAL = 1800
 
 
 def _env_timeout() -> int:

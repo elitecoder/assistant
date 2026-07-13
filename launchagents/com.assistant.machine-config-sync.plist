@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  OPT-IN daemon. install.sh copies this plist (PLIST_SKIP: copy-but-not-load) but
+  loads it ONLY from step 8, and only behind an explicit interactive opt-in — a
+  non-interactive `install.sh --apply` (self-update) never starts it.
+
+  Paths use the /Users/<user>/ placeholder, which install.sh's `sed
+  s|/Users/<user>/|$HOME/|g` rewrites to the installing user's home — so this
+  daemon works on ANY box, not just one hardcoded user. HOME is intentionally
+  NOT set here (launchd provides the user's HOME; hardcoding it re-introduced the
+  wrong-user bug and the sed's no-trailing-slash mismatch).
+-->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -7,20 +18,18 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/machine-config-sync.py</string>
+        <string>/Users/<user>/dev/assistant/bin/machine-config-sync.py</string>
     </array>
     <key>StartInterval</key>
     <integer>3600</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/machine-config-sync.log</string>
+    <string>/Users/<user>/.assistant/machine-config-sync.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/machine-config-sync.log</string>
+    <string>/Users/<user>/.assistant/machine-config-sync.log</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>HOME</key>
-        <string>/Users/mukuls</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
