@@ -704,6 +704,88 @@ def test_dispatch_todo_happy_path(mod, home, no_sleep, monkeypatch):
     assert any("Read " in (t or "") for t in sent_texts)
 
 
+def _claude_project_dir_for(mod, cwd: Path) -> Path:
+    real = os.path.realpath(str(cwd))
+    return mod.HOME / ".claude/projects" / real.replace("/", "-")
+
+
+def test_dispatch_todo_happy_path_claude_is_the_default(mod, home, no_sleep):
+    # The DEFAULT dispatch agent is claude (no opt-in, no droid binary): trust
+    # prompt answered, claude launch command, .claude/projects confirm dir,
+    # claude transcript schema. Exercises the fail-closed default end to end.
+    _seed_todo(mod, [{"id": "td-1", "title": "Build feature"}])
+    mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
+    mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
+    cwd = home / "dev"
+    cwd.mkdir(parents=True, exist_ok=True)
+    mod.DISPATCH_CWD = cwd
+    project_dir = _claude_project_dir_for(mod, cwd)
+
+    rpc_calls = []
+    reads = iter([
+        "1. Yes, I trust this folder",                    # trust-prompt branch
+        "Claude Code v1.2.3  ⏵⏵ bypass permissions on",   # ready banner
+    ])
+
+    def fake_surface(ref, lines=200):
+        try:
+            return next(reads)
+        except StopIteration:
+            return "Claude Code v1.2.3  ⏵⏵ bypass permissions on"
+
+    state = {"submitted_written": False}
+
+    def fake_rpc_with_transcript(method, params, timeout=15):
+        rpc_calls.append((method, params))
+        if method == "surface.send_key" and params.get("key") == "enter" \
+                and not state["submitted_written"]:
+            staged = list(mod.SPAWN_PROMPT_DIR.glob("prompt-dispatch-td-1-*.md"))
+            if staged:
+                sig = str(staged[0])
+                project_dir.mkdir(parents=True, exist_ok=True)
+                tp = project_dir / "session-abc.jsonl"
+                tp.write_text(json.dumps({
+                    "type": "user",
+                    "message": {"role": "user",
+                                "content": f"Read {sig} in full and execute "
+                                           "every instruction in it."},
+                }) + "\n")
+                state["submitted_written"] = True
+        return {}
+
+    commands = []
+
+    def fake_run(cmd, **k):
+        commands.append(cmd)
+        if cmd[1] == "ping":
+            return (0, "", "")
+        if cmd[1] == "new-workspace":
+            return (0, "workspace:7", "")
+        if cmd[1] == "list-pane-surfaces":
+            return (0, "surface:3", "")
+        return (0, "", "")
+
+    with mock.patch.object(mod, "run", side_effect=fake_run):
+        with mock.patch.object(mod, "_cmux_rpc",
+                               side_effect=fake_rpc_with_transcript):
+            with mock.patch.object(mod, "_surface_read_text",
+                                   side_effect=fake_surface):
+                ok = mod.dispatch_todo("td-1")
+
+    assert ok is True
+    it = json.loads(mod.TODO_PATH.read_text())["items"][0]
+    assert it["status"] == "in-progress"
+    assert it["dispatchedWs"] == "workspace:7"
+    # Launched claude (the default), NOT droid.
+    launch = next(cmd for cmd in commands if cmd[1] == "new-workspace")
+    launch_cmd = launch[launch.index("--command") + 1]
+    assert launch_cmd == "claude"
+    assert "droid" not in launch_cmd
+    # The trust prompt was answered with "1".
+    assert any(p.get("text") == "1" for m, p in rpc_calls
+               if m == "surface.send_text")
+
+
 def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep, monkeypatch):
     """Regression for td-128: a spawned workspace whose submission can't be
     confirmed via the transcript (e.g. a Claude Code transcript-layout change)

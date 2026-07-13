@@ -2024,13 +2024,19 @@ def dispatch_todo(todo_id: str) -> bool:
         time.sleep(1)
     if not ready:
         # PARK, don't storm. A spawned-but-never-ready workspace is real; if we
-        # return without stamping, the TODO stays in bucket_b and every pulse
-        # re-spawns another dead workspace up to the fleet caps (td-128 storm).
-        # Stamping moves it out of bucket_b; if the workspace never flips to
-        # done, the picker routes it to bucket_a (re-classify), never re-spawn.
-        log.warning("dispatch %s: %s never ready in %s/%s — parking to re-classify",
+        # return without stamping, the TODO stays in bucket_b (status=open) and
+        # every pulse re-spawns another dead workspace up to the fleet caps
+        # (td-128 storm). Stamping flips status→in-progress, which the picker
+        # skips entirely (pick-open-todos only buckets status==open), so it can
+        # never be re-spawned. Recovery is NOT automatic: the still-live dead
+        # workspace is surfaced by the Observer (which can strand it), and the
+        # operator can re-run it via the "Dispatch now" action — there is no
+        # auto re-classify back to open.
+        log.warning("dispatch %s: %s never ready in %s/%s — parking (no re-spawn)",
                     todo_id, agent, ws_ref, surface_ref)
-        _mark_todo_dispatched(todo_id, ws_ref)
+        if not _mark_todo_dispatched(todo_id, ws_ref):
+            log.warning("dispatch %s: never-ready park stamp FAILED — TODO stays "
+                        "open and WILL be re-dispatched next pulse", todo_id)
         return False
 
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
