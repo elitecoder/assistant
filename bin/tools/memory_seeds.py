@@ -34,6 +34,9 @@ PROPOSALS = HOME / ".assistant" / "comms" / "proposals.jsonl"
 LEDGER = HOME / ".assistant" / "actions-ledger.jsonl"
 OBSERVER_REPORT = HOME / ".assistant" / "observer-latest-report.json"
 TRANSCRIPT_DIR = HOME / ".claude" / "projects" / "-Users-mukuls-dev-assistant"
+DEFAULT_TRANSCRIPT_DIR = TRANSCRIPT_DIR
+DROID_TRANSCRIPT_DIR = (
+    HOME / ".factory" / "sessions" / "-Users-mukuls-dev-assistant")
 
 
 def _seed(title: str, body: str, category: str, tags: list[str],
@@ -386,9 +389,13 @@ def _iter_user_texts(path: Path) -> Iterable[str]:
 def decision_seeds(limit: int = 15, scan_files: int = 50) -> list[dict[str, Any]]:
     """Scan the most recent transcript files for decision signals in Mukul's
     own turns. De-duped by the normalized decision text."""
-    if not TRANSCRIPT_DIR.exists():
+    transcript_dirs = [TRANSCRIPT_DIR]
+    if TRANSCRIPT_DIR == DEFAULT_TRANSCRIPT_DIR:
+        transcript_dirs.append(DROID_TRANSCRIPT_DIR)
+    if not any(path.exists() for path in transcript_dirs):
         return []
-    files = sorted(TRANSCRIPT_DIR.glob("*.jsonl"),
+    files = sorted((path for root in transcript_dirs if root.exists()
+                    for path in root.glob("*.jsonl")),
                    key=lambda p: p.stat().st_mtime, reverse=True)[:scan_files]
     seen: set[str] = set()
     seeds: list[dict[str, Any]] = []

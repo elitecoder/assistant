@@ -41,6 +41,9 @@ class StrategistDraftCallerTests(unittest.TestCase):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = Path(self._tmp_obj.name)
         (self._tmp / ".assistant").mkdir(parents=True)
+        config = self._tmp / ".assistant/comms/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"strategist": {"provider": "claude"}}))
         self._old_home = os.environ.get("HOME")
         self.mod = load_strategist_bin(self._tmp)
 
@@ -89,6 +92,7 @@ class StrategistDraftCallerTests(unittest.TestCase):
         rows = self._cost_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["caller"], "strategist")
+        self.assertEqual(rows[0]["provider"], "claude")
         self.assertEqual(rows[0]["tokens_in"], 400)
         self.assertEqual(rows[0]["est_usd"], 0.0015)
         self.assertEqual(rows[0]["status"], "ok")
@@ -126,7 +130,12 @@ class StrategistDraftCallerTests(unittest.TestCase):
         # a low ceiling for this goal-less governance check
         cfgp = self._tmp / ".assistant" / "comms" / "config.json"
         cfgp.parent.mkdir(parents=True, exist_ok=True)
-        cfgp.write_text(json.dumps({"strategist": {"dailyCostCeilingUsd": 0.01}}))
+        cfgp.write_text(json.dumps({
+            "strategist": {
+                "provider": "claude",
+                "dailyCostCeilingUsd": 0.01,
+            },
+        }))
         now = _t.time()
         self.assertFalse(strat.over_ceiling(now))
         with mock.patch.object(self.mod, "run",
@@ -168,6 +177,9 @@ class StrategistContextCallerTests(unittest.TestCase):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = Path(self._tmp_obj.name)
         (self._tmp / ".assistant").mkdir(parents=True)
+        config = self._tmp / ".assistant/comms/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"strategist": {"provider": "claude"}}))
         (self._tmp / ".claude" / "cache").mkdir(parents=True)
         self._old_home = os.environ.get("HOME")
         self.mod = load_strategist_bin(self._tmp)

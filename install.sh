@@ -227,6 +227,8 @@ launchctl_reload() {
 log "[1/5] Symlinking code into ~/.claude/"
 
 ensure_symlink "$HOME_DIR/.claude/bin" "$REPO_ROOT/bin"
+ensure_symlink "$HOME_DIR/.local/bin/assistant-llm" \
+    "$REPO_ROOT/bin/assistant-llm.py"
 
 # Decommission legacy spawn-prompts links from the old LLM-Assistant era
 # (prompt-assistant-agent.md, prompt-triage-agent.md). The mechanical
@@ -329,6 +331,12 @@ for skill_dir in "$REPO_ROOT"/skills/*/; do
         ln -s "$expected" "$target"
     fi
 done
+log ""
+
+# Factory Droid discovers the same repo-owned skills and durable instructions
+# through its native paths.
+ensure_symlink "$HOME_DIR/.factory/skills" "$HOME_DIR/.claude/skills"
+ensure_symlink "$HOME_DIR/.factory/AGENTS.md" "$HOME_DIR/.claude/CLAUDE.md" || true
 log ""
 
 # --- 3. Copy LaunchAgent plists + reload only those that changed ----------
@@ -445,16 +453,25 @@ log ""
 log "[3b] Ensuring ~/.assistant/logs/"
 mkdir -p "$HOME_DIR/.assistant/logs"
 note "ensured $HOME_DIR/.assistant/logs/"
+ensure_file_copy "$HOME_DIR/.assistant/droid-glm-settings.json" \
+    "$REPO_ROOT/config/droid-glm-settings.json"
+if [[ $APPLY -eq 1 ]]; then
+    python3 "$REPO_ROOT/install/patch-factory-settings.py" \
+        "$HOME_DIR/.factory/settings.json" \
+        "$REPO_ROOT/config/droid-glm-settings.json" | sed 's/^/  /'
+else
+    note "would set Factory interactive defaults to GLM-5.2/high autonomy"
+fi
 log ""
 
 # --- 4. cmux session-restore (vendored) -------------------------------------
-# Three layers that make Claude panes survive cmux restart/reboot:
+# Three layers that make Claude and Factory Droid panes survive restart/reboot:
 #   Layer 1+2  hooks/cmux-auto-resume.py + cmux-session-ledger.py
 #              → symlinked into ~/.claude/hooks/ (a MIXED dir — symlink the
 #                files individually, never the directory)
 #   Layer 3    bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions
 #   settings   install/patch-settings.py registers the SessionStart/SessionEnd
-#              hook commands in ~/.claude/settings.json (idempotent, self-backs-up)
+#              hook commands in Claude settings and Factory hooks (idempotent)
 # Vendored from the former elitecoder/cmux-session-restore repo so a single
 # `assistant install --apply` rebuilds all three layers from git on any machine
 # — claude.tgz-style home backups only capture ~/.claude and silently drop the
@@ -464,10 +481,17 @@ ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hook
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
 ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
 if [[ $APPLY -eq 1 ]]; then
-    python3 "$REPO_ROOT/install/patch-settings.py" "$HOME_DIR/.claude/settings.json" \
+    CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"
+    if [[ -x "$CMUX_CLI" ]]; then
+        "$CMUX_CLI" hooks factory install --yes | sed 's/^/  /'
+    else
+        warn "cmux CLI missing; Factory lifecycle hooks were not installed"
+    fi
+    python3 "$REPO_ROOT/install/patch-settings.py" \
+        "$HOME_DIR/.claude/settings.json" "$HOME_DIR/.factory/hooks.json" \
         | sed 's/^/  /'
 else
-    note "would patch ~/.claude/settings.json (SessionStart: cmux-auto-resume + ledger start; SessionEnd: ledger end)"
+    note "would install cmux Factory hooks and patch Claude + Factory lifecycle hooks"
 fi
 log ""
 

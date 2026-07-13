@@ -607,7 +607,7 @@ def test_dispatch_todo_never_ready(mod, home, no_sleep):
 
 def _project_dir_for(mod, cwd: Path) -> Path:
     real = os.path.realpath(str(cwd))
-    return mod.HOME / ".claude/projects" / real.replace("/", "-")
+    return mod.HOME / ".factory/sessions" / real.replace("/", "-")
 
 
 def test_dispatch_todo_happy_path(mod, home, no_sleep):
@@ -624,19 +624,6 @@ def test_dispatch_todo_happy_path(mod, home, no_sleep):
     def fake_rpc(method, params, timeout=15):
         rpc_calls.append((method, params))
         return {}
-
-    # First surface read: trust prompt present (covers the trust branch).
-    # Subsequent reads: the readiness banner.
-    reads = iter([
-        "1. Yes, I trust this folder",          # trust-prompt branch
-        "Claude Code v1.2.3  ⏵⏵ bypass permissions on",  # ready
-    ])
-
-    def fake_surface(ref, lines=200):
-        try:
-            return next(reads)
-        except StopIteration:
-            return "Claude Code v1.2.3"
 
     # The submission-confirmation loop polls for a new *.jsonl carrying the
     # prompt-file path. We materialize that transcript when send_key (Enter) is
@@ -655,14 +642,17 @@ def test_dispatch_todo_happy_path(mod, home, no_sleep):
                 project_dir.mkdir(parents=True, exist_ok=True)
                 tp = project_dir / "session-abc.jsonl"
                 tp.write_text(json.dumps({
-                    "type": "user",
+                    "type": "message",
                     "message": {"role": "user",
                                 "content": f"Read {sig} in full and execute every instruction in it."},
                 }) + "\n")
                 state["submitted_written"] = True
         return {}
 
+    commands = []
+
     def fake_run(cmd, **k):
+        commands.append(cmd)
         if cmd[1] == "ping":
             return (0, "", "")
         if cmd[1] == "new-workspace":
@@ -673,7 +663,8 @@ def test_dispatch_todo_happy_path(mod, home, no_sleep):
 
     with mock.patch.object(mod, "run", side_effect=fake_run):
         with mock.patch.object(mod, "_cmux_rpc", side_effect=fake_rpc_with_transcript):
-            with mock.patch.object(mod, "_surface_read_text", side_effect=fake_surface):
+            with mock.patch.object(mod, "_surface_read_text",
+                                   return_value="GLM-5.2 · allow all commands"):
                 ok = mod.dispatch_todo("td-1")
 
     assert ok is True
@@ -683,9 +674,12 @@ def test_dispatch_todo_happy_path(mod, home, no_sleep):
     assert it["dispatchedWs"] == "workspace:7"
     # Prompt staged on disk.
     assert list(mod.SPAWN_PROMPT_DIR.glob("prompt-dispatch-td-1-*.md"))
-    # Trust prompt was answered ("1" + enter), then the instruction sent.
+    launch = next(cmd for cmd in commands if cmd[1] == "new-workspace")
+    launch_cmd = launch[launch.index("--command") + 1]
+    assert launch_cmd.startswith("droid --settings ")
+    assert "--auto high" in launch_cmd
+    # The prompt instruction was sent.
     sent_texts = [p.get("text") for m, p in rpc_calls if m == "surface.send_text"]
-    assert "1" in sent_texts
     assert any("Read " in (t or "") for t in sent_texts)
 
 
@@ -714,7 +708,7 @@ def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep):
         with mock.patch.object(mod, "_cmux_rpc", return_value={}):
             # Ready immediately, but no transcript ever appears → unconfirmed.
             with mock.patch.object(mod, "_surface_read_text",
-                                   return_value="Claude Code v1.0"):
+                                   return_value="GLM-5.2 · allow all commands"):
                 assert mod.dispatch_todo("td-1") is True
     # The TODO MUST be stamped so the picker drops it from bucket_b.
     it = json.loads(mod.TODO_PATH.read_text())["items"][0]
@@ -745,7 +739,7 @@ def test_dispatch_todo_confirms_via_session_subdir_transcript(mod, home, no_slee
                 subdir = project_dir / "session-xyz"
                 subdir.mkdir(parents=True, exist_ok=True)
                 (subdir / "session-xyz.jsonl").write_text(json.dumps({
-                    "type": "user",
+                    "type": "message",
                     "message": {"role": "user",
                                 "content": f"Read {staged[0]} in full and execute every instruction in it."},
                 }) + "\n")
@@ -770,7 +764,7 @@ def test_dispatch_todo_confirms_via_session_subdir_transcript(mod, home, no_slee
     with mock.patch.object(mod, "run", side_effect=fake_run):
         with mock.patch.object(mod, "_cmux_rpc", side_effect=fake_rpc):
             with mock.patch.object(mod, "_surface_read_text",
-                                   return_value="Claude Code v1.0"):
+                                   return_value="GLM-5.2 · allow all commands"):
                 with mock.patch.object(mod.log, "info",
                                        side_effect=lambda m, *a: logs["info"].append(m % a if a else m)):
                     with mock.patch.object(mod.log, "warning",
@@ -779,6 +773,71 @@ def test_dispatch_todo_confirms_via_session_subdir_transcript(mod, home, no_slee
     it = json.loads(mod.TODO_PATH.read_text())["items"][0]
     assert it["status"] == "in-progress"
     # Confirmation fired (subdir transcript was found by the recursive glob).
+    assert any("dispatch td-1 → workspace:7" in m for m in logs["info"])
+    assert not any("submission unconfirmed" in m for m in logs["warning"])
+
+
+def test_dispatch_todo_confirms_append_to_existing_transcript(
+        mod, home, no_sleep):
+    _seed_todo(mod, [{"id": "td-1", "title": "t"}])
+    mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
+    mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
+    cwd = home / "dev"
+    cwd.mkdir(parents=True, exist_ok=True)
+    mod.DISPATCH_CWD = cwd
+    project_dir = _project_dir_for(mod, cwd)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    transcript = project_dir / "existing.jsonl"
+    transcript.write_text(json.dumps({
+        "type": "session_start", "id": "existing",
+    }) + "\n")
+    state = {"written": False}
+
+    def fake_rpc(method, params, timeout=15):
+        if (method == "surface.send_key" and params.get("key") == "enter"
+                and not state["written"]):
+            staged = list(
+                mod.SPAWN_PROMPT_DIR.glob("prompt-dispatch-td-1-*.md"))
+            if staged:
+                with open(transcript, "a") as stream:
+                    stream.write(json.dumps({
+                        "type": "message",
+                        "message": {
+                            "role": "user",
+                            "content": (
+                                f"Read {staged[0]} in full and execute every "
+                                "instruction in it."
+                            ),
+                        },
+                    }) + "\n")
+                state["written"] = True
+        return {}
+
+    def fake_run(cmd, **k):
+        if cmd[1] == "ping":
+            return (0, "", "")
+        if cmd[1] == "new-workspace":
+            return (0, "workspace:7", "")
+        if cmd[1] == "list-pane-surfaces":
+            return (0, "surface:3", "")
+        return (0, "", "")
+
+    logs = {"info": [], "warning": []}
+    with mock.patch.object(mod, "run", side_effect=fake_run), \
+         mock.patch.object(mod, "_cmux_rpc", side_effect=fake_rpc), \
+         mock.patch.object(
+             mod, "_surface_read_text",
+             return_value="GLM-5.2 · allow all commands"), \
+         mock.patch.object(
+             mod.log, "info",
+             side_effect=lambda m, *a: logs["info"].append(
+                 m % a if a else m)), \
+         mock.patch.object(
+             mod.log, "warning",
+             side_effect=lambda m, *a: logs["warning"].append(
+                 m % a if a else m)):
+        assert mod.dispatch_todo("td-1") is True
+
     assert any("dispatch td-1 → workspace:7" in m for m in logs["info"])
     assert not any("submission unconfirmed" in m for m in logs["warning"])
 
@@ -799,7 +858,7 @@ def test_dispatch_todo_stamp_failure_after_submit(mod, home, no_sleep):
             if staged:
                 project_dir.mkdir(parents=True, exist_ok=True)
                 (project_dir / "s.jsonl").write_text(json.dumps({
-                    "type": "user",
+                    "type": "message",
                     "message": {"role": "user",
                                 "content": f"Read {staged[0]} in full and execute every instruction in it."},
                 }) + "\n")
@@ -818,7 +877,7 @@ def test_dispatch_todo_stamp_failure_after_submit(mod, home, no_sleep):
     with mock.patch.object(mod, "run", side_effect=fake_run):
         with mock.patch.object(mod, "_cmux_rpc", side_effect=fake_rpc):
             with mock.patch.object(mod, "_surface_read_text",
-                                   return_value="Claude Code v1.0"):
+                                   return_value="GLM-5.2 · allow all commands"):
                 # Submission confirmed, but the stamp write fails → False.
                 with mock.patch.object(mod, "_mark_todo_dispatched", return_value=False):
                     assert mod.dispatch_todo("td-1") is False

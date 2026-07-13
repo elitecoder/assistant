@@ -73,12 +73,15 @@ def main() -> int:
     # (ws:24/ws:4, 2026-06-15). A degraded row beats a vanished one: synthesize
     # a fallback `next`, warn on stderr (so the pulse log still flags the slip),
     # and persist. The Observer prompt remains the place that enforces shape.
-    if not (verdict.get("next") or "").strip():
+    next_text = verdict.get("next")
+    if not isinstance(next_text, str) or not next_text.strip():
         kind = str(verdict.get("verdict") or verdict.get("classification") or "")
+        summary = verdict.get("summary")
+        summary_text = summary.strip() if isinstance(summary, str) else ""
         if kind == "no_action":
             verdict["next"] = "User will close the workspace when ready."
-        elif (verdict.get("summary") or "").strip():
-            verdict["next"] = f"(inferred) {verdict['summary'].strip()[:140]}"
+        elif summary_text:
+            verdict["next"] = f"(inferred) {summary_text[:140]}"
         else:
             verdict["next"] = "(unknown — Observer emitted no `next`; review workspace directly.)"
         print(

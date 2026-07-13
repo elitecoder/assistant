@@ -122,7 +122,14 @@ class _AuditBase(unittest.TestCase):
             self._spawn_calls.append({"model": model, "label": label,
                                       "n": len(ctxs)})
             return ({c["ws_ref"]: {"verdict": self._frontier[c["ws_ref"]]}
-                     for c in ctxs if c["ws_ref"] in self._frontier}, {})
+                     for c in ctxs if c["ws_ref"] in self._frontier}, {
+                         "tokens_in": 10,
+                         "tokens_out": 1,
+                         "cost_usd": 0.01,
+                         "source": "cli",
+                         "provider": "droid",
+                         "model": "glm-5.2",
+                     })
         self.pulse.call_observer_batch = fake_batch
 
     def tearDown(self):
@@ -197,6 +204,10 @@ class AuditGateTests(_AuditBase):
         self.assertEqual(self._spawn_calls[0]["model"],
                          self.pulse.OBSERVER_AUDIT_MODEL)
         self.assertEqual(self._spawn_calls[0]["label"], "audit")
+        ledger = self._tmp / ".assistant/cost-ledger.jsonl"
+        row = json.loads(ledger.read_text().splitlines()[0])
+        self.assertEqual(row["provider"], "droid")
+        self.assertEqual(row["model"], "glm-5.2")
 
 
 class AuditSampleTests(_AuditBase):
@@ -235,6 +246,24 @@ class AuditDriftTests(_AuditBase):
         self.assertFalse(by["ws:2"]["agreed"])
         self.assertEqual(by["ws:2"]["sonnet"], "active")
         self.assertEqual(by["ws:2"]["frontier"], "stranded")
+        self.assertEqual(by["ws:2"]["provider_audit"], "droid")
+        self.assertEqual(by["ws:2"]["model_audit"], "glm-5.2")
+
+    def test_driver_route_is_ledgered_per_workspace(self):
+        self._frontier = {"ws:1": "active"}
+        self.pulse.run_observer_audit(
+            self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 0,
+            now=self.now,
+            driver_routes_by_ws={
+                "ws:1": {"provider": "droid", "model": "glm-5.2"},
+            },
+        )
+        ledger = (
+            self._tmp / ".assistant/audit/observer-drift.jsonl"
+        )
+        row = json.loads(ledger.read_text().splitlines()[0])
+        self.assertEqual(row["provider_driver"], "droid")
+        self.assertEqual(row["model_driver"], "glm-5.2")
 
     def test_records_only_never_executes(self):
         """The audit path must not call execute_verdict — it drives nothing."""
@@ -261,6 +290,8 @@ class AuditDriftTests(_AuditBase):
         rows = [json.loads(x) for x in status.read_text().splitlines()]
         self.assertEqual(len(rows), 1)
         self.assertFalse(rows[0]["ok"])
+        self.assertEqual(rows[0]["provider_audit"], "droid")
+        self.assertEqual(rows[0]["model_audit"], "glm-5.2")
 
 
 class BriefHealthDerivationTests(unittest.TestCase):

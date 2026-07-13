@@ -159,7 +159,9 @@ def read_json_obj(path: Path) -> dict | None:
 
 # ─── metering (never load-bearing; mirrors bin/strategist._meter) ────────────
 
-def _meter(out: str, rc: int, prompt_len: int, wall_ms: int) -> dict:
+def _meter(out: str, rc: int, prompt_len: int, wall_ms: int,
+           model: str = DEFAULT_MODEL,
+           provider: str | None = None) -> dict:
     """Append one cost-ledger row (caller='narrator'). On failure still books an
     ESTIMATED, non-zero cost so the daily ceiling can't be evaded by failing."""
     usage: dict = {}
@@ -168,10 +170,11 @@ def _meter(out: str, rc: int, prompt_len: int, wall_ms: int) -> dict:
             sys.path.insert(0, str(BIN))
         import metering  # noqa: PLC0415
         failed = rc != 0 or metering.parse_cli_result(out) is None
-        usage = metering.observer_usage(out, prompt_len, DEFAULT_MODEL)
+        usage = metering.observer_usage(out, prompt_len, model)
         metering.append_cost_row(
-            caller="narrator", model=DEFAULT_MODEL, usage=usage,
-            wall_ms=wall_ms, status="failed" if failed else "ok")
+            caller="narrator", model=model, usage=usage,
+            wall_ms=wall_ms, status="failed" if failed else "ok",
+            provider=provider)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("narrator metering capture failed (ignored): %s", e)
     return usage
@@ -183,29 +186,35 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str]:
     prompt/stdout/stderr/meta like the Strategist/Observer runs."""
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompt.md").write_text(prompt)
-    cmd = [
-        DEFAULT_CLAUDE_BIN,
-        "--model", DEFAULT_MODEL,
-        "--dangerously-skip-permissions",
-        "--print",
-        "--output-format", "json",
-        "--add-dir", str(run_dir),
-    ]
-    t0 = time.time()
-    rc, out, err = run(cmd, input_text=prompt, timeout=NARRATOR_TIMEOUT_SEC,
-                       merge_bedrock=True)
-    wall_ms = int((time.time() - t0) * 1000)
-    usage = _meter(out, rc, len(prompt), wall_ms)
-    (run_dir / "stdout.txt").write_text(out or "")
-    (run_dir / "stderr.txt").write_text(err or "")
+    if str(BIN) not in sys.path:
+        sys.path.insert(0, str(BIN))
+    import llm_runner  # noqa: PLC0415
+    route = llm_runner.load_route_config(
+        llm_runner.config_path(home=_home()), "narrator")
+    provider = llm_runner.select_provider(route, [str(run_dir)])
+    model = route.droid_model if provider == "droid" else DEFAULT_MODEL
+    result = llm_runner.invoke(
+        provider=provider, prompt=prompt, model=model, run_dir=run_dir,
+        timeout=NARRATOR_TIMEOUT_SEC, run=run,
+        claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
+        reasoning_effort=route.droid_reasoning_effort,
+        disable_tools=True, tag="assistant-narrator")
+    if result.result_text:
+        (run_dir / out_name).write_text(result.result_text)
+    usage = _meter(
+        result.stdout, result.rc, len(prompt), result.wall_ms, model,
+        provider)
+    (run_dir / "stdout.txt").write_text(result.stdout)
+    (run_dir / "stderr.txt").write_text(result.stderr)
     (run_dir / "meta.json").write_text(json.dumps({
-        "rc": rc, "wall_ms": wall_ms, "model": DEFAULT_MODEL,
+        **{k: v for k, v in result.metadata().items()
+           if k not in {"stdout", "stderr", "result_text"}},
         "out_name": out_name, "usage": usage, "ts": utc_iso(),
     }, indent=2))
-    if rc != 0:
-        log.warning("narrator subprocess rc=%d: %s", rc,
-                    (err or "").strip()[-300:])
-    return rc, out, err
+    if not result.usable:
+        log.warning("narrator subprocess rc=%d: %s", result.rc,
+                    result.stderr.strip()[-300:])
+    return result.rc, result.stdout, result.stderr
 
 
 # ─── the injected LLM callable ───────────────────────────────────────────────
@@ -226,9 +235,7 @@ def call_narrate(facts: dict, pulse_idx: int = 0) -> dict | None:
     prompt = (
         NARRATOR_PROMPT.read_text()
         + "\n\n---\n\n## RUNTIME CONTEXT\n\n"
-        + "**Output destination — write your ONE JSON object to this file, "
-          "not stdout.** Use the Write tool to write to:\n\n"
-        + f"    {out_path}\n\n"
+        + "Return only your ONE JSON object in the final response.\n\n"
         + "These are the ONLY facts you may phrase. Invent nothing; write a "
           "recommendation ONLY for a decision id listed under `decisions`.\n\n"
         + "```json\n" + json.dumps(facts, indent=2, ensure_ascii=False)

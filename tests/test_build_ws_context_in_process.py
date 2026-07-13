@@ -44,6 +44,7 @@ def load_module(home: Path):
 def fixture_home(tmp: Path) -> Path:
     (tmp / "Library/Application Support/cmux").mkdir(parents=True)
     (tmp / ".claude/projects").mkdir(parents=True)
+    (tmp / ".factory/sessions").mkdir(parents=True)
     return tmp
 
 
@@ -144,6 +145,17 @@ class TranscriptFromSessionIdTests(unittest.TestCase):
         os.utime(old, (time.time() - 100, time.time() - 100))
         os.utime(new, (time.time(), time.time()))
         self.assertEqual(self.mod.transcript_from_session_id("abcd1234"), str(new))
+
+    def test_resolves_droid_session_start_id(self):
+        full = "d0d01234-7134-4060-bcf1-6c509c9983cd"
+        proj = self._tmp / ".factory/sessions/-Users-x-dev"
+        proj.mkdir(parents=True, exist_ok=True)
+        tp = proj / f"{full}.jsonl"
+        tp.write_text(json.dumps({
+            "type": "session_start", "id": full, "cwd": "/Users/x/dev",
+        }) + "\n")
+        self.assertEqual(
+            self.mod.transcript_from_session_id(full), str(tp))
 
 
 class RegistryTranscriptTests(unittest.TestCase):
@@ -382,6 +394,19 @@ class SurfaceHelperTests(unittest.TestCase):
             pairs = self.mod._pane_surfaces("workspace:9", "pane:20")
         self.assertEqual(pairs, [("surface:21", "DE7AC3CD-C1F1-4CA8-82FD-225E12FB6749")])
 
+    def test_resume_binding_normalizes_factory_to_droid(self):
+        fake = mock.Mock(returncode=0, stdout=json.dumps({
+            "binding": {
+                "kind": "factory",
+                "checkpointId": "d0d01234-aaaa-bbbb-cccc-dddddddddddd",
+            },
+        }))
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            binding = self.mod.resume_binding_for_surface(
+                "surface:21", "workspace:9")
+        self.assertEqual(binding["agent"], "droid")
+        self.assertEqual(binding["session_id"][:8], "d0d01234")
+
 
 class FindAgentPaneTests(unittest.TestCase):
     """The multi-pane trap: the agent is NOT always the focused/first pane.
@@ -392,6 +417,8 @@ class FindAgentPaneTests(unittest.TestCase):
               "  ⏵⏵ bypass permissions on (shift+tab to cycle)")
     BOOTING = ("▝▜█████▛▘  Opus 4.8 (1M context)\n"
                "  Welcome back\n  ❯ ")   # banner, no status bar yet
+    DROID = ("Skills (63) ✓  MCPs (1) ✓\n"
+             "GLM-5.2 (High) · allow all commands\n? for help")
     SHELL = "$ tail -f server.log\n  GET /api 200 12ms"
 
     def setUp(self):
@@ -457,6 +484,16 @@ class FindAgentPaneTests(unittest.TestCase):
             res = self.mod.find_agent_pane("workspace:9")
         self.assertEqual(res["surface_ref"], "surface:2")
         self.assertIsNone(res["sid8"])
+
+    def test_droid_agent_pane_is_detected(self):
+        p = self._patch(
+            panes=["pane:1"],
+            surfaces_by_pane={"pane:1": [("surface:1", "U1")]},
+            screen_by_surface={"surface:1": self.DROID})
+        with p[0], p[1], p[2]:
+            res = self.mod.find_agent_pane("workspace:9")
+        self.assertEqual(res["agent"], "droid")
+        self.assertEqual(res["surface_ref"], "surface:1")
 
     def test_no_agent_pane_returns_none(self):
         # All shells → None. No agent ⇒ no transcript attached (the invariant).
@@ -541,7 +578,9 @@ class ResolveWorkspaceTests(unittest.TestCase):
         (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
         with mock.patch.object(self.mod, "find_agent_pane", return_value={
                 "surface_ref": "surface:2", "surface_uuid": "U2",
-                "screen_text": "booting…", "sid8": None}):
+                "screen_text": "booting…", "sid8": None}), \
+                mock.patch.object(self.mod, "resume_binding_for_surface",
+                                  return_value=None):
             res = self.mod.resolve_workspace_screen_and_transcript("workspace:9")
         self.assertEqual(res["transcript_source"], "registry_live_pid")
         self.assertEqual(res["transcript_path"], tp)
@@ -572,12 +611,35 @@ class ResolveWorkspaceTests(unittest.TestCase):
         # transcript_path MUST be None (never a guess). screen still provided.
         with mock.patch.object(self.mod, "find_agent_pane", return_value={
                 "surface_ref": "surface:2", "surface_uuid": "U2",
-                "screen_text": self.CLAUDE, "sid8": "6fb0c668"}):
+                "screen_text": self.CLAUDE, "sid8": "6fb0c668"}), \
+                mock.patch.object(self.mod, "resume_binding_for_surface",
+                                  return_value=None):
             res = self.mod.resolve_workspace_screen_and_transcript("workspace:9")
         self.assertIsNone(res["transcript_path"])
         self.assertIsNone(res["transcript_source"])
         self.assertEqual(res["session_id8"], "6fb0c668")  # surfaced for later
         self.assertIn("bypass permissions", res["screen_text"])
+
+    def test_droid_uses_verified_cmux_resume_binding(self):
+        full = "d0d01234-7134-4060-bcf1-6c509c9983cd"
+        proj = self._tmp / ".factory/sessions/-Users-x-dev"
+        proj.mkdir(parents=True, exist_ok=True)
+        tp = proj / f"{full}.jsonl"
+        tp.write_text(json.dumps({
+            "type": "session_start", "id": full, "cwd": "/Users/x/dev",
+        }) + "\n")
+        with mock.patch.object(self.mod, "find_agent_pane", return_value={
+                "surface_ref": "surface:2", "surface_uuid": "U2",
+                "screen_text": "GLM-5.2 · allow all commands", "sid8": None,
+                "agent": "droid"}), \
+                mock.patch.object(self.mod, "resume_binding_for_surface",
+                                  return_value={
+                                      "session_id": full, "agent": "droid"}):
+            res = self.mod.resolve_workspace_screen_and_transcript(
+                "workspace:9")
+        self.assertEqual(res["transcript_path"], str(tp))
+        self.assertEqual(res["transcript_source"], "cmux_resume_binding")
+        self.assertEqual(res["agent_provider"], "droid")
 
     def test_no_agent_pane_yields_everything_null(self):
         with mock.patch.object(self.mod, "find_agent_pane", return_value=None):
@@ -645,10 +707,13 @@ class MainTests(unittest.TestCase):
 
     @staticmethod
     def _resolved(screen_text="", screen_shows_error=False, session_id8=None,
-                  transcript_path=None, transcript_source=None, agent_surface=None):
+                  transcript_path=None, transcript_source=None,
+                  agent_surface=None, agent_provider=None):
         return {"screen_text": screen_text, "screen_shows_error": screen_shows_error,
                 "session_id8": session_id8, "transcript_path": transcript_path,
-                "transcript_source": transcript_source, "agent_surface": agent_surface}
+                "transcript_source": transcript_source,
+                "agent_surface": agent_surface,
+                "agent_provider": agent_provider}
 
     def _run_main(self, ws_ref, title, cwd, resolved=None):
         sys.argv = ["build-ws-context.py", "--ws-ref", ws_ref,
@@ -670,6 +735,7 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(d["transcript_source"])
         self.assertIsNone(d["session_id8"])
         self.assertIsNone(d["agent_surface"])
+        self.assertIsNone(d["agent_provider"])
         # cwd doesn't exist → dirty/unpushed both false.
         self.assertFalse(d["cwd_dirty"])
         self.assertFalse(d["cwd_unpushed"])
@@ -802,7 +868,7 @@ class TranscriptSignalsEdgeCaseTests(unittest.TestCase):
 
 
 class CmuxHelperEdgeCases(unittest.TestCase):
-    """Test the _cmux / _is_claude_pane / _pane_surfaces / _read_surface edge
+    """Test the _cmux / _is_agent_pane / _pane_surfaces / _read_surface edge
     cases that the higher-level tests don't exercise."""
 
     def setUp(self):
@@ -819,12 +885,12 @@ class CmuxHelperEdgeCases(unittest.TestCase):
             result = self.mod._cmux(["list-panes"])
         self.assertIsNone(result)
 
-    def test_is_claude_pane_empty_string_returns_false(self):
-        self.assertFalse(self.mod._is_claude_pane(""))
+    def test_is_agent_pane_empty_string_returns_false(self):
+        self.assertFalse(self.mod._is_agent_pane(""))
 
-    def test_is_claude_pane_with_status_bar_returns_true(self):
+    def test_is_agent_pane_with_status_bar_returns_true(self):
         text = "  assistant main │ ●1 │ context 50% │ $1.00 │ #aabbccdd"
-        self.assertTrue(self.mod._is_claude_pane(text))
+        self.assertTrue(self.mod._is_agent_pane(text))
 
     def test_pane_surfaces_returns_empty_on_cmux_failure(self):
         with mock.patch.object(self.mod.subprocess, "run",

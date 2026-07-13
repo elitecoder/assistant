@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Idempotent patcher for ~/.claude/settings.json.
+"""Idempotent hook patcher for Claude settings and Factory hooks.
 
 Ensures:
   - SessionStart contains: cmux-auto-resume.py and cmux-session-ledger.py start
   - SessionEnd contains:   cmux-session-ledger.py end
   - Stop does NOT contain: cmux-session-ledger.py end (legacy bug)
 
-Backs up the original to settings.json.bak-<ts> before writing.
+Accepts one or more paths, including ``~/.claude/settings.json`` and
+``~/.factory/hooks.json``. Existing files are backed up before writing; newly
+created files are not.
 """
 import json
 import shutil
@@ -44,9 +46,10 @@ def remove_command(blocks, cmd):
     return out
 
 
-def main():
-    path = Path(sys.argv[1]).expanduser()
-    settings = json.loads(path.read_text()) if path.exists() else {}
+def patch_path(path):
+    path = Path(path).expanduser()
+    existed = path.exists()
+    settings = json.loads(path.read_text()) if existed else {}
     hooks = settings.setdefault("hooks", {})
 
     ss = hooks.setdefault("SessionStart", [])
@@ -83,13 +86,29 @@ def main():
 
     if not changed:
         print("  no changes needed")
-        return
+        return False
 
-    bak = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
-    shutil.copy2(path, bak)
-    print(f"  backed up to {bak}")
+    if existed:
+        bak = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
+        shutil.copy2(path, bak)
+        print(f"  backed up to {bak}")
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2) + "\n")
     print(f"  wrote {path}")
+    return True
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(
+            "usage: patch-settings.py PATH [PATH ...]",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    for index, raw_path in enumerate(sys.argv[1:]):
+        if index:
+            print()
+        patch_path(raw_path)
 
 
 if __name__ == "__main__":

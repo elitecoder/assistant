@@ -62,6 +62,7 @@ _PRICE_PER_MTOK = (
     ("opus", (5.0, 25.0)),
     ("haiku", (1.0, 5.0)),
     ("sonnet", (3.0, 15.0)),
+    ("glm-5.2", (1.65, 8.25)),
 )
 _DEFAULT_PRICE = (3.0, 15.0)  # sonnet rates — the fleet's Observer default
 
@@ -107,8 +108,8 @@ def estimate_cost_usd(tokens_in: int, tokens_out: int, model: str) -> float:
     return tokens_in / 1e6 * p_in + tokens_out / 1e6 * p_out
 
 
-def parse_cli_result(stdout: str) -> dict | None:
-    """Parse the `claude --print --output-format json` result envelope.
+def parse_cli_usage(stdout: str) -> dict | None:
+    """Parse usage from any Claude or Droid result envelope.
 
     Returns {"tokens_in", "tokens_out", "cost_usd"} or None when stdout is
     not a usage-bearing envelope (plain-text CLI, timeout, empty). tokens_in
@@ -136,16 +137,34 @@ def parse_cli_result(stdout: str) -> dict | None:
     }
 
 
+def parse_cli_result(stdout: str) -> dict | None:
+    """Parse usage only from a successful CLI result envelope."""
+    try:
+        d = json.loads((stdout or "").strip())
+    except Exception:
+        return None
+    if not isinstance(d, dict):
+        return None
+    if d.get("type") == "result" and (
+        d.get("is_error") is True
+        or d.get("subtype") not in (None, "success")
+    ):
+        return None
+    return parse_cli_usage(stdout)
+
+
 def observer_usage(stdout: str, prompt_chars: int, model: str) -> dict:
     """Usage for ONE Observer subprocess: real CLI numbers when the stdout
     envelope parses, chars/4 estimate otherwise (and says so in `source`)."""
-    parsed = parse_cli_result(stdout)
+    parsed = parse_cli_usage(stdout)
     if parsed is not None:
         cost = parsed["cost_usd"]
+        source = "cli"
         if cost is None:
             cost = estimate_cost_usd(parsed["tokens_in"], parsed["tokens_out"], model)
+            source = "estimated"
         return {"tokens_in": parsed["tokens_in"], "tokens_out": parsed["tokens_out"],
-                "cost_usd": round(cost, 6), "source": "cli"}
+                "cost_usd": round(cost, 6), "source": source}
     tokens_in = estimate_tokens(prompt_chars)
     tokens_out = estimate_tokens(len(stdout or ""))
     return {"tokens_in": tokens_in, "tokens_out": tokens_out,
@@ -154,34 +173,51 @@ def observer_usage(stdout: str, prompt_chars: int, model: str) -> dict:
 
 
 def sum_usage(usages: list[dict]) -> dict:
-    """Combine per-batch usages into one pulse total. source is 'cli' only
-    when every batch reported real numbers."""
+    """Combine per-batch usage and preserve actual provider/model routing."""
     if not usages:
-        return {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "source": "estimated"}
+        return {
+            "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0,
+            "source": "estimated", "provider": None, "model": None,
+            "routes": [],
+        }
     sources = {u.get("source", "estimated") for u in usages}
     source = "cli" if sources == {"cli"} else ("estimated" if sources == {"estimated"} else "mixed")
+    route_counts = Counter(
+        (str(u.get("provider") or "unknown"), str(u.get("model") or "unknown"))
+        for u in usages
+    )
+    routes = [
+        {"provider": provider, "model": model, "calls": calls}
+        for (provider, model), calls in sorted(route_counts.items())
+    ]
+    providers = {route["provider"] for route in routes}
+    models = {route["model"] for route in routes}
     return {
         "tokens_in": sum(int(u.get("tokens_in") or 0) for u in usages),
         "tokens_out": sum(int(u.get("tokens_out") or 0) for u in usages),
         "cost_usd": round(sum(float(u.get("cost_usd") or 0.0) for u in usages), 6),
         "source": source,
+        "provider": next(iter(providers)) if len(providers) == 1 else "mixed",
+        "model": next(iter(models)) if len(models) == 1 else "mixed",
+        "routes": routes,
     }
 
 
-def append_cost_row(*, caller: str, model: str, usage: dict, wall_ms: int,
-                    path: Path | None = None, status: str = "ok") -> None:
+def append_cost_row(*, caller: str, model: str | None, usage: dict,
+                    wall_ms: int,
+                    path: Path | None = None, status: str = "ok",
+                    provider: str | None = None) -> None:
     """One per-call row in ~/.assistant/cost-ledger.jsonl (design section 3:
     {ts, caller, model, tokens_in, tokens_out, est_usd, wall_ms}). Every LLM
     caller beyond the Observer (triage, later strategist/drafter) appends here
-    so $/day per caller is derivable. status="failed" rows record a call that
-    produced no usable output — callers append those with ZERO usage so
-    failures stay visible without booking phantom spend. Single-write append
-    like the actions ledger; the read side must tolerate a torn line."""
+    so $/day per caller is derivable. Failed rows retain observed or estimated
+    spend so repeated failures cannot evade cost accounting."""
     p = path if path is not None else cost_ledger_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     row = {
         "ts": utc_iso(int(time.time())),
         "caller": caller,
+        "provider": provider,
         "model": model,
         "tokens_in": int(usage.get("tokens_in") or 0),
         "tokens_out": int(usage.get("tokens_out") or 0),
@@ -263,7 +299,9 @@ def build_pulse_record(*, epoch: int, pulse_idx: int, observer_called: bool,
         "pulse_idx": pulse_idx,
         "observer_called": bool(observer_called),
         "batch_size": int(batch_size),
+        "provider": usage.get("provider") if observer_called else None,
         "model": model,
+        "routes": usage.get("routes", []) if observer_called else [],
         "duration_s": round(float(duration_s), 2),
         "tokens_in": int(usage.get("tokens_in") or 0),
         "tokens_out": int(usage.get("tokens_out") or 0),

@@ -899,12 +899,19 @@ def render_workspaces_tab():
                 d = json.loads(line)
             except Exception:
                 continue
-            if d.get("type") != "assistant":
-                continue
             msg = d.get("message", {})
             if not isinstance(msg, dict):
                 continue
+            if not (d.get("type") == "assistant"
+                    or (d.get("type") == "message"
+                        and msg.get("role") == "assistant")):
+                continue
             content = msg.get("content", [])
+            if isinstance(content, str):
+                text = " ".join(content.split()).strip()
+                if text:
+                    return (text[:max_chars - 1] + "…"
+                            if len(text) > max_chars else text)
             if not isinstance(content, list):
                 continue
             for c in reversed(content):

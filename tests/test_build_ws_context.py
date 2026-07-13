@@ -40,6 +40,7 @@ def run_ctx_builder(env_home: Path, ws_ref: str, title: str, cwd: str) -> dict:
 def fixture_home(tmp: Path) -> Path:
     home = tmp / "home"
     (home / ".claude/projects").mkdir(parents=True)
+    (home / ".factory/sessions").mkdir(parents=True)
     (home / "Library/Application Support/cmux").mkdir(parents=True)
     return home
 
@@ -53,6 +54,7 @@ class TestBuildWsContextCLI(unittest.TestCase):
         # Every documented field is present.
         for key in ("ws_ref", "title", "cwd", "transcript_path", "transcript_source",
                     "session_id8", "agent_surface", "last_turn_age_sec", "agent_status",
+                    "agent_provider",
                     "cwd_dirty", "cwd_unpushed", "is_protected", "screen_text",
                     "screen_shows_error"):
             self.assertIn(key, ctx, f"missing field: {key}")

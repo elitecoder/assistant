@@ -5,7 +5,7 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
 #
 # What it does:
-#   1. Checks prerequisites (git, python3, claude CLI)
+#   1. Checks prerequisites (git, python3, Factory Droid CLI)
 #   2. Clones the repo to ~/dev/assistant (or pulls if already present)
 #   3. Runs install.sh --apply  (symlinks skills, copies plists)
 #   4. Prints next steps (manual launchctl load)
@@ -27,9 +27,9 @@ info "Checking prerequisites"
 
 command -v git     >/dev/null 2>&1 || die "git not found — install Xcode Command Line Tools: xcode-select --install"
 command -v python3 >/dev/null 2>&1 || die "python3 not found — install from https://brew.sh or python.org"
-command -v claude  >/dev/null 2>&1 || die "claude CLI not found — install from https://claude.ai/code"
+command -v droid   >/dev/null 2>&1 || die "Factory Droid CLI not found — install Droid first"
 
-ok "git, python3, claude all present"
+ok "git, python3, droid all present"
 
 # uv is strongly preferred but not required
 if command -v uv >/dev/null 2>&1; then

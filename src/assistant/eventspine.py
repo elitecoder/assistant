@@ -588,8 +588,8 @@ def _drain_inbox_files(summary: dict, index: dict, seen: set,
                 seen.add(event["id"])
                 index[event["id"]] = now
                 summary["events_appended"] += 1
-                summary["inbox_consumed"] += 1
                 p.unlink()
+                summary["inbox_consumed"] += 1
         except OSError as e:
             # Archive/append/unlink failed on a well-formed item. The inbox
             # file stays; dedup makes the next pulse's retry safe.

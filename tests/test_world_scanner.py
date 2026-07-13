@@ -324,6 +324,28 @@ def test_build_live_sessions_dedup_keeps_first_when_second_is_older(ws):
     assert out["sess-A"]["cwd"] == "/work/new"
 
 
+def test_build_live_sessions_adds_bound_droid_session(ws, monkeypatch):
+    session_id = "d0d01234-aaaa-bbbb-cccc-dddddddddddd"
+    transcript = ws.HOME / ".factory/sessions/-work-repo" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n")
+    workspaces = [{
+        "ws_ref": "workspace:7", "title": "Droid task",
+        "surfaces": [{
+            "ref": "surface:9", "tty": "ttys009", "type": "terminal",
+            "title": "droid",
+        }],
+    }]
+    monkeypatch.setattr(ws, "surface_resume_binding", lambda *_: {
+        "session_id": session_id, "provider": "droid", "cwd": "/work/repo",
+    })
+    monkeypatch.setattr(ws, "agent_pid_on_tty", lambda *_: 1234)
+    out = ws.build_live_sessions(workspaces)
+    assert out[session_id]["provider"] == "droid"
+    assert out[session_id]["transcript_path"] == str(transcript)
+    assert out[session_id]["ws_ref"] == "workspace:7"
+
+
 # ─── join_workspaces_to_sessions ─────────────────────────────────────────────
 
 def test_join_workspaces_to_sessions(ws, monkeypatch):
@@ -499,6 +521,7 @@ def _seed_world(ws, monkeypatch, now):
         ]}],
     }]}]}
     monkeypatch.setattr(ws, "cmux_tree", lambda: tree)
+    monkeypatch.setattr(ws, "surface_resume_binding", lambda *_: None)
     monkeypatch.setattr(ws, "ps_tty", lambda pid: "ttys010")
     monkeypatch.setattr(ws, "read_mem_pct", lambda: 42.0)
 

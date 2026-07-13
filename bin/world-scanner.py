@@ -31,6 +31,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -202,7 +203,76 @@ def build_workspace_index(tree):
     return out
 
 
-def build_live_sessions():
+def surface_resume_binding(surface_ref, ws_ref):
+    """Return a normalized live cmux agent binding for one terminal surface."""
+    try:
+        r = subprocess.run(
+            [CMUX_BIN, "surface", "resume", "show", "--json",
+             "--surface", surface_ref, "--workspace", ws_ref],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return None
+        doc = json.loads(r.stdout)
+    except Exception:
+        return None
+    queue = [doc]
+    binding = None
+    while queue:
+        value = queue.pop(0)
+        if not isinstance(value, dict):
+            continue
+        if value.get("checkpointId") or value.get("checkpoint_id"):
+            binding = value
+            break
+        queue.extend(v for v in value.values() if isinstance(v, dict))
+    if not binding:
+        return None
+    kind = str(binding.get("kind") or "").lower()
+    if kind not in {"claude", "factory", "droid"}:
+        return None
+    sid = binding.get("checkpointId") or binding.get("checkpoint_id")
+    return {
+        "session_id": str(sid),
+        "provider": "droid" if kind in {"factory", "droid"} else "claude",
+        "cwd": binding.get("cwd"),
+    }
+
+
+def transcript_for_session(provider, session_id):
+    root = (HOME / ".factory/sessions" if provider == "droid"
+            else HOME / ".claude/projects")
+    if not root.is_dir() or not session_id:
+        return None
+    matches = list(root.glob(f"*/{session_id}*.jsonl"))
+    if not matches:
+        return None
+    return str(max(matches, key=lambda p: p.stat().st_mtime))
+
+
+def agent_pid_on_tty(tty, provider):
+    if not tty:
+        return None
+    try:
+        r = subprocess.run(
+            ["ps", "-t", tty, "-o", "pid=,command="],
+            capture_output=True, text=True, timeout=3,
+        )
+    except Exception:
+        return None
+    marker = "droid" if provider == "droid" else "claude"
+    for line in r.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2 or marker not in parts[1].lower():
+            continue
+        try:
+            return int(parts[0])
+        except ValueError:
+            continue
+    return None
+
+
+def build_live_sessions(workspaces=None):
     """Build the canonical live-session list by joining cmux-registry (records
     every Claude session ever) with pid-alive filter. Each entry carries
     session_id, pid, cwd, tty, transcript_path, and the workspace_ref it lives
@@ -225,9 +295,36 @@ def build_live_sessions():
             "pid": int(pid),
             "cwd": e.get("cwd"),
             "transcript_path": e.get("transcript_path"),
+            "provider": e.get("provider") or "claude",
             "tab_id": tab_id,
             "ts": e.get("ts"),
         }
+    for ws in workspaces or []:
+        for surface in ws.get("surfaces", []):
+            if surface.get("type") != "terminal":
+                continue
+            binding = surface_resume_binding(surface.get("ref"), ws.get("ws_ref"))
+            if not binding:
+                continue
+            sid = binding["session_id"]
+            provider = binding["provider"]
+            pid = agent_pid_on_tty(surface.get("tty"), provider)
+            if not pid:
+                continue
+            out[sid] = {
+                "session_id": sid,
+                "pid": pid,
+                "cwd": binding.get("cwd"),
+                "transcript_path": transcript_for_session(provider, sid),
+                "provider": provider,
+                "tab_id": None,
+                "ts": time.time(),
+                "tty": surface.get("tty"),
+                "ws_ref": ws.get("ws_ref"),
+                "surface_ref": surface.get("ref"),
+                "ws_title": ws.get("title", ""),
+                "surface_title": surface.get("title", ""),
+            }
     return out
 
 
@@ -248,7 +345,7 @@ def join_workspaces_to_sessions(workspaces, live_sessions):
                 }
 
     for sid, sess in live_sessions.items():
-        tty = ps_tty(sess["pid"])
+        tty = sess.get("tty") or ps_tty(sess["pid"])
         sess["tty"] = tty
         info = tty_to_ws.get(tty) if tty else None
         if info:
@@ -441,7 +538,7 @@ def build():
 
     tree = cmux_tree()
     workspaces = build_workspace_index(tree)
-    live_sessions = build_live_sessions()
+    live_sessions = build_live_sessions(workspaces)
     join_workspaces_to_sessions(workspaces, live_sessions)
     tag_cron_workers(live_sessions)
     merge_session_context(live_sessions)

@@ -413,6 +413,22 @@ def test_decision_seeds_limit(ms, tmp_path, monkeypatch):
     assert len(seeds) == 3
 
 
+def test_decision_seeds_scans_droid_transcripts(ms, tmp_path, monkeypatch):
+    claude_dir = tmp_path / "claude"
+    droid_dir = tmp_path / "droid"
+    claude_dir.mkdir()
+    droid_dir.mkdir()
+    (droid_dir / "session.jsonl").write_text(json.dumps({
+        "type": "message",
+        "message": {"role": "user", "content": "let's go with GLM"},
+    }) + "\n")
+    monkeypatch.setattr(ms, "TRANSCRIPT_DIR", claude_dir)
+    monkeypatch.setattr(ms, "DEFAULT_TRANSCRIPT_DIR", claude_dir)
+    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", droid_dir)
+    seeds = ms.decision_seeds()
+    assert any("GLM" in seed["content"] for seed in seeds)
+
+
 def test_decision_seeds_prose_pattern_limit(ms, tmp_path, monkeypatch):
     # exercise the inner-pattern _emit return-early path
     tdir = tmp_path / "transcripts"

@@ -31,6 +31,7 @@ from pathlib import Path
 HOME = Path(os.environ["HOME"])
 PROJECTS_DIR = HOME / ".claude/projects"
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
+WORLD_PATH = HOME / ".claude/cache/world.json"
 ORCHESTRATOR_REGISTRY = HOME / ".architect/orchestrator-registry.json"
 OUT_PATH = HOME / ".claude/cache/session-context.json"
 LOG_DIR = HOME / ".assistant/logs"
@@ -43,6 +44,10 @@ RECENT_INPUTS_LIMIT = 30
 DISCOVERY_INTERVAL_SEC = 30  # how often we look for brand-new transcript files
 FLUSH_DEBOUNCE_SEC = 0.5     # batch writes during a burst of fs events
 MAX_WATCHED_FDS = 256        # cap on simultaneously-watched files
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session
 
 
 def utc_now():
@@ -87,15 +92,12 @@ def pid_alive(pid):
         return False
 
 
-def load_live_claude_sessions():
-    """Return a dict {session_id: {pid, cwd, transcript_path, ts}} for Claude
-    processes that ARE actually running right now and have a registry entry.
-    The cmux-registry has ~200 entries (every Claude session ever), but only
-    ~20 are alive at any moment. This filters to the live set."""
+def load_live_agent_sessions():
+    """Return verified live Claude and Droid sessions keyed by session id."""
     try:
         reg = json.loads(CMUX_REGISTRY.read_text())
     except Exception:
-        return {}
+        reg = {}
     out = {}
     for tab_id, entry in reg.items():
         pid = entry.get("claude_pid")
@@ -113,10 +115,35 @@ def load_live_claude_sessions():
             "pid": int(pid),
             "cwd": entry.get("cwd"),
             "transcript_path": entry.get("transcript_path"),
+            "provider": entry.get("provider") or "claude",
             "ts": entry.get("ts"),
             "tab_id": tab_id,
         }
+    try:
+        world = json.loads(WORLD_PATH.read_text())
+    except Exception:
+        world = {}
+    for entry in world.get("live_sessions", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        sid = entry.get("session_id")
+        pid = entry.get("pid")
+        if not sid or not pid_alive(pid):
+            continue
+        out[sid] = {
+            "pid": int(pid),
+            "cwd": entry.get("cwd"),
+            "transcript_path": entry.get("transcript_path"),
+            "provider": entry.get("provider") or "claude",
+            "ts": entry.get("ts"),
+            "tab_id": entry.get("tab_id"),
+        }
     return out
+
+
+def load_live_claude_sessions():
+    """Compatibility alias for older callers and tests."""
+    return load_live_agent_sessions()
 
 
 def load_cron_workers():
@@ -189,9 +216,10 @@ class TranscriptState:
     """Per-file incremental parser state."""
     __slots__ = ("path", "cwd", "session_id", "pos", "turns", "queue_pending",
                  "last_user", "last_assistant", "mtime", "pid", "is_cron",
-                 "cron_label", "tab_id")
+                 "cron_label", "tab_id", "provider")
 
-    def __init__(self, path, cwd, pid=None, is_cron=False, cron_label=None, tab_id=None):
+    def __init__(self, path, cwd, pid=None, is_cron=False, cron_label=None,
+                 tab_id=None, provider="claude"):
         self.path = path
         self.cwd = cwd
         self.session_id = path.stem
@@ -205,6 +233,7 @@ class TranscriptState:
         self.is_cron = is_cron
         self.cron_label = cron_label
         self.tab_id = tab_id
+        self.provider = provider
 
     def read_new(self):
         """Read bytes since self.pos, parse JSONL turns, update state."""
@@ -242,10 +271,10 @@ class TranscriptState:
             if t == "queue-operation":
                 self.queue_pending += 1
                 continue
-            if t not in ("user", "assistant"):
+            role = agent_session.record_role(d)
+            if role not in ("user", "assistant"):
                 continue
             msg = d.get("message", {})
-            role = msg.get("role") or t
             ts = d.get("timestamp") or d.get("ts")
             text = text_from_message(msg)
             if not text:
@@ -275,6 +304,7 @@ class TranscriptState:
             "is_cron": self.is_cron,
             "cron_label": self.cron_label,
             "tab_id": self.tab_id,
+            "provider": self.provider,
             "last_modified": iso(datetime.fromtimestamp(self.mtime, tz=timezone.utc).replace(microsecond=0)),
             "age_sec": int(now.timestamp() - self.mtime) if self.mtime else None,
             "last_user": self.last_user,
@@ -299,7 +329,7 @@ class Watcher:
         registered in cmux. This is the real set of 'sessions inside open
         cmux workspaces'. Skips the hundreds of closed-workspace ghost
         transcripts that mtime alone can't filter out."""
-        live = load_live_claude_sessions()
+        live = load_live_agent_sessions()
         # Tag the cron workers so we can mark them. We need session_id for that
         # join. The orchestrator-registry has workspace_ref; correlate by the
         # cmux-registry tab→workspace mapping. Easier: for now, infer by the
@@ -317,9 +347,9 @@ class Watcher:
             if not tpath:
                 continue
             p = Path(tpath)
-            if not p.exists():
-                continue
             try:
+                if not p.exists():
+                    continue
                 if p.stat().st_mtime < cutoff:
                     continue
             except OSError:
@@ -334,10 +364,12 @@ class Watcher:
                 "is_cron": is_cron,
                 "cron_label": cron_label,
                 "tab_id": meta.get("tab_id"),
+                "provider": meta.get("provider") or "claude",
             })
         return out
 
-    def add_watch(self, path, cwd, pid=None, is_cron=False, cron_label=None, tab_id=None):
+    def add_watch(self, path, cwd, pid=None, is_cron=False, cron_label=None,
+                  tab_id=None, provider="claude"):
         key = str(path)
         if key in self.path_to_fd:
             # Already watching — refresh metadata in case pid/cron tag changed.
@@ -347,6 +379,7 @@ class Watcher:
                 existing.is_cron = is_cron
                 existing.cron_label = cron_label
                 existing.tab_id = tab_id
+                existing.provider = provider
             return
         if len(self.fd_to_state) >= MAX_WATCHED_FDS:
             oldest_fd = min(self.fd_to_state, key=lambda fd: self.fd_to_state[fd].mtime)
@@ -374,7 +407,8 @@ class Watcher:
             log(f"kqueue add {path.name}: {e}", "warn")
             return
         state = TranscriptState(path, cwd, pid=pid, is_cron=is_cron,
-                                cron_label=cron_label, tab_id=tab_id)
+                                cron_label=cron_label, tab_id=tab_id,
+                                provider=provider)
         state.read_new()
         self.fd_to_state[fd] = state
         self.path_to_fd[key] = fd
@@ -411,6 +445,7 @@ class Watcher:
                 entry["path"], entry["cwd"],
                 pid=entry["pid"], is_cron=entry["is_cron"],
                 cron_label=entry["cron_label"], tab_id=entry["tab_id"],
+                provider=entry["provider"],
             )
             live_paths.add(str(entry["path"]))
         # Drop watches for sessions whose Claude pid died since last discovery.

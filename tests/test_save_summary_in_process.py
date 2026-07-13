@@ -176,21 +176,41 @@ class MainTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("must be a JSON object", err)
 
-    def test_rejects_missing_next(self):
+    def test_synthesizes_missing_next(self):
         rc, _, err = run_main(self._tmp, [
             "--ws-ref", "workspace:1",
             "--json", json.dumps({"verdict": "active", "summary": "s"}),
         ])
-        self.assertEqual(rc, 2)
-        self.assertIn("missing required 'next' field", err)
+        self.assertEqual(rc, 0)
+        self.assertIn("synthesized fallback", err)
+        saved = json.loads(
+            (self._tmp / ".assistant/observer-summaries/workspace_1.json").read_text()
+        )
+        self.assertEqual(saved["next"], "(inferred) s")
 
-    def test_rejects_blank_next(self):
+    def test_synthesizes_blank_next(self):
         rc, _, err = run_main(self._tmp, [
             "--ws-ref", "workspace:1",
             "--json", json.dumps({"verdict": "active", "summary": "s", "next": "   "}),
         ])
-        self.assertEqual(rc, 2)
-        self.assertIn("missing required 'next'", err)
+        self.assertEqual(rc, 0)
+        self.assertIn("synthesized fallback", err)
+        saved = json.loads(
+            (self._tmp / ".assistant/observer-summaries/workspace_1.json").read_text()
+        )
+        self.assertEqual(saved["next"], "(inferred) s")
+
+    def test_synthesizes_next_for_non_string_fields(self):
+        rc, _, err = run_main(self._tmp, [
+            "--ws-ref", "workspace:1",
+            "--json", json.dumps({"verdict": "active", "summary": {"bad": "shape"}, "next": 1}),
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIn("synthesized fallback", err)
+        saved = json.loads(
+            (self._tmp / ".assistant/observer-summaries/workspace_1.json").read_text()
+        )
+        self.assertIn("unknown", saved["next"])
 
     def test_pr_refs_default_to_empty_when_unparseable(self):
         rc, _, _ = run_main(self._tmp, [
