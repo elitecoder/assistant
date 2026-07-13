@@ -30,9 +30,12 @@ class RouteConfigTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def test_missing_config_defaults_to_droid(self):
+    def test_missing_config_defaults_to_claude(self):
+        # Fail-closed to the always-present agent: a missing config must NOT
+        # route the fleet at a droid binary that may be absent (which fails open
+        # to empty verdicts every pulse). Droid is opt-in.
         cfg = self.mod.load_route_config(self.path, env={})
-        self.assertEqual(cfg.provider, "droid")
+        self.assertEqual(cfg.provider, "claude")
         self.assertEqual(cfg.droid_canary_percent, 100)
         self.assertEqual(cfg.droid_model, "glm-5.2")
 
@@ -49,7 +52,7 @@ class RouteConfigTests(unittest.TestCase):
             self.path,
         )
 
-    def test_invalid_config_fails_closed_to_droid(self):
+    def test_invalid_config_fails_closed_to_claude(self):
         self.path.write_text(json.dumps({
             "triage": {
                 "provider": "unknown",
@@ -58,7 +61,7 @@ class RouteConfigTests(unittest.TestCase):
             },
         }))
         cfg = self.mod.load_route_config(self.path, env={})
-        self.assertEqual(cfg.provider, "droid")
+        self.assertEqual(cfg.provider, "claude")
         self.assertEqual(cfg.droid_canary_percent, 100)
         self.assertEqual(cfg.droid_reasoning_effort, "high")
 
@@ -233,7 +236,7 @@ class InvokeTests(unittest.TestCase):
         self.assertEqual(seen["input_text"], "triage")
         self.assertFalse(seen["merge_bedrock"])
 
-    def test_invalid_provider_fails_closed_to_droid(self):
+    def test_invalid_provider_fails_closed_to_claude(self):
         seen = {}
 
         def fake_run(cmd, **kwargs):
@@ -247,12 +250,14 @@ class InvokeTests(unittest.TestCase):
             }), ""
 
         result = self.mod.invoke(
-            provider="unknown", prompt="triage", model="glm-5.2",
+            provider="unknown", prompt="triage", model="a-model",
             run_dir=self.tmp, timeout=30, run=fake_run,
             claude_bin="/claude", droid_bin="/droid",
         )
-        self.assertEqual(result.provider, "droid")
-        self.assertEqual(seen["cmd"][0], "/droid")
+        # Unrecognized provider coerces to claude (fail-closed to the
+        # always-present agent), not droid — an opt-in binary that may be absent.
+        self.assertEqual(result.provider, "claude")
+        self.assertEqual(seen["cmd"][0], "/claude")
 
     def test_invokes_claude_with_existing_contract(self):
         seen = {}

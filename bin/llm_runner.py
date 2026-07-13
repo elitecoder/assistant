@@ -13,7 +13,11 @@ from typing import Callable
 
 @dataclass(frozen=True)
 class RouteConfig:
-    provider: str = "droid"
+    # Default provider is claude — the always-present agent. Droid is opt-in
+    # (config.json llm.provider / *_LLM_PROVIDER=droid): a missing or malformed
+    # config must NOT silently route the fleet's judgment layer at a binary that
+    # may not be installed, which fails open to empty verdicts every pulse.
+    provider: str = "claude"
     droid_canary_percent: int = 100
     droid_bin: str = "~/.local/bin/droid"
     droid_model: str = "glm-5.2"
@@ -58,8 +62,10 @@ def _bounded_percent(value, default: int = 100) -> int:
 
 
 def _provider(value) -> str:
+    # Unrecognized / empty coerces to claude (fail-closed to the always-present
+    # agent), NOT droid — an opt-in binary that may be absent.
     value = str(value or "").strip().lower()
-    return value if value in {"claude", "canary", "droid"} else "droid"
+    return value if value in {"claude", "canary", "droid"} else "claude"
 
 
 def _reasoning_effort(value) -> str:
@@ -93,7 +99,7 @@ def load_route_config(path: Path, section: str = "triage",
     provider = env.get(
         f"{prefix}_LLM_PROVIDER",
         feature.get("provider", llm.get(
-            "provider", legacy.get("provider", "droid"))),
+            "provider", legacy.get("provider", "claude"))),
     )
     percent = env.get(
         f"{prefix}_DROID_CANARY_PERCENT",
