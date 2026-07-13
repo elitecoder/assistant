@@ -59,7 +59,13 @@ class RecordShapeTests(MeteringBase):
             batch_size=8, model="us.anthropic.claude-sonnet-4-6[1m]",
             duration_s=41.234,
             usage={"tokens_in": 91000, "tokens_out": 1800,
-                   "cost_usd": 0.3, "source": "cli"},
+                   "cost_usd": 0.3, "source": "cli",
+                   "provider": "claude",
+                   "routes": [{
+                       "provider": "claude",
+                       "model": "us.anthropic.claude-sonnet-4-6[1m]",
+                       "calls": 1,
+                   }]},
             new_verdicts={"workspace:1": "active", "workspace:2": "active",
                           "workspace:3": "needs_user"},
             verdict_changes=1,
@@ -75,9 +81,9 @@ class RecordShapeTests(MeteringBase):
         rec = self._record()
         self.assertEqual(set(rec.keys()), {
             "ts", "epoch", "pulse_idx", "observer_called", "batch_size",
-            "model", "duration_s", "tokens_in", "tokens_out", "cost_usd_est",
-            "usage_source", "verdicts", "verdict_changes", "synthesized",
-            "skipped", "actions",
+            "provider", "model", "routes", "duration_s", "tokens_in",
+            "tokens_out", "cost_usd_est", "usage_source", "verdicts",
+            "verdict_changes", "synthesized", "skipped", "actions",
         })
 
     def test_record_values_and_counters(self):
@@ -86,6 +92,8 @@ class RecordShapeTests(MeteringBase):
         self.assertEqual(rec["pulse_idx"], 42)
         self.assertTrue(rec["observer_called"])
         self.assertEqual(rec["batch_size"], 8)
+        self.assertEqual(rec["provider"], "claude")
+        self.assertEqual(rec["routes"][0]["calls"], 1)
         self.assertEqual(rec["duration_s"], 41.23)
         self.assertEqual(rec["tokens_in"], 91000)
         self.assertEqual(rec["tokens_out"], 1800)
@@ -104,7 +112,9 @@ class RecordShapeTests(MeteringBase):
                            duration_s=0.0, usage={}, new_verdicts={},
                            verdict_changes=0, actions=[])
         self.assertFalse(rec["observer_called"])
+        self.assertIsNone(rec["provider"])
         self.assertIsNone(rec["model"])
+        self.assertEqual(rec["routes"], [])
         self.assertEqual(rec["tokens_in"], 0)
         self.assertEqual(rec["cost_usd_est"], 0.0)
         self.assertEqual(rec["verdicts"], {})
@@ -222,6 +232,31 @@ class UsageCaptureTests(MeteringBase):
         u = self.mod.sum_usage([])
         self.assertEqual(u["tokens_in"], 0)
         self.assertEqual(u["cost_usd"], 0.0)
+        self.assertIsNone(u["provider"])
+        self.assertIsNone(u["model"])
+        self.assertEqual(u["routes"], [])
+
+    def test_sum_usage_preserves_uniform_and_mixed_routes(self):
+        droid = {
+            "tokens_in": 10, "tokens_out": 1, "cost_usd": 0.1,
+            "source": "cli", "provider": "droid", "model": "glm-5.2",
+        }
+        uniform = self.mod.sum_usage([droid, droid])
+        self.assertEqual(uniform["provider"], "droid")
+        self.assertEqual(uniform["model"], "glm-5.2")
+        self.assertEqual(uniform["routes"], [{
+            "provider": "droid", "model": "glm-5.2", "calls": 2,
+        }])
+
+        claude = {
+            **droid,
+            "provider": "claude",
+            "model": "us.anthropic.claude-sonnet-4-6[1m]",
+        }
+        mixed = self.mod.sum_usage([droid, claude])
+        self.assertEqual(mixed["provider"], "mixed")
+        self.assertEqual(mixed["model"], "mixed")
+        self.assertEqual(len(mixed["routes"]), 2)
 
 
 # ─── dashboard aggregation math ──────────────────────────────────────────────

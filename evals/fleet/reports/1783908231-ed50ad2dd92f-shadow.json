@@ -1,0 +1,147 @@
+{
+  "generated_at_epoch": 1783908231,
+  "git_revision": "ed50ad2dd92f4ff659baaf467e790f36bc4b57db",
+  "prompt_hashes": {
+    "triage-batch-prompt.md": "cb8ecbc999a4518a2c6b980af45961fb2ba6134275b56976814c446a1aac8902",
+    "strategist-draft-prompt.md": "b87050b01ffdae48119cf9884502f0dfbcfa5dbedee9f89feb510a0957d3c95d",
+    "brief-narrator-prompt.md": "c34a0ed99b1dc80ab91cda25a73b845f49e1b1bf020ba7f8f0534b5c587c48f1"
+  },
+  "input_hashes": {
+    "evals/fleet/run.py": "4d71941f82b0612c2e28aa94312458787bdf365ed9f1f0ea20d120cc8f6b2395",
+    "bin/llm_runner.py": "9b1f17c6ac8c46967c16dcc58275226ca44408fa1bc9be4583987766fbc0daaf",
+    "prompts/triage-batch-prompt.md": "cb8ecbc999a4518a2c6b980af45961fb2ba6134275b56976814c446a1aac8902",
+    "prompts/strategist-draft-prompt.md": "b87050b01ffdae48119cf9884502f0dfbcfa5dbedee9f89feb510a0957d3c95d",
+    "prompts/brief-narrator-prompt.md": "c34a0ed99b1dc80ab91cda25a73b845f49e1b1bf020ba7f8f0534b5c587c48f1"
+  },
+  "final_input_hashes": {
+    "evals/fleet/run.py": "4d71941f82b0612c2e28aa94312458787bdf365ed9f1f0ea20d120cc8f6b2395",
+    "bin/llm_runner.py": "9b1f17c6ac8c46967c16dcc58275226ca44408fa1bc9be4583987766fbc0daaf",
+    "prompts/triage-batch-prompt.md": "cb8ecbc999a4518a2c6b980af45961fb2ba6134275b56976814c446a1aac8902",
+    "prompts/strategist-draft-prompt.md": "b87050b01ffdae48119cf9884502f0dfbcfa5dbedee9f89feb510a0957d3c95d",
+    "prompts/brief-narrator-prompt.md": "c34a0ed99b1dc80ab91cda25a73b845f49e1b1bf020ba7f8f0534b5c587c48f1"
+  },
+  "inputs_stable": true,
+  "qualification_inputs_sha256": "343ec5234f1d712a59c3f63b1a5a5b1ad3f8183d8e93b09bbeedd875fb72dad3",
+  "mode": "shadow",
+  "providers": [
+    "claude",
+    "droid"
+  ],
+  "cases_per_provider": 5,
+  "passed": 10,
+  "failed": 0,
+  "qualification_passed": true,
+  "parity_passed": true,
+  "results": [
+    {
+      "provider": "claude",
+      "model": "us.anthropic.claude-sonnet-4-6[1m]",
+      "case": "triage",
+      "passed": true,
+      "score": "lanes={'urgent-1': 'escalate', 'review-2': 'staged', 'fyi-3': 'digest'}",
+      "elapsed_sec": 15.082,
+      "session_id": "e46f0af9-f0d2-4e54-bfd5-2b2236b8039f",
+      "tokens_in": 10964,
+      "tokens_out": 128
+    },
+    {
+      "provider": "claude",
+      "model": "us.anthropic.claude-sonnet-4-6[1m]",
+      "case": "strategist",
+      "passed": true,
+      "score": "step_class='doc-draft'",
+      "elapsed_sec": 21.24,
+      "session_id": "4d60399c-18bb-4809-9328-64f631ed2129",
+      "tokens_in": 11097,
+      "tokens_out": 105
+    },
+    {
+      "provider": "claude",
+      "model": "us.anthropic.claude-sonnet-4-6[1m]",
+      "case": "narrator",
+      "passed": true,
+      "score": "recommendation_ids=['dec-1']",
+      "elapsed_sec": 21.564,
+      "session_id": "7c260e4b-17a2-4cc2-9bdd-00e071006fd6",
+      "tokens_in": 10924,
+      "tokens_out": 75
+    },
+    {
+      "provider": "claude",
+      "model": "us.anthropic.claude-sonnet-4-6[1m]",
+      "case": "lesson",
+      "passed": true,
+      "score": "target='claude' scope='global'",
+      "elapsed_sec": 20.785,
+      "session_id": "12b91b3f-74bc-4420-a78e-9bf1d3ed0a5f",
+      "tokens_in": 10315,
+      "tokens_out": 68
+    },
+    {
+      "provider": "claude",
+      "model": "us.anthropic.claude-sonnet-4-6[1m]",
+      "case": "interactive-add",
+      "passed": true,
+      "score": "add(2,3)=5 and add(-2,2)=0",
+      "elapsed_sec": 23.404,
+      "session_id": "cc4e5a57-cf4a-4854-8772-d8c6ceb88aba",
+      "tokens_in": 115276,
+      "tokens_out": 367
+    },
+    {
+      "provider": "droid",
+      "model": "glm-5.2",
+      "case": "triage",
+      "passed": true,
+      "score": "lanes={'urgent-1': 'escalate', 'review-2': 'staged', 'fyi-3': 'digest'}",
+      "elapsed_sec": 10.186,
+      "session_id": "519feef0-3df0-4e1b-96d1-a2ec731ddbc9",
+      "tokens_in": 8619,
+      "tokens_out": 252
+    },
+    {
+      "provider": "droid",
+      "model": "glm-5.2",
+      "case": "strategist",
+      "passed": true,
+      "score": "step_class='doc-draft'",
+      "elapsed_sec": 9.942,
+      "session_id": "d11c95a2-5ef1-4c11-88f0-88a9c245cb70",
+      "tokens_in": 8712,
+      "tokens_out": 200
+    },
+    {
+      "provider": "droid",
+      "model": "glm-5.2",
+      "case": "narrator",
+      "passed": true,
+      "score": "recommendation_ids=['dec-1']",
+      "elapsed_sec": 10.418,
+      "session_id": "601d1370-003e-4f4f-affd-ca86f13096bb",
+      "tokens_in": 8583,
+      "tokens_out": 229
+    },
+    {
+      "provider": "droid",
+      "model": "glm-5.2",
+      "case": "lesson",
+      "passed": true,
+      "score": "target='claude' scope='global'",
+      "elapsed_sec": 11.749,
+      "session_id": "0423d77a-9744-4fab-a233-836c3e9ce5b3",
+      "tokens_in": 8033,
+      "tokens_out": 300
+    },
+    {
+      "provider": "droid",
+      "model": "glm-5.2",
+      "case": "interactive-add",
+      "passed": true,
+      "score": "add(2,3)=5 and add(-2,2)=0",
+      "elapsed_sec": 14.13,
+      "session_id": "385c3d80-4296-47f0-98ad-aafdc7cbdbf9",
+      "tokens_in": 78874,
+      "tokens_out": 252
+    }
+  ]
+}

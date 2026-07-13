@@ -1,4 +1,4 @@
-{"type":"user","timestamp":"2026-05-26T15:00:00Z","message":{"role":"user","content":[{"type":"text","text":"De-flake cross-track-drag-reparent-live (poll dropzone-count assertions)."}]}}
-{"type":"assistant","timestamp":"2026-05-26T15:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Reproducing the flake locally."}]}}
-{"type":"assistant","timestamp":"2026-05-26T15:25:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Patched dropzone-count assertion to use polling. Running full E2E to verify."}]}}
-{"type":"assistant","timestamp":"2026-05-26T15:29:50Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01abc","name":"Bash","input":{"command":"pnpm e2e:squirrel --grep cross-track-drag-reparent-live"}}]}}
+{"type":"session_start","id":"factory-eval-active-08","timestamp":"2026-05-26T15:00:00Z"}
+{"type":"message","timestamp":"2026-05-26T15:00:00Z","message":{"role":"user","content":[{"type":"text","text":"De-flake cross-track-drag-reparent-live (poll dropzone-count assertions)."}]}}
+{"type":"message","timestamp":"2026-05-26T15:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Reproducing the flake locally."}]}}
+{"type":"message","timestamp":"2026-05-26T15:25:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Patched dropzone-count assertion to use polling. Running full E2E to verify."},{"type":"tool_call","name":"execute-cli","input":{"command":"pnpm e2e:squirrel --grep cross-track-drag-reparent-live"}}]}}

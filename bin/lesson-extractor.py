@@ -68,13 +68,9 @@ STEM_WORDS = 8
 
 # Where Claude Code writes one JSONL transcript per session.
 CLAUDE_PROJECTS = HOME / ".claude" / "projects"
-
-# Coexistence seam: also scan Droid sessions (~/.factory/sessions) and normalize
-# the two transcript schemas to one (role, content) shape.
-import sys as _sys
-if str(BIN) not in _sys.path:
-    _sys.path.insert(0, str(BIN))
-import agent_session
+if str(BIN) not in sys.path:
+    sys.path.insert(0, str(BIN))
+import agent_session  # noqa: E402
 
 # Strip these noise tokens out of evidence before computing the stem so the
 # grouping keys on the SHAPE of the evidence, not its per-workspace specifics.
@@ -356,8 +352,7 @@ class TranscriptScanner:
                  existing: list[str] | None = None,
                  now: float | None = None):
         if roots is None:
-            if droid_dir is None:
-                droid_dir = agent_session.DROID_SESSIONS
+            droid_dir = droid_dir or agent_session.DROID_SESSIONS
             roots = [base / d for base in (projects_dir, droid_dir)
                      for d in self.PRIORITY_DIRS if (base / d).is_dir()]
         self.roots = roots
@@ -455,8 +450,6 @@ class TranscriptScanner:
                 # turn is an orchestrator prompt, not the operator.
                 if obj.get("isMeta") or obj.get("isSidechain"):
                     continue
-                # Normalize across Claude (role == top-level type) and Droid
-                # (role on message.role; top-level type == "message").
                 role = agent_session.record_role(obj)
                 if role is None:
                     continue
@@ -703,10 +696,15 @@ def build_draft_prompt(candidate: dict[str, Any]) -> str:
 
 
 def _run(cmd: list[str], timeout: int = 120,
-         env: dict[str, str] | None = None) -> tuple[int, str, str]:
+         env: dict[str, str] | None = None,
+         input_text: str | None = None,
+         merge_bedrock: bool = False) -> tuple[int, str, str]:
+    if merge_bedrock:
+        env = _bedrock_env()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           env=env)
+        p = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            env=env, input=input_text)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return 124, "", f"timeout after {timeout}s"
@@ -773,10 +771,48 @@ def draft_lesson(candidate: dict[str, Any],
 
 
 def _claude_oneshot(prompt: str) -> str:
-    rc, out, _ = _run(
-        [CLAUDE_BIN, "--model", EXTRACTOR_MODEL, "--print", prompt],
-        timeout=120, env=_bedrock_env())
-    return out if rc == 0 else ""
+    if str(BIN) not in sys.path:
+        sys.path.insert(0, str(BIN))
+    import llm_runner  # noqa: PLC0415
+    run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "prompt.md").write_text(prompt)
+    route = llm_runner.load_route_config(
+        llm_runner.config_path(home=HOME), "lessons")
+    provider = llm_runner.select_provider(route, [str(time.time_ns())])
+    model = route.droid_model if provider == "droid" else EXTRACTOR_MODEL
+    result = llm_runner.invoke(
+        provider=provider, prompt=prompt, model=model, run_dir=run_dir,
+        timeout=120, run=_run, claude_bin=CLAUDE_BIN,
+        droid_bin=route.droid_bin,
+        reasoning_effort=route.droid_reasoning_effort,
+        disable_tools=True, tag="assistant-lessons")
+    (run_dir / "stdout.txt").write_text(result.stdout)
+    (run_dir / "stderr.txt").write_text(result.stderr)
+    (run_dir / "meta.json").write_text(json.dumps({
+        **{k: v for k, v in result.metadata().items()
+           if k not in {"stdout", "stderr", "result_text"}},
+        "ts": utc_iso(),
+    }, indent=2))
+    try:
+        import metering  # noqa: PLC0415
+        cost = result.cost_usd
+        source = result.usage_source
+        if cost is None:
+            cost = metering.estimate_cost_usd(
+                result.tokens_in, result.tokens_out, model)
+            source = "estimated"
+        metering.append_cost_row(
+            caller="lessons", model=model,
+            usage={"tokens_in": result.tokens_in,
+                   "tokens_out": result.tokens_out,
+                   "cost_usd": cost, "source": source},
+            wall_ms=result.wall_ms,
+            status="ok" if result.usable else "failed",
+            provider=provider)
+    except Exception:
+        pass
+    return result.result_text if result.usable else ""
 
 
 def _extract_json(raw: str) -> dict[str, Any] | None:

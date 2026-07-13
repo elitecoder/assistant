@@ -16,9 +16,9 @@ A JSON array of WorldEvents. Each has: `id`, `source` (cmux/github/gmail/…), `
 
 There is deliberately **no way to suggest an automatic action and no way to suggest dropping an event**. Auto-handling requires a human-confirmed policy rule; dropping requires an explicit rule. Any other string you emit for a lane is discarded and the event keeps its fail-safe `escalate` default.
 
-## Output — write to the file you are given, not stdout
+## Output
 
-Write one JSON object per line (JSONL) to the output path named in the runtime context:
+Return one JSON object per line (JSONL) in your final response:
 
 ```
 {"event_id": "<the event's id field>", "suggested_lane": "escalate|staged|digest", "rationale": "<one short sentence>"}

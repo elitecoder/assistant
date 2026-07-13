@@ -227,6 +227,8 @@ launchctl_reload() {
 log "[1/5] Symlinking code into ~/.claude/"
 
 ensure_symlink "$HOME_DIR/.claude/bin" "$REPO_ROOT/bin"
+ensure_symlink "$HOME_DIR/.local/bin/assistant-llm" \
+    "$REPO_ROOT/bin/assistant-llm.py"
 
 # Decommission legacy spawn-prompts links from the old LLM-Assistant era
 # (prompt-assistant-agent.md, prompt-triage-agent.md). The mechanical
@@ -329,6 +331,12 @@ for skill_dir in "$REPO_ROOT"/skills/*/; do
         ln -s "$expected" "$target"
     fi
 done
+log ""
+
+# Factory Droid discovers the same repo-owned skills and durable instructions
+# through its native paths.
+ensure_symlink "$HOME_DIR/.factory/skills" "$HOME_DIR/.claude/skills"
+ensure_symlink "$HOME_DIR/.factory/AGENTS.md" "$HOME_DIR/.claude/CLAUDE.md" || true
 log ""
 
 # --- 3. Copy LaunchAgent plists + reload only those that changed ----------
@@ -451,16 +459,25 @@ log ""
 log "[3b] Ensuring ~/.assistant/logs/"
 mkdir -p "$HOME_DIR/.assistant/logs"
 note "ensured $HOME_DIR/.assistant/logs/"
+ensure_file_copy "$HOME_DIR/.assistant/droid-glm-settings.json" \
+    "$REPO_ROOT/config/droid-glm-settings.json"
+if [[ $APPLY -eq 1 ]]; then
+    python3 "$REPO_ROOT/install/patch-factory-settings.py" \
+        "$HOME_DIR/.factory/settings.json" \
+        "$REPO_ROOT/config/droid-glm-settings.json" | sed 's/^/  /'
+else
+    note "would set Factory interactive defaults to GLM-5.2/high autonomy"
+fi
 log ""
 
 # --- 4. cmux session-restore (vendored) -------------------------------------
-# Three layers that make Claude panes survive cmux restart/reboot:
+# Three layers that make Claude and Factory Droid panes survive restart/reboot:
 #   Layer 1+2  hooks/cmux-auto-resume.py + cmux-session-ledger.py
 #              → symlinked into ~/.claude/hooks/ (a MIXED dir — symlink the
 #                files individually, never the directory)
 #   Layer 3    bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions
 #   settings   install/patch-settings.py registers the SessionStart/SessionEnd
-#              hook commands in ~/.claude/settings.json (idempotent, self-backs-up)
+#              hook commands in Claude settings and Factory hooks (idempotent)
 # Vendored from the former elitecoder/cmux-session-restore repo so a single
 # `assistant install --apply` rebuilds all three layers from git on any machine
 # — claude.tgz-style home backups only capture ~/.claude and silently drop the
@@ -470,10 +487,17 @@ ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hook
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
 ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
 if [[ $APPLY -eq 1 ]]; then
-    python3 "$REPO_ROOT/install/patch-settings.py" "$HOME_DIR/.claude/settings.json" \
+    CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"
+    if [[ -x "$CMUX_CLI" ]]; then
+        "$CMUX_CLI" hooks factory install --yes | sed 's/^/  /'
+    else
+        warn "cmux CLI missing; Factory lifecycle hooks were not installed"
+    fi
+    python3 "$REPO_ROOT/install/patch-settings.py" \
+        "$HOME_DIR/.claude/settings.json" "$HOME_DIR/.factory/hooks.json" \
         | sed 's/^/  /'
 else
-    note "would patch ~/.claude/settings.json (SessionStart: cmux-auto-resume + ledger start; SessionEnd: ledger end)"
+    note "would install cmux Factory hooks and patch Claude + Factory lifecycle hooks"
 fi
 log ""
 
@@ -546,91 +570,6 @@ log ""
 #      sync). Lessons stay in ~/.claude/CLAUDE.md; semantic memory lives at
 #      ~/.assistant/mem0/ on this machine only.
 #
-# --- Dispatch agent choice (Claude or Droid) --------------------------------
-# The fleet dispatches TODO work to a coding agent. Default is Claude Code; a
-# machine with Factory Droid installed can choose Droid. The choice is persisted
-# to comms/config.json (dispatch.agent) and read by agent_session.dispatch_agent();
-# the runtime still pre-flights the binary and falls back to Claude if the chosen
-# agent isn't on PATH. Idempotent (never re-prompts once set) and never flipped
-# by a non-interactive self-update.
-# Read the persisted choice via `python3 -c` (NOT a heredoc inside $()) — a
-# heredoc-in-$() with parens in its body confuses bash's paren matching for the
-# command-substitution close. Only report a value the RUNTIME will honor, so a
-# hand-edited junk value (e.g. "gpt") doesn't wedge install into "already set"
-# while the runtime ignores it and dispatches claude — it re-prompts instead.
-CURRENT_AGENT="$(HOME="$HOME_DIR" python3 -c '
-import json, os
-from pathlib import Path
-p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
-try:
-    d = json.loads(p.read_text()).get("dispatch") or {}
-    a = d.get("agent") if isinstance(d, dict) else None
-    print(a if a in ("claude", "droid") else "")
-except Exception:
-    print("")
-' 2>/dev/null || true)"
-if [[ $APPLY -eq 0 ]]; then
-    note "(dry-run) Would ask which agent the fleet dispatches (Claude/Droid); current: ${CURRENT_AGENT:-claude (default)}"
-elif [[ -n "$CURRENT_AGENT" ]]; then
-    note "OK   dispatch agent already set: $CURRENT_AGENT (edit comms/config.json dispatch.agent to change)"
-elif [[ ! -t 0 ]]; then
-    note "non-interactive run — leaving dispatch agent at default (claude); run install.sh --apply to choose Droid"
-else
-    log ""
-    log "Which coding agent should the fleet DISPATCH work to?"
-    log "  1) Claude Code (default)"
-    log "  2) Factory Droid"
-    # `|| AGENT_CHOICE=""` so a Ctrl-D (EOF) at the prompt defaults to Claude
-    # instead of exiting `read` non-zero and killing the whole installer under
-    # `set -euo pipefail` before the memory step ever runs.
-    read -r -p "Choice [1/2]: " AGENT_CHOICE || AGENT_CHOICE=""
-    CHOSEN=claude
-    [[ "$AGENT_CHOICE" == "2" ]] && CHOSEN=droid
-    if [[ "$CHOSEN" == "droid" ]] && ! command -v droid >/dev/null 2>&1; then
-        warn "droid is not on PATH — the fleet will FALL BACK to Claude at dispatch until droid is installed"
-    fi
-    if HOME="$HOME_DIR" python3 - "$CHOSEN" <<'PY'
-import json, os, sys
-from pathlib import Path
-p = Path(os.environ["HOME"]) / ".assistant/comms/config.json"
-p.parent.mkdir(parents=True, exist_ok=True)
-existing = ""
-try:
-    existing = p.read_text()
-except FileNotFoundError:
-    pass
-if existing.strip():
-    try:
-        cfg = json.loads(existing)
-    except Exception:
-        # REFUSE to overwrite a malformed config — clobbering it would silently
-        # drop the operator's other keys (brief/strategist/…). Fail loud instead.
-        sys.stderr.write("config.json is not valid JSON — fix it by hand; not overwriting\n")
-        sys.exit(2)
-    if not isinstance(cfg, dict):
-        sys.stderr.write("config.json is not a JSON object — not overwriting\n")
-        sys.exit(2)
-else:
-    cfg = {}
-# Coerce a pre-corrupted non-dict `dispatch` (e.g. a bare string) rather than
-# TypeError on setdefault()[...] = …
-disp = cfg.get("dispatch")
-if not isinstance(disp, dict):
-    disp = {}
-disp["agent"] = sys.argv[1]
-cfg["dispatch"] = disp
-tmp = p.with_suffix(".json.tmp")
-tmp.write_text(json.dumps(cfg, indent=2) + "\n")
-os.replace(tmp, p)
-PY
-    then
-        note "dispatch agent set to $CHOSEN (comms/config.json)"
-    else
-        warn "could not write dispatch agent choice to comms/config.json"
-    fi
-    log ""
-fi
-
 # The installer asks interactively only when --apply is set; in dry-run it explains
 # what each path would do.
 log "[7/8] Memory setup"

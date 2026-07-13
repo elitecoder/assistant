@@ -1,1 +1,1 @@
-{"verdict": "ready_for_merge"}
+{"verdict": "needs_user", "allowed_verdicts": ["stranded"], "forbidden_verdicts": ["ready_for_merge"]}

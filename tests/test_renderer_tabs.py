@@ -918,8 +918,8 @@ class WorkspacesTabRichTests(_Base):
                 {"type": "tool_use", "name": "Bash"},
                 {"type": "text", "text": "   "},
             ]}}),
-            # content not a list.
-            json.dumps({"type": "assistant", "message": {"content": "str-content"}}),
+            # Unsupported content shape.
+            json.dumps({"type": "assistant", "message": {"content": {"bad": "shape"}}}),
             json.dumps({"type": "assistant", "message": "string-not-dict"}),
             "",
         ]) + "\n")

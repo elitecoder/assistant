@@ -133,6 +133,13 @@ _CLAUDE_PANE_MARKERS = (
     "Sonnet 4",
     "Haiku 4",
 )
+_DROID_PANE_MARKERS = (
+    "? for help",
+    "allow all commands",
+    "Skills (",
+    "GLM-5.2",
+    "GLM5.2",
+)
 _SURFACE_LINE_RE = re.compile(r"(surface:\d+)\s+([0-9A-Fa-f-]{36})")
 
 
@@ -173,12 +180,20 @@ def status_bar_session_id(screen_text: str) -> str | None:
     return found
 
 
-def _is_claude_pane(text: str) -> bool:
+def _agent_for_screen(text: str) -> str | None:
     if not text:
-        return False
+        return None
     if status_bar_session_id(text):
-        return True
-    return any(m in text for m in _CLAUDE_PANE_MARKERS)
+        return "claude"
+    if any(m in text for m in _DROID_PANE_MARKERS):
+        return "droid"
+    if any(m in text for m in _CLAUDE_PANE_MARKERS):
+        return "claude"
+    return None
+
+
+def _is_agent_pane(text: str) -> bool:
+    return _agent_for_screen(text) is not None
 
 
 def _list_panes(ws_ref: str) -> list[str]:
@@ -250,10 +265,13 @@ def find_agent_pane(ws_ref: str, lines: int = SCREEN_LINES) -> dict | None:
         sid = status_bar_session_id(text)
         if sid:
             return {"surface_ref": sref, "surface_uuid": suuid,
-                    "screen_text": _bound(text), "sid8": sid}
-        if booting is None and _is_claude_pane(text):
+                    "screen_text": _bound(text), "sid8": sid,
+                    "agent": _agent_for_screen(text)}
+        agent = _agent_for_screen(text)
+        if booting is None and agent:
             booting = {"surface_ref": sref, "surface_uuid": suuid,
-                       "screen_text": _bound(text), "sid8": None}
+                       "screen_text": _bound(text), "sid8": None,
+                       "agent": agent}
     return booting
 
 
@@ -282,6 +300,8 @@ def _transcript_internal_sid(path: str) -> str | None:
         except Exception:
             continue
         sid = d.get("sessionId") or d.get("session_id")
+        if not sid and d.get("type") == "session_start":
+            sid = d.get("id")
         if sid:
             return sid
     return None
@@ -297,11 +317,10 @@ def transcript_from_session_id(sid8: str | None) -> str | None:
     (astronomically unlikely) 8-hex prefix collision."""
     if not sid8:
         return None
-    projects = HOME / ".claude/projects"
-    if not projects.is_dir():
-        return None
+    roots = [HOME / ".claude/projects", HOME / ".factory/sessions"]
     candidates = sorted(
-        (str(p) for p in projects.glob(f"*/{sid8}*.jsonl")),
+        (str(p) for root in roots if root.is_dir()
+         for p in root.glob(f"*/{sid8}*.jsonl")),
         key=os.path.getmtime, reverse=True,
     )
     for path in candidates:
@@ -338,7 +357,7 @@ def registry_transcript_for_surface(surface_uuid: str, expect_sid8: str | None =
     if not entries:
         return None
     entry = max(entries, key=lambda e: e.get("ts", 0))
-    if not _pid_alive(entry.get("claude_pid")):
+    if not _pid_alive(entry.get("agent_pid") or entry.get("claude_pid")):
         return None  # stale registry row — do NOT trust
     sid = (entry.get("session_id") or "")
     sid8 = sid[:8] if sid else None
@@ -352,6 +371,40 @@ def registry_transcript_for_surface(surface_uuid: str, expect_sid8: str | None =
     if internal and sid8 and not internal.startswith(sid8):
         return None
     return {"transcript_path": tp, "session_id8": sid8}
+
+
+def resume_binding_for_surface(surface_ref: str, ws_ref: str) -> dict | None:
+    """Return the live cmux resume binding for an agent surface.
+
+    cmux owns this surface-to-session association, so it is a verified signal
+    even when an agent UI does not render a session id (Factory Droid).
+    """
+    if not surface_ref or not ws_ref:
+        return None
+    r = _cmux(["surface", "resume", "show", "--json",
+               "--surface", surface_ref, "--workspace", ws_ref])
+    if not r or r.returncode != 0:
+        return None
+    try:
+        doc = json.loads(r.stdout)
+    except Exception:
+        return None
+    queue = [doc]
+    binding = None
+    while queue:
+        value = queue.pop(0)
+        if not isinstance(value, dict):
+            continue
+        if value.get("checkpointId") or value.get("checkpoint_id"):
+            binding = value
+            break
+        queue.extend(v for v in value.values() if isinstance(v, dict))
+    if not binding:
+        return None
+    sid = binding.get("checkpointId") or binding.get("checkpoint_id")
+    kind = str(binding.get("kind") or "").lower()
+    agent = "droid" if kind in {"factory", "droid"} else "claude"
+    return {"session_id": str(sid), "agent": agent}
 
 
 def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
@@ -372,6 +425,8 @@ def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
     screen = pane["screen_text"] if pane else ""
     sid8 = pane["sid8"] if pane else None
     surface_uuid = pane["surface_uuid"] if pane else None
+    surface_ref = pane["surface_ref"] if pane else None
+    agent = pane.get("agent") if pane else None
 
     transcript = None
     source = None
@@ -381,11 +436,22 @@ def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
         if transcript:
             source = "screen_session_id"
 
+    if transcript is None and surface_ref:
+        binding = resume_binding_for_surface(surface_ref, ws_ref)
+        if binding and (not agent or binding["agent"] == agent):
+            bound_sid = binding["session_id"]
+            transcript = transcript_from_session_id(bound_sid)
+            if transcript:
+                sid8 = bound_sid[:8]
+                agent = agent or binding["agent"]
+                source = "cmux_resume_binding"
+
     if transcript is None and surface_uuid:
         reg = registry_transcript_for_surface(surface_uuid, expect_sid8=sid8)
         if reg:
             transcript = reg["transcript_path"]
             sid8 = sid8 or reg["session_id8"]
+            agent = agent or "claude"
             source = "registry_live_pid"
 
     return {
@@ -394,7 +460,8 @@ def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
         "session_id8": sid8,
         "transcript_path": transcript,
         "transcript_source": source,
-        "agent_surface": pane["surface_ref"] if pane else None,
+        "agent_surface": surface_ref,
+        "agent_provider": agent,
     }
 
 
@@ -525,6 +592,7 @@ def main() -> int:
         "transcript_source": resolved["transcript_source"],
         "session_id8": resolved["session_id8"],
         "agent_surface": resolved["agent_surface"],
+        "agent_provider": resolved.get("agent_provider"),
         "last_turn_age_sec": age,
         "agent_status": agent_status,
         "cwd_dirty": dirty,

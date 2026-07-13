@@ -26,8 +26,8 @@ anything. Your output is prose that a human reads over coffee — nothing else.
 
 ## Output
 
-Write **one JSON object** with the Write tool to the file named in the RUNTIME
-CONTEXT — NOT to stdout. Shape:
+Return **one JSON object** as your final response. Do not use tools, write files,
+or add markdown fences. Shape:
 
 ```json
 {

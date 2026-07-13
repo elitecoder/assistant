@@ -59,6 +59,7 @@ def tmp_home(tmp_path, monkeypatch):
     cmux_reg = home / ".claude/cmux-registry.json"
     orch_reg = home / ".architect/orchestrator-registry.json"
     out_path = home / ".claude/cache/session-context.json"
+    world_path = home / ".claude/cache/world.json"
     log_dir = home / ".assistant/logs"
     lock_file = home / ".architect/.session-context-watcher.lock"
     monkeypatch.setattr(scw, "HOME", home)
@@ -66,6 +67,7 @@ def tmp_home(tmp_path, monkeypatch):
     monkeypatch.setattr(scw, "CMUX_REGISTRY", cmux_reg)
     monkeypatch.setattr(scw, "ORCHESTRATOR_REGISTRY", orch_reg)
     monkeypatch.setattr(scw, "OUT_PATH", out_path)
+    monkeypatch.setattr(scw, "WORLD_PATH", world_path)
     monkeypatch.setattr(scw, "LOG_DIR", log_dir)
     monkeypatch.setattr(scw, "LOCK_FILE", lock_file)
     return home
@@ -154,6 +156,24 @@ def test_load_live_sessions_filters_dead_keeps_live(tmp_home):
     assert set(out.keys()) == {"S-LIVE"}
     assert out["S-LIVE"]["pid"] == live_pid
     assert out["S-LIVE"]["tab_id"] == "tab-live"
+
+
+def test_load_live_sessions_includes_droid_from_world(tmp_home):
+    transcript = tmp_home / ".factory/sessions/-work/droid-session.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n")
+    scw.WORLD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    scw.WORLD_PATH.write_text(json.dumps({"live_sessions": [{
+        "session_id": "droid-session",
+        "pid": os.getpid(),
+        "cwd": "/work",
+        "transcript_path": str(transcript),
+        "provider": "droid",
+        "ts": 200,
+    }]}))
+    out = scw.load_live_agent_sessions()
+    assert out["droid-session"]["provider"] == "droid"
+    assert out["droid-session"]["transcript_path"] == str(transcript)
 
 
 def test_load_live_sessions_dup_keeps_most_recent_ts(tmp_home):
@@ -332,6 +352,21 @@ def test_read_new_picks_up_turns_and_sets_last(tmp_path):
     assert st.last_assistant["text"] == "hello back"
     assert len(st.turns) == 2
     assert st.session_id == "sess"
+
+
+def test_read_new_parses_droid_message_records(tmp_path):
+    f = tmp_path / "droid.jsonl"
+    f.write_text(json.dumps({
+        "type": "message",
+        "timestamp": "2026-07-12T10:00:00Z",
+        "message": {"role": "user", "content": "droid input"},
+    }) + "\n")
+    st = scw.TranscriptState(f, "/cwd", provider="droid")
+    assert st.read_new() is True
+    assert st.last_user["text"] == "droid input"
+    assert st.to_dict(scw.utc_now())["provider"] == "droid"
+    assert len(st.turns) == 1
+    assert st.session_id == "droid"
 
 
 def test_read_new_incremental_only_reads_new_bytes(tmp_path):

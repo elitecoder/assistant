@@ -1,0 +1,8 @@
+{
+  "sessionDefaultSettings": {
+    "interactionMode": "auto",
+    "autonomyLevel": "high",
+    "model": "glm-5.2",
+    "reasoningEffort": "high"
+  }
+}

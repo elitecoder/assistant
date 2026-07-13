@@ -365,7 +365,6 @@ def test_date_from_mtime(ms, tmp_path):
 
 def test_decision_seeds_missing_dir(ms, tmp_path, monkeypatch):
     monkeypatch.setattr(ms, "TRANSCRIPT_DIR", tmp_path / "no-such-dir")
-    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", tmp_path / "no-droid")
     assert ms.decision_seeds() == []
 
 
@@ -383,7 +382,6 @@ def test_decision_seeds(ms, tmp_path, monkeypatch):
         _msg("z" * 2001),                                    # giant paste -> skipped
     ]) + "\n")
     monkeypatch.setattr(ms, "TRANSCRIPT_DIR", tdir)
-    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", tmp_path / "no-droid")
 
     seeds = ms.decision_seeds()
     fragments = [s["content"] for s in seeds]
@@ -411,9 +409,24 @@ def test_decision_seeds_limit(ms, tmp_path, monkeypatch):
         _msg(f"let's go with option {i}") for i in range(10)
     ) + "\n")
     monkeypatch.setattr(ms, "TRANSCRIPT_DIR", tdir)
-    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", tmp_path / "no-droid")
     seeds = ms.decision_seeds(limit=3)
     assert len(seeds) == 3
+
+
+def test_decision_seeds_scans_droid_transcripts(ms, tmp_path, monkeypatch):
+    claude_dir = tmp_path / "claude"
+    droid_dir = tmp_path / "droid"
+    claude_dir.mkdir()
+    droid_dir.mkdir()
+    (droid_dir / "session.jsonl").write_text(json.dumps({
+        "type": "message",
+        "message": {"role": "user", "content": "let's go with GLM"},
+    }) + "\n")
+    monkeypatch.setattr(ms, "TRANSCRIPT_DIR", claude_dir)
+    monkeypatch.setattr(ms, "DEFAULT_TRANSCRIPT_DIR", claude_dir)
+    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", droid_dir)
+    seeds = ms.decision_seeds()
+    assert any("GLM" in seed["content"] for seed in seeds)
 
 
 def test_decision_seeds_prose_pattern_limit(ms, tmp_path, monkeypatch):
@@ -431,21 +444,9 @@ def test_decision_seeds_prose_pattern_limit(ms, tmp_path, monkeypatch):
         for i in range(6)
     ) + "\n")
     monkeypatch.setattr(ms, "TRANSCRIPT_DIR", tdir)
-    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", tmp_path / "no-droid")
     seeds = ms.decision_seeds(limit=2)
     assert len(seeds) == 2
     assert all("decided to use approach" in s["content"] for s in seeds)
-
-
-def test_decision_seeds_reads_droid_dir(ms, tmp_path, monkeypatch):
-    # Coexistence: a decision made in a Droid session is mined too.
-    ddir = tmp_path / "droid"
-    ddir.mkdir()
-    (ddir / "session.jsonl").write_text(_msg("let's go with the droid seam") + "\n")
-    monkeypatch.setattr(ms, "TRANSCRIPT_DIR", tmp_path / "no-claude")
-    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", ddir)
-    seeds = ms.decision_seeds()
-    assert any("droid seam" in s["content"] for s in seeds)
 
 
 # ════════════════════════════════════════════════════════════════════════════

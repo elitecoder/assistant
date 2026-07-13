@@ -571,13 +571,17 @@ class MergePrDispatchTests(unittest.TestCase):
     def test_main_send_unverified_path(self):
         with mock.patch.object(self.mod, "step0_safety_gate",
                                return_value=(True, "test_only", {})):
-            with mock.patch.object(self.mod, "step1_ci_route",
-                                   return_value=("merge-when-ready", "ci_all_green", {})):
-                with mock.patch.object(self.mod, "step2_send_and_verify",
-                                       return_value=(False, "did not match")):
-                    rc, out = self._run_main([
-                        "--ws", "workspace:1", "--pr", "100"
-                    ])
+            with mock.patch.object(self.mod, "gh_pr_view",
+                                   return_value={"files": []}):
+                with mock.patch.object(self.mod, "step_freeze_retarget",
+                                       return_value=(False, "not_blocked", {})):
+                    with mock.patch.object(self.mod, "step1_ci_route",
+                                           return_value=("merge-when-ready", "ci_all_green", {})):
+                        with mock.patch.object(self.mod, "step2_send_and_verify",
+                                               return_value=(False, "did not match")):
+                            rc, out = self._run_main([
+                                "--ws", "workspace:1", "--pr", "100"
+                            ])
         self.assertEqual(rc, 2)
         d = json.loads(out)
         self.assertEqual(d["outcome"], "send_unverified")
@@ -585,13 +589,17 @@ class MergePrDispatchTests(unittest.TestCase):
     def test_main_submitted_path(self):
         with mock.patch.object(self.mod, "step0_safety_gate",
                                return_value=(True, "test_only", {})):
-            with mock.patch.object(self.mod, "step1_ci_route",
-                                   return_value=("merge-when-ready", "ci_all_green", {})):
-                with mock.patch.object(self.mod, "step2_send_and_verify",
-                                       return_value=(True, "/merge-when-ready 100")):
-                    rc, out = self._run_main([
-                        "--ws", "workspace:1", "--pr", "100"
-                    ])
+            with mock.patch.object(self.mod, "gh_pr_view",
+                                   return_value={"files": []}):
+                with mock.patch.object(self.mod, "step_freeze_retarget",
+                                       return_value=(False, "not_blocked", {})):
+                    with mock.patch.object(self.mod, "step1_ci_route",
+                                           return_value=("merge-when-ready", "ci_all_green", {})):
+                        with mock.patch.object(self.mod, "step2_send_and_verify",
+                                               return_value=(True, "/merge-when-ready 100")):
+                            rc, out = self._run_main([
+                                "--ws", "workspace:1", "--pr", "100"
+                            ])
         self.assertEqual(rc, 0)
         d = json.loads(out)
         self.assertEqual(d["outcome"], "submitted")
