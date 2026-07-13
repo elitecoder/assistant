@@ -46,6 +46,14 @@ class TriageCallerTests(unittest.TestCase):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = Path(self._tmp_obj.name)
         (self._tmp / ".assistant").mkdir(parents=True)
+        # A REAL executable droid stub: llm_runner.invoke now pre-flights
+        # os.access(X_OK) on the droid binary, so a fake path short-circuits to
+        # rc=127 before the mocked run() is ever reached.
+        self._droid_bin = self._tmp / ".local" / "bin" / "droid"
+        self._droid_bin.parent.mkdir(parents=True, exist_ok=True)
+        self._droid_bin.write_text("#!/bin/sh\n")
+        self._droid_bin.chmod(0o755)
+        self._droid_bin = str(self._droid_bin)
         self._old_home = os.environ.get("HOME")
         self._route_env = {
             key: os.environ.pop(key, None)
@@ -207,7 +215,7 @@ class TriageCallerTests(unittest.TestCase):
 
     def test_explicit_droid_route_uses_glm(self):
         self._write_route(provider="droid", droid_model="glm-5.2",
-                          droid_bin="/factory/droid")
+                          droid_bin=self._droid_bin)
         commands = []
 
         def fake(cmd, *, input_text=None, **kwargs):
@@ -229,7 +237,7 @@ class TriageCallerTests(unittest.TestCase):
             out = self.mod.call_triage_batch([make_event(1)], 2)
         self.assertEqual(out["eid-1"]["suggested_lane"], "digest")
         self.assertEqual(commands[1][:4],
-                         ["/factory/droid", "exec", "--model", "glm-5.2"])
+                         [self._droid_bin, "exec", "--model", "glm-5.2"])
         disabled = commands[1][commands[1].index("--disabled-tools") + 1]
         self.assertEqual(set(disabled.split(",")),
                          {"execute-cli", "read-cli"})
@@ -241,12 +249,12 @@ class TriageCallerTests(unittest.TestCase):
         self.assertEqual(self._cost_rows()[0]["provider"], "droid")
 
     def test_failed_droid_attempt_does_not_fallback(self):
-        self._write_route(provider="droid", droid_bin="/factory/droid")
+        self._write_route(provider="droid", droid_bin=self._droid_bin)
         commands = []
 
         def fake(cmd, *, input_text=None, **kwargs):
             commands.append(cmd)
-            if cmd[0] == "/factory/droid":
+            if cmd[0] == self._droid_bin:
                 if "--list-tools" in cmd:
                     return 0, self._droid_tools(), ""
                 return 124, "", "timeout"
@@ -270,13 +278,13 @@ class TriageCallerTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "failed")
 
     def test_droid_without_lane_output_fails_closed(self):
-        self._write_route(provider="droid", droid_bin="/factory/droid")
+        self._write_route(provider="droid", droid_bin=self._droid_bin)
         calls = 0
 
         def fake(cmd, *, input_text=None, **kwargs):
             nonlocal calls
             calls += 1
-            if cmd[0] == "/factory/droid":
+            if cmd[0] == self._droid_bin:
                 if "--list-tools" in cmd:
                     return 0, self._droid_tools(), ""
                 return 0, json.dumps({
@@ -301,7 +309,7 @@ class TriageCallerTests(unittest.TestCase):
         self.assertEqual(self._cost_rows()[0]["status"], "failed")
 
     def test_foreign_and_partial_droid_ids_fail_closed(self):
-        self._write_route(provider="droid", droid_bin="/factory/droid")
+        self._write_route(provider="droid", droid_bin=self._droid_bin)
 
         for pulse_idx, droid_result in (
             (8, self._line("attacker-id")),
@@ -312,7 +320,7 @@ class TriageCallerTests(unittest.TestCase):
             def fake(cmd, **kwargs):
                 if "--list-tools" in cmd:
                     return 0, self._droid_tools(), ""
-                if cmd[0] == "/factory/droid":
+                if cmd[0] == self._droid_bin:
                     return 0, json.dumps({
                         "type": "result",
                         "subtype": "success",
@@ -334,7 +342,7 @@ class TriageCallerTests(unittest.TestCase):
             self.assertFalse(meta["accepted"])
 
     def test_double_failure_records_both_attempts(self):
-        self._write_route(provider="droid", droid_bin="/factory/droid")
+        self._write_route(provider="droid", droid_bin=self._droid_bin)
 
         def fake(cmd, **kwargs):
             if "--list-tools" in cmd:
@@ -371,7 +379,7 @@ class TriageCallerTests(unittest.TestCase):
 
     def test_zero_percent_canary_routes_to_claude(self):
         self._write_route(provider="canary", droid_canary_percent=0,
-                          droid_bin="/factory/droid")
+                          droid_bin=self._droid_bin)
         commands = []
 
         def fake(cmd, **kwargs):
@@ -389,7 +397,7 @@ class TriageCallerTests(unittest.TestCase):
         path.write_text(json.dumps({
             "llm": {
                 "provider": "droid",
-                "droid": {"bin": "/factory/droid"},
+                "droid": {"bin": self._droid_bin},
             },
         }))
         os.environ["ASSISTANT_LLM_CONFIG"] = str(path)
@@ -409,7 +417,7 @@ class TriageCallerTests(unittest.TestCase):
 
         with mock.patch.object(self.mod, "run", side_effect=fake):
             self.mod.call_triage_batch([make_event(1)], 12)
-        self.assertEqual(commands[0][0], "/factory/droid")
+        self.assertEqual(commands[0][0], self._droid_bin)
 
     def test_missing_prompt_file_skips_the_call(self):
         with mock.patch.object(self.mod, "TRIAGE_BATCH_PROMPT",

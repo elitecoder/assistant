@@ -194,6 +194,11 @@ class InvokeTests(unittest.TestCase):
         self.mod = load_runner()
         self._tmp_obj = TemporaryDirectory()
         self.tmp = Path(self._tmp_obj.name)
+        # A REAL executable droid stub: invoke() now pre-flights os.access(X_OK)
+        # on the droid binary, so a fake path would short-circuit to rc=127.
+        self.droid_bin = self.tmp / "droid"
+        self.droid_bin.write_text("#!/bin/sh\n")
+        self.droid_bin.chmod(0o755)
 
     def tearDown(self):
         self._tmp_obj.cleanup()
@@ -221,14 +226,14 @@ class InvokeTests(unittest.TestCase):
             timeout=30,
             run=fake_run,
             claude_bin="/claude",
-            droid_bin="/droid",
+            droid_bin=str(self.droid_bin),
             json_schema={"type": "object"},
         )
         self.assertTrue(result.usable)
         self.assertEqual(result.provider, "droid")
         self.assertEqual(result.result_text, "done")
-        self.assertEqual(seen["cmd"][:4],
-                         ["/droid", "exec", "--model", "glm-5.2"])
+        self.assertEqual(seen["cmd"][0], str(self.droid_bin))
+        self.assertEqual(seen["cmd"][1:4], ["exec", "--model", "glm-5.2"])
         self.assertEqual(
             seen["cmd"][seen["cmd"].index("--auto") + 1], "high")
         self.assertNotIn("--skip-permissions-unsafe", seen["cmd"])
@@ -252,7 +257,7 @@ class InvokeTests(unittest.TestCase):
         result = self.mod.invoke(
             provider="unknown", prompt="triage", model="a-model",
             run_dir=self.tmp, timeout=30, run=fake_run,
-            claude_bin="/claude", droid_bin="/droid",
+            claude_bin="/claude", droid_bin=str(self.droid_bin),
         )
         # Unrecognized provider coerces to claude (fail-closed to the
         # always-present agent), not droid — an opt-in binary that may be absent.
@@ -284,7 +289,11 @@ class InvokeTests(unittest.TestCase):
         self.assertIn("--add-dir", seen["cmd"])
         self.assertTrue(seen["merge_bedrock"])
 
-    def test_no_tools_droid_enumerates_and_disables_every_allowed_tool(self):
+    def test_no_tools_droid_disables_every_enumerated_tool(self):
+        # A read-only judge must disable ALL enumerated tools — including one that
+        # is not currentlyAllowed at enumeration time (write-cli), which could
+        # still be enabled at exec time. Disabling only currentlyAllowed==True
+        # left a WRITE tool live over untrusted content.
         seen = []
 
         def fake_run(cmd, **kwargs):
@@ -306,7 +315,7 @@ class InvokeTests(unittest.TestCase):
         result = self.mod.invoke(
             provider="droid", prompt="triage", model="glm-5.2",
             run_dir=self.tmp, timeout=30, run=fake_run,
-            claude_bin="/claude", droid_bin="/droid",
+            claude_bin="/claude", droid_bin=str(self.droid_bin),
             disable_tools=True,
         )
         self.assertTrue(result.usable)
@@ -314,7 +323,54 @@ class InvokeTests(unittest.TestCase):
         command = seen[1][0]
         disabled = command[command.index("--disabled-tools") + 1]
         self.assertEqual(set(disabled.split(",")),
-                         {"read-cli", "execute-cli"})
+                         {"read-cli", "execute-cli", "write-cli"})
+
+    def test_droid_missing_binary_preflights_to_rc127(self):
+        # A missing/non-executable droid binary yields ONE unambiguous failure
+        # (rc=127) and never calls run — the clean signal the provider-health
+        # card keys on.
+        calls = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal calls
+            calls += 1
+            return 0, "", ""
+
+        result = self.mod.invoke(
+            provider="droid", prompt="triage", model="glm-5.2",
+            run_dir=self.tmp, timeout=30, run=fake_run,
+            claude_bin="/claude", droid_bin=str(self.tmp / "does-not-exist"),
+            disable_tools=True,
+        )
+        self.assertFalse(result.usable)
+        self.assertEqual(result.rc, 127)
+        self.assertEqual(calls, 0)
+        self.assertIn("not found or not executable", result.stderr)
+
+    def test_no_tools_droid_fails_closed_on_empty_enumeration(self):
+        # If enumeration returns an empty tool list, we cannot build a
+        # tools-disabled command; running exec anyway would use droid's session
+        # autonomy default. Must fail closed (rc=126, unusable), NOT launch.
+        calls = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal calls
+            calls += 1
+            if "--list-tools" in cmd:
+                return 0, json.dumps([]), ""
+            return 0, json.dumps({"type": "result", "subtype": "success",
+                                  "is_error": False, "result": "x",
+                                  "usage": {"input_tokens": 1, "output_tokens": 1}}), ""
+
+        result = self.mod.invoke(
+            provider="droid", prompt="triage", model="glm-5.2",
+            run_dir=self.tmp, timeout=30, run=fake_run,
+            claude_bin="/claude", droid_bin=str(self.droid_bin),
+            disable_tools=True,
+        )
+        self.assertFalse(result.usable)
+        self.assertEqual(result.rc, 126)
+        self.assertEqual(calls, 1)  # never reached the exec call
 
     def test_no_tools_droid_fails_closed_when_enumeration_fails(self):
         calls = 0
@@ -327,7 +383,7 @@ class InvokeTests(unittest.TestCase):
         result = self.mod.invoke(
             provider="droid", prompt="triage", model="glm-5.2",
             run_dir=self.tmp, timeout=30, run=fake_run,
-            claude_bin="/claude", droid_bin="/missing/droid",
+            claude_bin="/claude", droid_bin=str(self.droid_bin),
             disable_tools=True,
         )
         self.assertFalse(result.usable)

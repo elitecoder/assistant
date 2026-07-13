@@ -49,7 +49,18 @@ def remove_command(blocks, cmd):
 def patch_path(path):
     path = Path(path).expanduser()
     existed = path.exists()
-    settings = json.loads(path.read_text()) if existed else {}
+    settings = {}
+    if existed:
+        try:
+            loaded = json.loads(path.read_text())
+            settings = loaded if isinstance(loaded, dict) else {}
+        except json.JSONDecodeError:
+            # A corrupt settings file must be recovered (backed up + rebuilt),
+            # not raise — that would abort the installer under `set -e`.
+            corrupt = path.with_suffix(path.suffix + f".corrupt-{int(time.time())}")
+            shutil.copy2(path, corrupt)
+            print(f"  {path} was malformed JSON — backed up to {corrupt}, rebuilding")
+            settings = {}
     hooks = settings.setdefault("hooks", {})
 
     ss = hooks.setdefault("SessionStart", [])
@@ -93,7 +104,11 @@ def patch_path(path):
         shutil.copy2(path, bak)
         print(f"  backed up to {bak}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + "\n")
+    # Atomic write: a crash mid-write must not truncate settings.json (which
+    # would brick every later `--apply` on the same malformed-JSON path).
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(settings, indent=2) + "\n")
+    tmp.replace(path)
     print(f"  wrote {path}")
     return True
 

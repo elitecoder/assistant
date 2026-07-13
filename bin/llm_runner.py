@@ -236,6 +236,19 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
     started = time.time()
     provider = _provider(provider)
     if provider == "droid":
+        # Explicit binary pre-flight so a missing/non-executable droid produces
+        # ONE unambiguous failure row (rc=127) that the cost ledger + the brief's
+        # provider-health card can surface — instead of a murky enumeration rc.
+        droid_exe = resolve_executable(droid_bin)
+        if not os.access(droid_exe, os.X_OK):
+            return LLMResult(
+                provider="droid", model=model, rc=127, stdout="",
+                stderr=f"droid binary not found or not executable: {droid_exe}",
+                wall_ms=int((time.time() - started) * 1000),
+                tokens_in=0, tokens_out=0, cost_usd=None,
+                usage_source="none", session_id=None, result_text="",
+                usable=False,
+            )
         disabled_tools: list[str] = []
         if disable_tools:
             tools_cmd = [
@@ -254,17 +267,38 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
                 tools = json.loads(tools_out)
                 if tools_rc != 0 or not isinstance(tools, list):
                     raise ValueError
+                # Disable EVERY enumerated tool id, not only currentlyAllowed==True:
+                # a tool that is not currently allowed at enumeration time can still
+                # be enabled at exec time (a fresh profile, an MCP server that
+                # materializes on launch), and a read-only judge over untrusted
+                # content must have ALL tools off.
                 disabled_tools = [
                     str(tool["id"]) for tool in tools
-                    if isinstance(tool, dict)
-                    and tool.get("currentlyAllowed") is True
-                    and tool.get("id")
+                    if isinstance(tool, dict) and tool.get("id")
                 ]
             except (json.JSONDecodeError, TypeError, ValueError):
                 return LLMResult(
                     provider="droid", model=model, rc=126,
                     stdout=tools_out or "", stderr=tools_err or
                     "failed to enumerate Droid tools",
+                    wall_ms=int((time.time() - started) * 1000),
+                    tokens_in=0, tokens_out=0, cost_usd=None,
+                    usage_source="none", session_id=None, result_text="",
+                    usable=False,
+                )
+            # FAIL CLOSED: if enumeration yielded no ids to disable, we cannot
+            # prove tools are off. Launching exec anyway would carry neither
+            # --disabled-tools nor --auto and run under droid's SESSION DEFAULT
+            # (config sets autonomyLevel=high) — so a "read-only" judge could act
+            # on untrusted event/transcript text. Refuse instead of running
+            # unrestricted; the caller degrades (visible via provider health).
+            if not disabled_tools:
+                return LLMResult(
+                    provider="droid", model=model, rc=126,
+                    stdout=tools_out or "", stderr=(tools_err or "") +
+                    " (refusing: could not build a tools-disabled droid command; "
+                    "failing closed rather than run under the session autonomy "
+                    "default)",
                     wall_ms=int((time.time() - started) * 1000),
                     tokens_in=0, tokens_out=0, cost_usd=None,
                     usage_source="none", session_id=None, result_text="",

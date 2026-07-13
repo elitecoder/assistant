@@ -616,6 +616,59 @@ def _observer_audit_health(now: float) -> dict:
     }
 
 
+_PROVIDER_FAIL_STREAK = 3
+
+
+def _providers_health(now: float) -> dict:
+    """Per-provider LLM health over the last 24h from the cost ledger (Factory
+    bulletproofing A5). Surfaces a DARK driver: an opted-in droid whose binary
+    or settings are broken books status='failed' rows every pulse (triage,
+    strategist, narrator, lessons, audit) while the rest of the brief renders
+    green — the 'green while blind' trap. PURE: reads the ledger the metered
+    callers append; any failure degrades to {} (never blocks the brief).
+
+    A provider is `failing` when its most recent runs are consecutively failing
+    (≥_PROVIDER_FAIL_STREAK) or every call in the window failed.
+    """
+    try:
+        bin_dir = str(_REPO / "bin")
+        if bin_dir not in sys.path:
+            sys.path.insert(0, bin_dir)
+        import metering  # noqa: PLC0415
+        rows = _read_jsonl_window(metering.cost_ledger_path(),
+                                  now - WINDOW_SEC, now)
+    except Exception:  # noqa: BLE001 — never load-bearing
+        return {}
+    if not rows:
+        return {}
+    by: dict = {}
+    for r in rows:
+        prov = str(r.get("provider") or "unknown")
+        d = by.setdefault(prov, [])
+        d.append((r.get("ts") or "", r.get("status") != "ok", r.get("caller")))
+    out: dict = {}
+    for prov, seq in by.items():
+        seq.sort(key=lambda t: t[0])
+        calls = len(seq)
+        failed = sum(1 for _t, f, _c in seq if f)
+        trailing = 0
+        for _t, f, _c in reversed(seq):
+            if f:
+                trailing += 1
+            else:
+                break
+        all_failed = calls > 0 and failed == calls
+        out[prov] = {
+            "calls": calls,
+            "failed": failed,
+            "trailing_failures": trailing,
+            "failing": all_failed or trailing >= _PROVIDER_FAIL_STREAK,
+            "last_failed_caller": next(
+                (c for _t, f, c in reversed(seq) if f), None),
+        }
+    return out
+
+
 def _build_health(records: list[dict], now: float) -> dict:
     world = _read_json(world_path()) or {}
     events = world.get("events") or {}
@@ -629,6 +682,7 @@ def _build_health(records: list[dict], now: float) -> dict:
         "expired_unseen_24h": expired_unseen_count(records, now),
         "connectors": _connector_heartbeats(now),
         "observer_audit": _observer_audit_health(now),
+        "providers": _providers_health(now),
     }
 
 

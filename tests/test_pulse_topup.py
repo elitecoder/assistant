@@ -619,14 +619,19 @@ def _project_dir_for(mod, cwd: Path) -> Path:
 
 
 def _opt_in_droid(home: Path, monkeypatch) -> None:
-    """Droid is opt-in (default is claude). Select it and plant a fake droid
-    binary in the tmp HOME so agent_available()'s pre-flight finds it and the
-    dispatch path doesn't downgrade to claude — for tests exercising the droid
+    """Droid is opt-in (default is claude). Select it and satisfy BOTH launch
+    preconditions agent_available() checks — an EXECUTABLE droid binary and the
+    droid-glm-settings.json the launch command bakes in — so the dispatch path
+    doesn't downgrade to claude, for tests exercising the droid
     (`.factory/sessions`) transcript/launch path."""
     monkeypatch.setenv("ASSISTANT_DISPATCH_AGENT", "droid")
     droid_bin = home / ".local" / "bin" / "droid"
     droid_bin.parent.mkdir(parents=True, exist_ok=True)
     droid_bin.write_text("#!/bin/sh\n")
+    droid_bin.chmod(0o755)  # executable — .exists() alone would not pass X_OK
+    settings = home / ".assistant" / "droid-glm-settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('{"sessionDefaultSettings": {"model": "glm-5.2"}}')
 
 
 def test_dispatch_todo_happy_path(mod, home, no_sleep, monkeypatch):

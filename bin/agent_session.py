@@ -24,6 +24,7 @@ that; callers keep their existing text extraction. The per-cwd directory slug
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -190,15 +191,31 @@ def agent_available(agent: str) -> bool:
     launcher WOULD find. We therefore also probe the common install locations. A
     residual false-negative is not catastrophic: it only falls back to claude,
     and the never-ready path now STAMPS (parks) rather than storms, so a wrongly-
-    spawned droid can't loop either way."""
+    spawned droid can't loop either way.
+
+    Two launch preconditions, both required (else fall back to claude):
+      (1) an EXECUTABLE binary — `.exists()` is not enough; a truncated download
+          or a lost exec bit passes existence but fails at spawn (permission
+          denied → never-ready → park). Require `os.access(..., X_OK)`.
+      (2) the `--settings` file `launch_command(DROID)` bakes in must exist and
+          parse as JSON — a droid spawned with a missing/broken settings path
+          errors, or boots WITHOUT the configured model/autonomy."""
     if agent != DROID:
         return True
-    if shutil.which(DROID):
-        return True
     home = Path(os.environ.get("HOME", str(Path.home())))
-    for cand in (home / ".local" / "bin" / DROID,
-                 Path("/opt/homebrew/bin") / DROID,
-                 Path("/usr/local/bin") / DROID):
-        if cand.exists():
-            return True
-    return False
+    binary_ok = shutil.which(DROID) is not None
+    if not binary_ok:
+        for cand in (home / ".local" / "bin" / DROID,
+                     Path("/opt/homebrew/bin") / DROID,
+                     Path("/usr/local/bin") / DROID):
+            if cand.is_file() and os.access(cand, os.X_OK):
+                binary_ok = True
+                break
+    if not binary_ok:
+        return False
+    settings = home / ".assistant" / "droid-glm-settings.json"
+    try:
+        json.loads(settings.read_text())
+    except (OSError, ValueError):
+        return False
+    return True
