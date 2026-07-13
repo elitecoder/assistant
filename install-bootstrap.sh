@@ -31,7 +31,9 @@ command -v python3 >/dev/null 2>&1 || die "python3 not found — install from ht
 # usually a ~/.zprofile alias, not an on-PATH executable, so probe both — but a
 # box with NEITHER claude nor droid cannot run the fleet.
 if ! command -v claude >/dev/null 2>&1 \
-    && ! grep -qsE '(^|\s)alias\s+claude=' "${HOME}/.zprofile" "${HOME}/.zshrc" 2>/dev/null; then
+    && [[ ! -x "${HOME}/.claude/local/claude" ]] \
+    && ! grep -qsE '^[[:space:]]*alias[[:space:]]+claude=' \
+        "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.zshenv" 2>/dev/null; then
     if command -v droid >/dev/null 2>&1; then
         warn "claude not found (droid present) — fleet will run droid-only; set it up so claude is available for the default posture"
     else

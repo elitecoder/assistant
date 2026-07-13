@@ -86,3 +86,25 @@ def test_new_factory_hooks_file_has_no_backup_and_is_idempotent(tmp_path):
     assert module.patch_path(path) is False
     assert path.read_text() == first
     assert not list(path.parent.glob("hooks.json.bak-*"))
+
+
+def test_symlinked_target_is_written_through_not_severed(tmp_path):
+    # A machine-config-managed target is a symlink; the atomic write must write
+    # THROUGH to the real file and preserve the symlink, not replace it with a
+    # regular file (which would disconnect config sync).
+    module = load_module()
+    real = tmp_path / "machine-config" / "settings.json"
+    real.parent.mkdir(parents=True)
+    real.write_text(json.dumps({"existing": "keep"}))
+    link = tmp_path / ".claude" / "settings.json"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+
+    assert module.patch_path(link)
+    # The symlink is intact and still points at the real file.
+    assert link.is_symlink()
+    assert Path(link).resolve() == real.resolve()
+    # The hooks landed in the REAL file (written through), preserving prior keys.
+    doc = json.loads(real.read_text())
+    assert doc["existing"] == "keep"
+    assert "SessionStart" in doc["hooks"]

@@ -148,6 +148,24 @@ class BriefTabTests(unittest.TestCase):
         self.assertNotIn("github · 2026-07-02T13:59:00Z", html)  # NOT shown fresh
         self.assertNotIn("connector heartbeat · gmail", html)    # nc stays quiet
 
+    def test_dark_provider_alarms_in_health(self):
+        # A5: an opted-in droid that goes dark books failed cost rows every
+        # pulse; the brief health chip must surface it LOUD (cold + FAILING) so
+        # the fleet never reads green while its LLM driver is blind. A healthy
+        # provider with zero failures stays quiet.
+        doc = brief_fixture()
+        doc["health"]["providers"] = {
+            "droid": {"calls": 8, "failed": 8, "trailing_failures": 8,
+                      "failing": True, "last_failed_caller": "triage"},
+            "claude": {"calls": 12, "failed": 0, "trailing_failures": 0,
+                       "failing": False, "last_failed_caller": None},
+        }
+        self.write_brief(doc)
+        html, _ = self.mod.render_brief_tab()
+        self.assertIn("droid · FAILING", html)       # loud
+        self.assertIn("cold", html)                  # alarming class
+        self.assertNotIn("claude · FAILING", html)   # healthy provider stays quiet
+
     def test_full_brief_renders_all_four_sections(self):
         self.write_brief(brief_fixture())
         html, n = self.mod.render_brief_tab()

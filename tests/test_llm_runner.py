@@ -347,6 +347,56 @@ class InvokeTests(unittest.TestCase):
         self.assertEqual(calls, 0)
         self.assertIn("not found or not executable", result.stderr)
 
+    def test_no_tools_droid_fails_closed_on_partial_enumeration(self):
+        # If ANY enumerated entry can't be named (missing/empty id, or not a
+        # dict), we cannot pass it to --disabled-tools, so the whole call must
+        # fail closed (rc=126) rather than launch with a subset that leaves the
+        # un-nameable tool live over untrusted content.
+        calls = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal calls
+            calls += 1
+            if "--list-tools" in cmd:
+                return 0, json.dumps([
+                    {"id": "read-cli", "currentlyAllowed": True},
+                    {"name": "write-cli"},   # no id → cannot be disabled
+                ]), ""
+            return 0, json.dumps({"type": "result", "subtype": "success",
+                                  "is_error": False, "result": "x",
+                                  "usage": {"input_tokens": 1, "output_tokens": 1}}), ""
+
+        result = self.mod.invoke(
+            provider="droid", prompt="triage", model="glm-5.2",
+            run_dir=self.tmp, timeout=30, run=fake_run,
+            claude_bin="/claude", droid_bin=str(self.droid_bin),
+            disable_tools=True,
+        )
+        self.assertFalse(result.usable)
+        self.assertEqual(result.rc, 126)
+        self.assertEqual(calls, 1)  # enumerated, then refused — never exec'd
+
+    def test_droid_preflight_rejects_a_directory(self):
+        # A directory passes os.access(X_OK) but is not a runnable binary; the
+        # pre-flight must reject it (is_file guard), not proceed.
+        d = self.tmp / "droid-dir"
+        d.mkdir()
+        calls = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal calls
+            calls += 1
+            return 0, "", ""
+
+        result = self.mod.invoke(
+            provider="droid", prompt="triage", model="glm-5.2",
+            run_dir=self.tmp, timeout=30, run=fake_run,
+            claude_bin="/claude", droid_bin=str(d), disable_tools=True,
+        )
+        self.assertFalse(result.usable)
+        self.assertEqual(result.rc, 127)
+        self.assertEqual(calls, 0)
+
     def test_no_tools_droid_fails_closed_on_empty_enumeration(self):
         # If enumeration returns an empty tool list, we cannot build a
         # tools-disabled command; running exec anyway would use droid's session

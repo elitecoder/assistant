@@ -657,7 +657,11 @@ def _providers_health(now: float) -> dict:
                 trailing += 1
             else:
                 break
-        all_failed = calls > 0 and failed == calls
+        # Require ≥2 calls for the all-failed flag: a single transient failure
+        # is not a dark provider (a genuinely dark droid fails every pulse, so a
+        # 24h window carries many rows). A trailing streak still flags at
+        # _PROVIDER_FAIL_STREAK regardless.
+        all_failed = calls >= 2 and failed == calls
         out[prov] = {
             "calls": calls,
             "failed": failed,

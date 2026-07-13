@@ -108,6 +108,20 @@ class GroundingTests(_Base):
         # counts are the brief's, not re-derived
         self.assertEqual(facts["counts"]["by_lane"], {"escalate": 1, "staged": 1})
 
+    def test_facts_name_failing_providers(self):
+        # A5: a dark LLM provider must reach the narrator so it can be called out
+        # rather than narrating a green fleet over a blind one.
+        doc = dict(self.doc)
+        doc["health"] = dict(self.doc["health"])
+        doc["health"]["providers"] = {
+            "droid": {"calls": 6, "failed": 6, "failing": True},
+            "claude": {"calls": 9, "failed": 0, "failing": False},
+        }
+        facts = narrator.brief_facts(doc)
+        self.assertEqual(facts["failing_providers"], ["droid"])
+        # no failing providers → empty list
+        self.assertEqual(narrator.brief_facts(self.doc)["failing_providers"], [])
+
     def test_validate_drops_invented_decision_id(self):
         raw = {"summary": "Good morning.",
                "recommendations": {"dec-11": "merge it",

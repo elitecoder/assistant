@@ -87,6 +87,11 @@ def brief_facts(brief_doc: dict) -> dict:
     health = brief_doc.get("health") or {}
     cost = health.get("cost") or {}
     interrupts = health.get("interrupts") or {}
+    # Factory bulletproofing A5: name any LLM provider whose driver is dark so the
+    # narrator can call it out instead of narrating a green fleet over a blind one.
+    failing_providers = sorted(
+        prov for prov, ph in (health.get("providers") or {}).items()
+        if isinstance(ph, dict) and ph.get("failing"))
     decs = []
     for d in queue[:TOP_N_DECISIONS]:
         if not isinstance(d, dict):
@@ -120,6 +125,7 @@ def brief_facts(brief_doc: dict) -> dict:
         "interrupts_delivered_24h": interrupts.get("delivered_24h"),
         "interrupts_denied_24h": interrupts.get("denied_24h"),
         "expired_unseen_24h": health.get("expired_unseen_24h"),
+        "failing_providers": failing_providers,
         "decisions": decs,
         "receipts": recs,
     }

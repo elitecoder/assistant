@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import shutil
 import sys
 import time
@@ -54,7 +55,7 @@ def patch_settings(target: Path, source: Path) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     # Atomic write: a crash/SIGTERM mid-write must not leave a truncated
     # settings.json that bricks every subsequent `--apply`.
-    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp = target.with_suffix(target.suffix + f".tmp-{os.getpid()}")
     tmp.write_text(json.dumps(merged, indent=2) + "\n")
     tmp.replace(target)
     print(f"  wrote {target}")

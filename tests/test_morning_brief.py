@@ -518,6 +518,17 @@ class ProvidersHealthTests(BriefBase):
         self.assertFalse(health["droid"]["failing"])  # 1 fail, not trailing/all
         self.assertEqual(health["droid"]["failed"], 1)
 
+    def test_single_transient_failure_is_not_failing(self):
+        # calls=1 all-failed must NOT flag failing — a genuinely dark provider
+        # fails every pulse and accrues many rows; one failure is transient.
+        ts = brief.utc_iso(int(NOW - 60))
+        self._write_cost_rows([
+            {"ts": ts, "caller": "triage", "provider": "droid", "status": "failed"},
+        ])
+        health = brief._providers_health(NOW)
+        self.assertEqual(health["droid"]["failed"], 1)
+        self.assertFalse(health["droid"]["failing"])
+
     def test_no_ledger_is_empty_not_error(self):
         self.assertEqual(brief._providers_health(NOW), {})
 

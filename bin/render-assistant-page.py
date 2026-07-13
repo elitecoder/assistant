@@ -698,6 +698,25 @@ def _render_brief_tab_inner():
                 f'<span class="ws-live-age {acls}" title="frontier audit · {e(tip)}">'
                 f'frontier audit · {agreed}/{compared} agree ({e(pct)}) · '
                 f'{dis} diff · 24h</span>')
+    # Provider health (Factory bulletproofing A5): an opted-in droid that goes
+    # dark books status=failed cost rows every pulse. Surface a FAILING provider
+    # LOUD so the fleet never reads green while its LLM driver is blind.
+    for prov, ph in sorted((health.get("providers") or {}).items()):
+        if not isinstance(ph, dict):
+            continue
+        calls = int(ph.get("calls") or 0)
+        failed = int(ph.get("failed") or 0)
+        if ph.get("failing"):
+            lc = ph.get("last_failed_caller") or "?"
+            chips.append(
+                f'<span class="ws-live-age cold" title="provider {e(str(prov))} '
+                f'FAILING · {failed}/{calls} calls failed (24h) · last: {e(str(lc))}">'
+                f'{e(str(prov))} · FAILING ({failed}/{calls} · 24h)</span>')
+        elif failed:
+            chips.append(
+                f'<span class="ws-live-age warm" title="provider {e(str(prov))} · '
+                f'{failed}/{calls} calls failed (24h)">'
+                f'{e(str(prov))} · {failed}/{calls} fail · 24h</span>')
     health_html = (
         f'<div class="brief-health-chips">{"".join(chips)}</div>'
         if chips else

@@ -240,7 +240,7 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
         # ONE unambiguous failure row (rc=127) that the cost ledger + the brief's
         # provider-health card can surface — instead of a murky enumeration rc.
         droid_exe = resolve_executable(droid_bin)
-        if not os.access(droid_exe, os.X_OK):
+        if not (os.path.isfile(droid_exe) and os.access(droid_exe, os.X_OK)):
             return LLMResult(
                 provider="droid", model=model, rc=127, stdout="",
                 stderr=f"droid binary not found or not executable: {droid_exe}",
@@ -271,11 +271,16 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
                 # a tool that is not currently allowed at enumeration time can still
                 # be enabled at exec time (a fresh profile, an MCP server that
                 # materializes on launch), and a read-only judge over untrusted
-                # content must have ALL tools off.
-                disabled_tools = [
-                    str(tool["id"]) for tool in tools
-                    if isinstance(tool, dict) and tool.get("id")
-                ]
+                # content must have ALL tools off. Crucially, FAIL CLOSED on ANY
+                # entry we cannot name (not a dict, or a missing/empty id): we
+                # cannot pass an un-nameable tool to --disabled-tools, so a
+                # partially-malformed list must refuse, not launch with a subset.
+                disabled_tools = []
+                for tool in tools:
+                    tid = tool.get("id") if isinstance(tool, dict) else None
+                    if not (isinstance(tid, str) and tid):
+                        raise ValueError
+                    disabled_tools.append(tid)
             except (json.JSONDecodeError, TypeError, ValueError):
                 return LLMResult(
                     provider="droid", model=model, rc=126,

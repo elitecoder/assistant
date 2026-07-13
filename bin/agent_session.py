@@ -215,7 +215,7 @@ def agent_available(agent: str) -> bool:
         return False
     settings = home / ".assistant" / "droid-glm-settings.json"
     try:
-        json.loads(settings.read_text())
+        parsed = json.loads(settings.read_text())
     except (OSError, ValueError):
         return False
-    return True
+    return isinstance(parsed, dict)
