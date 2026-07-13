@@ -35,6 +35,9 @@ SKIP_PLISTS = (
     "com.assistant.connector-gcal.plist",
     "com.assistant.connector-slack.plist",
     "com.assistant.connector-outlook.plist",
+    # The config-PUSHING sync daemon — the most dangerous plist to auto-load;
+    # pin it here so a future edit dropping it from PLIST_SKIP fails a test.
+    "com.assistant.machine-config-sync.plist",
 )
 
 

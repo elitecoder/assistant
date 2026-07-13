@@ -24,6 +24,15 @@ CONFIG_REPO = HOME / "dev" / "machine-config"
 SYNC_PUSH = CONFIG_REPO / "scripts" / "sync-push.sh"
 SYNC_PULL = CONFIG_REPO / "scripts" / "sync-pull.sh"
 LAST_RUN_PATH = HOME / ".assistant" / "machine-config-sync-last.json"
+# The opt-in marker install.sh step 8 writes ONLY after an explicit interactive
+# opt-in. The RUNTIME gates on it (below), which is the real opt-in enforcement:
+# macOS launchd bootstraps every ~/Library/LaunchAgents plist at login
+# regardless of `launchctl load`, so the copied-but-not-loaded plist WILL
+# auto-load at the next login — and RunAtLoad would fire this daemon on any box
+# where ~/dev/machine-config already exists (it does, pre-PR). Gating only in
+# install.sh (load time) is therefore decorative; the wrapper must refuse to
+# sync until the marker exists (review BLOCKER).
+CONFIGURED_MARKER = HOME / ".assistant" / "machine-config-configured"
 # Below the plist's StartInterval (3600) so launchd's timer jitter — a fire a
 # few seconds early — can't trip `now - last < INTERVAL` and skip the cycle,
 # which would drift the effective cadence toward 2h (review). The throttle only
@@ -81,6 +90,13 @@ def main() -> int:
     # MACHINE_CONFIG_SYNC_IN_PROGRESS=1. If we're already inside a sync, bail
     # before doing anything so a re-entrant invocation can't recurse.
     if os.environ.get("MACHINE_CONFIG_SYNC_IN_PROGRESS") == "1":
+        return 0
+
+    # OPT-IN GATE (the real one). Refuse to sync unless the operator explicitly
+    # opted this box in via install.sh step 8. This holds even when launchd
+    # auto-loads the plist at login, so a config-pushing daemon never runs
+    # itself onto an un-opted-in box (see CONFIGURED_MARKER note above).
+    if not CONFIGURED_MARKER.exists():
         return 0
 
     if not CONFIG_REPO.exists():

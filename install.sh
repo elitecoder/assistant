@@ -740,8 +740,11 @@ if [[ -f "$MC_MARKER" ]]; then
     note "OK   machine-config sync already opted in ($MC_MARKER) — leaving as-is"
 elif [[ $APPLY -eq 0 ]]; then
     note "(dry-run) would ASK whether to opt into machine-config sync (clone + symlink dotfiles + hourly push/pull daemon). Not opted in yet."
-elif [[ ! -t 0 ]]; then
-    note "non-interactive run — NOT opting into machine-config sync (a config-pushing daemon is never auto-started; run install.sh --apply by hand to enable)"
+elif [[ ! -t 0 || "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]]; then
+    # Non-interactive OR the pulse self-update (which exports ASSISTANT_SELF_UPDATE=1):
+    # never prompt. Checking the env var too — not just the tty — makes the skip
+    # deterministic even if a future deploy path hands the self-update a pty.
+    note "non-interactive / self-update — NOT opting into machine-config sync (run install.sh --apply by hand to enable)"
 else
     log ""
     log "Set up machine-config sync?"
@@ -762,13 +765,18 @@ else
             log "  Applying machine config (symlink Factory/Claude config, reconcile crons)…"
             if bash "$MC_REPO_DIR/scripts/install.sh" 2>&1 | sed 's/^/  /'; then
                 note "machine config applied (originals backed up to *.bak-* where present)"
+                # Write the opt-in marker + ensure ~/.assistant exists BEFORE loading
+                # the daemon: the runtime wrapper gates on this marker, and the
+                # daemon's RunAtLoad fires the wrapper the instant it loads — if the
+                # marker weren't there yet, that first run would no-op (and the log
+                # dir must exist before launchd opens StandardOutPath).
+                mkdir -p "$(dirname "$MC_MARKER")"
+                date -u +%Y-%m-%dT%H:%M:%SZ > "$MC_MARKER"
                 log "  Loading $MC_SYNC_PLIST (full-auto hourly sync)…"
                 staged_mc="$PLIST_STAGE/$MC_SYNC_PLIST.plist"
                 sed "s|/Users/<user>/|$HOME_DIR/|g" "$REPO_ROOT/launchagents/$MC_SYNC_PLIST.plist" > "$staged_mc"
                 ensure_file_copy "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist" "$staged_mc"
                 launchctl_reload "$MC_SYNC_PLIST" "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist"
-                mkdir -p "$(dirname "$MC_MARKER")"
-                date -u +%Y-%m-%dT%H:%M:%SZ > "$MC_MARKER"
                 note "machine-config sync opted in + daemon loaded ($MC_MARKER)"
             else
                 warn "machine-config install had errors — check $MC_REPO_DIR/scripts/install.sh (daemon NOT loaded, not marked opted-in)"

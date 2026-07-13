@@ -64,10 +64,37 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "SYNC_PUSH", push)
     monkeypatch.setattr(mod, "SYNC_PULL", pull)
     monkeypatch.setattr(mod, "LAST_RUN_PATH", home / ".assistant" / "machine-config-sync-last.json")
+    # This box is OPTED IN (the marker exists) — the default for the sync tests.
+    marker = home / ".assistant" / "machine-config-configured"
+    marker.write_text("2026-01-01T00:00:00Z\n")
+    monkeypatch.setattr(mod, "CONFIGURED_MARKER", marker)
 
     fake = FakeRun()
     monkeypatch.setattr(mod, "_run_script", fake)
-    return {"home": home, "repo": repo, "fake": fake, "monkeypatch": monkeypatch}
+    return {"home": home, "repo": repo, "marker": marker, "fake": fake,
+            "monkeypatch": monkeypatch}
+
+
+def test_not_opted_in_is_a_noop(env):
+    # No opt-in marker → the wrapper refuses to sync, EVEN with the repo present
+    # and scripts in place. This is the real gate: launchd auto-loads the plist
+    # at login regardless of install.sh, so the runtime must enforce opt-in.
+    env["marker"].unlink()
+    assert mod.main() == 0
+    assert env["fake"].calls == []           # nothing spawned
+    assert not mod.LAST_RUN_PATH.exists()     # and no marker/throttle churn
+
+
+def test_run_script_kills_process_group_on_timeout(tmp_path):
+    # Exercise the REAL _run_script (not the FakeRun): a hanging child must be
+    # process-group-killed and rc=124/timed_out returned PROMPTLY — the killpg
+    # path both reviews flagged as untested.
+    slow = tmp_path / "slow.sh"
+    slow.write_text("#!/bin/bash\nsleep 30\n")
+    t0 = time.time()
+    rc, out, err, timed = mod._run_script(slow, "slow", {"PATH": "/bin:/usr/bin"}, 1)
+    assert timed is True and rc == 124
+    assert time.time() - t0 < 15  # returned promptly; the child was killed, not waited on
 
 
 def test_skip_when_repo_missing(env, capsys):
