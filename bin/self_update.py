@@ -324,6 +324,11 @@ def maybe_update(
             ["bash", str(install_sh), "--apply"],
             capture_output=True, text=True, timeout=300, env=env,
             cwd=str(repo),
+            # Detach stdin: install.sh's interactive opt-in prompts must read EOF
+            # (→ non-tty skip), never inherit a pty and block on a prompt whose
+            # text capture_output has swallowed — which would hang the whole
+            # self-update for 300s and report it failed (review).
+            stdin=subprocess.DEVNULL,
         )
         result["installed"] = True
         result["install_rc"] = p.returncode

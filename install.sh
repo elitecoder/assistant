@@ -370,6 +370,12 @@ PLIST_SKIP=(
     # hand once the OAuth token cache is seeded). KeepAlive={SuccessfulExit:false}
     # so an unconfigured daemon never hot-respawns (F3).
     "com.assistant.connector-outlook.plist"
+    # The machine-config sync daemon PUSHES local config drift to a remote. Copied
+    # by the loop above (D8: copy-but-not-load) but LOADED only by step 8, and step
+    # 8 activates it ONLY behind an explicit interactive opt-in + a durable marker
+    # — so a non-interactive `install.sh --apply` (the pulse self-update path)
+    # NEVER starts the config-pushing daemon. RunAtLoad: full-auto once activated.
+    "com.assistant.machine-config-sync.plist"
 )
 
 declare -a CHANGED_LABELS
@@ -627,7 +633,7 @@ fi
 
 # The installer asks interactively only when --apply is set; in dry-run it explains
 # what each path would do.
-log "[7/7] Memory setup"
+log "[7/8] Memory setup"
 
 MEMORY_CONFIG="$HOME_DIR/.assistant/memory-repo-config.json"
 
@@ -709,6 +715,75 @@ LOCAL_CFG
                 warn "Unknown choice '$MEM_CHOICE' — skipping memory setup."
                 ;;
         esac
+    fi
+fi
+log ""
+
+# --- 8. Machine config (Droid/Claude dotfiles) ------------------------------
+# Mirrors the memory model: the canonical Factory + Claude machine config lives
+# in the private machine-config repo, which ships its own scripts/install.sh
+# (apply) plus sync-pull/sync-push. Here we clone it (if needed) and project it
+# onto this box; the com.assistant.machine-config-sync LaunchAgent (copied in
+# step 3) then keeps it in sync hourly. Non-fatal if offline / SSH key missing.
+log "[8/8] Machine config (Factory/Claude dotfiles)"
+MC_REPO_DIR="$HOME_DIR/dev/machine-config"
+MC_REMOTE="git@github-personal:elitecoder/machine-config.git"
+MC_SYNC_PLIST="com.assistant.machine-config-sync"
+MC_MARKER="$HOME_DIR/.assistant/machine-config-configured"
+# OPT-IN, exactly like [7] memory: this clones a repo, symlinks dotfiles over the
+# box's live config, and loads a daemon that PUSHES config drift to a shared
+# remote — so it must NEVER activate itself. The gates (marker → skip;
+# non-interactive → skip; else prompt) guarantee a non-interactive
+# `install.sh --apply` (the pulse self-update path) can never headlessly opt a
+# box in. Idempotent: once the marker exists we leave everything as-is.
+if [[ -f "$MC_MARKER" ]]; then
+    note "OK   machine-config sync already opted in ($MC_MARKER) — leaving as-is"
+elif [[ $APPLY -eq 0 ]]; then
+    note "(dry-run) would ASK whether to opt into machine-config sync (clone + symlink dotfiles + hourly push/pull daemon). Not opted in yet."
+elif [[ ! -t 0 || "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]]; then
+    # Non-interactive OR the pulse self-update (which exports ASSISTANT_SELF_UPDATE=1):
+    # never prompt. Checking the env var too — not just the tty — makes the skip
+    # deterministic even if a future deploy path hands the self-update a pty.
+    note "non-interactive / self-update — NOT opting into machine-config sync (run install.sh --apply by hand to enable)"
+else
+    log ""
+    log "Set up machine-config sync?"
+    log "  This clones the private machine-config repo, SYMLINKS Factory/Claude"
+    log "  dotfiles onto this box, and loads a daemon that PUSHES local config"
+    log "  drift to a shared remote + pulls other machines' changes hourly."
+    read -r -p "Opt in? [y/N]: " MC_CHOICE || MC_CHOICE=""
+    if [[ "$MC_CHOICE" =~ ^[Yy] ]]; then
+        if [[ ! -d "$MC_REPO_DIR/.git" ]]; then
+            log "  Cloning machine-config…"
+            git clone "$MC_REMOTE" "$MC_REPO_DIR" \
+                && note "cloned to $MC_REPO_DIR" \
+                || warn "clone failed — check your github-personal SSH key (skipping)"
+        else
+            note "machine-config already cloned at $MC_REPO_DIR"
+        fi
+        if [[ -d "$MC_REPO_DIR/.git" ]]; then
+            log "  Applying machine config (symlink Factory/Claude config, reconcile crons)…"
+            if bash "$MC_REPO_DIR/scripts/install.sh" 2>&1 | sed 's/^/  /'; then
+                note "machine config applied (originals backed up to *.bak-* where present)"
+                # Write the opt-in marker + ensure ~/.assistant exists BEFORE loading
+                # the daemon: the runtime wrapper gates on this marker, and the
+                # daemon's RunAtLoad fires the wrapper the instant it loads — if the
+                # marker weren't there yet, that first run would no-op (and the log
+                # dir must exist before launchd opens StandardOutPath).
+                mkdir -p "$(dirname "$MC_MARKER")"
+                date -u +%Y-%m-%dT%H:%M:%SZ > "$MC_MARKER"
+                log "  Loading $MC_SYNC_PLIST (full-auto hourly sync)…"
+                staged_mc="$PLIST_STAGE/$MC_SYNC_PLIST.plist"
+                sed "s|/Users/<user>/|$HOME_DIR/|g" "$REPO_ROOT/launchagents/$MC_SYNC_PLIST.plist" > "$staged_mc"
+                ensure_file_copy "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist" "$staged_mc"
+                launchctl_reload "$MC_SYNC_PLIST" "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist"
+                note "machine-config sync opted in + daemon loaded ($MC_MARKER)"
+            else
+                warn "machine-config install had errors — check $MC_REPO_DIR/scripts/install.sh (daemon NOT loaded, not marked opted-in)"
+            fi
+        fi
+    else
+        note "skipped machine-config sync (re-run install.sh --apply to enable later)"
     fi
 fi
 log ""
