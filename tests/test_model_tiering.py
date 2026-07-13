@@ -349,5 +349,71 @@ class BriefHealthDerivationTests(unittest.TestCase):
         self.assertEqual(h["last_error"], "frontier produced no verdicts")
 
 
+class AuditProviderGuardTests(unittest.TestCase):
+    """The frontier shadow-audit must stay a DIFFERENT judge from the driver.
+    Even when config routes the observer to droid, the audit is pinned to
+    claude + the frontier model so it can't collapse into droid/glm-5.2 auditing
+    itself (self-agreement ~100% by construction) while rendering a green
+    "frontier audit" chip. Exercises the REAL call_observer_batch routing (the
+    _AuditBase tests mock it out, so they never covered this)."""
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = Path(self._tmp_obj.name)
+        (self._tmp / ".assistant" / "comms").mkdir(parents=True)
+        # Route the WHOLE fleet (both observer sections) to droid.
+        (self._tmp / ".assistant" / "comms" / "config.json").write_text(
+            json.dumps({"llm": {"provider": "droid",
+                                "droid": {"bin": "/x/droid",
+                                          "model": "glm-5.2"}}}))
+        self._old_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self._tmp)
+        self.pulse = _load_pulse()
+        if str(BIN) not in os.sys.path:
+            os.sys.path.insert(0, str(BIN))
+        import llm_runner  # noqa: PLC0415
+        self.lr = llm_runner
+        self._real_invoke = llm_runner.invoke
+        self.captured = []
+
+        def fake_invoke(*, provider, model, **kw):
+            self.captured.append({"provider": provider, "model": model})
+            return llm_runner.LLMResult(
+                provider=provider, model=model, rc=1, stdout="", stderr="",
+                wall_ms=0, tokens_in=0, tokens_out=0, cost_usd=None,
+                usage_source="none", session_id=None, result_text="",
+                usable=False)
+        llm_runner.invoke = fake_invoke
+
+    def tearDown(self):
+        self.lr.invoke = self._real_invoke
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
+        self._tmp_obj.cleanup()
+
+    def _ctxs(self, *refs):
+        return [{"ws_ref": r, "transcript_path": None, "cwd": None}
+                for r in refs]
+
+    def test_audit_pinned_to_claude_even_when_observer_routed_to_droid(self):
+        self.pulse.call_observer_batch(
+            self._ctxs("ws:1"), 0, 0,
+            model=self.pulse.OBSERVER_AUDIT_MODEL, label="audit")
+        self.assertEqual(self.captured[-1]["provider"], "claude")
+        self.assertEqual(self.captured[-1]["model"],
+                         self.pulse.OBSERVER_AUDIT_MODEL)
+
+    def test_driver_batch_still_honors_droid_routing(self):
+        # The guard is audit-specific: the driver batch still follows the
+        # configured provider, so opting the fleet into droid is respected.
+        self.pulse.call_observer_batch(
+            self._ctxs("ws:1"), 0, 0,
+            model=self.pulse.DEFAULT_OBSERVER_MODEL, label="batch")
+        self.assertEqual(self.captured[-1]["provider"], "droid")
+        self.assertEqual(self.captured[-1]["model"], "glm-5.2")
+
+
 if __name__ == "__main__":
     unittest.main()

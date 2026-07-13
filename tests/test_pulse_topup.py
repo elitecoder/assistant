@@ -580,6 +580,11 @@ def test_dispatch_todo_no_surface(mod, home, no_sleep):
 
 
 def test_dispatch_todo_never_ready(mod, home, no_sleep):
+    """Root storm-fix (M8 review): a workspace whose REPL never reaches readiness
+    (missing/misconfigured agent, unanswered trust prompt, banner mismatch) must
+    STILL be stamped — parked to re-classify — so the next pulse can't re-spawn a
+    fresh dead workspace every pulse (the td-128 storm via the readiness path,
+    pronounced on droid). dispatch_todo returns False, but the TODO is stamped."""
     _seed_todo(mod, [{"id": "td-1", "title": "t"}])
     mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
     mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
@@ -603,6 +608,9 @@ def test_dispatch_todo_never_ready(mod, home, no_sleep):
     # Prompt was still staged on disk.
     staged = list(mod.SPAWN_PROMPT_DIR.glob("prompt-dispatch-td-1-*.md"))
     assert staged, "prompt file should have been staged before the readiness loop"
+    # …and the TODO was STAMPED (parked) so the next pulse can't re-storm it.
+    it = json.loads(mod.TODO_PATH.read_text())["items"][0]
+    assert it["status"] == "in-progress"
 
 
 def _project_dir_for(mod, cwd: Path) -> Path:
@@ -610,7 +618,20 @@ def _project_dir_for(mod, cwd: Path) -> Path:
     return mod.HOME / ".factory/sessions" / real.replace("/", "-")
 
 
-def test_dispatch_todo_happy_path(mod, home, no_sleep):
+def _opt_in_droid(home: Path, monkeypatch) -> None:
+    """Droid is opt-in (default is claude). Select it and plant a fake droid
+    binary in the tmp HOME so agent_available()'s pre-flight finds it and the
+    dispatch path doesn't downgrade to claude — for tests exercising the droid
+    (`.factory/sessions`) transcript/launch path."""
+    monkeypatch.setenv("ASSISTANT_DISPATCH_AGENT", "droid")
+    droid_bin = home / ".local" / "bin" / "droid"
+    droid_bin.parent.mkdir(parents=True, exist_ok=True)
+    droid_bin.write_text("#!/bin/sh\n")
+
+
+def test_dispatch_todo_happy_path(mod, home, no_sleep, monkeypatch):
+    # Exercises the droid launch path end to end (droid is opt-in — default claude).
+    _opt_in_droid(home, monkeypatch)
     _seed_todo(mod, [{"id": "td-1", "title": "Build feature"}])
     mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
     mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
@@ -683,11 +704,12 @@ def test_dispatch_todo_happy_path(mod, home, no_sleep):
     assert any("Read " in (t or "") for t in sent_texts)
 
 
-def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep):
+def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep, monkeypatch):
     """Regression for td-128: a spawned workspace whose submission can't be
     confirmed via the transcript (e.g. a Claude Code transcript-layout change)
     must STILL be stamped so the next pulse does not re-spawn a duplicate.
     The stamp is decoupled from confirmation; dispatch_todo returns True."""
+    _opt_in_droid(home, monkeypatch)
     _seed_todo(mod, [{"id": "td-1", "title": "t"}])
     mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
     mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
@@ -717,11 +739,12 @@ def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep):
     assert it["dispatchedAt"]
 
 
-def test_dispatch_todo_confirms_via_session_subdir_transcript(mod, home, no_sleep):
+def test_dispatch_todo_confirms_via_session_subdir_transcript(mod, home, no_sleep, monkeypatch):
     """Regression for td-128: newer Claude Code writes the main transcript inside
     a per-session subdirectory (<project>/<session-id>/foo.jsonl), not a flat
     <id>.jsonl. The confirmation glob must be recursive so the dispatched
     session's prompt is still detected as submitted."""
+    _opt_in_droid(home, monkeypatch)
     _seed_todo(mod, [{"id": "td-1", "title": "t"}])
     mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
     mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
@@ -778,7 +801,8 @@ def test_dispatch_todo_confirms_via_session_subdir_transcript(mod, home, no_slee
 
 
 def test_dispatch_todo_confirms_append_to_existing_transcript(
-        mod, home, no_sleep):
+        mod, home, no_sleep, monkeypatch):
+    _opt_in_droid(home, monkeypatch)
     _seed_todo(mod, [{"id": "td-1", "title": "t"}])
     mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
     mod.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"

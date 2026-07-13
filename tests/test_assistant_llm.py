@@ -32,12 +32,14 @@ class AssistantLLMCommandTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def test_missing_config_defaults_to_droid(self):
+    def test_missing_config_defaults_to_claude(self):
+        # Fail-closed to the always-present agent: a missing config routes to
+        # claude, not a droid binary that may be absent. Droid is opt-in.
         result = self.run_cli("status", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
-        self.assertEqual(status["global_provider"], "droid")
-        self.assertEqual(status["features"]["triage"]["provider"], "droid")
+        self.assertEqual(status["global_provider"], "claude")
+        self.assertEqual(status["features"]["triage"]["provider"], "claude")
 
     def test_set_droid_preserves_unrelated_and_legacy_config(self):
         self.config.write_text(json.dumps({

@@ -116,7 +116,9 @@ def inherit_provider(path: Path, feature: str) -> None:
 def status(path: Path) -> dict:
     document = load_document(path)
     llm = document.get("llm") if isinstance(document.get("llm"), dict) else {}
-    global_provider = llm.get("provider", "droid")
+    # Default claude — fail-closed to the always-present agent (mirrors
+    # llm_runner.RouteConfig). Droid is opt-in.
+    global_provider = llm.get("provider", "claude")
     features = {}
     for feature in FEATURES:
         route = llm_runner.load_route_config(path, feature)

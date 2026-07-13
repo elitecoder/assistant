@@ -1172,6 +1172,16 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
     provider = llm_runner.select_provider(
         route, [str(c.get("ws_ref") or "") for c in ctxs])
     selected_model = route.droid_model if provider == "droid" else model
+    if label == "audit":
+        # The shadow-audit's entire purpose (Keel M8) is a DIFFERENT, stronger
+        # model second-guessing the driver. If routing made the audit use the
+        # same provider+model as the driver (e.g. both routed to droid glm-5.2),
+        # it degrades into self-agreement — ~100% by construction — while the
+        # dashboard still renders a green "frontier audit" chip. Pin the audit to
+        # the frontier claude model so it stays a genuinely independent judge
+        # regardless of how the driver is routed.
+        provider = "claude"
+        selected_model = model
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=selected_model,
         run_dir=run_dir, timeout=OBSERVER_TIMEOUT_SEC, run=run,
@@ -1936,6 +1946,15 @@ def dispatch_todo(todo_id: str) -> bool:
         sys.path.insert(0, str(BIN))
     import agent_session  # noqa: PLC0415
     agent = agent_session.dispatch_agent()
+    # Pre-flight the opt-in droid binary: if droid is selected but not installed
+    # here, degrade to claude rather than spawn a workspace that can never reach
+    # readiness (the never-ready return precedes the idempotency stamp, so it
+    # would re-dispatch a dead workspace every pulse until the fleet caps
+    # saturate). Claude — the always-present agent — keeps the fleet moving.
+    if agent == agent_session.DROID and not agent_session.agent_available(agent):
+        log.warning("dispatch %s: droid selected but the droid binary is not "
+                    "on PATH — falling back to claude", todo_id)
+        agent = agent_session.CLAUDE
     launch_cmd = agent_session.launch_command(agent, home=HOME)
     cwd = str(DISPATCH_CWD)
     title = f"{todo_id}: {item.get('title','')}"[:40]
@@ -2004,8 +2023,14 @@ def dispatch_todo(todo_id: str) -> bool:
             break
         time.sleep(1)
     if not ready:
-        log.warning("dispatch %s: %s never ready in %s/%s",
+        # PARK, don't storm. A spawned-but-never-ready workspace is real; if we
+        # return without stamping, the TODO stays in bucket_b and every pulse
+        # re-spawns another dead workspace up to the fleet caps (td-128 storm).
+        # Stamping moves it out of bucket_b; if the workspace never flips to
+        # done, the picker routes it to bucket_a (re-classify), never re-spawn.
+        log.warning("dispatch %s: %s never ready in %s/%s — parking to re-classify",
                     todo_id, agent, ws_ref, surface_ref)
+        _mark_todo_dispatched(todo_id, ws_ref)
         return False
 
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
