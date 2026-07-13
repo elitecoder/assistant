@@ -159,21 +159,37 @@ def test_explicit_env_arg_is_pure_policy_ignores_config(tmp_path, monkeypatch):
     assert ag.dispatch_agent({}) == "claude"
 
 
+def _write_droid_settings(home):
+    s = home / ".assistant" / "droid-glm-settings.json"
+    s.parent.mkdir(parents=True, exist_ok=True)
+    s.write_text('{"sessionDefaultSettings": {"model": "glm-5.2"}}')
+
+
 def test_agent_available_preflights_only_droid(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(ag.shutil, "which", lambda _b: None)
+    _write_droid_settings(tmp_path)
     # claude is launched via the ~/.zprofile alias (not on PATH) → assumed present.
     assert ag.agent_available(ag.CLAUDE) is True
     # droid absent from PATH and known install locations → not available (caller
     # falls back to claude).
     assert ag.agent_available(ag.DROID) is False
     # droid at Factory's default ~/.local/bin — INVISIBLE to launchd's pinned
-    # PATH (so shutil.which misses it) but found by the known-location probe, so
-    # a real droid install isn't a false-negative (M8 review PATH fix).
+    # PATH (so shutil.which misses it) but found by the known-location probe.
     d = tmp_path / ".local" / "bin"
     d.mkdir(parents=True)
-    (d / "droid").write_text("#!/bin/sh\n")
+    droid = d / "droid"
+    droid.write_text("#!/bin/sh\n")
+    # A NON-executable stub must NOT count as available (.exists() is not enough).
+    droid.chmod(0o644)
+    assert ag.agent_available(ag.DROID) is False
+    # Executable + settings present → available.
+    droid.chmod(0o755)
     assert ag.agent_available(ag.DROID) is True
+    # Missing settings file → not available (would spawn droid --settings <gone>).
+    (tmp_path / ".assistant" / "droid-glm-settings.json").unlink()
+    assert ag.agent_available(ag.DROID) is False
+    _write_droid_settings(tmp_path)
     # or resolvable on PATH directly.
     monkeypatch.setattr(ag.shutil, "which",
                         lambda b: "/x/droid" if b == "droid" else None)

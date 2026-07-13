@@ -1952,8 +1952,9 @@ def dispatch_todo(todo_id: str) -> bool:
     # would re-dispatch a dead workspace every pulse until the fleet caps
     # saturate). Claude — the always-present agent — keeps the fleet moving.
     if agent == agent_session.DROID and not agent_session.agent_available(agent):
-        log.warning("dispatch %s: droid selected but the droid binary is not "
-                    "on PATH — falling back to claude", todo_id)
+        log.warning("dispatch %s: droid selected but not launch-ready (missing/"
+                    "non-executable binary or missing/corrupt droid-glm-settings"
+                    ".json) — falling back to claude", todo_id)
         agent = agent_session.CLAUDE
     launch_cmd = agent_session.launch_command(agent, home=HOME)
     cwd = str(DISPATCH_CWD)

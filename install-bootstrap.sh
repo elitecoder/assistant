@@ -5,7 +5,7 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
 #
 # What it does:
-#   1. Checks prerequisites (git, python3, Factory Droid CLI)
+#   1. Checks prerequisites (git, python3, claude; droid optional)
 #   2. Clones the repo to ~/dev/assistant (or pulls if already present)
 #   3. Runs install.sh --apply  (symlinks skills, copies plists)
 #   4. Prints next steps (manual launchctl load)
@@ -27,9 +27,25 @@ info "Checking prerequisites"
 
 command -v git     >/dev/null 2>&1 || die "git not found — install Xcode Command Line Tools: xcode-select --install"
 command -v python3 >/dev/null 2>&1 || die "python3 not found — install from https://brew.sh or python.org"
-command -v droid   >/dev/null 2>&1 || die "Factory Droid CLI not found — install Droid first"
+# claude is the fleet's default agent (droid is opt-in). The `claude` launcher is
+# usually a ~/.zprofile alias, not an on-PATH executable, so probe both — but a
+# box with NEITHER claude nor droid cannot run the fleet.
+if ! command -v claude >/dev/null 2>&1 \
+    && [[ ! -x "${HOME}/.claude/local/claude" ]] \
+    && ! grep -qsE '^[[:space:]]*alias[[:space:]]+claude=' \
+        "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.zshenv" 2>/dev/null; then
+    if command -v droid >/dev/null 2>&1; then
+        warn "claude not found (droid present) — fleet will run droid-only; set it up so claude is available for the default posture"
+    else
+        die "no coding agent found — install Claude Code (default) or Factory Droid first"
+    fi
+fi
+# droid is OPTIONAL: the fleet fails closed to claude when droid is absent (PR #21).
+command -v droid >/dev/null 2>&1 \
+    && ok "droid found (Factory available as opt-in)" \
+    || warn "droid not found — Factory stays unavailable; fleet defaults to claude"
 
-ok "git, python3, droid all present"
+ok "prerequisites present (git, python3, coding agent)"
 
 # uv is strongly preferred but not required
 if command -v uv >/dev/null 2>&1; then

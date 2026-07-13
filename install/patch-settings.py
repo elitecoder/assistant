@@ -11,6 +11,7 @@ Accepts one or more paths, including ``~/.claude/settings.json`` and
 created files are not.
 """
 import json
+import os
 import shutil
 import sys
 import time
@@ -48,8 +49,24 @@ def remove_command(blocks, cmd):
 
 def patch_path(path):
     path = Path(path).expanduser()
+    # Atomic replace on a SYMLINK would sever it (swap the link for a regular
+    # file), disconnecting an operator/machine-config-managed target. These are
+    # functional session-restore hooks that must still apply, so resolve to the
+    # real file and write THROUGH the symlink instead of replacing it.
+    write_target = Path(os.path.realpath(path)) if path.is_symlink() else path
     existed = path.exists()
-    settings = json.loads(path.read_text()) if existed else {}
+    settings = {}
+    if existed:
+        try:
+            loaded = json.loads(path.read_text())
+            settings = loaded if isinstance(loaded, dict) else {}
+        except json.JSONDecodeError:
+            # A corrupt settings file must be recovered (backed up + rebuilt),
+            # not raise — that would abort the installer under `set -e`.
+            corrupt = path.with_suffix(path.suffix + f".corrupt-{int(time.time())}")
+            shutil.copy2(path, corrupt)
+            print(f"  {path} was malformed JSON — backed up to {corrupt}, rebuilding")
+            settings = {}
     hooks = settings.setdefault("hooks", {})
 
     ss = hooks.setdefault("SessionStart", [])
@@ -88,13 +105,19 @@ def patch_path(path):
         print("  no changes needed")
         return False
 
-    if existed:
-        bak = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
-        shutil.copy2(path, bak)
+    if write_target.exists():
+        bak = write_target.with_suffix(
+            write_target.suffix + f".bak-{int(time.time())}")
+        shutil.copy2(write_target, bak)
         print(f"  backed up to {bak}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + "\n")
-    print(f"  wrote {path}")
+    write_target.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write: a crash mid-write must not truncate settings.json (which
+    # would brick every later `--apply`). A pid-unique tmp name avoids two
+    # concurrent `--apply` runs racing on a shared tmp path.
+    tmp = write_target.with_suffix(write_target.suffix + f".tmp-{os.getpid()}")
+    tmp.write_text(json.dumps(settings, indent=2) + "\n")
+    tmp.replace(write_target)
+    print(f"  wrote {write_target}")
     return True
 
 

@@ -462,9 +462,12 @@ note "ensured $HOME_DIR/.assistant/logs/"
 ensure_file_copy "$HOME_DIR/.assistant/droid-glm-settings.json" \
     "$REPO_ROOT/config/droid-glm-settings.json"
 if [[ $APPLY -eq 1 ]]; then
+    # Factory-optional: must never abort the installer under `set -euo pipefail`
+    # and skip the Claude core / launchd reload below. Guard the pipeline.
     python3 "$REPO_ROOT/install/patch-factory-settings.py" \
         "$HOME_DIR/.factory/settings.json" \
-        "$REPO_ROOT/config/droid-glm-settings.json" | sed 's/^/  /'
+        "$REPO_ROOT/config/droid-glm-settings.json" 2>&1 | sed 's/^/  /' \
+        || warn "patch-factory-settings failed (continuing — Factory defaults not applied)"
 else
     note "would set Factory interactive defaults to GLM-5.2/high autonomy"
 fi
@@ -489,13 +492,18 @@ ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/
 if [[ $APPLY -eq 1 ]]; then
     CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"
     if [[ -x "$CMUX_CLI" ]]; then
-        "$CMUX_CLI" hooks factory install --yes | sed 's/^/  /'
+        # Factory-optional: an old cmux without factory support, or a droid-less
+        # box, must not abort the installer before the Claude settings patch and
+        # launchd reload below.
+        "$CMUX_CLI" hooks factory install --yes 2>&1 | sed 's/^/  /' \
+            || warn "cmux Factory hooks install failed (continuing — droid resume may be unbound)"
     else
         warn "cmux CLI missing; Factory lifecycle hooks were not installed"
     fi
     python3 "$REPO_ROOT/install/patch-settings.py" \
         "$HOME_DIR/.claude/settings.json" "$HOME_DIR/.factory/hooks.json" \
-        | sed 's/^/  /'
+        2>&1 | sed 's/^/  /' \
+        || warn "patch-settings failed (continuing — session-restore hooks may be incomplete)"
 else
     note "would install cmux Factory hooks and patch Claude + Factory lifecycle hooks"
 fi

@@ -475,6 +475,64 @@ class LedgerWindowNoClipTests(BriefBase):
         self.assertEqual(health["interrupts"]["denied_24h"], n)
 
 
+class ProvidersHealthTests(BriefBase):
+    """A5: a dark provider (opted-in droid whose binary/settings are broken)
+    books status=failed cost rows every pulse — the brief must surface it as
+    FAILING rather than render green."""
+
+    def _write_cost_rows(self, rows):
+        bin_dir = str(brief._REPO / "bin")
+        if bin_dir not in sys.path:
+            sys.path.insert(0, bin_dir)
+        import metering  # noqa: PLC0415
+        p = metering.cost_ledger_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+
+    def test_dark_droid_flags_failing_while_claude_healthy(self):
+        ts = brief.utc_iso(int(NOW - 60))
+        self._write_cost_rows([
+            {"ts": ts, "caller": "triage", "provider": "droid", "status": "failed"},
+            {"ts": ts, "caller": "strategist", "provider": "droid", "status": "failed"},
+            {"ts": ts, "caller": "narrator", "provider": "droid", "status": "failed"},
+            {"ts": ts, "caller": "lessons", "provider": "claude", "status": "ok"},
+        ])
+        health = brief._providers_health(NOW)
+        self.assertTrue(health["droid"]["failing"])
+        self.assertEqual(health["droid"]["failed"], 3)
+        self.assertFalse(health["claude"]["failing"])
+        # and it is surfaced in the full health block
+        full = brief._build_health([], NOW)
+        self.assertTrue(full["providers"]["droid"]["failing"])
+
+    def test_healthy_droid_not_flagged(self):
+        ts = brief.utc_iso(int(NOW - 60))
+        self._write_cost_rows([
+            {"ts": ts, "caller": "triage", "provider": "droid", "status": "ok"},
+            {"ts": ts, "caller": "triage", "provider": "droid", "status": "failed"},
+            {"ts": ts, "caller": "triage", "provider": "droid", "status": "ok"},
+        ])
+        health = brief._providers_health(NOW)
+        self.assertFalse(health["droid"]["failing"])  # 1 fail, not trailing/all
+        self.assertEqual(health["droid"]["failed"], 1)
+
+    def test_single_transient_failure_is_not_failing(self):
+        # calls=1 all-failed must NOT flag failing — a genuinely dark provider
+        # fails every pulse and accrues many rows; one failure is transient.
+        ts = brief.utc_iso(int(NOW - 60))
+        self._write_cost_rows([
+            {"ts": ts, "caller": "triage", "provider": "droid", "status": "failed"},
+        ])
+        health = brief._providers_health(NOW)
+        self.assertEqual(health["droid"]["failed"], 1)
+        self.assertFalse(health["droid"]["failing"])
+
+    def test_no_ledger_is_empty_not_error(self):
+        self.assertEqual(brief._providers_health(NOW), {})
+
+
 class PerDecisionSeenTests(BriefBase):
     """F4: seen-ness is per DECISION — a decision viewed in ANY brief is never
     degraded, even when its own (older) brief's sidecar was never stamped."""
