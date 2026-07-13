@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "_comment": "Outbound action-class gate registry (Keel M7 — gated outbound). gate is one of: forbidden | draft_only | confirm | standing. This registry is the SECOND of two independent gates in bin/outbound-dispatch.py: an accepted decision is NECESSARY but NOT SUFFICIENT — the class must also be enabled here and its gate must permit the requested effect. `forbidden` is an EXPLICIT, ledgered refusal (strictly stronger than a class simply being absent). The known send classes (email.send, slack.reply.send) are ALSO forbidden in CODE (action_classes._CODE_FORBIDDEN), so a future edit to this config file cannot un-forbid a send — enabling any send requires a schema change + a new gate + its own eval, not a config flip.",
+  "classes": {
+    "email.send": {"gate": "forbidden", "enabled": true},
+    "slack.reply.send": {"gate": "forbidden", "enabled": true},
+    "email.draft": {"gate": "draft_only", "enabled": true},
+    "slack.reply.draft": {"gate": "draft_only", "enabled": true},
+    "github.merge": {"gate": "confirm", "enabled": true},
+    "todo.create": {"gate": "standing", "enabled": true},
+    "ws.close": {"gate": "confirm", "enabled": true}
+  }
+}

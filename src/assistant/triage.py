@@ -45,7 +45,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import decisions, policy, todostore
+from . import action_classes, decisions, policy, todostore
 
 EVENT_SCHEMA = "world-event/1"
 DISPOSITION_KIND = "triage.disposition"
@@ -368,6 +368,9 @@ def triage_new_events(pulse_idx: int = 0, log=None, now: float | None = None,
     }
 
     summary["policy_installed"] = policy.ensure_policies_installed()
+    # Keel M7: seed/upgrade the outbound action-class gate registry the same way
+    # (additive, operator-edits preserved) so it lands on the first pulse.
+    action_classes.ensure_action_classes_installed()
     rules, invalid, error = policy.load_policies()
     if invalid:
         summary["policy_invalid"] = invalid

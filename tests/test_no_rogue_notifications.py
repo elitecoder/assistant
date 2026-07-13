@@ -173,5 +173,100 @@ class NoRogueNotificationsTest(unittest.TestCase):
             self.assertEqual(scan_source(src), [], f"false positive: {src!r}")
 
 
+# ── Outbound-send chokepoint (Keel M7.d) ────────────────────────────────────
+# The outbound counterpart of the push guard: the primitives that actually send
+# to the external world (SMTP, `gh pr merge`) may appear ONLY inside the gated
+# outbound path. Everything M7 does to the outside is a DRAFT (Gmail
+# drafts.create) or staged paste-text — never a send. `chat.postMessage` is
+# already forbidden by the push guard above, so Slack sends are covered there.
+OUTBOUND_PATTERN = re.compile(r"smtplib|gh\s+pr\s+merge", re.IGNORECASE)
+# The only files permitted to carry a real send primitive. All three are the
+# sanctioned executors; none actually contains one today (this guard is a
+# forward fence), but a future send-capable line must live in one of them.
+OUTBOUND_ALLOWLIST = {
+    Path("bin") / "outbound-dispatch.py",
+    Path("bin") / "merge-pr-dispatch.py",
+    Path("bin") / "cmux-send.py",
+}
+
+
+def scan_outbound(text: str) -> list[str]:
+    """Every distinct forbidden outbound token in `text`, via the text scan AND
+    the constant-folding scan (catches split-literal `"gh pr " + "merge"`)."""
+    hits: list[str] = []
+    for m in OUTBOUND_PATTERN.finditer(text):
+        hits.append(m.group(0).lower())
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return sorted(set(hits))
+    for node in ast.walk(tree):
+        folded = _fold_str(node)
+        if folded and OUTBOUND_PATTERN.search(folded):
+            hits.append(OUTBOUND_PATTERN.search(folded).group(0).lower())
+    return sorted(set(hits))
+
+
+class NoRogueOutboundTest(unittest.TestCase):
+    def test_no_send_primitives_outside_the_gate(self):
+        offenders = []
+        for d in SCAN_DIRS:
+            root = REPO / d
+            for path in sorted(root.rglob("*")):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(REPO)
+                if rel in OUTBOUND_ALLOWLIST:
+                    continue
+                if path.suffix in (".pyc",):
+                    continue
+                try:
+                    text = path.read_text(errors="replace")
+                except OSError:
+                    continue
+                for n, line in enumerate(text.splitlines(), 1):
+                    if OUTBOUND_PATTERN.search(line):
+                        offenders.append(f"{rel}:{n}: {line.strip()[:120]}")
+                if path.suffix == ".py":
+                    folded_hits = set(scan_outbound(text))
+                    line_hits = {OUTBOUND_PATTERN.search(l).group(0).lower()
+                                 for l in text.splitlines()
+                                 if OUTBOUND_PATTERN.search(l)}
+                    for extra in sorted(folded_hits - line_hits):
+                        offenders.append(
+                            f"{rel}: split-literal outbound token {extra!r} "
+                            "(constant-folded)")
+        self.assertEqual(
+            offenders, [],
+            "outbound send primitives (SMTP / `gh pr merge`) outside the gated "
+            "executors (route them through bin/outbound-dispatch.py — Keel M7):\n"
+            + "\n".join(offenders))
+
+    def test_outbound_allowlist_files_exist(self):
+        # A renamed executor would silently widen the fence — pin their presence.
+        for rel in OUTBOUND_ALLOWLIST:
+            self.assertTrue((REPO / rel).is_file(), f"{rel} missing")
+
+    def test_outbound_decoys_are_caught(self):
+        decoys = [
+            'import smtplib',
+            's = "smtp" + "lib"',                    # + concat
+            'cmd = "gh pr " "merge"',                # implicit adjacent concat
+            'cmd = "gh pr " + "merge"',              # + concat
+            'cmd = "".join(["gh pr ", "merge"])',    # constant join
+        ]
+        for src in decoys:
+            self.assertTrue(scan_outbound(src), f"decoy evaded: {src!r}")
+
+    def test_outbound_clean_source_not_flagged(self):
+        clean = [
+            'run(["gh", "pr", "view", pr])',   # view is fine
+            'x = "merge the branch"',
+            'note = "send it to the queue"',
+        ]
+        for src in clean:
+            self.assertEqual(scan_outbound(src), [], f"false positive: {src!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
