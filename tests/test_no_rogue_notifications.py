@@ -40,9 +40,12 @@ SCAN_DIRS = ("bin", "src")
 # The one permitted push call site.
 ALLOWLIST = {Path("bin") / "interrupt-gate.py"}
 
-# Case-insensitive so `OSASCRIPT` / `Chat.PostMessage` can't slip past.
+# Case-insensitive so `OSASCRIPT` / `Chat.PostMessage` can't slip past. The
+# Slack send is matched in BOTH its Web-API (`chat.postMessage`) and Python-SDK
+# (`chat_postMessage`) spellings via `chat[._]post_?message`.
 PUSH_PATTERN = re.compile(
-    r"osascript|display notification|terminal-notifier|chat\.postMessage",
+    r"osascript|display notification|terminal-notifier|"
+    r"chat[._]post_?message",
     re.IGNORECASE)
 
 
@@ -175,11 +178,19 @@ class NoRogueNotificationsTest(unittest.TestCase):
 
 # ── Outbound-send chokepoint (Keel M7.d) ────────────────────────────────────
 # The outbound counterpart of the push guard: the primitives that actually send
-# to the external world (SMTP, `gh pr merge`) may appear ONLY inside the gated
-# outbound path. Everything M7 does to the outside is a DRAFT (Gmail
-# drafts.create) or staged paste-text — never a send. `chat.postMessage` is
-# already forbidden by the push guard above, so Slack sends are covered there.
-OUTBOUND_PATTERN = re.compile(r"smtplib|gh\s+pr\s+merge", re.IGNORECASE)
+# to the external world may appear ONLY inside the gated outbound path.
+# Everything M7 does to the outside is a DRAFT (Gmail drafts.create) or staged
+# paste-text — never a send. Covered here: SMTP (smtplib/sendmail), a PR merge
+# (`gh pr merge`, including the argv-split `["gh","pr","merge"]` form via the
+# list-fold below), and the Gmail send surfaces (messages().send/drafts().send).
+# The Slack SEND spellings (chat.postMessage / chat_postMessage) are covered by
+# the PUSH guard above. NOTE: this is DEFENSE-IN-DEPTH, not the primary barrier
+# (the two-gate dispatcher is) — a determined dynamic-construction dodge
+# (getattr, `gh api … PUT …/merge`, an arbitrary webhook POST) is out of scope;
+# the point is that no ORDINARY send primitive lands outside the gate by accident.
+OUTBOUND_PATTERN = re.compile(
+    r"smtplib|sendmail|gh\s+pr\s+merge|messages\(\)\.send|drafts\(\)\.send",
+    re.IGNORECASE)
 # The only files permitted to carry a real send primitive. All three are the
 # sanctioned executors; none actually contains one today (this guard is a
 # forward fence), but a future send-capable line must live in one of them.
@@ -191,8 +202,10 @@ OUTBOUND_ALLOWLIST = {
 
 
 def scan_outbound(text: str) -> list[str]:
-    """Every distinct forbidden outbound token in `text`, via the text scan AND
-    the constant-folding scan (catches split-literal `"gh pr " + "merge"`)."""
+    """Every distinct forbidden outbound token in `text`, via the text scan, the
+    constant-folding scan (`"gh pr " + "merge"`), AND an argv-list fold that
+    joins a list/tuple of string constants with a space — the natural
+    `subprocess.run(["gh", "pr", "merge", n])` form a plain grep misses."""
     hits: list[str] = []
     for m in OUTBOUND_PATTERN.finditer(text):
         hits.append(m.group(0).lower())
@@ -204,6 +217,16 @@ def scan_outbound(text: str) -> list[str]:
         folded = _fold_str(node)
         if folded and OUTBOUND_PATTERN.search(folded):
             hits.append(OUTBOUND_PATTERN.search(folded).group(0).lower())
+        # argv-list: join the string-constant elements with a space so a
+        # command split across list elements is scanned as one command line.
+        if isinstance(node, (ast.List, ast.Tuple)):
+            parts = [e.value for e in node.elts
+                     if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            if len(parts) >= 2:
+                joined = " ".join(parts)
+                m = OUTBOUND_PATTERN.search(joined)
+                if m:
+                    hits.append(m.group(0).lower())
     return sorted(set(hits))
 
 
@@ -250,10 +273,13 @@ class NoRogueOutboundTest(unittest.TestCase):
     def test_outbound_decoys_are_caught(self):
         decoys = [
             'import smtplib',
-            's = "smtp" + "lib"',                    # + concat
-            'cmd = "gh pr " "merge"',                # implicit adjacent concat
-            'cmd = "gh pr " + "merge"',              # + concat
-            'cmd = "".join(["gh pr ", "merge"])',    # constant join
+            's = "smtp" + "lib"',                        # + concat
+            'cmd = "gh pr " "merge"',                    # implicit adjacent concat
+            'cmd = "gh pr " + "merge"',                  # + concat
+            'cmd = "".join(["gh pr ", "merge"])',        # constant join
+            'subprocess.run(["gh", "pr", "merge", n])',  # argv-split
+            'run(["/usr/sbin/sendmail", "-t"], input=b)',  # sendmail argv
+            'service.users().messages().send(userId=u)',  # gmail send
         ]
         for src in decoys:
             self.assertTrue(scan_outbound(src), f"decoy evaded: {src!r}")

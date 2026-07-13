@@ -33,10 +33,29 @@ _REPO = Path(__file__).resolve().parents[2]
 
 GATES = frozenset({"forbidden", "draft_only", "confirm", "standing"})
 
-# Send classes that are forbidden in CODE regardless of the config file. A
-# config edit cannot promote these out of `forbidden`; outbound-dispatch always
-# refuses them. This is the load-bearing "no auto-send" guarantee.
+# Strictness order: a config edit may make a class STRICTER, never looser.
+_STRICTNESS = {"forbidden": 3, "confirm": 2, "draft_only": 1, "standing": 0}
+
+# Send classes forbidden in CODE regardless of the config file — normalized
+# (casefold+strip) so `Email.Send` / `email.send ` can't slip past. In ADDITION,
+# ANY class whose normalized name ends in `.send` is code-forbidden: enabling a
+# real send requires explicit code support (a new gate + its own eval), never a
+# config entry. This is the load-bearing "no auto-send by config" guarantee.
 _CODE_FORBIDDEN = frozenset({"email.send", "slack.reply.send"})
+
+# Code-pinned MINIMUM strictness per class: the config may only make these
+# STRICTER, never looser. A live-file edit downgrading github.merge/ws.close to
+# `standing` (auto, no prompt) is clamped back up to `confirm`.
+_MIN_GATE = {
+    "email.send": "forbidden",
+    "slack.reply.send": "forbidden",
+    "github.merge": "confirm",
+    "ws.close": "confirm",
+}
+
+
+def _normalize(action_class) -> str:
+    return action_class.strip().casefold() if isinstance(action_class, str) else ""
 
 
 def _home() -> Path:
@@ -154,14 +173,23 @@ def load_action_classes() -> dict:
 
 def resolve_gate(action_class: str, registry: dict | None = None) -> str | None:
     """The effective gate for a class, or None when it is unknown/disabled/
-    malformed (→ the caller refuses). CODE-FORBIDDEN classes always resolve to
-    'forbidden' regardless of the registry — a config edit cannot un-forbid a
-    send."""
-    if action_class in _CODE_FORBIDDEN:
+    malformed (→ the caller refuses). Two code backstops the config CANNOT relax:
+      • CODE-FORBIDDEN — normalized send classes and ANY `.send` verb always
+        resolve to 'forbidden' regardless of the registry;
+      • MIN-GATE ceiling — a class is clamped to at least its pinned strictness
+        (github.merge/ws.close can never be downgraded to `standing` by config).
+    Config may make a class stricter, never looser."""
+    norm = _normalize(action_class)
+    if norm in _CODE_FORBIDDEN or norm.endswith(".send"):
         return "forbidden"
     reg = load_action_classes() if registry is None else registry
     entry = reg.get(action_class) if isinstance(reg, dict) else None
     if not isinstance(entry, dict) or entry.get("enabled") is not True:
         return None
     gate = entry.get("gate")
-    return gate if gate in GATES else None
+    if gate not in GATES:
+        return None
+    floor = _MIN_GATE.get(norm)
+    if floor and _STRICTNESS.get(gate, 0) < _STRICTNESS[floor]:
+        return floor  # config tried to loosen below the code-pinned minimum
+    return gate

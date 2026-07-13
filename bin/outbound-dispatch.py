@@ -139,6 +139,7 @@ def _append_row(dec_id: str, action_class: str, target,
     }
     p = outbound_ledger_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    _compact_if_needed()
     with open(p, "a") as f:
         f.write(json.dumps(row) + "\n")
     return row
@@ -165,9 +166,47 @@ def _actions_ledger_refusal(dec_id: str, action_class: str,
         pass
 
 
-def _decision_status(dec_id: str) -> str | None:
+MAX_LEDGER_BYTES = 5_000_000
+
+
+def _compact_if_needed() -> None:
+    """Caller holds _outbound_lock(). Bound the live ledger: when it exceeds
+    MAX_LEDGER_BYTES, archive the full log to <name>.1 and rewrite the live file
+    with ONLY the idempotency-relevant terminal rows (drafted/verified, folded
+    latest per dec_id+class). Refusal/audit rows are archived, never lost to the
+    live idempotency scan — replay protection survives rotation (mirrors
+    decisions._maybe_compact)."""
+    p = outbound_ledger_path()
+    try:
+        if not p.exists() or p.stat().st_size <= MAX_LEDGER_BYTES:
+            return
+    except OSError:
+        return
+    rows = read_outbound_ledger()
+    try:
+        os.replace(p, p.with_name(p.name + ".1"))
+    except OSError:
+        return
+    keep: dict = {}
+    for r in rows:
+        if r.get("outcome") in _ACTIONED_OUTCOMES:
+            keep[(r.get("dec_id"), r.get("class"))] = r
+    with open(p, "w") as f:
+        for r in keep.values():
+            f.write(json.dumps(r) + "\n")
+
+
+def _decision_record(dec_id: str) -> dict | None:
     latest = decisions.fold(decisions.read_log()).get(dec_id)
-    return latest.get("status") if isinstance(latest, dict) else None
+    return latest if isinstance(latest, dict) else None
+
+
+def _accepted_class(record: dict | None) -> str | None:
+    """The action class the decision was OPENED/accepted for — the dec_id
+    cryptographically encodes it (decisions.decision_id hashes the class), and
+    it is carried on recommended.class. None when the decision has no action."""
+    reco = record.get("recommended") if isinstance(record, dict) else None
+    return reco.get("class") if isinstance(reco, dict) else None
 
 
 def dispatch(dec_id: str, action_class: str, target=None,
@@ -186,22 +225,43 @@ def dispatch(dec_id: str, action_class: str, target=None,
         out["reason"] = "missing action class"
         return out, EXIT_USAGE
 
-    # --- Gate 1: authorization (an ACCEPTED decision must exist) ------------
-    status = _decision_status(dec_id)
-    authorized = status in _AUTHORIZED_STATUSES
+    # --- Gate 1: authorization — an ACCEPTED decision FOR THIS EXACT CLASS ---
+    # The two gates must together prove "the human accepted THIS action", not
+    # merely "some decision is accepted" + "this class is permitted". The dec_id
+    # cryptographically encodes the action class, so any accepted dec_id would
+    # otherwise be a bearer token for EVERY permitted class (a confused deputy:
+    # accept a benign todo.create card, then dispatch a confirm-gated merge on
+    # its id). Bind the requested class to the decision's own recommended.class.
+    record = _decision_record(dec_id)
+    status = record.get("status") if record else None
+    accepted_class = _accepted_class(record)
+    status_ok = status in _AUTHORIZED_STATUSES
+    class_ok = accepted_class is not None and accepted_class == action_class
+    authorized = status_ok and class_ok
+    if status is None:
+        reason = "no such decision"
+    elif not status_ok:
+        reason = f"decision status is {status!r}, not accepted"
+    elif not class_ok:
+        reason = (f"decision was accepted for {accepted_class!r}, "
+                  f"not {action_class!r} — acceptance does not authorize this "
+                  "action")
+    else:
+        reason = "accepted decision for this class"
     out["gate1_authorization"] = {
-        "ok": authorized,
-        "status": status,
-        "reason": ("accepted decision" if authorized else
-                   ("no such decision" if status is None
-                    else f"decision status is {status!r}, not accepted")),
+        "ok": authorized, "status": status,
+        "accepted_class": accepted_class, "reason": reason,
     }
     if not authorized:
-        # No accepted decision → NO outbound-ledger row (invariant). Audit in
-        # the actions-ledger and refuse.
+        # No valid human authorization FOR THIS class+dec → NO outbound-ledger
+        # row (a class-mismatch refers to an unrelated class's acceptance, so it
+        # would violate 'every row is authorized FOR its class'). Audit in the
+        # actions-ledger and refuse.
         out["outcome"] = "refused"
-        out["reason"] = out["gate1_authorization"]["reason"]
-        _actions_ledger_refusal(dec_id, action_class, "no-accepted-decision", now)
+        out["reason"] = reason
+        _actions_ledger_refusal(
+            dec_id, action_class,
+            "class-mismatch" if status_ok else "no-accepted-decision", now)
         return out, EXIT_REFUSED
 
     # From here we HOLD an accepted decision → outbound-ledger rows are allowed.
@@ -241,12 +301,13 @@ def dispatch(dec_id: str, action_class: str, target=None,
         out["idempotency"] = {"ok": True, "reason": "first dispatch"}
         # ACT: no send/draft/delegate handler is wired in the M7.a–d chokepoint.
         # The permitted class is fully boxed (gate + ledger + CI invariant); the
-        # real effect lands in M7.e+ INSIDE this reservation.
+        # real effect lands in M7.e+ INSIDE this reservation and will write the
+        # `drafted`/`verified` row that then blocks replay. We deliberately do
+        # NOT ledger `unimplemented`: it carries no idempotency meaning and an
+        # automated retry loop would balloon the ledger with no-op rows.
         out["outcome"] = "unimplemented"
         out["reason"] = (f"gate={gate} permitted; no outbound handler wired yet "
                          "(M7.a-d is the chokepoint only)")
-        _append_row(dec_id, action_class, target, "unimplemented",
-                    f"gate={gate}; handler pending (M7.e+)", now)
         return out, EXIT_USAGE
 
 

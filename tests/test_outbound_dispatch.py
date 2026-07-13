@@ -45,14 +45,20 @@ class OutboundDispatchTests(unittest.TestCase):
         self._tmp_obj.cleanup()
 
     # ── helpers ──────────────────────────────────────────────────────────────
-    def _seed_decision(self, dec_id, status):
+    def _seed_decision(self, dec_id, status, cls="email.draft"):
+        # A decision is opened/accepted FOR a specific action class (recommended.
+        # class); the dispatcher binds the requested class to it. cls=None models
+        # a decision with no action (e.g. an escalate) — not dispatchable.
         p = decisions.decisions_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         now = time.time()
+        rec = {"schema": decisions.SCHEMA, "id": dec_id, "status": status,
+               "epoch": int(now), "ts": decisions.utc_iso(now)}
+        if cls is not None:
+            rec["recommended"] = {"class": cls, "summary": "x",
+                                  "payload_path": None}
         with open(p, "a") as f:
-            f.write(json.dumps({
-                "schema": decisions.SCHEMA, "id": dec_id, "status": status,
-                "epoch": int(now), "ts": decisions.utc_iso(now)}) + "\n")
+            f.write(json.dumps(rec) + "\n")
 
     def _ledger(self):
         return self.mod.read_outbound_ledger()
@@ -84,29 +90,51 @@ class OutboundDispatchTests(unittest.TestCase):
         self.assertEqual(code, self.mod.EXIT_REFUSED)
         self.assertFalse(out["gate1_authorization"]["ok"])
 
+    # ── Gate 1: class↔acceptance binding (the confused-deputy fix) ───────────
+    def test_accepting_one_class_does_not_authorize_another(self):
+        # BLOCKER fix: a decision accepted FOR todo.create must NOT authorize a
+        # dispatch of email.draft / github.merge / ws.close on the same id.
+        self._seed_decision(ACCEPTED, "accepted", cls="todo.create")
+        for other in ("email.draft", "github.merge", "ws.close"):
+            out, code = self.mod.dispatch(ACCEPTED, other)
+            self.assertEqual(code, self.mod.EXIT_REFUSED, other)
+            self.assertFalse(out["gate1_authorization"]["ok"], other)
+            self.assertEqual(out["gate1_authorization"]["accepted_class"],
+                             "todo.create", other)
+        # class-mismatch refers to another class's acceptance → NO outbound row,
+        # audited in the actions-ledger instead.
+        self.assertEqual(self._ledger(), [])
+        self.assertIn("class-mismatch",
+                      (self.home / ".assistant/actions-ledger.jsonl").read_text())
+
+    def test_decision_with_no_action_is_not_dispatchable(self):
+        self._seed_decision(ACCEPTED, "accepted", cls=None)  # e.g. an escalate
+        out, code = self.mod.dispatch(ACCEPTED, "email.draft")
+        self.assertEqual(code, self.mod.EXIT_REFUSED)
+        self.assertIsNone(out["gate1_authorization"]["accepted_class"])
+
     # ── Gate 2: class registry ───────────────────────────────────────────────
     def test_named_forbidden_send_refuses_with_a_row(self):
-        self._seed_decision(ACCEPTED, "accepted")
-        for cls in ("email.send", "slack.reply.send"):
-            out, code = self.mod.dispatch(ACCEPTED, cls)
+        cases = {"dec-" + "c" * 16: "email.send",
+                 "dec-" + "d" * 16: "slack.reply.send"}
+        for dec, cls in cases.items():
+            self._seed_decision(dec, "accepted", cls=cls)
+            out, code = self.mod.dispatch(dec, cls)
             self.assertEqual(code, self.mod.EXIT_REFUSED, cls)
             self.assertEqual(out["gate2_registry"]["gate"], "forbidden", cls)
         rows = self._ledger()
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), len(cases))
         self.assertTrue(all(r["outcome"] == "refused" for r in rows))
-        # every row has the accepted dec (invariant)
-        self.assertTrue(all(r["dec_id"] == ACCEPTED for r in rows))
 
     def test_unknown_class_refuses(self):
-        self._seed_decision(ACCEPTED, "accepted")
+        self._seed_decision(ACCEPTED, "accepted", cls="made.up.class")
         out, code = self.mod.dispatch(ACCEPTED, "made.up.class")
         self.assertEqual(code, self.mod.EXIT_REFUSED)
         self.assertIsNone(out["gate2_registry"]["gate"])
         self.assertEqual(self._ledger()[0]["outcome"], "refused")
 
     def test_disabled_class_refuses(self):
-        self._seed_decision(ACCEPTED, "accepted")
-        # install then disable a class in the live registry
+        self._seed_decision(ACCEPTED, "accepted", cls="todo.create")
         from assistant import action_classes  # noqa: PLC0415
         action_classes.ensure_action_classes_installed()
         p = action_classes.action_classes_path()
@@ -117,40 +145,39 @@ class OutboundDispatchTests(unittest.TestCase):
         self.assertEqual(code, self.mod.EXIT_REFUSED)
 
     # ── permitted (no handler wired in the a–d chokepoint) ──────────────────
-    def test_permitted_class_is_unimplemented_not_a_send(self):
-        self._seed_decision(ACCEPTED, "accepted")
+    def test_permitted_class_is_unimplemented_and_writes_no_row(self):
+        self._seed_decision(ACCEPTED, "accepted", cls="email.draft")
         out, code = self.mod.dispatch(ACCEPTED, "email.draft")
         self.assertEqual(code, self.mod.EXIT_USAGE)          # 3: not built yet
         self.assertEqual(out["outcome"], "unimplemented")
         self.assertTrue(out["gate1_authorization"]["ok"])
         self.assertEqual(out["gate2_registry"]["gate"], "draft_only")
-        self.assertEqual(self._ledger()[0]["outcome"], "unimplemented")
+        # No handler → no idempotency meaning → NO ledger row (retry-loop safe).
+        self.assertEqual(self._ledger(), [])
 
     def test_edited_decision_is_authorized(self):
-        self._seed_decision(ACCEPTED, "open")
-        self._seed_decision(ACCEPTED, "edited")  # accept-with-changes
+        self._seed_decision(ACCEPTED, "open", cls="todo.create")
+        self._seed_decision(ACCEPTED, "edited", cls="todo.create")
         out, code = self.mod.dispatch(ACCEPTED, "todo.create")
         self.assertTrue(out["gate1_authorization"]["ok"])
         self.assertEqual(out["outcome"], "unimplemented")
 
     # ── M7.c: idempotency ───────────────────────────────────────────────────
     def test_replay_of_actioned_dec_class_refuses(self):
-        self._seed_decision(ACCEPTED, "accepted")
-        # simulate a prior successful draft (a future handler's row)
-        with self.mod._outbound_lock():
+        self._seed_decision(ACCEPTED, "accepted", cls="email.draft")
+        with self.mod._outbound_lock():   # a prior successful draft (future handler)
             self.mod._append_row(ACCEPTED, "email.draft", None, "drafted",
                                  "prior draft", time.time())
         out, code = self.mod.dispatch(ACCEPTED, "email.draft")
         self.assertEqual(code, self.mod.EXIT_REFUSED)
         self.assertFalse(out["idempotency"]["ok"])
-        self.assertEqual(out["reason"], "replay of an already-actioned "
-                         "dec_id+class")
 
     def test_refused_row_does_not_block_retry(self):
-        # A prior REFUSED/unimplemented row must NOT count as actioned — only
-        # drafted/verified block. Different class, same dec, still dispatchable.
-        self._seed_decision(ACCEPTED, "accepted")
-        self.mod.dispatch(ACCEPTED, "email.send")   # writes a refused row
+        # A prior REFUSED row must NOT count as actioned — only drafted/verified.
+        self._seed_decision(ACCEPTED, "accepted", cls="email.draft")
+        with self.mod._outbound_lock():
+            self.mod._append_row(ACCEPTED, "email.draft", None, "refused",
+                                 "some earlier refusal", time.time())
         out, code = self.mod.dispatch(ACCEPTED, "email.draft")
         self.assertTrue(out["idempotency"]["ok"])   # not blocked
 
@@ -161,18 +188,23 @@ class OutboundDispatchTests(unittest.TestCase):
         self.assertEqual(out["outcome"], "usage_error")
         self.assertEqual(self._ledger(), [])
 
-    def test_ledger_invariant_every_row_has_a_decision(self):
-        # Exhaustive: after a mix of dispatches, EVERY outbound-ledger row must
-        # reference a dec that exists AND is authorized in the store.
-        self._seed_decision(ACCEPTED, "accepted")
-        self.mod.dispatch(ACCEPTED, "email.send")       # refused row
-        self.mod.dispatch(ACCEPTED, "email.draft")      # unimplemented row
-        self.mod.dispatch(OTHER, "email.draft")         # no dec → no row
+    def test_ledger_invariant_every_row_has_a_matching_decision(self):
+        # EVERY outbound-ledger row must reference a dec that is accepted/edited
+        # AND accepted for that row's class.
+        self._seed_decision(ACCEPTED, "accepted", cls="email.send")
+        self._seed_decision(OTHER, "accepted", cls="email.draft")
+        self.mod.dispatch(ACCEPTED, "email.send")   # forbidden → refused row
+        self.mod.dispatch(OTHER, "email.draft")     # permitted → no row
+        self.mod.dispatch("dec-" + "e" * 16, "email.draft")  # no dec → no row
         folded = decisions.fold(decisions.read_log())
-        for row in self._ledger():
+        rows = self._ledger()
+        self.assertTrue(rows)  # at least the forbidden refusal
+        for row in rows:
             rec = folded.get(row["dec_id"])
             self.assertIsNotNone(rec, row)
             self.assertIn(rec.get("status"), ("accepted", "edited"), row)
+            self.assertEqual((rec.get("recommended") or {}).get("class"),
+                             row["class"], row)
 
 
 if __name__ == "__main__":
