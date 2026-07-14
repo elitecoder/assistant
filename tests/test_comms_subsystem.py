@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+from assistant import brief as brief_mod
 from assistant import conversation, slack
 from assistant.config import Config
 from assistant.daemon import DaemonProcess
@@ -209,6 +210,10 @@ def test_broadcast_sends_and_suppresses(cfg: Config, monkeypatch):
     sub._broadcast_entry({"kind": "self-update", "key": "self-update-skip", "outcome": "verified"})
     sub._broadcast_entry({"kind": "cleanup", "key": "skipped:1", "outcome": "skipped"})
     sub._broadcast_entry({"kind": "lesson-proposal", "key": "lesson-proposal:1", "outcome": "verified"})
+    # Keel silent receipts → suppressed (regression: event-drop firehosed the
+    # channel on first live launch because comms branched before these existed).
+    for rk in brief_mod.RECEIPT_KINDS:
+        sub._broadcast_entry({"kind": rk, "key": f"{rk}:1", "outcome": "verified"})
     assert len(fake.sends) == 1
     assert fake.sends[0]["kind"] == "action"
     # broadcast mirrored into conversation.jsonl
@@ -220,6 +225,34 @@ def test_broadcast_send_disabled_does_not_send(cfg: Config, monkeypatch):
     sub, fake = _make_subsystem(cfg, monkeypatch, send_enabled=False)
     sub._broadcast_entry({"kind": "cleanup", "key": "k", "outcome": "verified"})
     assert fake.sends == []
+
+
+def test_both_suppressors_cover_every_receipt_kind():
+    """Regression + drift-guard: BOTH the in-process CommsSubsystem and the
+    standalone comms-listen.py must suppress every Keel RECEIPT_KIND (silent,
+    pull-only receipts shown in the brief). A live launch firehosed 34 event-drop
+    receipts to Slack because comms branched before those kinds existed. If a new
+    RECEIPT_KIND is added to brief.py, this fails until both suppressors cover it.
+
+    The two suppressors are deliberately duplicated (comms-listen.py can't import
+    the package without a sys.path hop), so this test is their sync contract."""
+    import importlib.util
+    repo = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "comms_listen_mod", repo / "bin" / "comms-listen.py")
+    cl = importlib.util.module_from_spec(spec)
+    # comms-listen.py adds bin/ to sys.path and imports comms_lib/comms_session
+    # at module load; that's fine in-process.
+    spec.loader.exec_module(cl)
+
+    assert brief_mod.RECEIPT_KINDS, "RECEIPT_KINDS unexpectedly empty"
+    for rk in brief_mod.RECEIPT_KINDS:
+        entry = {"kind": rk, "key": f"{rk}:1", "outcome": "verified"}
+        # standalone daemon: _suppress_reason returns a non-None reason
+        reason = cl._suppress_reason(entry)
+        assert reason is not None, (
+            f"comms-listen._suppress_reason does NOT suppress receipt kind {rk!r} "
+            f"— it would firehose to Slack")
 
 
 def test_heartbeat_pages_when_stale(cfg: Config, monkeypatch):

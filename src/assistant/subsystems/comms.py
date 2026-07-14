@@ -34,7 +34,7 @@ import threading
 import time
 
 from . import Subsystem
-from .. import conversation, ledger, slack
+from .. import brief, conversation, ledger, slack
 
 
 class CommsSubsystem(Subsystem):
@@ -94,6 +94,11 @@ class CommsSubsystem(Subsystem):
         key = entry.get("key", "")
         if kind in ("noop", "emit-card"):
             self.log.debug("suppressed routine broadcast kind=%s key=%s", kind, key)
+            return
+        # Keel RECEIPT_KINDS are silent, pull-only receipts (shown in the brief,
+        # never pushed). comms-listen.py._suppress_reason mirrors this set.
+        if kind in brief.RECEIPT_KINDS:
+            self.log.debug("suppressed receipt broadcast kind=%s key=%s", kind, key)
             return
         if kind == "self-update" and "skip" in key:
             self.log.debug("suppressed self-update-skip broadcast key=%s", key)

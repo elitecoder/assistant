@@ -297,6 +297,13 @@ def _suppress_reason(entry: dict) -> str | None:
     key = entry.get("key", "")
     if kind in ("noop", "emit-card"):
         return f"routine kind={kind}"
+    # Keel RECEIPT_KINDS (src/assistant/brief.py): silent, pull-only receipts the
+    # brief shows quietly — a dropped noise event, an auto-done decision, a merge
+    # dispatch. They must NOT push to Slack (comms branched before these existed;
+    # without this an event-drop firehose hits the channel). Keep in sync with
+    # brief.RECEIPT_KINDS and CommsSubsystem._broadcast_entry.
+    if kind in ("event-drop", "decision-auto-done", "merge-dispatched"):
+        return f"receipt kind={kind} (pull-only, shown in brief)"
     if kind == "self-update" and "skip" in key:
         return "self-update-skip"
     if kind in ("lesson-proposal", "lesson_proposal") or key.startswith("lesson-proposal"):
