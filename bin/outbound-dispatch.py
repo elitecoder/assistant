@@ -47,7 +47,7 @@ REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import action_classes, decisions  # noqa: E402
+from assistant import action_classes, decisions, strategist  # noqa: E402
 
 EXIT_ACTED = 0
 EXIT_REFUSED = 1
@@ -71,6 +71,15 @@ def outbound_ledger_path() -> Path:
 
 def outbound_lock_path() -> Path:
     return _home() / ".assistant" / "outbound-ledger.writer.lock"
+
+
+def outbound_drafts_dir() -> Path:
+    return _home() / ".assistant" / "outbound-drafts"
+
+
+def staged_draft_path(dec_id: str, action_class: str) -> Path:
+    # dec_id is [0-9a-f]{16}; action_class is a dotted slug — both filename-safe.
+    return outbound_drafts_dir() / f"{dec_id}__{action_class}.md"
 
 
 def _utc_iso(epoch: float) -> str:
@@ -209,6 +218,56 @@ def _accepted_class(record: dict | None) -> str | None:
     return reco.get("class") if isinstance(reco, dict) else None
 
 
+def _derive_target(record: dict | None) -> str:
+    """The outbound target derived FROM THE DECISION RECORD (never the caller's
+    argv): the reply thread / channel / sender / PR the decision is about. The
+    caller-supplied --target is advisory only and is NOT trusted for the ledger
+    or the staged artifact."""
+    refs = record.get("refs") if isinstance(record, dict) else None
+    refs = refs if isinstance(refs, dict) else {}
+    for key in ("thread", "slack_ts", "channel", "sender", "to", "pr",
+                "ws_ref"):
+        val = refs.get(key)
+        if val:
+            return f"{key}:{val}"
+    return (record.get("source") if isinstance(record, dict) else None) or "unknown"
+
+
+def _act_draft_only(out: dict, dec_id: str, action_class: str,
+                    record: dict | None, now: float) -> tuple[dict, int]:
+    """The draft_only handler (M7.e). Caller holds _outbound_lock() and has
+    already passed both gates + the idempotency check. Stages the Strategist's
+    decision-context prose as a LOCAL draft artifact the human reviews and sends
+    themselves — it NEVER sends. Records a `drafted` row (which then blocks
+    replay). Re-staging is idempotent (same path, atomic write), so a crash
+    between the artifact write and the ledger row is self-healing on retry."""
+    body = strategist.read_context(dec_id)
+    if not body:
+        # Nothing to draft from yet (the nightly pre-research pass writes the
+        # decision-context). No `drafted` row → retriable once context exists.
+        out["outcome"] = "awaiting_draft_body"
+        out["reason"] = ("no Strategist decision-context to draft from yet; "
+                         "retry after pre-research writes it")
+        return out, EXIT_USAGE
+    target = _derive_target(record)
+    path = staged_draft_path(dec_id, action_class)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = ("<!-- GATED OUTBOUND DRAFT — review, then send it yourself. This "
+              "file is never auto-sent.\n"
+              f"     decision: {dec_id}  class: {action_class}  target: "
+              f"{target} -->\n\n")
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text(header + body.strip() + "\n")
+    os.replace(tmp, path)
+    _append_row(dec_id, action_class, target, "drafted",
+                f"staged local draft at {path}", now)
+    out["target"] = target
+    out["draft_path"] = str(path)
+    out["outcome"] = "drafted"
+    out["reason"] = "staged a local draft for review (never sent)"
+    return out, EXIT_ACTED
+
+
 def dispatch(dec_id: str, action_class: str, target=None,
              now: float | None = None) -> tuple[dict, int]:
     now = time.time() if now is None else now
@@ -299,15 +358,16 @@ def dispatch(dec_id: str, action_class: str, target=None,
                         "replay of an already-actioned dec_id+class", now)
             return out, EXIT_REFUSED
         out["idempotency"] = {"ok": True, "reason": "first dispatch"}
-        # ACT: no send/draft/delegate handler is wired in the M7.a–d chokepoint.
-        # The permitted class is fully boxed (gate + ledger + CI invariant); the
-        # real effect lands in M7.e+ INSIDE this reservation and will write the
-        # `drafted`/`verified` row that then blocks replay. We deliberately do
-        # NOT ledger `unimplemented`: it carries no idempotency meaning and an
-        # automated retry loop would balloon the ledger with no-op rows.
+        # ACT — inside the reservation. draft_only stages a local draft (M7.e);
+        # confirm/standing handlers (merge delegate, Gmail draft-via-API, etc.)
+        # land in later M7 steps. We deliberately do NOT ledger `unimplemented`:
+        # it carries no idempotency meaning and a retry loop would balloon the
+        # ledger with no-op rows.
+        if gate == "draft_only":
+            return _act_draft_only(out, dec_id, action_class, record, now)
         out["outcome"] = "unimplemented"
-        out["reason"] = (f"gate={gate} permitted; no outbound handler wired yet "
-                         "(M7.a-d is the chokepoint only)")
+        out["reason"] = (f"gate={gate} permitted; no handler wired yet for this "
+                         "gate (M7.e wires draft_only)")
         return out, EXIT_USAGE
 
 
