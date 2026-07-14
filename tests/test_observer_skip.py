@@ -138,6 +138,100 @@ class ObsInputHashTests(unittest.TestCase):
         without = self.mod.obs_input_hash(ctx(transcript_path=None))
         self.assertNotEqual(with_t, without)
 
+    def test_spinner_tick_does_not_change_the_hash(self):
+        """A spinner animation frame (braille chars ⠋⠙⠹…) must not invalidate
+        a carry-forward verdict — it is rendering jitter, not semantic change."""
+        base = self.mod.obs_input_hash(ctx(screen_text="Working on task...\n⠋"))
+        tick = self.mod.obs_input_hash(ctx(screen_text="Working on task...\n⠙"))
+        self.assertEqual(base, tick,
+                         "spinner frame change must not change the hash")
+
+    def test_status_bar_clock_change_does_not_change_the_hash(self):
+        """The status bar carries a volatile clock (2:34 PM → 2:35 PM); it must
+        not invalidate the skip."""
+        base = self.mod.obs_input_hash(ctx(
+            screen_text="Working...\n│ claude │ 2:34 PM │ #abc12345 │"))
+        tick = self.mod.obs_input_hash(ctx(
+            screen_text="Working...\n│ claude │ 2:35 PM │ #abc12345 │"))
+        self.assertEqual(base, tick,
+                         "status bar clock change must not change the hash")
+
+    def test_cursor_block_does_not_change_the_hash(self):
+        """A cursor block character (█▋▊▉) is rendering, not content."""
+        base = self.mod.obs_input_hash(ctx(screen_text="$ ls -la█"))
+        tick = self.mod.obs_input_hash(ctx(screen_text="$ ls -la"))
+        self.assertEqual(base, tick,
+                         "cursor block change must not change the hash")
+
+    def test_trailing_whitespace_does_not_change_the_hash(self):
+        """Trailing whitespace (line-padding jitter, cursor position) must not
+        invalidate the skip."""
+        base = self.mod.obs_input_hash(ctx(screen_text="$ git status  \n  "))
+        tick = self.mod.obs_input_hash(ctx(screen_text="$ git status\n"))
+        self.assertEqual(base, tick,
+                         "trailing whitespace change must not change the hash")
+
+    def test_blank_lines_do_not_change_the_hash(self):
+        """Empty lines between content must not affect the fingerprint."""
+        base = self.mod.obs_input_hash(ctx(
+            screen_text="line 1\n\n\nline 2"))
+        tick = self.mod.obs_input_hash(ctx(
+            screen_text="line 1\nline 2"))
+        self.assertEqual(base, tick,
+                         "blank line difference must not change the hash")
+
+    def test_real_content_change_still_changes_the_hash(self):
+        """Despite normalization, a genuine semantic change (new output line)
+        MUST still produce a different hash so the Observer re-observes."""
+        base = self.mod.obs_input_hash(ctx(
+            screen_text="$ git status\nOn branch main"))
+        changed = self.mod.obs_input_hash(ctx(
+            screen_text="$ git status\nOn branch main\nnothing to commit"))
+        self.assertNotEqual(base, changed,
+                            "real content change must change the hash")
+
+    def test_error_appearance_still_changes_the_hash(self):
+        """An error banner appearing on screen is a semantic change that must
+        produce a different hash even though the error flag is separate."""
+        base = self.mod.obs_input_hash(ctx(
+            screen_text="$ npm test\nAll tests passed"))
+        changed = self.mod.obs_input_hash(ctx(
+            screen_text="$ npm test\n⏺ API Error: rate limit exceeded"))
+        self.assertNotEqual(base, changed,
+                            "error banner appearance must change the hash")
+
+    def test_tree_output_change_is_detected(self):
+        """Lines with │ that are NOT status bars (tree connectors, table rows)
+        must still contribute to the fingerprint — dropping them causes false
+        matches on common coding agent output."""
+        base = self.mod.obs_input_hash(ctx(
+            screen_text="$ tree src/\n├── mod_a.py\n│   └── helper.py"))
+        changed = self.mod.obs_input_hash(ctx(
+            screen_text="$ tree src/\n├── mod_a.py\n│   └── helper.py\n"
+                        "│   └── utils.py"))
+        self.assertNotEqual(base, changed,
+                            "tree output change must change the hash")
+
+    def test_git_log_graph_change_is_detected(self):
+        """git log --graph output contains │ in branch connectors; a new
+        commit must change the fingerprint."""
+        base = self.mod.obs_input_hash(ctx(
+            screen_text="$ git log --graph\n* abc123 main\n│ * def456 branch"))
+        changed = self.mod.obs_input_hash(ctx(
+            screen_text="$ git log --graph\n* abc123 main\n│ * def456 branch\n"
+                        "│ * 789abc branch"))
+        self.assertNotEqual(base, changed,
+                            "git log graph change must change the hash")
+
+    def test_empty_screen_fingerprint(self):
+        """Empty/blank screen produces a stable marker, not a crash."""
+        self.assertEqual(self.mod._screen_text_fingerprint(""), "empty-screen")
+        self.assertEqual(self.mod._screen_text_fingerprint("   \n  \n"),
+                         "blank-screen")
+        # stable across calls
+        self.assertEqual(self.mod._screen_text_fingerprint(""),
+                         self.mod._screen_text_fingerprint(""))
+
 
 # ─── main() wiring ───────────────────────────────────────────────────────────
 

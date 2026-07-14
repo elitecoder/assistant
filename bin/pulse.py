@@ -892,10 +892,65 @@ def _transcript_tail_digest(path: str | None) -> str:
         return "unreadable-transcript"
 
 
+# Volatile screen patterns that change between pulses without any semantic
+# state change. Stripping them before hashing prevents unnecessary re-
+# observations: a spinner tick, a clock second, or a cursor blink must not
+# invalidate a carry-forward verdict.
+_SPINNER_RE = re.compile(
+    r"[\u2800-\u28FF]"          # braille block (spinner frames ⠋⠙⠹…)
+)
+_STATUS_BAR_RE = re.compile(
+    r"^│.*│\s*$"                # status bar: starts AND ends with │ (the
+                                # Claude/Droid status bar shape). Anchored so
+                                # tree connectors, git-log graph lines, and
+                                # table rows containing │ are NOT dropped —
+                                # dropping those would cause false matches.
+)
+_CURSOR_RE = re.compile(
+    r"[█▋▊▉]"                   # cursor block variants
+)
+
+
+def _screen_text_fingerprint(text: str) -> str:
+    """Stable digest of the Observer-visible screen content. Normalizes away
+    volatile rendering artifacts (spinner frames, status bar timestamps,
+    cursor blocks, trailing whitespace, blank lines) before hashing, so the
+    fingerprint changes ONLY when the semantic content of the screen changes —
+    an agent appending a turn, an error banner appearing, a prompt changing.
+    The raw screen_text in obs_input_hash was causing ~43% of carries to miss
+    because a single spinner tick or clock-second change flipped the hash."""
+    if not text:
+        return "empty-screen"
+    lines = text.splitlines()
+    cleaned: list[str] = []
+    for line in lines:
+        # Strip spinner/cursor characters
+        line = _SPINNER_RE.sub("", line)
+        line = _CURSOR_RE.sub("", line)
+        # Skip box-drawing status bar lines (volatile clock, token count)
+        if _STATUS_BAR_RE.search(line):
+            continue
+        # Strip trailing whitespace (cursor position, line-padding jitter)
+        line = line.rstrip()
+        if not line.strip():
+            continue
+        cleaned.append(line)
+    if not cleaned:
+        return "blank-screen"
+    payload = "\n".join(cleaned)
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()
+
+
 def obs_input_hash(ctx: dict) -> str:
     """Stable digest of one workspace's Observer-visible state. Equal hashes
     ⇒ the Observer would see byte-identical inputs ⇒ its prior verdict is
-    still the verdict; carry it forward instead of spending a call."""
+    still the verdict; carry it forward instead of spending a call.
+
+    screen_text is normalized via _screen_text_fingerprint to strip volatile
+    rendering artifacts (spinner frames, status-bar clocks, cursor blocks)
+    that change every pulse without any semantic state change. Without this,
+    ~43% of carry opportunities were missed because a spinner tick or
+    clock-second flip changed the raw screen_text hash."""
     payload = json.dumps([
         ctx.get("ws_ref"),
         ctx.get("title"),
@@ -903,7 +958,7 @@ def obs_input_hash(ctx: dict) -> str:
         ctx.get("transcript_path"),
         ctx.get("session_id8"),
         _transcript_tail_digest(ctx.get("transcript_path")),
-        ctx.get("screen_text") or "",
+        _screen_text_fingerprint(ctx.get("screen_text") or ""),
         bool(ctx.get("screen_shows_error")),
         ctx.get("agent_status"),
         bool(ctx.get("cwd_dirty")),

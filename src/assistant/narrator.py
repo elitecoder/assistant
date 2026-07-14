@@ -115,6 +115,37 @@ def brief_facts(brief_doc: dict) -> dict:
         if isinstance(r, dict):
             recs.append({"kind": r.get("kind"),
                          "evidence": (r.get("evidence") or "")[:200]})
+    # Agent activity + goal details for the LLM to phrase on quiet mornings.
+    agent = brief_doc.get("agent_activity") or {}
+    agent_sessions = []
+    for s in (agent.get("needs_user") or [])[:4]:
+        if isinstance(s, dict):
+            agent_sessions.append({
+                "ws_ref": s.get("ws_ref"),
+                "verdict": s.get("verdict"),
+                "title": (s.get("title") or "")[:120],
+                "next": (s.get("next") or "")[:200],
+                "stale_h": s.get("stale_h"),
+            })
+    for s in (agent.get("working") or [])[:4]:
+        if isinstance(s, dict):
+            agent_sessions.append({
+                "ws_ref": s.get("ws_ref"),
+                "verdict": s.get("verdict"),
+                "title": (s.get("title") or "")[:120],
+                "summary": (s.get("summary") or "")[:200],
+            })
+    goal_detail = brief_doc.get("goal_details") or {}
+    active_goals = []
+    if goal_detail.get("available"):
+        for g in (goal_detail.get("goals") or [])[:5]:
+            if isinstance(g, dict) and g.get("status") == "active":
+                active_goals.append({
+                    "id": g.get("id"),
+                    "title": g.get("title"),
+                    "rank": g.get("rank"),
+                    "progressed_24h": g.get("progressed_24h"),
+                })
     return {
         "date": brief_doc.get("date"),
         "counts": {
@@ -130,6 +161,8 @@ def brief_facts(brief_doc: dict) -> dict:
         "failing_providers": failing_providers,
         "decisions": decs,
         "receipts": recs,
+        "agent_sessions": agent_sessions,
+        "active_goals": active_goals,
     }
 
 
@@ -139,7 +172,9 @@ def brief_facts(brief_doc: dict) -> dict:
 def deterministic_summary(brief_doc: dict) -> str:
     """The template summary sentence, from counts alone — the floor the whole
     editorial layout renders against before (and without) any LLM voice.
-    Deterministic and grounded: every clause is a count the brief derived."""
+    Deterministic and grounded: every clause is a count the brief derived.
+    When the queue is empty, surfaces agent activity and goal status so the
+    brief stays useful on quiet mornings."""
     lanes = _lane_counts(brief_doc)
     n_receipts = len(brief_doc.get("handled_overnight") or [])
     esc = lanes.get("escalate", 0)
@@ -155,7 +190,20 @@ def deterministic_summary(brief_doc: dict) -> str:
     if digest_rows:
         parts.append(f"{digest_rows} FYI")
     if not parts:
-        parts.append("all clear — nothing needs a decision")
+        # Queue is empty — surface agent activity and goals instead
+        agent = brief_doc.get("agent_activity") or {}
+        n_working = len(agent.get("working") or [])
+        n_needs = len(agent.get("needs_user") or [])
+        if n_needs:
+            parts.append(f"{n_needs} agent(s) waiting for input")
+        if n_working:
+            parts.append(f"{n_working} agent(s) working")
+        goal_detail = brief_doc.get("goal_details") or {}
+        n_active = goal_detail.get("n_active") if goal_detail.get("available") else 0
+        if isinstance(n_active, int) and n_active > 0:
+            parts.append(f"{n_active} active goal(s)")
+        if not parts:
+            parts.append("all clear — nothing needs a decision")
     # Add cost signal when notable
     cost = (brief_doc.get("health") or {}).get("cost") or {}
     cpd = cost.get("cost_per_day_usd")

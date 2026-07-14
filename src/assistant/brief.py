@@ -176,6 +176,10 @@ def connectors_dir() -> Path:
     return _home() / ".assistant" / "connectors"
 
 
+def observer_summaries_dir() -> Path:
+    return _home() / ".assistant" / "observer-summaries"
+
+
 def decision_context_dir() -> Path:
     return _home() / ".assistant" / "decision-context"
 
@@ -726,6 +730,109 @@ def _build_proposals(now: float) -> dict:
     return out
 
 
+def _build_agent_activity(now: float) -> dict:
+    """Surfaces live agent workspaces and their Observer verdicts so the brief
+    is useful even when the decision queue is empty. Reads observer-summaries
+    (the per-ws verdict files save-ws-summary.py writes) and world.json's
+    live_sessions for agent_status. PURE derivation, no side effects; any
+    failure degrades to an empty section. Caps at 10 workspaces to bound the
+    payload. Per-file try/except so one corrupt summary never blanks the
+    section (F3: one bad file degrades only itself)."""
+    out: dict[str, list] = {"working": [], "needs_user": [], "idle": []}
+    d = observer_summaries_dir()
+    try:
+        entries: list[tuple[float, Path]] = []
+        for p in d.glob("workspace_*.json"):
+            try:
+                entries.append((p.stat().st_mtime, p))
+            except OSError:
+                continue
+        entries.sort(key=lambda t: t[0], reverse=True)
+    except OSError:
+        return {"working": [], "needs_user": [], "idle": [], "n_total": 0}
+    n = 0
+    for _, p in entries:
+        if n >= 10:
+            break
+        try:
+            row = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(row, dict) or not isinstance(row.get("ws_ref"), str):
+            continue
+        verdict = str(row.get("verdict") or "idle")
+        ws_ref = row.get("ws_ref") or ""
+        title = str(row.get("title") or "")[:120]
+        summary = str(row.get("summary") or "")[:200]
+        next_action = str(row.get("next") or "")[:200]
+        stale_h = None
+        ts = row.get("state_unchanged_since_ts")
+        if isinstance(ts, (int, float)) and ts > 0:
+            stale_h = round(max(0, now - ts) / 3600.0, 1)
+        entry = {
+            "ws_ref": ws_ref,
+            "title": title,
+            "verdict": verdict,
+            "summary": summary,
+            "next": next_action,
+            "stale_h": stale_h,
+        }
+        if verdict == "needs_user":
+            out["needs_user"].append(entry)
+        elif verdict == "working":
+            out["working"].append(entry)
+        else:
+            out["idle"].append(entry)
+        n += 1
+    return {
+        "working": out["working"],
+        "needs_user": out["needs_user"],
+        "idle": out["idle"],
+        "n_total": n,
+    }
+
+
+def _build_goal_details(goals: dict | None, now: float) -> dict:
+    """Enriched goals section with per-goal titles, status, and progress
+    signals so the brief can surface what the control loop is working on
+    when the queue is empty. PURE derivation over the goals store. Uses
+    the same status-checking logic as build_brief's goals_section so
+    n_active is consistent between the two."""
+    if not isinstance(goals, dict) or not isinstance(goals.get("goals"), list):
+        return {"available": False, "note": "goals store absent"}
+    active_goals = []
+    n_active = 0
+    for g in sorted(goals["goals"],
+                    key=lambda g: (g.get("rank", 1 << 30), g.get("id", ""))
+                    if isinstance(g, dict) else (1 << 30, "")):
+        if not isinstance(g, dict):
+            continue
+        status = g.get("status") or "active"
+        if status == "active":
+            n_active += 1
+        lp = g.get("lastProgressAt")
+        progressed = False
+        if isinstance(lp, str):
+            lp_epoch = decisions.parse_iso(lp)
+            if lp_epoch is not None and (now - lp_epoch) < WINDOW_SEC:
+                progressed = True
+        active_goals.append({
+            "id": g.get("id"),
+            "title": str(g.get("title") or g.get("name") or "")[:120],
+            "rank": g.get("rank"),
+            "status": status,
+            "progressed_24h": progressed,
+            "last_progress_at": lp,
+        })
+    return {
+        "available": True,
+        "n_goals": len(goals["goals"]),
+        "n_active": n_active,
+        "paused": bool(goals.get("_paused", False)),
+        "goals": active_goals[:10],
+    }
+
+
 # ─── the brief ───────────────────────────────────────────────────────────────
 
 def build_brief(now: float | None = None) -> dict:
@@ -753,13 +860,16 @@ def build_brief(now: float | None = None) -> dict:
         counts_by_lane[lane] = counts_by_lane.get(lane, 0) + 1
     if isinstance(goals, dict) and isinstance(goals.get("goals"), list):
         active = sum(1 for g in goals["goals"]
-                     if isinstance(g, dict) and g.get("status") == "active")
+                     if isinstance(g, dict)
+                     and (g.get("status") or "active") == "active")
         goals_section = {"available": True, "n_goals": len(goals["goals"]),
                          "n_active": active,
                          "paused": bool(goals.get("_paused", False))}
     else:
         goals_section = {"available": False,
                          "note": "goals store absent until M4"}
+    goals_detail = _build_goal_details(goals, now)
+    agent_activity = _build_agent_activity(now)
     digest = _build_digest(now)
     receipts = _build_receipts(now)
     return {
@@ -773,6 +883,8 @@ def build_brief(now: float | None = None) -> dict:
         "digest": digest,
         "health": _build_health(records, now),
         "goals": goals_section,
+        "goal_details": goals_detail,
+        "agent_activity": agent_activity,
         "proposals": _build_proposals(now),
         "counts": {
             "open_decisions": len(queue),
