@@ -82,9 +82,11 @@ class DecisionRouteTests(unittest.TestCase):
 
     # ── helpers ──────────────────────────────────────────────────────────
 
-    def _request(self, path, method="POST", body=b""):
+    def _request(self, path, method="POST", body=b"", human=False):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", data=body, method=method)
+        if human:
+            req.add_header("X-Assistant-Human", "1")
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return resp.status, resp.read().decode()
@@ -95,6 +97,13 @@ class DecisionRouteTests(unittest.TestCase):
         rec, _ = decisions.open_decision(
             event=make_event(i), lane=lane, policy_id="r1", urgency="now",
             now=NOW)
+        return rec
+
+    def _open_dispatchable(self, i=1, cls="email.draft"):
+        # A decision that carries an OUTBOUND action (recommended.class set).
+        rec, _ = decisions.open_decision(
+            event=make_event(i, refs={"sender": "boss@example.com"}),
+            lane="staged", policy_id="r1", action={"class": cls}, now=NOW)
         return rec
 
     # ── /decision/list ───────────────────────────────────────────────────
@@ -176,6 +185,51 @@ class DecisionRouteTests(unittest.TestCase):
         self.assertIn("unknown action", body)
         folded = decisions.fold(decisions.read_log())
         self.assertEqual(folded[rec["id"]]["status"], "open")
+
+    # ── M7.h: accept → gated outbound dispatch ──────────────────────────────
+    def test_accept_of_outbound_action_requires_human_assertion(self):
+        # Automation (no X-Assistant-Human) cannot accept-and-dispatch an
+        # outbound action: refused BEFORE the transition, decision stays open.
+        rec = self._open_dispatchable()
+        code, body = self._request(f"/decision/act/{rec['id']}?action=accept")
+        self.assertEqual(code, 400)
+        self.assertIn("human confirmation", body)
+        folded = decisions.fold(decisions.read_log())
+        self.assertEqual(folded[rec["id"]]["status"], "open")   # NOT consumed
+
+    def test_accept_of_outbound_action_with_human_dispatches(self):
+        rec = self._open_dispatchable()
+        # give the Strategist context so the draft_only handler actually stages
+        from assistant import strategist  # noqa: PLC0415
+        strategist.write_context(rec["id"], "Hi — yes, Friday works. —M", NOW)
+        code, body = self._request(
+            f"/decision/act/{rec['id']}?action=accept", human=True)
+        self.assertEqual(code, 200)
+        self.assertIn("accepted", body)
+        self.assertIn("drafted", body)                          # dispatch fired
+        # decision accepted AND a staged draft + outbound-ledger row exist
+        self.assertEqual(
+            decisions.fold(decisions.read_log())[rec["id"]]["status"], "accepted")
+        led = (self.home / ".assistant/outbound-ledger.jsonl").read_text()
+        self.assertIn("drafted", led)
+        self.assertIn(rec["id"], led)
+
+    def test_accept_outbound_without_context_awaits_body(self):
+        rec = self._open_dispatchable()
+        code, body = self._request(
+            f"/decision/act/{rec['id']}?action=accept", human=True)
+        self.assertEqual(code, 200)
+        self.assertIn("accepted", body)
+        self.assertIn("draft pending", body)   # awaiting, no draft yet
+
+    def test_accept_of_non_outbound_decision_needs_no_human(self):
+        # A decision with no recommended action (escalate/needs_input) accepts
+        # with no human assertion and triggers no dispatch (unchanged behavior).
+        rec = self._open_decision()   # make_event has no action → recommended None
+        code, body = self._request(f"/decision/act/{rec['id']}?action=accept")
+        self.assertEqual(code, 200)
+        self.assertNotIn("drafted", body)
+        self.assertFalse((self.home / ".assistant/outbound-ledger.jsonl").exists())
 
     def test_act_missing_decision_is_404(self):
         code, body = self._request(

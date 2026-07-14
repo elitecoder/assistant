@@ -2933,11 +2933,16 @@ async function handleDecisionActClick(ev) {
   const originalText = btn.textContent;
   btn.classList.add('busy');
   try {
-    const r = await fetch(url, {method: 'POST'});
+    // X-Assistant-Human asserts this is the human dashboard (not an automated
+    // localhost caller): the server requires it to accept an OUTBOUND action
+    // (Keel M7.h), so only a real click here can trigger a draft/send.
+    const r = await fetch(url, {method: 'POST', headers: {'X-Assistant-Human': '1'}});
     const t = await r.text();
     if (r.ok) {
       btn.classList.remove('busy'); btn.classList.add('ok');
       btn.textContent = '✓ ' + originalText;
+      // Surface the server note (e.g. "drafted: <path>") on hover.
+      if (t) { btn.title = t; }
       const row = btn.closest('[data-dec-row]');
       if (row) { row.style.opacity = '0.35'; row.style.transition = 'opacity 0.5s'; }
     } else {
