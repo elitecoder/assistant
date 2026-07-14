@@ -25,10 +25,14 @@ first send-capable scope is already gated, ledgered, and CI-fenced.
 
 Envelope mirrors merge-pr-dispatch: a numbered gate/act result dict printed as
 JSON, plus an exit code:
-    0  acted (drafted / delegated / verified)   [future]
+    0  acted (drafted / delegated / verified)
     1  refused (a gate failed)
     2  acted but unverified                     [future]
-    3  usage error / precondition (bad args, or no handler wired yet)
+    3  usage error / no handler wired yet       (do NOT retry — bad request)
+    4  awaiting a precondition                  (RETRIABLE — e.g. draft body not
+                                                 written yet; retry later)
+Callers that automate retries must branch on the `outcome` string, not the exit
+code alone (3 and 4 both mean "didn't act" but only 4 is retriable).
 """
 from __future__ import annotations
 
@@ -53,8 +57,14 @@ EXIT_ACTED = 0
 EXIT_REFUSED = 1
 EXIT_UNVERIFIED = 2
 EXIT_USAGE = 3
+EXIT_AWAITING = 4  # retriable: gates passed but a precondition isn't ready yet
 
 DEC_ID_RE = re.compile(r"dec-[0-9a-f]{16}$")
+# An action class is a dotted lowercase slug. Enforced at the door so a class
+# string can NEVER reach a filesystem path with a '/', '..', or null byte — the
+# staged-draft filename is built from it (defense in depth even though gate2 is
+# an allowlist of exactly these shapes).
+SAFE_CLASS_RE = re.compile(r"[a-z0-9]+(\.[a-z0-9]+)*$")
 # A dec whose current status is one of these was approved by the human.
 _AUTHORIZED_STATUSES = ("accepted", "edited")
 # Outcomes that are terminal side effects — replaying them must refuse.
@@ -220,16 +230,27 @@ def _accepted_class(record: dict | None) -> str | None:
 
 def _derive_target(record: dict | None) -> str:
     """The outbound target derived FROM THE DECISION RECORD (never the caller's
-    argv): the reply thread / channel / sender / PR the decision is about. The
-    caller-supplied --target is advisory only and is NOT trusted for the ledger
-    or the staged artifact."""
+    argv): the reply channel/thread / sender / PR the decision is about. Keys
+    match what the connectors actually emit (slack-events: channel/thread_ts/
+    slack_ts; gmail+outlook: sender/to; github: pr/repo). The caller-supplied
+    --target is advisory only and NOT trusted."""
     refs = record.get("refs") if isinstance(record, dict) else None
     refs = refs if isinstance(refs, dict) else {}
-    for key in ("thread", "slack_ts", "channel", "sender", "to", "pr",
-                "ws_ref"):
-        val = refs.get(key)
-        if val:
-            return f"{key}:{val}"
+    # Slack reply: a channel (+ the thread it belongs to) — both are needed to
+    # identify the recipient, so build a composite, not a single key.
+    channel = refs.get("channel")
+    if channel:
+        thread = refs.get("thread_ts") or refs.get("slack_ts")
+        return f"channel:{channel}/thread_ts:{thread}" if thread \
+            else f"channel:{channel}"
+    for key in ("sender", "to"):            # email reply
+        if refs.get(key):
+            return f"{key}:{refs[key]}"
+    if refs.get("pr"):                       # github
+        repo = refs.get("repo")
+        return f"pr:{repo}#{refs['pr']}" if repo else f"pr:{refs['pr']}"
+    if refs.get("ws_ref"):
+        return f"ws_ref:{refs['ws_ref']}"
     return (record.get("source") if isinstance(record, dict) else None) or "unknown"
 
 
@@ -248,14 +269,27 @@ def _act_draft_only(out: dict, dec_id: str, action_class: str,
         out["outcome"] = "awaiting_draft_body"
         out["reason"] = ("no Strategist decision-context to draft from yet; "
                          "retry after pre-research writes it")
-        return out, EXIT_USAGE
+        return out, EXIT_AWAITING
     target = _derive_target(record)
+    drafts_dir = outbound_drafts_dir()
     path = staged_draft_path(dec_id, action_class)
+    # Defense in depth: the artifact MUST stay inside the drafts dir. action_class
+    # is already a validated slug (SAFE_CLASS_RE at the door), but never trust a
+    # constructed path near the filesystem — refuse anything that resolves out.
+    try:
+        path.resolve().relative_to(drafts_dir.resolve())
+    except ValueError:
+        out["outcome"] = "refused"
+        out["reason"] = "staged draft path escapes the outbound-drafts dir"
+        return out, EXIT_REFUSED
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Sanitize interpolated metadata so a stray `-->` in a derived target can't
+    # break the HTML comment.
+    safe_target = str(target).replace("-->", "--)")
     header = ("<!-- GATED OUTBOUND DRAFT — review, then send it yourself. This "
               "file is never auto-sent.\n"
               f"     decision: {dec_id}  class: {action_class}  target: "
-              f"{target} -->\n\n")
+              f"{safe_target} -->\n\n")
     tmp = path.with_suffix(".md.tmp")
     tmp.write_text(header + body.strip() + "\n")
     os.replace(tmp, path)
@@ -282,6 +316,11 @@ def dispatch(dec_id: str, action_class: str, target=None,
     if not (isinstance(action_class, str) and action_class):
         out["outcome"] = "usage_error"
         out["reason"] = "missing action class"
+        return out, EXIT_USAGE
+    if not SAFE_CLASS_RE.fullmatch(action_class):
+        # Not a dotted lowercase slug → never let it reach a filesystem path.
+        out["outcome"] = "usage_error"
+        out["reason"] = "action class must be a dotted lowercase slug"
         return out, EXIT_USAGE
 
     # --- Gate 1: authorization — an ACCEPTED decision FOR THIS EXACT CLASS ---
@@ -324,6 +363,9 @@ def dispatch(dec_id: str, action_class: str, target=None,
         return out, EXIT_REFUSED
 
     # From here we HOLD an accepted decision → outbound-ledger rows are allowed.
+    # The target is derived from the DECISION RECORD for every row (never the
+    # caller's advisory --target, which is dropped from here on).
+    target = _derive_target(record)
     action_classes.ensure_action_classes_installed()
     gate = action_classes.resolve_gate(action_class)
     out["gate2_registry"] = {
