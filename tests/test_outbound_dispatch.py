@@ -53,7 +53,8 @@ class OutboundDispatchTests(unittest.TestCase):
         p.parent.mkdir(parents=True, exist_ok=True)
         now = time.time()
         rec = {"schema": decisions.SCHEMA, "id": dec_id, "status": status,
-               "epoch": int(now), "ts": decisions.utc_iso(now)}
+               "epoch": int(now), "ts": decisions.utc_iso(now),
+               "source": "github", "refs": {}}
         if cls is not None:
             rec["recommended"] = {"class": cls, "summary": "x",
                                   "payload_path": None}
@@ -144,16 +145,98 @@ class OutboundDispatchTests(unittest.TestCase):
         out, code = self.mod.dispatch(ACCEPTED, "todo.create")
         self.assertEqual(code, self.mod.EXIT_REFUSED)
 
-    # ── permitted (no handler wired in the a–d chokepoint) ──────────────────
-    def test_permitted_class_is_unimplemented_and_writes_no_row(self):
+    # ── M7.e: draft_only staging ─────────────────────────────────────────────
+    def _seed_context(self, dec_id, markdown):
+        from assistant import strategist  # noqa: PLC0415
+        strategist.write_context(dec_id, markdown, time.time())
+
+    def _set_refs(self, dec_id, refs):
+        p = decisions.decisions_path()
+        recs = [json.loads(l) for l in p.read_text().splitlines()]
+        for r in recs:
+            if r.get("id") == dec_id:
+                r["refs"] = refs
+        p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def test_draft_only_without_context_awaits_body(self):
+        # A draft_only class with no Strategist decision-context yet: nothing to
+        # draft from → awaiting_draft_body (RETRIABLE, distinct exit), NO row.
         self._seed_decision(ACCEPTED, "accepted", cls="email.draft")
         out, code = self.mod.dispatch(ACCEPTED, "email.draft")
-        self.assertEqual(code, self.mod.EXIT_USAGE)          # 3: not built yet
-        self.assertEqual(out["outcome"], "unimplemented")
-        self.assertTrue(out["gate1_authorization"]["ok"])
-        self.assertEqual(out["gate2_registry"]["gate"], "draft_only")
-        # No handler → no idempotency meaning → NO ledger row (retry-loop safe).
+        self.assertEqual(code, self.mod.EXIT_AWAITING)
+        self.assertEqual(out["outcome"], "awaiting_draft_body")
         self.assertEqual(self._ledger(), [])
+
+    def test_slack_draft_target_is_channel_and_thread(self):
+        self._seed_decision(ACCEPTED, "accepted", cls="slack.reply.draft")
+        self._set_refs(ACCEPTED, {"channel": "C123", "thread_ts": "1700.5",
+                                  "slack_ts": "1700.9"})
+        self._seed_context(ACCEPTED, "reply body")
+        out, code = self.mod.dispatch(ACCEPTED, "slack.reply.draft")
+        self.assertEqual(code, self.mod.EXIT_ACTED)
+        self.assertEqual(out["target"], "channel:C123/thread_ts:1700.5")
+
+    def test_missing_refs_degrades_to_source(self):
+        self._seed_decision(ACCEPTED, "accepted", cls="email.draft")
+        self._set_refs(ACCEPTED, {})            # no usable refs
+        self._seed_context(ACCEPTED, "body")
+        out, code = self.mod.dispatch(ACCEPTED, "email.draft")
+        self.assertEqual(code, self.mod.EXIT_ACTED)
+        self.assertEqual(out["target"], "github")   # falls back to source
+
+    def test_hostile_class_name_is_rejected_before_any_write(self):
+        # A path-traversal class must be refused at the door (usage_error) and
+        # never touch the filesystem — even if a decision were hand-forged for it.
+        self._seed_decision(ACCEPTED, "accepted", cls="../../../pwned")
+        out, code = self.mod.dispatch(ACCEPTED, "../../../pwned")
+        self.assertEqual(code, self.mod.EXIT_USAGE)
+        self.assertEqual(out["outcome"], "usage_error")
+        self.assertFalse((self.home / "pwned.md").exists())
+        self.assertFalse(list(self.home.rglob("pwned.md")))
+
+    def test_draft_only_with_context_stages_a_local_draft(self):
+        self._seed_decision(ACCEPTED, "accepted", cls="email.draft")
+        # decision carries a reply target in refs; the handler derives target
+        # from the record, not from argv.
+        p = decisions.decisions_path()
+        recs = [json.loads(l) for l in p.read_text().splitlines()]
+        recs[-1]["refs"] = {"sender": "boss@example.com"}
+        p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._seed_context(ACCEPTED, "Hi — yes, shipping Friday. —M")
+
+        out, code = self.mod.dispatch(ACCEPTED, "email.draft", target="ATTACKER")
+        self.assertEqual(code, self.mod.EXIT_ACTED)
+        self.assertEqual(out["outcome"], "drafted")
+        self.assertEqual(out["target"], "sender:boss@example.com")  # from record
+        # a local draft artifact exists and carries the body, never auto-sent
+        draft = Path(out["draft_path"])
+        self.assertTrue(draft.exists())
+        # and it stays INSIDE the outbound-drafts dir (no traversal)
+        draft.resolve().relative_to(self.mod.outbound_drafts_dir().resolve())
+        text = draft.read_text()
+        self.assertIn("shipping Friday", text)
+        self.assertIn("never auto-sent", text)
+        # a `drafted` ledger row was written (idempotency now live)
+        rows = self._ledger()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["outcome"], "drafted")
+        self.assertEqual(rows[0]["target"], "sender:boss@example.com")
+
+    def test_draft_replay_is_blocked_after_first_draft(self):
+        self._seed_decision(ACCEPTED, "accepted", cls="email.draft")
+        self._seed_context(ACCEPTED, "draft body")
+        out1, code1 = self.mod.dispatch(ACCEPTED, "email.draft")
+        self.assertEqual(code1, self.mod.EXIT_ACTED)
+        out2, code2 = self.mod.dispatch(ACCEPTED, "email.draft")
+        self.assertEqual(code2, self.mod.EXIT_REFUSED)
+        self.assertFalse(out2["idempotency"]["ok"])
+        self.assertEqual(len([r for r in self._ledger()
+                              if r["outcome"] == "drafted"]), 1)
+
+    def test_confirm_and_standing_still_unimplemented(self):
+        self._seed_decision(ACCEPTED, "accepted", cls="todo.create")
+        out, code = self.mod.dispatch(ACCEPTED, "todo.create")  # standing
+        self.assertEqual(out["outcome"], "unimplemented")
 
     def test_edited_decision_is_authorized(self):
         self._seed_decision(ACCEPTED, "open", cls="todo.create")
