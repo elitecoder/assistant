@@ -397,7 +397,25 @@ class AuditProviderGuardTests(unittest.TestCase):
         return [{"ws_ref": r, "transcript_path": None, "cwd": None}
                 for r in refs]
 
-    def test_audit_pinned_to_claude_even_when_observer_routed_to_droid(self):
+    def test_audit_routes_to_droid_when_driver_is_droid(self):
+        """When the fleet is routed to Droid (GLM-5.2), the audit also uses
+        Droid GLM-5.2 — the user's explicit decision post-migration."""
+        self.pulse.call_observer_batch(
+            self._ctxs("ws:1"), 0, 0,
+            model=self.pulse.OBSERVER_AUDIT_MODEL, label="audit")
+        self.assertEqual(self.captured[-1]["provider"], "droid")
+        self.assertEqual(self.captured[-1]["model"], "glm-5.2")
+
+    def test_audit_pinned_to_opus_when_driver_is_claude(self):
+        """When the fleet is routed to Claude (Sonnet), the audit is pinned to
+        a stronger independent model (Opus) for a genuine second opinion."""
+        # Override config to route to Claude
+        import json as _json
+        cfg = _json.loads(
+            (self._tmp / ".assistant" / "comms" / "config.json").read_text())
+        cfg["llm"]["provider"] = "claude"
+        (self._tmp / ".assistant" / "comms" / "config.json").write_text(
+            _json.dumps(cfg))
         self.pulse.call_observer_batch(
             self._ctxs("ws:1"), 0, 0,
             model=self.pulse.OBSERVER_AUDIT_MODEL, label="audit")

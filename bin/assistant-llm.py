@@ -62,8 +62,7 @@ def write_document(path: Path, update) -> dict:
         return document
 
 
-def set_provider(path: Path, provider: str, feature: str | None,
-                 percent: int | None) -> None:
+def set_provider(path: Path, provider: str, feature: str | None) -> None:
     def update(document: dict) -> None:
         llm = document.setdefault("llm", {})
         if not isinstance(llm, dict):
@@ -78,10 +77,6 @@ def set_provider(path: Path, provider: str, feature: str | None,
                 raise ValueError(
                     f"config key 'llm.features.{feature}' must be an object")
         target["provider"] = provider
-        if provider == "canary":
-            target["droid_canary_percent"] = percent
-        else:
-            target.pop("droid_canary_percent", None)
         droid = llm.setdefault("droid", {})
         if not isinstance(droid, dict):
             raise ValueError("config key 'llm.droid' must be an object")
@@ -104,7 +99,6 @@ def inherit_provider(path: Path, feature: str) -> None:
         if not isinstance(target, dict):
             return
         target.pop("provider", None)
-        target.pop("droid_canary_percent", None)
         if not target:
             features.pop(feature, None)
         if not features:
@@ -118,7 +112,10 @@ def status(path: Path) -> dict:
     llm = document.get("llm") if isinstance(document.get("llm"), dict) else {}
     # Default claude — fail-closed to the always-present agent (mirrors
     # llm_runner.RouteConfig). Droid is opt-in.
-    global_provider = llm.get("provider", "claude")
+    # Coerce through _provider() so status reflects actual routing, not raw
+    # config text (e.g. a stale "canary" value shows as "claude").
+    global_provider = llm_runner._provider(
+        llm.get("provider", "claude"))
     features = {}
     for feature in FEATURES:
         route = llm_runner.load_route_config(path, feature)
@@ -127,7 +124,6 @@ def status(path: Path) -> dict:
         environment_overrides = {
             key: value for key in (
                 f"{prefix}_LLM_PROVIDER",
-                f"{prefix}_DROID_CANARY_PERCENT",
                 f"{prefix}_DROID_MODEL",
                 f"{prefix}_DROID_REASONING_EFFORT",
                 "DROID_BIN",
@@ -136,7 +132,6 @@ def status(path: Path) -> dict:
         features[feature] = {
             "provider": route.provider,
             "configured_provider": configured.provider,
-            "droid_canary_percent": route.droid_canary_percent,
             "droid_model": route.droid_model,
             "droid_reasoning_effort": route.droid_reasoning_effort,
             "environment_override": environment_overrides.get(
@@ -158,9 +153,8 @@ def parser() -> argparse.ArgumentParser:
     show.add_argument("--json", action="store_true")
 
     set_cmd = commands.add_parser("set")
-    set_cmd.add_argument("provider", choices=("claude", "droid", "canary"))
+    set_cmd.add_argument("provider", choices=("claude", "droid"))
     set_cmd.add_argument("--feature", choices=FEATURES)
-    set_cmd.add_argument("--percent", type=int)
 
     inherit = commands.add_parser("inherit")
     inherit.add_argument("--feature", choices=FEATURES, required=True)
@@ -184,9 +178,6 @@ def main(argv: list[str] | None = None) -> int:
                     if detail == "droid":
                         detail += f" ({feature['droid_model']}, " \
                             f"{feature['droid_reasoning_effort']} reasoning)"
-                    elif detail == "canary":
-                        detail += \
-                            f" ({feature['droid_canary_percent']}% Droid)"
                     print(f"{name}: {detail}")
                     for key, value in feature[
                         "environment_overrides"
@@ -195,13 +186,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Config: {current['config_path']}")
             return 0
         if args.command == "set":
-            if args.provider == "canary" and (
-                args.percent is None or not 0 <= args.percent <= 100
-            ):
-                parser().error(
-                    "set canary requires --percent between 0 and 100")
             set_provider(
-                path, args.provider, args.feature, args.percent)
+                path, args.provider, args.feature)
         else:
             inherit_provider(path, args.feature)
         return main(["status"])

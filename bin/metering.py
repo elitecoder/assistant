@@ -58,13 +58,16 @@ MAX_METRICS_BYTES = 5_000_000
 # NOTE: estimates only — the real number comes from the CLI's total_cost_usd
 # when available. The [1m] long-context tier can bill input above 200K ctx at
 # a premium, so the estimated cost is a floor, not an exact figure.
+# GLM-5.2 Z.ai official API pricing (July 2026): $1.40/M input, $4.40/M output.
+# Factory Droid subscription covers this, but tracking the real API cost keeps
+# the $/day tile honest about underlying usage.
 _PRICE_PER_MTOK = (
     ("opus", (5.0, 25.0)),
     ("haiku", (1.0, 5.0)),
     ("sonnet", (3.0, 15.0)),
-    ("glm-5.2", (1.65, 8.25)),
+    ("glm-5.2", (1.40, 4.40)),
 )
-_DEFAULT_PRICE = (3.0, 15.0)  # sonnet rates — the fleet's Observer default
+_DEFAULT_PRICE = (3.0, 15.0)  # sonnet rates — unknown models default to Claude pricing
 
 
 def _home() -> Path:

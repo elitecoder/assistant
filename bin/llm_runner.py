@@ -1,8 +1,8 @@
 """Provider-neutral headless LLM subprocess runner."""
 from __future__ import annotations
 
-import hashlib
 import json
+import logging
 import os
 import shutil
 import time
@@ -18,7 +18,6 @@ class RouteConfig:
     # config must NOT silently route the fleet's judgment layer at a binary that
     # may not be installed, which fails open to empty verdicts every pulse.
     provider: str = "claude"
-    droid_canary_percent: int = 100
     droid_bin: str = "~/.local/bin/droid"
     droid_model: str = "glm-5.2"
     droid_reasoning_effort: str = "high"
@@ -53,19 +52,16 @@ def config_path(home: Path | None = None,
     return (home or Path.home()) / ".assistant/comms/config.json"
 
 
-def _bounded_percent(value, default: int = 100) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if 0 <= parsed <= 100 else default
-
-
 def _provider(value) -> str:
     # Unrecognized / empty coerces to claude (fail-closed to the always-present
     # agent), NOT droid — an opt-in binary that may be absent.
     value = str(value or "").strip().lower()
-    return value if value in {"claude", "canary", "droid"} else "claude"
+    if value in {"claude", "droid"}:
+        return value
+    if value:
+        logging.getLogger("llm_runner").warning(
+            "unknown LLM provider %r, falling back to claude", value)
+    return "claude"
 
 
 def _reasoning_effort(value) -> str:
@@ -100,16 +96,6 @@ def load_route_config(path: Path, section: str = "triage",
         f"{prefix}_LLM_PROVIDER",
         feature.get("provider", llm.get(
             "provider", legacy.get("provider", "claude"))),
-    )
-    percent = env.get(
-        f"{prefix}_DROID_CANARY_PERCENT",
-        feature.get(
-            "droid_canary_percent",
-            llm.get(
-                "droid_canary_percent",
-                legacy.get("droid_canary_percent", 100),
-            ),
-        ),
     )
     droid_bin = env.get(
         "DROID_BIN",
@@ -151,24 +137,14 @@ def load_route_config(path: Path, section: str = "triage",
     )
     return RouteConfig(
         provider=_provider(provider),
-        droid_canary_percent=_bounded_percent(percent),
         droid_bin=str(droid_bin),
         droid_model=str(droid_model or "glm-5.2"),
         droid_reasoning_effort=_reasoning_effort(reasoning),
     )
 
 
-def canary_bucket(keys: list[str]) -> int:
-    stable = "\n".join(sorted(str(key) for key in keys))
-    digest = hashlib.sha256(stable.encode()).digest()
-    return int.from_bytes(digest[:8], "big") % 100
-
-
 def select_provider(config: RouteConfig, routing_keys: list[str]) -> str:
-    if config.provider in {"claude", "droid"}:
-        return config.provider
-    return "droid" if canary_bucket(routing_keys) < config.droid_canary_percent \
-        else "claude"
+    return config.provider
 
 
 def resolve_executable(value: str) -> str:

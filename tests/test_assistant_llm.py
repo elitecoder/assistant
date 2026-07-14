@@ -41,17 +41,14 @@ class AssistantLLMCommandTests(unittest.TestCase):
         self.assertEqual(status["global_provider"], "claude")
         self.assertEqual(status["features"]["triage"]["provider"], "claude")
 
-    def test_set_droid_preserves_unrelated_and_legacy_config(self):
+    def test_set_droid_preserves_unrelated_config(self):
         self.config.write_text(json.dumps({
             "daemon": {"pulse_interval_sec": 60},
-            "triage": {"provider": "canary",
-                       "droid_canary_percent": 10},
         }))
         result = self.run_cli("set", "droid")
         self.assertEqual(result.returncode, 0, result.stderr)
         document = json.loads(self.config.read_text())
         self.assertEqual(document["daemon"]["pulse_interval_sec"], 60)
-        self.assertEqual(document["triage"]["provider"], "canary")
         self.assertEqual(document["llm"]["provider"], "droid")
         self.assertEqual(document["llm"]["droid"]["model"], "glm-5.2")
         self.assertIn("triage: droid", result.stdout)
@@ -79,30 +76,15 @@ class AssistantLLMCommandTests(unittest.TestCase):
     def test_feature_override_and_inherit(self):
         self.assertEqual(self.run_cli("set", "droid").returncode, 0)
         result = self.run_cli(
-            "set", "canary", "--feature", "triage", "--percent", "25")
+            "set", "claude", "--feature", "triage")
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(self.run_cli("status", "--json").stdout)
-        self.assertEqual(status["features"]["triage"]["provider"], "canary")
-        self.assertEqual(
-            status["features"]["triage"]["droid_canary_percent"], 25)
+        self.assertEqual(status["features"]["triage"]["provider"], "claude")
 
         result = self.run_cli("inherit", "--feature", "triage")
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(self.run_cli("status", "--json").stdout)
         self.assertEqual(status["features"]["triage"]["provider"], "droid")
-
-    def test_global_canary_percentage_is_effective(self):
-        result = self.run_cli("set", "canary", "--percent", "40")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        status = json.loads(self.run_cli("status", "--json").stdout)
-        self.assertEqual(status["features"]["triage"]["provider"], "canary")
-        self.assertEqual(
-            status["features"]["triage"]["droid_canary_percent"], 40)
-
-    def test_invalid_canary_percent_does_not_write(self):
-        result = self.run_cli("set", "canary", "--percent", "101")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.config.exists())
 
     def test_malformed_config_is_not_overwritten(self):
         self.config.write_text("{broken")

@@ -36,7 +36,6 @@ class RouteConfigTests(unittest.TestCase):
         # to empty verdicts every pulse). Droid is opt-in.
         cfg = self.mod.load_route_config(self.path, env={})
         self.assertEqual(cfg.provider, "claude")
-        self.assertEqual(cfg.droid_canary_percent, 100)
         self.assertEqual(cfg.droid_model, "glm-5.2")
 
     def test_config_path_honors_shared_override(self):
@@ -56,28 +55,33 @@ class RouteConfigTests(unittest.TestCase):
         self.path.write_text(json.dumps({
             "triage": {
                 "provider": "unknown",
-                "droid_canary_percent": 500,
                 "droid_reasoning_effort": "low",
             },
         }))
         cfg = self.mod.load_route_config(self.path, env={})
         self.assertEqual(cfg.provider, "claude")
-        self.assertEqual(cfg.droid_canary_percent, 100)
         self.assertEqual(cfg.droid_reasoning_effort, "high")
+
+    def test_canary_provider_rejected_as_claude(self):
+        """Canary mode was removed — a stale canary config must coerce to
+        claude, not silently route to droid."""
+        self.path.write_text(json.dumps({
+            "llm": {"provider": "canary"},
+        }))
+        cfg = self.mod.load_route_config(self.path, env={})
+        self.assertEqual(cfg.provider, "claude")
 
     def test_environment_overrides_config(self):
         self.path.write_text(json.dumps({
-            "triage": {"provider": "claude", "droid_canary_percent": 0},
+            "triage": {"provider": "claude"},
         }))
         cfg = self.mod.load_route_config(self.path, env={
-            "TRIAGE_LLM_PROVIDER": "canary",
-            "TRIAGE_DROID_CANARY_PERCENT": "25",
+            "TRIAGE_LLM_PROVIDER": "droid",
             "TRIAGE_DROID_MODEL": "glm-5.2-fast",
             "TRIAGE_DROID_REASONING_EFFORT": "max",
             "DROID_BIN": "/opt/droid",
         })
-        self.assertEqual(cfg.provider, "canary")
-        self.assertEqual(cfg.droid_canary_percent, 25)
+        self.assertEqual(cfg.provider, "droid")
         self.assertEqual(cfg.droid_model, "glm-5.2-fast")
         self.assertEqual(cfg.droid_reasoning_effort, "max")
         self.assertEqual(cfg.droid_bin, "/opt/droid")
@@ -106,30 +110,15 @@ class RouteConfigTests(unittest.TestCase):
                 "provider": "claude",
                 "features": {
                     "triage": {
-                        "provider": "canary",
-                        "droid_canary_percent": 30,
+                        "provider": "droid",
                         "droid": {"model": "glm-5.2-fast"},
                     },
                 },
             },
         }))
         cfg = self.mod.load_route_config(self.path, env={})
-        self.assertEqual(cfg.provider, "canary")
-        self.assertEqual(cfg.droid_canary_percent, 30)
+        self.assertEqual(cfg.provider, "droid")
         self.assertEqual(cfg.droid_model, "glm-5.2-fast")
-
-    def test_canary_route_is_stable_and_bounded(self):
-        bucket = self.mod.canary_bucket(["event-2", "event-1"])
-        self.assertEqual(bucket,
-                         self.mod.canary_bucket(["event-1", "event-2"]))
-        cfg = self.mod.RouteConfig(provider="canary",
-                                   droid_canary_percent=bucket)
-        self.assertEqual(self.mod.select_provider(cfg, ["event-1", "event-2"]),
-                         "claude")
-        cfg = self.mod.RouteConfig(provider="canary",
-                                   droid_canary_percent=bucket + 1)
-        self.assertEqual(self.mod.select_provider(cfg, ["event-1", "event-2"]),
-                         "droid")
 
 
 class EnvelopeTests(unittest.TestCase):

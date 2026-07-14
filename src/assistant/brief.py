@@ -597,6 +597,10 @@ def _observer_audit_health(now: float) -> dict:
             last_error = last.get("reason") or "frontier produced no verdicts"
     model_audit = (rows[-1].get("model_audit") if rows
                    else (status[-1].get("model_audit") if status else None))
+    model_driver = (rows[-1].get("model_driver") if rows
+                    else (status[-1].get("model_driver") if status else None))
+    same_model = (isinstance(model_audit, str) and isinstance(model_driver, str)
+                  and model_audit == model_driver)
     return {
         "available": True,
         "window_h": 24,
@@ -609,6 +613,8 @@ def _observer_audit_health(now: float) -> dict:
         "failing": failing,
         "last_error": last_error,
         "model_audit": model_audit,
+        "model_driver": model_driver,
+        "same_model": same_model,
         "recent_diffs": [
             {"ws_ref": d.get("ws_ref"), "sonnet": d.get("sonnet"),
              "frontier": d.get("frontier"), "ts": d.get("ts")}
