@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -60,9 +61,15 @@ class InstallPlistCopyContractTests(unittest.TestCase):
         (home / ".claude").mkdir(parents=True, exist_ok=True)
         (home / ".claude" / "settings.json").write_text("{}\n")
 
+        # install.sh's [0] doctor preflight requires python>=3.11 on PATH (the
+        # pulse orchestrator needs it) and aborts --apply otherwise. The minimal
+        # PATH below would otherwise resolve to the system's 3.9, so prepend the
+        # dir of the interpreter running this test (a modern python, since pytest
+        # itself runs under it). The launchctl stub still shadows the real one.
+        py_bin = str(Path(sys.executable).parent)
         env = {
             "HOME": str(home),
-            "PATH": f"{stubbin}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": f"{stubbin}:{py_bin}:/usr/bin:/bin:/usr/sbin:/sbin",
         }
         proc = subprocess.run(
             ["bash", str(REPO / "install.sh"), "--apply"],

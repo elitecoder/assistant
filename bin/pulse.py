@@ -76,7 +76,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
-HOME = Path.home()
+HOME = Path(os.environ.get("HOME", str(Path.home())))
 
 # Semantic model tiers (Keel M8): callers name a TIER, not a provider id — the
 # resolver picks the id the live backend (Bedrock/Anthropic/Vertex) expects.
@@ -85,7 +85,9 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 from assistant import model_tiers  # noqa: E402
 
-ASSISTANT_DIR = HOME / ".assistant"
+# ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
+# rely on $HOME under macOS home sandboxing) points at the real tree.
+ASSISTANT_DIR = Path(os.environ.get("ASSISTANT_DIR", str(HOME / ".assistant")))
 INBOX_DIR = ASSISTANT_DIR / "inbox"
 PULSE_LOG = ASSISTANT_DIR / "assistant-pulse.log"
 HEARTBEAT_PATH = ASSISTANT_DIR / "heartbeat.json"

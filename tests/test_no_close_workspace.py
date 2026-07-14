@@ -44,6 +44,25 @@ class TestNoCloseWorkspace(unittest.TestCase):
         re.compile(r"'close-workspace'\s*,?\s*'--workspace'"),
     ]
 
+    # The single, deliberately-narrow exception (operator-approved 2026-07-06):
+    # the comms daemon reaps ITS OWN throwaway warm session. This is NOT the
+    # banned case — the 2026-05-26 incident was about automation closing
+    # workspaces that hold USER WORK. close_own_workspace() is title-guarded: it
+    # closes only an "assistant-comms (warm)" workspace, which user work never
+    # is. We allow this ONE exact invocation line and nothing else, so any other
+    # close-workspace call (even elsewhere in the same file) still fails.
+    ALLOWED_INVOCATION_SUBSTRINGS = {
+        'bin/comms_session.py': (
+            '[str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]',
+        ),
+    }
+
+    def _is_allowed(self, path: Path, line: str) -> bool:
+        for rel, allowed in self.ALLOWED_INVOCATION_SUBSTRINGS.items():
+            if path.as_posix().endswith(rel):
+                return any(a in line for a in allowed)
+        return False
+
     def _scan(self, paths: list[Path], allow_paths: set[Path]) -> list[tuple[Path, int, str, str]]:
         """Returns [(path, line_no, line, pattern)] of forbidden hits."""
         hits = []
@@ -80,6 +99,8 @@ class TestNoCloseWorkspace(unittest.TestCase):
                         continue
                     for pat in self.FORBIDDEN_INVOCATIONS:
                         if pat.search(line):
+                            if self._is_allowed(p, line):
+                                continue  # the one title-guarded self-close
                             hits.append((p, line_no, line.rstrip(), pat.pattern))
                 else:
                     # Inside a multi-line string — skip but watch for closing.
@@ -96,6 +117,20 @@ class TestNoCloseWorkspace(unittest.TestCase):
         if hits:
             msg = "\n".join(f"  {p.relative_to(REPO_ASSISTANT)}:{n}: [{pat}] {line}" for p, n, line, pat in hits)
             self.fail(f"forbidden close-workspace invocations found in production code:\n{msg}")
+
+    def test_allowlist_is_exact_not_a_file_wide_pass(self):
+        """The comms_session.py exception must be the EXACT guarded line, not a
+        blanket pass for the file. A different close-workspace invocation in the
+        same file must still be flagged."""
+        rogue = 'run_cmd([cmux, "close-workspace", "--workspace", some_other_ref])'
+        p = Path("/repo/bin/comms_session.py")  # path only used for suffix match
+        self.assertFalse(self._is_allowed(p, rogue),
+                         "a non-guarded close-workspace line must NOT be allowed")
+        # The real guarded line IS allowed.
+        guarded = '[str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]'
+        self.assertTrue(self._is_allowed(p, guarded))
+        # And the exception does not leak to other files.
+        self.assertFalse(self._is_allowed(Path("/repo/bin/pulse.py"), guarded))
 
     def test_cleanup_skill_does_not_call_close_workspace(self):
         if not REPO_CLEANUP_SKILL.exists():

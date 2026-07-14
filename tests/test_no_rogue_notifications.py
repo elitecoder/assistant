@@ -37,8 +37,21 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCAN_DIRS = ("bin", "src")
-# The one permitted push call site.
-ALLOWLIST = {Path("bin") / "interrupt-gate.py"}
+# Permitted push / send call sites (each consciously exempted, answered for here).
+#   interrupt-gate.py — the ONLY Notification-Center push chokepoint (Keel M3).
+#   slack-send.py / src/assistant/slack.py — the assistant-comms egress. NOT a
+#     rogue notification: comms is a confined 1:1 pull feed the operator created
+#     and can mute, and slack-send.py refuses (with NO API call) any target not
+#     in config.slack.allowed_targets — so the bot physically cannot post
+#     anywhere but the operator's own comms channel. Proven by
+#     test_slack_send.py::test_gate_blocks_non_allowlisted_target_no_http. This
+#     is a DIFFERENT action from the code-forbidden `slack.reply.send` (posting
+#     into a shared human channel on the operator's behalf), which stays banned.
+ALLOWLIST = {
+    Path("bin") / "interrupt-gate.py",
+    Path("bin") / "slack-send.py",
+    Path("src") / "assistant" / "slack.py",
+}
 
 # Case-insensitive so `OSASCRIPT` / `Chat.PostMessage` can't slip past. The
 # Slack send is matched in BOTH its Web-API (`chat.postMessage`) and Python-SDK

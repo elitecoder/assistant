@@ -6,25 +6,32 @@
     <string>com.assistant.assistant-page</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/render-assistant-page.py</string>
+        <string>__PYTHON__</string>
+        <string>__REPO__/bin/render-assistant-page.py</string>
     </array>
+    <!-- 30s to match world-scanner's cadence. The renderer's only input is
+         world.json, which the scanner rewrites every 30s; rendering at 15s
+         meant ~half the renders were byte-identical no-ops. The dashboard HTML
+         carries its own 15s <meta> auto-refresh, so the browser view stays as
+         fresh as before — this only removes the wasted server-side re-render.
+         (Not WatchPaths-driven: world.json is written non-atomically, so a
+         vnode event could fire mid-write; a cadence match is the safe fix.) -->
     <key>StartInterval</key>
-    <integer>15</integer>
+    <integer>30</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-page.launchd.out</string>
+    <string>__HOME__/.assistant/logs/assistant-page.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-page.launchd.err</string>
+    <string>__HOME__/.assistant/logs/assistant-page.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <string>__PATH__</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

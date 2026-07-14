@@ -14,8 +14,14 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/elitecoder/assistant.git"
-REPO_DIR="${HOME}/dev/assistant"
+# Overridable so an engineer with repo access can clone over their own SSH
+# identity (the repo is a private, personal-account repo — the public HTTPS
+# default only works if it's public or you're already authenticated). E.g.:
+#   ASSISTANT_REPO_URL=git@github.com:elitecoder/assistant.git bash install-bootstrap.sh
+# NOTE: do NOT hardcode the author's `git@github-personal:` SSH host-alias — it
+# is defined only in the author's ~/.ssh/config and resolves nowhere else.
+REPO_URL="${ASSISTANT_REPO_URL:-https://github.com/elitecoder/assistant.git}"
+REPO_DIR="${ASSISTANT_REPO_DIR:-${HOME}/dev/assistant}"
 
 info()  { printf '\033[0;34m==> %s\033[0m\n' "$*"; }
 ok()    { printf '\033[0;32m    ✓ %s\033[0m\n' "$*"; }
@@ -77,11 +83,16 @@ bash "${REPO_DIR}/install.sh" --apply
 cat <<'DONE'
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Assistant installed.
+  Assistant installed. install.sh (re)loaded the always-on set (pulse
+  orchestrator + dashboard/todo/watcher daemons) — see the runbook above.
 
-  One manual step remaining — load the pulse LaunchAgent so
-  the orchestrator starts on boot (and right now):
+  The OPT-IN features (cmux-watcher, Slack comms, slack-reactor) are
+  copied but not loaded — enable the ones you want per the runbook.
 
-    launchctl load -w ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
+  Verify core is up:
+    launchctl list | grep com.assistant
+
+  Full step-by-step guide, incl. Slack comms: ONBOARDING.md
+  Health check anytime:                       ./bin/assistant-doctor.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DONE
