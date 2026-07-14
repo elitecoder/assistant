@@ -19,18 +19,20 @@ triage's suggestion-only LLM):
   • GROUNDED. validate_narrative drops any recommendation whose key is not a
     decision id the brief actually surfaced — the LLM cannot invent an item, the
     same way validate_draft rejects an out-of-playbook step_class.
-  • FALLBACK on EVERY gate/failure. There is always a narrative: if the LLM is
-    disabled / auto-paused / over-ceiling / errors / returns junk, the
-    deterministic template summary + per-decision lines are returned instead,
-    marked source="template". The editorial LAYOUT therefore ships even with the
-    narrator never once run; only the VOICE waits on the LLM.
+  • FALLBACK on EVERY failure. There is always a narrative: if the LLM errors or
+    returns junk, the deterministic template summary + per-decision lines are
+    returned instead, marked source="template". The editorial LAYOUT therefore
+    ships even with the narrator never once run; only the VOICE waits on the LLM.
   • EPOCH-TIED. The sidecar carries the brief_epoch it summarized; the renderer
     only overlays a narrative whose brief_epoch matches the current brief, so a
     stale narrative can never misdescribe a rebuilt/changed queue.
 
-Shares the Strategist's active()/ceiling gate (lazy, fenced) so the cost
-governance rule "shed the Strategist family first, never the Observer" covers
-the narrator too. Pure stdlib; never closes a workspace.
+After the Droid GLM-5.2 migration the narrator is a lightweight, once-per-day
+call routed through llm_runner (Droid). It no longer rides the Strategist's
+cost ceiling — the $5/day ceiling was designed for the Strategist's expensive
+per-goal research calls, not a single morning summary. The narrator always
+proceeds to the LLM; a per-date stamp prevents re-fires, and the template floor
+covers any LLM failure. Pure stdlib; never closes a workspace.
 """
 from __future__ import annotations
 
@@ -133,41 +135,59 @@ def brief_facts(brief_doc: dict) -> dict:
 
 # ─── deterministic floor (no LLM; always available) ──────────────────────────
 
-def _plural(n: int, one: str, many: str | None = None) -> str:
-    return one if n == 1 else (many or one + "s")
-
 
 def deterministic_summary(brief_doc: dict) -> str:
     """The template summary sentence, from counts alone — the floor the whole
     editorial layout renders against before (and without) any LLM voice.
     Deterministic and grounded: every clause is a count the brief derived."""
     lanes = _lane_counts(brief_doc)
-    n_open = len(brief_doc.get("queue") or [])
     n_receipts = len(brief_doc.get("handled_overnight") or [])
     esc = lanes.get("escalate", 0)
+    staged = lanes.get("staged", 0)
+    digest_rows = (brief_doc.get("counts") or {}).get("digest_rows") or 0
     parts: list[str] = []
     if n_receipts:
         parts.append(f"{n_receipts} handled overnight")
-    if n_open:
-        tail = f" ({esc} escalate)" if esc else ""
-        parts.append(f"{n_open} {_plural(n_open, 'decision')} for you{tail}")
-    else:
-        parts.append("nothing needs a decision")
-    digest = (brief_doc.get("counts") or {}).get("digest_rows") or 0
-    if digest:
-        parts.append(f"{digest} FYI")
+    if esc:
+        parts.append(f"{esc} need your attention")
+    if staged:
+        parts.append(f"{staged} staged for review")
+    if digest_rows:
+        parts.append(f"{digest_rows} FYI")
+    if not parts:
+        parts.append("all clear — nothing needs a decision")
+    # Add cost signal when notable
+    cost = (brief_doc.get("health") or {}).get("cost") or {}
+    cpd = cost.get("cost_per_day_usd")
+    if isinstance(cpd, (int, float)) and cpd > 1.0:
+        parts.append(f"${cpd:.0f}/day")
     return " · ".join(parts) + "."
 
 
 def deterministic_recommendation(row: dict) -> str:
     """The template one-liner for a decision when the LLM did not phrase it.
-    Grounded in the row's mechanical fields (recommended default + urgency)."""
+    Grounded in the row's mechanical fields — tries to say something useful
+    about the kind of decision, not just 'Accept — today.'"""
     if not isinstance(row, dict):
         return ""
     label = row.get("default_label") or "Accept"
     urg = row.get("urgency")
+    kind = row.get("kind") or ""
+    title = row.get("title") or ""
+    ws_ref = row.get("ws_ref") or ""
     when = {"now": "today", "high": "today", "low": "when you get to it"}.get(
         urg if isinstance(urg, str) else "", "when you get to it")
+    # Build a more specific recommendation based on kind
+    if kind == "needs_input":
+        if ws_ref:
+            return f"Check {ws_ref} — agent is waiting for input."
+        return "Agent is waiting for your input — check the workspace."
+    if kind == "workspace_closed":
+        if ws_ref:
+            return f"Acknowledge closure of {ws_ref}."
+        return "Acknowledge workspace closure."
+    if "pr" in title.lower() or "merge" in title.lower():
+        return f"Review and {label.lower()} — {when}."
     return f"{label} — {when}."
 
 
@@ -230,19 +250,6 @@ def validate_narrative(raw, brief_doc: dict) -> dict | None:
 
 # ─── the entrypoint: build the narrative (floor + optional LLM overlay) ───────
 
-def _active(now: float, log) -> tuple[bool, str | None]:
-    """The Strategist's global gate (disabled / auto-paused / over-ceiling),
-    lazily imported and fully fenced: a broken/absent strategist module must
-    NEVER block the narrative — it just means no LLM voice (floor renders)."""
-    try:
-        from . import strategist  # noqa: PLC0415
-        return strategist.active(now)
-    except Exception as exc:  # noqa: BLE001 — never load-bearing
-        if log:
-            log.warning("narrator gate unavailable → template floor: %s", exc)
-        return False, "gate-unavailable"
-
-
 def build_narrative(brief_doc: dict, *, llm_narrate, now: float,
                     log=None) -> dict:
     """Build the narrative for one brief. ALWAYS returns a narrative dict.
@@ -250,21 +257,13 @@ def build_narrative(brief_doc: dict, *, llm_narrate, now: float,
     `llm_narrate(facts) -> dict | None` is INJECTED by the caller
     (bin/narrate-brief.py spawns the subprocess). This module never talks to an
     LLM. The floor (deterministic summary + per-decision template lines) is
-    computed FIRST and is the return value on every gate and every failure:
-      • Strategist family not active (disabled / auto-paused / over-ceiling) →
-        floor, source="template" (the ceiling path is the 'shed Strategist
-        first' cost rule reaching the narrator);
+    computed FIRST and is the return value on every failure:
       • llm_narrate raises / returns non-dict / fails validation → floor.
     On success the validated summary REPLACES the template summary and each
     validated recommendation REPLACES that decision's template line; decisions
     the LLM omitted keep their deterministic line. source="llm"."""
     log = log or logging.getLogger("narrator")
     floor = _floor(brief_doc)
-
-    ok, reason = _active(now, log)
-    if not ok:
-        floor["reason"] = reason
-        return floor
 
     try:
         raw = llm_narrate(brief_facts(brief_doc))

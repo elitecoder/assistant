@@ -1,0 +1,16 @@
+{
+  "schema": "world-event/1",
+  "id": "e3",
+  "ts": "2026-07-09T12:00:00Z",
+  "epoch": 1783000000,
+  "source": "cmux",
+  "kind": "workspace_closed",
+  "external_id": "cmux:workspace:5:closed:1783000000",
+  "actor": null,
+  "title": "dev closed (intentional)",
+  "snippet": "cause=intentional resume={}",  "url": null,
+  "refs": {
+    "ws_ref": "workspace:5"
+  },
+  "raw_path": null
+}

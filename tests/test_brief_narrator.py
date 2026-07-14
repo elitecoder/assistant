@@ -9,7 +9,7 @@ NEVER compromise the brief's purity or invent facts:
     not a narrative sidecar exists (the narrative lives in a SEPARATE sidecar);
   • GROUNDING: validate_narrative drops any recommendation keyed to a decision id
     the brief never surfaced (the structural M7 twin of M6's playbook-enum guard);
-  • FALLBACK: gate closed / raising / malformed LLM → deterministic template
+  • FALLBACK: raising / malformed LLM → deterministic template
     floor, always a narrative, never a crash;
   • the narrative is EPOCH-TIED: a stale sidecar (brief rebuilt) is ignored;
   • TEXT ONLY: the narrative dict carries no field that can act;
@@ -31,7 +31,7 @@ BIN = REPO / "bin"
 if str(SRC) not in os.sys.path:
     os.sys.path.insert(0, str(SRC))
 
-from assistant import brief, narrator, strategist  # noqa: E402
+from assistant import brief, narrator  # noqa: E402
 
 
 def _load_cli():
@@ -80,12 +80,8 @@ class _Base(unittest.TestCase):
         os.environ["HOME"] = str(self._tmp)
         self.now = time.time()
         self.doc = _brief_doc(self.now)
-        # Default: the Strategist gate is OPEN unless a test closes it.
-        self._real_active = strategist.active
-        strategist.active = lambda now, records=None: (True, None)
 
     def tearDown(self):
-        strategist.active = self._real_active
         if self._old_home is not None:
             os.environ["HOME"] = self._old_home
         self._tmp_obj.cleanup()
@@ -98,7 +94,8 @@ class GroundingTests(_Base):
             self.doc, llm_narrate=lambda facts: None, now=self.now)
         self.assertEqual(narr["source"], "template")
         self.assertIn("1 handled overnight", narr["summary"])
-        self.assertIn("2 decisions for you", narr["summary"])
+        self.assertIn("1 need your attention", narr["summary"])
+        self.assertIn("1 staged for review", narr["summary"])
         self.assertEqual(set(narr["recommendations"]), {"dec-11", "dec-22"})
 
     def test_facts_expose_only_surfaced_ids(self):
@@ -149,14 +146,17 @@ class GroundingTests(_Base):
 
 
 class FallbackTests(_Base):
-    def test_gate_closed_returns_template_floor(self):
-        strategist.active = lambda now, records=None: (False, "ceiling-shed")
+    def test_narrator_always_calls_llm(self):
+        """After the Droid migration the narrator has NO cost gate — it always
+        calls the LLM. The per-date stamp (not a cost gate) prevents re-fires."""
         called = []
         narr = narrator.build_narrative(
             self.doc, llm_narrate=lambda f: called.append(1) or {}, now=self.now)
+        # LLM was called
+        self.assertEqual(called, [1])
+        # LLM returned no summary → template floor with llm-invalid reason
         self.assertEqual(narr["source"], "template")
-        self.assertEqual(narr["reason"], "ceiling-shed")
-        self.assertEqual(called, [])  # gate closed BEFORE any spend
+        self.assertEqual(narr["reason"], "llm-invalid")
 
     def test_raising_llm_falls_back(self):
         def boom(facts):
@@ -172,14 +172,84 @@ class FallbackTests(_Base):
         self.assertEqual(narr["source"], "template")
         self.assertEqual(narr["reason"], "llm-invalid")
 
-    def test_gate_unavailable_is_not_load_bearing(self):
-        def broken_active(now, records=None):
-            raise RuntimeError("strategist import broke")
-        strategist.active = broken_active
-        narr = narrator.build_narrative(
-            self.doc, llm_narrate=lambda f: {"summary": "x"}, now=self.now)
-        self.assertEqual(narr["source"], "template")
-        self.assertEqual(narr["reason"], "gate-unavailable")
+    def test_narrator_does_not_import_strategist(self):
+        """The narrator no longer imports or calls strategist.active. Verify the
+        narrator module has no active code reference to strategist (not even
+        a lazy import inside a function)."""
+        import inspect
+        src = inspect.getsource(narrator)
+        # No import statement and no function call referencing strategist
+        self.assertNotIn("import strategist", src)
+        self.assertNotIn("strategist.active", src)
+        self.assertNotIn("from . import strategist", src)
+
+
+class TemplateEdgeCaseTests(_Base):
+    """Coverage for the improved deterministic_summary and recommendation."""
+
+    def test_empty_queue_all_clear(self):
+        doc = dict(self.doc, queue=[], counts={
+            "open_decisions": 0, "by_lane": {},
+            "handled_overnight": 0, "digest_rows": 0})
+        doc["handled_overnight"] = []
+        doc["health"] = {"cost": {"cost_per_day_usd": 0.5}}
+        summary = narrator.deterministic_summary(doc)
+        self.assertIn("all clear", summary)
+
+    def test_cost_shown_when_over_one_dollar(self):
+        summary = narrator.deterministic_summary(self.doc)
+        self.assertIn("$4/day", summary)
+
+    def test_cost_hidden_when_under_one_dollar(self):
+        doc = dict(self.doc)
+        doc["health"] = {"cost": {"cost_per_day_usd": 0.5}}
+        summary = narrator.deterministic_summary(doc)
+        self.assertNotIn("$", summary)
+
+    def test_digest_rows_in_summary(self):
+        doc = dict(self.doc)
+        doc["counts"] = dict(self.doc["counts"], digest_rows=5)
+        summary = narrator.deterministic_summary(doc)
+        self.assertIn("5 FYI", summary)
+
+    def test_recommendation_needs_input_with_ws_ref(self):
+        row = {"kind": "needs_input", "ws_ref": "workspace:42",
+               "urgency": "now", "default_label": "Accept"}
+        rec = narrator.deterministic_recommendation(row)
+        self.assertIn("workspace:42", rec)
+        self.assertIn("waiting for input", rec)
+
+    def test_recommendation_needs_input_without_ws_ref(self):
+        row = {"kind": "needs_input", "ws_ref": "",
+               "urgency": "now", "default_label": "Accept"}
+        rec = narrator.deterministic_recommendation(row)
+        self.assertIn("waiting for your input", rec)
+
+    def test_recommendation_workspace_closed_with_ws_ref(self):
+        row = {"kind": "workspace_closed", "ws_ref": "workspace:7",
+               "urgency": "low", "default_label": "Accept"}
+        rec = narrator.deterministic_recommendation(row)
+        self.assertIn("workspace:7", rec)
+        self.assertIn("closure", rec)
+
+    def test_recommendation_workspace_closed_without_ws_ref(self):
+        row = {"kind": "workspace_closed", "ws_ref": "",
+               "urgency": "low", "default_label": "Accept"}
+        rec = narrator.deterministic_recommendation(row)
+        self.assertIn("closure", rec)
+        self.assertNotIn("of .", rec)
+
+    def test_recommendation_pr_in_title(self):
+        row = {"kind": "", "title": "Merge PR #42", "ws_ref": "",
+               "urgency": "now", "default_label": "Accept: merge"}
+        rec = narrator.deterministic_recommendation(row)
+        self.assertIn("review", rec.lower())
+
+    def test_recommendation_generic_fallback(self):
+        row = {"kind": "", "title": "Some task", "ws_ref": "",
+               "urgency": "low", "default_label": "Accept"}
+        rec = narrator.deterministic_recommendation(row)
+        self.assertIn("Accept", rec)
 
 
 class TextOnlyTests(_Base):

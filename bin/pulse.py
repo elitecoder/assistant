@@ -734,11 +734,12 @@ def run_narrator_step(pulse_idx: int) -> None:
     (brief-<date>.narrative.json): a summary sentence + one recommendation per
     decision. The brief file itself is NEVER touched — it stays a pure
     derivation; a missing/failed/stale narrative just falls back to the
-    renderer's deterministic template. All governance (the Strategist's
-    active()/ceiling/auto-pause gate, once-per-day stamp, metering as
-    caller='narrator') lives in the pure module + the caller. Imported lazily and
-    fully fenced, same contract as the brief: a broken narrator costs one
-    morning's VOICE, never a pulse (and never the brief itself)."""
+    renderer's deterministic template. Governance (once-per-day stamp, metering
+    as caller='narrator') lives in the pure module + the caller. After the Droid
+    GLM-5.2 migration the narrator always proceeds to the LLM call — no cost
+    gate. Imported lazily and fully fenced, same contract as the brief: a broken
+    narrator costs one morning's VOICE, never a pulse (and never the brief
+    itself)."""
     try:
         if str(BIN) not in sys.path:
             sys.path.insert(0, str(BIN))
@@ -1172,16 +1173,12 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
     provider = llm_runner.select_provider(
         route, [str(c.get("ws_ref") or "") for c in ctxs])
     selected_model = route.droid_model if provider == "droid" else model
-    if label == "audit":
-        # The shadow-audit's entire purpose (Keel M8) is a DIFFERENT, stronger
-        # model second-guessing the driver. If routing made the audit use the
-        # same provider+model as the driver (e.g. both routed to droid glm-5.2),
-        # it degrades into self-agreement — ~100% by construction — while the
-        # dashboard still renders a green "frontier audit" chip. Pin the audit to
-        # the frontier claude model so it stays a genuinely independent judge
-        # regardless of how the driver is routed.
-        provider = "claude"
-        selected_model = model
+    # When the driver is Claude (Sonnet), the `model` arg passed by the caller
+    # is OBSERVER_AUDIT_MODEL (Opus) — a stronger independent model for a
+    # genuine second opinion. When the driver is Droid (GLM-5.2), the audit
+    # also uses GLM-5.2 via the route config — the user's explicit decision
+    # post-migration, since paying for Claude Opus to audit a Droid fleet is
+    # not worth the cost.
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=selected_model,
         run_dir=run_dir, timeout=OBSERVER_TIMEOUT_SEC, run=run,
@@ -1415,6 +1412,10 @@ def run_observer_audit(ctxs_to_observe: list[dict],
                 "disagreements": len(diff_ws),
                 "provider_audit": audit_provider,
                 "model_audit": audit_model,
+                "model_driver": next(
+                    (r.get("model") for r in (
+                        driver_routes_by_ws or {}).values()
+                    if isinstance(r, dict)), None),
                 "reason": None if ok else "frontier produced no verdicts",
             }) + "\n")
     except OSError as e:

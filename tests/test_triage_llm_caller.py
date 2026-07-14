@@ -377,8 +377,8 @@ class TriageCallerTests(unittest.TestCase):
         self.assertIn("--tools", commands[0])
         self.assertNotIn("--dangerously-skip-permissions", commands[0])
 
-    def test_zero_percent_canary_routes_to_claude(self):
-        self._write_route(provider="canary", droid_canary_percent=0,
+    def test_claude_provider_routes_to_claude(self):
+        self._write_route(provider="claude",
                           droid_bin=self._droid_bin)
         commands = []
 

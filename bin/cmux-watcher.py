@@ -78,8 +78,6 @@ SCREEN_LINES = 50
 NEEDS_INPUT_EVENTS = {
     "agent.hook.Notification",
     "agent.hook.AskUserQuestion",
-    # Feed events — fired when the agent presents a multi-choice dialog
-    "feed.item.received",
 }
 TURN_END_EVENTS = {"agent.hook.Stop"}
 
@@ -506,8 +504,8 @@ def stream_events(stop_flag=None, on_proc=None):
     while not (stop_flag and stop_flag()):
         try:
             proc = subprocess.Popen(
-                [CMUX_BIN, "events", "--category", "agent", "--category", "feed",
-                 "--reconnect", "--no-heartbeat"],
+                [CMUX_BIN, "events", "--category", "agent", "--reconnect",
+                 "--no-heartbeat"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             )
         except FileNotFoundError:

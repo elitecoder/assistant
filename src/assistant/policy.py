@@ -173,7 +173,34 @@ def ensure_policies_installed() -> bool:
     live_ids = {r.get("id") for r in live["policies"] if isinstance(r, dict)}
     added = [r for r in boot["policies"]
              if isinstance(r, dict) and r.get("id") not in live_ids]
-    live["policies"] = live["policies"] + added
+    # Insert added rules at their bootstrap-relative position so first-match-wins
+    # ordering is preserved. For each added rule, find the next bootstrap rule
+    # that already exists in the live file and insert before it. Rules with no
+    # subsequent live counterpart are appended at the end. Existing live rules
+    # (including user rules) keep their relative positions.
+    boot_ids = [r.get("id") for r in boot["policies"]
+                if isinstance(r, dict)]
+    new_policies: list[dict] = list(live["policies"])
+    for added_rule in added:
+        aid = added_rule.get("id")
+        # Find the next bootstrap rule after this one that exists in live
+        insert_before_id = None
+        seen = False
+        for bid in boot_ids:
+            if bid == aid:
+                seen = True
+                continue
+            if seen and bid in live_ids:
+                insert_before_id = bid
+                break
+        if insert_before_id is not None:
+            idx = next((i for i, r in enumerate(new_policies)
+                        if isinstance(r, dict) and r.get("id") == insert_before_id),
+                       len(new_policies))
+            new_policies.insert(idx, added_rule)
+        else:
+            new_policies.append(added_rule)
+    live["policies"] = new_policies
     live["version"] = boot_version
     _atomic_write_policies(dst, live)
     now = datetime.now(timezone.utc).timestamp()
