@@ -182,7 +182,9 @@ class NoRogueNotificationsTest(unittest.TestCase):
 
         Counts call-argument occurrences via AST, not raw string matches, so the
         honest 'the warm session can bypass this gate' docstring in slack-send.py
-        doesn't inflate the count."""
+        doesn't inflate the count. Both positional AND keyword args are scanned,
+        so a `_api_post(t, method="chat.postMessage", …)` keyword-form egress
+        can't slip the pin."""
         for rel, expected in EGRESS_CALL_SITES.items():
             text = (REPO / rel).read_text()
             tree = ast.parse(text)
@@ -190,7 +192,8 @@ class NoRogueNotificationsTest(unittest.TestCase):
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
-                for arg in node.args:
+                arg_nodes = list(node.args) + [kw.value for kw in node.keywords]
+                for arg in arg_nodes:
                     folded = _fold_str(arg)
                     if folded and PUSH_PATTERN.search(folded):
                         found += 1

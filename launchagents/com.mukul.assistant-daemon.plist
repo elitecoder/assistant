@@ -13,23 +13,32 @@
   THIS PLIST IS NOT LOADED BY THE INSTALLER. The migration is additive — the
   existing pulse agent keeps running until you switch over by hand.
 
-  ⚠ IMPORTANT — the single daemon's CommsSubsystem SUBSUMES the standalone
-  com.assistant.assistant-comms daemon (both broadcast the actions-ledger and
-  page on a stale heartbeat to the SAME Slack channel, with SEPARATE cursors and
-  no shared lock). Running both means every ledger entry pings you twice and
-  every stale-heartbeat pages you twice. So when activating this daemon you MUST
-  also unload assistant-comms.
+  ⚠ COMMS IS NOT FULLY MIGRATED HERE. This daemon's CommsSubsystem carries only
+  TWO of the five comms loops — the mechanical ledger broadcast + heartbeat pager
+  — and auto-wires whenever Slack is configured (token + allowlisted target). It
+  does NOT carry the standalone com.assistant.assistant-comms daemon's other
+  three loops: inbound warm-session replies, lesson-proposal delivery, and
+  cmux-watcher inbox pings. So:
+    • DO NOT unload assistant-comms when adopting this daemon — doing so would
+      silently kill inbound replies (you text the channel, nothing answers),
+      proposal delivery, and inbox pings.
+    • BUT if BOTH run on a Slack-configured box, they BOTH broadcast the ledger
+      and page on a stale heartbeat to the SAME channel with SEPARATE cursors and
+      no shared lock → every ledger entry pings you twice, every stale heartbeat
+      pages twice.
+  Net: this single-daemon migration is NOT recommended on a box running
+  assistant-comms until CommsSubsystem carries all five loops (and a shared
+  cursor/lock dedups ledger+heartbeat). On such a box, stay on the split model
+  (assistant-pulse + assistant-comms). Adopt this daemon only on boxes WITHOUT
+  Slack comms, where CommsSubsystem stays dormant (has_slack is false).
 
-  To activate (hand off pulse + comms to the single daemon):
+  To activate on a NON-comms box (hand off pulse to the single daemon):
     launchctl unload ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
-    launchctl unload ~/Library/LaunchAgents/com.assistant.assistant-comms.plist  2>/dev/null || true
     launchctl load   ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
 
-  To roll back (restore the split pulse + standalone comms):
+  To roll back (restore the split pulse):
     launchctl unload ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
     launchctl load   ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
-    # and, if you were running comms standalone before:
-    # launchctl load ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
 -->
 <plist version="1.0">
 <dict>
