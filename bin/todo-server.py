@@ -318,6 +318,20 @@ def _outbound_dispatch_mod():
     return _OUTBOUND_DISPATCH_MOD
 
 
+def _is_outbound_class(action_class):
+    """True iff the class is one the outbound action-class registry knows (i.e.
+    a real outbound action). Internal goal-step classes (research, doc-draft,
+    pr-scaffold, …) live in a DIFFERENT namespace and are NOT outbound — they
+    must accept normally, never route through the outbound dispatcher."""
+    try:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        from assistant import action_classes  # noqa: PLC0415
+        return action_classes.resolve_gate(action_class) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _run_outbound_dispatch(dec_id, action_class):
     """Invoke the gated dispatcher for an accepted decision and return a short
     human-facing note. The action_class comes from the DECISION RECORD (never
@@ -372,12 +386,17 @@ def decision_act(dec_id, action, params, note, is_human=False):
     teaches the policy engine); the proposal is best-effort — the decision
     transition is the authoritative outcome either way.
 
-    Keel M7.h: accepting a decision that carries an OUTBOUND action (recommended.
-    class) additionally invokes the gated dispatcher. That accept requires the
-    X-Assistant-Human assertion (is_human) — an automated localhost caller can
-    flip a non-outbound decision but CANNOT trigger an outbound draft/send; only
-    the human dashboard can. The action class is read from the decision record,
-    never the client."""
+    Keel M7.h: approving (accept OR edit) a decision that carries an OUTBOUND
+    action (a class the action-class registry knows — NOT an internal goal-step
+    class) additionally invokes the gated dispatcher. That approval requires the
+    X-Assistant-Human assertion (is_human): the dashboard sends it and honest
+    automation does not. NOTE this header is a soft, forgeable convention — a
+    deliberate/injected same-user local caller can set it (same-user processes
+    are trusted in this project's model, and can call dispatch() directly
+    anyway). The REAL outbound safety is the dispatcher's registry + code-
+    forbidden-send chokepoint, which holds regardless of this header; the header
+    only keeps ordinary automation from consuming/dispatching a human's decision.
+    The action class is read from the decision record, never the client."""
     status = DECISION_ACTIONS.get(action)
     if status is None:
         return False, f"unknown action {action!r} (want one of {sorted(DECISION_ACTIONS)})"
@@ -393,20 +412,26 @@ def decision_act(dec_id, action, params, note, is_human=False):
     except Exception as e:
         return False, f"decision store unavailable: {e}"
 
-    # For an accept, peek the CURRENT record to see whether it carries an
-    # outbound action; if so, the accept requires the human assertion BEFORE we
-    # transition (so automation can't consume-then-block the decision).
-    dispatch_class = None
-    if action == "accept":
+    # For an approval (accept OR edit), peek the CURRENT record: if it carries an
+    # OUTBOUND action class (registry-known — NOT an internal goal-step class),
+    # the approval requires the human assertion BEFORE we transition (so
+    # automation can't consume-then-block the decision) and triggers the
+    # dispatcher afterward. Both accept and edit are gated because both produce a
+    # dispatch-authorized status (accepted/edited).
+    outbound_class = None
+    if action in ("accept", "edit"):
         try:
             pre = decisions.fold(decisions.read_log()).get(dec_id)
         except Exception:  # noqa: BLE001
             pre = None
         reco = pre.get("recommended") if isinstance(pre, dict) else None
-        dispatch_class = reco.get("class") if isinstance(reco, dict) else None
-        if dispatch_class and not is_human:
-            return False, ("accepting an outbound action requires the dashboard "
-                           "human confirmation (X-Assistant-Human) — refused")
+        cls = reco.get("class") if isinstance(reco, dict) else None
+        if cls and _is_outbound_class(cls):
+            outbound_class = cls
+            if not is_human:
+                return False, ("approving an outbound action requires the "
+                               "dashboard human confirmation "
+                               "(X-Assistant-Human) — refused")
 
     try:
         rec, err = decisions.transition(
@@ -429,8 +454,8 @@ def decision_act(dec_id, action, params, note, is_human=False):
         except Exception as e:
             proposal_note = f"; policy proposal failed: {e}"
     dispatch_note = ""
-    if action == "accept" and dispatch_class:
-        dispatch_note = _run_outbound_dispatch(dec_id, dispatch_class)
+    if outbound_class:
+        dispatch_note = _run_outbound_dispatch(dec_id, outbound_class)
     rerender_dashboard()
     return True, f"{dec_id} -> {rec['status']}{proposal_note}{dispatch_note}"
 

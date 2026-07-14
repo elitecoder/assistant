@@ -231,6 +231,41 @@ class DecisionRouteTests(unittest.TestCase):
         self.assertNotIn("drafted", body)
         self.assertFalse((self.home / ".assistant/outbound-ledger.jsonl").exists())
 
+    def test_goal_step_class_is_not_outbound(self):
+        # M1 regression: a decision carrying an INTERNAL goal-step class
+        # (research/doc-draft/…) is NOT an outbound action — it must accept with
+        # no human assertion, trigger no dispatch, and write NO outbound row
+        # (the class lives in a different namespace than the outbound registry).
+        rec, _ = decisions.open_decision(
+            event=make_event(3), lane="staged", policy_id="r1",
+            action={"class": "research"}, now=NOW)
+        code, body = self._request(f"/decision/act/{rec['id']}?action=accept")
+        self.assertEqual(code, 200)   # no human header required
+        self.assertNotIn("drafted", body)
+        self.assertNotIn("outbound", body)
+        self.assertEqual(
+            decisions.fold(decisions.read_log())[rec["id"]]["status"], "accepted")
+        self.assertFalse((self.home / ".assistant/outbound-ledger.jsonl").exists())
+
+    def test_edit_of_outbound_action_is_human_gated_and_dispatches(self):
+        # Both approvals (accept AND edit) are human-gated + dispatch, because
+        # both yield a dispatch-authorized status (accepted/edited).
+        rec = self._open_dispatchable()
+        # edit without the human assertion → refused, decision stays open
+        code, _ = self._request(f"/decision/act/{rec['id']}?action=edit")
+        self.assertEqual(code, 400)
+        self.assertEqual(
+            decisions.fold(decisions.read_log())[rec["id"]]["status"], "open")
+        # with the assertion + context → edits AND dispatches
+        from assistant import strategist  # noqa: PLC0415
+        strategist.write_context(rec["id"], "revised reply", NOW)
+        code, body = self._request(
+            f"/decision/act/{rec['id']}?action=edit", human=True)
+        self.assertEqual(code, 200)
+        self.assertIn("drafted", body)
+        self.assertEqual(
+            decisions.fold(decisions.read_log())[rec["id"]]["status"], "edited")
+
     def test_act_missing_decision_is_404(self):
         code, body = self._request(
             "/decision/act/dec-0123456789abcdef?action=accept")
