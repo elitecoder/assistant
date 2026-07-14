@@ -90,6 +90,7 @@ DECISION_ACTIONS = {"accept": "accepted", "edit": "edited",
 # /brief/seen date param: strict ISO date only.
 BRIEF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+BIN_DIR = Path(__file__).resolve().parent
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 HOME = Path(os.path.expanduser("~"))
@@ -298,6 +299,61 @@ def _decisions_mod():
     return decisions
 
 
+_OUTBOUND_DISPATCH_MOD = None
+
+
+def _outbound_dispatch_mod():
+    """Load bin/outbound-dispatch.py (a hyphenated script) in-process, cached —
+    same importlib idiom pulse.py uses for narrate-brief.py. We call its
+    dispatch() directly rather than spawning a subprocess: it's a fast local
+    op, and importing lets errors propagate like the other in-process modules."""
+    global _OUTBOUND_DISPATCH_MOD
+    if _OUTBOUND_DISPATCH_MOD is None:
+        import importlib.util  # noqa: PLC0415
+        spec = importlib.util.spec_from_file_location(
+            "outbound_dispatch", str(BIN_DIR / "outbound-dispatch.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _OUTBOUND_DISPATCH_MOD = mod
+    return _OUTBOUND_DISPATCH_MOD
+
+
+def _is_outbound_class(action_class):
+    """True iff the class is one the outbound action-class registry knows (i.e.
+    a real outbound action). Internal goal-step classes (research, doc-draft,
+    pr-scaffold, …) live in a DIFFERENT namespace and are NOT outbound — they
+    must accept normally, never route through the outbound dispatcher."""
+    try:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        from assistant import action_classes  # noqa: PLC0415
+        return action_classes.resolve_gate(action_class) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _run_outbound_dispatch(dec_id, action_class):
+    """Invoke the gated dispatcher for an accepted decision and return a short
+    human-facing note. The action_class comes from the DECISION RECORD (never
+    the client) — the dispatcher re-binds it to recommended.class and re-checks
+    the accepted status, so this wiring cannot smuggle a class the human didn't
+    accept. Never raises into the route: a dispatch failure is surfaced, the
+    accept transition already stands."""
+    try:
+        disp = _outbound_dispatch_mod()
+        out, _code = disp.dispatch(dec_id, action_class)
+    except Exception as e:  # noqa: BLE001 — dispatch must not break the accept
+        return f" · outbound dispatch error: {e}"
+    outcome = out.get("outcome")
+    if outcome == "drafted":
+        return f" · drafted: {out.get('draft_path')}"
+    if outcome == "awaiting_draft_body":
+        return " · draft pending (no research context yet)"
+    if outcome == "unimplemented":
+        return f" · {action_class}: outbound handler pending"
+    return f" · outbound {outcome}: {out.get('reason', '')}"
+
+
 def decision_list():
     """The materialized queue view: open decisions (queue order) + totals."""
     try:
@@ -322,13 +378,25 @@ def decision_list():
     }, ensure_ascii=False)
 
 
-def decision_act(dec_id, action, params, note):
+def decision_act(dec_id, action, params, note, is_human=False):
     """One-tap transition on a decision. Appends a new record via
     decisions.transition (append-only log, flock'd, ledgered) — this server
     never rewrites decision state directly. wrong_lane additionally files a
     confirmation-gated type=policy proposal (design section 5: the tap
     teaches the policy engine); the proposal is best-effort — the decision
-    transition is the authoritative outcome either way."""
+    transition is the authoritative outcome either way.
+
+    Keel M7.h: approving (accept OR edit) a decision that carries an OUTBOUND
+    action (a class the action-class registry knows — NOT an internal goal-step
+    class) additionally invokes the gated dispatcher. That approval requires the
+    X-Assistant-Human assertion (is_human): the dashboard sends it and honest
+    automation does not. NOTE this header is a soft, forgeable convention — a
+    deliberate/injected same-user local caller can set it (same-user processes
+    are trusted in this project's model, and can call dispatch() directly
+    anyway). The REAL outbound safety is the dispatcher's registry + code-
+    forbidden-send chokepoint, which holds regardless of this header; the header
+    only keeps ordinary automation from consuming/dispatching a human's decision.
+    The action class is read from the decision record, never the client."""
     status = DECISION_ACTIONS.get(action)
     if status is None:
         return False, f"unknown action {action!r} (want one of {sorted(DECISION_ACTIONS)})"
@@ -341,6 +409,31 @@ def decision_act(dec_id, action, params, note):
         wake_ts = time.time() + max(1, minutes) * 60
     try:
         decisions = _decisions_mod()
+    except Exception as e:
+        return False, f"decision store unavailable: {e}"
+
+    # For an approval (accept OR edit), peek the CURRENT record: if it carries an
+    # OUTBOUND action class (registry-known — NOT an internal goal-step class),
+    # the approval requires the human assertion BEFORE we transition (so
+    # automation can't consume-then-block the decision) and triggers the
+    # dispatcher afterward. Both accept and edit are gated because both produce a
+    # dispatch-authorized status (accepted/edited).
+    outbound_class = None
+    if action in ("accept", "edit"):
+        try:
+            pre = decisions.fold(decisions.read_log()).get(dec_id)
+        except Exception:  # noqa: BLE001
+            pre = None
+        reco = pre.get("recommended") if isinstance(pre, dict) else None
+        cls = reco.get("class") if isinstance(reco, dict) else None
+        if cls and _is_outbound_class(cls):
+            outbound_class = cls
+            if not is_human:
+                return False, ("approving an outbound action requires the "
+                               "dashboard human confirmation "
+                               "(X-Assistant-Human) — refused")
+
+    try:
         rec, err = decisions.transition(
             dec_id, status, via=f"todo-server:{action}",
             note=(note or "").strip() or None, wake_ts=wake_ts)
@@ -360,8 +453,11 @@ def decision_act(dec_id, action, params, note):
                              else "; policy proposal already pending")
         except Exception as e:
             proposal_note = f"; policy proposal failed: {e}"
+    dispatch_note = ""
+    if outbound_class:
+        dispatch_note = _run_outbound_dispatch(dec_id, outbound_class)
     rerender_dashboard()
-    return True, f"{dec_id} -> {rec['status']}{proposal_note}"
+    return True, f"{dec_id} -> {rec['status']}{proposal_note}{dispatch_note}"
 
 
 def _goals_mod():
@@ -684,7 +780,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             action = (qs.get("action", [""])[0]) or ""
             note = self._read_body()
-            ok, msg = decision_act(dec_id, action, qs, note)
+            ok, msg = decision_act(dec_id, action, qs, note,
+                                   is_human=self._is_human())
             self._reply(200 if ok else (404 if "not found" in msg else 400), msg)
             return
 

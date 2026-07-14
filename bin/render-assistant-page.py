@@ -2933,11 +2933,18 @@ async function handleDecisionActClick(ev) {
   const originalText = btn.textContent;
   btn.classList.add('busy');
   try {
-    const r = await fetch(url, {method: 'POST'});
+    // X-Assistant-Human asserts this is the human dashboard: the server requires
+    // it to approve an OUTBOUND action (Keel M7.h). It's a soft convention that
+    // keeps ordinary automation from consuming/dispatching a human's decision —
+    // NOT a hard boundary (a deliberate local caller can forge it); real outbound
+    // safety is the dispatcher's registry + forbidden-send chokepoint.
+    const r = await fetch(url, {method: 'POST', headers: {'X-Assistant-Human': '1'}});
     const t = await r.text();
     if (r.ok) {
       btn.classList.remove('busy'); btn.classList.add('ok');
       btn.textContent = '✓ ' + originalText;
+      // Surface the server note (e.g. "drafted: <path>") on hover.
+      if (t) { btn.title = t; }
       const row = btn.closest('[data-dec-row]');
       if (row) { row.style.opacity = '0.35'; row.style.transition = 'opacity 0.5s'; }
     } else {
