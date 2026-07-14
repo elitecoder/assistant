@@ -52,6 +52,39 @@ def test_slack_send_gate_blocks_unlisted():
         slack.send("hi", "U999", token="t", allowed={"U123"}, http=http)
 
 
+def test_every_slack_send_caller_passes_config_allowlist():
+    """slack.send() gates against the caller-supplied `allowed` set, so a caller
+    that passes a hand-built set (e.g. allowed={target}) would tautologically
+    defeat the gate. Pin every in-package call site to pass the config's own
+    allowlist — allowed=self.config.allowed_targets (or config.allowed_targets)
+    — so the gate can't be neutered by a future caller. AST-checked so a literal
+    set or a renamed source fails loudly."""
+    import ast
+
+    repo = Path(__file__).resolve().parent.parent
+    callers = 0
+    for py in (repo / "src").rglob("*.py"):
+        tree = ast.parse(py.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "send"
+                    and isinstance(fn.value, ast.Name) and fn.value.id == "slack"):
+                continue
+            callers += 1
+            kw = {k.arg: k.value for k in node.keywords}
+            allowed = kw.get("allowed")
+            # must be `<something>.allowed_targets` attribute access, NOT a
+            # literal set/list/dict/call.
+            ok = isinstance(allowed, ast.Attribute) and allowed.attr == "allowed_targets"
+            assert ok, (
+                f"{py.relative_to(repo)}:{getattr(node,'lineno','?')}: slack.send() "
+                f"must pass allowed=<config>.allowed_targets, not a hand-built set "
+                f"(got {ast.dump(allowed) if allowed else 'no allowed kwarg'})")
+    assert callers >= 2, f"expected the 2 known slack.send callers, found {callers}"
+
+
 def test_slack_send_resolves_user_then_posts():
     calls = []
 

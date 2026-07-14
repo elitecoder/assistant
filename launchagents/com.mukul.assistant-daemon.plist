@@ -5,20 +5,31 @@
 
   Collapses the com.assistant.assistant-pulse LaunchAgent (a 5-min timer) into
   ONE process: `python -m assistant`, run via bin/assistant-daemon.py. The
-  daemon owns the pulse loop, the daemon heartbeat, and tool dispatch — each in
-  its own thread of one process. No StartInterval: the daemon does not tick, it
-  runs; KeepAlive relaunches it if it ever exits.
+  daemon owns the pulse loop, the daemon heartbeat, tool dispatch, AND (when
+  Slack is configured) the CommsSubsystem — each in its own thread of one
+  process. No StartInterval: the daemon does not tick, it runs; KeepAlive
+  relaunches it if it ever exits.
 
   THIS PLIST IS NOT LOADED BY THE INSTALLER. The migration is additive — the
   existing pulse agent keeps running until you switch over by hand.
 
-  To activate (hand off pulse to the single daemon):
+  ⚠ IMPORTANT — the single daemon's CommsSubsystem SUBSUMES the standalone
+  com.assistant.assistant-comms daemon (both broadcast the actions-ledger and
+  page on a stale heartbeat to the SAME Slack channel, with SEPARATE cursors and
+  no shared lock). Running both means every ledger entry pings you twice and
+  every stale-heartbeat pages you twice. So when activating this daemon you MUST
+  also unload assistant-comms.
+
+  To activate (hand off pulse + comms to the single daemon):
     launchctl unload ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
+    launchctl unload ~/Library/LaunchAgents/com.assistant.assistant-comms.plist  2>/dev/null || true
     launchctl load   ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
 
-  To roll back:
+  To roll back (restore the split pulse + standalone comms):
     launchctl unload ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
     launchctl load   ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
+    # and, if you were running comms standalone before:
+    # launchctl load ~/Library/LaunchAgents/com.assistant.assistant-comms.plist
 -->
 <plist version="1.0">
 <dict>

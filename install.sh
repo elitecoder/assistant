@@ -672,15 +672,13 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     fi
 
     # Substitute the four machine tokens with this box's real values (the
-    # __TOKEN__ template scheme). ALSO run the legacy /Users/<user>/ → $HOME
-    # substitution for any plist still on the old placeholder (machine-config-sync
-    # predates tokenization). A surviving __TOKEN__ is a loud plutil/launchd
-    # failure, not a silent wrong-path — the opposite of the old no-op sed.
+    # __TOKEN__ template scheme — every committed plist uses it). A surviving
+    # __TOKEN__ is a loud plutil/launchd failure, not a silent wrong-path — the
+    # opposite of the old /Users/<user>/ no-op sed this replaced.
     sed -e "s|__PYTHON__|$PLIST_PYTHON|g" \
         -e "s|__REPO__|$REPO_ROOT|g" \
         -e "s|__HOME__|$HOME_DIR|g" \
         -e "s|__PATH__|$PLIST_PATH_VALUE|g" \
-        -e "s|/Users/<user>/|$HOME_DIR/|g" \
         "$plist" > "$staged"
 
     # A daemon that must NOT auto-load: either a PLIST_SKIP entry (connectors,

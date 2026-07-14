@@ -10,11 +10,18 @@ TARGET is a Slack user id (U…, opened as a DM) or a channel id (C…/D…/G…
 The bot token comes from $SLACK_BOT_TOKEN (never config.json). Routing target
 + the send-gate allowlist come from ~/.assistant/config.json.
 
-THE SEND-GATE — confines the bot to its one comms channel. A message is sent
-ONLY if its resolved target is in config.slack.allowed_targets (the one private
-channel the bot was invited to, or the operator's DM). Any other target is
-refused with NO API call and a nonzero exit. Defense-in-depth: even a rogue warm
-session physically cannot post anywhere but that single allowlisted destination.
+THE SEND-GATE — confines THIS CLI to the one comms channel. A message is sent
+ONLY if its target is in config.slack.allowed_targets (the private channel the
+bot was invited to, or the operator's DM). Any other target is refused with NO
+API call and a nonzero exit. This is the gate for every mechanical daemon send
+(comms-listen.py / CommsSubsystem route through here).
+
+SCOPE OF THE GUARANTEE (be honest): the gate confines *callers of this CLI and
+of slack.send()*. It does NOT sandbox the warm cmux session — that session runs
+--dangerously-skip-permissions with $SLACK_BOT_TOKEN in its env and could, if
+prompt-injected, call chat.postMessage directly and bypass this gate. The warm
+session is TRUSTED, not confined; the gate is defense-in-depth for the daemon's
+own automated sends, not a hard sandbox around the token.
 
 Stdout JSON (one line):
   {"channel": "C…", "message_id": "1699…", "ts": "ISO", "kind": "...", "muted": false}

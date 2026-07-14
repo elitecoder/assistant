@@ -40,17 +40,31 @@ SCAN_DIRS = ("bin", "src")
 # Permitted push / send call sites (each consciously exempted, answered for here).
 #   interrupt-gate.py — the ONLY Notification-Center push chokepoint (Keel M3).
 #   slack-send.py / src/assistant/slack.py — the assistant-comms egress. NOT a
-#     rogue notification: comms is a confined 1:1 pull feed the operator created
-#     and can mute, and slack-send.py refuses (with NO API call) any target not
-#     in config.slack.allowed_targets — so the bot physically cannot post
-#     anywhere but the operator's own comms channel. Proven by
-#     test_slack_send.py::test_gate_blocks_non_allowlisted_target_no_http. This
-#     is a DIFFERENT action from the code-forbidden `slack.reply.send` (posting
-#     into a shared human channel on the operator's behalf), which stays banned.
+#     rogue notification: comms posts only to config.slack.allowed_targets (the
+#     private channel the operator created + invited the bot to, which they can
+#     mute), and both files refuse — with NO API call — any target off that
+#     allowlist. Proven by test_slack_send.py::test_gate_blocks_..._no_http. A
+#     DIFFERENT action from the code-forbidden `slack.reply.send` (posting into a
+#     shared human channel on the operator's behalf), which stays banned.
+#
+#   RESIDUAL GAP (file-level exemption, closed by test_egress_call_sites_are_pinned
+#   below): allowlisting the WHOLE file means a *new* chat.postMessage added to
+#   either file would not be caught by this grep. So we pin the count: each file
+#   may hold exactly ONE egress call site today, and adding another fails CI —
+#   forcing the author to answer for it (and to route it through the gate). This
+#   guard does NOT confine the warm cmux session, which holds the raw token and
+#   runs --dangerously-skip-permissions; that session is TRUSTED, not sandboxed
+#   (see prompts/prompt-assistant-comms-warm.md and slack-send.py's docstring).
 ALLOWLIST = {
     Path("bin") / "interrupt-gate.py",
     Path("bin") / "slack-send.py",
     Path("src") / "assistant" / "slack.py",
+}
+# The exact egress call sites the file-level allowlist exempts, pinned by count so
+# a new (potentially ungated) chat.postMessage can't be added silently.
+EGRESS_CALL_SITES = {
+    Path("bin") / "slack-send.py": 1,
+    Path("src") / "assistant" / "slack.py": 1,
 }
 
 # Case-insensitive so `OSASCRIPT` / `Chat.PostMessage` can't slip past. The
@@ -158,6 +172,33 @@ class NoRogueNotificationsTest(unittest.TestCase):
         otherwise pass the grep while breaking every caller."""
         for rel in ALLOWLIST:
             self.assertTrue((REPO / rel).is_file(), f"{rel} missing")
+
+    def test_egress_call_sites_are_pinned(self):
+        """Close the file-level-allowlist gap: allowlisting a whole file means a
+        NEW chat.postMessage added to it would evade the push grep. Pin the count
+        of ACTUAL egress call sites (a chat.postMessage string passed as a call
+        argument — docstrings/comments don't count) so adding a second one fails
+        CI and forces the author to answer for it (and route it through the gate).
+
+        Counts call-argument occurrences via AST, not raw string matches, so the
+        honest 'the warm session can bypass this gate' docstring in slack-send.py
+        doesn't inflate the count."""
+        for rel, expected in EGRESS_CALL_SITES.items():
+            text = (REPO / rel).read_text()
+            tree = ast.parse(text)
+            found = 0
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for arg in node.args:
+                    folded = _fold_str(arg)
+                    if folded and PUSH_PATTERN.search(folded):
+                        found += 1
+            self.assertEqual(
+                found, expected,
+                f"{rel}: expected exactly {expected} chat.postMessage call "
+                f"site(s), found {found}. A new egress must be gated by "
+                f"allowed_targets and this pin updated with a reason.")
 
     def test_split_token_and_concat_decoys_are_caught(self):
         """The dodges a per-line literal grep misses (F17): mixed case, string
