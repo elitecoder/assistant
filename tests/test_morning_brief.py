@@ -661,5 +661,144 @@ class QueuePartitionTests(BriefBase):
         self.assertEqual(doc["queue"][0]["lane"], "escalate")
 
 
+class AgentActivityTests(BriefBase):
+    """The brief surfaces live agent workspaces and goal details so it stays
+    useful even when the decision queue is empty."""
+
+    def _plant_summary(self, ws_ref, verdict, title="t", summary="s",
+                       next_action="n", stale_ts=None):
+        d = self.home / ".assistant/observer-summaries"
+        d.mkdir(parents=True, exist_ok=True)
+        row = {"verdict": verdict, "summary": summary, "next": next_action,
+               "ws_ref": ws_ref, "title": title, "cwd": "/", "pr_refs": [],
+               "last_updated_ts": int(NOW), "state_hash": "x",
+               "state_unchanged_since_ts": stale_ts or int(NOW - 3600)}
+        (d / f"{ws_ref.replace(':', '_')}.json").write_text(json.dumps(row))
+
+    def test_agent_activity_present_in_brief(self):
+        self._plant_summary("workspace:1", "needs_user", title="Review PR")
+        self._plant_summary("workspace:2", "working", title="Building feature")
+        doc = brief.build_brief(now=NOW)
+        aa = doc["agent_activity"]
+        self.assertEqual(aa["n_total"], 2)
+        self.assertEqual(len(aa["needs_user"]), 1)
+        self.assertEqual(len(aa["working"]), 1)
+        self.assertEqual(aa["needs_user"][0]["ws_ref"], "workspace:1")
+        self.assertEqual(aa["needs_user"][0]["title"], "Review PR")
+        self.assertEqual(aa["working"][0]["ws_ref"], "workspace:2")
+
+    def test_agent_activity_empty_when_no_summaries(self):
+        doc = brief.build_brief(now=NOW)
+        self.assertEqual(doc["agent_activity"]["n_total"], 0)
+        self.assertEqual(doc["agent_activity"]["working"], [])
+
+    def test_agent_activity_caps_at_ten(self):
+        for i in range(15):
+            self._plant_summary(f"workspace:{i}", "idle", title=f"ws {i}")
+        doc = brief.build_brief(now=NOW)
+        self.assertEqual(doc["agent_activity"]["n_total"], 10)
+
+    def test_agent_activity_stale_h_calculated(self):
+        self._plant_summary("workspace:1", "needs_user",
+                            stale_ts=int(NOW - 7200))  # 2h ago
+        doc = brief.build_brief(now=NOW)
+        entry = doc["agent_activity"]["needs_user"][0]
+        self.assertAlmostEqual(entry["stale_h"], 2.0, places=1)
+
+    def test_goal_details_absent_store(self):
+        doc = brief.build_brief(now=NOW)
+        gd = doc["goal_details"]
+        self.assertFalse(gd["available"])
+
+    def test_goal_details_with_active_goals(self):
+        goals_path = self.home / ".claude/assistant-goals.json"
+        goals_path.parent.mkdir(parents=True, exist_ok=True)
+        goals_path.write_text(json.dumps({
+            "goals": [
+                {"id": "goal-1", "title": "Ship M8", "rank": 1,
+                 "status": "active",
+                 "lastProgressAt": brief.utc_iso(NOW - 3600)},
+                {"id": "goal-2", "title": "Fix bugs", "rank": 2,
+                 "status": "active",
+                 "lastProgressAt": brief.utc_iso(NOW - 100000)},
+                {"id": "goal-3", "title": "Paused work", "rank": 3,
+                 "status": "paused"},
+            ],
+        }))
+        doc = brief.build_brief(now=NOW)
+        gd = doc["goal_details"]
+        self.assertTrue(gd["available"])
+        self.assertEqual(gd["n_goals"], 3)
+        self.assertEqual(gd["n_active"], 2)
+        active = [g for g in gd["goals"] if g["status"] == "active"]
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["title"], "Ship M8")
+        self.assertTrue(active[0]["progressed_24h"])
+        self.assertFalse(active[1]["progressed_24h"])
+
+    def test_brief_pure_with_agent_activity(self):
+        """Agent activity is a pure derivation: rebuilding produces identical
+        bytes (same invariant as the rest of the brief)."""
+        self._plant_summary("workspace:1", "needs_user", title="Review PR")
+        b1 = brief.build_brief(now=NOW)
+        b2 = brief.build_brief(now=NOW)
+        self.assertEqual(json.dumps(b1, sort_keys=True),
+                         json.dumps(b2, sort_keys=True))
+
+    def test_corrupt_observer_summary_skipped(self):
+        """A corrupt JSON file in observer-summaries must not crash the brief
+        build (F3: one bad file degrades only itself)."""
+        d = self.home / ".assistant/observer-summaries"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "workspace_999.json").write_text("not valid json{{{")
+        self._plant_summary("workspace:1", "needs_user", title="Good entry")
+        doc = brief.build_brief(now=NOW)
+        self.assertEqual(doc["agent_activity"]["n_total"], 1)
+        self.assertEqual(doc["agent_activity"]["needs_user"][0]["ws_ref"],
+                         "workspace:1")
+
+    def test_non_string_title_does_not_crash(self):
+        """A non-string title/summary/next in an observer summary must not
+        crash the brief build (the module's foundational contract)."""
+        d = self.home / ".assistant/observer-summaries"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "workspace_1.json").write_text(json.dumps({
+            "verdict": "needs_user", "ws_ref": "workspace:1",
+            "title": 12345, "summary": None, "next": True,
+            "state_unchanged_since_ts": int(NOW - 3600),
+        }))
+        doc = brief.build_brief(now=NOW)
+        self.assertEqual(doc["agent_activity"]["n_total"], 1)
+        entry = doc["agent_activity"]["needs_user"][0]
+        self.assertEqual(entry["title"], "12345")
+        self.assertEqual(entry["summary"], "")
+        self.assertEqual(entry["next"], "True")
+
+    def test_negative_stale_h_clamped_to_zero(self):
+        """Clock skew making state_unchanged_since_ts future-dated must clamp
+        stale_h to 0, not produce a negative value."""
+        self._plant_summary("workspace:1", "needs_user",
+                            stale_ts=int(NOW + 3600))  # 1h in the future
+        doc = brief.build_brief(now=NOW)
+        entry = doc["agent_activity"]["needs_user"][0]
+        self.assertEqual(entry["stale_h"], 0.0)
+
+    def test_goals_n_active_matches_goal_details(self):
+        """goals.n_active and goal_details.n_active must agree (H1 fix)."""
+        goals_path = self.home / ".claude/assistant-goals.json"
+        goals_path.parent.mkdir(parents=True, exist_ok=True)
+        goals_path.write_text(json.dumps({
+            "goals": [
+                {"id": "g1", "rank": 1, "status": "active"},
+                {"id": "g2", "rank": 2, "status": "active"},
+                {"id": "g3", "rank": 3},  # no status → defaults to active
+                {"id": "g4", "rank": 4, "status": "paused"},
+            ],
+        }))
+        doc = brief.build_brief(now=NOW)
+        self.assertEqual(doc["goals"]["n_active"],
+                         doc["goal_details"]["n_active"])
+
+
 if __name__ == "__main__":
     unittest.main()

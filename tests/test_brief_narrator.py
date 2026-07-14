@@ -252,6 +252,95 @@ class TemplateEdgeCaseTests(_Base):
         self.assertIn("Accept", rec)
 
 
+class AgentActivitySummaryTests(_Base):
+    """When the decision queue is empty, the summary surfaces agent activity
+    and goal status instead of just 'all clear'."""
+
+    def _empty_queue_doc(self, **extra) -> dict:
+        doc = {
+            "schema": "morning-brief/1", "date": "2026-07-10",
+            "ts": "2026-07-10T14:00:00Z", "epoch": int(self.now),
+            "queue": [], "handled_overnight": [], "digest": {},
+            "health": {"cost": {"cost_per_day_usd": 0.5}},
+            "counts": {"open_decisions": 0, "by_lane": {},
+                       "handled_overnight": 0, "digest_rows": 0},
+            "agent_activity": {"working": [], "needs_user": [], "idle": [],
+                               "n_total": 0},
+            "goal_details": {"available": False, "note": "goals store absent"},
+        }
+        doc.update(extra)
+        return doc
+
+    def test_empty_queue_no_agents_no_goals_says_all_clear(self):
+        summary = narrator.deterministic_summary(self._empty_queue_doc())
+        self.assertIn("all clear", summary)
+
+    def test_empty_queue_with_working_agents(self):
+        doc = self._empty_queue_doc(agent_activity={
+            "working": [{"ws_ref": "workspace:1", "title": "Building feature",
+                         "verdict": "working", "summary": "s", "next": ""}],
+            "needs_user": [], "idle": [], "n_total": 1})
+        summary = narrator.deterministic_summary(doc)
+        self.assertIn("1 agent(s) working", summary)
+        self.assertNotIn("all clear", summary)
+
+    def test_empty_queue_with_needs_user_agents(self):
+        doc = self._empty_queue_doc(agent_activity={
+            "working": [],
+            "needs_user": [{"ws_ref": "workspace:2", "title": "Awaiting input",
+                            "verdict": "needs_user", "summary": "s",
+                            "next": "review the plan"}],
+            "idle": [], "n_total": 1})
+        summary = narrator.deterministic_summary(doc)
+        self.assertIn("1 agent(s) waiting for input", summary)
+
+    def test_empty_queue_with_active_goals(self):
+        doc = self._empty_queue_doc(goal_details={
+            "available": True, "n_goals": 3, "n_active": 2, "paused": False,
+            "goals": []})
+        summary = narrator.deterministic_summary(doc)
+        self.assertIn("2 active goal(s)", summary)
+
+    def test_empty_queue_with_agents_and_goals(self):
+        doc = self._empty_queue_doc(
+            agent_activity={
+                "working": [{"ws_ref": "ws:1", "title": "t", "verdict": "working",
+                             "summary": "", "next": ""}],
+                "needs_user": [{"ws_ref": "ws:2", "title": "t",
+                                "verdict": "needs_user", "summary": "",
+                                "next": ""}],
+                "idle": [], "n_total": 2},
+            goal_details={
+                "available": True, "n_goals": 5, "n_active": 3, "paused": False,
+                "goals": []})
+        summary = narrator.deterministic_summary(doc)
+        self.assertIn("1 agent(s) waiting for input", summary)
+        self.assertIn("1 agent(s) working", summary)
+        self.assertIn("3 active goal(s)", summary)
+
+    def test_facts_include_agent_sessions(self):
+        doc = self._empty_queue_doc(agent_activity={
+            "working": [],
+            "needs_user": [{"ws_ref": "workspace:42", "title": "Review PR",
+                            "verdict": "needs_user", "summary": "s",
+                            "next": "approve the plan", "stale_h": 2.5}],
+            "idle": [], "n_total": 1})
+        facts = narrator.brief_facts(doc)
+        self.assertTrue(len(facts["agent_sessions"]) >= 1)
+        self.assertEqual(facts["agent_sessions"][0]["ws_ref"], "workspace:42")
+        self.assertEqual(facts["agent_sessions"][0]["verdict"], "needs_user")
+
+    def test_facts_include_active_goals(self):
+        doc = self._empty_queue_doc(goal_details={
+            "available": True, "n_goals": 2, "n_active": 2, "paused": False,
+            "goals": [{"id": "goal-1", "title": "Ship M8", "rank": 1,
+                       "status": "active", "progressed_24h": True,
+                       "last_progress_at": "2026-07-10T10:00:00Z"}]})
+        facts = narrator.brief_facts(doc)
+        self.assertEqual(len(facts["active_goals"]), 1)
+        self.assertEqual(facts["active_goals"][0]["title"], "Ship M8")
+
+
 class TextOnlyTests(_Base):
     def test_narrative_dict_carries_no_action_field(self):
         """The narrative can PHRASE but not ACT: no lane/action/dispatch key can
