@@ -40,9 +40,12 @@ SCAN_DIRS = ("bin", "src")
 # The one permitted push call site.
 ALLOWLIST = {Path("bin") / "interrupt-gate.py"}
 
-# Case-insensitive so `OSASCRIPT` / `Chat.PostMessage` can't slip past.
+# Case-insensitive so `OSASCRIPT` / `Chat.PostMessage` can't slip past. The
+# Slack send is matched in BOTH its Web-API (`chat.postMessage`) and Python-SDK
+# (`chat_postMessage`) spellings via `chat[._]post_?message`.
 PUSH_PATTERN = re.compile(
-    r"osascript|display notification|terminal-notifier|chat\.postMessage",
+    r"osascript|display notification|terminal-notifier|"
+    r"chat[._]post_?message",
     re.IGNORECASE)
 
 
@@ -171,6 +174,124 @@ class NoRogueNotificationsTest(unittest.TestCase):
         ]
         for src in clean:
             self.assertEqual(scan_source(src), [], f"false positive: {src!r}")
+
+
+# ── Outbound-send chokepoint (Keel M7.d) ────────────────────────────────────
+# The outbound counterpart of the push guard: the primitives that actually send
+# to the external world may appear ONLY inside the gated outbound path.
+# Everything M7 does to the outside is a DRAFT (Gmail drafts.create) or staged
+# paste-text — never a send. Covered here: SMTP (smtplib/sendmail), a PR merge
+# (`gh pr merge`, including the argv-split `["gh","pr","merge"]` form via the
+# list-fold below), and the Gmail send surfaces (messages().send/drafts().send).
+# The Slack SEND spellings (chat.postMessage / chat_postMessage) are covered by
+# the PUSH guard above. NOTE: this is DEFENSE-IN-DEPTH, not the primary barrier
+# (the two-gate dispatcher is) — a determined dynamic-construction dodge
+# (getattr, `gh api … PUT …/merge`, an arbitrary webhook POST) is out of scope;
+# the point is that no ORDINARY send primitive lands outside the gate by accident.
+OUTBOUND_PATTERN = re.compile(
+    r"smtplib|sendmail|gh\s+pr\s+merge|messages\(\)\.send|drafts\(\)\.send",
+    re.IGNORECASE)
+# The only files permitted to carry a real send primitive. All three are the
+# sanctioned executors; none actually contains one today (this guard is a
+# forward fence), but a future send-capable line must live in one of them.
+OUTBOUND_ALLOWLIST = {
+    Path("bin") / "outbound-dispatch.py",
+    Path("bin") / "merge-pr-dispatch.py",
+    Path("bin") / "cmux-send.py",
+}
+
+
+def scan_outbound(text: str) -> list[str]:
+    """Every distinct forbidden outbound token in `text`, via the text scan, the
+    constant-folding scan (`"gh pr " + "merge"`), AND an argv-list fold that
+    joins a list/tuple of string constants with a space — the natural
+    `subprocess.run(["gh", "pr", "merge", n])` form a plain grep misses."""
+    hits: list[str] = []
+    for m in OUTBOUND_PATTERN.finditer(text):
+        hits.append(m.group(0).lower())
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return sorted(set(hits))
+    for node in ast.walk(tree):
+        folded = _fold_str(node)
+        if folded and OUTBOUND_PATTERN.search(folded):
+            hits.append(OUTBOUND_PATTERN.search(folded).group(0).lower())
+        # argv-list: join the string-constant elements with a space so a
+        # command split across list elements is scanned as one command line.
+        if isinstance(node, (ast.List, ast.Tuple)):
+            parts = [e.value for e in node.elts
+                     if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            if len(parts) >= 2:
+                joined = " ".join(parts)
+                m = OUTBOUND_PATTERN.search(joined)
+                if m:
+                    hits.append(m.group(0).lower())
+    return sorted(set(hits))
+
+
+class NoRogueOutboundTest(unittest.TestCase):
+    def test_no_send_primitives_outside_the_gate(self):
+        offenders = []
+        for d in SCAN_DIRS:
+            root = REPO / d
+            for path in sorted(root.rglob("*")):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(REPO)
+                if rel in OUTBOUND_ALLOWLIST:
+                    continue
+                if path.suffix in (".pyc",):
+                    continue
+                try:
+                    text = path.read_text(errors="replace")
+                except OSError:
+                    continue
+                for n, line in enumerate(text.splitlines(), 1):
+                    if OUTBOUND_PATTERN.search(line):
+                        offenders.append(f"{rel}:{n}: {line.strip()[:120]}")
+                if path.suffix == ".py":
+                    folded_hits = set(scan_outbound(text))
+                    line_hits = {OUTBOUND_PATTERN.search(l).group(0).lower()
+                                 for l in text.splitlines()
+                                 if OUTBOUND_PATTERN.search(l)}
+                    for extra in sorted(folded_hits - line_hits):
+                        offenders.append(
+                            f"{rel}: split-literal outbound token {extra!r} "
+                            "(constant-folded)")
+        self.assertEqual(
+            offenders, [],
+            "outbound send primitives (SMTP / `gh pr merge`) outside the gated "
+            "executors (route them through bin/outbound-dispatch.py — Keel M7):\n"
+            + "\n".join(offenders))
+
+    def test_outbound_allowlist_files_exist(self):
+        # A renamed executor would silently widen the fence — pin their presence.
+        for rel in OUTBOUND_ALLOWLIST:
+            self.assertTrue((REPO / rel).is_file(), f"{rel} missing")
+
+    def test_outbound_decoys_are_caught(self):
+        decoys = [
+            'import smtplib',
+            's = "smtp" + "lib"',                        # + concat
+            'cmd = "gh pr " "merge"',                    # implicit adjacent concat
+            'cmd = "gh pr " + "merge"',                  # + concat
+            'cmd = "".join(["gh pr ", "merge"])',        # constant join
+            'subprocess.run(["gh", "pr", "merge", n])',  # argv-split
+            'run(["/usr/sbin/sendmail", "-t"], input=b)',  # sendmail argv
+            'service.users().messages().send(userId=u)',  # gmail send
+        ]
+        for src in decoys:
+            self.assertTrue(scan_outbound(src), f"decoy evaded: {src!r}")
+
+    def test_outbound_clean_source_not_flagged(self):
+        clean = [
+            'run(["gh", "pr", "view", pr])',   # view is fine
+            'x = "merge the branch"',
+            'note = "send it to the queue"',
+        ]
+        for src in clean:
+            self.assertEqual(scan_outbound(src), [], f"false positive: {src!r}")
 
 
 if __name__ == "__main__":
