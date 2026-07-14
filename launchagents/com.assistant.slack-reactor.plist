@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>/Users/mukuls/dev/assistant/bin/spawn-slack-reactor.sh</string>
+        <string>__REPO__/bin/spawn-slack-reactor.sh</string>
     </array>
     <key>KeepAlive</key>
     <true/>
@@ -16,17 +16,17 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/slack-reactor.launchd.out</string>
+    <string>__HOME__/.assistant/logs/slack-reactor.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/slack-reactor.launchd.err</string>
+    <string>__HOME__/.assistant/logs/slack-reactor.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__PATH__</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

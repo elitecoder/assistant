@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("command", nargs="?", default="run", choices=["run", "status"],
                     help="run the daemon (default) or print status and exit")
     ap.add_argument("--config", default=None,
-                    help="path to config.json (default: ~/.assistant/comms/config.json)")
+                    help="path to config.json (default: ~/.assistant/config.json)")
     ap.add_argument("--dry-run", action="store_true",
                     help="run the pulse in dry-run mode")
     args = ap.parse_args(argv)

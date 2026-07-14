@@ -27,10 +27,14 @@
 ## Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
+# repo-access engineers: clone over your own SSH identity, then run the installer
+ASSISTANT_REPO_URL=git@github.com:elitecoder/assistant.git \
+  bash <(curl -fsSL https://raw.githubusercontent.com/elitecoder/assistant/main/install-bootstrap.sh)
 ```
 
-Prerequisites: `git`, `python3`, and the [`claude` CLI](https://claude.ai/code). The script clones the repo to `~/dev/assistant`, wires up symlinks and LaunchAgent plists. One manual step at the end: `launchctl load` the plists.
+Prerequisites: `git`, `python3` (3.11+), and the [`claude` CLI](https://claude.ai/code); `cmux.app` for the workspace-driving features. The bootstrap clones to `~/dev/assistant`, runs a **preflight** (`bin/assistant-doctor.py`), wires symlinks, and renders the LaunchAgent plists. `install.sh --apply` **(re)loads the always-on set** (pulse orchestrator + dashboard/todo/watcher daemons); the **opt-in** features (cmux-watcher, Slack comms, slack-reactor) are copied but not loaded — you enable those by hand. It ends by printing the activation runbook.
+
+**→ Full step-by-step onboarding, incl. Slack comms: [ONBOARDING.md](ONBOARDING.md).** Run `./bin/assistant-doctor.py` anytime for a health check.
 
 ## What it is
 
@@ -94,6 +98,8 @@ The whole thing optimizes one number downward, computed mechanically each day: *
 ## What it can do
 
 **📥 Capture work from a Slack emoji.** React to any Slack thread with this machine's emoji (`TODO_EMOJI`, default `mukuls2`) and the whole thread — every message, plus a link back — is captured as a TODO in `~/.claude/assistant-todo.json`, the same store the `/todo` skill, the pulse, and the dashboard read. Per-machine emoji routing means a shared bot can fan reactions out to whichever laptop owns that emoji. See [`slack-reactor/`](slack-reactor/README.md).
+
+**💬 Talk to Assistant over Slack.** The opt-in comms daemon (`bin/comms-listen.py`) posts to a private channel you create and invite the bot to: it pings you when Assistant takes a verified action, the instant a workspace needs input or finishes, and when Assistant's heartbeat goes stale — and lets you *reply*. A warm cmux Claude session answers your questions about the fleet in seconds, grounded in real state, and can add a lesson / restart / respawn Assistant on your confirmation. A **mechanical send-gate** confines the bot to that one channel — it can post nowhere else. See [`docs/assistant-comms-onboarding.md`](docs/assistant-comms-onboarding.md).
 
 **🚀 Dispatch TODOs while keeping the fleet from overloading.** A TODO flagged `autoDispatch=true` that's never been spawned gets picked up by the next pulse and dropped into a *fresh* cmux workspace — prompt staged on disk, delivered to the surface, confirmed by watching the transcript grow. Load is bounded by hard caps: at most `ACTIVE_WS_CAP=5` busy workspaces, `TOTAL_WS_CAP=30` total, and `MAX_DISPATCH_PER_PULSE=2` new spawns per cycle. Hit a cap and dispatch waits — the fleet never runs away from you.
 
@@ -243,11 +249,15 @@ These are structural, not just conventions — violating them will cause real pr
 ## Testing
 
 ```bash
-python3 -m unittest discover tests -v    # 35 test files, no LLM
-cd evals/observer && ./run.py            # 13 real-transcript fixtures × Observer
+python3 -m pytest tests/ -q              # 48 test files, no LLM
+cd evals/observer && ./run.py            # 14 real-transcript fixtures × Observer
 ```
 
 The headline eval fixture (`01-ws97-trap-no-pr-mid-audit`) replays the production bug where an unrelated merged PR in transcript prose drove an auto-close. Run the evals after any change to `prompts/observer-batch-prompt.md` or `bin/build-ws-context.py`.
+
+## Changes
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog / SemVer). Current: **0.3.1**.
 
 <div align="center">
 <sub>A deterministic decision spine over a fleet of Claude Code agents · Python owns every gate · macOS</sub>

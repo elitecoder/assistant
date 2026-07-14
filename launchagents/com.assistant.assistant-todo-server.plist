@@ -7,16 +7,16 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/todo-server.py</string>
+        <string>__PYTHON__</string>
+        <string>__REPO__/bin/todo-server.py</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+        <string>__PATH__</string>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -26,12 +26,12 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.claude/cache/todo-server.log</string>
+    <string>__HOME__/.claude/cache/todo-server.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.claude/cache/todo-server.err</string>
+    <string>__HOME__/.claude/cache/todo-server.err</string>
 
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

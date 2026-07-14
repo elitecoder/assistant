@@ -5,18 +5,38 @@
 
   Collapses the com.assistant.assistant-pulse LaunchAgent (a 5-min timer) into
   ONE process: `python -m assistant`, run via bin/assistant-daemon.py. The
-  daemon owns the pulse loop, the daemon heartbeat, and tool dispatch — each in
-  its own thread of one process. No StartInterval: the daemon does not tick, it
-  runs; KeepAlive relaunches it if it ever exits.
+  daemon owns the pulse loop, the daemon heartbeat, tool dispatch, AND (when
+  Slack is configured) the CommsSubsystem — each in its own thread of one
+  process. No StartInterval: the daemon does not tick, it runs; KeepAlive
+  relaunches it if it ever exits.
 
   THIS PLIST IS NOT LOADED BY THE INSTALLER. The migration is additive — the
   existing pulse agent keeps running until you switch over by hand.
 
-  To activate (hand off pulse to the single daemon):
+  ⚠ COMMS IS NOT FULLY MIGRATED HERE. This daemon's CommsSubsystem carries only
+  TWO of the five comms loops — the mechanical ledger broadcast + heartbeat pager
+  — and auto-wires whenever Slack is configured (token + allowlisted target). It
+  does NOT carry the standalone com.assistant.assistant-comms daemon's other
+  three loops: inbound warm-session replies, lesson-proposal delivery, and
+  cmux-watcher inbox pings. So:
+    • DO NOT unload assistant-comms when adopting this daemon — doing so would
+      silently kill inbound replies (you text the channel, nothing answers),
+      proposal delivery, and inbox pings.
+    • BUT if BOTH run on a Slack-configured box, they BOTH broadcast the ledger
+      and page on a stale heartbeat to the SAME channel with SEPARATE cursors and
+      no shared lock → every ledger entry pings you twice, every stale heartbeat
+      pages twice.
+  Net: this single-daemon migration is NOT recommended on a box running
+  assistant-comms until CommsSubsystem carries all five loops (and a shared
+  cursor/lock dedups ledger+heartbeat). On such a box, stay on the split model
+  (assistant-pulse + assistant-comms). Adopt this daemon only on boxes WITHOUT
+  Slack comms, where CommsSubsystem stays dormant (has_slack is false).
+
+  To activate on a NON-comms box (hand off pulse to the single daemon):
     launchctl unload ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
     launchctl load   ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
 
-  To roll back:
+  To roll back (restore the split pulse):
     launchctl unload ~/Library/LaunchAgents/com.mukul.assistant-daemon.plist
     launchctl load   ~/Library/LaunchAgents/com.assistant.assistant-pulse.plist
 -->
@@ -26,8 +46,8 @@
     <string>com.mukul.assistant-daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/python3</string>
-        <string>/Users/mukuls/dev/assistant/bin/assistant-daemon.py</string>
+        <string>__PYTHON__</string>
+        <string>__REPO__/bin/assistant-daemon.py</string>
     </array>
     <key>KeepAlive</key>
     <true/>
@@ -36,17 +56,17 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-daemon.launchd.out</string>
+    <string>__HOME__/.assistant/logs/assistant-daemon.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/assistant-daemon.launchd.err</string>
+    <string>__HOME__/.assistant/logs/assistant-daemon.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+        <string>__PATH__</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>

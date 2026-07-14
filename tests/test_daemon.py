@@ -26,7 +26,7 @@ def tmp_config(tmp_path: Path) -> Config:
     """A Config rooted entirely under tmp_path."""
     home = tmp_path / "home"
     assistant_dir = home / ".assistant"
-    (assistant_dir / "comms").mkdir(parents=True)
+    assistant_dir.mkdir(parents=True)
     return Config(
         home=home,
         assistant_dir=assistant_dir,
@@ -48,8 +48,8 @@ def log() -> logging.Logger:
 class TestConfigLoads:
     def test_config_loads(self, tmp_path: Path):
         # A fixture config.json laid out like the real one
-        # (<dir>/.assistant/comms/config.json) roots the whole tree at <dir>/.assistant.
-        cfg_path = tmp_path / ".assistant" / "comms" / "config.json"
+        # (<dir>/.assistant/config.json) roots the whole tree at <dir>/.assistant.
+        cfg_path = tmp_path / ".assistant" / "config.json"
         cfg_path.parent.mkdir(parents=True)
         cfg_path.write_text(json.dumps({
             "stale_heartbeat_sec": 999,
@@ -59,16 +59,16 @@ class TestConfigLoads:
         assert cfg.stale_heartbeat_sec == 999
         assert cfg.pulse_interval_sec == 120
         assert cfg.heartbeat_check_sec == 30
-        # Derived paths root at the config's grandparent dir.
+        # Derived paths root at the config's dir.
         assert cfg.assistant_dir == (tmp_path / ".assistant").resolve()
 
     def test_missing_config_yields_defaults(self, tmp_path: Path):
-        cfg = Config.load(tmp_path / "nope" / "comms" / "config.json")
+        cfg = Config.load(tmp_path / "nope" / "config.json")
         assert cfg.pulse_interval_sec == 300
         assert cfg.stale_heartbeat_sec == 1200
 
     def test_corrupt_config_yields_defaults(self, tmp_path: Path):
-        p = tmp_path / ".assistant" / "comms" / "config.json"
+        p = tmp_path / ".assistant" / "config.json"
         p.parent.mkdir(parents=True)
         p.write_text("{ not json")
         cfg = Config.load(p)

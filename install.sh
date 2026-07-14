@@ -29,6 +29,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOME_DIR="${HOME}"
 APPLY=0
 PULL_SKILLS=0
+# Opt-in feature daemons: off by default (core-only install). Each --with flag
+# turns one on. See the "Daemon tiers" block in Section 3.
+WITH_MEMORY=0
+WITH_CRASH_RESUME=0
 TS="$(date +%s)"
 
 log() { printf '%s\n' "$*"; }
@@ -41,6 +45,9 @@ for arg in "$@"; do
         --apply) APPLY=1 ;;
         --dry-run) APPLY=0 ;;
         --pull-skills) PULL_SKILLS=1 ;;
+        --with-memory) WITH_MEMORY=1 ;;
+        --with-crash-resume) WITH_CRASH_RESUME=1 ;;
+        --with-all) WITH_MEMORY=1; WITH_CRASH_RESUME=1 ;;
         -h|--help)
             cat <<USAGE
 install.sh — install/update the Assistant system from $REPO_ROOT
@@ -53,6 +60,26 @@ install.sh — install/update the Assistant system from $REPO_ROOT
                     copy→symlink migration). Once a skill is symlinked, live
                     edits ARE repo edits, so this becomes a no-op for it.
                     Prints a unified diff in dry-run; run with --apply to copy.
+
+  Opt-in feature daemons (off by default — a bare --apply installs CORE only:
+  the fleet loop pulse/world-scanner/session-context-watcher/assistant-page/
+  todo-server). On an interactive --apply (a real terminal), install.sh OFFERS
+  each undecided feature with a one-line explanation and a [y/N] prompt, so you
+  discover them without reading docs. Your answer is remembered in
+  ~/.assistant/feature-opt-in, so re-runs never re-ask. Headless runs (pulse
+  self-update, curl|bash, CI) never prompt — they default to OFF.
+  --with-memory        cross-machine memory sync (memory-sync-pull). Only useful
+                       if you run Assistant on more than one machine.
+  --with-crash-resume  auto-resume crashed cmux workspaces (workspace-watcher).
+  --with-all           enable all of the above (and suppress their prompts).
+  (Slack comms + slack-reactor are always copied but hand-loaded after their
+   token setup — see ONBOARDING.md — never auto-loaded even with a flag.)
+  Changed your mind? Declined a feature and want it now: re-run with its --with
+  flag (the flag beats a remembered 'no'). To be re-asked from scratch: delete
+  its line from ~/.assistant/feature-opt-in. To disable a running one:
+  launchctl bootout gui/\$UID/com.assistant.<label>, then set its line to 'no'.
+  Flags/answers only affect what gets LOADED; an already-running feature daemon
+  is never torn out (it's adopted and remembered as enabled).
   -h, --help        This help.
 
 After --apply:
@@ -61,8 +88,11 @@ After --apply:
     (old LLM-Assistant era; the mechanical pulse.py reads prompts/ directly)
   - lessons live in ~/.claude/CLAUDE.md (not in this repo). Curator: bin/assistant-curator.py
   - ~/.claude/skills/<name> → SYMLINK → $REPO_ROOT/skills/<name> (repo is truth)
-  - ~/Library/LaunchAgents/com.assistant.{world-scanner,assistant-pulse,assistant-page,
-       session-context-watcher,assistant-todo-server}.plist → COPIED
+  - CORE plists loaded: com.assistant.{assistant-pulse,world-scanner,
+       session-context-watcher,assistant-page,assistant-todo-server}
+  - FEATURE plists copied, loaded only with their --with flag: memory-sync-pull
+       (--with-memory), workspace-watcher (--with-crash-resume); comms +
+       slack-reactor copied but hand-loaded after token setup
   - cmux session-restore (vendored): hooks/ → ~/.claude/hooks/ (symlinks),
        bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
        and ~/.claude/settings.json SessionStart/SessionEnd hooks patched in
@@ -83,6 +113,119 @@ USAGE
             exit 0 ;;
         *) warn "unknown arg: $arg"; exit 2 ;;
     esac
+done
+
+# --- feature opt-in resolution ----------------------------------------------
+# Turn the WITH_* flags into final load decisions, offering a DISCOVERY PROMPT
+# for undecided features on an interactive --apply. Precedence per feature
+# (first match wins): explicit --with flag > remembered answer > daemon already
+# loaded > interactive prompt > headless default-NO.
+#
+# Guard lineage: mirrors the phase-7 memory step ([[ ! -t 0 ]] skip + a state
+# file for idempotence). A prompt fires ONLY on an interactive --apply that is
+# NOT a self-update; all headless contexts (pulse self-update, curl|bash, CI)
+# fall through to default-NO WITHOUT persisting, so discovery survives to the
+# user's first real interactive run. NEVER hangs: no bare `read` (set -e would
+# abort on EOF), and a walk-away is bounded by read -t.
+STATE_FILE="$HOME_DIR/.assistant/feature-opt-in"
+
+# state_get <feat> → prints yes|no|"" (empty = never decided). `local` masks
+# grep's exit-1-on-no-match so set -e can't abort.
+state_get() {
+    local v
+    v="$(grep "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2)"
+    printf '%s' "$v"
+}
+# state_set <feat> <yes|no> — APPLY-only, atomic last-write-wins. The `|| true`
+# after grep -v is mandatory (no-match exits 1 under set -e).
+state_set() {
+    [[ $APPLY -eq 1 ]] || return 0
+    mkdir -p "$(dirname "$STATE_FILE")"
+    touch "$STATE_FILE"
+    local tmp="$STATE_FILE.tmp.$$"
+    { grep -v "^$1=" "$STATE_FILE" 2>/dev/null || true; printf '%s=%s\n' "$1" "$2"; } > "$tmp" \
+        && mv "$tmp" "$STATE_FILE"
+}
+explicit_flag_for() {
+    case "$1" in
+        memory)        echo "$WITH_MEMORY" ;;
+        crash-resume)  echo "$WITH_CRASH_RESUME" ;;
+        *)             echo 0 ;;
+    esac
+}
+_feat_label() {
+    case "$1" in
+        memory)        echo "com.assistant.memory-sync-pull" ;;
+        crash-resume)  echo "com.assistant.workspace-watcher" ;;
+    esac
+}
+# daemon_loaded <feat> — 0 if the feature's LaunchAgent is loaded. Called ONLY
+# inside a condition (never bare) so its nonzero-when-absent can't trip set -e.
+daemon_loaded() { launchctl print "gui/$UID/$(_feat_label "$1")" >/dev/null 2>&1; }
+feat_desc() {
+    case "$1" in
+        memory)        echo "Memory sync keeps your lessons + semantic memory identical across all your machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N] " ;;
+        crash-resume)  echo "Crash-resume auto-restarts a cmux workspace whose Claude session died, so long jobs survive a crash or reboot. Enable? [y/N] " ;;
+    esac
+}
+# prompt_yn <question> → 0 on yes. Sets PROMPT_TIMED_OUT=1 iff read timed out
+# (exit >128) so the caller can distinguish a walk-away (do NOT persist) from an
+# explicit decline (persist no). The if/else wrapper is mandatory: a bare read
+# returns nonzero on EOF and set -e would abort the whole install.
+PROMPT_TIMED_OUT=0
+prompt_yn() {
+    local q="$1" ans rc
+    PROMPT_TIMED_OUT=0
+    if read -r -t 60 -p "$q" ans; then rc=0; else rc=$?; fi
+    # bash: read exits >128 specifically on -t timeout; EOF exits 1.
+    if [[ ${rc:-0} -gt 128 ]]; then PROMPT_TIMED_OUT=1; ans=""; fi
+    case "$ans" in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        *)                 return 1 ;;
+    esac
+}
+# feature_should_prompt <feat> — the full guard, all terms AND-ed. Each headless
+# context is blocked by ≥2 independent terms (self-update fails both -t 0 AND the
+# env term; curl|bash & CI fail -t 0).
+feature_should_prompt() {
+    [[ $APPLY -eq 1 ]] || return 1
+    [[ -t 0 ]] || return 1
+    [[ "${ASSISTANT_SELF_UPDATE:-0}" != "1" ]] || return 1
+    [[ "$(explicit_flag_for "$1")" != "1" ]] || return 1
+    [[ -z "$(state_get "$1")" ]] || return 1
+    ! daemon_loaded "$1" || return 1
+    return 0
+}
+
+_optin_header_shown=0
+_optin_header() {
+    [[ $_optin_header_shown -eq 1 ]] && return 0
+    _optin_header_shown=1
+    log "[2.5] Optional features (safe to skip; enable later with --with-<name>)"
+}
+for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME'; do
+    _feat="${_pair%%:*}"; _var="${_pair##*:}"
+    if [[ "$(explicit_flag_for "$_feat")" == "1" ]]; then
+        state_set "$_feat" yes                      # (a) explicit flag wins
+        continue
+    fi
+    _saved="$(state_get "$_feat")"
+    if [[ "$_saved" == "yes" ]]; then eval "$_var=1"; continue; fi   # (b) remembered yes
+    if [[ "$_saved" == "no"  ]]; then continue; fi                  # (b) remembered no
+    if daemon_loaded "$_feat"; then                                # (c) adopt already-running
+        eval "$_var=1"; state_set "$_feat" yes; continue
+    fi
+    if feature_should_prompt "$_feat"; then                        # (d) discovery prompt
+        _optin_header
+        if prompt_yn "$(feat_desc "$_feat")"; then
+            eval "$_var=1"; state_set "$_feat" yes
+        elif [[ $PROMPT_TIMED_OUT -eq 1 ]]; then
+            note "$_feat: no response (timed out) — left undecided, will re-ask next time"
+        else
+            state_set "$_feat" no                  # explicit decline → remember, stop nagging
+        fi
+    fi
+    # (e) headless-undecided: leave WITH at 0, DO NOT persist (preserve discovery)
 done
 
 if [[ $PULL_SKILLS -eq 1 ]]; then
@@ -186,6 +329,19 @@ ensure_file_copy() {
         warn "source file missing: $source"
         return 1
     fi
+    # Symlink guard: NEVER cp through a symlink. A legacy install left some
+    # ~/Library/LaunchAgents/*.plist as symlinks INTO the repo (e.g.
+    # workspace-watcher). macOS cp follows the link and would write the rendered,
+    # /Users/mukuls-substituted content back through it into the committed
+    # template — corrupting the portable template and dirtying the tree. Replace
+    # any such symlink with a real file. (-e is false for a dangling symlink, so
+    # test -L explicitly.)
+    if [[ -L "$target" ]]; then
+        note "REPLACE symlink $target → real rendered file (was → $(readlink "$target"))"
+        if [[ $APPLY -eq 1 ]]; then
+            rm -f "$target"
+        fi
+    fi
     if [[ -f "$target" ]] && cmp -s "$source" "$target"; then
         note "OK   $target (matches $source)"
         return 0
@@ -222,6 +378,33 @@ launchctl_reload() {
         note "would reload $label (bootout + bootstrap $plist)"
     fi
 }
+
+# --- 0. Preflight (assistant-doctor) ----------------------------------------
+# Run the doctor BEFORE any mutation so a missing prerequisite is a clear,
+# actionable error rather than a half-wired system. CORE failures (python, repo,
+# git, cmux) abort an interactive --apply; optional-feature failures (Slack /
+# warm session) only warn. Under the pulse self-update (ASSISTANT_SELF_UPDATE=1)
+# we report-only and never block — the running box already passed core once.
+log "[0] Preflight — assistant-doctor"
+DOCTOR="$REPO_ROOT/bin/assistant-doctor.py"
+DOCTOR_PY="$(command -v python3 || echo /usr/bin/python3)"
+if [[ -f "$DOCTOR" ]]; then
+    if "$DOCTOR_PY" "$DOCTOR" --only core; then
+        note "core preflight passed"
+    else
+        if [[ "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]]; then
+            warn "core preflight FAILED (self-update: report-only, not blocking)"
+        elif [[ $APPLY -eq 1 ]]; then
+            warn "core preflight FAILED — aborting --apply. Fix the ↳ items above and re-run."
+            exit 1
+        else
+            warn "core preflight FAILED (dry-run: not blocking; --apply would abort)"
+        fi
+    fi
+else
+    warn "assistant-doctor.py not found at $DOCTOR — skipping preflight"
+fi
+log ""
 
 # --- 1. Symlink code into ~/.claude/ ----------------------------------------
 log "[1/5] Symlinking code into ~/.claude/"
@@ -339,16 +522,52 @@ ensure_symlink "$HOME_DIR/.factory/skills" "$HOME_DIR/.claude/skills"
 ensure_symlink "$HOME_DIR/.factory/AGENTS.md" "$HOME_DIR/.claude/CLAUDE.md" || true
 log ""
 
-# --- 3. Copy LaunchAgent plists + reload only those that changed ----------
-# Plists in the repo may contain `/Users/<user>/...` as a home placeholder.
-# At install time we substitute the live $HOME and stage the result in a
-# temp dir, then copy that to ~/Library/LaunchAgents/. Plists that don't
-# have the placeholder (the original 5 with literal /Users/mukuls) are
-# unchanged by the sed.
-log "[3/5] Copying LaunchAgent plists into ~/Library/LaunchAgents/"
+# --- 3. Generate LaunchAgent plists from templates + reload only those that changed ----------
+# The committed launchagents/*.plist files are TEMPLATES: they carry four
+# machine-independent tokens that we substitute with this box's real values at
+# install time, staging the result in a temp dir before copying to
+# ~/Library/LaunchAgents/. This replaced an earlier `/Users/<user>/`+sed scheme
+# that was a silent no-op (the plists held literal /Users/mukuls, which the sed
+# never matched, so every daemon shipped the author's home path and died on any
+# other machine — the P1 onboarding bug).
+#
+# Tokens (see any launchagents/*.plist):
+#   __HOME__    → this user's home ($HOME_DIR)
+#   __REPO__    → this checkout ($REPO_ROOT), NOT assumed to be ~/dev/assistant
+#   __PYTHON__  → an arch-resolved python3 (Apple-Silicon /opt/homebrew vs Intel
+#                 /usr/local vs system /usr/bin) — a literal path would 404 on
+#                 the other arch
+#   __PATH__    → an arch-aware PATH superset incl. the Homebrew bin + cmux
+#
+# The filenames are deliberately UNCHANGED (still <label>.plist): self_update.py
+# keys plist-change detection + its own-reload-defer guard on the exact string
+# `launchagents/<label>.plist`, and its tests hardcode these names. Keeping the
+# templates AT those paths means self-update keeps working.
+log "[3/5] Generating LaunchAgent plists into ~/Library/LaunchAgents/"
 mkdir -p "$HOME_DIR/Library/LaunchAgents"
 PLIST_STAGE="$(mktemp -d)"
 trap 'rm -rf "$PLIST_STAGE"' EXIT
+
+# Resolve this machine's interpreter + PATH ONCE. Probe for a real python3
+# rather than hardcode an arch: Homebrew (arm64 /opt/homebrew, Intel
+# /usr/local), then system. Fail loud if none — a daemon with no interpreter is
+# worse than a clear error.
+BREW_BIN=""
+if command -v brew >/dev/null 2>&1; then
+    BREW_BIN="$(brew --prefix 2>/dev/null)/bin"
+fi
+PLIST_PYTHON=""
+for cand in "$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -n "$cand" && -x "$cand" ]]; then PLIST_PYTHON="$cand"; break; fi
+done
+if [[ -z "$PLIST_PYTHON" ]]; then
+    warn "no python3 found for LaunchAgent plists — install Xcode CLT or Homebrew python3"
+    PLIST_PYTHON="/usr/bin/python3"  # last resort; doctor (phase 0) flags a missing one
+fi
+# PATH superset: real Homebrew bin (if any) first, then the standard dirs + the
+# cmux CLI dir the watchers/comms need.
+PLIST_PATH_VALUE="${BREW_BIN:+$BREW_BIN:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Applications/cmux.app/Contents/Resources/bin"
+note "plist interpreter: $PLIST_PYTHON"
 
 # Opt-in plists the installer must NEVER copy or load. The single-process
 # daemon (com.mukul.assistant-daemon) is additive: it replaces the pulse
@@ -386,6 +605,43 @@ PLIST_SKIP=(
     "com.assistant.machine-config-sync.plist"
 )
 
+# ── Daemon tiers ────────────────────────────────────────────────────────────
+# CORE (everything not listed below) is loaded by default — the fleet loop +
+# its dashboard: pulse, world-scanner, session-context-watcher, assistant-page,
+# todo-server. There is no product without these.
+#
+# FEATURE daemons are always COPIED (so a later hand-load / --with flag works
+# from the canonical path) but loaded ONLY when the user opts in. Each solves a
+# problem not every user has, so none is forced on a fresh install:
+#   memory-sync-pull   cross-machine memory sync   → --with-memory
+#   workspace-watcher  auto-resume crashed cmux ws → --with-crash-resume
+#   assistant-comms    Slack comms (needs token + assistant-comms-setup.sh)
+#   slack-reactor      Slack emoji→todo (needs SLACK_APP_TOKEN/SLACK_BOT_TOKEN)
+# comms/slack-reactor are never auto-loaded even with a flag — they crash-loop
+# without their tokens, so they activate by hand after setup. memory &
+# crash-resume DO auto-load when their flag is passed.
+#
+# feature_of <plist-base> → prints the feature name, or "" if it's core.
+feature_of() {
+    case "$1" in
+        com.assistant.memory-sync-pull.plist)   echo "memory" ;;
+        com.assistant.workspace-watcher.plist)  echo "crash-resume" ;;
+        com.assistant.assistant-comms.plist)    echo "comms" ;;
+        com.assistant.slack-reactor.plist)      echo "slack-reactor" ;;
+        *)                                       echo "" ;;
+    esac
+}
+# feature_enabled <feature> → 0 (load it) / 1 (copy-no-load). comms &
+# slack-reactor are ALWAYS copy-no-load (token-gated); memory & crash-resume
+# load only when their --with flag was passed.
+feature_enabled() {
+    case "$1" in
+        memory)        [[ $WITH_MEMORY -eq 1 ]] ;;
+        crash-resume)  [[ $WITH_CRASH_RESUME -eq 1 ]] ;;
+        *)             return 1 ;;
+    esac
+}
+
 declare -a CHANGED_LABELS
 for plist in "$REPO_ROOT"/launchagents/*.plist; do
     base="$(basename "$plist")"
@@ -398,28 +654,57 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         [[ "$base" == "$skip_base" ]] && skip=1 && break
     done
 
-    # Substitute /Users/<user>/ → $HOME/ so the staged plist references the
-    # current user's home dir. No-op for plists that don't have the token.
-    sed "s|/Users/<user>/|$HOME_DIR/|g" "$plist" > "$staged"
+    # Tier: CORE loads; a FEATURE daemon loads only if opted in, else copy-no-load.
+    copy_no_load=0
+    feat="$(feature_of "$base")"
+    if [[ -n "$feat" ]]; then
+        if feature_enabled "$feat"; then
+            note "FEATURE $base — enabled (flag / prompt / remembered / already-running) → will load"
+        else
+            copy_no_load=1
+            case "$feat" in
+                memory|crash-resume)
+                    note "FEATURE $base — not enabled (copied, NOT loaded; enable with --with-$feat)" ;;
+                *)  # comms / slack-reactor: token-gated, hand-loaded after setup
+                    note "FEATURE $base — token-gated (copied, NOT loaded; hand-load after setup — see ONBOARDING.md)" ;;
+            esac
+        fi
+    fi
 
-    # D8: ALWAYS stage + copy the plist — even a PLIST_SKIP one — so it actually
-    # LANDS in ~/Library/LaunchAgents and the documented
-    # `launchctl load ~/Library/LaunchAgents/<label>.plist` can succeed. The old
-    # code `continue`d BEFORE the copy, so a skipped plist never landed and the
-    # documented manual load failed for ALL six connector plists AND the
-    # single-process daemon. PLIST_SKIP now suppresses ONLY the auto-reload (the
-    # never-auto-load contract), never the copy: a skipped plist is placed but
-    # NOT appended to CHANGED_LABELS, so launchctl_reload is never called on it.
-    if [[ -f "$target" ]] && cmp -s "$staged" "$target"; then
-        if [[ $skip -eq 1 ]]; then
-            note "OK   $target (matches repo; opt-in daemon — not loaded, activate by hand)"
+    # Substitute the four machine tokens with this box's real values (the
+    # __TOKEN__ template scheme — every committed plist uses it). A surviving
+    # __TOKEN__ is a loud plutil/launchd failure, not a silent wrong-path — the
+    # opposite of the old /Users/<user>/ no-op sed this replaced.
+    sed -e "s|__PYTHON__|$PLIST_PYTHON|g" \
+        -e "s|__REPO__|$REPO_ROOT|g" \
+        -e "s|__HOME__|$HOME_DIR|g" \
+        -e "s|__PATH__|$PLIST_PATH_VALUE|g" \
+        "$plist" > "$staged"
+
+    # A daemon that must NOT auto-load: either a PLIST_SKIP entry (connectors,
+    # config-sync, the legacy single-process daemon) OR a FEATURE daemon the user
+    # didn't opt into (copy_no_load). Both are still COPIED — D8: ALWAYS stage +
+    # copy even a not-loaded plist so it LANDS in ~/Library/LaunchAgents and the
+    # documented `launchctl load …` / hand-load succeeds from the canonical path.
+    # The old code `continue`d BEFORE the copy, so a skipped plist never landed
+    # and the manual load failed. A not-loaded plist is placed but NOT appended to
+    # CHANGED_LABELS, so Section 5 never reloads it (the never-auto-load contract).
+    no_load=0
+    [[ $skip -eq 1 || $copy_no_load -eq 1 ]] && no_load=1
+
+    # A symlinked target (legacy install pointing into the repo) must be turned
+    # into a real file regardless of content — cmp reads THROUGH the link, so
+    # never trust an "OK match" on a symlink. Force the ensure_file_copy path.
+    if [[ ! -L "$target" && -f "$target" ]] && cmp -s "$staged" "$target"; then
+        if [[ $no_load -eq 1 ]]; then
+            note "OK   $target (matches repo; not auto-loaded — activate by hand)"
         else
             note "OK   $target (matches repo, no reload needed)"
         fi
     else
         ensure_file_copy "$target" "$staged"
-        if [[ $skip -eq 1 ]]; then
-            note "COPIED $base but NOT loaded (opt-in daemon — activate by hand, see plist header)"
+        if [[ $no_load -eq 1 ]]; then
+            note "COPIED $base but NOT loaded (activate by hand — see plist header / ONBOARDING.md)"
         else
             CHANGED_LABELS+=("$label")
         fi
@@ -538,8 +823,9 @@ log ""
 # run by hand.
 log "[6/6] Writing cmux-watcher LaunchAgent plist (NOT loaded)"
 WATCHER_PLIST="$HOME_DIR/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
-WATCHER_PY="/opt/homebrew/bin/python3"
-[[ -x "$WATCHER_PY" ]] || WATCHER_PY="/usr/bin/python3"
+# Reuse the arch-resolved interpreter from Section 3 (falls back if this section
+# is ever reached standalone).
+WATCHER_PY="${PLIST_PYTHON:-/usr/bin/python3}"
 WATCHER_PLIST_BODY="$(cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -721,7 +1007,11 @@ else
                 date -u +%Y-%m-%dT%H:%M:%SZ > "$MC_MARKER"
                 log "  Loading $MC_SYNC_PLIST (full-auto hourly sync)…"
                 staged_mc="$PLIST_STAGE/$MC_SYNC_PLIST.plist"
-                sed "s|/Users/<user>/|$HOME_DIR/|g" "$REPO_ROOT/launchagents/$MC_SYNC_PLIST.plist" > "$staged_mc"
+                sed -e "s|__PYTHON__|$PLIST_PYTHON|g" \
+                    -e "s|__REPO__|$REPO_ROOT|g" \
+                    -e "s|__HOME__|$HOME_DIR|g" \
+                    -e "s|__PATH__|$PLIST_PATH_VALUE|g" \
+                    "$REPO_ROOT/launchagents/$MC_SYNC_PLIST.plist" > "$staged_mc"
                 ensure_file_copy "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist" "$staged_mc"
                 launchctl_reload "$MC_SYNC_PLIST" "$HOME_DIR/Library/LaunchAgents/$MC_SYNC_PLIST.plist"
                 note "machine-config sync opted in + daemon loaded ($MC_MARKER)"
@@ -735,12 +1025,37 @@ else
 fi
 log ""
 
-# --- summary ----------------------------------------------------------------
+# --- summary + NEXT STEPS runbook -------------------------------------------
+# On --apply the installer RELOADS the always-on set whose plists changed
+# (phase [5]) — those are on by running the installer. The OPT-IN daemons
+# (cmux-watcher, comms, slack-reactor, the single-process daemon) are
+# copy-no-load / skip and must be hand-loaded. So the summary states what is
+# already running vs. what the user still activates by hand. Same runbook in
+# ONBOARDING.md (linked from the README).
 if [[ $APPLY -eq 0 ]]; then
     log "✅ Dry-run complete. Re-run with --apply to make changes."
+    log "   Then follow the activation runbook it prints (also in ONBOARDING.md)."
 else
-    log "✅ Install complete. Verify with:"
-    log "   ls -la ~/.claude/bin"
-    log "   launchctl list | grep com.assistant"
-    log "   stat -f '%Sm' ~/.claude/cache/world.json   # should refresh within 30s"
+    log "✅ Install complete. The always-on set (pulse orchestrator, dashboard"
+    log "   page, todo-server, session-context-watcher, workspace-watcher,"
+    log "   world-scanner) has been (re)loaded by this --apply. Verify:"
+    log "     launchctl list | grep com.assistant"
+    log "     stat -f '%Sm' ~/.claude/cache/world.json   # refreshes within ~30s"
+    log ""
+    log "   OPT-IN features are copied but NOT loaded — enable the ones you want:"
+    log ""
+    log "   ── workspace-signal pings (needed for comms 'needs input') ────────"
+    log "   • launchctl load ~/Library/LaunchAgents/com.mukul.assistant-cmux-watcher.plist"
+    log ""
+    log "   ── Slack comms (bidirectional; needs the cmux-watcher above) ──────"
+    log "   • Set SLACK_BOT_TOKEN in ~/.zprofile, create a private Slack channel,"
+    log "     /invite the bot, then:  ./bin/assistant-comms-setup.sh"
+    log "     (it runs a preflight and prints the exact launchctl line when green)"
+    log ""
+    log "   ── Slack emoji → todo capture ─────────────────────────────────────"
+    log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"
+    log "     launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
+    log ""
+    log "   Re-run anytime:  ./bin/assistant-doctor.py         (preflight health)"
+    log "   Full guide:      ONBOARDING.md"
 fi

@@ -388,10 +388,12 @@ def test_tag_cron_workers(ws):
     ws.ORCH_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
     ws.ORCH_REGISTRY.write_text(json.dumps(oreg))
 
+    # cron cwd is derived from the module's HOME (portable), not a literal
+    architect_cwd = f"{ws.HOME}/.architect/"
     live = {
         "by-ws": {"session_id": "by-ws", "ws_ref": "workspace:9", "cwd": "/somewhere"},
         "by-cwd": {"session_id": "by-cwd", "ws_ref": "workspace:5",
-                   "cwd": "/Users/mukuls/.architect/"},
+                   "cwd": architect_cwd},
         "human": {"session_id": "human", "ws_ref": "workspace:5", "cwd": "/work/repo"},
     }
     ws.tag_cron_workers(live)

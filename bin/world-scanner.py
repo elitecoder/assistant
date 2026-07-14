@@ -370,7 +370,7 @@ def tag_cron_workers(live_sessions):
         ref = w.get("workspace_ref")
         if ref:
             cron_ws_refs.add(ref)
-    cron_cwds = {"/Users/mukuls/.architect"}
+    cron_cwds = {str(HOME / ".architect")}
     for sid, sess in live_sessions.items():
         ws_ref = sess.get("ws_ref")
         cwd = sess.get("cwd") or ""

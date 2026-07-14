@@ -19,7 +19,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>/Users/mukuls/dev/assistant/bin/connectors/spawn-connector.sh</string>
+        <string>__REPO__/bin/connectors/spawn-connector.sh</string>
         <string>github-notifications.py</string>
     </array>
     <!-- F3 defense-in-depth: restart ONLY on a non-zero (unsuccessful)
@@ -36,17 +36,17 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/Users/mukuls/.assistant/logs/connector-github.launchd.out</string>
+    <string>__HOME__/.assistant/logs/connector-github.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mukuls/.assistant/logs/connector-github.launchd.err</string>
+    <string>__HOME__/.assistant/logs/connector-github.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/mukuls</string>
+        <string>__HOME__</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/Users/mukuls</string>
+    <string>__HOME__</string>
 </dict>
 </plist>
