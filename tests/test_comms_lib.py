@@ -157,6 +157,91 @@ def test_slack_cursor_roundtrip(paths: cl.Paths):
     assert cl.read_slack_cursor(paths) == "1700000000.000200"
 
 
+# ─── proposals queue (delivery high-water mark) ─────────────────────────────
+
+def _write_proposals(paths: cl.Paths, *entries: dict) -> None:
+    paths.assistant_dir.mkdir(parents=True, exist_ok=True)
+    paths.proposals.write_text(
+        "".join(json.dumps(e) + "\n" for e in entries))
+
+
+def _lesson(pid: str, status: str = "pending", **extra) -> dict:
+    return {"id": pid, "ts": pid, "type": "lesson", "status": status,
+            "trigger": f"trigger-{pid}", "rule": f"rule-{pid}",
+            "target": "assistant", "scope": "general", **extra}
+
+
+def test_proposals_cursor_initialize_skips_backlog(paths: cl.Paths):
+    # A month-old backlog must NOT deliver — the cursor jumps to the newest id.
+    _write_proposals(paths,
+                     _lesson("2026-06-08T05:14:26.000000Z"),
+                     _lesson("2026-06-10T18:00:29.000000Z"))
+    cl.initialize_proposals_cursor_if_missing(paths)
+    assert cl.read_proposals_cursor(paths) == "2026-06-10T18:00:29.000000Z"
+    assert cl.read_new_proposals(paths) == [], "backlog skipped on first run"
+
+
+def test_proposals_cursor_initialize_empty_when_no_file(paths: cl.Paths):
+    cl.initialize_proposals_cursor_if_missing(paths)
+    assert cl.read_proposals_cursor(paths) == ""
+    # A later proposal is fresh (cursor is "").
+    _write_proposals(paths, _lesson("2026-07-08T10:00:00.000000Z"))
+    fresh = cl.read_new_proposals(paths)
+    assert [e["id"] for e in fresh] == ["2026-07-08T10:00:00.000000Z"]
+
+
+def test_read_new_proposals_only_pending_lessons(paths: cl.Paths):
+    _write_proposals(paths,
+                     _lesson("2026-07-08T10:00:00.000000Z"),
+                     _lesson("2026-07-08T10:00:01.000000Z", status="confirmed"),
+                     {"id": "2026-07-08T10:00:02.000000Z", "type": "pattern",
+                      "status": "pending"},
+                     {"id": "2026-07-08T10:00:03.000000Z", "type": "lesson_audit",
+                      "status": "pending"},
+                     _lesson("2026-07-08T10:00:04.000000Z"))
+    cl.write_proposals_cursor(paths, "")
+    fresh = cl.read_new_proposals(paths)
+    ids = [e["id"] for e in fresh]
+    assert ids == ["2026-07-08T10:00:00.000000Z", "2026-07-08T10:00:04.000000Z"], \
+        "only type=lesson & status=pending deliver; pattern/audit/confirmed skipped"
+
+
+def test_read_new_proposals_respects_cursor_and_order(paths: cl.Paths):
+    # File order is deliberately shuffled; delivery must be oldest-id first.
+    _write_proposals(paths,
+                     _lesson("2026-07-08T10:00:02.000000Z"),
+                     _lesson("2026-07-08T10:00:00.000000Z"),
+                     _lesson("2026-07-08T10:00:01.000000Z"))
+    cl.write_proposals_cursor(paths, "2026-07-08T10:00:00.000000Z")
+    fresh = cl.read_new_proposals(paths)
+    assert [e["id"] for e in fresh] == \
+        ["2026-07-08T10:00:01.000000Z", "2026-07-08T10:00:02.000000Z"]
+
+
+def test_read_new_proposals_limit(paths: cl.Paths):
+    _write_proposals(paths, *[_lesson(f"2026-07-08T10:00:0{i}.000000Z")
+                              for i in range(5)])
+    cl.write_proposals_cursor(paths, "")
+    assert len(cl.read_new_proposals(paths, limit=2)) == 2
+
+
+def test_read_new_proposals_does_not_advance_cursor(paths: cl.Paths):
+    _write_proposals(paths, _lesson("2026-07-08T10:00:00.000000Z"))
+    cl.write_proposals_cursor(paths, "")
+    cl.read_new_proposals(paths)
+    # Reading is side-effect-free — the caller advances only after a good send.
+    assert cl.read_proposals_cursor(paths) == ""
+    assert len(cl.read_new_proposals(paths)) == 1
+
+
+def test_fmt_lesson_proposal_carries_id_and_confirm_hint(paths: cl.Paths):
+    body = cl.fmt_lesson_proposal(
+        _lesson("2026-07-08T10:00:00.000000Z", pattern_count=4))
+    assert "2026-07-08T10:00:00.000000Z" in body, "id must travel in the message"
+    assert "y" in body and "n" in body
+    assert "seen 4" in body
+
+
 # ─── threads.jsonl ──────────────────────────────────────────────────────────
 
 def test_threads_append_and_lookup(paths: cl.Paths):

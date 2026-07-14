@@ -2,9 +2,13 @@
 
 The in-process-daemon variant of the two mechanical, no-LLM loops from
 bin/comms-listen.py (ledger watcher + heartbeat pager). It does NOT carry
-comms-listen.py's inbound warm-session reply loop — that stays in
-comms-listen.py; the single-process daemon is additive and must not double-poll
-the same Slack channel as the standalone daemon.
+comms-listen.py's inbound warm-session reply loop NOR its lesson-proposal
+delivery loop — both stay in comms-listen.py; the single-process daemon is
+additive and must not double-poll the same Slack channel as the standalone
+daemon. (Proposal delivery is coupled to the inbound loop: confirmation happens
+via the warm session's `y`/`n` reply flow, so whichever daemon owns inbound must
+own proposal delivery too — migrate the two together, sharing proposals.cursor,
+never split across processes or they race on the high-water mark.)
 
 Two cooperating jobs, each on its own thread under the shared shutdown Event:
 

@@ -41,6 +41,8 @@ class Paths:
     config: Path
     cursor: Path                 # ledger byte offset (Claude's place in actions-ledger.jsonl)
     slack_cursor: Path           # Slack message-ts offset (the newest inbound ts we've seen)
+    proposals: Path              # proposals.jsonl (lesson/pattern proposals the extractor mines)
+    proposals_cursor: Path       # highest proposal id delivered to Slack (exactly-once high-water mark)
     daemon_hb: Path              # comms session's own heartbeat (the listen daemon writes this)
     threads: Path                # threads.jsonl (sent_msg_ts <-> ledger_key)
     conversation: Path           # conversation.jsonl (durable chat memory, both directions)
@@ -65,6 +67,8 @@ class Paths:
             config=Path(env.get("COMMS_CONFIG", str(assistant_dir / "config.json"))),
             cursor=comms_dir / "ledger.cursor",
             slack_cursor=comms_dir / "slack.cursor",
+            proposals=assistant_dir / "proposals.jsonl",
+            proposals_cursor=comms_dir / "proposals.cursor",
             daemon_hb=comms_dir / "heartbeat.json",
             threads=comms_dir / "threads.jsonl",
             conversation=comms_dir / "conversation.jsonl",
@@ -271,6 +275,29 @@ def fmt_workspace_signal(item: dict[str, Any]) -> str:
     return body
 
 
+def fmt_lesson_proposal(entry: dict[str, Any]) -> str:
+    """Render a pending lesson proposal (from proposals.jsonl) for Slack.
+
+    The extractor mined a recurring pattern and drafted a rule; this asks Mukul
+    to confirm it. The message carries the proposal id so the warm session can
+    confirm THIS proposal (not the newest on disk) when Mukul replies `y` — the
+    warm prompt reads the id back out of the conversation window."""
+    trigger = (entry.get("trigger") or "").strip()
+    rule = (entry.get("rule") or "").strip()
+    target = entry.get("target") or "assistant"
+    count = entry.get("pattern_count")
+    pid = str(entry.get("id") or entry.get("ts") or "?")
+    seen = f" (seen {count}×)" if count else ""
+    head = f"*Lesson proposal*{seen} — reply `y` to add, `n` to drop"
+    body = (
+        f"{head}\n"
+        f"*when* {escape_mrkdwn(trigger)}\n"
+        f"*rule* {escape_mrkdwn(rule)}\n"
+        f"_target={escape_mrkdwn(str(target))} · id=`{escape_mrkdwn(pid)}`_"
+    )
+    return body
+
+
 # --------------------------------------------------------------------------- cursor (ledger byte offset)
 
 def read_ledger_cursor(paths: Paths) -> int:
@@ -324,6 +351,94 @@ def read_new_ledger_lines(paths: Paths) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     return out
+
+
+# --------------------------------------------------------------------------- proposals cursor (delivery high-water mark)
+#
+# proposals.jsonl is a DURABLE queue, not an ephemeral signal stream: the
+# lesson-extractor appends pending proposals, the confirm path rewrites the file
+# in place (flipping status → confirmed). A byte-offset cursor like the ledger's
+# would be corrupted by that in-place rewrite, so we track the highest proposal
+# id we've DELIVERED instead. Proposal ids are ISO-8601-µs timestamps
+# ("2026-07-08T15:42:01.693265Z") — lexicographically AND chronologically
+# ordered — so "id > cursor" is a clean, rewrite-safe high-water mark.
+
+def read_proposals_cursor(paths: "Paths") -> str:
+    """The highest proposal id delivered so far, or "" if none (deliver-all)."""
+    if not paths.proposals_cursor.exists():
+        return ""
+    try:
+        return paths.proposals_cursor.read_text().strip()
+    except OSError:
+        return ""
+
+
+def write_proposals_cursor(paths: "Paths", proposal_id: str) -> None:
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    paths.proposals_cursor.write_text(str(proposal_id))
+
+
+def initialize_proposals_cursor_if_missing(paths: "Paths") -> None:
+    """First run: skip the existing backlog so the daemon never blasts a stale
+    queue of proposals at the operator's phone (there can be hundreds — the
+    pipeline sat dead for weeks before delivery was wired). We set the cursor to
+    the highest id currently on disk; only proposals written AFTER this point
+    deliver. Recoverable: delete proposals.cursor to replay the whole queue.
+
+    Subsequent runs: no-op (resume from the stored high-water mark)."""
+    if paths.proposals_cursor.exists():
+        return
+    highest = ""
+    if paths.proposals.exists():
+        for entry in read_all_proposals(paths):
+            pid = str(entry.get("id") or entry.get("ts") or "")
+            if pid > highest:
+                highest = pid
+    write_proposals_cursor(paths, highest)
+
+
+def read_all_proposals(paths: "Paths") -> list[dict[str, Any]]:
+    """Every proposal on disk, in file order. Malformed/blank lines dropped."""
+    if not paths.proposals.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    with open(paths.proposals) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+    return out
+
+
+def read_new_proposals(paths: "Paths", limit: int | None = None) -> list[dict[str, Any]]:
+    """Return pending LESSON proposals with id > the delivery cursor, oldest
+    first, WITHOUT advancing the cursor (the caller advances it only after a
+    successful send, so a send failure retries next pass).
+
+    Only `type == "lesson"` && `status == "pending"` entries are returned:
+    those are the ones the warm session can actually confirm (pattern /
+    lesson_audit proposals have no confirm path yet, so pinging them would be a
+    dead-end). `limit` caps a single drain so one big extractor batch can't
+    firehose the channel; the remainder delivers on the next pass."""
+    cursor = read_proposals_cursor(paths)
+    fresh: list[dict[str, Any]] = []
+    for entry in read_all_proposals(paths):
+        pid = str(entry.get("id") or entry.get("ts") or "")
+        if not pid or pid <= cursor:
+            continue
+        if entry.get("type") != "lesson" or entry.get("status") != "pending":
+            continue
+        fresh.append(entry)
+    fresh.sort(key=lambda e: str(e.get("id") or e.get("ts") or ""))
+    if limit is not None:
+        return fresh[:limit]
+    return fresh
 
 
 # --------------------------------------------------------------------------- Slack cursor (message-ts offset)
