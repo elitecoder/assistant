@@ -51,6 +51,24 @@ import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
 
+
+def _load_doctor():
+    """The doctor lives at bin/assistant-doctor.py — a HYPHENATED filename that is
+    not a valid module name, so a bare `import assistant_doctor` can never resolve
+    (it silently sent the preflight down its except-and-continue path on every
+    startup). Load it by file path, exactly as tests/test_doctor.py does, and
+    register it under the importable name so the preflight can `import` it."""
+    import importlib.util  # noqa: PLC0415
+    if "assistant_doctor" in sys.modules:
+        return sys.modules["assistant_doctor"]
+    spec = importlib.util.spec_from_file_location(
+        "assistant_doctor",
+        str(Path(__file__).resolve().parent / "assistant-doctor.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["assistant_doctor"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
 HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
@@ -678,7 +696,7 @@ def main() -> int:
     for k, v in comms_lib.load_bedrock_env().items():
         env0.setdefault(k, v)
     try:
-        import assistant_doctor  # bin/ is on sys.path (added at import time)
+        assistant_doctor = _load_doctor()  # hyphenated filename → load by path
         dchecks = assistant_doctor.run_checks(only="slack")
         failed = [c for c in dchecks if c.status == assistant_doctor.FAIL]
         if failed:

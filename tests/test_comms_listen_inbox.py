@@ -323,3 +323,26 @@ def test_reply_no_clear_writes_session_and_skips_clear(env_reply):
     assert "clear_agent" not in rec, "should_clear False must not delegate to clear_session"
     assert rec.get("wrote") is True
     assert out == {"agent": "droid"}
+
+
+# ─── preflight doctor loader (regression: bare `import assistant_doctor` could
+#     never resolve the hyphenated bin/assistant-doctor.py, so the preflight
+#     silently ran its except-and-continue path on every startup) ─────────────
+
+def test_load_doctor_resolves_hyphenated_module():
+    doc = listen._load_doctor()
+    # The real doctor module, usable by the preflight — not an ImportError.
+    assert doc.__name__ == "assistant_doctor"
+    assert hasattr(doc, "run_checks") and hasattr(doc, "FAIL")
+    # It is the SAME module object the tests/doctor tests load (registered in
+    # sys.modules under the importable name), so the preflight's contract holds.
+    assert sys.modules.get("assistant_doctor") is doc
+
+
+def test_load_doctor_runs_slack_checks():
+    # The exact call the preflight makes — proves the loaded module is functional,
+    # not just importable. (On the bug, this line raised ModuleNotFoundError.)
+    doc = listen._load_doctor()
+    checks = doc.run_checks(only="slack")
+    assert isinstance(checks, list) and checks
+    assert all(hasattr(c, "status") and hasattr(c, "name") for c in checks)
