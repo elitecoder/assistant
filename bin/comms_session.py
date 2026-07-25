@@ -305,8 +305,58 @@ def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
     return read_session(paths) or sess
 
 
+def spawned_ledger_path(paths: comms_lib.Paths) -> Path:
+    """Per-INSTANCE record of every warm workspace THIS comms instance spawned.
+    Lives under comms_dir (derived from COMMS_HOME), so two instances with
+    distinct COMMS_HOMEs never see each other's refs — the reconcile scope is the
+    instance, not the machine."""
+    return paths.comms_dir / "spawned-workspaces.json"
+
+
+def read_spawned_refs(paths: comms_lib.Paths) -> list[str]:
+    """The warm workspace refs this instance has spawned (may include dead ones —
+    reconcile prunes them). Empty on missing / malformed ledger."""
+    p = spawned_ledger_path(paths)
+    try:
+        refs = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [r for r in refs if isinstance(r, str)] if isinstance(refs, list) else []
+
+
+def record_spawned_ref(paths: comms_lib.Paths, ws_ref: str) -> None:
+    """Append `ws_ref` to this instance's spawned-workspaces ledger (idempotent,
+    order-preserving). Written atomically so a crash mid-write can't corrupt it."""
+    refs = read_spawned_refs(paths)
+    if ws_ref in refs:
+        return
+    refs.append(ws_ref)
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    p = spawned_ledger_path(paths)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(refs))
+    os.replace(tmp, p)
+
+
+def refs_to_reconcile(spawned: list[str], keep: str | None) -> list[str]:
+    """Pure policy: which of THIS instance's spawned refs to close on reconcile —
+    every spawned ref except `keep`, de-duplicated in first-seen order. Scoping to
+    the instance's OWN ledger (not a machine-wide title scan) is the fix for a
+    second comms instance / a live validation run closing the production session."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ws in spawned:
+        if ws == keep or ws in seen:
+            continue
+        seen.add(ws)
+        out.append(ws)
+    return out
+
+
 def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cover - live cmux I/O
-    """All workspace refs whose title is the warm-session title."""
+    """All workspace refs whose title is the warm-session title, machine-wide.
+    Retained for diagnostics only — reconcile no longer uses it (it closed OTHER
+    instances' warm sessions). Instance-scoped reconcile uses read_spawned_refs."""
     rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
     if rc != 0:
         return []
@@ -321,15 +371,24 @@ def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cov
 
 
 def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
-    """Close every warm-titled workspace except `keep`. The daemon is a
-    singleton, so at most one warm session should exist; any others are orphans
-    from a prior daemon that died without cleanup. Called on startup and after
-    each spawn so leaks self-heal. Title-guarded (close_own_workspace only ever
-    closes an 'assistant-comms (warm)' workspace, never user work)."""
-    for ws in list_warm_workspaces(paths):
-        if ws == keep:
-            continue
+    """Close every warm workspace THIS instance spawned except `keep` — orphans
+    from a prior daemon of the SAME instance that died without cleanup. Called on
+    startup and after each spawn so leaks self-heal.
+
+    Instance-scoped via the spawned-workspaces ledger (read_spawned_refs), NOT a
+    machine-wide title scan: a second comms instance (distinct COMMS_HOME) or a
+    live-validation spawn must never close the production instance's warm session.
+    close_own_workspace stays title-guarded as defense-in-depth. `keep` is pruned
+    from the ledger so it becomes the sole surviving spawned ref."""
+    to_close = refs_to_reconcile(read_spawned_refs(paths), keep)
+    for ws in to_close:
         close_own_workspace(paths, ws, log=log)
+    # Rewrite the ledger to just the kept ref (the survivor); closed refs are gone.
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    p = spawned_ledger_path(paths)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps([keep] if keep else []))
+    os.replace(tmp, p)
 
 
 def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembly, driven live
@@ -389,6 +448,9 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         log(f"no workspace ref in: {out.strip()[:200]}")
         return None
     ws_ref = m.group(0)
+    # Record the ref BEFORE the surface lookup: if any later step early-returns,
+    # this instance's next reconcile still knows to clean up the workspace it made.
+    record_spawned_ref(paths, ws_ref)
 
     rc, out, _ = comms_lib.run_cmd([cmux, "list-pane-surfaces", "--workspace", ws_ref], timeout=15)
     sm = re.search(r"surface:\d+", out)

@@ -236,3 +236,69 @@ def test_clear_session_claude_clears_in_place_and_returns_refreshed(paths: cl.Pa
     assert out["transcript_path"] == "/new-t.jsonl"
     assert out["ws_ref"] == "workspace:5"
     assert out["agent"] == ag.CLAUDE
+
+
+# ─── instance-scoped warm-workspace reconcile (reconcile bug fix) ─────────────
+
+def test_spawned_ledger_roundtrip(paths: cl.Paths):
+    assert cs.read_spawned_refs(paths) == []
+    cs.record_spawned_ref(paths, "workspace:10")
+    cs.record_spawned_ref(paths, "workspace:11")
+    assert cs.read_spawned_refs(paths) == ["workspace:10", "workspace:11"]
+    # Idempotent — a repeat ref is not duplicated.
+    cs.record_spawned_ref(paths, "workspace:10")
+    assert cs.read_spawned_refs(paths) == ["workspace:10", "workspace:11"]
+
+
+def test_read_spawned_refs_bad_json(paths: cl.Paths):
+    p = cs.spawned_ledger_path(paths)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{not json")
+    assert cs.read_spawned_refs(paths) == []
+
+
+def test_refs_to_reconcile_excludes_keep_and_dedupes():
+    # Every spawned ref except keep, first-seen order, de-duplicated.
+    got = cs.refs_to_reconcile(
+        ["workspace:1", "workspace:2", "workspace:1", "workspace:3"],
+        keep="workspace:2")
+    assert got == ["workspace:1", "workspace:3"]
+
+
+def test_refs_to_reconcile_keep_none_closes_all():
+    assert cs.refs_to_reconcile(["workspace:1", "workspace:2"], keep=None) == \
+        ["workspace:1", "workspace:2"]
+
+
+def test_refs_to_reconcile_empty_ledger():
+    assert cs.refs_to_reconcile([], keep="workspace:9") == []
+
+
+def test_reconcile_is_instance_scoped_never_touches_other_instance(tmp_path, monkeypatch):
+    """The bug: reconcile closed EVERY warm-titled workspace machine-wide, so a
+    second comms instance (distinct COMMS_HOME) or a live-validation spawn closed
+    the production instance's warm session. Fix: reconcile only closes refs in
+    THIS instance's own spawned-workspaces ledger."""
+    home_a = tmp_path / "a"; (home_a / ".assistant").mkdir(parents=True)
+    home_b = tmp_path / "b"; (home_b / ".assistant").mkdir(parents=True)
+    paths_a = cl.Paths.from_env({"HOME": str(home_a), "COMMS_HOME": str(home_a)})
+    paths_b = cl.Paths.from_env({"HOME": str(home_b), "COMMS_HOME": str(home_b)})
+
+    # Instance A spawned ws:1; instance B spawned ws:2 (the production session).
+    cs.record_spawned_ref(paths_a, "workspace:1")
+    cs.record_spawned_ref(paths_b, "workspace:2")
+
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda paths, ws, log=lambda m: None: closed.append(ws))
+
+    # Instance A reconciles after respawning ws:3 — it must close only its OWN
+    # orphan (ws:1) and NEVER B's production ws:2.
+    cs.record_spawned_ref(paths_a, "workspace:3")
+    cs.reconcile_warm_workspaces(paths_a, keep="workspace:3")
+
+    assert "workspace:2" not in closed, "reconcile must not touch another instance's session"
+    assert closed == ["workspace:1"]
+    # B's ledger is untouched; A's ledger now holds only the survivor.
+    assert cs.read_spawned_refs(paths_b) == ["workspace:2"]
+    assert cs.read_spawned_refs(paths_a) == ["workspace:3"]
