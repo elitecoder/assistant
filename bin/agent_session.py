@@ -136,25 +136,37 @@ def trust_marker(agent: str) -> str | None:
     return _TRUST_MARKER.get(agent)
 
 
-def _config_agent() -> str | None:
-    """The dispatch-agent choice persisted at INSTALL time in
-    ``~/.assistant/comms/config.json`` (``{"dispatch": {"agent": "claude"|
-    "droid"}}``) — how the operator picks Droid or Claude without editing an env
-    var. None when absent / unreadable / not a known agent. Read per-call from
-    $HOME so a tmp-home test sees its own config."""
-    import json  # noqa: PLC0415
+def _read_comms_config() -> dict | None:
+    """The comms config dict at ``~/.assistant/comms/config.json``, or None when
+    absent / unreadable / not a JSON object. Read per-call from $HOME so a
+    tmp-home test sees its own config."""
     home = Path(os.environ.get("HOME", str(Path.home())))
     try:
         raw = json.loads(
             (home / ".assistant" / "comms" / "config.json").read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(raw, dict):
-        return None
-    v = (raw.get("dispatch") or {}).get("agent") if isinstance(
-        raw.get("dispatch"), dict) else None
-    v = v.strip().lower() if isinstance(v, str) else ""
+    return raw if isinstance(raw, dict) else None
+
+
+def _cfg_agent(raw: dict | None, *keys: str) -> str | None:
+    """Walk ``keys`` into ``raw`` (each level must be a dict), returning the
+    leaf value lower-cased iff it names a known agent, else None."""
+    node: object = raw
+    for k in keys:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(k)
+    v = node.strip().lower() if isinstance(node, str) else ""
     return v if v in AGENTS else None
+
+
+def _config_agent() -> str | None:
+    """The dispatch-agent choice persisted at INSTALL time in
+    ``~/.assistant/comms/config.json`` (``{"dispatch": {"agent": "claude"|
+    "droid"}}``) — how the operator picks Droid or Claude without editing an env
+    var. None when absent / unreadable / not a known agent."""
+    return _cfg_agent(_read_comms_config(), "dispatch", "agent")
 
 
 def dispatch_agent(env: dict | None = None) -> str:
@@ -162,7 +174,9 @@ def dispatch_agent(env: dict | None = None) -> str:
     detection. Precedence:
       1. the ASSISTANT_DISPATCH_AGENT env override (one-off / testing);
       2. the INSTALL-TIME choice persisted in comms/config.json (dispatch.agent);
-      3. the coexistence default ``claude`` — the always-present agent, so a
+      3. the global ``llm.provider`` knob (the ONE-KNOB rule: setting
+         ``llm.provider: droid`` makes spawns follow headless calls);
+      4. the coexistence default ``claude`` — the always-present agent, so a
          droid-less box never spawns a dead workspace by default.
     Passing ``env`` explicitly selects PURE env policy (no config read) — the
     shape the unit tests pin; production calls with no arg, so the operator's
@@ -174,7 +188,30 @@ def dispatch_agent(env: dict | None = None) -> str:
     v = (os.environ.get("ASSISTANT_DISPATCH_AGENT") or "").strip().lower()
     if v in AGENTS:
         return v
-    return _config_agent() or CLAUDE
+    raw = _read_comms_config()
+    return (_cfg_agent(raw, "dispatch", "agent")
+            or _cfg_agent(raw, "llm", "provider")
+            or CLAUDE)
+
+
+def warm_agent(env: dict | None = None) -> str:
+    """Which agent to spawn for the comms WARM session. Precedence:
+      1. the ASSISTANT_COMMS_AGENT override (from ``env`` when given, else the
+         process environment);
+      2. ``llm.features.comms.provider`` in comms/config.json (comms-only pin);
+      3. the global ``llm.provider`` knob (comms follows the one-knob default);
+      4. the coexistence default ``claude``.
+    Config is always consulted (unlike ``dispatch_agent``'s pure-env shape); the
+    ``env`` arg only redirects where the ASSISTANT_COMMS_AGENT override is read
+    from, so a test can inject one without touching the process environment."""
+    src = os.environ if env is None else env
+    v = (src.get("ASSISTANT_COMMS_AGENT") or "").strip().lower()
+    if v in AGENTS:
+        return v
+    raw = _read_comms_config()
+    return (_cfg_agent(raw, "llm", "features", "comms", "provider")
+            or _cfg_agent(raw, "llm", "provider")
+            or CLAUDE)
 
 
 def agent_available(agent: str) -> bool:

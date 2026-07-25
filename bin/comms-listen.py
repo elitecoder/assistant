@@ -47,6 +47,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
 
@@ -160,7 +161,11 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
         in_args += ["--reply-to", str(reply_to)]
     cli(in_args, timeout=10)
 
-    transcript = sess.get("transcript_path") or comms_session.newest_transcript(sess["cwd"])
+    # Thread the session's provider through every transcript-root / context call:
+    # a Droid session writes under ~/.factory/sessions with no usage block, so a
+    # claude default here would read the wrong root and never clear (G3).
+    agent = sess.get("agent") or agent_session.CLAUDE
+    transcript = sess.get("transcript_path") or comms_session.newest_transcript(sess["cwd"], agent)
     before_lines = comms_session.transcript_line_count(transcript) if transcript else 0
 
     # Feed the message as a user turn. The warm session's boot prompt tells it
@@ -180,19 +185,16 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
             grew = True
             break
         if not transcript:
-            transcript = comms_session.newest_transcript(sess["cwd"])
+            transcript = comms_session.newest_transcript(sess["cwd"], agent)
     log(f"reply channel={channel} msg={msg_ts} grew={grew} wall_ms={int((time.time()-t0)*1000)}")
 
-    # Context management: clear-and-resume at >= 50%.
-    if transcript and comms_session.should_clear(transcript):
-        log(f"context >= {int(comms_session.CLEAR_THRESHOLD*100)}% — clear-and-resume")
-        comms_session.clear_session(paths, sess["surface_ref"], WARM_PROMPT)
-        new_t = comms_session.newest_transcript(sess["cwd"])
-        if new_t:
-            comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
-                                        sess["cwd"], new_t)
-            sess = comms_session.read_session(paths) or sess
-            return sess
+    # Context management: clear-and-resume at >= 50% (claude) or the size proxy
+    # (droid). should_clear + clear_session are provider-aware; for droid a
+    # "clear" is a lossless respawn since durable memory lives in conversation.jsonl.
+    # clear_session owns the registry update and returns the refreshed record.
+    if transcript and comms_session.should_clear(transcript, agent=agent):
+        log(f"context threshold reached ({agent}) — clear-and-resume")
+        return comms_session.clear_session(paths, sess, WARM_PROMPT, agent=agent, log=log)
 
     if transcript and transcript != sess.get("transcript_path"):
         comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],

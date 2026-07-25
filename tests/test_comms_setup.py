@@ -35,6 +35,14 @@ from tempfile import TemporaryDirectory
 REPO = Path(__file__).resolve().parent.parent
 SETUP = REPO / "bin" / "assistant-comms-setup.sh"
 
+# Import the REAL provider consumers so a test can prove the knob the script
+# writes is reachable by the code that resolves it at runtime (llm_runner for
+# headless calls, agent_session for spawns). This is the assertion that would
+# have caught the write-to-the-wrong-file bug.
+sys.path.insert(0, str(REPO / "bin"))
+import llm_runner  # noqa: E402
+import agent_session  # noqa: E402
+
 OK_AUTH = '{"ok":true,"user_id":"U0BOT","team":"TestTeam"}'
 FAIL_AUTH = '{"ok":false,"error":"invalid_auth"}'
 
@@ -64,7 +72,7 @@ sys.exit(int(os.environ.get("DOCTOR_EXIT", "0")))
 class CommsSetupTests(unittest.TestCase):
     def _run(self, *, token="xoxb-test-fake", ping_target="C0TEST123",
              auth_json=OK_AUTH, send_exit=0, doctor_exit=0,
-             seed_config=None):
+             seed_config=None, seed_comms_config=None, llm_provider=None):
         """Run the REAL setup script in a fake repo (stubbed bin/) + isolated
         $HOME. Returns (proc, home_path, send_log_lines, doctor_log_lines)."""
         self._td = TemporaryDirectory()
@@ -72,7 +80,7 @@ class CommsSetupTests(unittest.TestCase):
         home = root / "home"
         fake_repo = root / "repo"
         stubbin = root / "stubbin"
-        for d in (home / ".assistant", fake_repo / "bin", stubbin):
+        for d in (home / ".assistant" / "comms", fake_repo / "bin", stubbin):
             d.mkdir(parents=True)
 
         # Copy the REAL script verbatim → REPO_DIR resolves to fake_repo, so it
@@ -87,6 +95,9 @@ class CommsSetupTests(unittest.TestCase):
 
         if seed_config is not None:
             (home / ".assistant" / "config.json").write_text(json.dumps(seed_config))
+        if seed_comms_config is not None:
+            (home / ".assistant" / "comms" / "config.json").write_text(
+                json.dumps(seed_comms_config))
 
         send_log = root / "send.log"
         doctor_log = root / "doctor.log"
@@ -104,6 +115,8 @@ class CommsSetupTests(unittest.TestCase):
             env["SLACK_BOT_TOKEN"] = token
         if ping_target is not None:
             env["SLACK_PING_TARGET"] = ping_target
+        if llm_provider is not None:
+            env["ASSISTANT_LLM_PROVIDER"] = llm_provider
 
         proc = subprocess.run(
             ["zsh", str(fake_repo / "bin" / "assistant-comms-setup.sh")],
@@ -115,6 +128,13 @@ class CommsSetupTests(unittest.TestCase):
 
     def _config(self, home: Path) -> dict:
         p = home / ".assistant" / "config.json"
+        return json.loads(p.read_text()) if p.exists() else {}
+
+    def _comms_config(self, home: Path) -> dict:
+        """The COMMS config (~/.assistant/comms/config.json) — the file every
+        provider consumer (llm_runner, agent_session) actually reads. The
+        one-knob llm.provider lands HERE, not in the Slack routing config."""
+        p = home / ".assistant" / "comms" / "config.json"
         return json.loads(p.read_text()) if p.exists() else {}
 
     # ── happy path ──────────────────────────────────────────────────────────
@@ -152,6 +172,84 @@ class CommsSetupTests(unittest.TestCase):
         # … and the target is updated + the gate follows it.
         self.assertEqual(cfg["slack"]["target"], "C0NEW456")
         self.assertEqual(cfg["slack"]["allowed_targets"], ["C0NEW456"])
+
+    # ── llm.provider one-knob ────────────────────────────────────────────────
+    # The knob is persisted to the COMMS config (~/.assistant/comms/config.json)
+    # — the ONLY file the provider consumers read. Every assertion below reads
+    # back from THAT file (self._comms_config), and the send-gate assertions
+    # confirm the Slack routing config is untouched by the provider write.
+
+    def test_env_provider_droid_persists(self):
+        _, home, _, _ = self._run(llm_provider="droid")
+        self.assertEqual(self._comms_config(home)["llm"]["provider"], "droid")
+        # slack.* + the send-gate live in the OTHER file and stay intact.
+        slack_cfg = self._config(home)
+        self.assertEqual(slack_cfg["slack"]["target"], "C0TEST123")
+        self.assertEqual(slack_cfg["slack"]["allowed_targets"], ["C0TEST123"])
+        # The Slack routing config must NOT carry the (inert) llm key.
+        self.assertNotIn("llm", slack_cfg)
+
+    def test_env_provider_unset_keeps_existing(self):
+        seed_comms = {"llm": {"provider": "droid", "droid": {"model": "glm-5.2"}}}
+        _, home, _, _ = self._run(
+            ping_target="C0NEW456",
+            seed_config={"slack": {"target": "COLD", "allowed_targets": ["COLD"]}},
+            seed_comms_config=seed_comms)
+        comms = self._comms_config(home)
+        # no env → existing provider (and its sibling keys) survive.
+        self.assertEqual(comms["llm"]["provider"], "droid")
+        self.assertEqual(comms["llm"]["droid"], {"model": "glm-5.2"})
+        # send-gate still follows the new target.
+        slack_cfg = self._config(home)
+        self.assertEqual(slack_cfg["slack"]["target"], "C0NEW456")
+        self.assertEqual(slack_cfg["slack"]["allowed_targets"], ["C0NEW456"])
+
+    def test_env_provider_unset_no_existing_defaults_claude(self):
+        _, home, _, _ = self._run()
+        self.assertEqual(self._comms_config(home)["llm"]["provider"], "claude")
+
+    def test_env_provider_invalid_coerces_to_claude(self):
+        _, home, _, _ = self._run(llm_provider="gpt5")
+        self.assertEqual(self._comms_config(home)["llm"]["provider"], "claude")
+        # send-gate unaffected by the coercion.
+        self.assertEqual(self._config(home)["slack"]["allowed_targets"],
+                         ["C0TEST123"])
+
+    def test_env_provider_overrides_existing(self):
+        _, home, _, _ = self._run(
+            ping_target="C0NEW456", llm_provider="droid",
+            seed_config={"slack": {"target": "COLD", "allowed_targets": ["COLD"]}},
+            seed_comms_config={"llm": {"provider": "claude"}})
+        self.assertEqual(self._comms_config(home)["llm"]["provider"], "droid")
+        self.assertEqual(self._config(home)["slack"]["allowed_targets"],
+                         ["C0NEW456"])
+
+    def test_persisted_provider_is_reachable_by_real_consumers(self):
+        """The knob the script writes must be observed by the ACTUAL runtime
+        resolvers — llm_runner (headless) and agent_session (spawns) — not just
+        readable from the file the script happens to write. This is the G4/G5
+        proof: point both consumers at the setup-written config and confirm they
+        resolve droid. (Reading from the wrong file makes this go RED.)"""
+        _, home, _, _ = self._run(llm_provider="droid")
+        # 1) headless path: llm_runner.config_path($HOME) is exactly the file the
+        #    script wrote; load_route_config must resolve droid from llm.provider.
+        cfg_path = llm_runner.config_path(home=home, env={})
+        self.assertEqual(
+            cfg_path, home / ".assistant" / "comms" / "config.json")
+        route = llm_runner.load_route_config(cfg_path, "triage", env={})
+        self.assertEqual(route.provider, "droid")
+        # 2) spawn path: agent_session reads $HOME/.assistant/comms/config.json;
+        #    warm_agent()/dispatch_agent() must follow the same llm.provider knob.
+        prev_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        try:
+            self.assertEqual(agent_session.warm_agent(env={}), "droid")
+            self.assertEqual(agent_session.dispatch_agent(), "droid")
+        finally:
+            if prev_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = prev_home
 
     def test_doctor_preflight_is_invoked_slack_strict(self):
         _, _, _, doctor_lines = self._run()
