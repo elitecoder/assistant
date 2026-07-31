@@ -28,10 +28,18 @@ import time
 from pathlib import Path
 from typing import Any
 
+import agent_session
 import comms_lib
 
 HOME = Path(os.environ["HOME"])
 CLEAR_THRESHOLD = float(os.environ.get("COMMS_CLEAR_FRACTION", "0.5"))
+# Droid transcripts carry NO usage/token block (verified live 2026-07-25 — only
+# session_start/message/todo_state records), so the Claude usage-fraction path
+# would peg should_clear() at False forever. Instead we proxy context growth by
+# on-disk transcript size. The default approximates ~50% of the 1M-token window:
+# a JSONL turn is roughly 4 bytes per context token once JSON framing + repeated
+# content are counted, so ~500k tokens ≈ 2 MB. Env-overridable per box.
+DROID_CLEAR_BYTES = int(os.environ.get("COMMS_DROID_CLEAR_BYTES", str(2_000_000)))
 SESSION_TITLE = "assistant-comms (warm)"
 # The warm session's cwd = this repo checkout (its own code + boot prompt), NOT
 # a hardcoded ~/dev/assistant — derive it from this file (bin/comms_session.py →
@@ -64,13 +72,22 @@ def read_session(paths: comms_lib.Paths) -> dict[str, Any] | None:
 
 
 def write_session(paths: comms_lib.Paths, ws_ref: str, surface_ref: str,
-                  cwd: str, transcript_path: str | None, clock=None) -> None:
+                  cwd: str, transcript_path: str | None,
+                  agent: str | None = None, clock=None) -> None:
+    """Persist the warm-session registry. `agent` records which provider owns
+    the session so post-restart reads pick the right transcript root + schema.
+    agent=None means "preserve the persisted choice" — used by the transcript-
+    refresh call path, which must NOT silently reset a droid session to claude;
+    it reuses the prior record's agent, falling back to the coexistence default."""
     paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    if agent is None:
+        agent = (read_session(paths) or {}).get("agent") or agent_session.CLAUDE
     rec = {
         "ws_ref": ws_ref,
         "surface_ref": surface_ref,
         "cwd": cwd,
         "transcript_path": transcript_path,
+        "agent": agent,
         "spawned_ts": (clock() if clock else int(time.time())),
     }
     p = session_registry_path(paths)
@@ -87,15 +104,17 @@ def clear_session_registry(paths: comms_lib.Paths) -> None:
 
 # --------------------------------------------------------------------------- transcript (pure)
 
-def project_dir_for_cwd(cwd: str) -> Path:
-    """Claude Code stores a session's JSONL under ~/.claude/projects/<slug>
-    where slug = the realpath with '/' → '-'."""
-    cwd_real = os.path.realpath(cwd)
-    return HOME / ".claude/projects" / cwd_real.replace("/", "-")
+def project_dir_for_cwd(cwd: str, agent: str = agent_session.CLAUDE) -> Path:
+    """Per-cwd transcript dir a warm `agent` session writes into. Claude:
+    ~/.claude/projects/<slug>; Droid: ~/.factory/sessions/<slug>. slug = the
+    realpath with '/' → '-'. Delegates to agent_session.confirm_dir (the single
+    source of truth for both roots), rooted at this module's HOME so a tmp-home
+    test resolves against its own tree."""
+    return agent_session.confirm_dir(agent, cwd, home=HOME)
 
 
-def newest_transcript(cwd: str) -> str | None:
-    pdir = project_dir_for_cwd(cwd)
+def newest_transcript(cwd: str, agent: str = agent_session.CLAUDE) -> str | None:
+    pdir = project_dir_for_cwd(cwd, agent)
     if not pdir.is_dir():
         return None
     jsonls = sorted(pdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -104,7 +123,10 @@ def newest_transcript(cwd: str) -> str | None:
 
 def last_assistant_text(transcript_path: str | Path) -> str | None:
     """Extract the most recent assistant turn's text content from a transcript.
-    Returns None if there is no assistant turn yet."""
+    Returns None if there is no assistant turn yet. Schema-agnostic: the role is
+    resolved via agent_session.record_role, which normalizes both the Claude
+    (type=="assistant") and Droid (type=="message" + message.role) schemas; the
+    content-block shape is identical across agents."""
     p = Path(transcript_path)
     if not p.exists():
         return None
@@ -118,7 +140,7 @@ def last_assistant_text(transcript_path: str | Path) -> str | None:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("type") != "assistant":
+            if agent_session.record_role(rec) != "assistant":
                 continue
             msg = rec.get("message")
             if not isinstance(msg, dict):
@@ -152,8 +174,22 @@ def transcript_line_count(transcript_path: str | Path) -> int:
 
 
 def should_clear(transcript_path: str | Path,
-                 threshold: float = CLEAR_THRESHOLD) -> bool:
-    """True when context usage has reached the /clear threshold (default 50%)."""
+                 threshold: float = CLEAR_THRESHOLD,
+                 agent: str = agent_session.CLAUDE,
+                 droid_clear_bytes: int = DROID_CLEAR_BYTES) -> bool:
+    """True when the warm session's context has grown enough to warrant a clear.
+
+    claude: use the per-turn usage block Claude Code records — live context
+    fraction >= threshold (default 50% of the 1M window).
+
+    droid: Droid transcripts have NO usage block, so read_context_tokens returns
+    None and the fraction path would be perpetually False. Proxy with on-disk
+    transcript size instead: >= droid_clear_bytes (COMMS_DROID_CLEAR_BYTES,
+    default ~2 MB ≈ 50% window). Deterministic and unit-testable; the "clear" it
+    triggers is a lossless respawn (durable memory lives in conversation.jsonl)."""
+    if agent == agent_session.DROID:
+        p = Path(transcript_path)
+        return p.exists() and p.stat().st_size >= droid_clear_bytes
     tokens = comms_lib.read_context_tokens(transcript_path)
     return comms_lib.context_fraction(tokens) >= threshold
 
@@ -223,20 +259,31 @@ def feed(paths: comms_lib.Paths, surface_ref: str, text: str) -> None:  # pragma
     _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
 
-def clear_session(paths: comms_lib.Paths, surface_ref: str, boot_prompt: Path) -> None:  # pragma: no cover - live cmux I/O
-    """Clear-AND-resume: reset the context window, then immediately re-deliver
-    the boot prompt so the fresh session reloads its identity + tools.
+def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
+                  agent: str = agent_session.CLAUDE,
+                  log=lambda m: None) -> dict:  # pragma: no cover - live cmux I/O
+    """Clear-AND-resume: reset the context window losslessly, then return the
+    refreshed session record. Per-message thread continuity comes from
+    conversation.jsonl (the boot prompt tells the session to reconstruct it), so
+    a reset loses nothing.
 
-    A bare /clear would wipe the warm session's briefing (delivered as a
-    conversation turn at spawn), leaving a generic un-briefed Claude that no
-    longer knows it's the assistant. We always resume with the SAME prompt —
-    per-message thread continuity comes from conversation.jsonl, which the boot
-    prompt tells it to reconstruct. So this is lossless.
+    claude — in-place /clear + resume: send /clear (as text, then an explicit
+    Enter keystroke; a trailing newline inside send_text does NOT reliably submit
+    a slash command), POLL for the post-clear "Welcome back" screen (feeding
+    during the ~2s reset window gets keystrokes swallowed), re-deliver the boot
+    prompt, then update the registry with the new transcript. The workspace and
+    surface are unchanged.
 
-    Send /clear as text, then an explicit Enter keystroke. A trailing newline
-    inside send_text does NOT reliably submit a slash command. Then POLL for the
-    post-clear "Welcome back" screen before re-feeding — feeding during the ~2s
-    reset window gets keystrokes swallowed."""
+    droid — respawn: Droid has no /clear slash command with the same semantics,
+    so the lossless equivalent is to close this warm workspace and spawn a fresh
+    one (a brand-new ws/surface/transcript). close_own_workspace is title-guarded
+    to the warm-session title, so it never touches user work."""
+    if agent == agent_session.DROID:
+        close_own_workspace(paths, sess["ws_ref"], log=log)
+        clear_session_registry(paths)
+        return spawn_session(paths, boot_prompt, log=log, agent=agent) or sess
+
+    surface_ref = sess["surface_ref"]
     _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "/clear"})
     time.sleep(0.5)
     _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
@@ -251,9 +298,65 @@ def clear_session(paths: comms_lib.Paths, surface_ref: str, boot_prompt: Path) -
     instruction = f"Read {boot_prompt} in full and execute every instruction in it."
     feed(paths, surface_ref, instruction)
 
+    new_t = newest_transcript(sess["cwd"], agent)
+    if new_t:
+        write_session(paths, sess["ws_ref"], surface_ref, sess["cwd"], new_t,
+                      agent=agent)
+    return read_session(paths) or sess
+
+
+def spawned_ledger_path(paths: comms_lib.Paths) -> Path:
+    """Per-INSTANCE record of every warm workspace THIS comms instance spawned.
+    Lives under comms_dir (derived from COMMS_HOME), so two instances with
+    distinct COMMS_HOMEs never see each other's refs — the reconcile scope is the
+    instance, not the machine."""
+    return paths.comms_dir / "spawned-workspaces.json"
+
+
+def read_spawned_refs(paths: comms_lib.Paths) -> list[str]:
+    """The warm workspace refs this instance has spawned (may include dead ones —
+    reconcile prunes them). Empty on missing / malformed ledger."""
+    p = spawned_ledger_path(paths)
+    try:
+        refs = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [r for r in refs if isinstance(r, str)] if isinstance(refs, list) else []
+
+
+def record_spawned_ref(paths: comms_lib.Paths, ws_ref: str) -> None:
+    """Append `ws_ref` to this instance's spawned-workspaces ledger (idempotent,
+    order-preserving). Written atomically so a crash mid-write can't corrupt it."""
+    refs = read_spawned_refs(paths)
+    if ws_ref in refs:
+        return
+    refs.append(ws_ref)
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    p = spawned_ledger_path(paths)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(refs))
+    os.replace(tmp, p)
+
+
+def refs_to_reconcile(spawned: list[str], keep: str | None) -> list[str]:
+    """Pure policy: which of THIS instance's spawned refs to close on reconcile —
+    every spawned ref except `keep`, de-duplicated in first-seen order. Scoping to
+    the instance's OWN ledger (not a machine-wide title scan) is the fix for a
+    second comms instance / a live validation run closing the production session."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ws in spawned:
+        if ws == keep or ws in seen:
+            continue
+        seen.add(ws)
+        out.append(ws)
+    return out
+
 
 def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cover - live cmux I/O
-    """All workspace refs whose title is the warm-session title."""
+    """All workspace refs whose title is the warm-session title, machine-wide.
+    Retained for diagnostics only — reconcile no longer uses it (it closed OTHER
+    instances' warm sessions). Instance-scoped reconcile uses read_spawned_refs."""
     rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
     if rc != 0:
         return []
@@ -268,21 +371,63 @@ def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cov
 
 
 def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
-    """Close every warm-titled workspace except `keep`. The daemon is a
-    singleton, so at most one warm session should exist; any others are orphans
-    from a prior daemon that died without cleanup. Called on startup and after
-    each spawn so leaks self-heal. Title-guarded (close_own_workspace only ever
-    closes an 'assistant-comms (warm)' workspace, never user work)."""
-    for ws in list_warm_workspaces(paths):
-        if ws == keep:
-            continue
+    """Close every warm workspace THIS instance spawned except `keep` — orphans
+    from a prior daemon of the SAME instance that died without cleanup. Called on
+    startup and after each spawn so leaks self-heal.
+
+    Instance-scoped via the spawned-workspaces ledger (read_spawned_refs), NOT a
+    machine-wide title scan: a second comms instance (distinct COMMS_HOME) or a
+    live-validation spawn must never close the production instance's warm session.
+    close_own_workspace stays title-guarded as defense-in-depth. `keep` is pruned
+    from the ledger so it becomes the sole surviving spawned ref."""
+    to_close = refs_to_reconcile(read_spawned_refs(paths), keep)
+    for ws in to_close:
         close_own_workspace(paths, ws, log=log)
+    # Rewrite the ledger to just the kept ref (the survivor); closed refs are gone.
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    p = spawned_ledger_path(paths)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps([keep] if keep else []))
+    os.replace(tmp, p)
 
 
-def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None) -> dict | None:  # pragma: no cover - live cmux I/O
-    """Spawn a fresh warm cmux Claude session and deliver the responder boot
-    prompt. Returns the session record on success, None on failure. Mirrors
-    pulse.py's proven dispatch sequence."""
+def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembly, driven live
+    """The cmux `--command` string for a warm `agent` session.
+
+    claude: the explicit binary + flags (NOT the bare `claude` alias, which is
+    Opus). The full path means the login shell's alias doesn't apply. Quote the
+    model slug — the [1m] brackets are shell glob chars. Scope to its OWN
+    surface: ~/dev/assistant (its code + boot prompt — so it can evolve its own
+    behavior) + ~/.assistant (runtime state: conversation.jsonl, session.json) +
+    ~/.architect (reads Assistant's proposals/ledger) + /tmp. Deliberately NOT
+    ~/.claude (global CLAUDE.md + settings.json — a session must not widen its
+    own rules/permissions) and NOT all of ~/dev. Lesson-writing still works via a
+    subprocess (assistant-curator.py) gated by an explicit human `y`.
+
+    droid: the single-source launch_command(DROID) — settings + --auto high +
+    optional --append-system-prompt-file. Droid scopes via --cwd + its settings,
+    so we invent NO --add-dir here; the caller passes --cwd."""
+    if agent == agent_session.DROID:
+        return agent_session.launch_command(agent, home=HOME)
+    return (
+        f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(WARM_MODEL)} "
+        f"--dangerously-skip-permissions "
+        f"--add-dir {shlex.quote(str(REPO_ROOT))} --add-dir {shlex.quote(str(HOME / '.assistant'))} "
+        f"--add-dir {shlex.quote(str(HOME / '.architect'))} --add-dir /tmp"
+    )
+
+
+def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
+                  agent: str | None = None) -> dict | None:  # pragma: no cover - live cmux I/O
+    """Spawn a fresh warm cmux session and deliver the responder boot prompt.
+    Returns the session record on success, None on failure. Mirrors pulse.py's
+    proven dispatch sequence.
+
+    Provider comes from agent_session.warm_agent() (env → comms pin → llm.provider
+    → claude) unless the caller pins `agent`. The launch, readiness gate, and
+    trust-prompt auto-answer are all resolved per-agent through agent_session so
+    Claude's behavior is byte-identical to before while Droid gets its own."""
+    agent = agent or agent_session.warm_agent()
     cmux = str(paths.cmux_bin)
     rc, _, _ = comms_lib.run_cmd([cmux, "ping"], timeout=10)
     if rc != 0:
@@ -290,22 +435,7 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None)
         return None
 
     cwd = str(DISPATCH_CWD)
-    # Explicit binary + flags (NOT the bare `claude` alias, which is Opus). The
-    # full path means the login shell's alias doesn't apply. Quote the model
-    # slug — the [1m] brackets are shell glob chars.
-    # Scope to its OWN surface: ~/dev/assistant (its code + boot prompt — so it
-    # can evolve its own behavior) + ~/.assistant (runtime state it writes:
-    # conversation.jsonl, session.json) + ~/.architect (reads Assistant's
-    # proposals/ledger) + /tmp. Deliberately NOT ~/.claude (global CLAUDE.md
-    # rules + settings.json — a session must not widen its own rules/permissions)
-    # and NOT all of ~/dev. The lesson-writing path still works via a subprocess
-    # (assistant-curator.py) gated by an explicit human `y`.
-    launch = (
-        f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(WARM_MODEL)} "
-        f"--dangerously-skip-permissions "
-        f"--add-dir {shlex.quote(str(REPO_ROOT))} --add-dir {shlex.quote(str(HOME / '.assistant'))} "
-        f"--add-dir {shlex.quote(str(HOME / '.architect'))} --add-dir /tmp"
-    )
+    launch = _warm_launch(agent)
     rc, out, err = comms_lib.run_cmd(
         [cmux, "new-workspace", "--cwd", cwd, "--name", SESSION_TITLE,
          "--focus", "false", "--command", launch], timeout=30)
@@ -318,6 +448,9 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None)
         log(f"no workspace ref in: {out.strip()[:200]}")
         return None
     ws_ref = m.group(0)
+    # Record the ref BEFORE the surface lookup: if any later step early-returns,
+    # this instance's next reconcile still knows to clean up the workspace it made.
+    record_spawned_ref(paths, ws_ref)
 
     rc, out, _ = comms_lib.run_cmd([cmux, "list-pane-surfaces", "--workspace", ws_ref], timeout=15)
     sm = re.search(r"surface:\d+", out)
@@ -326,26 +459,29 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None)
         return None
     surface_ref = sm.group(0)
 
-    project_dir = project_dir_for_cwd(cwd)
+    project_dir = project_dir_for_cwd(cwd, agent)
     project_dir.mkdir(parents=True, exist_ok=True)
     before = {p.name for p in project_dir.glob("*.jsonl")}
 
-    # Trust prompt (first launch in a never-used cwd).
+    # Trust prompt (first launch in a never-used cwd). Claude has a known
+    # auto-answerable line; droid's trust_marker is None → skip (never misfires).
     time.sleep(2)
-    if "1. Yes, I trust this folder" in _surface_read_text(paths, surface_ref):
+    trust = agent_session.trust_marker(agent)
+    if trust and trust in _surface_read_text(paths, surface_ref):
         _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "1"})
         _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
-    # Readiness: banner OR bottom status bar (mode-independent).
+    # Readiness: the per-agent boot-screen regex (banner or status bar).
+    ready_re = agent_session.ready_re(agent)
     ready = False
     for _ in range(30):
         screen = _surface_read_text(paths, surface_ref)
-        if "Claude Code v" in screen or "bypass permissions on" in screen:
+        if ready_re.search(screen):
             ready = True
             break
         time.sleep(1)
     if not ready:
-        log(f"claude never ready in {ws_ref}/{surface_ref}")
+        log(f"{agent} never ready in {ws_ref}/{surface_ref}")
         return None
 
     # Deliver the responder boot prompt by reference.
@@ -368,10 +504,10 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None)
         time.sleep(1)
 
     if not transcript:
-        transcript = newest_transcript(cwd)
+        transcript = newest_transcript(cwd, agent)
         log(f"warm session {ws_ref} spawned but boot submission unconfirmed")
 
-    write_session(paths, ws_ref, surface_ref, cwd, transcript)
+    write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent)
     log(f"warm session ready: {ws_ref} / {surface_ref} (transcript={transcript})")
     reconcile_warm_workspaces(paths, keep=ws_ref, log=log)
     return read_session(paths)

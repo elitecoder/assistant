@@ -29,7 +29,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path(os.environ["HOME"])
-PROJECTS_DIR = HOME / ".claude/projects"
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ORCHESTRATOR_REGISTRY = HOME / ".architect/orchestrator-registry.json"

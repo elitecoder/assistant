@@ -3,8 +3,8 @@
 The script is a hyphenated CLI (not an importable module name), so it's loaded
 by file path via importlib. The module binds HOME-derived path constants AT
 IMPORT, so we set os.environ["HOME"] to a tmp dir BEFORE the first import — every
-constant (PROJECTS_DIR, CMUX_REGISTRY, ORCHESTRATOR_REGISTRY, OUT_PATH, LOG_DIR,
-LOCK_FILE) then resolves under that tmp dir. Per-test we monkeypatch individual
+constant (CMUX_REGISTRY, ORCHESTRATOR_REGISTRY, OUT_PATH, LOG_DIR, LOCK_FILE)
+then resolves under that tmp dir. Per-test we monkeypatch individual
 module-level constants so nothing ever touches the real ~/.claude or ~/.architect.
 
 kqueue is real here (macOS); we exercise add_watch / drop_watch / handle_event /
@@ -55,7 +55,6 @@ def tmp_home(tmp_path, monkeypatch):
     so log() writes are safe."""
     home = tmp_path / "home"
     home.mkdir()
-    projects = home / ".claude/projects"
     cmux_reg = home / ".claude/cmux-registry.json"
     orch_reg = home / ".architect/orchestrator-registry.json"
     out_path = home / ".claude/cache/session-context.json"
@@ -63,7 +62,6 @@ def tmp_home(tmp_path, monkeypatch):
     log_dir = home / ".assistant/logs"
     lock_file = home / ".architect/.session-context-watcher.lock"
     monkeypatch.setattr(scw, "HOME", home)
-    monkeypatch.setattr(scw, "PROJECTS_DIR", projects)
     monkeypatch.setattr(scw, "CMUX_REGISTRY", cmux_reg)
     monkeypatch.setattr(scw, "ORCHESTRATOR_REGISTRY", orch_reg)
     monkeypatch.setattr(scw, "OUT_PATH", out_path)

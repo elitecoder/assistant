@@ -243,3 +243,106 @@ def test_drain_proposals_backlog_skipped_on_first_run(env_proposals):
     with open(paths.proposals, "a") as f:
         f.write(json.dumps(_lesson("2026-07-08T10:00:00.000000Z")) + "\n")
     assert listen._drain_proposals_once({}, paths) == 1
+
+
+# ─── reply_to_message threads the session provider (G3 integration) ──────────
+#
+# A persisted droid session must thread agent="droid" into every transcript-root
+# / context call — newest_transcript, should_clear, and the clear_session
+# delegation — else it reads the wrong root and never clears. Zero real
+# cmux/network: every comms_session touchpoint + cli() is monkeypatched.
+
+
+@pytest.fixture
+def env_reply(monkeypatch):
+    """Stub every cmux/network touchpoint reply_to_message can reach; record the
+    agent threaded into each provider-aware call. transcript grows on the first
+    poll so the reply loop breaks without real sleeps."""
+    monkeypatch.setattr(listen.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(listen, "cli", lambda *a, **k: (0, "", ""))
+
+    rec = {}
+    monkeypatch.setattr(listen.comms_session, "feed", lambda *a, **k: None)
+
+    def fake_newest(cwd, agent="claude"):
+        rec["newest_agent"] = agent
+        return "/warm-t.jsonl"
+    monkeypatch.setattr(listen.comms_session, "newest_transcript", fake_newest)
+
+    counts = iter([0, 5, 5, 5])
+    monkeypatch.setattr(listen.comms_session, "transcript_line_count",
+                        lambda t: next(counts, 5))
+
+    def fake_should_clear(transcript, agent="claude"):
+        rec["should_clear_agent"] = agent
+        return rec.get("_clear", True)
+    monkeypatch.setattr(listen.comms_session, "should_clear", fake_should_clear)
+
+    refreshed = {"ws_ref": "workspace:new", "surface_ref": "surface:new",
+                 "cwd": "/cwd", "transcript_path": "/refreshed.jsonl", "agent": "droid"}
+
+    def fake_clear(paths, sess, boot_prompt, agent="claude", log=None):
+        rec["clear_agent"] = agent
+        return refreshed
+    monkeypatch.setattr(listen.comms_session, "clear_session", fake_clear)
+
+    def fake_write(*a, **k):
+        rec["wrote"] = True
+    monkeypatch.setattr(listen.comms_session, "write_session", fake_write)
+    monkeypatch.setattr(listen.comms_session, "read_session",
+                        lambda paths: {"agent": "droid"})
+    return rec, refreshed
+
+
+def _droid_sess():
+    return {"ws_ref": "workspace:5", "surface_ref": "surface:3", "cwd": "/cwd",
+            "transcript_path": None, "agent": "droid"}
+
+
+def test_reply_threads_droid_agent_into_context_calls(env_reply):
+    rec, _ = env_reply
+    inbound = {"channel": "C0", "text": "hi", "msg_ts": "1.1", "reply_to": None}
+    listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess(), inbound)
+    assert rec["newest_agent"] == "droid"
+    assert rec["should_clear_agent"] == "droid"
+
+
+def test_reply_delegates_to_clear_session_and_returns_refreshed(env_reply):
+    rec, refreshed = env_reply
+    inbound = {"channel": "C0", "text": "hi", "msg_ts": "1.1", "reply_to": None}
+    out = listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess(), inbound)
+    assert rec["clear_agent"] == "droid"
+    assert out == refreshed
+
+
+def test_reply_no_clear_writes_session_and_skips_clear(env_reply):
+    rec, _ = env_reply
+    rec["_clear"] = False
+    inbound = {"channel": "C0", "text": "hi", "msg_ts": "1.1", "reply_to": None}
+    out = listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess(), inbound)
+    assert "clear_agent" not in rec, "should_clear False must not delegate to clear_session"
+    assert rec.get("wrote") is True
+    assert out == {"agent": "droid"}
+
+
+# ─── preflight doctor loader (regression: bare `import assistant_doctor` could
+#     never resolve the hyphenated bin/assistant-doctor.py, so the preflight
+#     silently ran its except-and-continue path on every startup) ─────────────
+
+def test_load_doctor_resolves_hyphenated_module():
+    doc = listen._load_doctor()
+    # The real doctor module, usable by the preflight — not an ImportError.
+    assert doc.__name__ == "assistant_doctor"
+    assert hasattr(doc, "run_checks") and hasattr(doc, "FAIL")
+    # It is the SAME module object the tests/doctor tests load (registered in
+    # sys.modules under the importable name), so the preflight's contract holds.
+    assert sys.modules.get("assistant_doctor") is doc
+
+
+def test_load_doctor_runs_slack_checks():
+    # The exact call the preflight makes — proves the loaded module is functional,
+    # not just importable. (On the bug, this line raised ModuleNotFoundError.)
+    doc = listen._load_doctor()
+    checks = doc.run_checks(only="slack")
+    assert isinstance(checks, list) and checks
+    assert all(hasattr(c, "status") and hasattr(c, "name") for c in checks)

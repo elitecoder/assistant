@@ -169,9 +169,9 @@ def test_reply_to_message_records_inbound_and_feeds_session(paths: cl.Paths, mon
     # monkeypatch.setattr auto-restores after the test, so the real comms_session
     # module is left pristine for test_comms_session.py (no cross-file leak).
     fed = {}
-    monkeypatch.setattr(cs, "newest_transcript", lambda cwd: "/tmp/fake.jsonl")
+    monkeypatch.setattr(cs, "newest_transcript", lambda cwd, agent=None: "/tmp/fake.jsonl")
     monkeypatch.setattr(cs, "transcript_line_count", lambda t: 0)
-    monkeypatch.setattr(cs, "should_clear", lambda t: False)
+    monkeypatch.setattr(cs, "should_clear", lambda t, agent=None: False)
     monkeypatch.setattr(cs, "feed", lambda paths, surface, text: fed.setdefault("feed", text))
     monkeypatch.setattr(cs, "write_session", lambda *a, **k: None)
     monkeypatch.setattr(cs, "read_session", lambda paths: None)

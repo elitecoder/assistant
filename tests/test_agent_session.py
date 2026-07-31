@@ -159,6 +159,76 @@ def test_explicit_env_arg_is_pure_policy_ignores_config(tmp_path, monkeypatch):
     assert ag.dispatch_agent({}) == "claude"
 
 
+def _write_config(home, cfg):
+    import json
+    d = home / ".assistant" / "comms"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.json").write_text(json.dumps(cfg))
+
+
+# ── dispatch_agent: llm.provider fallback (the ONE-KNOB rule) ──────────────────
+
+def test_dispatch_agent_falls_back_to_llm_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASSISTANT_DISPATCH_AGENT", raising=False)
+    _write_config(tmp_path, {"llm": {"provider": "droid"}})
+    assert ag.dispatch_agent() == "droid"
+    _write_config(tmp_path, {"llm": {"provider": "claude"}})
+    assert ag.dispatch_agent() == "claude"
+
+
+def test_dispatch_agent_prefers_dispatch_over_llm_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASSISTANT_DISPATCH_AGENT", raising=False)
+    _write_config(tmp_path,
+                  {"dispatch": {"agent": "claude"}, "llm": {"provider": "droid"}})
+    assert ag.dispatch_agent() == "claude"  # dispatch.agent wins over llm.provider
+
+
+def test_dispatch_agent_env_beats_llm_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _write_config(tmp_path, {"llm": {"provider": "droid"}})
+    monkeypatch.setenv("ASSISTANT_DISPATCH_AGENT", "claude")
+    assert ag.dispatch_agent() == "claude"  # env wins over llm.provider
+
+
+# ── warm_agent: comms warm-session resolver ────────────────────────────────────
+
+def test_warm_agent_env_override_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _write_config(tmp_path, {"llm": {"provider": "droid"}})
+    # env arg carries the override; it beats config.
+    assert ag.warm_agent({"ASSISTANT_COMMS_AGENT": "claude"}) == "claude"
+    # unknown env value is ignored, falls through to config.
+    assert ag.warm_agent({"ASSISTANT_COMMS_AGENT": "gpt"}) == "droid"
+    # process-env override when env arg omitted.
+    monkeypatch.setenv("ASSISTANT_COMMS_AGENT", "claude")
+    assert ag.warm_agent() == "claude"
+
+
+def test_warm_agent_comms_provider_pin_beats_llm_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASSISTANT_COMMS_AGENT", raising=False)
+    _write_config(tmp_path, {
+        "llm": {"provider": "claude", "features": {"comms": {"provider": "droid"}}}})
+    assert ag.warm_agent() == "droid"  # comms-only pin overrides global knob
+
+
+def test_warm_agent_inherits_llm_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASSISTANT_COMMS_AGENT", raising=False)
+    _write_config(tmp_path, {"llm": {"provider": "droid"}})
+    assert ag.warm_agent() == "droid"  # no comms pin → follows global knob
+
+
+def test_warm_agent_defaults_claude(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASSISTANT_COMMS_AGENT", raising=False)
+    assert ag.warm_agent() == "claude"  # no config, no env → default
+    _write_config(tmp_path, {"llm": {"provider": "gpt"}})
+    assert ag.warm_agent() == "claude"  # unknown provider → default
+
+
 def _write_droid_settings(home):
     s = home / ".assistant" / "droid-glm-settings.json"
     s.parent.mkdir(parents=True, exist_ok=True)

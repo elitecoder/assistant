@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
 """comms-listen — event-driven assistant-comms daemon (Slack transport).
 
-A single long-running process (KeepAlive LaunchAgent) with five concurrent jobs,
+A single long-running process (KeepAlive LaunchAgent) with six concurrent jobs,
 one blocking loop per thread joined under a shutdown Event:
 
   1. INBOUND (event) — REST-poll Slack (conversations.history via slack-poll.py)
      for inbound messages in the configured DM/channel. On a message: feeds the
      warm cmux session, which composes and sends a reply via slack-send.py.
 
-  2. OUTBOUND PINGS (event) — watch actions-ledger.jsonl for appends. On new
+  2. WATCHDOG (timer) — every WATCHDOG_INTERVAL_SEC, ensure a live warm session
+     exists (respawn if dead/missing). Closes the gap where a warm workspace that
+     died between inbound messages (cmux restart, crash, sleep) stayed dead until
+     the next Slack message arrived.
+
+  3. OUTBOUND PINGS (event) — watch actions-ledger.jsonl for appends. On new
      lines, format with comms_lib.fmt_action_line and send. No LLM — mechanical,
      fires near-instantly (~2s stat-poll floor).
 
-  3. INBOX (event) — watch ~/.assistant/inbox for cmux-watcher signals
+  4. INBOX (event) — watch ~/.assistant/inbox for cmux-watcher signals
      (workspace needs input / work complete) and ping within seconds. kqueue on
      macOS, stat-poll fallback elsewhere.
 
-  4. PROPOSALS (timer) — watch ~/.assistant/proposals.jsonl (the durable queue
+  5. PROPOSALS (timer) — watch ~/.assistant/proposals.jsonl (the durable queue
      the lesson-extractor writes). Deliver each new pending lesson proposal to
      the channel exactly once (id high-water-mark cursor, backlog skipped on
      first run), asking Mukul to confirm it. No LLM.
 
-  5. HEARTBEAT PAGE (timer) — every 60s, check Assistant's heartbeat; if stale
+  6. HEARTBEAT PAGE (timer) — every 60s, check Assistant's heartbeat; if stale
      or status ∈ {frozen, stale_world, respawn-requested}, send a templated
      urgent page (30-min dedup). No LLM.
 
-All five reuse the tested CLIs and comms_lib. Durable memory stays in
+All six reuse the tested CLIs and comms_lib. Durable memory stays in
 conversation.jsonl, so a crash + KeepAlive respawn loses nothing.
 
 Slack is the sole transport. The bot token comes from $SLACK_BOT_TOKEN; the
@@ -47,8 +52,27 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
+
+
+def _load_doctor():
+    """The doctor lives at bin/assistant-doctor.py — a HYPHENATED filename that is
+    not a valid module name, so a bare `import assistant_doctor` can never resolve
+    (it silently sent the preflight down its except-and-continue path on every
+    startup). Load it by file path, exactly as tests/test_doctor.py does, and
+    register it under the importable name so the preflight can `import` it."""
+    import importlib.util  # noqa: PLC0415
+    if "assistant_doctor" in sys.modules:
+        return sys.modules["assistant_doctor"]
+    spec = importlib.util.spec_from_file_location(
+        "assistant_doctor",
+        str(Path(__file__).resolve().parent / "assistant-doctor.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["assistant_doctor"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parent.parent
@@ -74,6 +98,22 @@ HEARTBEAT_DEDUP_SEC = 1800
 # can't firehose the channel — the rest follow on later passes.
 PROPOSALS_POLL_SEC = float(os.environ.get("COMMS_PROPOSALS_POLL_SEC", "30"))
 PROPOSALS_MAX_PER_DRAIN = int(os.environ.get("COMMS_PROPOSALS_MAX_PER_DRAIN", "3"))
+
+# Warm-session liveness watchdog. ensure_warm_session (the spawn/respawn logic)
+# was originally called ONLY on daemon startup and per inbound Slack message, so
+# a warm workspace that died during a quiet period (cmux restart, crash, machine
+# sleep) stayed dead until the next inbound message — sometimes hours, with a
+# stale session.json pointing at a ref cmux no longer knows. This loop closes
+# that gap: it calls ensure_warm_session on a slow cadence so a dead/missing warm
+# session self-heals within WATCHDOG_INTERVAL_SEC regardless of inbound traffic.
+WATCHDOG_INTERVAL_SEC = int(os.environ.get("COMMS_WATCHDOG_INTERVAL_SEC", "60"))
+
+# Serializes ensure_warm_session's respawn critical section. Without this the
+# watchdog tick and an inbound message arriving at the same instant could BOTH
+# see the session dead and BOTH spawn a fresh workspace — two warm sessions
+# racing, one orphaned. Held only across the read→alive-check→respawn span, so
+# it never blocks inbound replies for long.
+_warm_session_lock = threading.Lock()
 
 PYTHON = sys.executable  # use the same interpreter that launched us for the CLIs
 
@@ -131,15 +171,20 @@ def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
     On respawn, close the prior warm workspace first so we never leak Claude
     processes. close_own_workspace is title-guarded — it only ever closes an
     'assistant-comms (warm)' workspace this daemon spawned, never user work
-    (the narrow, allowlisted exception to the 2026-05-26 close-workspace ban)."""
-    sess = comms_session.read_session(paths)
-    if sess and comms_session.cmux_alive(paths, sess["ws_ref"]):
-        return sess
-    if sess:
-        log(f"warm session {sess['ws_ref']} gone — closing it and respawning")
-        comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
-        comms_session.clear_session_registry(paths)
-    return comms_session.spawn_session(paths, WARM_PROMPT, log=log)
+    (the narrow, allowlisted exception to the 2026-05-26 close-workspace ban).
+
+    Serialized by _warm_session_lock: the watchdog tick and an inbound message
+    can both call this concurrently, and without a guard both would see the
+    session dead and double-spawn. The lock scopes only the respawn decision."""
+    with _warm_session_lock:
+        sess = comms_session.read_session(paths)
+        if sess and comms_session.cmux_alive(paths, sess["ws_ref"]):
+            return sess
+        if sess:
+            log(f"warm session {sess['ws_ref']} gone — closing it and respawning")
+            comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
+            comms_session.clear_session_registry(paths)
+        return comms_session.spawn_session(paths, WARM_PROMPT, log=log)
 
 
 def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
@@ -160,7 +205,11 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
         in_args += ["--reply-to", str(reply_to)]
     cli(in_args, timeout=10)
 
-    transcript = sess.get("transcript_path") or comms_session.newest_transcript(sess["cwd"])
+    # Thread the session's provider through every transcript-root / context call:
+    # a Droid session writes under ~/.factory/sessions with no usage block, so a
+    # claude default here would read the wrong root and never clear (G3).
+    agent = sess.get("agent") or agent_session.CLAUDE
+    transcript = sess.get("transcript_path") or comms_session.newest_transcript(sess["cwd"], agent)
     before_lines = comms_session.transcript_line_count(transcript) if transcript else 0
 
     # Feed the message as a user turn. The warm session's boot prompt tells it
@@ -180,19 +229,16 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
             grew = True
             break
         if not transcript:
-            transcript = comms_session.newest_transcript(sess["cwd"])
+            transcript = comms_session.newest_transcript(sess["cwd"], agent)
     log(f"reply channel={channel} msg={msg_ts} grew={grew} wall_ms={int((time.time()-t0)*1000)}")
 
-    # Context management: clear-and-resume at >= 50%.
-    if transcript and comms_session.should_clear(transcript):
-        log(f"context >= {int(comms_session.CLEAR_THRESHOLD*100)}% — clear-and-resume")
-        comms_session.clear_session(paths, sess["surface_ref"], WARM_PROMPT)
-        new_t = comms_session.newest_transcript(sess["cwd"])
-        if new_t:
-            comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
-                                        sess["cwd"], new_t)
-            sess = comms_session.read_session(paths) or sess
-            return sess
+    # Context management: clear-and-resume at >= 50% (claude) or the size proxy
+    # (droid). should_clear + clear_session are provider-aware; for droid a
+    # "clear" is a lossless respawn since durable memory lives in conversation.jsonl.
+    # clear_session owns the registry update and returns the refreshed record.
+    if transcript and comms_session.should_clear(transcript, agent=agent):
+        log(f"context threshold reached ({agent}) — clear-and-resume")
+        return comms_session.clear_session(paths, sess, WARM_PROMPT, agent=agent, log=log)
 
     if transcript and transcript != sess.get("transcript_path"):
         comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
@@ -277,6 +323,39 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
             t.start()
             channel_workers[channel_id] = (ch_q, t)
         channel_workers[channel_id][0].put(rec)
+
+
+# --------------------------------------------------------------------------- warm-session liveness watchdog
+
+def watchdog_tick(paths: comms_lib.Paths) -> str:
+    """One watchdog pass: ensure a live warm session exists, respawning if the
+    registered one is dead/missing. Returns a short status string for logging
+    and tests. NEVER raises — a transient cmux error (cmux briefly down, a
+    spawn timeout) must not kill the watchdog thread; it logs and retries on the
+    next tick. Delegates the actual liveness check + respawn to
+    ensure_warm_session under _warm_session_lock, so this never races an
+    inbound-driven respawn."""
+    try:
+        sess = ensure_warm_session(paths)
+    except Exception as e:  # noqa: BLE001 — watchdog must survive any error
+        return f"error:{type(e).__name__}"
+    return "alive" if sess else "no-session"
+
+
+def watchdog_loop(stop: threading.Event, env: dict) -> None:
+    """Periodically call ensure_warm_session so a warm workspace that died
+    between inbound messages (cmux restart, crash, machine sleep) self-heals
+    within WATCHDOG_INTERVAL_SEC instead of waiting for the next Slack message.
+    Slow cadence — the warm session is only load-bearing when a message arrives,
+    and ensure_warm_session is already called per inbound message, so this is a
+    safety net, not a hot path."""
+    paths = comms_lib.Paths.from_env()
+    log(f"warm-session watchdog started (interval={WATCHDOG_INTERVAL_SEC}s)")
+    while not stop.is_set():
+        status = watchdog_tick(paths)
+        if status != "alive":
+            log(f"watchdog: warm session {status} — will retry next tick")
+        stop.wait(WATCHDOG_INTERVAL_SEC)
 
 
 # --------------------------------------------------------------------------- outbound pings
@@ -676,7 +755,7 @@ def main() -> int:
     for k, v in comms_lib.load_bedrock_env().items():
         env0.setdefault(k, v)
     try:
-        import assistant_doctor  # bin/ is on sys.path (added at import time)
+        assistant_doctor = _load_doctor()  # hyphenated filename → load by path
         dchecks = assistant_doctor.run_checks(only="slack")
         failed = [c for c in dchecks if c.status == assistant_doctor.FAIL]
         if failed:
@@ -713,20 +792,33 @@ def main() -> int:
     signal.signal(signal.SIGTERM, handle_sig)
     signal.signal(signal.SIGINT, handle_sig)
 
-    threads = [
-        threading.Thread(target=inbound_loop, args=(stop, env), name="inbound", daemon=True),
-        threading.Thread(target=ledger_loop, args=(stop, env), name="ledger", daemon=True),
-        threading.Thread(target=inbox_loop, args=(stop, env), name="inbox", daemon=True),
-        threading.Thread(target=proposals_loop, args=(stop, env), name="proposals", daemon=True),
-        threading.Thread(target=heartbeat_loop, args=(stop, env), name="heartbeat", daemon=True),
-    ]
-    log(f"comms-listen starting (pid={os.getpid()}, transport=slack) — 5 loops")
+    threads = _loop_threads(stop, env)
+    log(f"comms-listen starting (pid={os.getpid()}, transport=slack) — "
+        f"{len(threads)} loops")
     for t in threads:
         t.start()
     while not stop.is_set():
         stop.wait(1)
     log("comms-listen stopped")
     return 0
+
+
+def _loop_threads(stop: threading.Event, env: dict) -> list[threading.Thread]:
+    """The daemon's worker threads — one per concurrent loop. Extracted from
+    main() so a test can assert the watchdog is wired in without running the
+    daemon (main() does preflight + singleton-lock + signal setup first).
+
+    Order is stable: inbound first (so a message on startup is handled ASAP),
+    then the watchdog (so a dead warm session self-heals within the first
+    interval), then the broadcast/heartbeat loops."""
+    return [
+        threading.Thread(target=inbound_loop, args=(stop, env), name="inbound", daemon=True),
+        threading.Thread(target=watchdog_loop, args=(stop, env), name="watchdog", daemon=True),
+        threading.Thread(target=ledger_loop, args=(stop, env), name="ledger", daemon=True),
+        threading.Thread(target=inbox_loop, args=(stop, env), name="inbox", daemon=True),
+        threading.Thread(target=proposals_loop, args=(stop, env), name="proposals", daemon=True),
+        threading.Thread(target=heartbeat_loop, args=(stop, env), name="heartbeat", daemon=True),
+    ]
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -14,11 +14,16 @@ set -euo pipefail
 
 HOME_DIR="${HOME}"
 CONFIG_PATH="${HOME_DIR}/.assistant/config.json"
+# The ONE-KNOB llm.provider lives in the COMMS config — the sole file every
+# provider consumer reads (llm_runner.config_path(), agent_session's
+# _read_comms_config()). Writing it to CONFIG_PATH would be inert (G4/G5).
+COMMS_CONFIG_PATH="${HOME_DIR}/.assistant/comms/config.json"
 REPO_DIR="$(cd "$(dirname "${(%):-%x}")/.." && pwd)"
 PYTHON="$(command -v python3 || echo /opt/homebrew/bin/python3)"
 PLIST="${HOME_DIR}/Library/LaunchAgents/com.assistant.assistant-comms.plist"
 
-mkdir -p "${HOME_DIR}/.assistant" "${HOME_DIR}/.assistant/logs"
+mkdir -p "${HOME_DIR}/.assistant" "${HOME_DIR}/.assistant/logs" \
+    "${HOME_DIR}/.assistant/comms"
 
 # --- 1. token -----------------------------------------------------------------
 [ -f "$HOME_DIR/.zprofile" ] && . "$HOME_DIR/.zprofile" >/dev/null 2>&1 || true
@@ -96,6 +101,38 @@ with open(path, "w") as f:
     json.dump(raw, f, indent=2)
 os.chmod(path, 0o600)
 print(f"     target={target} allowed_targets=[{target}]")
+PY
+
+# Persist the ONE-KNOB llm.provider into the COMMS config — the file
+# llm_runner/agent_session actually read (G4/G5). env ASSISTANT_LLM_PROVIDER
+# (validated to claude|droid, anything else coerced to claude) wins; else keep
+# an existing value; else default claude. Merge only — never touch sibling
+# llm.* keys (droid bin/model) or any other key.
+echo "     Writing llm.provider into ${COMMS_CONFIG_PATH}…"
+"$PYTHON" - "$COMMS_CONFIG_PATH" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+raw = {}
+if os.path.exists(path):
+    try:
+        raw = json.load(open(path))
+    except Exception:
+        raw = {}
+if not isinstance(raw, dict):
+    raw = {}
+env_provider = os.environ.get("ASSISTANT_LLM_PROVIDER")
+if env_provider is not None:
+    provider = env_provider if env_provider in ("claude", "droid") else "claude"
+else:
+    llm = raw.get("llm", {})
+    provider = llm.get("provider", "claude") if isinstance(llm, dict) else "claude"
+if not isinstance(raw.get("llm"), dict):
+    raw["llm"] = {}
+raw["llm"]["provider"] = provider
+with open(path, "w") as f:
+    json.dump(raw, f, indent=2)
+os.chmod(path, 0o600)
+print(f"     llm.provider={provider}")
 PY
 
 # --- 4. test send -------------------------------------------------------------

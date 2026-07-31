@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.7.0] - 2026-07-25
+
+Completes Factory Droid provider parity across the assistant. Droid was
+previously wired only into the headless (`llm_runner`) and dispatch
+(`agent_session`) paths; the comms warm-session subsystem, the doctor, and setup
+were still Claude-only, so setting `llm.provider: droid` left the warm session
+spawning Claude and reading only Claude-schema transcripts.
+
+### One-knob provider selection (G4)
+- `agent_session.dispatch_agent` now falls back to the global `llm.provider` knob
+  (precedence: `ASSISTANT_DISPATCH_AGENT` env → `dispatch.agent` → `llm.provider`
+  → `claude`), so a single `llm.provider: droid` drives BOTH headless calls and
+  spawns.
+- New `agent_session.warm_agent()` resolves the comms warm-session provider:
+  `ASSISTANT_COMMS_AGENT` env → `llm.features.comms.provider` (comms-only pin) →
+  `llm.provider` → `claude`.
+
+### Comms warm-session Droid parity (G1+G2+G3)
+- `comms_session.spawn_session` picks the provider via `warm_agent()` and launches
+  per-agent: Claude keeps its exact byte-identical launch (Sonnet, scoped
+  `--add-dir`s); Droid uses `agent_session.launch_command(DROID)` with `--cwd`.
+  Readiness and the first-launch trust prompt route through
+  `agent_session.ready_re`/`trust_marker`.
+- Transcript reads are schema-agnostic: `project_dir_for_cwd`/`newest_transcript`
+  resolve the per-agent root (`~/.factory/sessions` for Droid) via
+  `agent_session.confirm_dir`, and `last_assistant_text` uses
+  `agent_session.record_role` (Droid `type=="message"`/`message.role`). The
+  chosen provider is persisted in `session.json` (`agent`) so post-restart reads
+  use the right root + schema.
+- Context management is provider-aware: Droid transcripts carry no usage/token
+  block, so `should_clear` uses an on-disk transcript-size proxy
+  (`COMMS_DROID_CLEAR_BYTES`, ~2 MB default), and `clear_session` performs a
+  lossless RESPAWN for Droid (close + spawn) instead of the Claude `/clear`. The
+  `comms-listen` daemon threads the persisted session agent through every
+  transcript-root / context call.
+
+### Doctor + setup (G7, G5)
+- `assistant-doctor.py` adds droid binary + `droid-glm-settings.json` checks
+  (mirroring `agent_session.agent_available`), run when any seam resolves to
+  droid and skipped for a Claude-only box.
+- `assistant-comms-setup.sh` persists `llm.provider` into config.json
+  (`ASSISTANT_LLM_PROVIDER` env, else preserved, else `claude`), merged without
+  disturbing the Slack send-gate invariant.
+
+### Cleanup
+- Removed the dead `PROJECTS_DIR` constant from `session-context-watcher.py`
+  (transcript discovery already flows through the Droid-aware world-scanner).
+
 ## [0.6.0] - 2026-07-14
 
 Unifies the productization line (0.3.1–0.5.1) with the lesson-proposal delivery

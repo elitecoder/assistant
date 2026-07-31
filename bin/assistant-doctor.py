@@ -36,7 +36,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
+
+DROID = agent_session.DROID
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 REPO = Path(__file__).resolve().parent.parent
@@ -256,6 +259,69 @@ def check_bedrock_env() -> Check:
 SLACK_CHECKS = [check_slack_token, check_slack_scopes, check_claude_bin, check_bedrock_env]
 
 
+# --------------------------------------------------------------------------- provider / agents checks
+
+def _droid_selected() -> bool:
+    # The resolved provider/agent across every seam: warm session, dispatch, or
+    # the global llm.provider knob. If ANY resolves to droid, the droid launch
+    # preconditions must hold, so we run the droid checks.
+    return DROID in (agent_session.warm_agent(), agent_session.dispatch_agent())
+
+
+def _droid_binary() -> str | None:
+    # Mirror agent_session.agent_available: PATH plus the common install
+    # locations launchd's pinned PATH misses (~/.local/bin is Factory's default).
+    on_path = shutil.which(DROID)
+    if on_path:
+        return on_path
+    for cand in (HOME / ".local" / "bin" / DROID,
+                 Path("/opt/homebrew/bin") / DROID,
+                 Path("/usr/local/bin") / DROID):
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+def check_droid_binary() -> Check:
+    if not _droid_selected():
+        return Check("droid binary", SKIP, core=False,
+                     detail="provider is not droid (llm.provider / dispatch.agent / comms)")
+    found = _droid_binary()
+    if found:
+        return Check("droid binary", PASS, core=False, detail=found)
+    return Check(
+        "droid binary", FAIL, core=False,
+        detail="droid not found on PATH or ~/.local/bin, /opt/homebrew/bin, /usr/local/bin",
+        remedy="install Factory droid (curl -fsSL https://app.factory.ai/cli | sh) "
+               "so it lands on ~/.local/bin/droid, then re-run",
+    )
+
+
+def check_droid_settings() -> Check:
+    if not _droid_selected():
+        return Check("droid settings", SKIP, core=False,
+                     detail="provider is not droid")
+    settings = HOME / ".assistant" / "droid-glm-settings.json"
+    try:
+        parsed = json.loads(settings.read_text())
+    except OSError:
+        return Check("droid settings", FAIL, core=False,
+                     detail=f"{settings} missing",
+                     remedy=f"create {settings} (a JSON object with the droid model settings)")
+    except ValueError:
+        return Check("droid settings", FAIL, core=False,
+                     detail=f"{settings} is not valid JSON",
+                     remedy=f"fix the JSON in {settings} so `droid --settings` can parse it")
+    if not isinstance(parsed, dict):
+        return Check("droid settings", FAIL, core=False,
+                     detail=f"{settings} parsed but is not a JSON object",
+                     remedy=f"make {settings} a JSON object of droid settings")
+    return Check("droid settings", PASS, core=False, detail=str(settings))
+
+
+AGENT_CHECKS = [check_droid_binary, check_droid_settings]
+
+
 # --------------------------------------------------------------------------- runner
 
 def run_checks(only: str = "all") -> list[Check]:
@@ -264,6 +330,8 @@ def run_checks(only: str = "all") -> list[Check]:
         checks += [c() for c in CORE_CHECKS]
     if only in ("all", "slack"):
         checks += [c() for c in SLACK_CHECKS]
+    if only == "all":
+        checks += [c() for c in AGENT_CHECKS]
     return checks
 
 
