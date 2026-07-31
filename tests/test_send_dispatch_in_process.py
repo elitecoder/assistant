@@ -232,11 +232,12 @@ class CmuxWsNumbererTests(unittest.TestCase):
         self.assertEqual(self.mod.desired_title("  Title  ", 1), "Title [1]")
 
     def test_list_workspaces_parses_output(self):
-        # list_workspaces uses `cmux workspace list --json` → JSON payload.
+        # list_workspaces uses `cmux list-workspaces --json` → JSON payload,
+        # and carries each workspace's custom_color (upper-cased, or None).
         import json as _json
         data = {"workspaces": [
-            {"ref": "workspace:5", "title": "My Title"},
-            {"ref": "workspace:6", "title": "Second Title"},
+            {"ref": "workspace:5", "title": "My Title", "custom_color": "#1565c0"},
+            {"ref": "workspace:6", "title": "Second Title", "custom_color": None},
         ]}
         with mock.patch.object(self.mod.subprocess, "run",
                                return_value=mock.Mock(returncode=0,
@@ -245,7 +246,9 @@ class CmuxWsNumbererTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["ref"], 5)
         self.assertEqual(rows[0]["title"], "My Title")
+        self.assertEqual(rows[0]["color"], "#1565C0")
         self.assertEqual(rows[1]["title"], "Second Title")
+        self.assertIsNone(rows[1]["color"])
 
     def test_list_workspaces_skips_non_matching_lines(self):
         # Entries whose "ref" field does not match "workspace:N" are skipped.
@@ -261,10 +264,40 @@ class CmuxWsNumbererTests(unittest.TestCase):
         # Only the entry with a valid workspace ref is returned.
         self.assertEqual(len(rows), 1)
 
+    @staticmethod
+    def _echo(ref: str) -> str:
+        # workspace-action echoes the resolved ref on stdout; the daemon parses
+        # it to defeat the silent fallback-to-selected. A faithful fake must
+        # echo back the ref it was handed.
+        return f"OK workspace={ref}"
+
+    def _fake_run_factory(self, calls):
+        # Records every command and returns a success whose stdout echoes the
+        # --workspace ref that was passed, mirroring real workspace-action.
+        def fake_run(cmd, **k):
+            calls.append(cmd)
+            ref = ""
+            if "--workspace" in cmd:
+                ref = cmd[cmd.index("--workspace") + 1]
+            return mock.Mock(returncode=0, stdout=self._echo(ref), stderr="")
+        return fake_run
+
+    @staticmethod
+    def _renames(calls):
+        # New CLI shape: ["cmux", "workspace-action", "--action", "rename", ...]
+        return [c for c in calls
+                if "workspace-action" in c and "rename" in c]
+
+    @staticmethod
+    def _colorings(calls):
+        return [c for c in calls
+                if "workspace-action" in c and "set-color" in c]
+
     def test_ensure_numbered_no_op_when_already_numbered(self):
-        # reconcile() skips a workspace that already has the correct [N] suffix.
+        # reconcile() skips a workspace that already has the correct [N] suffix
+        # AND already has a color — no rename, no set-color.
         with mock.patch.object(self.mod, "list_workspaces", return_value=[
-            {"ref": 7, "title": "Title [7]"},
+            {"ref": 7, "title": "Title [7]", "color": "#1565C0"},
         ]):
             with mock.patch.object(self.mod.subprocess, "run") as run_mock:
                 self.mod.reconcile()
@@ -273,27 +306,21 @@ class CmuxWsNumbererTests(unittest.TestCase):
     def test_ensure_numbered_renames_when_mismatched(self):
         # reconcile() renames a workspace that lacks or has a wrong suffix.
         with mock.patch.object(self.mod, "list_workspaces", return_value=[
-            {"ref": 7, "title": "Title"},
+            {"ref": 7, "title": "Title", "color": "#1565C0"},
         ]):
             calls = []
-            def fake_run(cmd, **k):
-                calls.append(cmd)
-                return mock.Mock(returncode=0, stdout="", stderr="")
-            with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(self.mod.subprocess, "run",
+                                   side_effect=self._fake_run_factory(calls)):
                 self.mod.reconcile()
-        # Look for the rename call: ["cmux", "workspace", "rename", ref, "--title", title]
-        rename_call = next(
-            (c for c in calls if len(c) >= 3 and c[1] == "workspace" and c[2] == "rename"),
-            None,
-        )
+        rename_call = next(iter(self._renames(calls)), None)
         self.assertIsNotNone(rename_call)
-        # Last positional should be "Title [7]"
+        # Last positional should be the new title "Title [7]".
         self.assertEqual(rename_call[-1], "Title [7]")
 
     def test_ensure_numbered_logs_rename_failure(self):
         # reconcile() does not raise when the rename command fails.
         with mock.patch.object(self.mod, "list_workspaces", return_value=[
-            {"ref": 7, "title": "Title"},
+            {"ref": 7, "title": "Title", "color": "#1565C0"},
         ]):
             with mock.patch.object(self.mod.subprocess, "run",
                                    return_value=mock.Mock(returncode=1, stdout="",
@@ -309,21 +336,55 @@ class CmuxWsNumbererTests(unittest.TestCase):
     def test_backfill_renames_each_unnumbered(self):
         # reconcile() renames all workspaces that lack the correct suffix.
         ws_list = [
-            {"ref": 7, "title": "Already [7]"},   # skip
-            {"ref": 8, "title": "Plain"},          # rename
-            {"ref": 9, "title": "Wrong [99]"},     # rename
+            {"ref": 7, "title": "Already [7]", "color": "#1565C0"},   # skip
+            {"ref": 8, "title": "Plain", "color": "#922B21"},          # rename
+            {"ref": 9, "title": "Wrong [99]", "color": "#196F3D"},     # rename
         ]
         with mock.patch.object(self.mod, "list_workspaces", return_value=ws_list):
             calls = []
-            def fake_run(cmd, **k):
-                calls.append(cmd)
-                return mock.Mock(returncode=0, stdout="", stderr="")
-            with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(self.mod.subprocess, "run",
+                                   side_effect=self._fake_run_factory(calls)):
                 self.mod.reconcile()
-        # Expect 2 rename calls (for refs 8 and 9).
-        # Command shape: ["cmux", "workspace", "rename", ref, "--title", title]
-        renames = [c for c in calls if len(c) >= 3 and c[1] == "workspace" and c[2] == "rename"]
-        self.assertEqual(len(renames), 2)
+        # Expect 2 rename calls (for refs 8 and 9); all three already colored.
+        self.assertEqual(len(self._renames(calls)), 2)
+        self.assertEqual(len(self._colorings(calls)), 0)
+
+    def test_backfill_colors_each_uncolored(self):
+        # reconcile() assigns a color to every workspace whose color is None,
+        # and leaves already-colored workspaces untouched.
+        ws_list = [
+            {"ref": 7, "title": "A [7]", "color": "#1565C0"},   # has color → skip
+            {"ref": 8, "title": "B [8]", "color": None},         # color it
+            {"ref": 9, "title": "C [9]", "color": None},         # color it
+        ]
+        with mock.patch.object(self.mod, "list_workspaces", return_value=ws_list):
+            calls = []
+            with mock.patch.object(self.mod.subprocess, "run",
+                                   side_effect=self._fake_run_factory(calls)):
+                self.mod.reconcile()
+        colorings = self._colorings(calls)
+        self.assertEqual(len(colorings), 2)
+        # Each set-color targets a distinct workspace ref (8 and 9).
+        colored_refs = {c[c.index("--workspace") + 1] for c in colorings}
+        self.assertEqual(colored_refs, {"workspace:8", "workspace:9"})
+
+    def test_action_skipped_when_ref_resolves_to_other_workspace(self):
+        # If workspace-action echoes a DIFFERENT ref than targeted (cmux fell
+        # back to the selected workspace because the target closed mid-poll),
+        # the daemon must treat it as a no-op, not a success.
+        with mock.patch.object(self.mod, "list_workspaces", return_value=[
+            {"ref": 8, "title": "Plain", "color": "#1565C0"},
+        ]):
+            def fallback_run(cmd, **k):
+                # Always echo the SELECTED workspace, not the target.
+                return mock.Mock(returncode=0, stdout="OK workspace=workspace:1",
+                                 stderr="")
+            with mock.patch.object(self.mod.subprocess, "run",
+                                   side_effect=fallback_run):
+                # Must not raise; the mismatch is logged and skipped.
+                ok = self.mod._run_action("rename", "workspace:8",
+                                          ["--title", "Plain [8]"])
+        self.assertFalse(ok)
 
 
 # ─── merge-pr-dispatch ──────────────────────────────────────────────────────
