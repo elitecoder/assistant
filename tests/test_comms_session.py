@@ -302,3 +302,61 @@ def test_reconcile_is_instance_scoped_never_touches_other_instance(tmp_path, mon
     # B's ledger is untouched; A's ledger now holds only the survivor.
     assert cs.read_spawned_refs(paths_b) == ["workspace:2"]
     assert cs.read_spawned_refs(paths_a) == ["workspace:3"]
+
+
+# ─── machine-wide orphan sweep (complements instance-scoped reconcile) ──────
+
+def test_orphan_warm_refs_finds_untracked_warm_workspaces():
+    """Orphans are warm-titled workspaces NOT in the ledger and NOT keep —
+    leftovers from a prior incarnation whose ledger was lost/reset."""
+    all_warm = ["workspace:48", "workspace:47", "workspace:20"]
+    ledger = ["workspace:48"]
+    got = cs.orphan_warm_refs(all_warm, ledger, keep="workspace:48")
+    assert got == ["workspace:47", "workspace:20"]
+
+
+def test_orphan_warm_refs_excludes_ledger_refs_even_if_not_keep():
+    """A ledger-tracked ref is NOT an orphan — reconcile owns it."""
+    all_warm = ["workspace:1", "workspace:2", "workspace:3"]
+    ledger = ["workspace:1", "workspace:2"]
+    got = cs.orphan_warm_refs(all_warm, ledger, keep="workspace:3")
+    assert got == []  # ws:1 and ws:2 are in the ledger, ws:3 is keep
+
+
+def test_orphan_warm_refs_dedupes():
+    got = cs.orphan_warm_refs(
+        ["workspace:5", "workspace:5", "workspace:6"], [], keep="workspace:7")
+    assert got == ["workspace:5", "workspace:6"]
+
+
+def test_orphan_warm_refs_empty_when_all_tracked():
+    assert cs.orphan_warm_refs(["workspace:1"], ["workspace:1"], keep="workspace:1") == []
+
+
+def test_orphan_warm_refs_keep_none_orphans_all_untracked():
+    """keep=None means everything untracked is an orphan."""
+    got = cs.orphan_warm_refs(["workspace:1", "workspace:2"], [], keep=None)
+    assert got == ["workspace:1", "workspace:2"]
+
+
+def test_sweep_orphan_warm_workspaces_closes_stale_and_skips_current(tmp_path, monkeypatch):
+    """Integration: sweep closes machine-wide warm workspaces not in the ledger
+    and not keep, using the title-guarded close_own_workspace."""
+    home = tmp_path / "home"; (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    # Current instance only tracks workspace:48 in its ledger.
+    cs.record_spawned_ref(paths, "workspace:48")
+
+    # Machine-wide scan finds 3 warm workspaces (47 and 20 are orphans).
+    monkeypatch.setattr(cs, "list_warm_workspaces",
+                        lambda p: ["workspace:48", "workspace:47", "workspace:20"])
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, ws, log=lambda m: None: closed.append(ws))
+
+    orphans = cs.sweep_orphan_warm_workspaces(paths, keep="workspace:48", log=lambda m: None)
+
+    assert orphans == ["workspace:47", "workspace:20"]
+    assert closed == ["workspace:47", "workspace:20"]
+    assert "workspace:48" not in closed, "sweep must never close the current session"

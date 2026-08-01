@@ -391,6 +391,52 @@ def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lamb
     os.replace(tmp, p)
 
 
+def orphan_warm_refs(all_warm: list[str], ledger: list[str], keep: str | None) -> list[str]:
+    """Pure policy: which machine-wide warm workspaces are orphans — warm-titled
+    refs that are NOT ``keep`` and NOT in this instance's spawned ledger.  These
+    are leftovers from a prior daemon incarnation whose ledger was lost/reset, or
+    from a crash mid-spawn (workspace created in cmux but never recorded).  The
+    instance-scoped ``refs_to_reconcile`` can't see them because they're absent
+    from the ledger; this function finds them via a machine-wide title scan.
+
+    De-duplicated in first-seen order.  ``keep`` is excluded even if it somehow
+    appears in the ledger (it's the survivor)."""
+    ledger_set = set(ledger)
+    seen: set[str] = set()
+    out: list[str] = []
+    for ws in all_warm:
+        if ws == keep or ws in ledger_set or ws in seen:
+            continue
+        seen.add(ws)
+        out.append(ws)
+    return out
+
+
+def sweep_orphan_warm_workspaces(paths: comms_lib.Paths, keep: str | None,
+                                 log=lambda m: None) -> list[str]:  # pragma: no cover - live cmux I/O
+    """Close warm-titled workspaces that are NOT ``keep`` and NOT in this
+    instance's spawned ledger — orphans from previous daemon incarnations whose
+    ledger was lost/reset, or from a crash mid-spawn.
+
+    Complements the instance-scoped ``reconcile_warm_workspaces``: reconcile
+    closes refs THIS instance tracked but no longer needs; sweep closes refs NO
+    instance tracks (they predate the ledger or survived a ledger reset).  Called
+    on daemon startup so orphans self-heal without a manual ``cmux
+    close-workspace``.
+
+    Safety: ``close_own_workspace`` is title-guarded — it verifies the target is
+    titled ``SESSION_TITLE`` before closing, so a ref reissued to non-comms work
+    is never touched.  A concurrent live-validation run with the same title would
+    be closed, but live-validation is rare, temporary, and self-healing (its
+    daemon respawns on the next tick); the orphan accumulation is chronic and
+    worse."""
+    orphans = orphan_warm_refs(list_warm_workspaces(paths), read_spawned_refs(paths), keep)
+    for ws in orphans:
+        log(f"orphan sweep: closing stale warm workspace {ws}")
+        close_own_workspace(paths, ws, log=log)
+    return orphans
+
+
 def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembly, driven live
     """The cmux `--command` string for a warm `agent` session.
 

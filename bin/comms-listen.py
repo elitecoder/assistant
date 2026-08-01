@@ -299,6 +299,7 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
     sess = ensure_warm_session(paths)
     if sess:
         comms_session.reconcile_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
+        comms_session.sweep_orphan_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
 
     channel_workers: dict[str, tuple[queue.Queue, threading.Thread]] = {}
     msg_queue: queue.Queue = queue.Queue()
