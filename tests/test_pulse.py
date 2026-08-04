@@ -455,6 +455,80 @@ class CountActiveTests(unittest.TestCase):
         self.assertEqual(self.mod.count_active(meta), 0)
 
 
+class WorkingOverrideTests(unittest.TestCase):
+    """apply_working_override — hard gate: agent_status=working forces active."""
+
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_pulse(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_working_forces_active_from_stranded(self):
+        ctx = {"agent_status": "working", "last_turn_age_sec": 2400,
+               "ws_ref": "workspace:1"}
+        verdict = {"verdict": "stranded", "nudge_text": "retry",
+                   "summary": "Paused mid-build.", "next": "Resume build."}
+        out = self.mod.apply_working_override(verdict, ctx)
+        self.assertEqual(out["verdict"], "active")
+        self.assertEqual(out["_working_override"], "stranded")
+        # summary/next preserved from the original verdict
+        self.assertEqual(out["summary"], "Paused mid-build.")
+
+    def test_working_forces_active_from_needs_user(self):
+        ctx = {"agent_status": "working", "last_turn_age_sec": 2000}
+        verdict = {"verdict": "needs_user", "title": "t", "detail": "d",
+                   "summary": "s", "next": "n"}
+        out = self.mod.apply_working_override(verdict, ctx)
+        self.assertEqual(out["verdict"], "active")
+
+    def test_idle_does_not_override(self):
+        ctx = {"agent_status": "idle", "last_turn_age_sec": 9999}
+        verdict = {"verdict": "stranded", "nudge_text": "retry",
+                   "summary": "s", "next": "n"}
+        out = self.mod.apply_working_override(verdict, ctx)
+        self.assertEqual(out["verdict"], "stranded")
+
+    def test_already_active_is_noop(self):
+        ctx = {"agent_status": "working", "last_turn_age_sec": 2400}
+        verdict = {"verdict": "active", "summary": "s", "next": "n"}
+        out = self.mod.apply_working_override(verdict, ctx)
+        self.assertEqual(out["verdict"], "active")
+        self.assertNotIn("_working_override", out)
+
+    def test_safety_valve_lets_observer_stand(self):
+        """A tool 'in flight' past WORKING_OVERRIDE_MAX_AGE_SEC is probably
+        hung — don't override, let the Observer's verdict through."""
+        max_age = self.mod.WORKING_OVERRIDE_MAX_AGE_SEC
+        ctx = {"agent_status": "working", "last_turn_age_sec": max_age + 1,
+               "ws_ref": "workspace:2"}
+        verdict = {"verdict": "stranded", "nudge_text": "retry",
+                   "summary": "s", "next": "n"}
+        out = self.mod.apply_working_override(verdict, ctx)
+        self.assertEqual(out["verdict"], "stranded")
+
+    def test_safety_valve_boundary_just_under(self):
+        """At exactly the threshold, still overrides (boundary is > not >=)."""
+        max_age = self.mod.WORKING_OVERRIDE_MAX_AGE_SEC
+        ctx = {"agent_status": "working", "last_turn_age_sec": max_age}
+        verdict = {"verdict": "stranded", "nudge_text": "retry",
+                   "summary": "s", "next": "n"}
+        out = self.mod.apply_working_override(verdict, ctx)
+        self.assertEqual(out["verdict"], "active")
+
+    def test_none_age_with_working_still_overrides(self):
+        """last_turn_age_sec=None (no transcript) + working → override.
+        No age evidence means we can't apply the safety valve, so default
+        to trusting the working signal."""
+        ctx = {"agent_status": "working", "last_turn_age_sec": None}
+        verdict = {"verdict": "stranded", "nudge_text": "retry",
+                   "summary": "s", "next": "n"}
+        out = self.mod.apply_working_override(verdict, ctx)
+        self.assertEqual(out["verdict"], "active")
+
+
 class TimeHelpersTests(unittest.TestCase):
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()

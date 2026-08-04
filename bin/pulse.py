@@ -861,6 +861,16 @@ OBS_HASH_TAIL_BYTES = 65536
 # idle > 1800s unlocks stranded/ready_for_cleanup/needs_user. Mirror exactly.
 OBS_IDLE_THRESHOLD_SEC = 1800
 
+# Safety valve for the working-override (see apply_working_override). A
+# tool_use with no matching tool_result means the agent is mid-execution and
+# the transcript mtime is stale by definition (the JSONL isn't appended to
+# until the tool returns). We deterministically force `active` in that case
+# so the Observer LLM can't emit `stranded` on a stale mtime. But a tool
+# "in flight" for this many seconds is probably hung, not running — past
+# this age we let the Observer's verdict stand so a genuinely stuck
+# workspace can still be rescued.
+WORKING_OVERRIDE_MAX_AGE_SEC = 7200
+
 # Hard cap on consecutive carried-forward verdicts: after this many skips
 # the ws is force-observed regardless of hash. Structural defense against
 # ANY hash blind spot (present or future) — no workspace can go unobserved
@@ -876,6 +886,49 @@ def idle_age_band(age) -> str:
     if not isinstance(age, (int, float)):
         return "age-unknown"
     return "le1800" if age <= OBS_IDLE_THRESHOLD_SEC else "gt1800"
+
+
+def apply_working_override(verdict: dict, ctx: dict) -> dict:
+    """Hard deterministic gate: when agent_status == 'working' (a tool_use is
+    in flight with no matching tool_result), force the verdict to `active`
+    regardless of what the Observer LLM said.
+
+    The transcript JSONL's mtime goes stale during long tool executions — the
+    file isn't appended to until the tool returns. The Observer prompt *tells*
+    the LLM to treat agent_status=working as active, but an LLM hint is not a
+    gate: when last_turn_age_sec > 1800 the LLM can still emit `stranded`,
+    nudging a workspace that's mid-build / mid-test-suite. This function makes
+    the override mechanical.
+
+    Safety valve: if last_turn_age_sec exceeds WORKING_OVERRIDE_MAX_AGE_SEC
+    (default 2h), the tool is probably hung, not running — let the Observer's
+    verdict stand so a genuinely stuck workspace can still be rescued.
+
+    Returns the (possibly overridden) verdict dict. The original Observer
+    summary/next are preserved when the verdict was already `active`; a new
+    short summary/next are set when overriding so the dashboard explains WHY
+    the verdict is active despite a stale transcript age.
+    """
+    if ctx.get("agent_status") != "working":
+        return verdict
+    if verdict.get("verdict") == "active":
+        return verdict  # already correct — no-op
+    age = ctx.get("last_turn_age_sec")
+    if isinstance(age, (int, float)) and age > WORKING_OVERRIDE_MAX_AGE_SEC:
+        return verdict  # tool "in flight" too long — probably hung, let Observer stand
+    observer_said = verdict.get("verdict")
+    log.info("working-override: %s agent_status=working (age=%ss), "
+             "Observer said %r — forcing active",
+             ctx.get("ws_ref"), age, observer_said)
+    return {
+        **verdict,
+        "verdict": "active",
+        "summary": (verdict.get("summary")
+                    or "Agent has a tool call in flight."),
+        "next": (verdict.get("next")
+                 or "Tool execution will complete and the agent will continue."),
+        "_working_override": observer_said,  # audit trail — stripped before save
+    }
 
 
 def _transcript_tail_digest(path: str | None) -> str:
@@ -2495,7 +2548,17 @@ def main() -> int:
                     "evidence": "observer returned no verdict; defaulted to active",
                 })
                 continue
-            v_for_save = {k: v for k, v in verdict.items() if k != "ws_ref"}
+            # Hard deterministic gate (2026-08-04): when agent_status=working
+            # (tool_use in flight, no tool_result yet), the transcript mtime
+            # is stale by definition — the JSONL isn't appended to until the
+            # tool returns. The Observer LLM is *told* to treat working as
+            # active, but an LLM hint is not a gate. Force active here so a
+            # long-running build/test-suite can never be nudged as stranded.
+            # Safety valve: past WORKING_OVERRIDE_MAX_AGE_SEC the tool is
+            # probably hung — let the Observer's verdict stand.
+            verdict = apply_working_override(verdict, ctxs_by_ref.get(ws_ref, {}))
+            v_for_save = {k: v for k, v in verdict.items()
+                          if k != "ws_ref" and k != "_working_override"}
             # Stamp the input hash a REAL verdict was earned against, so the
             # next pulse can skip an unchanged workspace. Synthesized fallback
             # verdicts (above) deliberately carry no hash — an Observer

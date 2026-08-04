@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.7.1] - 2026-08-04
+
+### Fixed
+- **Working-override gate in pulse.py**: when `agent_status == "working"`
+  (a `tool_use` is in flight with no matching `tool_result`), the Observer's
+  verdict is now deterministically forced to `active` before it reaches
+  `execute_verdict`. Previously, the transcript JSONL's mtime went stale during
+  long tool executions (builds, test suites) because the file isn't appended to
+  until the tool returns. The Observer prompt *told* the LLM to treat
+  `agent_status=working` as `active`, but an LLM hint is not a gate — when
+  `last_turn_age_sec > 1800` the LLM could still emit `stranded`, nudging a
+  workspace that was mid-execution. The new `apply_working_override()` function
+  makes the override mechanical, with a safety valve at
+  `WORKING_OVERRIDE_MAX_AGE_SEC` (7200s / 2h): past that age a tool "in flight"
+  is probably hung, so the Observer's verdict stands and the workspace can
+  still be rescued.
+
 ## [0.7.0] - 2026-07-25
 
 Completes Factory Droid provider parity across the assistant. Droid was
