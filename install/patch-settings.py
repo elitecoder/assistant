@@ -2,7 +2,7 @@
 """Idempotent hook patcher for Claude settings and Factory hooks.
 
 Ensures:
-  - SessionStart contains: cmux-auto-resume.py and cmux-session-ledger.py start
+  - SessionStart contains: cmux-session-ledger.py start
   - SessionEnd contains:   cmux-session-ledger.py end
   - Stop does NOT contain: cmux-session-ledger.py end (legacy bug)
 
@@ -17,7 +17,6 @@ import sys
 import time
 from pathlib import Path
 
-AUTO_RESUME_CMD = "python3 $HOME/.claude/hooks/cmux-auto-resume.py"
 LEDGER_START_CMD = "python3 $HOME/.claude/hooks/cmux-session-ledger.py start"
 LEDGER_END_CMD = "python3 $HOME/.claude/hooks/cmux-session-ledger.py end"
 
@@ -74,13 +73,6 @@ def patch_path(path):
     stop = hooks.setdefault("Stop", [])
 
     changed = False
-
-    if not has_command(ss, AUTO_RESUME_CMD):
-        add_hook(ss, AUTO_RESUME_CMD, 10)
-        print(f"  + SessionStart: {AUTO_RESUME_CMD}")
-        changed = True
-    else:
-        print(f"  = SessionStart already has {AUTO_RESUME_CMD}")
 
     if not has_command(ss, LEDGER_START_CMD):
         add_hook(ss, LEDGER_START_CMD, 5)

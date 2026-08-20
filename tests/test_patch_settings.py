@@ -98,7 +98,6 @@ def test_patches_claude_and_factory_without_deleting_existing_hooks(tmp_path):
     assert factory_doc["custom"] is True
     assert "existing-factory" in commands(factory_doc, "PostToolUse")
     for document in (claude_doc, factory_doc):
-        assert module.AUTO_RESUME_CMD in commands(document, "SessionStart")
         assert module.LEDGER_START_CMD in commands(document, "SessionStart")
         assert module.LEDGER_END_CMD in commands(document, "SessionEnd")
 
@@ -154,7 +153,6 @@ def test_fresh_machine_no_settings_file(tmp_path):
     assert "SessionStart" in hooks and "SessionEnd" in hooks
     # commands live at SessionStart[].hooks[].command (nested matcher blocks)
     cmds = _session_start_cmds(data)
-    assert any("cmux-auto-resume.py" in c for c in cmds)
     assert any("cmux-session-ledger.py start" in c for c in cmds)
 
 
