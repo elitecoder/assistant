@@ -54,6 +54,26 @@ DISPATCH_CWD = REPO_ROOT
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 WARM_MODEL = os.environ.get("COMMS_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
 
+def _positive_int_env(name: str, default: int) -> int:
+    """Env override parsed as a positive int, falling back to ``default`` on a
+    missing/malformed/non-positive value. A bad tunable must never crash the
+    daemon at import — it degrades to the safe default instead."""
+    try:
+        value = int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Boot-screen readiness budget: how many poll iterations (~1s each) to wait for
+# the ready marker before giving up on a spawn. A cold Claude-on-Bedrock launch
+# (plus the login-shell nvm preamble) can render its banner well past the old
+# 30-poll window, so the budget is generous and env-overridable. Each poll also
+# answers the first-launch trust prompt if it is showing (see await_ready), so a
+# slow boot no longer stalls. This is a ceiling: a healthy boot breaks out as
+# soon as the marker appears.
+READY_ATTEMPTS = _positive_int_env("COMMS_READY_ATTEMPTS", 90)
+
 
 # --------------------------------------------------------------------------- registry (pure)
 
@@ -417,6 +437,35 @@ def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembl
     )
 
 
+def await_ready(read_screen, ready_re, trust_marker, answer_trust,
+                attempts, sleep=time.sleep):
+    """Poll the boot screen until the ready marker appears, auto-answering the
+    first-launch trust prompt the moment it is seen.
+
+    Pure control flow (all I/O is injected) so the readiness/trust ordering is
+    unit-testable without a live cmux. Returns ``(ready, trust_answered)``.
+
+    The trust-answer is folded INTO the poll rather than fired once before it:
+    a slow cold boot can render the prompt after any fixed pre-loop wait, and a
+    missed answer stalls the session forever — the 2026-08-21 comms outage.
+    ``answer_trust`` fires at most once (Claude re-renders the same prompt on
+    every frame until it is answered; sending "1"+Enter repeatedly would leak
+    keystrokes into the REPL once accepted). ``trust_marker`` is None for agents
+    with no known auto-answerable gate (droid), so the branch never misfires.
+    Readiness is checked before trust each iteration so an already-ready screen
+    short-circuits without touching the surface."""
+    trust_answered = False
+    for _ in range(attempts):
+        screen = read_screen()
+        if ready_re.search(screen):
+            return True, trust_answered
+        if trust_marker and not trust_answered and trust_marker in screen:
+            answer_trust()
+            trust_answered = True
+        sleep(1)
+    return False, trust_answered
+
+
 def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
                   agent: str | None = None) -> dict | None:  # pragma: no cover - live cmux I/O
     """Spawn a fresh warm cmux session and deliver the responder boot prompt.
@@ -463,25 +512,29 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     project_dir.mkdir(parents=True, exist_ok=True)
     before = {p.name for p in project_dir.glob("*.jsonl")}
 
-    # Trust prompt (first launch in a never-used cwd). Claude has a known
-    # auto-answerable line; droid's trust_marker is None → skip (never misfires).
-    time.sleep(2)
-    trust = agent_session.trust_marker(agent)
-    if trust and trust in _surface_read_text(paths, surface_ref):
+    # Readiness gate: poll the boot screen for the per-agent ready marker
+    # (banner or status bar), answering the first-launch trust prompt if/when it
+    # shows. Both are delegated to await_ready so the ordering is unit-tested.
+    def _answer_trust() -> None:
         _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "1"})
+        # send_text streams keystrokes; give "1" a beat to land before Enter so
+        # the selection isn't submitted empty (mirrors feed()'s proven pattern).
+        time.sleep(0.5)
         _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
-    # Readiness: the per-agent boot-screen regex (banner or status bar).
-    ready_re = agent_session.ready_re(agent)
-    ready = False
-    for _ in range(30):
-        screen = _surface_read_text(paths, surface_ref)
-        if ready_re.search(screen):
-            ready = True
-            break
-        time.sleep(1)
+    ready, trust_answered = await_ready(
+        read_screen=lambda: _surface_read_text(paths, surface_ref),
+        ready_re=agent_session.ready_re(agent),
+        trust_marker=agent_session.trust_marker(agent),
+        answer_trust=_answer_trust,
+        attempts=READY_ATTEMPTS,
+    )
     if not ready:
-        log(f"{agent} never ready in {ws_ref}/{surface_ref}")
+        # "answer sent" — not "accepted": if the RPC dropped or the keystroke
+        # raced acceptance, the prompt can still be up. Distinct from the
+        # no-trust-seen case so the next outage triage isn't misled.
+        detail = " (trust prompt seen; answer sent)" if trust_answered else ""
+        log(f"{agent} never ready in {ws_ref}/{surface_ref}{detail}")
         return None
 
     # Deliver the responder boot prompt by reference.

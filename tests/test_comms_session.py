@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import agent_session as ag
@@ -302,3 +303,261 @@ def test_reconcile_is_instance_scoped_never_touches_other_instance(tmp_path, mon
     # B's ledger is untouched; A's ledger now holds only the survivor.
     assert cs.read_spawned_refs(paths_b) == ["workspace:2"]
     assert cs.read_spawned_refs(paths_a) == ["workspace:3"]
+
+
+# ─── await_ready: readiness gate + trust-prompt auto-answer ──────────────────
+#
+# Regression guard for the 2026-08-21 comms outage: the old spawn code answered
+# the first-launch trust prompt exactly once, at a fixed sleep(2) BEFORE the
+# readiness loop. A cold Claude boot rendered that prompt after the 2s window,
+# so the answer was missed and the session stalled until timeout. await_ready
+# folds the answer INTO the poll, so it fires whenever the prompt appears.
+
+TRUST = "1. Yes, I trust this folder"
+READY = "⏵⏵ bypass permissions on"
+
+
+class _Recorder:
+    """Injectable I/O double: serves a scripted list of boot screens (the last
+    frame repeats once exhausted) and records trust answers + sleeps."""
+
+    def __init__(self, screens):
+        self._screens = list(screens)
+        self._i = 0
+        self.answers = 0
+        self.sleeps = 0
+        self.reads = 0
+
+    def read(self) -> str:
+        self.reads += 1
+        frame = self._screens[min(self._i, len(self._screens) - 1)]
+        self._i += 1
+        return frame
+
+    def answer(self) -> None:
+        self.answers += 1
+
+    def sleep(self, _seconds) -> None:
+        self.sleeps += 1
+
+
+def _run(screens, *, trust_marker=TRUST, attempts=10):
+    rec = _Recorder(screens)
+    ready, answered = cs.await_ready(
+        read_screen=rec.read,
+        ready_re=re.compile(re.escape(READY)),
+        trust_marker=trust_marker,
+        answer_trust=rec.answer,
+        attempts=attempts,
+        sleep=rec.sleep,
+    )
+    return ready, answered, rec
+
+
+def test_await_ready_ready_on_first_poll_no_trust_no_sleep():
+    ready, answered, rec = _run([f"header {READY} footer"])
+    assert (ready, answered) == (True, False)
+    assert rec.answers == 0
+    assert rec.reads == 1
+    assert rec.sleeps == 0  # short-circuits before sleeping
+
+
+def test_await_ready_trust_shown_late_then_ready():
+    # The outage shape: two blank frames (still booting), THEN the trust prompt
+    # appears (well past any fixed 2s window), then the ready banner.
+    ready, answered, rec = _run([
+        "booting…", "booting…",
+        f"...{TRUST}...", f"...{TRUST}...",
+        f"{READY}",
+    ])
+    assert (ready, answered) == (True, True)
+    assert rec.answers == 1  # answered when the prompt finally appeared
+
+
+def test_await_ready_answers_trust_exactly_once_while_prompt_persists():
+    # Claude re-renders the same prompt every frame until answered; we must not
+    # spray "1"+Enter repeatedly (leaks keystrokes into the REPL post-accept).
+    ready, answered, rec = _run([TRUST] * 5 + [READY])
+    assert (ready, answered) == (True, True)
+    assert rec.answers == 1
+
+
+def test_await_ready_never_ready_reports_trust_seen():
+    ready, answered, rec = _run([TRUST] * 4, attempts=4)
+    assert ready is False
+    assert answered is True          # surfaced in the "never ready" log detail
+    assert rec.reads == 4            # respects the attempts budget exactly
+    assert rec.sleeps == 4
+
+
+def test_await_ready_never_ready_without_trust():
+    ready, answered, rec = _run(["booting…"] * 3, attempts=3)
+    assert (ready, answered) == (False, False)
+    assert rec.answers == 0
+
+
+def test_await_ready_none_trust_marker_never_answers():
+    # Droid path: trust_marker is None, so even a screen literally containing the
+    # Claude trust line must never trigger an answer.
+    ready, answered, rec = _run([TRUST, TRUST, READY], trust_marker=None)
+    assert (ready, answered) == (True, False)
+    assert rec.answers == 0
+
+
+def test_await_ready_ready_wins_when_both_markers_present():
+    # If a single frame shows both, readiness short-circuits and we never answer.
+    ready, answered, rec = _run([f"{TRUST} {READY}"])
+    assert (ready, answered) == (True, False)
+    assert rec.answers == 0
+
+
+def test_await_ready_uses_real_claude_markers():
+    rec = _Recorder([f"...{ag.trust_marker('claude')}...", "⏵⏵ bypass permissions on (shift+tab)"])
+    ready, answered = cs.await_ready(
+        read_screen=rec.read,
+        ready_re=ag.ready_re("claude"),
+        trust_marker=ag.trust_marker("claude"),
+        answer_trust=rec.answer,
+        attempts=5,
+        sleep=rec.sleep,
+    )
+    assert (ready, answered) == (True, True)
+    assert rec.answers == 1
+
+
+def test_await_ready_droid_marker_is_none_by_contract():
+    # The whole no-misfire guarantee rests on droid having no auto-answer gate.
+    assert ag.trust_marker("droid") is None
+
+
+def test_ready_attempts_default_is_generous():
+    # A cold Claude-on-Bedrock boot must have headroom past the old 30s window.
+    assert cs.READY_ATTEMPTS >= 60
+
+
+# A faithful excerpt of the REAL Claude cold-boot trust frame captured live on
+# 2026-08-21 (cmux surface.read_text of the stalled warm workspace). The whole
+# fix rests on the ready marker NOT appearing on this screen — otherwise
+# await_ready would report ready on the trust frame and feed the boot prompt
+# into an unanswered modal. Note "Claude Code'll" must NOT match "Claude Code v".
+REAL_TRUST_FRAME = """\
+ Accessing workspace:
+
+ /Users/mukuls/dev/assistant
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ ⚠ This folder pre-approves 61 tool permissions in .claude/settings.local.json:
+   mcp__scout__search, mcp__scout__semantic_doc_search, and 53 more
+ These will apply without asking. Only proceed if you trust this configuration.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel"""
+
+
+def test_real_trust_frame_does_not_false_positive_ready():
+    # The load-bearing assumption of the whole fix, pinned against the real frame.
+    assert ag.ready_re("claude").search(REAL_TRUST_FRAME) is None
+    # …and the auto-answer trigger IS present on that frame.
+    assert ag.trust_marker("claude") in REAL_TRUST_FRAME
+
+
+def test_await_ready_on_real_trust_frame_then_real_ready_bar():
+    # End-to-end over the real frames: trust modal (answered) → status bar (ready).
+    rec = _Recorder([REAL_TRUST_FRAME, "context 5% · ⏵⏵ bypass permissions on (shift+tab)"])
+    ready, answered = cs.await_ready(
+        read_screen=rec.read,
+        ready_re=ag.ready_re("claude"),
+        trust_marker=ag.trust_marker("claude"),
+        answer_trust=rec.answer,
+        attempts=5,
+        sleep=rec.sleep,
+    )
+    assert (ready, answered) == (True, True)
+    assert rec.answers == 1
+
+
+# ─── _positive_int_env: env-tunable parse must never crash the daemon ─────────
+
+def test_positive_int_env_valid_override(monkeypatch):
+    monkeypatch.setenv("COMMS_READY_ATTEMPTS", "45")
+    assert cs._positive_int_env("COMMS_READY_ATTEMPTS", 90) == 45
+
+
+@pytest.mark.parametrize("bad", ["", "90s", "oops", "3.5"])
+def test_positive_int_env_malformed_falls_back(monkeypatch, bad):
+    monkeypatch.setenv("COMMS_READY_ATTEMPTS", bad)
+    assert cs._positive_int_env("COMMS_READY_ATTEMPTS", 90) == 90
+
+
+@pytest.mark.parametrize("bad", ["0", "-5"])
+def test_positive_int_env_non_positive_falls_back(monkeypatch, bad):
+    monkeypatch.setenv("COMMS_READY_ATTEMPTS", bad)
+    assert cs._positive_int_env("COMMS_READY_ATTEMPTS", 90) == 90
+
+
+def test_positive_int_env_missing_uses_default(monkeypatch):
+    monkeypatch.delenv("COMMS_READY_ATTEMPTS", raising=False)
+    assert cs._positive_int_env("COMMS_READY_ATTEMPTS", 90) == 90
+
+
+# ─── spawn_session wiring: the exact call site of the 2026-08-21 outage ───────
+#
+# spawn_session is `pragma: no cover` (live cmux I/O), but the WIRING to
+# await_ready is the literal location the outage lived. This test fakes the cmux
+# boundary and stubs await_ready so a regression that hardcoded attempts, swapped
+# the markers, or broke the _answer_trust closure would fail here — not silently
+# pass every helper test.
+
+def test_spawn_session_wires_await_ready_and_answers_trust(paths, monkeypatch, tmp_path):
+    def fake_run(argv, timeout=None, **kw):
+        if "ping" in argv:
+            return (0, "", "")
+        if "new-workspace" in argv:
+            return (0, "created workspace:246", "")
+        if "list-pane-surfaces" in argv:
+            return (0, "surface:308", "")
+        return (0, "", "")
+
+    monkeypatch.setattr(cs.comms_lib, "run_cmd", fake_run)
+    monkeypatch.setattr(cs, "record_spawned_ref", lambda *a, **k: None)
+    monkeypatch.setattr(cs, "project_dir_for_cwd", lambda cwd, agent: tmp_path / "proj")
+    monkeypatch.setattr(cs.time, "sleep", lambda *a, **k: None)  # skip the 0.5s in _answer_trust
+
+    sends: list[tuple] = []
+    monkeypatch.setattr(cs, "_cmux_rpc",
+                        lambda paths, method, params, timeout=15: sends.append((method, params)))
+    monkeypatch.setattr(cs, "_surface_read_text", lambda paths, ref: "SCREEN-TEXT")
+
+    captured: dict = {}
+
+    def spy_await(read_screen, ready_re, trust_marker, answer_trust, attempts, sleep=None):
+        captured.update(ready_re=ready_re, trust_marker=trust_marker, attempts=attempts)
+        # Prove the injected callables are wired to the right surface.
+        assert read_screen() == "SCREEN-TEXT"
+        answer_trust()
+        return (False, True)  # never ready → spawn returns None, short-circuiting downstream I/O
+
+    monkeypatch.setattr(cs, "await_ready", spy_await)
+
+    logs: list[str] = []
+    result = cs.spawn_session(paths, tmp_path / "boot.md", log=logs.append, agent="claude")
+
+    assert result is None
+    # Correct budget + per-agent markers forwarded (not hardcoded / swapped).
+    assert captured["attempts"] == cs.READY_ATTEMPTS
+    assert captured["trust_marker"] == ag.trust_marker("claude")
+    assert captured["ready_re"].pattern == ag.ready_re("claude").pattern
+    # _answer_trust sends "1" then Enter to the resolved surface, in that order.
+    assert sends == [
+        ("surface.send_text", {"surface_id": "surface:308", "text": "1"}),
+        ("surface.send_key", {"surface_id": "surface:308", "key": "enter"}),
+    ]
+    # The never-ready diagnostic records that the trust prompt was seen.
+    assert any("never ready" in m and "trust prompt seen; answer sent" in m for m in logs)
