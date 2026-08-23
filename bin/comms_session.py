@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import time
 from pathlib import Path
@@ -53,6 +54,26 @@ DISPATCH_CWD = REPO_ROOT
 # `claude`. Bedrock prefix matches pulse.py.
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 WARM_MODEL = os.environ.get("COMMS_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Env override parsed as a positive int, falling back to ``default`` on a
+    missing/malformed/non-positive value. A bad tunable must never crash the
+    daemon at import — it degrades to the safe default instead."""
+    try:
+        value = int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Boot-screen readiness budget: how many poll iterations (~1s each) to wait for
+# the ready marker before giving up on a spawn. A cold Claude-on-Bedrock launch
+# (plus the login-shell nvm preamble) can render its banner well past the old
+# 30-poll window, so the budget is generous and env-overridable. Each poll also
+# answers the first-launch trust prompt if it is showing (see await_ready), so a
+# slow boot no longer stalls. This is a ceiling: a healthy boot breaks out as
+# soon as the marker appears.
+READY_ATTEMPTS = _positive_int_env("COMMS_READY_ATTEMPTS", 90)
 
 
 # --------------------------------------------------------------------------- registry (pure)
@@ -353,14 +374,29 @@ def refs_to_reconcile(spawned: list[str], keep: str | None) -> list[str]:
     return out
 
 
+def parse_ws_ref_from_output(out: str, err: str) -> str | None:
+    """Extract the first ``workspace:\\d+`` ref from combined stdout+stderr.
+    Used after a failed/timed-out new-workspace call: cmux may have assigned a
+    ref and printed it before the timeout fired, leaving an untracked orphan."""
+    m = re.search(r"workspace:\d+", out + err)
+    return m.group(0) if m else None
+
+
+def untracked_warm_refs(warm_refs: list[str], spawned_refs: list[str],
+                        keep: str | None) -> list[str]:
+    """Warm-titled workspaces (from a machine-wide title scan) that are NOT in
+    this instance's spawned ledger and are NOT the kept survivor.  These are
+    orphans that slipped through record_spawned_ref — e.g. a timed-out
+    new-workspace that created a workspace before the daemon got rc=1."""
+    known = set(spawned_refs)
+    return [ws for ws in warm_refs if ws != keep and ws not in known]
+
+
 def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cover - live cmux I/O
-    """All workspace refs whose title is the warm-session title, machine-wide.
-    Retained for diagnostics only — reconcile no longer uses it (it closed OTHER
-    instances' warm sessions). Instance-scoped reconcile uses read_spawned_refs."""
+    """All workspace refs whose title is the warm-session title, machine-wide."""
     rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
     if rc != 0:
         return []
-    import re
     refs = []
     for line in out.splitlines():
         if SESSION_TITLE in line:
@@ -371,17 +407,24 @@ def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cov
 
 
 def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
-    """Close every warm workspace THIS instance spawned except `keep` — orphans
-    from a prior daemon of the SAME instance that died without cleanup. Called on
-    startup and after each spawn so leaks self-heal.
+    """Close every warm workspace THIS instance spawned except `keep`, plus any
+    untracked orphan found by a machine-wide title scan.
 
-    Instance-scoped via the spawned-workspaces ledger (read_spawned_refs), NOT a
-    machine-wide title scan: a second comms instance (distinct COMMS_HOME) or a
-    live-validation spawn must never close the production instance's warm session.
-    close_own_workspace stays title-guarded as defense-in-depth. `keep` is pruned
-    from the ledger so it becomes the sole surviving spawned ref."""
-    to_close = refs_to_reconcile(read_spawned_refs(paths), keep)
-    for ws in to_close:
+    Two-pass cleanup:
+    1. Ledger pass — close every ref in spawned-workspaces.json that isn't keep.
+       Instance-scoped: a second comms instance (distinct COMMS_HOME) cannot
+       accidentally close the production session this way.
+    2. Title-scan pass — close any SESSION_TITLE workspace NOT in the spawned
+       ledger and NOT keep.  Catches orphans from timed-out spawns that created a
+       workspace before new-workspace returned rc=1 and record_spawned_ref was
+       never reached.  close_own_workspace is title-guarded as defence-in-depth.
+
+    `keep` is rewritten as the sole entry in the spawned ledger afterward."""
+    spawned = read_spawned_refs(paths)
+    for ws in refs_to_reconcile(spawned, keep):
+        close_own_workspace(paths, ws, log=log)
+    for ws in untracked_warm_refs(list_warm_workspaces(paths), spawned, keep):
+        log(f"closing untracked orphan {ws} (not in spawned ledger)")
         close_own_workspace(paths, ws, log=log)
     # Rewrite the ledger to just the kept ref (the survivor); closed refs are gone.
     paths.comms_dir.mkdir(parents=True, exist_ok=True)
@@ -417,6 +460,35 @@ def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembl
     )
 
 
+def await_ready(read_screen, ready_re, trust_marker, answer_trust,
+                attempts, sleep=time.sleep):
+    """Poll the boot screen until the ready marker appears, auto-answering the
+    first-launch trust prompt the moment it is seen.
+
+    Pure control flow (all I/O is injected) so the readiness/trust ordering is
+    unit-testable without a live cmux. Returns ``(ready, trust_answered)``.
+
+    The trust-answer is folded INTO the poll rather than fired once before it:
+    a slow cold boot can render the prompt after any fixed pre-loop wait, and a
+    missed answer stalls the session forever — the 2026-08-21 comms outage.
+    ``answer_trust`` fires at most once (Claude re-renders the same prompt on
+    every frame until it is answered; sending "1"+Enter repeatedly would leak
+    keystrokes into the REPL once accepted). ``trust_marker`` is None for agents
+    with no known auto-answerable gate (droid), so the branch never misfires.
+    Readiness is checked before trust each iteration so an already-ready screen
+    short-circuits without touching the surface."""
+    trust_answered = False
+    for _ in range(attempts):
+        screen = read_screen()
+        if ready_re.search(screen):
+            return True, trust_answered
+        if trust_marker and not trust_answered and trust_marker in screen:
+            answer_trust()
+            trust_answered = True
+        sleep(1)
+    return False, trust_answered
+
+
 def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
                   agent: str | None = None) -> dict | None:  # pragma: no cover - live cmux I/O
     """Spawn a fresh warm cmux session and deliver the responder boot prompt.
@@ -441,8 +513,14 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
          "--focus", "false", "--command", launch], timeout=30)
     if rc != 0:
         log(f"new-workspace failed rc={rc}: {err.strip()[:200]}")
+        # cmux may have assigned a workspace ref before timing out — record it
+        # immediately so the next reconcile (on the following successful spawn)
+        # closes it rather than leaving it as a permanent orphan.
+        partial = parse_ws_ref_from_output(out, err)
+        if partial:
+            record_spawned_ref(paths, partial)
+            log(f"recorded partial spawn {partial} for cleanup on next reconcile")
         return None
-    import re
     m = re.search(r"workspace:\d+", out)
     if not m:
         log(f"no workspace ref in: {out.strip()[:200]}")
@@ -463,25 +541,29 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     project_dir.mkdir(parents=True, exist_ok=True)
     before = {p.name for p in project_dir.glob("*.jsonl")}
 
-    # Trust prompt (first launch in a never-used cwd). Claude has a known
-    # auto-answerable line; droid's trust_marker is None → skip (never misfires).
-    time.sleep(2)
-    trust = agent_session.trust_marker(agent)
-    if trust and trust in _surface_read_text(paths, surface_ref):
+    # Readiness gate: poll the boot screen for the per-agent ready marker
+    # (banner or status bar), answering the first-launch trust prompt if/when it
+    # shows. Both are delegated to await_ready so the ordering is unit-tested.
+    def _answer_trust() -> None:
         _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "1"})
+        # send_text streams keystrokes; give "1" a beat to land before Enter so
+        # the selection isn't submitted empty (mirrors feed()'s proven pattern).
+        time.sleep(0.5)
         _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
 
-    # Readiness: the per-agent boot-screen regex (banner or status bar).
-    ready_re = agent_session.ready_re(agent)
-    ready = False
-    for _ in range(30):
-        screen = _surface_read_text(paths, surface_ref)
-        if ready_re.search(screen):
-            ready = True
-            break
-        time.sleep(1)
+    ready, trust_answered = await_ready(
+        read_screen=lambda: _surface_read_text(paths, surface_ref),
+        ready_re=agent_session.ready_re(agent),
+        trust_marker=agent_session.trust_marker(agent),
+        answer_trust=_answer_trust,
+        attempts=READY_ATTEMPTS,
+    )
     if not ready:
-        log(f"{agent} never ready in {ws_ref}/{surface_ref}")
+        # "answer sent" — not "accepted": if the RPC dropped or the keystroke
+        # raced acceptance, the prompt can still be up. Distinct from the
+        # no-trust-seen case so the next outage triage isn't misled.
+        detail = " (trust prompt seen; answer sent)" if trust_answered else ""
+        log(f"{agent} never ready in {ws_ref}/{surface_ref}{detail}")
         return None
 
     # Deliver the responder boot prompt by reference.

@@ -274,11 +274,145 @@ def test_refs_to_reconcile_empty_ledger():
     assert cs.refs_to_reconcile([], keep="workspace:9") == []
 
 
+# ─── parse_ws_ref_from_output (pure) ────────────────────────────────────────
+
+def test_parse_ws_ref_from_output_found_in_stdout():
+    assert cs.parse_ws_ref_from_output("created workspace:252\n", "") == "workspace:252"
+
+
+def test_parse_ws_ref_from_output_found_in_stderr():
+    assert cs.parse_ws_ref_from_output("", "Error: workspace:252 timed out") == "workspace:252"
+
+
+def test_parse_ws_ref_from_output_stdout_wins_over_stderr():
+    assert cs.parse_ws_ref_from_output("workspace:10 ok", "workspace:99 err") == "workspace:10"
+
+
+def test_parse_ws_ref_from_output_not_found():
+    assert cs.parse_ws_ref_from_output("", "Error: Command timed out") is None
+
+
+# ─── untracked_warm_refs (pure) ──────────────────────────────────────────────
+
+def test_untracked_warm_refs_finds_orphan():
+    got = cs.untracked_warm_refs(
+        warm_refs=["workspace:252", "workspace:254"],
+        spawned_refs=["workspace:254"],
+        keep="workspace:254",
+    )
+    assert got == ["workspace:252"]
+
+
+def test_untracked_warm_refs_skips_keep():
+    got = cs.untracked_warm_refs(
+        warm_refs=["workspace:254"],
+        spawned_refs=[],
+        keep="workspace:254",
+    )
+    assert got == []
+
+
+def test_untracked_warm_refs_skips_known_spawned():
+    got = cs.untracked_warm_refs(
+        warm_refs=["workspace:10", "workspace:11"],
+        spawned_refs=["workspace:10", "workspace:11"],
+        keep="workspace:11",
+    )
+    assert got == []
+
+
+def test_untracked_warm_refs_empty_warm():
+    assert cs.untracked_warm_refs([], ["workspace:5"], "workspace:5") == []
+
+
+# ─── reconcile closes title-scanned untracked orphan ────────────────────────
+
+def test_reconcile_closes_untracked_title_scanned_orphan(tmp_path, monkeypatch):
+    """Regression: a workspace created by a timed-out spawn is never in the
+    spawned ledger.  reconcile_warm_workspaces must find and close it via the
+    title-scan pass even though it was never recorded."""
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    # Ledger only knows about ws:254 (the successful spawn).
+    cs.record_spawned_ref(paths, "workspace:254")
+
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, ws, log=lambda m: None: closed.append(ws))
+    # Title scan returns both ws:252 (orphan) and ws:254 (keep).
+    monkeypatch.setattr(cs, "list_warm_workspaces",
+                        lambda p: ["workspace:252", "workspace:254"])
+
+    cs.reconcile_warm_workspaces(paths, keep="workspace:254")
+
+    assert "workspace:252" in closed, "untracked orphan must be closed"
+    assert "workspace:254" not in closed, "kept session must not be closed"
+    assert cs.read_spawned_refs(paths) == ["workspace:254"]
+
+
+# ─── spawn_session records partial ref on new-workspace timeout ──────────────
+
+def test_spawn_session_records_partial_ref_on_timeout(tmp_path, monkeypatch):
+    """When new-workspace times out but prints a workspace ref in its output,
+    spawn_session must record that ref in the spawned ledger so the next
+    reconcile can close the orphan."""
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    call_count = {"n": 0}
+
+    def fake_run_cmd(cmd, timeout=30):
+        call_count["n"] += 1
+        if "ping" in cmd:
+            return 0, "", ""
+        if "new-workspace" in cmd:
+            # Simulate cmux printing a workspace ref before timing out.
+            return 1, "workspace:252\n", "Error: Command timed out"
+        return 1, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run_cmd)
+
+    result = cs.spawn_session(paths, Path("/boot.md"))
+
+    assert result is None, "must return None on failure"
+    assert cs.read_spawned_refs(paths) == ["workspace:252"], \
+        "partial ref must be recorded for next reconcile"
+
+
+def test_spawn_session_no_partial_ref_when_output_empty(tmp_path, monkeypatch):
+    """When new-workspace fails with no workspace ref in output, nothing is
+    recorded — the spawned ledger stays empty."""
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    def fake_run_cmd(cmd, timeout=30):
+        if "ping" in cmd:
+            return 0, "", ""
+        if "new-workspace" in cmd:
+            return 1, "", "Error: Command timed out"
+        return 1, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run_cmd)
+
+    result = cs.spawn_session(paths, Path("/boot.md"))
+
+    assert result is None
+    assert cs.read_spawned_refs(paths) == []
+
+
 def test_reconcile_is_instance_scoped_never_touches_other_instance(tmp_path, monkeypatch):
     """The bug: reconcile closed EVERY warm-titled workspace machine-wide, so a
     second comms instance (distinct COMMS_HOME) or a live-validation spawn closed
     the production instance's warm session. Fix: reconcile only closes refs in
-    THIS instance's own spawned-workspaces ledger."""
+    THIS instance's own spawned-workspaces ledger.
+
+    The title-scan pass also closes untracked orphans, but it still cannot reach
+    B's workspace when the title scan returns only instance-A-visible refs — and
+    close_own_workspace is title-guarded as defence-in-depth."""
     home_a = tmp_path / "a"; (home_a / ".assistant").mkdir(parents=True)
     home_b = tmp_path / "b"; (home_b / ".assistant").mkdir(parents=True)
     paths_a = cl.Paths.from_env({"HOME": str(home_a), "COMMS_HOME": str(home_a)})
@@ -291,6 +425,8 @@ def test_reconcile_is_instance_scoped_never_touches_other_instance(tmp_path, mon
     closed: list[str] = []
     monkeypatch.setattr(cs, "close_own_workspace",
                         lambda paths, ws, log=lambda m: None: closed.append(ws))
+    # Title scan returns only the surviving warm workspace — no untracked orphans.
+    monkeypatch.setattr(cs, "list_warm_workspaces", lambda p: ["workspace:3"])
 
     # Instance A reconciles after respawning ws:3 — it must close only its OWN
     # orphan (ws:1) and NEVER B's production ws:2.
