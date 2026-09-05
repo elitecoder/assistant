@@ -64,13 +64,29 @@ from assistant import model_tiers  # noqa: E402
 # the one spawn site in this repo still hardcoding a Bedrock-shaped id,
 # instead of going through model_tiers like pulse.py/strategist.py/
 # lesson-extractor.py/narrate-brief.py already do — it broke the moment the
-# operator's alias stopped defaulting to Bedrock). WARM_BACKEND is baked into
-# the launch command as an explicit CLAUDE_CODE_USE_BEDROCK=<0|1> prefix (see
-# _warm_launch) so the child's backend can never disagree with its model id.
+# operator's alias stopped defaulting to Bedrock).
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
-WARM_BACKEND = model_tiers.provider()
-WARM_MODEL = os.environ.get("COMMS_MODEL") or model_tiers.model_for(
-    "balanced", long_context=True, provider_hint=WARM_BACKEND)
+
+
+def _resolve_warm_model_and_backend() -> tuple[str, str, bool]:
+    """(model_id, backend, pinned) for the warm session's --model + explicit
+    CLAUDE_CODE_USE_BEDROCK prefix — resolved FRESH on every call, not frozen
+    at import. `comms-listen.py` is a long-lived daemon; freezing these as
+    module constants meant a mid-run `claude-backend bedrock|sub` toggle was
+    invisible until the daemon itself restarted (2026-09-05 review finding).
+
+    `pinned=True` means COMMS_MODEL is an explicit operator override. In that
+    case the caller must NOT also declare CLAUDE_CODE_USE_BEDROCK: an operator
+    pinning a specific id already knows which backend it targets, and
+    auto-declaring a flag from ambient detection could contradict that pin
+    (e.g. COMMS_MODEL set to a Bedrock id on a box whose zprofile currently
+    reads non-Bedrock) — worse than the pre-fix ambient-inheritance behavior
+    the override previously fell back to (2026-09-05 review finding)."""
+    override = os.environ.get("COMMS_MODEL")
+    if override:
+        return override, model_tiers.provider(), True
+    backend = model_tiers.provider()
+    return model_tiers.model_for("balanced", long_context=True), backend, False
 
 def _positive_int_env(name: str, default: int) -> int:
     """Env override parsed as a positive int, falling back to ``default`` on a
@@ -451,32 +467,50 @@ def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lamb
     os.replace(tmp, p)
 
 
-def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembly, driven live
+def _warm_launch(agent: str) -> str:
     """The cmux `--command` string for a warm `agent` session.
 
     claude: the explicit binary + flags (NOT the bare `claude` alias, which is
     Opus). The full path means the login shell's alias doesn't apply — so this
-    command must declare its OWN backend rather than assume one. It prefixes
-    CLAUDE_CODE_USE_BEDROCK=<0|1> from the SAME model_tiers.provider() call
-    that picked WARM_MODEL's id shape, so the two can never disagree (no more
-    assuming Bedrock and hoping the ambient shell agrees). Quote the model
-    slug — the [1m] brackets are shell glob chars. Scope to its OWN surface:
-    ~/dev/assistant (its code + boot prompt — so it can evolve its own
-    behavior) + ~/.assistant (runtime state: conversation.jsonl, session.json) +
-    ~/.architect (reads Assistant's proposals/ledger) + /tmp. Deliberately NOT
-    ~/.claude (global CLAUDE.md + settings.json — a session must not widen its
-    own rules/permissions) and NOT all of ~/dev. Lesson-writing still works via a
-    subprocess (assistant-curator.py) gated by an explicit human `y`.
+    command must declare its OWN backend rather than assume one. Unless the
+    model is an explicit COMMS_MODEL pin (see _resolve_warm_model_and_backend),
+    it prefixes CLAUDE_CODE_USE_BEDROCK=<0|1> from the SAME model_tiers
+    resolution that picked the model id, so the two can never disagree.
+
+    Deliberately NOT prefixed: AWS_REGION / AWS_BEARER_TOKEN_BEDROCK. Those are
+    secrets — baking them into a `--command` string would put them in the
+    cmux process's argv, visible to any other local user via `ps`, which the
+    global credential-handling rule forbids regardless of how convenient it
+    would be. They still reach the child correctly: the pane `--command` types
+    into is itself a fresh login shell (cmux spawns one per workspace) that
+    already sourced ~/.zprofile — the SAME mechanism that makes the AWS vars
+    (and the `claude` alias, and every --add-dir root) available to a spawn
+    that invokes the alias directly. Only the ONE non-secret routing flag,
+    CLAUDE_CODE_USE_BEDROCK, is worth declaring explicitly here, because it is
+    the one value this command's own id-shape choice can silently disagree
+    with if left to ambient inheritance (2026-09-05 review finding) — the AWS
+    vars have no such shape-matching hazard, only a delivery mechanism, and
+    that mechanism already works.
+
+    Quote the model slug — the [1m] brackets are shell glob chars. Scope to
+    its OWN surface: ~/dev/assistant (its code + boot prompt — so it can
+    evolve its own behavior) + ~/.assistant (runtime state: conversation.jsonl,
+    session.json) + ~/.architect (reads Assistant's proposals/ledger) + /tmp.
+    Deliberately NOT ~/.claude (global CLAUDE.md + settings.json — a session
+    must not widen its own rules/permissions) and NOT all of ~/dev.
+    Lesson-writing still works via a subprocess (assistant-curator.py) gated
+    by an explicit human `y`.
 
     droid: the single-source launch_command(DROID) — settings + --auto high +
     optional --append-system-prompt-file. Droid scopes via --cwd + its settings,
     so we invent NO --add-dir here; the caller passes --cwd."""
     if agent == agent_session.DROID:
         return agent_session.launch_command(agent, home=HOME)
-    bedrock_flag = "1" if WARM_BACKEND == "bedrock" else "0"
+    model, backend, pinned = _resolve_warm_model_and_backend()
+    prefix = "" if pinned else f"CLAUDE_CODE_USE_BEDROCK={'1' if backend == 'bedrock' else '0'} "
     return (
-        f"CLAUDE_CODE_USE_BEDROCK={bedrock_flag} "
-        f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(WARM_MODEL)} "
+        f"{prefix}"
+        f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(model)} "
         f"--dangerously-skip-permissions "
         f"--add-dir {shlex.quote(str(REPO_ROOT))} --add-dir {shlex.quote(str(HOME / '.assistant'))} "
         f"--add-dir {shlex.quote(str(HOME / '.architect'))} --add-dir /tmp"

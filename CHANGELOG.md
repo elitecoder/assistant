@@ -15,11 +15,24 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   for the warm session it spawns, bypassing `model_tiers` (the module every
   other spawn site in this repo already resolves its model id through). If
   the operator's backend wasn't Bedrock, the spawned session got handed an id
-  its own backend would reject. `WARM_MODEL` and a new `WARM_BACKEND` now come
-  from the same `model_tiers.provider()` call, and the launch command
-  explicitly prefixes `CLAUDE_CODE_USE_BEDROCK=<0|1>` so the spawned session's
-  backend can never disagree with its model id — it no longer depends on the
-  ambient shell happening to agree.
+  its own backend would reject. The model id and backend now resolve fresh on
+  every spawn (not frozen at daemon import) from the same `model_tiers`
+  resolution, and the launch command explicitly prefixes
+  `CLAUDE_CODE_USE_BEDROCK=<0|1>` — unless the model is an explicit
+  `COMMS_MODEL` pin, in which case the flag is left alone rather than risk
+  contradicting an operator's deliberate override. AWS auth vars are
+  deliberately NOT baked into the command (that would put secrets in the
+  process's argv); they still reach the child via the pane's own login-shell
+  `~/.zprofile` sourcing.
+- **`model_tiers.model_for(long_context=True)` no longer drops 1M context on
+  direct Anthropic**: it previously appended the `[1m]` suffix only on
+  Bedrock, on the mistaken assumption that `[1m]` was Bedrock-specific.
+  Verified false against the operator's own non-Bedrock `~/.zprofile` alias
+  (`claude --model "claude-opus-4-8[1m]"` with Bedrock off). This was latent
+  in every `long_context=True` caller (`pulse.py`'s Observer + Strategist
+  models); it became an active regression the moment `comms_session.py`
+  started routing through `model_tiers` above, silently breaking the warm
+  session's 50%-of-1M-token `/clear` threshold on a non-Bedrock box.
 
 ## [0.7.1] - 2026-08-04
 

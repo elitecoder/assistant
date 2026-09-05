@@ -18,11 +18,13 @@ Resolution precedence for a tier:
      exact id without touching code);
   2. the built-in default for the detected provider.
 
-The 1M-context `[1m]` suffix is a Bedrock-only, call-path-specific quirk (the CLI
-appends it for the 1M beta; Bedrock REJECTS it on some paths — e.g. the mem0
-extractor). So it is opt-in per call via long_context=True and is ONLY ever added
-on Bedrock. Metering/pricing match by the substrings opus/sonnet/haiku, so a
-resolved id costs correctly on every provider. Pure stdlib; no imports beyond os/re.
+The 1M-context `[1m]` suffix is a call-path-specific quirk (the CLI appends it
+for the 1M beta; Bedrock REJECTS it on some paths — e.g. the mem0 extractor).
+So it is opt-in per call via long_context=True — applied on BOTH Bedrock and
+direct Anthropic (verified live: the operator's non-Bedrock ~/.zprofile alias
+runs `[1m]` on a bare id), never on vertex until proven there too. Metering/
+pricing match by the substrings opus/sonnet/haiku, so a resolved id costs
+correctly on every provider. Pure stdlib; no imports beyond os/re.
 """
 from __future__ import annotations
 
@@ -122,9 +124,16 @@ def model_for(tier: str, *, long_context: bool = False,
     non-Bedrock would hand mem0 a bare id its Bedrock backend rejects). An
     unknown hint falls back to detection.
 
-    long_context adds the Bedrock-only `[1m]` 1M-context suffix — opt-in per call
-    because Bedrock rejects it on some paths, so it is never added on any other
-    provider, when not requested, or to a verbatim override."""
+    long_context adds the `[1m]` 1M-context suffix on Bedrock AND direct
+    Anthropic — opt-in per call because Bedrock rejects it on some paths (e.g.
+    the mem0 extractor), so it is never added when not requested or to a
+    verbatim override. Direct Anthropic DOES accept it (verified live: the
+    operator's own non-Bedrock `claude` alias in ~/.zprofile runs
+    `--model "claude-opus-4-8[1m]"` with CLAUDE_CODE_USE_BEDROCK unset) — an
+    earlier version of this docstring called `[1m]` "Bedrock-only", which was
+    wrong and silently dropped 1M context for every long_context caller on a
+    non-Bedrock box (2026-09-05). Unconfirmed on vertex, so it stays bare
+    there until proven otherwise."""
     if tier not in TIERS:
         raise ValueError(f"unknown model tier {tier!r} (expected {TIERS})")
     override = os.environ.get(f"ASSISTANT_MODEL_{tier.upper()}")
@@ -133,6 +142,6 @@ def model_for(tier: str, *, long_context: bool = False,
     hint = (provider_hint or "").strip().lower()
     prov = hint if hint in _DEFAULTS else provider()
     base = _DEFAULTS.get(prov, _DEFAULTS["anthropic"])[tier]
-    if long_context and prov == "bedrock" and not base.endswith("[1m]"):
+    if long_context and prov in ("bedrock", "anthropic") and not base.endswith("[1m]"):
         base = base + "[1m]"
     return base
