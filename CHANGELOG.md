@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.7.2] - 2026-09-05
+
+### Fixed
+- **Warm comms session no longer assumes Bedrock**: `bin/comms_session.py`
+  hardcoded a Bedrock-shaped model id (`us.anthropic.claude-sonnet-4-6[1m]`)
+  for the warm session it spawns, bypassing `model_tiers` (the module every
+  other spawn site in this repo already resolves its model id through). If
+  the operator's backend wasn't Bedrock, the spawned session got handed an id
+  its own backend would reject. `WARM_MODEL` and a new `WARM_BACKEND` now come
+  from the same `model_tiers.provider()` call, and the launch command
+  explicitly prefixes `CLAUDE_CODE_USE_BEDROCK=<0|1>` so the spawned session's
+  backend can never disagree with its model id — it no longer depends on the
+  ambient shell happening to agree.
+
 ## [0.7.1] - 2026-08-04
 
 ### Fixed

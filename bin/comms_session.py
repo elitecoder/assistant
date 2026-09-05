@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shlex
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -48,12 +49,28 @@ SESSION_TITLE = "assistant-comms (warm)"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DISPATCH_CWD = REPO_ROOT
 
+# Semantic model tiers (Keel M8): resolve a TIER to the id the LIVE backend
+# expects instead of hardcoding one provider's id shape. See model_tiers.py.
+SRC = REPO_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+from assistant import model_tiers  # noqa: E402
+
 # Comms is a narrow conversational role — Sonnet, not the Opus the ~/.zprofile
 # `claude` alias bakes in. We bypass the alias by invoking the binary at its
 # full path with explicit flags; an alias only expands for the bare word
-# `claude`. Bedrock prefix matches pulse.py.
+# `claude`, so this session must declare its OWN backend rather than assume
+# whatever the ambient shell happens to carry (2026-09-05: comms_session was
+# the one spawn site in this repo still hardcoding a Bedrock-shaped id,
+# instead of going through model_tiers like pulse.py/strategist.py/
+# lesson-extractor.py/narrate-brief.py already do — it broke the moment the
+# operator's alias stopped defaulting to Bedrock). WARM_BACKEND is baked into
+# the launch command as an explicit CLAUDE_CODE_USE_BEDROCK=<0|1> prefix (see
+# _warm_launch) so the child's backend can never disagree with its model id.
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
-WARM_MODEL = os.environ.get("COMMS_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
+WARM_BACKEND = model_tiers.provider()
+WARM_MODEL = os.environ.get("COMMS_MODEL") or model_tiers.model_for(
+    "balanced", long_context=True, provider_hint=WARM_BACKEND)
 
 def _positive_int_env(name: str, default: int) -> int:
     """Env override parsed as a positive int, falling back to ``default`` on a
@@ -438,9 +455,13 @@ def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembl
     """The cmux `--command` string for a warm `agent` session.
 
     claude: the explicit binary + flags (NOT the bare `claude` alias, which is
-    Opus). The full path means the login shell's alias doesn't apply. Quote the
-    model slug — the [1m] brackets are shell glob chars. Scope to its OWN
-    surface: ~/dev/assistant (its code + boot prompt — so it can evolve its own
+    Opus). The full path means the login shell's alias doesn't apply — so this
+    command must declare its OWN backend rather than assume one. It prefixes
+    CLAUDE_CODE_USE_BEDROCK=<0|1> from the SAME model_tiers.provider() call
+    that picked WARM_MODEL's id shape, so the two can never disagree (no more
+    assuming Bedrock and hoping the ambient shell agrees). Quote the model
+    slug — the [1m] brackets are shell glob chars. Scope to its OWN surface:
+    ~/dev/assistant (its code + boot prompt — so it can evolve its own
     behavior) + ~/.assistant (runtime state: conversation.jsonl, session.json) +
     ~/.architect (reads Assistant's proposals/ledger) + /tmp. Deliberately NOT
     ~/.claude (global CLAUDE.md + settings.json — a session must not widen its
@@ -452,7 +473,9 @@ def _warm_launch(agent: str) -> str:  # pragma: no cover - launch-string assembl
     so we invent NO --add-dir here; the caller passes --cwd."""
     if agent == agent_session.DROID:
         return agent_session.launch_command(agent, home=HOME)
+    bedrock_flag = "1" if WARM_BACKEND == "bedrock" else "0"
     return (
+        f"CLAUDE_CODE_USE_BEDROCK={bedrock_flag} "
         f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(WARM_MODEL)} "
         f"--dangerously-skip-permissions "
         f"--add-dir {shlex.quote(str(REPO_ROOT))} --add-dir {shlex.quote(str(HOME / '.assistant'))} "

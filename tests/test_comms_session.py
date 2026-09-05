@@ -39,6 +39,31 @@ def test_read_session_bad_json(paths: cl.Paths):
     assert cs.read_session(paths) is None
 
 
+# ─── warm launch backend selection ──────────────────────────────────────────
+# Regression coverage for the 2026-09-05 bug: comms_session hardcoded a
+# Bedrock-shaped model id (`us.anthropic.claude-sonnet-4-6[1m]`) regardless of
+# which backend was actually live, so a non-Bedrock alias got handed an id its
+# own backend would reject. The fix derives both the model id AND an explicit
+# CLAUDE_CODE_USE_BEDROCK=<0|1> launch-command prefix from the SAME
+# model_tiers.provider() call, so the launched session can never disagree
+# with its own backend the way an inherited/assumed env could.
+
+def test_warm_launch_declares_bedrock_backend_explicitly(monkeypatch):
+    monkeypatch.setattr(cs, "WARM_BACKEND", "bedrock")
+    monkeypatch.setattr(cs, "WARM_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
+    cmd = cs._warm_launch(ag.CLAUDE)
+    assert cmd.startswith("CLAUDE_CODE_USE_BEDROCK=1 ")
+    assert "us.anthropic.claude-sonnet-4-6" in cmd
+
+
+def test_warm_launch_declares_non_bedrock_backend_explicitly(monkeypatch):
+    monkeypatch.setattr(cs, "WARM_BACKEND", "anthropic")
+    monkeypatch.setattr(cs, "WARM_MODEL", "claude-sonnet-4-6")
+    cmd = cs._warm_launch(ag.CLAUDE)
+    assert cmd.startswith("CLAUDE_CODE_USE_BEDROCK=0 ")
+    assert "us.anthropic." not in cmd
+
+
 # ─── transcript logic ───────────────────────────────────────────────────────
 
 def test_last_assistant_text_list_and_str(tmp_path: Path):
