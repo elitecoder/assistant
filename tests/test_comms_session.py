@@ -39,6 +39,84 @@ def test_read_session_bad_json(paths: cl.Paths):
     assert cs.read_session(paths) is None
 
 
+# ─── warm launch backend selection ──────────────────────────────────────────
+# Regression coverage for the 2026-09-05 bug: comms_session hardcoded a
+# Bedrock-shaped model id (`us.anthropic.claude-sonnet-4-6[1m]`) regardless of
+# which backend was actually live, so a non-Bedrock alias got handed an id its
+# own backend would reject. The fix derives both the model id AND an explicit
+# CLAUDE_CODE_USE_BEDROCK=<0|1> launch-command prefix from the SAME
+# model_tiers.provider() call, so the launched session can never disagree
+# with its own backend the way an inherited/assumed env could.
+#
+# These exercise the REAL resolution path (env -> model_tiers.provider() ->
+# model_tiers.model_for()), not a mock of the values under test — an earlier
+# version of these tests monkeypatched the (now-removed) WARM_MODEL/
+# WARM_BACKEND constants directly, which passed even with the fix fully
+# reverted (2026-09-05 brutal-review finding: mutation-proven vacuous).
+
+@pytest.fixture(autouse=True)
+def _isolated_backend_env(monkeypatch):
+    # CLAUDE_CODE_USE_BEDROCK env (when set) beats ~/.zprofile, so setting it
+    # explicitly in every test isolates from whatever backend this dev box
+    # currently has toggled — no test should depend on that external state.
+    monkeypatch.delenv("COMMS_MODEL", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+
+
+def test_warm_launch_declares_bedrock_backend_and_keeps_1m_context(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    cmd = cs._warm_launch(ag.CLAUDE)
+    assert cmd.startswith("CLAUDE_CODE_USE_BEDROCK=1 ")
+    assert "us.anthropic.claude-sonnet-4-6[1m]" in cmd
+
+
+def test_warm_launch_declares_non_bedrock_backend_and_still_gets_1m_context(monkeypatch):
+    # Regression for the review's CRITICAL finding: model_tiers used to add
+    # [1m] ONLY on Bedrock, so the non-Bedrock path silently lost 1M context
+    # (breaking should_clear's whole 50%-of-1M-token design) the moment this
+    # file started routing through model_tiers instead of a Bedrock-shaped
+    # literal. Direct Anthropic DOES accept [1m] (verified live against the
+    # operator's own non-Bedrock ~/.zprofile alias) — this must stay present.
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "0")
+    cmd = cs._warm_launch(ag.CLAUDE)
+    assert cmd.startswith("CLAUDE_CODE_USE_BEDROCK=0 ")
+    assert "us.anthropic." not in cmd
+    assert "[1m]" in cmd, "non-Bedrock must not silently lose the 1M context window"
+
+
+def test_warm_launch_pinned_model_skips_the_backend_prefix(monkeypatch):
+    # Regression for a footgun the review found: auto-declaring
+    # CLAUDE_CODE_USE_BEDROCK from AMBIENT detection while the operator has
+    # explicitly pinned COMMS_MODEL to a specific id can contradict the pin
+    # (e.g. a Bedrock id pinned on a box whose zprofile currently reads
+    # non-Bedrock). An explicit pin means the operator already knows what
+    # they're doing — don't second-guess it with an auto-declared flag.
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "0")
+    monkeypatch.setenv("COMMS_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
+    cmd = cs._warm_launch(ag.CLAUDE)
+    assert "CLAUDE_CODE_USE_BEDROCK" not in cmd
+    assert "us.anthropic.claude-sonnet-4-6[1m]" in cmd
+
+
+def test_resolve_warm_model_and_backend_respects_env(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    model, backend, pinned = cs._resolve_warm_model_and_backend()
+    assert backend == "bedrock"
+    assert model == "us.anthropic.claude-sonnet-4-6[1m]"
+    assert pinned is False
+
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "0")
+    model, backend, pinned = cs._resolve_warm_model_and_backend()
+    assert backend == "anthropic"
+    assert model == "claude-sonnet-4-6[1m]"
+    assert pinned is False
+
+    monkeypatch.setenv("COMMS_MODEL", "my-pinned-id")
+    model, backend, pinned = cs._resolve_warm_model_and_backend()
+    assert (model, pinned) == ("my-pinned-id", True)
+
+
 # ─── transcript logic ───────────────────────────────────────────────────────
 
 def test_last_assistant_text_list_and_str(tmp_path: Path):

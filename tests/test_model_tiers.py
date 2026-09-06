@@ -6,8 +6,10 @@ Proves:
   • the provider is detected off the SAME flags the CLI routes on — env first,
     then a ~/.zprofile fallback — and MODEL_PROVIDER forces it;
   • a per-tier ASSISTANT_MODEL_<TIER> override wins (operator pins an exact id);
-  • the [1m] 1M-context suffix is Bedrock-only AND opt-in (never on anthropic,
-    never when not requested — the mem0 quirk);
+  • the [1m] 1M-context suffix is opt-in and applies on Bedrock AND direct
+    Anthropic (verified live: ~/.zprofile's non-Bedrock alias runs
+    `[1m]` too), never on an unrequested call or a verbatim override
+    (the mem0 quirk);
   • an unknown tier is a hard error, not a silent default.
 """
 from __future__ import annotations
@@ -108,15 +110,18 @@ class ResolutionTests(_Base):
         self.assertEqual(mt.model_for("cheap", provider_hint="nonsense"),
                          "claude-haiku-4-5")
 
-    def test_long_context_suffix_is_bedrock_only_and_opt_in(self):
+    def test_long_context_suffix_is_opt_in_on_bedrock_and_anthropic(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
         self.assertEqual(mt.model_for("balanced", long_context=True),
                          "us.anthropic.claude-sonnet-4-6[1m]")
         # not requested → no suffix (the mem0 path stays clean)
         self.assertNotIn("[1m]", mt.model_for("cheap"))
-        # anthropic never gets the Bedrock-only suffix even if asked
+        # direct Anthropic ALSO gets it when requested — verified live: the
+        # operator's non-Bedrock ~/.zprofile alias runs `[1m]` on a bare id
+        # (2026-09-05 — an earlier version wrongly called this Bedrock-only).
         os.environ["MODEL_PROVIDER"] = "anthropic"
-        self.assertNotIn("[1m]", mt.model_for("balanced", long_context=True))
+        self.assertEqual(mt.model_for("balanced", long_context=True),
+                         "claude-sonnet-4-6[1m]")
 
     def test_per_tier_override_is_verbatim(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
