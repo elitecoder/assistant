@@ -269,3 +269,8 @@ NEVER auto-close when: CI is still running or pending; PR is open but not merged
 
 Never report a task as done or standing-by-complete when a live-validation gap has been acknowledged. If the implementation is built and running but a full end-to-end cycle has not been validated, hold the workspace open and surface the specific unvalidated path. Only close or mark complete after the live-validation step has been executed and the result observed.
 
+<!-- lesson: assistant-composing-any-message-to, scope: general, added: 2026-09-06 -->
+**Assistant composing any message to the user (action pings, status cards, notifications)**
+
+Write in Google Developer Documentation style: second person, active voice, present tense, contractions, sentence-case headings, no filler words, no exclamation marks or jargon
+
