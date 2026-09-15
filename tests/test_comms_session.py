@@ -512,13 +512,16 @@ def test_spawn_session_closes_workspace_when_never_ready(tmp_path, monkeypatch):
     closed: list[str] = []
     monkeypatch.setattr(cs, "close_own_workspace",
                         lambda p, ws, log=lambda m: None: closed.append(ws))
-    monkeypatch.setattr(cs, "list_warm_workspaces", lambda p: ["workspace:300"])
+    # A machine-wide title scan here would close a second comms instance's healthy
+    # session; the failure path must NOT scan. Blow up if it does.
+    def _no_scan(p):
+        raise AssertionError("failure cleanup must not machine-wide title-scan")
+    monkeypatch.setattr(cs, "list_warm_workspaces", _no_scan)
 
     result = cs.spawn_session(paths, Path("/boot.md"))
 
     assert result is None, "a never-ready spawn must fail"
-    assert "workspace:300" in closed, "the leaked workspace must be closed"
-    assert cs.read_spawned_refs(paths) == [], "ledger cleared after cleanup"
+    assert closed == ["workspace:300"], "only the just-created workspace is closed"
 
 
 def test_spawn_session_closes_workspace_when_no_surface(tmp_path, monkeypatch):
@@ -543,23 +546,88 @@ def test_spawn_session_closes_workspace_when_no_surface(tmp_path, monkeypatch):
     closed: list[str] = []
     monkeypatch.setattr(cs, "close_own_workspace",
                         lambda p, ws, log=lambda m: None: closed.append(ws))
-    monkeypatch.setattr(cs, "list_warm_workspaces", lambda p: ["workspace:301"])
 
     result = cs.spawn_session(paths, Path("/boot.md"))
 
     assert result is None
-    assert "workspace:301" in closed, "surface-less workspace must be closed"
+    assert closed == ["workspace:301"], "surface-less workspace must be closed"
+
+
+def test_spawn_session_closes_partial_ref_on_new_workspace_timeout(tmp_path, monkeypatch):
+    """Finding 2: when new-workspace times out (rc!=0) but cmux already created a
+    workspace and printed its ref, spawn_session must close that partial ref now.
+    Waiting for 'the next reconcile' leaks under a persistent timeout — no
+    successful spawn ever comes to run it. The ref is still recorded as a
+    belt-and-suspenders fallback if the close itself fails.
+
+    Mutation probe: drop the `_abandon_failed_spawn(paths, partial, ...)` call and
+    workspace:252 is never closed."""
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    def fake_run_cmd(cmd, timeout=30):
+        if "ping" in cmd:
+            return 0, "", ""
+        if "new-workspace" in cmd:
+            return 1, "workspace:252\n", "Error: Command timed out"
+        return 0, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run_cmd)
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, ws, log=lambda m: None: closed.append(ws))
+
+    result = cs.spawn_session(paths, Path("/boot.md"))
+
+    assert result is None
+    assert closed == ["workspace:252"], "the timed-out partial workspace must be closed"
+    assert cs.read_spawned_refs(paths) == ["workspace:252"], \
+        "partial ref still recorded as a fallback for the next reconcile"
+
+
+def test_abandon_failed_spawn_targets_only_the_given_ref(paths: cl.Paths, monkeypatch):
+    """Finding 1 regression guard: cleanup closes ONLY the ref it is given and
+    never machine-wide title-scans — otherwise a failing instance would close a
+    second comms instance's healthy warm session (same title, different
+    COMMS_HOME) on every tick. Mutation probe: switch back to
+    reconcile_warm_workspaces(keep=None) and the list_warm_workspaces scan fires."""
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, ws, log=lambda m: None: closed.append(ws))
+    monkeypatch.setattr(cs, "list_warm_workspaces",
+                        lambda p: (_ for _ in ()).throw(
+                            AssertionError("must not machine-wide scan")))
+    cs._abandon_failed_spawn(paths, "workspace:7", log=lambda m: None)
+    assert closed == ["workspace:7"]
+
+
+def test_abandon_failed_spawn_no_ref_is_a_noop(paths: cl.Paths, monkeypatch):
+    """The no-ref path (cmux returned success but printed no workspace ref) has
+    nothing to target. Cleanup must NOT fall back to a machine-wide scan/close —
+    that is the cross-instance hazard. Mutation probe: make it scan and this
+    raises."""
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, ws, log=lambda m: None: closed.append(ws))
+    monkeypatch.setattr(cs, "list_warm_workspaces",
+                        lambda p: (_ for _ in ()).throw(
+                            AssertionError("must not machine-wide scan")))
+    logs: list[str] = []
+    cs._abandon_failed_spawn(paths, None, log=logs.append)
+    assert closed == []
+    assert any("no workspace ref" in m for m in logs)
 
 
 def test_abandon_failed_spawn_swallows_cleanup_errors(paths: cl.Paths, monkeypatch):
-    """Cleanup is best-effort: if reconcile itself raises (cmux mid-crash), the
+    """Cleanup is best-effort: if the close itself raises (cmux mid-crash), the
     error must be logged, not propagated — the caller already handled the spawn
     failure. Mutation probe: remove the try/except and this raises."""
     def boom(*a, **k):
         raise RuntimeError("cmux gone")
-    monkeypatch.setattr(cs, "reconcile_warm_workspaces", boom)
+    monkeypatch.setattr(cs, "close_own_workspace", boom)
     logs: list[str] = []
-    cs._abandon_failed_spawn(paths, log=logs.append)
+    cs._abandon_failed_spawn(paths, "workspace:9", log=logs.append)
     assert any("cleanup after failed spawn errored" in m for m in logs)
 
 

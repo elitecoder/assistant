@@ -546,19 +546,29 @@ def await_ready(read_screen, ready_re, trust_marker, answer_trust,
     return False, trust_answered
 
 
-def _abandon_failed_spawn(paths: comms_lib.Paths, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
-    """Close the workspace a failed spawn just created, plus any warm orphans.
+def _abandon_failed_spawn(paths: comms_lib.Paths, ws_ref: str | None,
+                          log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
+    """Close the single workspace a failed spawn just created.
 
-    Every spawn_session failure path AFTER new-workspace succeeds used to return
-    None without closing the workspace it made. When claude never reached the
-    ready marker (a bad boot, a slow machine), the watchdog respawned every tick
-    and each attempt leaked one live workspace — ~200 piled up on 2026-09-14 and
-    killed cmux. Reconciling with keep=None here closes this attempt's workspace
-    (recorded in the spawned ledger) AND title-scans for orphans from earlier
-    failed ticks, so a persistent boot failure holds at most one transient
-    workspace instead of leaking one per minute."""
+    Every spawn_session failure path AFTER new-workspace made a workspace used to
+    return None without closing it. When claude never reached the ready marker (a
+    bad boot, a slow machine), the watchdog respawned every tick and each attempt
+    leaked one live workspace — ~200 piled up on 2026-09-14 and killed cmux.
+
+    Closes ONLY ws_ref, via title-guarded close_own_workspace — never a
+    machine-wide title scan. A machine-wide scan (reconcile with keep=None) would
+    also close a SECOND comms instance's healthy warm session (same SESSION_TITLE,
+    different COMMS_HOME), so a failing instance would kill a healthy one on every
+    tick. Targeting one ref keeps cleanup instance-safe. ws_ref is None only on
+    the no-ref path (cmux returned success but printed no ref); there is nothing
+    to target there, so warn and let the next successful spawn's reconcile sweep
+    the orphan via its title-scan pass."""
+    if not ws_ref:
+        log("failed spawn produced no workspace ref — cannot target-close; "
+            "next successful reconcile will sweep any orphan")
+        return
     try:
-        reconcile_warm_workspaces(paths, keep=None, log=log)
+        close_own_workspace(paths, ws_ref, log=log)
     except Exception as e:  # noqa: BLE001 — cleanup is best-effort; never mask the spawn failure
         log(f"cleanup after failed spawn errored: {e}")
 
@@ -590,15 +600,20 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         # cmux may have assigned a workspace ref before timing out — record it
         # immediately so the next reconcile (on the following successful spawn)
         # closes it rather than leaving it as a permanent orphan.
+        # cmux may have assigned a workspace ref before timing out. Record it (so
+        # a later reconcile still catches it if the close below fails), then close
+        # it now — under a persistent new-workspace timeout no successful spawn
+        # ever comes to run reconcile, so waiting for "next reconcile" leaks.
         partial = parse_ws_ref_from_output(out, err)
         if partial:
             record_spawned_ref(paths, partial)
-            log(f"recorded partial spawn {partial} for cleanup on next reconcile")
+            log(f"recorded partial spawn {partial}")
+            _abandon_failed_spawn(paths, partial, log=log)
         return None
     m = re.search(r"workspace:\d+", out)
     if not m:
         log(f"no workspace ref in: {out.strip()[:200]}")
-        _abandon_failed_spawn(paths, log=log)
+        _abandon_failed_spawn(paths, None, log=log)
         return None
     ws_ref = m.group(0)
     # Record the ref BEFORE the surface lookup: if any later step early-returns,
@@ -609,7 +624,7 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     sm = re.search(r"surface:\d+", out)
     if not sm:
         log(f"no surface for {ws_ref}")
-        _abandon_failed_spawn(paths, log=log)
+        _abandon_failed_spawn(paths, ws_ref, log=log)
         return None
     surface_ref = sm.group(0)
 
@@ -640,7 +655,7 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         # no-trust-seen case so the next outage triage isn't misled.
         detail = " (trust prompt seen; answer sent)" if trust_answered else ""
         log(f"{agent} never ready in {ws_ref}/{surface_ref}{detail}")
-        _abandon_failed_spawn(paths, log=log)
+        _abandon_failed_spawn(paths, ws_ref, log=log)
         return None
 
     # Deliver the responder boot prompt by reference.
