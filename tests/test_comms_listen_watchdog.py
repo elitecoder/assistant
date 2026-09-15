@@ -143,6 +143,65 @@ def test_watchdog_loop_self_heals_across_ticks(env, monkeypatch):
     assert len(calls) == 2, "watchdog must retry after a failed first tick"
 
 
+# ─── watchdog_delay: exponential backoff on repeated failure ────────────────
+
+
+def test_watchdog_delay_base_when_healthy():
+    """A live session (streak 0) waits the base interval — no backoff penalty for
+    a healthy warm session. Mutation probe: if the base case returned a backoff
+    value, this pins it to the interval."""
+    assert listen.watchdog_delay(0) == listen.WATCHDOG_INTERVAL_SEC
+
+
+def test_watchdog_delay_doubles_per_consecutive_failure():
+    """Each consecutive non-alive tick doubles the wait: 120, 240, 480 … This is
+    what stops a never-booting warm session from spawning a workspace every 60s
+    (the 2026-09-14 failure). Mutation probe: a linear or constant backoff fails
+    the geometric progression."""
+    assert listen.watchdog_delay(1) == 120
+    assert listen.watchdog_delay(2) == 240
+    assert listen.watchdog_delay(3) == 480
+
+
+def test_watchdog_delay_caps_at_max():
+    """Backoff never exceeds WATCHDOG_BACKOFF_MAX_SEC, so the watchdog keeps
+    checking at least that often once cmux recovers. Mutation probe: removing the
+    min() lets the delay grow unbounded and this fails."""
+    assert listen.watchdog_delay(100) == listen.WATCHDOG_BACKOFF_MAX_SEC
+
+
+def test_watchdog_loop_backs_off_on_repeated_failure(env, monkeypatch):
+    """A run of failed ticks must wait progressively longer, and a recovery tick
+    must reset the cadence to the base interval. This is the core guard against
+    the runaway respawn that killed cmux. Mutation probe: if the loop always
+    waited WATCHDOG_INTERVAL_SEC, the captured waits would be all 60s."""
+    monkeypatch.setattr(listen.time, "sleep", lambda *a, **k: None)
+    # fail, fail, fail, then alive.
+    seq = iter([None, None, None, {"ws_ref": "workspace:9"}])
+    monkeypatch.setattr(listen, "ensure_warm_session", lambda paths: next(seq))
+
+    waits: list[float] = []
+    stop = threading.Event()
+
+    def fake_wait(timeout=None):
+        waits.append(timeout)
+        if len(waits) >= 4:
+            stop.set()
+            return True
+        return False
+    monkeypatch.setattr(stop, "wait", fake_wait)
+
+    listen.watchdog_loop(stop, {})
+
+    # tick1 fail→120, tick2 fail→240, tick3 fail→480, tick4 alive→reset to 60.
+    assert waits == [120, 240, 480, listen.WATCHDOG_INTERVAL_SEC]
+
+
+def test_watchdog_backoff_max_default():
+    """Default cap is 30 minutes. Mutation probe: a changed default is caught."""
+    assert listen.WATCHDOG_BACKOFF_MAX_SEC == 1800
+
+
 # ─── _loop_threads: the watchdog is wired into the daemon ───────────────────
 
 

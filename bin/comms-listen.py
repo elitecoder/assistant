@@ -108,6 +108,14 @@ PROPOSALS_MAX_PER_DRAIN = int(os.environ.get("COMMS_PROPOSALS_MAX_PER_DRAIN", "3
 # session self-heals within WATCHDOG_INTERVAL_SEC regardless of inbound traffic.
 WATCHDOG_INTERVAL_SEC = int(os.environ.get("COMMS_WATCHDOG_INTERVAL_SEC", "60"))
 
+# Exponential backoff for a warm session that keeps failing to come up. A single
+# spawn now cleans up after itself (comms_session._abandon_failed_spawn), but a
+# persistent boot failure at the fixed 60s cadence still means a new-workspace
+# every minute — heavy cmux churn that helped kill cmux on 2026-09-14. On each
+# non-alive tick the wait doubles from WATCHDOG_INTERVAL_SEC up to this cap; the
+# next alive tick resets it. A healthy session never backs off.
+WATCHDOG_BACKOFF_MAX_SEC = int(os.environ.get("COMMS_WATCHDOG_BACKOFF_MAX_SEC", "1800"))
+
 # Serializes ensure_warm_session's respawn critical section. Without this the
 # watchdog tick and an inbound message arriving at the same instant could BOTH
 # see the session dead and BOTH spawn a fresh workspace — two warm sessions
@@ -342,20 +350,43 @@ def watchdog_tick(paths: comms_lib.Paths) -> str:
     return "alive" if sess else "no-session"
 
 
+def watchdog_delay(fail_streak: int) -> int:
+    """Seconds to wait before the next watchdog tick.
+
+    fail_streak is the count of consecutive non-alive ticks (0 right after an
+    alive tick). Delay doubles from WATCHDOG_INTERVAL_SEC per consecutive
+    failure, capped at WATCHDOG_BACKOFF_MAX_SEC. Pure so the backoff curve is
+    unit-tested without running the loop."""
+    if fail_streak <= 0:
+        return WATCHDOG_INTERVAL_SEC
+    return min(WATCHDOG_INTERVAL_SEC * (2 ** fail_streak), WATCHDOG_BACKOFF_MAX_SEC)
+
+
 def watchdog_loop(stop: threading.Event, env: dict) -> None:
     """Periodically call ensure_warm_session so a warm workspace that died
     between inbound messages (cmux restart, crash, machine sleep) self-heals
     within WATCHDOG_INTERVAL_SEC instead of waiting for the next Slack message.
     Slow cadence — the warm session is only load-bearing when a message arrives,
     and ensure_warm_session is already called per inbound message, so this is a
-    safety net, not a hot path."""
+    safety net, not a hot path.
+
+    A run of non-alive ticks (cmux down, a warm session that never boots) backs
+    off exponentially via watchdog_delay so a persistent failure can't respawn a
+    workspace every minute the way it did on 2026-09-14; an alive tick resets the
+    cadence to WATCHDOG_INTERVAL_SEC."""
     paths = comms_lib.Paths.from_env()
     log(f"warm-session watchdog started (interval={WATCHDOG_INTERVAL_SEC}s)")
+    fail_streak = 0
     while not stop.is_set():
         status = watchdog_tick(paths)
-        if status != "alive":
-            log(f"watchdog: warm session {status} — will retry next tick")
-        stop.wait(WATCHDOG_INTERVAL_SEC)
+        if status == "alive":
+            fail_streak = 0
+        else:
+            fail_streak += 1
+            delay = watchdog_delay(fail_streak)
+            log(f"watchdog: warm session {status} — retry in {delay}s "
+                f"(consecutive failures={fail_streak})")
+        stop.wait(watchdog_delay(fail_streak))
 
 
 # --------------------------------------------------------------------------- outbound pings

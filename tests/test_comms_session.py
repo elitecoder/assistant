@@ -482,6 +482,87 @@ def test_spawn_session_no_partial_ref_when_output_empty(tmp_path, monkeypatch):
     assert cs.read_spawned_refs(paths) == []
 
 
+# ─── failed-spawn cleanup (2026-09-14 leak: ~200 orphaned workspaces killed cmux) ─
+
+def test_spawn_session_closes_workspace_when_never_ready(tmp_path, monkeypatch):
+    """The 2026-09-14 leak: new-workspace SUCCEEDS but claude never reaches its
+    ready marker (bad boot). spawn_session used to return None leaving the fresh
+    workspace alive; the watchdog respawned every tick and ~200 orphans piled up
+    until cmux died. spawn_session must now close the workspace it just made.
+
+    Mutation probe: delete the `_abandon_failed_spawn` call on the never-ready
+    path and workspace:300 is never closed — this assertion fails."""
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    def fake_run_cmd(cmd, timeout=30):
+        if "ping" in cmd:
+            return 0, "", ""
+        if "new-workspace" in cmd:
+            return 0, "workspace:300\n", ""
+        if "list-pane-surfaces" in cmd:
+            return 0, "surface:300\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run_cmd)
+    # claude never reaches the ready marker.
+    monkeypatch.setattr(cs, "await_ready", lambda **kw: (False, False))
+
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, ws, log=lambda m: None: closed.append(ws))
+    monkeypatch.setattr(cs, "list_warm_workspaces", lambda p: ["workspace:300"])
+
+    result = cs.spawn_session(paths, Path("/boot.md"))
+
+    assert result is None, "a never-ready spawn must fail"
+    assert "workspace:300" in closed, "the leaked workspace must be closed"
+    assert cs.read_spawned_refs(paths) == [], "ledger cleared after cleanup"
+
+
+def test_spawn_session_closes_workspace_when_no_surface(tmp_path, monkeypatch):
+    """A workspace with no pane surface is unusable but still alive. spawn_session
+    must close it rather than leak it. Mutation probe: drop the cleanup call on
+    the no-surface path and workspace:301 is never closed."""
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    def fake_run_cmd(cmd, timeout=30):
+        if "ping" in cmd:
+            return 0, "", ""
+        if "new-workspace" in cmd:
+            return 0, "workspace:301\n", ""
+        if "list-pane-surfaces" in cmd:
+            return 0, "(no surfaces)\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run_cmd)
+
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, ws, log=lambda m: None: closed.append(ws))
+    monkeypatch.setattr(cs, "list_warm_workspaces", lambda p: ["workspace:301"])
+
+    result = cs.spawn_session(paths, Path("/boot.md"))
+
+    assert result is None
+    assert "workspace:301" in closed, "surface-less workspace must be closed"
+
+
+def test_abandon_failed_spawn_swallows_cleanup_errors(paths: cl.Paths, monkeypatch):
+    """Cleanup is best-effort: if reconcile itself raises (cmux mid-crash), the
+    error must be logged, not propagated — the caller already handled the spawn
+    failure. Mutation probe: remove the try/except and this raises."""
+    def boom(*a, **k):
+        raise RuntimeError("cmux gone")
+    monkeypatch.setattr(cs, "reconcile_warm_workspaces", boom)
+    logs: list[str] = []
+    cs._abandon_failed_spawn(paths, log=logs.append)
+    assert any("cleanup after failed spawn errored" in m for m in logs)
+
+
 def test_reconcile_is_instance_scoped_never_touches_other_instance(tmp_path, monkeypatch):
     """The bug: reconcile closed EVERY warm-titled workspace machine-wide, so a
     second comms instance (distinct COMMS_HOME) or a live-validation spawn closed
