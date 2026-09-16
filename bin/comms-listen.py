@@ -197,11 +197,19 @@ def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = Fals
                 # A stale-but-alive session (its model id no longer matches the
                 # current backend after a `claude-backend` toggle) still WORKS on
                 # its old backend, so only the INBOUND path respawns it —
-                # respawn_on_stale=True — and does so BEFORE feeding a message, so
-                # no in-flight reply is dropped. The liveness watchdog leaves a
-                # live session alone (respawn_on_stale=False): closing it there
-                # could race an active reply, and it isn't counted toward the
-                # watchdog backoff, so a flapping resolver would churn cmux.
+                # respawn_on_stale=True — and does so BEFORE that worker feeds its
+                # message, so it never drops its OWN in-flight reply. The liveness
+                # watchdog leaves a live session alone (respawn_on_stale=False):
+                # closing it there could race an active reply, and it isn't
+                # counted toward the watchdog backoff, so a flapping resolver
+                # would churn cmux.
+                #
+                # Residual (unreachable in the 1:1-DM config, one channel worker):
+                # feed() runs outside _warm_session_lock, so if a SECOND channel
+                # worker respawned this shared session mid-reply, the first
+                # worker's reply could drop. One-shot per toggle and self-healing
+                # (the inbound turn is already in conversation.jsonl). Widen the
+                # lock over feed() only if multi-channel ever goes hot.
                 if not respawn_on_stale or comms_session.warm_session_model_is_current(paths, sess):
                     return sess
                 why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"

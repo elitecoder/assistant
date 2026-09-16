@@ -85,6 +85,23 @@ def test_warm_launch_declares_non_bedrock_backend_and_still_gets_1m_context(monk
     assert "[1m]" in cmd, "non-Bedrock must not silently lose the 1M context window"
 
 
+def test_warm_launch_uses_passed_resolved_not_a_fresh_resolve(monkeypatch):
+    """F1: spawn_session resolves the model ONCE and passes that tuple to
+    _warm_launch so the launched --model matches the id recorded in session.json,
+    even if a `claude-backend` toggle lands mid-boot. _warm_launch must consume
+    the PASSED resolution, not re-resolve from the env.
+
+    The env here resolves to the bare anthropic id; the passed tuple pins a
+    distinct Bedrock-shaped id + backend. The command must reflect the PASSED
+    tuple. Mutation probe: make _warm_launch re-resolve (ignore `resolved`) and
+    both assertions fail."""
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "0")  # env would resolve bare/anthropic
+    cmd = cs._warm_launch(
+        ag.CLAUDE, resolved=("us.anthropic.claude-sonnet-4-6[1m]", "bedrock", False))
+    assert "us.anthropic.claude-sonnet-4-6[1m]" in cmd, "must use the PASSED model id"
+    assert cmd.startswith("CLAUDE_CODE_USE_BEDROCK=1 "), "must use the PASSED backend"
+
+
 def test_warm_launch_pinned_model_skips_the_backend_prefix(monkeypatch):
     # Regression for a footgun the review found: auto-declaring
     # CLAUDE_CODE_USE_BEDROCK from AMBIENT detection while the operator has
