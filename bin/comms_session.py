@@ -528,7 +528,7 @@ def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lamb
     os.replace(tmp, p)
 
 
-def _warm_launch(agent: str) -> str:
+def _warm_launch(agent: str, resolved: tuple[str, str, bool] | None = None) -> str:
     """The cmux `--command` string for a warm `agent` session.
 
     claude: the explicit binary + flags (NOT the bare `claude` alias, which is
@@ -567,7 +567,7 @@ def _warm_launch(agent: str) -> str:
     so we invent NO --add-dir here; the caller passes --cwd."""
     if agent == agent_session.DROID:
         return agent_session.launch_command(agent, home=HOME)
-    model, backend, pinned = _resolve_warm_model_and_backend()
+    model, backend, pinned = resolved or _resolve_warm_model_and_backend()
     prefix = "" if pinned else f"CLAUDE_CODE_USE_BEDROCK={'1' if backend == 'bedrock' else '0'} "
     return (
         f"{prefix}"
@@ -652,7 +652,12 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         return None
 
     cwd = str(DISPATCH_CWD)
-    launch = _warm_launch(agent)
+    # Resolve the model/backend ONCE and use it for BOTH the launch flag and the
+    # recorded id, so a `claude-backend` toggle mid-boot can't make the record
+    # disagree with what the session actually launched with (claude only; droid
+    # has no such id).
+    resolved = _resolve_warm_model_and_backend() if agent == agent_session.CLAUDE else None
+    launch = _warm_launch(agent, resolved=resolved)
     rc, out, err = comms_lib.run_cmd(
         [cmux, "new-workspace", "--cwd", cwd, "--name", warm_workspace_title(paths),
          "--focus", "false", "--command", launch], timeout=30)
@@ -742,11 +747,10 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         transcript = newest_transcript(cwd, agent)
         log(f"warm session {ws_ref} spawned but boot submission unconfirmed")
 
-    # Record the exact model this session launched with (claude only — droid has
-    # no such id) so ensure_warm_session can respawn it if a backend toggle later
-    # changes the resolved id. Deterministic within this spawn: the same
-    # resolution _warm_launch already used for the --model flag.
-    spawn_model = _resolve_warm_model_and_backend()[0] if agent == agent_session.CLAUDE else None
+    # Record the EXACT id this session launched with — the same `resolved` tuple
+    # _warm_launch used above, captured once so a mid-boot backend toggle can't
+    # desync the record from the running session.
+    spawn_model = resolved[0] if resolved else None
     write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent, model=spawn_model)
     log(f"warm session ready: {ws_ref} / {surface_ref} (transcript={transcript})")
     reconcile_warm_workspaces(paths, keep=ws_ref, log=log)

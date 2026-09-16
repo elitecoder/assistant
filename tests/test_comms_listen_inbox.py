@@ -381,22 +381,34 @@ def test_ensure_warm_session_keeps_alive_current_session(env_inbox, monkeypatch)
     assert rec["spawned"] is False and rec["closed"] == []
 
 
-def test_ensure_warm_session_respawns_when_model_stale(env_inbox, monkeypatch):
-    """Alive but the recorded model no longer matches the current backend (the
-    2026-09-16 Bedrock-string-after-toggle bug) → close + clear + respawn onto
-    the current id. Mutation probe: revert ensure_warm_session to `if sess and
-    cmux_alive: return sess` and this fails (no respawn)."""
+def test_ensure_warm_session_respawns_stale_on_inbound(env_inbox, monkeypatch):
+    """On the INBOUND path (respawn_on_stale=True), an alive session whose model
+    no longer matches the current backend (the 2026-09-16 Bedrock-after-toggle
+    bug) is closed + respawned BEFORE the message is fed. Mutation probe: revert
+    the currency gate and this fails (no respawn)."""
     rec, _ = _stub_warm(monkeypatch, alive=True, model_current=False)
-    out = listen.ensure_warm_session(cl.Paths.from_env())
+    out = listen.ensure_warm_session(cl.Paths.from_env(), respawn_on_stale=True)
     assert rec["closed"] == ["workspace:18"], "stale session must be closed"
     assert rec["cleared"] is True
     assert rec["spawned"] is True, "a fresh session must be spawned on the current model"
     assert out["model"] == "claude-sonnet-4-6[1m]"
 
 
+def test_ensure_warm_session_watchdog_keeps_stale_live_session(env_inbox, monkeypatch):
+    """The WATCHDOG (respawn_on_stale=False) must NOT close a live-but-stale
+    session — that could drop an in-flight reply and, returning 'alive', would
+    dodge the watchdog backoff and churn cmux on a flapping resolver. A stale
+    session still works on its old backend; only the inbound path respawns it.
+    Mutation probe: drop the respawn_on_stale gate and this session gets closed."""
+    rec, sess = _stub_warm(monkeypatch, alive=True, model_current=False)
+    out = listen.ensure_warm_session(cl.Paths.from_env())  # watchdog default
+    assert out is sess, "watchdog reuses the live session even when stale"
+    assert rec["closed"] == [] and rec["spawned"] is False
+
+
 def test_ensure_warm_session_respawns_when_gone(env_inbox, monkeypatch):
-    """The pre-existing dead-session path still respawns. Model currency is not
-    even consulted when the session is gone."""
+    """The pre-existing dead-session path still respawns, on either path. Model
+    currency is not even consulted when the session is gone."""
     rec, _ = _stub_warm(monkeypatch, alive=False, model_current=True)
     listen.ensure_warm_session(cl.Paths.from_env())
     assert rec["closed"] == ["workspace:18"] and rec["spawned"] is True

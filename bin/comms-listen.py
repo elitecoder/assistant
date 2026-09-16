@@ -173,8 +173,13 @@ def cli(argv: list[str], timeout: int = 30, env: dict | None = None) -> tuple[in
 
 # --------------------------------------------------------------------------- inbound
 
-def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
+def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False) -> dict | None:
     """Return a live warm-session record, spawning one if none is alive.
+
+    respawn_on_stale (inbound path only): also respawn a session that is alive
+    but whose recorded model id no longer matches the current backend (a
+    `claude-backend` toggle since spawn). The watchdog passes False so it never
+    closes a live session out from under an active reply.
 
     On respawn, close the prior warm workspace first so we never leak Claude
     processes. close_own_workspace is title-guarded — it only ever closes an
@@ -188,13 +193,20 @@ def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
         sess = comms_session.read_session(paths)
         if sess:
             alive = comms_session.cmux_alive(paths, sess["ws_ref"])
-            if alive and comms_session.warm_session_model_is_current(paths, sess):
-                return sess
-            # Dead, OR alive but running a now-stale model id (a
-            # `claude-backend bedrock|sub` toggle changed the resolved id since
-            # spawn). Either way: close and respawn onto the current id.
-            why = "gone" if not alive else (
-                f"model stale ({sess.get('model')!r} — backend changed since spawn)")
+            if alive:
+                # A stale-but-alive session (its model id no longer matches the
+                # current backend after a `claude-backend` toggle) still WORKS on
+                # its old backend, so only the INBOUND path respawns it —
+                # respawn_on_stale=True — and does so BEFORE feeding a message, so
+                # no in-flight reply is dropped. The liveness watchdog leaves a
+                # live session alone (respawn_on_stale=False): closing it there
+                # could race an active reply, and it isn't counted toward the
+                # watchdog backoff, so a flapping resolver would churn cmux.
+                if not respawn_on_stale or comms_session.warm_session_model_is_current(paths, sess):
+                    return sess
+                why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
+            else:
+                why = "gone"
             log(f"warm session {sess['ws_ref']} {why} — closing it and respawning")
             comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
             comms_session.clear_session_registry(paths)
@@ -292,7 +304,7 @@ def _channel_worker(channel_id: str, ch_queue: queue.Queue, stop: threading.Even
     """Per-channel worker: serializes replies for one channel while other
     channels run concurrently."""
     paths = comms_lib.Paths.from_env()
-    sess = ensure_warm_session(paths)
+    sess = ensure_warm_session(paths, respawn_on_stale=True)
     while not stop.is_set():
         try:
             rec = ch_queue.get(timeout=1)
@@ -300,7 +312,7 @@ def _channel_worker(channel_id: str, ch_queue: queue.Queue, stop: threading.Even
             continue
         log(f"inbound channel={channel_id} msg={rec.get('msg_ts')} "
             f"text={rec.get('text','')[:80]!r}")
-        sess = ensure_warm_session(paths)
+        sess = ensure_warm_session(paths, respawn_on_stale=True)
         if not sess:
             log(f"no warm session — skipping msg={rec.get('msg_ts')}")
             continue
@@ -310,7 +322,7 @@ def _channel_worker(channel_id: str, ch_queue: queue.Queue, stop: threading.Even
 def inbound_loop(stop: threading.Event, env: dict) -> None:
     paths = comms_lib.Paths.from_env()
     log("inbound loop started (slack, keyed-per-channel)")
-    sess = ensure_warm_session(paths)
+    sess = ensure_warm_session(paths, respawn_on_stale=True)
     if sess:
         comms_session.reconcile_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
 
