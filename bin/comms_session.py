@@ -438,9 +438,9 @@ def parse_ws_ref_from_output(out: str, err: str) -> str | None:
 
 def untracked_warm_refs(warm_refs: list[str], spawned_refs: list[str],
                         keep: str | None) -> list[str]:
-    """Warm-titled workspaces (from a machine-wide title scan) that are NOT in
-    this instance's spawned ledger and are NOT the kept survivor.  These are
-    orphans that slipped through record_spawned_ref — e.g. a timed-out
+    """This instance's warm workspaces (from list_warm_workspaces' instance-tagged
+    scan) that are NOT in its spawned ledger and are NOT the kept survivor.  These
+    are orphans that slipped through record_spawned_ref — e.g. a timed-out
     new-workspace that created a workspace before the daemon got rc=1."""
     known = set(spawned_refs)
     return [ws for ws in warm_refs if ws != keep and ws not in known]
