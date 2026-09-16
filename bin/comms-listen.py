@@ -186,10 +186,16 @@ def ensure_warm_session(paths: comms_lib.Paths) -> dict | None:
     session dead and double-spawn. The lock scopes only the respawn decision."""
     with _warm_session_lock:
         sess = comms_session.read_session(paths)
-        if sess and comms_session.cmux_alive(paths, sess["ws_ref"]):
-            return sess
         if sess:
-            log(f"warm session {sess['ws_ref']} gone — closing it and respawning")
+            alive = comms_session.cmux_alive(paths, sess["ws_ref"])
+            if alive and comms_session.warm_session_model_is_current(paths, sess):
+                return sess
+            # Dead, OR alive but running a now-stale model id (a
+            # `claude-backend bedrock|sub` toggle changed the resolved id since
+            # spawn). Either way: close and respawn onto the current id.
+            why = "gone" if not alive else (
+                f"model stale ({sess.get('model')!r} — backend changed since spawn)")
+            log(f"warm session {sess['ws_ref']} {why} — closing it and respawning")
             comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
             comms_session.clear_session_registry(paths)
         return comms_session.spawn_session(paths, WARM_PROMPT, log=log)

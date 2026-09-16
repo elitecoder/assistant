@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.7.4] - 2026-09-16
+
+### Fixed
+- **Warm comms session respawns on a backend toggle instead of freezing its
+  spawn-time model id**: the warm session is kept alive by ref across daemon
+  restarts, so its `--model` id was fixed at spawn. After a
+  `claude-backend bedrock|sub` switch, a session spawned on Bedrock kept running
+  `us.anthropic.claude-sonnet-4-6[1m]` even though the box moved to direct
+  Anthropic (observed 2026-09-16 — a stale Bedrock sonnet id on a non-Bedrock
+  box). `spawn_session` now records the resolved model id in `session.json`, and
+  `ensure_warm_session` respawns the session when that id no longer matches the
+  current backend's resolution. A pre-upgrade session with no recorded id
+  respawns once onto the tracked id; a droid session (no such id) is unaffected.
+
 ## [0.7.3] - 2026-09-16
 
 ### Fixed

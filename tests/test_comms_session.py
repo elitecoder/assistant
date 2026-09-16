@@ -245,6 +245,58 @@ def test_write_session_defaults_agent_claude(paths: cl.Paths):
     assert cs.read_session(paths)["agent"] == ag.CLAUDE
 
 
+# ─── warm-session model currency (2026-09-16: sonnet workspace stuck on Bedrock id) ─
+
+def test_write_session_persists_model(paths: cl.Paths):
+    cs.write_session(paths, "workspace:5", "surface:3", "/cwd", "/t.jsonl",
+                     agent=ag.CLAUDE, model="claude-sonnet-4-6[1m]")
+    assert cs.read_session(paths)["model"] == "claude-sonnet-4-6[1m]"
+
+
+def test_write_session_preserves_model_on_refresh(paths: cl.Paths):
+    """The transcript-refresh path calls write_session without a model — it must
+    reuse the recorded id, not drop it (dropping it would read as stale and force
+    a needless respawn on every refresh)."""
+    cs.write_session(paths, "workspace:5", "surface:3", "/cwd", "/t.jsonl",
+                     agent=ag.CLAUDE, model="claude-sonnet-4-6[1m]")
+    cs.write_session(paths, "workspace:5", "surface:3", "/cwd", "/t2.jsonl")  # no model
+    assert cs.read_session(paths)["model"] == "claude-sonnet-4-6[1m]"
+
+
+def test_model_is_current_true_when_recorded_matches_resolved(paths, monkeypatch):
+    monkeypatch.setattr(cs, "_resolve_warm_model_and_backend",
+                        lambda: ("claude-sonnet-4-6[1m]", "anthropic", False))
+    sess = {"agent": ag.CLAUDE, "model": "claude-sonnet-4-6[1m]"}
+    assert cs.warm_session_model_is_current(paths, sess) is True
+
+
+def test_model_is_current_false_when_backend_toggled(paths, monkeypatch):
+    """The bug: a session spawned on Bedrock keeps us.anthropic.* after the box
+    switches to direct Anthropic. Now resolves to the bare id → stale → respawn.
+    Mutation probe: if the check ignored the recorded model, this would be True."""
+    monkeypatch.setattr(cs, "_resolve_warm_model_and_backend",
+                        lambda: ("claude-sonnet-4-6[1m]", "anthropic", False))
+    sess = {"agent": ag.CLAUDE, "model": "us.anthropic.claude-sonnet-4-6[1m]"}
+    assert cs.warm_session_model_is_current(paths, sess) is False
+
+
+def test_model_is_current_false_for_legacy_session_without_model(paths, monkeypatch):
+    """A pre-upgrade session has no recorded model → treated as stale so it
+    respawns once onto the tracked id."""
+    monkeypatch.setattr(cs, "_resolve_warm_model_and_backend",
+                        lambda: ("claude-sonnet-4-6[1m]", "anthropic", False))
+    assert cs.warm_session_model_is_current(paths, {"agent": ag.CLAUDE}) is False
+
+
+def test_model_is_current_true_for_droid_session(paths, monkeypatch):
+    """A droid session carries no claude model id, so the check never forces a
+    respawn on it. Mutation probe: drop the agent guard and this raises/mismatches."""
+    def _boom():
+        raise AssertionError("must not resolve a claude model for a droid session")
+    monkeypatch.setattr(cs, "_resolve_warm_model_and_backend", _boom)
+    assert cs.warm_session_model_is_current(paths, {"agent": ag.DROID}) is True
+
+
 # ─── claude path unchanged (byte-identical target) ──────────────────────────
 
 def test_should_clear_claude_default_agent_matches_usage_path(tmp_path: Path):

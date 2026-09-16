@@ -109,6 +109,29 @@ def _resolve_warm_model_and_backend() -> tuple[str, str, bool]:
     backend = model_tiers.provider()
     return model_tiers.model_for("balanced", long_context=True), backend, False
 
+
+def warm_session_model_is_current(paths: comms_lib.Paths, sess: dict) -> bool:
+    """True if an alive warm session was spawned with the model id the CURRENT
+    backend resolves to.
+
+    A warm session is long-lived and kept alive by ref across daemon restarts
+    (ensure_warm_session), so its model id is fixed at spawn time. A
+    `claude-backend bedrock|sub` toggle AFTER spawn changes what
+    _resolve_warm_model_and_backend returns, but the running session keeps the
+    OLD provider's id — e.g. a Bedrock `us.anthropic.claude-sonnet-4-6[1m]`
+    still running after the box switched to direct Anthropic (observed
+    2026-09-16). Comparing the recorded id to the freshly resolved one lets the
+    caller respawn on the correct id.
+
+    Only the claude warm session carries such an id; a droid session has none,
+    so it is always current. A pre-upgrade session with no recorded model reads
+    as NOT current, so it respawns once onto the tracked id."""
+    if (sess.get("agent") or agent_session.CLAUDE) != agent_session.CLAUDE:
+        return True
+    want, _backend, _pinned = _resolve_warm_model_and_backend()
+    return sess.get("model") == want
+
+
 def _positive_int_env(name: str, default: int) -> int:
     """Env override parsed as a positive int, falling back to ``default`` on a
     missing/malformed/non-positive value. A bad tunable must never crash the
@@ -148,21 +171,30 @@ def read_session(paths: comms_lib.Paths) -> dict[str, Any] | None:
 
 def write_session(paths: comms_lib.Paths, ws_ref: str, surface_ref: str,
                   cwd: str, transcript_path: str | None,
-                  agent: str | None = None, clock=None) -> None:
+                  agent: str | None = None, clock=None,
+                  model: str | None = None) -> None:
     """Persist the warm-session registry. `agent` records which provider owns
     the session so post-restart reads pick the right transcript root + schema.
-    agent=None means "preserve the persisted choice" — used by the transcript-
-    refresh call path, which must NOT silently reset a droid session to claude;
-    it reuses the prior record's agent, falling back to the coexistence default."""
+    `model` records the exact model id the session was spawned with, so
+    ensure_warm_session can respawn it when a `claude-backend bedrock|sub`
+    toggle changes the resolved id out from under a still-alive session.
+    agent=None / model=None mean "preserve the persisted value" — used by the
+    transcript-refresh call path, which must NOT silently reset a droid session
+    to claude or drop the recorded model; each reuses the prior record's value."""
     paths.comms_dir.mkdir(parents=True, exist_ok=True)
-    if agent is None:
-        agent = (read_session(paths) or {}).get("agent") or agent_session.CLAUDE
+    if agent is None or model is None:
+        prior = read_session(paths) or {}
+        if agent is None:
+            agent = prior.get("agent") or agent_session.CLAUDE
+        if model is None:
+            model = prior.get("model")
     rec = {
         "ws_ref": ws_ref,
         "surface_ref": surface_ref,
         "cwd": cwd,
         "transcript_path": transcript_path,
         "agent": agent,
+        "model": model,
         "spawned_ts": (clock() if clock else int(time.time())),
     }
     p = session_registry_path(paths)
@@ -710,7 +742,12 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         transcript = newest_transcript(cwd, agent)
         log(f"warm session {ws_ref} spawned but boot submission unconfirmed")
 
-    write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent)
+    # Record the exact model this session launched with (claude only — droid has
+    # no such id) so ensure_warm_session can respawn it if a backend toggle later
+    # changes the resolved id. Deterministic within this spawn: the same
+    # resolution _warm_launch already used for the --model flag.
+    spawn_model = _resolve_warm_model_and_backend()[0] if agent == agent_session.CLAUDE else None
+    write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent, model=spawn_model)
     log(f"warm session ready: {ws_ref} / {surface_ref} (transcript={transcript})")
     reconcile_warm_workspaces(paths, keep=ws_ref, log=log)
     return read_session(paths)

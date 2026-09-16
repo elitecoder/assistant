@@ -346,3 +346,57 @@ def test_load_doctor_runs_slack_checks():
     checks = doc.run_checks(only="slack")
     assert isinstance(checks, list) and checks
     assert all(hasattr(c, "status") and hasattr(c, "name") for c in checks)
+
+
+# ─── ensure_warm_session: respawn when the live session's model went stale ──────
+
+def _stub_warm(monkeypatch, *, alive: bool, model_current: bool):
+    """Stub the comms_session machinery ensure_warm_session drives; return a dict
+    recording which lifecycle calls fired."""
+    rec = {"closed": [], "cleared": False, "spawned": False}
+    sess = {"ws_ref": "workspace:18", "agent": "claude",
+            "model": "us.anthropic.claude-sonnet-4-6[1m]"}
+    monkeypatch.setattr(listen.comms_session, "read_session", lambda p: sess)
+    monkeypatch.setattr(listen.comms_session, "cmux_alive", lambda p, ref: alive)
+    monkeypatch.setattr(listen.comms_session, "warm_session_model_is_current",
+                        lambda p, s: model_current)
+    monkeypatch.setattr(listen.comms_session, "close_own_workspace",
+                        lambda p, ref, log=None: rec["closed"].append(ref))
+    def _clear(p):
+        rec["cleared"] = True
+    monkeypatch.setattr(listen.comms_session, "clear_session_registry", _clear)
+    def _spawn(p, prompt, log=None):
+        rec["spawned"] = True
+        return {"ws_ref": "workspace:19", "agent": "claude", "model": "claude-sonnet-4-6[1m]"}
+    monkeypatch.setattr(listen.comms_session, "spawn_session", _spawn)
+    return rec, sess
+
+
+def test_ensure_warm_session_keeps_alive_current_session(env_inbox, monkeypatch):
+    """Alive AND model still current → reuse it, never respawn. Mutation probe:
+    if the currency check were dropped, spawned would flip True."""
+    rec, sess = _stub_warm(monkeypatch, alive=True, model_current=True)
+    out = listen.ensure_warm_session(cl.Paths.from_env())
+    assert out is sess
+    assert rec["spawned"] is False and rec["closed"] == []
+
+
+def test_ensure_warm_session_respawns_when_model_stale(env_inbox, monkeypatch):
+    """Alive but the recorded model no longer matches the current backend (the
+    2026-09-16 Bedrock-string-after-toggle bug) → close + clear + respawn onto
+    the current id. Mutation probe: revert ensure_warm_session to `if sess and
+    cmux_alive: return sess` and this fails (no respawn)."""
+    rec, _ = _stub_warm(monkeypatch, alive=True, model_current=False)
+    out = listen.ensure_warm_session(cl.Paths.from_env())
+    assert rec["closed"] == ["workspace:18"], "stale session must be closed"
+    assert rec["cleared"] is True
+    assert rec["spawned"] is True, "a fresh session must be spawned on the current model"
+    assert out["model"] == "claude-sonnet-4-6[1m]"
+
+
+def test_ensure_warm_session_respawns_when_gone(env_inbox, monkeypatch):
+    """The pre-existing dead-session path still respawns. Model currency is not
+    even consulted when the session is gone."""
+    rec, _ = _stub_warm(monkeypatch, alive=False, model_current=True)
+    listen.ensure_warm_session(cl.Paths.from_env())
+    assert rec["closed"] == ["workspace:18"] and rec["spawned"] is True
