@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [0.7.3] - 2026-09-16
+
+### Fixed
+- **Warm comms session no longer leaks cmux workspaces until cmux dies**: the
+  warm-session watchdog (`bin/comms-listen.py`) spawned a fresh cmux workspace
+  every ~minute when `claude` never reached its ready marker, and
+  `spawn_session` (`bin/comms_session.py`) returned without closing the failed
+  workspace. On 2026-09-14 that leaked ~200 orphaned workspaces (refs climbing
+  to 340) and killed cmux. `spawn_session` now closes the specific workspace it
+  created on every post-creation failure path (no ref, no surface, never ready,
+  and the new-workspace-timeout partial ref), and `watchdog_loop` backs off
+  exponentially (60s doubling to 30m, resetting on recovery) so a persistent
+  boot failure can't hammer cmux.
+- **Warm-workspace orphan sweep is now instance-scoped**: `reconcile_warm_workspaces`'
+  title-scan pass matched every `assistant-comms (warm)` workspace machine-wide,
+  so a failing comms instance would close a SECOND instance's healthy warm
+  session (distinct `COMMS_HOME` — a second box or a live-validation spawn).
+  Each warm workspace's cmux name now carries a stable per-instance tag
+  (`warm_workspace_title`), and the sweep filters on it — it still closes this
+  instance's own orphans but can never reach another instance's session.
+
 ## [0.7.2] - 2026-09-05
 
 ### Fixed
