@@ -631,37 +631,74 @@ def test_abandon_failed_spawn_swallows_cleanup_errors(paths: cl.Paths, monkeypat
     assert any("cleanup after failed spawn errored" in m for m in logs)
 
 
-def test_reconcile_is_instance_scoped_never_touches_other_instance(tmp_path, monkeypatch):
-    """The bug: reconcile closed EVERY warm-titled workspace machine-wide, so a
-    second comms instance (distinct COMMS_HOME) or a live-validation spawn closed
-    the production instance's warm session. Fix: reconcile only closes refs in
-    THIS instance's own spawned-workspaces ledger.
+def test_instance_tag_and_title_differ_per_comms_home(tmp_path):
+    """Two comms instances with distinct COMMS_HOME get distinct tags and titles,
+    so cmux workspace names encode which instance owns each warm session.
+    Mutation probe: if the tag ignored comms_dir, both titles would be equal."""
+    paths_a = cl.Paths.from_env({"HOME": str(tmp_path / "a"), "COMMS_HOME": str(tmp_path / "a")})
+    paths_b = cl.Paths.from_env({"HOME": str(tmp_path / "b"), "COMMS_HOME": str(tmp_path / "b")})
+    assert cs._instance_tag(paths_a) != cs._instance_tag(paths_b)
+    assert cs.warm_workspace_title(paths_a).startswith(cs.SESSION_TITLE)
+    assert cs.warm_workspace_title(paths_a) != cs.warm_workspace_title(paths_b)
 
-    The title-scan pass also closes untracked orphans, but it still cannot reach
-    B's workspace when the title scan returns only instance-A-visible refs — and
-    close_own_workspace is title-guarded as defence-in-depth."""
+
+def test_list_warm_workspaces_filters_to_this_instance(tmp_path, monkeypatch):
+    """The real (unmocked) scan must return only THIS instance's tagged warm
+    workspaces from the machine-wide list-workspaces output — never a second
+    instance's. Mutation probe: filter on the bare SESSION_TITLE and ws:2 (B's)
+    leaks into A's result."""
+    paths_a = cl.Paths.from_env({"HOME": str(tmp_path / "a"), "COMMS_HOME": str(tmp_path / "a")})
+    paths_b = cl.Paths.from_env({"HOME": str(tmp_path / "b"), "COMMS_HOME": str(tmp_path / "b")})
+    title_a = cs.warm_workspace_title(paths_a)
+    title_b = cs.warm_workspace_title(paths_b)
+
+    listing = (
+        f"workspace:1  {title_a}\n"
+        f"workspace:2  {title_b}\n"
+        f"workspace:9  some user work\n"
+    )
+    monkeypatch.setattr(cl, "run_cmd", lambda cmd, timeout=10: (0, listing, ""))
+    assert cs.list_warm_workspaces(paths_a) == ["workspace:1"]
+    assert cs.list_warm_workspaces(paths_b) == ["workspace:2"]
+
+
+def test_reconcile_sweeps_own_orphan_but_never_another_instance(tmp_path, monkeypatch):
+    """End-to-end instance safety through the REAL scan (no mocked
+    list_warm_workspaces): instance A's reconcile sweeps its OWN untracked orphan
+    (ws:4) yet never closes instance B's healthy session (ws:2), which appears in
+    the same machine-wide listing under B's tag. This is the fix for the
+    cross-instance kill the previous test masked by mocking the scan.
+
+    Mutation probe: revert list_warm_workspaces to filter on bare SESSION_TITLE
+    and ws:2 gets swept — this asserts it is not."""
     home_a = tmp_path / "a"; (home_a / ".assistant").mkdir(parents=True)
     home_b = tmp_path / "b"; (home_b / ".assistant").mkdir(parents=True)
     paths_a = cl.Paths.from_env({"HOME": str(home_a), "COMMS_HOME": str(home_a)})
     paths_b = cl.Paths.from_env({"HOME": str(home_b), "COMMS_HOME": str(home_b)})
+    title_a = cs.warm_workspace_title(paths_a)
+    title_b = cs.warm_workspace_title(paths_b)
 
-    # Instance A spawned ws:1; instance B spawned ws:2 (the production session).
+    # A tracks its survivor ws:3 and a stale orphan ws:1; ws:4 is an untracked
+    # orphan of A (never made it into the ledger). B owns healthy ws:2.
     cs.record_spawned_ref(paths_a, "workspace:1")
+    cs.record_spawned_ref(paths_a, "workspace:3")
     cs.record_spawned_ref(paths_b, "workspace:2")
+
+    listing = (
+        f"workspace:2  {title_b}\n"      # B's healthy session
+        f"workspace:3  {title_a}\n"      # A's survivor (keep)
+        f"workspace:4  {title_a}\n"      # A's untracked orphan
+    )
 
     closed: list[str] = []
     monkeypatch.setattr(cs, "close_own_workspace",
                         lambda paths, ws, log=lambda m: None: closed.append(ws))
-    # Title scan returns only the surviving warm workspace — no untracked orphans.
-    monkeypatch.setattr(cs, "list_warm_workspaces", lambda p: ["workspace:3"])
+    monkeypatch.setattr(cl, "run_cmd", lambda cmd, timeout=10: (0, listing, ""))
 
-    # Instance A reconciles after respawning ws:3 — it must close only its OWN
-    # orphan (ws:1) and NEVER B's production ws:2.
-    cs.record_spawned_ref(paths_a, "workspace:3")
     cs.reconcile_warm_workspaces(paths_a, keep="workspace:3")
 
-    assert "workspace:2" not in closed, "reconcile must not touch another instance's session"
-    assert closed == ["workspace:1"]
-    # B's ledger is untouched; A's ledger now holds only the survivor.
-    assert cs.read_spawned_refs(paths_b) == ["workspace:2"]
-    assert cs.read_spawned_refs(paths_a) == ["workspace:3"]
+    assert "workspace:1" in closed, "A's ledger-tracked orphan is closed"
+    assert "workspace:4" in closed, "A's untracked orphan is still swept (safety net kept)"
+    assert "workspace:2" not in closed, "B's healthy session must never be closed"
+    assert cs.read_spawned_refs(paths_b) == ["workspace:2"], "B's ledger untouched"
+    assert cs.read_spawned_refs(paths_a) == ["workspace:3"], "A's ledger holds only the survivor"

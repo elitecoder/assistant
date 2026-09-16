@@ -21,6 +21,7 @@ The daemon composes the per-message feed string; this only manages the session.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -43,6 +44,26 @@ CLEAR_THRESHOLD = float(os.environ.get("COMMS_CLEAR_FRACTION", "0.5"))
 # content are counted, so ~500k tokens ≈ 2 MB. Env-overridable per box.
 DROID_CLEAR_BYTES = int(os.environ.get("COMMS_DROID_CLEAR_BYTES", str(2_000_000)))
 SESSION_TITLE = "assistant-comms (warm)"
+
+
+def _instance_tag(paths: comms_lib.Paths) -> str:
+    """A short stable discriminator for THIS comms instance, derived from its
+    COMMS_HOME (via comms_dir). Two daemons with distinct COMMS_HOME — a second
+    box, or a live-validation spawn — get distinct tags."""
+    return hashlib.sha1(str(paths.comms_dir).encode()).hexdigest()[:6]
+
+
+def warm_workspace_title(paths: comms_lib.Paths) -> str:
+    """The cmux workspace name for this instance's warm session: the shared
+    SESSION_TITLE plus this instance's tag. The machine-wide orphan scan
+    (list_warm_workspaces) filters on this full title, so a failing instance
+    can only ever sweep ITS OWN orphans and never closes another instance's
+    healthy warm session (which carries a different tag). close_own_workspace's
+    guard still matches on the SESSION_TITLE substring, so it keeps working for
+    both tagged and any legacy untagged session."""
+    return f"{SESSION_TITLE} #{_instance_tag(paths)}"
+
+
 # The warm session's cwd = this repo checkout (its own code + boot prompt), NOT
 # a hardcoded ~/dev/assistant — derive it from this file (bin/comms_session.py →
 # repo root is parent-of-bin) so a checkout elsewhere still works.
@@ -426,13 +447,19 @@ def untracked_warm_refs(warm_refs: list[str], spawned_refs: list[str],
 
 
 def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cover - live cmux I/O
-    """All workspace refs whose title is the warm-session title, machine-wide."""
+    """Workspace refs whose title is THIS instance's warm-session title.
+
+    Filters on the instance-tagged warm_workspace_title, not the bare
+    SESSION_TITLE, so the machine-wide list-workspaces output is narrowed to
+    this instance's own warm workspaces. That keeps reconcile's orphan-sweep
+    pass from ever returning a second comms instance's healthy session."""
     rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
     if rc != 0:
         return []
+    title = warm_workspace_title(paths)
     refs = []
     for line in out.splitlines():
-        if SESSION_TITLE in line:
+        if title in line:
             m = re.search(r"workspace:\d+", line)
             if m:
                 refs.append(m.group(0))
@@ -447,10 +474,12 @@ def reconcile_warm_workspaces(paths: comms_lib.Paths, keep: str | None, log=lamb
     1. Ledger pass — close every ref in spawned-workspaces.json that isn't keep.
        Instance-scoped: a second comms instance (distinct COMMS_HOME) cannot
        accidentally close the production session this way.
-    2. Title-scan pass — close any SESSION_TITLE workspace NOT in the spawned
-       ledger and NOT keep.  Catches orphans from timed-out spawns that created a
-       workspace before new-workspace returned rc=1 and record_spawned_ref was
-       never reached.  close_own_workspace is title-guarded as defence-in-depth.
+    2. Title-scan pass — close any of THIS instance's warm workspaces (matched by
+       the instance-tagged warm_workspace_title, via list_warm_workspaces) NOT in
+       the spawned ledger and NOT keep.  Catches orphans from timed-out spawns
+       that created a workspace before record_spawned_ref was reached.  The
+       instance tag keeps this from ever reaching a second comms instance's
+       healthy warm session; close_own_workspace is title-guarded on top.
 
     `keep` is rewritten as the sole entry in the spawned ledger afterward."""
     spawned = read_spawned_refs(paths)
@@ -593,7 +622,7 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     cwd = str(DISPATCH_CWD)
     launch = _warm_launch(agent)
     rc, out, err = comms_lib.run_cmd(
-        [cmux, "new-workspace", "--cwd", cwd, "--name", SESSION_TITLE,
+        [cmux, "new-workspace", "--cwd", cwd, "--name", warm_workspace_title(paths),
          "--focus", "false", "--command", launch], timeout=30)
     if rc != 0:
         log(f"new-workspace failed rc={rc}: {err.strip()[:200]}")
