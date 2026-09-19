@@ -185,8 +185,8 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 
 Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/todo-server.py`).
 
-- **Overview tab** — your default view groups open workspaces into **Needs you**, **Working**, **Ready to close**, and **Parked**. Each card shows one next action. Expand it for the return note and workspace link. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
-- **Brief tab** — your morning: open decisions ranked by a deterministic score, each with a one-tap **accept / reject / snooze / edit / wrong-lane** button; plus **handled-overnight** receipts (auto-done actions with their rule id, goal work staged/dispatched with workspace links, verified fleet progress), an **FYI digest** grouped by source, and a **health** row (connector staleness, token expiry, interrupts used/denied, $/day).
+- **Sessions tab** — your default view counts open cmux workspaces, not GitHub alerts. It groups workspaces into **Needs you**, **Working**, **Ready to close**, and **Parked**. Each card shows one next action. Expand it for the return note and workspace link. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
+- **Notifications tab** — a separate inbox for GitHub pull requests and other alerts. Its counts don't add to your session workload. Expand a group's history for its existing controls; receipts, the FYI digest, and health remain available here.
 - **Connections tab** — every connector as **Connected** / **Available, not connected** / **Needs attention**, with the how-to-connect hint inline.
 - **`/goal` skill** — add / list / rerank / pause goals (`/goal add "…" --outcome "…"`). Goals feed the planner and boost decision ranking. Automation can only *propose* goal changes; only you (this skill) edit the store in place.
 - **One-tap accept** on a decision routes through the todo-server, executes the recommended action class (draft-only for any external send in this tree), and ledgers the transition. Reject / snooze do the same.
@@ -208,12 +208,18 @@ workspace identity so the overview can confirm **Parked**. If you run the dashbo
 from a separate checkout, use its displayed confirmation command for older pause
 records; your globally installed skill might still use the older version.
 
-The Brief tab reads the current decision log and groups GitHub alerts by pull
-request. It shows three review topics first; expand the rest or the individual
-alert history when needed. Topic counts aren't counts of decisions you must make.
+The Notifications tab reads the current decision log and groups GitHub alerts by pull
+request. It shows three groups first; expand the rest or the individual
+alert history when needed. GitHub counts include closed pull requests with follow-ups,
+not just open pull requests, and never represent cmux workspaces. The navigation
+doesn't show a notification-count badge. Old `#brief` bookmarks still open this inbox;
+**Back to sessions** returns to your workspace view.
 Optional `~/.assistant/decisions/focus.json` records order matching open topics and
 provide dated recommendations. Old Assistant snapshots appear as **Saved requests**,
 without current-decision badges or workspace-opening actions.
+
+When the session snapshot expires, its workspace-count badge changes to **?**.
+The last recorded count remains labeled as historical, not a current workspace count.
 
 Approved historical-alert cleanup uses `decisions.expire_selected`: exact record
 fingerprints, a locked preflight, private backups, and an atomic log update.

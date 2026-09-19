@@ -130,7 +130,7 @@ class BriefTabTests(unittest.TestCase):
         self.assertIn("Current alert", html)
         self.assertNotIn("Closed alert", html)
         self.assertNotIn("dec-aaaa1111bbbb2222", html)
-        self.assertIn("1 review topics", html)
+        self.assertIn("1 GitHub pull requests", html)
         self.assertIn("1 raw alerts", html)
         self.assertEqual(before, {
             p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
@@ -162,7 +162,9 @@ class BriefTabTests(unittest.TestCase):
         self.assertEqual(html.count('class="review-topic"'), 6)
         self.assertEqual(html.count('data-dec-row='), 7)
         self.assertIn("7 raw alerts", html)
-        self.assertIn("3 more review topics", html)
+        self.assertIn("2 GitHub pull requests", html)
+        self.assertIn("4 other notification groups", html)
+        self.assertIn("3 more notification groups", html)
 
     def test_missing_or_corrupt_log_explicitly_labels_snapshot(self):
         self.write_brief(brief_fixture())
@@ -362,8 +364,8 @@ class BriefTabTests(unittest.TestCase):
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 0)
         self.assertIn("No brief yet", html)
-        self.assertIn("raw alert counts unavailable", html)
-        self.assertNotIn("0 review topics", html)
+        self.assertIn("Notification counts unavailable", html)
+        self.assertNotIn("0 GitHub pull requests", html)
         self.assertNotIn("data-brief-date=", html)
 
     def test_corrupt_brief_degrades_to_message(self):

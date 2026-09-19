@@ -415,7 +415,7 @@ class DecisionsTabTests(_Base):
                 self.assertIn("workspace:999", html)
                 self.mod.render()
                 page = (self._tmp / ".claude/assistant-dashboard.html").read_text()
-                tab = page.split('data-tab="decisions"', 1)[1].split("</button>", 1)[0]
+                tab = page.split('<button class="tab" data-tab="decisions"', 1)[1].split("</button>", 1)[0]
                 self.assertIn("Saved requests", tab)
                 self.assertNotIn("tab-count", tab)
 

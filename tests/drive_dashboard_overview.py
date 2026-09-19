@@ -75,6 +75,16 @@ def drive(output_dir, browser_executable):
              "createdAt": now.date().isoformat(), "status": "open"},
         ]}))
         (output / "cache/world.json").write_text(json.dumps(world))
+        decisions = home / ".assistant/decisions"
+        decisions.mkdir(parents=True)
+        (decisions / "decisions.jsonl").write_text("".join(json.dumps({
+            "schema": "decision/1", "id": f"dec-test-{index}",
+            "status": "open", "epoch": int(now.timestamp()),
+            "source": "github", "kind": "review_requested", "lane": "staged",
+            "title": f"Unrelated pull request {index}", "refs": {
+                "repo": "example/project", "pr": index,
+            },
+        }) + "\n" for index in range(1, 50)))
         with mock.patch.dict(os.environ, {"HOME": str(home)}):
             spec = importlib.util.spec_from_file_location(
                 "browser_renderer", REPO / "bin/render-assistant-page.py")
@@ -104,6 +114,17 @@ def drive(output_dir, browser_executable):
                 page.goto(url)
                 page.wait_for_selector('[data-panel="overview"].active')
                 assert not errors, errors
+                assert page.locator('[data-tab="overview"]').inner_text().split() == ["Sessions", "10"]
+                assert page.locator('[data-tab="brief"]').inner_text().strip() == "Notifications"
+                assert page.locator('[data-tab="brief"] .tab-count').count() == 0
+                assert page.locator('.session-scope').inner_text().startswith("10 open cmux workspaces")
+                assert not page.locator('.review-topic').first.is_visible()
+                page.locator('[data-tab="brief"]').click()
+                assert page.locator('.review-topic').count() == 49
+                assert "49 GitHub pull requests" in page.locator('.brief-summary').inner_text()
+                assert "not open workspaces" in page.locator('.brief-summary').inner_text()
+                page.get_by_role("button", name="Back to sessions", exact=True).click()
+                assert page.locator('[data-panel="overview"]').is_visible()
                 assert page.locator(".attention-context[open]").count() == 0
                 visible_cards = page.locator(".attention-card:visible").count()
                 assert visible_cards == 7, visible_cards
@@ -203,6 +224,8 @@ def drive(output_dir, browser_executable):
                 assert page.locator('.attention-card button:not([disabled])').count() == 0
                 assert page.locator('.attention-card[data-lane="ready"]').count() == 0
                 assert page.locator('.attention-card[data-lane="working"]').count() == 0
+                assert page.locator('[data-tab="overview"] .tab-count').inner_text() == "?"
+                assert "Current workspace count is unverified" in page.locator('.session-scope').inner_text()
                 assert page.locator(".pulse-health").get_attribute("class").endswith("pulse-bad")
                 assert not errors, errors
                 page.screenshot(path=str(output_dir / "overview-stale.png"), full_page=True)

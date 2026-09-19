@@ -18,6 +18,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Separate cmux workspace counts from GitHub notifications. Sessions stay the
+  default view, notification counts stay inside their inbox, and expired
+  workspace counts show as unverified.
 - Show snapshot age independently from page age. Suppress completion suggestions
   when data is outdated, and preserve expanded context while you read.
 - Bind context and workspace-opening requests to stable identities. Distinguish

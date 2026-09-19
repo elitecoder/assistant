@@ -568,8 +568,19 @@ def _render_brief_tab_inner():
     counts_available = current or (snapshot_available and "queue" in brief)
     topic_count = len(topics) if counts_available else "?"
     alert_count = len(queue) if counts_available else "?"
-    count_label = (f"{topic_count} review topics · {alert_count} raw alerts"
-                   if counts_available else "Review topics and raw alert counts unavailable")
+    github_topics = sum(
+        topic["rows"][0].get("source") == "github"
+        and _pr_topic_key(topic["rows"][0].get("refs")) is not None
+        for topic in topics)
+    other_topics = len(topics) - github_topics
+    sources = []
+    if github_topics:
+        sources.append(f"{github_topics} GitHub pull requests")
+    if other_topics:
+        sources.append(f"{other_topics} other notification groups")
+    source_label = " · ".join(sources) or "No notification groups"
+    count_label = (f"{source_label} · {alert_count} raw alerts"
+                   if counts_available else "Notification counts unavailable")
     brief = {**brief, "queue": queue,
              "counts": {**(brief.get("counts") or {}), "open_decisions": len(queue)}}
     receipts = brief.get("handled_overnight") or []
@@ -619,7 +630,7 @@ def _render_brief_tab_inner():
         f'<div class="k">Raw alerts · daily snapshot trend</div></div>')
     stats = f"""
 <div class="stats">
-  <div class="stat"><div class="v">{topic_count}</div><div class="k">Review topics</div></div>
+  <div class="stat"><div class="v">{topic_count}</div><div class="k">Notification groups · not workspaces</div></div>
   {trend_tile}
   <div class="stat"><div class="v">{len(receipts)}</div><div class="k">Handled overnight</div></div>
   <div class="stat"><div class="v">{sum(len(v) for v in digest.values())}</div><div class="k">FYI digest rows</div></div>
@@ -715,7 +726,7 @@ def _render_brief_tab_inner():
         if len(cards) > 3:
             queue_html += (
                 f'<details class="more-review-topics" data-context-key="brief-more-topics">'
-                f'<summary>{len(cards) - 3} more review topics'
+                f'<summary>{len(cards) - 3} more notification groups'
                 f'</summary>{"".join(cards[3:])}</details>')
     else:
         queue_html = ('<div class="empty">No open notifications in the current log.</div>'
@@ -876,28 +887,28 @@ def _render_brief_tab_inner():
     seen_note = "seen" if seen else "unseen — viewing this tab records it"
 
     # ─── editorial header: eyebrow · good morning · voice summary ───
-    hello = _greeting_for(brief.get("epoch"))
     summary_txt = (f"{count_label}. "
-                   "Notifications are not confirmed human decisions.")
+                   "These are alerts, not open workspaces or confirmed decisions.")
     voice_tag = '<span class="voice-tag">notification summary</span>'
     summary_html = (
         f'<p class="brief-summary template-voice">{e(summary_txt)}{voice_tag}</p>')
     header_html = (
-        f'<div class="brief-eyebrow">Morning brief · {e(date_str)} · '
-        f'built {e((brief.get("ts") or "?")[11:19])} UTC</div>'
-        f'<h1 class="brief-hello">{e(hello)}</h1>'
+        f'<div class="brief-eyebrow">Notification history · supporting snapshot {e(date_str)}</div>'
+        '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
         f'{summary_html}')
 
     date_attribute = f' data-brief-date="{e(date_str)}"' if snapshot_available else ""
     html = f"""
 <div class="brief-root"{date_attribute}>
 {header_html}
+<p class="meta">GitHub alerts can include closed pull requests with follow-ups. They do not add sessions to your workload.</p>
+<button class="btn" onclick="showTab('overview')">Back to sessions</button>
 <p class="snapshot-status" data-current-queue="{str(current).lower()}">{e(queue_notice)}</p>
 <p class="meta">{e(snapshot_notice)} {e(focus_notice)}</p>
 {stats}
 
 <div class="section">
-  <h2>Review topics <span class="count">{e(count_label)}</span></h2>
+  <h2>Notification groups <span class="count">{e(count_label)}</span></h2>
   {queue_html}
 </div>
 
@@ -1816,8 +1827,9 @@ def render_overview_tab(world):
     finish_html = render_finish_prompt(world, cards, fresh)
     return f"""
 <div class="attention-intro">
-  <div><p class="attention-eyebrow">Your attention, not another inbox</p>
+  <div><p class="attention-eyebrow">Your cmux sessions</p>
     <h2>Keep work moving. Finish one thing.</h2>
+    <p class="session-scope" data-workspace-count="{len(cards)}">{len(cards)} open cmux workspaces in this snapshot. GitHub alerts are separate.</p>
     <p>Open a card for context. Long-running work can stay open while it progresses.</p></div>
   <label class="attention-filter">Find your work
     <input id="attention-search" type="search" placeholder="Task or folder"
@@ -1832,7 +1844,7 @@ def render_overview_tab(world):
 <div class="attention-board">{''.join(lanes)}</div>
 <p id="attention-search-empty" hidden>No matching tasks. Clear the search to see your work.</p>
 {errors}
-<p class="attention-footnote">One card per open workspace. Existing decisions and controls remain in the other tabs.</p>
+<p class="attention-footnote">One card per open cmux workspace, even when it contains multiple sessions. Counts describe the snapshot, not GitHub notifications.</p>
 """, len(cards)
 
 
@@ -3575,6 +3587,13 @@ function showTab(name) {
         + new Date(stamp * 1000).toLocaleString()
         + (fresh ? '. Session age is not a failure.' : '. Refresh the data before acting.')
       : 'Session snapshot time is unknown. Refresh the data before acting.';
+    const scope = document.querySelector('.session-scope');
+    const workspaceCount = scope.dataset.workspaceCount;
+    document.querySelector('[data-tab="overview"] .tab-count').textContent = fresh ? workspaceCount : '?';
+    scope.textContent = fresh
+      ? workspaceCount + ' open cmux workspaces in this snapshot. GitHub alerts are separate.'
+      : 'Current workspace count is unverified. The last snapshot lists ' + workspaceCount
+        + ' workspaces; GitHub alerts are separate.';
     const finishAt = Number(document.getElementById('finish-prompt')?.dataset.evidenceAt);
     const finishFresh = fresh && finishAt && now >= finishAt
       && now - finishAt <= Number(root.dataset.freshSeconds);
@@ -3896,16 +3915,16 @@ document.addEventListener('click', handleTodoToolsClick);
 
 <div class="tabs">
   <button class="tab" data-tab="overview" onclick="showTab('overview')">
-    Overview <span class="tab-count">{overview_n}</span>
+    Sessions <span class="tab-count" title="Open cmux workspaces in this snapshot">{overview_n}</span>
   </button>
   <button class="tab" data-tab="brief" onclick="showTab('brief')">
-    Brief <span class="tab-count">{brief_n}</span>
+    Notifications
   </button>
   <button class="tab" data-tab="decisions" onclick="showTab('decisions')">
     {requests_tab}
   </button>
   <button class="tab" data-tab="workspaces" onclick="showTab('workspaces')">
-    Workspaces <span class="tab-count">{ws_n}</span>
+    Session details
   </button>
   <button class="tab" data-tab="fleet" onclick="showTab('fleet')">
     Fleet <span class="tab-count">{fleet_n}</span>
