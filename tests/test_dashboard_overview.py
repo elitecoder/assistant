@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -72,6 +73,7 @@ class OverviewTests(unittest.TestCase):
             **identity, "ws_ref": ref, "workspace_id": f"workspace-id-{number}",
             "cwd": "/work/project", "identity_status": "verified",
             "context_status": "verified", "context_built_at": NOW.isoformat(),
+            "pending_tool_use": False,
         })
         summary = {
             "ws_ref": ref, "title": title, "verdict": verdict,
@@ -165,6 +167,7 @@ class OverviewTests(unittest.TestCase):
     def test_newer_tool_activity_prevents_close_nudge(self):
         ref = self.workspace(1, "ready_for_cleanup", age=120)
         self.world["live_sessions"][0].update({
+            "pending_tool_use": True,
             "last_assistant": {
                 "ts": (NOW - timedelta(seconds=10)).isoformat(),
                 "text": "[tool_use:Bash] build",
@@ -173,6 +176,80 @@ class OverviewTests(unittest.TestCase):
         html, _ = self.render()
         self.assertIn("Last signal: tool activity", html)
         self.assertNotIn("One task may be ready", html)
+
+    def test_mixed_text_and_pending_tool_does_not_trigger_wrap_up(self):
+        self.workspace(1, "ready_for_cleanup")
+        self.world["live_sessions"][0].update({
+            "first_recorded_at": "2026-09-01T10:00:00Z",
+            "pending_tool_use": True,
+            "last_assistant": {
+                "ts": NOW.isoformat(),
+                "text": "I am checking the final result.\n[tool_use:Bash] run checks",
+            },
+        })
+        html, _ = self.render()
+        self.assertIn("lane-working", Cards(html).cards["workspace:1"]["class"])
+        self.assertNotIn("Wrap up an older session", html)
+        self.assertNotIn("Check before closing", html)
+
+    def test_unknown_pending_tool_state_cannot_trigger_wrap_up(self):
+        self.workspace(1, workspace_id="previous-workspace")
+        self.world["live_sessions"][0].update({
+            "first_recorded_at": "2026-09-01T10:00:00Z",
+            "pending_tool_use": None,
+            "last_assistant": {"ts": NOW.isoformat(), "text": "Partial tool context."},
+        })
+        html, _ = self.render()
+        self.assertIn("Tool status unknown", html)
+        self.assertNotIn("Wrap up an older session", html)
+
+    def test_real_transcript_tool_lifecycle_controls_the_finish_prompt(self):
+        spec = importlib.util.spec_from_file_location(
+            "overview_transcript_reader", REPO / "bin/session-context-watcher.py")
+        watcher = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = watcher
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(watcher)
+        transcript = self.home / "session-1.jsonl"
+        events = [
+            {"type": "user", "uuid": "user-1", "parentUuid": None,
+             "timestamp": NOW.isoformat(), "message": {"role": "user", "content": "Run the checks."}},
+            {"type": "assistant", "uuid": "assistant-1", "parentUuid": "user-1",
+             "timestamp": NOW.isoformat(), "message": {"role": "assistant", "content": [
+                 {"type": "text", "text": "I am checking the result."},
+                 {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"command": "checks"}},
+             ]}},
+        ]
+        transcript.write_text("".join(json.dumps(event) + "\n" for event in events))
+        state = watcher.TranscriptState(transcript, "/work/project", provider="claude")
+        state.read_new()
+        context = state.to_dict(NOW)
+        self.assertIs(context["pending_tool_use"], True)
+        self.workspace(1, "ready_for_cleanup")
+        self.world["live_sessions"][0].update(context)
+        self.world["live_sessions"][0]["first_recorded_at"] = "2026-09-01T10:00:00Z"
+        html, _ = self.render()
+        self.assertIn("lane-working", Cards(html).cards["workspace:1"]["class"])
+        self.assertNotIn("Wrap up an older session", html)
+        completed = [
+            {"type": "user", "uuid": "result-1", "parentUuid": "assistant-1",
+             "timestamp": NOW.isoformat(), "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tool-1", "content": "Checks passed."},
+             ]}},
+            {"type": "assistant", "uuid": "assistant-2", "parentUuid": "result-1",
+             "timestamp": NOW.isoformat(), "message": {"role": "assistant", "content": [
+                 {"type": "text", "text": "The recorded checks passed. Review the change."},
+             ]}},
+        ]
+        with transcript.open("a") as stream:
+            stream.write("".join(json.dumps(event) + "\n" for event in completed))
+        state.read_new()
+        context = state.to_dict(NOW)
+        self.assertIs(context["pending_tool_use"], False)
+        self.world["live_sessions"][0].update(context)
+        html, _ = self.render()
+        self.assertIn("Wrap up an older session", html)
+        self.assertIn("The recorded checks passed. Review the change.", html)
 
     def test_same_folder_does_not_link_another_workspace_session(self):
         self.workspace(1)

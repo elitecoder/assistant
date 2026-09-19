@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -1505,8 +1506,9 @@ def overview_cards(world):
                        and (_overview_timestamp((latest.get("last_user") or {}).get("ts")) or 0)
                        > (_overview_timestamp((latest.get("last_assistant") or {}).get("ts")) or 0))
         working = any(
-            ((s.get("last_assistant") or {}).get("text") or "").startswith("[tool_use:")
+            s.get("pending_tool_use") is True
             for s in current_context)
+        tools_complete = latest in current_context and latest.get("pending_tool_use") is False
         recorded = [_overview_timestamp(s.get("first_recorded_at")) for s in associated]
         first_recorded = min((stamp for stamp in recorded if stamp is not None), default=None)
         pause = parked.get(ref, {})
@@ -1522,7 +1524,7 @@ def overview_cards(world):
         elif not snapshot_fresh:
             lane, state = "needs-you", "Status unknown"
             action = "Refresh the session state before deciding what to do."
-        elif working and (not context_fresh or newest_turn > (context_at or 0)):
+        elif working:
             lane, state = "working", "Last signal: tool activity"
             action = "Look for the next result. Don't close the session while work continues."
         elif not context_fresh:
@@ -1530,6 +1532,9 @@ def overview_cards(world):
             if new_request:
                 state = "Request awaiting a response"
                 action = "Check whether your latest request is being handled before wrapping up."
+            elif reply_current and not tools_complete:
+                state = "Tool status unknown"
+                action = "Check whether tools have finished before deciding to wrap up."
             else:
                 state = "Review the last response" if reply_current else "Status unknown"
                 action = ("Read the last response, then choose to continue, finish, or park this work."
@@ -1569,7 +1574,7 @@ def overview_cards(world):
             "unverified": bool(summaries.get(ref)) and not matches,
             "wrap_eligible": (snapshot_fresh and not pause and not new_request
                               and lane in ("needs-you", "ready")
-                              and (context_fresh or (reply_current and not working))),
+                              and (context_fresh or (reply_current and tools_complete))),
         })
     return cards, issues, snapshot_at
 
@@ -1597,8 +1602,13 @@ def render_overview_tab(world):
         reason = (f'<dt>{pause_label}</dt><dd>{e(card["park_reason"])}</dd>'
                   if card["park_reason"] else "")
         if card["pause_uncertain"]:
-            reason += ('<dt>Confirm the pause</dt><dd>Run /back-off in this workspace to reconfirm, '
-                       'or /attend to remove the previous pause.</dd>')
+            command = shlex.join([
+                str(REPO / "bin/back-off.py"), "add", ref, "Paused after dashboard review",
+                "--workspace-id", card["workspace_id"] or "",
+            ])
+            reason += (
+                '<dt>Confirm the pause</dt><dd>After checking this workspace, run '
+                f'<code>{e(command)}</code>. Run /attend inside the workspace to remove the pause.</dd>')
         history = (f'<dt>Historical note (not current)</dt><dd>{e(card["history"])}</dd>'
                    if card["history"] else "")
         session_text = ", ".join(s.get("session_id") or s.get("tab_id") or "unidentified"

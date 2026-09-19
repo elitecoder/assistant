@@ -51,6 +51,7 @@ def drive(output_dir, browser_executable):
             world["live_sessions"].append({
                 **identity, "ws_ref": ref, "workspace_id": f"workspace-id-{index}",
                 "identity_status": "verified", "context_status": "verified",
+                "pending_tool_use": False,
                 "context_built_at": now.isoformat()})
             (home / f".assistant/observer-summaries/workspace_{index}.json").write_text(
                 json.dumps({

@@ -18,6 +18,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   when data is outdated, and preserve expanded context while you read.
 - Bind context and workspace-opening requests to stable identities. Distinguish
   failed observations from evidence that work is progressing.
+- Track outstanding tool calls across long transcripts without nudging active
+  sessions to close. Preserve separate live bindings when sessions are resumed twice.
 - Isolate installer tests from host service registrations and terminal hooks.
 
 ## [0.7.4] - 2026-09-16

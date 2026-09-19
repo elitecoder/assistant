@@ -32,6 +32,8 @@ whose start predates that hook. Registry keys are workspace UUIDs, not surfaces.
 context_status verifies the cached session/provider association, not freshness;
 context_built_at supplies the cache clock. Missing bindings and unsupported
 providers stay unknown. first_recorded_at is not a session creation timestamp.
+Internal session keys include provider, full session ID, workspace UUID, and
+surface UUID, so resumed sessions retain each binding in the exported list.
 """
 
 import json
@@ -272,26 +274,45 @@ def transcript_for_session(provider, session_id):
     return str(max(matches, key=lambda p: p.stat().st_mtime))
 
 
-def agent_pid_on_tty(tty, provider):
+def foreground_provider_process(tty, provider):
+    """Return the unique foreground provider process and its start time."""
     if not tty or provider not in {"claude", "droid"}:
         return None
     try:
-        r = subprocess.run(
-            ["ps", "-t", tty, "-o", "pid=,command="],
+        result = subprocess.run(
+            ["ps", "-t", tty, "-o", "pid=,pgid=,tpgid=,lstart=,comm="],
             capture_output=True, text=True, timeout=3,
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
         )
-    except Exception:
+        if result.returncode != 0:
+            return None
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    marker = "droid" if provider == "droid" else "claude"
-    for line in r.stdout.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) != 2 or marker not in parts[1].lower():
+    processes = []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 8)
+        if len(fields) != 9:
+            continue
+        process_provider = Path(fields[8]).name
+        if process_provider not in {"claude", "droid", "copilot"}:
             continue
         try:
-            return int(parts[0])
+            pid, pgid, foreground = map(int, fields[:3])
+            started = datetime.strptime(
+                " ".join(fields[3:8]), "%a %b %d %H:%M:%S %Y",
+            ).replace(tzinfo=timezone.utc).timestamp()
         except ValueError:
             continue
-    return None
+        if pgid > 0 and pgid == foreground:
+            processes.append((pid, started, process_provider))
+    if len(processes) != 1 or processes[0][2] != provider:
+        return None
+    return processes[0][:2]
+
+
+def agent_pid_on_tty(tty, provider):
+    process = foreground_provider_process(tty, provider)
+    return process[0] if process else None
 
 
 def registry_binding_for_surface(registry, workspace, surface):
@@ -318,33 +339,10 @@ def registry_binding_for_surface(registry, workspace, surface):
         return None
     if isinstance(recorded, bool) or not isinstance(recorded, (int, float)):
         return None
-    try:
-        result = subprocess.run(
-            ["ps", "-t", tty, "-o", "pid=,pgid=,tpgid=,lstart=,comm="],
-            capture_output=True, text=True, timeout=3,
-            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
-        )
-        if result.returncode != 0:
-            return None
-    except (OSError, subprocess.TimeoutExpired):
+    process = foreground_provider_process(tty, provider)
+    if process is None:
         return None
-    processes = []
-    for line in result.stdout.splitlines():
-        fields = line.split(None, 8)
-        if len(fields) != 9 or Path(fields[8]).name != provider:
-            continue
-        try:
-            pid, pgid, foreground = map(int, fields[:3])
-            started = datetime.strptime(
-                " ".join(fields[3:8]), "%a %b %d %H:%M:%S %Y",
-            ).replace(tzinfo=timezone.utc).timestamp()
-        except ValueError:
-            continue
-        if pgid > 0 and pgid == foreground:
-            processes.append((pid, started))
-    if len(processes) != 1:
-        return None
-    pid, started = processes[0]
+    pid, started = process
     if entry.get("claude_pid") and str(entry["claude_pid"]) != str(pid):
         return None
     if not started <= recorded < utc_now().timestamp() + 1:
@@ -354,6 +352,15 @@ def registry_binding_for_surface(registry, workspace, surface):
         "pid": pid, "ts": recorded, "tab_id": workspace_id,
         "identity_source": "session_start_registry",
     }
+
+
+def session_identity_key(session):
+    return (
+        normalize_provider(session.get("provider")),
+        session["session_id"],
+        str(session.get("workspace_id") or "").lower(),
+        str(session.get("surface_id") or "").lower(),
+    )
 
 
 def build_live_sessions(workspaces=None):
@@ -370,11 +377,7 @@ def build_live_sessions(workspaces=None):
         sid = e.get("session_id")
         if not sid:
             continue
-        prev = out.get(sid)
-        # Multiple registry entries can share session_id (resume); keep most recent.
-        if prev and prev.get("ts", 0) > e.get("ts", 0):
-            continue
-        out[sid] = {
+        session = {
             "session_id": sid,
             "pid": int(pid),
             "cwd": e.get("cwd"),
@@ -388,6 +391,11 @@ def build_live_sessions(workspaces=None):
             "identity_source": "registry",
             "agent_status": "unknown",
         }
+        key = session_identity_key(session)
+        prev = out.get(key)
+        if prev and prev.get("ts", 0) > e.get("ts", 0):
+            continue
+        out[key] = session
     for ws in workspaces or []:
         for surface in ws.get("surfaces", []):
             if surface.get("type") != "terminal":
@@ -411,7 +419,7 @@ def build_live_sessions(workspaces=None):
                 "provider": provider,
                 "identity_status": "verified" if verified else "unknown",
             })
-            out[sid] = {
+            session = {
                 "session_id": sid,
                 "pid": pid,
                 "cwd": binding.get("cwd"),
@@ -430,6 +438,7 @@ def build_live_sessions(workspaces=None):
                 "identity_source": binding.get("identity_source", "cmux_resume_binding"),
                 "agent_status": "unknown",
             }
+            out[session_identity_key(session)] = session
     return out
 
 
@@ -450,14 +459,18 @@ def join_workspaces_to_sessions(workspaces, live_sessions):
                     "surface_title": surf.get("title", ""),
                     "ws_title": ws.get("title", ""),
                     "bound_session_id": surf.get("session_id"),
+                    "bound_provider": surf.get("provider"),
                 }
 
-    for sid, sess in live_sessions.items():
+    for sess in live_sessions.values():
+        sid = sess["session_id"]
         tty = sess.get("tty") or ps_tty(sess["pid"])
         sess["tty"] = tty
         info = tty_to_ws.get(tty.removeprefix("/dev/")) if tty else None
         if info:
             if info["bound_session_id"] and info["bound_session_id"] != sid:
+                continue
+            if info["bound_provider"] and info["bound_provider"] != normalize_provider(sess.get("provider")):
                 continue
             if any(
                 sess.get(key) and info.get(key)
@@ -476,7 +489,7 @@ def join_workspaces_to_sessions(workspaces, live_sessions):
 
     # Reverse-index ws_ref → session_ids
     for ws in workspaces:
-        ws["session_ids"] = [
+        ws["session_ids"] = list(dict.fromkeys(
             s["session_id"] for s in live_sessions.values()
             if s.get("ws_ref") == ws["ws_ref"]
             and (
@@ -486,7 +499,7 @@ def join_workspaces_to_sessions(workspaces, live_sessions):
                     and str(s.get("workspace_id") or "").lower() == str(ws["workspace_id"]).lower()
                 )
             )
-        ]
+        ))
 
 
 def tag_cron_workers(live_sessions):
@@ -498,7 +511,7 @@ def tag_cron_workers(live_sessions):
         if ref:
             cron_ws_refs.add(ref)
     cron_cwds = {str(HOME / ".architect")}
-    for sid, sess in live_sessions.items():
+    for sess in live_sessions.values():
         ws_ref = sess.get("ws_ref")
         cwd = sess.get("cwd") or ""
         sess["is_cron"] = (
@@ -512,8 +525,10 @@ def merge_session_context(live_sessions):
     (maintained event-driven by the watcher)."""
     ctx = load_json(SESSION_CTX, {})
     by_sess = ctx.get("by_session") or {}
-    for sid, sess in live_sessions.items():
+    for sess in live_sessions.values():
+        sid = sess["session_id"]
         sess["context_status"] = "unknown"
+        sess["pending_tool_use"] = None
         sess["context_built_at"] = (ctx.get("_meta") or {}).get("built_at")
         c = by_sess.get(sid)
         if c:
@@ -534,6 +549,8 @@ def merge_session_context(live_sessions):
             sess["queue_pending"] = c.get("queue_pending", 0)
             sess["user_unanswered"] = c.get("user_unanswered", False)
             sess["recent_turns"] = c.get("recent_turns", [])
+            pending = c.get("pending_tool_use")
+            sess["pending_tool_use"] = pending if isinstance(pending, bool) else None
             if sess.get("identity_status") == "verified":
                 sess["context_status"] = "verified"
 
@@ -546,17 +563,17 @@ def normalize_provider(provider):
 def merge_first_recorded(live_sessions, now):
     """Join recorded starts by workspace UUID, provider, and full session ID."""
     targets = {}
-    for sid, session in live_sessions.items():
+    for session in live_sessions.values():
         session["first_recorded_at"] = None
         if session.get("identity_status") != "verified":
             continue
         key = (
             str(session.get("workspace_id") or "").lower(),
             normalize_provider(session.get("provider")),
-            sid,
+            session["session_id"],
         )
         if all(key):
-            targets[key] = session
+            targets.setdefault(key, []).append(session)
     if not targets:
         return
     first = {}
@@ -587,7 +604,8 @@ def merge_first_recorded(live_sessions, now):
         return
     for key, timestamp in first.items():
         recorded = datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(microsecond=0)
-        targets[key]["first_recorded_at"] = iso(recorded)
+        for session in targets[key]:
+            session["first_recorded_at"] = iso(recorded)
 
 
 def compute_session_age(sess, now):
@@ -740,7 +758,7 @@ def build():
     merge_first_recorded(live_sessions, now)
 
     # Compute per-session activity age and bucket.
-    for sid, sess in live_sessions.items():
+    for sess in live_sessions.values():
         age_sec, last_ts = compute_session_age(sess, now)
         sess["last_turn_age_sec"] = age_sec
         sess["last_turn_ts"] = last_ts

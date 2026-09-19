@@ -13,6 +13,9 @@ entries — directory-level kqueue events tell us *something* changed but
 not what, so we re-list active transcripts when stat() suggests change).
 
 Cache schema matches build-session-context.py (drop-in replacement).
+pending_tool_use is true for observed unmatched tool calls, false only when
+complete session history proves none remain, and null for incomplete evidence.
+This field describes tool calls, not whether the session is idle.
 
 Usage:
   session-context-watcher.py [--daemon]   long-lived watcher (default)
@@ -215,7 +218,9 @@ class TranscriptState:
     """Per-file incremental parser state."""
     __slots__ = ("path", "cwd", "session_id", "pos", "turns", "queue_pending",
                  "last_user", "last_assistant", "mtime", "pid", "is_cron",
-                 "cron_label", "tab_id", "provider")
+                 "cron_label", "tab_id", "provider", "pending_tools",
+                 "tool_history_complete", "tool_read_started", "tool_partial_line",
+                 "file_identity", "tool_scan_from_start")
 
     def __init__(self, path, cwd, pid=None, is_cron=False, cron_label=None,
                  tab_id=None, provider="claude"):
@@ -233,62 +238,141 @@ class TranscriptState:
         self.cron_label = cron_label
         self.tab_id = tab_id
         self.provider = provider
+        self.pending_tools = set()
+        self.tool_history_complete = False
+        self.tool_read_started = False
+        self.tool_partial_line = False
+        self.file_identity = None
+        self.tool_scan_from_start = None
+
+    def pending_tool_use(self):
+        if self.tool_partial_line:
+            return None
+        if self.pending_tools:
+            return True
+        return False if self.tool_history_complete else None
+
+    def invalidate_tool_history(self):
+        self.pending_tools.clear()
+        self.tool_history_complete = False
+
+    def track_tools(self, record, role, first_record):
+        if first_record and (
+                record.get("type") == "session_start"
+                or (role in ("user", "assistant")
+                    and "parentUuid" in record and record["parentUuid"] is None)):
+            self.tool_history_complete = True
+        if role not in ("user", "assistant"):
+            return
+        message = record.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            return
+        if not isinstance(content, list):
+            self.invalidate_tool_history()
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                self.invalidate_tool_history()
+                continue
+            kind = block.get("type")
+            if kind not in ("tool_use", "tool_result"):
+                continue
+            key = "id" if kind == "tool_use" else "tool_use_id"
+            tool_id = block.get(key)
+            expected_role = "assistant" if kind == "tool_use" else "user"
+            if role != expected_role or not isinstance(tool_id, str) or not tool_id:
+                self.invalidate_tool_history()
+            elif kind == "tool_use":
+                self.pending_tools.add(tool_id)
+            else:
+                self.pending_tools.discard(tool_id)
+
+    def consume_line(self, line):
+        if not line.strip():
+            return False
+        try:
+            record = json.loads(line)
+        except (ValueError, UnicodeError):
+            self.invalidate_tool_history()
+            self.tool_read_started = True
+            return False
+        if not isinstance(record, dict):
+            self.invalidate_tool_history()
+            self.tool_read_started = True
+            return False
+        kind = record.get("type")
+        if kind == "queue-operation":
+            self.queue_pending += 1
+            return False
+        role = agent_session.record_role(record)
+        first_record = self.tool_scan_from_start and not self.tool_read_started
+        if kind != "file-history-snapshot":
+            self.tool_read_started = True
+        self.track_tools(record, role, first_record)
+        if role not in ("user", "assistant"):
+            return False
+        message = record.get("message", {})
+        text = text_from_message(message)
+        if not text:
+            return False
+        entry = {"role": role, "ts": record.get("timestamp") or record.get("ts"),
+                 "text": truncate(text)}
+        self.turns.append(entry)
+        if len(self.turns) > TURNS_PER_SESSION * 4 + 1:
+            self.turns = self.turns[-(TURNS_PER_SESSION * 4 + 1):]
+        if role == "user":
+            self.last_user = entry
+            self.queue_pending = 0
+        else:
+            self.last_assistant = entry
+        return True
 
     def read_new(self):
-        """Read bytes since self.pos, parse JSONL turns, update state."""
+        """Scan full history once, then only appended complete JSONL records."""
+        pending_before = self.pending_tool_use()
         try:
             st = self.path.stat()
         except FileNotFoundError:
-            return False
+            self.invalidate_tool_history()
+            return pending_before is not None
         self.mtime = st.st_mtime
-        if st.st_size < self.pos:
+        identity = (st.st_dev, st.st_ino)
+        if st.st_size < self.pos or (
+                self.file_identity is not None and identity != self.file_identity):
             # File truncated/rotated — start over.
             self.pos = 0
             self.turns.clear()
             self.queue_pending = 0
             self.last_user = None
             self.last_assistant = None
+            self.invalidate_tool_history()
+            self.tool_read_started = False
+            self.tool_partial_line = False
+            self.tool_scan_from_start = None
+        self.file_identity = identity
         if st.st_size == self.pos:
-            return False
+            return self.pending_tool_use() is not pending_before
+        changed = False
         try:
             with open(self.path, "rb") as f:
                 f.seek(self.pos)
-                data = f.read().decode("utf-8", errors="replace")
-                self.pos = f.tell()
+                if self.tool_scan_from_start is None:
+                    self.tool_scan_from_start = self.pos == 0
+                self.tool_partial_line = False
+                while line := f.readline():
+                    if not line.endswith(b"\n"):
+                        self.tool_partial_line = True
+                        break
+                    self.pos = f.tell()
+                    changed = self.consume_line(line) or changed
         except OSError as e:
             log(f"read {self.path.name}: {e}", "warn")
-            return False
-        changed = False
-        for line in data.splitlines():
-            if not line.strip():
-                continue
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-            t = d.get("type")
-            if t == "queue-operation":
-                self.queue_pending += 1
-                continue
-            role = agent_session.record_role(d)
-            if role not in ("user", "assistant"):
-                continue
-            msg = d.get("message", {})
-            ts = d.get("timestamp") or d.get("ts")
-            text = text_from_message(msg)
-            if not text:
-                continue
-            entry = {"role": role, "ts": ts, "text": truncate(text)}
-            self.turns.append(entry)
-            if role == "user":
-                self.last_user = entry
-                self.queue_pending = 0  # processed
-            elif role == "assistant":
-                self.last_assistant = entry
-            changed = True
+            self.invalidate_tool_history()
+            return pending_before is not None
         if len(self.turns) > TURNS_PER_SESSION * 4:
             self.turns = self.turns[-TURNS_PER_SESSION * 2:]
-        return changed
+        return changed or self.pending_tool_use() is not pending_before
 
     def to_dict(self, now):
         recent = self.turns[-TURNS_PER_SESSION:]
@@ -310,6 +394,7 @@ class TranscriptState:
             "last_assistant": self.last_assistant,
             "user_unanswered": user_unanswered,
             "queue_pending": self.queue_pending,
+            "pending_tool_use": self.pending_tool_use(),
             "recent_turns": recent,
         }
 

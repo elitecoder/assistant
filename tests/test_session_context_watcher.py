@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -333,6 +334,242 @@ def _user_line(text, ts="2026-06-09T10:00:00Z"):
 def _assistant_line(text, ts="2026-06-09T10:00:05Z"):
     return json.dumps({"type": "assistant", "timestamp": ts,
                        "message": {"role": "assistant", "content": text}})
+
+
+def _tool_turn(role, content, provider="claude", root=False):
+    record = {"type": "message" if provider == "droid" else role,
+              "message": {"role": role, "content": content}}
+    if root:
+        record["parentUuid"] = None
+    return json.dumps(record) + "\n"
+
+
+def _append_tool_turn(path, role, content, provider="claude"):
+    with path.open("a") as stream:
+        stream.write(_tool_turn(role, content, provider))
+
+
+@pytest.mark.parametrize("provider", ["claude", "droid"])
+def test_pending_tools_mixed_text_parallel_and_matching_results(tmp_path, provider):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(_tool_turn("user", "Start.", provider, root=True))
+    state = scw.TranscriptState(path, "/cwd", provider=provider)
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+    _append_tool_turn(path, "assistant", [
+        {"type": "text", "text": "Running checks. " * 100},
+        {"type": "tool_use", "id": "a", "name": "Bash"},
+        {"type": "tool_use", "id": "b", "name": "Bash"},
+    ], provider)
+    state.read_new()
+    assert "[tool_use:" not in state.last_assistant["text"]
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    for tool_id in ("unrelated", "a"):
+        _append_tool_turn(path, "user", [
+            {"type": "tool_result", "tool_use_id": tool_id, "content": "done"},
+        ], provider)
+        state.read_new()
+        assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    _append_tool_turn(path, "user", [
+        {"type": "tool_result", "tool_use_id": "b", "is_error": True, "content": "failed"},
+    ], provider)
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+
+
+def test_pending_tools_survive_display_window_trimming(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(_tool_turn("user", "Start.", root=True)
+                    + _tool_turn("assistant", [{"type": "tool_use", "id": "a", "name": "Bash"}])
+                    + "".join(_assistant_line("Still working.") + "\n" for _ in range(40)))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+
+
+def test_pending_tools_partial_lines_recover_without_losing_results(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(_tool_turn("user", "Start.", root=True)
+                    + _tool_turn("assistant", [{"type": "tool_use", "id": "a", "name": "Bash"}]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    result = _tool_turn("user", [{"type": "tool_result", "tool_use_id": "a"}])
+    with path.open("a") as stream:
+        stream.write(result[:20])
+    assert state.read_new() is True
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+    with path.open("a") as stream:
+        stream.write(result[20:])
+    assert state.read_new() is True
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+
+
+@pytest.mark.parametrize("prefix", ["", "{broken json\n"])
+def test_pending_tools_tail_or_corrupt_history_never_claims_no_pending(tmp_path, prefix):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(prefix + _assistant_line("Wrapping up.") + "\n")
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+    _append_tool_turn(path, "assistant", [{"type": "tool_use", "id": "a", "name": "Bash"}])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    _append_tool_turn(path, "user", [{"type": "tool_result", "tool_use_id": "a"}])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+
+
+@pytest.mark.parametrize("block", [
+    {"type": "tool_use", "name": "Bash"},
+    {"type": "tool_use", "id": ""},
+    {"type": "tool_result"},
+])
+def test_pending_tools_missing_identifiers_remain_unknown(tmp_path, block):
+    path = tmp_path / "tools.jsonl"
+    role = "assistant" if block["type"] == "tool_use" else "user"
+    path.write_text(_tool_turn("user", "Start.", root=True) + _tool_turn(role, [block]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+
+
+def test_pending_tools_reading_from_offset_does_not_assume_complete_history(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    prefix = _tool_turn("assistant", [{"type": "tool_use", "id": "a", "name": "Bash"}])
+    path.write_text(prefix + _tool_turn("assistant", "Summary.", root=True))
+    state = scw.TranscriptState(path, "/cwd")
+    state.pos = len(prefix.encode())
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+
+
+def test_pending_tools_session_start_establishes_complete_droid_history(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(json.dumps({"type": "session_start", "id": "tools"}) + "\n"
+                    + _tool_turn("assistant", "Ready.", provider="droid"))
+    state = scw.TranscriptState(path, "/cwd", provider="droid")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+
+
+def test_pending_tools_corruption_after_known_call_loses_certainty(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(_tool_turn("user", "Start.", root=True)
+                    + _tool_turn("assistant", [{"type": "tool_use", "id": "a", "name": "Bash"}]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    with path.open("a") as stream:
+        stream.write("{broken\n")
+    assert state.read_new() is True
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+
+
+def test_pending_tools_partial_first_record_and_rotation_remain_unknown(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    record = _tool_turn("assistant", [{"type": "tool_use", "id": "a", "name": "Bash"}])
+    path.write_text(record[:10])
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+    with path.open("a") as stream:
+        stream.write(record[10:])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    path.write_text("")
+    assert state.read_new() is True
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+
+
+def test_pending_tools_read_failure_loses_certainty(tmp_path, tmp_home, monkeypatch):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(_tool_turn("user", "Start.", root=True))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    _append_tool_turn(path, "assistant", "More output.")
+    real_open = open
+
+    def fail_transcript_read(filename, *args, **kwargs):
+        if filename == path:
+            raise OSError("Cannot read transcript.")
+        return real_open(filename, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fail_transcript_read)
+    assert state.read_new() is True
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+
+
+def test_pending_tools_full_history_scan_is_streamed_then_incremental(tmp_path, monkeypatch):
+    path = tmp_path / "long-session.jsonl"
+    path.write_text(
+        json.dumps({"type": "file-history-snapshot", "snapshot": {}}) + "\n"
+        + _tool_turn("user", "Start.", root=True)
+        + _tool_turn("assistant", [{"type": "tool_use", "id": "old", "name": "Bash"}])
+        + "".join(_assistant_line("Progress. " * 150) + "\n" for _ in range(200))
+        + _tool_turn("user", [{"type": "tool_result", "tool_use_id": "old"}]))
+    assert path.stat().st_size > 131072
+    real_open = open
+    readers = []
+
+    def tracked_open(filename, *args, **kwargs):
+        stream = real_open(filename, *args, **kwargs)
+        if filename != path or args != ("rb",):
+            return stream
+        reader = MagicMock(wraps=stream)
+        reader.__enter__.return_value = reader
+        reader.__exit__.side_effect = lambda *_: stream.close()
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr("builtins.open", tracked_open)
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+    assert len(state.turns) <= scw.TURNS_PER_SESSION * 2
+    readers[0].read.assert_not_called()
+    assert readers[0].readline.call_count > 200
+    offset = state.pos
+    _append_tool_turn(path, "assistant", [{"type": "tool_use", "id": "new", "name": "Bash"}])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    readers[1].seek.assert_called_once_with(offset)
+    assert readers[1].readline.call_count == 2
+    _append_tool_turn(path, "user", [{"type": "tool_result", "tool_use_id": "new"}])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+    assert readers[2].readline.call_count == 2
+    assert state.read_new() is False
+    assert len(readers) == 3
+
+
+def test_pending_tools_root_after_incremental_file_metadata_is_known(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(json.dumps({"type": "file-history-snapshot"}) + "\n")
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+    with path.open("a") as stream:
+        stream.write(_tool_turn("user", "Start.", root=True))
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+
+
+def test_pending_tools_replacement_and_truncation_reset_history(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(_tool_turn("user", "Start.", root=True))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text(
+        _tool_turn("assistant", [{"type": "tool_use", "id": "new", "name": "Bash"}])
+        + _assistant_line("Still running. " * 100) + "\n")
+    assert replacement.stat().st_size > state.pos
+    replacement.replace(path)
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    path.write_text(_assistant_line("A partial history.") + "\n")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
 
 
 def test_read_new_missing_file_returns_false(tmp_path):

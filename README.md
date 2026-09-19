@@ -203,8 +203,10 @@ Saved context must match the current workspace and session identities.
 Missing or unsupported session bindings stay unknown instead of borrowing another
 session's notes. **First recorded** means the earliest matching start in your
 local session history, not the session's original creation date. Pending task
-dates come from their creation records. `/back-off` saves the current workspace
-identity so the overview can safely show it as **Parked**.
+dates come from their creation records. The updated `/back-off` skill saves the
+workspace identity so the overview can confirm **Parked**. If you run the dashboard
+from a separate checkout, use its displayed confirmation command for older pause
+records; your globally installed skill might still use the older version.
 
 ## Entry points
 
