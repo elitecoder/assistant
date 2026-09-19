@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Add approval-bound backlog cleanup with record fingerprints, backups, and a
+  private audit receipt that cannot trigger outgoing notification broadcasts.
 - Add an attention overview with compact task cards, expandable return notes,
   and reminders to finish older pending work before starting another task.
 

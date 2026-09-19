@@ -17,9 +17,10 @@ Dedup is structural: a decision id is derived from
 the same event can never enqueue twice. open_decision() checks the folded log
 before appending and returns the existing record instead.
 
-Every status transition is ledgered to the actions ledger as
+Ordinary status transitions are ledgered to the actions ledger as
 ``decision:<from>-><to>`` (design section 3), so the audit trail the rest of
-the fleet uses covers decisions too.
+the fleet uses covers decisions too. Approved backlog cleanup uses a private
+batch receipt instead, preventing the communications daemon from broadcasting it.
 
 Paths are computed per-call (not module constants) so tests that point $HOME
 at a tmp dir see fresh paths even when this module stays cached in
@@ -32,6 +33,8 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -455,6 +458,122 @@ def transition(dec_id: str, to_status: str, *, via: str, note: str | None = None
                     + (f": {note[:120]}" if note else ""),
     })
     return record, None
+
+
+def record_fingerprint(record: dict) -> str:
+    encoded = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def expire_selected(changes: list[dict], *, approval_id: str, backup_dir: Path,
+                    now: float | None = None) -> dict:
+    """Expire an explicitly approved, unchanged set without executing its actions.
+
+    Each change supplies id, fingerprint, and note. A changed record aborts the
+    entire batch before writes. History and the prior materialized view are
+    backed up before an atomic append preserving existing history. The batch receipt
+    stays private: the shared actions ledger would broadcast every expiry.
+    """
+    if not isinstance(changes, list) or not changes or not isinstance(approval_id, str) or not approval_id:
+        raise ValueError("a nonempty approved batch is required")
+    for change in changes:
+        if not isinstance(change, dict) or any(
+                not isinstance(change.get(key), str) or not change[key].strip()
+                for key in ("id", "fingerprint", "note")):
+            raise ValueError("each decision needs an ID, fingerprint, and evidence note")
+    ids = [change["id"] for change in changes]
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate decision IDs in the approved batch")
+    now = time.time() if now is None else now
+    via = f"backlog-recovery:{approval_id}"
+    rows = []
+    already_expired = []
+    receipt_path = backup_dir / "result.json"
+    with _writer_lock():
+        path = decisions_path()
+        raw_bytes = path.read_bytes()
+        raw = raw_bytes.decode("utf-8")
+        records = read_log(path)
+        if len(records) != sum(bool(line.strip()) for line in raw.splitlines()):
+            raise ValueError("decision history contains unreadable records; refusing cleanup")
+        current = fold(records)
+        manifest = backup_dir / "approval.json"
+        if backup_dir.exists():
+            previous = json.loads(manifest.read_text())
+            if previous.get("approval_id") != approval_id or previous.get("changes") != changes:
+                raise ValueError("backup directory belongs to a different approval")
+        for change in changes:
+            latest = current.get(change["id"])
+            if latest is None:
+                raise ValueError(f"decision no longer exists: {change['id']}")
+            resolution = latest.get("resolution") or {}
+            if (latest.get("status") == "expired" and resolution.get("via") == via
+                    and resolution.get("source_fingerprint") == change["fingerprint"]):
+                if resolution.get("receipt_path") != str(receipt_path):
+                    raise ValueError("retry must use the original backup directory")
+                already_expired.append(latest["id"])
+                continue
+            if latest.get("status") != OPEN or record_fingerprint(latest) != change["fingerprint"]:
+                raise ValueError(f"decision changed since approval: {change['id']}")
+            if latest.get("epoch", 0) > now:
+                raise ValueError(f"decision timestamp is in the future: {change['id']}")
+            record = dict(latest)
+            record.update({
+                "ts": utc_iso(now), "epoch": int(now), "status": "expired",
+                "created_epoch": latest.get("created_epoch", latest.get("epoch")),
+                "resolution": {
+                    "ts": utc_iso(now), "via": via,
+                    "receipt_path": str(receipt_path),
+                    "source_fingerprint": change["fingerprint"],
+                    "note": change["note"][:500],
+                },
+            })
+            rows.append(record)
+        if rows:
+            if not backup_dir.exists():
+                backup_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+                for source in (path, path.with_name(path.name + ".1"), queue_path()):
+                    if source.exists():
+                        target = backup_dir / source.name
+                        shutil.copy2(source, target)
+                        target.chmod(0o600)
+                manifest.write_text(json.dumps({
+                    "approval_id": approval_id, "ts": utc_iso(now),
+                    "changes": changes,
+                    "source_log_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                }, indent=2))
+                manifest.chmod(0o600)
+            staged_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                        mode="wb", dir=path.parent, prefix="decisions.recovery-",
+                        suffix=".tmp", delete=False) as staged:
+                    staged_path = Path(staged.name)
+                    staged.write(raw_bytes)
+                    if raw_bytes and not raw_bytes.endswith(b"\n"):
+                        staged.write(b"\n")
+                    for record in rows:
+                        staged.write((json.dumps(record, ensure_ascii=False) + "\n").encode())
+                    staged.flush()
+                    os.fsync(staged.fileno())
+                os.replace(staged_path, path)
+            finally:
+                if staged_path is not None and staged_path.exists():
+                    staged_path.unlink()
+            _write_queue(fold(records + rows))
+        else:
+            _write_queue(current)
+        result = {
+            "approval_id": approval_id, "ts": utc_iso(now),
+            "expired": [record["id"] for record in rows],
+            "already_expired": already_expired,
+            "backup_dir": str(backup_dir), "outbound_notifications": False,
+        }
+        temporary_receipt = receipt_path.with_suffix(".json.tmp")
+        temporary_receipt.write_text(json.dumps(result, indent=2))
+        temporary_receipt.chmod(0o600)
+        os.replace(temporary_receipt, receipt_path)
+    return result
 
 
 def annotate_triage(dec_id: str, suggested_lane: str, rationale: str,
