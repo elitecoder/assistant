@@ -185,11 +185,26 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 
 Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/todo-server.py`).
 
-- **Brief tab** — your morning: open decisions ranked by a deterministic score, each with a one-tap **accept / reject / snooze / edit / wrong-lane** button; plus **handled-overnight** receipts (auto-done actions with their rule id, goal work staged/dispatched with workspace links, verified fleet progress), an **FYI digest** grouped by source, and a **health** row (connector staleness, token expiry, interrupts used/denied, $/day). The dashboard opens **on this tab by default** — the morning brief is the first thing you see.
+- **Overview tab** — your default view groups open workspaces into **Needs you**, **Working**, **Ready to close**, and **Parked**. Each card shows one next action. Expand it for the return note and workspace link. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
+- **Brief tab** — your morning: open decisions ranked by a deterministic score, each with a one-tap **accept / reject / snooze / edit / wrong-lane** button; plus **handled-overnight** receipts (auto-done actions with their rule id, goal work staged/dispatched with workspace links, verified fleet progress), an **FYI digest** grouped by source, and a **health** row (connector staleness, token expiry, interrupts used/denied, $/day).
 - **Connections tab** — every connector as **Connected** / **Available, not connected** / **Needs attention**, with the how-to-connect hint inline.
 - **`/goal` skill** — add / list / rerank / pause goals (`/goal add "…" --outcome "…"`). Goals feed the planner and boost decision ranking. Automation can only *propose* goal changes; only you (this skill) edit the store in place.
 - **One-tap accept** on a decision routes through the todo-server, executes the recommended action class (draft-only for any external send in this tree), and ledgers the transition. Reject / snooze do the same.
 - **Nothing pushes or notifies you.** The system is pull-by-design: you go look. Neglected decisions degrade to digest (and mine policy proposals) — they don't nag. A suppressed page is auditable in the brief's health row, never delivered.
+
+The overview shows when its source snapshot was checked, not just when the page rendered.
+When the snapshot is over ten minutes old or has no valid timestamp, completion
+suggestions disappear and workspace-opening controls are disabled. A long session
+isn't stale merely because it's old. Missing or outdated context appears as unknown.
+The page checks for updates every 15 seconds without reloading while you read expanded
+details. Existing tabs and their controls remain available.
+
+Saved context must match the current workspace and session identities.
+Missing or unsupported session bindings stay unknown instead of borrowing another
+session's notes. **First recorded** means the earliest matching start in your
+local session history, not the session's original creation date. Pending task
+dates come from their creation records. `/back-off` saves the current workspace
+identity so the overview can safely show it as **Parked**.
 
 ## Entry points
 

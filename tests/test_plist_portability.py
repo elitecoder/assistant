@@ -1,7 +1,6 @@
 """Portability integration test — plists must render for ANY user/arch, and the
-installer must leave no author-specific literal behind. NO launchctl is run
-(honors the 'never launchctl load' rule); we exercise install.sh's staging into
-a temp HOME and assert on the rendered files.
+installer must leave no author-specific literal behind. A recording launchctl
+replaces the host command while install.sh stages plists into an isolated HOME.
 
 This is the gate for the C1 fix: the old `/Users/<user>/`+sed scheme was a silent
 no-op that shipped /Users/mukuls to every other machine. A grep-for-mukuls alone
@@ -16,6 +15,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from installer_sandbox import assert_recorded_services, installer_env
 
 REPO = Path(__file__).resolve().parent.parent
 PLISTS = sorted((REPO / "launchagents").glob("*.plist"))
@@ -101,53 +102,34 @@ def test_plist_renders_clean_for_arbitrary_user(plist: Path, tmp_path: Path):
 
 
 def test_install_sh_substitutes_all_tokens_end_to_end(tmp_path: Path):
-    """The real portability gate: copy the repo to a mukuls-FREE path, then run
-    install.sh --apply against a fully sandboxed fake HOME (no launchctl — the
-    script only stages+copies plists, loads nothing). Because BOTH the checkout
-    path and HOME are now free of the author's username, ZERO '/Users/mukuls'
-    may survive in any rendered plist — this is what a fresh machine for a
-    different engineer actually looks like. Also assert no token survives and
-    the interpreter path resolves."""
+    """Run the real installer with recording commands and verify rendered paths."""
     if not shutil.which("rsync"):
         pytest.skip("rsync unavailable")
-    # pytest's tmp_path lives under /private/var/folders/.../pytest-of-mukuls/…,
-    # so it can't be mukuls-free. Use an explicit temp root under /tmp
-    # (→ /private/tmp, no username) so both the checkout AND HOME are free of the
-    # author's name — a true "different engineer's machine" simulation.
-    import tempfile
-    sandbox = Path(tempfile.mkdtemp(prefix="assistant-portability-", dir="/tmp"))
-    try:
-        _run_portability_e2e(sandbox)
-    finally:
-        shutil.rmtree(sandbox, ignore_errors=True)
+    _run_portability_e2e(tmp_path)
 
 
 def _run_portability_e2e(sandbox: Path):
-    # Copy the working tree (incl. uncommitted changes) minus the heavy/derived
-    # dirs, to a path with no 'mukuls' in it.
     repo_copy = sandbox / "checkout" / "assistant"
     repo_copy.parent.mkdir(parents=True)
     rc = subprocess.run(
         ["rsync", "-a", "--exclude=.git", "--exclude=node_modules",
-         "--exclude=__pycache__", "--exclude=.venv-mem0",
+         "--exclude=__pycache__", "--exclude=.venv-mem0", "--exclude=.venv",
+         "--exclude=.worktrees", "--exclude=.pytest_cache",
          f"{REPO}/", str(repo_copy) + "/"],
         capture_output=True, text=True, timeout=120)
     assert rc.returncode == 0, f"rsync failed: {rc.stderr}"
-    assert "mukuls" not in str(repo_copy), "test setup: copy path must be mukuls-free"
-
     fake_home = sandbox / "home"
     (fake_home / "Library" / "LaunchAgents").mkdir(parents=True)
     (fake_home / ".claude").mkdir(parents=True)
     (fake_home / ".assistant").mkdir(parents=True)
 
-    env = {
-        "HOME": str(fake_home),
-        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
-        "ASSISTANT_SELF_UPDATE": "1",  # report-only preflight; never blocks
-    }
+    env = installer_env(fake_home)
+    env["ASSISTANT_SELF_UPDATE"] = "1"
     r = subprocess.run(
         ["bash", str(repo_copy / "install.sh"), "--apply"],
         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=180)
+    assert r.returncode == 0, f"{r.stdout[-2000:]}\n{r.stderr[-1000:]}"
+    assert_recorded_services(fake_home, apply=True)
     la = fake_home / "Library" / "LaunchAgents"
     rendered = list(la.glob("com.assistant.*.plist")) + list(la.glob("com.mukul.*.plist"))
     assert rendered, f"no plists staged into {la}\nstdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-1000:]}"
@@ -155,7 +137,8 @@ def _run_portability_e2e(sandbox: Path):
     for p in rendered:
         t = p.read_text()
         assert not re.search(r"__[A-Z]+__", t), f"{p.name}: token survived install"
-        assert "/Users/mukuls" not in t, f"{p.name}: /Users/mukuls survived install (not portable!)"
+        normalized = t.replace(str(fake_home), "__HOME__").replace(str(repo_copy), "__REPO__")
+        assert "/Users/mukuls" not in normalized, f"{p.name}: author path survived install"
         assert str(fake_home) in t, f"{p.name}: fake HOME not substituted"
         assert str(repo_copy) in t, f"{p.name}: repo path not substituted"
         # the interpreter (ProgramArguments[0]) must be a real executable

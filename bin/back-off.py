@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 PATH = Path.home() / ".assistant/back-off.json"
@@ -46,11 +47,22 @@ def cmd_add(args) -> int:
     if not args.ws_ref.startswith("workspace:"):
         print(f"ws_ref must look like 'workspace:N', got {args.ws_ref!r}", file=sys.stderr)
         return 2
+    workspace_id = getattr(args, "workspace_id", None)
+    if workspace_id:
+        try:
+            workspace_id = str(uuid.UUID(workspace_id))
+        except ValueError:
+            print("workspace_id must be a UUID from cmux identify", file=sys.stderr)
+            return 2
     d = load()
     for w in d["workspaces"]:
         if w.get("ws_ref") == args.ws_ref:
             w["reason"] = args.reason
             w["added_ts"] = int(time.time())
+            if workspace_id:
+                w["workspace_id"] = workspace_id
+            else:
+                w.pop("workspace_id", None)
             save(d)
             print(f"updated {args.ws_ref}: {args.reason}")
             return 0
@@ -58,6 +70,7 @@ def cmd_add(args) -> int:
         "ws_ref": args.ws_ref,
         "reason": args.reason,
         "added_ts": int(time.time()),
+        **({"workspace_id": workspace_id} if workspace_id else {}),
     })
     save(d)
     print(f"added {args.ws_ref}: {args.reason}")
@@ -94,6 +107,7 @@ def main() -> int:
     a = sub.add_parser("add")
     a.add_argument("ws_ref")
     a.add_argument("reason", nargs="?", default="(no reason given)")
+    a.add_argument("--workspace-id", help="Observed cmux workspace UUID for the dashboard")
     a.set_defaults(func=cmd_add)
     r = sub.add_parser("remove")
     r.add_argument("ws_ref")

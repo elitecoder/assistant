@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 (`__version__`); keep the two in sync when bumping.
 
+## [Unreleased]
+
+### Added
+- Add an attention overview with compact task cards, expandable return notes,
+  and reminders to finish older pending work before starting another task.
+
+### Fixed
+- Show snapshot age independently from page age. Suppress completion suggestions
+  when data is outdated, and preserve expanded context while you read.
+- Bind context and workspace-opening requests to stable identities. Distinguish
+  failed observations from evidence that work is progressing.
+- Isolate installer tests from host service registrations and terminal hooks.
+
 ## [0.7.4] - 2026-09-16
 
 ### Fixed

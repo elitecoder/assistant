@@ -15,6 +15,13 @@ Output JSON to stdout:
     "transcript_source": "screen_session_id" | "registry_live_pid" | null,
     "session_id8": "<8hex>" | null,
     "agent_surface": "surface:N" | null,
+    "observation_identity": {
+      "ws_ref": "workspace:N",
+      "workspace_id": "<UUID>" | null,
+      "observed_at": <epoch seconds>,
+      "observed_sessions": [{"surface_id": "<UUID>", "provider": "claude|droid",
+                             "session_id": "<full session ID>"}]
+    },
     "last_turn_age_sec": <int|null>,
     "agent_status": "working" | "idle",
     "cwd_dirty": <bool>,
@@ -403,8 +410,82 @@ def resume_binding_for_surface(surface_ref: str, ws_ref: str) -> dict | None:
         return None
     sid = binding.get("checkpointId") or binding.get("checkpoint_id")
     kind = str(binding.get("kind") or "").lower()
+    if kind not in {"claude", "factory", "droid"}:
+        return None
     agent = "droid" if kind in {"factory", "droid"} else "claude"
     return {"session_id": str(sid), "agent": agent}
+
+
+def workspace_identity_snapshot(ws_ref: str) -> dict | None:
+    """Read workspace UUIDs and authoritative surface bindings before observation."""
+    result = _cmux(["--id-format", "both", "tree", "--all", "--json"])
+    if not result or result.returncode:
+        return None
+    try:
+        tree = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(tree, dict):
+        return None
+    matches = [
+        ws for window in tree.get("windows", []) or []
+        for ws in window.get("workspaces", []) or []
+        if ws.get("ref") == ws_ref
+    ]
+    if len(matches) != 1:
+        return None
+    ws = matches[0]
+    workspace_id = ws.get("id") or ws.get("workspace_id") or ws.get("uuid")
+    if not workspace_id:
+        return None
+    surfaces = {}
+    for pane in ws.get("panes", []) or []:
+        for surface in pane.get("surfaces", []) or []:
+            surface_id = surface.get("id") or surface.get("surface_id") or surface.get("uuid")
+            surface_ref = surface.get("ref")
+            if surface_id and surface_ref and surface.get("type") == "terminal":
+                surfaces[surface_ref] = {
+                    "surface_id": surface_id,
+                    "binding": resume_binding_for_surface(surface_ref, ws_ref),
+                }
+    return {"workspace_id": workspace_id, "surfaces": surfaces}
+
+
+def observation_identity(ws_ref: str, before: dict | None,
+                         after: dict | None, resolved: dict, observed_at: float) -> dict:
+    """Bind only the observed pane, rejecting workspace or session changes."""
+    identity = {"ws_ref": ws_ref, "workspace_id": None, "observed_sessions": [],
+                "observed_at": observed_at}
+    if (not before or not after
+            or str(before["workspace_id"]).casefold() != str(after["workspace_id"]).casefold()):
+        return identity
+    surface_ref = resolved.get("agent_surface")
+    first = before["surfaces"].get(surface_ref)
+    last = after["surfaces"].get(surface_ref)
+    if (not first or not last or not first["binding"]
+            or first["binding"] != last["binding"]
+            or str(first["surface_id"]).casefold() != str(last["surface_id"]).casefold()):
+        return identity
+    if str(resolved.get("agent_surface_id") or "").casefold() != str(first["surface_id"]).casefold():
+        return identity
+    binding = first["binding"]
+    sid, provider = binding["session_id"], binding["agent"]
+    if resolved.get("agent_provider") != provider:
+        return identity
+    sid8 = resolved.get("session_id8")
+    if sid8 and not sid.startswith(sid8):
+        return identity
+    transcript = resolved.get("transcript_path")
+    if transcript:
+        root = HOME / (".factory/sessions" if provider == "droid" else ".claude/projects")
+        if (not Path(transcript).is_relative_to(root)
+                or _transcript_internal_sid(transcript) != sid):
+            return identity
+    identity["workspace_id"] = before["workspace_id"]
+    identity["observed_sessions"] = [{
+        "surface_id": first["surface_id"], "provider": provider, "session_id": sid,
+    }]
+    return identity
 
 
 def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
@@ -461,6 +542,7 @@ def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
         "transcript_path": transcript,
         "transcript_source": source,
         "agent_surface": surface_ref,
+        "agent_surface_id": surface_uuid,
         "agent_provider": agent,
     }
 
@@ -560,7 +642,12 @@ def main() -> int:
     # ONLY verified signals (status-bar session id, or a live-pid registry row
     # that agrees with the screen). transcript_path is None when nothing
     # verifies — by design: a wrong transcript is worse than none.
+    observed_at = time.time()
+    identity_before = workspace_identity_snapshot(args.ws_ref)
     resolved = resolve_workspace_screen_and_transcript(args.ws_ref)
+    identity = observation_identity(
+        args.ws_ref, identity_before, workspace_identity_snapshot(args.ws_ref),
+        resolved, observed_at)
     transcript = resolved["transcript_path"]
     age, agent_status = transcript_signals(transcript)
     dirty, unpushed = cwd_state(args.cwd)
@@ -593,6 +680,7 @@ def main() -> int:
         "session_id8": resolved["session_id8"],
         "agent_surface": resolved["agent_surface"],
         "agent_provider": resolved.get("agent_provider"),
+        "observation_identity": identity,
         "last_turn_age_sec": age,
         "agent_status": agent_status,
         "cwd_dirty": dirty,

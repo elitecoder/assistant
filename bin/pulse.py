@@ -1575,7 +1575,8 @@ def chunk(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-def save_summary(ws: dict, verdict: dict) -> None:
+def save_summary(ws: dict, verdict: dict, observation_identity: dict | None = None,
+                 *, observation_complete: bool | None = None) -> None:
     """Persist the verdict via save-ws-summary.py.
 
     The save script synthesizes missing `next` values so malformed Observer
@@ -1587,6 +1588,8 @@ def save_summary(ws: dict, verdict: dict) -> None:
         "--title", ws.get("title") or "",
         "--cwd", ws.get("cwd") or "",
         "--json", json.dumps(verdict),
+        "--observation-json", json.dumps(observation_identity or {}),
+        "--observation-complete", json.dumps(observation_complete),
     ])
     if rc != 0:
         log.error("save-ws-summary %s rc=%d: %s", ws["ref"], rc, err.strip())
@@ -2507,7 +2510,12 @@ def main() -> int:
                 # card-emitting paths — merge/cleanup/nudge sends already ran
                 # when the verdict was first earned and must not repeat.
                 v = carried[ws_ref]
-                save_summary(ws, v)
+                save_summary(ws, v, {
+                    "ws_ref": ws_ref,
+                    "workspace_id": v.get("workspace_id"),
+                    "observed_sessions": v.get("observed_sessions", []),
+                    "observed_at": v.get("observed_at"),
+                }, observation_complete=v.get("observation_complete"))
                 new_verdicts[ws_ref] = v.get("verdict") or "active"
                 card_action = execute_verdict(ws, v, awaiting_input,
                                               carry=True)
@@ -2536,7 +2544,8 @@ def main() -> int:
                                "(timeout or batch error); defaulted to active.",
                     "next": "Assistant will re-observe next pulse.",
                 }
-                save_summary(ws, synth)
+                save_summary(ws, synth, ctx.get("observation_identity"),
+                             observation_complete=False)
                 new_verdicts[ws_ref] = "active"
                 # A synthesized verdict is a failure artifact, not a real
                 # judgment — it must never count as a verdict change (it would
@@ -2565,7 +2574,8 @@ def main() -> int:
             # failure must be retried, never carried forward.
             if ws_ref in obs_hashes:
                 v_for_save["obs_input_hash"] = obs_hashes[ws_ref]
-            save_summary(ws, v_for_save)
+            save_summary(ws, v_for_save, ctx.get("observation_identity"),
+                         observation_complete=True)
             # Effective verdict for metering — mirrors what was just saved
             # (a verdict-less line defaults to active, same as the synth path).
             new_verdicts[ws_ref] = v_for_save.get("verdict") or "active"

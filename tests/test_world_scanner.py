@@ -13,7 +13,7 @@ import importlib.util
 import json
 import os
 import subprocess
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -34,10 +34,11 @@ def load_scanner(home: Path):
 
 
 @pytest.fixture
-def ws(tmp_path):
+def ws(tmp_path, monkeypatch):
     """Fresh module bound to a tmp HOME."""
     home = tmp_path / "home"
     home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     return load_scanner(home)
 
 
@@ -268,7 +269,11 @@ def test_build_workspace_index(ws):
     assert a["index"] == 0
     assert len(a["surfaces"]) == 2
     s0 = a["surfaces"][0]
-    assert s0 == {"ref": "surface:1a", "tty": "ttys001", "type": "terminal", "title": "term"}
+    assert s0 == {
+        "ref": "surface:1a", "surface_id": None, "tty": "ttys001",
+        "type": "terminal", "title": "term", "session_id": None,
+        "provider": None, "identity_status": "unknown", "agent_status": "unknown",
+    }
     # None title coerced to "".
     assert b["title"] == ""
     assert b["surfaces"][0]["title"] == ""
@@ -344,6 +349,360 @@ def test_build_live_sessions_adds_bound_droid_session(ws, monkeypatch):
     assert out[session_id]["provider"] == "droid"
     assert out[session_id]["transcript_path"] == str(transcript)
     assert out[session_id]["ws_ref"] == "workspace:7"
+
+
+def _seed_identity_world(ws, monkeypatch, kinds=("claude", "factory")):
+    now = ws.parse_iso("2026-09-19T09:00:00Z")
+    first = ws.parse_iso("2026-09-01T09:00:00Z")
+    workspaces, records, contexts, starts, calls = [], [], {}, [], []
+    for index, kind in enumerate(kinds, 1):
+        provider = "droid" if kind in {"factory", "droid"} else kind
+        sid = f"session-{index}"
+        workspace_id = f"aaaaaaaa-0000-0000-0000-{index:012d}"
+        surface_id = f"bbbbbbbb-0000-0000-0000-{index:012d}"
+        workspaces.append({
+            "id": workspace_id, "ref": f"workspace:{index}", "title": sid,
+            "panes": [{"surfaces": [{
+                "id": surface_id, "ref": f"surface:{index}",
+                "tty": f"ttys{index:03d}", "type": "terminal", "title": kind,
+            }]}],
+        })
+        records.append({
+            "session_id": sid, "workspace_id": workspace_id,
+            "surface_id": surface_id, "provider": provider,
+        })
+        contexts[sid] = {
+            "session_id": sid, "provider": provider,
+            "last_user": {"text": f"Context for {sid}", "ts": ws.iso(now - timedelta(minutes=1))},
+            "queue_pending": 0, "user_unanswered": True, "recent_turns": [],
+        }
+        starts.append({
+            "event": "start", "ts": first.timestamp(), "session_id": sid,
+            "workspace_id": workspace_id.upper(), "provider": kind,
+        })
+        if kind in {"claude", "factory", "droid"}:
+            root = ".claude/projects" if provider == "claude" else ".factory/sessions"
+            path = ws.HOME / root / "same-cwd" / f"{sid}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n")
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if "tree" in args:
+            return fake_completed(json.dumps({"windows": [{"workspaces": workspaces}]}))
+        if args[1:4] == ["surface", "resume", "show"]:
+            target = args[args.index("--surface") + 1]
+            index = next(
+                i for i, record in enumerate(records, 1)
+                if target in {f"surface:{i}", record["surface_id"]}
+            )
+            kind = kinds[index - 1]
+            binding = None if kind is None else {
+                "kind": kind, "checkpoint_id": f"session-{index}", "cwd": "/work/shared",
+            }
+            return fake_completed(json.dumps({"binding": binding}))
+        if args[:2] == ["ps", "-t"]:
+            index = int(args[2][-3:])
+            return fake_completed(f"{100 + index} {records[index - 1]['provider']}\n")
+        if args[:2] == ["ps", "-p"]:
+            return fake_completed("ttys001\n")
+        raise AssertionError(f"Unexpected external command: {args}")
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    monkeypatch.setattr(ws, "utc_now", lambda: now)
+    monkeypatch.setattr(ws, "read_mem_pct", lambda: 42.0)
+    monkeypatch.setattr(ws, "pid_alive", lambda pid: bool(pid))
+    ws.SESSION_CTX.parent.mkdir(parents=True)
+    ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
+    ledger = ws.HOME / ".cmux-session-ledger.jsonl"
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in starts))
+    return records, contexts, ledger, calls
+
+
+def test_build_identity_keeps_same_cwd_sessions_separate(ws, monkeypatch):
+    records, _, _, calls = _seed_identity_world(ws, monkeypatch)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert any(args[1:4] == ["--id-format", "both", "tree"] for args in calls)
+    binding_calls = [args for args in calls if args[1:4] == ["surface", "resume", "show"]]
+    assert len(binding_calls) == 2
+    for args, expected in zip(binding_calls, records):
+        assert args[args.index("--surface") + 1] == expected["surface_id"]
+        assert args[args.index("--workspace") + 1] == expected["workspace_id"]
+    assert len(world["live_sessions"]) == 2
+    for workspace, session, expected in zip(world["workspaces"], world["live_sessions"], records):
+        assert workspace["workspace_id"] == expected["workspace_id"]
+        assert workspace["surfaces"][0]["surface_id"] == expected["surface_id"]
+        assert workspace["surfaces"][0]["session_id"] == expected["session_id"]
+        assert workspace["surfaces"][0]["identity_status"] == "verified"
+        assert workspace["session_ids"] == [expected["session_id"]]
+        assert session["workspace_id"] == expected["workspace_id"]
+        assert session["surface_id"] == expected["surface_id"]
+        assert session["provider"] == expected["provider"]
+        assert session["context_status"] == "verified"
+        assert session["last_user"]["text"] == f"Context for {expected['session_id']}"
+
+
+def test_build_recycled_ref_rejects_old_registry_identity(ws, monkeypatch):
+    _, contexts, ledger, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    ws.CMUX_REGISTRY.write_text(json.dumps({
+        "old-tab": {
+            "claude_pid": 999, "session_id": "old-session", "ts": 10,
+            "cwd": "/work/shared", "workspace_id": "old-workspace",
+            "surface_id": "old-surface",
+        },
+    }))
+    contexts["old-session"] = {
+        "provider": "claude", "last_user": {"text": "Old task", "ts": "2026-01-01T00:00:00Z"},
+    }
+    ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
+    with ledger.open("a") as f:
+        f.write(json.dumps({
+            "event": "start", "ts": 1, "workspace_id": "old-workspace",
+            "provider": "claude", "session_id": "session-1",
+        }) + "\n")
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == ["session-1"]
+    old = next(s for s in world["live_sessions"] if s["session_id"] == "old-session")
+    assert old.get("ws_ref") is None
+    assert old["identity_status"] == "unknown"
+    assert old["context_status"] == "unknown"
+    assert old["first_recorded_at"] is None
+    current = next(s for s in world["live_sessions"] if s["session_id"] == "session-1")
+    assert current["first_recorded_at"] == "2026-09-01T09:00:00Z"
+
+
+def test_first_recorded_is_not_last_activity(ws, monkeypatch):
+    _, contexts, ledger, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    with ledger.open("a") as f:
+        f.write(json.dumps({
+            "event": "start", "ts": ws.parse_iso("2026-09-18T09:00:00Z").timestamp(),
+            "workspace_id": "aaaaaaaa-0000-0000-0000-000000000001",
+            "provider": "claude", "session_id": "session-1",
+        }) + "\n")
+    for timestamp in ["2026-09-19T08:50:00Z", "2026-09-19T08:59:00Z"]:
+        contexts["session-1"]["last_user"]["ts"] = timestamp
+        ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
+        ws.build()
+        session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
+        assert session["first_recorded_at"] == "2026-09-01T09:00:00Z"
+        assert session["last_turn_ts"] == timestamp
+
+
+def test_context_and_ledger_accept_uuid_casing_differences(ws, monkeypatch):
+    records, contexts, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    contexts["session-1"].update({
+        "workspace_id": records[0]["workspace_id"].upper(),
+        "surface_id": records[0]["surface_id"].upper(),
+    })
+    ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    session = world["live_sessions"][0]
+    assert session["identity_status"] == "verified"
+    assert session["context_status"] == "verified"
+    assert session["first_recorded_at"] == "2026-09-01T09:00:00Z"
+    assert world["workspaces"][0]["session_ids"] == ["session-1"]
+
+
+@pytest.mark.parametrize("kind,provider,root", [
+    ("claude", "claude", ".claude/projects"),
+    ("factory", "droid", ".factory/sessions"),
+    ("droid", "droid", ".factory/sessions"),
+])
+def test_identity_preserves_supported_provider_routes(ws, monkeypatch, kind, provider, root):
+    _seed_identity_world(ws, monkeypatch, (kind,))
+    ws.build()
+    session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
+    assert session["provider"] == provider
+    assert session["transcript_path"] == str(ws.HOME / root / "same-cwd/session-1.jsonl")
+    assert session["identity_status"] == "verified"
+    assert session["context_status"] == "verified"
+    assert session["first_recorded_at"] == "2026-09-01T09:00:00Z"
+
+
+@pytest.mark.parametrize("kind", ["copilot", None])
+def test_unsupported_or_missing_binding_stays_unknown(ws, monkeypatch, kind):
+    _seed_identity_world(ws, monkeypatch, (kind,))
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    surface = world["workspaces"][0]["surfaces"][0]
+    assert surface["surface_id"] == "bbbbbbbb-0000-0000-0000-000000000001"
+    assert surface["session_id"] is None
+    assert surface["provider"] is None
+    assert surface["identity_status"] == "unknown"
+    assert surface["agent_status"] == "unknown"
+    assert world["live_sessions"] == []
+    assert world["workspaces"][0]["session_ids"] == []
+
+
+def test_registry_without_live_binding_is_not_authoritative(ws, monkeypatch):
+    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    monkeypatch.setattr(ws, "surface_resume_binding", lambda *_: None)
+    ws.CMUX_REGISTRY.write_text(json.dumps({
+        "tab": {**records[0], "claude_pid": 101, "ts": 1, "cwd": "/work/shared"},
+    }))
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    session = world["live_sessions"][0]
+    assert session["identity_status"] == "unknown"
+    assert session["context_status"] == "unknown"
+    assert session["first_recorded_at"] is None
+    assert world["workspaces"][0]["session_ids"] == []
+    assert world["workspaces"][0]["surfaces"][0]["session_id"] is None
+
+
+def _seed_current_hook(ws, monkeypatch, *, changes=None, process_change=None, native=None):
+    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    registered = ws.utc_now().timestamp() - 60
+    row = {
+        "session_id": "session-1",
+        "surface_id": records[0]["surface_id"].upper(),
+        "claude_pid": "",
+        "ts": registered,
+        "cwd": "/work/shared",
+    }
+    row.update(changes or {})
+    ws.CMUX_REGISTRY.write_text(json.dumps({records[0]["workspace_id"].upper(): row}))
+    process = {
+        "pid": 101, "pgid": 101, "tpgid": 101,
+        "started": registered - 2, "command": "/Users/fixture/.local/bin/claude",
+    }
+    process.update(process_change or {})
+    original_run = ws.subprocess.run
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[1:4] == ["surface", "resume", "show"]:
+            return fake_completed(json.dumps({"binding": native}))
+        if args[:2] == ["ps", "-t"] and "lstart" in args[-1]:
+            assert kwargs["env"]["TZ"] == "UTC"
+            started = datetime.fromtimestamp(
+                process["started"], tz=timezone.utc,
+            ).strftime("%a %b %d %H:%M:%S %Y")
+            return fake_completed(
+                f"{process['pid']} {process['pgid']} {process['tpgid']} "
+                f"{started} {process['command']}\n"
+            )
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    return calls
+
+
+@pytest.mark.parametrize("recorded_pid", ["", "101"])
+def test_current_session_start_hook_verifies_missing_native_binding(ws, monkeypatch, recorded_pid):
+    calls = _seed_current_hook(ws, monkeypatch, changes={"claude_pid": recorded_pid})
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    session = world["live_sessions"][0]
+    assert session["session_id"] == "session-1"
+    assert session["pid"] == 101
+    assert session["identity_status"] == "verified"
+    assert session["identity_source"] == "session_start_registry"
+    assert session["context_status"] == "verified"
+    assert session["first_recorded_at"] == "2026-09-01T09:00:00Z"
+    assert world["workspaces"][0]["session_ids"] == ["session-1"]
+    assert world["workspaces"][0]["surfaces"][0]["session_id"] == "session-1"
+    assert any(args[:3] == ["ps", "-t", "ttys001"] for args in calls)
+
+
+@pytest.mark.parametrize("changes,process_change", [
+    ({"surface_id": "different-surface"}, {}),
+    ({"workspace_id": "different-workspace"}, {}),
+    ({"claude_pid": "999"}, {}),
+    ({"ts": 1}, {}),
+    ({"ts": "not-a-timestamp"}, {}),
+    ({"provider": "copilot"}, {}),
+    ({}, {"started": datetime.fromisoformat("2026-09-19T08:59:30+00:00").timestamp()}),
+    ({"claude_pid": "101"}, {"started": datetime.fromisoformat("2026-09-19T08:59:30+00:00").timestamp()}),
+    ({}, {"tpgid": 202}),
+    ({}, {"command": "/usr/bin/login"}),
+])
+def test_hook_fallback_rejects_stale_or_mismatched_process(ws, monkeypatch, changes, process_change):
+    _seed_current_hook(ws, monkeypatch, changes=changes, process_change=process_change)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == []
+    assert world["workspaces"][0]["surfaces"][0]["identity_status"] == "unknown"
+    assert not any(s["identity_status"] == "verified" for s in world["live_sessions"])
+
+
+@pytest.mark.parametrize("kind", ["claude", "copilot"])
+def test_native_binding_conflict_never_uses_hook_fallback(ws, monkeypatch, kind):
+    calls = _seed_current_hook(ws, monkeypatch, native={
+        "kind": kind, "checkpoint_id": "different-session", "cwd": "/work/shared",
+    })
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert "session-1" not in world["workspaces"][0]["session_ids"]
+    assert not any("lstart" in args[-1] for args in calls)
+
+
+def test_failed_native_lookup_does_not_fall_back_to_hook(ws, monkeypatch):
+    _seed_current_hook(ws, monkeypatch)
+    original_run = ws.subprocess.run
+
+    def run(args, **kwargs):
+        if args[1:4] == ["surface", "resume", "show"]:
+            return fake_completed(returncode=1)
+        assert "lstart" not in args[-1]
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == []
+    assert world["workspaces"][0]["surfaces"][0]["identity_status"] == "unknown"
+
+
+@pytest.mark.parametrize("override", [
+    {"provider": "droid"},
+    {"session_id": "different-session"},
+    {"session_id": "SESSION-1"},
+    {"workspace_id": "different-workspace"},
+    {"surface_id": "different-surface"},
+])
+def test_context_with_wrong_identity_is_not_attached(ws, monkeypatch, override):
+    _, contexts, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    contexts["session-1"].update(override)
+    ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
+    ws.build()
+    session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
+    assert session["identity_status"] == "verified"
+    assert session["context_status"] == "unknown"
+    assert "last_user" not in session
+
+
+def test_missing_ledger_keeps_first_recorded_unknown(ws, monkeypatch):
+    _seed_identity_world(ws, monkeypatch, ("claude",))
+    monkeypatch.setattr(ws, "SESSION_LEDGER", ws.HOME / "missing-ledger.jsonl")
+    ws.build()
+    session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
+    assert session["first_recorded_at"] is None
+    assert session["identity_status"] == "verified"
+
+
+@pytest.mark.parametrize("override", [
+    {"workspace_id": "different-workspace"},
+    {"session_id": "different-session"},
+    {"session_id": "SESSION-1"},
+    {"provider": "droid"},
+    {"provider": None},
+    {"event": "end"},
+    {"ts": "not-a-time"},
+    {"ts": 999999999999999},
+])
+def test_unmatched_recorded_start_stays_unknown(ws, monkeypatch, override):
+    _, _, ledger, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    record = json.loads(ledger.read_text())
+    record.update(override)
+    ledger.write_text("invalid\n[]\n" + json.dumps(record) + "\n")
+    ws.build()
+    session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
+    assert session["first_recorded_at"] is None
 
 
 # ─── join_workspaces_to_sessions ─────────────────────────────────────────────

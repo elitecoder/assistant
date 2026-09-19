@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -104,17 +105,13 @@ class PulseHealthTests(unittest.TestCase):
         self.assertIn("Pulse stale", html)
 
     def test_age_formatting_includes_unit(self):
-        self._write_heartbeat({"last_pulse_ts": int(time.time()) - 10})
-        html = self.mod.render_pulse_health()
-        self.assertIn("10s", html)
-
-        self._write_heartbeat({"last_pulse_ts": int(time.time()) - 200})
-        html = self.mod.render_pulse_health()
-        self.assertIn("3m", html)  # 200/60 = 3
-
-        self._write_heartbeat({"last_pulse_ts": int(time.time()) - 3700})
-        html = self.mod.render_pulse_health()
-        self.assertIn("h", html)
+        now = int(time.time())
+        with mock.patch.object(self.mod, "utc_now",
+                               return_value=datetime.fromtimestamp(now, timezone.utc)):
+            for seconds, expected in ((10, "10s"), (200, "3m"), (3700, "h")):
+                with self.subTest(seconds=seconds):
+                    self._write_heartbeat({"last_pulse_ts": now - seconds})
+                    self.assertIn(expected, self.mod.render_pulse_health())
 
     def test_age_formatting_handles_days(self):
         self._write_heartbeat({"last_pulse_ts": int(time.time()) - (2 * 86400)})

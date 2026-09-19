@@ -1272,8 +1272,10 @@ class MainPipelineTests(unittest.TestCase):
         # When Observer returns no verdict, a synthetic "active" summary is saved
         # so the dashboard stays fresh rather than going stale on the prior verdict.
         save_mock.assert_called_once()
-        ws_arg, verdict_arg = save_mock.call_args[0]
+        ws_arg, verdict_arg, identity_arg = save_mock.call_args[0]
         self.assertEqual(verdict_arg["verdict"], "active")
+        self.assertIsNone(identity_arg)
+        self.assertIs(save_mock.call_args.kwargs["observation_complete"], False)
 
     def test_dispatch_cap_hit_when_over_active_limit(self):
         # Set up: 1 ws to_reclassify, ws_meta would have agent_status=working.

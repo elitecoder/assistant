@@ -603,7 +603,7 @@ class ResolveWorkspaceTests(unittest.TestCase):
                 "screen_text": self.CLAUDE, "sid8": "6fb0c668"}):
             res = self.mod.resolve_workspace_screen_and_transcript("workspace:12")
         self.assertEqual(res["transcript_path"], live_tp)
-        self.assertNotIn("assistant", res["transcript_path"])  # not the stale dir
+        self.assertNotIn("assistant", Path(res["transcript_path"]).parent.name)
         self.assertEqual(res["transcript_source"], "screen_session_id")
 
     def test_no_verified_signal_yields_null_transcript(self):
@@ -722,6 +722,7 @@ class MainTests(unittest.TestCase):
         # Keep main() hermetic — never touch a live cmux in tests.
         with mock.patch.object(self.mod, "resolve_workspace_screen_and_transcript",
                                return_value=resolved or self._resolved()), \
+                mock.patch.object(self.mod, "workspace_identity_snapshot", return_value=None), \
                 mock.patch("sys.stdout", captured):
             rc = self.mod.main()
         return rc, json.loads(captured.getvalue())

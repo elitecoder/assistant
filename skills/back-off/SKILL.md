@@ -10,13 +10,15 @@ The user typed `/back-off` because the Assistant is doing something annoying in 
 ## Execution
 
 ```bash
-WS_REF="$(cmux identify 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('caller',{}).get('workspace_ref',''))")"
-if [ -z "$WS_REF" ]; then
-    echo "ERROR: could not identify caller workspace via cmux identify" >&2
+IDENTITY="$(cmux --id-format both identify)"
+WS_REF="$(printf '%s' "$IDENTITY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('caller',{}).get('workspace_ref',''))")"
+WS_ID="$(printf '%s' "$IDENTITY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('caller',{}).get('workspace_id',''))")"
+if [ -z "$WS_REF" ] || [ -z "$WS_ID" ]; then
+    echo "ERROR: could not identify caller workspace and UUID via cmux identify" >&2
     exit 1
 fi
 REASON="${*:-User pressed /back-off}"
-~/dev/assistant/bin/back-off.py add "$WS_REF" "$REASON"
+~/dev/assistant/bin/back-off.py add "$WS_REF" "$REASON" --workspace-id "$WS_ID"
 ```
 
 Pass through any argument the user supplied — that becomes the reason logged on the back-off entry. If they passed nothing, default to a generic message.
@@ -30,6 +32,10 @@ Takes effect on the Assistant's next pulse (within ~2 minutes). After that, this
 - never has its transcript read by the Observer subagent
 - never receives `/cleanup`, `/merge-when-ready`, or any nudge text
 - never appears in awaiting cards on the dashboard
+
+The overview uses the UUID to confirm **Parked** belongs to this workspace.
+Legacy or mismatched records need confirmation. The existing automation filter
+still uses workspace references; this change protects the dashboard's interpretation.
 
 To undo, run `/attend` from inside this same workspace, or `~/dev/assistant/bin/back-off.py remove <ws_ref>` from anywhere.
 

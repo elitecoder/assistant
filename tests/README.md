@@ -18,6 +18,21 @@ python3 -m unittest tests.test_build_ws_context -v
 python3 -m unittest tests.test_no_close_workspace -v
 ```
 
+## Dashboard browser checks
+
+Run the overview against an isolated local server and fixture data:
+
+```bash
+uv run --with playwright python tests/drive_dashboard_overview.py \
+  --browser-executable "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --output-dir /tmp/assistant-overview-browser
+```
+
+The driver measures layout at phone, tablet, and desktop widths. It exercises
+search, context expansion, refresh, older-work reminders, and outdated-data gates.
+Workspace focus requests are intercepted; the driver never switches a real session.
+The server-side identity guard has separate coverage in `test_todo_server.py`.
+
 ## What's covered
 
 | File | What it tests |

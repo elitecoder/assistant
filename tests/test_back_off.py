@@ -122,6 +122,30 @@ class BackOffFilterTests(unittest.TestCase):
 
 
 class BackOffCLITests(unittest.TestCase):
+    def test_add_preserves_observed_workspace_identity(self):
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".assistant").mkdir()
+            identity = "1a2b3c4d-1111-2222-3333-123456789abc"
+            result = run_cli(home, "add", "workspace:7", "Wait for the dependency",
+                             "--workspace-id", identity)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads((home / ".assistant/back-off.json").read_text())
+            self.assertEqual(state["workspaces"][0]["workspace_id"], identity)
+            result = run_cli(home, "add", "workspace:7", "Legacy caller, identity unknown")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads((home / ".assistant/back-off.json").read_text())
+            self.assertNotIn("workspace_id", state["workspaces"][0])
+
+    def test_invalid_workspace_identity_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".assistant").mkdir()
+            result = run_cli(home, "add", "workspace:7", "--workspace-id", "not-a-uuid")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("must be a UUID", result.stderr)
+            self.assertFalse((home / ".assistant/back-off.json").exists())
+
     def test_add_creates_file_and_appears_in_list(self):
         with TemporaryDirectory() as tmp:
             tmp = Path(tmp)

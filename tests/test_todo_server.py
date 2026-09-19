@@ -93,6 +93,12 @@ def test_load_save_json_roundtrip_atomic_newline(env):
     assert mod.load_json() == payload
 
 
+def test_rerender_targets_this_checkout():
+    expected = _BIN / "render-assistant-page.py"
+    assert mod.RENDER_SCRIPT == expected
+    assert mod.RENDER_DASHBOARD_SCRIPT == expected
+
+
 def test_rerender_invokes_subprocess(env, monkeypatch):
     # rerender() is no-op'd by the env fixture; restore the real one and verify
     # it shells out to the render script (subprocess stubbed).
@@ -569,6 +575,84 @@ def test_post_focus_valid(server, monkeypatch):
 def test_post_focus_invalid(server):
     status, _ = _request(server.base, "POST", "/focus/garbage")
     assert status == 400
+
+
+@pytest.mark.parametrize("current_id", [
+    "aaaaaaaa-0000-0000-0000-000000000001",
+    "AAAAAAAA-0000-0000-0000-000000000001",
+    "bbbbbbbb-0000-0000-0000-000000000002",
+    None,
+])
+def test_post_focus_checks_observed_workspace_identity(server, monkeypatch, current_id):
+    expected_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if "tree" in argv:
+            assert argv == ["/bin/true", "--id-format", "both", "tree", "--all", "--json"]
+            workspaces = [] if current_id is None else [{
+                "ref": "workspace:4", "id": current_id,
+            }]
+            return type("R", (), {
+                "returncode": 0,
+                "stdout": json.dumps({"windows": [{"workspaces": workspaces}]}),
+                "stderr": "",
+            })()
+        assert argv[1] == "select-workspace"
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    status, body = _request(
+        server.base, "POST", f"/focus/workspace:4?workspace_id={expected_id.upper()}",
+    )
+    selections = [call for call in calls if "select-workspace" in call]
+    if current_id is not None and current_id.lower() == expected_id:
+        assert status == 200
+        assert selections == [["/bin/true", "select-workspace", "--workspace", expected_id]]
+    else:
+        assert status == 409
+        assert "workspace identity" in body
+        assert selections == []
+
+
+@pytest.mark.parametrize("failure", ["command_error", "invalid_json", "exception"])
+def test_post_focus_identity_lookup_failure_never_selects(server, monkeypatch, failure):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        assert "select-workspace" not in argv
+        if failure == "exception":
+            raise OSError("cmux unavailable")
+        return type("R", (), {
+            "returncode": 1 if failure == "command_error" else 0,
+            "stdout": "not-json",
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    status, body = _request(
+        server.base, "POST",
+        "/focus/workspace:4?workspace_id=aaaaaaaa-0000-0000-0000-000000000001",
+    )
+    assert status == 409
+    assert "workspace identity" in body
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("query", [
+    "workspace_id=",
+    "workspace_id=invalid",
+    "workspace_id=aaaaaaaa-0000-0000-0000-000000000001&workspace_id=",
+])
+def test_post_focus_invalid_identity_cannot_use_legacy_route(server, monkeypatch, query):
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *args, **kwargs: pytest.fail("No command is permitted"),
+    )
+    status, body = _request(server.base, "POST", f"/focus/workspace:4?{query}")
+    assert status == 409
+    assert "workspace identity" in body
 
 
 def test_post_append_detail(server):

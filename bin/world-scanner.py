@@ -21,8 +21,17 @@ Inputs:
   - vm_stat (memory pressure)
   - ~/.assistant/events.jsonl (event-spine health: counts + latest-event age
                                per source, so a stalled spine is visible)
+  - ~/.cmux-session-ledger.jsonl (first recorded start for a verified identity)
 
 Cadence: 30s via LaunchAgent. Stdlib only.
+
+Workspace and surface UUIDs identify current cmux objects. A session's
+identity_status is verified when a live resume binding and process agree, or a
+SessionStart registry entry matches both UUIDs and a foreground provider process
+whose start predates that hook. Registry keys are workspace UUIDs, not surfaces.
+context_status verifies the cached session/provider association, not freshness;
+context_built_at supplies the cache clock. Missing bindings and unsupported
+providers stay unknown. first_recorded_at is not a session creation timestamp.
 """
 
 import json
@@ -60,6 +69,7 @@ OUT_PATH = HOME / ".claude/cache/world.json"
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 ORCH_REGISTRY = HOME / ".architect/orchestrator-registry.json"
 SESSION_CTX = HOME / ".claude/cache/session-context.json"
+SESSION_LEDGER = HOME / ".cmux-session-ledger.jsonl"
 DASHBOARD_STATE = HOME / ".claude/cache/dashboard-state.json"
 TODO_PATH = HOME / ".claude/assistant-todo.json"
 PROPOSALS_DIR = HOME / ".architect/orchestrator-proposals"
@@ -143,7 +153,7 @@ def ps_tty(pid):
 def cmux_tree():
     try:
         r = subprocess.run(
-            [CMUX_BIN, "tree", "--all", "--json"],
+            [CMUX_BIN, "--id-format", "both", "tree", "--all", "--json"],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode != 0:
@@ -179,7 +189,7 @@ def read_mem_pct():
 
 
 def build_workspace_index(tree):
-    """Return list of {ws_ref, title, surfaces:[{ref, tty, type, title}]}."""
+    """Retain cmux object IDs separately from reusable display references."""
     out = []
     if not tree:
         return out
@@ -187,6 +197,7 @@ def build_workspace_index(tree):
         for ws in win.get("workspaces", []) or []:
             entry = {
                 "ws_ref": ws.get("ref"),
+                "workspace_id": ws.get("id"),
                 "title": ws.get("title") or "",
                 "index": ws.get("index", 0),
                 "surfaces": [],
@@ -195,9 +206,14 @@ def build_workspace_index(tree):
                 for surf in pane.get("surfaces", []) or []:
                     entry["surfaces"].append({
                         "ref": surf.get("ref"),
+                        "surface_id": surf.get("id"),
                         "tty": surf.get("tty"),
                         "type": surf.get("type"),
                         "title": surf.get("title") or "",
+                        "session_id": None,
+                        "provider": None,
+                        "identity_status": "unknown",
+                        "agent_status": "unknown",
                     })
             out.append(entry)
     return out
@@ -212,25 +228,29 @@ def surface_resume_binding(surface_ref, ws_ref):
             capture_output=True, text=True, timeout=3,
         )
         if r.returncode != 0:
-            return None
+            return {"unverified": True}
         doc = json.loads(r.stdout)
     except Exception:
-        return None
+        return {"unverified": True}
+    if not isinstance(doc, dict):
+        return {"unverified": True}
     queue = [doc]
     binding = None
+    has_kind = False
     while queue:
         value = queue.pop(0)
         if not isinstance(value, dict):
             continue
+        has_kind = has_kind or bool(value.get("kind"))
         if value.get("checkpointId") or value.get("checkpoint_id"):
             binding = value
             break
         queue.extend(v for v in value.values() if isinstance(v, dict))
     if not binding:
-        return None
+        return {"unverified": True} if has_kind else None
     kind = str(binding.get("kind") or "").lower()
     if kind not in {"claude", "factory", "droid"}:
-        return None
+        return {"unverified": True}
     sid = binding.get("checkpointId") or binding.get("checkpoint_id")
     return {
         "session_id": str(sid),
@@ -240,6 +260,8 @@ def surface_resume_binding(surface_ref, ws_ref):
 
 
 def transcript_for_session(provider, session_id):
+    if provider not in {"claude", "droid"}:
+        return None
     root = (HOME / ".factory/sessions" if provider == "droid"
             else HOME / ".claude/projects")
     if not root.is_dir() or not session_id:
@@ -251,7 +273,7 @@ def transcript_for_session(provider, session_id):
 
 
 def agent_pid_on_tty(tty, provider):
-    if not tty:
+    if not tty or provider not in {"claude", "droid"}:
         return None
     try:
         r = subprocess.run(
@@ -270,6 +292,68 @@ def agent_pid_on_tty(tty, provider):
         except ValueError:
             continue
     return None
+
+
+def registry_binding_for_surface(registry, workspace, surface):
+    """Verify the hook's workspace key, surface UUID, session, and process age."""
+    workspace_id = workspace.get("workspace_id")
+    surface_id = surface.get("surface_id")
+    tty = surface.get("tty")
+    if not workspace_id or not surface_id or not tty:
+        return None
+    matches = [
+        entry for key, entry in registry.items()
+        if key.lower() == str(workspace_id).lower()
+        and str(entry.get("surface_id") or "").lower() == str(surface_id).lower()
+    ]
+    if len(matches) != 1:
+        return None
+    entry = matches[0]
+    if entry.get("workspace_id") and str(entry["workspace_id"]).lower() != str(workspace_id).lower():
+        return None
+    sid = entry.get("session_id")
+    provider = normalize_provider(entry.get("provider") or "claude")
+    recorded = entry.get("ts")
+    if not isinstance(sid, str) or not sid or provider not in {"claude", "droid"}:
+        return None
+    if isinstance(recorded, bool) or not isinstance(recorded, (int, float)):
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-t", tty, "-o", "pid=,pgid=,tpgid=,lstart=,comm="],
+            capture_output=True, text=True, timeout=3,
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+        )
+        if result.returncode != 0:
+            return None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    processes = []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 8)
+        if len(fields) != 9 or Path(fields[8]).name != provider:
+            continue
+        try:
+            pid, pgid, foreground = map(int, fields[:3])
+            started = datetime.strptime(
+                " ".join(fields[3:8]), "%a %b %d %H:%M:%S %Y",
+            ).replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+        if pgid > 0 and pgid == foreground:
+            processes.append((pid, started))
+    if len(processes) != 1:
+        return None
+    pid, started = processes[0]
+    if entry.get("claude_pid") and str(entry["claude_pid"]) != str(pid):
+        return None
+    if not started <= recorded < utc_now().timestamp() + 1:
+        return None
+    return {
+        "session_id": sid, "provider": provider, "cwd": entry.get("cwd"),
+        "pid": pid, "ts": recorded, "tab_id": workspace_id,
+        "identity_source": "session_start_registry",
+    }
 
 
 def build_live_sessions(workspaces=None):
@@ -295,35 +379,56 @@ def build_live_sessions(workspaces=None):
             "pid": int(pid),
             "cwd": e.get("cwd"),
             "transcript_path": e.get("transcript_path"),
-            "provider": e.get("provider") or "claude",
+            "provider": normalize_provider(e.get("provider") or "claude"),
             "tab_id": tab_id,
             "ts": e.get("ts"),
+            "workspace_id": e.get("workspace_id") or (tab_id if e.get("surface_id") else None),
+            "surface_id": e.get("surface_id"),
+            "identity_status": "unknown",
+            "identity_source": "registry",
+            "agent_status": "unknown",
         }
     for ws in workspaces or []:
         for surface in ws.get("surfaces", []):
             if surface.get("type") != "terminal":
                 continue
-            binding = surface_resume_binding(surface.get("ref"), ws.get("ws_ref"))
-            if not binding:
+            binding = surface_resume_binding(
+                surface.get("surface_id") or surface.get("ref"),
+                ws.get("workspace_id") or ws.get("ws_ref"),
+            )
+            if binding is None:
+                binding = registry_binding_for_surface(reg, ws, surface)
+            if not binding or binding.get("unverified"):
                 continue
             sid = binding["session_id"]
             provider = binding["provider"]
-            pid = agent_pid_on_tty(surface.get("tty"), provider)
+            pid = binding.get("pid") or agent_pid_on_tty(surface.get("tty"), provider)
             if not pid:
                 continue
+            verified = bool(ws.get("workspace_id") and surface.get("surface_id"))
+            surface.update({
+                "session_id": sid,
+                "provider": provider,
+                "identity_status": "verified" if verified else "unknown",
+            })
             out[sid] = {
                 "session_id": sid,
                 "pid": pid,
                 "cwd": binding.get("cwd"),
                 "transcript_path": transcript_for_session(provider, sid),
                 "provider": provider,
-                "tab_id": None,
-                "ts": time.time(),
+                "tab_id": binding.get("tab_id"),
+                "ts": binding.get("ts", time.time()),
                 "tty": surface.get("tty"),
                 "ws_ref": ws.get("ws_ref"),
                 "surface_ref": surface.get("ref"),
                 "ws_title": ws.get("title", ""),
                 "surface_title": surface.get("title", ""),
+                "workspace_id": ws.get("workspace_id"),
+                "surface_id": surface.get("surface_id"),
+                "identity_status": "verified" if verified else "unknown",
+                "identity_source": binding.get("identity_source", "cmux_resume_binding"),
+                "agent_status": "unknown",
             }
     return out
 
@@ -337,20 +442,35 @@ def join_workspaces_to_sessions(workspaces, live_sessions):
         for surf in ws.get("surfaces", []):
             tty = surf.get("tty")
             if tty:
-                tty_to_ws[tty] = {
+                tty_to_ws[tty.removeprefix("/dev/")] = {
                     "ws_ref": ws["ws_ref"],
+                    "workspace_id": ws.get("workspace_id"),
                     "surface_ref": surf["ref"],
+                    "surface_id": surf.get("surface_id"),
                     "surface_title": surf.get("title", ""),
                     "ws_title": ws.get("title", ""),
+                    "bound_session_id": surf.get("session_id"),
                 }
 
     for sid, sess in live_sessions.items():
         tty = sess.get("tty") or ps_tty(sess["pid"])
         sess["tty"] = tty
-        info = tty_to_ws.get(tty) if tty else None
+        info = tty_to_ws.get(tty.removeprefix("/dev/")) if tty else None
         if info:
+            if info["bound_session_id"] and info["bound_session_id"] != sid:
+                continue
+            if any(
+                sess.get(key) and info.get(key)
+                and str(sess[key]).lower() != str(info[key]).lower()
+                for key in ("workspace_id", "surface_id")
+            ):
+                continue
+            if info["surface_id"] and not sess.get("surface_id"):
+                continue
             sess["ws_ref"] = info["ws_ref"]
+            sess["workspace_id"] = info["workspace_id"]
             sess["surface_ref"] = info["surface_ref"]
+            sess["surface_id"] = info["surface_id"]
             sess["ws_title"] = info["ws_title"]
             sess["surface_title"] = info["surface_title"]
 
@@ -359,6 +479,13 @@ def join_workspaces_to_sessions(workspaces, live_sessions):
         ws["session_ids"] = [
             s["session_id"] for s in live_sessions.values()
             if s.get("ws_ref") == ws["ws_ref"]
+            and (
+                not ws.get("workspace_id")
+                or (
+                    s.get("identity_status") == "verified"
+                    and str(s.get("workspace_id") or "").lower() == str(ws["workspace_id"]).lower()
+                )
+            )
         ]
 
 
@@ -386,13 +513,81 @@ def merge_session_context(live_sessions):
     ctx = load_json(SESSION_CTX, {})
     by_sess = ctx.get("by_session") or {}
     for sid, sess in live_sessions.items():
+        sess["context_status"] = "unknown"
+        sess["context_built_at"] = (ctx.get("_meta") or {}).get("built_at")
         c = by_sess.get(sid)
         if c:
+            provider = normalize_provider(sess.get("provider") or "claude")
+            if provider not in {"claude", "droid"}:
+                continue
+            if normalize_provider(c.get("provider") or "claude") != provider:
+                continue
+            if c.get("session_id", sid) != sid:
+                continue
+            if any(
+                c.get(key) and str(c[key]).lower() != str(sess.get(key) or "").lower()
+                for key in ("workspace_id", "surface_id")
+            ):
+                continue
             sess["last_user"] = c.get("last_user")
             sess["last_assistant"] = c.get("last_assistant")
             sess["queue_pending"] = c.get("queue_pending", 0)
             sess["user_unanswered"] = c.get("user_unanswered", False)
             sess["recent_turns"] = c.get("recent_turns", [])
+            if sess.get("identity_status") == "verified":
+                sess["context_status"] = "verified"
+
+
+def normalize_provider(provider):
+    provider = str(provider or "").lower()
+    return "droid" if provider in {"factory", "droid"} else provider
+
+
+def merge_first_recorded(live_sessions, now):
+    """Join recorded starts by workspace UUID, provider, and full session ID."""
+    targets = {}
+    for sid, session in live_sessions.items():
+        session["first_recorded_at"] = None
+        if session.get("identity_status") != "verified":
+            continue
+        key = (
+            str(session.get("workspace_id") or "").lower(),
+            normalize_provider(session.get("provider")),
+            sid,
+        )
+        if all(key):
+            targets[key] = session
+    if not targets:
+        return
+    first = {}
+    try:
+        with SESSION_LEDGER.open(errors="replace") as ledger:
+            for line in ledger:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("event") != "start":
+                    continue
+                key = (
+                    str(row.get("workspace_id") or "").lower(),
+                    normalize_provider(row.get("provider")),
+                    row.get("session_id"),
+                )
+                if not isinstance(key[2], str) or key not in targets:
+                    continue
+                timestamp = row.get("ts")
+                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                    continue
+                if not 0 < timestamp <= now.timestamp():
+                    continue
+                if key not in first or timestamp < first[key]:
+                    first[key] = timestamp
+    except OSError:
+        return
+    for key, timestamp in first.items():
+        recorded = datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(microsecond=0)
+        targets[key]["first_recorded_at"] = iso(recorded)
 
 
 def compute_session_age(sess, now):
@@ -542,6 +737,7 @@ def build():
     join_workspaces_to_sessions(workspaces, live_sessions)
     tag_cron_workers(live_sessions)
     merge_session_context(live_sessions)
+    merge_first_recorded(live_sessions, now)
 
     # Compute per-session activity age and bucket.
     for sid, sess in live_sessions.items():

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,8 @@ ACTIVITY_HOURS = 24
 FEED_LIMIT = 30  # was 80 — kept overflowing the page
 NOISE_EVENT_KINDS = {"pulse-rollup", "heartbeat", "tick", "noop", "worker-heartbeat-stale"}
 LIVE_SESSIONS_LIMIT = 20
+OVERVIEW_FRESH_SECONDS = 600
+OVERVIEW_VISIBLE_CARDS = 4
 
 
 def utc_now():
@@ -1311,7 +1314,7 @@ def render_todos_tab(world):
             else:
                 tools_html = ""
             rows.append(f"""
-<div class="row todo-row" data-detail="{e(detail_text if td_id else '')}">
+<div class="row todo-row" data-task-id="{e(td_id)}" tabindex="-1" data-detail="{e(detail_text if td_id else '')}">
   <div class="todo-row-main" title="{e(detail_text)}">
     <span class="pill {it.get('priority', 'P3').lower()}">{e(it.get('priority', 'P3'))}</span>
     <span class="todo-id">{e(td_id or '—')}</span>
@@ -1387,6 +1390,370 @@ def _first_sentence(text: str, max_len: int = 120) -> str:
     if len(s) > max_len:
         s = s[:max_len - 1].rstrip() + "…"
     return s
+
+
+def _overview_object(path):
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}, f"{path.name} is missing."
+    except (OSError, ValueError) as exc:
+        return {}, f"{path.name} could not be read: {exc}"
+    if not isinstance(value, dict):
+        return {}, f"{path.name} is not an object."
+    return value, ""
+
+
+def _overview_timestamp(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        parsed = parse_iso(value)
+        if parsed and parsed.tzinfo:
+            return parsed.timestamp()
+    return None
+
+
+def _overview_fresh(timestamp, now):
+    return timestamp is not None and 0 <= now - timestamp <= OVERVIEW_FRESH_SECONDS
+
+
+def _overview_identity(value):
+    return (value or "").casefold()
+
+
+def _overview_session_time(session):
+    return max(_overview_timestamp((session.get(key) or {}).get("ts")) or 0
+               for key in ("last_user", "last_assistant"))
+
+
+def overview_cards(world):
+    now = utc_now().timestamp()
+    snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
+    snapshot_fresh = _overview_fresh(snapshot_at, now)
+    summaries = {}
+    issues = []
+    for path in sorted((HOME / ".assistant/observer-summaries").glob("*.json")):
+        summary, error = _overview_object(path)
+        if error:
+            issues.append(error)
+            continue
+        ref = summary.get("ws_ref")
+        written = _overview_timestamp(summary.get("last_updated_ts") or summary.get("ts")) or 0
+        previous = summaries.get(ref, {})
+        previous_written = _overview_timestamp(previous.get("last_updated_ts") or previous.get("ts")) or 0
+        if ref and written >= previous_written:
+            summaries[ref] = summary
+    backoff_path = HOME / ".assistant/back-off.json"
+    backoff, error = _overview_object(backoff_path)
+    if error and backoff_path.exists():
+        issues.append(error)
+    parked = {entry["ws_ref"]: entry for entry in backoff.get("workspaces", [])
+              if entry.get("ws_ref")}
+    cards = []
+    seen = set()
+    for workspace in world.get("workspaces", []):
+        ref = workspace.get("ws_ref") or workspace.get("ref") or workspace.get("workspace_ref")
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        title = workspace.get("title") or ref
+        workspace_id = workspace.get("workspace_id")
+        surface_ids = {_overview_identity(surface.get("surface_id")) for surface in workspace.get("surfaces", [])
+                       if surface.get("surface_id")}
+        session_ids = set(workspace.get("session_ids", []))
+        associated = [
+            session for session in world.get("live_sessions", [])
+            if workspace_id and _overview_identity(session.get("workspace_id")) == _overview_identity(workspace_id)
+            and session.get("session_id") in session_ids
+            and _overview_identity(session.get("surface_id")) in surface_ids
+            and session.get("provider")
+            and session.get("identity_status") == "verified"
+        ]
+        identities = {(_overview_identity(s["surface_id"]), s["provider"], s["session_id"]) for s in associated}
+        summary = summaries.get(ref, {})
+        context_at = _overview_timestamp(summary.get("observed_at"))
+        observed = {(_overview_identity(s.get("surface_id")), s.get("provider"), s.get("session_id"))
+                    for s in summary.get("observed_sessions", [])}
+        matches = bool(workspace_id and identities and observed == identities
+                       and _overview_identity(summary.get("workspace_id")) == _overview_identity(workspace_id))
+        context_fresh = (matches and summary.get("observation_complete") is True
+                         and _overview_fresh(context_at, now))
+        if not matches:
+            summary = {}
+            context_at = None
+            context_fresh = False
+        verdict = summary.get("verdict") or {
+            "ACTIVE": "active", "DONE": "ready_for_cleanup",
+            "STRANDED": "stranded", "AWAITING_USER": "needs_user",
+            "BROKEN": "needs_user",
+        }.get(summary.get("classification", ""), "unknown")
+        associated.sort(key=_overview_session_time, reverse=True)
+        latest = associated[0] if associated else {}
+        last_reply = (latest.get("last_assistant") or {}).get("text") or ""
+        last_request = (latest.get("last_user") or {}).get("text") or ""
+        current_context = [
+            session for session in associated
+            if session.get("context_status") == "verified"
+            and _overview_fresh(_overview_timestamp(session.get("context_built_at")), now)
+        ]
+        reply_current = latest in current_context and bool(last_reply)
+        newest_turn = max((_overview_session_time(s) for s in current_context), default=0)
+        if newest_turn > (context_at or 0):
+            context_fresh = False
+        new_request = (latest in current_context
+                       and (_overview_timestamp((latest.get("last_user") or {}).get("ts")) or 0)
+                       > (_overview_timestamp((latest.get("last_assistant") or {}).get("ts")) or 0))
+        working = any(
+            ((s.get("last_assistant") or {}).get("text") or "").startswith("[tool_use:")
+            for s in current_context)
+        recorded = [_overview_timestamp(s.get("first_recorded_at")) for s in associated]
+        first_recorded = min((stamp for stamp in recorded if stamp is not None), default=None)
+        pause = parked.get(ref, {})
+        verified_pause = bool(workspace_id and
+                              _overview_identity(pause.get("workspace_id")) == _overview_identity(workspace_id))
+        uncertain_pause = bool(pause) and not verified_pause
+        if verified_pause:
+            lane, state = "parked", "Parked intentionally"
+            action = "Review the reason for pausing before choosing to resume."
+        elif uncertain_pause:
+            lane, state = "needs-you", "Pause needs confirmation"
+            action = "Confirm the previous pause before continuing or wrapping up this session."
+        elif not snapshot_fresh:
+            lane, state = "needs-you", "Status unknown"
+            action = "Refresh the session state before deciding what to do."
+        elif working and (not context_fresh or newest_turn > (context_at or 0)):
+            lane, state = "working", "Last signal: tool activity"
+            action = "Look for the next result. Don't close the session while work continues."
+        elif not context_fresh:
+            lane = "needs-you"
+            if new_request:
+                state = "Request awaiting a response"
+                action = "Check whether your latest request is being handled before wrapping up."
+            else:
+                state = "Review the last response" if reply_current else "Status unknown"
+                action = ("Read the last response, then choose to continue, finish, or park this work."
+                          if reply_current else "Open the workspace and check its current state.")
+        elif verdict == "active":
+            lane, state = "working", "In progress"
+            action = summary.get("next") or "Wait for the next recorded result."
+        elif verdict in ("ready_for_merge", "ready_for_cleanup"):
+            lane = "ready"
+            state = "Review before merging" if verdict == "ready_for_merge" else "Check before closing"
+            action = ("Review the change and remaining checks before merging."
+                      if verdict == "ready_for_merge" else
+                      "Verify the outcome and save a return note before closing.")
+        else:
+            lane = "needs-you"
+            state = "Needs a decision" if verdict == "needs_user" else "Check the session"
+            action = summary.get("next") or "Open the session and identify the next useful step."
+        summary_text = summary.get("summary") or summary.get("summary_for_next_pulse") or ""
+        evidence_at = (context_at if context_fresh else
+                       _overview_timestamp(latest.get("context_built_at")))
+        cards.append({
+            "ref": ref, "workspace_id": workspace_id, "title": title, "lane": lane, "state": state,
+            "action": " ".join(action.split()),
+            "summary": (summary_text if context_fresh else last_reply) or
+                       "No matching return note is available.",
+            "next": (summary.get("next") if context_fresh else None) or
+                    "Check the current response before choosing the next step.",
+            "history": summary_text if not context_fresh else "",
+            "context_at": evidence_at,
+            "snapshot_at": snapshot_at,
+            "fresh": snapshot_fresh and (context_fresh or reply_current),
+            "cwd": summary.get("cwd") or latest.get("cwd") or workspace.get("cwd") or "",
+            "park_reason": pause.get("reason") or "",
+            "pause_uncertain": uncertain_pause,
+            "sessions": associated, "request": last_request,
+            "first_recorded_at": first_recorded,
+            "unverified": bool(summaries.get(ref)) and not matches,
+            "wrap_eligible": (snapshot_fresh and not pause and not new_request
+                              and lane in ("needs-you", "ready")
+                              and (context_fresh or (reply_current and not working))),
+        })
+    return cards, issues, snapshot_at
+
+
+def render_overview_tab(world):
+    cards, issues, snapshot_at = overview_cards(world)
+    now = utc_now().timestamp()
+    fresh = _overview_fresh(snapshot_at, now)
+    columns = [
+        ("needs-you", "Needs you", "A decision or a state to check"),
+        ("working", "Working", "Let productive sessions continue"),
+        ("ready", "Ready to close", "Verify the outcome before closing"),
+        ("parked", "Parked", "Paused on purpose, not forgotten"),
+    ]
+
+    def render_card(card):
+        ref = card["ref"]
+        key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or ref)
+        updated = (datetime.fromtimestamp(card["context_at"], timezone.utc).isoformat()
+                   if card["context_at"] else "Unknown")
+        context_age = (age_str(now - card["context_at"]) + " ago"
+                       if card["context_at"] else "unknown")
+        disabled = "" if fresh and card["workspace_id"] else " disabled"
+        pause_label = "Earlier pause reason (unverified)" if card["pause_uncertain"] else "Why paused"
+        reason = (f'<dt>{pause_label}</dt><dd>{e(card["park_reason"])}</dd>'
+                  if card["park_reason"] else "")
+        if card["pause_uncertain"]:
+            reason += ('<dt>Confirm the pause</dt><dd>Run /back-off in this workspace to reconfirm, '
+                       'or /attend to remove the previous pause.</dd>')
+        history = (f'<dt>Historical note (not current)</dt><dd>{e(card["history"])}</dd>'
+                   if card["history"] else "")
+        session_text = ", ".join(s.get("session_id") or s.get("tab_id") or "unidentified"
+                                 for s in card["sessions"]) or "No verified session link"
+        recorded = (datetime.fromtimestamp(card["first_recorded_at"], timezone.utc).date().isoformat()
+                    if card["first_recorded_at"] else None)
+        age_label = f"First recorded {recorded}" if recorded else "Session start unknown"
+        unverified = ('<p class="attention-boundary">An earlier note has no matching session identity; '
+                      'it is not used for this task.</p>') if card["unverified"] else ""
+        return f"""
+<article class="attention-card lane-{card['lane']}" id="task-{key}"
+         data-workspace-ref="{e(ref)}"
+         data-lane="{card['lane']}" data-evidence-at="{card['context_at'] or ''}"
+         data-search="{e((card['title'] + ' ' + card['cwd']).lower())}">
+  <span class="attention-state">{e(card['state'])}</span>
+  <h3 title="{e(card['title'])}">{e(card['title'])}</h3>
+  <p class="attention-next">{e(_first_sentence(card['action'], 160))}</p>
+  <span class="attention-age">{e(age_label)}</span>
+  <details class="attention-context" data-context-key="{e(card['workspace_id'] or ref)}">
+    <summary>Context and next step</summary>
+    <p class="attention-expiry attention-boundary" hidden>This is historical context. Refresh before acting on it.</p>
+    <dl>
+      <dt>Task</dt><dd>{e(card['title'])}</dd>
+      <dt>Last request</dt><dd>{e(card['request'] or 'No verified request is available.')}</dd>
+      <dt>Where you left off</dt><dd>{e(card['summary'])}</dd>
+      <dt>Recorded next step</dt><dd>{e(card['next'])}</dd>
+      {history}
+      {reason}
+      <dt>Working folder</dt><dd>{e(card['cwd'] or 'Unknown')}</dd>
+      <dt>Session links</dt><dd>{e(session_text)}</dd>
+      <dt>Context checked</dt><dd>{e(updated)} ({e(context_age)})</dd>
+    </dl>
+    {unverified}
+    <p class="attention-boundary">Opening a workspace doesn't resume, merge, or close it.</p>
+    <button class="btn" data-ws="{e(ref)}" data-workspace-id="{e(card['workspace_id'] or '')}" onclick="openWs(this)"{disabled}>Open workspace</button>
+  </details>
+</article>"""
+
+    buckets = {key: [c for c in cards if c["lane"] == key] for key, _, _ in columns}
+    lanes = []
+    for key, label, hint in columns:
+        items = buckets[key]
+        items.sort(key=lambda c: (c["first_recorded_at"] or float("inf"), c["title"].casefold()))
+        visible = "".join(render_card(c) for c in items[:OVERVIEW_VISIBLE_CARDS])
+        remaining = items[OVERVIEW_VISIBLE_CARDS:]
+        more = (f'<details class="attention-more" data-context-key="more-{key}">'
+                f'<summary>Show {len(remaining)} more</summary>'
+                f'{"".join(render_card(c) for c in remaining)}</details>') if remaining else ""
+        lanes.append(
+            f'<section class="attention-lane lane-{key}" data-lane="{key}"><h2>{label} '
+            f'<span class="attention-count">{len(items)}</span></h2>'
+            f'<p class="attention-hint">{hint}</p>{visible}{more}'
+            f'{"" if items else "<p class=attention-empty>Nothing here.</p>"}</section>')
+    errors = (f'<details class="attention-errors"><summary>Context needs checking '
+              f'({len(issues)})</summary><p>{"<br>".join(e(i) for i in issues)}</p></details>'
+              if issues else "")
+    finish_html = render_finish_prompt(world, cards, fresh)
+    return f"""
+<div class="attention-intro">
+  <div><p class="attention-eyebrow">Your attention, not another inbox</p>
+    <h2>Keep work moving. Finish one thing.</h2>
+    <p>Open a card for context. Long-running work can stay open while it progresses.</p></div>
+  <label class="attention-filter">Find your work
+    <input id="attention-search" type="search" placeholder="Task or folder"
+           oninput="filterAttention(this.value)">
+  </label>
+</div>
+<div id="finish-current">{finish_html}</div>
+<aside class="finish-prompt" id="finish-outdated" hidden>
+  <strong>Check the current state before wrapping up</strong>
+  <p>The supporting context is outdated. Refresh the view before choosing what to close.</p>
+</aside>
+<div class="attention-board">{''.join(lanes)}</div>
+<p id="attention-search-empty" hidden>No matching tasks. Clear the search to see your work.</p>
+{errors}
+<p class="attention-footnote">One card per open workspace. Existing decisions and controls remain in the other tabs.</p>
+""", len(cards)
+
+
+def render_finish_prompt(world, cards, fresh):
+    if not fresh:
+        return ('<aside class="finish-prompt" id="finish-prompt">'
+                '<strong>Before starting something new</strong>'
+                '<p>Restore a current view first. Old data cannot tell you what is safe to close.</p>'
+                '</aside>')
+    todo_path = HOME / ".claude/assistant-todo.json"
+    todos, error = _overview_object(todo_path)
+    if error and not todo_path.exists():
+        todos = world.get("todo", {})
+        error = ""
+    candidates = []
+    invalid_dates = 0
+    paused_refs = {card["ref"] for card in cards if card["lane"] in ("working", "parked")
+                   or card["pause_uncertain"]}
+    today = utc_now().date()
+    for item in todos.get("items", []):
+        if item.get("status", "open") not in ("open", "blocked", "stale"):
+            continue
+        if item.get("dispatchedWs") in paused_refs:
+            continue
+        created = item.get("createdAt")
+        if not isinstance(created, str):
+            continue
+        try:
+            created_date = datetime.fromisoformat(created.replace("Z", "+00:00")).date()
+        except ValueError:
+            invalid_dates += 1
+            continue
+        if created_date < today:
+            candidates.append((created_date, item.get("id", ""), item))
+    candidates.sort(key=lambda row: (row[0], row[1]))
+    ready = [card for card in cards if card["lane"] == "ready" and card["wrap_eligible"]]
+    older_sessions = [card for card in cards if card["first_recorded_at"]
+                      and datetime.fromtimestamp(card["first_recorded_at"], timezone.utc).date() < today
+                      and card["wrap_eligible"]]
+    older_sessions.sort(key=lambda card: (card["lane"] != "ready", card["first_recorded_at"]))
+    if older_sessions:
+        card = older_sessions[0]
+        heading = "Wrap up an older session before starting another"
+        title = card["title"]
+        recorded = datetime.fromtimestamp(card["first_recorded_at"], timezone.utc).date().isoformat()
+        text = f"First recorded {recorded}. {card['action']}"
+        key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or card["ref"])
+        link = f'<button class="btn" onclick="revealAttention(\'task-{key}\')">Review this session</button>'
+        evidence_at = card["context_at"]
+    elif candidates:
+        created_date, task_id, item = candidates[0]
+        heading = "Finish one older task before adding another"
+        title = item.get("title") or task_id
+        text = f"Created {created_date.isoformat()}. Finish it, record the blocker, or deliberately defer it."
+        link = (f'<button class="btn" data-task-id="{e(task_id)}" '
+                'onclick="openPending(this.dataset.taskId)">Review this task</button>')
+        evidence_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
+    elif ready:
+        card = ready[0]
+        heading = "One task may be ready to wrap up"
+        title = card["title"]
+        text = "Check the outcome, preserve a return note, and close only when you are satisfied."
+        key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or card["ref"])
+        link = f'<button class="btn" onclick="revealAttention(\'task-{key}\')">Review this task</button>'
+        evidence_at = card["context_at"]
+    else:
+        heading = "Before starting something new"
+        title = "Give unfinished work a deliberate next step."
+        text = "Let productive sessions continue. Finish, park, or record a blocker instead of leaving work ambiguous."
+        link = ""
+        evidence_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
+    if error:
+        text += " Pending-task dates could not be loaded."
+    if invalid_dates:
+        text += f" {invalid_dates} task dates need checking."
+    return (f'<aside class="finish-prompt" id="finish-prompt" data-evidence-at="{evidence_at or ""}">'
+            f'<strong>{heading}</strong>'
+            f'<p class="finish-title">{e(_first_sentence(title, 120))}</p>'
+            f'<p>{e(text)}</p>{link}</aside>')
 
 
 def _latest_receipt(ws_ref: str) -> dict | None:
@@ -1654,7 +2021,7 @@ def render_pulse_health() -> str:
     pulse_idx = hb.get("pulse_idx", "?")
     model = hb.get("model", "?")
     return (
-        f'<div class="pulse-health {cls}">'
+        f'<div class="pulse-health {cls}" data-pulse-at="{last_ts}">'
         f'<span class="pulse-dot"></span>'
         f'<span class="pulse-text">{msg}</span>'
         f'<span class="pulse-meta">last pulse {age_str} ago · #{pulse_idx} · {e(str(model))}</span>'
@@ -1793,6 +2160,7 @@ def render():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
         return
     world = json.loads(WORLD_PATH.read_text())
+    overview_html, overview_n = render_overview_tab(world)
     decisions_html, awaiting_n = render_decisions_tab(world)
     todos_html, p0_p1 = render_todos_tab(world)
     workspaces_html, ws_n = render_workspaces_tab()
@@ -1801,6 +2169,8 @@ def render():
     connections_html, connected_n = render_connections_panel(world)
     pulse_health_html = render_pulse_health()
     counts = world.get("counts", {})
+    snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
+    rendered_at = utc_now().timestamp()
 
     css = """
 /* ────────────────────────────────────────────────────────────────────
@@ -2852,6 +3222,55 @@ h1 {
 /* Footer — contract line */
 .brief-footer { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--line);
   font: 400 11px/1.6 var(--mono); color: var(--muted); }
+
+.tabs { flex-wrap: wrap; }
+.dashboard-header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+.dashboard-header h1 { margin: 0; }
+.snapshot-status { color: var(--amber); font-size: 13px; margin: 14px 0; }
+.snapshot-status[data-fresh="true"] { color: var(--text-2); }
+.service-details { margin: 10px 0 22px; color: var(--muted); font-size: 12px; }
+.service-details summary { cursor: pointer; }
+.service-details .pulse-health { margin-top: 12px; }
+.attention-intro { display: flex; justify-content: space-between; gap: 24px; margin: 28px 0 20px; }
+.attention-intro h2 { font: 600 26px/1.2 var(--sans); text-transform: none; letter-spacing: -.025em; margin: 6px 0 10px; }
+.attention-intro p { color: var(--text-2); font-size: 13px; margin: 6px 0; }
+.attention-intro .attention-eyebrow { color: var(--blue); font-size: 11px; }
+.attention-filter { display: grid; gap: 6px; align-self: center; color: var(--text-2); font-size: 12px; }
+.attention-filter input { width: 220px; max-width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: 8px; padding: 10px 12px; font: inherit; }
+.finish-prompt { padding: 18px 20px; margin: 0 0 24px; border: 1px solid rgba(240,179,48,.3); border-left: 3px solid var(--amber); border-radius: 10px; background: rgba(240,179,48,.045); }
+.finish-prompt strong { font-size: 14px; }
+.finish-prompt p { margin: 7px 0 0; font-size: 13px; color: var(--text-2); }
+.attention-board { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); align-items: start; gap: 14px; }
+.attention-lane { min-width: 0; padding: 12px; background: rgba(255,255,255,.018); border: 1px solid var(--line); border-radius: 12px; }
+.attention-lane h2 { display: flex; align-items: baseline; justify-content: space-between; margin: 2px 0 4px; font: 600 15px/1.4 var(--sans); text-transform: none; letter-spacing: 0; }
+.attention-count { font: 500 12px/1 var(--mono); color: var(--muted); }
+.attention-hint { min-height: 34px; font-size: 11px; color: var(--muted); margin: 0 0 14px; }
+.attention-card { min-width: 0; margin-bottom: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; }
+.attention-card:last-child { margin-bottom: 0; }
+.attention-state { font-size: 10px; font-weight: 600; color: var(--amber); }
+.lane-working .attention-state { color: var(--blue); }
+.lane-ready .attention-state { color: var(--green); }
+.lane-parked .attention-state { color: var(--muted); }
+.attention-card h3 { font: 600 14px/1.4 var(--sans); margin: 8px 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.attention-next { font-size: 12px; line-height: 1.5; margin: 0 0 10px; color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+.attention-age { display: block; font-size: 10px; color: var(--muted); margin-bottom: 12px; }
+.attention-context > summary, .attention-more > summary { cursor: pointer; color: var(--blue); font-size: 11px; padding: 4px 0; }
+.attention-context[open] { padding-top: 10px; border-top: 1px solid var(--line); }
+.attention-context dl { display: block; margin: 12px 0; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.attention-context dt { color: var(--muted); margin-top: 12px; }
+.attention-context dd { margin: 3px 0; white-space: pre-wrap; }
+.attention-boundary { font-size: 10px; line-height: 1.5; color: var(--muted); }
+.attention-context button:disabled { opacity: .45; cursor: not-allowed; }
+.attention-more > .attention-card { margin-top: 12px; }
+.attention-empty, .attention-footnote { color: var(--muted); font-size: 12px; }
+.attention-footnote { margin: 24px 0; }
+.attention-errors { color: var(--amber); font-size: 12px; margin-top: 18px; overflow-wrap: anywhere; }
+.attention-card[hidden], .attention-lane[hidden], [hidden] { display: none !important; }
+.attention-card:target { border-color: var(--amber); }
+.todo-row:focus { outline: 2px solid var(--amber); outline-offset: 4px; }
+button:focus-visible, summary:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+@media (max-width: 1100px) { .attention-board { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 620px) { .attention-board { grid-template-columns: 1fr; } .attention-intro { flex-direction: column; gap: 12px; } .attention-filter { align-self: stretch; } .attention-filter input { width: 100%; } .attention-hint { min-height: auto; } }
 """
 
     js = """
@@ -2863,6 +3282,188 @@ function showTab(name) {
   }
   if (name === 'brief') pingBriefSeen();
 }
+  function filterAttention(value) {
+    const query = value.trim().toLowerCase();
+    let count = 0;
+    document.querySelectorAll('.attention-card').forEach(card => {
+      card.hidden = !card.dataset.search.includes(query);
+      if (!card.hidden) count++;
+    });
+    document.querySelectorAll('.attention-lane').forEach(lane => {
+      const matches = lane.querySelectorAll('.attention-card:not([hidden])').length;
+      lane.hidden = Boolean(query) && matches === 0;
+      const more = lane.querySelector('.attention-more');
+      if (more && query && matches) {
+        if (!more.dataset.searchOpen) more.dataset.searchOpen = String(more.open);
+        more.open = true;
+      } else if (more && !query && more.dataset.searchOpen) {
+        more.open = more.dataset.searchOpen === 'true';
+        delete more.dataset.searchOpen;
+      }
+    });
+    document.getElementById('attention-search-empty').hidden = count > 0 || !query;
+  }
+  function revealAttention(id) {
+    const card = document.getElementById(id);
+    if (!card) return;
+    const search = document.getElementById('attention-search');
+    search.value = '';
+    filterAttention('');
+    const more = card.closest('.attention-more');
+    if (more) more.open = true;
+    card.querySelector('.attention-context').open = true;
+    card.scrollIntoView({block: 'start'});
+  }
+  function openPending(id) {
+    showTab('todos');
+    const row = [...document.querySelectorAll('.todo-row[data-task-id]')]
+      .find(element => element.dataset.taskId === id);
+    if (row) {
+      row.focus({preventScroll: true});
+      row.scrollIntoView({block: 'center'});
+    }
+  }
+  function expireAttention(root, now, fresh) {
+    const destination = root.querySelector('.attention-lane[data-lane="needs-you"]');
+    const reading = root.querySelector('.attention-context[open]')?.closest('.attention-card');
+    const top = reading?.getBoundingClientRect().top;
+    root.querySelectorAll('.attention-card').forEach(card => {
+      const evidence = Number(card.dataset.evidenceAt);
+      const age = evidence ? now - evidence : 0;
+      if (card.dataset.expired || (fresh && (!evidence || (age >= 0 && age <= Number(root.dataset.freshSeconds))))) return;
+      if (fresh && card.dataset.lane === 'parked') return;
+      card.dataset.expired = 'true';
+      card.querySelector('.attention-state').textContent = 'Status needs refreshing';
+      card.querySelector('.attention-next').textContent = 'Refresh the current state before continuing or closing.';
+      card.querySelector('.attention-expiry').hidden = false;
+      if (card.dataset.lane !== 'needs-you') {
+        card.classList.remove('lane-' + card.dataset.lane);
+        card.classList.add('lane-needs-you');
+        card.dataset.lane = 'needs-you';
+        if (destination.querySelectorAll(':scope > .attention-card').length >= Number(root.dataset.visibleCards)) {
+          let more = destination.querySelector('.attention-more');
+          if (!more) {
+            more = document.createElement('details');
+            more.className = 'attention-more';
+            more.dataset.contextKey = 'more-needs-you';
+            more.innerHTML = '<summary>Show more</summary>';
+            destination.append(more);
+          }
+          more.append(card);
+          if (card.querySelector('details[open]')) more.open = true;
+        } else {
+          destination.append(card);
+        }
+      }
+    });
+    root.querySelectorAll('.attention-lane').forEach(lane => {
+      const count = lane.querySelectorAll('.attention-card').length;
+      lane.querySelector('.attention-count').textContent = count;
+      let empty = lane.querySelector('.attention-empty');
+      if (!empty && count === 0) {
+        empty = document.createElement('p');
+        empty.className = 'attention-empty';
+        empty.textContent = 'Nothing here.';
+        lane.append(empty);
+      }
+      if (empty) empty.hidden = count > 0;
+      const more = lane.querySelector('.attention-more');
+      if (more) {
+        const remaining = more.querySelectorAll('.attention-card').length;
+        more.hidden = remaining === 0;
+        more.querySelector('summary').textContent = 'Show ' + remaining + ' more';
+      }
+    });
+    filterAttention(document.getElementById('attention-search').value);
+    if (reading && top !== undefined) window.scrollBy(0, reading.getBoundingClientRect().top - top);
+  }
+  function updateFreshness() {
+    const root = document.getElementById('dashboard-content');
+    if (!root) return;
+    const now = Date.now() / 1000;
+    const stamp = Number(root.dataset.snapshotAt);
+    const age = stamp ? now - stamp : Infinity;
+    const fresh = age >= 0 && age <= Number(root.dataset.freshSeconds);
+    const status = document.getElementById('snapshot-status');
+    status.dataset.fresh = String(fresh);
+    status.textContent = stamp
+      ? (fresh ? 'Session snapshot checked ' : 'Outdated snapshot from ')
+        + new Date(stamp * 1000).toLocaleString()
+        + (fresh ? '. Session age is not a failure.' : '. Refresh the data before acting.')
+      : 'Session snapshot time is unknown. Refresh the data before acting.';
+    const finishAt = Number(document.getElementById('finish-prompt')?.dataset.evidenceAt);
+    const finishFresh = fresh && finishAt && now >= finishAt
+      && now - finishAt <= Number(root.dataset.freshSeconds);
+    document.getElementById('finish-current').hidden = !finishFresh;
+    document.getElementById('finish-outdated').hidden = Boolean(finishFresh);
+    expireAttention(root, now, fresh);
+    const reading = document.querySelector('.tab-panel.active details[open], .service-details[open]');
+    document.getElementById('refresh-note').textContent = reading
+      ? 'Updates pause while you read. Refresh view keeps your place.'
+      : 'Checks for updates every 15 seconds.';
+    root.querySelectorAll('.attention-card button[data-ws]').forEach(button => {
+      button.disabled = !fresh || !button.dataset.workspaceId;
+    });
+    const health = root.querySelector('[data-pulse-at]');
+    if (health) {
+      const pulseAge = now - Number(health.dataset.pulseAt);
+      health.classList.remove('pulse-ok', 'pulse-warn', 'pulse-bad');
+      health.classList.add(pulseAge < 0 || pulseAge >= 1800 ? 'pulse-bad'
+        : pulseAge < 600 ? 'pulse-ok' : 'pulse-warn');
+      health.querySelector('.pulse-text').textContent = pulseAge < 0 ? 'Heartbeat time is in the future'
+        : pulseAge < 600 ? 'Pulse healthy' : pulseAge < 1800 ? 'Pulse slow' : 'Pulse stale';
+    }
+  }
+  let dashboardRefreshing = false;
+  async function refreshDashboard(force = false) {
+    updateFreshness();
+    if (dashboardRefreshing || location.protocol === 'file:') return;
+    if (!force && (document.querySelector('.tab-panel.active details[open], .service-details[open]')
+        || document.activeElement?.matches('input,textarea,select'))) return;
+    dashboardRefreshing = true;
+    try {
+      const expanded = [...document.querySelectorAll('details[open][data-context-key]')]
+        .map(element => element.dataset.contextKey);
+      const scroll = window.scrollY;
+      const focusedId = document.activeElement?.id;
+      const focusedTab = document.activeElement?.dataset.tab;
+      const focusedContext = document.activeElement?.tagName === 'SUMMARY'
+        ? document.activeElement.parentElement.dataset.contextKey : null;
+      const response = await fetch(location.pathname, {cache: 'no-store'});
+      if (!response.ok) throw new Error('Dashboard returned ' + response.status);
+      const page = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const incoming = page.getElementById('dashboard-content');
+      const current = document.getElementById('dashboard-content');
+      if (!incoming) throw new Error('Dashboard content is unavailable');
+      if (incoming.dataset.renderedAt !== current.dataset.renderedAt) {
+        const query = document.getElementById('attention-search').value;
+        if (incoming.querySelector('[data-brief-date]')?.dataset.briefDate
+            !== current.querySelector('[data-brief-date]')?.dataset.briefDate) {
+          briefSeenSent = false;
+        }
+        current.replaceWith(incoming);
+        document.getElementById('attention-search').value = query;
+        showTab((location.hash || '#overview').slice(1));
+        filterAttention(query);
+        document.querySelectorAll('details[data-context-key]').forEach(element => {
+          if (expanded.includes(element.dataset.contextKey)) element.open = true;
+        });
+        if (focusedId) document.getElementById(focusedId)?.focus({preventScroll: true});
+        else if (focusedTab) [...document.querySelectorAll('.tab')]
+          .find(element => element.dataset.tab === focusedTab)?.focus({preventScroll: true});
+        else if (focusedContext) [...document.querySelectorAll('details[data-context-key]')]
+          .find(element => element.dataset.contextKey === focusedContext)?.querySelector('summary')
+          ?.focus({preventScroll: true});
+        window.scrollTo({top: scroll, behavior: 'instant'});
+      }
+      document.getElementById('refresh-error').textContent = '';
+      updateFreshness();
+    } catch (error) {
+      document.getElementById('refresh-error').textContent = 'Refresh failed: ' + error.message;
+    } finally {
+      dashboardRefreshing = false;
+    }
+  }
 // /brief/seen signal (Keel M3): viewing the Brief tab stamps the seen
 // sidecar so the unseen-degradation pass knows the brief was looked at.
 // Fired at most once per page load; failures (server down) are swallowed —
@@ -2883,13 +3484,10 @@ function pingBriefSeen() {
   } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
-  const initial = (window.location.hash || '#brief').replace('#', '');
-  showTab(['brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'brief');
-  // Auto-refresh every 15s but preserve the current hash. We use location.reload()
-  // (not <meta http-equiv="refresh">) because meta-refresh reloads from the original
-  // href and drops the fragment on most browsers, snapping the user back to
-  // the default Brief tab even when they're reading TODOs.
-  setInterval(() => { location.reload(); }, 15000);
+  const initial = (window.location.hash || '#overview').replace('#', '');
+  showTab(['overview', 'brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'overview');
+  updateFreshness();
+  setInterval(refreshDashboard, 15000);
 });
 async function openWs(btn) {
   const ws = btn.dataset.ws;
@@ -2898,7 +3496,9 @@ async function openWs(btn) {
   btn.classList.add('busy');
   btn.textContent = 'opening…';
   try {
-    const r = await fetch('/focus/' + ws, {method: 'POST'});
+    const identity = btn.dataset.workspaceId
+      ? '?workspace_id=' + encodeURIComponent(btn.dataset.workspaceId) : '';
+    const r = await fetch('/focus/' + ws + identity, {method: 'POST'});
     if (r.ok) {
       btn.classList.remove('busy');
       btn.classList.add('ok');
@@ -3084,11 +3684,26 @@ document.addEventListener('click', handleTodoToolsClick);
 <script>{js}</script>
 </head><body>
 
-<h1>Assistant</h1>
-<div class="meta">{e(utc_now().strftime('%H:%M:%S UTC'))} · auto-refresh 15s · v3 (one Scanner, one Evaluator)</div>
+<main id="dashboard-content" data-snapshot-at="{snapshot_at or ''}"
+      data-rendered-at="{rendered_at}" data-fresh-seconds="{OVERVIEW_FRESH_SECONDS}"
+      data-visible-cards="{OVERVIEW_VISIBLE_CARDS}">
+<div class="dashboard-header"><h1>Assistant</h1>
+  <span class="meta">Finish work without keeping every session in your head.</span></div>
+<p class="snapshot-status" id="snapshot-status" role="status">Checking snapshot age...</p>
+<p class="snapshot-status" id="refresh-error" role="status"></p>
+<div class="dashboard-header">
+  <button class="btn" id="refresh-dashboard" onclick="refreshDashboard(true)">Refresh view</button>
+  <span class="meta" id="refresh-note">Checks for updates every 15 seconds.</span>
+</div>
+<details class="service-details" data-context-key="service-health"><summary>Service health and data sources</summary>
 {pulse_health_html}
+<p>The page checks for updates every 15 seconds, except while you're reading expanded details.</p>
+</details>
 
 <div class="tabs">
+  <button class="tab" data-tab="overview" onclick="showTab('overview')">
+    Overview <span class="tab-count">{overview_n}</span>
+  </button>
   <button class="tab" data-tab="brief" onclick="showTab('brief')">
     Brief <span class="tab-count">{brief_n}</span>
   </button>
@@ -3107,6 +3722,10 @@ document.addEventListener('click', handleTodoToolsClick);
   <button class="tab" data-tab="todos" onclick="showTab('todos')">
     TODOs <span class="tab-count">{p0_p1}</span>
   </button>
+</div>
+
+<div class="tab-panel" data-panel="overview">
+{overview_html}
 </div>
 
 <div class="tab-panel" data-panel="brief">
@@ -3134,6 +3753,7 @@ document.addEventListener('click', handleTodoToolsClick);
 </div>
 
 <div class="footer">v3 · Scanner: ~/.claude/cache/world.json · Evaluator: ~/.architect/orchestrator-{{proposals,ledger}}/ · Lessons: ~/.claude/CLAUDE.md `## Lessons` · Undo: world-evaluator owns ledger</div>
+</main>
 </body></html>
 """
     DASHBOARD_HTML.write_text(body)

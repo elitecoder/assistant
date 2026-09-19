@@ -8,6 +8,7 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
                                                           with removedAt stamp)
   POST /focus/<workspace_ref>                             switch the active
                                                           cmux workspace
+    Optional ?workspace_id=<UUID> rejects a changed identity with HTTP 409.
                                                           (workspace:N only)
   POST /decision/list                                     decision queue view
                                                           (Keel M2; open set +
@@ -67,6 +68,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+from uuid import UUID
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -515,12 +517,43 @@ def brief_seen(params):
         return False, f"brief store unavailable: {e}"
 
 
-def focus_workspace(ws_ref):
-    if not WORKSPACE_REF_RE.match(ws_ref):
-        return False, f"invalid workspace ref {ws_ref!r}"
+class WorkspaceIdentityConflict(ValueError):
+    """The requested workspace identity cannot be verified."""
+
+
+def checked_workspace_id(ws_ref, observed_id):
+    try:
+        expected_id = str(UUID(observed_id))
+    except ValueError:
+        raise WorkspaceIdentityConflict("invalid workspace identity; refresh the dashboard") from None
     try:
         result = subprocess.run(
-            [CMUX_BIN, "select-workspace", "--workspace", ws_ref],
+            [CMUX_BIN, "--id-format", "both", "tree", "--all", "--json"],
+            check=False, timeout=4, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise WorkspaceIdentityConflict("workspace identity unavailable")
+        tree = json.loads(result.stdout)
+        matches = [
+            workspace.get("id")
+            for window in tree.get("windows", [])
+            for workspace in window.get("workspaces", [])
+            if workspace.get("ref") == ws_ref
+        ]
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError, TypeError):
+        raise WorkspaceIdentityConflict("workspace identity unavailable; refresh the dashboard") from None
+    if len(matches) != 1 or str(matches[0]).lower() != expected_id:
+        raise WorkspaceIdentityConflict("workspace identity changed; refresh the dashboard")
+    return expected_id
+
+
+def focus_workspace(ws_ref, workspace_id=None):
+    if not WORKSPACE_REF_RE.match(ws_ref):
+        return False, f"invalid workspace ref {ws_ref!r}"
+    target = checked_workspace_id(ws_ref, workspace_id) if workspace_id is not None else ws_ref
+    try:
+        result = subprocess.run(
+            [CMUX_BIN, "select-workspace", "--workspace", target],
             check=False, timeout=4, capture_output=True, text=True,
         )
         if result.returncode != 0:
@@ -748,7 +781,19 @@ class Handler(BaseHTTPRequestHandler):
 
         # POST /focus/<workspace_ref>
         if len(parts) == 2 and parts[0] == "focus":
-            ok, msg = focus_workspace(parts[1])
+            identity = urllib.parse.parse_qs(
+                parsed.query, keep_blank_values=True,
+            ).get("workspace_id")
+            if identity is not None and len(identity) != 1:
+                self._reply(409, "ambiguous workspace identity; refresh the dashboard")
+                return
+            try:
+                ok, msg = focus_workspace(
+                    parts[1], workspace_id=identity[0] if identity is not None else None,
+                )
+            except WorkspaceIdentityConflict as error:
+                self._reply(409, str(error))
+                return
             self._reply(200 if ok else 400, msg)
             return
 
