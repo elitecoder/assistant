@@ -1508,7 +1508,9 @@ def overview_cards(world):
         working = any(
             s.get("pending_tool_use") is True
             for s in current_context)
-        tools_complete = latest in current_context and latest.get("pending_tool_use") is False
+        tools_complete = bool(associated) and all(
+            session in current_context and session.get("pending_tool_use") is False
+            for session in associated)
         recorded = [_overview_timestamp(s.get("first_recorded_at")) for s in associated]
         first_recorded = min((stamp for stamp in recorded if stamp is not None), default=None)
         pause = parked.get(ref, {})
@@ -1542,6 +1544,9 @@ def overview_cards(world):
         elif verdict == "active":
             lane, state = "working", "In progress"
             action = summary.get("next") or "Wait for the next recorded result."
+        elif verdict in ("ready_for_merge", "ready_for_cleanup") and not tools_complete:
+            lane, state = "needs-you", "Tool status unknown"
+            action = "Check every session in this workspace before deciding to wrap up."
         elif verdict in ("ready_for_merge", "ready_for_cleanup"):
             lane = "ready"
             state = "Review before merging" if verdict == "ready_for_merge" else "Check before closing"
@@ -1572,9 +1577,9 @@ def overview_cards(world):
             "sessions": associated, "request": last_request,
             "first_recorded_at": first_recorded,
             "unverified": bool(summaries.get(ref)) and not matches,
-            "wrap_eligible": (snapshot_fresh and not pause and not new_request
+            "wrap_eligible": (snapshot_fresh and tools_complete and not pause and not new_request
                               and lane in ("needs-you", "ready")
-                              and (context_fresh or (reply_current and tools_complete))),
+                              and (context_fresh or reply_current)),
         })
     return cards, issues, snapshot_at
 

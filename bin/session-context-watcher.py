@@ -46,6 +46,10 @@ RECENT_INPUTS_LIMIT = 30
 DISCOVERY_INTERVAL_SEC = 30  # how often we look for brand-new transcript files
 FLUSH_DEBOUNCE_SEC = 0.5     # batch writes during a burst of fs events
 MAX_WATCHED_FDS = 256        # cap on simultaneously-watched files
+CLAUDE_PREAMBLE_TYPES = {
+    "mode", "permission-mode", "atis-latch", "last-prompt", "ai-title",
+    "pr-link", "file-history-snapshot",
+}
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -259,7 +263,8 @@ class TranscriptState:
     def track_tools(self, record, role, first_record):
         if first_record and (
                 record.get("type") == "session_start"
-                or (role in ("user", "assistant")
+                or ((role in ("user", "assistant")
+                     or (record.get("type") == "attachment" and record.get("uuid")))
                     and "parentUuid" in record and record["parentUuid"] is None)):
             self.tool_history_complete = True
         if role not in ("user", "assistant"):
@@ -307,7 +312,11 @@ class TranscriptState:
             return False
         role = agent_session.record_role(record)
         first_record = self.tool_scan_from_start and not self.tool_read_started
-        if kind != "file-history-snapshot":
+        is_preamble = (
+            kind in CLAUDE_PREAMBLE_TYPES
+            and not any(key in record for key in ("uuid", "parentUuid", "message"))
+        )
+        if not is_preamble:
             self.tool_read_started = True
         self.track_tools(record, role, first_record)
         if role not in ("user", "assistant"):

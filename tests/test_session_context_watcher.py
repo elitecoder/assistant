@@ -553,6 +553,54 @@ def test_pending_tools_root_after_incremental_file_metadata_is_known(tmp_path):
     assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
 
 
+@pytest.mark.parametrize("root_type", ["user", "attachment"])
+def test_pending_tools_claude_metadata_preamble_and_root_attachment(tmp_path, root_type):
+    path = tmp_path / "real-shape.jsonl"
+    preamble = [
+        {"type": kind} for kind in (
+            "last-prompt", "mode", "permission-mode", "atis-latch", "ai-title",
+            "pr-link", "file-history-snapshot")
+    ]
+    root = {"type": root_type, "uuid": "root", "parentUuid": None, "isSidechain": False}
+    if root_type == "user":
+        root["message"] = {"role": "user", "content": "Start."}
+    path.write_text("".join(json.dumps(record) + "\n" for record in [*preamble, root]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+    for content in (
+            [{"type": "thinking", "thinking": "Fixture reasoning."}],
+            [{"type": "text", "text": "Checking."}],
+            [{"type": "tool_use", "id": "call", "name": "Bash"}]):
+        with path.open("a") as stream:
+            stream.write(json.dumps({
+                "type": "assistant", "uuid": f"block-{content[0]['type']}",
+                "parentUuid": "root", "message": {
+                    "id": "shared-message-id", "role": "assistant",
+                    "stop_reason": "tool_use", "content": content,
+                },
+            }) + "\n")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    _append_tool_turn(path, "user", [{"type": "tool_result", "tool_use_id": "call"}])
+    _append_tool_turn(path, "assistant", [{"type": "text", "text": "Finished."}])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+
+
+@pytest.mark.parametrize("metadata", [
+    {"type": "unknown-metadata"},
+    {"type": "mode", "uuid": "not-just-metadata"},
+    {"type": "mode", "message": {"content": "Not metadata."}},
+])
+def test_pending_tools_unknown_prefix_does_not_gain_root_certainty(tmp_path, metadata):
+    path = tmp_path / "tools.jsonl"
+    path.write_text(json.dumps(metadata) + "\n" + _tool_turn("user", "Start.", root=True))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is None
+
+
 def test_pending_tools_replacement_and_truncation_reset_history(tmp_path):
     path = tmp_path / "tools.jsonl"
     path.write_text(_tool_turn("user", "Start.", root=True))

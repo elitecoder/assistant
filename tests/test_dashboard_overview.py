@@ -203,6 +203,37 @@ class OverviewTests(unittest.TestCase):
         self.assertIn("Tool status unknown", html)
         self.assertNotIn("Wrap up an older session", html)
 
+    def test_completion_summary_cannot_override_unknown_tools(self):
+        self.workspace(1, "ready_for_cleanup")
+        self.world["live_sessions"][0].update({
+            "first_recorded_at": "2026-09-01T10:00:00Z", "pending_tool_use": None})
+        html, _ = self.render()
+        self.assertIn("Tool status unknown", html)
+        self.assertNotIn("Check before closing", html)
+        self.assertNotIn("Wrap up an older session", html)
+
+    def test_every_associated_surface_needs_known_completed_tools(self):
+        self.workspace(1)
+        first = self.world["live_sessions"][0]
+        first.update({
+            "first_recorded_at": "2026-09-01T10:00:00Z",
+            "last_assistant": {"ts": NOW.isoformat(), "text": "The first session finished."}})
+        second = {**first, "session_id": "second-session", "surface_id": "second-surface",
+                  "provider": "droid", "last_assistant": {
+                      "ts": (NOW - timedelta(seconds=10)).isoformat(), "text": "Other session."}}
+        self.world["live_sessions"].append(second)
+        self.world["workspaces"][0]["session_ids"].append("second-session")
+        self.world["workspaces"][0]["surfaces"].append({"surface_id": "second-surface"})
+        for pending, status in ((None, "verified"), (False, "unknown")):
+            with self.subTest(pending=pending, context=status):
+                second.update({"pending_tool_use": pending, "context_status": status})
+                html, _ = self.render()
+                self.assertIn("Tool status unknown", html)
+                self.assertNotIn("Wrap up an older session", html)
+        second.update({"pending_tool_use": False, "context_status": "verified"})
+        html, _ = self.render()
+        self.assertIn("Wrap up an older session", html)
+
     def test_real_transcript_tool_lifecycle_controls_the_finish_prompt(self):
         spec = importlib.util.spec_from_file_location(
             "overview_transcript_reader", REPO / "bin/session-context-watcher.py")
