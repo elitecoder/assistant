@@ -386,6 +386,7 @@ def _build_queue(records: list[dict], now: float,
             "default_action": default_action,
             "default_label": default_label,
             "triage": rec.get("triage"),
+            "refs": dict(rec.get("refs") or {}),
             "ws_ref": (rec.get("refs") or {}).get("ws_ref"),
             "snippet": (rec.get("snippet") or "")[:200],
             # Strategist-prepared context/draft (Keel M6), inline when present.
@@ -401,6 +402,38 @@ def _build_queue(records: list[dict], now: float,
     rows.sort(key=lambda r: (decisions.lane_rank(r.get("lane")),
                              -r["score"], r["created_ts"], r["id"]))
     return rows
+
+
+def build_queue(records: list[dict], now: float, goals=None) -> list[dict]:
+    """Build the ranked queue for both snapshots and read-only live rendering."""
+    goals = _read_json(goals_path()) if goals is None else goals
+    goal_ranks = {}
+    if isinstance(goals, dict) and isinstance(goals.get("goals"), list):
+        for goal in goals["goals"]:
+            if isinstance(goal, dict) and isinstance(goal.get("id"), str) \
+                    and isinstance(goal.get("rank"), int):
+                goal_ranks[goal["id"]] = goal["rank"]
+    return _build_queue(records, now, goal_ranks=goal_ranks)
+
+
+def read_current_queue(now: float | None = None) -> list[dict]:
+    """Read the canonical log without writes; reject incomplete or corrupt data.
+
+    Unlike the tolerant background reader, the UI must not present a skipped
+    transition or a missing log as a successfully checked, empty queue.
+    """
+    records = []
+    for number, line in enumerate(decisions.decisions_path().read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if not isinstance(rec, dict) or rec.get("schema") != decisions.SCHEMA \
+                or not isinstance(rec.get("id"), str) or not rec["id"] \
+                or rec.get("status") not in decisions.STATUSES \
+                or not isinstance(rec.get("refs", {}), dict):
+            raise ValueError(f"invalid notification record on line {number}")
+        records.append(rec)
+    return build_queue(records, now if now is not None else time.time())
 
 
 def _build_receipts(now: float) -> list[dict]:
@@ -845,13 +878,7 @@ def build_brief(now: float | None = None) -> dict:
     # derivation with no dependency on the planner module; a malformed/absent
     # store simply yields no boosts.
     goals = _read_json(goals_path())
-    goal_ranks: dict = {}
-    if isinstance(goals, dict) and isinstance(goals.get("goals"), list):
-        for g in goals["goals"]:
-            if isinstance(g, dict) and isinstance(g.get("id"), str) \
-                    and isinstance(g.get("rank"), int):
-                goal_ranks[g["id"]] = g["rank"]
-    queue = _build_queue(records, now, goal_ranks=goal_ranks)
+    queue = build_queue(records, now, goals=goals)
     counts_by_lane: dict[str, int] = {}
     for row in queue:
         lane = row.get("lane")

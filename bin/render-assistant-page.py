@@ -21,9 +21,15 @@ import sys
 from datetime import datetime, timedelta, timezone
 from html import escape as e
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parents[1]  # repo root (src/ for the connector base)
+if str(REPO / "src") not in sys.path:
+    sys.path.insert(0, str(REPO / "src"))
+
+from assistant import brief as brief_store
+
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
 LEGACY_TRIAGE_STATE = HOME / ".claude/cache/triage-state.json"
@@ -101,16 +107,28 @@ def load_assistant_state():
     return {}
 
 
-def render_awaiting(world):
-    """Awaiting cards now come from Assistant's `awaiting_input[]` directly.
-    No proposals dir, no Evaluator, no fuse. If the Assistant put it there, surface it.
-    Sorted by confidence desc."""
-    ts = load_assistant_state()
+def _assistant_generated_at(state):
+    meta = state.get("_meta")
+    return state.get("generated_at") or (meta.get("generated_at") if isinstance(meta, dict) else None)
+
+
+def render_awaiting(world, state=None):
+    """Render requests by confidence; preserve stale entries as inert history."""
+    ts = load_assistant_state() if state is None else state
+    generated_at = _assistant_generated_at(ts)
+    fresh = _overview_fresh(_overview_timestamp(generated_at), utc_now().timestamp())
+    warning = (
+        f'<p class="snapshot-status" id="saved-requests-warning"{" hidden" if fresh else ""}>'
+        f'Historical requests from {e(str(generated_at or "an unknown date"))}; '
+        'current need and workspace references are unverified. '
+        'Saved references are not current action targets.</p>')
     awaiting = list(ts.get("awaiting_input") or [])
     awaiting.sort(key=lambda a: a.get("confidence") or 0, reverse=True)
     if not awaiting:
-        return '<div class="empty">No decisions awaiting your input.</div>', 0
-    cards = []
+        message = ("No decisions awaiting your input." if fresh else
+                   "No saved requests available; current requests are unverified.")
+        return warning + f'<div class="empty">{message}</div>', 0
+    cards = [warning]
     for a in awaiting:
         tier = (a.get("tier") or "T3").upper()
         tier_lower = tier.lower()
@@ -126,12 +144,14 @@ def render_awaiting(world):
                 break
         ws_ref = first_ws_ref(a.get("touches"))
         button = ""
-        if ws_ref:
+        if ws_ref and fresh:
             button = (
                 f'<div class="buttons">'
                 f'<button class="btn" data-ws="{e(ws_ref)}" onclick="openWs(this)">'
                 f'Open {e(ws_ref)}</button></div>'
             )
+        elif ws_ref:
+            button = f'<div class="meta">Saved reference: {e(ws_ref)}</div>'
         alts = a.get("alt_actions") or []
         alts_html = ""
         if alts:
@@ -420,12 +440,88 @@ def _greeting_for(epoch) -> str:
     return "Good evening"
 
 
+def _pr_topic_key(refs):
+    if not isinstance(refs, dict):
+        return None
+    repo, pr = refs.get("repo"), refs.get("pr")
+    if not isinstance(repo, str) or not re.fullmatch(
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100}", repo):
+        return None
+    if repo.split("/")[1] in {".", ".."}:
+        return None
+    if type(pr) is int and pr > 0:
+        return repo, pr
+    if isinstance(pr, str) and len(pr) <= 20 and re.fullmatch(r"[1-9][0-9]*", pr):
+        return repo, int(pr)
+    return None
+
+
+def _review_topics(queue, current):
+    """Group exact PR identities; focus.json only orders currently open topics.
+
+    Focus schema: {"topics": [{"repo": "owner/repo", "pr": 123,
+    "headline": "...", "recommendation": "...", "evidence_url": "https://...",
+    "checked_at": "2026-09-19T16:00:00Z"}]}. Array order sets display order.
+    Text stays draft-only. Unmatched entries never create or remove topics.
+    New alerts created after checked_at invalidate that topic's pin.
+    """
+    topics = {}
+    for index, row in enumerate(queue):
+        key = _pr_topic_key(row.get("refs")) if row.get("source") == "github" else None
+        key = key or ("notification", index)
+        topics.setdefault(key, {"rows": [], "focus": None})["rows"].append(row)
+    if not current:
+        return list(topics.values()), ""
+    try:
+        focus = json.loads((HOME / ".assistant/decisions/focus.json").read_text())
+    except FileNotFoundError:
+        return list(topics.values()), ""
+    except (OSError, ValueError):
+        return list(topics.values()), "Focus unavailable; all current topics remain listed."
+    if not isinstance(focus, dict) or not isinstance(focus.get("topics"), list):
+        return list(topics.values()), "Invalid focus file; all current topics remain listed."
+    ordered = []
+    invalid = False
+    changed = {}
+    for entry in focus["topics"]:
+        key = _pr_topic_key(entry)
+        if not isinstance(entry, dict) or key is None or any(
+                not isinstance(entry.get(field), str) or not entry[field].strip()
+                for field in ("headline", "recommendation", "evidence_url", "checked_at")):
+            invalid = True
+            continue
+        try:
+            url = urlsplit(entry["evidence_url"])
+            checked = datetime.fromisoformat(entry["checked_at"].replace("Z", "+00:00"))
+            valid = (url.scheme in {"https", "http"} and bool(url.hostname)
+                     and not url.username and not url.password and checked.tzinfo is not None
+                     and not any(char.isspace() for char in entry["evidence_url"]))
+        except ValueError:
+            valid = False
+        if not valid:
+            invalid = True
+            continue
+        if key in topics and topics[key]["focus"] is None:
+            if any(datetime.fromisoformat(row["created_ts"].replace("Z", "+00:00")) > checked
+                   for row in topics[key]["rows"]):
+                changed[key] = (
+                    f"{key[0]} #{key[1]} changed after {entry['checked_at']}; "
+                    "dated focus ignored. Review new alerts and recheck the draft.")
+                continue
+            topics[key]["focus"] = entry
+            ordered.append(topics[key])
+    ordered.extend(topic for topic in topics.values() if topic["focus"] is None)
+    notices = (["Invalid focus entries ignored; all current topics remain listed."]
+               if invalid else [])
+    notices.extend(note for key, note in changed.items() if topics[key]["focus"] is None)
+    return ordered, " ".join(notices)
+
+
 def render_brief_tab():
-    """The Brief tab (Keel M3): the latest ~/.assistant/brief/brief-<date>.json
-    rendered as the design's four sections — ranked decision queue with
-    one-tap action buttons (POSTing the existing /decision/act route),
-    handled-overnight receipts, collapsed FYI digest, health tiles — plus the
-    north-star trend from brief-metrics.jsonl. Returns (html, n_open).
+    """Render current review topics and the latest brief's supporting sections.
+
+    Original notification controls stay in collapsed history. Receipts, digest,
+    health, and the daily trend remain dated snapshots. Returns (html, n_topics).
 
     The WHOLE body is fenced: any failure (no brief yet, corrupt JSON,
     unexpected shape) degrades to a message div and never breaks the page —
@@ -440,42 +536,57 @@ def render_brief_tab():
 
 def _render_brief_tab_inner():
     briefs = sorted(BRIEF_DIR.glob("brief-????-??-??.json"))
+    brief = {}
+    date_str = ""
+    snapshot_available = False
+    snapshot_notice = ""
     if not briefs:
-        return ('<div class="empty">No brief yet — the first pulse after '
-                'wake_hour builds one, or run '
-                '<code>bin/build-morning-brief.py</code>.</div>'), 0
-    path = briefs[-1]
-    date_str = path.name[len("brief-"):-len(".json")]
+        snapshot_notice = "No brief yet; receipts and health snapshot unavailable."
+    else:
+        path = briefs[-1]
+        date_str = path.name[len("brief-"):-len(".json")]
+        try:
+            brief = json.loads(path.read_text())
+            if not isinstance(brief, dict):
+                raise ValueError("not a brief object")
+            snapshot_available = True
+        except (OSError, ValueError):
+            brief = {}
+            snapshot_notice = f"Brief {date_str} unreadable; receipts and health snapshot unavailable."
+    current = False
     try:
-        brief = json.loads(path.read_text())
-    except Exception:
-        return (f'<div class="empty">Brief {e(date_str)} unreadable — '
-                f'rebuild with <code>bin/build-morning-brief.py</code> '
-                f'(the brief is a pure derivation; nothing is lost).</div>'), 0
-
-    queue = brief.get("queue") or []
+        queue = brief_store.read_current_queue()
+        current = True
+        queue_notice = "Current notifications read from the canonical log at render time."
+    except (OSError, ValueError, TypeError, OverflowError) as exc:
+        queue = brief.get("queue") or []
+        queue_notice = (
+            f"Current notifications unavailable ({exc}). "
+            + (f"Showing dated snapshot from {date_str}; open status is unverified."
+               if brief else "No dated queue snapshot available."))
+    topics, focus_notice = _review_topics(queue, current)
+    counts_available = current or (snapshot_available and "queue" in brief)
+    topic_count = len(topics) if counts_available else "?"
+    alert_count = len(queue) if counts_available else "?"
+    count_label = (f"{topic_count} review topics · {alert_count} raw alerts"
+                   if counts_available else "Review topics and raw alert counts unavailable")
+    brief = {**brief, "queue": queue,
+             "counts": {**(brief.get("counts") or {}), "open_decisions": len(queue)}}
     receipts = brief.get("handled_overnight") or []
     digest = brief.get("digest") or {}
     health = brief.get("health") or {}
     interrupts = health.get("interrupts") or {}
     cost = health.get("cost") or {}
 
-    # ─── the editorial VOICE (Keel M7 narrator) ───
-    # The narrator is a suggestion-only draft layer OVER this pure brief: a
-    # summary sentence + one recommendation per decision. narrative_for_brief
-    # ALWAYS returns something (a deterministic template floor when no LLM
-    # narrative sidecar exists or it's stale), so the editorial layout ships
-    # even with the narrator never run. Fenced like the connector import: a
-    # broken narrator must never break the Brief tab (M0's lesson). Its summary
-    # is LLM prose authored over attacker-controllable connector text, so every
-    # string is e()-escaped at render (M3's XSS lesson).
+    # Saved narration belongs to the dated snapshot, not the current log.
     narrator = None
     narrative = {"summary": "", "recommendations": {}, "source": "template"}
     try:
         if str(REPO / "src") not in sys.path:
             sys.path.insert(0, str(REPO / "src"))
         from assistant import narrator as narrator  # noqa: PLC0415
-        narrative = narrator.narrative_for_brief(brief)
+        if not current:
+            narrative = narrator.narrative_for_brief(brief)
     except Exception:  # noqa: BLE001 — no voice is fine; the floor still renders
         narrator = None
     recs = narrative.get("recommendations") or {}
@@ -503,11 +614,12 @@ def _render_brief_tab_inner():
     # ─── stats strip + north-star trend ───
     spark = _brief_trend_svg()
     trend_tile = (
-        f'<div class="stat brief-trend"><div class="v">{len(queue)}'
+        f'<div class="stat brief-trend"><div class="v">{alert_count}'
         f'{spark}</div>'
-        f'<div class="k">Decisions pending (north star)</div></div>')
+        f'<div class="k">Raw alerts · daily snapshot trend</div></div>')
     stats = f"""
 <div class="stats">
+  <div class="stat"><div class="v">{topic_count}</div><div class="k">Review topics</div></div>
   {trend_tile}
   <div class="stat"><div class="v">{len(receipts)}</div><div class="k">Handled overnight</div></div>
   <div class="stat"><div class="v">{sum(len(v) for v in digest.values())}</div><div class="k">FYI digest rows</div></div>
@@ -517,15 +629,11 @@ def _render_brief_tab_inner():
 </div>"""
 
     # ─── 1. decision queue ───
-    # Cap the rendered queue with an "N more" row, consistent with the capped
-    # receipts (:40) and digest (:50) sections — an unbounded queue on an
-    # incident day would blow the page up while the others stay bounded (F18).
-    # The queue is lane-partitioned (escalate first), so the cap always shows
-    # the highest-priority decisions; the overflow lives on the Decisions tab.
-    QUEUE_RENDER_CAP = 40
+    HISTORY_CHUNK_SIZE = 40
     if queue:
-        rows = []
-        for rank, d in enumerate(queue[:QUEUE_RENDER_CAP], start=1):
+        alert_html = {}
+        history_rows = [row for topic in topics for row in topic["rows"]]
+        for rank, d in enumerate(history_rows, start=1):
             dec_id = d.get("id") or ""
             lane = (d.get("lane") or "?")
             lane_cls = {"escalate": "lane-escalate", "staged": "lane-staged",
@@ -554,7 +662,7 @@ def _render_brief_tab_inner():
             # The recommendation is narrator prose (or a deterministic template)
             # — same escaping contract as the strategist context.
             rec_html = (f'<div class="drec">{e(str(_rec_for(d)))}</div>')
-            rows.append(f"""
+            alert_html[id(d)] = f"""
 <div class="drow brief-dec {lane_cls}" data-dec-row="{e(dec_id)}">
   <span class="dn">{rank}</span>
   <div class="dbody">
@@ -573,14 +681,45 @@ def _render_brief_tab_inner():
     </div>
   </div>
   <span class="urg {urg_cls}">{e(urg_label)}</span>
-</div>""")
-        if len(queue) > QUEUE_RENDER_CAP:
-            rows.append(
-                f'<div class="row more">… {len(queue) - QUEUE_RENDER_CAP} '
-                f'more decision(s) — see the Decisions tab</div>')
-        queue_html = "".join(rows)
+</div>"""
+        cards = []
+        for topic in topics:
+            alerts, focus = topic["rows"], topic["focus"]
+            first = alerts[0]
+            key = _pr_topic_key(first.get("refs")) if first.get("source") == "github" else None
+            identity = f"{key[0]} #{key[1]}" if key else str(first.get("source") or "notification")
+            context_key = f"brief-pr:{key[0]}:{key[1]}" if key else f"brief-alert:{first['id']}"
+            headline = focus["headline"] if focus else first.get("title") or first["id"]
+            focus_html = (
+                f'<p class="drec">Draft recommendation: {e(focus["recommendation"])}</p>'
+                f'<p class="dmeta">Checked at {e(focus["checked_at"])} · '
+                f'<a href="{e(focus["evidence_url"])}" target="_blank" rel="noopener noreferrer">'
+                f'Evidence</a></p>' if focus else "")
+            history = "".join(alert_html[id(row)] for row in alerts[:HISTORY_CHUNK_SIZE])
+            for start in range(HISTORY_CHUNK_SIZE, len(alerts), HISTORY_CHUNK_SIZE):
+                end = min(start + HISTORY_CHUNK_SIZE, len(alerts))
+                history += (
+                    f'<details class="notification-chunk" '
+                    f'data-context-key="{e(context_key)}:alerts:{start}">'
+                    f'<summary>Alerts {start + 1}-{end} of {len(alerts)}</summary>'
+                    + "".join(alert_html[id(row)] for row in alerts[start:end])
+                    + '</details>')
+            cards.append(
+                f'<article class="review-topic"><h3>{e(str(headline))}</h3>'
+                f'<p class="dmeta">{e(identity)} · {len(alerts)} raw alerts</p>{focus_html}'
+                f'<details class="notification-history" data-context-key="{e(context_key)}">'
+                f'<summary>Notification history and controls '
+                f'({len(alerts)} raw alerts)</summary>'
+                + history + '</details></article>')
+        queue_html = "".join(cards[:3])
+        if len(cards) > 3:
+            queue_html += (
+                f'<details class="more-review-topics" data-context-key="brief-more-topics">'
+                f'<summary>{len(cards) - 3} more review topics'
+                f'</summary>{"".join(cards[3:])}</details>')
     else:
-        queue_html = '<div class="empty">Queue clear — nothing needs a decision.</div>'
+        queue_html = ('<div class="empty">No open notifications in the current log.</div>'
+                      if current else '<div class="empty">Current queue unavailable; no verified count.</div>')
 
     # ─── 2. handled overnight ───
     if receipts:
@@ -738,28 +877,27 @@ def _render_brief_tab_inner():
 
     # ─── editorial header: eyebrow · good morning · voice summary ───
     hello = _greeting_for(brief.get("epoch"))
-    voice_src = narrative.get("source")
-    summary_txt = narrative.get("summary") or ""
-    voice_tag = ('' if voice_src == "llm"
-                 else '<span class="voice-tag" title="narrator has not run for '
-                      'this brief yet — deterministic summary">auto-summary</span>')
-    summary_cls = "" if voice_src == "llm" else " template-voice"
+    summary_txt = (f"{count_label}. "
+                   "Notifications are not confirmed human decisions.")
+    voice_tag = '<span class="voice-tag">notification summary</span>'
     summary_html = (
-        f'<p class="brief-summary{summary_cls}">{e(summary_txt)}{voice_tag}</p>'
-        if summary_txt else "")
+        f'<p class="brief-summary template-voice">{e(summary_txt)}{voice_tag}</p>')
     header_html = (
         f'<div class="brief-eyebrow">Morning brief · {e(date_str)} · '
         f'built {e((brief.get("ts") or "?")[11:19])} UTC</div>'
         f'<h1 class="brief-hello">{e(hello)}</h1>'
         f'{summary_html}')
 
+    date_attribute = f' data-brief-date="{e(date_str)}"' if snapshot_available else ""
     html = f"""
-<div class="brief-root" data-brief-date="{e(date_str)}">
+<div class="brief-root"{date_attribute}>
 {header_html}
+<p class="snapshot-status" data-current-queue="{str(current).lower()}">{e(queue_notice)}</p>
+<p class="meta">{e(snapshot_notice)} {e(focus_notice)}</p>
 {stats}
 
 <div class="section">
-  <h2>Decide <span class="count">{len(queue)} · ranked</span></h2>
+  <h2>Review topics <span class="count">{e(count_label)}</span></h2>
   {queue_html}
 </div>
 
@@ -782,25 +920,30 @@ def _render_brief_tab_inner():
 <div class="brief-footer">brief {e(date_str)} · built {e(brief.get('ts') or '?')} · {e(seen_note)} · pure derivation — delete-safe, rebuild via <code>bin/build-morning-brief.py</code></div>
 </div>
 """
-    return html, len(queue)
+    return html, len(topics)
 
 
 def render_decisions_tab(world):
-    awaiting_html, awaiting_n = render_awaiting(world)
+    triage = load_assistant_state()
+    awaiting_html, awaiting_n = render_awaiting(world, state=triage)
     activity_html, activity_n = render_activity(world)
     live_html, live_n = render_live_sessions(world)
     counts = world.get("counts", {})
-    triage = load_assistant_state()
     actions_24h = len(triage.get("actions_taken") or [])
-    triage_meta = triage.get("_meta") or {}
+    gen = _overview_timestamp(_assistant_generated_at(triage))
+    fresh = _overview_fresh(gen, utc_now().timestamp())
     triage_age = "?"
-    gen = parse_iso(triage_meta.get("generated_at"))
-    if gen:
-        triage_age = age_str((utc_now() - gen).total_seconds())
+    if gen is not None:
+        triage_age = age_str(utc_now().timestamp() - gen)
+    request_label = "Awaiting input" if fresh else "Saved requests"
+    request_count = awaiting_n if fresh else "Unverified"
+    request_heading = (
+        f'Awaiting your input <span class="count">{awaiting_n}</span>'
+        if fresh else "Saved requests")
     metering_html = render_metering_stats()
     return f"""
 <div class="stats">
-  <div class="stat"><div class="v">{awaiting_n}</div><div class="k">Awaiting input</div></div>
+  <div class="stat" id="requests-stat"><div class="v">{request_count}</div><div class="k">{request_label}</div></div>
   <div class="stat"><div class="v">{actions_24h}</div><div class="k">Assistant actions</div></div>
   <div class="stat"><div class="v">{counts.get('truly_active_30m', 0)}</div><div class="k">Active sessions</div></div>
   <div class="stat"><div class="v">{counts.get('human_sessions', 0)}</div><div class="k">Live · {counts.get('cron_sessions', 0)} cron hidden</div></div>
@@ -808,8 +951,8 @@ def render_decisions_tab(world):
 </div>
 {metering_html}
 
-<div class="section">
-  <h2>Awaiting your input <span class="count">{awaiting_n}</span></h2>
+<div class="section" id="assistant-requests" data-generated-at="{gen or ''}">
+  <h2 id="requests-heading">{request_heading}</h2>
   {awaiting_html}
 </div>
 
@@ -822,7 +965,7 @@ def render_decisions_tab(world):
   <h2>Decisions <span class="count">{activity_n} · last {ACTIVITY_HOURS}h</span></h2>
   {activity_html}
 </div>
-""", awaiting_n
+""", awaiting_n if fresh else None
 
 
 def render_workspaces_tab():
@@ -2177,6 +2320,8 @@ def render():
     world = json.loads(WORLD_PATH.read_text())
     overview_html, overview_n = render_overview_tab(world)
     decisions_html, awaiting_n = render_decisions_tab(world)
+    requests_tab = (f'Decisions <span class="tab-count">{awaiting_n}</span>'
+                    if awaiting_n is not None else "Saved requests")
     todos_html, p0_p1 = render_todos_tab(world)
     workspaces_html, ws_n = render_workspaces_tab()
     fleet_html, fleet_n = render_fleet_tab()
@@ -3203,6 +3348,17 @@ h1 {
   text-transform: uppercase; color: var(--muted-2); border: 1px solid var(--line);
   border-radius: 4px; padding: 2px 6px; margin-left: 8px; vertical-align: middle; }
 .brief-summary.template-voice { color: var(--text-2); }
+.review-topic { min-width: 0; overflow-wrap: anywhere; padding: 16px;
+  border: 1px solid var(--line); border-radius: 10px; margin-bottom: 12px; }
+.review-topic h3 { margin: 0 0 8px; font: 600 16px/1.4 var(--sans); }
+.review-topic > .drec::before { content: none; }
+.notification-history > summary, .notification-chunk > summary, .more-review-topics > summary {
+  cursor: pointer; color: var(--text-2); padding: 8px 0; }
+.review-topic .dbody { min-width: 0; }
+@media (max-width: 600px) {
+  .review-topic .drow { grid-template-columns: 20px minmax(0, 1fr); gap: 8px; padding: 10px; }
+  .review-topic .urg { grid-column: 2; justify-self: start; }
+}
 
 /* Decide — numbered, ranked rows */
 .drow { display: grid; grid-template-columns: 30px 1fr auto; gap: 14px;
@@ -3396,6 +3552,19 @@ function showTab(name) {
     const root = document.getElementById('dashboard-content');
     if (!root) return;
     const now = Date.now() / 1000;
+    const requests = root.querySelector('#assistant-requests');
+    const requestStamp = Number(requests?.dataset.generatedAt);
+    if (requests && (!requestStamp || now < requestStamp
+        || now - requestStamp > Number(root.dataset.freshSeconds))) {
+      document.querySelector('[data-tab="decisions"]').textContent = 'Saved requests';
+      document.getElementById('requests-heading').textContent = 'Saved requests';
+      document.querySelector('#requests-stat .v').textContent = 'Unverified';
+      document.querySelector('#requests-stat .k').textContent = 'Saved requests';
+      document.getElementById('saved-requests-warning').hidden = false;
+      requests.querySelectorAll('button[data-ws]').forEach(button => {
+        button.replaceWith(document.createTextNode('Saved reference: ' + button.dataset.ws));
+      });
+    }
     const stamp = Number(root.dataset.snapshotAt);
     const age = stamp ? now - stamp : Infinity;
     const fresh = age >= 0 && age <= Number(root.dataset.freshSeconds);
@@ -3505,6 +3674,16 @@ window.addEventListener('DOMContentLoaded', () => {
   setInterval(refreshDashboard, 15000);
 });
 async function openWs(btn) {
+  const requests = btn.closest('#assistant-requests');
+  if (requests) {
+    const stamp = Number(requests.dataset.generatedAt);
+    const age = Date.now() / 1000 - stamp;
+    const limit = Number(document.getElementById('dashboard-content').dataset.freshSeconds);
+    if (!stamp || age < 0 || age > limit) {
+      updateFreshness();
+      return;
+    }
+  }
   const ws = btn.dataset.ws;
   const original = btn.dataset.original || btn.textContent;
   btn.dataset.original = original;
@@ -3723,7 +3902,7 @@ document.addEventListener('click', handleTodoToolsClick);
     Brief <span class="tab-count">{brief_n}</span>
   </button>
   <button class="tab" data-tab="decisions" onclick="showTab('decisions')">
-    Decisions <span class="tab-count">{awaiting_n}</span>
+    {requests_tab}
   </button>
   <button class="tab" data-tab="workspaces" onclick="showTab('workspaces')">
     Workspaces <span class="tab-count">{ws_n}</span>

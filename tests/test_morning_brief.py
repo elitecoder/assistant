@@ -106,6 +106,31 @@ class ScorerTests(BriefBase):
 
 
 class BuildBriefTests(BriefBase):
+    def test_current_queue_preserves_refs_goal_ranks_and_lane_order(self):
+        for i, lane, goals in [(1, "staged", []), (2, "staged", ["top"]),
+                               (3, "escalate", [])]:
+            decisions.open_decision(
+                event=make_event(i, source="github",
+                                 refs={"repo": "adobe/firefly-platform", "pr": 15561}),
+                lane=lane, policy_id="p", goal_refs=goals, now=NOW)
+        brief.goals_path().parent.mkdir(parents=True, exist_ok=True)
+        brief.goals_path().write_text(json.dumps({
+            "goals": [{"id": "top", "rank": 1, "status": "active"}]}))
+        queue = brief.read_current_queue(now=NOW)
+        self.assertEqual(queue, brief.build_brief(now=NOW)["queue"])
+        self.assertEqual([row["lane"] for row in queue], ["escalate", "staged", "staged"])
+        self.assertEqual(queue[1]["goal_refs"], ["top"])
+        self.assertGreater(queue[1]["goal_boost"], queue[2]["goal_boost"])
+        self.assertEqual(queue[0]["refs"], {"repo": "adobe/firefly-platform", "pr": 15561})
+
+    def test_current_queue_rejects_missing_and_corrupt_log(self):
+        with self.assertRaises(FileNotFoundError):
+            brief.read_current_queue(now=NOW)
+        decisions.decisions_path().parent.mkdir(parents=True)
+        decisions.decisions_path().write_text("{torn\n")
+        with self.assertRaises(ValueError):
+            brief.read_current_queue(now=NOW)
+
     def seed(self):
         decisions.open_decision(event=make_event(1), lane="escalate",
                                 policy_id="rule-esc", urgency="now", now=NOW - 3600)

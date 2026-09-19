@@ -174,7 +174,7 @@ class _Base(unittest.TestCase):
 
 class AwaitingTests(_Base):
     def test_empty_state(self):
-        self._write_state({"awaiting_input": []})
+        self._write_state({"generated_at": _iso(self.mod.utc_now()), "awaiting_input": []})
         html, n = self.mod.render_awaiting({})
         self.assertEqual(n, 0)
         self.assertIn("No decisions awaiting your input", html)
@@ -185,7 +185,7 @@ class AwaitingTests(_Base):
         self.assertIn("empty", html)
 
     def test_cards_render_sorted_by_confidence(self):
-        self._write_state({"awaiting_input": [
+        self._write_state({"generated_at": _iso(self.mod.utc_now()), "awaiting_input": [
             {"tier": "T2", "title": "low conf", "detail": "d1", "confidence": 0.10,
              "touches": [{"ref": "workspace:5", "name": "alpha"}]},
             {"tier": "T1", "title": "high conf", "detail": "d2", "confidence": 0.90,
@@ -390,6 +390,63 @@ class LiveSessionsTests(_Base):
 # ─── render_decisions_tab ────────────────────────────────────────────────────
 
 class DecisionsTabTests(_Base):
+    def test_saved_requests_do_not_claim_current_choices_or_targets(self):
+        now = datetime.now(timezone.utc)
+        for stamp in ({}, {"generated_at": _iso(now - timedelta(days=5))},
+                      {"_meta": {"generated_at": _iso(now - timedelta(days=5))}},
+                      {"generated_at": "invalid"},
+                      {"generated_at": _iso(now + timedelta(minutes=1))}):
+            with self.subTest(stamp=stamp):
+                self._write_state({
+                    **stamp, "awaiting_input": [
+                        {"title": f"Saved request {i}", "detail": "<b>Old context</b>",
+                         "touches": ["workspace:999"], "confidence": 0.8}
+                        for i in range(30)],
+                })
+                self._write_world(full_world())
+                html, n = self.mod.render_decisions_tab(full_world())
+                self.assertIsNone(n)
+                self.assertIn("Saved requests", html)
+                self.assertIn("Historical requests", html)
+                self.assertIn("unverified", html)
+                self.assertIn("Saved request 29", html)
+                self.assertIn("&lt;b&gt;Old context&lt;/b&gt;", html)
+                self.assertNotIn('data-ws="workspace:999"', html)
+                self.assertIn("workspace:999", html)
+                self.mod.render()
+                page = (self._tmp / ".claude/assistant-dashboard.html").read_text()
+                tab = page.split('data-tab="decisions"', 1)[1].split("</button>", 1)[0]
+                self.assertIn("Saved requests", tab)
+                self.assertNotIn("tab-count", tab)
+
+    def test_fresh_top_level_and_nested_dates_keep_existing_controls(self):
+        now = self.mod.utc_now()
+        for stamp in ({"generated_at": _iso(now)},
+                      {"_meta": {"generated_at": _iso(now)}}):
+            with self.subTest(stamp=stamp):
+                self._write_state({
+                    **stamp, "awaiting_input": [
+                        {"title": "Current request", "touches": ["workspace:999"]}],
+                })
+                html, n = self.mod.render_decisions_tab(full_world())
+                self.assertEqual(n, 1)
+                self.assertIn('data-ws="workspace:999"', html)
+                self.assertIn("Awaiting your input", html)
+                self.assertIn('id="saved-requests-warning" hidden', html)
+
+    def test_requests_use_existing_freshness_boundary(self):
+        now = self.mod.utc_now()
+        for age, expected in ((self.mod.OVERVIEW_FRESH_SECONDS, 1),
+                              (self.mod.OVERVIEW_FRESH_SECONDS + 1, None)):
+            with self.subTest(age=age), mock.patch.object(self.mod, "utc_now", return_value=now):
+                self._write_state({
+                    "generated_at": _iso(now - timedelta(seconds=age)),
+                    "awaiting_input": [{"title": "Boundary request", "touches": ["workspace:999"]}],
+                })
+                html, n = self.mod.render_decisions_tab(full_world())
+                self.assertEqual(n, expected)
+                self.assertEqual('data-ws="workspace:999"' in html, expected is not None)
+
     def test_assembles_stats_and_sections(self):
         world = full_world()
         now = datetime.now(timezone.utc)

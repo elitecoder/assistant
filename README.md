@@ -208,6 +208,18 @@ workspace identity so the overview can confirm **Parked**. If you run the dashbo
 from a separate checkout, use its displayed confirmation command for older pause
 records; your globally installed skill might still use the older version.
 
+The Brief tab reads the current decision log and groups GitHub alerts by pull
+request. It shows three review topics first; expand the rest or the individual
+alert history when needed. Topic counts aren't counts of decisions you must make.
+Optional `~/.assistant/decisions/focus.json` records order matching open topics and
+provide dated recommendations. Old Assistant snapshots appear as **Saved requests**,
+without current-decision badges or workspace-opening actions.
+
+Approved historical-alert cleanup uses `decisions.expire_selected`: exact record
+fingerprints, a locked preflight, private backups, and an atomic log update.
+Its private receipt doesn't enter the outgoing action ledger. It never approves,
+merges, closes, or completes the work represented by those alerts.
+
 ## Entry points
 
 - `bin/pulse.py` — the main orchestrator loop, runs every 5 min via LaunchAgent

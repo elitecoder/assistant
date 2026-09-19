@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Group live GitHub alerts into review topics, show three first, and keep
+  individual alerts available in history. Surface stale saved requests separately.
 - Add approval-bound backlog cleanup with record fingerprints, backups, and a
   private audit receipt that cannot trigger outgoing notification broadcasts.
 - Add an attention overview with compact task cards, expandable return notes,

@@ -16,6 +16,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "bin/render-assistant-page.py"
@@ -106,10 +107,264 @@ class BriefTabTests(unittest.TestCase):
         (self.home / ".assistant/brief" / f"brief-{doc['date']}.json"
          ).write_text(json.dumps(doc))
 
+    def write_log(self, rows):
+        path = self.home / ".assistant/decisions/decisions.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps({
+            "schema": "decision/1", "status": "open", "epoch": NOW,
+            "lane": "staged", **row,
+        }) + "\n" for row in rows))
+        return path
+
+    def test_current_log_replaces_stale_brief_read_only(self):
+        self.write_brief(brief_fixture())
+        path = self.write_log([
+            {"id": "current", "source": "github", "title": "Current alert",
+             "refs": {"repo": "adobe/firefly-platform", "pr": 15561}},
+            {"id": "closed", "title": "Closed alert"},
+            {"id": "closed", "status": "expired", "epoch": NOW + 1},
+        ])
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 1)
+        self.assertIn("Current alert", html)
+        self.assertNotIn("Closed alert", html)
+        self.assertNotIn("dec-aaaa1111bbbb2222", html)
+        self.assertIn("1 review topics", html)
+        self.assertIn("1 raw alerts", html)
+        self.assertEqual(before, {
+            p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+        path.write_text(path.read_text() + json.dumps({
+            "schema": "decision/1", "id": "current", "status": "expired",
+            "epoch": NOW + 2,
+        }) + "\n")
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 0)
+        self.assertNotIn("Current alert", html)
+
+    def test_github_grouping_keeps_other_sources_distinct(self):
+        self.write_brief(brief_fixture())
+        self.write_log([
+            {"id": str(i), "source": source, "title": "Same title",
+             "refs": {"repo": repo, "pr": pr}}
+            for i, (source, repo, pr) in enumerate([
+                ("github", "adobe/firefly-platform", 15561),
+                ("github", "adobe/firefly-platform", "15561"),
+                ("github", "other/repo", 15561),
+                ("cmux", "adobe/firefly-platform", 15561),
+                ("cmux", "adobe/firefly-platform", 15561),
+                ("github", "invalid/repo/extra", 15561),
+                ("github", "adobe/firefly-platform", True),
+            ])
+        ])
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 6)
+        self.assertEqual(html.count('class="review-topic"'), 6)
+        self.assertEqual(html.count('data-dec-row='), 7)
+        self.assertIn("7 raw alerts", html)
+        self.assertIn("3 more review topics", html)
+
+    def test_missing_or_corrupt_log_explicitly_labels_snapshot(self):
+        self.write_brief(brief_fixture())
+        for contents in (None, "{torn", '{"schema":"decision/1","id":"x"}\n', '[]\n'):
+            with self.subTest(contents=contents):
+                if contents is not None:
+                    self.write_log([]).write_text(contents)
+                html, n = self.mod.render_brief_tab()
+                self.assertEqual(n, 2)
+                self.assertIn("Current notifications unavailable", html)
+                self.assertIn("dated snapshot from 2026-07-02", html)
+                self.assertIn("open status is unverified", html)
+                self.assertNotIn("Queue clear", html)
+
+    def test_current_queue_without_readable_brief(self):
+        self.write_log([{"id": "live", "title": "Live notification"}])
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 1)
+        self.assertIn("Live notification", html)
+        self.assertIn("No brief yet", html)
+        self.assertNotIn("data-brief-date=", html)
+        (self.home / ".assistant/brief/brief-2026-07-02.json").write_text("{bad")
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 1)
+        self.assertIn("Live notification", html)
+        self.assertIn("unreadable", html)
+        self.assertNotIn("data-brief-date=", html)
+
+    def test_focus_order_matching_escaping_and_invalid_entries(self):
+        self.write_brief(brief_fixture())
+        self.write_log([
+            {"id": str(pr), "source": "github", "title": f"Original {pr}",
+             "refs": {"repo": "adobe/firefly-platform", "pr": pr}}
+            for pr in (15561, 15723, 15795, 999)
+        ])
+        entry = {
+            "repo": "adobe/firefly-platform", "pr": 15723,
+            "headline": '<script>alert("headline")</script>',
+            "recommendation": "<b>Draft only</b>",
+            "evidence_url": 'https://github.com/adobe/firefly-platform/pull/15723?a="b"&c=d',
+            "checked_at": "2026-09-19T16:00:00Z",
+        }
+        path = self.home / ".assistant/decisions/focus.json"
+        path.write_text(json.dumps({"topics": [
+            entry, {**entry, "pr": 15561, "headline": "Second focus"},
+            {**entry, "pr": 12345, "headline": "Closed topic"},
+            {**entry, "pr": 15795, "evidence_url": "javascript:alert(1)"},
+            {**entry, "pr": 999, "checked_at": "not a date"},
+        ]}))
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 4)
+        self.assertLess(html.index("&lt;script&gt;"), html.index("Second focus"))
+        self.assertIn("Checked at 2026-09-19T16:00:00Z", html)
+        self.assertIn("&lt;b&gt;Draft only&lt;/b&gt;", html)
+        self.assertIn('a=&quot;b&quot;&amp;c=d', html)
+        self.assertNotIn("<script>", html)
+        self.assertNotIn("javascript:", html)
+        self.assertNotIn("Closed topic", html)
+        self.assertEqual(html.count('data-dec-row='), 4)
+        self.assertIn("Invalid focus entries ignored", html)
+        for bad in ("{torn", "[]", '{"topics":null}'):
+            path.write_text(bad)
+            html, n = self.mod.render_brief_tab()
+            self.assertEqual(n, 4)
+            self.assertEqual(html.count('data-dec-row='), 4)
+            self.assertIn("all current topics remain listed", html)
+
+    def test_focus_never_promotes_unverified_snapshot(self):
+        doc = brief_fixture()
+        doc["queue"][1]["refs"] = {"repo": "adobe/firefly-platform", "pr": 15561}
+        self.write_brief(doc)
+        directory = self.home / ".assistant/decisions"
+        directory.mkdir()
+        (directory / "focus.json").write_text(json.dumps({"topics": [{
+            "repo": "adobe/firefly-platform", "pr": 15561,
+            "headline": "Unverified focus", "recommendation": "Do not promote",
+            "evidence_url": "https://github.com/adobe/firefly-platform/pull/15561",
+            "checked_at": "2026-09-19T16:00:00Z",
+        }]}))
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 2)
+        self.assertNotIn("Unverified focus", html)
+
+    def test_old_narration_cannot_restore_decision_count(self):
+        self.write_brief(brief_fixture())
+        self.write_log([{"id": "new"}])
+        with patch("assistant.narrator.narrative_for_brief", return_value={
+                "summary": "2259 decisions pending", "source": "llm"}):
+            html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 1)
+        self.assertNotIn("2259", html)
+        self.assertNotIn("Decisions pending", html)
+
+    def test_live_recommendations_ignore_saved_narration_for_changed_records(self):
+        doc = brief_fixture()
+        row = dict(doc["queue"][1])
+        row["snippet"] = "Old cached snippet"
+        doc["queue"] = [row]
+        self.write_brief(doc)
+        (self.home / f".assistant/brief/brief-{doc['date']}.narrative.json").write_text(
+            json.dumps({
+                "schema": "brief-narrative/1", "date": doc["date"],
+                "brief_epoch": doc["epoch"], "source": "llm",
+                "summary": "Old summary",
+                "recommendations": {row["id"]: "Obsolete saved recommendation"},
+            }))
+        self.write_log([row, {
+            **row, "epoch": NOW + 1,
+            "recommended": {"class": "digest.append"},
+            "snippet": "Updated current evidence",
+        }])
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 1)
+        self.assertIn(f'data-dec-row="{row["id"]}"', html)
+        self.assertIn("Updated current evidence", html)
+        self.assertIn("Accept: digest.append", html)
+        self.assertNotIn("Obsolete saved recommendation", html)
+        self.assertNotIn("Old cached snippet", html)
+        self.assertNotIn("Accept: todo.create", html)
+        with patch("assistant.narrator.narrative_for_brief") as saved_narration:
+            self.mod.render_brief_tab()
+        saved_narration.assert_not_called()
+
+    def test_focus_requires_timezone_aware_checked_at(self):
+        self.write_brief(brief_fixture())
+        self.write_log([{"id": "focus-alert", "title": "Original topic",
+                         "source": "github", "refs": {"repo": "adobe/firefly-platform", "pr": 15561}}])
+        path = self.home / ".assistant/decisions/focus.json"
+        for stamp, valid in (("2026-09-19T16:00:00", False),
+                             ("2026-09-19T16:00:00Z", True),
+                             ("2026-09-19T09:00:00-07:00", True)):
+            with self.subTest(stamp=stamp):
+                path.write_text(json.dumps({"topics": [{
+                    "repo": "adobe/firefly-platform", "pr": 15561,
+                    "headline": "Curated topic", "recommendation": "Curated draft",
+                    "evidence_url": "https://github.com/adobe/firefly-platform/pull/15561",
+                    "checked_at": stamp,
+                }]}))
+                html, n = self.mod.render_brief_tab()
+                self.assertEqual(n, 1)
+                self.assertEqual("Curated topic" in html, valid)
+                self.assertEqual("Curated draft" in html, valid)
+                self.assertIn('data-dec-row="focus-alert"', html)
+                if valid:
+                    self.assertIn(f"Checked at {stamp}", html)
+                else:
+                    self.assertIn("Invalid focus entries ignored", html)
+
+    def test_alert_created_after_focus_unpins_topic_without_hiding_history(self):
+        self.write_brief(brief_fixture())
+        checked_at = "2026-09-19T10:10:00-07:00"
+        checked_epoch = datetime.fromisoformat(checked_at).timestamp()
+        old = {"id": "old-alert", "title": "Old topic alert", "source": "github",
+               "refs": {"repo": "adobe/firefly-platform", "pr": 15561},
+               "created_epoch": NOW, "epoch": checked_epoch + 60}
+        urgent = {"id": "urgent-alert", "title": "Urgent other topic", "source": "github",
+                  "lane": "escalate", "refs": {"repo": "adobe/firefly-platform", "pr": 15723}}
+        self.write_log([old, urgent])
+        focus = self.home / ".assistant/decisions/focus.json"
+        focus.write_text(json.dumps({"topics": [{
+            "repo": "adobe/firefly-platform", "pr": 15561,
+            "headline": "Prepared topic", "recommendation": "Previously checked draft",
+            "evidence_url": "https://github.com/adobe/firefly-platform/pull/15561",
+            "checked_at": checked_at,
+        }]}))
+        before = focus.read_bytes()
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 2)
+        self.assertLess(html.index("<h3>Prepared topic"), html.index("<h3>Urgent other topic"))
+        for seconds_after in (0, 1):
+            with self.subTest(seconds_after=seconds_after):
+                self.write_log([old, urgent, {
+                    **old, "id": "new-alert", "title": "New topic alert",
+                    "created_epoch": checked_epoch + seconds_after,
+                }])
+                html, n = self.mod.render_brief_tab()
+                self.assertEqual(n, 2)
+                self.assertEqual(html.count('data-dec-row='), 3)
+                self.assertIn("3 raw alerts", html)
+                for dec_id in ("old-alert", "urgent-alert", "new-alert"):
+                    self.assertIn(f'data-dec="{dec_id}" data-action="accept"', html)
+                self.assertEqual(focus.read_bytes(), before)
+                if seconds_after == 0:
+                    self.assertIn("Prepared topic", html)
+                    self.assertIn("Previously checked draft", html)
+                    self.assertNotIn("dated focus ignored", html)
+                else:
+                    self.assertNotIn("Prepared topic", html)
+                    self.assertNotIn("Previously checked draft", html)
+                    self.assertIn(f"adobe/firefly-platform #15561 changed after {checked_at}", html)
+                    self.assertIn("dated focus ignored", html)
+                    self.assertIn("Review new alerts and recheck the draft", html)
+                    self.assertLess(html.index("<h3>Urgent other topic"),
+                                    html.index("<h3>New topic alert"))
+
     def test_no_brief_yet_degrades_to_message(self):
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 0)
         self.assertIn("No brief yet", html)
+        self.assertIn("raw alert counts unavailable", html)
+        self.assertNotIn("0 review topics", html)
+        self.assertNotIn("data-brief-date=", html)
 
     def test_corrupt_brief_degrades_to_message(self):
         (self.home / ".assistant/brief/brief-2026-07-02.json"
@@ -243,21 +498,27 @@ class BriefTabTests(unittest.TestCase):
         self.assertIn("/brief/seen", page)
         self.assertIn("handleDecisionActClick", page)
 
-    def test_queue_render_is_capped_with_more_row(self):
-        """F18: the queue is capped with an 'N more' row like the receipts
-        and digest sections — an incident-day queue can't render unbounded."""
-        doc = brief_fixture()
-        row = dict(doc["queue"][1])
-        doc["queue"] = []
-        for i in range(45):  # > the 40-row cap
-            r = dict(row)
-            r["id"] = f"dec-{i:016x}"
-            doc["queue"].append(r)
-        self.write_brief(doc)
-        html, n = self.mod.render_brief_tab()
-        self.assertEqual(n, 45)                      # count is honest …
-        self.assertEqual(html.count("data-dec-row="), 40)  # … render is capped
-        self.assertIn("more decision", html)
+    def test_all_alert_controls_remain_reachable_in_history_chunks(self):
+        for count in (45, 85):
+            with self.subTest(count=count):
+                doc = brief_fixture()
+                row = {**doc["queue"][1],
+                       "refs": {"repo": "adobe/firefly-platform", "pr": 15561}}
+                doc["queue"] = [{**row, "id": f"dec-{i:016x}"} for i in range(count)]
+                self.write_brief(doc)
+                self.write_log(doc["queue"])
+                html, n = self.mod.render_brief_tab()
+                self.assertEqual(n, 1)
+                self.assertEqual(html.count("data-dec-row="), count)
+                self.assertEqual(html.count('class="notification-chunk"'), (count - 1) // 40)
+                self.assertIn(f"{count} raw alerts", html)
+                self.assertNotIn("not displayed", html)
+                self.assertNotIn("history is capped", html)
+                for item in doc["queue"]:
+                    for action in ("accept", "snooze", "reject", "wrong_lane"):
+                        self.assertIn(f'data-dec="{item["id"]}" data-action="{action}"', html)
+                for start in range(40, count, 40):
+                    self.assertIn(f"Alerts {start + 1}-{min(start + 40, count)} of {count}", html)
 
     def test_seen_ping_uses_absolute_server_url(self):
         """F19: the /brief/seen ping targets the todo-server's absolute origin
