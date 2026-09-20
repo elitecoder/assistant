@@ -114,8 +114,12 @@ def load_live_agent_sessions():
     """Prefer verified world bindings; use legacy registrations without identity data."""
     try:
         world = json.loads(WORLD_PATH.read_text())
-    except Exception:
-        world = {}
+    except (OSError, ValueError) as exc:
+        log(f"session membership unavailable: {exc}", "warn")
+        return {}
+    if not isinstance(world, dict):
+        log("session membership unavailable: world snapshot is not an object", "warn")
+        return {}
     world_sessions = world.get("live_sessions", []) or []
     identity_schema = any(
         isinstance(entry, dict) and "identity_status" in entry for entry in world_sessions

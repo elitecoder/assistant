@@ -69,6 +69,8 @@ def tmp_home(tmp_path, monkeypatch):
     monkeypatch.setattr(scw, "WORLD_PATH", world_path)
     monkeypatch.setattr(scw, "LOG_DIR", log_dir)
     monkeypatch.setattr(scw, "LOCK_FILE", lock_file)
+    world_path.parent.mkdir(parents=True, exist_ok=True)
+    world_path.write_text(json.dumps({"live_sessions": []}))
     return home
 
 
@@ -138,6 +140,20 @@ def test_pid_alive_non_int():
 def test_load_live_sessions_missing_registry(tmp_home):
     # No file → empty dict, no crash.
     assert scw.load_live_claude_sessions() == {}
+
+
+@pytest.mark.parametrize("contents", [None, "{incomplete", "[]", "null"])
+def test_unreadable_world_never_restores_historical_registry(tmp_home, monkeypatch, contents):
+    _write_registry(tmp_home, {
+        "historical": {"claude_pid": os.getpid(), "session_id": "old-session",
+                       "transcript_path": "/history.jsonl"},
+    })
+    if contents is None:
+        monkeypatch.setattr(scw, "WORLD_PATH", scw.WORLD_PATH.with_name("missing.json"))
+    else:
+        scw.WORLD_PATH.write_text(contents)
+    assert scw.load_live_agent_sessions() == {}
+    assert "session membership unavailable" in (scw.LOG_DIR / "session-context-watcher.err").read_text()
 
 
 def test_load_live_sessions_filters_dead_keeps_live(tmp_home):
