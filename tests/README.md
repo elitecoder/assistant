@@ -51,31 +51,42 @@ services; a temporary `HOME` alone doesn't isolate `launchctl`.
 ```bash
 REPORT="$HOME/dev/generated-docs/assistant-coverage"
 mkdir -p "$REPORT"
-uv run --with pytest --with pytest-cov --with coverage python -m pytest tests/ -q \
-  --cov="$PWD/bin" --cov="$PWD/src" --cov-config=tests/coverage.ini \
-  --cov-report="json:$REPORT/python.json"
+uv run --with pytest --with pytest-cov --with coverage python tests/run_python_coverage.py \
+  --output-dir "$REPORT" --pytest-args -q
 npm --prefix tests ci --no-audit --no-fund
 uv run --with playwright python tests/drive_dashboard_overview.py \
   --browser-executable "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --output-dir "$REPORT/browser" --coverage-dir "$REPORT/browser"
 node tests/browser_coverage.cjs "$REPORT/browser/browser-v8.json" "$REPORT/browser/istanbul.json"
-python3 tests/check_change_coverage.py --base main \
+uv run --with coverage python tests/check_change_coverage.py --base main \
   --python-report "$REPORT/python.json" \
   --browser-report "$REPORT/browser/istanbul.json" \
   --output "$REPORT/changed-code.json"
 uv run --with pytest python tests/mutation_smoke.py --output "$REPORT/mutations.json"
 ```
 
-The last command fails below 100%. It also rejects missing reports, excluded
-new code, and browser reports from a different script version. Python coverage
+The coverage command fails below 100%. It also rejects missing or stale reports,
+excluded new code, and browser reports from a different script version. Source
+fingerprints are captured before and after the test run; changed source invalidates
+the measurement. Changed Python continuation lines map to their executable
+statement, rather than disappearing from the count. Python coverage
 of an HTML string doesn't count as JavaScript coverage. Layout and CSS still
 need browser measurements and visual inspection.
+
+The current coverage adapters cover Python under `bin/` and `src/` and the
+dashboard's embedded JavaScript. Changes to other executable code fail until
+an adapter is added; they aren't silently treated as covered.
+
+The checked-in workflow runs these checks for pull requests and pushes to
+`main`. To prevent merges that bypass them, require **Tests and 100% new-code
+coverage** in your branch protection settings. This change doesn't edit those
+repository settings or automate the two independent reviews.
 
 Coverage isn't proof of correctness. Use the two reviews to challenge the
 diagnosis, side effects, missing cases, and whether tests catch the actual bug.
 Keep both verdicts and the measured results with the exact commit under review.
 
-The mutation check uses separate temporary copies. It breaks four protections
+The mutation check uses separate temporary copies. It breaks six protections
 one at a time and requires the corresponding test to fail; it never edits your
 working copy or sends commands to live sessions.
 

@@ -1673,7 +1673,13 @@ def overview_cards(world):
         working = any(
             s.get("pending_tool_use") is True
             for s in current_context)
-        tools_complete = bool(associated) and all(
+        associated_surfaces = {_overview_identity(session["surface_id"]) for session in associated}
+        unknown_terminals = [
+            surface for surface in workspace.get("surfaces", [])
+            if surface.get("type") != "browser"
+            and _overview_identity(surface.get("surface_id")) not in associated_surfaces
+        ]
+        tools_complete = bool(associated) and not unknown_terminals and all(
             session in current_context and session.get("pending_tool_use") is False
             for session in associated)
         recorded = [_overview_timestamp(s.get("first_recorded_at")) for s in associated]
@@ -1740,6 +1746,7 @@ def overview_cards(world):
             "park_reason": pause.get("reason") or "",
             "pause_uncertain": uncertain_pause,
             "sessions": associated, "request": last_request,
+            "unknown_terminals": len(unknown_terminals),
             "first_recorded_at": first_recorded,
             "unverified": bool(summaries.get(ref)) and not matches,
             "observation_current": context_fresh,
@@ -1792,17 +1799,31 @@ def render_overview_tab(world):
         age_label = f"First seen {recorded}" if recorded else "Start date unknown"
         unverified = ("<p class=\"attention-boundary\">An earlier note couldn't be matched to this session. "
                       "It isn't used here.</p>") if card["unverified"] else ""
+        incomplete = (
+            '<p class="attention-boundary">Another terminal in this workspace has not been checked. '
+            'Check every terminal before closing the workspace.</p>'
+            if card["unknown_terminals"] else "")
         questions_html = ""
         choice_labels = []
         for question in card["questions"]:
-            choice_labels.extend(option["label"] for option in question.get("options", []))
+            supplied_options = question.get("options") or []
+            readable_options = [
+                option for option in supplied_options
+                if isinstance(option, dict) and isinstance(option.get("label"), str)
+                and option["label"].strip()
+            ]
+            choice_labels.extend(option["label"] for option in readable_options)
             options = "".join(
                 f'<li><strong>{e(option["label"])}</strong>'
                 f' {e(option.get("description") or "")}</li>'
-                for option in question.get("options", []))
+                for option in readable_options)
+            warning = (
+                '<p class="attention-boundary">Some question details were shortened or could not be read. '
+                'Check the original question in your session before answering.</p>'
+                if question.get("truncated") or len(readable_options) != len(supplied_options) else "")
             questions_html += (
                 f'<div class="session-question"><p>{e(question["question"])}</p>'
-                f'<ul>{options}</ul><p class="attention-boundary">'
+                f'<ul>{options}</ul>{warning}<p class="attention-boundary">'
                 "Answer in your session. This page doesn't send a reply.</p></div>")
         choices_preview = (f'<p class="attention-choices">{len(choice_labels)} choices from your session. '
                            'Expand the question to read them.</p>') if choice_labels else ""
@@ -1874,6 +1895,7 @@ def render_overview_tab(world):
     </dl>
     {resume_html}
     {unverified}
+    {incomplete}
     <p class="attention-boundary">This opens the workspace. It doesn't send instructions or close anything.</p>
   </details>
   <div class="attention-actions">
@@ -3560,7 +3582,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, a:focus-visibl
 @media (max-width: 620px) { .attention-board { grid-template-columns: 1fr; } .attention-intro { flex-direction: column; gap: 12px; } .attention-filter { align-self: stretch; } .attention-filter input { width: 100%; } .attention-hint { min-height: auto; } }
 """
 
-    js = """
+    js = r"""
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
@@ -3581,7 +3603,7 @@ function showTab(name) {
       await navigator.clipboard.writeText(prompt.value);
       status.textContent = 'Copied. Open your session and read the message before sending it.';
     } catch (error) {
-      status.textContent = \"Couldn't copy. Select the message and copy it yourself.\";
+      status.textContent = "Couldn't copy. Select the message and copy it yourself.";
       prompt.focus();
       prompt.select();
     }
@@ -3727,14 +3749,14 @@ function showTab(name) {
       ? (fresh ? 'Sessions last checked ' : 'Session information is out of date. Last checked ')
         + new Date(stamp * 1000).toLocaleString()
         + (fresh ? '.' : '. Check for an update before acting.')
-      : \"Sessions haven't been checked yet. Check for an update before acting.\";
+      : "Sessions haven't been checked yet. Check for an update before acting.";
     const scope = document.querySelector('.session-scope');
     const workspaceCount = scope.dataset.workspaceCount;
     document.querySelector('[data-tab="overview"] .tab-count').textContent = fresh ? workspaceCount : '?';
     scope.textContent = fresh
-      ? workspaceCount + \" cmux workspaces in the saved list. GitHub alerts aren't included.\"
-      : \"The current workspace count hasn't been checked. The saved list has \" + workspaceCount
-        + \" workspaces. GitHub alerts aren't included.\";
+      ? workspaceCount + " cmux workspaces in the saved list. GitHub alerts aren't included."
+      : "The current workspace count hasn't been checked. The saved list has " + workspaceCount
+        + " workspaces. GitHub alerts aren't included.";
     const finishAt = Number(document.getElementById('finish-prompt')?.dataset.evidenceAt);
     const finishFresh = fresh && finishAt && now >= finishAt
       && now - finishAt <= Number(root.dataset.freshSeconds);
@@ -3944,7 +3966,9 @@ async function handleTodoToolsClick(ev) {
 
   // ─── Remove TODO (soft-delete via /remove/<id>) ───
   if (btn.classList.contains('td-remove')) {
-    if (!confirm(`Remove ${id}?\n\nSoft-delete: TODO is moved into the 'removed[]' array of assistant-todo.json (recoverable, but disappears from the dashboard).`)) return;
+    if (!confirm(`Remove ${id}?
+
+Soft-delete: TODO is moved into the 'removed[]' array of assistant-todo.json (recoverable, but disappears from the dashboard).`)) return;
     btn.classList.add('busy'); btn.textContent = 'Removing…';
     try {
       const r = await fetch(`/remove/${id}`, {method: 'POST'});
@@ -3965,7 +3989,10 @@ async function handleTodoToolsClick(ev) {
 
   // ─── Dispatch now: force Bucket B at next pulse ───
   if (btn.classList.contains('td-dispatch')) {
-    if (!confirm(`Force ${id} to dispatch at next Assistant pulse?\n\nThis sets autoDispatch=true and clears dispatchedAt/dispatchedWs.\nIf the TODO was deferred/blocked/done, it will be reopened.`)) return;
+    if (!confirm(`Force ${id} to dispatch at next Assistant pulse?
+
+This sets autoDispatch=true and clears dispatchedAt/dispatchedWs.
+If the TODO was deferred/blocked/done, it will be reopened.`)) return;
     btn.classList.add('busy'); btn.textContent = 'Queueing…';
     try {
       const r = await fetch(`/dispatch-now/${id}`, {method: 'POST'});

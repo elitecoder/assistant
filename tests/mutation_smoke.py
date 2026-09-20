@@ -42,6 +42,20 @@ CHECKS = (
         'latest.get("status") != OPEN',
         "tests/test_decision_backlog_cleanup.py::BacklogCleanupTests::test_changed_open_decision_invalidates_its_approved_fingerprint",
     ),
+    (
+        "completed tool traffic invalidates old close-out notes",
+        "bin/session-context-watcher.py",
+        '"history": self.history_digest.hexdigest(),',
+        '"history": "",',
+        "tests/test_session_context_watcher.py::test_completed_tool_roundtrip_cannot_reuse_closeout_note",
+    ),
+    (
+        "unknown terminals block workspace close-out",
+        "bin/render-assistant-page.py",
+        "tools_complete = bool(associated) and not unknown_terminals and all(",
+        "tools_complete = bool(associated) and all(",
+        "tests/test_dashboard_overview.py::OverviewTests::test_unknown_second_terminal_blocks_observed_and_reviewed_close_out",
+    ),
 )
 
 

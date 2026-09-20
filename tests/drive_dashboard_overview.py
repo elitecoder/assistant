@@ -421,18 +421,36 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 next_date = (now + timedelta(days=1)).date().isoformat()
                 (brief_dir / f"brief-{first_date}.json").write_text(json.dumps({"epoch": now.timestamp()}))
                 refresh_fixture()
-                page.locator('[data-tab="brief"]').click()
-                page.wait_for_timeout(50)
+                with page.expect_response(lambda response: "/brief/seen?" in response.url) as first_seen:
+                    page.locator('[data-tab="brief"]').click()
+                assert first_seen.value.status == 200
                 seen = [url for url in intercepted_writes if "/brief/seen?" in url]
                 assert len(seen) == 1 and seen[0].endswith(first_date), seen
                 refresh_fixture()
-                page.wait_for_timeout(50)
                 assert [url for url in intercepted_writes if "/brief/seen?" in url] == seen
                 (brief_dir / f"brief-{next_date}.json").write_text(json.dumps({"epoch": now.timestamp()}))
-                refresh_fixture()
-                page.wait_for_timeout(50)
+                with page.expect_response(lambda response: "/brief/seen?" in response.url) as next_seen:
+                    refresh_fixture()
+                assert next_seen.value.status == 200
                 seen = [url for url in intercepted_writes if "/brief/seen?" in url]
                 assert len(seen) == 2 and seen[-1].endswith(next_date), seen
+                page.locator('[data-tab="overview"]').click()
+
+                page.locator('[data-tab="todos"]').click()
+                for selector, endpoint in (
+                        ('.td-remove[data-id="td-901"]', "/remove/td-901"),
+                        ('.td-dispatch[data-id="td-901"]', "/dispatch-now/td-901")):
+                    before_cancel = len(intercepted_writes)
+                    page.once("dialog", lambda dialog: dialog.dismiss())
+                    page.locator(selector).click()
+                    assert len(intercepted_writes) == before_cancel
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    with page.expect_response(lambda response, endpoint=endpoint:
+                                              response.url.endswith(endpoint)) as requested:
+                        page.locator(selector).click()
+                    assert requested.value.status == 200
+                    assert intercepted_writes[-1].endswith(endpoint)
+                    assert len(intercepted_writes) == before_cancel + 1
                 page.locator('[data-tab="overview"]').click()
 
                 page.route("**/assistant-dashboard.html", lambda route: route.fulfill(

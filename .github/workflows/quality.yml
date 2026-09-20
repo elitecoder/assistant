@@ -31,9 +31,8 @@ jobs:
       - name: Run tests with Python coverage
         run: |
           mkdir -p "$RUNNER_TEMP/assistant-coverage"
-          uv run --no-sync python -m pytest tests/ -q \
-            --cov="$PWD/bin" --cov="$PWD/src" --cov-config=tests/coverage.ini \
-            --cov-report="json:$RUNNER_TEMP/assistant-coverage/python.json"
+          uv run --no-sync python tests/run_python_coverage.py \
+            --output-dir "$RUNNER_TEMP/assistant-coverage" --pytest-args -q
       - name: Exercise the dashboard in a browser
         run: |
           uv run --no-sync python tests/drive_dashboard_overview.py \

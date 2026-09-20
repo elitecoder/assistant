@@ -18,7 +18,13 @@ complete session history proves none remain, and null for incomplete evidence.
 This field describes tool calls, not whether the session is idle.
 guidance_context adds transcript-only initial/latest requests, latest assistant
 text, and outstanding AskUserQuestion inputs. Text retains its head and tail
-within 6000 characters; its version hashes the full source, not the display.
+within 6000 characters. The history-v2 source version hashes every complete
+transcript line, including tool inputs, results, and errors, with bounded memory.
+Unchanged incremental and full reads produce the same version. Replacing or
+truncating a transcript restarts its history hash. Legacy note versions don't
+match; review those notes again rather than rebinding them automatically.
+Question choices require nonblank text labels. Invalid choices are omitted and
+mark the question evidence as truncated, so you can distinguish incomplete choices.
 
 Usage:
   session-context-watcher.py [--daemon]   long-lived watcher (default)
@@ -278,7 +284,10 @@ def bounded_questions(tool_id, tool_input):
         if isinstance(options, list):
             result["truncated"] |= len(options) > GUIDANCE_OPTION_LIMIT
             for option in options[:GUIDANCE_OPTION_LIMIT]:
-                if not isinstance(option, dict):
+                if (not isinstance(option, dict)
+                        or not isinstance(option.get("label"), str)
+                        or not option["label"].strip()):
+                    result["truncated"] = True
                     continue
                 bounded = {}
                 for key, limit in (("label", 300), ("description", 1000)):
@@ -287,6 +296,8 @@ def bounded_questions(tool_id, tool_input):
                         bounded[key] = bounded_guidance_text(text, limit)
                         result["truncated"] |= len(text) > limit
                 item["options"].append(bounded)
+        else:
+            result["truncated"] = True
         if isinstance(question.get("multiSelect"), bool):
             item["multiSelect"] = question["multiSelect"]
         result["questions"].append(item)
@@ -321,7 +332,7 @@ class TranscriptState:
                  "tool_history_complete", "tool_read_started", "tool_partial_line",
                  "file_identity", "tool_scan_from_start", "guidance_entries",
                  "guidance_fingerprints", "pending_questions", "question_fingerprints",
-                 "transcript_mtime_ns")
+                 "transcript_mtime_ns", "history_digest")
 
     def __init__(self, path, cwd, pid=None, is_cron=False, cron_label=None,
                  tab_id=None, provider="claude"):
@@ -350,9 +361,10 @@ class TranscriptState:
         self.pending_questions = {}
         self.question_fingerprints = {}
         self.transcript_mtime_ns = None
+        self.history_digest = hashlib.sha256()
 
     def guidance_context(self):
-        """Return bounded evidence with a version covering unabridged source text."""
+        """Return bounded evidence with a version covering complete transcript history."""
         return {
             **{key: self.guidance_entries.get(key) for key in (
                 "initial_request", "last_request", "last_response")},
@@ -361,7 +373,8 @@ class TranscriptState:
                  "truncated": self.pending_questions[key]["truncated"]}
                 for key in sorted(self.pending_questions)
                 for question in self.pending_questions[key]["questions"]],
-            "source_version": guidance_hash({
+            "source_version": "history-v2:" + guidance_hash({
+                "history": self.history_digest.hexdigest(),
                 "entries": self.guidance_fingerprints,
                 "questions": self.question_fingerprints,
                 "pending_tools": sorted(self.pending_tools),
@@ -529,6 +542,7 @@ class TranscriptState:
             self.last_assistant = None
             self.guidance_entries.clear()
             self.guidance_fingerprints.clear()
+            self.history_digest = hashlib.sha256()
             self.invalidate_tool_history()
             self.tool_read_started = False
             self.tool_partial_line = False
@@ -552,6 +566,7 @@ class TranscriptState:
                         self.tool_partial_line = True
                         break
                     self.pos = f.tell()
+                    self.history_digest.update(line)
                     changed = self.consume_line(line) or changed
                 opened = os.fstat(f.fileno())
                 current = self.path.stat()

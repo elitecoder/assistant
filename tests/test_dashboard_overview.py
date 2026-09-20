@@ -235,6 +235,79 @@ class OverviewTests(unittest.TestCase):
         self.assertNotIn("Finish an older session", html)
         self.assertIn("lane-updates", Cards(html).cards["workspace:1"]["class"])
 
+    def test_unknown_second_terminal_blocks_observed_and_reviewed_close_out(self):
+        self.workspace(1, "ready_for_cleanup")
+        self.world["live_sessions"][0]["first_recorded_at"] = "2026-09-01T10:00:00Z"
+        self.world["workspaces"][0]["surfaces"].append({
+            "surface_id": "unsupported-agent", "ref": "surface:99",
+            "type": "terminal", "identity_status": "unknown",
+        })
+        for reviewed in (False, True):
+            with self.subTest(reviewed=reviewed):
+                if reviewed:
+                    self.world["live_sessions"][0]["guidance_context"] = {
+                        "source_version": "finished-first-session",
+                        "last_response": {"text": "The first session finished.", "ts": NOW.isoformat()},
+                    }
+                    self.write(".assistant/session-return-notes.json", {"sessions": [{
+                        "workspace_id": "workspace-id-1", "surface_id": "surface-id-1",
+                        "provider": "claude", "session_id": "session-1",
+                        "source_version": "finished-first-session",
+                        "goal": "Finish the first task", "progress": "The first change merged.",
+                        "next_action": "Review closing this workspace.",
+                        "who": "user", "recommendation": "close_candidate",
+                        "completion_evidence": [{"kind": "pull_request", "state": "MERGED",
+                                                "url": "https://github.com/example/project/pull/1"}],
+                    }]})
+                html, _ = self.render()
+                self.assertNotIn("lane-ready", Cards(html).cards["workspace:1"]["class"])
+                self.assertNotIn("Finish an older session", html)
+                self.assertNotIn("You may be able to finish this task", html)
+
+    def test_browser_panel_does_not_count_as_an_unverified_agent(self):
+        self.workspace(1, "ready_for_cleanup")
+        self.world["workspaces"][0]["surfaces"].append({
+            "surface_id": "browser", "type": "browser", "identity_status": "unknown"})
+        html, _ = self.render()
+        self.assertIn("lane-ready", Cards(html).cards["workspace:1"]["class"])
+
+    def test_question_options_remain_readable_after_parser_and_legacy_cache(self):
+        spec = importlib.util.spec_from_file_location(
+            "overview_question_reader", REPO / "bin/session-context-watcher.py")
+        watcher = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = watcher
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(watcher)
+        options = [{"label": "Staging", "description": "Use the staging target."},
+                   {"description": "Later."}, {"label": ""}, {"label": "   "},
+                   {"label": 42}, None]
+        transcript = self.home / "session-1.jsonl"
+        transcript.write_text("\n".join(json.dumps(event) for event in [
+            {"type": "user", "uuid": "u1", "parentUuid": None, "timestamp": NOW.isoformat(),
+             "message": {"role": "user", "content": "Choose a deployment target."}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": NOW.isoformat(),
+             "message": {"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "question-1", "name": "AskUserQuestion",
+                 "input": {"questions": [{"question": "Choose a target.", "options": options}]},
+             }]}},
+        ]) + "\n")
+        state = watcher.TranscriptState(transcript, "/work/project", provider="claude")
+        state.read_new()
+        self.workspace(1)
+        self.world["live_sessions"][0].update(state.to_dict(NOW))
+        for legacy_cache in (False, True):
+            with self.subTest(legacy_cache=legacy_cache):
+                if legacy_cache:
+                    question = self.world["live_sessions"][0]["guidance_context"]["pending_questions"][0]
+                    question["options"] = options
+                    question["truncated"] = False
+                html, _ = self.render()
+                self.assertIn("Choose a target.", html)
+                self.assertIn("Staging", html)
+                self.assertNotIn("Later.", html)
+                self.assertIn("Some question details were shortened or could not be read.", html)
+                self.assertIn("lane-needs-you", Cards(html).cards["workspace:1"]["class"])
+
     def test_real_transcript_tool_lifecycle_controls_the_finish_prompt(self):
         spec = importlib.util.spec_from_file_location(
             "overview_transcript_reader", REPO / "bin/session-context-watcher.py")

@@ -25,6 +25,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from assistant.session_guidance import matching_note
+
 REPO = Path(__file__).resolve().parent.parent
 
 # A tmp HOME that exists for the whole test session, bound BEFORE the module
@@ -418,6 +420,147 @@ def _question_call(tool_id="question"):
             }]}}
 
 
+@pytest.mark.parametrize("outcome", ["error", "success", "answer"])
+def test_completed_tool_roundtrip_cannot_reuse_closeout_note(tmp_home, outcome):
+    path = tmp_home / "closeout.jsonl"
+    path.write_text(_tool_turn("user", "Finish the release.", root=True)
+                    + _tool_turn("assistant", "All done."))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    session = {
+        "workspace_id": "workspace", "surface_id": "surface",
+        "provider": "claude", "session_id": "closeout",
+        "guidance_context": state.guidance_context(),
+    }
+    version = session["guidance_context"]["source_version"]
+    note = {key: session[key] for key in (
+        "workspace_id", "surface_id", "provider", "session_id")}
+    note.update(source_version=version, recommendation="close_candidate",
+                progress="All done.", goal="Finish the release.")
+    assert matching_note(session, [note]) == note
+    call = (_question_call("check") if outcome == "answer" else {
+        "type": "tool_use", "id": "check", "name": "Bash",
+        "input": {"command": "run release checks"},
+    })
+    _append_tool_turn(path, "assistant", [call])
+    state.read_new()
+    assert state.pending_tool_use() is True
+    _append_tool_turn(path, "user", [{
+        "type": "tool_result", "tool_use_id": "check",
+        "content": "Staging" if outcome == "answer" else "Check output.",
+        "is_error": outcome == "error",
+    }])
+    state.read_new()
+    assert state.pending_tool_use() is False
+    session["guidance_context"] = state.guidance_context()
+    assert session["guidance_context"]["last_response"]["text"] == "All done."
+    assert session["guidance_context"]["pending_questions"] == []
+    assert session["guidance_context"]["source_version"] != version
+    assert matching_note(session, [note]) is None
+    fresh = scw.TranscriptState(path, str(tmp_home))
+    fresh.read_new()
+    assert fresh.guidance_context() == state.guidance_context()
+    assert state.read_new() is False
+    assert state.guidance_context() == session["guidance_context"]
+
+
+def test_history_version_rejects_legacy_closeout_note(tmp_home):
+    path = tmp_home / "closeout.jsonl"
+    path.write_text(_tool_turn("user", "Finish the release.", root=True)
+                    + _tool_turn("assistant", "All done."))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    session = {
+        "workspace_id": "workspace", "surface_id": "surface",
+        "provider": "claude", "session_id": "closeout",
+        "guidance_context": state.guidance_context(),
+    }
+    note = {
+        "workspace_id": "workspace", "surface_id": "surface",
+        "provider": "claude", "session_id": "closeout",
+        "source_version": "94102dc2e23d823268b60cc13b81951332ef652bfd0c0a64b5a743669a9e7eea",
+        "recommendation": "close_candidate", "progress": "All done.",
+    }
+    assert state.guidance_context()["source_version"].startswith("history-v2:")
+    assert matching_note(session, [note]) is None
+
+
+@pytest.mark.parametrize("changed_field", ["input", "output", "error", "answer"])
+def test_history_version_retains_completed_tool_inputs_and_results(tmp_home, changed_field):
+    contexts = []
+    for index in range(2):
+        path = tmp_home / f"history-{index}.jsonl"
+        call = (_question_call("check") if changed_field == "answer" else {
+            "type": "tool_use", "id": "check", "name": "Bash",
+            "input": {"command": f"check {index}" if changed_field == "input" else "check"},
+        })
+        result = {
+            "type": "tool_result", "tool_use_id": "check",
+            "content": f"answer {index}" if changed_field in {"output", "answer"} else "same",
+            "is_error": bool(index) if changed_field == "error" else False,
+        }
+        path.write_text(_tool_turn("user", "Start.", root=True)
+                        + _tool_turn("assistant", [call])
+                        + _tool_turn("user", [result])
+                        + _tool_turn("assistant", "All done."))
+        state = scw.TranscriptState(path, str(tmp_home))
+        state.read_new()
+        assert state.pending_tool_use() is False
+        contexts.append(state.guidance_context())
+    assert contexts[0]["source_version"] != contexts[1]["source_version"]
+    assert {key: value for key, value in contexts[0].items() if key != "source_version"} == {
+        key: value for key, value in contexts[1].items() if key != "source_version"}
+
+
+@pytest.mark.parametrize("replacement", ["truncate", "rotate", "same_size"])
+def test_history_digest_resets_to_match_full_read_after_replacement(tmp_home, replacement):
+    path = tmp_home / "history.jsonl"
+    prefix = _tool_turn("user", "Start.", root=True)
+    path.write_text(prefix + _tool_turn("assistant", "Old response."))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    previous = state.guidance_context()["source_version"]
+    previous_stat = path.stat()
+    replacement_text = prefix + _tool_turn("assistant", "New response.")
+    if replacement == "truncate":
+        replacement_text = prefix
+    elif replacement == "rotate":
+        path.rename(tmp_home / "old-history.jsonl")
+    path.write_text(replacement_text)
+    os.utime(path, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 1_000_000))
+    assert state.read_new() is True
+    assert state.guidance_context()["source_version"] != previous
+    fresh = scw.TranscriptState(path, str(tmp_home))
+    fresh.read_new()
+    assert state.guidance_context() == fresh.guidance_context()
+    assert state.read_new() is False
+
+
+def test_history_digest_hashes_each_complete_record_once_across_partial_reads(tmp_home):
+    path = tmp_home / "history.jsonl"
+    path.write_text(_tool_turn("user", "Start.", root=True))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    record = _tool_turn("assistant", [{
+        "type": "tool_use", "id": "check", "name": "Bash", "input": {"command": "check"},
+    }])
+    with path.open("a") as stream:
+        stream.write(record[:25])
+    state.read_new()
+    partial = state.guidance_context()
+    assert state.pending_tool_use() is None
+    assert state.read_new() is False
+    assert state.guidance_context() == partial
+    with path.open("a") as stream:
+        stream.write(record[25:])
+    state.read_new()
+    fresh = scw.TranscriptState(path, str(tmp_home))
+    fresh.read_new()
+    assert state.pending_tool_use() is True
+    assert state.guidance_context() == fresh.guidance_context()
+    assert state.read_new() is False
+
+
 def test_fresh_watcher_import_resolves_sibling_parser(tmp_home, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_home))
     monkeypatch.setattr(sys, "path", [
@@ -502,11 +645,50 @@ def test_question_parser_skips_invalid_optional_fields_and_options(tmp_home):
     state.read_new()
     assert state.guidance_context()["pending_questions"] == [
         {"question": "Choose a target.",
-         "options": [{"label": "Staging"}, {"description": "Later."}],
-         "tool_use_id": "question", "truncated": False},
+         "options": [{"label": "Staging"}],
+         "tool_use_id": "question", "truncated": True},
         {"question": "When?", "header": "", "options": [],
-         "tool_use_id": "question", "truncated": False},
+         "tool_use_id": "question", "truncated": True},
     ]
+
+
+@pytest.mark.parametrize("invalid_option", [
+    None, {}, {"description": "Missing label."}, {"label": None},
+    {"label": 42}, {"label": ""}, {"label": " \t\n"},
+])
+@pytest.mark.parametrize("keep_valid_choice", [True, False])
+def test_invalid_question_options_remain_explicitly_incomplete(
+        tmp_home, invalid_option, keep_valid_choice):
+    path = tmp_home / "questions.jsonl"
+    call = _question_call()
+    question = call["input"]["questions"][0]
+    valid_options = question["options"] if keep_valid_choice else []
+    question["options"] = [invalid_option, *valid_options]
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [call]))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    pending = state.guidance_context()["pending_questions"]
+    assert pending == [{
+        **question, "options": valid_options, "tool_use_id": "question", "truncated": True,
+    }]
+    assert state.pending_tool_use() is True
+    assert state.read_new() is False
+
+
+@pytest.mark.parametrize("options", [None, {}, "not a list"])
+def test_malformed_options_container_marks_question_incomplete(tmp_home, options):
+    path = tmp_home / "questions.jsonl"
+    call = _question_call()
+    question = call["input"]["questions"][0]
+    question["options"] = options
+    path.write_text(_tool_turn("assistant", [call]))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    assert state.guidance_context()["pending_questions"] == [{
+        **question, "options": [], "tool_use_id": "question", "truncated": True,
+    }]
+    assert state.pending_tool_use() is True
 
 
 @pytest.mark.parametrize("provider", ["claude", "droid"])
@@ -1154,16 +1336,22 @@ def test_read_new_skips_empty_text_turn(tmp_path):
     f.write_text(json.dumps({"type": "user", "timestamp": "t",
                              "message": {"role": "user", "content": []}}) + "\n")
     st = scw.TranscriptState(f, "/cwd")
-    assert st.read_new() is False
+    previous = st.guidance_context()["source_version"]
+    assert st.read_new() is True
     assert st.turns == []
+    assert st.guidance_context()["source_version"] != previous
+    assert st.read_new() is False
 
 
 def test_read_new_ignores_non_user_assistant_types(tmp_path):
     f = tmp_path / "sess.jsonl"
     f.write_text(json.dumps({"type": "summary", "message": {"content": "x"}}) + "\n")
     st = scw.TranscriptState(f, "/cwd")
-    assert st.read_new() is False
+    previous = st.guidance_context()["source_version"]
+    assert st.read_new() is True
     assert st.turns == []
+    assert st.guidance_context()["source_version"] != previous
+    assert st.read_new() is False
 
 
 def test_read_new_role_falls_back_to_type(tmp_path):
