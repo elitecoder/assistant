@@ -1877,8 +1877,10 @@ def render_overview_tab(world):
     {resume_html}
     {unverified}
     <p class="attention-boundary">This opens the workspace. It doesn't send instructions or close anything.</p>
-    <button class="btn" data-ws="{e(ref)}" data-workspace-id="{e(card['workspace_id'] or '')}" onclick="openWs(this)"{disabled}>Go to session</button>
   </details>
+  <div class="attention-actions">
+    <button class="btn" data-ws="{e(ref)}" data-workspace-id="{e(card['workspace_id'] or '')}" onclick="openWs(this)" title="Show this workspace in cmux" aria-label="Go to session: {e(display_title)}"{disabled}>Go to session</button>
+  </div>
 </article>"""
 
     buckets = {key: [c for c in cards if c["lane"] == key] for key, _, _ in columns}
@@ -3546,7 +3548,8 @@ h1 {
 .attention-context dt { color: var(--muted); margin-top: 12px; }
 .attention-context dd { margin: 3px 0; white-space: pre-wrap; }
 .attention-boundary { font-size: 10px; line-height: 1.5; color: var(--muted); }
-.attention-context button:disabled { opacity: .45; cursor: not-allowed; }
+.attention-card button:disabled { opacity: .45; cursor: not-allowed; }
+.attention-actions { margin-top: 12px; }
 .attention-more > .attention-card { margin-top: 12px; }
 .attention-empty, .attention-footnote { color: var(--muted); font-size: 12px; }
 .attention-footnote { margin: 24px 0; }

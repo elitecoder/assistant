@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Show **Go to session** on collapsed cards so you can focus a workspace
+  without opening its details. Existing identity and freshness checks still apply.
 - Allow manual close-out review for plan-only work when its exact saved document
   still matches the reviewed hash; keep implementation explicitly separate.
 - Preserve actionable transcript context and outstanding question choices.

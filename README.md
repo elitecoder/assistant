@@ -185,7 +185,7 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 
 Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/todo-server.py`).
 
-- **Sessions tab** — your default view counts open cmux workspaces, not GitHub alerts. It groups workspaces into **Needs you**, **Agent work**, **Ready to close**, and **Parked**. Each card shows one next action. Expand it for the return note and workspace link. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
+- **Sessions tab** — your default view counts open cmux workspaces, not GitHub alerts. It groups workspaces into **Needs your answer**, **Assistant tasks**, **Ready to close**, and **Paused**. Each card shows one next action. Click **Go to session** to focus its workspace, or expand the card for details. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
 - **Notifications tab** — a separate inbox for GitHub pull requests and other alerts. Its counts don't add to your session workload. Expand a group's history for its existing controls; receipts, the FYI digest, and health remain available here.
 - **Connections tab** — every connector as **Connected** / **Available, not connected** / **Needs attention**, with the how-to-connect hint inline.
 - **`/goal` skill** — add / list / rerank / pause goals (`/goal add "…" --outcome "…"`). Goals feed the planner and boost decision ranking. Automation can only *propose* goal changes; only you (this skill) edit the store in place.

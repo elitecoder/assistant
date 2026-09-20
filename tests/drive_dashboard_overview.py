@@ -157,6 +157,9 @@ def drive(output_dir, browser_executable):
                 assert page.locator(".attention-context[open]").count() == 0
                 visible_cards = page.locator(".attention-card:visible").count()
                 assert visible_cards == 7, visible_cards
+                assert page.locator(".attention-card .attention-actions button:visible").count() == visible_cards
+                assert page.locator(".attention-context button[data-ws]").count() == 0
+                assert page.locator('#task-workspace-id-1 .attention-actions button').is_enabled()
                 assert "Task 9" in page.locator("#finish-current").inner_text()
                 assert not mutations
                 assert "Your answer is needed" in page.locator('#task-workspace-id-1').inner_text()
@@ -220,10 +223,11 @@ def drive(output_dir, browser_executable):
                     .textContent.includes('503')""")
                 assert "A new result arrived" in page.locator("#task-workspace-id-1").inner_text()
                 page.unroute("**/assistant-dashboard.html")
+                page.locator('#task-workspace-id-1 summary').click()
+                assert not page.locator('#task-workspace-id-1 details').get_attribute("open")
                 page.locator('#task-workspace-id-1 button').click()
                 assert len(mutations) == 1 and mutations[0].endswith(
                     "/focus/workspace:1?workspace_id=workspace-id-1")
-                page.locator('#task-workspace-id-1 summary').click()
                 page.get_by_role("button", name="Review this task", exact=True).click()
                 assert page.locator('#task-workspace-id-9 details').get_attribute("open") is not None
                 page.locator('#task-workspace-id-9 summary').click()
