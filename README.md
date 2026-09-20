@@ -249,6 +249,23 @@ fingerprints, a locked preflight, private backups, and an atomic log update.
 Its private receipt doesn't enter the outgoing action ledger. It never approves,
 merges, closes, or completes the work represented by those alerts.
 
+## Dashboard writing style
+
+Use [Google's voice and tone guide](https://developers.google.com/style/tone)
+and [style highlights](https://developers.google.com/style/highlights). Address
+the reader as "you," use active voice, and explain the next step in everyday words.
+Prefer "Last checked" to "Snapshot," "Not checked yet" to "Unverified," and
+"Check before closing" to "Review close-out."
+
+Keep the original session name, questions, choices, and supporting records in
+the expanded details. Don't rewrite quoted evidence or weaken conditions such as
+"check the result before ignoring a failed test." Saved summaries can use clearer
+wording without changing their session IDs, matching checks, or suggested action.
+
+`tests/test_dashboard_voice.py` requires a plain display label for every session
+state and rejects internal terms in those labels. Browser checks cover the labels,
+expanded original questions, and unchanged controls.
+
 ## Entry points
 
 - `bin/pulse.py` — the main orchestrator loop, runs every 5 min via LaunchAgent

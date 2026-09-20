@@ -175,8 +175,8 @@ class BriefTabTests(unittest.TestCase):
                 html, n = self.mod.render_brief_tab()
                 self.assertEqual(n, 2)
                 self.assertIn("Current notifications unavailable", html)
-                self.assertIn("dated snapshot from 2026-07-02", html)
-                self.assertIn("open status is unverified", html)
+                self.assertIn("saved list from 2026-07-02", html)
+                self.assertIn("hasn&#x27;t been checked for changes", html)
                 self.assertNotIn("Queue clear", html)
 
     def test_current_queue_without_readable_brief(self):
@@ -184,13 +184,13 @@ class BriefTabTests(unittest.TestCase):
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 1)
         self.assertIn("Live notification", html)
-        self.assertIn("No brief yet", html)
+        self.assertIn("No saved summary yet", html)
         self.assertNotIn("data-brief-date=", html)
         (self.home / ".assistant/brief/brief-2026-07-02.json").write_text("{bad")
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 1)
         self.assertIn("Live notification", html)
-        self.assertIn("unreadable", html)
+        self.assertIn("couldn&#x27;t be read", html)
         self.assertNotIn("data-brief-date=", html)
 
     def test_focus_order_matching_escaping_and_invalid_entries(self):
@@ -363,7 +363,7 @@ class BriefTabTests(unittest.TestCase):
     def test_no_brief_yet_degrades_to_message(self):
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 0)
-        self.assertIn("No brief yet", html)
+        self.assertIn("No saved summary yet", html)
         self.assertIn("Notification counts unavailable", html)
         self.assertNotIn("0 GitHub pull requests", html)
         self.assertNotIn("data-brief-date=", html)
@@ -373,7 +373,7 @@ class BriefTabTests(unittest.TestCase):
          ).write_text("{torn write")
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 0)
-        self.assertIn("unreadable", html)
+        self.assertIn("couldn&#x27;t be read", html)
         self.assertIn("build-morning-brief.py", html)
 
     def test_unexpected_shape_never_raises(self):

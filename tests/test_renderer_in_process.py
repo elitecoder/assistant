@@ -299,7 +299,7 @@ class BriefStrategistContextRenderTests(unittest.TestCase):
             json.dumps(brief_doc))
         mod = load_module(self._tmp)
         html, _n = mod.render_brief_tab()
-        self.assertIn("Strategist context", html)          # spend reaches a human
+        self.assertIn("Background information", html)          # spend reaches a human
         self.assertIn("Plan: do the reversible thing", html)
         self.assertIn("&lt;script&gt;", html)              # escaped …
         self.assertNotIn("<script>alert('xss')</script>", html)  # … and inert

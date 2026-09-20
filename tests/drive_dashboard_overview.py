@@ -146,7 +146,7 @@ def drive(output_dir, browser_executable):
                 assert page.locator('[data-tab="overview"]').inner_text().split() == ["Sessions", "10"]
                 assert page.locator('[data-tab="brief"]').inner_text().strip() == "Notifications"
                 assert page.locator('[data-tab="brief"] .tab-count').count() == 0
-                assert page.locator('.session-scope').inner_text().startswith("10 open cmux workspaces")
+                assert page.locator('.session-scope').inner_text().startswith("10 cmux workspaces in the saved list")
                 assert not page.locator('.review-topic').first.is_visible()
                 page.locator('[data-tab="brief"]').click()
                 assert page.locator('.review-topic').count() == 49
@@ -159,8 +159,8 @@ def drive(output_dir, browser_executable):
                 assert visible_cards == 7, visible_cards
                 assert "Task 9" in page.locator("#finish-current").inner_text()
                 assert not mutations
-                assert "Question waiting for you" in page.locator('#task-workspace-id-1').inner_text()
-                assert "Investigate / Park" in page.locator('#task-workspace-id-1').inner_text()
+                assert "Your answer is needed" in page.locator('#task-workspace-id-1').inner_text()
+                assert "2 choices from your session" in page.locator('#task-workspace-id-1').inner_text()
                 page.locator('#task-workspace-id-8 summary').click()
                 page.evaluate("""() => Object.defineProperty(navigator, 'clipboard', {
                     configurable: true, value: {writeText: async text => {window.copiedPrompt = text;}}
@@ -198,6 +198,7 @@ def drive(output_dir, browser_executable):
                 page.locator('#task-workspace-id-1 .attention-context > summary').click()
                 assert "A detailed return note" in page.locator("#task-workspace-id-1").inner_text()
                 assert "Keep the failure as a blocker." in page.locator("#task-workspace-id-1").inner_text()
+                assert "Investigate" in page.locator("#task-workspace-id-1 .session-question").inner_text()
                 awaitable = page.evaluate("refreshDashboard()")
                 assert awaitable is None
                 assert page.locator('#task-workspace-id-1 details').get_attribute("open") is not None
@@ -208,13 +209,13 @@ def drive(output_dir, browser_executable):
                 with mock.patch.dict(os.environ, {"HOME": str(home)}), mock.patch.object(
                         renderer, "utc_now", return_value=now + timedelta(seconds=3)):
                     renderer.render()
-                page.get_by_role("button", name="Refresh view", exact=True).click()
+                page.get_by_role("button", name="Reload page", exact=True).click()
                 page.wait_for_function("""() => document.querySelector('#task-workspace-id-1')
                     .innerText.includes('A new result arrived')""")
                 assert page.locator('#task-workspace-id-1 details').get_attribute("open") is not None
                 page.route("**/assistant-dashboard.html", lambda route: route.fulfill(
                     status=503, body="temporarily unavailable"))
-                page.get_by_role("button", name="Refresh view", exact=True).click()
+                page.get_by_role("button", name="Reload page", exact=True).click()
                 page.wait_for_function("""() => document.getElementById('refresh-error')
                     .textContent.includes('503')""")
                 assert "A new result arrived" in page.locator("#task-workspace-id-1").inner_text()
@@ -262,7 +263,7 @@ def drive(output_dir, browser_executable):
                     root.querySelector('[data-pulse-at]').dataset.pulseAt = root.dataset.snapshotAt;
                     updateFreshness();
                 }""")
-                assert "Outdated snapshot" in page.locator("#snapshot-status").inner_text()
+                assert "Session information is out of date" in page.locator("#snapshot-status").inner_text()
                 assert page.locator("#finish-outdated").is_visible()
                 assert not page.locator("#finish-current").is_visible()
                 assert page.locator('.attention-card button:not([disabled])').count() == 0
@@ -271,7 +272,7 @@ def drive(output_dir, browser_executable):
                 assert page.locator('.attention-lane[data-lane="needs-you"] .attention-count').inner_text() == "0"
                 assert page.locator('.attention-lane[data-lane="unknown"] .attention-count').inner_text() == "10"
                 assert page.locator('[data-tab="overview"] .tab-count').inner_text() == "?"
-                assert "Current workspace count is unverified" in page.locator('.session-scope').inner_text()
+                assert "The current workspace count hasn't been checked" in page.locator('.session-scope').inner_text()
                 assert page.locator(".pulse-health").get_attribute("class").endswith("pulse-bad")
                 assert not errors, errors
                 page.screenshot(path=str(output_dir / "overview-stale.png"), full_page=True)

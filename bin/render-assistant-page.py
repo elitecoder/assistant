@@ -381,10 +381,10 @@ def render_metering_stats():
             return ""
         return f"""
 <div class="stats">
-  <div class="stat"><div class="v">{agg['observer_calls_per_day']:.0f}</div><div class="k">Observer calls/day</div></div>
+  <div class="stat"><div class="v">{agg['observer_calls_per_day']:.0f}</div><div class="k">Summary requests per day</div></div>
   <div class="stat"><div class="v">${agg['cost_per_day_usd']:.2f}</div><div class="k">$/day est · 7d (incl. triage ${agg['cost_ledger_per_day_usd']:.2f})</div></div>
-  <div class="stat"><div class="v">{agg['verdict_change_rate'] * 100:.0f}%</div><div class="k">Verdict-change rate</div></div>
-  <div class="stat"><div class="v">{agg['skip_rate'] * 100:.0f}%</div><div class="k">Skip rate (ws carried, no Observer call)</div></div>
+  <div class="stat"><div class="v">{agg['verdict_change_rate'] * 100:.0f}%</div><div class="k">Checks that changed a status</div></div>
+  <div class="stat"><div class="v">{agg['skip_rate'] * 100:.0f}%</div><div class="k">Checks that reused an earlier result</div></div>
 </div>
 """
     except Exception:
@@ -542,7 +542,7 @@ def _render_brief_tab_inner():
     snapshot_available = False
     snapshot_notice = ""
     if not briefs:
-        snapshot_notice = "No brief yet; receipts and health snapshot unavailable."
+        snapshot_notice = "No saved summary yet. Completed actions and service details aren't available."
     else:
         path = briefs[-1]
         date_str = path.name[len("brief-"):-len(".json")]
@@ -553,18 +553,18 @@ def _render_brief_tab_inner():
             snapshot_available = True
         except (OSError, ValueError):
             brief = {}
-            snapshot_notice = f"Brief {date_str} unreadable; receipts and health snapshot unavailable."
+            snapshot_notice = f"The saved summary from {date_str} couldn't be read. Service details aren't available."
     current = False
     try:
         queue = brief_store.read_current_queue()
         current = True
-        queue_notice = "Current notifications read from the canonical log at render time."
+        queue_notice = "This list uses your saved notifications, read when the page was built."
     except (OSError, ValueError, TypeError, OverflowError) as exc:
         queue = brief.get("queue") or []
         queue_notice = (
             f"Current notifications unavailable ({exc}). "
-            + (f"Showing dated snapshot from {date_str}; open status is unverified."
-               if brief else "No dated queue snapshot available."))
+            + (f"Showing the saved list from {date_str}; it hasn't been checked for changes."
+               if brief else "No saved notification list is available."))
     topics, focus_notice = _review_topics(queue, current)
     counts_available = current or (snapshot_available and "queue" in brief)
     topic_count = len(topics) if counts_available else "?"
@@ -628,7 +628,7 @@ def _render_brief_tab_inner():
     trend_tile = (
         f'<div class="stat brief-trend"><div class="v">{alert_count}'
         f'{spark}</div>'
-        f'<div class="k">Raw alerts · daily snapshot trend</div></div>')
+        f'<div class="k">Individual alerts · daily totals</div></div>')
     stats = f"""
 <div class="stats">
   <div class="stat"><div class="v">{topic_count}</div><div class="k">Notification groups · not workspaces</div></div>
@@ -669,7 +669,7 @@ def _render_brief_tab_inner():
             # the one-line editorial take; this is the fuller research context.
             strat_ctx = d.get("strategist_context")
             strat_html = (f'<div class="strat-ctx"><span class="strat-ctx-h">'
-                          f'Strategist context</span>{e(str(strat_ctx))}</div>'
+                          f'Background information</span>{e(str(strat_ctx))}</div>'
                           if strat_ctx else "")
             # The recommendation is narrator prose (or a deterministic template)
             # — same escaping contract as the strategist context.
@@ -703,7 +703,7 @@ def _render_brief_tab_inner():
             context_key = f"brief-pr:{key[0]}:{key[1]}" if key else f"brief-alert:{first['id']}"
             headline = focus["headline"] if focus else first.get("title") or first["id"]
             focus_html = (
-                f'<p class="drec">Draft recommendation: {e(focus["recommendation"])}</p>'
+                f'<p class="drec">Suggested next step: {e(focus["recommendation"])}</p>'
                 f'<p class="dmeta">Checked at {e(focus["checked_at"])} · '
                 f'<a href="{e(focus["evidence_url"])}" target="_blank" rel="noopener noreferrer">'
                 f'Evidence</a></p>' if focus else "")
@@ -731,7 +731,7 @@ def _render_brief_tab_inner():
                 f'</summary>{"".join(cards[3:])}</details>')
     else:
         queue_html = ('<div class="empty">No open notifications in the current log.</div>'
-                      if current else '<div class="empty">Current queue unavailable; no verified count.</div>')
+                      if current else '<div class="empty">The current list is unavailable, so its count is unknown.</div>')
 
     # ─── 2. handled overnight ───
     if receipts:
@@ -750,7 +750,7 @@ def _render_brief_tab_inner():
 </div>""")
         receipts_html = f'<div class="feed">{"".join(rrows)}</div>'
     else:
-        receipts_html = '<div class="empty">Nothing auto-handled in the last 24h.</div>'
+        receipts_html = '<div class="empty">No automatic actions are recorded in the last 24 hours.</div>'
 
     # ─── 3. FYI digest (grouped by source, collapsed) ───
     if digest:
@@ -894,7 +894,7 @@ def _render_brief_tab_inner():
     summary_html = (
         f'<p class="brief-summary template-voice">{e(summary_txt)}{voice_tag}</p>')
     header_html = (
-        f'<div class="brief-eyebrow">Notification history · supporting snapshot {e(date_str)}</div>'
+        f'<div class="brief-eyebrow">Notification history · saved {e(date_str)}</div>'
         '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
         f'{summary_html}')
 
@@ -914,22 +914,25 @@ def _render_brief_tab_inner():
 </div>
 
 <div class="section">
-  <h2>Receipts <span class="count">{len(receipts)} · handled overnight</span></h2>
+  <h2>Completed actions <span class="count">{len(receipts)} · handled overnight</span></h2>
   {receipts_html}
 </div>
 
 <div class="section">
-  <h2>FYI digest <span class="count">{sum(len(v) for v in digest.values())} · grouped by source</span></h2>
+  <h2>Other updates <span class="count">{sum(len(v) for v in digest.values())} · grouped by source</span></h2>
   {digest_html}
 </div>
 
 <div class="section">
-  <h2>Health <span class="count">notes &amp; watch items</span></h2>
+  <h2>Service status <span class="count">things to check</span></h2>
   {health_html}
   {budget_note}
 </div>
 
-<div class="brief-footer">brief {e(date_str)} · built {e(brief.get('ts') or '?')} · {e(seen_note)} · pure derivation — delete-safe, rebuild via <code>bin/build-morning-brief.py</code></div>
+<div class="brief-footer">Summary saved {e(brief.get('ts') or '?')}. {e(seen_note)}.</div>
+<details class="brief-footer"><summary>Technical details</summary>
+<p>To rebuild the saved summary, run <code>python3 bin/build-morning-brief.py</code>.</p>
+</details>
 </div>
 """
     return html, len(topics)
@@ -1447,24 +1450,24 @@ def render_todos_tab(world):
                 n_active = " active" if ad_state == "null" else ""
                 tools_html = (
                     f'<div class="todo-tools">'
-                    f'  <span class="tool-label">autoDispatch:</span>'
-                    f'  <button class="tool-btn td-set td-set-true{t_active}" data-id="{e(td_id)}" data-value="true" title="Set autoDispatch=true (Assistant will spawn at next pulse)">on</button>'
-                    f'  <button class="tool-btn td-set td-set-false{f_active}" data-id="{e(td_id)}" data-value="false" title="Set autoDispatch=false (manual dispatch only)">off</button>'
-                    f'  <button class="tool-btn td-set td-set-null{n_active}" data-id="{e(td_id)}" data-value="null" title="Set autoDispatch=null (Bucket C — Assistant will surface a card asking what to do)">unset</button>'
+                    f'  <span class="tool-label">Start automatically:</span>'
+                    f'  <button class="tool-btn td-set td-set-true{t_active}" data-id="{e(td_id)}" data-value="true" title="Start this task on the next automatic check">On</button>'
+                    f'  <button class="tool-btn td-set td-set-false{f_active}" data-id="{e(td_id)}" data-value="false" title="Start this task only when you choose">Off</button>'
+                    f'  <button class="tool-btn td-set td-set-null{n_active}" data-id="{e(td_id)}" data-value="null" title="Ask you what to do before starting">Ask me</button>'
                     f'  <span class="tool-spacer"></span>'
-                    f'  <button class="tool-btn td-dispatch" data-id="{e(td_id)}" title="Force Bucket B at next Assistant pulse: sets autoDispatch=true and clears dispatchedAt">'
-                    f'    Dispatch now'
+                    f'  <button class="tool-btn td-dispatch" data-id="{e(td_id)}" title="Queue this task to start at the next automatic check">'
+                    f'    Queue to start'
                     f'  </button>'
-                    f'  <button class="tool-btn td-context-toggle" data-id="{e(td_id)}" title="Append context to detail">'
-                    f'    + context'
+                    f'  <button class="tool-btn td-context-toggle" data-id="{e(td_id)}" title="Add details to this task">'
+                    f'    Add details'
                     f'  </button>'
                     f'  <button class="tool-btn td-remove" data-id="{e(td_id)}" title="Remove this TODO (soft-delete: moved to removed[] in the JSON)">'
                     f'    remove'
                     f'  </button>'
                     f'</div>'
                     f'<div class="todo-context" data-id="{e(td_id)}" hidden>'
-                    f'  <textarea class="td-context-text" data-id="{e(td_id)}" rows="3" placeholder="Add context (will be appended to detail with a [mukul ts] marker)"></textarea>'
-                    f'  <button class="tool-btn td-context-save" data-id="{e(td_id)}">Append</button>'
+                    f'  <textarea class="td-context-text" data-id="{e(td_id)}" rows="3" placeholder="Add a note. It will be saved with your name and the date."></textarea>'
+                    f'  <button class="tool-btn td-context-save" data-id="{e(td_id)}">Save note</button>'
                     f'</div>'
                 )
             else:
@@ -1681,13 +1684,13 @@ def overview_cards(world):
         uncertain_pause = bool(pause) and not verified_pause
         if verified_pause:
             lane, state = "parked", "Parked intentionally"
-            action = "Review the reason for pausing before choosing to resume."
+            action = "Before continuing, check why you paused this work."
         elif uncertain_pause:
             lane, state = "needs-you", "Pause needs confirmation"
-            action = "Confirm the previous pause before continuing or wrapping up this session."
+            action = "Check whether you still want this work paused before continuing or closing."
         elif not snapshot_fresh:
             lane, state = "needs-you", "Status unknown"
-            action = "Refresh the session state before deciding what to do."
+            action = "Check for a recent update before deciding what to do."
         elif working:
             lane, state = "working", "Last signal: tool activity"
             action = "Look for the next result. Don't close the session while work continues."
@@ -1695,26 +1698,26 @@ def overview_cards(world):
             lane = "needs-you"
             if new_request:
                 state = "Request awaiting a response"
-                action = "Check whether your latest request is being handled before wrapping up."
+                action = "Check whether your latest request is being handled before closing."
             elif reply_current and not tools_complete:
                 state = "Tool status unknown"
-                action = "Check whether tools have finished before deciding to wrap up."
+                action = "Check whether the current work has finished before closing."
             else:
                 state = "Review the last response" if reply_current else "Status unknown"
-                action = ("Read the last response, then choose to continue, finish, or park this work."
+                action = ("Read the latest reply, then choose whether to continue, finish, or pause."
                           if reply_current else "Open the workspace and check its current state.")
         elif verdict == "active":
             lane, state = "working", "In progress"
             action = summary.get("next") or "Wait for the next recorded result."
         elif verdict in ("ready_for_merge", "ready_for_cleanup") and not tools_complete:
             lane, state = "needs-you", "Tool status unknown"
-            action = "Check every session in this workspace before deciding to wrap up."
+            action = "Before closing, check that every conversation in this workspace has finished."
         elif verdict in ("ready_for_merge", "ready_for_cleanup"):
             lane = "ready"
             state = "Review before merging" if verdict == "ready_for_merge" else "Check before closing"
             action = ("Review the change and remaining checks before merging."
                       if verdict == "ready_for_merge" else
-                      "Verify the outcome and save a return note before closing.")
+                      "Check the result and save a short note before closing.")
         else:
             lane = "needs-you"
             state = "Needs a decision" if verdict == "needs_user" else "Check the session"
@@ -1726,9 +1729,9 @@ def overview_cards(world):
             "ref": ref, "workspace_id": workspace_id, "title": title, "lane": lane, "state": state,
             "action": " ".join(action.split()),
             "summary": (summary_text if context_fresh else last_reply) or
-                       "No matching return note is available.",
+                       "Nothing has been saved for this session yet.",
             "next": (summary.get("next") if context_fresh else None) or
-                    "Check the current response before choosing the next step.",
+                    "Read the latest reply before choosing the next step.",
             "history": summary_text if not context_fresh else "",
             "context_at": evidence_at,
             "snapshot_at": snapshot_at,
@@ -1755,10 +1758,10 @@ def render_overview_tab(world):
     now = utc_now().timestamp()
     fresh = _overview_fresh(snapshot_at, now)
     columns = [
-        ("needs-you", "Needs you", "A specific question or next step"),
-        ("working", "Agent work", "Running work or a prepared continuation"),
-        ("ready", "Ready to close", "Verify the outcome before closing"),
-        ("parked", "Parked", "Paused on purpose, not forgotten"),
+        ("needs-you", "Needs your answer", "Questions and choices for you"),
+        ("working", "Assistant tasks", "Work in progress or a next step to send"),
+        ("ready", "Ready to close", "Check the result before closing"),
+        ("parked", "Paused", "Work you've chosen to leave for later"),
     ]
 
     def render_card(card):
@@ -1769,7 +1772,7 @@ def render_overview_tab(world):
         context_age = (age_str(now - card["context_at"]) + " ago"
                        if card["context_at"] else "unknown")
         disabled = "" if fresh and card["workspace_id"] else " disabled"
-        pause_label = "Earlier pause reason (unverified)" if card["pause_uncertain"] else "Why paused"
+        pause_label = "Earlier reason for pausing (not checked)" if card["pause_uncertain"] else "Why it's paused"
         reason = (f'<dt>{pause_label}</dt><dd>{e(card["park_reason"])}</dd>'
                   if card["park_reason"] else "")
         if card["pause_uncertain"]:
@@ -1780,15 +1783,15 @@ def render_overview_tab(world):
             reason += (
                 '<dt>Confirm the pause</dt><dd>After checking this workspace, run '
                 f'<code>{e(command)}</code>. Run /attend inside the workspace to remove the pause.</dd>')
-        history = (f'<dt>Historical note (not current)</dt><dd>{e(card["history"])}</dd>'
+        history = (f'<dt>Earlier note (may be out of date)</dt><dd>{e(card["history"])}</dd>'
                    if card["history"] else "")
         session_text = ", ".join(s.get("session_id") or s.get("tab_id") or "unidentified"
-                                 for s in card["sessions"]) or "No verified session link"
+                                 for s in card["sessions"]) or "No session link has been checked"
         recorded = (datetime.fromtimestamp(card["first_recorded_at"], timezone.utc).date().isoformat()
                     if card["first_recorded_at"] else None)
-        age_label = f"First recorded {recorded}" if recorded else "Session start unknown"
-        unverified = ('<p class="attention-boundary">An earlier note has no matching session identity; '
-                      'it is not used for this task.</p>') if card["unverified"] else ""
+        age_label = f"First seen {recorded}" if recorded else "Start date unknown"
+        unverified = ("<p class=\"attention-boundary\">An earlier note couldn't be matched to this session. "
+                      "It isn't used here.</p>") if card["unverified"] else ""
         questions_html = ""
         choice_labels = []
         for question in card["questions"]:
@@ -1800,9 +1803,9 @@ def render_overview_tab(world):
             questions_html += (
                 f'<div class="session-question"><p>{e(question["question"])}</p>'
                 f'<ul>{options}</ul><p class="attention-boundary">'
-                'Answer in the original session; this dashboard does not send a reply.</p></div>')
-        choices_preview = (f'<p class="attention-choices">Choices: '
-                           f'{e(" / ".join(choice_labels[:4]))}</p>') if choice_labels else ""
+                "Answer in your session. This page doesn't send a reply.</p></div>")
+        choices_preview = (f'<p class="attention-choices">{len(choice_labels)} choices from your session. '
+                           'Expand the question to read them.</p>') if choice_labels else ""
         evidence_html = ""
         resume_html = ""
         if card["guidance_note"]:
@@ -1814,65 +1817,67 @@ def render_overview_tab(world):
                 url = evidence.get("url")
                 parsed_url = urlsplit(url) if isinstance(url, str) else None
                 if parsed_url and parsed_url.scheme == "https" and parsed_url.hostname == "github.com":
-                    label = f'Pull request #{parsed_url.path.rsplit("/", 1)[-1]}: {evidence.get("state", "state unverified")}'
+                    label = f'Pull request #{parsed_url.path.rsplit("/", 1)[-1]}: {evidence.get("state", "not checked").lower()}'
                     evidence_items.append(
                         f'<li><a href="{e(url)}" target="_blank" rel="noopener noreferrer">{e(label)}</a></li>')
                 elif evidence.get("path"):
-                    evidence_items.append(f'<li>Saved evidence: <code>{e(evidence["path"])}</code></li>')
+                    evidence_items.append(f'<li>Saved file: <code>{e(evidence["path"])}</code></li>')
                 elif evidence.get("branch"):
                     evidence_items.append(
                         f'<li>Branch <code>{e(evidence["branch"])}</code>: '
-                        f'{"worktree registered" if evidence.get("registered") else "no registered worktree"}</li>')
+                        f'{"separate working copy exists" if evidence.get("registered") else "no separate working copy listed"}</li>')
             uncertainties = note.get("uncertainties") or []
             evidence_html = (
                 f'<dt>Why this next step</dt><dd>{e(note.get("rationale") or "")}</dd>'
-                f'<dt>Evidence</dt><dd><ul>{"".join(evidence_items)}</ul></dd>'
-                f'<dt>Still unverified</dt><dd>{e(" ".join(uncertainties)) or "No additional claim is made."}</dd>')
+                f'<dt>Supporting details</dt><dd><ul>{"".join(evidence_items)}</ul></dd>'
+                f'<dt>What hasn\'t been checked</dt><dd>{e(" ".join(uncertainties)) or "No other checks are recorded."}</dd>')
             if note.get("who") == "agent" and note.get("next_action"):
                 prompt = (
-                    f"Goal: {note['goal']}\nRecorded progress: {note['progress']}\n"
+                    f"Goal: {note['goal']}\nProgress so far: {note['progress']}\n"
                     f"Next step: {note['next_action']}\n"
-                    "Recheck the current state first. Stay within the original approved task. "
+                    "First, check what has changed. Continue only the task already approved. "
                     "Don't merge, delete, close sessions, or send external messages without approval."
                 )
                 resume_html = (
-                    f'<label class="resume-label">Prepared continuation'
+                    f'<label class="resume-label">Message you can send to continue'
                     f'<textarea class="resume-prompt" readonly rows="5">{e(prompt)}</textarea></label>'
                     '<button class="btn resume-copy" onclick="copySessionPrompt(this)">Copy next step</button>'
                     '<span class="copy-result" role="status"></span>')
+        display_title = card["guidance_note"]["goal"] if card["guidance_note"] else card["title"]
         return f"""
 <article class="attention-card lane-{card['lane']}" id="task-{key}"
          data-workspace-ref="{e(ref)}"
          data-lane="{card['lane']}" data-evidence-at="{card['context_at'] or ''}"
          data-guidance-kind="{e(card['source_kind'])}"
-         data-search="{e((card['title'] + ' ' + card['cwd']).lower())}">
-  <span class="attention-state">{e(card['state'])}</span>
-  <h3 title="{e(card['title'])}">{e(card['title'])}</h3>
+         data-search="{e((card['title'] + ' ' + display_title + ' ' + card['cwd']).lower())}">
+  <span class="attention-state">{e(session_guidance.STATE_LABELS.get(card['state'], card['state']))}</span>
+  <h3 title="{e(card['title'])}">{e(display_title)}</h3>
   <p class="attention-progress">{e(_first_sentence(card['summary'], 150)) if card['guidance_note'] else ''}</p>
+  {'<span class="attention-source">From your session:</span>' if not card['guidance_note'] and card['source_kind'] in ('Quoted from the session', 'Last session update', 'Question from your session') else ''}
   <p class="attention-next">{e(_first_sentence(card['action'], 160))}</p>
   {choices_preview}
   <span class="attention-age">{e(age_label)}</span>
   <details class="attention-context" data-context-key="{e(card['workspace_id'] or ref)}">
-    <summary>{'Question and choices' if card['questions'] else 'Context and next step'}</summary>
-    <p class="attention-expiry attention-boundary" hidden>This is historical context. Refresh before acting on it.</p>
+    <summary>{'Read the question and choices' if card['questions'] else 'Details and next step'}</summary>
+    <p class="attention-expiry attention-boundary" hidden>This information is old. Check for updates before acting on it.</p>
     {questions_html}
     <dl>
-      <dt>Task</dt><dd>{e(card['title'])}</dd>
-      <dt>Goal</dt><dd>{e(card['goal'] or 'No verified original request is available.')}</dd>
-      <dt>Last request</dt><dd>{e(card['request'] or 'No verified request is available.')}</dd>
+      <dt>Session name</dt><dd>{e(card['title'])}</dd>
+      <dt>Goal</dt><dd>{e(card['goal'] or "The original request hasn't been checked.")}</dd>
+      <dt>Your last request</dt><dd>{e(card['request'] or 'No request is available.')}</dd>
       <dt>Where you left off</dt><dd>{e(card['summary'])}</dd>
-      <dt>Recorded next step</dt><dd>{e(card['next'])}</dd>
+      <dt>Next step</dt><dd>{e(card['next'])}</dd>
       {evidence_html}
       {history}
       {reason}
       <dt>Working folder</dt><dd>{e(card['cwd'] or 'Unknown')}</dd>
-      <dt>Session links</dt><dd>{e(session_text)}</dd>
-      <dt>Context checked</dt><dd>{e(updated)} ({e(context_age)})</dd>
+      <dt>Session IDs</dt><dd>{e(session_text)}</dd>
+      <dt>Last checked</dt><dd>{e(updated)} ({e(context_age)})</dd>
     </dl>
     {resume_html}
     {unverified}
-    <p class="attention-boundary">Opening a workspace doesn't resume, merge, or close it.</p>
-    <button class="btn" data-ws="{e(ref)}" data-workspace-id="{e(card['workspace_id'] or '')}" onclick="openWs(this)"{disabled}>Open workspace</button>
+    <p class="attention-boundary">This opens the workspace. It doesn't send instructions or close anything.</p>
+    <button class="btn" data-ws="{e(ref)}" data-workspace-id="{e(card['workspace_id'] or '')}" onclick="openWs(this)"{disabled}>Go to session</button>
   </details>
 </article>"""
 
@@ -1893,8 +1898,8 @@ def render_overview_tab(world):
             f'{"" if items else "<p class=attention-empty>Nothing here.</p>"}</section>')
     secondary = []
     for key, label, hint in (
-            ("updates", "Updates, not decisions", "No confirmed request for you. Read the actual latest update if needed."),
-            ("unknown", "Unverified sessions", "Missing evidence is not a decision. These are excluded from Needs you.")):
+            ("updates", "Updates to read", "No question for you is confirmed here."),
+            ("unknown", "Sessions not checked yet", "Missing information doesn't mean you need to make a decision.")):
         items = [card for card in cards if card["lane"] == key]
         secondary.append(
             f'<details class="secondary-sessions" data-context-key="secondary-{key}"'
@@ -1904,16 +1909,16 @@ def render_overview_tab(world):
             f'<h2>{label}<span class="attention-count">{len(items)}</span></h2>'
             f'<p class="attention-hint">{hint}</p>'
             f'{"".join(render_card(card) for card in items)}</section></details>')
-    errors = (f'<details class="attention-errors"><summary>Context needs checking '
+    errors = (f'<details class="attention-errors"><summary>Some notes couldn\'t be read '
               f'({len(issues)})</summary><p>{"<br>".join(e(i) for i in issues)}</p></details>'
               if issues else "")
     finish_html = render_finish_prompt(world, cards, fresh)
     return f"""
 <div class="attention-intro">
   <div><p class="attention-eyebrow">Your cmux sessions</p>
-    <h2>Keep work moving. Finish one thing.</h2>
-    <p class="session-scope" data-workspace-count="{len(cards)}">{len(cards)} open cmux workspaces in this snapshot. GitHub alerts are separate.</p>
-    <p>Open a card for context. Long-running work can stay open while it progresses.</p></div>
+    <h2>Choose what to finish next.</h2>
+    <p class="session-scope" data-workspace-count="{len(cards)}">{len(cards)} cmux workspaces in the saved list. GitHub alerts aren't included.</p>
+    <p>Open a card to see what's done and what comes next.</p></div>
   <label class="attention-filter">Find your work
     <input id="attention-search" type="search" placeholder="Task or folder"
            oninput="filterAttention(this.value)">
@@ -1921,14 +1926,14 @@ def render_overview_tab(world):
 </div>
 <div id="finish-current">{finish_html}</div>
 <aside class="finish-prompt" id="finish-outdated" hidden>
-  <strong>Check the current state before wrapping up</strong>
-  <p>The supporting context is outdated. Refresh the view before choosing what to close.</p>
+  <strong>Check for updates before closing anything</strong>
+  <p>This information is old. Reload the page to see the latest saved update.</p>
 </aside>
 <div class="attention-board">{''.join(lanes)}</div>
 <div class="secondary-session-list">{''.join(secondary)}</div>
 <p id="attention-search-empty" hidden>No matching tasks. Clear the search to see your work.</p>
 {errors}
-<p class="attention-footnote">One card per open cmux workspace, even when it contains multiple sessions. Counts describe the snapshot, not GitHub notifications.</p>
+<p class="attention-footnote">Each card is one cmux workspace. It can contain several conversations. GitHub notifications are counted separately.</p>
 """, len(cards)
 
 
@@ -1936,7 +1941,7 @@ def render_finish_prompt(world, cards, fresh):
     if not fresh:
         return ('<aside class="finish-prompt" id="finish-prompt">'
                 '<strong>Before starting something new</strong>'
-                '<p>Restore a current view first. Old data cannot tell you what is safe to close.</p>'
+                "<p>Check for a recent update first. This information is too old to tell you what's safe to close.</p>"
                 '</aside>')
     todo_path = HOME / ".claude/assistant-todo.json"
     todos, error = _overview_object(todo_path)
@@ -1971,17 +1976,17 @@ def render_finish_prompt(world, cards, fresh):
     older_sessions.sort(key=lambda card: (card["lane"] != "ready", card["first_recorded_at"]))
     if older_sessions:
         card = older_sessions[0]
-        heading = "Wrap up an older session before starting another"
-        title = card["title"]
+        heading = "Finish an older session before starting another"
+        title = card["guidance_note"]["goal"] if card["guidance_note"] else card["title"]
         recorded = datetime.fromtimestamp(card["first_recorded_at"], timezone.utc).date().isoformat()
-        text = f"First recorded {recorded}. {card['action']}"
+        text = f"First seen {recorded}. {card['action']}"
         key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or card["ref"])
         link = f'<button class="btn" onclick="revealAttention(\'task-{key}\')">Review this session</button>'
         evidence_at = card["context_at"]
     elif ready:
         card = ready[0]
-        heading = "One task may be ready to wrap up"
-        title = card["title"]
+        heading = "You may be able to finish this task"
+        title = card["guidance_note"]["goal"] if card["guidance_note"] else card["title"]
         text = card["action"]
         key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or card["ref"])
         link = f'<button class="btn" onclick="revealAttention(\'task-{key}\')">Review this task</button>'
@@ -1990,14 +1995,14 @@ def render_finish_prompt(world, cards, fresh):
         created_date, task_id, item = candidates[0]
         heading = "Finish one older task before adding another"
         title = item.get("title") or task_id
-        text = f"Created {created_date.isoformat()}. Finish it, record the blocker, or deliberately defer it."
+        text = f"Added {created_date.isoformat()}. Finish it, note what's stopping it, or pause it."
         link = (f'<button class="btn" data-task-id="{e(task_id)}" '
                 'onclick="openPending(this.dataset.taskId)">Review this task</button>')
         evidence_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     else:
         heading = "Before starting something new"
-        title = "Give unfinished work a deliberate next step."
-        text = "Let productive sessions continue. Finish, park, or record a blocker instead of leaving work ambiguous."
+        title = "Give unfinished work a clear next step."
+        text = "Let useful work continue. For the rest, choose what to finish, pause, or check."
         link = ""
         evidence_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     if error:
@@ -3522,6 +3527,7 @@ h1 {
 .attention-next { font-size: 12px; line-height: 1.5; margin: 0 0 10px; color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
 .attention-progress { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 9px; }
 .attention-progress:empty { display: none; }
+.attention-source { display: block; margin-bottom: 4px; color: var(--muted); font-size: 10px; }
 .attention-choices { font-size: 12px; line-height: 1.5; color: var(--amber); overflow-wrap: anywhere; }
 .secondary-sessions { margin-top: 18px; border: 1px solid var(--line); padding: 16px; border-radius: 10px; }
 .secondary-sessions > summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
@@ -3567,14 +3573,14 @@ function showTab(name) {
     const prompt = context.querySelector('.resume-prompt');
     const status = context.querySelector('.copy-result');
     if (context.closest('.attention-card').dataset.expired) {
-      status.textContent = 'This continuation is outdated. Refresh the session evidence first.';
+      status.textContent = 'This saved message is old. Check for an update before using it.';
       return;
     }
     try {
       await navigator.clipboard.writeText(prompt.value);
-      status.textContent = 'Copied. Open the session and review the prompt before sending.';
+      status.textContent = 'Copied. Open your session and read the message before sending it.';
     } catch (error) {
-      status.textContent = 'Copy failed. Select the prepared text and copy it manually.';
+      status.textContent = \"Couldn't copy. Select the message and copy it yourself.\";
       prompt.focus();
       prompt.select();
     }
@@ -3642,8 +3648,8 @@ function showTab(name) {
       if (fresh && card.dataset.lane === 'parked') return;
       card.dataset.expired = 'true';
       card.querySelectorAll('.resume-copy').forEach(button => { button.disabled = true; });
-      card.querySelector('.attention-state').textContent = 'Status needs refreshing';
-      card.querySelector('.attention-next').textContent = 'Refresh the current state before continuing or closing.';
+      card.querySelector('.attention-state').textContent = 'Check for updates';
+      card.querySelector('.attention-next').textContent = 'This information is old. Check for updates before continuing or closing.';
       card.querySelector('.attention-expiry').hidden = false;
       if (card.dataset.lane !== 'unknown') {
         card.classList.remove('lane-' + card.dataset.lane);
@@ -3717,17 +3723,17 @@ function showTab(name) {
     const status = document.getElementById('snapshot-status');
     status.dataset.fresh = String(fresh);
     status.textContent = stamp
-      ? (fresh ? 'Session snapshot checked ' : 'Outdated snapshot from ')
+      ? (fresh ? 'Sessions last checked ' : 'Session information is out of date. Last checked ')
         + new Date(stamp * 1000).toLocaleString()
-        + (fresh ? '. Session age is not a failure.' : '. Refresh the data before acting.')
-      : 'Session snapshot time is unknown. Refresh the data before acting.';
+        + (fresh ? '.' : '. Check for an update before acting.')
+      : \"Sessions haven't been checked yet. Check for an update before acting.\";
     const scope = document.querySelector('.session-scope');
     const workspaceCount = scope.dataset.workspaceCount;
     document.querySelector('[data-tab="overview"] .tab-count').textContent = fresh ? workspaceCount : '?';
     scope.textContent = fresh
-      ? workspaceCount + ' open cmux workspaces in this snapshot. GitHub alerts are separate.'
-      : 'Current workspace count is unverified. The last snapshot lists ' + workspaceCount
-        + ' workspaces; GitHub alerts are separate.';
+      ? workspaceCount + \" cmux workspaces in the saved list. GitHub alerts aren't included.\"
+      : \"The current workspace count hasn't been checked. The saved list has \" + workspaceCount
+        + \" workspaces. GitHub alerts aren't included.\";
     const finishAt = Number(document.getElementById('finish-prompt')?.dataset.evidenceAt);
     const finishFresh = fresh && finishAt && now >= finishAt
       && now - finishAt <= Number(root.dataset.freshSeconds);
@@ -3736,7 +3742,7 @@ function showTab(name) {
     expireAttention(root, now, fresh);
     const reading = document.querySelector('.tab-panel.active details[open], .service-details[open]');
     document.getElementById('refresh-note').textContent = reading
-      ? 'Updates pause while you read. Refresh view keeps your place.'
+      ? 'Updates pause while you read. Reloading keeps your place.'
       : 'Checks for updates every 15 seconds.';
     root.querySelectorAll('.attention-card button[data-ws]').forEach(button => {
       button.disabled = !fresh || !button.dataset.workspaceId;
@@ -4035,21 +4041,21 @@ document.addEventListener('click', handleTodoToolsClick);
       data-rendered-at="{rendered_at}" data-fresh-seconds="{OVERVIEW_FRESH_SECONDS}"
       data-visible-cards="{OVERVIEW_VISIBLE_CARDS}">
 <div class="dashboard-header"><h1>Assistant</h1>
-  <span class="meta">Finish work without keeping every session in your head.</span></div>
-<p class="snapshot-status" id="snapshot-status" role="status">Checking snapshot age...</p>
+  <span class="meta">See what needs your attention and what you can finish.</span></div>
+<p class="snapshot-status" id="snapshot-status" role="status">Checking when your sessions last updated...</p>
 <p class="snapshot-status" id="refresh-error" role="status"></p>
 <div class="dashboard-header">
-  <button class="btn" id="refresh-dashboard" onclick="refreshDashboard(true)">Refresh view</button>
+  <button class="btn" id="refresh-dashboard" onclick="refreshDashboard(true)">Reload page</button>
   <span class="meta" id="refresh-note">Checks for updates every 15 seconds.</span>
 </div>
-<details class="service-details" data-context-key="service-health"><summary>Service health and data sources</summary>
+<details class="service-details" data-context-key="service-health"><summary>Background services and saved data</summary>
 {pulse_health_html}
 <p>The page checks for updates every 15 seconds, except while you're reading expanded details.</p>
 </details>
 
 <div class="tabs">
   <button class="tab" data-tab="overview" onclick="showTab('overview')">
-    Sessions <span class="tab-count" title="Open cmux workspaces in this snapshot">{overview_n}</span>
+    Sessions <span class="tab-count" title="cmux workspaces in the saved list">{overview_n}</span>
   </button>
   <button class="tab" data-tab="brief" onclick="showTab('brief')">
     Notifications
@@ -4061,13 +4067,13 @@ document.addEventListener('click', handleTodoToolsClick);
     Session details
   </button>
   <button class="tab" data-tab="fleet" onclick="showTab('fleet')">
-    Fleet <span class="tab-count">{fleet_n}</span>
+    Background work <span class="tab-count">{fleet_n}</span>
   </button>
   <button class="tab" data-tab="connections" onclick="showTab('connections')">
-    Connections <span class="tab-count">{connected_n}</span>
+    Connected apps <span class="tab-count">{connected_n}</span>
   </button>
   <button class="tab" data-tab="todos" onclick="showTab('todos')">
-    TODOs <span class="tab-count">{p0_p1}</span>
+    Tasks <span class="tab-count">{p0_p1}</span>
   </button>
 </div>
 
@@ -4099,7 +4105,11 @@ document.addEventListener('click', handleTodoToolsClick);
 {todos_html}
 </div>
 
-<div class="footer">v3 · Scanner: ~/.claude/cache/world.json · Evaluator: ~/.architect/orchestrator-{{proposals,ledger}}/ · Lessons: ~/.claude/CLAUDE.md `## Lessons` · Undo: world-evaluator owns ledger</div>
+<details class="footer"><summary>Technical details</summary>
+<p>Session data: <code>~/.claude/cache/world.json</code>.
+Saved action history: <code>~/.architect/orchestrator-ledger/</code>.</p>
+<p>Writing reference: <a href="https://developers.google.com/style/tone">Google's voice and tone guide</a>.</p>
+</details>
 </main>
 </body></html>
 """

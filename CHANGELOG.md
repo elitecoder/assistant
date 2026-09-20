@@ -22,6 +22,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Rewrite dashboard labels, status messages, and instructions in plain language
+  using Google's documentation style. Preserve original questions and technical
+  records in expanded details, and add a wording check for every session state.
 - Resolve full session filenames directly instead of scanning every transcript
   filename for prefix matches on each collector pass.
 - Keep ordinary updates and unverified sessions out of the human decision queue.

@@ -116,8 +116,8 @@ class OverviewTests(unittest.TestCase):
         self.world["workspaces"] = [{"ws_ref": "workspace:1", "title": "New work"}]
         html, count = self.render()
         self.assertEqual(count, 1)
-        self.assertIn("Status unknown", html)
-        self.assertIn("No matching return note", html)
+        self.assertIn("Not checked yet", html)
+        self.assertIn("Nothing has been saved for this session yet", html)
 
     def test_closed_workspace_summaries_never_reappear(self):
         self.workspace(1)
@@ -129,7 +129,7 @@ class OverviewTests(unittest.TestCase):
     def test_recycled_reference_with_same_title_does_not_borrow_context(self):
         self.workspace(1, workspace_id="previous-workspace", summary="Wrong task's private context.")
         html, _ = self.render()
-        self.assertIn("Status unknown", html)
+        self.assertIn("Not checked yet", html)
         self.assertNotIn("Wrong task", html)
 
     def test_old_and_future_snapshots_are_not_actionable(self):
@@ -138,20 +138,20 @@ class OverviewTests(unittest.TestCase):
             with self.subTest(delta=delta):
                 self.world["_meta"]["built_at"] = (NOW + timedelta(seconds=delta)).isoformat()
                 html, _ = self.render()
-                self.assertIn("Status unknown", html)
+                self.assertIn("Not checked yet", html)
                 self.assertIn(" disabled", html)
-                self.assertIn("Old data cannot tell you", html)
+                self.assertIn("This information is too old", html)
 
     def test_old_context_is_not_a_current_completion_claim(self):
         self.workspace(1, "ready_for_cleanup", age=601)
         html, _ = self.render()
-        self.assertIn("Status unknown", html)
+        self.assertIn("Not checked yet", html)
         self.assertNotIn("Check before closing", html)
 
     def test_failed_observation_is_not_evidence_of_work(self):
         self.workspace(1, "active", observation_complete=False)
         html, _ = self.render()
-        self.assertIn("Status unknown", html)
+        self.assertIn("Not checked yet", html)
         self.assertNotIn("In progress", html)
 
     def test_fresh_scan_does_not_make_old_session_context_current(self):
@@ -161,8 +161,8 @@ class OverviewTests(unittest.TestCase):
             "last_assistant": {"ts": NOW.isoformat(), "text": "[tool_use:Bash] old run"},
         })
         html, _ = self.render()
-        self.assertIn("Status unknown", html)
-        self.assertNotIn("Last signal: tool activity", html)
+        self.assertIn("Not checked yet", html)
+        self.assertNotIn("Waiting for a result", html)
 
     def test_newer_tool_activity_prevents_close_nudge(self):
         ref = self.workspace(1, "ready_for_cleanup", age=120)
@@ -174,8 +174,8 @@ class OverviewTests(unittest.TestCase):
             },
         })
         html, _ = self.render()
-        self.assertIn("Last signal: tool activity", html)
-        self.assertNotIn("One task may be ready", html)
+        self.assertIn("Waiting for a result", html)
+        self.assertNotIn("You may be able to finish this task", html)
 
     def test_mixed_text_and_pending_tool_does_not_trigger_wrap_up(self):
         self.workspace(1, "ready_for_cleanup")
@@ -189,7 +189,7 @@ class OverviewTests(unittest.TestCase):
         })
         html, _ = self.render()
         self.assertIn("lane-working", Cards(html).cards["workspace:1"]["class"])
-        self.assertNotIn("Wrap up an older session", html)
+        self.assertNotIn("Finish an older session", html)
         self.assertNotIn("Check before closing", html)
 
     def test_unknown_pending_tool_state_cannot_trigger_wrap_up(self):
@@ -200,17 +200,17 @@ class OverviewTests(unittest.TestCase):
             "last_assistant": {"ts": NOW.isoformat(), "text": "Partial tool context."},
         })
         html, _ = self.render()
-        self.assertIn("Tool status unknown", html)
-        self.assertNotIn("Wrap up an older session", html)
+        self.assertIn("Not checked yet", html)
+        self.assertNotIn("Finish an older session", html)
 
     def test_completion_summary_cannot_override_unknown_tools(self):
         self.workspace(1, "ready_for_cleanup")
         self.world["live_sessions"][0].update({
             "first_recorded_at": "2026-09-01T10:00:00Z", "pending_tool_use": None})
         html, _ = self.render()
-        self.assertIn("Tool status unknown", html)
+        self.assertIn("Not checked yet", html)
         self.assertNotIn("Check before closing", html)
-        self.assertNotIn("Wrap up an older session", html)
+        self.assertNotIn("Finish an older session", html)
 
     def test_every_associated_surface_needs_known_completed_tools(self):
         self.workspace(1)
@@ -228,11 +228,11 @@ class OverviewTests(unittest.TestCase):
             with self.subTest(pending=pending, context=status):
                 second.update({"pending_tool_use": pending, "context_status": status})
                 html, _ = self.render()
-                self.assertIn("Tool status unknown", html)
-                self.assertNotIn("Wrap up an older session", html)
+                self.assertIn("Not checked yet", html)
+                self.assertNotIn("Finish an older session", html)
         second.update({"pending_tool_use": False, "context_status": "verified"})
         html, _ = self.render()
-        self.assertNotIn("Wrap up an older session", html)
+        self.assertNotIn("Finish an older session", html)
         self.assertIn("lane-updates", Cards(html).cards["workspace:1"]["class"])
 
     def test_real_transcript_tool_lifecycle_controls_the_finish_prompt(self):
@@ -262,7 +262,7 @@ class OverviewTests(unittest.TestCase):
         self.world["live_sessions"][0]["first_recorded_at"] = "2026-09-01T10:00:00Z"
         html, _ = self.render()
         self.assertIn("lane-working", Cards(html).cards["workspace:1"]["class"])
-        self.assertNotIn("Wrap up an older session", html)
+        self.assertNotIn("Finish an older session", html)
         completed = [
             {"type": "user", "uuid": "result-1", "parentUuid": "assistant-1",
              "timestamp": NOW.isoformat(), "message": {"role": "user", "content": [
@@ -280,7 +280,7 @@ class OverviewTests(unittest.TestCase):
         self.assertIs(context["pending_tool_use"], False)
         self.world["live_sessions"][0].update(context)
         html, _ = self.render()
-        self.assertNotIn("Wrap up an older session", html)
+        self.assertNotIn("Finish an older session", html)
         self.assertIn("lane-updates", Cards(html).cards["workspace:1"]["class"])
         self.assertIn("The recorded checks passed. Review the change.", html)
 
@@ -298,9 +298,9 @@ class OverviewTests(unittest.TestCase):
         self.world["workspaces"][0]["session_ids"] = ["new-session"]
         self.world["live_sessions"][0]["session_id"] = "new-session"
         html, _ = self.render()
-        self.assertIn("Status unknown", html)
+        self.assertIn("Not checked yet", html)
         self.assertNotIn("Check before closing", html)
-        self.assertIn("earlier note has no matching session identity", html)
+        self.assertIn("earlier note couldn't be matched to this session", html)
 
     def test_verified_live_context_survives_unverified_legacy_summary(self):
         self.workspace(1, workspace_id="old-workspace", summary="Wrong old summary.")
@@ -309,7 +309,7 @@ class OverviewTests(unittest.TestCase):
             "last_user": {"ts": NOW.isoformat(), "text": "Fix the export issue."},
         })
         html, _ = self.render()
-        self.assertIn("Latest recorded update", html)
+        self.assertIn("Latest update", html)
         self.assertIn("lane-updates", Cards(html).cards["workspace:1"]["class"])
         self.assertIn("Choose a retry policy.", html)
         self.assertIn("Fix the export issue.", html)
@@ -322,10 +322,10 @@ class OverviewTests(unittest.TestCase):
         self.world["live_sessions"][1]["first_recorded_at"] = "2026-08-01T10:00:00Z"
         html, _ = self.render()
         finish = html.split('id="finish-prompt"', 1)[1].split("</aside>", 1)[0]
-        self.assertIn("Wrap up an older session", finish)
+        self.assertIn("Finish an older session", finish)
         self.assertIn("Task 1", finish)
         self.assertNotIn("Task 2", finish)
-        self.assertIn("First recorded 2026-09-01", finish)
+        self.assertIn("First seen 2026-09-01", finish)
         self.assertNotIn("Created", finish)
 
     def test_pause_for_recycled_reference_does_not_park_current_work(self):
@@ -334,7 +334,7 @@ class OverviewTests(unittest.TestCase):
             "workspaces": [{"ws_ref": "workspace:1", "workspace_id": "old-workspace"}]})
         html, _ = self.render()
         self.assertIn("lane-needs-you", Cards(html).cards["workspace:1"]["class"])
-        self.assertIn("Pause needs confirmation", html)
+        self.assertIn("Check whether this should stay paused", html)
 
     def test_legacy_pause_suppresses_wrap_up_until_reconfirmed(self):
         self.workspace(1, "ready_for_cleanup")
@@ -342,11 +342,11 @@ class OverviewTests(unittest.TestCase):
         self.write(".assistant/back-off.json", {
             "workspaces": [{"ws_ref": "workspace:1", "reason": "Waiting on another team."}]})
         html, _ = self.render()
-        self.assertIn("Pause needs confirmation", html)
-        self.assertIn("Earlier pause reason (unverified)", html)
+        self.assertIn("Check whether this should stay paused", html)
+        self.assertIn("Earlier reason for pausing (not checked)", html)
         self.assertIn("Waiting on another team.", html)
-        self.assertNotIn("Wrap up an older session", html)
-        self.assertNotIn("One task may be ready", html)
+        self.assertNotIn("Finish an older session", html)
+        self.assertNotIn("You may be able to finish this task", html)
 
     def test_new_request_invalidates_previous_completion(self):
         self.workspace(1, "ready_for_cleanup", age=120)
@@ -357,9 +357,9 @@ class OverviewTests(unittest.TestCase):
                                "text": "The original task is complete."},
         })
         html, _ = self.render()
-        self.assertIn("Request awaiting a response", html)
+        self.assertIn("Waiting for a reply", html)
         self.assertNotIn("Check before closing", html)
-        self.assertNotIn("Wrap up an older session", html)
+        self.assertNotIn("Finish an older session", html)
 
     def test_new_blocker_replaces_current_summary_instead_of_hiding_response(self):
         for age in (120, 601):
@@ -370,16 +370,16 @@ class OverviewTests(unittest.TestCase):
                 self.world["live_sessions"][0].update({
                     "last_assistant": {"ts": NOW.isoformat(), "text": "A new failure blocks this change."}})
                 html, _ = self.render()
-                self.assertIn("Latest recorded update", html)
+                self.assertIn("Latest update", html)
                 self.assertIn("A new failure blocks this change.", html)
-                self.assertIn("Historical note (not current)", html)
+                self.assertIn("Earlier note (may be out of date)", html)
                 self.assertNotIn("Check before closing", html)
 
     def test_save_time_cannot_refresh_an_old_observation(self):
         self.workspace(1, "ready_for_cleanup", age=1000,
                        ts=NOW.timestamp(), last_updated_ts=NOW.timestamp())
         html, _ = self.render()
-        self.assertIn("Status unknown", html)
+        self.assertIn("Not checked yet", html)
         self.assertNotIn("Check before closing", html)
 
     def test_uuid_case_does_not_break_verified_context_or_pause(self):
@@ -412,7 +412,7 @@ class OverviewTests(unittest.TestCase):
         ]})
         html, _ = self.render()
         self.assertIn("Finish the old fix", html)
-        self.assertIn("Created 2026-09-01", html)
+        self.assertIn("Added 2026-09-01", html)
         self.assertNotIn("Productive work", html)
         self.assertNotIn("Paused work", html)
         self.assertNotIn("New idea", html)
@@ -423,7 +423,7 @@ class OverviewTests(unittest.TestCase):
         self.write(".claude/assistant-todo.json", {"items": [
             {"id": "td-1", "title": "Unknown age", "status": "open"}]})
         html, _ = self.render()
-        self.assertNotIn("Created ", html)
+        self.assertNotIn("Added ", html)
         self.assertNotIn("older task", html)
 
     def test_old_stale_task_is_not_forgotten_by_the_finish_prompt(self):
@@ -433,7 +433,7 @@ class OverviewTests(unittest.TestCase):
              "createdAt": "2026-08-01", "status": "stale"}]})
         html, _ = self.render()
         self.assertIn("Review the forgotten task", html)
-        self.assertIn("Created 2026-08-01", html)
+        self.assertIn("Added 2026-08-01", html)
 
     def test_context_is_closed_and_extra_cards_are_collapsed(self):
         for number in range(12):
@@ -449,7 +449,7 @@ class OverviewTests(unittest.TestCase):
         (self.home / ".assistant/observer-summaries/bad.json").write_text("{bad")
         html, count = self.render()
         self.assertEqual(count, 1)
-        self.assertIn("Context needs checking", html)
+        self.assertIn("Some notes couldn't be read", html)
         self.assertIn("bad.json", html)
 
     def test_untrusted_text_is_escaped_everywhere(self):

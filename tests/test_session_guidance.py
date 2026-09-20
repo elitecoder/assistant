@@ -150,11 +150,11 @@ class SessionGuidanceTests(TestCase):
             ]}))
             notes, error = read_notes(path)
             self.assertEqual(notes, [self.note])
-            self.assertIn("3 invalid", error)
+            self.assertIn("3 saved notes", error)
             path.write_text("{broken")
             notes, error = read_notes(path)
             self.assertEqual(notes, [])
-            self.assertIn("could not be read", error)
+            self.assertIn("couldn't be read", error)
 
     def test_current_observer_note_does_not_lose_its_progress_to_raw_text(self):
         self.card.update(observation_current=True, summary="Verified progress.",

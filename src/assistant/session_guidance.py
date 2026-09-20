@@ -11,6 +11,31 @@ from urllib.parse import urlsplit
 
 RECOMMENDATIONS = {"continue", "answer", "review", "park", "close_candidate", "unknown"}
 
+STATE_LABELS = {
+    "Status unknown": "Not checked yet",
+    "Question waiting for you": "Your answer is needed",
+    "No action for you": "Nothing you need to do",
+    "Next step not established": "Next step unclear",
+    "Agent's next step": "Your assistant's next step",
+    "Your next step": "What to do next",
+    "Review close-out": "Check before closing",
+    "Close-out evidence needs rechecking": "Check the result again",
+    "Ready to park deliberately": "You can pause this work",
+    "Latest recorded update": "Latest update",
+    "Review the last response": "Read the latest reply",
+    "Tools still running": "Waiting for a result",
+    "Tool status unknown": "Not checked yet",
+    "Request awaiting a response": "Waiting for a reply",
+    "Parked intentionally": "Paused by you",
+    "Pause needs confirmation": "Check whether this should stay paused",
+    "Last signal: tool activity": "Waiting for a result",
+    "In progress": "In progress",
+    "Review before merging": "Review the code change",
+    "Check before closing": "Check before closing",
+    "Needs a decision": "Your answer is needed",
+    "Check the session": "Check the latest update",
+}
+
 
 def read_notes(path: Path) -> tuple[list[dict], str]:
     try:
@@ -18,9 +43,9 @@ def read_notes(path: Path) -> tuple[list[dict], str]:
     except FileNotFoundError:
         return [], ""
     except (OSError, ValueError) as exc:
-        return [], f"Session return notes could not be read: {exc}"
+        return [], f"Your saved session notes couldn't be read: {exc}"
     if not isinstance(document, dict) or not isinstance(document.get("sessions"), list):
-        return [], "Session return notes have an invalid format."
+        return [], "Your saved session notes have an unexpected format."
     notes = []
     invalid = 0
     for note in document["sessions"]:
@@ -66,7 +91,7 @@ def read_notes(path: Path) -> tuple[list[dict], str]:
             invalid += 1
             continue
         notes.append(note)
-    return notes, f"{invalid} invalid session return notes were ignored." if invalid else ""
+    return notes, f"{invalid} saved notes couldn't be used. Check their details." if invalid else ""
 
 
 def matching_note(session: dict, notes: list[dict]) -> dict | None:
@@ -137,14 +162,14 @@ def guide_card(card: dict, current_sessions: list[dict], notes: list[dict],
     result.update({"questions": [], "guidance_note": None, "goal": "", "source_kind": ""})
     if not snapshot_fresh:
         result.update(lane="unknown", state="Status unknown",
-                      action="Session evidence is out of date; this is not a decision for you.",
+                      action="This information is old. Check for updates before acting on it.",
                       wrap_eligible=False)
         return result
     if card["lane"] == "parked" or card["pause_uncertain"]:
         return result
     if not current_sessions:
         result.update(lane="unknown", state="Status unknown",
-                      action="No reliable current session context is available.",
+                      action="This session hasn't been checked yet.",
                       wrap_eligible=False)
         return result
     questions = [
@@ -156,7 +181,7 @@ def guide_card(card: dict, current_sessions: list[dict], notes: list[dict],
         result.update(lane="needs-you", state="Question waiting for you",
                       action=questions[0]["question"], questions=questions,
                       next=questions[0]["question"], wrap_eligible=False,
-                      source_kind="Outstanding question from the session")
+                      source_kind="Question from your session")
         if len(current_sessions) == len(card["sessions"]) == 1:
             note = matching_note(current_sessions[0], notes)
             if note and note["who"] == "user" and note["recommendation"] == "answer":
@@ -175,10 +200,10 @@ def guide_card(card: dict, current_sessions: list[dict], notes: list[dict],
     note = matching_note(latest, notes)
     if note and not new_request and len(current_sessions) == len(card["sessions"]) == 1:
         recommendation = note["recommendation"]
-        next_action = note.get("next_action") or "No further action is recorded for this task."
+        next_action = note.get("next_action") or "No further action is listed for this task."
         result.update(guidance_note=note, goal=note["goal"], summary=note["progress"],
                       next=next_action, action=next_action,
-                      source_kind="Reviewed return note; current conversation matches")
+                      source_kind="Saved note checked against this conversation")
         if note.get("who") == "nobody":
             result.update(lane="updates", state="No action for you", wrap_eligible=False)
         elif note.get("who") == "unknown":
@@ -191,7 +216,7 @@ def guide_card(card: dict, current_sessions: list[dict], notes: list[dict],
             result.update(lane="ready", state="Review close-out", wrap_eligible=True)
         elif recommendation == "close_candidate" and tools_complete:
             result.update(lane="updates", state="Close-out evidence needs rechecking",
-                          action="The saved completion evidence changed or is unavailable. Recheck it before closing.",
+                          action="The saved result changed or couldn't be found. Check it before closing.",
                           wrap_eligible=False)
         elif recommendation == "park" and tools_complete:
             result.update(lane="needs-you", state="Ready to park deliberately", wrap_eligible=True)
@@ -204,11 +229,11 @@ def guide_card(card: dict, current_sessions: list[dict], notes: list[dict],
         if card["state"] == "Tool status unknown":
             result.update(lane="unknown", wrap_eligible=False)
             return result
-        result.update(source_kind="Current observed next step", action=card["next"],
+        result.update(source_kind="Next step from the latest check", action=card["next"],
                       summary=card["summary"], next=card["next"])
         return result
     if card["lane"] == "working":
-        result.update(action=text_excerpt(reply or request) or "A recorded tool call is still pending.",
+        result.update(action=text_excerpt(reply or request) or "Your assistant is waiting for a result.",
                       source_kind="Last session update", wrap_eligible=False)
     elif new_request:
         result.update(lane="updates", state="Request awaiting a response",
@@ -221,6 +246,6 @@ def guide_card(card: dict, current_sessions: list[dict], notes: list[dict],
                       wrap_eligible=False)
     else:
         result.update(lane="unknown", state="Status unknown",
-                      action="The session has no verified text response to summarize.",
+                      action="No reply is available to summarize yet.",
                       wrap_eligible=False)
     return result
