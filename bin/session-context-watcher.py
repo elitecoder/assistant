@@ -3,7 +3,7 @@
 session-context-watcher.py — event-driven session transcript watcher.
 
 Uses macOS kqueue (stdlib `select.kqueue`) to react to writes on every
-recently-active Claude transcript JSONL. When any transcript grows,
+registered live agent transcript JSONL, regardless of idle age. When one grows,
 incrementally updates ~/.claude/cache/session-context.json with the new
 turns. Pure stdlib. No polling — kqueue blocks until a real fs event.
 
@@ -16,6 +16,9 @@ Cache schema matches build-session-context.py (drop-in replacement).
 pending_tool_use is true for observed unmatched tool calls, false only when
 complete session history proves none remain, and null for incomplete evidence.
 This field describes tool calls, not whether the session is idle.
+guidance_context adds transcript-only initial/latest requests, latest assistant
+text, and outstanding AskUserQuestion inputs. Text retains its head and tail
+within 6000 characters; its version hashes the full source, not the display.
 
 Usage:
   session-context-watcher.py [--daemon]   long-lived watcher (default)
@@ -23,13 +26,19 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import select
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session
 
 HOME = Path(os.environ["HOME"])
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
@@ -42,6 +51,13 @@ LOCK_FILE = HOME / ".architect/.session-context-watcher.lock"
 ACTIVITY_HOURS = 24
 TURNS_PER_SESSION = 6
 TEXT_TRUNCATE = 800
+GUIDANCE_TEXT_LIMIT = 6000
+GUIDANCE_PENDING_LIMIT = 8
+GUIDANCE_QUESTION_LIMIT = 4
+GUIDANCE_OPTION_LIMIT = 8
+GUIDANCE_SCAFFOLDING = re.compile(
+    r"<(system-reminder|system_reminder|environment_context|current_datetime"
+    r"|local-command-caveat|local-command-stdout)>.*?</\1>", re.DOTALL)
 RECENT_INPUTS_LIMIT = 30
 DISCOVERY_INTERVAL_SEC = 30  # how often we look for brand-new transcript files
 FLUSH_DEBOUNCE_SEC = 0.5     # batch writes during a burst of fs events
@@ -50,10 +66,6 @@ CLAUDE_PREAMBLE_TYPES = {
     "mode", "permission-mode", "atis-latch", "last-prompt", "ai-title",
     "pr-link", "file-history-snapshot",
 }
-
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-import agent_session
 
 
 def utc_now():
@@ -99,11 +111,25 @@ def pid_alive(pid):
 
 
 def load_live_agent_sessions():
-    """Return verified live Claude and Droid sessions keyed by session id."""
+    """Prefer verified world bindings; use legacy registrations without identity data."""
     try:
-        reg = json.loads(CMUX_REGISTRY.read_text())
+        world = json.loads(WORLD_PATH.read_text())
     except Exception:
-        reg = {}
+        world = {}
+    world_sessions = world.get("live_sessions", []) or []
+    identity_schema = any(
+        isinstance(entry, dict) and "identity_status" in entry for entry in world_sessions
+    ) or any(
+        isinstance(surface, dict) and "identity_status" in surface
+        for workspace in world.get("workspaces", []) or [] if isinstance(workspace, dict)
+        for surface in workspace.get("surfaces", []) or []
+    )
+    reg = {}
+    if not identity_schema:
+        try:
+            reg = json.loads(CMUX_REGISTRY.read_text())
+        except Exception:
+            pass
     out = {}
     for tab_id, entry in reg.items():
         pid = entry.get("claude_pid")
@@ -125,12 +151,12 @@ def load_live_agent_sessions():
             "ts": entry.get("ts"),
             "tab_id": tab_id,
         }
-    try:
-        world = json.loads(WORLD_PATH.read_text())
-    except Exception:
-        world = {}
-    for entry in world.get("live_sessions", []) or []:
+    for entry in world_sessions:
         if not isinstance(entry, dict):
+            continue
+        if identity_schema and (
+                entry.get("identity_status") != "verified"
+                or not entry.get("workspace_id") or not entry.get("surface_id")):
             continue
         sid = entry.get("session_id")
         pid = entry.get("pid")
@@ -198,6 +224,71 @@ def truncate(s, n=TEXT_TRUNCATE):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def guidance_text(message):
+    """Extract transcript text without synthesizing tool markers."""
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(block["text"] for block in content
+                     if isinstance(block, dict) and block.get("type") == "text"
+                     and isinstance(block.get("text"), str))
+
+
+def bounded_guidance_text(text, limit=GUIDANCE_TEXT_LIMIT):
+    if len(text) <= limit:
+        return text
+    marker = "\n…\n"
+    head = (limit - len(marker)) // 2
+    return text[:head] + marker + text[-(limit - len(marker) - head):]
+
+
+def guidance_hash(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def bounded_questions(tool_id, tool_input):
+    if not isinstance(tool_input, dict):
+        return None
+    questions = tool_input.get("questions")
+    if not isinstance(questions, list):
+        return None
+    result = {"tool_call_id": tool_id, "questions": [],
+              "truncated": len(questions) > GUIDANCE_QUESTION_LIMIT}
+    for question in questions[:GUIDANCE_QUESTION_LIMIT]:
+        if not isinstance(question, dict) or not isinstance(question.get("question"), str):
+            continue
+        item = {}
+        for key, limit in (("question", GUIDANCE_TEXT_LIMIT), ("header", 200)):
+            text = question.get(key, "")
+            if isinstance(text, str):
+                item[key] = bounded_guidance_text(text, limit)
+                result["truncated"] |= len(text) > limit
+        options = question.get("options", [])
+        item["options"] = []
+        if isinstance(options, list):
+            result["truncated"] |= len(options) > GUIDANCE_OPTION_LIMIT
+            for option in options[:GUIDANCE_OPTION_LIMIT]:
+                if not isinstance(option, dict):
+                    continue
+                bounded = {}
+                for key, limit in (("label", 300), ("description", 1000)):
+                    text = option.get(key)
+                    if isinstance(text, str):
+                        bounded[key] = bounded_guidance_text(text, limit)
+                        result["truncated"] |= len(text) > limit
+                item["options"].append(bounded)
+        if isinstance(question.get("multiSelect"), bool):
+            item["multiSelect"] = question["multiSelect"]
+        result["questions"].append(item)
+    return result if result["questions"] else None
+
+
 def acquire_lock():
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     if LOCK_FILE.exists():
@@ -224,7 +315,9 @@ class TranscriptState:
                  "last_user", "last_assistant", "mtime", "pid", "is_cron",
                  "cron_label", "tab_id", "provider", "pending_tools",
                  "tool_history_complete", "tool_read_started", "tool_partial_line",
-                 "file_identity", "tool_scan_from_start")
+                 "file_identity", "tool_scan_from_start", "guidance_entries",
+                 "guidance_fingerprints", "pending_questions", "question_fingerprints",
+                 "transcript_mtime_ns")
 
     def __init__(self, path, cwd, pid=None, is_cron=False, cron_label=None,
                  tab_id=None, provider="claude"):
@@ -248,6 +341,48 @@ class TranscriptState:
         self.tool_partial_line = False
         self.file_identity = None
         self.tool_scan_from_start = None
+        self.guidance_entries = {}
+        self.guidance_fingerprints = {}
+        self.pending_questions = {}
+        self.question_fingerprints = {}
+        self.transcript_mtime_ns = None
+
+    def guidance_context(self):
+        """Return bounded evidence with a version covering unabridged source text."""
+        return {
+            **{key: self.guidance_entries.get(key) for key in (
+                "initial_request", "last_request", "last_response")},
+            "pending_questions": [
+                {**question, "tool_use_id": key,
+                 "truncated": self.pending_questions[key]["truncated"]}
+                for key in sorted(self.pending_questions)
+                for question in self.pending_questions[key]["questions"]],
+            "source_version": guidance_hash({
+                "entries": self.guidance_fingerprints,
+                "questions": self.question_fingerprints,
+                "pending_tools": sorted(self.pending_tools),
+                "pending_tool_use": self.pending_tool_use(),
+            }),
+        }
+
+    def track_guidance(self, record, role):
+        text = guidance_text(record.get("message"))
+        if role == "user":
+            if record.get("isMeta") or record.get("isCompactSummary"):
+                return
+            text = GUIDANCE_SCAFFOLDING.sub("", text)
+        if not text.strip():
+            return
+        timestamp = record.get("timestamp") or record.get("ts")
+        entry = {"ts": timestamp, "text": bounded_guidance_text(text),
+                 "truncated": len(text) > GUIDANCE_TEXT_LIMIT}
+        fingerprint = guidance_hash({"ts": timestamp, "text": text})
+        key = "last_request" if role == "user" else "last_response"
+        self.guidance_entries[key] = entry
+        self.guidance_fingerprints[key] = fingerprint
+        if role == "user" and "initial_request" not in self.guidance_entries:
+            self.guidance_entries["initial_request"] = entry
+            self.guidance_fingerprints["initial_request"] = fingerprint
 
     def pending_tool_use(self):
         if self.tool_partial_line:
@@ -258,6 +393,8 @@ class TranscriptState:
 
     def invalidate_tool_history(self):
         self.pending_tools.clear()
+        self.pending_questions.clear()
+        self.question_fingerprints.clear()
         self.tool_history_complete = False
 
     def track_tools(self, record, role, first_record):
@@ -290,8 +427,21 @@ class TranscriptState:
                 self.invalidate_tool_history()
             elif kind == "tool_use":
                 self.pending_tools.add(tool_id)
+                self.pending_questions.pop(tool_id, None)
+                self.question_fingerprints.pop(tool_id, None)
+                if block.get("name") == "AskUserQuestion":
+                    question = bounded_questions(tool_id, block.get("input"))
+                    if question:
+                        if len(self.pending_questions) >= GUIDANCE_PENDING_LIMIT:
+                            oldest = next(iter(self.pending_questions))
+                            self.pending_questions.pop(oldest)
+                            self.question_fingerprints.pop(oldest)
+                        self.pending_questions[tool_id] = question
+                        self.question_fingerprints[tool_id] = guidance_hash(block.get("input"))
             else:
                 self.pending_tools.discard(tool_id)
+                self.pending_questions.pop(tool_id, None)
+                self.question_fingerprints.pop(tool_id, None)
 
     def consume_line(self, line):
         if not line.strip():
@@ -307,6 +457,15 @@ class TranscriptState:
             self.tool_read_started = True
             return False
         kind = record.get("type")
+        # Claude can carry a separate session_id alongside its transcript sessionId.
+        identity_key = "sessionId" if "sessionId" in record else "session_id"
+        identities = [record[identity_key]] if identity_key in record else []
+        if kind == "session_start" and "id" in record:
+            identities = [record["id"]]
+        if any(identity != self.session_id for identity in identities):
+            self.invalidate_tool_history()
+            self.tool_read_started = True
+            return False
         if kind == "queue-operation":
             self.queue_pending += 1
             return False
@@ -321,6 +480,7 @@ class TranscriptState:
         self.track_tools(record, role, first_record)
         if role not in ("user", "assistant"):
             return False
+        self.track_guidance(record, role)
         message = record.get("message", {})
         text = text_from_message(message)
         if not text:
@@ -340,29 +500,43 @@ class TranscriptState:
     def read_new(self):
         """Scan full history once, then only appended complete JSONL records."""
         pending_before = self.pending_tool_use()
+        guidance_before = self.guidance_context()["source_version"]
+        mtime_before = self.transcript_mtime_ns
         try:
             st = self.path.stat()
         except FileNotFoundError:
+            self.transcript_mtime_ns = None
             self.invalidate_tool_history()
-            return pending_before is not None
+            return (pending_before is not None
+                    or mtime_before is not None
+                    or self.guidance_context()["source_version"] != guidance_before)
         self.mtime = st.st_mtime
         identity = (st.st_dev, st.st_ino)
         if st.st_size < self.pos or (
-                self.file_identity is not None and identity != self.file_identity):
+                self.file_identity is not None and (
+                    identity != self.file_identity
+                    or (st.st_size == self.pos
+                        and st.st_mtime_ns != self.transcript_mtime_ns))):
             # File truncated/rotated — start over.
             self.pos = 0
             self.turns.clear()
             self.queue_pending = 0
             self.last_user = None
             self.last_assistant = None
+            self.guidance_entries.clear()
+            self.guidance_fingerprints.clear()
             self.invalidate_tool_history()
             self.tool_read_started = False
             self.tool_partial_line = False
             self.tool_scan_from_start = None
+            self.transcript_mtime_ns = None
         self.file_identity = identity
         if st.st_size == self.pos:
-            return self.pending_tool_use() is not pending_before
+            return (self.pending_tool_use() is not pending_before
+                    or self.transcript_mtime_ns != mtime_before
+                    or self.guidance_context()["source_version"] != guidance_before)
         changed = False
+        self.transcript_mtime_ns = None
         try:
             with open(self.path, "rb") as f:
                 f.seek(self.pos)
@@ -375,13 +549,26 @@ class TranscriptState:
                         break
                     self.pos = f.tell()
                     changed = self.consume_line(line) or changed
+                opened = os.fstat(f.fileno())
+                current = self.path.stat()
+                if (not self.tool_partial_line and self.tool_scan_from_start
+                        and self.pos == st.st_size
+                        and all(
+                            (other.st_dev, other.st_ino, other.st_size, other.st_mtime_ns)
+                            == (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+                            for other in (opened, current))):
+                    self.transcript_mtime_ns = st.st_mtime_ns
         except OSError as e:
             log(f"read {self.path.name}: {e}", "warn")
             self.invalidate_tool_history()
-            return pending_before is not None
+            return (pending_before is not None
+                    or mtime_before is not None
+                    or self.guidance_context()["source_version"] != guidance_before)
         if len(self.turns) > TURNS_PER_SESSION * 4:
             self.turns = self.turns[-TURNS_PER_SESSION * 2:]
-        return changed or self.pending_tool_use() is not pending_before
+        return (changed or self.pending_tool_use() is not pending_before
+                or (self.transcript_mtime_ns != mtime_before and bool(self.guidance_entries))
+                or self.guidance_context()["source_version"] != guidance_before)
 
     def to_dict(self, now):
         recent = self.turns[-TURNS_PER_SESSION:]
@@ -405,6 +592,13 @@ class TranscriptState:
             "queue_pending": self.queue_pending,
             "pending_tool_use": self.pending_tool_use(),
             "recent_turns": recent,
+            "guidance_context": self.guidance_context(),
+            "transcript_state": {
+                "device": self.file_identity[0] if self.file_identity else None,
+                "inode": self.file_identity[1] if self.file_identity else None,
+                "size_read": self.pos,
+                "mtime_ns": self.transcript_mtime_ns,
+            },
         }
 
 
@@ -417,11 +611,11 @@ class Watcher:
         self.last_flush = 0.0
         self.last_discovery = 0.0
 
-    def find_active_transcripts(self, cutoff):
-        """Return ONLY transcripts whose Claude process is currently alive AND
-        registered in cmux. This is the real set of 'sessions inside open
-        cmux workspaces'. Skips the hundreds of closed-workspace ghost
-        transcripts that mtime alone can't filter out."""
+    def find_active_transcripts(self, cutoff=None):
+        """Return registered live transcripts regardless of age.
+
+        The cutoff argument remains accepted for compatibility.
+        """
         live = load_live_agent_sessions()
         # Tag the cron workers so we can mark them. We need session_id for that
         # join. The orchestrator-registry has workspace_ref; correlate by the
@@ -442,8 +636,6 @@ class Watcher:
             p = Path(tpath)
             try:
                 if not p.exists():
-                    continue
-                if p.stat().st_mtime < cutoff:
                     continue
             except OSError:
                 continue
@@ -530,10 +722,8 @@ class Watcher:
                 self.dirty = True
 
     def discover(self):
-        now = utc_now()
-        cutoff = (now - timedelta(hours=ACTIVITY_HOURS)).timestamp()
         live_paths = set()
-        for entry in self.find_active_transcripts(cutoff):
+        for entry in self.find_active_transcripts():
             self.add_watch(
                 entry["path"], entry["cwd"],
                 pid=entry["pid"], is_cron=entry["is_cron"],

@@ -529,6 +529,8 @@ def merge_session_context(live_sessions):
         sid = sess["session_id"]
         sess["context_status"] = "unknown"
         sess["pending_tool_use"] = None
+        sess["guidance_context"] = None
+        sess["context_checked_at"] = None
         sess["context_built_at"] = (ctx.get("_meta") or {}).get("built_at")
         c = by_sess.get(sid)
         if c:
@@ -553,6 +555,26 @@ def merge_session_context(live_sessions):
             sess["pending_tool_use"] = pending if isinstance(pending, bool) else None
             if sess.get("identity_status") == "verified":
                 sess["context_status"] = "verified"
+                guidance = c.get("guidance_context")
+                if isinstance(guidance, dict):
+                    sess["context_status"] = "unknown"
+                    evidence = c.get("transcript_state")
+                    path = sess.get("transcript_path")
+                    if not isinstance(evidence, dict) or not isinstance(path, str) or not path:
+                        continue
+                    try:
+                        current = Path(path).stat()
+                    except (OSError, ValueError):
+                        continue
+                    expected = {
+                        "device": current.st_dev, "inode": current.st_ino,
+                        "size_read": current.st_size, "mtime_ns": current.st_mtime_ns,
+                    }
+                    if all(type(evidence.get(key)) is int and evidence[key] == value
+                           for key, value in expected.items()):
+                        sess["guidance_context"] = guidance
+                        sess["context_status"] = "verified"
+                        sess["context_checked_at"] = iso(utc_now())
 
 
 def normalize_provider(provider):

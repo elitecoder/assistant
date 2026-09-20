@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Preserve actionable transcript context and outstanding question choices.
+  Display reviewed, conversation-bound return notes with specific next steps.
 - Group live GitHub alerts into review topics, show three first, and keep
   individual alerts available in history. Surface stale saved requests separately.
 - Add approval-bound backlog cleanup with record fingerprints, backups, and a
@@ -18,6 +20,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Keep ordinary updates and unverified sessions out of the human decision queue.
+  Preserve response endings instead of dropping next steps after 800 characters.
 - Separate cmux workspace counts from GitHub notifications. Sessions stay the
   default view, notification counts stay inside their inbox, and expired
   workspace counts show as unverified.

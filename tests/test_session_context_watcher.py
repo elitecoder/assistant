@@ -175,6 +175,48 @@ def test_load_live_sessions_includes_droid_from_world(tmp_home):
     assert out["droid-session"]["transcript_path"] == str(transcript)
 
 
+@pytest.mark.parametrize("binding", [
+    "unknown", "missing_status", "missing_workspace", "missing_surface", "verified", "dead",
+])
+def test_load_live_sessions_identity_world_excludes_reused_registry_pids(tmp_home, binding):
+    _write_registry(tmp_home, {
+        "old": {"claude_pid": os.getpid(), "session_id": "historical",
+                "cwd": "/old", "transcript_path": "/history.jsonl", "ts": 100},
+    })
+    entry = {"session_id": "current", "pid": os.getpid(), "provider": "claude",
+             "workspace_id": "workspace", "surface_id": "surface",
+             "identity_status": "verified", "transcript_path": "/current.jsonl"}
+    if binding == "unknown":
+        entry["identity_status"] = "unknown"
+    elif binding == "missing_status":
+        entry.pop("identity_status")
+    elif binding == "missing_workspace":
+        entry.pop("workspace_id")
+    elif binding == "missing_surface":
+        entry.pop("surface_id")
+    elif binding == "dead":
+        entry["pid"] = 2_000_000_000
+    scw.WORLD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    scw.WORLD_PATH.write_text(json.dumps({"live_sessions": [
+        {"session_id": "historical", "pid": os.getpid(), "identity_status": "unknown"},
+        entry,
+    ]}))
+    assert set(scw.load_live_agent_sessions()) == ({"current"} if binding == "verified" else set())
+
+
+def test_load_live_sessions_empty_identity_world_does_not_restore_registry(tmp_home):
+    _write_registry(tmp_home, {
+        "old": {"claude_pid": os.getpid(), "session_id": "historical",
+                "transcript_path": "/history.jsonl"},
+    })
+    scw.WORLD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    scw.WORLD_PATH.write_text(json.dumps({
+        "live_sessions": [],
+        "workspaces": [{"surfaces": [{"identity_status": "unknown"}]}],
+    }))
+    assert scw.load_live_agent_sessions() == {}
+
+
 def test_load_live_sessions_dup_keeps_most_recent_ts(tmp_home):
     live_pid = os.getpid()
     scw.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
@@ -347,6 +389,299 @@ def _tool_turn(role, content, provider="claude", root=False):
 def _append_tool_turn(path, role, content, provider="claude"):
     with path.open("a") as stream:
         stream.write(_tool_turn(role, content, provider))
+
+
+def _question_call(tool_id="question"):
+    return {"type": "tool_use", "id": tool_id, "name": "AskUserQuestion",
+            "input": {"questions": [{
+                "question": "Which environment should you deploy to?",
+                "header": "Environment",
+                "options": [{"label": "Staging", "description": "Run checks first."},
+                            {"label": "Production", "description": "Release to users."}],
+                "multiSelect": False,
+            }]}}
+
+
+@pytest.mark.parametrize("provider", ["claude", "droid"])
+def test_guidance_real_human_and_long_response_survive_tool_results(tmp_path, provider):
+    path = tmp_path / "guidance.jsonl"
+    response = "Summary: " + "checks pass. " * 800 + "Which environment should you deploy to?"
+    path.write_text(
+        _tool_turn("user", "<system-reminder>Environment details.</system-reminder>",
+                   provider, root=True)
+        + _tool_turn("user", "Build a release.", provider)
+        + _tool_turn("assistant", [{"type": "text", "text": response},
+                                  {"type": "tool_use", "id": "check", "name": "Bash"}],
+                     provider)
+        + _tool_turn("user", [{"type": "tool_result", "tool_use_id": "check",
+                               "content": "Success"}], provider))
+    state = scw.TranscriptState(path, "/cwd", provider=provider)
+    state.read_new()
+    guidance = state.to_dict(scw.utc_now())["guidance_context"]
+    assert guidance["initial_request"]["text"] == "Build a release."
+    assert guidance["last_request"]["text"] == "Build a release."
+    assert guidance["last_response"]["text"].startswith("Summary:")
+    assert guidance["last_response"]["text"].endswith("Which environment should you deploy to?")
+    assert guidance["last_response"]["truncated"] is True
+    assert len(guidance["last_response"]["text"]) <= 6000
+    assert "[tool_use:" not in guidance["last_response"]["text"]
+    assert state.last_user["text"] == "[tool_result]"
+    assert len(state.last_assistant["text"]) == scw.TEXT_TRUNCATE
+
+
+def test_guidance_questions_wait_for_matching_result_and_version_is_stable(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [
+                        {"type": "text", "text": "You need to choose a target."},
+                        _question_call(),
+                        {"type": "tool_use", "id": "check", "name": "Bash"}]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    initial = state.to_dict(scw.utc_now())["guidance_context"]
+    assert initial["pending_questions"] == [
+        {**_question_call()["input"]["questions"][0], "tool_use_id": "question",
+         "truncated": False}]
+    assert initial["last_response"]["text"] == "You need to choose a target."
+    reloaded = scw.TranscriptState(path, "/cwd")
+    reloaded.read_new()
+    assert reloaded.to_dict(scw.utc_now())["guidance_context"] == initial
+    assert state.read_new() is False
+    assert state.to_dict(scw.utc_now() + timedelta(days=1))["guidance_context"] == initial
+    _append_tool_turn(path, "user", [{"type": "tool_result", "tool_use_id": "check"}])
+    state.read_new()
+    pending = state.to_dict(scw.utc_now())["guidance_context"]
+    assert pending["pending_questions"] == initial["pending_questions"]
+    assert pending["source_version"] != initial["source_version"]
+    _append_tool_turn(path, "user", [{"type": "tool_result", "tool_use_id": "question",
+                                    "content": "Staging"}])
+    state.read_new()
+    answered = state.to_dict(scw.utc_now())["guidance_context"]
+    assert answered["pending_questions"] == []
+    assert answered["last_request"]["text"] == "Release."
+    assert state.pending_tool_use() is False
+    _append_tool_turn(path, "user", [{"type": "text", "text": "Deploy staging."},
+                                   {"type": "tool_result", "tool_use_id": "other"}])
+    state.read_new()
+    latest = state.to_dict(scw.utc_now())["guidance_context"]
+    assert latest["initial_request"]["text"] == "Release."
+    assert latest["last_request"]["text"] == "Deploy staging."
+    assert latest["source_version"] != answered["source_version"]
+
+
+def test_guidance_answered_questions_leave_ordinary_tool_pending(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    call = _question_call()
+    second = {**call["input"]["questions"][0], "question": "When should you deploy?"}
+    call["input"]["questions"].append(second)
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [
+                        call, {"type": "tool_use", "id": "check", "name": "Bash"}]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    initial = state.to_dict(scw.utc_now())["guidance_context"]
+    assert [question["tool_use_id"] for question in initial["pending_questions"]] == [
+        "question", "question"]
+    assert initial["pending_questions"][1]["question"] == "When should you deploy?"
+    _append_tool_turn(path, "user", [{"type": "tool_result", "tool_use_id": "question",
+                                    "content": "Staging, now."}])
+    state.read_new()
+    answered = state.to_dict(scw.utc_now())["guidance_context"]
+    assert answered["pending_questions"] == []
+    assert state.pending_tool_use() is True
+    assert state.pending_tools == {"check"}
+    assert answered["source_version"] != initial["source_version"]
+
+
+@pytest.mark.parametrize("secondary_identity", [None, "separate-session-id"])
+def test_guidance_preserves_completion_after_human_followup(tmp_path, secondary_identity):
+    path = tmp_path / "guidance.jsonl"
+    completion = "Completed checks. " * 500 + "Do you want to review the release?"
+    records = [
+        {"type": "user", "sessionId": "guidance", "parentUuid": None,
+         "timestamp": "2026-09-19T10:00:00Z", "message": {"content": "Prepare release."}},
+        {"type": "assistant", "sessionId": "guidance",
+         "timestamp": "2026-09-19T10:05:00Z",
+         "message": {"content": [{"type": "text", "text": completion}, _question_call()]}},
+        {"type": "user", "sessionId": "guidance", "timestamp": "2026-09-19T10:06:00Z",
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "question",
+                                  "content": "Review it."}]}},
+    ]
+    if secondary_identity is not None:
+        for record in records[1:]:
+            record["session_id"] = secondary_identity
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    before = state.guidance_context()
+    assert before["last_response"]["text"].endswith("Do you want to review the release?")
+    with path.open("a") as stream:
+        stream.write(_user_line("Show me the final changes.", "2026-09-19T10:07:00Z") + "\n")
+    state.read_new()
+    after = state.guidance_context()
+    assert after["last_response"] == before["last_response"]
+    assert after["last_request"]["text"] == "Show me the final changes."
+    assert after["last_request"]["ts"] > after["last_response"]["ts"]
+    assert after["source_version"] != before["source_version"]
+    assert after["pending_questions"] == []
+    assert state.pending_tool_use() is False
+
+
+def test_guidance_rejects_wrong_primary_identity_even_if_secondary_matches(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [_question_call()])
+                    + json.dumps({"type": "assistant", "sessionId": "wrong",
+                                  "session_id": "guidance",
+                                  "message": {"content": "Wrong session."}}) + "\n")
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.guidance_context()["pending_questions"] == []
+    assert state.guidance_context()["last_response"] is None
+
+
+@pytest.mark.parametrize("replacement", ["truncate", "rotate", "corrupt", "identity"])
+def test_guidance_pending_questions_reset_with_lost_history(tmp_path, replacement):
+    path = tmp_path / "guidance.jsonl"
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [_question_call()]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    before = state.to_dict(scw.utc_now())["guidance_context"]["source_version"]
+    if replacement == "truncate":
+        path.write_text("")
+    elif replacement == "rotate":
+        path.rename(tmp_path / "old.jsonl")
+        path.write_text(_tool_turn("user", "New request.", root=True))
+    else:
+        with path.open("a") as stream:
+            stream.write("{bad\n" if replacement == "corrupt" else json.dumps({
+                "type": "assistant", "sessionId": "wrong",
+                "message": {"content": [_question_call("wrong")]}}) + "\n")
+    assert state.read_new() is True
+    guidance = state.to_dict(scw.utc_now())["guidance_context"]
+    assert guidance["pending_questions"] == []
+    assert guidance["source_version"] != before
+    if replacement == "truncate":
+        assert guidance["initial_request"] is None
+        assert guidance["last_response"] is None
+    elif replacement == "rotate":
+        assert guidance["initial_request"]["text"] == "New request."
+
+
+def test_guidance_full_text_hash_changes_even_when_bounded_display_matches(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    state = scw.TranscriptState(path, "/cwd")
+    snapshots = []
+    for middle in ("first", "other"):
+        _append_tool_turn(path, "assistant", "H" * 6000 + middle + "T" * 6000)
+        state.read_new()
+        snapshots.append(state.to_dict(scw.utc_now())["guidance_context"])
+    assert snapshots[0]["last_response"] == snapshots[1]["last_response"]
+    assert snapshots[0]["source_version"] != snapshots[1]["source_version"]
+
+
+def test_guidance_question_fields_and_count_are_bounded(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    call = _question_call()
+    call["input"]["questions"][0]["question"] = "Start " + "Q" * 12000 + " end?"
+    path.write_text(_tool_turn("assistant", [call]))
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    pending = state.to_dict(scw.utc_now())["guidance_context"]["pending_questions"][0]
+    assert pending["truncated"] is True
+    assert len(pending["question"]) <= 6000
+    assert pending["question"].endswith(" end?")
+
+
+def test_guidance_ignores_meta_but_preserves_human_text_and_response_timestamp(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    path.write_text(json.dumps({
+        "type": "user", "isMeta": True,
+        "message": {"content": "Injected instructions."}}) + "\n"
+        + _user_line("<system-reminder>System facts.</system-reminder>Build it.") + "\n"
+        + _assistant_line("Result. " * 130 + "Do you approve?") + "\n")
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    original = state.to_dict(scw.utc_now())["guidance_context"]
+    assert original["initial_request"]["text"] == "Build it."
+    assert original["last_response"]["ts"] == "2026-06-09T10:00:05Z"
+    assert original["last_response"]["truncated"] is False
+    assert original["last_response"]["text"].endswith("Do you approve?")
+    _append_tool_turn(path, "assistant", [_question_call()])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["guidance_context"]["last_response"] == original["last_response"]
+
+
+def test_guidance_question_display_caps_do_not_hide_full_input_changes(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    state = scw.TranscriptState(path, "/cwd")
+    versions = []
+    for middle in ("first", "other"):
+        call = _question_call()
+        question = call["input"]["questions"][0]
+        question["question"] = "H" * 6000 + middle + "T" * 6000
+        question["options"] *= 10
+        call["input"]["questions"] *= 10
+        _append_tool_turn(path, "assistant", [call])
+        state.read_new()
+        context = state.to_dict(scw.utc_now())["guidance_context"]
+        versions.append(context["source_version"])
+        assert len(context["pending_questions"]) == scw.GUIDANCE_QUESTION_LIMIT
+        assert len(context["pending_questions"][0]["options"]) == scw.GUIDANCE_OPTION_LIMIT
+    assert versions[0] != versions[1]
+    for index in range(20):
+        _append_tool_turn(path, "assistant", [_question_call(str(index))])
+    state.read_new()
+    assert len(state.pending_questions) == scw.GUIDANCE_PENDING_LIMIT
+    assert len(state.question_fingerprints) == scw.GUIDANCE_PENDING_LIMIT
+
+
+def test_guidance_transcript_state_requires_complete_read_and_refreshes_same_size(tmp_path):
+    path = tmp_path / "guidance.jsonl"
+    original = _tool_turn("user", "Start.", root=True)
+    path.write_text(original)
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    stat = path.stat()
+    assert state.to_dict(scw.utc_now())["transcript_state"] == {
+        "device": stat.st_dev, "inode": stat.st_ino,
+        "size_read": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    path.write_text(original.replace("Start.", "Later."))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000000))
+    assert state.read_new() is True
+    assert state.to_dict(scw.utc_now())["guidance_context"]["last_request"]["text"] == "Later."
+    result = _tool_turn("assistant", "Done.")
+    with path.open("a") as stream:
+        stream.write(result[:10])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["transcript_state"]["mtime_ns"] is None
+    with path.open("a") as stream:
+        stream.write(result[10:])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["transcript_state"]["mtime_ns"] == path.stat().st_mtime_ns
+
+
+def test_guidance_transcript_state_rejects_append_during_scan(tmp_path, monkeypatch):
+    path = tmp_path / "guidance.jsonl"
+    path.write_text(_tool_turn("user", "Start.", root=True))
+    original_consume = scw.TranscriptState.consume_line
+    appended = False
+
+    def consume_and_append(state, line):
+        nonlocal appended
+        result = original_consume(state, line)
+        if not appended:
+            appended = True
+            _append_tool_turn(path, "assistant", "Appended while reading.")
+        return result
+
+    monkeypatch.setattr(scw.TranscriptState, "consume_line", consume_and_append)
+    state = scw.TranscriptState(path, "/cwd")
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["transcript_state"]["mtime_ns"] is None
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["transcript_state"]["mtime_ns"] == path.stat().st_mtime_ns
 
 
 @pytest.mark.parametrize("provider", ["claude", "droid"])
@@ -900,7 +1235,7 @@ def test_find_active_transcripts_recent_returned(tmp_home, tmp_path):
         w.kq.close()
 
 
-def test_find_active_transcripts_old_mtime_skipped(tmp_home, tmp_path):
+def test_find_active_transcripts_old_mtime_retained(tmp_home, tmp_path):
     tfile = tmp_path / "stale.jsonl"
     tfile.write_text(_user_line("old") + "\n")
     # Backdate mtime well past the activity window.
@@ -913,7 +1248,7 @@ def test_find_active_transcripts_old_mtime_skipped(tmp_home, tmp_path):
     w = scw.Watcher()
     try:
         cutoff = (scw.utc_now() - timedelta(hours=scw.ACTIVITY_HOURS)).timestamp()
-        assert w.find_active_transcripts(cutoff) == []
+        assert [entry["path"] for entry in w.find_active_transcripts(cutoff)] == [tfile]
     finally:
         w.kq.close()
 
@@ -1158,6 +1493,95 @@ def test_handle_event_delete_drops_watch(tmp_home, tmp_path):
 
 
 # ─── Watcher.discover ─────────────────────────────────────────────────────────
+
+def test_discover_identity_world_keeps_idle_verified_session_not_registry_ghosts(
+        tmp_home, tmp_path):
+    paths = {}
+    old = scw.utc_now() - timedelta(hours=72)
+    for name in ("verified", "unknown", "registry-only"):
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(_user_line("Resume this work.", scw.iso(old)) + "\n")
+        os.utime(path, (old.timestamp(), old.timestamp()))
+        paths[name] = path
+    _write_registry(tmp_home, {
+        name: {"claude_pid": os.getpid(), "session_id": name,
+               "transcript_path": str(path), "cwd": "/project"}
+        for name, path in paths.items()
+    })
+    scw.WORLD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    scw.WORLD_PATH.write_text(json.dumps({"live_sessions": [
+        {"session_id": name, "pid": os.getpid(), "transcript_path": str(paths[name]),
+         "workspace_id": "workspace", "surface_id": name,
+         "identity_status": name, "provider": "claude", "cwd": "/project"}
+        for name in ("verified", "unknown")
+    ]}))
+    watcher = scw.Watcher()
+    try:
+        watcher.discover()
+        watcher.flush()
+        assert set(watcher.path_to_fd) == {str(paths["verified"])}
+        assert set(json.loads(scw.OUT_PATH.read_text())["by_session"]) == {"verified"}
+    finally:
+        for fd in list(watcher.fd_to_state):
+            watcher.drop_watch(fd)
+        watcher.kq.close()
+
+
+@pytest.mark.parametrize("drop_reason", ["dead_pid", "missing_identity"])
+def test_discover_keeps_days_old_live_guidance_and_scanner_verifies_it(
+        tmp_home, tmp_path, monkeypatch, drop_reason):
+    path = tmp_path / "long-lived.jsonl"
+    old = scw.utc_now() - timedelta(hours=72)
+    response = "Completed the checks. " * 100 + "Would you like to review them?"
+    path.write_text(_user_line("Finish the checks.", scw.iso(old)) + "\n"
+                    + _assistant_line(response, scw.iso(old + timedelta(minutes=1))) + "\n"
+                    + _user_line("Show the results.", scw.iso(old + timedelta(minutes=2))) + "\n")
+    os.utime(path, (old.timestamp(), old.timestamp()))
+    historical = tmp_path / "unregistered-history.jsonl"
+    historical.write_text(_user_line("Do not watch historical sessions.") + "\n")
+    registration = {"claude_pid": os.getpid(), "session_id": path.stem,
+                    "cwd": "/project", "transcript_path": str(path), "ts": 1}
+    _write_registry(tmp_home, {"tab-live": registration})
+    spec = importlib.util.spec_from_file_location(
+        "scanner_for_idle_watcher", str(REPO / "bin/world-scanner.py"))
+    scanner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scanner)
+    monkeypatch.setattr(scanner, "SESSION_CTX", scw.OUT_PATH)
+    checked = scw.utc_now() + timedelta(days=2)
+    monkeypatch.setattr(scanner, "utc_now", lambda: checked)
+    watcher = scw.Watcher()
+    try:
+        watcher.discover()
+        assert set(watcher.path_to_fd) == {str(path)}
+        watcher.flush()
+        cached = json.loads(scw.OUT_PATH.read_text())
+        guidance = cached["by_session"][path.stem]["guidance_context"]
+        assert guidance["last_response"]["text"] == response
+        assert guidance["last_request"]["text"] == "Show the results."
+        assert cached["recent_user_inputs"] == []
+        watcher.discover()
+        assert set(watcher.path_to_fd) == {str(path)}
+        live = {path.stem: {"session_id": path.stem, "identity_status": "verified",
+                            "transcript_path": str(path)}}
+        scanner.merge_session_context(live)
+        assert live[path.stem]["guidance_context"] == guidance
+        assert live[path.stem]["context_status"] == "verified"
+        assert live[path.stem]["context_checked_at"] == scanner.iso(checked)
+        assert live[path.stem]["context_built_at"] == cached["_meta"]["built_at"]
+        if drop_reason == "dead_pid":
+            registration["claude_pid"] = 2_000_000_000
+        else:
+            registration.pop("session_id")
+        _write_registry(tmp_home, {"tab-live": registration})
+        watcher.discover()
+        watcher.flush()
+        assert watcher.path_to_fd == {}
+        assert json.loads(scw.OUT_PATH.read_text())["by_session"] == {}
+    finally:
+        for fd in list(watcher.fd_to_state):
+            watcher.drop_watch(fd)
+        watcher.kq.close()
+
 
 def test_discover_adds_live_and_drops_dead(tmp_home, tmp_path):
     live_file = tmp_path / "live.jsonl"

@@ -185,7 +185,7 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 
 Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/todo-server.py`).
 
-- **Sessions tab** — your default view counts open cmux workspaces, not GitHub alerts. It groups workspaces into **Needs you**, **Working**, **Ready to close**, and **Parked**. Each card shows one next action. Expand it for the return note and workspace link. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
+- **Sessions tab** — your default view counts open cmux workspaces, not GitHub alerts. It groups workspaces into **Needs you**, **Agent work**, **Ready to close**, and **Parked**. Each card shows one next action. Expand it for the return note and workspace link. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
 - **Notifications tab** — a separate inbox for GitHub pull requests and other alerts. Its counts don't add to your session workload. Expand a group's history for its existing controls; receipts, the FYI digest, and health remain available here.
 - **Connections tab** — every connector as **Connected** / **Available, not connected** / **Needs attention**, with the how-to-connect hint inline.
 - **`/goal` skill** — add / list / rerank / pause goals (`/goal add "…" --outcome "…"`). Goals feed the planner and boost decision ranking. Automation can only *propose* goal changes; only you (this skill) edit the store in place.
@@ -198,6 +198,27 @@ suggestions disappear and workspace-opening controls are disabled. A long sessio
 isn't stale merely because it's old. Missing or outdated context appears as unknown.
 The page checks for updates every 15 seconds without reloading while you read expanded
 details. Existing tabs and their controls remain available.
+
+**Needs you means a specific request, not missing information.** Outstanding
+agent questions show their actual choices. Ordinary responses appear under
+**Updates, not decisions**; missing or expired evidence appears under
+**Unverified sessions**. Neither category inflates your decision count.
+
+The transcript watcher preserves the first request, latest human request, and
+latest text response separately from tool traffic. Longer responses retain their
+beginning and ending, so a closing question isn't lost at the old 800-character limit.
+Answers remove completed tool questions through their matching tool-result IDs.
+
+Reviewed return notes in `~/.assistant/session-return-notes.json` can add a
+short goal, progress summary, and concrete next action. Every note must match
+the workspace, surface, provider, session, and current `guidance_context.source_version`.
+A changed conversation invalidates the note immediately; current quoted evidence
+replaces it rather than silently presenting an obsolete plan. This does not launch
+an extra model or treat a completed tool call as completed work. Closing remains
+your decision; the dashboard never closes, resumes, or sends instructions to a session.
+**Agent work** distinguishes a running tool from a reviewed next step. For a
+prepared continuation, **Copy next step** carries the goal, recorded progress,
+and next action back to the original session. Copying never sends it automatically.
 
 Saved context must match the current workspace and session identities.
 Missing or unsupported session bindings stay unknown instead of borrowing another

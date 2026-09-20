@@ -232,7 +232,8 @@ class OverviewTests(unittest.TestCase):
                 self.assertNotIn("Wrap up an older session", html)
         second.update({"pending_tool_use": False, "context_status": "verified"})
         html, _ = self.render()
-        self.assertIn("Wrap up an older session", html)
+        self.assertNotIn("Wrap up an older session", html)
+        self.assertIn("lane-updates", Cards(html).cards["workspace:1"]["class"])
 
     def test_real_transcript_tool_lifecycle_controls_the_finish_prompt(self):
         spec = importlib.util.spec_from_file_location(
@@ -279,7 +280,8 @@ class OverviewTests(unittest.TestCase):
         self.assertIs(context["pending_tool_use"], False)
         self.world["live_sessions"][0].update(context)
         html, _ = self.render()
-        self.assertIn("Wrap up an older session", html)
+        self.assertNotIn("Wrap up an older session", html)
+        self.assertIn("lane-updates", Cards(html).cards["workspace:1"]["class"])
         self.assertIn("The recorded checks passed. Review the change.", html)
 
     def test_same_folder_does_not_link_another_workspace_session(self):
@@ -307,7 +309,8 @@ class OverviewTests(unittest.TestCase):
             "last_user": {"ts": NOW.isoformat(), "text": "Fix the export issue."},
         })
         html, _ = self.render()
-        self.assertIn("Review the last response", html)
+        self.assertIn("Latest recorded update", html)
+        self.assertIn("lane-updates", Cards(html).cards["workspace:1"]["class"])
         self.assertIn("Choose a retry policy.", html)
         self.assertIn("Fix the export issue.", html)
         self.assertNotIn("Wrong old summary.", html)
@@ -367,7 +370,7 @@ class OverviewTests(unittest.TestCase):
                 self.world["live_sessions"][0].update({
                     "last_assistant": {"ts": NOW.isoformat(), "text": "A new failure blocks this change."}})
                 html, _ = self.render()
-                self.assertIn("Review the last response", html)
+                self.assertIn("Latest recorded update", html)
                 self.assertIn("A new failure blocks this change.", html)
                 self.assertIn("Historical note (not current)", html)
                 self.assertNotIn("Check before closing", html)
@@ -482,3 +485,36 @@ class OverviewTests(unittest.TestCase):
             self.assertIn(f'data-panel="{tab}"', page)
         self.assertIn("refreshDashboard", page)
         self.assertNotIn("location.reload()", page)
+
+    def test_idle_context_with_matching_file_check_keeps_its_return_note(self):
+        self.workspace(1, "needs_user", age=1200)
+        session = self.world["live_sessions"][0]
+        session.update({
+            "context_built_at": (NOW - timedelta(days=2)).isoformat(),
+            "context_checked_at": NOW.isoformat(),
+            "guidance_context": {
+                "source_version": "unchanged-transcript",
+                "last_response": {"text": "The merged patch is saved.", "ts": (NOW - timedelta(days=2)).isoformat()},
+                "last_request": {"text": "Complete the export fix.", "ts": (NOW - timedelta(days=3)).isoformat()},
+                "pending_questions": [],
+            },
+        })
+        self.write(".assistant/session-return-notes.json", {"sessions": [{
+            "workspace_id": "workspace-id-1", "surface_id": "surface-id-1",
+            "provider": "claude", "session_id": "session-1",
+            "source_version": "unchanged-transcript", "goal": "Fix export",
+            "progress": "The patch is merged and its record is saved.",
+            "next_action": "Review closing the export-fix session.",
+            "who": "user", "recommendation": "close_candidate",
+            "completion_evidence": [{
+                "kind": "pull_request", "state": "MERGED",
+                "url": "https://github.com/example/project/pull/1",
+            }],
+        }]})
+        html, _ = self.render()
+        self.assertIn("lane-ready", Cards(html).cards["workspace:1"]["class"])
+        self.assertIn("Review closing the export-fix session.", html)
+        session["guidance_context"]["source_version"] = "new-work"
+        html, _ = self.render()
+        self.assertNotIn("lane-ready", Cards(html).cards["workspace:1"]["class"])
+        self.assertNotIn("Review closing the export-fix session.", html)

@@ -66,6 +66,35 @@ def drive(output_dir, browser_executable):
         (home / ".assistant/back-off.json").write_text(json.dumps({
             "workspaces": [{"ws_ref": "workspace:10", "workspace_id": "workspace-id-10",
                             "reason": "Waiting for a dependency."}]}))
+        world["live_sessions"][0].update({
+            "pending_tool_use": True,
+            "guidance_context": {
+                "source_version": "question-v1",
+                "initial_request": {"text": "Repair the playback behavior."},
+                "last_request": {"text": "Verify the failing interaction."},
+                "last_response": {"text": "One behavior choice remains."},
+                "pending_questions": [{
+                    "tool_use_id": "question-1",
+                    "question": "Investigate the undo failure before closing this task?",
+                    "header": "Undo failure",
+                    "options": [{"label": "Investigate", "description": "Keep the failure as a blocker."},
+                                {"label": "Park", "description": "Save the evidence and revisit later."}],
+                    "multiSelect": False,
+                }],
+            },
+        })
+        world["live_sessions"][7]["guidance_context"] = {
+            "source_version": "continuation-v1",
+            "last_response": {"text": "The coder's patch is available."},
+            "pending_questions": [],
+        }
+        (home / ".assistant/session-return-notes.json").write_text(json.dumps({"sessions": [{
+            "workspace_id": "workspace-id-8", "surface_id": "surface-id-8",
+            "provider": "claude", "session_id": "session-8", "source_version": "continuation-v1",
+            "goal": "Complete the retry fix", "progress": "The coder's patch is available.",
+            "next_action": "Run the retry regression against the patched code.",
+            "who": "agent", "recommendation": "continue",
+        }]}))
         (home / ".assistant/heartbeat.json").write_text(json.dumps({
             "last_pulse_ts": now.timestamp(), "pulse_idx": 1, "model": "fixture"}))
         (output / "assistant-todo.json").write_text(json.dumps({"items": [
@@ -128,8 +157,19 @@ def drive(output_dir, browser_executable):
                 assert page.locator(".attention-context[open]").count() == 0
                 visible_cards = page.locator(".attention-card:visible").count()
                 assert visible_cards == 7, visible_cards
-                assert "Finish the older retry fix" in page.locator("#finish-current").inner_text()
+                assert "Task 9" in page.locator("#finish-current").inner_text()
                 assert not mutations
+                assert "Question waiting for you" in page.locator('#task-workspace-id-1').inner_text()
+                assert "Investigate / Park" in page.locator('#task-workspace-id-1').inner_text()
+                page.locator('#task-workspace-id-8 summary').click()
+                page.evaluate("""() => Object.defineProperty(navigator, 'clipboard', {
+                    configurable: true, value: {writeText: async text => {window.copiedPrompt = text;}}
+                })""")
+                page.locator('#task-workspace-id-8 .resume-copy').click()
+                assert "Run the retry regression" in page.evaluate("window.copiedPrompt")
+                assert "Don't merge, delete, close sessions" in page.evaluate("window.copiedPrompt")
+                assert not mutations
+                page.locator('#task-workspace-id-8 summary').click()
                 measurements = []
                 for width in (390, 820, 1440):
                     page.set_viewport_size({"width": width, "height": 1000})
@@ -157,6 +197,7 @@ def drive(output_dir, browser_executable):
                 page.locator("#attention-search").fill("")
                 page.locator('#task-workspace-id-1 .attention-context > summary').click()
                 assert "A detailed return note" in page.locator("#task-workspace-id-1").inner_text()
+                assert "Keep the failure as a blocker." in page.locator("#task-workspace-id-1").inner_text()
                 awaitable = page.evaluate("refreshDashboard()")
                 assert awaitable is None
                 assert page.locator('#task-workspace-id-1 details').get_attribute("open") is not None
@@ -183,6 +224,9 @@ def drive(output_dir, browser_executable):
                     "/focus/workspace:1?workspace_id=workspace-id-1")
                 page.locator('#task-workspace-id-1 summary').click()
                 page.get_by_role("button", name="Review this task", exact=True).click()
+                assert page.locator('#task-workspace-id-9 details').get_attribute("open") is not None
+                page.locator('#task-workspace-id-9 summary').click()
+                page.evaluate('openPending("td-901")')
                 assert page.locator('[data-panel="todos"]').is_visible()
                 assert page.locator('.todo-row[data-task-id="td-901"]').evaluate(
                     "element => document.activeElement === element")
@@ -208,7 +252,7 @@ def drive(output_dir, browser_executable):
                     document.getElementById('finish-prompt').dataset.evidenceAt = expired;
                 }""")
                 page.clock.fast_forward(15000)
-                assert page.locator('#task-workspace-id-9').get_attribute("data-lane") == "needs-you"
+                assert page.locator('#task-workspace-id-9').get_attribute("data-lane") == "unknown"
                 assert page.locator('#task-workspace-id-9 details').get_attribute("open") is not None
                 assert "Check before closing" not in page.locator("#task-workspace-id-9").inner_text()
                 assert page.locator("#finish-outdated").is_visible()
@@ -224,6 +268,8 @@ def drive(output_dir, browser_executable):
                 assert page.locator('.attention-card button:not([disabled])').count() == 0
                 assert page.locator('.attention-card[data-lane="ready"]').count() == 0
                 assert page.locator('.attention-card[data-lane="working"]').count() == 0
+                assert page.locator('.attention-lane[data-lane="needs-you"] .attention-count').inner_text() == "0"
+                assert page.locator('.attention-lane[data-lane="unknown"] .attention-count').inner_text() == "10"
                 assert page.locator('[data-tab="overview"] .tab-count').inner_text() == "?"
                 assert "Current workspace count is unverified" in page.locator('.session-scope').inner_text()
                 assert page.locator(".pulse-health").get_attribute("class").endswith("pulse-bad")

@@ -892,6 +892,82 @@ def test_merge_session_context(ws):
     assert "last_user" not in live["sess-Z"]
 
 
+@pytest.mark.parametrize("mismatch", [
+    None, "provider", "session_id", "workspace_id", "surface_id", "unverified", "missing",
+])
+def test_merge_guidance_context_requires_matching_verified_identity(ws, tmp_path, mismatch):
+    transcript = tmp_path / "sess-A.jsonl"
+    transcript.write_text('{"type":"user","message":{"content":"Ship."}}\n')
+    stat = transcript.stat()
+    guidance = {"initial_request": {"ts": None, "text": "Ship.", "truncated": False},
+                "last_request": None, "last_response": None,
+                "pending_questions": [{"tool_use_id": "question", "question": "Deploy?",
+                                       "header": "Release", "options": [], "multiSelect": False}],
+                "source_version": "stable-content-version"}
+    cached = {"session_id": "sess-A", "provider": "claude",
+              "workspace_id": "workspace-A", "surface_id": "surface-A",
+              "guidance_context": guidance,
+              "transcript_state": {"device": stat.st_dev, "inode": stat.st_ino,
+                                   "size_read": stat.st_size, "mtime_ns": stat.st_mtime_ns}}
+    session = {"session_id": "sess-A", "provider": "claude",
+               "workspace_id": "workspace-A", "surface_id": "surface-A",
+               "transcript_path": str(transcript),
+               "identity_status": "verified", "guidance_context": {"stale": True}}
+    if mismatch in {"provider", "session_id", "workspace_id", "surface_id"}:
+        cached[mismatch] = "different"
+    elif mismatch == "unverified":
+        session["identity_status"] = "unknown"
+    ws.SESSION_CTX.parent.mkdir(parents=True, exist_ok=True)
+    ws.SESSION_CTX.write_text(json.dumps({
+        "by_session": {} if mismatch == "missing" else {"sess-A": cached}}))
+    ws.merge_session_context({"sess-A": session})
+    assert session["guidance_context"] == (guidance if mismatch is None else None)
+
+
+@pytest.mark.parametrize("change", [
+    "idle", "append", "replace", "same_size", "partial", "missing_evidence", "wrong_path",
+])
+def test_guidance_freshness_checks_authoritative_transcript(ws, tmp_path, monkeypatch, change):
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text('{"type":"user","message":{"content":"Ship."}}\n')
+    stat = transcript.stat()
+    evidence = {"device": stat.st_dev, "inode": stat.st_ino,
+                "size_read": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    guidance = {"source_version": "unchanged", "last_request": {"text": "Ship.", "ts": None}}
+    built_at = "2026-06-09T10:00:00Z"
+    now = ws.parse_iso("2026-06-12T10:00:00Z")
+    monkeypatch.setattr(ws, "utc_now", lambda: now)
+    cached = {"session_id": "session", "guidance_context": guidance,
+              "transcript_state": evidence, "transcript_path": "/do/not/stat/cache/path"}
+    session = {"session_id": "session", "identity_status": "verified",
+               "transcript_path": str(transcript), "context_checked_at": "old"}
+    if change == "append":
+        with transcript.open("a") as stream:
+            stream.write('{"type":"assistant","message":{"content":"Done."}}\n')
+    elif change == "replace":
+        transcript.rename(tmp_path / "replaced.jsonl")
+        transcript.write_text('{"type":"user","message":{"content":"Ship."}}\n')
+        os.utime(transcript, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    elif change == "same_size":
+        transcript.write_text('{"type":"user","message":{"content":"Wait."}}\n')
+        os.utime(transcript, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000000))
+    elif change == "partial":
+        evidence["mtime_ns"] = None
+    elif change == "missing_evidence":
+        cached.pop("transcript_state")
+    elif change == "wrong_path":
+        session["transcript_path"] = str(tmp_path / "missing.jsonl")
+        cached["transcript_path"] = str(transcript)
+    ws.SESSION_CTX.parent.mkdir(parents=True, exist_ok=True)
+    ws.SESSION_CTX.write_text(json.dumps({
+        "_meta": {"built_at": built_at}, "by_session": {"session": cached}}))
+    ws.merge_session_context({"session": session})
+    assert session["context_built_at"] == built_at
+    assert session["context_status"] == ("verified" if change == "idle" else "unknown")
+    assert session["context_checked_at"] == (ws.iso(now) if change == "idle" else None)
+    assert session["guidance_context"] == (guidance if change == "idle" else None)
+
+
 # ─── compute_session_age ──────────────────────────────────────────────────────
 
 def test_compute_session_age_picks_latest(ws):

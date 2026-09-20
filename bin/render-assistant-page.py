@@ -29,6 +29,7 @@ if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
 from assistant import brief as brief_store
+from assistant import session_guidance
 
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
@@ -1588,6 +1589,9 @@ def overview_cards(world):
     snapshot_fresh = _overview_fresh(snapshot_at, now)
     summaries = {}
     issues = []
+    return_notes, note_error = session_guidance.read_notes(HOME / ".assistant/session-return-notes.json")
+    if note_error:
+        issues.append(note_error)
     for path in sorted((HOME / ".assistant/observer-summaries").glob("*.json")):
         summary, error = _overview_object(path)
         if error:
@@ -1645,20 +1649,24 @@ def overview_cards(world):
         }.get(summary.get("classification", ""), "unknown")
         associated.sort(key=_overview_session_time, reverse=True)
         latest = associated[0] if associated else {}
-        last_reply = (latest.get("last_assistant") or {}).get("text") or ""
-        last_request = (latest.get("last_user") or {}).get("text") or ""
+        guidance_context = latest.get("guidance_context") or {}
+        response_record = guidance_context.get("last_response") or latest.get("last_assistant") or {}
+        request_record = guidance_context.get("last_request") or latest.get("last_user") or {}
+        last_reply = response_record.get("text") or ""
+        last_request = request_record.get("text") or ""
         current_context = [
             session for session in associated
             if session.get("context_status") == "verified"
-            and _overview_fresh(_overview_timestamp(session.get("context_built_at")), now)
+            and _overview_fresh(_overview_timestamp(
+                session.get("context_checked_at") or session.get("context_built_at")), now)
         ]
         reply_current = latest in current_context and bool(last_reply)
         newest_turn = max((_overview_session_time(s) for s in current_context), default=0)
         if newest_turn > (context_at or 0):
             context_fresh = False
         new_request = (latest in current_context
-                       and (_overview_timestamp((latest.get("last_user") or {}).get("ts")) or 0)
-                       > (_overview_timestamp((latest.get("last_assistant") or {}).get("ts")) or 0))
+                       and (_overview_timestamp(request_record.get("ts")) or 0)
+                       > (_overview_timestamp(response_record.get("ts")) or 0))
         working = any(
             s.get("pending_tool_use") is True
             for s in current_context)
@@ -1713,8 +1721,8 @@ def overview_cards(world):
             action = summary.get("next") or "Open the session and identify the next useful step."
         summary_text = summary.get("summary") or summary.get("summary_for_next_pulse") or ""
         evidence_at = (context_at if context_fresh else
-                       _overview_timestamp(latest.get("context_built_at")))
-        cards.append({
+                       _overview_timestamp(latest.get("context_checked_at") or latest.get("context_built_at")))
+        card = {
             "ref": ref, "workspace_id": workspace_id, "title": title, "lane": lane, "state": state,
             "action": " ".join(action.split()),
             "summary": (summary_text if context_fresh else last_reply) or
@@ -1731,10 +1739,14 @@ def overview_cards(world):
             "sessions": associated, "request": last_request,
             "first_recorded_at": first_recorded,
             "unverified": bool(summaries.get(ref)) and not matches,
+            "observation_current": context_fresh,
             "wrap_eligible": (snapshot_fresh and tools_complete and not pause and not new_request
                               and lane in ("needs-you", "ready")
                               and (context_fresh or reply_current)),
-        })
+        }
+        cards.append(session_guidance.guide_card(
+            card, current_context, return_notes, snapshot_fresh=snapshot_fresh,
+            tools_complete=tools_complete, new_request=new_request))
     return cards, issues, snapshot_at
 
 
@@ -1743,8 +1755,8 @@ def render_overview_tab(world):
     now = utc_now().timestamp()
     fresh = _overview_fresh(snapshot_at, now)
     columns = [
-        ("needs-you", "Needs you", "A decision or a state to check"),
-        ("working", "Working", "Let productive sessions continue"),
+        ("needs-you", "Needs you", "A specific question or next step"),
+        ("working", "Agent work", "Running work or a prepared continuation"),
         ("ready", "Ready to close", "Verify the outcome before closing"),
         ("parked", "Parked", "Paused on purpose, not forgotten"),
     ]
@@ -1777,29 +1789,87 @@ def render_overview_tab(world):
         age_label = f"First recorded {recorded}" if recorded else "Session start unknown"
         unverified = ('<p class="attention-boundary">An earlier note has no matching session identity; '
                       'it is not used for this task.</p>') if card["unverified"] else ""
+        questions_html = ""
+        choice_labels = []
+        for question in card["questions"]:
+            choice_labels.extend(option["label"] for option in question.get("options", []))
+            options = "".join(
+                f'<li><strong>{e(option["label"])}</strong>'
+                f' {e(option.get("description") or "")}</li>'
+                for option in question.get("options", []))
+            questions_html += (
+                f'<div class="session-question"><p>{e(question["question"])}</p>'
+                f'<ul>{options}</ul><p class="attention-boundary">'
+                'Answer in the original session; this dashboard does not send a reply.</p></div>')
+        choices_preview = (f'<p class="attention-choices">Choices: '
+                           f'{e(" / ".join(choice_labels[:4]))}</p>') if choice_labels else ""
+        evidence_html = ""
+        resume_html = ""
+        if card["guidance_note"]:
+            note = card["guidance_note"]
+            evidence_items = []
+            for evidence in note.get("completion_evidence") or []:
+                if not isinstance(evidence, dict):
+                    continue
+                url = evidence.get("url")
+                parsed_url = urlsplit(url) if isinstance(url, str) else None
+                if parsed_url and parsed_url.scheme == "https" and parsed_url.hostname == "github.com":
+                    label = f'Pull request #{parsed_url.path.rsplit("/", 1)[-1]}: {evidence.get("state", "state unverified")}'
+                    evidence_items.append(
+                        f'<li><a href="{e(url)}" target="_blank" rel="noopener noreferrer">{e(label)}</a></li>')
+                elif evidence.get("path"):
+                    evidence_items.append(f'<li>Saved evidence: <code>{e(evidence["path"])}</code></li>')
+                elif evidence.get("branch"):
+                    evidence_items.append(
+                        f'<li>Branch <code>{e(evidence["branch"])}</code>: '
+                        f'{"worktree registered" if evidence.get("registered") else "no registered worktree"}</li>')
+            uncertainties = note.get("uncertainties") or []
+            evidence_html = (
+                f'<dt>Why this next step</dt><dd>{e(note.get("rationale") or "")}</dd>'
+                f'<dt>Evidence</dt><dd><ul>{"".join(evidence_items)}</ul></dd>'
+                f'<dt>Still unverified</dt><dd>{e(" ".join(uncertainties)) or "No additional claim is made."}</dd>')
+            if note.get("who") == "agent" and note.get("next_action"):
+                prompt = (
+                    f"Goal: {note['goal']}\nRecorded progress: {note['progress']}\n"
+                    f"Next step: {note['next_action']}\n"
+                    "Recheck the current state first. Stay within the original approved task. "
+                    "Don't merge, delete, close sessions, or send external messages without approval."
+                )
+                resume_html = (
+                    f'<label class="resume-label">Prepared continuation'
+                    f'<textarea class="resume-prompt" readonly rows="5">{e(prompt)}</textarea></label>'
+                    '<button class="btn resume-copy" onclick="copySessionPrompt(this)">Copy next step</button>'
+                    '<span class="copy-result" role="status"></span>')
         return f"""
 <article class="attention-card lane-{card['lane']}" id="task-{key}"
          data-workspace-ref="{e(ref)}"
          data-lane="{card['lane']}" data-evidence-at="{card['context_at'] or ''}"
+         data-guidance-kind="{e(card['source_kind'])}"
          data-search="{e((card['title'] + ' ' + card['cwd']).lower())}">
   <span class="attention-state">{e(card['state'])}</span>
   <h3 title="{e(card['title'])}">{e(card['title'])}</h3>
+  <p class="attention-progress">{e(_first_sentence(card['summary'], 150)) if card['guidance_note'] else ''}</p>
   <p class="attention-next">{e(_first_sentence(card['action'], 160))}</p>
+  {choices_preview}
   <span class="attention-age">{e(age_label)}</span>
   <details class="attention-context" data-context-key="{e(card['workspace_id'] or ref)}">
-    <summary>Context and next step</summary>
+    <summary>{'Question and choices' if card['questions'] else 'Context and next step'}</summary>
     <p class="attention-expiry attention-boundary" hidden>This is historical context. Refresh before acting on it.</p>
+    {questions_html}
     <dl>
       <dt>Task</dt><dd>{e(card['title'])}</dd>
+      <dt>Goal</dt><dd>{e(card['goal'] or 'No verified original request is available.')}</dd>
       <dt>Last request</dt><dd>{e(card['request'] or 'No verified request is available.')}</dd>
       <dt>Where you left off</dt><dd>{e(card['summary'])}</dd>
       <dt>Recorded next step</dt><dd>{e(card['next'])}</dd>
+      {evidence_html}
       {history}
       {reason}
       <dt>Working folder</dt><dd>{e(card['cwd'] or 'Unknown')}</dd>
       <dt>Session links</dt><dd>{e(session_text)}</dd>
       <dt>Context checked</dt><dd>{e(updated)} ({e(context_age)})</dd>
     </dl>
+    {resume_html}
     {unverified}
     <p class="attention-boundary">Opening a workspace doesn't resume, merge, or close it.</p>
     <button class="btn" data-ws="{e(ref)}" data-workspace-id="{e(card['workspace_id'] or '')}" onclick="openWs(this)"{disabled}>Open workspace</button>
@@ -1821,6 +1891,19 @@ def render_overview_tab(world):
             f'<span class="attention-count">{len(items)}</span></h2>'
             f'<p class="attention-hint">{hint}</p>{visible}{more}'
             f'{"" if items else "<p class=attention-empty>Nothing here.</p>"}</section>')
+    secondary = []
+    for key, label, hint in (
+            ("updates", "Updates, not decisions", "No confirmed request for you. Read the actual latest update if needed."),
+            ("unknown", "Unverified sessions", "Missing evidence is not a decision. These are excluded from Needs you.")):
+        items = [card for card in cards if card["lane"] == key]
+        secondary.append(
+            f'<details class="secondary-sessions" data-context-key="secondary-{key}"'
+            f'{"" if items else " hidden"}><summary>{label} '
+            f'<span class="secondary-count">{len(items)}</span></summary>'
+            f'<section class="attention-lane lane-{key}" data-lane="{key}">'
+            f'<h2>{label}<span class="attention-count">{len(items)}</span></h2>'
+            f'<p class="attention-hint">{hint}</p>'
+            f'{"".join(render_card(card) for card in items)}</section></details>')
     errors = (f'<details class="attention-errors"><summary>Context needs checking '
               f'({len(issues)})</summary><p>{"<br>".join(e(i) for i in issues)}</p></details>'
               if issues else "")
@@ -1842,6 +1925,7 @@ def render_overview_tab(world):
   <p>The supporting context is outdated. Refresh the view before choosing what to close.</p>
 </aside>
 <div class="attention-board">{''.join(lanes)}</div>
+<div class="secondary-session-list">{''.join(secondary)}</div>
 <p id="attention-search-empty" hidden>No matching tasks. Clear the search to see your work.</p>
 {errors}
 <p class="attention-footnote">One card per open cmux workspace, even when it contains multiple sessions. Counts describe the snapshot, not GitHub notifications.</p>
@@ -1894,6 +1978,14 @@ def render_finish_prompt(world, cards, fresh):
         key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or card["ref"])
         link = f'<button class="btn" onclick="revealAttention(\'task-{key}\')">Review this session</button>'
         evidence_at = card["context_at"]
+    elif ready:
+        card = ready[0]
+        heading = "One task may be ready to wrap up"
+        title = card["title"]
+        text = card["action"]
+        key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or card["ref"])
+        link = f'<button class="btn" onclick="revealAttention(\'task-{key}\')">Review this task</button>'
+        evidence_at = card["context_at"]
     elif candidates:
         created_date, task_id, item = candidates[0]
         heading = "Finish one older task before adding another"
@@ -1902,14 +1994,6 @@ def render_finish_prompt(world, cards, fresh):
         link = (f'<button class="btn" data-task-id="{e(task_id)}" '
                 'onclick="openPending(this.dataset.taskId)">Review this task</button>')
         evidence_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
-    elif ready:
-        card = ready[0]
-        heading = "One task may be ready to wrap up"
-        title = card["title"]
-        text = "Check the outcome, preserve a return note, and close only when you are satisfied."
-        key = re.sub(r"[^a-zA-Z0-9_-]", "-", card["workspace_id"] or card["ref"])
-        link = f'<button class="btn" onclick="revealAttention(\'task-{key}\')">Review this task</button>'
-        evidence_at = card["context_at"]
     else:
         heading = "Before starting something new"
         title = "Give unfinished work a deliberate next step."
@@ -3436,6 +3520,19 @@ h1 {
 .lane-parked .attention-state { color: var(--muted); }
 .attention-card h3 { font: 600 14px/1.4 var(--sans); margin: 8px 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .attention-next { font-size: 12px; line-height: 1.5; margin: 0 0 10px; color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+.attention-progress { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 9px; }
+.attention-progress:empty { display: none; }
+.attention-choices { font-size: 12px; line-height: 1.5; color: var(--amber); overflow-wrap: anywhere; }
+.secondary-sessions { margin-top: 18px; border: 1px solid var(--line); padding: 16px; border-radius: 10px; }
+.secondary-sessions > summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
+.secondary-sessions[open] > .attention-lane { margin-top: 14px; }
+.secondary-sessions .attention-card { max-width: 750px; }
+.secondary-count { color: var(--muted); margin-left: 8px; }
+.session-question { border-left: 3px solid var(--amber); padding-left: 12px; font-size: 13px; overflow-wrap: anywhere; }
+.session-question ul { padding-left: 20px; }
+.resume-label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 8px; }
+.resume-prompt { width: 100%; margin-top: 6px; padding: 10px; font: 12px/1.5 var(--sans); color: var(--text-2); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 6px; resize: vertical; }
+.copy-result { display: block; margin: 6px 0; font-size: 11px; color: var(--text-2); }
 .attention-age { display: block; font-size: 10px; color: var(--muted); margin-bottom: 12px; }
 .attention-context > summary, .attention-more > summary { cursor: pointer; color: var(--blue); font-size: 11px; padding: 4px 0; }
 .attention-context[open] { padding-top: 10px; border-top: 1px solid var(--line); }
@@ -3465,6 +3562,23 @@ function showTab(name) {
   }
   if (name === 'brief') pingBriefSeen();
 }
+  async function copySessionPrompt(button) {
+    const context = button.closest('.attention-context');
+    const prompt = context.querySelector('.resume-prompt');
+    const status = context.querySelector('.copy-result');
+    if (context.closest('.attention-card').dataset.expired) {
+      status.textContent = 'This continuation is outdated. Refresh the session evidence first.';
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(prompt.value);
+      status.textContent = 'Copied. Open the session and review the prompt before sending.';
+    } catch (error) {
+      status.textContent = 'Copy failed. Select the prepared text and copy it manually.';
+      prompt.focus();
+      prompt.select();
+    }
+  }
   function filterAttention(value) {
     const query = value.trim().toLowerCase();
     let count = 0;
@@ -3475,6 +3589,17 @@ function showTab(name) {
     document.querySelectorAll('.attention-lane').forEach(lane => {
       const matches = lane.querySelectorAll('.attention-card:not([hidden])').length;
       lane.hidden = Boolean(query) && matches === 0;
+      const secondary = lane.closest('.secondary-sessions');
+      if (secondary) {
+        secondary.hidden = Boolean(query) ? matches === 0 : lane.querySelectorAll('.attention-card').length === 0;
+        if (query && matches) {
+          if (!secondary.dataset.searchOpen) secondary.dataset.searchOpen = String(secondary.open);
+          secondary.open = true;
+        } else if (!query && secondary.dataset.searchOpen) {
+          secondary.open = secondary.dataset.searchOpen === 'true';
+          delete secondary.dataset.searchOpen;
+        }
+      }
       const more = lane.querySelector('.attention-more');
       if (more && query && matches) {
         if (!more.dataset.searchOpen) more.dataset.searchOpen = String(more.open);
@@ -3507,7 +3632,7 @@ function showTab(name) {
     }
   }
   function expireAttention(root, now, fresh) {
-    const destination = root.querySelector('.attention-lane[data-lane="needs-you"]');
+    const destination = root.querySelector('.attention-lane[data-lane="unknown"]');
     const reading = root.querySelector('.attention-context[open]')?.closest('.attention-card');
     const top = reading?.getBoundingClientRect().top;
     root.querySelectorAll('.attention-card').forEach(card => {
@@ -3516,19 +3641,23 @@ function showTab(name) {
       if (card.dataset.expired || (fresh && (!evidence || (age >= 0 && age <= Number(root.dataset.freshSeconds))))) return;
       if (fresh && card.dataset.lane === 'parked') return;
       card.dataset.expired = 'true';
+      card.querySelectorAll('.resume-copy').forEach(button => { button.disabled = true; });
       card.querySelector('.attention-state').textContent = 'Status needs refreshing';
       card.querySelector('.attention-next').textContent = 'Refresh the current state before continuing or closing.';
       card.querySelector('.attention-expiry').hidden = false;
-      if (card.dataset.lane !== 'needs-you') {
+      if (card.dataset.lane !== 'unknown') {
         card.classList.remove('lane-' + card.dataset.lane);
-        card.classList.add('lane-needs-you');
-        card.dataset.lane = 'needs-you';
+        card.classList.add('lane-unknown');
+        card.dataset.lane = 'unknown';
+        const secondary = destination.closest('.secondary-sessions');
+        secondary.hidden = false;
+        if (card.querySelector('details[open]')) secondary.open = true;
         if (destination.querySelectorAll(':scope > .attention-card').length >= Number(root.dataset.visibleCards)) {
           let more = destination.querySelector('.attention-more');
           if (!more) {
             more = document.createElement('details');
             more.className = 'attention-more';
-            more.dataset.contextKey = 'more-needs-you';
+            more.dataset.contextKey = 'more-unknown';
             more.innerHTML = '<summary>Show more</summary>';
             destination.append(more);
           }
@@ -3542,6 +3671,11 @@ function showTab(name) {
     root.querySelectorAll('.attention-lane').forEach(lane => {
       const count = lane.querySelectorAll('.attention-card').length;
       lane.querySelector('.attention-count').textContent = count;
+      const secondary = lane.closest('.secondary-sessions');
+      if (secondary) {
+        secondary.querySelector('.secondary-count').textContent = count;
+        secondary.hidden = count === 0;
+      }
       let empty = lane.querySelector('.attention-empty');
       if (!empty && count === 0) {
         empty = document.createElement('p');
