@@ -76,6 +76,17 @@ class BacklogCleanupTests(unittest.TestCase):
         self.assertFalse(self.backup.exists())
         self.assertEqual(decisions.fold(decisions.read_log())[one["id"]]["status"], "open")
 
+    def test_changed_open_decision_invalidates_its_approved_fingerprint(self):
+        record = self.decision("question-with-new-context")
+        plan = [self.change(record)]
+        decisions.annotate_triage(
+            record["id"], "escalate", "New information changes the decision.", now=NOW + 1)
+        before = decisions.decisions_path().read_bytes()
+        with self.assertRaisesRegex(ValueError, "changed since approval"):
+            self.apply(plan)
+        self.assertEqual(decisions.decisions_path().read_bytes(), before)
+        self.assertEqual(decisions.fold(decisions.read_log())[record["id"]]["status"], "open")
+
     def test_unrelated_new_records_do_not_invalidate_approved_subset(self):
         chosen = self.decision("chosen")
         plan = [self.change(chosen)]

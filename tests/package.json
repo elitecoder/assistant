@@ -1,0 +1,9 @@
+{
+  "name": "assistant-browser-coverage",
+  "private": true,
+  "description": "Development-only coverage conversion for the dashboard browser checks.",
+  "devDependencies": {
+    "istanbul-lib-coverage": "^3.2.2",
+    "v8-to-istanbul": "^9.3.0"
+  }
+}

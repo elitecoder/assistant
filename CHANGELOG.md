@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Enforce 100% changed-code coverage with separate Python and real-browser reports.
+  Add missing failure-path tests and repeatable mutation checks for key protections.
 - Show **Go to session** on collapsed cards so you can focus a workspace
   without opening its details. Existing identity and freshness checks still apply.
 - Allow manual close-out review for plan-only work when its exact saved document
@@ -24,6 +26,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Keep installer tests away from real terminal hooks, and count isolated Python
+  subprocesses in coverage. Update regression checks for the new observation
+  metadata and plain-language dashboard labels.
 - Rewrite dashboard labels, status messages, and instructions in plain language
   using Google's documentation style. Preserve original questions and technical
   records in expanded details, and add a wording check for every session state.

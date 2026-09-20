@@ -324,9 +324,14 @@ These are structural, not just conventions — violating them will cause real pr
 ## Testing
 
 ```bash
-python3 -m pytest tests/ -q              # 48 test files, no LLM
+uv run --with pytest python -m pytest tests/ -q
 cd evals/observer && ./run.py            # 14 real-transcript fixtures × Observer
 ```
+
+Before review, follow the [new-code quality checks](tests/README.md#check-new-code-before-review):
+100% coverage of changed Python lines and branches, browser coverage for changed
+JavaScript, a passing full suite, targeted mutation checks, and two independent
+reviews. Passing tests alone doesn't establish coverage or runtime correctness.
 
 The headline eval fixture (`01-ws97-trap-no-pr-mid-audit`) replays the production bug where an unrelated merged PR in transcript prose drove an auto-close. Run the evals after any change to `prompts/observer-batch-prompt.md` or `bin/build-ws-context.py`.
 

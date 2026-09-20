@@ -775,6 +775,104 @@ def test_failed_native_lookup_does_not_fall_back_to_hook(ws, monkeypatch):
     assert world["workspaces"][0]["surfaces"][0]["identity_status"] == "unknown"
 
 
+@pytest.mark.parametrize("failure", ["invalid_json", "wrong_shape", "io_error"])
+def test_unreadable_native_binding_does_not_restore_registry_identity(ws, monkeypatch, failure):
+    _seed_current_hook(ws, monkeypatch)
+    original_run = ws.subprocess.run
+
+    def run(args, **kwargs):
+        if args[1:4] == ["surface", "resume", "show"]:
+            if failure == "io_error":
+                raise OSError("Fixture native binding unavailable.")
+            return fake_completed("not json" if failure == "invalid_json" else "[]")
+        assert args[:2] != ["ps", "-t"]
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["live_sessions"] == []
+    assert world["workspaces"][0]["session_ids"] == []
+    assert world["workspaces"][0]["surfaces"][0]["identity_status"] == "unknown"
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "io_error", "timeout", "short_row"])
+def test_failed_foreground_observation_never_verifies_binding(ws, monkeypatch, failure):
+    _seed_identity_world(ws, monkeypatch, ("claude",))
+    original_run = ws.subprocess.run
+
+    def run(args, **kwargs):
+        if args[:2] == ["ps", "-t"]:
+            if failure == "io_error":
+                raise OSError("Fixture process lookup unavailable.")
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(args, 3)
+            return fake_completed("101 claude\n", returncode=1 if failure == "nonzero" else 0)
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["live_sessions"] == []
+    assert world["workspaces"][0]["surfaces"][0]["identity_status"] == "unknown"
+
+
+def test_unsupported_provider_and_missing_tty_do_not_invoke_process_lookup(ws, monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("No native command should run.")
+
+    monkeypatch.setattr(ws.subprocess, "run", unexpected)
+    assert ws.transcript_for_session("copilot", "session") is None
+    assert ws.foreground_provider_process("ttys001", "copilot") is None
+    assert ws.foreground_provider_process(None, "claude") is None
+
+
+@pytest.mark.parametrize("override", [
+    {"provider": "droid"},
+    {"workspace_id": "different-workspace"},
+    {"surface_id": "different-surface"},
+    {"surface_id": None},
+])
+def test_tty_join_rejects_conflicting_or_missing_identity(ws, monkeypatch, override):
+    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    ws.CMUX_REGISTRY.write_text(json.dumps({
+        "old-tab": {**records[0], **override, "claude_pid": 999, "ts": 1},
+    }))
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    historical = next(session for session in world["live_sessions"] if session["pid"] == 999)
+    current = next(session for session in world["live_sessions"] if session["pid"] == 101)
+    assert "ws_ref" not in historical
+    assert historical["identity_status"] == "unknown"
+    assert current["identity_status"] == "verified"
+    assert world["workspaces"][0]["session_ids"] == ["session-1"]
+
+
+def test_unsupported_registry_provider_cannot_inherit_claude_context(ws, monkeypatch):
+    records, _, _, _ = _seed_identity_world(ws, monkeypatch, (None,))
+    ws.CMUX_REGISTRY.write_text(json.dumps({
+        "old-tab": {**records[0], "provider": "copilot", "claude_pid": 999, "ts": 1},
+    }))
+    ws.build()
+    session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
+    assert session["provider"] == "copilot"
+    assert session["context_status"] == "unknown"
+    assert session["guidance_context"] is None
+    assert "last_user" not in session
+
+
+def test_recorded_start_requires_complete_verified_identity(ws):
+    ws.SESSION_LEDGER.write_text(json.dumps({
+        "event": "start", "workspace_id": "", "provider": "claude",
+        "session_id": "session", "ts": 1,
+    }) + "\n")
+    sessions = {"session": {
+        "session_id": "session", "provider": "claude", "identity_status": "verified",
+    }}
+    ws.merge_first_recorded(sessions, ws.utc_now())
+    assert sessions["session"]["first_recorded_at"] is None
+
+
 @pytest.mark.parametrize("override", [
     {"provider": "droid"},
     {"session_id": "different-session"},

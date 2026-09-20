@@ -1,7 +1,8 @@
 # Assistant unit tests
 
 Pure-Python tests for the mechanical (non-LLM) parts of the Assistant
-pipeline. No Claude calls. Fast — full suite < 5s.
+pipeline. The default suite uses local fixtures; optional memory integration
+tests require a separate environment.
 
 ## Run
 
@@ -32,6 +33,51 @@ The driver measures layout at phone, tablet, and desktop widths. It exercises
 search, context expansion, refresh, older-work reminders, and outdated-data gates.
 Workspace focus requests are intercepted; the driver never switches a real session.
 The server-side identity guard has separate coverage in `test_todo_server.py`.
+
+## Check new code before review
+
+| Check | Required evidence |
+| --- | --- |
+| Regression tests | The test fails with the original bug or a targeted broken version. |
+| Test suite | Targeted tests pass, then the full applicable suite passes. |
+| New-code coverage | Every changed executable Python line and branch is covered. |
+| Browser coverage | Changed dashboard JavaScript has complete line and block coverage from a real browser. |
+| Independent reviews | Two reviewers inspect the full change and tests; resolve blocking findings before proceeding. |
+| Runtime behavior | Exercise the real path and inspect the result before recommending a merge. |
+
+Run from the repository root. Keep installer tests isolated from the host's
+services; a temporary `HOME` alone doesn't isolate `launchctl`.
+
+```bash
+REPORT="$HOME/dev/generated-docs/assistant-coverage"
+mkdir -p "$REPORT"
+uv run --with pytest --with pytest-cov --with coverage python -m pytest tests/ -q \
+  --cov="$PWD/bin" --cov="$PWD/src" --cov-config=tests/coverage.ini \
+  --cov-report="json:$REPORT/python.json"
+npm --prefix tests ci --no-audit --no-fund
+uv run --with playwright python tests/drive_dashboard_overview.py \
+  --browser-executable "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --output-dir "$REPORT/browser" --coverage-dir "$REPORT/browser"
+node tests/browser_coverage.cjs "$REPORT/browser/browser-v8.json" "$REPORT/browser/istanbul.json"
+python3 tests/check_change_coverage.py --base main \
+  --python-report "$REPORT/python.json" \
+  --browser-report "$REPORT/browser/istanbul.json" \
+  --output "$REPORT/changed-code.json"
+uv run --with pytest python tests/mutation_smoke.py --output "$REPORT/mutations.json"
+```
+
+The last command fails below 100%. It also rejects missing reports, excluded
+new code, and browser reports from a different script version. Python coverage
+of an HTML string doesn't count as JavaScript coverage. Layout and CSS still
+need browser measurements and visual inspection.
+
+Coverage isn't proof of correctness. Use the two reviews to challenge the
+diagnosis, side effects, missing cases, and whether tests catch the actual bug.
+Keep both verdicts and the measured results with the exact commit under review.
+
+The mutation check uses separate temporary copies. It breaks four protections
+one at a time and requires the corresponding test to fail; it never edits your
+working copy or sends commands to live sessions.
 
 ## What's covered
 

@@ -1,0 +1,70 @@
+name: Assistant quality checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changed-code-coverage:
+    name: Tests and 100% new-code coverage
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install development tools
+        run: |
+          uv venv --python 3.13
+          uv pip install pytest==9.1.1 pytest-cov==7.1.0 coverage==7.16.1 playwright==1.63.0
+          npm --prefix tests ci --no-audit --no-fund
+          uv run --no-sync python -m playwright install chromium
+      - name: Run tests with Python coverage
+        run: |
+          mkdir -p "$RUNNER_TEMP/assistant-coverage"
+          uv run --no-sync python -m pytest tests/ -q \
+            --cov="$PWD/bin" --cov="$PWD/src" --cov-config=tests/coverage.ini \
+            --cov-report="json:$RUNNER_TEMP/assistant-coverage/python.json"
+      - name: Exercise the dashboard in a browser
+        run: |
+          uv run --no-sync python tests/drive_dashboard_overview.py \
+            --output-dir "$RUNNER_TEMP/assistant-coverage/browser" \
+            --coverage-dir "$RUNNER_TEMP/assistant-coverage/browser"
+          node tests/browser_coverage.cjs \
+            "$RUNNER_TEMP/assistant-coverage/browser/browser-v8.json" \
+            "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json"
+      - name: Require complete new-code coverage
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PREVIOUS_COMMIT: ${{ github.event.before }}
+          PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            BASE="$PR_BASE_COMMIT"
+          else
+            BASE="$PREVIOUS_COMMIT"
+          fi
+          uv run --no-sync python tests/check_change_coverage.py --base "$BASE" \
+            --python-report "$RUNNER_TEMP/assistant-coverage/python.json" \
+            --browser-report "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json" \
+            --output "$RUNNER_TEMP/assistant-coverage/changed-code.json"
+      - name: Prove critical regression tests catch broken behavior
+        run: |
+          uv run --no-sync python tests/mutation_smoke.py \
+            --output "$RUNNER_TEMP/assistant-coverage/mutations.json"
+      - name: Keep validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-quality-evidence
+          path: ${{ runner.temp }}/assistant-coverage
+          if-no-files-found: warn

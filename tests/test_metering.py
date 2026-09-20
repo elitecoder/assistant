@@ -461,10 +461,10 @@ class RendererMeteringTilesTests(unittest.TestCase):
     def test_tiles_render_from_metrics(self):
         self._plant_metrics()
         html = self.renderer.render_metering_stats()
-        self.assertIn("Observer calls/day", html)
+        self.assertIn("Summary requests per day", html)
         self.assertIn("$/day est", html)
-        self.assertIn("Verdict-change rate", html)
-        self.assertIn("Skip rate", html)
+        self.assertIn("Checks that changed a status", html)
+        self.assertIn("Checks that reused an earlier result", html)
         self.assertIn('class="stat"', html)
 
     def test_no_metrics_file_renders_nothing(self):
@@ -490,7 +490,7 @@ class RendererMeteringTilesTests(unittest.TestCase):
              "batch_size": 4, "cost_usd_est": 0.5, "verdict_changes": 1}) + "\n")
         p.write_text("")
         html = self.renderer.render_metering_stats()
-        self.assertIn("Observer calls/day", html)
+        self.assertIn("Summary requests per day", html)
 
     def test_aggregate_missing_keys_degrades_to_empty(self):
         # Adversarial: aggregate() returning a dict WITHOUT the tile keys must

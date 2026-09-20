@@ -297,13 +297,24 @@ class SkipWiringTests(unittest.TestCase):
     def test_matching_hash_skips_observer_and_carries_verdict(self):
         c = ctx()
         self._plant_summary("workspace:1", "needs_user",
-                            obs_hash=self.mod.obs_input_hash(c))
+                            obs_hash=self.mod.obs_input_hash(c),
+                            workspace_id="original-workspace",
+                            observed_sessions=[{"surface_id": "original-surface",
+                                                "provider": "claude", "session_id": "original-session"}],
+                            observed_at=1000, observation_complete=True)
         rc, obs_mock, save_mock, send_mock, run_mock = self._run_pulse(c)
         self.assertEqual(rc, 0)
         obs_mock.assert_not_called()          # zero LLM calls this pulse
         send_mock.assert_not_called()         # carried verdicts never re-act
         save_mock.assert_called_once()        # ...but the LRU clock rotates
-        _, carried = save_mock.call_args[0]
+        _, carried, identity = save_mock.call_args[0]
+        self.assertEqual(identity, {
+            "ws_ref": "workspace:1", "workspace_id": "original-workspace",
+            "observed_sessions": [{"surface_id": "original-surface",
+                                   "provider": "claude", "session_id": "original-session"}],
+            "observed_at": 1000,
+        })
+        self.assertIs(save_mock.call_args.kwargs["observation_complete"], True)
         self.assertEqual(carried["verdict"], "needs_user")
         self.assertEqual(carried["obs_input_hash"],
                          self.mod.obs_input_hash(c))
@@ -335,7 +346,9 @@ class SkipWiringTests(unittest.TestCase):
         self.assertEqual(rec["skipped"], 0)
         # A REAL verdict earned against the new state stores its hash for
         # the next pulse's comparison.
-        _, saved = save_mock.call_args[0]
+        _, saved, identity = save_mock.call_args[0]
+        self.assertIsNone(identity)
+        self.assertIs(save_mock.call_args.kwargs["observation_complete"], True)
         self.assertEqual(saved["obs_input_hash"],
                          self.mod.obs_input_hash(changed))
 
@@ -359,7 +372,10 @@ class SkipWiringTests(unittest.TestCase):
         rc, obs_mock, save_mock, _, _ = self._run_pulse(c)
         self.assertEqual(rc, 0)
         obs_mock.assert_not_called()
-        _, carried = save_mock.call_args[0]
+        _, carried, identity = save_mock.call_args[0]
+        self.assertIsNone(identity["workspace_id"])
+        self.assertIsNone(identity["observed_at"])
+        self.assertIsNone(save_mock.call_args.kwargs["observation_complete"])
         self.assertEqual(carried["carry_count"], 4)
 
     def test_seventh_consecutive_carry_forces_an_observation(self):
@@ -381,7 +397,9 @@ class SkipWiringTests(unittest.TestCase):
         self.assertTrue(rec["observer_called"])
         self.assertEqual(rec["skipped"], 0)
         # The fresh real verdict resets the carry counter.
-        _, saved = save_mock.call_args[0]
+        _, saved, identity = save_mock.call_args[0]
+        self.assertIsNone(identity)
+        self.assertIs(save_mock.call_args.kwargs["observation_complete"], True)
         self.assertNotIn("carry_count", saved)
 
     def test_carried_needs_user_reemits_its_card_without_acting(self):
@@ -435,7 +453,9 @@ class SkipWiringTests(unittest.TestCase):
         rc, _, save_mock, _, _ = self._run_pulse(ctx(),
                                                  observer_result=({}, {}))
         self.assertEqual(rc, 0)
-        _, synth = save_mock.call_args[0]
+        _, synth, identity = save_mock.call_args[0]
+        self.assertIsNone(identity)
+        self.assertIs(save_mock.call_args.kwargs["observation_complete"], False)
         self.assertEqual(synth["verdict"], "active")
         self.assertNotIn("obs_input_hash", synth)
 

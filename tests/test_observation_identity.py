@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ast
+import copy
+import importlib.util
 import json
 import logging
 import os
@@ -70,7 +72,11 @@ def cmux_fixture(tmp_path_factory):
 def observed_home(tmp_path, cmux_fixture):
     home = tmp_path / "home"
     home.mkdir()
-    env = {key: os.environ[key] for key in ("PATH", "TMPDIR") if key in os.environ}
+    env = {
+        key: os.environ[key]
+        for key in ("PATH", "TMPDIR", "COVERAGE_PROCESS_CONFIG")
+        if key in os.environ
+    }
     env.update({"HOME": str(home), "CMUX_BIN": str(cmux_fixture),
                 "ASSISTANT_DIR": str(home / ".assistant")})
     return home, env
@@ -133,6 +139,91 @@ def expected_identity(provider="claude", observed_at=1700000000.25):
             {"surface_id": SURFACE_ID, "provider": provider, "session_id": SESSION_ID},
         ],
     }
+
+
+@pytest.fixture
+def context_module(observed_home, monkeypatch):
+    home, _env = observed_home
+    monkeypatch.setenv("HOME", str(home))
+    spec = importlib.util.spec_from_file_location("identity_edge_context", BIN / "build-ws-context.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("payload", ["{broken", "[]", "null", '{"windows": []}'])
+def test_identity_snapshot_rejects_unreadable_or_missing_workspace(context_module, monkeypatch, payload):
+    monkeypatch.setattr(context_module, "_cmux", lambda _args: subprocess.CompletedProcess(
+        ["cmux"], 0, stdout=payload, stderr=""))
+    assert context_module.workspace_identity_snapshot("workspace:7") is None
+
+
+def test_identity_snapshot_rejects_missing_workspace_uuid(context_module, monkeypatch):
+    payload = {"windows": [{"workspaces": [{"ref": "workspace:7"}]}]}
+    monkeypatch.setattr(context_module, "_cmux", lambda _args: subprocess.CompletedProcess(
+        ["cmux"], 0, stdout=json.dumps(payload), stderr=""))
+    assert context_module.workspace_identity_snapshot("workspace:7") is None
+
+
+def test_identity_snapshot_ignores_browser_and_unidentified_surfaces(context_module, monkeypatch):
+    payload = {"windows": [{"workspaces": [{
+        "ref": "workspace:7", "id": WORKSPACE_ID,
+        "panes": [{"surfaces": [
+            {"ref": "surface:1", "id": "browser-id", "type": "browser"},
+            {"ref": "surface:2", "type": "terminal"},
+            {"id": "missing-ref", "type": "terminal"},
+        ]}],
+    }]}]}
+    calls = []
+
+    def cmux(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(["cmux"], 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(context_module, "_cmux", cmux)
+    assert context_module.workspace_identity_snapshot("workspace:7") == {
+        "workspace_id": WORKSPACE_ID, "surfaces": {}}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("change", ["surface-id", "status-prefix"])
+def test_resolved_pane_must_agree_with_observed_identity(context_module, change):
+    snapshot = {"workspace_id": WORKSPACE_ID, "surfaces": {
+        "surface:7": {"surface_id": SURFACE_ID,
+                      "binding": {"agent": "claude", "session_id": SESSION_ID}}}}
+    resolved = {"agent_surface": "surface:7", "agent_surface_id": SURFACE_ID,
+                "agent_provider": "claude", "session_id8": SESSION_ID[:8],
+                "transcript_path": None}
+    if change == "surface-id":
+        resolved["agent_surface_id"] = "other-surface"
+    else:
+        resolved["session_id8"] = "deadbeef"
+    result = context_module.observation_identity(
+        "workspace:7", snapshot, copy.deepcopy(snapshot), resolved, 1000)
+    assert result == {"ws_ref": "workspace:7", "workspace_id": None,
+                      "observed_sessions": [], "observed_at": 1000}
+
+
+def test_unknown_provider_binding_is_not_treated_as_claude(context_module, monkeypatch):
+    monkeypatch.setattr(context_module, "_cmux", lambda _args: subprocess.CompletedProcess(
+        ["cmux"], 0, stdout=json.dumps({"kind": "other-agent", "checkpointId": SESSION_ID}), stderr=""))
+    assert context_module.resume_binding_for_surface("surface:7", "workspace:7") is None
+
+
+@pytest.mark.parametrize("identity", [
+    [],
+    {**expected_identity(), "workspace_id": ""},
+    {**expected_identity(), "observed_sessions": {}},
+    {**expected_identity(), "observed_sessions": [None]},
+    {**expected_identity(), "observed_sessions": [{"surface_id": SURFACE_ID}]},
+    {**expected_identity(), "workspace_id": None},
+])
+def test_summary_rejects_invalid_identity_shapes_without_saving(observed_home, identity):
+    home, env = observed_home
+    result = save(env, identity)
+    assert result.returncode == 2
+    assert "--observation-json invalid" in result.stderr
+    assert not (home / ".assistant/observer-summaries/workspace_7.json").exists()
 
 
 @pytest.mark.parametrize("provider", ["claude", "droid"])

@@ -103,6 +103,19 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(len(d["workspaces"]), 1)
         self.assertEqual(d["workspaces"][0]["reason"], "second")
 
+    def test_reconfirming_pause_replaces_the_saved_workspace_identity(self):
+        first = "aaaaaaaa-1111-4111-8111-111111111111"
+        current = "bbbbbbbb-2222-4222-8222-222222222222"
+        self._capture(self.mod.cmd_add, argparse.Namespace(
+            ws_ref="workspace:7", reason="old task", workspace_id=first))
+        rc, _, _ = self._capture(self.mod.cmd_add, argparse.Namespace(
+            ws_ref="workspace:7", reason="current task", workspace_id=current))
+        self.assertEqual(rc, 0)
+        entries = self.mod.load()["workspaces"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["workspace_id"], current)
+        self.assertEqual(entries[0]["reason"], "current task")
+
     def test_remove_drops_entry(self):
         self._capture(self.mod.cmd_add,
                        argparse.Namespace(ws_ref="workspace:7", reason="r"))

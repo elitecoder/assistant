@@ -25,9 +25,9 @@ class QuietHandler(SimpleHTTPRequestHandler):
         pass
 
 
-def drive(output_dir, browser_executable):
+def drive(output_dir, browser_executable, coverage_dir=None):
     output_dir.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="assistant-browser-") as temporary:
+    with TemporaryDirectory(prefix=".assistant-browser-", dir=REPO) as temporary:
         home = Path(temporary)
         output = home / ".claude"
         (output / "cache").mkdir(parents=True)
@@ -128,16 +128,38 @@ def drive(output_dir, browser_executable):
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(
                     headless=True, executable_path=browser_executable)
-                page = browser.new_page(viewport={"width": 1440, "height": 1000})
+                context = browser.new_context(viewport={"width": 1440, "height": 1000})
+                page = context.new_page()
+                profiler = None
+                if coverage_dir is not None:
+                    coverage_dir.mkdir(parents=True, exist_ok=True)
+                    profiler = page.context.new_cdp_session(page)
+                    profiler.send("Profiler.enable")
+                    profiler.send("Debugger.enable")
+                    profiler.send("Profiler.startPreciseCoverage", {"callCount": True, "detailed": True})
                 page.clock.install()
                 errors = []
                 mutations = []
+                intercepted_writes = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
+
+                def isolate_requests(route):
+                    request = route.request
+                    if request.method not in ("GET", "HEAD"):
+                        intercepted_writes.append(request.url)
+                        route.fulfill(status=200, content_type="application/json",
+                                      body='{"ok":true}', headers={"Access-Control-Allow-Origin": "*"})
+                    elif (request.url.startswith(f"http://127.0.0.1:{server.server_port}/")
+                          or request.url.split("#", 1)[0] == (output / "assistant-dashboard.html").as_uri()):
+                        route.continue_()
+                    else:
+                        route.abort()
 
                 def reject_action(route):
                     mutations.append(route.request.url)
                     route.fulfill(status=200, body="ok")
 
+                page.context.route("**/*", isolate_requests)
                 page.route("**/focus/*", reject_action)
                 url = f"http://127.0.0.1:{server.server_port}/assistant-dashboard.html"
                 page.goto(url)
@@ -280,10 +302,227 @@ def drive(output_dir, browser_executable):
                 assert page.locator(".pulse-health").get_attribute("class").endswith("pulse-bad")
                 assert not errors, errors
                 page.screenshot(path=str(output_dir / "overview-stale.png"), full_page=True)
+
+                render_version = 100
+
+                def refresh_fixture():
+                    nonlocal render_version
+                    render_version += 1
+                    (output / "cache/world.json").write_text(json.dumps(world))
+                    with mock.patch.dict(os.environ, {"HOME": str(home)}), mock.patch.object(
+                            renderer, "utc_now", return_value=now + timedelta(seconds=render_version)):
+                        renderer.render()
+                    page.evaluate("refreshDashboard(true)")
+
+                refresh_fixture()
+                page.locator('#task-workspace-id-8 summary').click()
+                page.evaluate("""() => Object.defineProperty(navigator, 'clipboard', {
+                    configurable: true, value: {writeText: async () => {
+                        window.deniedCopies = (window.deniedCopies || 0) + 1;
+                        throw new DOMException('Permission denied', 'NotAllowedError');
+                    }}
+                })""")
+                page.locator('#task-workspace-id-8 .resume-copy').click()
+                assert "Couldn't copy" in page.locator('#task-workspace-id-8 .copy-result').inner_text()
+                assert page.locator('#task-workspace-id-8 textarea').evaluate(
+                    "el => document.activeElement === el && el.selectionEnd === el.value.length")
+                page.evaluate("""() => {
+                    const card = document.getElementById('task-workspace-id-8');
+                    card.dataset.evidenceAt = String(Date.now() / 1000 - 601);
+                    updateFreshness();
+                    copySessionPrompt(card.querySelector('.resume-copy'));
+                }""")
+                assert page.locator('#task-workspace-id-8 .resume-copy').is_disabled()
+                assert "saved message is old" in page.locator('#task-workspace-id-8 .copy-result').inner_text()
+                assert page.evaluate("window.deniedCopies") == 1
+                refresh_fixture()
+                page.evaluate("""() => {
+                    document.getElementById('task-workspace-id-10').dataset.evidenceAt =
+                        String(Date.now() / 1000 - 601);
+                    updateFreshness();
+                }""")
+                assert page.locator('#task-workspace-id-10').get_attribute("data-lane") == "parked"
+                assert page.locator('#task-workspace-id-10').get_attribute("data-expired") is None
+
+                world["live_sessions"][1]["guidance_context"] = {"source_version": "updates-v1"}
+                world["live_sessions"][2]["context_status"] = "unknown"
+                world["workspaces"].append({
+                    "ws_ref": "workspace:11", "workspace_id": "workspace-id-11",
+                    "title": "Not linked yet",
+                })
+                notes_path = home / ".assistant/session-return-notes.json"
+                notes = json.loads(notes_path.read_text())
+                notes["sessions"].append({
+                    "workspace_id": "workspace-id-2", "surface_id": "surface-id-2",
+                    "provider": "claude", "session_id": "session-2", "source_version": "updates-v1",
+                    "goal": "Archived retry findings", "progress": "You have the saved result.",
+                    "recommendation": "review", "who": "nobody",
+                })
+                notes_path.write_text(json.dumps(notes))
+                refresh_fixture()
+                assert page.locator('#task-workspace-id-11').get_attribute("data-evidence-at") == ""
+                assert "Not checked yet" in page.locator('#task-workspace-id-11 .attention-state').text_content()
+                for lane, query in (("updates", "Archived retry"), ("unknown", "Task 3:")):
+                    secondary = page.locator(f'[data-context-key="secondary-{lane}"]')
+                    secondary.evaluate("el => el.open = false")
+                    page.locator("#attention-search").fill(query)
+                    assert secondary.get_attribute("open") is not None
+                    assert page.locator(".attention-card:visible").count() == 1
+                    page.locator("#attention-search").fill(query + " ")
+                    page.locator("#attention-search").fill("")
+                    assert secondary.get_attribute("open") is None
+                    secondary.locator(":scope > summary").click()
+                    page.locator("#attention-search").fill(query)
+                    page.locator("#attention-search").fill("")
+                    assert secondary.get_attribute("open") is not None
+                page.evaluate('revealAttention("task-workspace-id-7")')
+                assert page.locator('#task-workspace-id-7 details').get_attribute("open") is not None
+                before_missing = page.locator("#dashboard-content").inner_html()
+                page.evaluate('revealAttention("missing-card")')
+                assert page.locator("#dashboard-content").inner_html() == before_missing
+                page.evaluate('openPending("missing-task")')
+                assert page.locator('[data-panel="todos"]').is_visible()
+                assert not page.locator('.todo-row:focus').count()
+                page.locator('[data-tab="overview"]').click()
+
+                request_state = {
+                    "generated_at": now.isoformat(),
+                    "awaiting_input": [{"title": "Legacy workspace question", "confidence": 1,
+                                        "touches": ["workspace:77"], "tier": "T1"}],
+                }
+                state_path = output / "cache/assistant-state.json"
+                state_path.write_text(json.dumps(request_state))
+                refresh_fixture()
+                page.locator('[data-tab="decisions"]').click()
+                focus_before = len(mutations)
+                page.locator('#assistant-requests button[data-ws="workspace:77"]').click()
+                page.wait_for_function("""() => document.querySelector(
+                    '#assistant-requests button[data-ws="workspace:77"]').textContent.includes('✓')""")
+                assert len(mutations) == focus_before + 1
+                assert mutations[-1].endswith("/focus/workspace:77")
+                for stamp in (None, "", now.timestamp() + 3600, now.timestamp() - 601):
+                    refresh_fixture()
+                    focus_before = len(mutations)
+                    page.evaluate("""async stamp => {
+                        const requests = document.getElementById('assistant-requests');
+                        requests.dataset.generatedAt = String(stamp);
+                        await openWs(requests.querySelector('button[data-ws]'));
+                    }""", stamp)
+                    assert len(mutations) == focus_before
+                    assert page.locator('#assistant-requests button[data-ws]').count() == 0
+                    assert "Saved reference: workspace:77" in page.locator("#assistant-requests").inner_text()
+                    assert page.locator("#saved-requests-warning").is_visible()
+                refresh_fixture()
+                page.locator('[data-tab="overview"]').click()
+
+                brief_dir = home / ".assistant/brief"
+                brief_dir.mkdir(exist_ok=True)
+                first_date = now.date().isoformat()
+                next_date = (now + timedelta(days=1)).date().isoformat()
+                (brief_dir / f"brief-{first_date}.json").write_text(json.dumps({"epoch": now.timestamp()}))
+                refresh_fixture()
+                page.locator('[data-tab="brief"]').click()
+                page.wait_for_timeout(50)
+                seen = [url for url in intercepted_writes if "/brief/seen?" in url]
+                assert len(seen) == 1 and seen[0].endswith(first_date), seen
+                refresh_fixture()
+                page.wait_for_timeout(50)
+                assert [url for url in intercepted_writes if "/brief/seen?" in url] == seen
+                (brief_dir / f"brief-{next_date}.json").write_text(json.dumps({"epoch": now.timestamp()}))
+                refresh_fixture()
+                page.wait_for_timeout(50)
+                seen = [url for url in intercepted_writes if "/brief/seen?" in url]
+                assert len(seen) == 2 and seen[-1].endswith(next_date), seen
+                page.locator('[data-tab="overview"]').click()
+
+                page.route("**/assistant-dashboard.html", lambda route: route.fulfill(
+                    status=200, body="<main>No dashboard content</main>"))
+                preserved = page.locator(".attention-card").all_text_contents()
+                page.evaluate("refreshDashboard(true)")
+                assert "Dashboard content is unavailable" in page.locator("#refresh-error").inner_text()
+                assert page.locator(".attention-card").all_text_contents() == preserved
+                page.unroute("**/assistant-dashboard.html")
+                page.route("**/assistant-dashboard.html", lambda route: route.abort("failed"))
+                page.evaluate("refreshDashboard(true)")
+                assert "Refresh failed" in page.locator("#refresh-error").inner_text()
+                page.unroute("**/assistant-dashboard.html")
+                pending_refresh = []
+                page.route("**/assistant-dashboard.html", lambda route: pending_refresh.append(route))
+                page.evaluate("() => { window.refreshResult = refreshDashboard(true); }")
+                page.wait_for_timeout(50)
+                assert len(pending_refresh) == 1
+                page.evaluate("refreshDashboard(true)")
+                assert len(pending_refresh) == 1
+                pending_refresh[0].fulfill(status=200, content_type="text/html",
+                                          body=(output / "assistant-dashboard.html").read_text())
+                page.evaluate("window.refreshResult")
+                page.unroute("**/assistant-dashboard.html")
+                assert page.locator("#refresh-error").inner_text() == ""
+
+                page.evaluate("""() => {
+                    const root = document.getElementById('dashboard-content');
+                    root.remove();
+                    updateFreshness();
+                    document.body.append(root);
+                    root.dataset.snapshotAt = '';
+                    updateFreshness();
+                }""")
+                assert "Sessions haven't been checked yet" in page.locator("#snapshot-status").inner_text()
+                refresh_fixture()
+                for delta, message, color in (
+                        (60, "Heartbeat time is in the future", "pulse-bad"),
+                        (-900, "Pulse slow", "pulse-warn")):
+                    page.evaluate("""delta => {
+                        document.querySelector('[data-pulse-at]').dataset.pulseAt =
+                            String(Date.now() / 1000 + delta);
+                        updateFreshness();
+                    }""", delta)
+                    assert message in page.locator(".pulse-health").text_content()
+                    assert color in page.locator(".pulse-health").get_attribute("class")
+                page.evaluate("""() => {
+                    history.replaceState(null, '', location.pathname);
+                    window.hashlessRefresh = refreshDashboard(true);
+                }""")
+                page.evaluate("window.hashlessRefresh")
+                refresh_fixture()
+                assert page.locator('[data-panel="overview"]').is_visible()
+
+                file_page = page.context.new_page()
+                file_errors = []
+                file_page.on("pageerror", lambda error: file_errors.append(str(error)))
+                file_profiler = None
+                if profiler is not None:
+                    file_profiler = page.context.new_cdp_session(file_page)
+                    file_profiler.send("Profiler.enable")
+                    file_profiler.send("Debugger.enable")
+                    file_profiler.send("Profiler.startPreciseCoverage", {"callCount": True, "detailed": True})
+                file_page.goto((output / "assistant-dashboard.html").as_uri() + "#invalid-tab")
+                assert file_page.locator('[data-panel="overview"]').is_visible()
+                requests_after_load = []
+                file_page.on("request", lambda request: requests_after_load.append(request.url))
+                file_page.evaluate("refreshDashboard(true)")
+                assert not requests_after_load, requests_after_load
+                assert file_page.locator("#refresh-error").inner_text() == ""
+                assert not file_errors, file_errors
+                assert not errors, errors
+                if profiler is not None:
+                    scripts = []
+                    for collector in (profiler, file_profiler):
+                        entries = collector.send("Profiler.takePreciseCoverage")["result"]
+                        for entry in entries:
+                            source = collector.send("Debugger.getScriptSource", {
+                                "scriptId": entry["scriptId"]})["scriptSource"]
+                            if "function showTab(name)" in source and "function updateFreshness()" in source:
+                                scripts.append({**entry, "source": source})
+                        collector.send("Profiler.stopPreciseCoverage")
+                    assert scripts, "Dashboard script was not captured by the browser coverage profiler"
+                    (coverage_dir / "browser-v8.json").write_text(json.dumps(scripts, indent=2))
                 browser.close()
                 print(json.dumps({"measurements": measurements, "browser_errors": errors,
                                   "explicit_focus_requests": len(mutations),
-                                  "checks": "grouping, density, search, expansion, reading stability, focus, task navigation, automatic refresh, observation expiry, stale gating"}))
+                                  "intercepted_brief_seen_requests": len(seen),
+                                  "coverage_script_instances": len(scripts) if profiler is not None else 0,
+                                  "checks": "grouping, density, search restoration, expansion, clipboard denial and expiry, reading stability, legacy focus, missing task guards, refresh errors and concurrency, brief date changes, file protocol, observation expiry, stale request gating"}))
         finally:
             server.shutdown()
             server.server_close()
@@ -294,8 +533,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--browser-executable")
+    parser.add_argument("--coverage-dir", type=Path)
     args = parser.parse_args()
-    drive(args.output_dir, args.browser_executable)
+    drive(args.output_dir, args.browser_executable, args.coverage_dir)
 
 
 if __name__ == "__main__":

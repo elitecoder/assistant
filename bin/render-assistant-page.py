@@ -1812,8 +1812,6 @@ def render_overview_tab(world):
             note = card["guidance_note"]
             evidence_items = []
             for evidence in note.get("completion_evidence") or []:
-                if not isinstance(evidence, dict):
-                    continue
                 url = evidence.get("url")
                 parsed_url = urlsplit(url) if isinstance(url, str) else None
                 if parsed_url and parsed_url.scheme == "https" and parsed_url.hostname == "github.com":

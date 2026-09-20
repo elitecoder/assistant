@@ -418,6 +418,97 @@ def _question_call(tool_id="question"):
             }]}}
 
 
+def test_fresh_watcher_import_resolves_sibling_parser(tmp_home, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_home))
+    monkeypatch.setattr(sys, "path", [
+        entry for entry in sys.path if entry != str(REPO / "bin")
+    ])
+    spec = importlib.util.spec_from_file_location(
+        "isolated_watcher", REPO / "bin/session-context-watcher.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    path = tmp_home / "fresh.jsonl"
+    path.write_text(_tool_turn("user", "Read this request.", root=True))
+    state = module.TranscriptState(path, str(tmp_home))
+    assert state.read_new() is True
+    assert state.guidance_context()["initial_request"]["text"] == "Read this request."
+    assert module.OUT_PATH.is_relative_to(tmp_home)
+
+
+@pytest.mark.parametrize("message", [None, [], {"content": None}, {"content": 123}])
+def test_malformed_message_invalidates_pending_questions(tmp_home, message):
+    path = tmp_home / "malformed.jsonl"
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [_question_call()])
+                    + json.dumps({"type": "assistant", "message": message}) + "\n")
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    output = state.to_dict(scw.utc_now())
+    assert output["pending_tool_use"] is None
+    assert output["guidance_context"]["pending_questions"] == []
+    assert output["guidance_context"]["last_response"] is None
+    assert output["guidance_context"]["initial_request"]["text"] == "Release."
+
+
+@pytest.mark.parametrize("record", [
+    None, [], 42, "not a transcript record",
+    {"type": "assistant", "message": {"content": [None]}},
+])
+def test_invalid_transcript_shapes_clear_existing_tool_evidence(tmp_home, record):
+    path = tmp_home / "invalid.jsonl"
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [_question_call()]))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    before = state.guidance_context()["source_version"]
+    with path.open("a") as stream:
+        stream.write(json.dumps(record) + "\n")
+    assert state.read_new() is True
+    output = state.to_dict(scw.utc_now())
+    assert output["pending_tool_use"] is None
+    assert output["guidance_context"]["pending_questions"] == []
+    assert output["guidance_context"]["source_version"] != before
+
+
+@pytest.mark.parametrize("tool_input", [
+    None, [], {"questions": None}, {"questions": {}},
+    {"questions": [None, {"question": 42}, {}]}, {"questions": []},
+])
+def test_invalid_question_input_preserves_call_without_inventing_questions(tmp_home, tool_input):
+    path = tmp_home / "questions.jsonl"
+    call = {**_question_call(), "input": tool_input}
+    path.write_text(_tool_turn("user", "Release.", root=True)
+                    + _tool_turn("assistant", [call]))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is True
+    assert state.guidance_context()["pending_questions"] == []
+    _append_tool_turn(path, "user", [{"type": "tool_result", "tool_use_id": "question"}])
+    state.read_new()
+    assert state.to_dict(scw.utc_now())["pending_tool_use"] is False
+
+
+def test_question_parser_skips_invalid_optional_fields_and_options(tmp_home):
+    path = tmp_home / "questions.jsonl"
+    call = _question_call()
+    call["input"]["questions"] = [
+        {"question": "Choose a target.", "header": None,
+         "options": [None, {"label": "Staging", "description": 42}, {"description": "Later."}],
+         "multiSelect": "false"},
+        {"question": "When?", "options": "not a list"},
+    ]
+    path.write_text(_tool_turn("assistant", [call]))
+    state = scw.TranscriptState(path, str(tmp_home))
+    state.read_new()
+    assert state.guidance_context()["pending_questions"] == [
+        {"question": "Choose a target.",
+         "options": [{"label": "Staging"}, {"description": "Later."}],
+         "tool_use_id": "question", "truncated": False},
+        {"question": "When?", "header": "", "options": [],
+         "tool_use_id": "question", "truncated": False},
+    ]
+
+
 @pytest.mark.parametrize("provider", ["claude", "droid"])
 def test_guidance_real_human_and_long_response_survive_tool_results(tmp_path, provider):
     path = tmp_path / "guidance.jsonl"

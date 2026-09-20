@@ -18,13 +18,13 @@ Runs install.sh as a subprocess (bash), so it is python-version agnostic.
 """
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+from installer_sandbox import installer_env
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -47,30 +47,13 @@ class InstallPlistCopyContractTests(unittest.TestCase):
     def _run_installer(self, home: Path) -> Path:
         """Run `install.sh --apply` against an isolated $HOME with launchctl
         stubbed. Returns the path to the launchctl call log."""
-        stubbin = home / "stubbin"
-        stubbin.mkdir(parents=True)
         launchctl_log = home / "launchctl.log"
-        stub = stubbin / "launchctl"
-        stub.write_text(
-            "#!/bin/sh\n"
-            f'echo "launchctl $*" >> "{launchctl_log}"\n'
-            "exit 0\n")
-        stub.chmod(0o755)
+        env = installer_env(home)
         # patch-settings.py backs up an existing settings.json; give it one so
         # the (unrelated) section-4 step completes and the installer returns 0.
         (home / ".claude").mkdir(parents=True, exist_ok=True)
         (home / ".claude" / "settings.json").write_text("{}\n")
 
-        # install.sh's [0] doctor preflight requires python>=3.11 on PATH (the
-        # pulse orchestrator needs it) and aborts --apply otherwise. The minimal
-        # PATH below would otherwise resolve to the system's 3.9, so prepend the
-        # dir of the interpreter running this test (a modern python, since pytest
-        # itself runs under it). The launchctl stub still shadows the real one.
-        py_bin = str(Path(sys.executable).parent)
-        env = {
-            "HOME": str(home),
-            "PATH": f"{stubbin}:{py_bin}:/usr/bin:/bin:/usr/sbin:/sbin",
-        }
         proc = subprocess.run(
             ["bash", str(REPO / "install.sh"), "--apply"],
             env=env, stdin=subprocess.DEVNULL,
