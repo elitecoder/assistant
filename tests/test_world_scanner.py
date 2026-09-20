@@ -46,6 +46,21 @@ def fake_completed(stdout="", returncode=0):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
 
+@pytest.mark.parametrize("provider,root", [
+    ("claude", ".claude/projects"), ("droid", ".factory/sessions"),
+])
+def test_transcript_lookup_uses_the_complete_session_filename(ws, provider, root):
+    project = ws.HOME / root / "project"
+    project.mkdir(parents=True)
+    unrelated = project / "session-1-other.jsonl"
+    unrelated.write_text("{}\n")
+    assert ws.transcript_for_session(provider, "session-1") is None
+    exact = project / "session-1.jsonl"
+    exact.write_text("{}\n")
+    os.utime(unrelated, (2_000_000_000, 2_000_000_000))
+    assert ws.transcript_for_session(provider, "session-1") == str(exact)
+
+
 # ─── time helpers ─────────────────────────────────────────────────────────────
 
 def test_utc_now_no_microseconds(ws):

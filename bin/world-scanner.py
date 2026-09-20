@@ -268,7 +268,7 @@ def transcript_for_session(provider, session_id):
             else HOME / ".claude/projects")
     if not root.is_dir() or not session_id:
         return None
-    matches = list(root.glob(f"*/{session_id}*.jsonl"))
+    matches = list(root.glob(f"*/{session_id}.jsonl"))
     if not matches:
         return None
     return str(max(matches, key=lambda p: p.stat().st_mtime))

@@ -20,6 +20,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Resolve full session filenames directly instead of scanning every transcript
+  filename for prefix matches on each collector pass.
 - Keep ordinary updates and unverified sessions out of the human decision queue.
   Preserve response endings instead of dropping next steps after 800 characters.
 - Separate cmux workspace counts from GitHub notifications. Sessions stay the
