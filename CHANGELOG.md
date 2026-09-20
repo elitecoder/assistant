@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Allow manual close-out review for plan-only work when its exact saved document
+  still matches the reviewed hash; keep implementation explicitly separate.
 - Preserve actionable transcript context and outstanding question choices.
   Display reviewed, conversation-bound return notes with specific next steps.
 - Group live GitHub alerts into review topics, show three first, and keep

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -96,12 +98,27 @@ def text_excerpt(text: str, limit: int = 220) -> str:
     return compact[:limit - 3].rstrip() + "..."
 
 
-def has_merged_evidence(note: dict) -> bool:
+def has_completion_evidence(note: dict) -> bool:
     evidence = note.get("completion_evidence")
     if not isinstance(evidence, list):
         return False
     for item in evidence:
-        if not isinstance(item, dict) or item.get("kind") != "pull_request" or item.get("state") != "MERGED":
+        if not isinstance(item, dict):
+            continue
+        if item.get("kind") == "artifact" and isinstance(item.get("path"), str):
+            path = Path(item["path"])
+            root = Path.home() / "dev/generated-docs"
+            if not path.resolve().is_relative_to(root.resolve()) or path.suffix not in {".md", ".html"}:
+                continue
+            if path.is_file() and isinstance(item.get("sha256"), str):
+                try:
+                    with path.open("rb") as stream:
+                        if hashlib.file_digest(stream, "sha256").hexdigest() == item["sha256"]:
+                            return True
+                except OSError as exc:
+                    logging.getLogger(__name__).warning("Close-out artifact unavailable: %s", exc)
+            continue
+        if item.get("kind") != "pull_request" or item.get("state") != "MERGED":
             continue
         try:
             url = urlsplit(item.get("url", ""))
@@ -170,8 +187,12 @@ def guide_card(card: dict, current_sessions: list[dict], notes: list[dict],
             result.update(lane="working", state="Agent's next step", wrap_eligible=False)
         elif recommendation in ("answer", "review") and tools_complete:
             result.update(lane="needs-you", state="Your next step", wrap_eligible=True)
-        elif recommendation == "close_candidate" and tools_complete and has_merged_evidence(note):
+        elif recommendation == "close_candidate" and tools_complete and has_completion_evidence(note):
             result.update(lane="ready", state="Review close-out", wrap_eligible=True)
+        elif recommendation == "close_candidate" and tools_complete:
+            result.update(lane="updates", state="Close-out evidence needs rechecking",
+                          action="The saved completion evidence changed or is unavailable. Recheck it before closing.",
+                          wrap_eligible=False)
         elif recommendation == "park" and tools_complete:
             result.update(lane="needs-you", state="Ready to park deliberately", wrap_eligible=True)
         else:

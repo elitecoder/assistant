@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
 from assistant.session_guidance import guide_card, matching_note, read_notes
 
@@ -97,6 +99,19 @@ class SessionGuidanceTests(TestCase):
                 result = self.guide([{**self.note, "completion_evidence": evidence}])
                 self.assertNotEqual(result["lane"], "ready")
                 self.assertFalse(result["wrap_eligible"])
+
+    def test_plan_only_close_out_requires_the_exact_preserved_artifact(self):
+        with TemporaryDirectory() as directory, patch("pathlib.Path.home", return_value=Path(directory)):
+            path = Path(directory) / "dev/generated-docs/delivered-plan.md"
+            path.parent.mkdir(parents=True)
+            path.write_text("A delivered plan, not an implemented feature.")
+            note = {**self.note, "completion_evidence": [{
+                "kind": "artifact", "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }]}
+            self.assertEqual(self.guide([note])["lane"], "ready")
+            path.write_text("Changed since review.")
+            self.assertNotEqual(self.guide([note])["lane"], "ready")
 
     def test_waiting_for_agent_work_is_not_a_human_decision(self):
         note = {**self.note, "who": "agent", "recommendation": "continue",

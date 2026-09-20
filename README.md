@@ -216,6 +216,8 @@ A changed conversation invalidates the note immediately; current quoted evidence
 replaces it rather than silently presenting an obsolete plan. This does not launch
 an extra model or treat a completed tool call as completed work. Closing remains
 your decision; the dashboard never closes, resumes, or sends instructions to a session.
+Close-out evidence can be a merged pull request or an unchanged, hash-verified
+planning document. A delivered plan doesn't imply that implementation has started.
 **Agent work** distinguishes a running tool from a reviewed next step. For a
 prepared continuation, **Copy next step** carries the goal, recorded progress,
 and next action back to the original session. Copying never sends it automatically.
