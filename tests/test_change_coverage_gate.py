@@ -9,6 +9,7 @@ import runpy
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -17,6 +18,16 @@ SCRIPT = Path(__file__).with_name("check_change_coverage.py")
 SPEC = importlib.util.spec_from_file_location("change_coverage_gate", SCRIPT)
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
+
+
+def test_browser_dependencies_use_public_download_urls():
+    lock = json.loads(SCRIPT.with_name("package-lock.json").read_text())
+    dependencies = [package for name, package in lock["packages"].items() if name]
+    assert dependencies
+    for package in dependencies:
+        url = urlsplit(package["resolved"])
+        assert url.scheme == "https"
+        assert url.netloc == "registry.npmjs.org"
 
 
 def python_report(*, executed=(1, 2), missing=(), branches=((1, 2), (1, -1)), missed=(), excluded=()):
