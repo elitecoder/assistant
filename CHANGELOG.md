@@ -27,6 +27,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Clear a stale `.git/index.lock` before self-update's stash/pull. An orphaned
+  lock left by a killed git op (machine sleep mid-pull, SIGKILL) previously made
+  every pull fail identically, silently freezing updates for weeks. Only a lock
+  older than the stale window (well above the git-op timeout) is removed, so a
+  lock a live git process is holding is never yanked out from under it.
 - Invalidate return notes after completed tool traffic; require review before reusing older notes.
 - Block close-out for unverified terminals, and safely show incomplete question choices.
 - Keep installer tests away from real terminal hooks, and count isolated Python

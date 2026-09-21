@@ -61,6 +61,16 @@ DEFAULT_INTERVAL_SEC = 3600
 # (`git stash list` / `git stash pop`); it is never dropped or discarded.
 DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
 
+# A killed or crashed git op (machine sleep mid-pull, SIGKILL) can orphan
+# .git/index.lock; git then refuses every later index operation with
+# "Unable to create '.../index.lock': File exists", so self-update's stash/pull
+# fail identically on every pulse and the Assistant silently stops updating
+# (observed: wedged for weeks, 26 commits behind). We remove such a lock only
+# once it is older than this window — comfortably above the 90s git-op timeout —
+# so a lock a LIVE git process is actively holding is never deleted out from
+# under it. A fresh lock is left alone and the pull simply retries next pulse.
+DEFAULT_STALE_LOCK_AFTER_SEC = 300  # 5 min
+
 
 def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
     """Run a git command in `repo`. Returns (rc, stdout, stderr); never raises."""
@@ -87,6 +97,44 @@ def _stash_dirty(repo: Path, label: str) -> tuple[bool, str]:
     if rc != 0:
         return False, err or out
     return True, out
+
+
+def _clear_stale_index_lock(repo: Path, now: float, stale_after_sec: int,
+                            log=lambda _m: None) -> dict | None:
+    """Remove a stale ``index.lock`` so index-touching git ops (stash, ff-only
+    pull) can run again after a killed/crashed git op left one behind.
+
+    Guarded by age: the lock is deleted ONLY when it is older than
+    ``stale_after_sec``. A live git op holds the lock for at most our 90s
+    timeout, so a lock older than the (larger) window cannot belong to one — we
+    never yank the lock out from under a git process that is still running.
+    ``now`` is threaded in (not read here) so the age check is deterministic in
+    tests, which set the lock's mtime relative to the same synthetic clock.
+
+    Returns a detail dict when a lock is present (``removed`` True/False), or
+    None when there is no lock. Never raises — a failure to stat/unlink degrades
+    to "leave it" and the pull below just fails-and-retries as before."""
+    rc, gitdir, _ = _git(repo, "rev-parse", "--absolute-git-dir")
+    lock = (Path(gitdir) if rc == 0 and gitdir else repo / ".git") / "index.lock"
+    try:
+        age = now - lock.stat().st_mtime
+    except OSError:
+        return None  # no lock (or unreadable) — nothing to clear
+    if age < stale_after_sec:
+        log(f"index.lock present but only {int(age)}s old "
+            f"(< {stale_after_sec}s) — a live git op may hold it; leaving it")
+        return {"present": True, "removed": False, "age_sec": int(age)}
+    try:
+        lock.unlink()
+    except FileNotFoundError:
+        return {"present": True, "removed": False, "age_sec": int(age)}
+    except OSError as e:  # noqa: BLE001 — degrade to "leave it", never crash the pulse
+        log(f"failed to remove stale index.lock: {e}")
+        return {"present": True, "removed": False, "age_sec": int(age),
+                "error": str(e)}
+    log(f"removed stale index.lock ({age / 3600.0:.1f}h old) — was blocking "
+        "index-touching git ops (pull/stash)")
+    return {"present": True, "removed": True, "age_sec": int(age)}
 
 
 def resolve_remote_branch(repo: Path) -> tuple[str, str] | None:
@@ -184,6 +232,7 @@ def maybe_update(
     now: float | None = None,
     interval_sec: int = DEFAULT_INTERVAL_SEC,
     dirty_stash_after_sec: int = DEFAULT_DIRTY_STASH_AFTER_SEC,
+    stale_lock_after_sec: int = DEFAULT_STALE_LOCK_AFTER_SEC,
     marker_path: Path | None = None,
     install_sh: Path | None = None,
     log=None,
@@ -258,6 +307,15 @@ def maybe_update(
         # Nothing to pull — leave a dirty tree untouched (no reason to stash).
         _log("already up to date")
         return result
+
+    # An update is waiting, so from here we run index-touching ops (an optional
+    # stash, then the ff-only pull). A stale index.lock orphaned by a killed git
+    # op would make every one of them fail identically on every pulse — the
+    # wedge that silently froze updates. Clear it first, but only if it is old
+    # enough to not belong to a live git process (fresh locks are left alone).
+    lock_info = _clear_stale_index_lock(repo, now, stale_lock_after_sec, log=_log)
+    if lock_info is not None:
+        result["stale_lock"] = lock_info
 
     if status["dirty"]:
         age = result["dirty_age_sec"]

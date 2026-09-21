@@ -263,6 +263,62 @@ class MaybeUpdateTests(unittest.TestCase):
             self.assertTrue((clone / "scratch.txt").exists())
             self.assertTrue((clone / "untracked.txt").exists())
 
+    def test_stale_index_lock_cleared_then_pulls(self):
+        # An orphaned index.lock (killed git op) would block the ff-only pull on
+        # every pulse — the wedge that silently froze self-update. Once the lock
+        # is older than the stale window it must be removed and the pull proceed.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "remote change")
+            lock = clone / ".git" / "index.lock"
+            lock.write_text("")  # simulate an orphaned lock
+            now = 1_000_000.0
+            os.utime(lock, (now - 4000, now - 4000))  # ~1.1h old, past the window
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json",
+                                now=now)
+            self.assertTrue(r["stale_lock"]["removed"])
+            self.assertFalse(lock.exists())
+            self.assertTrue(r["changed"])
+            self.assertIn("bin/pulse.py", r["files_changed"])
+
+    def test_fresh_index_lock_left_and_pull_fails(self):
+        # A RECENT lock may belong to a live git op — never yank it. The pull
+        # fails this pulse (and retries next) but no work is touched.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "remote change")
+            lock = clone / ".git" / "index.lock"
+            lock.write_text("")
+            now = 1_000_000.0
+            os.utime(lock, (now - 10, now - 10))  # 10s old — inside the window
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json",
+                                now=now)
+            self.assertFalse(r["stale_lock"]["removed"])
+            self.assertTrue(lock.exists())  # left in place for the live op
+            self.assertEqual(r["skipped_reason"], "pull-failed")
+            self.assertFalse(r["changed"])
+
+    def test_no_index_lock_leaves_result_clean(self):
+        # No lock present → helper is a no-op (no stale_lock key) and the pull
+        # proceeds normally.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "remote change")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertNotIn("stale_lock", r)
+            self.assertTrue(r["changed"])
+
+    def test_clear_stale_index_lock_absent_returns_none(self):
+        # Direct: no lock file → None, never raises.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _ = make_repos(tmp)
+            self.assertIsNone(
+                su._clear_stale_index_lock(clone, now=1000.0, stale_after_sec=300))
+
     def test_ahead_dirty_past_window_still_refuses(self):
         # Unpushed commits block the pull even after the dirty window elapses —
         # stashing can't fast-forward over a local commit, so we never stash.
