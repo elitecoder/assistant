@@ -27,6 +27,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Restore the warm comms session (and pulse dispatch) after a Claude Code
+  trust-prompt UI change. The first-launch "trust this folder" prompt became an
+  arrow-selector defaulting to **No, exit**, but the daemon still matched the old
+  numbered marker (`1. Yes, I trust this folder`) and answered by sending `1` —
+  which no longer matches, and on the new UI would confirm "No, exit" and quit
+  claude. Every warm session stalled on the unanswered prompt and was closed, so
+  no warm session existed at all. The marker (`Yes, I trust this folder`) and the
+  accept keystrokes (**Down** then **Enter**) are now single-sourced in
+  `agent_session` and shared by both call sites, with a regression test pinning
+  the live prompt screen.
 - Invalidate return notes after completed tool traffic; require review before reusing older notes.
 - Block close-out for unverified terminals, and safely show incomplete question choices.
 - Keep installer tests away from real terminal hooks, and count isolated Python

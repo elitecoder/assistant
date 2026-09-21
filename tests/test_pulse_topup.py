@@ -728,7 +728,7 @@ def test_dispatch_todo_happy_path_claude_is_the_default(mod, home, no_sleep):
 
     rpc_calls = []
     reads = iter([
-        "1. Yes, I trust this folder",                    # trust-prompt branch
+        "❯ No, exit\n  Yes, I trust this folder\nEnter to confirm",  # trust prompt (v2.1 arrow UI)
         "Claude Code v1.2.3  ⏵⏵ bypass permissions on",   # ready banner
     ])
 
@@ -786,9 +786,11 @@ def test_dispatch_todo_happy_path_claude_is_the_default(mod, home, no_sleep):
     launch_cmd = launch[launch.index("--command") + 1]
     assert launch_cmd == "claude"
     assert "droid" not in launch_cmd
-    # The trust prompt was answered with "1".
-    assert any(p.get("text") == "1" for m, p in rpc_calls
-               if m == "surface.send_text")
+    # The trust prompt was answered with the current UI's accept keys: Down to
+    # move off the default "No, exit", then Enter to confirm "Yes, I trust…".
+    sent_keys = [p.get("key") for m, p in rpc_calls if m == "surface.send_key"]
+    assert "down" in sent_keys
+    assert sent_keys.index("down") < sent_keys.index("enter")
 
 
 def test_dispatch_todo_unconfirmed_still_stamps_no_respawn(mod, home, no_sleep, monkeypatch):

@@ -120,12 +120,15 @@ def ready_re(agent: str) -> "re.Pattern[str]":
     return _READY_RE[DROID] if agent == DROID else _READY_RE[CLAUDE]
 
 
-# First-launch folder-trust prompt to auto-answer with "1" + Enter. Claude's
-# exact line is known; Droid's trust UX is not yet pinned here, so it returns
-# None (no auto-answer) until verified — a missing answer only delays, never
-# misfires.
+# First-launch folder-trust prompt. Claude's prompt is an arrow-selector whose
+# DEFAULT highlighted option is "No, exit", with "Yes, I trust this folder" on
+# the line below it (verified live 2026-09-21 against Claude Code v2.1.x). An
+# earlier numbered UI ("1. Yes, I trust this folder") is gone; matching the
+# unnumbered option text stays robust to both. Droid's trust UX is not pinned
+# here, so it returns None (no auto-answer) — a missing answer only delays,
+# never misfires.
 _TRUST_MARKER = {
-    CLAUDE: "1. Yes, I trust this folder",
+    CLAUDE: "Yes, I trust this folder",
     DROID: None,
 }
 
@@ -134,6 +137,25 @@ def trust_marker(agent: str) -> str | None:
     """Screen substring of the first-launch trust prompt to auto-answer, or
     None when this agent has no known auto-answerable trust gate."""
     return _TRUST_MARKER.get(agent)
+
+
+# Keystrokes that ACCEPT the trust prompt, sent in order once the marker shows.
+# Claude's selector defaults to "No, exit"; the trusting option is one line
+# below, so we move Down then confirm with Enter (verified live 2026-09-21).
+# Sending "1" — correct for the RETIRED numbered UI — would now confirm the
+# default "No, exit" and quit claude, so the keys MUST track the current UI.
+# Droid has no auto-answerable gate → empty tuple (never fires). Single-sourced
+# here so every call site (comms warm session, pulse dispatch) stays in sync.
+_TRUST_ANSWER_KEYS = {
+    CLAUDE: ("down", "enter"),
+    DROID: (),
+}
+
+
+def trust_answer_keys(agent: str) -> tuple[str, ...]:
+    """Ordered cmux key names that accept the first-launch trust prompt for
+    `agent`, or an empty tuple when there is no auto-answerable gate."""
+    return _TRUST_ANSWER_KEYS.get(agent, ())
 
 
 def _read_comms_config() -> dict | None:

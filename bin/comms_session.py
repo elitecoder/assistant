@@ -590,8 +590,8 @@ def await_ready(read_screen, ready_re, trust_marker, answer_trust,
     a slow cold boot can render the prompt after any fixed pre-loop wait, and a
     missed answer stalls the session forever — the 2026-08-21 comms outage.
     ``answer_trust`` fires at most once (Claude re-renders the same prompt on
-    every frame until it is answered; sending "1"+Enter repeatedly would leak
-    keystrokes into the REPL once accepted). ``trust_marker`` is None for agents
+    every frame until it is answered; re-sending the accept keystrokes would
+    leak them into the REPL once accepted). ``trust_marker`` is None for agents
     with no known auto-answerable gate (droid), so the branch never misfires.
     Readiness is checked before trust each iteration so an already-ready screen
     short-circuits without touching the surface."""
@@ -702,11 +702,14 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     # (banner or status bar), answering the first-launch trust prompt if/when it
     # shows. Both are delegated to await_ready so the ordering is unit-tested.
     def _answer_trust() -> None:
-        _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "1"})
-        # send_text streams keystrokes; give "1" a beat to land before Enter so
-        # the selection isn't submitted empty (mirrors feed()'s proven pattern).
-        time.sleep(0.5)
-        _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+        # Accept the trust prompt with the per-agent key sequence (claude: Down
+        # then Enter — its selector defaults to "No, exit", the trusting option
+        # is below it). A per-key beat lets each keystroke land before the next
+        # (mirrors feed()'s proven send pattern); await_ready's once-only guard
+        # keeps these keys from leaking into the REPL after acceptance.
+        for key in agent_session.trust_answer_keys(agent):
+            _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": key})
+            time.sleep(0.5)
 
     ready, trust_answered = await_ready(
         read_screen=lambda: _surface_read_text(paths, surface_ref),

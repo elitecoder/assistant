@@ -110,8 +110,39 @@ def test_dispatch_agent_policy_defaults_claude():
 
 
 def test_trust_marker():
-    assert ag.trust_marker(ag.CLAUDE) == "1. Yes, I trust this folder"
+    assert ag.trust_marker(ag.CLAUDE) == "Yes, I trust this folder"
     assert ag.trust_marker(ag.DROID) is None
+
+
+# The real first-launch trust prompt (Claude Code v2.1.x, captured live
+# 2026-09-21). The retired numbered UI ("1. Yes, I trust this folder") no
+# longer renders; the daemon's marker must be found in THIS screen or the warm
+# session never boots (the outage this test guards against).
+_NEW_TRUST_SCREEN = (
+    "Accessing workspace:\n"
+    "/Users/mukuls/dev/assistant\n"
+    "Quick safety check: Is this a project you created or one you trust?\n"
+    "❯ No, exit\n"
+    "  Yes, I trust this folder\n"
+    "Enter to confirm · Esc to cancel"
+)
+
+
+def test_trust_marker_matches_live_prompt_and_not_ready_screen():
+    marker = ag.trust_marker(ag.CLAUDE)
+    assert marker in _NEW_TRUST_SCREEN
+    # Must NOT be mistaken for an already-ready REPL banner.
+    assert marker not in "Claude Code v2.1.177  ⏵⏵ bypass permissions on"
+
+
+def test_trust_answer_keys():
+    # Claude's selector defaults to "No, exit" with the trusting option below,
+    # so acceptance is Down then Enter. Sending the retired "1" would confirm
+    # "No, exit" and quit claude.
+    assert ag.trust_answer_keys(ag.CLAUDE) == ("down", "enter")
+    # No auto-answerable gate for droid → empty, so the branch never fires.
+    assert ag.trust_answer_keys(ag.DROID) == ()
+    assert ag.trust_answer_keys("unknown-agent") == ()
 
 
 def _write_dispatch_config(home, agent):

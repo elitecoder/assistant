@@ -2118,8 +2118,12 @@ def dispatch_todo(todo_id: str) -> bool:
     time.sleep(2)
     trust = agent_session.trust_marker(agent)
     if trust and trust in _surface_read_text(surface_ref):
-        _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": "1"})
-        _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+        # Accept with the per-agent key sequence (claude: Down then Enter — its
+        # selector defaults to "No, exit", the trusting option is below it).
+        # Single-sourced in agent_session so this stays in sync with the warm
+        # comms session's answer.
+        for key in agent_session.trust_answer_keys(agent):
+            _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": key})
 
     # 5. Wait for readiness. Match EITHER pre-submission marker so the gate is
     #    independent of `/tui` mode and terminal height:
