@@ -502,10 +502,15 @@ def self_update_pulse(pulse_idx: int) -> None:
         outcome = "failed"
         kind = "self-update-syntax-fail"
         revert = "reverted" if result.get("revert_ok") else "REVERT FAILED"
+        stash_note = ""
+        if result.get("stashed"):
+            # An aged-out dirty tree was auto-stashed before this pull. Keep the
+            # recovery path loud so the operator knows their work is parked.
+            stash_note = "; auto-stashed dirty tree (recover: git stash pop)"
         evidence = (
             f"blocked broken self-update {result.get('from_sha')}.."
             f"{result.get('to_sha')} ({revert} to {result.get('reverted_to')}): "
-            f"{result.get('syntax_error', '')}"
+            f"{result.get('syntax_error', '')}{stash_note}"
         )[:300]
         key = f"self-update-syntax-fail-p{pulse_idx}"
     else:

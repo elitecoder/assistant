@@ -513,6 +513,17 @@ class SyntaxGateTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertNotIn("conflict marker", detail)
 
+    def test_gate_ignores_rst_underline_without_arrows(self):
+        # A bare `=======` line (an RST section underline in a docstring) is
+        # NOT a conflict marker — flagging it would revert a healthy pull.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            (tmp / "bin").mkdir()
+            (tmp / "bin/pulse.py").write_text(
+                '"""Module.\n\nSection\n=======\n\nBody.\n"""\nx = 1\n')
+            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
+            self.assertTrue(ok, detail)
+
     def test_gate_skips_missing_targets(self):
         with TemporaryDirectory() as t:
             tmp = Path(t)

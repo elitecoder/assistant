@@ -43,6 +43,16 @@ def test_committed_wrapper_is_executable_with_shebang():
     assert WRAPPER.read_text().startswith("#!/bin/bash")
 
 
+def test_good_pulse_runs_with_no_extra_args(tmp_path):
+    # The real plist invocation is `run-pulse.sh <python>` with nothing after
+    # it, so exec "$@" runs with an empty $@ under `set -u`. Pin that path.
+    wrapper, home = _make_layout(tmp_path, 'print("RAN")\n')
+    r = _run(wrapper, home, "python3")
+    assert r.returncode == 0
+    assert "RAN" in r.stdout
+    assert not (home / ".assistant/logs/assistant-pulse.launchd.err").exists()
+
+
 def test_good_pulse_runs_and_passes_args(tmp_path):
     wrapper, home = _make_layout(
         tmp_path, 'import sys\nprint("RAN", " ".join(sys.argv[1:]))\n')

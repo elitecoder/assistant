@@ -198,16 +198,25 @@ def should_attempt(marker: dict, now: float, interval_sec: int) -> bool:
 def _scan_conflict_markers(paths: list[Path]) -> str | None:
     """Return "path:line" of the first git conflict marker found, else None.
 
-    Only lines that START with a marker count — a git conflict marker always
-    sits at column 0, so this avoids flagging an incidental `=======` mid-line."""
+    Only column-0 markers count. The `<<<<<<<` / `>>>>>>>` markers are
+    unambiguous — no valid Python or RST starts a line with seven of them. A
+    bare `=======` line is NOT flagged on its own: a 7-char RST section
+    underline in a docstring is legitimate and would otherwise revert a good
+    pull and loop. It counts only when the file also carries an arrow marker,
+    i.e. it is the divider of a real conflict block."""
     for p in paths:
         try:
-            text = p.read_text(errors="replace")
+            lines = p.read_text(errors="replace").splitlines()
         except OSError:
             continue
-        for lineno, line in enumerate(text.splitlines(), 1):
-            if any(line.startswith(m) for m in _CONFLICT_MARKERS):
-                return f"{p}:{lineno}"
+        markers: list[tuple[int, bool]] = []  # (lineno, is_arrow)
+        for lineno, line in enumerate(lines, 1):
+            if line.startswith("<<<<<<<") or line.startswith(">>>>>>>"):
+                markers.append((lineno, True))
+            elif line.startswith("======="):
+                markers.append((lineno, False))
+        if any(is_arrow for _, is_arrow in markers):
+            return f"{p}:{min(lineno for lineno, _ in markers)}"
     return None
 
 
@@ -236,6 +245,8 @@ def syntax_gate(repo: Path, rel_files: tuple[str, ...] = SYNTAX_GATE_FILES) -> t
         )
     except subprocess.TimeoutExpired:
         return False, "py_compile timed out after 60s"
+    except Exception as e:  # noqa: BLE001 — the gate must never raise into the pulse
+        return False, f"py_compile could not run: {e}"[:500]
     if p.returncode != 0:
         return False, (p.stderr or p.stdout).strip()[:500]
     return True, "ok"

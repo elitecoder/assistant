@@ -3,11 +3,17 @@
 #
 # Compile-checks bin/pulse.py before running it. If pulse.py won't parse (a
 # self-update that slipped broken code past its own gate, or any local
-# corruption), this logs the failure and exits 0 so launchd keeps the
-# StartInterval schedule alive. A non-zero exit here would make launchd
-# throttle and eventually stop retrying — exactly the silent months-long
-# outage this guards against. The next self-update (or a manual fix) heals the
-# tree and the following run succeeds.
+# corruption), this logs the reason to the launchd err file and exits 0 instead
+# of running a doomed pulse.
+#
+# The LaunchAgent is StartInterval=300 + RunAtLoad with no KeepAlive, so it
+# fires every 5 minutes regardless of exit code. The 2026 outage wasn't launchd
+# giving up — it was pulse.py raising SyntaxError on every tick, doing no work
+# for months, with the only trace in an err log nobody watches. Exiting 0 on a
+# failed compile keeps that log to one legible line per tick (no repeated crash
+# traceback, no brief crash-respawn throttle). If the broken file is pulse.py
+# ITSELF, self-update (which runs inside pulse.py) can't heal it and recovery is
+# manual — but the wrapper still turns a silent crash into a clear, logged retry.
 #
 # The plist passes the arch-resolved python3 as $1 (install.sh's __PYTHON__
 # substitution); the repo is derived from this script's own location.
