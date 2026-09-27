@@ -14,6 +14,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   parse and carry no leftover merge conflict markers. If a pull brings broken
   code, revert it, log the failure, and record it on the dashboard instead of
   letting the next restart crash on unparseable code.
+- Run the pulse through a pre-flight wrapper (`bin/run-pulse.sh`) that
+  compile-checks `pulse.py` before each launchd start. If the check fails, it
+  logs the reason and exits cleanly so launchd keeps its schedule instead of
+  throttling on a crash-loop.
 - Enforce 100% changed-code coverage with separate Python and real-browser reports.
   Add missing failure-path tests and repeatable mutation checks for key protections.
   Bind reports to measured sources and correctly map multiline Python and JavaScript changes.
