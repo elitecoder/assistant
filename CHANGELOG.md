@@ -37,6 +37,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Pin the clock in the review-topic focus test so it stops failing once its fixture alert is more than 4 days old.
 - Download browser-check dependencies publicly so CI doesn't require Adobe's internal network.
 - Invalidate return notes after completed tool traffic; require review before reusing older notes.
 - Block close-out for unverified terminals, and safely show incomplete question choices.
