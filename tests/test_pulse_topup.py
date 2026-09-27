@@ -243,6 +243,19 @@ def test_self_update_already_refused_commit_is_silent(mod, home):
     assert _read_ledger(home) == []
 
 
+def test_self_update_gate_error_is_recorded(mod, home):
+    _inject_self_update(mod, {"changed": False, "skipped_reason": "gate-error",
+                              "error": "could not read bin/pulse.py at bbbb"})
+    try:
+        mod.self_update_pulse(15)
+    finally:
+        sys.modules.pop("self_update", None)
+    e = _read_ledger(home)[0]
+    assert e["outcome"] == "failed"
+    assert e["kind"] == "self-update"
+    assert e["evidence"] == "self-update gate-error: could not read bin/pulse.py at bbbb"
+
+
 def test_self_update_other_reason_failed(mod, home):
     _inject_self_update(mod, {
         "changed": False, "skipped_reason": "pull-failed",

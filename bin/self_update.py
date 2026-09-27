@@ -19,11 +19,11 @@ location-independent — a user who installed it anywhere, not just
      clocked from the first pulse that observed it dirty) AND an update is
      waiting, in which case the tree is auto-stashed (`git stash push -u`,
      always recoverable via `git stash pop`) and the pull proceeds.
-     Before any stash or pull, every Python file the fetched commits add or
-     change under bin/ or src/ is parsed straight from git. Code that won't
-     parse (conflict markers, a SyntaxError) is refused and never reaches the
-     working tree; that remote commit is remembered and skipped until the
-     remote moves.
+     Before any stash or pull, every runtime file the fetched commits add or
+     change is read straight from git: all are scanned for conflict markers,
+     and Python files are parsed. A broken commit is refused and never reaches
+     the working tree; it's skipped quietly until the remote moves, with a
+     reminder once a day.
   3. If behind: `git merge --ff-only <fetched sha>` — exactly the commit the
      gate checked. Fast-forward only, so a diverged history fails loudly
      rather than merging blindly.
@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -68,10 +69,16 @@ DEFAULT_INTERVAL_SEC = 3600
 DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
 
 # ── Pre-pull syntax gate ─────────────────────────────────────────────────────
-# Runtime Python lives under these directories. The July 2026 incident (commit
-# 17f3862 pulled unresolved conflict markers into bin/pulse.py and the pulse
-# failed every tick for months) is what the gate exists to stop.
-SYNTAX_GATE_DIRS = ("bin/", "src/")
+# Paths the running system loads, runs, or installs from the checkout. Add new
+# runtime paths here. The July 2026 incident (commit 17f3862 pulled unresolved
+# conflict markers into bin/pulse.py and the pulse failed every tick for
+# months) is what the gate exists to stop.
+SYNTAX_GATE_PATHS = ("bin/", "src/", "hooks/", "install/", "prompts/", "skills/",
+                     "launchagents/", "config/", "slack-reactor/", "install.sh",
+                     "install-bootstrap.sh")
+
+# A refused commit is re-checked, and its failure re-recorded, this often.
+REJECT_REMIND_SEC = 86400  # 1 day
 
 
 def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
@@ -217,29 +224,32 @@ def _blob(repo: Path, sha: str, name: str) -> bytes | None:
     return p.stdout if p.returncode == 0 else None
 
 
-def syntax_gate(repo: Path, old_sha: str, new_sha: str) -> tuple[bool, str]:
-    """Check the Python files under SYNTAX_GATE_DIRS that `new_sha` adds or
-    changes relative to `old_sha`: each must parse and carry no conflict
-    markers. Reads committed blobs, never the working tree. Returns
-    (ok, detail); detail names the first failure, or "ok"."""
+def syntax_gate(repo: Path, old_sha: str, new_sha: str) -> tuple[str, str]:
+    """Check the files under SYNTAX_GATE_PATHS that `new_sha` adds or changes
+    relative to `old_sha`: none may carry conflict markers, and Python files
+    must parse. Reads committed blobs, never the working tree.
+
+    Returns (verdict, detail). verdict is "ok", "broken" (a file has conflict
+    markers or won't parse), or "unchecked" (git couldn't list or read the
+    files). detail names the first problem, or "ok"."""
     rc, names, err = _git(repo, "diff", "--name-only", "--diff-filter=ACMR", "-z",
-                          old_sha, new_sha, "--", *SYNTAX_GATE_DIRS)
+                          old_sha, new_sha, "--", *SYNTAX_GATE_PATHS)
     if rc != 0:
-        return False, f"could not list incoming changes: {err}"[:500]
-    for name in names.split("\0"):
-        if not name.endswith(".py"):
-            continue
+        return "unchecked", f"could not list incoming changes: {err}"[:500]
+    for name in filter(None, names.split("\0")):
         source = _blob(repo, new_sha, name)
         if source is None:
-            return False, f"could not read {name} at {new_sha[:12]}"
+            return "unchecked", f"could not read {name} at {new_sha[:12]}"
         marker = _conflict_marker_line(source.decode("utf-8", errors="replace"))
         if marker:
-            return False, f"conflict marker at {name}:{marker}"
+            return "broken", f"conflict marker at {name}:{marker}"
+        if not name.endswith(".py"):
+            continue
         try:
             compile(source, name, "exec", dont_inherit=True)
         except (SyntaxError, ValueError) as exc:
-            return False, f"{name}: {exc}"[:500]
-    return True, "ok"
+            return "broken", f"{name}: {exc}"[:500]
+    return "ok", "ok"
 
 
 def maybe_update(
@@ -323,18 +333,33 @@ def maybe_update(
         _log("already up to date")
         return result
 
+    if status["dirty"] and result["dirty_age_sec"] < dirty_stash_after_sec:
+        age = result["dirty_age_sec"]
+        result["skipped_reason"] = "dirty"
+        _log(f"working tree dirty for {age / 3600.0:.1f}h "
+             f"(< {dirty_stash_after_sec / 3600.0:.0f}h) — refusing to pull "
+             "(surfacing instead)")
+        return result
+
     # Gate the fetched commit before stashing or pulling anything, so broken
-    # code never reaches the working tree. A commit already refused is skipped
-    # quietly (its failure was recorded once) until the remote moves.
+    # code never reaches the working tree. A commit this interpreter already
+    # refused is skipped quietly until the remote moves or a day passes.
     old_head, new_sha = status["head"], status["remote_sha"]
     result["to_sha"] = new_sha[:12]
-    if marker.get("rejected_sha") == new_sha:
+    rejected = f"{new_sha} python{sys.version_info[0]}.{sys.version_info[1]}"
+    if (marker.get("rejected") == rejected
+            and now - marker.get("rejected_ts", 0) < REJECT_REMIND_SEC):
         result["skipped_reason"] = "syntax-fail-known"
         _log(f"{remote}/{branch} is still at refused {new_sha[:12]}; waiting for a fix")
         return result
-    ok, detail = syntax_gate(repo, old_head, new_sha)
-    if not ok:
-        marker["rejected_sha"] = new_sha
+    verdict, detail = syntax_gate(repo, old_head, new_sha)
+    if verdict == "unchecked":
+        result["skipped_reason"] = "gate-error"
+        result["error"] = detail
+        _log(f"could not check {new_sha[:12]}; not updating this time: {detail[:200]}")
+        return result
+    if verdict == "broken":
+        marker["rejected"], marker["rejected_ts"] = rejected, now
         _write_marker(marker_path, marker)
         result["skipped_reason"] = "syntax-fail"
         result["syntax_error"] = detail
@@ -343,12 +368,6 @@ def maybe_update(
 
     if status["dirty"]:
         age = result["dirty_age_sec"]
-        if age < dirty_stash_after_sec:
-            result["skipped_reason"] = "dirty"
-            _log(f"working tree dirty for {age / 3600.0:.1f}h "
-                 f"(< {dirty_stash_after_sec / 3600.0:.0f}h) — refusing to pull "
-                 "(surfacing instead)")
-            return result
         # Dirty past the window AND an update is waiting → stash, then pull.
         # The stash is recoverable (`git stash list` / `git stash pop`); it is
         # never dropped.

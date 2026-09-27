@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -491,7 +492,7 @@ class SyntaxGateTests(unittest.TestCase):
         new_sha = advance_remote(tmp, remote, files, "incoming")
         return clone, old_head, new_sha
 
-    def _gate(self, files: dict[str, str]) -> tuple[bool, str]:
+    def _gate(self, files: dict[str, str]) -> tuple[str, str]:
         with TemporaryDirectory() as t:
             clone, old_head, new_sha = self._bad_remote(Path(t), files)
             git(clone, "fetch", "origin", "main")
@@ -511,18 +512,25 @@ class SyntaxGateTests(unittest.TestCase):
             self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
             self.assertEqual(git(clone, "reflog"), reflog)  # no merge, no reset
             self.assertEqual((clone / "bin/pulse.py").read_text(), "# pulse\n")
-            self.assertEqual(json.loads((tmp / "m.json").read_text())["rejected_sha"], new_sha)
+            self.assertEqual(json.loads((tmp / "m.json").read_text())["rejected"],
+                             f"{new_sha} python{sys.version_info[0]}.{sys.version_info[1]}")
 
-    def test_broken_src_module_is_refused(self):
-        with TemporaryDirectory() as t:
-            tmp = Path(t)
-            clone, old_head, _ = self._bad_remote(
-                tmp, {"src/assistant/model_tiers.py": "def broken(:\n"})
-            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
-            self.assertEqual(r["skipped_reason"], "syntax-fail")
-            self.assertTrue(r["syntax_error"].startswith("src/assistant/model_tiers.py: "))
-            self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
-            self.assertFalse((clone / "src").exists())
+    def test_broken_runtime_python_outside_bin_is_refused(self):
+        for rel in ("src/assistant/model_tiers.py", "hooks/cmux-session-ledger.py",
+                    "install/patch-settings.py"):
+            with self.subTest(rel=rel), TemporaryDirectory() as t:
+                tmp = Path(t)
+                clone, old_head, _ = self._bad_remote(tmp, {rel: "def broken(:\n"})
+                r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+                self.assertEqual(r["skipped_reason"], "syntax-fail")
+                self.assertTrue(r["syntax_error"].startswith(f"{rel}: "))
+                self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
+                self.assertFalse((clone / rel).exists())
+
+    def test_conflict_markers_in_runtime_non_python_files_are_refused(self):
+        verdict, detail = self._gate({"install.sh": "<<<<<<< HEAD\necho a\n=======\necho b\n"})
+        self.assertEqual(verdict, "broken")
+        self.assertEqual(detail, "conflict marker at install.sh:1")
 
     def test_refused_commit_is_skipped_until_the_remote_moves(self):
         with TemporaryDirectory() as t:
@@ -536,11 +544,48 @@ class SyntaxGateTests(unittest.TestCase):
                 r = su.maybe_update(clone, interval_sec=0, marker_path=marker)
             gate.assert_not_called()
             self.assertEqual(r["skipped_reason"], "syntax-fail-known")
+            self.assertEqual(r["to_sha"], git(clone, "rev-parse", "origin/main")[:12])
             fixed = advance_remote(tmp, remote, {"bin/pulse.py": "fixed = True\n"}, "fix")
             r = su.maybe_update(clone, interval_sec=0, marker_path=marker)
             self.assertTrue(r["changed"])
             self.assertEqual(git(clone, "rev-parse", "HEAD"), fixed)
             self.assertEqual((clone / "bin/pulse.py").read_text(), "fixed = True\n")
+
+    def test_refused_commit_is_recorded_again_after_a_day(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _, _ = self._bad_remote(tmp, {"bin/pulse.py": "def broken(:\n"})
+            marker = tmp / "m.json"
+            runs = [su.maybe_update(clone, interval_sec=0, marker_path=marker, now=when)
+                    ["skipped_reason"] for when in (1000.0, 1000.0 + 3600, 1000.0 + 86400)]
+            self.assertEqual(runs, ["syntax-fail", "syntax-fail-known", "syntax-fail"])
+            self.assertEqual(json.loads(marker.read_text())["rejected_ts"], 1000.0 + 86400)
+
+    def test_refusal_by_another_python_is_checked_again(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _, new_sha = self._bad_remote(tmp, {"bin/pulse.py": "def broken(:\n"})
+            marker = tmp / "m.json"
+            su.maybe_update(clone, interval_sec=0, marker_path=marker, now=1000.0)
+            saved = json.loads(marker.read_text())
+            marker.write_text(json.dumps({**saved, "rejected": f"{new_sha} python3.0"}))
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker, now=1001.0)
+            self.assertEqual(r["skipped_reason"], "syntax-fail")
+
+    def test_git_trouble_during_the_check_is_not_remembered(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _, new_sha = self._bad_remote(tmp, {"bin/pulse.py": "ok = 1\n"})
+            marker = tmp / "m.json"
+            with unittest.mock.patch.object(su, "syntax_gate",
+                                            return_value=("unchecked", "git timed out")):
+                r = su.maybe_update(clone, interval_sec=0, marker_path=marker)
+            self.assertEqual(r["skipped_reason"], "gate-error")
+            self.assertEqual(r["error"], "git timed out")
+            self.assertNotIn("rejected", json.loads(marker.read_text()))
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker)
+            self.assertTrue(r["changed"])
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), new_sha)
 
     def test_dirty_tree_past_window_is_not_stashed_for_a_refused_update(self):
         with TemporaryDirectory() as t:
@@ -552,8 +597,8 @@ class SyntaxGateTests(unittest.TestCase):
                                     dirty_stash_after_sec=86400, now=1000.0)
             later = su.maybe_update(clone, interval_sec=0, marker_path=marker,
                                     dirty_stash_after_sec=86400, now=1000.0 + 25 * 3600)
-            self.assertEqual(first["skipped_reason"], "syntax-fail")
-            self.assertEqual(later["skipped_reason"], "syntax-fail-known")
+            self.assertEqual(first["skipped_reason"], "dirty")
+            self.assertEqual(later["skipped_reason"], "syntax-fail")
             self.assertNotIn("stashed", later)
             self.assertEqual(git(clone, "stash", "list"), "")
             self.assertEqual((clone / "install.sh").read_text(), "# operator edit\n")
@@ -565,6 +610,8 @@ class SyntaxGateTests(unittest.TestCase):
                 "bin/pulse.py": '"""Pulse.\n\nSection\n=======\n"""\nok = True\n',
                 "tests/test_scratch.py": "def broken(:\n",
                 "docs/merging.md": "<<<<<<< HEAD\n=======\n>>>>>>> x\n",
+                "prompts/observer.md": "Heading\n=======\n",
+                "skills/logo.bin": "\x00\x01binary",
             })
             r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
             self.assertTrue(r["changed"])
@@ -572,8 +619,8 @@ class SyntaxGateTests(unittest.TestCase):
             self.assertEqual(git(clone, "rev-parse", "HEAD"), new_sha)
 
     def test_marker_inside_a_string_is_flagged_even_though_it_compiles(self):
-        ok, detail = self._gate({"bin/pulse.py": 'X = """\n>>>>>>> theirs\n"""\n'})
-        self.assertFalse(ok)
+        verdict, detail = self._gate({"bin/pulse.py": 'X = """\n>>>>>>> theirs\n"""\n'})
+        self.assertEqual(verdict, "broken")
         self.assertEqual(detail, "conflict marker at bin/pulse.py:2")
 
     def test_marker_line_ignores_rst_underline_alone(self):
@@ -583,8 +630,8 @@ class SyntaxGateTests(unittest.TestCase):
     def test_unreadable_diff_is_refused(self):
         with TemporaryDirectory() as t:
             clone, _ = make_repos(Path(t))
-            ok, detail = su.syntax_gate(clone, "0" * 40, "HEAD")
-            self.assertFalse(ok)
+            verdict, detail = su.syntax_gate(clone, "0" * 40, "HEAD")
+            self.assertEqual(verdict, "unchecked")
             self.assertTrue(detail.startswith("could not list incoming changes: "))
 
     def test_unreadable_blob_is_refused(self):
@@ -599,8 +646,8 @@ class SyntaxGateTests(unittest.TestCase):
                 return real_run(cmd, **kwargs)
 
             with unittest.mock.patch.object(su.subprocess, "run", run):
-                ok, detail = su.syntax_gate(clone, old_head, new_sha)
-            self.assertFalse(ok)
+                verdict, detail = su.syntax_gate(clone, old_head, new_sha)
+            self.assertEqual(verdict, "unchecked")
             self.assertEqual(detail, f"could not read bin/new.py at {new_sha[:12]}")
 
     def test_blob_missing_from_commit_reads_as_none(self):

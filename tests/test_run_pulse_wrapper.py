@@ -28,14 +28,10 @@ def _load():
     return mod
 
 
-def _layout(tmp: Path, pulse_body: str, src_files: dict[str, str] | None = None) -> Path:
+def _layout(tmp: Path, pulse_body: str) -> Path:
     (tmp / "bin").mkdir()
     shutil.copy2(WRAPPER, tmp / "bin/run-pulse.py")
     (tmp / "bin/pulse.py").write_text(pulse_body)
-    for rel, body in (src_files or {}).items():
-        path = tmp / "src" / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body)
     return tmp / "bin/run-pulse.py"
 
 
@@ -51,8 +47,7 @@ def test_broken_pulse_skips_the_run_and_logs(tmp_path, capsys):
     _layout(tmp_path, "def broken(:\n    pass\n")
     mod = _load()
     calls = []
-    with mock.patch.object(mod, "PULSE", tmp_path / "bin/pulse.py"), \
-            mock.patch.object(mod, "SRC", tmp_path / "src"):
+    with mock.patch.object(mod, "PULSE", tmp_path / "bin/pulse.py"):
         assert mod.main([], execv=lambda *a: calls.append(a)) == 0
     assert calls == []
     err = capsys.readouterr().err
@@ -60,16 +55,16 @@ def test_broken_pulse_skips_the_run_and_logs(tmp_path, capsys):
     assert f"{tmp_path / 'bin/pulse.py'}: SyntaxError" in err
 
 
-def test_broken_src_module_skips_the_run(tmp_path, capsys):
-    _layout(tmp_path, "x = 1\n", {"assistant/__init__.py": "",
-                                  "assistant/model_tiers.py": "x = 1\n<<<<<<< HEAD\n"})
-    mod = _load()
-    calls = []
-    with mock.patch.object(mod, "PULSE", tmp_path / "bin/pulse.py"), \
-            mock.patch.object(mod, "SRC", tmp_path / "src"):
-        assert mod.main([], execv=lambda *a: calls.append(a)) == 0
-    assert calls == []
-    assert "assistant/model_tiers.py: SyntaxError" in capsys.readouterr().err
+def test_broken_src_module_does_not_block_the_pulse(tmp_path):
+    # The pulse guards its optional imports itself; an unrelated broken module
+    # must not stop every run.
+    wrapper = _layout(tmp_path, 'print("RAN")\n')
+    (tmp_path / "src/assistant").mkdir(parents=True)
+    (tmp_path / "src/assistant/narrator.py").write_text("def broken(:\n")
+    r = subprocess.run([sys.executable, str(wrapper)], capture_output=True, text=True,
+                       timeout=60)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "RAN"
 
 
 def test_script_entry_point_execs_pulse():
@@ -84,8 +79,7 @@ def test_script_entry_point_execs_pulse():
 
 
 def test_real_exec_runs_pulse_and_passes_args(tmp_path):
-    wrapper = _layout(tmp_path, 'import sys\nprint("RAN", " ".join(sys.argv[1:]))\n',
-                      {"assistant/__init__.py": ""})
+    wrapper = _layout(tmp_path, 'import sys\nprint("RAN", " ".join(sys.argv[1:]))\n')
     r = subprocess.run([sys.executable, str(wrapper), "--pulse-idx", "5"],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0

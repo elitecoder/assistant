@@ -10,17 +10,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
-- Check every self-update before it lands: parse each Python file under `bin/`
-  and `src/` that the fetched commits add or change, straight from git. If any
-  file has leftover merge conflict markers or won't parse, refuse the update
-  before anything is stashed or merged, record the failure on the dashboard
-  once, and skip that commit until the remote moves. Updates now fast-forward
-  to exactly the commit that was checked.
+- Check every self-update before it lands: read each runtime file the fetched
+  commits add or change straight from git, scan it for leftover merge conflict
+  markers, and parse it if it's Python. If a file fails, refuse the update
+  before anything is stashed or merged, and record the failure on the
+  dashboard. Skip that commit quietly until the remote moves, with a reminder
+  once a day. Updates now fast-forward to exactly the commit that was checked.
 - Run the pulse through a pre-flight (`bin/run-pulse.py`) that parses `pulse.py`
-  and the `src/` package before each start. If either won't parse, it logs one
-  line to the pulse's launchd error log and exits cleanly instead of crashing.
-  New installs get this right away; existing machines pick it up on the next
-  reinstall or reboot, since the pulse's own LaunchAgent reload is deferred.
+  before each start. If it won't parse, the pre-flight logs one line to the
+  pulse's launchd error log and exits cleanly instead of crashing. New installs
+  get this right away. Existing machines pick it up after a reboot, a logout, or
+  a manual reload of the pulse LaunchAgent, since self-update defers that reload.
 - Enforce 100% changed-code coverage with separate Python and real-browser reports.
   Add missing failure-path tests and repeatable mutation checks for key protections.
   Bind reports to measured sources and correctly map multiline Python and JavaScript changes.
