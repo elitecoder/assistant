@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -60,6 +61,22 @@ DEFAULT_INTERVAL_SEC = 3600
 # so we err toward waiting longer. The stash is always recoverable
 # (`git stash list` / `git stash pop`); it is never dropped or discarded.
 DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
+
+# ── Post-pull syntax gate ────────────────────────────────────────────────────
+# The files a bad pull most commonly corrupts and which MUST parse for the
+# pulse to restart at all. After every pull that changed something, each of
+# these is compiled out-of-process and scanned for git conflict markers; a
+# failure reverts the pull rather than letting the next launchd restart
+# crash-loop on unparseable code (the July 2026 incident: commit 17f3862
+# pulled unresolved conflict markers into bin/pulse.py and the pulse silently
+# throttled for months).
+SYNTAX_GATE_FILES = ("bin/pulse.py", "bin/agent_session.py", "bin/todo-server.py")
+
+# Git writes these at column 0 in an unresolved merge. A committed marker makes
+# a .py file a SyntaxError, so py_compile already catches most of them — but we
+# scan explicitly too, since a marker inside a string or docstring can slip past
+# the compiler yet still corrupt behavior.
+_CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
 
 
 def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
@@ -176,6 +193,52 @@ def should_attempt(marker: dict, now: float, interval_sec: int) -> bool:
     if not last:
         return True
     return (now - last) >= interval_sec
+
+
+def _scan_conflict_markers(paths: list[Path]) -> str | None:
+    """Return "path:line" of the first git conflict marker found, else None.
+
+    Only lines that START with a marker count — a git conflict marker always
+    sits at column 0, so this avoids flagging an incidental `=======` mid-line."""
+    for p in paths:
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if any(line.startswith(m) for m in _CONFLICT_MARKERS):
+                return f"{p}:{lineno}"
+    return None
+
+
+def syntax_gate(repo: Path, rel_files: tuple[str, ...] = SYNTAX_GATE_FILES) -> tuple[bool, str]:
+    """Verify the given repo-relative files parse and carry no conflict markers.
+
+    Returns (ok, detail). Scans for conflict markers first (cheap, and catches
+    a marker even inside a string that would still compile), then compiles the
+    existing targets out-of-process with `python -m py_compile` — a true parse
+    by a fresh interpreter, the same way a launchd restart loads them. Missing
+    targets are skipped (a checkout may not ship every file). `detail` names
+    the first failure, or "ok"."""
+    paths = [repo / rel for rel in rel_files if (repo / rel).is_file()]
+
+    marker_hit = _scan_conflict_markers(paths)
+    if marker_hit:
+        return False, f"conflict marker at {marker_hit}"
+
+    if not paths:
+        return True, "ok (no target files present)"
+
+    try:
+        p = subprocess.run(
+            [sys.executable, "-m", "py_compile", *[str(x) for x in paths]],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "py_compile timed out after 60s"
+    if p.returncode != 0:
+        return False, (p.stderr or p.stdout).strip()[:500]
+    return True, "ok"
 
 
 def maybe_update(
@@ -297,6 +360,26 @@ def maybe_update(
     result["changed"] = new_head != old_head
     result["to_sha"] = new_head[:12]
     if not result["changed"]:
+        return result
+
+    # Post-pull syntax gate. If the pull brought code that won't parse (conflict
+    # markers or a SyntaxError), revert it now rather than let the next launchd
+    # restart crash-loop on it. Resetting to the pre-pull SHA is safe here: the
+    # pull was fast-forward-only over a tree we verified clean and zero commits
+    # ahead, so every reverted commit is a REMOTE commit — never operator work.
+    ok, detail = syntax_gate(repo)
+    if not ok:
+        rc, _, rerr = _git(repo, "reset", "--hard", old_head)
+        result["changed"] = False
+        result["skipped_reason"] = "syntax-fail"
+        result["syntax_error"] = detail[:500]
+        result["reverted_to"] = old_head[:12]
+        result["revert_ok"] = rc == 0
+        if rc != 0:
+            result["error"] = f"revert failed after syntax gate: {rerr}"[:300]
+        _log(f"post-pull syntax gate FAILED — reverted {new_head[:12]} → "
+             f"{old_head[:12]} ({'ok' if rc == 0 else 'REVERT FAILED'}): "
+             f"{detail[:200]}")
         return result
 
     rc, files_out, _ = _git(repo, "diff", "--name-only", f"{old_head}..{new_head}")

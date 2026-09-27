@@ -461,6 +461,7 @@ def self_update_pulse(pulse_idx: int) -> None:
     if not changed and reason is None and not result.get("error"):
         return
 
+    kind = "self-update"
     if changed:
         files = result.get("files_changed", [])
         installed = result.get("installed")
@@ -495,6 +496,18 @@ def self_update_pulse(pulse_idx: int) -> None:
         outcome = "failed"
         evidence = f"self-update auto-stash failed: {result.get('error', '')}"[:300]
         key = f"self-update-stash-failed-p{pulse_idx}"
+    elif reason == "syntax-fail":
+        # The pull brought unparseable code (conflict markers or a SyntaxError);
+        # self_update reverted it so the pulse won't crash-loop. Surface loudly.
+        outcome = "failed"
+        kind = "self-update-syntax-fail"
+        revert = "reverted" if result.get("revert_ok") else "REVERT FAILED"
+        evidence = (
+            f"blocked broken self-update {result.get('from_sha')}.."
+            f"{result.get('to_sha')} ({revert} to {result.get('reverted_to')}): "
+            f"{result.get('syntax_error', '')}"
+        )[:300]
+        key = f"self-update-syntax-fail-p{pulse_idx}"
     else:
         outcome = "failed"
         evidence = f"self-update {reason or 'error'}: {result.get('error', '')}"[:300]
@@ -505,7 +518,7 @@ def self_update_pulse(pulse_idx: int) -> None:
         "epoch": utc_ts(),
         "pulse_idx": pulse_idx,
         "key": key,
-        "kind": "self-update",
+        "kind": kind,
         "ws_ref": "(launchd)",
         "outcome": outcome,
         "evidence": evidence,

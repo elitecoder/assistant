@@ -216,6 +216,44 @@ def test_self_update_reason_stash_failed(mod, home):
     assert e["key"] == "self-update-stash-failed-p9"
 
 
+def test_self_update_reason_syntax_fail(mod, home):
+    _inject_self_update(mod, {
+        "changed": False, "skipped_reason": "syntax-fail",
+        "from_sha": "aaaaaaaaaaaa", "to_sha": "bbbbbbbbbbbb",
+        "reverted_to": "aaaaaaaaaaaa", "revert_ok": True,
+        "syntax_error": "conflict marker at bin/pulse.py:42",
+    })
+    try:
+        mod.self_update_pulse(13)
+    finally:
+        sys.modules.pop("self_update", None)
+    e = _read_ledger(home)[0]
+    assert e["outcome"] == "failed"
+    assert e["kind"] == "self-update-syntax-fail"
+    assert e["key"] == "self-update-syntax-fail-p13"
+    assert "blocked broken self-update aaaaaaaaaaaa..bbbbbbbbbbbb" in e["evidence"]
+    assert "reverted to aaaaaaaaaaaa" in e["evidence"]
+    assert "conflict marker at bin/pulse.py:42" in e["evidence"]
+
+
+def test_self_update_syntax_fail_revert_failed_note(mod, home):
+    _inject_self_update(mod, {
+        "changed": False, "skipped_reason": "syntax-fail",
+        "from_sha": "aaaa", "to_sha": "bbbb",
+        "reverted_to": "aaaa", "revert_ok": False,
+        "syntax_error": "SyntaxError: invalid syntax",
+        "error": "revert failed after syntax gate: detached",
+    })
+    try:
+        mod.self_update_pulse(14)
+    finally:
+        sys.modules.pop("self_update", None)
+    e = _read_ledger(home)[0]
+    assert e["outcome"] == "failed"
+    assert e["kind"] == "self-update-syntax-fail"
+    assert "REVERT FAILED" in e["evidence"]
+
+
 def test_self_update_other_reason_failed(mod, home):
     _inject_self_update(mod, {
         "changed": False, "skipped_reason": "pull-failed",

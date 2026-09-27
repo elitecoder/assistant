@@ -480,6 +480,91 @@ class MaybeUpdateTests(unittest.TestCase):
         self.assertIn("no git binary", err)
 
 
+class SyntaxGateTests(unittest.TestCase):
+    """The post-pull gate: a pull that brings unparseable code (conflict
+    markers or a SyntaxError) is reverted, not applied — so the pulse can never
+    crash-loop on it the way it did in July 2026."""
+
+    def test_gate_passes_clean_file(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            (tmp / "bin").mkdir()
+            (tmp / "bin/pulse.py").write_text("x = 1\n")
+            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
+            self.assertTrue(ok, detail)
+
+    def test_gate_flags_conflict_marker(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            (tmp / "bin").mkdir()
+            (tmp / "bin/pulse.py").write_text(
+                "x = 1\n<<<<<<< HEAD\ny = 2\n=======\ny = 3\n>>>>>>> other\n")
+            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
+            self.assertFalse(ok)
+            self.assertIn("conflict marker at", detail)
+            self.assertIn("bin/pulse.py:2", detail)
+
+    def test_gate_flags_syntax_error_without_markers(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            (tmp / "bin").mkdir()
+            (tmp / "bin/pulse.py").write_text("def broken(:\n    pass\n")
+            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
+            self.assertFalse(ok)
+            self.assertNotIn("conflict marker", detail)
+
+    def test_gate_skips_missing_targets(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py", "bin/absent.py"))
+            self.assertTrue(ok)
+
+    def test_pull_with_conflict_marker_is_reverted(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            old_head = git(clone, "rev-parse", "HEAD")
+            advance_remote(
+                tmp, remote,
+                {"bin/pulse.py": "# pulse\n<<<<<<< HEAD\na = 1\n=======\na = 2\n>>>>>>> x\n"},
+                "bad merge with markers")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertEqual(r["skipped_reason"], "syntax-fail")
+            self.assertFalse(r["changed"])
+            self.assertTrue(r["revert_ok"])
+            self.assertIn("conflict marker", r["syntax_error"])
+            # The bad commit was reverted: HEAD is back where it started and the
+            # working file is the pre-pull content, with no markers.
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
+            self.assertNotIn("<<<<<<<", (clone / "bin/pulse.py").read_text())
+            self.assertEqual(git(clone, "status", "--porcelain"), "")
+
+    def test_pull_with_syntax_error_is_reverted(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            old_head = git(clone, "rev-parse", "HEAD")
+            advance_remote(tmp, remote, {"bin/pulse.py": "def broken(:\n"},
+                           "syntax error, no markers")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertEqual(r["skipped_reason"], "syntax-fail")
+            self.assertFalse(r["changed"])
+            self.assertTrue(r["revert_ok"])
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
+
+    def test_pull_with_valid_code_still_applies(self):
+        # The gate is transparent to a healthy pull.
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            advance_remote(tmp, remote, {"bin/pulse.py": "# pulse v2\nok = True\n"},
+                           "clean change")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertTrue(r["changed"])
+            self.assertIsNone(r["skipped_reason"])
+            self.assertIn("ok = True", (clone / "bin/pulse.py").read_text())
+
+
 class ResolveRemoteBranchTests(unittest.TestCase):
     def test_detached_head_returns_none(self):
         """When HEAD is detached, resolve_remote_branch returns None."""

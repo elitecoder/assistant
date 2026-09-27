@@ -10,6 +10,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Gate every self-update pull: after a pull, check that the core pulse files
+  parse and carry no leftover merge conflict markers. If a pull brings broken
+  code, revert it, log the failure, and record it on the dashboard instead of
+  letting the next restart crash on unparseable code.
 - Enforce 100% changed-code coverage with separate Python and real-browser reports.
   Add missing failure-path tests and repeatable mutation checks for key protections.
   Bind reports to measured sources and correctly map multiline Python and JavaScript changes.
