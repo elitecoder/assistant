@@ -2254,6 +2254,18 @@ def render_fleet_tab():
     return f'<div class="fleet-board">{"".join(col_html)}</div>', total
 
 
+def _preflight_failure_since(last_pulse_ts: int) -> str | None:
+    """The error bin/run-pulse.py recorded when it last refused to start the
+    pulse, if no pulse has run since. None when there's nothing to show."""
+    try:
+        record = json.loads((HOME / ".assistant/pulse-preflight.json").read_text())
+        if float(record["failed_at"]) > last_pulse_ts:
+            return str(record["error"])
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
 def render_pulse_health() -> str:
     """One-line banner showing whether the assistant-pulse cron is alive.
     Reads ~/.assistant/heartbeat.json and color-codes by age:
@@ -2291,6 +2303,14 @@ def render_pulse_health() -> str:
     else:
         cls = "pulse-bad"
         msg = "Pulse stale — orchestrator may be down"
+    # Without data-pulse-at, the page script leaves the failure text in place
+    # instead of replacing it with an age-based status.
+    pulse_at = f' data-pulse-at="{last_ts}"'
+    failure = _preflight_failure_since(last_ts)
+    if failure is not None:
+        cls = "pulse-bad"
+        msg = f"Pulse can't start: {e(failure[:200])}"
+        pulse_at = ""
     if age_sec < 60:
         age_str = f"{age_sec}s"
     elif age_sec < 3600:
@@ -2302,7 +2322,7 @@ def render_pulse_health() -> str:
     pulse_idx = hb.get("pulse_idx", "?")
     model = hb.get("model", "?")
     return (
-        f'<div class="pulse-health {cls}" data-pulse-at="{last_ts}">'
+        f'<div class="pulse-health {cls}"{pulse_at}>'
         f'<span class="pulse-dot"></span>'
         f'<span class="pulse-text">{msg}</span>'
         f'<span class="pulse-meta">last pulse {age_str} ago · #{pulse_idx} · {e(str(model))}</span>'

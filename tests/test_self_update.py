@@ -609,7 +609,7 @@ class SyntaxGateTests(unittest.TestCase):
             clone, _, new_sha = self._bad_remote(tmp, {
                 "bin/pulse.py": '"""Pulse.\n\nSection\n=======\n"""\nok = True\n',
                 "tests/test_scratch.py": "def broken(:\n",
-                "docs/merging.md": "<<<<<<< HEAD\n=======\n>>>>>>> x\n",
+                "README.md": "<<<<<<< HEAD\n=======\n>>>>>>> x\n",
                 "prompts/observer.md": "Heading\n=======\n",
                 "skills/logo.bin": "\x00\x01binary",
             })
@@ -617,6 +617,23 @@ class SyntaxGateTests(unittest.TestCase):
             self.assertTrue(r["changed"])
             self.assertIsNone(r["skipped_reason"])
             self.assertEqual(git(clone, "rev-parse", "HEAD"), new_sha)
+
+    def test_symlinked_python_file_is_not_compiled_as_its_link_text(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            old_head = git(clone, "rev-parse", "HEAD")
+            scratch = tmp / "scratch-link"
+            git(tmp, "clone", str(remote), str(scratch))
+            git(scratch, "config", "user.email", "t@t")
+            git(scratch, "config", "user.name", "t")
+            (scratch / "bin/alias.py").symlink_to("../bin/pulse.py")
+            git(scratch, "add", "-A")
+            git(scratch, "commit", "-m", "add symlink")
+            git(scratch, "push", "origin", "main")
+            git(clone, "fetch", "origin", "main")
+            verdict, detail = su.syntax_gate(clone, old_head, git(scratch, "rev-parse", "HEAD"))
+            self.assertEqual((verdict, detail), ("ok", "ok"))
 
     def test_marker_inside_a_string_is_flagged_even_though_it_compiles(self):
         verdict, detail = self._gate({"bin/pulse.py": 'X = """\n>>>>>>> theirs\n"""\n'})

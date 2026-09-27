@@ -6,8 +6,11 @@ the real file next to a stub pulse and let it exec for real.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
+import json
 import os
+import plistlib
 import runpy
 import shutil
 import subprocess
@@ -28,10 +31,13 @@ def _load():
     return mod
 
 
-def _layout(tmp: Path, pulse_body: str) -> Path:
+def _layout(tmp: Path, pulse_body: str, model_tiers: str = "TIERS = {}\n") -> Path:
     (tmp / "bin").mkdir()
     shutil.copy2(WRAPPER, tmp / "bin/run-pulse.py")
     (tmp / "bin/pulse.py").write_text(pulse_body)
+    (tmp / "src/assistant").mkdir(parents=True)
+    (tmp / "src/assistant/__init__.py").write_text("")
+    (tmp / "src/assistant/model_tiers.py").write_text(model_tiers)
     return tmp / "bin/run-pulse.py"
 
 
@@ -43,28 +49,49 @@ def test_healthy_checkout_execs_pulse_with_same_interpreter_and_args():
                                        "--pulse-idx", "5"])]
 
 
-def test_broken_pulse_skips_the_run_and_logs(tmp_path, capsys):
+def test_broken_pulse_skips_the_run_and_records_why(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _layout(tmp_path, "def broken(:\n    pass\n")
     mod = _load()
     calls = []
-    with mock.patch.object(mod, "PULSE", tmp_path / "bin/pulse.py"):
+    with mock.patch.object(mod, "STARTUP_FILES", (tmp_path / "bin/pulse.py",)):
         assert mod.main([], execv=lambda *a: calls.append(a)) == 0
     assert calls == []
     err = capsys.readouterr().err
     assert "pulse pre-flight FAILED, skipping this run" in err
     assert f"{tmp_path / 'bin/pulse.py'}: SyntaxError" in err
+    record = json.loads((tmp_path / "home/.assistant/pulse-preflight.json").read_text())
+    assert record["error"].startswith(f"{tmp_path / 'bin/pulse.py'}: SyntaxError")
+    assert isinstance(record["failed_at"], float)
 
 
-def test_broken_src_module_does_not_block_the_pulse(tmp_path):
-    # The pulse guards its optional imports itself; an unrelated broken module
+def test_broken_startup_import_skips_the_run(tmp_path):
+    wrapper = _layout(tmp_path, 'print("RAN")\n', model_tiers="x = 1\n<<<<<<< HEAD\n")
+    r = subprocess.run([sys.executable, str(wrapper)], capture_output=True, text=True,
+                       timeout=60, env=dict(os.environ, HOME=str(tmp_path / "home")))
+    assert r.returncode == 0
+    assert r.stdout == ""
+    assert "src/assistant/model_tiers.py: SyntaxError" in r.stderr
+
+
+def test_broken_later_module_does_not_block_the_pulse(tmp_path):
+    # The pulse guards the modules it loads later; an unrelated broken module
     # must not stop every run.
     wrapper = _layout(tmp_path, 'print("RAN")\n')
-    (tmp_path / "src/assistant").mkdir(parents=True)
     (tmp_path / "src/assistant/narrator.py").write_text("def broken(:\n")
     r = subprocess.run([sys.executable, str(wrapper)], capture_output=True, text=True,
-                       timeout=60)
+                       timeout=60, env=dict(os.environ, HOME=str(tmp_path / "home")))
     assert r.returncode == 0
     assert r.stdout.strip() == "RAN"
+
+
+def test_startup_files_match_pulse_module_level_imports():
+    tree = ast.parse((REPO / "bin/pulse.py").read_text())
+    imported = {f"src/assistant/{alias.name}.py" for node in tree.body
+                if isinstance(node, ast.ImportFrom) and node.module == "assistant"
+                for alias in node.names}
+    listed = {str(path.relative_to(REPO)) for path in _load().STARTUP_FILES}
+    assert imported | {"bin/pulse.py", "src/assistant/__init__.py"} == listed
 
 
 def test_script_entry_point_execs_pulse():
@@ -81,7 +108,8 @@ def test_script_entry_point_execs_pulse():
 def test_real_exec_runs_pulse_and_passes_args(tmp_path):
     wrapper = _layout(tmp_path, 'import sys\nprint("RAN", " ".join(sys.argv[1:]))\n')
     r = subprocess.run([sys.executable, str(wrapper), "--pulse-idx", "5"],
-                       capture_output=True, text=True, timeout=60)
+                       capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, HOME=str(tmp_path / "home")))
     assert r.returncode == 0
     assert r.stdout.strip() == "RAN --pulse-idx 5"
     assert r.stderr == ""
@@ -90,7 +118,14 @@ def test_real_exec_runs_pulse_and_passes_args(tmp_path):
 def test_real_run_with_broken_pulse_exits_zero(tmp_path):
     wrapper = _layout(tmp_path, "def broken(:\n")
     r = subprocess.run([sys.executable, str(wrapper)],
-                       capture_output=True, text=True, timeout=60)
+                       capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, HOME=str(tmp_path / "home")))
     assert r.returncode == 0
     assert r.stdout == ""
     assert "pulse pre-flight FAILED" in r.stderr
+
+
+def test_pulse_launch_agent_runs_the_preflight():
+    plist = plistlib.loads((REPO / "launchagents/com.assistant.assistant-pulse.plist")
+                           .read_bytes())
+    assert plist["ProgramArguments"] == ["__PYTHON__", "__REPO__/bin/run-pulse.py"]

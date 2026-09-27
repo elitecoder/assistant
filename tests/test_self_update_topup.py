@@ -91,7 +91,7 @@ def test_maybe_update_stash_failed(tmp_path):
                 "dirty": True, "behind": 1, "ahead": 0}):
             with mock.patch.object(su, "_stash_dirty",
                                    return_value=(False, "fatal: stash conflict")), \
-                    mock.patch.object(su, "syntax_gate", return_value=(True, "ok")):
+                    mock.patch.object(su, "syntax_gate", return_value=("ok", "ok")):
                 # First pass stamps dirty_since at t=1000.
                 su.maybe_update(tmp_path, interval_sec=0, marker_path=marker,
                                 dirty_stash_after_sec=86400, now=1000.0)

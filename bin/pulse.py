@@ -458,7 +458,7 @@ def self_update_pulse(pulse_idx: int) -> None:
     reason = result.get("skipped_reason")
     changed = result.get("changed")
     # Silent path: attempted, nothing to do, no problem — or a refused commit
-    # whose failure was already recorded when it was first refused.
+    # whose failure was recorded in the last day.
     if not changed and reason in (None, "syntax-fail-known") and not result.get("error"):
         return
 
@@ -498,12 +498,13 @@ def self_update_pulse(pulse_idx: int) -> None:
         evidence = f"self-update auto-stash failed: {result.get('error', '')}"[:300]
         key = f"self-update-stash-failed-p{pulse_idx}"
     elif reason == "syntax-fail":
-        # The fetched commits carry Python that won't parse; self_update refused
-        # them before touching the working tree.
+        # A fetched file has conflict markers or Python that won't parse;
+        # self_update refused the commits before touching the working tree.
         outcome = "failed"
         kind = "self-update-syntax-fail"
         evidence = (f"refused self-update {result.get('from_sha')}.."
-                    f"{result.get('to_sha')}: {result.get('syntax_error', '')}")[:300]
+                    f"{result.get('to_sha')} (pull by hand if this is wrong): "
+                    f"{result.get('syntax_error', '')}")[:300]
         key = f"self-update-syntax-fail-p{pulse_idx}"
     else:
         outcome = "failed"

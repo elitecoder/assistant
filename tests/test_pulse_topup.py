@@ -230,7 +230,8 @@ def test_self_update_reason_syntax_fail(mod, home):
     assert e["outcome"] == "failed"
     assert e["kind"] == "self-update-syntax-fail"
     assert e["key"] == "self-update-syntax-fail-p13"
-    assert e["evidence"] == ("refused self-update aaaaaaaaaaaa..bbbbbbbbbbbb: "
+    assert e["evidence"] == ("refused self-update aaaaaaaaaaaa..bbbbbbbbbbbb "
+                             "(pull by hand if this is wrong): "
                              "conflict marker at bin/pulse.py:42")
 
 

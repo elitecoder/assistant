@@ -70,12 +70,12 @@ DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
 
 # ── Pre-pull syntax gate ─────────────────────────────────────────────────────
 # Paths the running system loads, runs, or installs from the checkout. Add new
-# runtime paths here. The July 2026 incident (commit 17f3862 pulled unresolved
-# conflict markers into bin/pulse.py and the pulse failed every tick for
-# months) is what the gate exists to stop.
+# runtime paths here. In July 2026, conflict markers left in the working copy of
+# bin/pulse.py made the pulse fail every tick for months. The gate keeps a
+# pulled commit from doing the same; bin/run-pulse.py covers the working copy.
 SYNTAX_GATE_PATHS = ("bin/", "src/", "hooks/", "install/", "prompts/", "skills/",
-                     "launchagents/", "config/", "slack-reactor/", "install.sh",
-                     "install-bootstrap.sh")
+                     "launchagents/", "config/", "docs/", "slack-reactor/",
+                     "install.sh", "install-bootstrap.sh")
 
 # A refused commit is re-checked, and its failure re-recorded, this often.
 REJECT_REMIND_SEC = 86400  # 1 day
@@ -232,11 +232,14 @@ def syntax_gate(repo: Path, old_sha: str, new_sha: str) -> tuple[str, str]:
     Returns (verdict, detail). verdict is "ok", "broken" (a file has conflict
     markers or won't parse), or "unchecked" (git couldn't list or read the
     files). detail names the first problem, or "ok"."""
-    rc, names, err = _git(repo, "diff", "--name-only", "--diff-filter=ACMR", "-z",
-                          old_sha, new_sha, "--", *SYNTAX_GATE_PATHS)
+    rc, raw, err = _git(repo, "diff", "--raw", "--no-renames", "-z", "--diff-filter=ACMT",
+                        old_sha, new_sha, "--", *SYNTAX_GATE_PATHS)
     if rc != 0:
         return "unchecked", f"could not list incoming changes: {err}"[:500]
-    for name in filter(None, names.split("\0")):
+    fields = raw.split("\0")
+    for meta, name in zip(fields[::2], fields[1::2]):
+        if not meta.split()[1].startswith("100"):
+            continue  # a symlink or submodule has no file content to check
         source = _blob(repo, new_sha, name)
         if source is None:
             return "unchecked", f"could not read {name} at {new_sha[:12]}"
@@ -363,7 +366,8 @@ def maybe_update(
         _write_marker(marker_path, marker)
         result["skipped_reason"] = "syntax-fail"
         result["syntax_error"] = detail
-        _log(f"refused {old_head[:12]}..{new_sha[:12]}, code won't parse: {detail[:200]}")
+        _log(f"refused {old_head[:12]}..{new_sha[:12]}, a file failed the check: "
+             f"{detail[:200]}")
         return result
 
     if status["dirty"]:
