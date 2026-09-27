@@ -457,8 +457,9 @@ def self_update_pulse(pulse_idx: int) -> None:
 
     reason = result.get("skipped_reason")
     changed = result.get("changed")
-    # Silent path: attempted, nothing to do, no problem.
-    if not changed and reason is None and not result.get("error"):
+    # Silent path: attempted, nothing to do, no problem — or a refused commit
+    # whose failure was already recorded when it was first refused.
+    if not changed and reason in (None, "syntax-fail-known") and not result.get("error"):
         return
 
     kind = "self-update"
@@ -497,21 +498,12 @@ def self_update_pulse(pulse_idx: int) -> None:
         evidence = f"self-update auto-stash failed: {result.get('error', '')}"[:300]
         key = f"self-update-stash-failed-p{pulse_idx}"
     elif reason == "syntax-fail":
-        # The pull brought unparseable code (conflict markers or a SyntaxError);
-        # self_update reverted it so the pulse won't crash-loop. Surface loudly.
+        # The fetched commits carry Python that won't parse; self_update refused
+        # them before touching the working tree.
         outcome = "failed"
         kind = "self-update-syntax-fail"
-        revert = "reverted" if result.get("revert_ok") else "REVERT FAILED"
-        stash_note = ""
-        if result.get("stashed"):
-            # An aged-out dirty tree was auto-stashed before this pull. Keep the
-            # recovery path loud so the operator knows their work is parked.
-            stash_note = "; auto-stashed dirty tree (recover: git stash pop)"
-        evidence = (
-            f"blocked broken self-update {result.get('from_sha')}.."
-            f"{result.get('to_sha')} ({revert} to {result.get('reverted_to')}): "
-            f"{result.get('syntax_error', '')}{stash_note}"
-        )[:300]
+        evidence = (f"refused self-update {result.get('from_sha')}.."
+                    f"{result.get('to_sha')}: {result.get('syntax_error', '')}")[:300]
         key = f"self-update-syntax-fail-p{pulse_idx}"
     else:
         outcome = "failed"

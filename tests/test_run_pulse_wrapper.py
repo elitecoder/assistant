@@ -1,83 +1,102 @@
-"""Integration tests for bin/run-pulse.sh — the launchd pre-flight wrapper.
+"""Tests for bin/run-pulse.py — the launchd pre-flight for the pulse.
 
-Drives the REAL shell script (byte-for-byte copied into a throwaway repo layout
-with a stub pulse.py) so the compile-check / exit-0-on-failure / arg-passthrough
-behavior is exercised end to end, not asserted from reading the source. This is
-the guard that keeps a bad pulse.py from crash-looping launchd into a silent,
-throttled outage.
+In-process tests call the real module with a fake `execv` so the parse check,
+the logged skip, and the exact exec command are measured. Subprocess tests copy
+the real file next to a stub pulse and let it exec for real.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
+import runpy
 import shutil
-import stat
 import subprocess
+import sys
 from pathlib import Path
+from unittest import mock
+
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-WRAPPER = REPO / "bin/run-pulse.sh"
+WRAPPER = REPO / "bin/run-pulse.py"
 
 
-def _make_layout(tmp: Path, pulse_body: str) -> tuple[Path, Path]:
-    """Copy the real wrapper into tmp/bin next to a stub pulse.py. Returns
-    (wrapper_path, fake_home)."""
+def _load():
+    spec = importlib.util.spec_from_file_location("run_pulse_mod", str(WRAPPER))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _layout(tmp: Path, pulse_body: str, src_files: dict[str, str] | None = None) -> Path:
     (tmp / "bin").mkdir()
-    dst = tmp / "bin/run-pulse.sh"
-    shutil.copy2(WRAPPER, dst)
-    dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    shutil.copy2(WRAPPER, tmp / "bin/run-pulse.py")
     (tmp / "bin/pulse.py").write_text(pulse_body)
-    home = tmp / "home"
-    home.mkdir()
-    return dst, home
+    for rel, body in (src_files or {}).items():
+        path = tmp / "src" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    return tmp / "bin/run-pulse.py"
 
 
-def _run(wrapper: Path, home: Path, *args: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ, HOME=str(home))
-    return subprocess.run([str(wrapper), *args], capture_output=True, text=True,
-                          env=env, timeout=60)
+def test_healthy_checkout_execs_pulse_with_same_interpreter_and_args():
+    mod = _load()
+    calls = []
+    assert mod.main(["--pulse-idx", "5"], execv=lambda *a: calls.append(a)) == 0
+    assert calls == [(sys.executable, [sys.executable, str(REPO / "bin/pulse.py"),
+                                       "--pulse-idx", "5"])]
 
 
-def test_committed_wrapper_is_executable_with_shebang():
-    assert WRAPPER.exists()
-    assert os.access(WRAPPER, os.X_OK), "run-pulse.sh must be executable for launchd"
-    assert WRAPPER.read_text().startswith("#!/bin/bash")
+def test_broken_pulse_skips_the_run_and_logs(tmp_path, capsys):
+    _layout(tmp_path, "def broken(:\n    pass\n")
+    mod = _load()
+    calls = []
+    with mock.patch.object(mod, "PULSE", tmp_path / "bin/pulse.py"), \
+            mock.patch.object(mod, "SRC", tmp_path / "src"):
+        assert mod.main([], execv=lambda *a: calls.append(a)) == 0
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "pulse pre-flight FAILED, skipping this run" in err
+    assert f"{tmp_path / 'bin/pulse.py'}: SyntaxError" in err
 
 
-def test_good_pulse_runs_with_no_extra_args(tmp_path):
-    # The real plist invocation is `run-pulse.sh <python>` with nothing after
-    # it, so exec "$@" runs with an empty $@ under `set -u`. Pin that path.
-    wrapper, home = _make_layout(tmp_path, 'print("RAN")\n')
-    r = _run(wrapper, home, "python3")
+def test_broken_src_module_skips_the_run(tmp_path, capsys):
+    _layout(tmp_path, "x = 1\n", {"assistant/__init__.py": "",
+                                  "assistant/model_tiers.py": "x = 1\n<<<<<<< HEAD\n"})
+    mod = _load()
+    calls = []
+    with mock.patch.object(mod, "PULSE", tmp_path / "bin/pulse.py"), \
+            mock.patch.object(mod, "SRC", tmp_path / "src"):
+        assert mod.main([], execv=lambda *a: calls.append(a)) == 0
+    assert calls == []
+    assert "assistant/model_tiers.py: SyntaxError" in capsys.readouterr().err
+
+
+def test_script_entry_point_execs_pulse():
+    calls = []
+    with mock.patch.object(os, "execv", lambda *a: calls.append(a)), \
+            mock.patch.object(sys, "argv", [str(WRAPPER), "--dry-run"]):
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_path(str(WRAPPER), run_name="__main__")
+    assert exc.value.code == 0
+    assert calls == [(sys.executable, [sys.executable, str(REPO / "bin/pulse.py"),
+                                       "--dry-run"])]
+
+
+def test_real_exec_runs_pulse_and_passes_args(tmp_path):
+    wrapper = _layout(tmp_path, 'import sys\nprint("RAN", " ".join(sys.argv[1:]))\n',
+                      {"assistant/__init__.py": ""})
+    r = subprocess.run([sys.executable, str(wrapper), "--pulse-idx", "5"],
+                       capture_output=True, text=True, timeout=60)
     assert r.returncode == 0
-    assert "RAN" in r.stdout
-    assert not (home / ".assistant/logs/assistant-pulse.launchd.err").exists()
+    assert r.stdout.strip() == "RAN --pulse-idx 5"
+    assert r.stderr == ""
 
 
-def test_good_pulse_runs_and_passes_args(tmp_path):
-    wrapper, home = _make_layout(
-        tmp_path, 'import sys\nprint("RAN", " ".join(sys.argv[1:]))\n')
-    r = _run(wrapper, home, "python3", "--pulse-idx", "5")
+def test_real_run_with_broken_pulse_exits_zero(tmp_path):
+    wrapper = _layout(tmp_path, "def broken(:\n")
+    r = subprocess.run([sys.executable, str(wrapper)],
+                       capture_output=True, text=True, timeout=60)
     assert r.returncode == 0
-    assert "RAN --pulse-idx 5" in r.stdout
-    # A healthy run leaves no failure log behind.
-    assert not (home / ".assistant/logs/assistant-pulse.launchd.err").exists()
-
-
-def test_broken_pulse_exits_zero_and_logs(tmp_path):
-    wrapper, home = _make_layout(tmp_path, "def broken(:\n    pass\n")
-    r = _run(wrapper, home, "python3")
-    # Exit 0 is the whole point: a non-zero exit would make launchd throttle.
-    assert r.returncode == 0, f"wrapper must exit 0 on compile failure, got {r.returncode}"
-    err_log = home / ".assistant/logs/assistant-pulse.launchd.err"
-    assert err_log.exists(), "compile failure must be logged for the operator"
-    text = err_log.read_text()
-    assert "pre-flight py_compile FAILED" in text
-    assert "SyntaxError" in text
-
-
-def test_conflict_markers_block_the_run(tmp_path):
-    wrapper, home = _make_layout(
-        tmp_path, "x = 1\n<<<<<<< HEAD\ny = 2\n=======\ny = 3\n>>>>>>> other\n")
-    r = _run(wrapper, home, "python3")
-    assert r.returncode == 0
-    assert (home / ".assistant/logs/assistant-pulse.launchd.err").exists()
+    assert r.stdout == ""
+    assert "pulse pre-flight FAILED" in r.stderr

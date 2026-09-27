@@ -19,8 +19,14 @@ location-independent — a user who installed it anywhere, not just
      clocked from the first pulse that observed it dirty) AND an update is
      waiting, in which case the tree is auto-stashed (`git stash push -u`,
      always recoverable via `git stash pop`) and the pull proceeds.
-  3. If behind: `git pull --ff-only <remote> <branch>`. Fast-forward only,
-     so a diverged history fails loudly rather than merging blindly.
+     Before any stash or pull, every Python file the fetched commits add or
+     change under bin/ or src/ is parsed straight from git. Code that won't
+     parse (conflict markers, a SyntaxError) is refused and never reaches the
+     working tree; that remote commit is remembered and skipped until the
+     remote moves.
+  3. If behind: `git merge --ff-only <fetched sha>` — exactly the commit the
+     gate checked. Fast-forward only, so a diverged history fails loudly
+     rather than merging blindly.
      bin/ and prompts/ are symlinked / read live, so a pull alone makes
      code + Observer-prompt changes take effect on the very next pulse.
   4. If the pull touched COPIED artifacts (skills/, launchagents/, the
@@ -37,7 +43,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -62,21 +67,11 @@ DEFAULT_INTERVAL_SEC = 3600
 # (`git stash list` / `git stash pop`); it is never dropped or discarded.
 DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
 
-# ── Post-pull syntax gate ────────────────────────────────────────────────────
-# The files a bad pull most commonly corrupts and which MUST parse for the
-# pulse to restart at all. After every pull that changed something, each of
-# these is compiled out-of-process and scanned for git conflict markers; a
-# failure reverts the pull rather than letting the next launchd restart
-# crash-loop on unparseable code (the July 2026 incident: commit 17f3862
-# pulled unresolved conflict markers into bin/pulse.py and the pulse silently
-# throttled for months).
-SYNTAX_GATE_FILES = ("bin/pulse.py", "bin/agent_session.py", "bin/todo-server.py")
-
-# Git writes these at column 0 in an unresolved merge. A committed marker makes
-# a .py file a SyntaxError, so py_compile already catches most of them — but we
-# scan explicitly too, since a marker inside a string or docstring can slip past
-# the compiler yet still corrupt behavior.
-_CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
+# ── Pre-pull syntax gate ─────────────────────────────────────────────────────
+# Runtime Python lives under these directories. The July 2026 incident (commit
+# 17f3862 pulled unresolved conflict markers into bin/pulse.py and the pulse
+# failed every tick for months) is what the gate exists to stop.
+SYNTAX_GATE_DIRS = ("bin/", "src/")
 
 
 def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
@@ -195,60 +190,55 @@ def should_attempt(marker: dict, now: float, interval_sec: int) -> bool:
     return (now - last) >= interval_sec
 
 
-def _scan_conflict_markers(paths: list[Path]) -> str | None:
-    """Return "path:line" of the first git conflict marker found, else None.
+def _conflict_marker_line(text: str) -> int | None:
+    """Line number of the first git conflict marker in `text`, else None.
 
-    Only column-0 markers count. The `<<<<<<<` / `>>>>>>>` markers are
-    unambiguous — no valid Python or RST starts a line with seven of them. A
-    bare `=======` line is NOT flagged on its own: a 7-char RST section
-    underline in a docstring is legitimate and would otherwise revert a good
-    pull and loop. It counts only when the file also carries an arrow marker,
-    i.e. it is the divider of a real conflict block."""
-    for p in paths:
-        try:
-            lines = p.read_text(errors="replace").splitlines()
-        except OSError:
+    Only column-0 markers count. A bare `=======` line alone is a legitimate
+    RST section underline, so it counts only when the text also carries a
+    `<<<<<<<` or `>>>>>>>` line."""
+    first = None
+    arrow = False
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.startswith(("<<<<<<<", ">>>>>>>")):
+            arrow = True
+        elif not line.startswith("======="):
             continue
-        markers: list[tuple[int, bool]] = []  # (lineno, is_arrow)
-        for lineno, line in enumerate(lines, 1):
-            if line.startswith("<<<<<<<") or line.startswith(">>>>>>>"):
-                markers.append((lineno, True))
-            elif line.startswith("======="):
-                markers.append((lineno, False))
-        if any(is_arrow for _, is_arrow in markers):
-            return f"{p}:{min(lineno for lineno, _ in markers)}"
-    return None
+        first = first or n
+    return first if arrow else None
 
 
-def syntax_gate(repo: Path, rel_files: tuple[str, ...] = SYNTAX_GATE_FILES) -> tuple[bool, str]:
-    """Verify the given repo-relative files parse and carry no conflict markers.
-
-    Returns (ok, detail). Scans for conflict markers first (cheap, and catches
-    a marker even inside a string that would still compile), then compiles the
-    existing targets out-of-process with `python -m py_compile` — a true parse
-    by a fresh interpreter, the same way a launchd restart loads them. Missing
-    targets are skipped (a checkout may not ship every file). `detail` names
-    the first failure, or "ok"."""
-    paths = [repo / rel for rel in rel_files if (repo / rel).is_file()]
-
-    marker_hit = _scan_conflict_markers(paths)
-    if marker_hit:
-        return False, f"conflict marker at {marker_hit}"
-
-    if not paths:
-        return True, "ok (no target files present)"
-
+def _blob(repo: Path, sha: str, name: str) -> bytes | None:
+    """Raw bytes of `name` at commit `sha`, or None if git can't read it."""
     try:
-        p = subprocess.run(
-            [sys.executable, "-m", "py_compile", *[str(x) for x in paths]],
-            capture_output=True, text=True, timeout=60,
-        )
+        p = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{sha}:{name}"],
+                           capture_output=True, timeout=90)
     except subprocess.TimeoutExpired:
-        return False, "py_compile timed out after 60s"
-    except Exception as e:  # noqa: BLE001 — the gate must never raise into the pulse
-        return False, f"py_compile could not run: {e}"[:500]
-    if p.returncode != 0:
-        return False, (p.stderr or p.stdout).strip()[:500]
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
+def syntax_gate(repo: Path, old_sha: str, new_sha: str) -> tuple[bool, str]:
+    """Check the Python files under SYNTAX_GATE_DIRS that `new_sha` adds or
+    changes relative to `old_sha`: each must parse and carry no conflict
+    markers. Reads committed blobs, never the working tree. Returns
+    (ok, detail); detail names the first failure, or "ok"."""
+    rc, names, err = _git(repo, "diff", "--name-only", "--diff-filter=ACMR", "-z",
+                          old_sha, new_sha, "--", *SYNTAX_GATE_DIRS)
+    if rc != 0:
+        return False, f"could not list incoming changes: {err}"[:500]
+    for name in names.split("\0"):
+        if not name.endswith(".py"):
+            continue
+        source = _blob(repo, new_sha, name)
+        if source is None:
+            return False, f"could not read {name} at {new_sha[:12]}"
+        marker = _conflict_marker_line(source.decode("utf-8", errors="replace"))
+        if marker:
+            return False, f"conflict marker at {name}:{marker}"
+        try:
+            compile(source, name, "exec", dont_inherit=True)
+        except (SyntaxError, ValueError) as exc:
+            return False, f"{name}: {exc}"[:500]
     return True, "ok"
 
 
@@ -333,6 +323,24 @@ def maybe_update(
         _log("already up to date")
         return result
 
+    # Gate the fetched commit before stashing or pulling anything, so broken
+    # code never reaches the working tree. A commit already refused is skipped
+    # quietly (its failure was recorded once) until the remote moves.
+    old_head, new_sha = status["head"], status["remote_sha"]
+    result["to_sha"] = new_sha[:12]
+    if marker.get("rejected_sha") == new_sha:
+        result["skipped_reason"] = "syntax-fail-known"
+        _log(f"{remote}/{branch} is still at refused {new_sha[:12]}; waiting for a fix")
+        return result
+    ok, detail = syntax_gate(repo, old_head, new_sha)
+    if not ok:
+        marker["rejected_sha"] = new_sha
+        _write_marker(marker_path, marker)
+        result["skipped_reason"] = "syntax-fail"
+        result["syntax_error"] = detail
+        _log(f"refused {old_head[:12]}..{new_sha[:12]}, code won't parse: {detail[:200]}")
+        return result
+
     if status["dirty"]:
         age = result["dirty_age_sec"]
         if age < dirty_stash_after_sec:
@@ -359,38 +367,17 @@ def maybe_update(
              "pull; recover with `git stash pop`")
 
     # Fast-forward only — a diverged history fails rather than merging blindly.
-    old_head = status["head"]
-    rc, _, err = _git(repo, "pull", "--ff-only", remote, branch)
+    rc, _, err = _git(repo, "merge", "--ff-only", new_sha)
     if rc != 0:
         result["skipped_reason"] = "pull-failed"
         result["error"] = err
-        _log(f"git pull --ff-only failed: {err}")
+        _log(f"git merge --ff-only {new_sha[:12]} failed: {err}")
         return result
 
     _, new_head, _ = _git(repo, "rev-parse", "HEAD")
     result["changed"] = new_head != old_head
     result["to_sha"] = new_head[:12]
     if not result["changed"]:
-        return result
-
-    # Post-pull syntax gate. If the pull brought code that won't parse (conflict
-    # markers or a SyntaxError), revert it now rather than let the next launchd
-    # restart crash-loop on it. Resetting to the pre-pull SHA is safe here: the
-    # pull was fast-forward-only over a tree we verified clean and zero commits
-    # ahead, so every reverted commit is a REMOTE commit — never operator work.
-    ok, detail = syntax_gate(repo)
-    if not ok:
-        rc, _, rerr = _git(repo, "reset", "--hard", old_head)
-        result["changed"] = False
-        result["skipped_reason"] = "syntax-fail"
-        result["syntax_error"] = detail[:500]
-        result["reverted_to"] = old_head[:12]
-        result["revert_ok"] = rc == 0
-        if rc != 0:
-            result["error"] = f"revert failed after syntax gate: {rerr}"[:300]
-        _log(f"post-pull syntax gate FAILED — reverted {new_head[:12]} → "
-             f"{old_head[:12]} ({'ok' if rc == 0 else 'REVERT FAILED'}): "
-             f"{detail[:200]}")
         return result
 
     rc, files_out, _ = _git(repo, "diff", "--name-only", f"{old_head}..{new_head}")

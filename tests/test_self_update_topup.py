@@ -90,7 +90,8 @@ def test_maybe_update_stash_failed(tmp_path):
                 "head": "oldsha", "remote_sha": "newsha",
                 "dirty": True, "behind": 1, "ahead": 0}):
             with mock.patch.object(su, "_stash_dirty",
-                                   return_value=(False, "fatal: stash conflict")):
+                                   return_value=(False, "fatal: stash conflict")), \
+                    mock.patch.object(su, "syntax_gate", return_value=(True, "ok")):
                 # First pass stamps dirty_since at t=1000.
                 su.maybe_update(tmp_path, interval_sec=0, marker_path=marker,
                                 dirty_stash_after_sec=86400, now=1000.0)
@@ -107,12 +108,12 @@ def test_maybe_update_stash_failed(tmp_path):
 # ─── maybe_update: pull-failed path (291-294) ─────────────────────────────────
 
 def test_maybe_update_pull_failed(tmp_path):
-    """Clean tree, behind, but `git pull --ff-only` fails (e.g. diverged) →
+    """Clean tree, behind, but `git merge --ff-only` fails (e.g. diverged) →
     skipped_reason 'pull-failed' with the git error captured."""
     marker = tmp_path / "m.json"
 
     def fake_git(repo, *args, **kw):
-        if args[:1] == ("pull",):
+        if args[:1] == ("merge",):
             return (1, "", "fatal: Not possible to fast-forward, aborting.")
         # rev-parse HEAD after a failed pull would not be reached.
         return (0, "", "")
@@ -137,7 +138,7 @@ def test_maybe_update_pull_noop_to_sha_set(tmp_path):
     marker = tmp_path / "m.json"
 
     def fake_git(repo, *args, **kw):
-        if args[:1] == ("pull",):
+        if args[:1] == ("merge",):
             return (0, "Already up to date.", "")
         if args[:2] == ("rev-parse", "HEAD"):
             return (0, "oldsha", "")  # same as status head → no change

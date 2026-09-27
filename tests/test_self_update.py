@@ -481,99 +481,151 @@ class MaybeUpdateTests(unittest.TestCase):
 
 
 class SyntaxGateTests(unittest.TestCase):
-    """The post-pull gate: a pull that brings unparseable code (conflict
-    markers or a SyntaxError) is reverted, not applied — so the pulse can never
-    crash-loop on it the way it did in July 2026."""
+    """The pre-pull gate: fetched commits whose Python won't parse (conflict
+    markers or a SyntaxError) are refused before anything is stashed, merged,
+    or reset — so the pulse can never crash on them the way it did in July 2026."""
 
-    def test_gate_passes_clean_file(self):
+    def _bad_remote(self, tmp: Path, files: dict[str, str]) -> tuple[Path, str, str]:
+        clone, remote = make_repos(tmp)
+        old_head = git(clone, "rev-parse", "HEAD")
+        new_sha = advance_remote(tmp, remote, files, "incoming")
+        return clone, old_head, new_sha
+
+    def _gate(self, files: dict[str, str]) -> tuple[bool, str]:
+        with TemporaryDirectory() as t:
+            clone, old_head, new_sha = self._bad_remote(Path(t), files)
+            git(clone, "fetch", "origin", "main")
+            return su.syntax_gate(clone, old_head, new_sha)
+
+    def test_conflict_markers_are_refused_before_touching_the_tree(self):
         with TemporaryDirectory() as t:
             tmp = Path(t)
-            (tmp / "bin").mkdir()
-            (tmp / "bin/pulse.py").write_text("x = 1\n")
-            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
-            self.assertTrue(ok, detail)
-
-    def test_gate_flags_conflict_marker(self):
-        with TemporaryDirectory() as t:
-            tmp = Path(t)
-            (tmp / "bin").mkdir()
-            (tmp / "bin/pulse.py").write_text(
-                "x = 1\n<<<<<<< HEAD\ny = 2\n=======\ny = 3\n>>>>>>> other\n")
-            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
-            self.assertFalse(ok)
-            self.assertIn("conflict marker at", detail)
-            self.assertIn("bin/pulse.py:2", detail)
-
-    def test_gate_flags_syntax_error_without_markers(self):
-        with TemporaryDirectory() as t:
-            tmp = Path(t)
-            (tmp / "bin").mkdir()
-            (tmp / "bin/pulse.py").write_text("def broken(:\n    pass\n")
-            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
-            self.assertFalse(ok)
-            self.assertNotIn("conflict marker", detail)
-
-    def test_gate_ignores_rst_underline_without_arrows(self):
-        # A bare `=======` line (an RST section underline in a docstring) is
-        # NOT a conflict marker — flagging it would revert a healthy pull.
-        with TemporaryDirectory() as t:
-            tmp = Path(t)
-            (tmp / "bin").mkdir()
-            (tmp / "bin/pulse.py").write_text(
-                '"""Module.\n\nSection\n=======\n\nBody.\n"""\nx = 1\n')
-            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py",))
-            self.assertTrue(ok, detail)
-
-    def test_gate_skips_missing_targets(self):
-        with TemporaryDirectory() as t:
-            tmp = Path(t)
-            ok, detail = su.syntax_gate(tmp, ("bin/pulse.py", "bin/absent.py"))
-            self.assertTrue(ok)
-
-    def test_pull_with_conflict_marker_is_reverted(self):
-        with TemporaryDirectory() as t:
-            tmp = Path(t)
-            clone, remote = make_repos(tmp)
-            old_head = git(clone, "rev-parse", "HEAD")
-            advance_remote(
-                tmp, remote,
-                {"bin/pulse.py": "# pulse\n<<<<<<< HEAD\na = 1\n=======\na = 2\n>>>>>>> x\n"},
-                "bad merge with markers")
+            clone, old_head, new_sha = self._bad_remote(
+                tmp, {"bin/pulse.py": "# pulse\n<<<<<<< HEAD\na = 1\n=======\na = 2\n>>>>>>> x\n"})
+            reflog = git(clone, "reflog")
             r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
             self.assertEqual(r["skipped_reason"], "syntax-fail")
             self.assertFalse(r["changed"])
-            self.assertTrue(r["revert_ok"])
-            self.assertIn("conflict marker", r["syntax_error"])
-            # The bad commit was reverted: HEAD is back where it started and the
-            # working file is the pre-pull content, with no markers.
+            self.assertEqual(r["syntax_error"], "conflict marker at bin/pulse.py:2")
+            self.assertEqual(r["to_sha"], new_sha[:12])
             self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
-            self.assertNotIn("<<<<<<<", (clone / "bin/pulse.py").read_text())
-            self.assertEqual(git(clone, "status", "--porcelain"), "")
+            self.assertEqual(git(clone, "reflog"), reflog)  # no merge, no reset
+            self.assertEqual((clone / "bin/pulse.py").read_text(), "# pulse\n")
+            self.assertEqual(json.loads((tmp / "m.json").read_text())["rejected_sha"], new_sha)
 
-    def test_pull_with_syntax_error_is_reverted(self):
+    def test_broken_src_module_is_refused(self):
         with TemporaryDirectory() as t:
             tmp = Path(t)
-            clone, remote = make_repos(tmp)
-            old_head = git(clone, "rev-parse", "HEAD")
-            advance_remote(tmp, remote, {"bin/pulse.py": "def broken(:\n"},
-                           "syntax error, no markers")
+            clone, old_head, _ = self._bad_remote(
+                tmp, {"src/assistant/model_tiers.py": "def broken(:\n"})
             r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
             self.assertEqual(r["skipped_reason"], "syntax-fail")
-            self.assertFalse(r["changed"])
-            self.assertTrue(r["revert_ok"])
+            self.assertTrue(r["syntax_error"].startswith("src/assistant/model_tiers.py: "))
             self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
+            self.assertFalse((clone / "src").exists())
 
-    def test_pull_with_valid_code_still_applies(self):
-        # The gate is transparent to a healthy pull.
+    def test_refused_commit_is_skipped_until_the_remote_moves(self):
         with TemporaryDirectory() as t:
             tmp = Path(t)
             clone, remote = make_repos(tmp)
-            advance_remote(tmp, remote, {"bin/pulse.py": "# pulse v2\nok = True\n"},
-                           "clean change")
+            advance_remote(tmp, remote, {"bin/pulse.py": "def broken(:\n"}, "bad")
+            marker = tmp / "m.json"
+            self.assertEqual(su.maybe_update(clone, interval_sec=0, marker_path=marker)
+                             ["skipped_reason"], "syntax-fail")
+            with unittest.mock.patch.object(su, "syntax_gate") as gate:
+                r = su.maybe_update(clone, interval_sec=0, marker_path=marker)
+            gate.assert_not_called()
+            self.assertEqual(r["skipped_reason"], "syntax-fail-known")
+            fixed = advance_remote(tmp, remote, {"bin/pulse.py": "fixed = True\n"}, "fix")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker)
+            self.assertTrue(r["changed"])
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), fixed)
+            self.assertEqual((clone / "bin/pulse.py").read_text(), "fixed = True\n")
+
+    def test_dirty_tree_past_window_is_not_stashed_for_a_refused_update(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _, _ = self._bad_remote(tmp, {"bin/pulse.py": "def broken(:\n"})
+            (clone / "install.sh").write_text("# operator edit\n")
+            marker = tmp / "m.json"
+            first = su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                                    dirty_stash_after_sec=86400, now=1000.0)
+            later = su.maybe_update(clone, interval_sec=0, marker_path=marker,
+                                    dirty_stash_after_sec=86400, now=1000.0 + 25 * 3600)
+            self.assertEqual(first["skipped_reason"], "syntax-fail")
+            self.assertEqual(later["skipped_reason"], "syntax-fail-known")
+            self.assertNotIn("stashed", later)
+            self.assertEqual(git(clone, "stash", "list"), "")
+            self.assertEqual((clone / "install.sh").read_text(), "# operator edit\n")
+
+    def test_healthy_update_lands_on_the_gated_commit(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _, new_sha = self._bad_remote(tmp, {
+                "bin/pulse.py": '"""Pulse.\n\nSection\n=======\n"""\nok = True\n',
+                "tests/test_scratch.py": "def broken(:\n",
+                "docs/merging.md": "<<<<<<< HEAD\n=======\n>>>>>>> x\n",
+            })
             r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
             self.assertTrue(r["changed"])
             self.assertIsNone(r["skipped_reason"])
-            self.assertIn("ok = True", (clone / "bin/pulse.py").read_text())
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), new_sha)
+
+    def test_marker_inside_a_string_is_flagged_even_though_it_compiles(self):
+        ok, detail = self._gate({"bin/pulse.py": 'X = """\n>>>>>>> theirs\n"""\n'})
+        self.assertFalse(ok)
+        self.assertEqual(detail, "conflict marker at bin/pulse.py:2")
+
+    def test_marker_line_ignores_rst_underline_alone(self):
+        self.assertIsNone(su._conflict_marker_line("Title\n=======\nbody\n"))
+        self.assertEqual(su._conflict_marker_line("a\n=======\n>>>>>>> b\n"), 2)
+
+    def test_unreadable_diff_is_refused(self):
+        with TemporaryDirectory() as t:
+            clone, _ = make_repos(Path(t))
+            ok, detail = su.syntax_gate(clone, "0" * 40, "HEAD")
+            self.assertFalse(ok)
+            self.assertTrue(detail.startswith("could not list incoming changes: "))
+
+    def test_unreadable_blob_is_refused(self):
+        with TemporaryDirectory() as t:
+            clone, old_head, new_sha = self._bad_remote(Path(t), {"bin/new.py": "x = 1\n"})
+            git(clone, "fetch", "origin", "main")
+            real_run = subprocess.run
+
+            def run(cmd, **kwargs):
+                if "cat-file" in cmd:
+                    raise subprocess.TimeoutExpired(cmd, 90)
+                return real_run(cmd, **kwargs)
+
+            with unittest.mock.patch.object(su.subprocess, "run", run):
+                ok, detail = su.syntax_gate(clone, old_head, new_sha)
+            self.assertFalse(ok)
+            self.assertEqual(detail, f"could not read bin/new.py at {new_sha[:12]}")
+
+    def test_blob_missing_from_commit_reads_as_none(self):
+        with TemporaryDirectory() as t:
+            clone, _ = make_repos(Path(t))
+            self.assertIsNone(su._blob(clone, "HEAD", "bin/absent.py"))
+            self.assertEqual(su._blob(clone, "HEAD", "bin/pulse.py"), b"# pulse\n")
+
+    def test_failed_fast_forward_is_reported(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, old_head, new_sha = self._bad_remote(tmp, {"bin/pulse.py": "ok = 1\n"})
+            real_git = su._git
+
+            def fake_git(repo, *args, **kwargs):
+                if args[0] == "merge":
+                    self.assertEqual(args, ("merge", "--ff-only", new_sha))
+                    return 1, "", "not possible to fast-forward"
+                return real_git(repo, *args, **kwargs)
+
+            with unittest.mock.patch.object(su, "_git", fake_git):
+                r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertEqual(r["skipped_reason"], "pull-failed")
+            self.assertEqual(r["error"], "not possible to fast-forward")
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), old_head)
 
 
 class ResolveRemoteBranchTests(unittest.TestCase):
