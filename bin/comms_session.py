@@ -12,9 +12,11 @@ nothing — the session reconstructs from disk on the next message.
 
 This module splits cleanly:
   - PURE logic (registry r/w, transcript reply-extraction, should_clear,
-    newest-transcript resolution) — unit-tested, no cmux.
-  - cmux I/O (spawn, feed, clear) — thin wrappers over the same RPC pattern
-    pulse.py uses to drive Assistant. Validated live, not mocked.
+    submission confirmation, prompt-box parsing, workspace liveness) —
+    unit-tested, no cmux.
+  - cmux I/O (spawn, submit, clear, liveness probes) — thin wrappers over the
+    same RPC pattern pulse.py uses to drive Assistant. Validated live, not
+    mocked.
 
 Transport-agnostic: this file knows nothing about Slack vs any other transport.
 The daemon composes the per-message feed string; this only manages the session.
@@ -152,6 +154,24 @@ def _positive_int_env(name: str, default: int) -> int:
 # soon as the marker appears.
 READY_ATTEMPTS = _positive_int_env("COMMS_READY_ATTEMPTS", 90)
 
+# The boot banner is the first thing Claude paints, before the prompt box exists,
+# and keys typed that early can be lost. After the banner, wait up to this many
+# seconds for the bottom status bar — the sign the prompt box is drawn.
+INPUT_READY_SEC = _positive_int_env("COMMS_INPUT_READY_SEC", 15)
+_INPUT_READY_RE = {agent_session.CLAUDE: re.compile(r"⏵⏵ bypass permissions on")}
+
+# Every prompt the daemon types is confirmed against the transcript. Enter can be
+# lost or turn into a newline (2026-09-27: a boot prompt and a Slack message sat
+# typed in the box for two hours), so up to SUBMIT_ATTEMPTS Enters are tried,
+# waiting SUBMIT_WAIT_SEC after each for the transcript to record the prompt.
+SUBMIT_ATTEMPTS = _positive_int_env("COMMS_SUBMIT_ATTEMPTS", 3)
+SUBMIT_WAIT_SEC = _positive_int_env("COMMS_SUBMIT_WAIT_SEC", 15)
+
+# How many times to look at a workspace cmux didn't answer about, and how long to
+# wait between looks, before calling its state unknown.
+LIVENESS_ATTEMPTS = _positive_int_env("COMMS_LIVENESS_ATTEMPTS", 3)
+LIVENESS_RETRY_SEC = _positive_int_env("COMMS_LIVENESS_RETRY_SEC", 3)
+
 
 # --------------------------------------------------------------------------- registry (pure)
 
@@ -213,19 +233,11 @@ def clear_session_registry(paths: comms_lib.Paths) -> None:
 
 def project_dir_for_cwd(cwd: str, agent: str = agent_session.CLAUDE) -> Path:
     """Per-cwd transcript dir a warm `agent` session writes into. Claude:
-    ~/.claude/projects/<slug>; Droid: ~/.factory/sessions/<slug>. slug = the
-    realpath with '/' → '-'. Delegates to agent_session.confirm_dir (the single
-    source of truth for both roots), rooted at this module's HOME so a tmp-home
-    test resolves against its own tree."""
+    ~/.claude/projects/<slug>; Droid: ~/.factory/sessions/<slug>. Delegates to
+    agent_session.confirm_dir (the single source of truth for both roots and
+    slugs), rooted at this module's HOME so a tmp-home test resolves against
+    its own tree."""
     return agent_session.confirm_dir(agent, cwd, home=HOME)
-
-
-def newest_transcript(cwd: str, agent: str = agent_session.CLAUDE) -> str | None:
-    pdir = project_dir_for_cwd(cwd, agent)
-    if not pdir.is_dir():
-        return None
-    jsonls = sorted(pdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return str(jsonls[0]) if jsonls else None
 
 
 def last_assistant_text(transcript_path: str | Path) -> str | None:
@@ -266,20 +278,6 @@ def last_assistant_text(transcript_path: str | Path) -> str | None:
     return last_text
 
 
-def transcript_line_count(transcript_path: str | Path) -> int:
-    """Count non-blank lines — a cheap 'has the transcript grown?' signal used
-    to detect that the session produced a new turn after we fed it."""
-    p = Path(transcript_path)
-    if not p.exists():
-        return 0
-    n = 0
-    with open(p) as f:
-        for line in f:
-            if line.strip():
-                n += 1
-    return n
-
-
 def should_clear(transcript_path: str | Path,
                  threshold: float = CLEAR_THRESHOLD,
                  agent: str = agent_session.CLAUDE,
@@ -299,6 +297,198 @@ def should_clear(transcript_path: str | Path,
         return p.exists() and p.stat().st_size >= droid_clear_bytes
     tokens = comms_lib.read_context_tokens(transcript_path)
     return comms_lib.context_fraction(tokens) >= threshold
+
+
+# --------------------------------------------------------------------------- submission (pure)
+
+# Only the transcript tail is read: a submitted prompt is always among the
+# newest records, and warm transcripts grow to megabytes.
+TRANSCRIPT_TAIL_BYTES = 262_144
+_RULE_RE = re.compile(r"^\s*─{8,}\s*$")
+_WS_RE = re.compile(r"\s+")
+
+
+def input_box_text(screen: str) -> str | None:
+    """The text in Claude's prompt box, or None when the screen shows no box.
+
+    The box is the region between the last two horizontal rules, and its first
+    line starts with ❯. Earlier prompts in the scrollback also start with ❯ but
+    aren't fenced by rules, so they never match. Wrapped lines are joined."""
+    lines = screen.splitlines()
+    rules = [i for i, line in enumerate(lines) if _RULE_RE.match(line)]
+    if len(rules) < 2:
+        return None
+    body = lines[rules[-2] + 1:rules[-1]]
+    if not body or not body[0].lstrip().startswith("❯"):
+        return None
+    first = body[0].lstrip()[1:]
+    return " ".join(part.strip() for part in [first, *body[1:]]).strip()
+
+
+def box_has_marker(box: str | None, marker: str) -> bool:
+    """True if the prompt box shows the daemon's marker, compared without
+    whitespace so a line wrap inside it still matches."""
+    return bool(box) and _WS_RE.sub("", marker) in _WS_RE.sub("", box)
+
+
+def box_holds(box: str | None, marker: str) -> bool:
+    """True if the prompt box still holds text the daemon just typed: its
+    marker, or a collapsed paste (Claude folds long typed text into one)."""
+    return box_has_marker(box, marker) or bool(box) and "[Pasted text" in box
+
+
+def _prompt_text(rec: dict) -> str | None:
+    """The prompt text of a submitted user turn or a prompt queued while the
+    session was busy; None for every other record, including tool results."""
+    if rec.get("type") == "queue-operation":
+        content = rec.get("content")
+        return content if isinstance(content, str) else None
+    if agent_session.record_role(rec) != "user":
+        return None
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text", "") for b in content
+                       if isinstance(b, dict) and b.get("type") == "text")
+    return None
+
+
+def transcript_has_submission(path: str | Path, marker: str) -> bool:
+    """True if the transcript at `path` records a prompt containing `marker`.
+
+    Headless `claude -p` transcripts never count: the proofgate Stop hook runs
+    one in this cwd after every warm turn, and it quotes the warm session's
+    prompts back."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - TRANSCRIPT_TAIL_BYTES))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    for line in tail.splitlines():
+        if marker not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict) or rec.get("entrypoint") == "sdk-cli":
+            continue
+        text = _prompt_text(rec)
+        if text and marker in text:
+            return True
+    return False
+
+
+def find_submission(project_dir: Path, marker: str, since: float) -> str | None:
+    """Path of the newest transcript in `project_dir` changed at or after
+    `since` that records a prompt containing `marker`, or None.
+
+    Searches instead of trusting a remembered path, so a session that was
+    cleared, resumed, or bound to the wrong file is found again. Subagent
+    transcripts are skipped."""
+    if not project_dir.is_dir():
+        return None
+    candidates = []
+    for p in project_dir.rglob("*.jsonl"):
+        if "subagents" in p.parts:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= since:
+            candidates.append((mtime, p))
+    for _mtime, p in sorted(candidates, reverse=True):
+        if transcript_has_submission(p, marker):
+            return str(p)
+    return None
+
+
+def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: str,
+                           attempts: int = SUBMIT_ATTEMPTS,
+                           wait_sec: float = SUBMIT_WAIT_SEC,
+                           sleep=time.sleep, clock=time.monotonic) -> bool:
+    """Type a prompt once, press Enter, and wait until `confirmed()` sees it in
+    the transcript. Returns whether it did.
+
+    If confirmation doesn't come and the box still holds the daemon's marker —
+    Enter was lost or became a newline — press Enter again, up to `attempts`
+    presses in all. The text is never retyped and Enter is never pressed on a
+    box that doesn't hold the marker, so a retry can't double-send a prompt or
+    submit someone else's half-typed input. A prompt an earlier try already
+    got recorded isn't typed again, and one an earlier try left sitting in the
+    box only gets its Enter. All I/O is injected."""
+    if confirmed():
+        return True
+    # Only this prompt's own marker counts here: an old collapsed paste in the
+    # box says nothing about whether this text was typed.
+    if not box_has_marker(read_box(), marker):
+        send_text()
+        sleep(0.5)
+    press_enter()
+    for attempt in range(attempts):
+        deadline = clock() + wait_sec
+        while clock() < deadline:
+            if confirmed():
+                return True
+            sleep(1)
+        if attempt + 1 < attempts and box_holds(read_box(), marker):
+            press_enter()
+    return confirmed()
+
+
+def boot_instruction(boot_prompt: Path, nonce: str) -> str:
+    """The prompt that boots a warm session. The nonce makes each boot's text
+    unique, so confirmation can't match an earlier session's boot turn."""
+    return f"Read {boot_prompt} in full and execute every instruction in it. [boot {nonce}]"
+
+
+# --------------------------------------------------------------------------- liveness (pure)
+
+ALIVE = "alive"
+GONE = "gone"
+UNKNOWN = "unknown"
+
+# What cmux prints for a workspace ref it doesn't know. Every other failure — a
+# refused socket connection, a timeout — means cmux didn't answer, which says
+# nothing about the workspace (2026-09-27: a napping cmux refused connections
+# for up to two hours, and each refusal used to close a healthy warm session).
+_MISSING_WORKSPACE_MARKERS = ("invalid_params", "Missing or invalid workspace")
+
+
+def classify_tree_result(rc: int, err: str) -> str:
+    """ALIVE, GONE, or UNKNOWN for one `cmux tree --workspace` result."""
+    if rc == 0:
+        return ALIVE
+    if any(m in (err or "") for m in _MISSING_WORKSPACE_MARKERS):
+        return GONE
+    return UNKNOWN
+
+
+def ref_listed(text: str, ws_ref: str) -> bool:
+    """True if `ws_ref` appears as a whole ref in `text`, so workspace:25
+    doesn't match workspace:258."""
+    return re.search(rf"{re.escape(ws_ref)}(?!\d)", text) is not None
+
+
+def resolve_workspace_state(probe, attempts: int = LIVENESS_ATTEMPTS,
+                            retry_sec: float = LIVENESS_RETRY_SEC,
+                            sleep=time.sleep) -> str:
+    """Run `probe` until it returns ALIVE or GONE, waiting `retry_sec` between
+    tries; UNKNOWN if cmux never gives an answer. Short cmux blips clear within
+    a few seconds, so one retry saves a session a single failed look would
+    have closed."""
+    for attempt in range(attempts):
+        state = probe()
+        if state != UNKNOWN:
+            return state
+        if attempt + 1 < attempts:
+            sleep(retry_sec)
+    return UNKNOWN
 
 
 # --------------------------------------------------------------------------- cmux I/O (live)
@@ -323,13 +513,27 @@ def _surface_read_text(paths: comms_lib.Paths, surface_ref: str, lines: int = 20
     return d.get("text", "") or ""
 
 
-def cmux_alive(paths: comms_lib.Paths, ws_ref: str) -> bool:  # pragma: no cover - live cmux I/O
-    rc, _, _ = comms_lib.run_cmd(
-        [str(paths.cmux_bin), "tree", "--workspace", ws_ref, "--json"], timeout=10)
-    return rc == 0
+def probe_workspace(paths: comms_lib.Paths, ws_ref: str, run=None) -> str:
+    """One look at a workspace. When `tree` fails without saying the ref is
+    unknown, a successful `list-workspaces` still settles it either way; if
+    that fails too, the answer is UNKNOWN. `run` defaults to comms_lib.run_cmd."""
+    run = run or comms_lib.run_cmd
+    rc, _, err = run([str(paths.cmux_bin), "tree", "--workspace", ws_ref, "--json"], timeout=10)
+    state = classify_tree_result(rc, err)
+    if state != UNKNOWN:
+        return state
+    rc, out, _ = run([str(paths.cmux_bin), "list-workspaces"], timeout=10)
+    if rc != 0:
+        return UNKNOWN
+    return ALIVE if ref_listed(out, ws_ref) else GONE
 
 
-def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
+def workspace_state(paths: comms_lib.Paths, ws_ref: str) -> str:
+    """ALIVE, GONE, or UNKNOWN (cmux didn't answer) for a warm workspace."""
+    return resolve_workspace_state(lambda: probe_workspace(paths, ws_ref))
+
+
+def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:
     """Close a warm workspace THIS daemon spawned (tracked in session.json).
 
     Scope of the 2026-05-26 close-workspace ban: automation must never close a
@@ -347,7 +551,7 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
     if rc != 0:
         return
     # Title guard: only ever close our own warm session, never an arbitrary ref.
-    is_warm = any(ws_ref in line and SESSION_TITLE in line for line in out.splitlines())
+    is_warm = any(ref_listed(line, ws_ref) and SESSION_TITLE in line for line in out.splitlines())
     if not is_warm:
         log(f"skip close {ws_ref}: not a '{SESSION_TITLE}' workspace (ref reissued?)")
         return
@@ -357,29 +561,71 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
         else f"close {ws_ref} rc={rc}: {err.strip()[:120]}")
 
 
-def feed(paths: comms_lib.Paths, surface_ref: str, text: str) -> None:  # pragma: no cover - live cmux I/O
-    """Type text into the warm session and submit. Strip trailing newline first
-    (send_text streams keystrokes; a trailing \\n auto-submits mid-paste), then
-    an explicit Enter — exactly pulse.py's delivery sequence."""
-    _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": text.rstrip("\n")})
-    time.sleep(0.5)
-    _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:
+    """Submit whatever is in the prompt box by writing a carriage return to the
+    terminal. `surface.send_key enter` reports success on a warm workspace that
+    was never shown on screen, yet the prompt stays unsent (reproduced
+    2026-09-28 on a --focus false workspace); a "\\r" through send_text submits
+    it at once."""
+    _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "\r"})
+
+
+def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
+           confirmed) -> bool:
+    """Type text into the warm session and press Enter until `confirmed()` sees
+    it in the transcript (see submit_until_confirmed). The trailing newline is
+    stripped: send_text streams keystrokes, so a trailing \\n would submit
+    mid-paste."""
+    return submit_until_confirmed(
+        send_text=lambda: _cmux_rpc(paths, "surface.send_text",
+                                    {"surface_id": surface_ref, "text": text.rstrip("\n")}),
+        press_enter=lambda: send_enter(paths, surface_ref),
+        read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60)),
+        confirmed=confirmed,
+        marker=marker,
+    )
+
+
+def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt: Path,
+                 agent: str, submit_fn=None) -> str | None:
+    """Type the boot prompt and return the transcript that recorded it, or None
+    if it was never submitted. The session is bound to that exact file — never
+    to whichever transcript happens to be newest, which on 2026-09-27/28 was
+    often another session's. `submit_fn` defaults to submit."""
+    submit_fn = submit_fn or submit
+    nonce = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{os.getpid()}"
+    marker = f"[boot {nonce}]"
+    project_dir = project_dir_for_cwd(cwd, agent)
+    since = time.time() - 1
+    found: list[str] = []
+
+    def confirmed() -> bool:
+        hit = find_submission(project_dir, marker, since)
+        if hit:
+            found.append(hit)
+        return hit is not None
+
+    if not submit_fn(paths, surface_ref, boot_instruction(boot_prompt, nonce), marker, confirmed):
+        return None
+    return found[-1]
 
 
 def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
                   agent: str = agent_session.CLAUDE,
-                  log=lambda m: None) -> dict:  # pragma: no cover - live cmux I/O
+                  log=lambda m: None) -> dict:
     """Clear-AND-resume: reset the context window losslessly, then return the
     refreshed session record. Per-message thread continuity comes from
     conversation.jsonl (the boot prompt tells the session to reconstruct it), so
     a reset loses nothing.
 
-    claude — in-place /clear + resume: send /clear (as text, then an explicit
-    Enter keystroke; a trailing newline inside send_text does NOT reliably submit
-    a slash command), POLL for the post-clear "Welcome back" screen (feeding
-    during the ~2s reset window gets keystrokes swallowed), re-deliver the boot
-    prompt, then update the registry with the new transcript. The workspace and
-    surface are unchanged.
+    claude — in-place /clear + resume: send /clear (as text, then a separate
+    carriage return; a trailing newline inside the same send_text does NOT
+    reliably submit a slash command), POLL the bottom of the screen for the
+    post-clear welcome and an empty prompt box (feeding during the ~2s reset
+    window gets keystrokes swallowed; a full-history read could match the old
+    banner), re-deliver the boot prompt, then bind the registry to the
+    transcript that recorded it. The workspace and surface are unchanged. If
+    the boot prompt never lands, fall back to a lossless respawn.
 
     droid — respawn: Droid has no /clear slash command with the same semantics,
     so the lossless equivalent is to close this warm workspace and spawn a fresh
@@ -393,22 +639,23 @@ def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
     surface_ref = sess["surface_ref"]
     _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "/clear"})
     time.sleep(0.5)
-    _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+    send_enter(paths, surface_ref)
 
     for _ in range(15):
         time.sleep(1)
-        screen = _surface_read_text(paths, surface_ref)
-        if "Welcome back" in screen or "Tips for getting started" in screen:
+        screen = _surface_read_text(paths, surface_ref, lines=40)
+        welcomed = "Welcome back" in screen or "Tips for getting started" in screen
+        if welcomed and input_box_text(screen) == "":
             break
 
     time.sleep(1)
-    instruction = f"Read {boot_prompt} in full and execute every instruction in it."
-    feed(paths, surface_ref, instruction)
-
-    new_t = newest_transcript(sess["cwd"], agent)
-    if new_t:
-        write_session(paths, sess["ws_ref"], surface_ref, sess["cwd"], new_t,
-                      agent=agent)
+    transcript = deliver_boot(paths, surface_ref, sess["cwd"], boot_prompt, agent)
+    if not transcript:
+        log(f"boot prompt after /clear never submitted in {sess['ws_ref']} — respawning")
+        close_own_workspace(paths, sess["ws_ref"], log=log)
+        clear_session_registry(paths)
+        return spawn_session(paths, boot_prompt, log=log, agent=agent) or sess
+    write_session(paths, sess["ws_ref"], surface_ref, sess["cwd"], transcript, agent=agent)
     return read_session(paths) or sess
 
 
@@ -635,7 +882,7 @@ def _abandon_failed_spawn(paths: comms_lib.Paths, ws_ref: str | None,
 
 
 def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
-                  agent: str | None = None) -> dict | None:  # pragma: no cover - live cmux I/O
+                  agent: str | None = None) -> dict | None:
     """Spawn a fresh warm cmux session and deliver the responder boot prompt.
     Returns the session record on success, None on failure. Mirrors pulse.py's
     proven dispatch sequence.
@@ -646,9 +893,9 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     Claude's behavior is byte-identical to before while Droid gets its own."""
     agent = agent or agent_session.warm_agent()
     cmux = str(paths.cmux_bin)
-    rc, _, _ = comms_lib.run_cmd([cmux, "ping"], timeout=10)
+    rc, _, err = comms_lib.run_cmd([cmux, "ping"], timeout=10)
     if rc != 0:
-        log("cmux not running — cannot spawn warm session")
+        log(f"cmux isn't answering ({err.strip()[:120]}) — cannot spawn warm session")
         return None
 
     cwd = str(DISPATCH_CWD)
@@ -694,19 +941,15 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         return None
     surface_ref = sm.group(0)
 
-    project_dir = project_dir_for_cwd(cwd, agent)
-    project_dir.mkdir(parents=True, exist_ok=True)
-    before = {p.name for p in project_dir.glob("*.jsonl")}
-
     # Readiness gate: poll the boot screen for the per-agent ready marker
     # (banner or status bar), answering the first-launch trust prompt if/when it
     # shows. Both are delegated to await_ready so the ordering is unit-tested.
     def _answer_trust() -> None:
         _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "1"})
         # send_text streams keystrokes; give "1" a beat to land before Enter so
-        # the selection isn't submitted empty (mirrors feed()'s proven pattern).
+        # the selection isn't submitted empty (mirrors submit()'s pattern).
         time.sleep(0.5)
-        _cmux_rpc(paths, "surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+        send_enter(paths, surface_ref)
 
     ready, trust_answered = await_ready(
         read_screen=lambda: _surface_read_text(paths, surface_ref),
@@ -724,28 +967,21 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
         _abandon_failed_spawn(paths, ws_ref, log=log)
         return None
 
-    # Deliver the responder boot prompt by reference.
-    instruction = f"Read {boot_prompt} in full and execute every instruction in it."
-    feed(paths, surface_ref, instruction)
+    input_ready_re = _INPUT_READY_RE.get(agent)
+    if input_ready_re:
+        await_ready(
+            read_screen=lambda: _surface_read_text(paths, surface_ref, lines=40),
+            ready_re=input_ready_re, trust_marker=None, answer_trust=lambda: None,
+            attempts=INPUT_READY_SEC,
+        )
 
-    # Confirm submission via a new transcript carrying the prompt path.
-    sig = str(boot_prompt)[:60]
-    transcript = None
-    for _ in range(30):
-        for name in {p.name for p in project_dir.glob("*.jsonl")} - before:
-            try:
-                if sig in (project_dir / name).read_text():
-                    transcript = str(project_dir / name)
-                    break
-            except OSError:
-                continue
-        if transcript:
-            break
-        time.sleep(1)
-
+    # Deliver the responder boot prompt by reference, and keep the session only
+    # if its transcript shows the prompt was submitted.
+    transcript = deliver_boot(paths, surface_ref, cwd, boot_prompt, agent)
     if not transcript:
-        transcript = newest_transcript(cwd, agent)
-        log(f"warm session {ws_ref} spawned but boot submission unconfirmed")
+        log(f"{agent} boot prompt never submitted in {ws_ref}/{surface_ref}")
+        _abandon_failed_spawn(paths, ws_ref, log=log)
+        return None
 
     # Record the EXACT id this session launched with — the same `resolved` tuple
     # _warm_launch used above, captured once so a mid-boot backend toggle can't

@@ -20,7 +20,7 @@ Two cooperating jobs, each on its own thread under the shared shutdown Event:
 
   2. Heartbeat pager — every heartbeat_check_sec, read Assistant's pulse
      heartbeat.json; if stale (age > stale_heartbeat_sec) or status is bad,
-     send a templated urgent page, deduped to heartbeat_dedup_sec.
+     send one templated urgent page, then one message when it recovers.
 
 When Slack isn't configured (no token / no target / target not allowlisted),
 both jobs still run their read loops but skip the actual send — so an
@@ -36,6 +36,8 @@ import time
 from . import Subsystem
 from .. import brief, conversation, ledger, slack
 
+HOUSEKEEPING_KINDS = ("decision-transition", "strategist-autopause", "stranded", "skipped")
+
 
 class CommsSubsystem(Subsystem):
     name = "comms"
@@ -47,7 +49,7 @@ class CommsSubsystem(Subsystem):
         self._send_enabled = send_enabled and self.config.has_slack
         self._reader = ledger.LedgerReader(
             self.config.ledger_path, self.config.ledger_cursor_path)
-        self._last_alert = 0
+        self._paged_last_ts: int | None = None  # the stale heartbeat's last pulse when paged
         self._broadcasts = 0
         self._pages = 0
         self._threads: list[threading.Thread] = []
@@ -100,6 +102,11 @@ class CommsSubsystem(Subsystem):
         if kind in brief.RECEIPT_KINDS:
             self.log.debug("suppressed receipt broadcast kind=%s key=%s", kind, key)
             return
+        # Housekeeping the brief already shows; mirrors comms-listen.py's
+        # HOUSEKEEPING_KINDS.
+        if kind in HOUSEKEEPING_KINDS:
+            self.log.debug("suppressed housekeeping broadcast kind=%s key=%s", kind, key)
+            return
         if kind == "self-update" and "skip" in key:
             self.log.debug("suppressed self-update-skip broadcast key=%s", key)
             return
@@ -147,23 +154,31 @@ class CommsSubsystem(Subsystem):
         age = int(time.time()) - last_ts
         stale = age > self.config.stale_heartbeat_sec
         bad = hb.get("status") in {"frozen", "stale_world", "respawn-requested"}
-        now = int(time.time())
-        if (stale or bad) and now - self._last_alert >= self.config.heartbeat_dedup_sec:
-            body = slack.fmt_heartbeat_alert(hb, age)
-            if self._send_enabled:
-                try:
-                    slack.send(body, self.config.target, token=self.config.bot_token,
-                               allowed=self.config.allowed_targets, kind="urgent")
-                except RuntimeError as e:
-                    self.log.warning("heartbeat page failed target=%s: %s",
-                                     self.config.target, str(e)[:160])
-            else:
-                self.log.info("would page: heartbeat stale age=%ss (send disabled)", age)
-            self._last_alert = now
-            self._pages += 1
+        if (stale or bad) and self._paged_last_ts is None:
+            if self._send_heartbeat(slack.fmt_heartbeat_alert(hb, age), "urgent"):
+                self._paged_last_ts = last_ts
+                self._pages += 1
             self.log.warning("heartbeat-stale page age=%ss", age)
-        elif not (stale or bad):
-            self._last_alert = 0  # healthy → re-arm
+        elif not (stale or bad) and self._paged_last_ts is not None:
+            down = max(0, last_ts - self._paged_last_ts)
+            self._send_heartbeat(slack.fmt_heartbeat_recovered(hb, down), "action")
+            self._paged_last_ts = None
+            self.log.info("heartbeat recovered after %ss", down)
+
+    def _send_heartbeat(self, body: str, kind: str) -> bool:
+        """Send (or, with sending disabled, log) a heartbeat message. False only
+        when a real send failed, so the caller can try the page again."""
+        if not self._send_enabled:
+            self.log.info("would send heartbeat %s (send disabled)", kind)
+            return True
+        try:
+            slack.send(body, self.config.target, token=self.config.bot_token,
+                       allowed=self.config.allowed_targets, kind=kind)
+        except RuntimeError as e:
+            self.log.warning("heartbeat %s failed target=%s: %s",
+                             kind, self.config.target, str(e)[:160])
+            return False
+        return True
 
     def _read_heartbeat(self) -> dict:
         p = self.config.heartbeat_path

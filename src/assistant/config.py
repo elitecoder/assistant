@@ -35,7 +35,6 @@ DEFAULT_PULSE_INTERVAL_SEC = 300
 DEFAULT_STALE_HEARTBEAT_SEC = 1200
 DEFAULT_HEARTBEAT_CHECK_SEC = 60
 DEFAULT_LEDGER_POLL_SEC = 2.0
-DEFAULT_HEARTBEAT_DEDUP_SEC = 1800
 
 # ─── fleet dispatch caps — THE single source of truth (Keel M4/M14) ──────────
 #
@@ -83,7 +82,6 @@ class Config:
     stale_heartbeat_sec: int = DEFAULT_STALE_HEARTBEAT_SEC
     heartbeat_check_sec: int = DEFAULT_HEARTBEAT_CHECK_SEC
     ledger_poll_sec: float = DEFAULT_LEDGER_POLL_SEC
-    heartbeat_dedup_sec: int = DEFAULT_HEARTBEAT_DEDUP_SEC
 
     # slack comms (CommsSubsystem). bot_token is a property (env), never a field.
     target: str = ""
@@ -212,8 +210,6 @@ class Config:
                                                DEFAULT_HEARTBEAT_CHECK_SEC)),
             ledger_poll_sec=float(daemon.get("ledger_poll_sec",
                                              DEFAULT_LEDGER_POLL_SEC)),
-            heartbeat_dedup_sec=int(daemon.get("heartbeat_dedup_sec",
-                                               DEFAULT_HEARTBEAT_DEDUP_SEC)),
             target=target,
             allowed_targets=allowed,
         )

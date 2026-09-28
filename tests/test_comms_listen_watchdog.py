@@ -55,38 +55,52 @@ def env(tmp_path: Path, monkeypatch):
 # ─── watchdog_tick: the per-pass contract ───────────────────────────────────
 
 
-def test_watchdog_tick_calls_ensure_warm_session(env, monkeypatch):
-    """watchdog_tick delegates to ensure_warm_session exactly once with the
-    paths it was given. Mutation probe: if the watchdog stopped calling
-    ensure_warm_session (e.g. the body was stubbed out), calls would be empty."""
+def test_watchdog_tick_calls_warm_session(env, monkeypatch):
+    """watchdog_tick delegates to _warm_session exactly once with the paths it
+    was given. Mutation probe: if the watchdog stopped calling _warm_session
+    (e.g. the body was stubbed out), calls would be empty."""
     calls = []
 
-    def fake_ensure(paths):
+    def fake_warm(paths):
         calls.append(paths)
-        return {"ws_ref": "workspace:1"}
+        return {"ws_ref": "workspace:1"}, listen.SESSION_ALIVE
 
-    monkeypatch.setattr(listen, "ensure_warm_session", fake_ensure)
+    monkeypatch.setattr(listen, "_warm_session", fake_warm)
     status = listen.watchdog_tick(env)
     assert calls == [env]
     assert status == "alive"
 
 
+def test_watchdog_tick_spawned_counts_as_alive(env, monkeypatch):
+    monkeypatch.setattr(listen, "_warm_session",
+                        lambda paths: ({"ws_ref": "workspace:2"}, listen.SESSION_SPAWNED))
+    assert listen.watchdog_tick(env) == "alive"
+
+
 def test_watchdog_tick_no_session(env, monkeypatch):
-    """ensure_warm_session returning None (cmux down, spawn failed) must surface
-    as 'no-session', NOT 'alive'. Mutation probe: if watchdog_tick always
+    """_warm_session returning no session (spawn failed) must surface as
+    'no-session', NOT 'alive'. Mutation probe: if watchdog_tick always
     returned 'alive' (e.g. `return 'alive'` unconditionally), this fails."""
-    monkeypatch.setattr(listen, "ensure_warm_session", lambda paths: None)
+    monkeypatch.setattr(listen, "_warm_session", lambda paths: (None, listen.SESSION_NONE))
     assert listen.watchdog_tick(env) == "no-session"
 
 
+def test_watchdog_tick_reports_unresponsive_cmux_distinctly(env, monkeypatch):
+    """When cmux doesn't answer, the session is kept, and the tick says so
+    instead of claiming it's alive or missing."""
+    monkeypatch.setattr(listen, "_warm_session",
+                        lambda paths: ({"ws_ref": "workspace:3"}, listen.SESSION_UNREACHABLE))
+    assert listen.watchdog_tick(env) == "cmux-unresponsive"
+
+
 def test_watchdog_tick_survives_exception(env, monkeypatch):
-    """A transient cmux error inside ensure_warm_session must NOT propagate — the
+    """A transient cmux error inside _warm_session must NOT propagate — the
     watchdog thread would die and never retry. Mutation probe: removing the
     try/except (letting the exception raise) makes this test raise instead of
     returning an 'error:...' status."""
     def boom(paths):
         raise RuntimeError("cmux RPC timed out")
-    monkeypatch.setattr(listen, "ensure_warm_session", boom)
+    monkeypatch.setattr(listen, "_warm_session", boom)
     status = listen.watchdog_tick(env)
     assert status.startswith("error:")
     assert "RuntimeError" in status
@@ -97,7 +111,7 @@ def test_watchdog_tick_error_status_names_exception_type(env, monkeypatch):
     actionable (a ValueError vs a TimeoutError mean different things). Mutation
     probe: if the handler returned a generic 'error' without the type name,
     'OSError' would be absent."""
-    monkeypatch.setattr(listen, "ensure_warm_session",
+    monkeypatch.setattr(listen, "_warm_session",
                         lambda paths: (_ for _ in ()).throw(OSError("nope")))
     assert "OSError" in listen.watchdog_tick(env)
 
@@ -121,9 +135,9 @@ def test_watchdog_loop_self_heals_across_ticks(env, monkeypatch):
     stop.is_set()`), the second call would never happen and calls would be 1."""
     monkeypatch.setattr(listen.time, "sleep", lambda *a, **k: None)
 
-    seq = iter([None, {"ws_ref": "workspace:9"}])
+    seq = iter([(None, listen.SESSION_NONE), ({"ws_ref": "workspace:9"}, listen.SESSION_SPAWNED)])
     calls = []
-    monkeypatch.setattr(listen, "ensure_warm_session",
+    monkeypatch.setattr(listen, "_warm_session",
                         lambda paths: (calls.append(1), next(seq))[1])
     # Stop the loop after two `stop.wait` returns by pre-setting the event the
     # second time. We do that by making stop.wait set the event after the 2nd
@@ -177,8 +191,9 @@ def test_watchdog_loop_backs_off_on_repeated_failure(env, monkeypatch):
     waited WATCHDOG_INTERVAL_SEC, the captured waits would be all 60s."""
     monkeypatch.setattr(listen.time, "sleep", lambda *a, **k: None)
     # fail, fail, fail, then alive.
-    seq = iter([None, None, None, {"ws_ref": "workspace:9"}])
-    monkeypatch.setattr(listen, "ensure_warm_session", lambda paths: next(seq))
+    none = (None, listen.SESSION_NONE)
+    seq = iter([none, none, none, ({"ws_ref": "workspace:9"}, listen.SESSION_ALIVE)])
+    monkeypatch.setattr(listen, "_warm_session", lambda paths: next(seq))
 
     waits: list[float] = []
     stop = threading.Event()

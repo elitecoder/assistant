@@ -248,33 +248,34 @@ def test_drain_proposals_backlog_skipped_on_first_run(env_proposals):
 # ─── reply_to_message threads the session provider (G3 integration) ──────────
 #
 # A persisted droid session must thread agent="droid" into every transcript-root
-# / context call — newest_transcript, should_clear, and the clear_session
-# delegation — else it reads the wrong root and never clears. Zero real
-# cmux/network: every comms_session touchpoint + cli() is monkeypatched.
+# / context call — the project folder searched for the submission, should_clear,
+# and the clear_session delegation — else it reads the wrong root and never
+# clears. Zero real cmux/network: every comms_session touchpoint is
+# monkeypatched.
 
 
 @pytest.fixture
 def env_reply(monkeypatch):
-    """Stub every cmux/network touchpoint reply_to_message can reach; record the
-    agent threaded into each provider-aware call. transcript grows on the first
-    poll so the reply loop breaks without real sleeps."""
-    monkeypatch.setattr(listen.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(listen, "cli", lambda *a, **k: (0, "", ""))
+    """Stub every cmux touchpoint reply_to_message can reach; record the agent
+    threaded into each provider-aware call and what was typed."""
+    rec = {"typed": [], "found": "/warm-t.jsonl", "submitted": True}
 
-    rec = {}
-    monkeypatch.setattr(listen.comms_session, "feed", lambda *a, **k: None)
+    def fake_submit(paths, surface_ref, text, marker, confirmed):
+        rec["typed"].append((surface_ref, text, marker))
+        return rec["submitted"] and confirmed()
+    monkeypatch.setattr(listen.comms_session, "submit", fake_submit)
 
-    def fake_newest(cwd, agent="claude"):
-        rec["newest_agent"] = agent
-        return "/warm-t.jsonl"
-    monkeypatch.setattr(listen.comms_session, "newest_transcript", fake_newest)
-
-    counts = iter([0, 5, 5, 5])
-    monkeypatch.setattr(listen.comms_session, "transcript_line_count",
-                        lambda t: next(counts, 5))
+    def fake_project_dir(cwd, agent="claude"):
+        rec["project_dir_agent"] = agent
+        return Path("/proj")
+    monkeypatch.setattr(listen.comms_session, "project_dir_for_cwd", fake_project_dir)
+    monkeypatch.setattr(listen.comms_session, "transcript_has_submission",
+                        lambda path, marker: path == rec.get("bound_hit"))
+    monkeypatch.setattr(listen.comms_session, "find_submission",
+                        lambda d, marker, since: rec["found"])
 
     def fake_should_clear(transcript, agent="claude"):
-        rec["should_clear_agent"] = agent
+        rec["should_clear"] = (transcript, agent)
         return rec.get("_clear", True)
     monkeypatch.setattr(listen.comms_session, "should_clear", fake_should_clear)
 
@@ -286,43 +287,106 @@ def env_reply(monkeypatch):
         return refreshed
     monkeypatch.setattr(listen.comms_session, "clear_session", fake_clear)
 
-    def fake_write(*a, **k):
-        rec["wrote"] = True
+    def fake_write(paths, ws, surface, cwd, transcript, **k):
+        rec["wrote"] = transcript
     monkeypatch.setattr(listen.comms_session, "write_session", fake_write)
     monkeypatch.setattr(listen.comms_session, "read_session",
-                        lambda paths: {"agent": "droid"})
+                        lambda paths: {"agent": "droid", "transcript_path": rec.get("wrote")})
     return rec, refreshed
 
 
-def _droid_sess():
+def _droid_sess(transcript=None):
     return {"ws_ref": "workspace:5", "surface_ref": "surface:3", "cwd": "/cwd",
-            "transcript_path": None, "agent": "droid"}
+            "transcript_path": transcript, "agent": "droid"}
 
 
-def test_reply_threads_droid_agent_into_context_calls(env_reply):
-    rec, _ = env_reply
-    inbound = {"channel": "C0", "text": "hi", "msg_ts": "1.1", "reply_to": None}
-    listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess(), inbound)
-    assert rec["newest_agent"] == "droid"
-    assert rec["should_clear_agent"] == "droid"
+INBOUND = [{"channel": "C0", "text": "hi", "msg_ts": "1.1", "reply_to": None}]
 
 
-def test_reply_delegates_to_clear_session_and_returns_refreshed(env_reply):
-    rec, refreshed = env_reply
-    inbound = {"channel": "C0", "text": "hi", "msg_ts": "1.1", "reply_to": None}
-    out = listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess(), inbound)
-    assert rec["clear_agent"] == "droid"
-    assert out == refreshed
-
-
-def test_reply_no_clear_writes_session_and_skips_clear(env_reply):
+def test_reply_threads_droid_agent_into_context_calls(env_reply, env_inbox):
     rec, _ = env_reply
     rec["_clear"] = False
-    inbound = {"channel": "C0", "text": "hi", "msg_ts": "1.1", "reply_to": None}
-    out = listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess(), inbound)
-    assert "clear_agent" not in rec, "should_clear False must not delegate to clear_session"
-    assert rec.get("wrote") is True
-    assert out == {"agent": "droid"}
+    listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess("/t.jsonl"), INBOUND)
+    assert rec["project_dir_agent"] == "droid"
+    assert rec["should_clear"] == ("/t.jsonl", "droid")
+
+
+def test_reply_types_the_header_and_waits_for_its_marker(env_reply, env_inbox):
+    rec, _ = env_reply
+    listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess(), INBOUND)
+    [(surface, text, marker)] = rec["typed"]
+    assert surface == "surface:3"
+    assert text == f"[slack channel=C0 msg_ts=1.1 send_cli={listen.SLACK_SEND}] hi"
+    assert marker == "msg_ts=1.1"
+
+
+def test_reply_clears_a_full_session_before_feeding_it(env_reply, env_inbox):
+    """A full session is cleared BEFORE the next message is typed, not right
+    after one lands, so the clear never cuts into the reply it triggered; the
+    message then goes to the refreshed session."""
+    rec, refreshed = env_reply
+    delivered, out = listen.reply_to_message(listen.comms_lib.Paths.from_env(),
+                                             _droid_sess("/full.jsonl"), INBOUND)
+    assert rec["should_clear"] == ("/full.jsonl", "droid")
+    assert rec["clear_agent"] == "droid"
+    assert [t[0] for t in rec["typed"]] == ["surface:new"], "typed into the refreshed session"
+    assert delivered is True
+
+
+def test_reply_skips_the_clear_under_the_threshold(env_reply, env_inbox):
+    rec, _ = env_reply
+    rec["_clear"] = False
+    listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess("/ok.jsonl"), INBOUND)
+    assert "clear_agent" not in rec and [t[0] for t in rec["typed"]] == ["surface:3"]
+
+
+def test_reply_rebinds_to_the_transcript_that_recorded_the_message(env_reply, env_inbox):
+    """The recorded transcript was another session's (2026-09-28: ws:258 was
+    bound to ws:256's file). The message lands elsewhere, and the session is
+    rebound to where it landed."""
+    rec, _ = env_reply
+    rec["_clear"] = False
+    delivered, out = listen.reply_to_message(listen.comms_lib.Paths.from_env(),
+                                             _droid_sess("/wrong.jsonl"), INBOUND)
+    assert delivered is True
+    assert rec["wrote"] == "/warm-t.jsonl"
+    assert out["transcript_path"] == "/warm-t.jsonl"
+
+
+def test_reply_keeps_the_bound_transcript_when_the_message_lands_there(env_reply, env_inbox):
+    rec, _ = env_reply
+    rec["_clear"] = False
+    rec["bound_hit"] = "/bound.jsonl"
+    rec["found"] = "/somewhere-else.jsonl"
+    sess = _droid_sess("/bound.jsonl")
+    delivered, out = listen.reply_to_message(listen.comms_lib.Paths.from_env(), sess, INBOUND)
+    assert delivered is True and out is sess
+    assert "wrote" not in rec, "no rebind when the bound transcript recorded it"
+
+
+def test_reply_not_delivered_returns_false_and_leaves_the_session(env_reply, env_inbox):
+    rec, _ = env_reply
+    rec["submitted"] = False
+    sess = _droid_sess()
+    assert listen.reply_to_message(listen.comms_lib.Paths.from_env(), sess, INBOUND) == (False, sess)
+    assert "wrote" not in rec
+
+
+def test_reply_unconfirmed_when_no_transcript_recorded_it(env_reply, env_inbox):
+    rec, _ = env_reply
+    rec["found"] = None
+    rec["_clear"] = False
+    sess = _droid_sess("/bound.jsonl")
+    assert listen.reply_to_message(listen.comms_lib.Paths.from_env(), sess, INBOUND) == (False, sess)
+
+
+def test_feed_text_combines_messages_that_piled_up():
+    recs = [{"text": "Are you alive?", "msg_ts": "1.0"},
+            {"text": "Pulse active now?", "msg_ts": "2.0"}]
+    text = listen.feed_text(recs, "C0")
+    assert text.startswith(f"[slack channel=C0 msg_ts=2.0 send_cli={listen.SLACK_SEND}] ")
+    assert "2 messages arrived while your session was down" in text
+    assert "(1) Are you alive? (2) Pulse active now?" in text
 
 
 # ─── preflight doctor loader (regression: bare `import assistant_doctor` could
@@ -350,14 +414,17 @@ def test_load_doctor_runs_slack_checks():
 
 # ─── ensure_warm_session: respawn when the live session's model went stale ──────
 
-def _stub_warm(monkeypatch, *, alive: bool, model_current: bool):
+def _stub_warm(monkeypatch, *, alive: bool | None, model_current: bool):
     """Stub the comms_session machinery ensure_warm_session drives; return a dict
-    recording which lifecycle calls fired."""
+    recording which lifecycle calls fired. alive=None means cmux didn't answer."""
     rec = {"closed": [], "cleared": False, "spawned": False}
+    monkeypatch.setattr(listen, "_spawn_failures", 0)
     sess = {"ws_ref": "workspace:18", "agent": "claude",
             "model": "us.anthropic.claude-sonnet-4-6[1m]"}
+    state = {True: listen.comms_session.ALIVE, False: listen.comms_session.GONE,
+             None: listen.comms_session.UNKNOWN}[alive]
     monkeypatch.setattr(listen.comms_session, "read_session", lambda p: sess)
-    monkeypatch.setattr(listen.comms_session, "cmux_alive", lambda p, ref: alive)
+    monkeypatch.setattr(listen.comms_session, "workspace_state", lambda p, ref: state)
     monkeypatch.setattr(listen.comms_session, "warm_session_model_is_current",
                         lambda p, s: model_current)
     monkeypatch.setattr(listen.comms_session, "close_own_workspace",
@@ -412,3 +479,74 @@ def test_ensure_warm_session_respawns_when_gone(env_inbox, monkeypatch):
     rec, _ = _stub_warm(monkeypatch, alive=False, model_current=True)
     listen.ensure_warm_session(cl.Paths.from_env())
     assert rec["closed"] == ["workspace:18"] and rec["spawned"] is True
+
+
+def test_warm_session_left_alone_when_cmux_doesnt_answer(env_inbox, monkeypatch):
+    """2026-09-27: a napping cmux refused connections, and each refused check
+    closed a healthy warm session and spawned another onto the stalled cmux. A
+    check cmux doesn't answer must keep the session and spawn nothing, even on
+    the inbound path with a stale model. Mutation probe: treat UNKNOWN like
+    GONE and the session is closed and respawned."""
+    listen._cmux_silent_since = None
+    rec, sess = _stub_warm(monkeypatch, alive=None, model_current=False)
+    out, how = listen._warm_session(cl.Paths.from_env(), respawn_on_stale=True)
+    assert out is sess and how == listen.SESSION_UNREACHABLE
+    assert rec["closed"] == [] and rec["spawned"] is False and rec["cleared"] is False
+    log = (cl.Paths.from_env().comms_dir / "comms-listen.log").read_text()
+    assert log.count("cmux isn't answering") == 1
+    listen._warm_session(cl.Paths.from_env())
+    log = (cl.Paths.from_env().comms_dir / "comms-listen.log").read_text()
+    assert log.count("cmux isn't answering") == 1, "one log line per silent episode"
+
+
+def test_warm_session_logs_when_cmux_answers_again(env_inbox, monkeypatch):
+    listen._cmux_silent_since = listen.time.time() - 42
+    rec, sess = _stub_warm(monkeypatch, alive=True, model_current=True)
+    out, how = listen._warm_session(cl.Paths.from_env())
+    assert out is sess and how == listen.SESSION_ALIVE
+    assert listen._cmux_silent_since is None
+    assert "cmux answering again after" in (
+        cl.Paths.from_env().comms_dir / "comms-listen.log").read_text()
+
+
+def test_warm_session_replace_ws_replaces_the_session_that_failed(env_inbox, monkeypatch):
+    """A live session that didn't accept a typed message is replaced, so the
+    queued message lands in a fresh one."""
+    rec, _ = _stub_warm(monkeypatch, alive=True, model_current=True)
+    out, how = listen._warm_session(cl.Paths.from_env(), replace_ws="workspace:18")
+    assert rec["closed"] == ["workspace:18"] and rec["spawned"] is True
+    assert how == listen.SESSION_SPAWNED and out["ws_ref"] == "workspace:19"
+
+
+def test_warm_session_replace_ws_never_closes_a_newer_session(env_inbox, monkeypatch):
+    """By the time the replace runs, another path may already have put a
+    healthy session in the registry; that one must survive."""
+    rec, sess = _stub_warm(monkeypatch, alive=True, model_current=True)
+    out, how = listen._warm_session(cl.Paths.from_env(), replace_ws="workspace:17")
+    assert out is sess and how == listen.SESSION_ALIVE
+    assert rec["closed"] == [] and rec["spawned"] is False
+
+
+def test_warm_session_spawn_backs_off_after_a_failure(env_inbox, monkeypatch):
+    """Every caller shares one spawn backoff, so inbound retries can't bring
+    back the 2026-09-14 respawn storm. Mutation probe: drop the backoff check
+    and the second call spawns again."""
+    rec, _ = _stub_warm(monkeypatch, alive=False, model_current=True)
+    spawns = []
+    monkeypatch.setattr(listen.comms_session, "spawn_session",
+                        lambda p, prompt, log=None: spawns.append(1))
+    assert listen._warm_session(cl.Paths.from_env()) == (None, listen.SESSION_NONE)
+    assert listen._warm_session(cl.Paths.from_env()) == (None, listen.SESSION_NONE)
+    assert spawns == [1], "the second call inside the backoff window doesn't spawn"
+    assert "spawn backing off" in (cl.Paths.from_env().comms_dir / "comms-listen.log").read_text()
+    monkeypatch.setattr(listen, "_spawn_failed_at", 0.0)
+    monkeypatch.setattr(listen.comms_session, "spawn_session",
+                        lambda p, prompt, log=None: {"ws_ref": "workspace:30"})
+    out, how = listen._warm_session(cl.Paths.from_env())
+    assert how == listen.SESSION_SPAWNED and listen._spawn_failures == 0
+
+
+def test_spawn_backoff_remaining_follows_the_watchdog_curve():
+    assert listen.spawn_backoff_remaining(0, 100.0, 100.0) == 0.0
+    assert listen.spawn_backoff_remaining(1, 100.0, 130.0) == listen.watchdog_delay(1) - 30
+    assert listen.spawn_backoff_remaining(3, 100.0, 100.0 + 10_000) == 0.0

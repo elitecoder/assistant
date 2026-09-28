@@ -8,6 +8,7 @@ constants (launch command, readiness markers, dispatch-agent resolution).
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -69,6 +70,19 @@ def test_project_slug_and_confirm_dir_share_convention():
     assert cd_droid.parent == ag.transcript_root(ag.DROID)
     assert ag.confirm_dir(ag.DROID, "/tmp", home="/sandbox").parent == (
         Path("/sandbox/.factory/sessions"))
+
+
+def test_claude_confirm_dir_maps_every_non_alphanumeric(tmp_path):
+    """Claude names the folder for /x/.worktrees/a_b as -x--worktrees-a-b. The
+    old '/'-only slug pointed the warm-session boot check at an empty folder
+    whenever the checkout sat under .worktrees."""
+    cwd = tmp_path / ".worktrees" / "comms_fix"
+    cwd.mkdir(parents=True)
+    real = os.path.realpath(cwd)
+    want = "".join(c if c.isalnum() or c == "-" else "-" for c in real)
+    assert ag.claude_project_slug(cwd) == want
+    assert ag.confirm_dir(ag.CLAUDE, cwd).name == want
+    assert ag.confirm_dir(ag.DROID, cwd).name == ag.project_slug(cwd)
 
 
 # ── spawn policy ──────────────────────────────────────────────────────────────

@@ -95,6 +95,42 @@ class TestPatternMatching(unittest.TestCase):
         hits = bank.match("a thing happened")
         self.assertEqual(hits[0]["id"], "highp")  # high sorts first
 
+    def _write_june_bank(self, ci_green_extra=None):
+        """The on-disk bank written before ci-green gained `suppress`."""
+        ci_green = {"id": "ci-green", "regex": r"CI (is )?green",
+                    "signal": "work_complete", "priority": "medium",
+                    **(ci_green_extra or {})}
+        self.bank_path.write_text(json.dumps({"version": 1, "patterns": [
+            ci_green,
+            {"id": "pr-opened", "regex": r"PR #\d+ opened",
+             "signal": "work_complete", "priority": "high"},
+        ]}))
+
+    def test_old_bank_inherits_default_suppress(self):
+        self._write_june_bank()
+        before = self.bank_path.read_text()
+        bank = self._bank()
+        by_id = {p["id"]: p for p in bank.patterns}
+        self.assertIs(by_id["ci-green"]["suppress"], True)
+        # pr-opened has no suppress in the defaults, so nothing is invented.
+        self.assertNotIn("suppress", by_id["pr-opened"])
+        self.assertEqual(self.bank_path.read_text(), before, "the user's file must not be rewritten")
+
+    def test_old_bank_ci_green_turn_end_is_silent(self):
+        self._write_june_bank()
+        bank = self._bank()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Stop", request_id="rCI"), bank,
+            self.mod.WatcherState(cooldown_sec=0), FakeResolver(),
+            screen_reader=lambda ws: "All done — CI is green",
+            message_reader=MessageReaderSpy())
+        self.assertIsNone(res, "a suppressed default must stay quiet in an old bank")
+
+    def test_explicit_suppress_in_file_wins(self):
+        self._write_june_bank({"suppress": False})
+        by_id = {p["id"]: p for p in self._bank().patterns}
+        self.assertIs(by_id["ci-green"]["suppress"], False)
+
 
 class TestInboxDrop(unittest.TestCase):
     def setUp(self):
@@ -128,6 +164,18 @@ class TestInboxDrop(unittest.TestCase):
         self.assertEqual(item["pattern_matched"], "awaiting-review")
         self.assertIn("ts", item)
         self.assertIn("screen_snippet", item)
+        self.assertNotIn("ws_title", item, "unresolved title must be omitted, not null")
+        self.assertNotIn("last_message", item)
+
+    def test_inbox_drop_carries_title_and_last_message(self):
+        path = self.mod.drop_inbox_item(
+            "workspace:244", "needs_input", "AskUserQuestion", "snippet",
+            inbox_dir=self.inbox, ws_title="Green E2E Suite",
+            last_message="Should I rebase or merge main?")
+        item = json.loads(path.read_text())
+        self.assertEqual(item["ws_title"], "Green E2E Suite")
+        self.assertEqual(item["last_message"], "Should I rebase or merge main?")
+        self.assertEqual(item["screen_snippet"], "snippet")
 
     def test_inbox_filename_prefix(self):
         path = self.mod.drop_inbox_item(
@@ -139,7 +187,8 @@ class TestInboxDrop(unittest.TestCase):
 
 # ─── cmux-watcher: event classification + end-to-end handling ─────────────────
 
-def _evt(name, *, request_id="r1", workspace_id="UUID-1", cwd="/x", phase="completed"):
+def _evt(name, *, request_id="r1", workspace_id="UUID-1", cwd="/x", phase="completed",
+         session_id="sess-1"):
     return {
         "type": "event",
         "name": name,
@@ -148,9 +197,36 @@ def _evt(name, *, request_id="r1", workspace_id="UUID-1", cwd="/x", phase="compl
             "_opencode_request_id": request_id,
             "workspace_id": workspace_id,
             "cwd": cwd,
+            "session_id": session_id,
             "phase": phase,
         },
     }
+
+
+class FakeResolver:
+    """Never shells out: every UUID resolves to one ref and (optionally) a title."""
+
+    def __init__(self, ref="workspace:99", title=None):
+        self.ref = ref
+        self._title = title
+
+    def resolve(self, uuid):
+        return self.ref if uuid else None
+
+    def title(self, uuid):
+        return self._title if uuid else None
+
+
+class MessageReaderSpy:
+    """Stands in for read_last_message; records each call's arguments."""
+
+    def __init__(self, reply=None):
+        self.reply = reply
+        self.calls = []
+
+    def __call__(self, cwd, session_id, *, question):
+        self.calls.append((cwd, session_id, question))
+        return self.reply
 
 
 class TestEventHandling(unittest.TestCase):
@@ -170,13 +246,10 @@ class TestEventHandling(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _components(self):
+    def _components(self, title=None):
         bank = self.mod.PatternBank(self.assistant / "pattern_bank.json")
         state = self.mod.WatcherState(cooldown_sec=0)
-        # Resolver that never shells out: identity map.
-        resolver = mock.Mock()
-        resolver.resolve = lambda u: ("workspace:99" if u else None)
-        return bank, state, resolver
+        return bank, state, FakeResolver(title=title)
 
     def test_ack_and_heartbeat_ignored(self):
         self.assertIsNone(self.mod.classify_event({"type": "ack"}))
@@ -193,6 +266,47 @@ class TestEventHandling(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertEqual(res["signal_type"], "needs_input")
         self.assertEqual(res["pattern_matched"], "AskUserQuestion")
+
+    def test_classify_passes_session_id_through(self):
+        cls = self.mod.classify_event(_evt("agent.hook.Stop", session_id="S-42"))
+        self.assertEqual(cls["session_id"], "S-42")
+
+    def test_ask_user_question_reads_pending_question(self):
+        bank, state, resolver = self._components(title="Fix archself deferral door")
+        reader = MessageReaderSpy(reply="Should I rebase or merge main?")
+        res = self.mod.handle_event(
+            _evt("agent.hook.AskUserQuestion", cwd="/w/repo", session_id="S-1"),
+            bank, state, resolver, screen_reader=lambda ws: "Which option?",
+            message_reader=reader)
+        self.assertEqual(reader.calls, [("/w/repo", "S-1", True)])
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["ws_title"], "Fix archself deferral door")
+        self.assertEqual(item["last_message"], "Should I rebase or merge main?")
+
+    def test_notification_reads_last_text_not_question(self):
+        bank, state, resolver = self._components()
+        reader = MessageReaderSpy()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="rN2", session_id="S-2"),
+            bank, state, resolver, screen_reader=lambda ws: "waiting",
+            message_reader=reader)
+        self.assertEqual(reader.calls, [("/x", "S-2", False)])
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertNotIn("ws_title", item)
+        self.assertNotIn("last_message", item)
+
+    def test_turn_end_drop_carries_title_and_last_text(self):
+        bank, state, resolver = self._components(title="Green E2E Suite")
+        reader = MessageReaderSpy(reply="Opened the PR; CI is running.")
+        res = self.mod.handle_event(
+            _evt("agent.hook.Stop", request_id="rS2", session_id="S-3"),
+            bank, state, resolver,
+            screen_reader=lambda ws: "Done. PR #321 opened for review.",
+            message_reader=reader)
+        self.assertEqual(reader.calls, [("/x", "S-3", False)])
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["ws_title"], "Green E2E Suite")
+        self.assertEqual(item["last_message"], "Opened the PR; CI is running.")
 
     def test_notification_drops_needs_input(self):
         bank, state, resolver = self._components()
@@ -241,8 +355,7 @@ class TestEventHandling(unittest.TestCase):
     def test_cooldown_suppresses_repeat(self):
         bank = self.mod.PatternBank(self.assistant / "pattern_bank.json")
         state = self.mod.WatcherState(cooldown_sec=3600)  # long cooldown
-        resolver = mock.Mock()
-        resolver.resolve = lambda u: "workspace:5"
+        resolver = FakeResolver(ref="workspace:5")
         a = self.mod.handle_event(
             _evt("agent.hook.Notification", request_id="c1"), bank, state, resolver,
             screen_reader=lambda ws: "x")
@@ -262,6 +375,251 @@ class TestEventHandling(unittest.TestCase):
                                       screen_reader=lambda ws: "")
             except Exception as e:  # noqa: BLE001
                 self.fail(f"handle_event raised on {bad!r}: {e}")
+
+
+# ─── screen snippet filtering ─────────────────────────────────────────────────
+
+class TestScreenSnippet(unittest.TestCase):
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        home = Path(self._tmp.name)
+        self.mod = load_module("cmux_watcher_snip", "bin/cmux-watcher.py", {
+            "HOME": str(home),
+            "CMUX_WATCHER_ASSISTANT_DIR": str(home / ".assistant"),
+            "CMUX_PATTERN_BANK": str(home / ".assistant" / "pattern_bank.json"),
+        })
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_drops_claude_code_chrome_keeps_content(self):
+        # Every noise line sits after real content, so a filter that stops
+        # working pushes its line into the snippet.
+        screen = "\n".join([
+            "⏺ Merged #367 after both reviews came back clean.",
+            "  │ PR   │ State  │ Tests │",
+            "❯ Great, leave this as a comment on #273",
+            "✽ Boogieing… (12m 1s · ↓ 48.9k tokens)",
+            "✻ Baked for 2m 10s · done 10:40 PM",
+            "✻ Brewed for 15m 33s · done 8:28 AM · 4 messages hidden (/focus to show)",
+            "❯",
+            "❯   ",
+            "  architect-ffp/wt-348 fix/x │ ●114 ●1 │ context 43% │ $85.54 │ #6746dc4f",
+            "wt-ptt │ context 58% │ $129.24 │ #6746dc4f",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+            "─────────────────────",
+            " " * 60 + "✔ Update installed · Restart to update",
+            " v1.0.85 downloaded · run /restart to apply · ? help",
+            "┃",
+            "╹▀▀▀▀▀▀▀▀━━━",
+            "╻▄▄▄▄▄▄▄▄",
+            "  ┌────┬────┐",
+            "  ├────┼────┤",
+            "  └────┴────┘",
+        ])
+        self.assertEqual(self.mod.last_lines(screen, n=10), "\n".join([
+            "⏺ Merged #367 after both reviews came back clean.",
+            "  │ PR   │ State  │ Tests │",
+            "❯ Great, leave this as a comment on #273",
+        ]))
+
+    def test_keeps_lines_that_only_look_like_chrome(self):
+        screen = "\n".join([
+            "⏺ Checking CI… still running",
+            "- Fixed for 3 users, reverted for 2m users",
+            "· Reading 3 files…",
+            "a │ b",
+        ])
+        self.assertEqual(self.mod.last_lines(screen, n=10), screen)
+
+
+# ─── workspace title resolution ───────────────────────────────────────────────
+
+class TestWsRefResolver(unittest.TestCase):
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        home = Path(self._tmp.name)
+        self.mod = load_module("cmux_watcher_res", "bin/cmux-watcher.py", {
+            "HOME": str(home),
+            "CMUX_WATCHER_ASSISTANT_DIR": str(home / ".assistant"),
+            "CMUX_PATTERN_BANK": str(home / ".assistant" / "pattern_bank.json"),
+        })
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_resolves_ref_and_human_title(self):
+        # The live `cmux rpc workspace.list` shape: title carries a " [NN]" suffix.
+        listing = {"window_id": "W", "workspaces": [
+            {"id": "aaaa-1", "ref": "workspace:244", "title": "Green E2E Suite [244]"},
+            {"id": "bbbb-2", "ref": "workspace:7", "title": ""},
+            {"id": "cccc-3", "ref": "workspace:259", "title": "Terminal [259]"},
+        ]}
+        with mock.patch.object(self.mod, "_run", return_value=(0, json.dumps(listing), "")):
+            resolver = self.mod.WsRefResolver(clock=lambda: 1000.0)
+            self.assertEqual(resolver.resolve("AAAA-1"), "workspace:244")
+            self.assertEqual(resolver.title("AAAA-1"), "Green E2E Suite")
+            self.assertEqual(resolver.resolve("bbbb-2"), "workspace:7")
+            self.assertIsNone(resolver.title("bbbb-2"), "an empty title is not stored")
+            self.assertIsNone(resolver.title("cccc-3"), "cmux's default name says nothing")
+            self.assertIsNone(resolver.title(None))
+
+    def test_human_title_strips_only_the_ref_suffix(self):
+        self.assertEqual(self.mod.human_title("Fix [WIP] ruler [12]"), "Fix [WIP] ruler")
+        self.assertEqual(self.mod.human_title(None), "")
+
+
+# ─── agent's last message (transcript tail) ───────────────────────────────────
+
+def _assistant(*blocks):
+    return {"type": "assistant", "message": {"role": "assistant", "content": list(blocks)}}
+
+
+def _user(*blocks):
+    return {"type": "user", "message": {"role": "user", "content": list(blocks)}}
+
+
+def _ask(tool_id, question):
+    return {"type": "tool_use", "id": tool_id, "name": "AskUserQuestion",
+            "input": {"questions": [{"question": question, "header": "h",
+                                     "options": [{"label": "a"}, {"label": "b"}]}]}}
+
+
+def _answer(tool_id):
+    return {"type": "tool_result", "tool_use_id": tool_id, "content": "a"}
+
+
+class TestLastMessage(unittest.TestCase):
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.home = Path(self._tmp.name)
+        self.mod = load_module("cmux_watcher_msg", "bin/cmux-watcher.py", {
+            "HOME": str(self.home),
+            "CMUX_WATCHER_ASSISTANT_DIR": str(self.home / ".assistant"),
+            "CMUX_PATTERN_BANK": str(self.home / ".assistant" / "pattern_bank.json"),
+        })
+        self.projects = self.home / ".claude" / "projects"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _transcript(self, slug, session_id, records):
+        d = self.projects / slug
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{session_id}.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in records))
+        return p
+
+    def test_project_slug_maps_every_non_alphanumeric(self):
+        cwd = self.home / "dev" / "assistant" / ".worktrees" / "comms_fix"
+        cwd.mkdir(parents=True)
+        expected = os.path.realpath(str(cwd)).replace("/", "-").replace(".", "-").replace("_", "-")
+        self.assertEqual(self.mod.agent_session.claude_project_slug(str(cwd)), expected)
+        self.assertIn("--worktrees-comms-fix", expected)
+
+    def test_transcript_path_direct_hit_skips_the_scan(self):
+        cwd = "/Users/me/dev/assistant/.worktrees/x"
+        want = self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-1", [])
+        with mock.patch.object(Path, "iterdir", side_effect=AssertionError("scanned all dirs")):
+            self.assertEqual(self.mod.transcript_path(cwd, "sess-1", self.projects), want)
+
+    def test_transcript_path_finds_session_after_cwd_drift(self):
+        want = self._transcript("-Users-me-launch-dir", "sess-2", [])
+        self.assertEqual(self.mod.transcript_path("/Users/me/elsewhere", "sess-2", self.projects), want)
+        self.assertEqual(self.mod.transcript_path(None, "sess-2", self.projects), want)
+        self.assertIsNone(self.mod.transcript_path("/Users/me/elsewhere", "sess-404", self.projects))
+
+    def test_transcript_path_rejects_unsafe_or_missing_session_id(self):
+        self._transcript("-a", "ok", [])
+        # Without the id check this path-walks back into -a/ and finds ok.jsonl.
+        self.assertIsNone(self.mod.transcript_path("/a", "../-a/ok", self.projects))
+        self.assertIsNone(self.mod.transcript_path("/a", None, self.projects))
+
+    def test_tail_records_reads_only_the_tail_and_skips_junk(self):
+        p = self.projects / "t.jsonl"
+        p.parent.mkdir(parents=True)
+        old = json.dumps({"n": "old", "pad": "x" * 500})
+        p.write_text("\n".join([old, "not json", "[1, 2]", json.dumps({"n": "new"})]) + "\n")
+        self.assertEqual(self.mod.tail_records(p, max_bytes=200), [{"n": "new"}])
+        self.assertEqual([r["n"] for r in self.mod.tail_records(p)], ["old", "new"])
+
+    def test_pending_question_returns_unanswered_newest(self):
+        records = [
+            _assistant(_ask("t1", "Old question?")),
+            _user(_answer("t1")),
+            _assistant({"type": "text", "text": "Two ways to go."}),
+            _assistant(_ask("t2", "Should I rebase or merge main?")),
+        ]
+        self.assertEqual(self.mod.pending_question(records), "Should I rebase or merge main?")
+
+    def test_pending_question_none_when_newest_is_answered(self):
+        records = [_assistant(_ask("t1", "Old question?")), _user(_answer("t1"))]
+        self.assertIsNone(self.mod.pending_question(records))
+
+    def test_pending_question_none_for_missing_or_blank_text(self):
+        blank = _ask("t1", "   ")
+        empty = {"type": "tool_use", "id": "t2", "name": "AskUserQuestion", "input": {}}
+        self.assertIsNone(self.mod.pending_question([_assistant(blank)]))
+        self.assertIsNone(self.mod.pending_question([_assistant(empty)]))
+        self.assertIsNone(self.mod.pending_question([_assistant({"type": "text", "text": "hi"})]))
+
+    def test_last_assistant_text_skips_user_and_non_text_blocks(self):
+        records = [
+            _assistant({"type": "text", "text": "Opened the PR."}),
+            _assistant({"type": "text", "text": "  "}, {"type": "tool_use", "name": "Bash",
+                                                       "input": {}}),
+            {"type": "assistant", "message": {"role": "assistant", "content": "plain string"}},
+            {"type": "summary", "summary": "not a turn"},
+            _assistant({"type": "tool_result", "text": "tool output, not the agent"}),
+            _user({"type": "text", "text": "the user's reply"}),
+        ]
+        self.assertEqual(self.mod.last_assistant_text(records), "Opened the PR.")
+        self.assertIsNone(self.mod.last_assistant_text([_user({"type": "text", "text": "x"})]))
+
+    def test_trim_words(self):
+        self.assertEqual(self.mod.trim_words("a\n\n  b"), "a b")
+        long = "word " * 100
+        trimmed = self.mod.trim_words(long, limit=23)
+        self.assertEqual(trimmed, "word word word word…")
+
+    def test_read_last_message_end_to_end(self):
+        cwd = "/Users/me/dev/proj"
+        records = [
+            _assistant({"type": "text", "text": "I found two ways.\n\nPick one."}),
+            _assistant(_ask("t9", "Should I rebase or merge main?")),
+        ]
+        self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-9", records)
+        self.assertEqual(self.mod.read_last_message(cwd, "sess-9", question=True),
+                         "Should I rebase or merge main?")
+        self.assertEqual(self.mod.read_last_message(cwd, "sess-9", question=False),
+                         "I found two ways. Pick one.")
+        self.assertIsNone(self.mod.read_last_message(cwd, "sess-404", question=False))
+
+    def test_live_payload_shape_finds_the_question(self):
+        # Live cmux payloads prefix the id (`claude-<uuid>`) while the file is
+        # `<uuid>.jsonl`, and the hook cwd drifts from the launch project dir.
+        uuid = "6746dc4f-9eca-4f38-9eb6-89a126ff3b53"
+        self._transcript("-Users-me-dev-architect-ffp", uuid,
+                         [_assistant(_ask("t1", "Should I rebase or merge main?"))])
+        bank = self.mod.PatternBank(self.home / ".assistant" / "pattern_bank.json")
+        res = self.mod.handle_event(
+            _evt("agent.hook.AskUserQuestion", cwd="/private/tmp/wt-261",
+                 session_id=f"claude-{uuid}"),
+            bank, self.mod.WatcherState(cooldown_sec=0), FakeResolver(title="T"),
+            screen_reader=lambda ws: "Which option?")
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["last_message"], "Should I rebase or merge main?")
+
+    def test_read_last_message_none_when_nothing_to_say(self):
+        cwd = "/Users/me/dev/quiet"
+        self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-q",
+                         [_user({"type": "text", "text": "hello?"})])
+        self.assertIsNone(self.mod.read_last_message(cwd, "sess-q", question=False))
+
+    def test_read_last_message_never_raises(self):
+        # No ~/.claude/projects at all: the scan fails, the drop must not.
+        self.assertIsNone(self.mod.read_last_message("/nowhere", "sess-x", question=False))
+        self.assertFalse(self.projects.exists())
 
 
 # ─── pattern hot-reload ────────────────────────────────────────────────────────

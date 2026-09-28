@@ -60,10 +60,18 @@ def project_slug(cwd: str | Path) -> str:
     return os.path.realpath(str(cwd)).replace("/", "-")
 
 
+def claude_project_slug(cwd: str | Path) -> str:
+    """The project dir name Claude Code uses for `cwd`: every non-alphanumeric
+    character of the real path becomes `-`, so `/x/.worktrees/a_b` is
+    `-x--worktrees-a-b`. Same as project_slug for plain paths."""
+    return re.sub(r"[^A-Za-z0-9-]", "-", project_slug(cwd))
+
+
 def confirm_dir(agent: str, cwd: str | Path,
                 home: str | Path | None = None) -> Path:
     """Per-cwd transcript dir a freshly-spawned `agent` session writes into."""
-    return transcript_root(agent, home=home) / project_slug(cwd)
+    slug = project_slug(cwd) if agent == DROID else claude_project_slug(cwd)
+    return transcript_root(agent, home=home) / slug
 
 
 def record_role(obj: object) -> str | None:
