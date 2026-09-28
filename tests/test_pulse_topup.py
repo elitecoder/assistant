@@ -216,6 +216,47 @@ def test_self_update_reason_stash_failed(mod, home):
     assert e["key"] == "self-update-stash-failed-p9"
 
 
+def test_self_update_reason_syntax_fail(mod, home):
+    _inject_self_update(mod, {
+        "changed": False, "skipped_reason": "syntax-fail",
+        "from_sha": "aaaaaaaaaaaa", "to_sha": "bbbbbbbbbbbb",
+        "syntax_error": "conflict marker at bin/pulse.py:42",
+    })
+    try:
+        mod.self_update_pulse(13)
+    finally:
+        sys.modules.pop("self_update", None)
+    e = _read_ledger(home)[0]
+    assert e["outcome"] == "failed"
+    assert e["kind"] == "self-update-syntax-fail"
+    assert e["key"] == "self-update-syntax-fail-p13"
+    assert e["evidence"] == ("refused self-update aaaaaaaaaaaa..bbbbbbbbbbbb "
+                             "(pull by hand if this is wrong): "
+                             "conflict marker at bin/pulse.py:42")
+
+
+def test_self_update_already_refused_commit_is_silent(mod, home):
+    _inject_self_update(mod, {"changed": False, "skipped_reason": "syntax-fail-known"})
+    try:
+        mod.self_update_pulse(14)
+    finally:
+        sys.modules.pop("self_update", None)
+    assert _read_ledger(home) == []
+
+
+def test_self_update_gate_error_is_recorded(mod, home):
+    _inject_self_update(mod, {"changed": False, "skipped_reason": "gate-error",
+                              "error": "could not read bin/pulse.py at bbbb"})
+    try:
+        mod.self_update_pulse(15)
+    finally:
+        sys.modules.pop("self_update", None)
+    e = _read_ledger(home)[0]
+    assert e["outcome"] == "failed"
+    assert e["kind"] == "self-update"
+    assert e["evidence"] == "self-update gate-error: could not read bin/pulse.py at bbbb"
+
+
 def test_self_update_other_reason_failed(mod, home):
     _inject_self_update(mod, {
         "changed": False, "skipped_reason": "pull-failed",

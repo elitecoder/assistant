@@ -17,8 +17,9 @@ Why B, after reading bin/pulse.py:
   - The pulse spawns its own Observer subprocesses, writes its own heartbeat,
     and is the most safety-critical component. A subprocess gives us complete
     isolation and byte-for-byte compatibility with the system that runs today:
-    the daemon runs EXACTLY `python3 bin/pulse.py`, the same command the
-    com.assistant.assistant-pulse LaunchAgent runs.
+    the daemon runs EXACTLY `python3 bin/pulse.py`, the command the
+    com.assistant.assistant-pulse LaunchAgent execs after its bin/run-pulse.py
+    pre-flight.
 
 So this subsystem is a clean supervisor loop: run one pulse, sleep
 `pulse_interval_sec`, repeat — interruptible on shutdown. Bedrock env is merged

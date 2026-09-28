@@ -10,6 +10,19 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Check every self-update before it lands: read each runtime file the fetched
+  commits add or change straight from git, scan it for leftover merge conflict
+  markers, and parse it if it's Python. If a file fails, refuse the update
+  before anything is stashed or merged, and record the failure on the
+  dashboard. Skip that commit quietly until the remote moves, with a reminder
+  once a day. Updates now fast-forward to exactly the commit that was checked.
+- Run the pulse through a pre-flight (`bin/run-pulse.py`) that parses `pulse.py`
+  and the modules it loads at startup before each start. If one won't parse,
+  the pre-flight skips the run and exits cleanly instead of crashing. The
+  dashboard shows the error at the top of the page until a pulse runs again, and
+  an actions-ledger entry reaches Slack for a new error, then once a day. New installs
+  get this right away. Existing machines pick it up after a reboot, a logout, or
+  a manual reload of the pulse LaunchAgent, since self-update defers that reload.
 - Enforce 100% changed-code coverage with separate Python and real-browser reports.
   Add missing failure-path tests and repeatable mutation checks for key protections.
   Bind reports to measured sources and correctly map multiline Python and JavaScript changes.
@@ -27,6 +40,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Pin the clock in the review-topic focus test so it stops failing once its fixture alert is more than 4 days old.
 - Download browser-check dependencies publicly so CI doesn't require Adobe's internal network.
 - Invalidate return notes after completed tool traffic; require review before reusing older notes.
 - Block close-out for unverified terminals, and safely show incomplete question choices.

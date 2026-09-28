@@ -317,6 +317,10 @@ class BriefTabTests(unittest.TestCase):
         self.write_brief(brief_fixture())
         checked_at = "2026-09-19T10:10:00-07:00"
         checked_epoch = datetime.fromisoformat(checked_at).timestamp()
+        # Pin the clock an hour after the check: freshness decays to 0 within
+        # 4 days, after which "New topic alert" no longer outranks "Old topic alert".
+        self.enterContext(patch.object(self.mod.brief_store.time, "time",
+                                       return_value=checked_epoch + 3600))
         old = {"id": "old-alert", "title": "Old topic alert", "source": "github",
                "refs": {"repo": "adobe/firefly-platform", "pr": 15561},
                "created_epoch": NOW, "epoch": checked_epoch + 60}

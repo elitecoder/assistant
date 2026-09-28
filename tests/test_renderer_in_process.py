@@ -104,6 +104,40 @@ class PulseHealthTests(unittest.TestCase):
         self.assertIn("pulse-bad", html)
         self.assertIn("Pulse stale", html)
 
+    def _write_preflight(self, payload) -> None:
+        (self._tmp / ".assistant/pulse-preflight.json").write_text(
+            payload if isinstance(payload, str) else json.dumps(payload))
+
+    def test_preflight_failure_after_last_pulse_renders_top_alert(self):
+        now = int(time.time())
+        self._write_heartbeat({"last_pulse_ts": now - 30, "pulse_idx": 99, "model": "m"})
+        self._write_preflight({"failed_at": now - 10,
+                               "error": "bin/pulse.py: SyntaxError: <bad> (line 1)"})
+        self.assertEqual(self.mod.render_pulse_alert(), (
+            '<div class="pulse-health pulse-bad" role="alert"><span class="pulse-dot"></span>'
+            "<span class=\"pulse-text\">Pulse can't start: bin/pulse.py: SyntaxError: "
+            "&lt;bad&gt; (line 1)</span></div>"))
+        self.assertIn("Pulse healthy", self.mod.render_pulse_health())
+
+    def test_preflight_failure_with_no_heartbeat_renders_top_alert(self):
+        self._write_preflight({"failed_at": 5, "error": "first run broke"})
+        self.assertIn("Pulse can't start: first run broke", self.mod.render_pulse_alert())
+
+    def test_preflight_failure_before_last_pulse_is_ignored(self):
+        now = int(time.time())
+        self._write_heartbeat({"last_pulse_ts": now - 30, "pulse_idx": 99, "model": "m"})
+        self._write_preflight({"failed_at": now - 60, "error": "old failure"})
+        self.assertEqual(self.mod.render_pulse_alert(), "")
+
+    def test_unreadable_preflight_record_is_ignored(self):
+        for payload in ("{ corrupt", {"error": "no timestamp"}):
+            with self.subTest(payload=payload):
+                self._write_preflight(payload)
+                self.assertEqual(self.mod.render_pulse_alert(), "")
+
+    def test_no_preflight_record_renders_nothing(self):
+        self.assertEqual(self.mod.render_pulse_alert(), "")
+
     def test_age_formatting_includes_unit(self):
         now = int(time.time())
         with mock.patch.object(self.mod, "utc_now",
