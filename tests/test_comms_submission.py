@@ -302,6 +302,14 @@ def test_submit_only_presses_enter_when_an_earlier_try_left_the_text_in_the_box(
     assert (term.typed, term.enters) == (0, 1)
 
 
+def test_submit_types_its_text_even_when_an_old_paste_sits_in_the_box():
+    """A stale "[Pasted text" says nothing about this prompt, so the text is
+    still typed; the paste only matters for Enter retries."""
+    term = FakeTerminal(confirm_after_enters=1, box="[Pasted text #1 +40 lines]")
+    assert _submit(term)
+    assert (term.typed, term.enters) == (1, 1)
+
+
 def test_submit_does_not_retype_a_prompt_that_already_landed():
     """A retry after an earlier try's prompt was recorded late must not send
     it again."""

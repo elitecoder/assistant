@@ -325,14 +325,16 @@ def input_box_text(screen: str) -> str | None:
     return " ".join(part.strip() for part in [first, *body[1:]]).strip()
 
 
+def box_has_marker(box: str | None, marker: str) -> bool:
+    """True if the prompt box shows the daemon's marker, compared without
+    whitespace so a line wrap inside it still matches."""
+    return bool(box) and _WS_RE.sub("", marker) in _WS_RE.sub("", box)
+
+
 def box_holds(box: str | None, marker: str) -> bool:
-    """True if the prompt box still holds text the daemon typed: its marker
-    (compared without whitespace, so a line wrap inside it still matches) or a
-    collapsed paste."""
-    if not box:
-        return False
-    return (_WS_RE.sub("", marker) in _WS_RE.sub("", box)
-            or "[Pasted text" in box)
+    """True if the prompt box still holds text the daemon just typed: its
+    marker, or a collapsed paste (Claude folds long typed text into one)."""
+    return box_has_marker(box, marker) or bool(box) and "[Pasted text" in box
 
 
 def _prompt_text(rec: dict) -> str | None:
@@ -422,7 +424,9 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
     box only gets its Enter. All I/O is injected."""
     if confirmed():
         return True
-    if not box_holds(read_box(), marker):
+    # Only this prompt's own marker counts here: an old collapsed paste in the
+    # box says nothing about whether this text was typed.
+    if not box_has_marker(read_box(), marker):
         send_text()
         sleep(0.5)
     press_enter()

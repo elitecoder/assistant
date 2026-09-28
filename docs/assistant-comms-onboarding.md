@@ -95,7 +95,7 @@ To stop: `launchctl bootout gui/$UID/com.assistant.assistant-comms`.
 - `~/.assistant/comms/slack.cursor` / `ledger.cursor` — poll offsets.
 - `~/.assistant/comms/session.json` — the warm workspace registry.
 - `~/.assistant/comms/pending-inbound.json` — inbound messages the warm session hasn't confirmed yet.
-- `~/.assistant/comms/restart-notice.json` — marks that this outage's "I'll answer as soon as it's back" note went out.
+- `~/.assistant/comms/restart-notice-<channel>.json` — marks that this outage's "I'll answer as soon as it's back" note went out to that channel.
 - `~/.assistant/comms/inbox-cooldown.json` — when each workspace was last pinged.
 - `~/.assistant/comms/comms-listen.log` — the daemon's own log.
 

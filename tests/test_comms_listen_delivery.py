@@ -404,34 +404,62 @@ def test_heartbeat_loop_sends_one_page_and_one_recovery(env, monkeypatch):
 
 
 def test_heartbeat_page_that_failed_is_retried_later_not_every_check(env, monkeypatch):
+    """A page that fails stays unsent, so it's tried again — but only once per
+    HEARTBEAT_PAGE_RETRY_SEC, not on every 60s check."""
     paths, _ = env
     paths.heartbeat.write_text(json.dumps({"last_pulse_ts": int(time.time()) - 5000}))
     monkeypatch.setattr(cl, "fmt_heartbeat_alert", lambda hb, age: "PAGE")
-    tries: list[int] = []
+    tries: list[float] = []
+    clock = {"now": time.time()}
 
-    def flaky_cli(argv, timeout=30, env=None):
+    def failing_cli(argv, timeout=30, env=None):
         if "slack-send.py" in argv[0]:
-            tries.append(1)
-            return (1, "", "slack down") if len(tries) == 1 else (0, "{}", "")
+            tries.append(clock["now"])
+            return 1, "", "slack down"
         return 0, "", ""
 
-    monkeypatch.setattr(listen, "cli", flaky_cli)
-    clock = {"now": time.time()}
+    monkeypatch.setattr(listen, "cli", failing_cli)
     monkeypatch.setattr(listen.time, "time", lambda: clock["now"])
+    stop = threading.Event()
+    steps = [60] * 8 + [listen.HEARTBEAT_PAGE_RETRY_SEC]
+    ticks = {"n": 0}
+
+    def fake_wait(timeout=None):
+        if ticks["n"] >= len(steps):
+            stop.set()
+            return True
+        clock["now"] += steps[ticks["n"]]
+        ticks["n"] += 1
+        return False
+
+    monkeypatch.setattr(stop, "wait", fake_wait)
+    listen.heartbeat_loop(stop, {})
+    assert len(tries) == 2, "one try, then silence for the retry window, then one more"
+    assert tries[1] - tries[0] >= listen.HEARTBEAT_PAGE_RETRY_SEC
+
+
+def test_a_new_outage_right_after_recovery_pages_at_once(env, monkeypatch):
+    """The failed-page retry wait must not delay the page for the next outage."""
+    paths, calls = env
+    now = time.time()
+    script = [now - 5000, now - 5000, now, now - 5000, now - 5000]
+    paths.heartbeat.write_text(json.dumps({"last_pulse_ts": int(script[0])}))
+    monkeypatch.setattr(cl, "fmt_heartbeat_alert", lambda hb, age: "PAGE")
+    monkeypatch.setattr(cl, "fmt_heartbeat_recovered", lambda hb, down: "BACK")
     stop = threading.Event()
     ticks = {"n": 0}
 
     def fake_wait(timeout=None):
         ticks["n"] += 1
-        clock["now"] += 60 if ticks["n"] < 4 else listen.HEARTBEAT_PAGE_RETRY_SEC
-        if ticks["n"] >= 6:
+        if ticks["n"] >= len(script):
             stop.set()
             return True
+        paths.heartbeat.write_text(json.dumps({"last_pulse_ts": int(script[ticks["n"]])}))
         return False
 
     monkeypatch.setattr(stop, "wait", fake_wait)
     listen.heartbeat_loop(stop, {})
-    assert len(tries) == 2, "one failed page, one retry after the wait, then silence"
+    assert _sends(calls) == ["PAGE", "BACK", "PAGE"]
 
 
 def test_heartbeat_loop_bad_status_pages_and_missing_config_is_quiet(env, monkeypatch):

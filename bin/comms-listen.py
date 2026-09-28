@@ -1105,6 +1105,7 @@ def heartbeat_loop(stop: threading.Event, env: dict) -> None:
                 body = comms_lib.fmt_heartbeat_recovered(hb, max(0, last_ts - paged_last_ts))
                 rc, _, _err = cli(_send_args(body, "action", target, None), timeout=30, env=env)
                 paged_last_ts = None
+                last_page_try = 0.0
                 log(f"heartbeat recovered rc={rc}")
         comms_lib.write_comms_heartbeat(paths, status="active", pulse_idx=0,
                                         note="listen-daemon")
