@@ -249,9 +249,11 @@ class FakeResolver:
 class SessionReaderSpy:
     """Stands in for read_session; records each call's arguments."""
 
-    def __init__(self, question=None, last_text=None, title=None, unreadable=False):
+    def __init__(self, question=None, last_text=None, title=None, unreadable=False,
+                 pending_tool=None, api_error=False):
         self.reply = None if unreadable else {
-            "question": question, "last_text": last_text, "title": title}
+            "question": question, "last_text": last_text, "title": title,
+            "pending_tool": pending_tool, "api_error": api_error}
         self.calls = []
 
     def __call__(self, cwd, session_id):
@@ -377,15 +379,45 @@ class TestEventHandling(unittest.TestCase):
 
 
     def test_turn_end_matches_the_agents_message_not_old_scrollback(self):
-        """2026-09-28: a "stranded" ping fired on a PR review because "blocked"
-        sat somewhere in 50 lines of screen. Patterns now match what the agent
-        just said. Mutation probe: match the screen again and this drops."""
+        """Patterns match what the agent just said, not 50 lines of screen where
+        old output ("CI is red" from an earlier run) sits. Mutation probe:
+        match the screen, or screen plus message, and the first call drops."""
         bank, state, resolver = self._components()
         res = self.mod.handle_event(
             _evt("agent.hook.Stop", request_id="rS9"), bank, state, resolver,
-            screen_reader=lambda ws: "earlier: build blocked, API error, timed out",
-            session_reader=SessionReaderSpy(last_text="Summarized PR #333's design docs."))
+            screen_reader=lambda ws: "earlier run: CI is red\nPR #12 opened",
+            session_reader=SessionReaderSpy(last_text="Summarized the design docs."))
         self.assertIsNone(res)
+        res = self.mod.handle_event(
+            _evt("agent.hook.Stop", request_id="rS10"), bank, state, resolver,
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="Heads up: CI is red on main."))
+        self.assertEqual(res["pattern_matched"], "ci-red")
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["screen_snippet"], "Heads up: CI is red on main.",
+                         "an empty screen falls back to the message for the snippet")
+
+    def test_permission_prompt_pings_even_after_a_status_line(self):
+        """cmux sends a permission prompt as the same bare Notification as the
+        idle alert. A tool call still waiting means a prompt is up. Mutation
+        probe: drop the pending_tool check and this is skipped."""
+        bank, state, resolver = self._components()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="rP"), bank, state, resolver,
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="Committing the fix now.",
+                                            pending_tool="Bash"))
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["last_message"], "Waiting for your OK to use Bash.")
+
+    def test_session_that_died_on_an_api_error_pings(self):
+        bank, state, resolver = self._components()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="rE"), bank, state, resolver,
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="API Error: 529 overloaded", api_error=True))
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["last_message"], "API Error: 529 overloaded")
 
     def test_notification_drops_needs_input(self):
         bank, state, resolver = self._components()
@@ -644,16 +676,57 @@ class TestLastMessage(unittest.TestCase):
 
     def test_last_assistant_text_skips_user_and_non_text_blocks(self):
         records = [
+            _assistant({"type": "text", "text": "an earlier turn's words"}),
+            _user({"type": "text", "text": "the user's prompt"}),
             _assistant({"type": "text", "text": "Opened the PR."}),
             _assistant({"type": "text", "text": "  "}, {"type": "tool_use", "name": "Bash",
                                                        "input": {}}),
             {"type": "assistant", "message": {"role": "assistant", "content": "plain string"}},
             {"type": "summary", "summary": "not a turn"},
             _assistant({"type": "tool_result", "text": "tool output, not the agent"}),
-            _user({"type": "text", "text": "the user's reply"}),
+            _user({"type": "tool_result", "tool_use_id": "t1", "content": "ok"}),
         ]
         self.assertEqual(self.mod.last_assistant_text(records), "Opened the PR.")
         self.assertIsNone(self.mod.last_assistant_text([_user({"type": "text", "text": "x"})]))
+
+    def test_last_assistant_text_ignores_earlier_turns(self):
+        """A turn with only tool calls must not re-judge the previous turn's
+        words ("PR #12 opened" would fire again)."""
+        records = [_assistant({"type": "text", "text": "PR #12 opened."}),
+                   _user({"type": "text", "text": "next task"}),
+                   _assistant({"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}),
+                   _user({"type": "tool_result", "tool_use_id": "t2", "content": "done"})]
+        self.assertIsNone(self.mod.last_assistant_text(records))
+        typed = {"type": "user", "message": {"role": "user", "content": "plain prompt"}}
+        hook = {"type": "user", "message": {"role": "user", "content": "<local-command>"}}
+        meta = {"type": "user", "isMeta": True, "message": {"role": "user", "content": "x"}}
+        self.assertEqual(self.mod.current_turn([_assistant(), typed, hook, meta]), [hook, meta])
+
+    def test_pending_tool_names_the_call_waiting_on_a_prompt(self):
+        waiting = [_user({"type": "text", "text": "go"}),
+                   _assistant({"type": "text", "text": "Committing now."},
+                              {"type": "tool_use", "id": "b1", "name": "Bash", "input": {}})]
+        self.assertEqual(self.mod.pending_tool(waiting), "Bash")
+        done = [*waiting, _user({"type": "tool_result", "tool_use_id": "b1", "content": "ok"})]
+        self.assertIsNone(self.mod.pending_tool(done))
+        nameless = [_assistant({"type": "tool_use", "id": "b2", "input": {}})]
+        self.assertEqual(self.mod.pending_tool(nameless), "a tool")
+
+    def test_ended_on_api_error(self):
+        err = {"type": "assistant", "isApiErrorMessage": True,
+               "message": {"role": "assistant", "content": [{"type": "text", "text": "API Error: 403"}]}}
+        self.assertTrue(self.mod.ended_on_api_error([_user({"type": "text", "text": "go"}), err]))
+        self.assertFalse(self.mod.ended_on_api_error([err, _assistant({"type": "text", "text": "ok"})]))
+        self.assertFalse(self.mod.ended_on_api_error([_user({"type": "text", "text": "go"})]))
+
+    def test_prompt_message_quotes_the_open_prompt(self):
+        pm = self.mod.prompt_message
+        self.assertEqual(pm({"pending_tool": "AskUserQuestion", "question": "Merge?"}), "Merge?")
+        self.assertEqual(pm({"pending_tool": "ExitPlanMode"}), "Waiting for you to approve its plan.")
+        self.assertEqual(pm({"pending_tool": "Bash", "last_text": "Committing."}),
+                         "Waiting for your OK to use Bash.")
+        self.assertEqual(pm({"pending_tool": "Bash", "last_text": "Run it?"}), "Run it?")
+        self.assertEqual(pm({"last_text": "Done."}), "Done.")
 
     def test_trim_words(self):
         self.assertEqual(self.mod.trim_words("a\n\n  b"), "a b")
@@ -672,6 +745,8 @@ class TestLastMessage(unittest.TestCase):
         self.assertEqual(self.mod.read_session(cwd, "sess-9"), {
             "question": "Should I rebase or merge main?",
             "last_text": "I found two ways.\n\nPick one.",
+            "pending_tool": "AskUserQuestion",
+            "api_error": False,
             "title": "Rebase the ruler fix"})
         self.assertIsNone(self.mod.read_session(cwd, "sess-404"))
 
@@ -695,7 +770,8 @@ class TestLastMessage(unittest.TestCase):
         self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-q",
                          [_user({"type": "text", "text": "hello?"})])
         self.assertEqual(self.mod.read_session(cwd, "sess-q"),
-                         {"question": None, "last_text": None, "title": None})
+                         {"question": None, "last_text": None, "pending_tool": None,
+                          "api_error": False, "title": None})
 
     def test_read_session_never_raises(self):
         # No ~/.claude/projects at all: the scan fails, the drop must not.
@@ -713,12 +789,19 @@ class TestLastMessage(unittest.TestCase):
         self.assertEqual(title([{"type": "ai-title", "aiTitle": "  "}, {"cwd": ""}]), None)
         self.assertIsNone(title([]))
 
-    def test_asks_user_reads_only_the_last_line(self):
+    def test_asks_user_reads_the_last_few_lines(self):
         asks = self.mod.asks_user
         self.assertTrue(asks("Done.\n\nWant me to open the PR?"))
         self.assertTrue(asks("Two options below.\nLet me know which one."))
         self.assertTrue(asks("Should I merge"))
-        self.assertFalse(asks("Is it fixed? Yes.\nStanding by for CI."))
+        self.assertTrue(asks("Tear down the worktree (`cleanup`)?\n- The 3 deferrals remain open"),
+                        "an ask above a closing note still counts")
+        self.assertTrue(asks("Paste the ticket text, or say the word and I'll open a browser"))
+        self.assertTrue(asks("Reply `cleanup` to tear down the batch4 worktree"))
+        self.assertTrue(asks("Please run /login · API Error: 403"))
+        self.assertTrue(asks("Ready for your approval."))
+        self.assertFalse(asks("Is it fixed?\nYes.\nGates green.\nStanding by for CI."),
+                          "a question four lines up is history, not an ask")
         self.assertFalse(asks("Standing by for the four gate agents."))
         self.assertFalse(asks(""))
         self.assertFalse(asks(None))

@@ -40,9 +40,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
-- Ping about an idle workspace only when the agent's last message asks you
-  something. Claude's idle alert fires about a minute after every turn, and 82%
-  of recent turns ended with a status update, not a question.
+- Ping about an idle workspace only when it needs you: the agent's last lines
+  ask you something, a permission or plan prompt is up, or the session stopped
+  on an API error. Claude's idle alert fires about a minute after every turn,
+  and about 75% of recent turns ended with a status update instead.
 - Match the watcher's screen patterns ("stranded", "CI red", "PR opened") against
   what the agent just said, not 50 lines of scrollback, so old tool output no
   longer triggers them. Name workspaces cmux left as "Terminal" by Claude's own

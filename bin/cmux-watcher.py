@@ -457,9 +457,30 @@ def pending_question(records: list[dict]) -> str | None:
     return None
 
 
+def _is_prompt(rec: dict) -> bool:
+    """A user turn someone typed, as opposed to a tool result or hook output."""
+    if agent_session.record_role(rec) != "user" or rec.get("isMeta"):
+        return False
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        return not content.startswith("<")
+    blocks = _content_blocks(rec)
+    return bool(blocks) and not any(b.get("type") == "tool_result" for b in blocks)
+
+
+def current_turn(records: list[dict]) -> list[dict]:
+    """The records after the newest typed prompt: this turn only, so an earlier
+    turn's words can't be judged again."""
+    for i in range(len(records) - 1, -1, -1):
+        if _is_prompt(records[i]):
+            return records[i + 1:]
+    return records
+
+
 def last_assistant_text(records: list[dict]) -> str | None:
-    """The newest non-empty text block the agent wrote."""
-    for rec in reversed(records):
+    """The newest non-empty text block the agent wrote in the current turn."""
+    for rec in reversed(current_turn(records)):
         if agent_session.record_role(rec) != "assistant":
             continue
         for block in reversed(_content_blocks(rec)):
@@ -467,6 +488,31 @@ def last_assistant_text(records: list[dict]) -> str | None:
             if block.get("type") == "text" and isinstance(text, str) and text.strip():
                 return text
     return None
+
+
+def pending_tool(records: list[dict]) -> str | None:
+    """Name of a tool call in the current turn that has no result yet. At an
+    idle alert every call has its result, so a pending one means Claude is
+    showing a prompt — a permission request or plan approval."""
+    answered = {b.get("tool_use_id") for rec in records for b in _content_blocks(rec)
+                if b.get("type") == "tool_result"}
+    for rec in reversed(current_turn(records)):
+        if agent_session.record_role(rec) != "assistant":
+            continue
+        for block in _content_blocks(rec):
+            if block.get("type") == "tool_use" and block.get("id") not in answered:
+                name = block.get("name")
+                return name if isinstance(name, str) and name else "a tool"
+    return None
+
+
+def ended_on_api_error(records: list[dict]) -> bool:
+    """True if the agent's newest message is an API error Claude wrote into the
+    transcript (an expired login, an overloaded API): the session has stopped."""
+    for rec in reversed(current_turn(records)):
+        if agent_session.record_role(rec) == "assistant":
+            return rec.get("isApiErrorMessage") is True
+    return False
 
 
 def trim_words(text: str, limit: int = LAST_MESSAGE_CHARS) -> str:
@@ -477,16 +523,22 @@ def trim_words(text: str, limit: int = LAST_MESSAGE_CHARS) -> str:
     return flat[:limit].rsplit(" ", 1)[0] + "…"
 
 
-# The last line of an agent's message asks the user something. Measured over
-# 1,495 recent turns: 18% end this way ("Want me to…?", "Should I…?"); the rest
-# are status updates ("Standing by for the gate agents…") that need nobody.
-_ASKS_RE = re.compile(r"\?|\b(let me know|your call|want me to|should i|shall i)\b", re.I)
+# Words that ask the user for something. Most turns end in a status update
+# ("Standing by for the gate agents…") that needs nobody; the ones that need
+# the user ask a question or ask them to act ("say the word", "reply
+# `cleanup`", "please run /login").
+_ASKS_RE = re.compile(
+    r"\?|\b(let me know|your call|want me to|should i|shall i|say the word|awaiting your"
+    r"|your (approval|go-ahead|review|decision|sign-off)"
+    r"|please (run|paste|approve|confirm|reply))\b|\breply `|/login\b", re.I)
+# An ask can sit a line or two above a closing note, so the last few lines count.
+ASK_TAIL_LINES = 3
 
 
 def asks_user(text: str | None) -> bool:
-    """True if the message's last non-empty line asks the user something."""
+    """True if the message's last few non-empty lines ask the user something."""
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    return bool(lines) and bool(_ASKS_RE.search(lines[-1]))
+    return any(_ASKS_RE.search(ln) for ln in lines[-ASK_TAIL_LINES:])
 
 
 def session_title(records: list[dict]) -> str | None:
@@ -505,11 +557,26 @@ def session_title(records: list[dict]) -> str | None:
     return None
 
 
+def prompt_message(session: dict) -> str | None:
+    """What an idle-alert ping should quote: the open question or prompt when
+    one is up, else the agent's last words."""
+    tool = session.get("pending_tool")
+    last_text = session.get("last_text")
+    if tool == "AskUserQuestion" and session.get("question"):
+        return session["question"]
+    if tool == "ExitPlanMode":
+        return "Waiting for you to approve its plan."
+    if tool and not asks_user(last_text):
+        return f"Waiting for your OK to use {tool}."
+    return last_text
+
+
 def read_session(cwd: str | None, session_id: str | None) -> dict | None:
     """What the session's transcript says right now: the pending question (an
     AskUserQuestion's text — the hook payload redacts it), the agent's last
-    message in full, and a title. None on any failure so a missing or
-    malformed transcript never blocks the drop."""
+    message this turn, any tool call still waiting on a prompt, whether the
+    turn ended on an API error, and a title. None on any failure so a missing
+    or malformed transcript never blocks the drop."""
     try:
         path = transcript_path(cwd, session_id)
         if path is None:
@@ -517,6 +584,8 @@ def read_session(cwd: str | None, session_id: str | None) -> dict | None:
         records = tail_records(path)
         return {"question": pending_question(records),
                 "last_text": last_assistant_text(records),
+                "pending_tool": pending_tool(records),
+                "api_error": ended_on_api_error(records),
                 "title": session_title(records)}
     except Exception:  # noqa: BLE001 — transcripts are external; the ping must still go
         return None
@@ -679,17 +748,21 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
     if cls["signal"] == "needs_input":
         pattern_matched = cls["event_name"].split(".")[-1]  # Notification / AskUserQuestion
         asking = pattern_matched == "AskUserQuestion"
-        # Claude's Notification here is its idle "waiting for your input" alert:
-        # it fires about a minute after every turn and its payload carries no
-        # message. It only needs the user when the agent's last words ask them
-        # something; an unreadable transcript still pings, as before.
-        if not asking and last_text and not asks_user(last_text):
+        # cmux sends every Claude alert as this one Notification event, with no
+        # message: a permission prompt looks the same as the idle "waiting for
+        # your input" alert that fires about a minute after every turn. Ping
+        # when a prompt is up (a tool call still waiting), the session died on
+        # an API error, or the agent's last words ask the user something; an
+        # unreadable transcript still pings, as before.
+        needs_user = (not session or session.get("pending_tool")
+                      or session.get("api_error") or asks_user(last_text))
+        if not asking and not needs_user:
             log(f"skip idle needs_input ws={ws_ref or workspace_id}: last message asks nothing")
             return None
         if not state.cooled_down(ws_key, "needs_input"):
             return None
         snippet = last_lines(screen_reader(workspace_id or ws_ref or ""))
-        message = session.get("question") if asking else last_text
+        message = session.get("question") if asking else prompt_message(session)
         item = drop_inbox_item(ws_ref, "needs_input", pattern_matched, snippet,
                                ws_title=ws_title,
                                last_message=trim_words(message) if message else None)
@@ -705,7 +778,7 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
     screen = screen_reader(workspace_id or ws_ref or "")
     text = last_text or screen
     if not text:
-        return None  # dead/headless workspace or read failure — nothing to judge
+        return None  # nothing said this turn and no screen to read — nothing to judge
     # A suppressed pattern doesn't count, so it can't hide a lower-priority
     # real hit (a message saying both "awaiting review" and "CI is red").
     hits = [h for h in bank.match(text) if not h.get("suppress")]
@@ -716,7 +789,7 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
     signal_type = pat_signal if pat_signal in ("needs_input", "work_complete") else "pattern_match"
     if not state.cooled_down(ws_key, signal_type):
         return None
-    snippet = last_lines(screen)
+    snippet = last_lines(screen) or (trim_words(last_text) if last_text else "")
     item = drop_inbox_item(ws_ref, signal_type, top.get("id", ""), snippet,
                            ws_title=ws_title,
                            last_message=trim_words(last_text) if last_text else None)
