@@ -259,6 +259,13 @@ def test_both_suppressors_cover_every_receipt_kind():
             f"— it would firehose to Slack")
 
 
+def test_broadcast_skips_housekeeping_kinds(cfg: Config, monkeypatch):
+    sub, fake = _make_subsystem(cfg, monkeypatch)
+    for kind in ("decision-transition", "strategist-autopause", "stranded", "skipped"):
+        sub._broadcast_entry({"kind": kind, "key": f"{kind}:1", "outcome": "failed"})
+    assert fake.sends == []
+
+
 def test_heartbeat_pages_when_stale(cfg: Config, monkeypatch):
     sub, fake = _make_subsystem(cfg, monkeypatch)
     stale = int(time.time()) - 99999

@@ -159,6 +159,12 @@ def test_find_submission_skips_old_files_subagents_and_missing_dirs(tmp_path):
     assert cs.find_submission(tmp_path / "nope", MARK, since=0) is None
 
 
+def test_find_submission_skips_files_it_cannot_stat(tmp_path):
+    (tmp_path / "dangling.jsonl").symlink_to(tmp_path / "gone.jsonl")
+    hit = _jsonl(tmp_path / "hit.jsonl", [_prompt(f"x {MARK}")])
+    assert cs.find_submission(tmp_path, MARK, since=0) == str(hit)
+
+
 def test_find_submission_finds_nested_session_transcripts(tmp_path):
     nested = _jsonl(tmp_path / "sess" / "main.jsonl", [_prompt(f"x {MARK}")])
     assert cs.find_submission(tmp_path, MARK, since=0) == str(nested)

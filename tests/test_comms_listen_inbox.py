@@ -359,6 +359,13 @@ def test_reply_not_delivered_returns_false_and_leaves_the_session(env_reply, env
     assert "should_clear" not in rec and "wrote" not in rec
 
 
+def test_reply_unconfirmed_when_no_transcript_recorded_it(env_reply, env_inbox):
+    rec, _ = env_reply
+    rec["found"] = None
+    sess = _droid_sess("/bound.jsonl")
+    assert listen.reply_to_message(listen.comms_lib.Paths.from_env(), sess, INBOUND) == (False, sess)
+
+
 def test_feed_text_combines_messages_that_piled_up():
     recs = [{"text": "Are you alive?", "msg_ts": "1.0"},
             {"text": "Pulse active now?", "msg_ts": "2.0"}]

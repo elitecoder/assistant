@@ -916,10 +916,7 @@ def _drain_inbox_once(env: dict) -> int:
             continue
         ws_key = str(item.get("ws_ref") or "ws")
         if not inbox_should_ping(item, last_ping.get(ws_key), now):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+            p.unlink(missing_ok=True)
             held += 1
             continue
         body = comms_lib.fmt_workspace_signal(item)
