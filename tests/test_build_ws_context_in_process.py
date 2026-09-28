@@ -323,6 +323,24 @@ class CwdStateTests(unittest.TestCase):
         d, u = self.mod.cwd_state("/no/such/dir-x")
         self.assertEqual((d, u), (False, False))
 
+    def test_git_checks_never_rewrite_the_index(self):
+        """cwd_state runs under the pulse's timeout kill; a plain `git status`
+        rewrites the index under index.lock, and a kill at that moment leaves
+        the lock behind. Mutation probe: drop `--no-optional-locks` and the
+        index mtime changes."""
+        repo = self._tmp / "repo-locks"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+        (repo / "f.txt").write_text("a")
+        subprocess.run(["git", "add", "f.txt"], cwd=str(repo), check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"],
+                       cwd=str(repo), check=True)
+        os.utime(repo / "f.txt", (1, 1))
+        index = repo / ".git" / "index"
+        before = index.stat().st_mtime_ns
+        self.mod.cwd_state(str(repo))
+        self.assertEqual(index.stat().st_mtime_ns, before)
+
     def test_clean_repo(self):
         # Init a real git repo + empty commit so @{u} doesn't error
         # (subprocess just returns rc != 0 when no upstream — we treat

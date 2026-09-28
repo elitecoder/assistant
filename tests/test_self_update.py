@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -467,18 +468,134 @@ class MaybeUpdateTests(unittest.TestCase):
             self.assertEqual(rb[0], "origin")
 
     def test_git_timeout_returns_minus1(self):
-        import subprocess as sp
-        with unittest.mock.patch.object(sp, "run", side_effect=sp.TimeoutExpired("git", 5)):
+        class SlowGit:
+            pid = 4242
+
+            def __init__(self, *a, **k):
+                self.calls = 0
+
+            def communicate(self, timeout=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise subprocess.TimeoutExpired("git", timeout)
+                return "", ""
+
+        killed = []
+        with unittest.mock.patch.object(su.subprocess, "Popen", SlowGit), \
+             unittest.mock.patch.object(su.os, "killpg", lambda pid, sig: killed.append(sig)):
             rc, out, err = su._git(Path("/tmp"), "status")
         self.assertEqual(rc, -1)
         self.assertIn("timed out", err)
+        self.assertEqual(killed, [su.signal.SIGTERM], "SIGTERM first, so git removes its locks")
 
     def test_git_os_error_returns_minus1(self):
-        import subprocess as sp
-        with unittest.mock.patch.object(sp, "run", side_effect=OSError("no git binary")):
+        with unittest.mock.patch.object(su.subprocess, "Popen", side_effect=OSError("no git binary")):
             rc, out, err = su._git(Path("/tmp"), "status")
         self.assertEqual(rc, -1)
         self.assertIn("no git binary", err)
+
+    def test_git_status_never_rewrites_the_index(self):
+        """`git status` normally refreshes and rewrites the index under
+        index.lock; killed at that moment, it leaves the lock behind. The
+        optional-locks flag makes it read-only. Mutation probe: drop
+        `--no-optional-locks` and the index mtime changes."""
+        with TemporaryDirectory() as t:
+            clone, _ = make_repos(Path(t))
+            index = clone / ".git" / "index"
+            os.utime(clone / "bin/pulse.py", (1, 1))  # stat-dirty, content unchanged
+            before = index.stat().st_mtime_ns
+            rc, out, _ = su._git(clone, "status", "--porcelain")
+            self.assertEqual((rc, out), (0, ""))
+            self.assertEqual(index.stat().st_mtime_ns, before)
+
+
+class StaleLockTests(unittest.TestCase):
+    """2026-09-28: a `git status` killed mid-write left .git/index.lock in the
+    Assistant checkout, and every self-update after it failed with "Unable to
+    create index.lock: File exists"."""
+
+    def _lock(self, clone: Path, age_sec: float) -> Path:
+        lock = clone / ".git" / "index.lock"
+        lock.write_text("")
+        t = time.time() - age_sec
+        os.utime(lock, (t, t))
+        return lock
+
+    def test_old_unheld_lock_is_removed(self):
+        with TemporaryDirectory() as t:
+            clone, _ = make_repos(Path(t))
+            lock = self._lock(clone, 3600)
+            msg = su.clear_stale_index_lock(clone, is_held=lambda p: False)
+            self.assertFalse(lock.exists())
+            self.assertIn("60 min ago", msg)
+
+    def test_young_held_or_missing_locks_are_left_alone(self):
+        with TemporaryDirectory() as t:
+            clone, _ = make_repos(Path(t))
+            self.assertIsNone(su.clear_stale_index_lock(clone, is_held=lambda p: False))
+            lock = self._lock(clone, 60)
+            self.assertIsNone(su.clear_stale_index_lock(clone, is_held=lambda p: False))
+            self._lock(clone, 3600)
+            self.assertIsNone(su.clear_stale_index_lock(clone, is_held=lambda p: True))
+            self.assertTrue(lock.exists())
+            self.assertIsNone(su.clear_stale_index_lock(Path(t) / "not-a-repo"))
+
+    def test_lock_that_cant_be_removed_is_reported_as_not_cleared(self):
+        with TemporaryDirectory() as t:
+            clone, _ = make_repos(Path(t))
+            lock = clone / ".git" / "index.lock"
+            lock.mkdir()
+            os.utime(lock, (1, 1))
+            self.assertIsNone(su.clear_stale_index_lock(clone, is_held=lambda p: False))
+
+    def test_lock_is_held_uses_lsof(self):
+        with TemporaryDirectory() as t:
+            path = Path(t) / "index.lock"
+            path.write_text("")
+            self.assertFalse(su._lock_is_held(path))
+            with open(path) as held:
+                self.assertTrue(su._lock_is_held(path), "a lock git still has open is live")
+                held.read()
+            with unittest.mock.patch.object(su.subprocess, "run", side_effect=OSError("no lsof")):
+                self.assertTrue(su._lock_is_held(path), "unknown means leave it alone")
+
+    def test_update_goes_through_a_stale_lock(self):
+        """End to end with the real lsof: the stale lock is cleared and the
+        fast-forward lands. Mutation probe: skip the clear and the result is
+        pull-failed."""
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            new_sha = advance_remote(tmp, remote, {"bin/pulse.py": "# v2\n"}, "v2")
+            self._lock(clone, 3600)
+            r = su.maybe_update(clone, marker_path=tmp / "marker.json",
+                                install_sh=tmp / "no-install.sh")
+            self.assertTrue(r["changed"], r)
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), new_sha)
+            self.assertIn("stale", r["cleared_stale_lock"])
+
+
+class TerminateGroupTests(unittest.TestCase):
+    def test_sigterm_lets_the_child_clean_up(self):
+        with TemporaryDirectory() as t:
+            lock = Path(t) / "index.lock"
+            lock.write_text("")
+            proc = subprocess.Popen(
+                ["/bin/sh", "-c", f'trap "rm -f {lock}; exit 0" TERM; while :; do sleep 0.1; done'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            time.sleep(0.3)
+            su._terminate_group(proc, grace=5)
+            self.assertFalse(lock.exists(), "the child's TERM handler ran")
+
+    def test_a_child_that_ignores_sigterm_is_killed(self):
+        proc = subprocess.Popen(["/bin/sh", "-c", 'trap "" TERM; sleep 30'],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
+        time.sleep(0.3)
+        t0 = time.time()
+        su._terminate_group(proc, grace=0.5)
+        self.assertLess(time.time() - t0, 10)
+        self.assertIsNotNone(proc.returncode)
 
 
 class SyntaxGateTests(unittest.TestCase):

@@ -295,6 +295,10 @@ def load_bedrock_env() -> dict:
 _BEDROCK_ENV = load_bedrock_env()
 
 
+# How long a timed-out child's process group gets after SIGTERM before SIGKILL.
+KILL_GRACE_SEC = 3
+
+
 def run(cmd: list[str], *, input_text: str | None = None,
         timeout: int = 30, env: dict | None = None,
         merge_bedrock: bool = False) -> tuple[int, str, str]:
@@ -331,6 +335,15 @@ def run(cmd: list[str], *, input_text: str | None = None,
         out, err = proc.communicate(input=input_text, timeout=timeout)
         return proc.returncode, out, err
     except subprocess.TimeoutExpired:
+        # SIGTERM first: git removes its lock files on SIGTERM, but a SIGKILL
+        # mid-`git status` left .git/index.lock behind in seven repos and
+        # blocked every later git write there (2026-09-28).
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate(timeout=KILL_GRACE_SEC)
+            return 124, "", f"timeout after {timeout}s"
+        except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired):
+            pass
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):

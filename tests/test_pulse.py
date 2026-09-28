@@ -645,6 +645,25 @@ class RunSubprocessTests(unittest.TestCase):
             os.kill(gpid, 9)  # clean up before failing
             self.fail(f"grandchild {gpid} survived the group kill")
 
+    def test_timeout_sends_sigterm_first_so_children_clean_up(self):
+        """A SIGKILL mid-`git status` left .git/index.lock behind in seven
+        repos. The timeout now sends SIGTERM first, which git handles by
+        removing its locks. Mutation probe: go straight to SIGKILL and the
+        marker file is never written."""
+        marker = Path(self._tmp_obj.name) / "cleaned"
+        rc, _, err = self.mod.run(
+            ["/bin/sh", "-c", f'trap "echo yes > {marker}; exit 0" TERM; while :; do sleep 0.1; done'],
+            timeout=1)
+        self.assertEqual(rc, 124)
+        self.assertEqual(marker.read_text().strip(), "yes")
+
+    def test_timeout_still_kills_a_child_that_ignores_sigterm(self):
+        import time as _time
+        t0 = _time.time()
+        rc, _, err = self.mod.run(["/bin/sh", "-c", 'trap "" TERM; sleep 30'], timeout=1)
+        self.assertEqual(rc, 124)
+        self.assertLess(_time.time() - t0, 1 + self.mod.KILL_GRACE_SEC + 5)
+
     def test_input_text_still_reaches_stdin(self):
         # The Popen rewrite must preserve the input_text contract.
         rc, out, _ = self.mod.run(

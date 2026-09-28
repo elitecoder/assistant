@@ -614,7 +614,7 @@ def cwd_state(cwd: str | None) -> tuple[bool, bool]:
         return False, False
     try:
         r = subprocess.run(
-            ["git", "-C", cwd, "status", "--porcelain"],
+            ["git", "--no-optional-locks", "-C", cwd, "status", "--porcelain"],
             capture_output=True, text=True, timeout=5,
         )
         dirty = bool(r.stdout.strip()) if r.returncode == 0 else False
@@ -622,7 +622,7 @@ def cwd_state(cwd: str | None) -> tuple[bool, bool]:
         dirty = False
     try:
         r = subprocess.run(
-            ["git", "-C", cwd, "log", "@{u}..", "--oneline"],
+            ["git", "--no-optional-locks", "-C", cwd, "log", "@{u}..", "--oneline"],
             capture_output=True, text=True, timeout=5,
         )
         unpushed = bool(r.stdout.strip()) if r.returncode == 0 else False

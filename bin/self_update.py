@@ -42,6 +42,9 @@ propagate.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -81,18 +84,86 @@ SYNTAX_GATE_PATHS = ("bin/", "src/", "hooks/", "install/", "prompts/", "skills/"
 REJECT_REMIND_SEC = 86400  # 1 day
 
 
+# How long a timed-out git gets after SIGTERM to remove its own lock files
+# before it's killed outright.
+KILL_GRACE_SEC = 3
+
+# git leaves `.git/index.lock` behind when it dies mid-write, and every later git
+# write in the repo then fails. A lock no process has open, older than this, is
+# stale (2026-09-28: one left by a killed `git status` blocked every self-update).
+STALE_LOCK_SEC = 600
+
+
 def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
-    """Run a git command in `repo`. Returns (rc, stdout, stderr); never raises."""
+    """Run a git command in `repo`. Returns (rc, stdout, stderr); never raises.
+
+    `--no-optional-locks` keeps read-only commands like `status` from taking
+    the index lock at all. On a timeout git gets SIGTERM first — it removes
+    its lock files on SIGTERM, but a SIGKILL leaves them behind."""
     try:
-        p = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True, text=True, timeout=timeout,
+        proc = subprocess.Popen(
+            ["git", "--no-optional-locks", "-C", str(repo), *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
         )
-        return p.returncode, p.stdout.strip(), p.stderr.strip()
-    except subprocess.TimeoutExpired:
-        return -1, "", f"git {' '.join(args)} timed out after {timeout}s"
     except Exception as e:  # noqa: BLE001
         return -1, "", str(e)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode, out.strip(), err.strip()
+    except subprocess.TimeoutExpired:
+        _terminate_group(proc)
+        return -1, "", f"git {' '.join(args)} timed out after {timeout}s"
+
+
+def _terminate_group(proc: subprocess.Popen, grace: float = KILL_GRACE_SEC) -> None:
+    """SIGTERM a child's process group, then SIGKILL whatever is left after
+    `grace` seconds."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.communicate(timeout=grace)
+    except (ProcessLookupError, PermissionError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.communicate()
+
+
+def _lock_is_held(path: Path) -> bool:
+    """True if some process has `path` open, or if lsof can't say for sure.
+    lsof exits 1 with no output when nobody has the file open."""
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"
+    try:
+        p = subprocess.run([lsof, "-w", "-t", "--", str(path)],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return not (p.returncode == 1 and not p.stdout.strip() and not p.stderr.strip())
+
+
+def clear_stale_index_lock(repo: Path, *, now: float | None = None,
+                           max_age: float = STALE_LOCK_SEC,
+                           is_held=_lock_is_held) -> str | None:
+    """Remove the repo's index.lock if it's stale: older than `max_age` and
+    held open by no process. Returns what was removed, or None. A lock that's
+    young, held, or can't be checked is left alone."""
+    now = time.time() if now is None else now
+    rc, git_dir, _ = _git(repo, "rev-parse", "--absolute-git-dir")
+    if rc != 0 or not git_dir:
+        return None
+    lock = Path(git_dir) / "index.lock"
+    try:
+        age = now - lock.stat().st_mtime
+    except OSError:
+        return None
+    if age < max_age or is_held(lock):
+        return None
+    try:
+        lock.unlink()
+    except OSError:
+        return None
+    return f"removed a stale {lock} from {int(age // 60)} min ago that no process held"
 
 
 def _stash_dirty(repo: Path, label: str) -> tuple[bool, str]:
@@ -287,6 +358,11 @@ def maybe_update(
 
     result: dict = {"attempted": True, "changed": False, "installed": False,
                     "skipped_reason": None}
+
+    cleared = clear_stale_index_lock(repo, now=now)
+    if cleared:
+        result["cleared_stale_lock"] = cleared
+        _log(cleared)
 
     rb = resolve_remote_branch(repo)
     if rb is None:

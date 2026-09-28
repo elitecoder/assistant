@@ -55,6 +55,10 @@ slack-reactor/package-lock.json
 # untracked, the deployed fleet's self_update.py sees a perpetually-dirty tree,
 # does `git stash push -u`, and loops a 24h-delay cycle forever.
 .worktrees/
+# Claude Code's isolated agent worktrees, and the self-update marker a test run
+# inside one writes to its grandparent: the same perpetually-dirty tree.
+.claude/worktrees/
+.claude/.assistant/
 
 # Runtime state dir when an install keeps it inside the repo instead of ~
 # (metrics.jsonl, observer-summaries/, heartbeat.json — never committed).
