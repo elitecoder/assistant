@@ -587,6 +587,26 @@ class TerminateGroupTests(unittest.TestCase):
             su._terminate_group(proc, grace=5)
             self.assertFalse(lock.exists(), "the child's TERM handler ran")
 
+    def test_a_group_that_is_already_gone_falls_back_to_killing_the_child(self):
+        class Gone:
+            pid = 999999
+            killed = False
+
+            def kill(self):
+                self.killed = True
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        proc = Gone()
+
+        def no_group(pid, sig):
+            raise ProcessLookupError
+
+        with unittest.mock.patch.object(su.os, "killpg", no_group):
+            su._terminate_group(proc, grace=0.1)
+        self.assertTrue(proc.killed)
+
     def test_a_child_that_ignores_sigterm_is_killed(self):
         proc = subprocess.Popen(["/bin/sh", "-c", 'trap "" TERM; sleep 30'],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
