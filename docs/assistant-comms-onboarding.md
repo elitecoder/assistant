@@ -37,7 +37,7 @@ Replies come from a **warm cmux Claude session** (Sonnet, scoped `--add-dir`) th
 |---|---|
 | Assistant appends a verified action to its ledger | `I asked a workspace to merge its PR.` with the refs in a trailing italic line |
 | Same, but evidence is `screen_read` (Assistant rejects this as weak) | `Heads up: I only confirmed this by reading the screen, which isn't reliable proof.` |
-| A workspace asks you a question / needs input / finishes work | `*<workspace title>* is asking you: <question>` or `*<workspace title>* needs your input.` with the agent's last message quoted |
+| A workspace asks you a question, goes idle on a message that asks you something, or opens a PR | `*<workspace title>* is asking you: <question>` or `*<workspace title>* needs your input.` with the agent's last message quoted. Idle workspaces whose last message is a status update don't ping. |
 | Assistant heartbeat stale (>20 min) or status flips to `frozen`/`stale_world`/`respawn-requested` | `*Assistant's main loop has stopped* — no run for 25m …`, then `*Assistant's main loop is running again* after 3h.` |
 
 Messages are Slack `mrkdwn`.

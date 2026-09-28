@@ -472,21 +472,49 @@ def trim_words(text: str, limit: int = LAST_MESSAGE_CHARS) -> str:
     return flat[:limit].rsplit(" ", 1)[0] + "…"
 
 
-def read_last_message(cwd: str | None, session_id: str | None, *,
-                      question: bool) -> str | None:
-    """What the agent last said, for the Slack ping: the pending question when
-    `question` (an AskUserQuestion event — the hook payload redacts its text),
-    else the last assistant text. Returns None on any failure so a missing or
+# The last line of an agent's message asks the user something. Measured over
+# 1,495 recent turns: 18% end this way ("Want me to…?", "Should I…?"); the rest
+# are status updates ("Standing by for the gate agents…") that need nobody.
+_ASKS_RE = re.compile(r"\?|\b(let me know|your call|want me to|should i|shall i)\b", re.I)
+
+
+def asks_user(text: str | None) -> bool:
+    """True if the message's last non-empty line asks the user something."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return bool(lines) and bool(_ASKS_RE.search(lines[-1]))
+
+
+def session_title(records: list[dict]) -> str | None:
+    """A name for the session when its workspace title is cmux's default:
+    Claude's own session title, else the working folder and git branch."""
+    for rec in reversed(records):
+        title = rec.get("aiTitle") if rec.get("type") == "ai-title" else None
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+    for rec in reversed(records):
+        cwd = rec.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            branch = rec.get("gitBranch")
+            name = Path(cwd).name or cwd
+            return f"{name} ({branch})" if isinstance(branch, str) and branch not in ("", "HEAD") else name
+    return None
+
+
+def read_session(cwd: str | None, session_id: str | None) -> dict | None:
+    """What the session's transcript says right now: the pending question (an
+    AskUserQuestion's text — the hook payload redacts it), the agent's last
+    message in full, and a title. None on any failure so a missing or
     malformed transcript never blocks the drop."""
     try:
         path = transcript_path(cwd, session_id)
         if path is None:
             return None
         records = tail_records(path)
-        text = pending_question(records) if question else last_assistant_text(records)
+        return {"question": pending_question(records),
+                "last_text": last_assistant_text(records),
+                "title": session_title(records)}
     except Exception:  # noqa: BLE001 — transcripts are external; the ping must still go
         return None
-    return trim_words(text) if text else None
 
 
 # ─── event classification (pure) ──────────────────────────────────────────────
@@ -625,10 +653,10 @@ class WatcherState:
 
 def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
                  resolver: WsRefResolver, *, screen_reader=read_screen,
-                 message_reader=read_last_message) -> dict | None:
+                 session_reader=read_session) -> dict | None:
     """Process one parsed event end-to-end. Returns the dropped item dict (for
     tests/logging) or None when nothing was dropped. `screen_reader` and
-    `message_reader` are injectable so tests don't shell out to cmux or read
+    `session_reader` are injectable so tests don't shell out to cmux or read
     real transcripts."""
     cls = classify_event(evt)
     if cls is None:
@@ -638,29 +666,42 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
 
     workspace_id = cls["workspace_id"]
     ws_ref = resolver.resolve(workspace_id)
-    ws_title = resolver.title(workspace_id)
     ws_key = ws_ref or workspace_id or "unknown"
+    session = session_reader(cls["cwd"], cls["session_id"]) or {}
+    ws_title = resolver.title(workspace_id) or session.get("title")
+    last_text = session.get("last_text")
 
     if cls["signal"] == "needs_input":
-        # Always a signal — the agent is blocked on the user. Cooldown only.
+        pattern_matched = cls["event_name"].split(".")[-1]  # Notification / AskUserQuestion
+        asking = pattern_matched == "AskUserQuestion"
+        # Claude's Notification here is its idle "waiting for your input" alert:
+        # it fires about a minute after every turn and its payload carries no
+        # message. It only needs the user when the agent's last words ask them
+        # something; an unreadable transcript still pings, as before.
+        if not asking and last_text and not asks_user(last_text):
+            log(f"skip idle needs_input ws={ws_ref or workspace_id}: last message asks nothing")
+            return None
         if not state.cooled_down(ws_key, "needs_input"):
             return None
         snippet = last_lines(screen_reader(workspace_id or ws_ref or ""))
-        pattern_matched = cls["event_name"].split(".")[-1]  # Notification / AskUserQuestion
-        last_message = message_reader(cls["cwd"], cls["session_id"],
-                                      question=pattern_matched == "AskUserQuestion")
+        message = session.get("question") if asking else last_text
         item = drop_inbox_item(ws_ref, "needs_input", pattern_matched, snippet,
-                               ws_title=ws_title, last_message=last_message)
+                               ws_title=ws_title,
+                               last_message=trim_words(message) if message else None)
         record_fired(pattern_matched, ws_ref, "needs_input")
         log(f"drop needs_input ws={ws_ref or workspace_id} via={pattern_matched} → {item.name}")
         return {"path": str(item), "signal_type": "needs_input",
                 "pattern_matched": pattern_matched, "ws_ref": ws_ref}
 
-    # turn_end: read the screen and pattern-match. Drop only on a non-muted hit.
+    # turn_end: pattern-match what the agent just said, not 50 lines of screen,
+    # where old scrollback and tool output matched words like "blocked" or
+    # "API error" that had nothing to do with this turn. The screen is only the
+    # fallback when the transcript can't be read.
     screen = screen_reader(workspace_id or ws_ref or "")
-    if not screen:
+    text = last_text or screen
+    if not text:
         return None  # dead/headless workspace or read failure — nothing to judge
-    hits = bank.match(screen)
+    hits = bank.match(text)
     if not hits:
         return None  # plain turn-end with nothing notable — the noise floor
     top = hits[0]
@@ -671,9 +712,9 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
     if not state.cooled_down(ws_key, signal_type):
         return None
     snippet = last_lines(screen)
-    last_message = message_reader(cls["cwd"], cls["session_id"], question=False)
     item = drop_inbox_item(ws_ref, signal_type, top.get("id", ""), snippet,
-                           ws_title=ws_title, last_message=last_message)
+                           ws_title=ws_title,
+                           last_message=trim_words(last_text) if last_text else None)
     record_fired(top.get("id", ""), ws_ref, signal_type)
     log(f"drop {signal_type} ws={ws_ref or workspace_id} pattern={top.get('id')} → {item.name}")
     return {"path": str(item), "signal_type": signal_type,
