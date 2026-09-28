@@ -5,21 +5,26 @@ A single long-running process (KeepAlive LaunchAgent) with six concurrent jobs,
 one blocking loop per thread joined under a shutdown Event:
 
   1. INBOUND (event) — REST-poll Slack (conversations.history via slack-poll.py)
-     for inbound messages in the configured DM/channel. On a message: feeds the
-     warm cmux session, which composes and sends a reply via slack-send.py.
+     for inbound messages in the configured DM/channel. Each message is queued
+     on disk and fed to the warm cmux session, which composes and sends a reply
+     via slack-send.py. It leaves the queue only once the session's transcript
+     shows it arrived; until then it's retried.
 
   2. WATCHDOG (timer) — every WATCHDOG_INTERVAL_SEC, ensure a live warm session
-     exists (respawn if dead/missing). Closes the gap where a warm workspace that
-     died between inbound messages (cmux restart, crash, sleep) stayed dead until
-     the next Slack message arrived.
+     exists (respawn if cmux says it's gone; leave it alone if cmux doesn't
+     answer). Closes the gap where a warm workspace that died between inbound
+     messages (cmux restart, crash, sleep) stayed dead until the next Slack
+     message arrived.
 
   3. OUTBOUND PINGS (event) — watch actions-ledger.jsonl for appends. On new
-     lines, format with comms_lib.fmt_action_line and send. No LLM — mechanical,
+     lines, skip housekeeping, format with comms_lib.fmt_action_line, and send
+     at most LEDGER_MAX_PER_PASS plus one summary line. No LLM — mechanical,
      fires near-instantly (~2s stat-poll floor).
 
   4. INBOX (event) — watch ~/.assistant/inbox for cmux-watcher signals
-     (workspace needs input / work complete) and ping within seconds. kqueue on
-     macOS, stat-poll fallback elsewhere.
+     (workspace needs input / work complete) and ping within seconds, at most
+     once per workspace per INBOX_COOLDOWN_SEC unless it's a real question.
+     kqueue on macOS, stat-poll fallback elsewhere.
 
   5. PROPOSALS (timer) — watch ~/.assistant/proposals.jsonl (the durable queue
      the lesson-extractor writes). Deliver each new pending lesson proposal to
@@ -27,8 +32,9 @@ one blocking loop per thread joined under a shutdown Event:
      first run), asking Mukul to confirm it. No LLM.
 
   6. HEARTBEAT PAGE (timer) — every 60s, check Assistant's heartbeat; if stale
-     or status ∈ {frozen, stale_world, respawn-requested}, send a templated
-     urgent page (30-min dedup). No LLM.
+     or status ∈ {frozen, stale_world, respawn-requested} for two checks in a
+     row, send one templated urgent page, then one message when it recovers.
+     No LLM.
 
 All six reuse the tested CLIs and comms_lib. Durable memory stays in
 conversation.jsonl, so a crash + KeepAlive respawn loses nothing.
@@ -79,8 +85,6 @@ REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 WARM_PROMPT = REPO / "prompts" / "prompt-assistant-comms-warm.md"
 
-REPLY_WAIT_SEC = int(os.environ.get("COMMS_REPLY_WAIT_SEC", "120"))
-
 SLACK_POLL = BIN / "slack-poll.py"
 SLACK_SEND = BIN / "slack-send.py"
 CONVERSATION = BIN / "conversation.py"
@@ -90,7 +94,28 @@ CONVERSATION = BIN / "conversation.py"
 SLACK_POLL_INTERVAL_SEC = int(os.environ.get("COMMS_SLACK_POLL_SEC", "3"))
 LEDGER_POLL_SEC = float(os.environ.get("COMMS_LEDGER_POLL_SEC", "2"))
 HEARTBEAT_CHECK_SEC = int(os.environ.get("COMMS_HEARTBEAT_CHECK_SEC", "60"))
-HEARTBEAT_DEDUP_SEC = 1800
+HEARTBEAT_CONFIRM_CHECKS = 2
+
+# Inbound messages wait on disk until the warm session confirms it received
+# them. The slack cursor moves past a message as soon as it's polled, so before
+# this queue a message that arrived while no session was up was lost for good
+# (2026-09-27: two "are you alive?" messages). Undelivered messages are retried
+# every PENDING_RETRY_SEC and given up after PENDING_MAX_AGE_SEC, when an
+# answer would no longer help.
+PENDING_RETRY_SEC = float(os.environ.get("COMMS_PENDING_RETRY_SEC", "30"))
+PENDING_MAX_AGE_SEC = float(os.environ.get("COMMS_PENDING_MAX_AGE_SEC", str(3 * 3600)))
+RESTART_NOTICE = ("My chat session isn't responding right now. I'll answer as soon "
+                  "as it's back.")
+RESTART_NOTICE_AFTER_SEC = float(os.environ.get("COMMS_RESTART_NOTICE_AFTER_SEC", "60"))
+
+# At most this many action updates go out per ledger pass; the rest collapse
+# into one summary line (2026-09-27: 129 posts in two minutes).
+LEDGER_MAX_PER_PASS = int(os.environ.get("COMMS_LEDGER_MAX_PER_PASS", "5"))
+
+# One workspace gets at most one ping per window, whatever the signal. A real
+# question (AskUserQuestion) always goes through (2026-09-28: one workspace was
+# pinged 21 times in six hours, a median of three minutes apart).
+INBOX_COOLDOWN_SEC = float(os.environ.get("COMMS_INBOX_COOLDOWN_SEC", "900"))
 
 # Proposals are a durable queue, not a live event, so we poll on a slow cadence
 # (they're written at most a few times a day by the pulse-throttled extractor).
@@ -173,13 +198,40 @@ def cli(argv: list[str], timeout: int = 30, env: dict | None = None) -> tuple[in
 
 # --------------------------------------------------------------------------- inbound
 
-def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False) -> dict | None:
-    """Return a live warm-session record, spawning one if none is alive.
+# Results of _warm_session, beyond the session record itself.
+SESSION_ALIVE = "alive"
+SESSION_SPAWNED = "spawned"
+SESSION_UNREACHABLE = "unreachable"  # cmux isn't answering; the session is left alone
+SESSION_NONE = "none"
 
-    respawn_on_stale (inbound path only): also respawn a session that is alive
-    but whose recorded model id no longer matches the current backend (a
-    `claude-backend` toggle since spawn). The watchdog passes False so it never
-    closes a live session out from under an active reply.
+# When cmux first stopped answering in the current episode, so the log gets one
+# line per episode instead of one per check.
+_cmux_silent_since: float | None = None
+
+
+def _note_cmux_answer(answered: bool) -> None:
+    global _cmux_silent_since
+    now = time.time()
+    if not answered and _cmux_silent_since is None:
+        _cmux_silent_since = now
+        log("cmux isn't answering — leaving the warm session alone until it does")
+    elif answered and _cmux_silent_since is not None:
+        log(f"cmux answering again after {int(now - _cmux_silent_since)}s")
+        _cmux_silent_since = None
+
+
+def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
+                  force_respawn: bool = False) -> tuple[dict | None, str]:
+    """The live warm-session record and how it was obtained, spawning one if
+    none is alive.
+
+    A session is replaced only when cmux says its workspace is gone, or when
+    it's alive and the caller asks: respawn_on_stale (inbound path only) for a
+    session whose model id no longer matches the current backend, or
+    force_respawn for one that didn't accept a typed prompt. When cmux doesn't
+    answer at all, the session is left alone — a refused or timed-out check
+    says nothing about the workspace (2026-09-27: every such check used to
+    close a healthy session and spawn another onto a stalled cmux).
 
     On respawn, close the prior warm workspace first so we never leak Claude
     processes. close_own_workspace is title-guarded — it only ever closes an
@@ -192,93 +244,220 @@ def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = Fals
     with _warm_session_lock:
         sess = comms_session.read_session(paths)
         if sess:
-            alive = comms_session.cmux_alive(paths, sess["ws_ref"])
-            if alive:
-                # A stale-but-alive session (its model id no longer matches the
-                # current backend after a `claude-backend` toggle) still WORKS on
-                # its old backend, so only the INBOUND path respawns it —
-                # respawn_on_stale=True — and does so BEFORE that worker feeds its
-                # message, so it never drops its OWN in-flight reply. The liveness
-                # watchdog leaves a live session alone (respawn_on_stale=False):
-                # closing it there could race an active reply, and it isn't
-                # counted toward the watchdog backoff, so a flapping resolver
-                # would churn cmux.
-                #
-                # Residual (unreachable in the 1:1-DM config, one channel worker):
-                # feed() runs outside _warm_session_lock, so if a SECOND channel
-                # worker respawned this shared session mid-reply, the first
-                # worker's reply could drop. One-shot per toggle and self-healing
-                # (the inbound turn is already in conversation.jsonl). Widen the
-                # lock over feed() only if multi-channel ever goes hot.
-                if not respawn_on_stale or comms_session.warm_session_model_is_current(paths, sess):
-                    return sess
-                why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
+            state = comms_session.workspace_state(paths, sess["ws_ref"])
+            _note_cmux_answer(state != comms_session.UNKNOWN)
+            if state == comms_session.UNKNOWN:
+                return sess, SESSION_UNREACHABLE
+            if state == comms_session.ALIVE:
+                # A stale-but-alive session still WORKS on its old backend, so
+                # only the INBOUND path respawns it, BEFORE it feeds its own
+                # message. The watchdog leaves a live session alone: closing it
+                # there could race an active reply.
+                if force_respawn:
+                    why = "didn't accept the typed message"
+                elif respawn_on_stale and not comms_session.warm_session_model_is_current(paths, sess):
+                    why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
+                else:
+                    return sess, SESSION_ALIVE
             else:
                 why = "gone"
             log(f"warm session {sess['ws_ref']} {why} — closing it and respawning")
             comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
             comms_session.clear_session_registry(paths)
-        return comms_session.spawn_session(paths, WARM_PROMPT, log=log)
+        spawned = comms_session.spawn_session(paths, WARM_PROMPT, log=log)
+        return spawned, (SESSION_SPAWNED if spawned else SESSION_NONE)
 
 
-def reply_to_message(paths: comms_lib.Paths, sess: dict, rec: dict) -> dict:
-    """Warm reply: record inbound, feed the message to the warm session, wait for
-    its reply turn in the transcript, then /clear if context >= 50%. Returns the
-    (possibly refreshed) session record."""
-    channel = rec.get("channel")
-    text = rec.get("text", "")
-    msg_ts = rec.get("msg_ts")
-    reply_to = rec.get("reply_to")
+def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False) -> dict | None:
+    """The live warm-session record, spawning one if none is alive (see
+    _warm_session)."""
+    return _warm_session(paths, respawn_on_stale=respawn_on_stale)[0]
 
-    # Record the inbound turn first — survives even if the session stalls.
-    in_args = [str(CONVERSATION), "append", "--channel", str(channel),
-               "--direction", "in", "--text", text]
-    if msg_ts is not None:
-        in_args += ["--msg-ts", str(msg_ts)]
-    if reply_to is not None:
-        in_args += ["--reply-to", str(reply_to)]
-    cli(in_args, timeout=10)
 
+def feed_text(recs: list[dict], channel: str) -> str:
+    """The user turn that hands inbound Slack message(s) to the warm session.
+
+    The header carries the newest message's ts; its `msg_ts=<ts>` doubles as the
+    marker that confirms the turn landed. Messages that piled up while the
+    session was down go in one turn, so the session answers them together."""
+    ts = recs[-1].get("msg_ts")
+    header = f"[slack channel={channel} msg_ts={ts} send_cli={SLACK_SEND}]"
+    if len(recs) == 1:
+        return f"{header} {recs[0].get('text', '')}"
+    parts = " ".join(f"({i}) {r.get('text', '')}" for i, r in enumerate(recs, 1))
+    return (f"{header} {len(recs)} messages arrived while your session was down. "
+            f"Answer them together in one reply. {parts}")
+
+
+def reply_to_message(paths: comms_lib.Paths, sess: dict,
+                     recs: list[dict]) -> tuple[bool, dict]:
+    """Hand inbound message(s) to the warm session and confirm its transcript
+    recorded them, then /clear if context >= 50%. Returns (delivered, the
+    possibly refreshed session record).
+
+    Confirmation looks for the message's marker in the bound transcript first,
+    then in any transcript in the session's project folder, and rebinds the
+    session to wherever it landed."""
+    channel = str(recs[-1].get("channel"))
+    marker = f"msg_ts={recs[-1].get('msg_ts')}"
     # Thread the session's provider through every transcript-root / context call:
     # a Droid session writes under ~/.factory/sessions with no usage block, so a
     # claude default here would read the wrong root and never clear (G3).
     agent = sess.get("agent") or agent_session.CLAUDE
-    transcript = sess.get("transcript_path") or comms_session.newest_transcript(sess["cwd"], agent)
-    before_lines = comms_session.transcript_line_count(transcript) if transcript else 0
+    project_dir = comms_session.project_dir_for_cwd(sess["cwd"], agent)
+    bound = sess.get("transcript_path")
+    since = time.time() - 1
+    found: list[str] = []
 
-    # Feed the message as a user turn. The warm session's boot prompt tells it
-    # how to reconstruct context, reply via slack-send.py, and record the out
-    # turn. This is a 1:1 channel — the session replies at TOP LEVEL (no
-    # threading), so the header only needs the channel + send CLI.
-    feed_text = (
-        f"[slack channel={channel} msg_ts={msg_ts} send_cli={SLACK_SEND}] {text}"
-    )
+    def confirmed() -> bool:
+        if bound and comms_session.transcript_has_submission(bound, marker):
+            hit = bound
+        else:
+            hit = comms_session.find_submission(project_dir, marker, since)
+        if hit:
+            found.append(hit)
+        return hit is not None
+
     t0 = time.time()
-    comms_session.feed(paths, sess["surface_ref"], feed_text)
-
-    grew = False
-    while time.time() - t0 < REPLY_WAIT_SEC:
-        time.sleep(2)
-        if transcript and comms_session.transcript_line_count(transcript) > before_lines:
-            grew = True
-            break
-        if not transcript:
-            transcript = comms_session.newest_transcript(sess["cwd"], agent)
-    log(f"reply channel={channel} msg={msg_ts} grew={grew} wall_ms={int((time.time()-t0)*1000)}")
+    delivered = comms_session.submit(paths, sess["surface_ref"], feed_text(recs, channel),
+                                     marker, confirmed)
+    log(f"reply channel={channel} msg={recs[-1].get('msg_ts')} n={len(recs)} "
+        f"submitted={delivered} wall_ms={int((time.time() - t0) * 1000)}")
+    if not delivered:
+        return False, sess
+    transcript = found[-1]
 
     # Context management: clear-and-resume at >= 50% (claude) or the size proxy
     # (droid). should_clear + clear_session are provider-aware; for droid a
     # "clear" is a lossless respawn since durable memory lives in conversation.jsonl.
     # clear_session owns the registry update and returns the refreshed record.
-    if transcript and comms_session.should_clear(transcript, agent=agent):
+    if comms_session.should_clear(transcript, agent=agent):
         log(f"context threshold reached ({agent}) — clear-and-resume")
-        return comms_session.clear_session(paths, sess, WARM_PROMPT, agent=agent, log=log)
+        return True, comms_session.clear_session(paths, sess, WARM_PROMPT, agent=agent, log=log)
 
-    if transcript and transcript != sess.get("transcript_path"):
+    if transcript != bound:
+        log(f"warm session transcript rebound to {transcript}")
         comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
                                     sess["cwd"], transcript)
         sess = comms_session.read_session(paths) or sess
-    return sess
+    return True, sess
+
+
+# --------------------------------------------------------------------------- pending inbound
+
+_pending_lock = threading.Lock()
+
+
+def _pending_path(paths: comms_lib.Paths) -> Path:
+    return paths.comms_dir / "pending-inbound.json"
+
+
+def read_pending(paths: comms_lib.Paths) -> list[dict]:
+    try:
+        data = json.loads(_pending_path(paths).read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+def _write_pending(paths: comms_lib.Paths, recs: list[dict]) -> None:
+    p = _pending_path(paths)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(recs, indent=2))
+    os.replace(tmp, p)
+
+
+def add_pending(paths: comms_lib.Paths, rec: dict) -> None:
+    """Queue an inbound message until the warm session confirms it. A message
+    already queued (same msg_ts) isn't added twice."""
+    with _pending_lock:
+        recs = read_pending(paths)
+        if any(r.get("msg_ts") == rec.get("msg_ts") for r in recs):
+            return
+        _write_pending(paths, [*recs, rec])
+
+
+def remove_pending(paths: comms_lib.Paths, msg_tss: list) -> None:
+    drop = set(msg_tss)
+    with _pending_lock:
+        _write_pending(paths, [r for r in read_pending(paths) if r.get("msg_ts") not in drop])
+
+
+def message_age_sec(rec: dict, now: float) -> float:
+    """Seconds since Slack received the message (its ts is epoch seconds)."""
+    try:
+        return now - float(rec.get("msg_ts"))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def split_pending(recs: list[dict], channel: str, now: float,
+                  max_age: float) -> tuple[list[dict], list[dict]]:
+    """(still worth answering, too old to answer) for one channel's queued
+    messages, oldest first."""
+    mine = sorted((r for r in recs if str(r.get("channel") or "default") == channel),
+                  key=lambda r: message_age_sec(r, now), reverse=True)
+    fresh = [r for r in mine if message_age_sec(r, now) <= max_age]
+    expired = [r for r in mine if message_age_sec(r, now) > max_age]
+    return fresh, expired
+
+
+def _record_inbound(rec: dict) -> None:
+    """Append the inbound turn to conversation.jsonl as soon as it arrives, so
+    it survives even if it's never delivered."""
+    args = [str(CONVERSATION), "append", "--channel", str(rec.get("channel")),
+            "--direction", "in", "--text", rec.get("text", "")]
+    if rec.get("msg_ts") is not None:
+        args += ["--msg-ts", str(rec["msg_ts"])]
+    if rec.get("reply_to") is not None:
+        args += ["--reply-to", str(rec["reply_to"])]
+    cli(args, timeout=10)
+
+
+def _restart_notice_path(paths: comms_lib.Paths) -> Path:
+    return paths.comms_dir / "restart-notice.json"
+
+
+def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None) -> None:
+    """Tell the user, once per outage, that their message is waiting. The marker
+    is written before sending, so a failing send can't repeat every retry."""
+    marker = _restart_notice_path(paths)
+    if marker.exists():
+        return
+    marker.write_text(json.dumps({"ts": time.time(), "channel": channel}))
+    rc, _out, err = cli(_send_args(RESTART_NOTICE, "reply", channel, None), timeout=30, env=env)
+    log(f"restart notice sent to {channel}" if rc == 0
+        else f"restart notice rc={rc} err={err.strip()[:160]}")
+
+
+def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> bool:
+    """Try to hand this channel's queued messages to the warm session. Returns
+    True when nothing is left waiting."""
+    now = time.time()
+    fresh, expired = split_pending(read_pending(paths), channel, now, PENDING_MAX_AGE_SEC)
+    if expired:
+        for r in expired:
+            log(f"inbound msg={r.get('msg_ts')} still undelivered after "
+                f"{comms_lib.fmt_age(int(message_age_sec(r, now)))} — giving up on it")
+        remove_pending(paths, [r.get("msg_ts") for r in expired])
+    if not fresh:
+        return True
+    sess, how = _warm_session(paths, respawn_on_stale=True)
+    delivered = False
+    if sess and how != SESSION_UNREACHABLE:
+        delivered, _sess = reply_to_message(paths, sess, fresh)
+        if not delivered:
+            _warm_session(paths, force_respawn=True)
+    if delivered:
+        remove_pending(paths, [r.get("msg_ts") for r in fresh])
+        _restart_notice_path(paths).unlink(missing_ok=True)
+        return True
+    log(f"inbound: {len(fresh)} message(s) waiting for the warm session "
+        f"(session={how}); retrying in {int(PENDING_RETRY_SEC)}s")
+    if message_age_sec(fresh[0], now) >= RESTART_NOTICE_AFTER_SEC:
+        _notify_restart_once(paths, channel, env)
+    return False
 
 
 def _poll_thread(stop: threading.Event, env: dict, msg_queue: queue.Queue) -> None:
@@ -308,23 +487,33 @@ def _poll_thread(stop: threading.Event, env: dict, msg_queue: queue.Queue) -> No
             stop.wait(SLACK_POLL_INTERVAL_SEC)
 
 
-def _channel_worker(channel_id: str, ch_queue: queue.Queue, stop: threading.Event) -> None:
-    """Per-channel worker: serializes replies for one channel while other
-    channels run concurrently."""
+def _channel_worker(channel_id: str, ch_queue: queue.Queue, stop: threading.Event,
+                    env: dict | None = None) -> None:
+    """Per-channel worker: queues each inbound message on disk, delivers the
+    queue, and retries every PENDING_RETRY_SEC until the warm session confirms
+    it. Serializes replies for one channel while other channels run
+    concurrently."""
     paths = comms_lib.Paths.from_env()
-    sess = ensure_warm_session(paths, respawn_on_stale=True)
+    waiting = bool(split_pending(read_pending(paths), channel_id, time.time(),
+                                 PENDING_MAX_AGE_SEC)[0])
+    last_try = 0.0
     while not stop.is_set():
         try:
             rec = ch_queue.get(timeout=1)
         except queue.Empty:
-            continue
-        log(f"inbound channel={channel_id} msg={rec.get('msg_ts')} "
-            f"text={rec.get('text','')[:80]!r}")
-        sess = ensure_warm_session(paths, respawn_on_stale=True)
-        if not sess:
-            log(f"no warm session — skipping msg={rec.get('msg_ts')}")
-            continue
-        sess = reply_to_message(paths, sess, rec)
+            rec = None
+        if rec is not None:
+            log(f"inbound channel={channel_id} msg={rec.get('msg_ts')} "
+                f"text={rec.get('text', '')[:80]!r}")
+            _record_inbound(rec)
+            add_pending(paths, rec)
+            waiting = True
+        if waiting and (rec is not None or time.time() - last_try >= PENDING_RETRY_SEC):
+            last_try = time.time()
+            try:
+                waiting = not _deliver_pending(paths, channel_id, env)
+            except Exception as e:  # noqa: BLE001 — one bad pass must never kill the channel
+                log(f"inbound delivery error (will retry): {type(e).__name__}: {e}")
 
 
 def inbound_loop(stop: threading.Event, env: dict) -> None:
@@ -335,6 +524,24 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
         comms_session.reconcile_warm_workspaces(paths, keep=sess["ws_ref"], log=log)
 
     channel_workers: dict[str, tuple[queue.Queue, threading.Thread]] = {}
+
+    def worker_for(channel_id: str) -> queue.Queue:
+        if channel_id not in channel_workers:
+            ch_q: queue.Queue = queue.Queue()
+            t = threading.Thread(
+                target=_channel_worker,
+                args=(channel_id, ch_q, stop, env),
+                name=f"inbound-{channel_id}",
+                daemon=True,
+            )
+            t.start()
+            channel_workers[channel_id] = (ch_q, t)
+        return channel_workers[channel_id][0]
+
+    # Messages still queued from before a restart get their workers right away.
+    for channel_id in sorted({str(r.get("channel") or "default") for r in read_pending(paths)}):
+        worker_for(channel_id)
+
     msg_queue: queue.Queue = queue.Queue()
     poller = threading.Thread(target=_poll_thread, args=(stop, env, msg_queue),
                               name="inbound-poller", daemon=True)
@@ -345,18 +552,7 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
             rec = msg_queue.get(timeout=1)
         except queue.Empty:
             continue
-        channel_id = str(rec.get("channel") or "default")
-        if channel_id not in channel_workers:
-            ch_q: queue.Queue = queue.Queue()
-            t = threading.Thread(
-                target=_channel_worker,
-                args=(channel_id, ch_q, stop),
-                name=f"inbound-{channel_id}",
-                daemon=True,
-            )
-            t.start()
-            channel_workers[channel_id] = (ch_q, t)
-        channel_workers[channel_id][0].put(rec)
+        worker_for(str(rec.get("channel") or "default")).put(rec)
 
 
 # --------------------------------------------------------------------------- warm-session liveness watchdog
@@ -367,12 +563,16 @@ def watchdog_tick(paths: comms_lib.Paths) -> str:
     and tests. NEVER raises — a transient cmux error (cmux briefly down, a
     spawn timeout) must not kill the watchdog thread; it logs and retries on the
     next tick. Delegates the actual liveness check + respawn to
-    ensure_warm_session under _warm_session_lock, so this never races an
-    inbound-driven respawn."""
+    _warm_session under _warm_session_lock, so this never races an
+    inbound-driven respawn. "cmux-unresponsive" means the session was left
+    alone because cmux didn't answer; it backs off like a failure so a long
+    cmux stall isn't probed every minute."""
     try:
-        sess = ensure_warm_session(paths)
+        sess, how = _warm_session(paths)
     except Exception as e:  # noqa: BLE001 — watchdog must survive any error
         return f"error:{type(e).__name__}"
+    if how == SESSION_UNREACHABLE:
+        return "cmux-unresponsive"
     return "alive" if sess else "no-session"
 
 
@@ -417,6 +617,9 @@ def watchdog_loop(stop: threading.Event, env: dict) -> None:
 
 # --------------------------------------------------------------------------- outbound pings
 
+HOUSEKEEPING_KINDS = ("decision-transition", "strategist-autopause", "stranded", "skipped")
+
+
 def _suppress_reason(entry: dict) -> str | None:
     """Return a reason string if this ledger entry should NOT be broadcast to
     Slack, or None if it should. Pure decision logic (no I/O) — the daemon owns
@@ -440,6 +643,13 @@ def _suppress_reason(entry: dict) -> str | None:
     # brief.RECEIPT_KINDS and CommsSubsystem._broadcast_entry.
     if kind in ("event-drop", "decision-auto-done", "merge-dispatched"):
         return f"receipt kind={kind} (pull-only, shown in brief)"
+    # Housekeeping the brief and dashboard already show: expiring stale
+    # decisions, pausing the strategist, nudging a stalled workspace, and skip
+    # records. Pushing them buried real updates (2026-09-27: 129 "decision
+    # expired" posts in two minutes). Keep in sync with
+    # CommsSubsystem._broadcast_entry.
+    if kind in HOUSEKEEPING_KINDS:
+        return f"housekeeping kind={kind} (pull-only, shown in brief)"
     if kind == "self-update" and "skip" in key:
         return "self-update-skip"
     if kind in ("lesson-proposal", "lesson_proposal") or key.startswith("lesson-proposal"):
@@ -452,9 +662,47 @@ def _suppress_reason(entry: dict) -> str | None:
     return None
 
 
+def plan_broadcast(entries: list[dict],
+                   max_send: int = LEDGER_MAX_PER_PASS) -> tuple[list[dict], list[tuple[dict, str]], int]:
+    """Split one ledger pass into (entries to post, suppressed entries with
+    their reasons, how many more were held back past the per-pass cap)."""
+    suppressed = []
+    postable = []
+    for entry in entries:
+        reason = _suppress_reason(entry)
+        if reason is None:
+            postable.append(entry)
+        else:
+            suppressed.append((entry, reason))
+    return postable[:max_send], suppressed, max(0, len(postable) - max_send)
+
+
+def fmt_overflow(n: int) -> str:
+    return (f"…and {n} more Assistant update{'s' if n != 1 else ''}. "
+            f"They're on the dashboard at http://127.0.0.1:9876.")
+
+
+def _mirror_sent(out: str, body: str) -> None:
+    """Record each message slack-send posted as an out turn in
+    conversation.jsonl."""
+    for line in out.strip().splitlines():
+        try:
+            sent = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if sent.get("muted") or not sent.get("message_id"):
+            continue
+        convo_id = sent.get("channel")
+        if convo_id:
+            cli([str(CONVERSATION), "append", "--channel", str(convo_id),
+                 "--direction", "out", "--text", body, "--kind", "action",
+                 "--msg-ts", str(sent["message_id"])], timeout=10)
+
+
 def ledger_loop(stop: threading.Event, env: dict) -> None:
     """Watch actions-ledger.jsonl; broadcast each new entry to the configured
-    target. stat-poll (2s) — simple and dependency-free."""
+    target, at most LEDGER_MAX_PER_PASS per pass plus one summary line for the
+    rest. stat-poll (2s) — simple and dependency-free."""
     paths = comms_lib.Paths.from_env()
     comms_lib.initialize_cursor_if_missing(paths)
     log("ledger loop started (slack)")
@@ -465,35 +713,27 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
         except Exception as e:  # noqa: BLE001
             log(f"ledger read error: {e}")
             entries = []
-        for entry in entries:
+        to_send, suppressed, overflow = plan_broadcast(entries, LEDGER_MAX_PER_PASS)
+        for entry, reason in suppressed:
+            log(f"suppressed broadcast key={entry.get('key', '')}: {reason}")
+        if (to_send or overflow) and not target:
+            log(f"no target configured — skipping {len(to_send) + overflow} broadcast(s)")
+            to_send, overflow = [], 0
+        for entry in to_send:
             key = entry.get("key", "")
-            reason = _suppress_reason(entry)
-            if reason is not None:
-                log(f"suppressed broadcast key={key}: {reason}")
-                continue
-            if not target:
-                log(f"no target configured — skipping broadcast key={key}")
-                continue
             body = comms_lib.fmt_action_line(entry)
-            send_argv = _send_args(body, "action", target, key)
-            rc, out, err = cli(send_argv, timeout=30, env=env)
+            rc, out, err = cli(_send_args(body, "action", target, key), timeout=30, env=env)
             if rc != 0:
                 log(f"ledger broadcast rc={rc} key={key} err={err.strip()[:160]}")
                 continue
-            # Mirror each sent broadcast into conversation.jsonl as an out turn.
-            for line in out.strip().splitlines():
-                try:
-                    sent = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if sent.get("muted") or not sent.get("message_id"):
-                    continue
-                convo_id = sent.get("channel")
-                if convo_id:
-                    cli([str(CONVERSATION), "append", "--channel", str(convo_id),
-                         "--direction", "out", "--text", body, "--kind", "action",
-                         "--msg-ts", str(sent["message_id"])], timeout=10)
+            _mirror_sent(out, body)
             log(f"broadcast key={key}")
+        if overflow:
+            body = fmt_overflow(overflow)
+            rc, out, err = cli(_send_args(body, "action", target, None), timeout=30, env=env)
+            if rc == 0:
+                _mirror_sent(out, body)
+            log(f"broadcast overflow summary for {overflow} update(s) rc={rc}")
         stop.wait(LEDGER_POLL_SEC)
 
 
@@ -600,6 +840,39 @@ def _signal_age_sec(item: dict, path: Path, now: float) -> float:
         return 0.0
 
 
+def inbox_should_ping(item: dict, last_ping_ts: float | None, now: float,
+                      cooldown: float = INBOX_COOLDOWN_SEC) -> bool:
+    """True if this workspace signal should reach Slack: a real question always
+    does; anything else only when the workspace hasn't been pinged within the
+    cooldown."""
+    if item.get("pattern_matched") == "AskUserQuestion":
+        return True
+    return last_ping_ts is None or now - last_ping_ts >= cooldown
+
+
+def _cooldown_path(paths: comms_lib.Paths) -> Path:
+    return paths.comms_dir / "inbox-cooldown.json"
+
+
+def _read_cooldown(paths: comms_lib.Paths) -> dict[str, float]:
+    try:
+        data = json.loads(_cooldown_path(paths).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, (int, float))} if isinstance(data, dict) else {}
+
+
+def _write_cooldown(paths: comms_lib.Paths, last_ping: dict[str, float], now: float) -> None:
+    """Persist per-workspace last-ping times, dropping ones past the cooldown so
+    the file never grows without bound."""
+    keep = {k: v for k, v in last_ping.items() if now - v < INBOX_COOLDOWN_SEC}
+    p = _cooldown_path(paths)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(keep))
+    os.replace(tmp, p)
+
+
 def _drain_inbox_once(env: dict) -> int:
     """Read every cmux-*.json in the inbox, ping, delete it. Returns the number
     of items PINGED. Stale signals (older than INBOX_MAX_AGE_SEC) are deleted
@@ -611,8 +884,10 @@ def _drain_inbox_once(env: dict) -> int:
     paths = comms_lib.Paths.from_env()
     target = _target(paths)
     now = time.time()
+    last_ping = _read_cooldown(paths)
     n = 0
     stale = 0
+    held = 0
     for p in sorted(INBOX_DIR.glob(INBOX_GLOB)):
         try:
             raw = p.read_text()
@@ -639,6 +914,14 @@ def _drain_inbox_once(env: dict) -> int:
         if not target:
             log(f"inbox: no target configured — leaving {p.name} for retry")
             continue
+        ws_key = str(item.get("ws_ref") or "ws")
+        if not inbox_should_ping(item, last_ping.get(ws_key), now):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+            held += 1
+            continue
         body = comms_lib.fmt_workspace_signal(item)
         ledger_key = f"{item.get('ws_ref') or 'ws'}:{item.get('signal_type') or item.get('signal') or 'signal'}"
         send_argv = _send_args(body, "action", target, ledger_key)
@@ -651,10 +934,16 @@ def _drain_inbox_once(env: dict) -> int:
         except OSError:
             pass
         n += 1
+        last_ping[ws_key] = now
         log(f"inbox: pinged {item.get('signal_type') or item.get('signal')} "
             f"ws={item.get('ws_ref')} ({p.name})")
+    if n:
+        _write_cooldown(paths, last_ping, now)
     if stale:
         log(f"inbox: dropped {stale} stale signal(s) older than {int(INBOX_MAX_AGE_SEC)}s (no ping)")
+    if held:
+        log(f"inbox: held back {held} signal(s) from workspaces pinged in the last "
+            f"{int(INBOX_COOLDOWN_SEC)}s (no ping)")
     return n
 
 
@@ -704,9 +993,24 @@ def inbox_loop(stop: threading.Event, env: dict) -> None:
 
 # --------------------------------------------------------------------------- heartbeat page
 
+def heartbeat_action(unhealthy_checks: int, paged: bool,
+                     confirm: int = HEARTBEAT_CONFIRM_CHECKS) -> str | None:
+    """"page" once Assistant's main loop has looked stopped for `confirm`
+    checks in a row, "recover" at the first healthy check after a page, else
+    None — one message per outage instead of one every half hour
+    (2026-09-14→27: 621 identical pages). The confirmation keeps a pulse that
+    runs a minute late from paging and recovering in back-to-back posts."""
+    if unhealthy_checks >= confirm and not paged:
+        return "page"
+    if paged and unhealthy_checks == 0:
+        return "recover"
+    return None
+
+
 def heartbeat_loop(stop: threading.Event, env: dict) -> None:
     paths = comms_lib.Paths.from_env()
-    last_alert = 0
+    paged_last_ts: int | None = None  # the stale heartbeat's last pulse when we paged
+    unhealthy_checks = 0
     log("heartbeat loop started (slack)")
     while not stop.is_set():
         try:
@@ -721,19 +1025,22 @@ def heartbeat_loop(stop: threading.Event, env: dict) -> None:
         except json.JSONDecodeError:
             hb = {}
         last_ts = int(hb.get("last_pulse_ts") or 0)
-        if last_ts > 0:
+        if last_ts > 0 and target:
             age = int(time.time()) - last_ts
-            stale = age > stale_sec
-            bad = hb.get("status") in {"frozen", "stale_world", "respawn-requested"}
-            now = int(time.time())
-            if (stale or bad) and now - last_alert >= HEARTBEAT_DEDUP_SEC and target:
+            unhealthy = (age > stale_sec
+                         or hb.get("status") in {"frozen", "stale_world", "respawn-requested"})
+            unhealthy_checks = unhealthy_checks + 1 if unhealthy else 0
+            action = heartbeat_action(unhealthy_checks, paged_last_ts is not None)
+            if action == "page":
                 body = comms_lib.fmt_heartbeat_alert(hb, age)
-                send_argv = _send_args(body, "urgent", target, None)
-                rc, _, err = cli(send_argv, timeout=30, env=env)
-                last_alert = now
+                rc, _, _err = cli(_send_args(body, "urgent", target, None), timeout=30, env=env)
+                paged_last_ts = last_ts
                 log(f"heartbeat-stale page age={age}s rc={rc}")
-            elif not (stale or bad):
-                last_alert = 0  # healthy → re-arm
+            elif action == "recover":
+                body = comms_lib.fmt_heartbeat_recovered(hb, max(0, last_ts - paged_last_ts))
+                rc, _, _err = cli(_send_args(body, "action", target, None), timeout=30, env=env)
+                paged_last_ts = None
+                log(f"heartbeat recovered rc={rc}")
         comms_lib.write_comms_heartbeat(paths, status="active", pulse_idx=0,
                                         note="listen-daemon")
         stop.wait(HEARTBEAT_CHECK_SEC)

@@ -118,7 +118,7 @@ def test_load_bedrock_env_no_zprofile(tmp_path: Path):
 def test_fmt_workspace_signal_pattern_match_label():
     body = cl.fmt_workspace_signal({"ws_ref": "ws:2", "signal_type": "pattern_match",
                                     "pattern_matched": "BUILD FAILED"})
-    assert "hit a watched signal" in body and "BUILD FAILED" in body
+    assert "showed something I watch for" in body and "BUILD FAILED" in body
 
 
 # ─── slack-send CLI error paths ─────────────────────────────────────────────
@@ -160,40 +160,6 @@ def test_poll_fetch_error_returns_1(paths: cl.Paths):
     assert rc == 1 and "ratelimited" in err.getvalue()
 
 
-# ─── comms-listen inbound reply flow (the core, previously untested) ─────────
-
-def test_reply_to_message_records_inbound_and_feeds_session(paths: cl.Paths, monkeypatch):
-    listen = _load("comms_listen", "comms-listen.py")
-    cs = sys.modules["comms_session"]
-
-    # monkeypatch.setattr auto-restores after the test, so the real comms_session
-    # module is left pristine for test_comms_session.py (no cross-file leak).
-    fed = {}
-    monkeypatch.setattr(cs, "newest_transcript", lambda cwd, agent=None: "/tmp/fake.jsonl")
-    monkeypatch.setattr(cs, "transcript_line_count", lambda t: 0)
-    monkeypatch.setattr(cs, "should_clear", lambda t, agent=None: False)
-    monkeypatch.setattr(cs, "feed", lambda paths, surface, text: fed.setdefault("feed", text))
-    monkeypatch.setattr(cs, "write_session", lambda *a, **k: None)
-    monkeypatch.setattr(cs, "read_session", lambda paths: None)
-
-    calls = []
-    monkeypatch.setattr(listen, "cli", lambda argv, timeout=30, env=None: (calls.append(argv) or (0, "[]", "")))
-    monkeypatch.setattr(listen.time, "sleep", lambda s: None)
-    monkeypatch.setattr(listen, "REPLY_WAIT_SEC", 0)
-
-    sess = {"ws_ref": "workspace:1", "surface_ref": "surface:1",
-            "cwd": "/tmp", "transcript_path": "/tmp/fake.jsonl"}
-    rec = {"channel": "C0", "text": "how's the fleet?", "msg_ts": "100.1", "reply_to": None}
-    listen.reply_to_message(paths, sess, rec)
-
-    # inbound turn recorded via conversation.py append
-    assert any("conversation.py" in a[0] and "append" in a for a in calls), calls
-    # message fed to the warm session with a flat (no thread_root) slack header
-    assert "how's the fleet?" in fed["feed"]
-    assert "slack channel=C0" in fed["feed"] and "send_cli=" in fed["feed"]
-    assert "thread_root" not in fed["feed"]  # 1:1 flat model
-
-
 def test_suppress_reason_matrix():
     listen = _load("comms_listen", "comms-listen.py")
     supp = listen._suppress_reason
@@ -204,6 +170,8 @@ def test_suppress_reason_matrix():
     assert supp({"kind": "self-update", "key": "self-update-skip-p1"})
     assert supp({"kind": "lesson-proposal", "key": "lesson-proposal:1"})
     assert supp({"kind": "x", "key": "lesson-proposal-abc"})
+    assert supp({"kind": "decision-transition", "key": "decision:d1:open->expired"})
+    assert supp({"kind": "skipped", "key": "workspace:205-ready_for_merge", "outcome": "failed"})
     # NOT suppressed — real actionable events, incl. self-update FAILURES.
     assert supp({"kind": "cleanup", "key": "assistant:close:ws:5", "outcome": "verified"}) is None
     assert supp({"kind": "self-update", "key": "self-update-fail-p8002",

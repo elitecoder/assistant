@@ -25,7 +25,10 @@ signal carriers are the `agent.hook.*` events:
 
 Each event's `payload.workspace_id` is a UUID, not a `workspace:NN` ref, and the
 tool input / screen text is redacted from the event itself — so we read the live
-terminal with `cmux read-screen --workspace <uuid>` to pattern-match. Events
+terminal with `cmux read-screen --workspace <uuid>` to pattern-match, and read
+the agent's own last words (or its pending question) from the Claude transcript
+the payload's `session_id` + `cwd` point at, so the ping reads as a person
+would say it. Events
 arrive as `phase: "received"` then `phase: "completed"` pairs sharing one
 `_opencode_request_id`; we de-dup on that id so each turn is handled once.
 
@@ -47,6 +50,9 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 ASSISTANT_DIR = Path(os.environ.get("CMUX_WATCHER_ASSISTANT_DIR",
@@ -72,6 +78,12 @@ SEEN_IDS_MAX = 4096
 WS_MAP_TTL_SEC = 30
 # Screen read window for pattern matching.
 SCREEN_LINES = 50
+# Claude Code session transcripts; the agent's last words ride on each inbox item.
+CLAUDE_PROJECTS = agent_session.transcript_root(agent_session.CLAUDE, home=HOME)
+# Only the transcript tail is read — a long session's JSONL runs to many MB and
+# the newest turn is all the ping needs.
+TRANSCRIPT_TAIL_BYTES = 256 * 1024
+LAST_MESSAGE_CHARS = 300
 
 # Event names we care about. Everything else (PreToolUse, UserPromptSubmit,
 # heartbeats, acks) is ignored.
@@ -105,6 +117,8 @@ DEFAULT_PATTERN_BANK = {
          "signal": "work_complete", "priority": "low"},
     ],
 }
+_DEFAULT_SUPPRESS = {p["id"]: p["suppress"]
+                     for p in DEFAULT_PATTERN_BANK["patterns"] if "suppress" in p}
 
 
 def utc_iso() -> str:
@@ -124,6 +138,17 @@ def log(msg: str) -> None:
 
 
 # ─── pattern bank ─────────────────────────────────────────────────────────────
+
+def inherit_default_suppress(patterns: list[dict]) -> list[dict]:
+    """Give a loaded pattern its default's `suppress` flag when the file omits it.
+
+    A bank written before a default gained `suppress` keeps pinging for it — the
+    June bank lacks it on ci-green, which sent 59 "CI green" pings. An explicit
+    `suppress` in the file still wins, and the file itself is never rewritten."""
+    return [{**p, "suppress": _DEFAULT_SUPPRESS[p["id"]]}
+            if p.get("id") in _DEFAULT_SUPPRESS and "suppress" not in p else p
+            for p in patterns]
+
 
 class PatternBank:
     """The compiled pattern set, hot-reloaded by mtime.
@@ -163,7 +188,7 @@ class PatternBank:
             log(f"pattern_bank: load failed ({e}); using defaults in-memory")
             data = DEFAULT_PATTERN_BANK
             self._mtime = None
-        self.patterns = list(data.get("patterns", []))
+        self.patterns = inherit_default_suppress(data.get("patterns", []))
         self._compile()
 
     def _compile(self) -> None:
@@ -225,17 +250,33 @@ def cmux_available() -> bool:
     return rc == 0
 
 
-class WsRefResolver:
-    """Maps a workspace UUID → its `workspace:NN` ref, cached with a short TTL.
+_TITLE_REF_SUFFIX_RE = re.compile(r"\s*\[\d+\]\s*$")
+# cmux's name for a workspace nobody titled; it says nothing about the work.
+_DEFAULT_WS_TITLE = "Terminal"
 
-    Events carry UUIDs; the inbox payload reads nicer with the ref. A miss
-    forces one refresh (a freshly-spawned workspace), then falls back to the
-    UUID so a drop is never blocked on resolution."""
+
+def human_title(title: str | None) -> str:
+    """A workspace title as a person reads it, or "" when it names no work.
+    cmux appends the workspace number (`Fix flaky ruler [244]`); the ref already
+    travels in the message footer, so the headline drops the duplicate."""
+    name = _TITLE_REF_SUFFIX_RE.sub("", title or "").strip()
+    return "" if name == _DEFAULT_WS_TITLE else name
+
+
+class WsRefResolver:
+    """Maps a workspace UUID → its `workspace:NN` ref and human title, cached
+    with a short TTL.
+
+    Events carry UUIDs; the inbox payload reads nicer with the ref, and the
+    Slack headline reads nicer still with the title. A miss forces one refresh
+    (a freshly-spawned workspace), then falls back to the UUID so a drop is
+    never blocked on resolution."""
 
     def __init__(self, ttl: int = WS_MAP_TTL_SEC, clock=time.time):
         self.ttl = ttl
         self._clock = clock
         self._map: dict[str, str] = {}
+        self._titles: dict[str, str] = {}
         self._fetched_at = 0.0
 
     def _refresh(self) -> None:
@@ -247,14 +288,24 @@ class WsRefResolver:
         except json.JSONDecodeError:
             return
         new_map: dict[str, str] = {}
+        new_titles: dict[str, str] = {}
         for w in data.get("workspaces", []):
             wid = (w.get("id") or "").upper()
             ref = w.get("ref")
             if wid and ref:
                 new_map[wid] = ref
+                title = human_title(w.get("title"))
+                if title:
+                    new_titles[wid] = title
         if new_map:
             self._map = new_map
+            self._titles = new_titles
             self._fetched_at = self._clock()
+
+    def title(self, uuid: str | None) -> str | None:
+        """The workspace's human title from the cache resolve() keeps fresh —
+        call it after resolve() so a new workspace's title is already fetched."""
+        return self._titles.get(uuid.upper()) if uuid else None
 
     def resolve(self, uuid: str | None) -> str | None:
         if not uuid:
@@ -290,27 +341,160 @@ def read_screen(workspace: str, lines: int = SCREEN_LINES) -> str:
 
 # Lines that are pure TUI chrome — box-drawing rules, the status bar, the
 # bypass-permissions hint — carry no signal and just bloat the phone snippet.
-_CHROME_RE = re.compile(r"^[\s│─╭╮╰╯▔▕>·•⏵◀▶]+$")
-_STATUS_BAR_RE = re.compile(r"bypass permissions on|shift\+tab to cycle")
+_CHROME_RE = re.compile(r"^[\s│─╭╮╰╯┌┐└┘├┤┬┴┼▔▕>·•⏵◀▶┃╹╻▀▄━]+$")
+_STATUS_BAR_RE = re.compile(
+    r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply")
+# Claude Code's live spinner (`✽ Boogieing… (12m 1s · ↓ 48.9k tokens)`) and its
+# turn-done line (`✻ Baked for 2m 10s · done 10:40 PM`) only say the agent is or
+# was busy.
+_SPINNER_RE = re.compile(r"^\s*[·✢✳✶✻✽]\s+\w+(?:…|\s+for \d+(?:\.\d+)?[hms]\b)")
+_STATUS_FIELD_SEP = " │ "
+
+
+def _is_custom_status_line(s: str) -> bool:
+    """A custom status line (`branch │ ●1 │ context 11% │ $2.13 │ #c2f4fe01`)
+    joins its fields with ` │ `. A table row the agent printed has them too but
+    starts with `│`, so it stays."""
+    return s.count(_STATUS_FIELD_SEP) >= 2 and not s.lstrip().startswith("│")
+
+
+def _is_tui_noise(s: str) -> bool:
+    return bool(_CHROME_RE.match(s) or _STATUS_BAR_RE.search(s)
+                or _SPINNER_RE.match(s) or s.strip() == "❯"
+                or _is_custom_status_line(s))
 
 
 def last_lines(text: str, n: int = 3) -> str:
     """Last n content-bearing lines of the screen, joined — the inbox snippet.
 
-    Drops blank lines, pure box-drawing / separator rules, and the cmux status
-    bar so the snippet reflects what the agent actually printed, not TUI chrome.
-    Falls back to the raw tail if filtering leaves nothing (rare)."""
+    Drops blank lines, pure box-drawing / separator rules, the cmux status bar,
+    Claude Code's spinner and turn-done lines, the empty `❯` prompt, and custom
+    status lines, so the snippet reflects what the agent actually printed, not
+    TUI chrome. Falls back to the raw tail if filtering leaves nothing (rare)."""
     rows = []
     for ln in (text or "").splitlines():
         s = ln.rstrip()
         if not s.strip():
             continue
-        if _CHROME_RE.match(s) or _STATUS_BAR_RE.search(s):
+        if _is_tui_noise(s):
             continue
         rows.append(s)
     if not rows:
         rows = [ln.rstrip() for ln in (text or "").splitlines() if ln.strip()]
     return "\n".join(rows[-n:])
+
+
+# ─── agent's last message (Claude transcript tail) ───────────────────────────
+
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+
+
+def claude_project_slug(cwd: str) -> str:
+    """The project dir name Claude Code uses for `cwd`: every non-alphanumeric
+    character of the real path becomes `-`. agent_session.project_slug maps
+    only `/`, so dotted or underscored paths (`.worktrees`, macOS temp dirs)
+    are finished here."""
+    return re.sub(r"[^A-Za-z0-9-]", "-", agent_session.project_slug(cwd))
+
+
+def transcript_path(cwd: str | None, session_id: str | None,
+                    projects_dir: Path = CLAUDE_PROJECTS) -> Path | None:
+    """Locate the Claude Code transcript for a hook payload's session.
+
+    cmux prefixes the payload's session id with its source
+    (`claude-6746dc4f-…`); the file on disk is named by the bare id. The hook's
+    cwd is the session's current dir, which drifts from the launch dir after a
+    `cd`, so a miss looks for the session id under every project dir."""
+    if not session_id or not _SESSION_ID_RE.fullmatch(session_id):
+        return None
+    name = f"{session_id.removeprefix('claude-')}.jsonl"
+    if cwd:
+        direct = projects_dir / claude_project_slug(cwd) / name
+        if direct.is_file():
+            return direct
+    return next((d / name for d in projects_dir.iterdir() if (d / name).is_file()), None)
+
+
+def tail_records(path: Path, max_bytes: int = TRANSCRIPT_TAIL_BYTES) -> list[dict]:
+    """Parsed JSONL records from the last `max_bytes` of a transcript. A line the
+    seek cuts mid-record has unmatched closing braces, so it fails to parse and
+    is skipped like any other malformed line."""
+    with open(path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - max_bytes))
+        chunk = f.read()
+    records = []
+    for ln in chunk.decode("utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            records.append(rec)
+    return records
+
+
+def _content_blocks(rec: dict) -> list[dict]:
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict)]
+
+
+def pending_question(records: list[dict]) -> str | None:
+    """First question of the newest AskUserQuestion, unless it's already been
+    answered — an answered one means the new call isn't in the transcript yet,
+    and repeating the old question would mislead."""
+    answered: set = set()
+    for rec in reversed(records):
+        for block in _content_blocks(rec):
+            if block.get("type") == "tool_result":
+                answered.add(block.get("tool_use_id"))
+            elif block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
+                if block.get("id") in answered:
+                    return None
+                first = next(iter((block.get("input") or {}).get("questions") or []), {})
+                question = first.get("question")
+                return question if isinstance(question, str) and question.strip() else None
+    return None
+
+
+def last_assistant_text(records: list[dict]) -> str | None:
+    """The newest non-empty text block the agent wrote."""
+    for rec in reversed(records):
+        if agent_session.record_role(rec) != "assistant":
+            continue
+        for block in reversed(_content_blocks(rec)):
+            text = block.get("text")
+            if block.get("type") == "text" and isinstance(text, str) and text.strip():
+                return text
+    return None
+
+
+def trim_words(text: str, limit: int = LAST_MESSAGE_CHARS) -> str:
+    """Collapse whitespace and cut to `limit` chars on a word boundary."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit].rsplit(" ", 1)[0] + "…"
+
+
+def read_last_message(cwd: str | None, session_id: str | None, *,
+                      question: bool) -> str | None:
+    """What the agent last said, for the Slack ping: the pending question when
+    `question` (an AskUserQuestion event — the hook payload redacts its text),
+    else the last assistant text. Returns None on any failure so a missing or
+    malformed transcript never blocks the drop."""
+    try:
+        path = transcript_path(cwd, session_id)
+        if path is None:
+            return None
+        records = tail_records(path)
+        text = pending_question(records) if question else last_assistant_text(records)
+    except Exception:  # noqa: BLE001 — transcripts are external; the ping must still go
+        return None
+    return trim_words(text) if text else None
 
 
 # ─── event classification (pure) ──────────────────────────────────────────────
@@ -325,7 +509,7 @@ def classify_event(evt: dict) -> dict | None:
     On a relevant event returns:
         {"signal": "needs_input"|"turn_end",
          "request_id": <str|None>, "workspace_id": <uuid|None>,
-         "cwd": <str|None>, "event_name": <str>}
+         "cwd": <str|None>, "session_id": <str|None>, "event_name": <str>}
     `turn_end` still needs a screen read + pattern match before any drop;
     `needs_input` is dropped unconditionally (subject to cooldown).
     """
@@ -348,6 +532,7 @@ def classify_event(evt: dict) -> dict | None:
         "request_id": request_id,
         "workspace_id": workspace_id,
         "cwd": payload.get("cwd"),
+        "session_id": payload.get("session_id"),
         "event_name": name,
     }
 
@@ -360,13 +545,18 @@ def _slug(ws_ref: str | None) -> str:
 
 def drop_inbox_item(ws_ref: str | None, signal_type: str,
                     pattern_matched: str, screen_snippet: str,
-                    inbox_dir: Path = INBOX_DIR) -> Path:
+                    inbox_dir: Path = INBOX_DIR, *,
+                    ws_title: str | None = None,
+                    last_message: str | None = None) -> Path:
     """Atomically write one inbox item. Returns the final path.
 
     The shape is:
-        {ts, event, ws_ref, signal_type, pattern_matched, screen_snippet}
-    Written to a unique temp file then os.replace'd so a reader never sees a
-    half-written file (a kqueue watcher wakes on the rename)."""
+        {ts, event, ws_ref, signal_type, pattern_matched, screen_snippet,
+         [ws_title], [last_message]}
+    ws_title / last_message are present only when resolved — they let the
+    Slack ping lead with the work in plain words. Written to a unique temp file
+    then os.replace'd so a reader never sees a half-written file (a kqueue
+    watcher wakes on the rename)."""
     inbox_dir.mkdir(parents=True, exist_ok=True)
     item = {
         "ts": utc_iso(),
@@ -376,6 +566,10 @@ def drop_inbox_item(ws_ref: str | None, signal_type: str,
         "pattern_matched": pattern_matched,
         "screen_snippet": screen_snippet,
     }
+    if ws_title:
+        item["ws_title"] = ws_title
+    if last_message:
+        item["last_message"] = last_message
     # Unique name: ws slug + monotonic-ish stamp + pid so concurrent drops never
     # collide. The temp file carries the pid too so two watchers can't clobber.
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
@@ -438,10 +632,12 @@ class WatcherState:
 
 
 def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
-                 resolver: WsRefResolver, *, screen_reader=read_screen) -> dict | None:
+                 resolver: WsRefResolver, *, screen_reader=read_screen,
+                 message_reader=read_last_message) -> dict | None:
     """Process one parsed event end-to-end. Returns the dropped item dict (for
-    tests/logging) or None when nothing was dropped. `screen_reader` is
-    injectable so tests don't shell out to cmux."""
+    tests/logging) or None when nothing was dropped. `screen_reader` and
+    `message_reader` are injectable so tests don't shell out to cmux or read
+    real transcripts."""
     cls = classify_event(evt)
     if cls is None:
         return None
@@ -450,6 +646,7 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
 
     workspace_id = cls["workspace_id"]
     ws_ref = resolver.resolve(workspace_id)
+    ws_title = resolver.title(workspace_id)
     ws_key = ws_ref or workspace_id or "unknown"
 
     if cls["signal"] == "needs_input":
@@ -458,7 +655,10 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
             return None
         snippet = last_lines(screen_reader(workspace_id or ws_ref or ""))
         pattern_matched = cls["event_name"].split(".")[-1]  # Notification / AskUserQuestion
-        item = drop_inbox_item(ws_ref, "needs_input", pattern_matched, snippet)
+        last_message = message_reader(cls["cwd"], cls["session_id"],
+                                      question=pattern_matched == "AskUserQuestion")
+        item = drop_inbox_item(ws_ref, "needs_input", pattern_matched, snippet,
+                               ws_title=ws_title, last_message=last_message)
         record_fired(pattern_matched, ws_ref, "needs_input")
         log(f"drop needs_input ws={ws_ref or workspace_id} via={pattern_matched} → {item.name}")
         return {"path": str(item), "signal_type": "needs_input",
@@ -479,7 +679,9 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
     if not state.cooled_down(ws_key, signal_type):
         return None
     snippet = last_lines(screen)
-    item = drop_inbox_item(ws_ref, signal_type, top.get("id", ""), snippet)
+    last_message = message_reader(cls["cwd"], cls["session_id"], question=False)
+    item = drop_inbox_item(ws_ref, signal_type, top.get("id", ""), snippet,
+                           ws_title=ws_title, last_message=last_message)
     record_fired(top.get("id", ""), ws_ref, signal_type)
     log(f"drop {signal_type} ws={ws_ref or workspace_id} pattern={top.get('id')} → {item.name}")
     return {"path": str(item), "signal_type": signal_type,

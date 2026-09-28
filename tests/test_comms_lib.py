@@ -6,6 +6,7 @@ from pathlib import Path
 
 import comms_lib as cl
 import pytest
+from assistant import slack
 
 
 @pytest.fixture
@@ -69,32 +70,181 @@ def test_bot_token_from_env():
 # ─── formatting ─────────────────────────────────────────────────────────────
 
 def test_fmt_action_line_flags_screen_read():
-    entry = {"kind": "cleanup", "key": "assistant:close:ws:5", "ws_ref": "ws:5",
+    entry = {"kind": "ready_for_merge", "key": "workspace:5-ready_for_merge", "ws_ref": "ws:5",
              "outcome": "verified", "verified_via": "screen_read", "pulse_idx": 3,
-             "evidence": "closed & <clean>"}
-    line = cl.fmt_action_line(entry)
-    assert "*[cleanup]* ok" in line
-    assert "(!)screen_read" in line
-    # mrkdwn escaping of the evidence's angle brackets + ampersand
-    assert "&lt;clean&gt;" in line and "&amp;" in line
+             "td": "td-12", "evidence": "sent '/merge-when-ready' & <ok>"}
+    # A verified step's evidence is machine detail: it leads the footer.
+    assert cl.fmt_action_line(entry) == (
+        "I asked a workspace to merge its PR.\n"
+        "Heads up: I only confirmed this by reading the screen, which isn't reliable proof.\n"
+        "_sent '/merge-when-ready' &amp; &lt;ok&gt; · ws:5 · ready_for_merge · "
+        "workspace:5-ready_for_merge · td-12 · pulse 3_")
+
+
+def test_fmt_action_line_observer_proof_has_no_warning():
+    line = cl.fmt_action_line({"kind": "goal-edit", "outcome": "verified",
+                               "verified_via": "observer"})
+    assert line == "I updated your goals.\n_goal-edit_"
+
+
+def test_fmt_action_line_failure_quotes_the_evidence():
+    entry = {"kind": "self-update", "key": "self-update-fail-p3326", "ws_ref": "(launchd)",
+             "outcome": "failed",
+             "evidence": "fetch failed:\n\n  fatal: couldn't find remote ref " + "x" * 300}
+    lines = cl.fmt_action_line(entry).splitlines()
+    assert lines[0] == "I tried to update Assistant to the latest code, but it didn't work."
+    assert lines[1] == "> fetch failed:"
+    assert lines[2].startswith(">   fatal: couldn't find remote ref x") and lines[2].endswith("x…")
+    assert lines[3] == "_(launchd) · self-update · self-update-fail-p3326_"
 
 
 def test_fmt_action_line_maps_outcomes():
-    assert "fail" in cl.fmt_action_line({"outcome": "failed"})
-    assert "rej" in cl.fmt_action_line({"outcome": "rejected"})
+    upd = {"kind": "self-update"}
+    assert cl.fmt_action_line({**upd, "outcome": "verified"}).startswith(
+        "I updated Assistant to the latest code.")
+    assert cl.fmt_action_line({**upd, "outcome": "rejected", "evidence": "no"}) == (
+        "I tried to update Assistant to the latest code, but it was turned down.\n"
+        "> no\n_self-update_")
+    assert cl.fmt_action_line({**upd, "outcome": "skipped"}).startswith(
+        "I didn't update Assistant to the latest code this time.")
+    assert cl.fmt_action_line({**upd, "outcome": "odd<x>"}).startswith(
+        "I tried to update Assistant to the latest code (result: odd&lt;x&gt;).")
 
 
-def test_fmt_heartbeat_alert():
-    body = cl.fmt_heartbeat_alert({"ws_ref": "ws:1", "status": "frozen",
+def test_fmt_action_line_names_strategist_research_plainly():
+    line = cl.fmt_action_line({
+        "kind": "strategist-context-wrote", "key": "strategist:context-wrote:dec-ca7d",
+        "ws_ref": "(strategist)", "outcome": "verified",
+        "evidence": "pre-researched decision dec-ca7d context (draft-only, surfaced in brief)"})
+    assert line.splitlines()[0] == (
+        "I added background to your brief for a decision that's waiting on you.")
+    assert "dec-ca7d" not in line.splitlines()[0], "the decision id is a ref: footer only"
+
+
+def test_fmt_action_line_unknown_kind_and_bare_entry():
+    assert cl.fmt_action_line({"kind": "brand-new-kind", "outcome": "verified"}) == (
+        "I took an automatic step.\n_brand-new-kind_")
+    # No evidence, key, ws, td, or pulse → no quote line and no empty refs.
+    assert cl.fmt_action_line({}) == "I tried to take an automatic step (result: ?)."
+
+
+def test_fmt_heartbeat_alert_stopped():
+    body = cl.fmt_heartbeat_alert({"ws_ref": "(launchd)", "status": "running",
+                                   "last_pulse_iso": "2026-09-28T10:02:00Z"}, 1500)
+    assert body == ("*Assistant's main loop has stopped* — no run for 25m "
+                    "(last run 2026-09-28T10:02:00Z). I'll post again when it's back.")
+
+
+@pytest.mark.parametrize("status,words", [
+    ("frozen", "it reports that it's frozen"),
+    ("stale_world", "it's working from an out-of-date view of your workspaces"),
+    ("respawn-requested", "it asked to be restarted"),
+])
+def test_fmt_heartbeat_alert_bad_status_in_words(status, words):
+    body = cl.fmt_heartbeat_alert({"status": status,
                                    "last_pulse_iso": "2026-07-05T00:00:00Z"}, 720)
-    assert "heartbeat stale" in body and "status=frozen" in body and "12m ago" in body
+    assert body == (f"*Assistant's main loop needs a look* — {words}. Last run 12m ago "
+                    f"(2026-07-05T00:00:00Z). I'll post again when it's back.")
+
+
+def test_fmt_heartbeat_alert_missing_last_run():
+    assert "(last run unknown)" in cl.fmt_heartbeat_alert({}, 60)
+
+
+def test_fmt_heartbeat_recovered():
+    assert cl.fmt_heartbeat_recovered({"last_pulse_iso": "2026-09-28T13:05:00Z"}, 3 * 3600) == (
+        "*Assistant's main loop is running again* after 3h0m (latest run 2026-09-28T13:05:00Z).")
+    assert cl.fmt_heartbeat_recovered({}, 1500) == (
+        "*Assistant's main loop is running again* after 25m.")
 
 
 def test_fmt_workspace_signal_handles_both_key_names():
     # cmux-watcher writes "signal"/"signal_type" — accept either.
     body = cl.fmt_workspace_signal({"ws_ref": "ws:2", "signal": "needs_input",
                                     "screen_snippet": "waiting for input"})
-    assert "needs your input" in body and "waiting for input" in body
+    assert body == "A workspace needs your input.\n> waiting for input\n_ws:2 · needs_input_"
+
+
+def test_fmt_workspace_signal_question_leads_with_title_and_question():
+    body = cl.fmt_workspace_signal({
+        "ws_ref": "workspace:244", "signal_type": "needs_input",
+        "pattern_matched": "AskUserQuestion", "ws_title": "Fix archself deferral door",
+        "last_message": "Should I rebase or merge main?", "screen_snippet": "1. Rebase"})
+    assert body == ("*Fix archself deferral door* is asking you: Should I rebase or merge main?\n"
+                    "_workspace:244 · AskUserQuestion_")
+
+
+def test_fmt_workspace_signal_question_without_text_falls_back_to_snippet():
+    body = cl.fmt_workspace_signal({
+        "ws_ref": "workspace:3", "signal_type": "needs_input",
+        "pattern_matched": "AskUserQuestion", "screen_snippet": "1. Rebase\n2. Merge"})
+    assert body == ("A workspace has a question for you.\n> 1. Rebase\n> 2. Merge\n"
+                    "_workspace:3 · AskUserQuestion_")
+
+
+def test_fmt_workspace_signal_prefers_last_message_over_snippet():
+    body = cl.fmt_workspace_signal({
+        "ws_ref": "workspace:244", "signal_type": "needs_input",
+        "pattern_matched": "Notification", "ws_title": "Green E2E Suite",
+        "last_message": "Can I run the full suite? It takes 40 min.",
+        "screen_snippet": "✽ Boogieing…"})
+    assert body == ("*Green E2E Suite* needs your input.\n"
+                    "> Can I run the full suite? It takes 40 min.\n"
+                    "_workspace:244 · Notification_")
+
+
+def test_fmt_workspace_signal_headlines_by_signal():
+    def first_line(signal_type):
+        return cl.fmt_workspace_signal({"ws_title": "T", "signal_type": signal_type}).split("\n")[0]
+    assert first_line("work_complete") == "*T* looks done."
+    assert first_line("pattern_match") == "*T* showed something I watch for."
+    assert first_line("mystery") == "*T* sent an update."
+
+
+def test_fmt_workspace_signal_escapes_and_caps_dynamic_text():
+    body = cl.fmt_workspace_signal({
+        "ws_title": "a<b>", "signal_type": "work_complete", "last_message": "x&" + "y" * 600})
+    assert body.startswith("*a&lt;b&gt;* looks done.\n> x&amp;")
+    assert body.count("y") == 398 and body.endswith("y…")
+    asked = cl.fmt_workspace_signal({"pattern_matched": "AskUserQuestion",
+                                     "last_message": "<q>" + "z" * 600})
+    assert asked.startswith("A workspace is asking you: &lt;q&gt;") and asked.count("z") == 397
+
+
+def test_fmt_workspace_signal_title_star_cannot_break_bold():
+    body = cl.fmt_workspace_signal({"ws_title": "Fix *all* flakes", "signal_type": "work_complete"})
+    assert body == "*Fix all flakes* looks done."
+
+
+def test_fmt_workspace_signal_bare_item_has_no_footer():
+    assert cl.fmt_workspace_signal({}) == "A workspace sent an update."
+
+
+_PARITY_ENTRIES = [
+    {"kind": "ready_for_merge", "key": "k", "ws_ref": "ws:5", "outcome": "verified",
+     "verified_via": "screen_read", "pulse_idx": 3, "td": "td-1", "evidence": "a & <b>"},
+    {"kind": "strategist-context", "key": "strategist:context:d", "outcome": "verified"},
+    {"kind": "self-update", "outcome": "failed", "evidence": "fetch failed\n\n" + "x" * 300},
+    {"kind": "goal-edit", "outcome": "rejected"},
+    {"kind": "policy-bootstrap-upgrade", "outcome": "skipped"},
+    {"kind": "new-kind", "outcome": "weird"},
+    {},
+]
+_PARITY_HEARTBEATS = [
+    ({"status": "running", "last_pulse_iso": "2026-09-28T10:02:00Z"}, 1500),
+    ({"status": "frozen"}, 60),
+    ({"status": "respawn-requested", "last_pulse_iso": "x<y"}, 90000),
+]
+
+
+def test_slack_formatters_match_comms_lib():
+    # The daemon package can't import bin/, so slack.py carries its own copy;
+    # both Slack paths must still say the same thing.
+    for entry in _PARITY_ENTRIES:
+        assert slack.fmt_action_line(entry) == cl.fmt_action_line(entry)
+    for hb, age in _PARITY_HEARTBEATS:
+        assert slack.fmt_heartbeat_alert(hb, age) == cl.fmt_heartbeat_alert(hb, age)
+        assert slack.fmt_heartbeat_recovered(hb, age) == cl.fmt_heartbeat_recovered(hb, age)
 
 
 def test_strip_html():

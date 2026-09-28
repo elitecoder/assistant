@@ -4,10 +4,10 @@
 
 It runs as a single **event-driven daemon**, `bin/comms-listen.py`, kept alive by a `KeepAlive` LaunchAgent (no `StartInterval` — it listens, it does not tick). The daemon runs four concurrent loops in threads:
 
-- **Inbound** — REST-polls Slack (`conversations.history`, ~3s) for new messages in your DM/channel and feeds each to a **warm cmux Claude session** that replies in seconds.
-- **Outbound pings** — watches `actions-ledger.jsonl` for appends; formats + sends each new verified/failed action. No LLM, ~2s latency floor.
-- **Inbox** — watches `~/.assistant/inbox` for cmux-watcher signals ("workspace needs input" / "work complete") and pings within seconds. kqueue-driven on macOS.
-- **Heartbeat page** — every 60s, checks Assistant's heartbeat; pages you (urgent, templated) if it's stale or `status ∈ {frozen, stale_world, respawn-requested}`. No LLM, 30-min dedup.
+- **Inbound** — REST-polls Slack (`conversations.history`, ~3s) for new messages in your DM/channel and feeds each to a **warm cmux Claude session** that replies in seconds. Each message waits in `comms/pending-inbound.json` until the session's transcript shows it arrived. If the session is down, the message is retried every 30s for up to 3 hours, and you get one "I'll answer as soon as it's back" note per outage.
+- **Outbound pings** — watches `actions-ledger.jsonl` for appends; formats + sends each new verified/failed action in plain language. Housekeeping (expired decisions, stranded nudges, skips, strategist pauses) stays in the brief. At most 5 posts per pass, then one summary line. No LLM, ~2s latency floor.
+- **Inbox** — watches `~/.assistant/inbox` for cmux-watcher signals ("workspace needs input" / "work complete") and pings within seconds, at most once per workspace per 15 minutes unless it's a real question. kqueue-driven on macOS.
+- **Heartbeat page** — every 60s, checks Assistant's heartbeat. If it's stale or `status ∈ {frozen, stale_world, respawn-requested}` for two checks in a row, pages you once (urgent, templated), then posts once when it recovers. No LLM.
 
 Durable memory lives entirely on disk (`conversation.jsonl` + poll cursors), so a crash and `KeepAlive` respawn loses nothing. The channel is a **flat 1:1 line** — the assistant replies at top level, not in threads.
 
@@ -35,12 +35,12 @@ Replies come from a **warm cmux Claude session** (Sonnet, scoped `--add-dir`) th
 
 | Trigger | Slack message |
 |---|---|
-| Assistant appends a verified action to its ledger | `*[cleanup]* ok `assistant:close-clean:workspace:117`` … `via=jsonl_transcript` |
-| Same, but evidence is `screen_read` (Assistant rejects this as weak) | `(!)screen_read` flag in `via=` |
-| A workspace needs your input / finishes work | `*<project> needs your input*  signal=`…`` |
-| Assistant heartbeat stale (>10 min) or status flips to `frozen`/`stale_world`/`respawn-requested` | `*Assistant heartbeat stale*  status=frozen  last pulse 12m ago` |
+| Assistant appends a verified action to its ledger | `I asked a workspace to merge its PR.` with the refs in a trailing italic line |
+| Same, but evidence is `screen_read` (Assistant rejects this as weak) | `Heads up: I only confirmed this by reading the screen, which isn't reliable proof.` |
+| A workspace asks you a question / needs input / finishes work | `*<workspace title>* is asking you: <question>` or `*<workspace title>* needs your input.` with the agent's last message quoted |
+| Assistant heartbeat stale (>20 min) or status flips to `frozen`/`stale_world`/`respawn-requested` | `*Assistant's main loop has stopped* — no run for 25m …`, then `*Assistant's main loop is running again* after 3h.` |
 
-Heartbeat alerts dedupe at 30 min. Messages are Slack `mrkdwn`.
+Messages are Slack `mrkdwn`.
 
 ## What you can text back
 

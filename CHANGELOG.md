@@ -40,6 +40,33 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Stop closing a healthy warm comms session whenever cmux is slow to answer.
+  A refused or timed-out check now leaves the session alone; only cmux saying
+  the workspace doesn't exist, or a successful workspace list without it,
+  counts as gone. Short blips get two more looks a few seconds apart.
+- Submit prompts to the warm session reliably. The daemon now presses Enter by
+  writing a carriage return, because `surface.send_key enter` can leave the
+  prompt typed but unsent on a workspace that was never shown. Every boot
+  prompt and Slack message is confirmed in the transcript, with up to two more
+  Enter presses when the text is still in the prompt box. A session whose boot
+  prompt never lands is closed instead of being declared ready, and the session
+  is bound to the transcript that recorded its prompt, never the newest file.
+- Keep inbound Slack messages until the warm session confirms it received them.
+  They're recorded on arrival, retried every 30 seconds for up to 3 hours, sent
+  together once the session is back, and you get one "I'll answer as soon as
+  it's back" note per outage. Before, a message that arrived while no session
+  was up was dropped for good.
+- Cut the automatic Slack feed. The heartbeat pages once per outage and posts
+  once when it recovers, instead of every 30 minutes. Housekeeping ledger
+  entries stay in the brief, and a ledger pass posts at most 5 updates plus one
+  summary line. A workspace gets at most one ping per 15 minutes unless it asks
+  a real question.
+- Write Slack posts in plain language: what happened first, with the workspace
+  title and the agent's own question or last message, and refs in a trailing
+  line. Screen snippets drop Claude's spinner, prompt, and status lines, and the
+  on-disk pattern bank inherits the built-in "CI green" mute it was missing.
+- Point tests at a cmux binary that doesn't exist, so a test that misses a stub
+  can't drive the real cmux.
 - Pin the clock in the review-topic focus test so it stops failing once its fixture alert is more than 4 days old.
 - Download browser-check dependencies publicly so CI doesn't require Adobe's internal network.
 - Invalidate return notes after completed tool traffic; require review before reusing older notes.

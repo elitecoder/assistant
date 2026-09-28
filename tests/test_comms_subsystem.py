@@ -109,9 +109,13 @@ def test_slack_send_channel_passthrough_no_open():
 
 
 def test_slack_fmt_action_line_matches_comms_lib_shape():
-    line = slack.fmt_action_line({"kind": "cleanup", "key": "k", "outcome": "verified",
+    # Full output parity with comms_lib is pinned in test_comms_lib.py.
+    line = slack.fmt_action_line({"kind": "goal-edit", "key": "k", "outcome": "verified",
                                   "verified_via": "screen_read"})
-    assert "*[cleanup]* ok" in line and "(!)screen_read" in line
+    assert line == ("I updated your goals.\n"
+                    "Heads up: I only confirmed this by reading the screen, "
+                    "which isn't reliable proof.\n"
+                    "_goal-edit · k_")
 
 
 # ─── conversation (src-side) ────────────────────────────────────────────────
@@ -285,8 +289,39 @@ def test_heartbeat_dedup(cfg: Config, monkeypatch):
     stale = int(time.time()) - 99999
     cfg.heartbeat_path.write_text(json.dumps({"last_pulse_ts": stale, "status": "ok"}))
     sub._check_heartbeat()
-    sub._check_heartbeat()  # within dedup window
+    sub._check_heartbeat()  # still the same outage
     assert len(fake.sends) == 1
+
+
+def test_heartbeat_pages_once_per_outage_then_announces_recovery(cfg: Config, monkeypatch):
+    """One page per outage and one recovery message, not a page every half
+    hour (621 of them during the 2026-09-14→27 pulse outage)."""
+    sub, fake = _make_subsystem(cfg, monkeypatch)
+    stale = int(time.time()) - 99999
+    cfg.heartbeat_path.write_text(json.dumps({"last_pulse_ts": stale, "status": "ok"}))
+    sub._check_heartbeat()
+    sub._check_heartbeat()
+    fresh = int(time.time())
+    cfg.heartbeat_path.write_text(json.dumps({"last_pulse_ts": fresh, "status": "ok"}))
+    sub._check_heartbeat()
+    sub._check_heartbeat()
+    assert [s["kind"] for s in fake.sends] == ["urgent", "action"]
+    assert fake.sends[1]["text"] == slack.fmt_heartbeat_recovered(
+        {"last_pulse_ts": fresh, "status": "ok"}, fresh - stale)
+
+
+def test_heartbeat_send_disabled_and_failures_are_logged(cfg: Config, monkeypatch, caplog):
+    sub, fake = _make_subsystem(cfg, monkeypatch, send_enabled=False)
+    sub._send_heartbeat("body", "urgent")
+    assert fake.sends == []
+    sub, _fake = _make_subsystem(cfg, monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("slack down")
+    monkeypatch.setattr("assistant.subsystems.comms.slack.send", boom)
+    with caplog.at_level(logging.WARNING, logger="test.comms"):
+        sub._send_heartbeat("body", "action")
+    assert "heartbeat action failed" in caplog.text
 
 
 def test_status_snapshot(cfg: Config, monkeypatch):

@@ -152,13 +152,6 @@ def test_last_assistant_text_none_when_no_assistant(tmp_path: Path):
     assert cs.last_assistant_text(t) is None
 
 
-def test_transcript_line_count(tmp_path: Path):
-    t = tmp_path / "t.jsonl"
-    t.write_text("a\n\nb\n  \nc\n")
-    assert cs.transcript_line_count(t) == 3
-    assert cs.transcript_line_count(tmp_path / "missing.jsonl") == 0
-
-
 def test_should_clear_uses_threshold(tmp_path: Path):
     t = tmp_path / "t.jsonl"
     t.write_text(json.dumps({"message": {"usage": {"input_tokens": 600_000}}}) + "\n")
@@ -176,10 +169,6 @@ def test_project_dir_for_cwd_slug():
     cwd = os.path.realpath("/tmp")
     d = cs.project_dir_for_cwd("/tmp")
     assert d.name == cwd.replace("/", "-")
-
-
-def test_newest_transcript_none_for_missing(tmp_path: Path):
-    assert cs.newest_transcript(str(tmp_path / "nowhere")) is None
 
 
 # ─── droid schema parity (G2 read) ──────────────────────────────────────────
@@ -332,6 +321,10 @@ def test_should_clear_claude_default_agent_matches_usage_path(tmp_path: Path):
 # tested here by stubbing every cmux-touching helper with fakes that record.
 
 
+RULE = "─" * 40
+WELCOME_SCREEN = f"Welcome back!\n{RULE}\n❯ \n{RULE}\n  ⏵⏵ bypass permissions on"
+
+
 def _stub_cmux(monkeypatch):
     """Neutralize every cmux/sleep touchpoint clear_session can reach and return
     recorders. No real cmux RPC, no wall-clock sleeps."""
@@ -339,11 +332,15 @@ def _stub_cmux(monkeypatch):
     rpc_calls: list = []
     monkeypatch.setattr(cs, "_cmux_rpc",
                         lambda p, method, params, timeout=15: rpc_calls.append((method, params)))
-    monkeypatch.setattr(cs, "_surface_read_text", lambda *a, **k: "Welcome back")
+    monkeypatch.setattr(cs, "_surface_read_text", lambda *a, **k: WELCOME_SCREEN)
     feeds: list = []
-    monkeypatch.setattr(cs, "feed", lambda p, s, text: feeds.append(text))
-    monkeypatch.setattr(cs, "newest_transcript", lambda cwd, agent: "/new-t.jsonl")
-    calls: dict = {}
+
+    def fake_boot(p, surface_ref, cwd, boot_prompt, agent):
+        feeds.append((surface_ref, boot_prompt))
+        return feeds_result["transcript"]
+    feeds_result = {"transcript": "/new-t.jsonl"}
+    monkeypatch.setattr(cs, "deliver_boot", fake_boot)
+    calls: dict = {"boot_result": feeds_result}
 
     def fake_close(p, ws, log=lambda m: None):
         calls["close"] = ws
@@ -380,9 +377,28 @@ def test_clear_session_claude_clears_in_place_and_returns_refreshed(paths: cl.Pa
     assert any(m == "surface.send_text" and params.get("text") == "/clear"
                for m, params in rpc_calls), "claude branch must send /clear"
     assert "spawn_agent" not in calls, "claude branch must not spawn a new session"
+    assert feeds == [("surface:3", Path("/boot.md"))], "the boot prompt is re-delivered once"
     assert out["transcript_path"] == "/new-t.jsonl"
     assert out["ws_ref"] == "workspace:5"
     assert out["agent"] == ag.CLAUDE
+
+
+def test_clear_session_claude_respawns_when_boot_never_lands(paths: cl.Paths, monkeypatch):
+    """If the boot prompt after /clear is never submitted, the session would sit
+    with no instructions; clear_session falls back to a lossless respawn instead
+    of recording a transcript that never received the prompt.
+
+    Mutation probe: drop the `if not transcript` fallback and the stale session
+    is returned with transcript_path None — the close/spawn asserts fail."""
+    rpc_calls, feeds, calls, respawned = _stub_cmux(monkeypatch)
+    calls["boot_result"]["transcript"] = None
+    cs.write_session(paths, "workspace:5", "surface:3", "/cwd", "/old.jsonl")
+    sess = cs.read_session(paths)
+    out = cs.clear_session(paths, sess, Path("/boot.md"), agent=ag.CLAUDE)
+    assert calls["close"] == "workspace:5"
+    assert calls["spawn_agent"] == ag.CLAUDE
+    assert out == respawned
+    assert cs.read_session(paths) is None, "the dead session's registry entry is cleared"
 
 
 # ─── instance-scoped warm-workspace reconcile (reconcile bug fix) ─────────────
@@ -591,6 +607,59 @@ def test_spawn_session_closes_workspace_when_never_ready(tmp_path, monkeypatch):
 
     assert result is None, "a never-ready spawn must fail"
     assert closed == ["workspace:300"], "only the just-created workspace is closed"
+
+
+def _spawn_env(tmp_path, monkeypatch, ws="workspace:310", surface="surface:310"):
+    """A spawn whose cmux calls all succeed and whose boot screen is ready."""
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    def fake_run_cmd(cmd, timeout=30):
+        if "new-workspace" in cmd:
+            return 0, f"{ws}\n", ""
+        if "list-pane-surfaces" in cmd:
+            return 0, f"{surface}\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(cs, "await_ready", lambda **kw: (True, False))
+    closed: list[str] = []
+    monkeypatch.setattr(cs, "close_own_workspace",
+                        lambda p, w, log=lambda m: None: closed.append(w))
+    monkeypatch.setattr(cs, "reconcile_warm_workspaces", lambda p, keep, log=lambda m: None: None)
+    return paths, closed
+
+
+def test_spawn_session_closes_workspace_when_boot_never_submitted(tmp_path, monkeypatch):
+    """2026-09-27/28: 16 of 30 warm sessions came up with the boot prompt typed
+    but never submitted, and were still declared ready. A spawn whose boot prompt
+    never reaches the transcript must now fail and close its workspace.
+
+    Mutation probe: restore the old "log unconfirmed and carry on" path and the
+    spawn returns a session record — both asserts fail."""
+    paths, closed = _spawn_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(cs, "deliver_boot", lambda *a, **k: None)
+    assert cs.spawn_session(paths, Path("/boot.md"), agent=ag.CLAUDE) is None
+    assert closed == ["workspace:310"]
+    assert cs.read_session(paths) is None
+
+
+def test_spawn_session_binds_the_transcript_that_recorded_the_boot(tmp_path, monkeypatch):
+    """The session is bound to the transcript deliver_boot confirmed, never to
+    whichever file is newest (which was often another session's)."""
+    paths, closed = _spawn_env(tmp_path, monkeypatch)
+    booted: list = []
+
+    def fake_boot(p, surface_ref, cwd, boot_prompt, agent):
+        booted.append((surface_ref, boot_prompt, agent))
+        return "/confirmed.jsonl"
+    monkeypatch.setattr(cs, "deliver_boot", fake_boot)
+    sess = cs.spawn_session(paths, Path("/boot.md"), agent=ag.CLAUDE)
+    assert booted == [("surface:310", Path("/boot.md"), ag.CLAUDE)]
+    assert sess["transcript_path"] == "/confirmed.jsonl"
+    assert sess["ws_ref"] == "workspace:310"
+    assert closed == []
 
 
 def test_spawn_session_closes_workspace_when_no_surface(tmp_path, monkeypatch):
