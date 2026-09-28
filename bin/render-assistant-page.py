@@ -2254,16 +2254,25 @@ def render_fleet_tab():
     return f'<div class="fleet-board">{"".join(col_html)}</div>', total
 
 
-def _preflight_failure_since(last_pulse_ts: int) -> str | None:
-    """The error bin/run-pulse.py recorded when it last refused to start the
-    pulse, if no pulse has run since. None when there's nothing to show."""
+def render_pulse_alert() -> str:
+    """A top-of-page alert when bin/run-pulse.py refused to start the pulse and
+    no pulse has run since. Empty string when there's nothing to show."""
     try:
         record = json.loads((HOME / ".assistant/pulse-preflight.json").read_text())
-        if float(record["failed_at"]) > last_pulse_ts:
-            return str(record["error"])
+        failed_at, error = float(record["failed_at"]), str(record["error"])
     except (OSError, ValueError, TypeError, KeyError):
-        pass
-    return None
+        return ""
+    try:
+        last_ts = float(json.loads((HOME / ".assistant/heartbeat.json").read_text())
+                        .get("last_pulse_ts") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        last_ts = 0
+    if failed_at <= last_ts:
+        return ""
+    return ('<div class="pulse-health pulse-bad" role="alert">'
+            '<span class="pulse-dot"></span>'
+            f'<span class="pulse-text">Pulse can\'t start: {e(error[:200])}</span>'
+            '</div>')
 
 
 def render_pulse_health() -> str:
@@ -2303,14 +2312,6 @@ def render_pulse_health() -> str:
     else:
         cls = "pulse-bad"
         msg = "Pulse stale — orchestrator may be down"
-    # Without data-pulse-at, the page script leaves the failure text in place
-    # instead of replacing it with an age-based status.
-    pulse_at = f' data-pulse-at="{last_ts}"'
-    failure = _preflight_failure_since(last_ts)
-    if failure is not None:
-        cls = "pulse-bad"
-        msg = f"Pulse can't start: {e(failure[:200])}"
-        pulse_at = ""
     if age_sec < 60:
         age_str = f"{age_sec}s"
     elif age_sec < 3600:
@@ -2322,7 +2323,7 @@ def render_pulse_health() -> str:
     pulse_idx = hb.get("pulse_idx", "?")
     model = hb.get("model", "?")
     return (
-        f'<div class="pulse-health {cls}"{pulse_at}>'
+        f'<div class="pulse-health {cls}" data-pulse-at="{last_ts}">'
         f'<span class="pulse-dot"></span>'
         f'<span class="pulse-text">{msg}</span>'
         f'<span class="pulse-meta">last pulse {age_str} ago · #{pulse_idx} · {e(str(model))}</span>'
@@ -2471,6 +2472,7 @@ def render():
     brief_html, brief_n = render_brief_tab()
     connections_html, connected_n = render_connections_panel(world)
     pulse_health_html = render_pulse_health()
+    pulse_alert_html = render_pulse_alert()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()
@@ -4096,6 +4098,7 @@ document.addEventListener('click', handleTodoToolsClick);
   <button class="btn" id="refresh-dashboard" onclick="refreshDashboard(true)">Reload page</button>
   <span class="meta" id="refresh-note">Checks for updates every 15 seconds.</span>
 </div>
+{pulse_alert_html}
 <details class="service-details" data-context-key="service-health"><summary>Background services and saved data</summary>
 {pulse_health_html}
 <p>The page checks for updates every 15 seconds, except while you're reading expanded details.</p>

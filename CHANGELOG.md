@@ -18,8 +18,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   once a day. Updates now fast-forward to exactly the commit that was checked.
 - Run the pulse through a pre-flight (`bin/run-pulse.py`) that parses `pulse.py`
   and the modules it loads at startup before each start. If one won't parse,
-  the pre-flight skips the run and exits cleanly instead of crashing, and the
-  dashboard's pulse banner turns red and shows the error. New installs
+  the pre-flight skips the run and exits cleanly instead of crashing. The
+  dashboard shows the error at the top of the page until a pulse runs again, and
+  an actions-ledger entry reaches Slack for a new error, then once a day. New installs
   get this right away. Existing machines pick it up after a reboot, a logout, or
   a manual reload of the pulse LaunchAgent, since self-update defers that reload.
 - Enforce 100% changed-code coverage with separate Python and real-browser reports.
