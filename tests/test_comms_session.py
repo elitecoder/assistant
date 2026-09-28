@@ -383,6 +383,20 @@ def test_clear_session_claude_clears_in_place_and_returns_refreshed(paths: cl.Pa
     assert out["agent"] == ag.CLAUDE
 
 
+def test_clear_session_waits_for_the_welcome_and_an_empty_box(paths: cl.Paths, monkeypatch):
+    """The reset takes a moment; the boot prompt waits until the welcome shows
+    and the box is empty, instead of matching the old banner at once."""
+    rpc_calls, feeds, calls, _ = _stub_cmux(monkeypatch)
+    screens = iter(["still working", f"Welcome back!\n{RULE}\n❯ /clear\n{RULE}", WELCOME_SCREEN])
+    reads: list = []
+    monkeypatch.setattr(cs, "_surface_read_text",
+                        lambda *a, **k: reads.append(1) or next(screens, WELCOME_SCREEN))
+    cs.clear_session(paths, {"ws_ref": "workspace:5", "surface_ref": "surface:3", "cwd": "/cwd"},
+                     Path("/boot.md"), agent=ag.CLAUDE)
+    assert len(reads) == 3, "kept polling until the welcome showed with an empty box"
+    assert len(feeds) == 1
+
+
 def test_clear_session_claude_respawns_when_boot_never_lands(paths: cl.Paths, monkeypatch):
     """If the boot prompt after /clear is never submitted, the session would sit
     with no instructions; clear_session falls back to a lossless respawn instead
@@ -655,6 +669,16 @@ def test_spawn_session_answers_the_trust_prompt_with_a_carriage_return(tmp_path,
     monkeypatch.setattr(cs, "deliver_boot", lambda *a, **k: "/t.jsonl")
     assert cs.spawn_session(paths, Path("/boot.md"), agent=ag.CLAUDE)["transcript_path"] == "/t.jsonl"
     assert rpc[:2] == ["1", "\r"], "trust answered with 1, then a carriage return"
+
+
+def test_spawn_session_droid_skips_the_claude_input_wait(tmp_path, monkeypatch):
+    paths, _ = _spawn_env(tmp_path, monkeypatch)
+    waits: list = []
+    monkeypatch.setattr(cs, "await_ready", lambda **kw: waits.append(kw["ready_re"]) or (True, False))
+    monkeypatch.setattr(cs, "deliver_boot", lambda *a, **k: "/droid.jsonl")
+    sess = cs.spawn_session(paths, Path("/boot.md"), agent=ag.DROID)
+    assert sess["transcript_path"] == "/droid.jsonl" and sess["agent"] == ag.DROID
+    assert waits == [ag.ready_re(ag.DROID)], "droid has no status-bar wait"
 
 
 def test_spawn_session_closes_workspace_when_boot_never_submitted(tmp_path, monkeypatch):
