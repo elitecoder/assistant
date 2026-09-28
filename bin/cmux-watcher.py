@@ -98,9 +98,14 @@ DEFAULT_PATTERN_BANK = {
     "patterns": [
         {"id": "pr-opened", "regex": r"PR #\d+ (opened|created|shipped)",
          "signal": "work_complete", "priority": "high"},
+        # The three needs-input word lists below matched status prose far more
+        # than real asks ("Awaiting the adversary, code-review…", "blocked" in a
+        # PR review): 168 pings in two weeks. A real ask now arrives as an
+        # AskUserQuestion or an idle alert whose last line asks something, and
+        # the pulse's Observer handles stalled workspaces itself.
         {"id": "awaiting-review",
          "regex": r"(awaiting|waiting for|needs).{0,30}(review|approval|your input)",
-         "signal": "needs_input", "priority": "high"},
+         "signal": "needs_input", "priority": "high", "suppress": True},
         {"id": "ci-green",
          "regex": r"(all CI (checks )?green|CI (is )?green|✓.*CI|Jenkins.*SUCCESS)",
          "signal": "work_complete", "priority": "medium", "suppress": True},
@@ -108,9 +113,9 @@ DEFAULT_PATTERN_BANK = {
          "regex": r"(CI (is )?red|CI fail|Jenkins.*FAIL|OURS.*failure)",
          "signal": "needs_input", "priority": "high"},
         {"id": "emit-card", "regex": r"(needs_user|emit.card|awaiting your)",
-         "signal": "needs_input", "priority": "high"},
+         "signal": "needs_input", "priority": "high", "suppress": True},
         {"id": "stranded", "regex": r"(stranded|stuck|blocked|timed out|API error)",
-         "signal": "needs_input", "priority": "medium"},
+         "signal": "needs_input", "priority": "medium", "suppress": True},
         {"id": "tests-pass", "regex": r"\d+ (tests?|specs?) (passing|passed|green)",
          "signal": "work_complete", "priority": "low"},
         {"id": "committed", "regex": r"\[main [a-f0-9]{7}\]",
@@ -701,12 +706,12 @@ def handle_event(evt: dict, bank: PatternBank, state: WatcherState,
     text = last_text or screen
     if not text:
         return None  # dead/headless workspace or read failure — nothing to judge
-    hits = bank.match(text)
+    # A suppressed pattern doesn't count, so it can't hide a lower-priority
+    # real hit (a message saying both "awaiting review" and "CI is red").
+    hits = [h for h in bank.match(text) if not h.get("suppress")]
     if not hits:
         return None  # plain turn-end with nothing notable — the noise floor
     top = hits[0]
-    if top.get("suppress"):
-        return None
     pat_signal = top.get("signal")
     signal_type = pat_signal if pat_signal in ("needs_input", "work_complete") else "pattern_match"
     if not state.cooled_down(ws_key, signal_type):

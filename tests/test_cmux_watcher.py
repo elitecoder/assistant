@@ -126,6 +126,35 @@ class TestPatternMatching(unittest.TestCase):
             session_reader=SessionReaderSpy())
         self.assertIsNone(res, "a suppressed default must stay quiet in an old bank")
 
+    def test_noisy_needs_input_word_lists_are_muted_by_default(self):
+        """Even an old on-disk bank without `suppress` keys stays quiet for
+        stranded / awaiting-review / emit-card, which fired on status prose."""
+        self.bank_path.write_text(json.dumps({"version": 1, "patterns": [
+            {"id": pid, "regex": rx, "signal": "needs_input", "priority": "high"}
+            for pid, rx in (("stranded", "blocked"), ("awaiting-review", "awaiting.{0,30}review"),
+                            ("emit-card", "needs_user"))]}))
+        bank = self._bank()
+        for text in ("the rollout is blocked on infra",
+                     "Awaiting the standing adversary, code-review, and G3",
+                     "card state needs_user"):
+            res = self.mod.handle_event(
+                _evt("agent.hook.Stop", request_id=text), bank,
+                self.mod.WatcherState(cooldown_sec=0), FakeResolver(),
+                screen_reader=lambda ws: "", session_reader=SessionReaderSpy(last_text=text))
+            self.assertIsNone(res, text)
+
+    def test_a_suppressed_hit_doesnt_hide_a_real_one(self):
+        self.bank_path.write_text(json.dumps({"version": 1, "patterns": [
+            {"id": "awaiting-review", "regex": "awaiting review", "signal": "needs_input",
+             "priority": "high", "suppress": True},
+            {"id": "ci-red", "regex": "CI is red", "signal": "needs_input", "priority": "medium"}]}))
+        res = self.mod.handle_event(
+            _evt("agent.hook.Stop", request_id="both"), self._bank(),
+            self.mod.WatcherState(cooldown_sec=0), FakeResolver(),
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="PR awaiting review, but CI is red"))
+        self.assertEqual(res["pattern_matched"], "ci-red")
+
     def test_explicit_suppress_in_file_wins(self):
         self._write_june_bank({"suppress": False})
         by_id = {p["id"]: p for p in self._bank().patterns}

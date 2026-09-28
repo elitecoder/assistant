@@ -47,6 +47,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   what the agent just said, not 50 lines of scrollback, so old tool output no
   longer triggers them. Name workspaces cmux left as "Terminal" by Claude's own
   session title, or the folder and branch.
+- Mute the "stranded", "awaiting-review", and "emit-card" word lists by default
+  (168 pings in two weeks, mostly on status prose), and stop a muted pattern
+  from hiding a real one in the same message.
 - Stop closing a healthy warm comms session whenever cmux is slow to answer.
   A refused or timed-out check now leaves the session alone; only cmux saying
   the workspace doesn't exist, or a successful workspace list without it,
