@@ -718,6 +718,9 @@ class TestLastMessage(unittest.TestCase):
         self.assertTrue(self.mod.ended_on_api_error([_user({"type": "text", "text": "go"}), err]))
         self.assertFalse(self.mod.ended_on_api_error([err, _assistant({"type": "text", "text": "ok"})]))
         self.assertFalse(self.mod.ended_on_api_error([_user({"type": "text", "text": "go"})]))
+        after_result = [_user({"type": "text", "text": "go"}), err,
+                        _user({"type": "tool_result", "tool_use_id": "x", "content": "ok"})]
+        self.assertTrue(self.mod.ended_on_api_error(after_result))
 
     def test_prompt_message_quotes_the_open_prompt(self):
         pm = self.mod.prompt_message
