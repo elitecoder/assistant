@@ -62,6 +62,8 @@ def _clip(text: str, limit: int) -> str:
 _ACTION_PHRASES: dict[str, tuple[str, str]] = {
     "ready_for_merge": ("asked a workspace to merge its PR", "ask a workspace to merge its PR"),
     "self-update": ("updated Assistant to the latest code", "update Assistant to the latest code"),
+    "self-update-lock-cleared": ("cleared a stale git lock that was blocking my updates",
+                                 "clear a stale git lock that was blocking my updates"),
     "self-update-syntax-fail": ("updated Assistant to the latest code",
                                 "update Assistant to the latest code"),
     "strategist-context": ("started researching a decision that's waiting on you",

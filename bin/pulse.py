@@ -340,10 +340,13 @@ def run(cmd: list[str], *, input_text: str | None = None,
         # blocked every later git write there (2026-09-28).
         try:
             os.killpg(proc.pid, signal.SIGTERM)
-            proc.communicate(timeout=KILL_GRACE_SEC)
-            return 124, "", f"timeout after {timeout}s"
-        except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired):
+        except (ProcessLookupError, PermissionError, OSError):
             pass
+        try:
+            proc.communicate(timeout=KILL_GRACE_SEC)
+        except Exception:  # noqa: BLE001 — a timeout here just means SIGKILL next
+            pass
+        # SIGKILL the group regardless, so nothing that ignored SIGTERM survives.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
@@ -467,6 +470,21 @@ def self_update_pulse(pulse_idx: int) -> None:
 
     if result is None:
         return  # throttled — nothing to report
+
+    if result.get("cleared_stale_lock"):
+        # Something left a git lock behind again; make it visible, since the
+        # cleanup would otherwise hide a new cause.
+        append_ledger({
+            "ts": utc_iso(),
+            "epoch": utc_ts(),
+            "pulse_idx": pulse_idx,
+            "key": f"self-update-lock-cleared-p{pulse_idx}",
+            "kind": "self-update-lock-cleared",
+            "ws_ref": "(launchd)",
+            "outcome": "verified",
+            "evidence": result["cleared_stale_lock"][:300],
+        })
+        log.info("self-update: %s", result["cleared_stale_lock"])
 
     reason = result.get("skipped_reason")
     changed = result.get("changed")

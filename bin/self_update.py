@@ -114,56 +114,100 @@ def _git(repo: Path, *args: str, timeout: int = 90) -> tuple[int, str, str]:
     except subprocess.TimeoutExpired:
         _terminate_group(proc)
         return -1, "", f"git {' '.join(args)} timed out after {timeout}s"
+    except Exception as e:  # noqa: BLE001 — e.g. undecodable output; never raise
+        _terminate_group(proc)
+        return -1, "", str(e)
 
 
 def _terminate_group(proc: subprocess.Popen, grace: float = KILL_GRACE_SEC) -> None:
-    """SIGTERM a child's process group, then SIGKILL whatever is left after
-    `grace` seconds."""
+    """SIGTERM a child's process group, give it `grace` seconds, then SIGKILL
+    the group regardless, so nothing that ignored SIGTERM survives. Every wait
+    is bounded."""
     try:
         os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
         proc.communicate(timeout=grace)
-    except (ProcessLookupError, PermissionError, subprocess.TimeoutExpired):
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        proc.communicate()
+    except Exception:  # noqa: BLE001 — a timeout here just means SIGKILL next
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+    try:
+        proc.communicate(timeout=5)
+    except Exception:  # noqa: BLE001 — reaping is best-effort after SIGKILL
+        pass
 
 
-def _lock_is_held(path: Path) -> bool:
-    """True if some process has `path` open, or if lsof can't say for sure.
-    lsof exits 1 with no output when nobody has the file open."""
+def _lsof(*args: str) -> subprocess.CompletedProcess | None:
     lsof = shutil.which("lsof") or "/usr/sbin/lsof"
     try:
-        p = subprocess.run([lsof, "-w", "-t", "--", str(path)],
-                           capture_output=True, text=True, timeout=15)
+        return subprocess.run([lsof, "-w", *args], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _lsof_found_nothing(p: subprocess.CompletedProcess | None) -> bool:
+    """lsof exits 1 with no output when nothing matches; anything else means
+    something matched or lsof couldn't tell."""
+    return p is not None and p.returncode == 1 and not p.stdout.strip() and not p.stderr.strip()
+
+
+def git_cwd_in(lsof_fields: str, toplevel: str) -> bool:
+    """True if `lsof -Fn` output lists a working directory inside `toplevel`."""
+    for line in lsof_fields.splitlines():
+        if line.startswith("n"):
+            cwd = os.path.realpath(line[1:])
+            if cwd == toplevel or cwd.startswith(toplevel.rstrip("/") + "/"):
+                return True
+    return False
+
+
+def _lock_is_held(lock: Path, toplevel: str) -> bool:
+    """True if the lock may be live, or if that can't be ruled out.
+
+    Two checks, because git doesn't always keep the lock file open: `git commit
+    -a` or `-p` writes index.lock, closes it, and keeps holding the lock while
+    hooks and the editor run. So a lock is live if any process has it open, or
+    if any git process is working in the repo (git runs from the top folder)."""
+    if not _lsof_found_nothing(_lsof("-t", "--", str(lock))):
         return True
-    return not (p.returncode == 1 and not p.stdout.strip() and not p.stderr.strip())
+    p = _lsof("-a", "-c", "git", "-d", "cwd", "-Fn")
+    if p is None or p.returncode not in (0, 1) or p.stderr.strip():
+        return True
+    return git_cwd_in(p.stdout, toplevel)
 
 
 def clear_stale_index_lock(repo: Path, *, now: float | None = None,
                            max_age: float = STALE_LOCK_SEC,
                            is_held=_lock_is_held) -> str | None:
-    """Remove the repo's index.lock if it's stale: older than `max_age` and
-    held open by no process. Returns what was removed, or None. A lock that's
-    young, held, or can't be checked is left alone."""
+    """Remove the repo's index.lock if it's stale: older than `max_age`, with
+    no process holding it and no git working in the repo. Returns what was
+    removed, or None. A lock that's young, live, replaced while it was being
+    checked, or can't be checked is left alone."""
     now = time.time() if now is None else now
     rc, git_dir, _ = _git(repo, "rev-parse", "--absolute-git-dir")
-    if rc != 0 or not git_dir:
+    rc2, toplevel, _ = _git(repo, "rev-parse", "--show-toplevel")
+    if rc != 0 or rc2 != 0 or not git_dir or not toplevel:
         return None
     lock = Path(git_dir) / "index.lock"
     try:
-        age = now - lock.stat().st_mtime
+        before = lock.stat()
     except OSError:
         return None
-    if age < max_age or is_held(lock):
+    age = now - before.st_mtime
+    if age < max_age or is_held(lock, os.path.realpath(toplevel)):
         return None
     try:
+        after = lock.stat()
+        if (after.st_ino, after.st_mtime_ns) != (before.st_ino, before.st_mtime_ns):
+            return None
         lock.unlink()
     except OSError:
         return None
-    return f"removed a stale {lock} from {int(age // 60)} min ago that no process held"
+    return f"removed a stale {lock} from {int(age // 60)} min ago that no git process held"
 
 
 def _stash_dirty(repo: Path, label: str) -> tuple[bool, str]:

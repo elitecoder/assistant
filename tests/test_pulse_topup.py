@@ -88,6 +88,21 @@ def test_self_update_none_throttled_no_ledger(mod, home):
     assert _read_ledger(home) == []
 
 
+def test_cleared_stale_lock_is_ledgered_even_when_nothing_else_happened(mod, home):
+    """A cleared lock means something left a git lock behind again; the ledger
+    shows it so the cleanup can't hide a new cause."""
+    _inject_self_update(mod, {"changed": False, "skipped_reason": None, "error": None,
+                              "cleared_stale_lock": "removed a stale /r/.git/index.lock"})
+    try:
+        mod.self_update_pulse(9)
+    finally:
+        sys.modules.pop("self_update", None)
+    [entry] = _read_ledger(home)
+    assert entry["kind"] == "self-update-lock-cleared"
+    assert entry["key"] == "self-update-lock-cleared-p9"
+    assert entry["evidence"] == "removed a stale /r/.git/index.lock"
+
+
 def test_self_update_clean_no_change_silent(mod, home):
     _inject_self_update(mod, {"changed": False, "skipped_reason": None, "error": None})
     try:

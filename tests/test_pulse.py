@@ -657,6 +657,24 @@ class RunSubprocessTests(unittest.TestCase):
         self.assertEqual(rc, 124)
         self.assertEqual(marker.read_text().strip(), "yes")
 
+    def test_group_members_that_ignore_sigterm_die_even_after_the_child_exits(self):
+        pid_file = Path(self._tmp_obj.name) / "stubborn.pid"
+        script = (f'(trap "" TERM; exec sleep 30) >/dev/null 2>&1 & echo $! > {pid_file}; '
+                  'trap "exit 0" TERM; while :; do sleep 0.1; done')
+        rc, _, _ = self.mod.run(["/bin/sh", "-c", script], timeout=1)
+        self.assertEqual(rc, 124)
+        gpid = int(pid_file.read_text().strip())
+        import time as _time
+        for _ in range(50):
+            try:
+                os.kill(gpid, 0)
+            except ProcessLookupError:
+                break
+            _time.sleep(0.1)
+        else:
+            os.kill(gpid, 9)
+            self.fail("a group member that ignored SIGTERM survived")
+
     def test_timeout_still_kills_a_child_that_ignores_sigterm(self):
         import time as _time
         t0 = _time.time()
