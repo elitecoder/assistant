@@ -123,8 +123,37 @@ class TestPatternMatching(unittest.TestCase):
             _evt("agent.hook.Stop", request_id="rCI"), bank,
             self.mod.WatcherState(cooldown_sec=0), FakeResolver(),
             screen_reader=lambda ws: "All done — CI is green",
-            message_reader=MessageReaderSpy())
+            session_reader=SessionReaderSpy())
         self.assertIsNone(res, "a suppressed default must stay quiet in an old bank")
+
+    def test_noisy_needs_input_word_lists_are_muted_by_default(self):
+        """Even an old on-disk bank without `suppress` keys stays quiet for
+        stranded / awaiting-review / emit-card, which fired on status prose."""
+        self.bank_path.write_text(json.dumps({"version": 1, "patterns": [
+            {"id": pid, "regex": rx, "signal": "needs_input", "priority": "high"}
+            for pid, rx in (("stranded", "blocked"), ("awaiting-review", "awaiting.{0,30}review"),
+                            ("emit-card", "needs_user"))]}))
+        bank = self._bank()
+        for text in ("the rollout is blocked on infra",
+                     "Awaiting the standing adversary, code-review, and G3",
+                     "card state needs_user"):
+            res = self.mod.handle_event(
+                _evt("agent.hook.Stop", request_id=text), bank,
+                self.mod.WatcherState(cooldown_sec=0), FakeResolver(),
+                screen_reader=lambda ws: "", session_reader=SessionReaderSpy(last_text=text))
+            self.assertIsNone(res, text)
+
+    def test_a_suppressed_hit_doesnt_hide_a_real_one(self):
+        self.bank_path.write_text(json.dumps({"version": 1, "patterns": [
+            {"id": "awaiting-review", "regex": "awaiting review", "signal": "needs_input",
+             "priority": "high", "suppress": True},
+            {"id": "ci-red", "regex": "CI is red", "signal": "needs_input", "priority": "medium"}]}))
+        res = self.mod.handle_event(
+            _evt("agent.hook.Stop", request_id="both"), self._bank(),
+            self.mod.WatcherState(cooldown_sec=0), FakeResolver(),
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="PR awaiting review, but CI is red"))
+        self.assertEqual(res["pattern_matched"], "ci-red")
 
     def test_explicit_suppress_in_file_wins(self):
         self._write_june_bank({"suppress": False})
@@ -217,15 +246,18 @@ class FakeResolver:
         return self._title if uuid else None
 
 
-class MessageReaderSpy:
-    """Stands in for read_last_message; records each call's arguments."""
+class SessionReaderSpy:
+    """Stands in for read_session; records each call's arguments."""
 
-    def __init__(self, reply=None):
-        self.reply = reply
+    def __init__(self, question=None, last_text=None, title=None, unreadable=False,
+                 pending_tool=None, api_error=False):
+        self.reply = None if unreadable else {
+            "question": question, "last_text": last_text, "title": title,
+            "pending_tool": pending_tool, "api_error": api_error}
         self.calls = []
 
-    def __call__(self, cwd, session_id, *, question):
-        self.calls.append((cwd, session_id, question))
+    def __call__(self, cwd, session_id):
+        self.calls.append((cwd, session_id))
         return self.reply
 
 
@@ -273,40 +305,119 @@ class TestEventHandling(unittest.TestCase):
 
     def test_ask_user_question_reads_pending_question(self):
         bank, state, resolver = self._components(title="Fix archself deferral door")
-        reader = MessageReaderSpy(reply="Should I rebase or merge main?")
+        reader = SessionReaderSpy(question="Should I rebase or merge main?",
+                                  last_text="Two ways to land this.")
         res = self.mod.handle_event(
             _evt("agent.hook.AskUserQuestion", cwd="/w/repo", session_id="S-1"),
             bank, state, resolver, screen_reader=lambda ws: "Which option?",
-            message_reader=reader)
-        self.assertEqual(reader.calls, [("/w/repo", "S-1", True)])
+            session_reader=reader)
+        self.assertEqual(reader.calls, [("/w/repo", "S-1")])
         item = json.loads(Path(res["path"]).read_text())
         self.assertEqual(item["ws_title"], "Fix archself deferral door")
         self.assertEqual(item["last_message"], "Should I rebase or merge main?")
 
-    def test_notification_reads_last_text_not_question(self):
+    def test_notification_pings_when_the_agent_asks_something(self):
         bank, state, resolver = self._components()
-        reader = MessageReaderSpy()
+        reader = SessionReaderSpy(question="an old question",
+                                  last_text="Fixed it.\n\nWant me to open the PR?",
+                                  title="assistant (fix/comms)")
         res = self.mod.handle_event(
             _evt("agent.hook.Notification", request_id="rN2", session_id="S-2"),
             bank, state, resolver, screen_reader=lambda ws: "waiting",
-            message_reader=reader)
-        self.assertEqual(reader.calls, [("/x", "S-2", False)])
+            session_reader=reader)
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["last_message"], "Fixed it. Want me to open the PR?")
+        self.assertEqual(item["ws_title"], "assistant (fix/comms)",
+                         "a default-titled workspace falls back to the session's title")
+
+    def test_idle_notification_after_a_status_update_is_skipped(self):
+        """Claude's idle alert fires about a minute after every turn. When the
+        turn ended with a status update, nobody needs to act, so no ping
+        (2026-09-28: 451 such pings in two weeks). Mutation probe: drop the
+        asks_user gate and this drops an item."""
+        bank, state, resolver = self._components()
+        reader = SessionReaderSpy(last_text="Standing by for the four gate agents. I'll resume.")
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="rN3"), bank, state, resolver,
+            screen_reader=lambda ws: "waiting", session_reader=reader)
+        self.assertIsNone(res)
+        self.assertEqual(list(self.inbox.glob("cmux-*.json")) if self.inbox.exists() else [], [])
+
+    def test_idle_notification_with_an_unreadable_transcript_still_pings(self):
+        bank, state, resolver = self._components()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="rN4"), bank, state, resolver,
+            screen_reader=lambda ws: "waiting", session_reader=SessionReaderSpy(unreadable=True))
         item = json.loads(Path(res["path"]).read_text())
         self.assertNotIn("ws_title", item)
         self.assertNotIn("last_message", item)
 
+    def test_skipped_idle_notification_doesnt_use_up_the_cooldown(self):
+        bank = self.mod.PatternBank(self.assistant / "pattern_bank.json")
+        state = self.mod.WatcherState(cooldown_sec=600)
+        resolver = FakeResolver()
+        self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="a"), bank, state, resolver,
+            screen_reader=lambda ws: "", session_reader=SessionReaderSpy(last_text="Done."))
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="b"), bank, state, resolver,
+            screen_reader=lambda ws: "", session_reader=SessionReaderSpy(last_text="Merge it?"))
+        self.assertIsNotNone(res)
+
     def test_turn_end_drop_carries_title_and_last_text(self):
         bank, state, resolver = self._components(title="Green E2E Suite")
-        reader = MessageReaderSpy(reply="Opened the PR; CI is running.")
+        reader = SessionReaderSpy(last_text="Done. PR #321 opened; CI is running.")
         res = self.mod.handle_event(
             _evt("agent.hook.Stop", request_id="rS2", session_id="S-3"),
             bank, state, resolver,
-            screen_reader=lambda ws: "Done. PR #321 opened for review.",
-            message_reader=reader)
-        self.assertEqual(reader.calls, [("/x", "S-3", False)])
+            screen_reader=lambda ws: "some screen",
+            session_reader=reader)
+        self.assertEqual(reader.calls, [("/x", "S-3")])
         item = json.loads(Path(res["path"]).read_text())
         self.assertEqual(item["ws_title"], "Green E2E Suite")
-        self.assertEqual(item["last_message"], "Opened the PR; CI is running.")
+        self.assertEqual(item["last_message"], "Done. PR #321 opened; CI is running.")
+
+
+    def test_turn_end_matches_the_agents_message_not_old_scrollback(self):
+        """Patterns match what the agent just said, not 50 lines of screen where
+        old output ("CI is red" from an earlier run) sits. Mutation probe:
+        match the screen, or screen plus message, and the first call drops."""
+        bank, state, resolver = self._components()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Stop", request_id="rS9"), bank, state, resolver,
+            screen_reader=lambda ws: "earlier run: CI is red\nPR #12 opened",
+            session_reader=SessionReaderSpy(last_text="Summarized the design docs."))
+        self.assertIsNone(res)
+        res = self.mod.handle_event(
+            _evt("agent.hook.Stop", request_id="rS10"), bank, state, resolver,
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="Heads up: CI is red on main."))
+        self.assertEqual(res["pattern_matched"], "ci-red")
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["screen_snippet"], "Heads up: CI is red on main.",
+                         "an empty screen falls back to the message for the snippet")
+
+    def test_permission_prompt_pings_even_after_a_status_line(self):
+        """cmux sends a permission prompt as the same bare Notification as the
+        idle alert. A tool call still waiting means a prompt is up. Mutation
+        probe: drop the pending_tool check and this is skipped."""
+        bank, state, resolver = self._components()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="rP"), bank, state, resolver,
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="Committing the fix now.",
+                                            pending_tool="Bash"))
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["last_message"], "Waiting for your OK to use Bash.")
+
+    def test_session_that_died_on_an_api_error_pings(self):
+        bank, state, resolver = self._components()
+        res = self.mod.handle_event(
+            _evt("agent.hook.Notification", request_id="rE"), bank, state, resolver,
+            screen_reader=lambda ws: "",
+            session_reader=SessionReaderSpy(last_text="API Error: 529 overloaded", api_error=True))
+        item = json.loads(Path(res["path"]).read_text())
+        self.assertEqual(item["last_message"], "API Error: 529 overloaded")
 
     def test_notification_drops_needs_input(self):
         bank, state, resolver = self._components()
@@ -565,16 +676,60 @@ class TestLastMessage(unittest.TestCase):
 
     def test_last_assistant_text_skips_user_and_non_text_blocks(self):
         records = [
+            _assistant({"type": "text", "text": "an earlier turn's words"}),
+            _user({"type": "text", "text": "the user's prompt"}),
             _assistant({"type": "text", "text": "Opened the PR."}),
             _assistant({"type": "text", "text": "  "}, {"type": "tool_use", "name": "Bash",
                                                        "input": {}}),
             {"type": "assistant", "message": {"role": "assistant", "content": "plain string"}},
             {"type": "summary", "summary": "not a turn"},
             _assistant({"type": "tool_result", "text": "tool output, not the agent"}),
-            _user({"type": "text", "text": "the user's reply"}),
+            _user({"type": "tool_result", "tool_use_id": "t1", "content": "ok"}),
         ]
         self.assertEqual(self.mod.last_assistant_text(records), "Opened the PR.")
         self.assertIsNone(self.mod.last_assistant_text([_user({"type": "text", "text": "x"})]))
+
+    def test_last_assistant_text_ignores_earlier_turns(self):
+        """A turn with only tool calls must not re-judge the previous turn's
+        words ("PR #12 opened" would fire again)."""
+        records = [_assistant({"type": "text", "text": "PR #12 opened."}),
+                   _user({"type": "text", "text": "next task"}),
+                   _assistant({"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}),
+                   _user({"type": "tool_result", "tool_use_id": "t2", "content": "done"})]
+        self.assertIsNone(self.mod.last_assistant_text(records))
+        typed = {"type": "user", "message": {"role": "user", "content": "plain prompt"}}
+        hook = {"type": "user", "message": {"role": "user", "content": "<local-command>"}}
+        meta = {"type": "user", "isMeta": True, "message": {"role": "user", "content": "x"}}
+        self.assertEqual(self.mod.current_turn([_assistant(), typed, hook, meta]), [hook, meta])
+
+    def test_pending_tool_names_the_call_waiting_on_a_prompt(self):
+        waiting = [_user({"type": "text", "text": "go"}),
+                   _assistant({"type": "text", "text": "Committing now."},
+                              {"type": "tool_use", "id": "b1", "name": "Bash", "input": {}})]
+        self.assertEqual(self.mod.pending_tool(waiting), "Bash")
+        done = [*waiting, _user({"type": "tool_result", "tool_use_id": "b1", "content": "ok"})]
+        self.assertIsNone(self.mod.pending_tool(done))
+        nameless = [_assistant({"type": "tool_use", "id": "b2", "input": {}})]
+        self.assertEqual(self.mod.pending_tool(nameless), "a tool")
+
+    def test_ended_on_api_error(self):
+        err = {"type": "assistant", "isApiErrorMessage": True,
+               "message": {"role": "assistant", "content": [{"type": "text", "text": "API Error: 403"}]}}
+        self.assertTrue(self.mod.ended_on_api_error([_user({"type": "text", "text": "go"}), err]))
+        self.assertFalse(self.mod.ended_on_api_error([err, _assistant({"type": "text", "text": "ok"})]))
+        self.assertFalse(self.mod.ended_on_api_error([_user({"type": "text", "text": "go"})]))
+        after_result = [_user({"type": "text", "text": "go"}), err,
+                        _user({"type": "tool_result", "tool_use_id": "x", "content": "ok"})]
+        self.assertTrue(self.mod.ended_on_api_error(after_result))
+
+    def test_prompt_message_quotes_the_open_prompt(self):
+        pm = self.mod.prompt_message
+        self.assertEqual(pm({"pending_tool": "AskUserQuestion", "question": "Merge?"}), "Merge?")
+        self.assertEqual(pm({"pending_tool": "ExitPlanMode"}), "Waiting for you to approve its plan.")
+        self.assertEqual(pm({"pending_tool": "Bash", "last_text": "Committing."}),
+                         "Waiting for your OK to use Bash.")
+        self.assertEqual(pm({"pending_tool": "Bash", "last_text": "Run it?"}), "Run it?")
+        self.assertEqual(pm({"last_text": "Done."}), "Done.")
 
     def test_trim_words(self):
         self.assertEqual(self.mod.trim_words("a\n\n  b"), "a b")
@@ -582,18 +737,21 @@ class TestLastMessage(unittest.TestCase):
         trimmed = self.mod.trim_words(long, limit=23)
         self.assertEqual(trimmed, "word word word word…")
 
-    def test_read_last_message_end_to_end(self):
+    def test_read_session_end_to_end(self):
         cwd = "/Users/me/dev/proj"
         records = [
+            {"type": "ai-title", "aiTitle": "Rebase the ruler fix", "sessionId": "sess-9"},
             _assistant({"type": "text", "text": "I found two ways.\n\nPick one."}),
             _assistant(_ask("t9", "Should I rebase or merge main?")),
         ]
         self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-9", records)
-        self.assertEqual(self.mod.read_last_message(cwd, "sess-9", question=True),
-                         "Should I rebase or merge main?")
-        self.assertEqual(self.mod.read_last_message(cwd, "sess-9", question=False),
-                         "I found two ways. Pick one.")
-        self.assertIsNone(self.mod.read_last_message(cwd, "sess-404", question=False))
+        self.assertEqual(self.mod.read_session(cwd, "sess-9"), {
+            "question": "Should I rebase or merge main?",
+            "last_text": "I found two ways.\n\nPick one.",
+            "pending_tool": "AskUserQuestion",
+            "api_error": False,
+            "title": "Rebase the ruler fix"})
+        self.assertIsNone(self.mod.read_session(cwd, "sess-404"))
 
     def test_live_payload_shape_finds_the_question(self):
         # Live cmux payloads prefix the id (`claude-<uuid>`) while the file is
@@ -610,16 +768,49 @@ class TestLastMessage(unittest.TestCase):
         item = json.loads(Path(res["path"]).read_text())
         self.assertEqual(item["last_message"], "Should I rebase or merge main?")
 
-    def test_read_last_message_none_when_nothing_to_say(self):
+    def test_read_session_with_nothing_to_say(self):
         cwd = "/Users/me/dev/quiet"
         self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-q",
                          [_user({"type": "text", "text": "hello?"})])
-        self.assertIsNone(self.mod.read_last_message(cwd, "sess-q", question=False))
+        self.assertEqual(self.mod.read_session(cwd, "sess-q"),
+                         {"question": None, "last_text": None, "pending_tool": None,
+                          "api_error": False, "title": None})
 
-    def test_read_last_message_never_raises(self):
+    def test_read_session_never_raises(self):
         # No ~/.claude/projects at all: the scan fails, the drop must not.
-        self.assertIsNone(self.mod.read_last_message("/nowhere", "sess-x", question=False))
+        self.assertIsNone(self.mod.read_session("/nowhere", "sess-x"))
         self.assertFalse(self.projects.exists())
+
+    def test_session_title_prefers_claudes_title_then_folder_and_branch(self):
+        title = self.mod.session_title
+        self.assertEqual(title([{"type": "ai-title", "aiTitle": " Fix ruler "},
+                                {"cwd": "/w/repo", "gitBranch": "main"}]), "Fix ruler")
+        self.assertEqual(title([{"cwd": "/w/architect-ffp", "gitBranch": "fix/x"}]),
+                         "architect-ffp (fix/x)")
+        self.assertEqual(title([{"cwd": "/w/repo", "gitBranch": "HEAD"}]), "repo")
+        self.assertEqual(title([{"cwd": "/", "gitBranch": ""}]), "/")
+        self.assertEqual(title([{"type": "ai-title", "aiTitle": "  "}, {"cwd": ""}]), None)
+        self.assertIsNone(title([]))
+
+    def test_asks_user_reads_the_last_few_lines(self):
+        asks = self.mod.asks_user
+        self.assertTrue(asks("Done.\n\nWant me to open the PR?"))
+        self.assertTrue(asks("Two options below.\nLet me know which one."))
+        self.assertTrue(asks("Should I merge"))
+        self.assertTrue(asks("Tear down the worktree (`cleanup`)?\n- The 3 deferrals remain open"),
+                        "an ask above a closing note still counts")
+        self.assertTrue(asks("Paste the ticket text, or say the word and I'll open a browser"))
+        self.assertTrue(asks("Reply `cleanup` to tear down the batch4 worktree"))
+        self.assertTrue(asks("Please run /login · API Error: 403"))
+        self.assertTrue(asks("Ready for your approval."))
+        self.assertFalse(asks("Is it fixed?\nYes.\nGates green.\nStanding by for CI."),
+                          "a question four lines up is history, not an ask")
+        self.assertFalse(asks("Standing by for the four gate agents."))
+        self.assertFalse(asks("Dev server is up: https://localhost.adobe.com:3000/?config=squirrel"),
+                         "a link's query string isn't a question")
+        self.assertTrue(asks("Open https://x.test/?a=1 — does it look right?"))
+        self.assertFalse(asks(""))
+        self.assertFalse(asks(None))
 
 
 # ─── pattern hot-reload ────────────────────────────────────────────────────────
