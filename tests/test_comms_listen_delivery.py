@@ -336,11 +336,13 @@ def test_inbound_loop_records_and_queues_before_the_worker_sees_it(env, monkeypa
         started.append(channel_id)
         if channel_id == "C0":
             wake.get(timeout=5)
+            wake.get(timeout=5)
             seen_on_disk.append(sorted(r["text"] for r in listen.read_pending(paths)))
             stop_.set()
 
     def fake_poll(stop_, env_, msg_queue):
         msg_queue.put(_msg("new"))
+        msg_queue.put(_msg("newer"))
 
     monkeypatch.setattr(listen, "_channel_worker", fake_worker)
     monkeypatch.setattr(listen, "_poll_thread", fake_poll)
@@ -348,8 +350,8 @@ def test_inbound_loop_records_and_queues_before_the_worker_sees_it(env, monkeypa
     t.start()
     t.join(timeout=10)
     assert not t.is_alive()
-    assert sorted(started) == ["C0", "C1"]
-    assert seen_on_disk == [["new", "queued"]]
+    assert sorted(started) == ["C0", "C1"], "one worker per channel, reused for later messages"
+    assert seen_on_disk == [["new", "newer", "queued"]]
     assert any("conversation.py" in a[0] and "append" in a for a in calls)
 
 
