@@ -317,9 +317,29 @@ def test_heartbeat_pages_once_per_outage_then_announces_recovery(cfg: Config, mo
         {"last_pulse_ts": fresh, "status": "ok"}, fresh - stale)
 
 
+def test_heartbeat_page_that_failed_is_tried_again(cfg: Config, monkeypatch):
+    sub, fake = _make_subsystem(cfg, monkeypatch)
+    stale = int(time.time()) - 99999
+    cfg.heartbeat_path.write_text(json.dumps({"last_pulse_ts": stale, "status": "ok"}))
+    real_send = fake.send
+    attempts = {"n": 0}
+
+    def flaky(*a, **k):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("slack down")
+        return real_send(*a, **k)
+
+    monkeypatch.setattr("assistant.subsystems.comms.slack.send", flaky)
+    sub._check_heartbeat()
+    sub._check_heartbeat()
+    sub._check_heartbeat()
+    assert attempts["n"] == 2 and len(fake.sends) == 1
+
+
 def test_heartbeat_send_disabled_and_failures_are_logged(cfg: Config, monkeypatch, caplog):
     sub, fake = _make_subsystem(cfg, monkeypatch, send_enabled=False)
-    sub._send_heartbeat("body", "urgent")
+    assert sub._send_heartbeat("body", "urgent") is True
     assert fake.sends == []
     sub, _fake = _make_subsystem(cfg, monkeypatch)
 
@@ -327,7 +347,7 @@ def test_heartbeat_send_disabled_and_failures_are_logged(cfg: Config, monkeypatc
         raise RuntimeError("slack down")
     monkeypatch.setattr("assistant.subsystems.comms.slack.send", boom)
     with caplog.at_level(logging.WARNING, logger="test.comms"):
-        sub._send_heartbeat("body", "action")
+        assert sub._send_heartbeat("body", "action") is False
     assert "heartbeat action failed" in caplog.text
 
 

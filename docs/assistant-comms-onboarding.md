@@ -80,7 +80,12 @@ To stop: `launchctl bootout gui/$UID/com.assistant.assistant-comms`.
 | `SLACK_PING_TARGET` | optional | `C…` private channel (recommended) or `U…` user (DMed); overrides `config.slack.target`. |
 | `COMMS_MODEL` | optional | warm-session model (default Sonnet 4.6 1M). |
 | `COMMS_SLACK_POLL_SEC` | optional | inbound poll interval (default 3s). |
-| `COMMS_REPLY_WAIT_SEC` | optional | max wait for a warm reply (default 120s). |
+| `COMMS_SUBMIT_ATTEMPTS` / `COMMS_SUBMIT_WAIT_SEC` | optional | Enter presses to try when a typed prompt doesn't reach the transcript, and seconds to wait after each (default 3 and 15s). |
+| `COMMS_LIVENESS_ATTEMPTS` / `COMMS_LIVENESS_RETRY_SEC` | optional | looks at a workspace cmux didn't answer about before calling it unknown, and seconds between them (default 3 and 3s). |
+| `COMMS_PENDING_RETRY_SEC` / `COMMS_PENDING_MAX_AGE_SEC` | optional | first retry delay for an undelivered inbound message (doubles on each failure, up to 30 min), and how long to keep trying (default 30s and 3h). |
+| `COMMS_RESTART_NOTICE_AFTER_SEC` | optional | how long a message waits before you get the "I'll answer as soon as it's back" note (default 60s). |
+| `COMMS_INBOX_COOLDOWN_SEC` | optional | minimum gap between pings about one workspace; real questions always go through (default 900s). |
+| `COMMS_LEDGER_MAX_PER_PASS` | optional | action updates per ledger pass before the rest collapse into one summary line (default 5). |
 
 ## Files it owns
 
@@ -89,6 +94,9 @@ To stop: `launchctl bootout gui/$UID/com.assistant.assistant-comms`.
 - `~/.assistant/comms/threads.jsonl` — sent-message-ts ↔ ledger-key links.
 - `~/.assistant/comms/slack.cursor` / `ledger.cursor` — poll offsets.
 - `~/.assistant/comms/session.json` — the warm workspace registry.
+- `~/.assistant/comms/pending-inbound.json` — inbound messages the warm session hasn't confirmed yet.
+- `~/.assistant/comms/restart-notice.json` — marks that this outage's "I'll answer as soon as it's back" note went out.
+- `~/.assistant/comms/inbox-cooldown.json` — when each workspace was last pinged.
 - `~/.assistant/comms/comms-listen.log` — the daemon's own log.
 
 ## Relationship to slack-reactor

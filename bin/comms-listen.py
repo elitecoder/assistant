@@ -95,14 +95,19 @@ SLACK_POLL_INTERVAL_SEC = int(os.environ.get("COMMS_SLACK_POLL_SEC", "3"))
 LEDGER_POLL_SEC = float(os.environ.get("COMMS_LEDGER_POLL_SEC", "2"))
 HEARTBEAT_CHECK_SEC = int(os.environ.get("COMMS_HEARTBEAT_CHECK_SEC", "60"))
 HEARTBEAT_CONFIRM_CHECKS = 2
+# A page that failed to send is tried again after this long, not every check.
+HEARTBEAT_PAGE_RETRY_SEC = 600
 
 # Inbound messages wait on disk until the warm session confirms it received
 # them. The slack cursor moves past a message as soon as it's polled, so before
 # this queue a message that arrived while no session was up was lost for good
 # (2026-09-27: two "are you alive?" messages). Undelivered messages are retried
-# every PENDING_RETRY_SEC and given up after PENDING_MAX_AGE_SEC, when an
-# answer would no longer help.
+# after PENDING_RETRY_SEC, doubling after each failed try up to
+# PENDING_RETRY_MAX_SEC (a retry can spawn a session, so an unbacked-off loop
+# could repeat the 2026-09-14 respawn storm), and given up after
+# PENDING_MAX_AGE_SEC, when an answer would no longer help.
 PENDING_RETRY_SEC = float(os.environ.get("COMMS_PENDING_RETRY_SEC", "30"))
+PENDING_RETRY_MAX_SEC = 1800.0
 PENDING_MAX_AGE_SEC = float(os.environ.get("COMMS_PENDING_MAX_AGE_SEC", str(3 * 3600)))
 RESTART_NOTICE = ("My chat session isn't responding right now. I'll answer as soon "
                   "as it's back.")
@@ -220,18 +225,35 @@ def _note_cmux_answer(answered: bool) -> None:
         _cmux_silent_since = None
 
 
+def spawn_backoff_remaining(failures: int, failed_at: float, now: float) -> float:
+    """Seconds until the next spawn may be tried after `failures` failed spawns
+    in a row, the last at `failed_at`. Shared by every caller of _warm_session,
+    so the watchdog and inbound retries together can't spawn faster than the
+    watchdog's own backoff curve (2026-09-14: ~200 leaked spawns killed cmux)."""
+    if failures <= 0:
+        return 0.0
+    return max(0.0, failed_at + watchdog_delay(failures) - now)
+
+
+# Consecutive failed spawns and when the last one failed (see spawn_backoff_remaining).
+_spawn_failures = 0
+_spawn_failed_at = 0.0
+
+
 def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
-                  force_respawn: bool = False) -> tuple[dict | None, str]:
+                  replace_ws: str | None = None) -> tuple[dict | None, str]:
     """The live warm-session record and how it was obtained, spawning one if
     none is alive.
 
     A session is replaced only when cmux says its workspace is gone, or when
     it's alive and the caller asks: respawn_on_stale (inbound path only) for a
     session whose model id no longer matches the current backend, or
-    force_respawn for one that didn't accept a typed prompt. When cmux doesn't
-    answer at all, the session is left alone — a refused or timed-out check
-    says nothing about the workspace (2026-09-27: every such check used to
-    close a healthy session and spawn another onto a stalled cmux).
+    replace_ws for a session that didn't accept a typed prompt — honored only
+    while the registry still names that workspace, so a newer healthy session
+    is never closed in its place. When cmux doesn't answer at all, the session
+    is left alone — a refused or timed-out check says nothing about the
+    workspace (2026-09-27: every such check used to close a healthy session and
+    spawn another onto a stalled cmux). Spawns back off after failures.
 
     On respawn, close the prior warm workspace first so we never leak Claude
     processes. close_own_workspace is title-guarded — it only ever closes an
@@ -241,6 +263,7 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
     Serialized by _warm_session_lock: the watchdog tick and an inbound message
     can both call this concurrently, and without a guard both would see the
     session dead and double-spawn. The lock scopes only the respawn decision."""
+    global _spawn_failures, _spawn_failed_at
     with _warm_session_lock:
         sess = comms_session.read_session(paths)
         if sess:
@@ -253,7 +276,7 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
                 # only the INBOUND path respawns it, BEFORE it feeds its own
                 # message. The watchdog leaves a live session alone: closing it
                 # there could race an active reply.
-                if force_respawn:
+                if replace_ws and replace_ws == sess["ws_ref"]:
                     why = "didn't accept the typed message"
                 elif respawn_on_stale and not comms_session.warm_session_model_is_current(paths, sess):
                     why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
@@ -264,8 +287,17 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
             log(f"warm session {sess['ws_ref']} {why} — closing it and respawning")
             comms_session.close_own_workspace(paths, sess["ws_ref"], log=log)
             comms_session.clear_session_registry(paths)
+        wait = spawn_backoff_remaining(_spawn_failures, _spawn_failed_at, time.time())
+        if wait > 0:
+            log(f"warm session spawn backing off {int(wait)}s after {_spawn_failures} failure(s)")
+            return None, SESSION_NONE
         spawned = comms_session.spawn_session(paths, WARM_PROMPT, log=log)
-        return spawned, (SESSION_SPAWNED if spawned else SESSION_NONE)
+        if spawned:
+            _spawn_failures = 0
+            return spawned, SESSION_SPAWNED
+        _spawn_failures += 1
+        _spawn_failed_at = time.time()
+        return None, SESSION_NONE
 
 
 def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False) -> dict | None:
@@ -289,20 +321,37 @@ def feed_text(recs: list[dict], channel: str) -> str:
             f"Answer them together in one reply. {parts}")
 
 
+def _clear_if_full(paths: comms_lib.Paths, sess: dict) -> dict:
+    """Clear-and-resume the warm session when its context is past the
+    threshold: >= 50% (claude) or the size proxy (droid). Runs before a message
+    is fed rather than right after one, so it never cuts into the reply it
+    triggered, and under _warm_session_lock, since clear_session can fall back
+    to a respawn that must not race the watchdog's. Returns the session to
+    feed."""
+    # Thread the session's provider through every transcript-root / context call:
+    # a Droid session writes under ~/.factory/sessions with no usage block, so a
+    # claude default here would read the wrong root and never clear (G3).
+    agent = sess.get("agent") or agent_session.CLAUDE
+    bound = sess.get("transcript_path")
+    if not bound or not comms_session.should_clear(bound, agent=agent):
+        return sess
+    log(f"context threshold reached ({agent}) — clear-and-resume")
+    with _warm_session_lock:
+        return comms_session.clear_session(paths, sess, WARM_PROMPT, agent=agent, log=log)
+
+
 def reply_to_message(paths: comms_lib.Paths, sess: dict,
                      recs: list[dict]) -> tuple[bool, dict]:
     """Hand inbound message(s) to the warm session and confirm its transcript
-    recorded them, then /clear if context >= 50%. Returns (delivered, the
-    possibly refreshed session record).
+    recorded them. Returns (delivered, the session that was fed, possibly
+    refreshed).
 
     Confirmation looks for the message's marker in the bound transcript first,
     then in any transcript in the session's project folder, and rebinds the
     session to wherever it landed."""
+    sess = _clear_if_full(paths, sess)
     channel = str(recs[-1].get("channel"))
     marker = f"msg_ts={recs[-1].get('msg_ts')}"
-    # Thread the session's provider through every transcript-root / context call:
-    # a Droid session writes under ~/.factory/sessions with no usage block, so a
-    # claude default here would read the wrong root and never clear (G3).
     agent = sess.get("agent") or agent_session.CLAUDE
     project_dir = comms_session.project_dir_for_cwd(sess["cwd"], agent)
     bound = sess.get("transcript_path")
@@ -326,15 +375,6 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
     if not delivered:
         return False, sess
     transcript = found[-1]
-
-    # Context management: clear-and-resume at >= 50% (claude) or the size proxy
-    # (droid). should_clear + clear_session are provider-aware; for droid a
-    # "clear" is a lossless respawn since durable memory lives in conversation.jsonl.
-    # clear_session owns the registry update and returns the refreshed record.
-    if comms_session.should_clear(transcript, agent=agent):
-        log(f"context threshold reached ({agent}) — clear-and-resume")
-        return True, comms_session.clear_session(paths, sess, WARM_PROMPT, agent=agent, log=log)
-
     if transcript != bound:
         log(f"warm session transcript rebound to {transcript}")
         comms_session.write_session(paths, sess["ws_ref"], sess["surface_ref"],
@@ -415,17 +455,20 @@ def _record_inbound(rec: dict) -> None:
     cli(args, timeout=10)
 
 
-def _restart_notice_path(paths: comms_lib.Paths) -> Path:
-    return paths.comms_dir / "restart-notice.json"
+def _restart_notice_path(paths: comms_lib.Paths, channel: str) -> Path:
+    safe = "".join(c if c.isalnum() else "-" for c in channel)
+    return paths.comms_dir / f"restart-notice-{safe}.json"
 
 
 def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None) -> None:
-    """Tell the user, once per outage, that their message is waiting. The marker
-    is written before sending, so a failing send can't repeat every retry."""
-    marker = _restart_notice_path(paths)
+    """Tell the user, once per outage per channel, that their message is
+    waiting. The marker is written before sending, so a failing send can't
+    repeat every retry; it's cleared once nothing is left waiting."""
+    marker = _restart_notice_path(paths, channel)
     if marker.exists():
         return
-    marker.write_text(json.dumps({"ts": time.time(), "channel": channel}))
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"ts": time.time()}))
     rc, _out, err = cli(_send_args(RESTART_NOTICE, "reply", channel, None), timeout=30, env=env)
     log(f"restart notice sent to {channel}" if rc == 0
         else f"restart notice rc={rc} err={err.strip()[:160]}")
@@ -442,22 +485,32 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
                 f"{comms_lib.fmt_age(int(message_age_sec(r, now)))} — giving up on it")
         remove_pending(paths, [r.get("msg_ts") for r in expired])
     if not fresh:
+        _restart_notice_path(paths, channel).unlink(missing_ok=True)
         return True
     sess, how = _warm_session(paths, respawn_on_stale=True)
     delivered = False
     if sess and how != SESSION_UNREACHABLE:
-        delivered, _sess = reply_to_message(paths, sess, fresh)
-        if not delivered:
-            _warm_session(paths, force_respawn=True)
+        delivered, fed = reply_to_message(paths, sess, fresh)
+        # Replace an existing session that didn't take the message. One that was
+        # just spawned (here or by a clear) is left for the next, backed-off
+        # try, so a Claude that can't accept input costs one spawn per retry.
+        if not delivered and how == SESSION_ALIVE and fed["ws_ref"] == sess["ws_ref"]:
+            _warm_session(paths, replace_ws=sess["ws_ref"])
     if delivered:
         remove_pending(paths, [r.get("msg_ts") for r in fresh])
-        _restart_notice_path(paths).unlink(missing_ok=True)
+        _restart_notice_path(paths, channel).unlink(missing_ok=True)
         return True
-    log(f"inbound: {len(fresh)} message(s) waiting for the warm session "
-        f"(session={how}); retrying in {int(PENDING_RETRY_SEC)}s")
+    log(f"inbound: {len(fresh)} message(s) waiting for the warm session (session={how})")
     if message_age_sec(fresh[0], now) >= RESTART_NOTICE_AFTER_SEC:
         _notify_restart_once(paths, channel, env)
     return False
+
+
+def pending_retry_delay(failures: int) -> float:
+    """Seconds before retrying undelivered messages after `failures` failed
+    tries in a row: PENDING_RETRY_SEC, doubling, capped at
+    PENDING_RETRY_MAX_SEC."""
+    return min(PENDING_RETRY_SEC * (2 ** max(0, failures - 1)), PENDING_RETRY_MAX_SEC)
 
 
 def _poll_thread(stop: threading.Event, env: dict, msg_queue: queue.Queue) -> None:
@@ -487,33 +540,38 @@ def _poll_thread(stop: threading.Event, env: dict, msg_queue: queue.Queue) -> No
             stop.wait(SLACK_POLL_INTERVAL_SEC)
 
 
-def _channel_worker(channel_id: str, ch_queue: queue.Queue, stop: threading.Event,
+def _channel_worker(channel_id: str, wake: queue.Queue, stop: threading.Event,
                     env: dict | None = None) -> None:
-    """Per-channel worker: queues each inbound message on disk, delivers the
-    queue, and retries every PENDING_RETRY_SEC until the warm session confirms
+    """Per-channel worker: delivers the channel's on-disk queue as soon as a
+    message arrives (inbound_loop has already recorded and queued it), then
+    retries with backoff (pending_retry_delay) until the warm session confirms
     it. Serializes replies for one channel while other channels run
     concurrently."""
     paths = comms_lib.Paths.from_env()
     waiting = bool(split_pending(read_pending(paths), channel_id, time.time(),
                                  PENDING_MAX_AGE_SEC)[0])
     last_try = 0.0
+    failures = 0
     while not stop.is_set():
         try:
-            rec = ch_queue.get(timeout=1)
-        except queue.Empty:
-            rec = None
-        if rec is not None:
-            log(f"inbound channel={channel_id} msg={rec.get('msg_ts')} "
-                f"text={rec.get('text', '')[:80]!r}")
-            _record_inbound(rec)
-            add_pending(paths, rec)
+            wake.get(timeout=1)
+            woken = True
             waiting = True
-        if waiting and (rec is not None or time.time() - last_try >= PENDING_RETRY_SEC):
-            last_try = time.time()
-            try:
-                waiting = not _deliver_pending(paths, channel_id, env)
-            except Exception as e:  # noqa: BLE001 — one bad pass must never kill the channel
-                log(f"inbound delivery error (will retry): {type(e).__name__}: {e}")
+        except queue.Empty:
+            woken = False
+        due = failures == 0 or time.time() - last_try >= pending_retry_delay(failures)
+        if not (waiting and (woken or due)):
+            continue
+        try:
+            waiting = not _deliver_pending(paths, channel_id, env)
+        except Exception as e:  # noqa: BLE001 — one bad pass must never kill the channel
+            log(f"inbound delivery error (will retry): {type(e).__name__}: {e}")
+        # Timed from the end of the try: a try that waits on a spawn can take
+        # minutes, and timing from its start would retry the moment it ends.
+        last_try = time.time()
+        failures = failures + 1 if waiting else 0
+        if waiting:
+            log(f"inbound: retrying in {int(pending_retry_delay(failures))}s")
 
 
 def inbound_loop(stop: threading.Event, env: dict) -> None:
@@ -527,15 +585,15 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
 
     def worker_for(channel_id: str) -> queue.Queue:
         if channel_id not in channel_workers:
-            ch_q: queue.Queue = queue.Queue()
+            wake: queue.Queue = queue.Queue()
             t = threading.Thread(
                 target=_channel_worker,
-                args=(channel_id, ch_q, stop, env),
+                args=(channel_id, wake, stop, env),
                 name=f"inbound-{channel_id}",
                 daemon=True,
             )
             t.start()
-            channel_workers[channel_id] = (ch_q, t)
+            channel_workers[channel_id] = (wake, t)
         return channel_workers[channel_id][0]
 
     # Messages still queued from before a restart get their workers right away.
@@ -552,7 +610,14 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
             rec = msg_queue.get(timeout=1)
         except queue.Empty:
             continue
-        worker_for(str(rec.get("channel") or "default")).put(rec)
+        channel_id = str(rec.get("channel") or "default")
+        log(f"inbound channel={channel_id} msg={rec.get('msg_ts')} "
+            f"text={rec.get('text', '')[:80]!r}")
+        # On disk before the worker sees it: the slack cursor has already moved
+        # past this message, and the worker may be busy for minutes.
+        _record_inbound(rec)
+        add_pending(paths, rec)
+        worker_for(channel_id).put(True)
 
 
 # --------------------------------------------------------------------------- warm-session liveness watchdog
@@ -1008,6 +1073,7 @@ def heartbeat_loop(stop: threading.Event, env: dict) -> None:
     paths = comms_lib.Paths.from_env()
     paged_last_ts: int | None = None  # the stale heartbeat's last pulse when we paged
     unhealthy_checks = 0
+    last_page_try = 0.0
     log("heartbeat loop started (slack)")
     while not stop.is_set():
         try:
@@ -1028,10 +1094,12 @@ def heartbeat_loop(stop: threading.Event, env: dict) -> None:
                          or hb.get("status") in {"frozen", "stale_world", "respawn-requested"})
             unhealthy_checks = unhealthy_checks + 1 if unhealthy else 0
             action = heartbeat_action(unhealthy_checks, paged_last_ts is not None)
-            if action == "page":
+            if action == "page" and time.time() - last_page_try >= HEARTBEAT_PAGE_RETRY_SEC:
+                last_page_try = time.time()
                 body = comms_lib.fmt_heartbeat_alert(hb, age)
                 rc, _, _err = cli(_send_args(body, "urgent", target, None), timeout=30, env=env)
-                paged_last_ts = last_ts
+                if rc == 0:
+                    paged_last_ts = last_ts
                 log(f"heartbeat-stale page age={age}s rc={rc}")
             elif action == "recover":
                 body = comms_lib.fmt_heartbeat_recovered(hb, max(0, last_ts - paged_last_ts))

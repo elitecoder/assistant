@@ -233,10 +233,10 @@ def clear_session_registry(paths: comms_lib.Paths) -> None:
 
 def project_dir_for_cwd(cwd: str, agent: str = agent_session.CLAUDE) -> Path:
     """Per-cwd transcript dir a warm `agent` session writes into. Claude:
-    ~/.claude/projects/<slug>; Droid: ~/.factory/sessions/<slug>. slug = the
-    realpath with '/' → '-'. Delegates to agent_session.confirm_dir (the single
-    source of truth for both roots), rooted at this module's HOME so a tmp-home
-    test resolves against its own tree."""
+    ~/.claude/projects/<slug>; Droid: ~/.factory/sessions/<slug>. Delegates to
+    agent_session.confirm_dir (the single source of truth for both roots and
+    slugs), rooted at this module's HOME so a tmp-home test resolves against
+    its own tree."""
     return agent_session.confirm_dir(agent, cwd, home=HOME)
 
 
@@ -417,9 +417,14 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
     Enter was lost or became a newline — press Enter again, up to `attempts`
     presses in all. The text is never retyped and Enter is never pressed on a
     box that doesn't hold the marker, so a retry can't double-send a prompt or
-    submit someone else's half-typed input. All I/O is injected."""
-    send_text()
-    sleep(0.5)
+    submit someone else's half-typed input. A prompt an earlier try already
+    got recorded isn't typed again, and one an earlier try left sitting in the
+    box only gets its Enter. All I/O is injected."""
+    if confirmed():
+        return True
+    if not box_holds(read_box(), marker):
+        send_text()
+        sleep(0.5)
     press_enter()
     for attempt in range(attempts):
         deadline = clock() + wait_sec
@@ -504,15 +509,16 @@ def _surface_read_text(paths: comms_lib.Paths, surface_ref: str, lines: int = 20
     return d.get("text", "") or ""
 
 
-def _probe_workspace(paths: comms_lib.Paths, ws_ref: str) -> str:  # pragma: no cover - live cmux I/O
+def probe_workspace(paths: comms_lib.Paths, ws_ref: str, run=None) -> str:
     """One look at a workspace. When `tree` fails without saying the ref is
-    unknown, a successful `list-workspaces` still settles it either way."""
-    rc, _, err = comms_lib.run_cmd(
-        [str(paths.cmux_bin), "tree", "--workspace", ws_ref, "--json"], timeout=10)
+    unknown, a successful `list-workspaces` still settles it either way; if
+    that fails too, the answer is UNKNOWN. `run` defaults to comms_lib.run_cmd."""
+    run = run or comms_lib.run_cmd
+    rc, _, err = run([str(paths.cmux_bin), "tree", "--workspace", ws_ref, "--json"], timeout=10)
     state = classify_tree_result(rc, err)
     if state != UNKNOWN:
         return state
-    rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
+    rc, out, _ = run([str(paths.cmux_bin), "list-workspaces"], timeout=10)
     if rc != 0:
         return UNKNOWN
     return ALIVE if ref_listed(out, ws_ref) else GONE
@@ -520,7 +526,7 @@ def _probe_workspace(paths: comms_lib.Paths, ws_ref: str) -> str:  # pragma: no 
 
 def workspace_state(paths: comms_lib.Paths, ws_ref: str) -> str:  # pragma: no cover - live cmux I/O
     """ALIVE, GONE, or UNKNOWN (cmux didn't answer) for a warm workspace."""
-    return resolve_workspace_state(lambda: _probe_workspace(paths, ws_ref))
+    return resolve_workspace_state(lambda: probe_workspace(paths, ws_ref))
 
 
 def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
@@ -577,11 +583,12 @@ def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
 
 
 def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt: Path,
-                 agent: str) -> str | None:  # pragma: no cover - live cmux I/O
+                 agent: str, submit_fn=None) -> str | None:
     """Type the boot prompt and return the transcript that recorded it, or None
     if it was never submitted. The session is bound to that exact file — never
     to whichever transcript happens to be newest, which on 2026-09-27/28 was
-    often another session's."""
+    often another session's. `submit_fn` defaults to submit."""
+    submit_fn = submit_fn or submit
     nonce = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{os.getpid()}"
     marker = f"[boot {nonce}]"
     project_dir = project_dir_for_cwd(cwd, agent)
@@ -594,9 +601,9 @@ def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt
             found.append(hit)
         return hit is not None
 
-    if not submit(paths, surface_ref, boot_instruction(boot_prompt, nonce), marker, confirmed):
+    if not submit_fn(paths, surface_ref, boot_instruction(boot_prompt, nonce), marker, confirmed):
         return None
-    return found[-1] if found else None
+    return found[-1]
 
 
 def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,

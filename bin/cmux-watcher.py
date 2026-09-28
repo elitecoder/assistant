@@ -389,14 +389,6 @@ def last_lines(text: str, n: int = 3) -> str:
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 
 
-def claude_project_slug(cwd: str) -> str:
-    """The project dir name Claude Code uses for `cwd`: every non-alphanumeric
-    character of the real path becomes `-`. agent_session.project_slug maps
-    only `/`, so dotted or underscored paths (`.worktrees`, macOS temp dirs)
-    are finished here."""
-    return re.sub(r"[^A-Za-z0-9-]", "-", agent_session.project_slug(cwd))
-
-
 def transcript_path(cwd: str | None, session_id: str | None,
                     projects_dir: Path = CLAUDE_PROJECTS) -> Path | None:
     """Locate the Claude Code transcript for a hook payload's session.
@@ -409,7 +401,7 @@ def transcript_path(cwd: str | None, session_id: str | None,
         return None
     name = f"{session_id.removeprefix('claude-')}.jsonl"
     if cwd:
-        direct = projects_dir / claude_project_slug(cwd) / name
+        direct = projects_dir / agent_session.claude_project_slug(cwd) / name
         if direct.is_file():
             return direct
     return next((d / name for d in projects_dir.iterdir() if (d / name).is_file()), None)

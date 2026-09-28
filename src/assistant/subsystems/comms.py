@@ -155,9 +155,9 @@ class CommsSubsystem(Subsystem):
         stale = age > self.config.stale_heartbeat_sec
         bad = hb.get("status") in {"frozen", "stale_world", "respawn-requested"}
         if (stale or bad) and self._paged_last_ts is None:
-            self._send_heartbeat(slack.fmt_heartbeat_alert(hb, age), "urgent")
-            self._paged_last_ts = last_ts
-            self._pages += 1
+            if self._send_heartbeat(slack.fmt_heartbeat_alert(hb, age), "urgent"):
+                self._paged_last_ts = last_ts
+                self._pages += 1
             self.log.warning("heartbeat-stale page age=%ss", age)
         elif not (stale or bad) and self._paged_last_ts is not None:
             down = max(0, last_ts - self._paged_last_ts)
@@ -165,16 +165,20 @@ class CommsSubsystem(Subsystem):
             self._paged_last_ts = None
             self.log.info("heartbeat recovered after %ss", down)
 
-    def _send_heartbeat(self, body: str, kind: str) -> None:
+    def _send_heartbeat(self, body: str, kind: str) -> bool:
+        """Send (or, with sending disabled, log) a heartbeat message. False only
+        when a real send failed, so the caller can try the page again."""
         if not self._send_enabled:
             self.log.info("would send heartbeat %s (send disabled)", kind)
-            return
+            return True
         try:
             slack.send(body, self.config.target, token=self.config.bot_token,
                        allowed=self.config.allowed_targets, kind=kind)
         except RuntimeError as e:
             self.log.warning("heartbeat %s failed target=%s: %s",
                              kind, self.config.target, str(e)[:160])
+            return False
+        return True
 
     def _read_heartbeat(self) -> dict:
         p = self.config.heartbeat_path

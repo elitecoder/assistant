@@ -514,12 +514,12 @@ class TestLastMessage(unittest.TestCase):
         cwd = self.home / "dev" / "assistant" / ".worktrees" / "comms_fix"
         cwd.mkdir(parents=True)
         expected = os.path.realpath(str(cwd)).replace("/", "-").replace(".", "-").replace("_", "-")
-        self.assertEqual(self.mod.claude_project_slug(str(cwd)), expected)
+        self.assertEqual(self.mod.agent_session.claude_project_slug(str(cwd)), expected)
         self.assertIn("--worktrees-comms-fix", expected)
 
     def test_transcript_path_direct_hit_skips_the_scan(self):
         cwd = "/Users/me/dev/assistant/.worktrees/x"
-        want = self._transcript(self.mod.claude_project_slug(cwd), "sess-1", [])
+        want = self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-1", [])
         with mock.patch.object(Path, "iterdir", side_effect=AssertionError("scanned all dirs")):
             self.assertEqual(self.mod.transcript_path(cwd, "sess-1", self.projects), want)
 
@@ -588,7 +588,7 @@ class TestLastMessage(unittest.TestCase):
             _assistant({"type": "text", "text": "I found two ways.\n\nPick one."}),
             _assistant(_ask("t9", "Should I rebase or merge main?")),
         ]
-        self._transcript(self.mod.claude_project_slug(cwd), "sess-9", records)
+        self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-9", records)
         self.assertEqual(self.mod.read_last_message(cwd, "sess-9", question=True),
                          "Should I rebase or merge main?")
         self.assertEqual(self.mod.read_last_message(cwd, "sess-9", question=False),
@@ -612,7 +612,7 @@ class TestLastMessage(unittest.TestCase):
 
     def test_read_last_message_none_when_nothing_to_say(self):
         cwd = "/Users/me/dev/quiet"
-        self._transcript(self.mod.claude_project_slug(cwd), "sess-q",
+        self._transcript(self.mod.agent_session.claude_project_slug(cwd), "sess-q",
                          [_user({"type": "text", "text": "hello?"})])
         self.assertIsNone(self.mod.read_last_message(cwd, "sess-q", question=False))
 

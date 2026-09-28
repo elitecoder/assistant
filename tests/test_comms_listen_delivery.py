@@ -38,6 +38,7 @@ listen = _load()
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch):
     """Isolated comms state plus a recording fake for every CLI call."""
+    monkeypatch.setattr(listen, "_spawn_failures", 0)
     home = tmp_path / "home"
     (home / ".assistant" / "comms").mkdir(parents=True)
     (home / ".assistant" / "inbox").mkdir(parents=True)
@@ -164,7 +165,7 @@ def test_undelivered_message_stays_queued_until_the_session_takes_it(env, monkey
                                        listen.SESSION_ALIVE], [False, True])
     assert listen._deliver_pending(paths, "C0", None) is False
     assert [r["text"] for r in listen.read_pending(paths)] == ["Are you alive?"]
-    assert {"force_respawn": True} in seen["warm"], "a session that didn't take input is replaced"
+    assert {"replace_ws": "workspace:5"} in seen["warm"], "a session that didn't take input is replaced"
     assert listen._deliver_pending(paths, "C0", None) is True
     assert listen.read_pending(paths) == []
     assert seen["replied"] == [["Are you alive?"], ["Are you alive?"]]
@@ -179,9 +180,35 @@ def test_no_session_sends_one_notice_per_outage_and_clears_it_on_delivery(env, m
     assert listen._deliver_pending(paths, "C0", None) is False
     assert listen._deliver_pending(paths, "C0", None) is False
     assert _sends(calls) == [listen.RESTART_NOTICE], "one notice, not one per retry"
+    assert listen._restart_notice_path(paths, "C0").exists()
     assert listen._deliver_pending(paths, "C0", None) is True
-    assert not (paths.comms_dir / "restart-notice.json").exists()
+    assert not listen._restart_notice_path(paths, "C0").exists()
     assert listen.read_pending(paths) == []
+
+
+def test_a_just_spawned_session_is_not_replaced_right_away(env, monkeypatch):
+    """A fresh session that refuses input is left for the next backed-off try
+    instead of being swapped for another spawn in the same pass."""
+    paths, _ = env
+    listen.add_pending(paths, _msg("hi"))
+    seen = _stub_session(monkeypatch, [listen.SESSION_SPAWNED], [False])
+    assert listen._deliver_pending(paths, "C0", None) is False
+    assert seen["warm"] == [{"respawn_on_stale": True}]
+
+
+def test_notice_marker_cleared_when_everything_expired(env, monkeypatch):
+    paths, _ = env
+    listen._restart_notice_path(paths, "C0").write_text("{}")
+    listen.add_pending(paths, _msg("ancient", age_sec=listen.PENDING_MAX_AGE_SEC + 60))
+    _stub_session(monkeypatch, [], [])
+    assert listen._deliver_pending(paths, "C0", None) is True
+    assert not listen._restart_notice_path(paths, "C0").exists(), "the next outage gets a notice"
+
+
+def test_restart_notice_is_per_channel():
+    paths = cl.Paths.from_env({"HOME": "/h", "COMMS_HOME": "/h"})
+    assert listen._restart_notice_path(paths, "C0") != listen._restart_notice_path(paths, "C1")
+    assert listen._restart_notice_path(paths, "a/b").name == "restart-notice-a-b.json"
 
 
 def test_no_notice_for_a_brief_blip(env, monkeypatch):
@@ -237,21 +264,39 @@ class ScriptedQueue:
         return item
 
 
-def test_channel_worker_records_queues_and_retries(env, monkeypatch):
-    paths, calls = env
-    attempts: list[int] = []
+def test_channel_worker_delivers_on_wake_and_backs_off_retries(env, monkeypatch):
+    """A wake-up delivers at once; after a failure the next try waits
+    pending_retry_delay, timed from the END of the failed try."""
+    paths, _ = env
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(listen.time, "time", lambda: clock["now"])
+    attempts: list[float] = []
     results = iter([False, True])
 
     def fake_deliver(p, channel, e):
-        attempts.append(len(listen.read_pending(p)))
+        attempts.append(clock["now"])
+        clock["now"] += 120  # a try that waited on a spawn
         return next(results)
 
     monkeypatch.setattr(listen, "_deliver_pending", fake_deliver)
-    monkeypatch.setattr(listen, "PENDING_RETRY_SEC", 0)
+    monkeypatch.setattr(listen, "PENDING_RETRY_SEC", 30)
     stop = threading.Event()
-    listen._channel_worker("C0", ScriptedQueue([_msg("hello"), None, None], stop), stop)
-    assert attempts == [1, 1], "delivered on arrival, retried once, then idle"
-    assert any("conversation.py" in a[0] for a in calls), "inbound turn recorded on arrival"
+
+    class Ticks(ScriptedQueue):
+        def get(self, timeout=None):
+            clock["now"] += 10
+            return super().get(timeout)
+
+    listen._channel_worker("C0", Ticks([True, None, None, None, None], stop), stop)
+    # The failed try ran 1010→1130; the retry waits 30s from 1130, not from 1010.
+    assert attempts == [1010.0, 1160.0], "retry 30s after the failed try ended, not at once"
+    assert "inbound: retrying in 30s" in _log(paths)
+
+
+def test_pending_retry_delay_doubles_and_caps():
+    assert listen.pending_retry_delay(1) == listen.PENDING_RETRY_SEC
+    assert listen.pending_retry_delay(2) == listen.PENDING_RETRY_SEC * 2
+    assert listen.pending_retry_delay(50) == listen.PENDING_RETRY_MAX_SEC
 
 
 def test_channel_worker_picks_up_messages_queued_before_a_restart(env, monkeypatch):
@@ -273,22 +318,25 @@ def test_channel_worker_survives_a_delivery_error(env, monkeypatch):
 
     monkeypatch.setattr(listen, "_deliver_pending", boom)
     stop = threading.Event()
-    listen._channel_worker("C0", ScriptedQueue([_msg("x")], stop), stop)
+    listen._channel_worker("C0", ScriptedQueue([True], stop), stop)
     assert "inbound delivery error (will retry): OSError: disk full" in _log(paths)
 
 
-def test_inbound_loop_starts_workers_for_queued_and_new_messages(env, monkeypatch):
-    paths, _ = env
+def test_inbound_loop_records_and_queues_before_the_worker_sees_it(env, monkeypatch):
+    """The slack cursor has moved past a message by the time it's polled, so it
+    must be on disk before a (possibly busy) worker gets it."""
+    paths, calls = env
     listen.add_pending(paths, _msg("queued", channel="C1"))
     monkeypatch.setattr(listen, "ensure_warm_session", lambda p, **kw: None)
     started: list[str] = []
-    received: list[str] = []
+    seen_on_disk: list[list[str]] = []
     stop = threading.Event()
 
-    def fake_worker(channel_id, ch_q, stop_, env_):
+    def fake_worker(channel_id, wake, stop_, env_):
         started.append(channel_id)
         if channel_id == "C0":
-            received.append(ch_q.get(timeout=5)["text"])
+            wake.get(timeout=5)
+            seen_on_disk.append(sorted(r["text"] for r in listen.read_pending(paths)))
             stop_.set()
 
     def fake_poll(stop_, env_, msg_queue):
@@ -300,7 +348,9 @@ def test_inbound_loop_starts_workers_for_queued_and_new_messages(env, monkeypatc
     t.start()
     t.join(timeout=10)
     assert not t.is_alive()
-    assert sorted(started) == ["C0", "C1"] and received == ["new"]
+    assert sorted(started) == ["C0", "C1"]
+    assert seen_on_disk == [["new", "queued"]]
+    assert any("conversation.py" in a[0] and "append" in a for a in calls)
 
 
 # ─── heartbeat ──────────────────────────────────────────────────────────────
@@ -334,13 +384,52 @@ def test_heartbeat_loop_sends_one_page_and_one_recovery(env, monkeypatch):
         paths.heartbeat.write_text(json.dumps({"last_pulse_ts": script[ticks["n"]]}))
         return False
 
-    monkeypatch.setattr(stop, "wait", fake_wait)
+    sent_after_tick: list[int] = []
+
+    def fake_wait_recording(timeout=None):
+        sent_after_tick.append(len(_sends(calls)))
+        return fake_wait(timeout)
+
+    monkeypatch.setattr(stop, "wait", fake_wait_recording)
     listen.heartbeat_loop(stop, {})
     sent = _sends(calls)
+    assert sent_after_tick[0] == 0, "no page after a single stale check"
+    assert sent_after_tick[1] == 1, "the page goes out on the second stale check"
     assert sent[0].startswith("PAGE") and len(sent) == 2
     assert sent[1] == f"BACK {script[-1] - stale}"
     kinds = [a[a.index("--kind") + 1] for a in calls if "slack-send.py" in a[0]]
     assert kinds == ["urgent", "action"]
+
+
+def test_heartbeat_page_that_failed_is_retried_later_not_every_check(env, monkeypatch):
+    paths, _ = env
+    paths.heartbeat.write_text(json.dumps({"last_pulse_ts": int(time.time()) - 5000}))
+    monkeypatch.setattr(cl, "fmt_heartbeat_alert", lambda hb, age: "PAGE")
+    tries: list[int] = []
+
+    def flaky_cli(argv, timeout=30, env=None):
+        if "slack-send.py" in argv[0]:
+            tries.append(1)
+            return (1, "", "slack down") if len(tries) == 1 else (0, "{}", "")
+        return 0, "", ""
+
+    monkeypatch.setattr(listen, "cli", flaky_cli)
+    clock = {"now": time.time()}
+    monkeypatch.setattr(listen.time, "time", lambda: clock["now"])
+    stop = threading.Event()
+    ticks = {"n": 0}
+
+    def fake_wait(timeout=None):
+        ticks["n"] += 1
+        clock["now"] += 60 if ticks["n"] < 4 else listen.HEARTBEAT_PAGE_RETRY_SEC
+        if ticks["n"] >= 6:
+            stop.set()
+            return True
+        return False
+
+    monkeypatch.setattr(stop, "wait", fake_wait)
+    listen.heartbeat_loop(stop, {})
+    assert len(tries) == 2, "one failed page, one retry after the wait, then silence"
 
 
 def test_heartbeat_loop_bad_status_pages_and_missing_config_is_quiet(env, monkeypatch):

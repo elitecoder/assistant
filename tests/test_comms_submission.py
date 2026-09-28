@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 
+import comms_lib as cl
 import comms_session as cs
 
 RULE = "─" * 60
@@ -183,15 +184,20 @@ def test_boot_instruction_is_unique_per_nonce():
 class FakeTerminal:
     """Records keystrokes; confirms after a given number of Enter presses."""
 
-    def __init__(self, confirm_after_enters: int | None, box: str | None = "stuck msg_ts=1"):
+    def __init__(self, confirm_after_enters: int | None, box: str | None = None,
+                 typed_box: str | None = "stuck msg_ts=1"):
+        """`box` is what the prompt box shows before anything is typed;
+        `typed_box` is what it shows once the daemon has typed its text."""
         self.confirm_after = confirm_after_enters
         self.box = box
+        self.typed_box = typed_box
         self.typed = 0
         self.enters = 0
         self.now = 0.0
 
     def send_text(self):
         self.typed += 1
+        self.box = self.typed_box
 
     def press_enter(self):
         self.enters += 1
@@ -238,7 +244,7 @@ def test_submit_never_presses_enter_on_a_box_without_the_marker():
     """If the box holds someone else's text (or nothing), a retry could submit
     the wrong thing — so no extra Enter, and no retyping."""
     for box in ("the user is typing here", "", None):
-        term = FakeTerminal(confirm_after_enters=None, box=box)
+        term = FakeTerminal(confirm_after_enters=None, typed_box=box)
         assert not _submit(term)
         assert (term.typed, term.enters) == (1, 1)
 
@@ -286,3 +292,79 @@ def test_resolve_workspace_state_returns_gone_at_once_and_unknown_when_silent():
     assert cs.resolve_workspace_state(lambda: cs.UNKNOWN, attempts=3, retry_sec=1,
                                       sleep=slept.append) == cs.UNKNOWN
     assert slept == [1, 1], "no sleep after the last try"
+
+
+def test_submit_only_presses_enter_when_an_earlier_try_left_the_text_in_the_box():
+    """Retyping would put two copies in the box and send the message twice in
+    one turn."""
+    term = FakeTerminal(confirm_after_enters=1, box="[slack channel=C msg_ts=1] hi")
+    assert _submit(term)
+    assert (term.typed, term.enters) == (0, 1)
+
+
+def test_submit_does_not_retype_a_prompt_that_already_landed():
+    """A retry after an earlier try's prompt was recorded late must not send
+    it again."""
+    term = FakeTerminal(confirm_after_enters=0)
+    assert _submit(term)
+    assert (term.typed, term.enters) == (0, 0)
+
+
+# ─── probe_workspace ────────────────────────────────────────────────────────
+
+
+class FakeCmux:
+    def __init__(self, tree, listing):
+        self.tree, self.listing, self.calls = tree, listing, []
+
+    def __call__(self, argv, timeout=30):
+        self.calls.append(argv[1])
+        return self.tree if argv[1] == "tree" else self.listing
+
+
+PATHS = cl.Paths.from_env({"HOME": "/h", "COMMS_HOME": "/h"})
+LISTING = (0, "  workspace:258  assistant-comms (warm) #ea290b [258]\n", "")
+REFUSED = (1, "", "Error: Failed to connect to socket (Connection refused, errno 61)")
+
+
+def test_probe_workspace_trusts_a_definite_tree_answer():
+    alive = FakeCmux((0, "{}", ""), LISTING)
+    assert cs.probe_workspace(PATHS, "workspace:258", run=alive) == cs.ALIVE
+    gone = FakeCmux((1, "", "Error: invalid_params: Missing or invalid workspace_id"), LISTING)
+    assert cs.probe_workspace(PATHS, "workspace:258", run=gone) == cs.GONE
+    assert alive.calls == ["tree"] and gone.calls == ["tree"]
+
+
+def test_probe_workspace_settles_an_unclear_tree_with_the_workspace_list():
+    assert cs.probe_workspace(PATHS, "workspace:258", run=FakeCmux(REFUSED, LISTING)) == cs.ALIVE
+    assert cs.probe_workspace(PATHS, "workspace:25", run=FakeCmux(REFUSED, LISTING)) == cs.GONE
+    assert cs.probe_workspace(PATHS, "workspace:258",
+                              run=FakeCmux(REFUSED, REFUSED)) == cs.UNKNOWN
+
+
+# ─── deliver_boot ───────────────────────────────────────────────────────────
+
+
+def test_deliver_boot_binds_the_transcript_holding_this_boots_nonce(tmp_path, monkeypatch):
+    """An older transcript with an earlier boot prompt must not be picked, even
+    though it's newer on disk than nothing and carries the same instruction."""
+    monkeypatch.setattr(cs, "project_dir_for_cwd", lambda cwd, agent="claude": tmp_path)
+    old = _jsonl(tmp_path / "old.jsonl", [_prompt(cs.boot_instruction(Path("/p.md"), "earlier"))])
+    typed: list[str] = []
+
+    def fake_submit(paths, surface_ref, text, marker, confirmed):
+        typed.append(text)
+        assert not confirmed(), "nothing has recorded this boot yet"
+        _jsonl(tmp_path / "new.jsonl", [_prompt(text)])
+        return confirmed()
+
+    got = cs.deliver_boot(PATHS, "surface:1", "/cwd", Path("/p.md"), "claude", submit_fn=fake_submit)
+    assert got == str(tmp_path / "new.jsonl") and got != str(old)
+    assert typed[0].startswith("Read /p.md in full") and "[boot " in typed[0]
+
+
+def test_deliver_boot_none_when_never_submitted(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "project_dir_for_cwd", lambda cwd, agent="claude": tmp_path)
+    got = cs.deliver_boot(PATHS, "surface:1", "/cwd", Path("/p.md"), "claude",
+                          submit_fn=lambda *a: False)
+    assert got is None
