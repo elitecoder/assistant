@@ -11,11 +11,13 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -674,6 +676,19 @@ class RunSubprocessTests(unittest.TestCase):
         else:
             os.kill(gpid, 9)
             self.fail("a group member that ignored SIGTERM survived")
+
+    def test_timeout_kills_the_child_even_if_sigterm_cant_be_sent(self):
+        real_killpg = os.killpg
+
+        def no_term(pid, sig):
+            if sig == signal.SIGTERM:
+                raise ProcessLookupError
+            real_killpg(pid, sig)
+
+        with unittest.mock.patch.object(self.mod.os, "killpg", no_term):
+            rc, _, err = self.mod.run([sys.executable, "-c", "import time; time.sleep(30)"],
+                                      timeout=1)
+        self.assertEqual(rc, 124)
 
     def test_timeout_still_kills_a_child_that_ignores_sigterm(self):
         import time as _time
