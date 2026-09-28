@@ -806,6 +806,9 @@ class TestLastMessage(unittest.TestCase):
         self.assertFalse(asks("Is it fixed?\nYes.\nGates green.\nStanding by for CI."),
                           "a question four lines up is history, not an ask")
         self.assertFalse(asks("Standing by for the four gate agents."))
+        self.assertFalse(asks("Dev server is up: https://localhost.adobe.com:3000/?config=squirrel"),
+                         "a link's query string isn't a question")
+        self.assertTrue(asks("Open https://x.test/?a=1 — does it look right?"))
         self.assertFalse(asks(""))
         self.assertFalse(asks(None))
 

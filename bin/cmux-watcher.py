@@ -535,10 +535,14 @@ _ASKS_RE = re.compile(
 ASK_TAIL_LINES = 3
 
 
+# A link's query string (`?config=squirrel`) isn't a question.
+_URL_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.I)
+
+
 def asks_user(text: str | None) -> bool:
     """True if the message's last few non-empty lines ask the user something."""
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    return any(_ASKS_RE.search(ln) for ln in lines[-ASK_TAIL_LINES:])
+    return any(_ASKS_RE.search(_URL_RE.sub("", ln)) for ln in lines[-ASK_TAIL_LINES:])
 
 
 def session_title(records: list[dict]) -> str | None:

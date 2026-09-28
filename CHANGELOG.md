@@ -44,9 +44,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   ask you something, a permission or plan prompt is up, or the session stopped
   on an API error. Claude's idle alert fires about a minute after every turn,
   and about 75% of recent turns ended with a status update instead.
-- Match the watcher's screen patterns ("stranded", "CI red", "PR opened") against
-  what the agent just said, not 50 lines of scrollback, so old tool output no
-  longer triggers them. Name workspaces cmux left as "Terminal" by Claude's own
+- Match the watcher's patterns ("CI red", "PR opened", "tests passed") against
+  what the agent said this turn, not 50 lines of scrollback, so old tool output
+  no longer triggers them. Name workspaces cmux left as "Terminal" by Claude's own
   session title, or the folder and branch.
 - Mute the "stranded", "awaiting-review", and "emit-card" word lists by default
   (168 pings in two weeks, mostly on status prose), and stop a muted pattern
