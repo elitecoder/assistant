@@ -155,12 +155,29 @@ def _lsof_found_nothing(p: subprocess.CompletedProcess | None) -> bool:
     return p is not None and p.returncode == 1 and not p.stdout.strip() and not p.stderr.strip()
 
 
+def _in_this_worktree(cwd: str, toplevel: str) -> bool:
+    """True if `cwd` is `toplevel` or inside it without crossing into a nested
+    repo or worktree (a folder with its own `.git`), which has its own index."""
+    top = Path(toplevel)
+    path = Path(cwd)
+    if path != top and top not in path.parents:
+        return False
+    while path != top:
+        if (path / ".git").exists():
+            return False
+        path = path.parent
+    return True
+
+
 def git_cwd_in(lsof_fields: str, toplevel: str) -> bool:
-    """True if `lsof -Fn` output lists a working directory inside `toplevel`."""
+    """True if `lsof -Fcn` output lists a git process (`git`, or a `git-*`
+    helper — not look-alikes such as `gitstatusd`) working in `toplevel`."""
+    command = ""
     for line in lsof_fields.splitlines():
-        if line.startswith("n"):
-            cwd = os.path.realpath(line[1:])
-            if cwd == toplevel or cwd.startswith(toplevel.rstrip("/") + "/"):
+        if line.startswith("c"):
+            command = line[1:]
+        elif line.startswith("n") and (command == "git" or command.startswith("git-")):
+            if _in_this_worktree(os.path.realpath(line[1:]), toplevel):
                 return True
     return False
 
@@ -174,7 +191,7 @@ def _lock_is_held(lock: Path, toplevel: str) -> bool:
     if any git process is working in the repo (git runs from the top folder)."""
     if not _lsof_found_nothing(_lsof("-t", "--", str(lock))):
         return True
-    p = _lsof("-a", "-c", "git", "-d", "cwd", "-Fn")
+    p = _lsof("-a", "-c", "git", "-d", "cwd", "-Fcn")
     if p is None or p.returncode not in (0, 1) or p.stderr.strip():
         return True
     return git_cwd_in(p.stdout, toplevel)

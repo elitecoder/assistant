@@ -610,11 +610,26 @@ class StaleLockTests(unittest.TestCase):
                 self.assertTrue(su._lock_is_held(path, t))
 
     def test_git_cwd_in(self):
-        fields = "p1\nn/Users/me/dev/assistant/bin\np2\nn/Users/me/dev/other\n"
-        self.assertTrue(su.git_cwd_in(fields, "/Users/me/dev/assistant"))
-        self.assertTrue(su.git_cwd_in("p1\nn/Users/me/dev/assistant\n", "/Users/me/dev/assistant"))
-        self.assertFalse(su.git_cwd_in("p1\nn/Users/me/dev/assistant-old\n", "/Users/me/dev/assistant"))
-        self.assertFalse(su.git_cwd_in("", "/Users/me/dev/assistant"))
+        with TemporaryDirectory() as t:
+            top = os.path.realpath(t)
+            (Path(top) / "bin").mkdir()
+            nested = Path(top) / ".worktrees" / "feature"
+            nested.mkdir(parents=True)
+            (nested / ".git").write_text("gitdir: elsewhere")
+            other = f"{top}-old"
+
+            def fields(command, cwd):
+                return f"p1\nc{command}\nn{cwd}\n"
+
+            self.assertTrue(su.git_cwd_in(fields("git", f"{top}/bin"), top))
+            self.assertTrue(su.git_cwd_in(fields("git", top), top))
+            self.assertTrue(su.git_cwd_in(fields("git-remote-https", top), top))
+            self.assertFalse(su.git_cwd_in(fields("gitstatusd", top), top),
+                             "a look-alike process isn't git")
+            self.assertFalse(su.git_cwd_in(fields("git", str(nested)), top),
+                             "a nested worktree has its own index")
+            self.assertFalse(su.git_cwd_in(fields("git", other), top))
+            self.assertFalse(su.git_cwd_in("", top))
 
     def test_a_lock_replaced_during_the_check_is_kept(self):
         with TemporaryDirectory() as t:
