@@ -305,6 +305,7 @@ These are structural, not just conventions — violating them will cause real pr
 ## Gotchas
 
 - **Self-update refuses a dirty or ahead tree.** `self_update.py` does `git pull --ff-only` only. A dirty tree is surfaced, never steamrolled.
+- **Self-update clears a stale git lock.** A `.git/index.lock` older than 10 minutes is removed before the update when `lsof` shows no process has it open and no git process working in the repo (a `git commit` waiting on its editor holds the lock without keeping the file open). A young or live lock is left alone, and every removal is ledgered.
 - **NO_INGEST_GUARD:** if the last send to a workspace returned `transcript_size_delta=0` (cmux sent OK but no Claude process was reading), the orchestrator skips the next resend. This breaks the cleanup-resend-loop class of bug structurally.
 - **The single-process daemon (`src/assistant/`) is opt-in.** The legacy pulse LaunchAgent keeps running until you explicitly switch over.
 - **mem0ai requires Python 3.12.** It lives in `.venv-mem0`; `ensure_venv()` transparently re-execs tools into that interpreter.

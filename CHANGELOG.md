@@ -40,6 +40,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Keep a killed git from blocking self-updates. The pulse's timeout used to
+  SIGKILL a context check mid-`git status`, leaving `.git/index.lock` behind;
+  on 2026-09-28 that blocked every self-update, and seven repos on this machine
+  held such locks. Timeouts now send SIGTERM first (git removes its locks) and
+  still SIGKILL the group after 3 seconds, the background `git status` and
+  `git log` calls take no index lock at all, and self-update removes an
+  index.lock older than 10 minutes when no process has it open and no git
+  process is working in the repo. Each removal is recorded in the ledger.
+- Ignore Claude Code's `.claude/worktrees/` and the stray `.claude/.assistant/`
+  marker, which made the tree look dirty and set off daily auto-stashes.
 - Ping about an idle workspace only when it needs you: the agent's last lines
   ask you something, a permission or plan prompt is up, or the session stopped
   on an API error. Claude's idle alert fires about a minute after every turn,

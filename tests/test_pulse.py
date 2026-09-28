@@ -11,11 +11,13 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -644,6 +646,56 @@ class RunSubprocessTests(unittest.TestCase):
         else:
             os.kill(gpid, 9)  # clean up before failing
             self.fail(f"grandchild {gpid} survived the group kill")
+
+    def test_timeout_sends_sigterm_first_so_children_clean_up(self):
+        """A SIGKILL mid-`git status` left .git/index.lock behind in seven
+        repos. The timeout now sends SIGTERM first, which git handles by
+        removing its locks. Mutation probe: go straight to SIGKILL and the
+        marker file is never written."""
+        marker = Path(self._tmp_obj.name) / "cleaned"
+        rc, _, err = self.mod.run(
+            ["/bin/sh", "-c", f'trap "echo yes > {marker}; exit 0" TERM; while :; do sleep 0.1; done'],
+            timeout=1)
+        self.assertEqual(rc, 124)
+        self.assertEqual(marker.read_text().strip(), "yes")
+
+    def test_group_members_that_ignore_sigterm_die_even_after_the_child_exits(self):
+        pid_file = Path(self._tmp_obj.name) / "stubborn.pid"
+        script = (f'(trap "" TERM; exec sleep 30) >/dev/null 2>&1 & echo $! > {pid_file}; '
+                  'trap "exit 0" TERM; while :; do sleep 0.1; done')
+        rc, _, _ = self.mod.run(["/bin/sh", "-c", script], timeout=1)
+        self.assertEqual(rc, 124)
+        gpid = int(pid_file.read_text().strip())
+        import time as _time
+        for _ in range(50):
+            try:
+                os.kill(gpid, 0)
+            except ProcessLookupError:
+                break
+            _time.sleep(0.1)
+        else:
+            os.kill(gpid, 9)
+            self.fail("a group member that ignored SIGTERM survived")
+
+    def test_timeout_kills_the_child_even_if_sigterm_cant_be_sent(self):
+        real_killpg = os.killpg
+
+        def no_term(pid, sig):
+            if sig == signal.SIGTERM:
+                raise ProcessLookupError
+            real_killpg(pid, sig)
+
+        with unittest.mock.patch.object(self.mod.os, "killpg", no_term):
+            rc, _, err = self.mod.run([sys.executable, "-c", "import time; time.sleep(30)"],
+                                      timeout=1)
+        self.assertEqual(rc, 124)
+
+    def test_timeout_still_kills_a_child_that_ignores_sigterm(self):
+        import time as _time
+        t0 = _time.time()
+        rc, _, err = self.mod.run(["/bin/sh", "-c", 'trap "" TERM; sleep 30'], timeout=1)
+        self.assertEqual(rc, 124)
+        self.assertLess(_time.time() - t0, 1 + self.mod.KILL_GRACE_SEC + 5)
 
     def test_input_text_still_reaches_stdin(self):
         # The Popen rewrite must preserve the input_text contract.
