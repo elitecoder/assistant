@@ -631,6 +631,32 @@ def _spawn_env(tmp_path, monkeypatch, ws="workspace:310", surface="surface:310")
     return paths, closed
 
 
+def test_spawn_session_logs_why_cmux_didnt_answer(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+    monkeypatch.setattr(cl, "run_cmd", lambda cmd, timeout=30: (1, "", "Connection refused, errno 61"))
+    logs: list = []
+    assert cs.spawn_session(paths, Path("/boot.md"), log=logs.append, agent=ag.CLAUDE) is None
+    assert logs == ["cmux isn't answering (Connection refused, errno 61) — cannot spawn warm session"]
+
+
+def test_spawn_session_answers_the_trust_prompt_with_a_carriage_return(tmp_path, monkeypatch):
+    paths, closed = _spawn_env(tmp_path, monkeypatch)
+    rpc: list = []
+    monkeypatch.setattr(cs, "_cmux_rpc", lambda p, m, params, timeout=15: rpc.append(params["text"]))
+    monkeypatch.setattr(cs.time, "sleep", lambda s: None)
+
+    def ready_after_trust(**kw):
+        kw["answer_trust"]()
+        return True, True
+
+    monkeypatch.setattr(cs, "await_ready", ready_after_trust)
+    monkeypatch.setattr(cs, "deliver_boot", lambda *a, **k: "/t.jsonl")
+    assert cs.spawn_session(paths, Path("/boot.md"), agent=ag.CLAUDE)["transcript_path"] == "/t.jsonl"
+    assert rpc[:2] == ["1", "\r"], "trust answered with 1, then a carriage return"
+
+
 def test_spawn_session_closes_workspace_when_boot_never_submitted(tmp_path, monkeypatch):
     """2026-09-27/28: 16 of 30 warm sessions came up with the boot prompt typed
     but never submitted, and were still declared ready. A spawn whose boot prompt

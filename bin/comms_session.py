@@ -524,12 +524,12 @@ def probe_workspace(paths: comms_lib.Paths, ws_ref: str, run=None) -> str:
     return ALIVE if ref_listed(out, ws_ref) else GONE
 
 
-def workspace_state(paths: comms_lib.Paths, ws_ref: str) -> str:  # pragma: no cover - live cmux I/O
+def workspace_state(paths: comms_lib.Paths, ws_ref: str) -> str:
     """ALIVE, GONE, or UNKNOWN (cmux didn't answer) for a warm workspace."""
     return resolve_workspace_state(lambda: probe_workspace(paths, ws_ref))
 
 
-def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:  # pragma: no cover - live cmux I/O
+def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None) -> None:
     """Close a warm workspace THIS daemon spawned (tracked in session.json).
 
     Scope of the 2026-05-26 close-workspace ban: automation must never close a
@@ -557,7 +557,7 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
         else f"close {ws_ref} rc={rc}: {err.strip()[:120]}")
 
 
-def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:  # pragma: no cover - live cmux I/O
+def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:
     """Submit whatever is in the prompt box by writing a carriage return to the
     terminal. `surface.send_key enter` reports success on a warm workspace that
     was never shown on screen, yet the prompt stays unsent (reproduced
@@ -567,7 +567,7 @@ def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:  # pragma: no 
 
 
 def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
-           confirmed) -> bool:  # pragma: no cover - live cmux I/O
+           confirmed) -> bool:
     """Type text into the warm session and press Enter until `confirmed()` sees
     it in the transcript (see submit_until_confirmed). The trailing newline is
     stripped: send_text streams keystrokes, so a trailing \\n would submit
@@ -608,7 +608,7 @@ def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt
 
 def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
                   agent: str = agent_session.CLAUDE,
-                  log=lambda m: None) -> dict:  # pragma: no cover - live cmux I/O
+                  log=lambda m: None) -> dict:
     """Clear-AND-resume: reset the context window losslessly, then return the
     refreshed session record. Per-message thread continuity comes from
     conversation.jsonl (the boot prompt tells the session to reconstruct it), so
@@ -878,7 +878,7 @@ def _abandon_failed_spawn(paths: comms_lib.Paths, ws_ref: str | None,
 
 
 def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
-                  agent: str | None = None) -> dict | None:  # pragma: no cover - live cmux I/O
+                  agent: str | None = None) -> dict | None:
     """Spawn a fresh warm cmux session and deliver the responder boot prompt.
     Returns the session record on success, None on failure. Mirrors pulse.py's
     proven dispatch sequence.

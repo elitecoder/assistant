@@ -368,3 +368,57 @@ def test_deliver_boot_none_when_never_submitted(tmp_path, monkeypatch):
     got = cs.deliver_boot(PATHS, "surface:1", "/cwd", Path("/p.md"), "claude",
                           submit_fn=lambda *a: False)
     assert got is None
+
+
+# ─── live wrappers, driven through stubs ────────────────────────────────────
+
+
+def _record_rpc(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(cs, "_cmux_rpc",
+                        lambda p, method, params, timeout=15: calls.append((method, params)))
+    return calls
+
+
+def test_send_enter_writes_a_carriage_return(monkeypatch):
+    """send_key enter left prompts unsent on never-shown workspaces; a "\\r"
+    through send_text submits them."""
+    calls = _record_rpc(monkeypatch)
+    cs.send_enter(PATHS, "surface:9")
+    assert calls == [("surface.send_text", {"surface_id": "surface:9", "text": "\r"})]
+
+
+def test_submit_types_once_then_presses_enter(monkeypatch):
+    calls = _record_rpc(monkeypatch)
+    monkeypatch.setattr(cs, "_surface_read_text", lambda p, s, lines=200: _screen(["❯ "]))
+    monkeypatch.setattr(cs.time, "sleep", lambda s: None)
+    seen = iter([False, True])
+    assert cs.submit(PATHS, "surface:9", "hello msg_ts=5\n", "msg_ts=5", lambda: next(seen))
+    assert calls == [("surface.send_text", {"surface_id": "surface:9", "text": "hello msg_ts=5"}),
+                     ("surface.send_text", {"surface_id": "surface:9", "text": "\r"})]
+
+
+def test_workspace_state_retries_the_probe(monkeypatch):
+    answers = iter([cs.UNKNOWN, cs.GONE])
+    monkeypatch.setattr(cs, "probe_workspace", lambda p, ref: next(answers))
+    monkeypatch.setattr(cs.time, "sleep", lambda s: None)
+    assert cs.workspace_state(PATHS, "workspace:1") == cs.GONE
+
+
+def test_close_own_workspace_matches_whole_refs_only(monkeypatch):
+    """workspace:25 is a user's workspace; the listing only has the warm
+    workspace:258. The old substring check would have closed workspace:25."""
+    closed: list = []
+
+    def fake_run(argv, timeout=30):
+        if argv[1] == "list-workspaces":
+            return 0, "  workspace:258  assistant-comms (warm) #ea290b [258]\n  workspace:25  Build [25]\n", ""
+        closed.append(argv[-1])
+        return 0, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run)
+    logs: list = []
+    cs.close_own_workspace(PATHS, "workspace:25", log=logs.append)
+    assert closed == [] and "skip close workspace:25" in logs[0]
+    cs.close_own_workspace(PATHS, "workspace:258", log=logs.append)
+    assert closed == ["workspace:258"]
