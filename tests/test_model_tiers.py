@@ -92,7 +92,7 @@ class ResolutionTests(_Base):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
         # frontier is a CURRENT Opus (not the deprecated 4-1 the review flagged)
         self.assertEqual(mt.model_for("frontier"), "us.anthropic.claude-opus-4-8")
-        self.assertEqual(mt.model_for("balanced"), "us.anthropic.claude-sonnet-4-6")
+        self.assertEqual(mt.model_for("balanced"), "us.anthropic.claude-sonnet-5-5")
         self.assertEqual(mt.model_for("cheap"), "us.anthropic.claude-haiku-4-5")
 
     def test_anthropic_ids_are_bare(self):
@@ -113,7 +113,7 @@ class ResolutionTests(_Base):
     def test_long_context_suffix_is_opt_in_on_bedrock_and_anthropic(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
         self.assertEqual(mt.model_for("balanced", long_context=True),
-                         "us.anthropic.claude-sonnet-4-6[1m]")
+                         "us.anthropic.claude-sonnet-5-5[1m]")
         # not requested → no suffix (the mem0 path stays clean)
         self.assertNotIn("[1m]", mt.model_for("cheap"))
         # direct Anthropic ALSO gets it when requested — verified live: the
@@ -121,7 +121,7 @@ class ResolutionTests(_Base):
         # (2026-09-05 — an earlier version wrongly called this Bedrock-only).
         os.environ["MODEL_PROVIDER"] = "anthropic"
         self.assertEqual(mt.model_for("balanced", long_context=True),
-                         "claude-sonnet-4-6[1m]")
+                         "claude-sonnet-5-5[1m]")
 
     def test_per_tier_override_is_verbatim(self):
         os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
