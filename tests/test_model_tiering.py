@@ -107,8 +107,10 @@ class _AuditBase(unittest.TestCase):
         os.environ["HOME"] = str(self._tmp)
         os.environ["OBSERVER_AUDIT"] = "1"
         os.environ["OBSERVER_AUDIT_SAMPLE"] = "6"
-        self.now = time.time()
         self.pulse = _load_pulse()
+        # Start of an audit window, so a few seconds later stays in the same one.
+        interval = self.pulse.OBSERVER_AUDIT_INTERVAL_HOURS * 3600
+        self.now = time.time() // interval * interval
         # gate open by default; individual tests may flip it
         from assistant import strategist  # noqa: PLC0415
         self._strat = strategist

@@ -57,6 +57,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Stop the Observer audit window test from failing when it runs in the last
+  minute of a two-hour window. The test now starts its clock at the beginning
+  of a window, so its second call 60 seconds later stays in the same window.
 - Name workspaces in Slack by the same number the sidebar shows. Workspace
   pings and action lines named the workspace by its `workspace:N` ref, which no
   longer matches the `[N]` in the title. `comms-listen` now looks up sidebar
