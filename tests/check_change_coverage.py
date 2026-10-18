@@ -18,7 +18,8 @@ from mutation_smoke import CHECKS
 from run_python_coverage import canonical_report_hash
 
 # Shell files with no line-coverage tool; each changed code hunk needs a
-# mutation_smoke check that breaks a line in it.
+# mutation_smoke check that breaks only changed code lines in it. A check can
+# still be written to dodge this, so review new checks like any test.
 MUTATION_PROVEN = {"install.sh"}
 
 
@@ -130,7 +131,7 @@ def check_mutation_proof(repo: Path, hunks: dict[str, list[set[int]]], checks) -
         for hunk in file_hunks:
             code = {line for line in hunk
                     if lines[line - 1].strip() and not lines[line - 1].lstrip().startswith("#")}
-            if code and not any(code & span for span in spans):
+            if code and not any(span and span <= code for span in spans):
                 unproven.append(sorted(code))
         results.append({"file": name, "hunks": len(file_hunks), "unproven_hunks": unproven})
     return results

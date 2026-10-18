@@ -15,8 +15,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   Each changed hunk that holds code needs a check in `tests/mutation_smoke.py`
   that breaks one of its lines. The gate fails on any unproven hunk, and the
   mutation step fails unless a test rejects each break and the broken script
-  still parses. A check proves only the lines its break changes, and one check
-  is enough for a whole hunk, so add more for large hunks. Hunks that only
+  still parses. A check proves a hunk only when every line it breaks is changed
+  code in that hunk. One check is enough for a whole hunk, so add more for
+  large hunks. Review new checks like any test, because a check written to
+  dodge the gate can still pass it. Hunks that only
   delete lines need no check. Other shell scripts still fail the gate.
 - Check every self-update before it lands: read each runtime file the fetched
   commits add or change straight from git, scan it for leftover merge conflict
