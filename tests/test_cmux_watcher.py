@@ -575,7 +575,7 @@ class TestWsRefResolver(unittest.TestCase):
             self.assertIsNone(resolver.title("cccc-3"), "cmux's default name says nothing")
             self.assertIsNone(resolver.title(None))
 
-    def test_human_title_strips_only_the_ref_suffix(self):
+    def test_human_title_strips_only_the_position_suffix(self):
         self.assertEqual(self.mod.human_title("Fix [WIP] ruler [12]"), "Fix [WIP] ruler")
         self.assertEqual(self.mod.human_title(None), "")
 

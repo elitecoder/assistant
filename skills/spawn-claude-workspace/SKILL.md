@@ -24,8 +24,11 @@ Two engines are supported, selected by the `engine` input:
 
 Do not set a `[N]` name suffix or a sidebar color in this skill. The
 `cmux-ws-numberer` daemon (`bin/cmux-ws-numberer.py`, a launchd job) owns both:
-it polls every ~3s and appends the `[N]` ref suffix plus a distinct palette
-color to every workspace that lacks one. Leave naming and color to the daemon.
+it polls every ~3s and appends a `[N]` suffix plus a distinct palette color to
+every workspace that lacks one. `N` is the workspace's 0-based sidebar position,
+which `--workspace <index>` accepts. It isn't the `workspace:N` ref, and it
+changes when workspaces move or close. Target workspaces by ref, never by the
+bracket number. Leave naming and color to the daemon.
 
 ## Engine-specific launch
 
