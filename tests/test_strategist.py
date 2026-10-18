@@ -24,6 +24,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
@@ -586,9 +587,11 @@ class StructuralNoActionPathTests(unittest.TestCase):
                 "playbook": {"unattended": ["research"], "gated": []}}
         v = strategist.validate_draft({"title": "a", "detail": "bb"}, goal, "research")
         self.assertTrue(isinstance(v, tuple) and all(isinstance(x, str) for x in v))
-        u = strategist.upgrade_step_text(
-            goal, "research", "TT", "TD",
-            llm_draft=lambda *a: {"title": "a", "detail": "bb"}, now=time.time())
+        # The call writes a ledger row; keep it out of the real home.
+        with TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            u = strategist.upgrade_step_text(
+                goal, "research", "TT", "TD",
+                llm_draft=lambda *a: {"title": "a", "detail": "bb"}, now=time.time())
         self.assertTrue(isinstance(u, tuple) and all(isinstance(x, str) for x in u))
 
 

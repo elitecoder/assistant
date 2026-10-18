@@ -62,6 +62,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   in the last minutes of a UTC day. Each test now starts its clock at the
   beginning of its window, so calls a few minutes later stay in the same one.
   The audit tests also set their own window length.
+- Keep a Strategist test from writing a row to the real
+  `~/.assistant/actions-ledger.jsonl`. It now runs with a temporary home.
 - Name workspaces in Slack by the same number the sidebar shows. Workspace
   pings and action lines named the workspace by its `workspace:N` ref, which no
   longer matches the `[N]` in the title. `comms-listen` now looks up sidebar
