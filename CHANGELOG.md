@@ -58,8 +58,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Fixed
 - Stop two time-of-day test failures. The Observer audit tests failed in the
-  last minute of a two-hour window, and five Strategist throttle tests failed
-  in the last minutes of a UTC day. Each test now starts its clock at the
+  last minute of a two-hour window, and five Strategist tests that count calls
+  per UTC day failed in the last minutes of the day. Each test now starts its clock at the
   beginning of its window, so calls a few minutes later stay in the same one.
   The audit tests also set their own window length.
 - Keep a Strategist test from writing a row to the real
