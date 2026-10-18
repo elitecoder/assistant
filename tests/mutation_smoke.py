@@ -162,6 +162,14 @@ def copy_sources(destination: Path):
             shutil.copy2(source, target)
 
 
+def reject_invalid_shell(name: str, target: Path):
+    if target.suffix != ".sh":
+        return
+    syntax = subprocess.run(["bash", "-n", str(target)], capture_output=True, text=True)
+    if syntax.returncode != 0:
+        raise RuntimeError(f"{name}: mutant is not valid shell\n{syntax.stderr}")
+
+
 def run_test(repo: Path, home: Path, selector: str):
     env = {
         "HOME": str(home),
@@ -194,6 +202,7 @@ def main():
             if source.count(original) != 1:
                 raise RuntimeError(f"{name}: expected one mutation target")
             target.write_text(source.replace(original, broken, 1))
+            reject_invalid_shell(name, target)
             mutant = run_test(repo, home, selector)
             if mutant.returncode != 1 or "FAILED" not in mutant.stdout:
                 raise RuntimeError(f"{name}: mutant was not rejected\n{mutant.stdout}\n{mutant.stderr}")

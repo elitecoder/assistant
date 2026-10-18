@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
+import mutation_smoke
+
 import pytest
 
 
@@ -392,3 +394,50 @@ def test_cli_fails_on_an_unproven_shell_hunk(tmp_path, monkeypatch, capsys, prov
     assert result.value.code == (0 if proven else 1)
     assert json.loads(capsys.readouterr().out)["mutation_proven"] == [
         {"file": "install.sh", "hunks": 1, "unproven_hunks": [] if proven else [[5]]}]
+
+
+def test_a_mutation_proves_only_the_lines_it_changes(tmp_path):
+    (tmp_path / "install.sh").write_text("keep=1\nchanged=1\nnext=1\n")
+    hunks = {"install.sh": [{2}]}
+    sneaky = [("next only", "install.sh", "changed=1\nnext=1", "changed=1\nexit 3", "t"),
+              ("insertion only", "install.sh", "keep=1\n", "keep=1\nexit 0\n", "t")]
+    for check in sneaky:
+        assert gate.check_mutation_proof(tmp_path, hunks, [check])[0]["unproven_hunks"] == [[2]], check[0]
+    leading_newline = [("leading newline", "install.sh", "\nchanged=1", "\nchanged=2", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{1}]}, leading_newline) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[1]]}]
+    assert gate.check_mutation_proof(tmp_path, hunks, leading_newline) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": []}]
+
+
+def test_unchanged_trailing_lines_of_a_target_are_not_proven(tmp_path):
+    (tmp_path / "install.sh").write_text("a=1\nchanged=1\n")
+    proof = [("first line only", "install.sh", "a=1\nchanged=1\n", "a=2\nchanged=1\n", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{2}]}, proof) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[2]]}]
+
+
+def test_a_mutation_on_a_comment_cannot_prove_the_code_beside_it(tmp_path):
+    (tmp_path / "install.sh").write_text("# why\ncode=1\n")
+    proof = [("comment", "install.sh", "# why\n", "", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{1, 2}]}, proof) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[2]]}]
+
+
+def test_hunks_stay_separate_when_git_merges_nearby_hunks(tmp_path):
+    script = shell_repo(tmp_path)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "diff.interHunkContext", "5"], check=True)
+    script.write_text("a=1\nnew_one=1\nb=2\nc=3\nnew_two=2\nd=4\n")
+    assert gate.changed_hunks(tmp_path, "HEAD") == {"install.sh": [{2}, {5}]}
+
+
+def test_shell_mutants_must_still_parse(tmp_path):
+    valid = tmp_path / "ok.sh"
+    valid.write_text("f() { echo hi; }\n")
+    mutation_smoke.reject_invalid_shell("valid", valid)
+    invalid = tmp_path / "bad.sh"
+    invalid.write_text("f() { echo (((; }\n")
+    with pytest.raises(RuntimeError, match="not valid shell"):
+        mutation_smoke.reject_invalid_shell("invalid", invalid)
+    (tmp_path / "notes.py").write_text("(((\n")
+    mutation_smoke.reject_invalid_shell("python", tmp_path / "notes.py")
