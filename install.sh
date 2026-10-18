@@ -167,7 +167,12 @@ _feat_label() {
 }
 # daemon_loaded <feat> — 0 if the feature's LaunchAgent is loaded. Called ONLY
 # inside a condition (never bare) so its nonzero-when-absent can't trip set -e.
-daemon_loaded() { launchctl print "gui/$UID/$(_feat_label "$1")" >/dev/null 2>&1; }
+# ws-numberer also counts its pre-rename label, so a running legacy daemon is
+# adopted instead of torn out by the LEGACY_LABELS cleanup.
+daemon_loaded() {
+    launchctl print "gui/$UID/$(_feat_label "$1")" >/dev/null 2>&1 && return 0
+    [[ "$1" == "ws-numberer" ]] && launchctl print "gui/$UID/com.mukuls.cmux-ws-numberer" >/dev/null 2>&1
+}
 feat_desc() {
     case "$1" in
         memory)        echo "Memory sync keeps your lessons + semantic memory identical across all your machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N] " ;;

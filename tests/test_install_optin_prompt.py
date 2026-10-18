@@ -177,3 +177,17 @@ def test_ws_numberer_adopted_when_already_running(tmp_path):
 def test_ws_numberer_not_adopted_when_another_label_runs(tmp_path):
     rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.unrelated")
     assert "cmux-ws-numberer.plist — not enabled" in out
+
+
+def test_ws_numberer_adopted_when_legacy_label_runs(tmp_path):
+    rc, out, home = _run_install(tmp_path, loaded_label="com.mukuls.cmux-ws-numberer")
+    assert "cmux-ws-numberer.plist — enabled" in out
+
+
+def test_ws_numberer_legacy_running_survives_apply(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply"],
+                                 loaded_label="com.mukuls.cmux-ws-numberer")
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=yes" in state
+    calls = (home / "launchctl.log").read_text()
+    assert "Library/LaunchAgents/com.assistant.cmux-ws-numberer.plist" in calls
