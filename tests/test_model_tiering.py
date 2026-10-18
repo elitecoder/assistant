@@ -103,10 +103,12 @@ class _AuditBase(unittest.TestCase):
         self._tmp = Path(self._tmp_obj.name)
         (self._tmp / ".assistant").mkdir(parents=True)
         self._old = {k: os.environ.get(k) for k in
-                     ("HOME", "OBSERVER_AUDIT", "OBSERVER_AUDIT_SAMPLE")}
+                     ("HOME", "OBSERVER_AUDIT", "OBSERVER_AUDIT_SAMPLE",
+                      "OBSERVER_AUDIT_INTERVAL_HOURS")}
         os.environ["HOME"] = str(self._tmp)
         os.environ["OBSERVER_AUDIT"] = "1"
         os.environ["OBSERVER_AUDIT_SAMPLE"] = "6"
+        os.environ["OBSERVER_AUDIT_INTERVAL_HOURS"] = "2"
         self.pulse = _load_pulse()
         # Start of an audit window, so a few seconds later stays in the same one.
         interval = self.pulse.OBSERVER_AUDIT_INTERVAL_HOURS * 3600
