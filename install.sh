@@ -33,6 +33,7 @@ PULL_SKILLS=0
 # turns one on. See the "Daemon tiers" block in Section 3.
 WITH_MEMORY=0
 WITH_CRASH_RESUME=0
+WITH_WS_NUMBERER=0
 TS="$(date +%s)"
 
 log() { printf '%s\n' "$*"; }
@@ -47,7 +48,8 @@ for arg in "$@"; do
         --pull-skills) PULL_SKILLS=1 ;;
         --with-memory) WITH_MEMORY=1 ;;
         --with-crash-resume) WITH_CRASH_RESUME=1 ;;
-        --with-all) WITH_MEMORY=1; WITH_CRASH_RESUME=1 ;;
+        --with-ws-numberer) WITH_WS_NUMBERER=1 ;;
+        --with-all) WITH_MEMORY=1; WITH_CRASH_RESUME=1; WITH_WS_NUMBERER=1 ;;
         -h|--help)
             cat <<USAGE
 install.sh — install/update the Assistant system from $REPO_ROOT
@@ -71,6 +73,7 @@ install.sh — install/update the Assistant system from $REPO_ROOT
   --with-memory        cross-machine memory sync (memory-sync-pull). Only useful
                        if you run Assistant on more than one machine.
   --with-crash-resume  auto-resume crashed cmux workspaces (workspace-watcher).
+  --with-ws-numberer   number and color cmux workspaces (cmux-ws-numberer).
   --with-all           enable all of the above (and suppress their prompts).
   (Slack comms + slack-reactor are always copied but hand-loaded after their
    token setup — see ONBOARDING.md — never auto-loaded even with a flag.)
@@ -91,7 +94,8 @@ After --apply:
   - CORE plists loaded: com.assistant.{assistant-pulse,world-scanner,
        session-context-watcher,assistant-page,assistant-todo-server}
   - FEATURE plists copied, loaded only with their --with flag: memory-sync-pull
-       (--with-memory), workspace-watcher (--with-crash-resume); comms +
+       (--with-memory), workspace-watcher (--with-crash-resume), cmux-ws-numberer
+       (--with-ws-numberer); comms +
        slack-reactor copied but hand-loaded after token setup
   - cmux session-restore (vendored): hooks/ → ~/.claude/hooks/ (symlinks),
        bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
@@ -150,6 +154,7 @@ explicit_flag_for() {
     case "$1" in
         memory)        echo "$WITH_MEMORY" ;;
         crash-resume)  echo "$WITH_CRASH_RESUME" ;;
+        ws-numberer)   echo "$WITH_WS_NUMBERER" ;;
         *)             echo 0 ;;
     esac
 }
@@ -157,6 +162,7 @@ _feat_label() {
     case "$1" in
         memory)        echo "com.assistant.memory-sync-pull" ;;
         crash-resume)  echo "com.assistant.workspace-watcher" ;;
+        ws-numberer)   echo "com.mukuls.cmux-ws-numberer" ;;
     esac
 }
 # daemon_loaded <feat> — 0 if the feature's LaunchAgent is loaded. Called ONLY
@@ -166,6 +172,7 @@ feat_desc() {
     case "$1" in
         memory)        echo "Memory sync keeps your lessons + semantic memory identical across all your machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N] " ;;
         crash-resume)  echo "Crash-resume auto-restarts a cmux workspace whose Claude session died, so long jobs survive a crash or reboot. Enable? [y/N] " ;;
+        ws-numberer)   echo "The workspace numberer adds a [N] suffix to every cmux workspace title and gives each an unused sidebar color. Enable? [y/N] " ;;
     esac
 }
 # prompt_yn <question> → 0 on yes. Sets PROMPT_TIMED_OUT=1 iff read timed out
@@ -203,7 +210,7 @@ _optin_header() {
     _optin_header_shown=1
     log "[2.5] Optional features (safe to skip; enable later with --with-<name>)"
 }
-for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME'; do
+for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:WITH_WS_NUMBERER'; do
     _feat="${_pair%%:*}"; _var="${_pair##*:}"
     if [[ "$(explicit_flag_for "$_feat")" == "1" ]]; then
         state_set "$_feat" yes                      # (a) explicit flag wins
@@ -603,9 +610,6 @@ PLIST_SKIP=(
     # — so a non-interactive `install.sh --apply` (the pulse self-update path)
     # NEVER starts the config-pushing daemon. RunAtLoad: full-auto once activated.
     "com.assistant.machine-config-sync.plist"
-    # cmux workspace titler/colorer: a KeepAlive stream watcher that renames
-    # workspaces and sets sidebar colors. Copied, never auto-loaded; load by hand.
-    "com.mukuls.cmux-ws-numberer.plist"
 )
 
 # ── Daemon tiers ────────────────────────────────────────────────────────────
@@ -618,6 +622,7 @@ PLIST_SKIP=(
 # problem not every user has, so none is forced on a fresh install:
 #   memory-sync-pull   cross-machine memory sync   → --with-memory
 #   workspace-watcher  auto-resume crashed cmux ws → --with-crash-resume
+#   cmux-ws-numberer   number + color cmux workspaces → --with-ws-numberer
 #   assistant-comms    Slack comms (needs token + assistant-comms-setup.sh)
 #   slack-reactor      Slack emoji→todo (needs SLACK_APP_TOKEN/SLACK_BOT_TOKEN)
 # comms/slack-reactor are never auto-loaded even with a flag — they crash-loop
@@ -629,6 +634,7 @@ feature_of() {
     case "$1" in
         com.assistant.memory-sync-pull.plist)   echo "memory" ;;
         com.assistant.workspace-watcher.plist)  echo "crash-resume" ;;
+        com.mukuls.cmux-ws-numberer.plist)      echo "ws-numberer" ;;
         com.assistant.assistant-comms.plist)    echo "comms" ;;
         com.assistant.slack-reactor.plist)      echo "slack-reactor" ;;
         *)                                       echo "" ;;
@@ -641,6 +647,7 @@ feature_enabled() {
     case "$1" in
         memory)        [[ $WITH_MEMORY -eq 1 ]] ;;
         crash-resume)  [[ $WITH_CRASH_RESUME -eq 1 ]] ;;
+        ws-numberer)   [[ $WITH_WS_NUMBERER -eq 1 ]] ;;
         *)             return 1 ;;
     esac
 }
@@ -666,7 +673,7 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         else
             copy_no_load=1
             case "$feat" in
-                memory|crash-resume)
+                memory|crash-resume|ws-numberer)
                     note "FEATURE $base — not enabled (copied, NOT loaded; enable with --with-$feat)" ;;
                 *)  # comms / slack-reactor: token-gated, hand-loaded after setup
                     note "FEATURE $base — token-gated (copied, NOT loaded; hand-load after setup — see ONBOARDING.md)" ;;

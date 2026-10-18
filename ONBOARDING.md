@@ -67,7 +67,8 @@ You can also decide up front with flags (which skip the prompt):
 |---|---|---|
 | `--with-memory` | `memory-sync-pull` | you run Assistant on **more than one machine** and want lessons/memory to sync between them |
 | `--with-crash-resume` | `workspace-watcher` | you want crashed cmux workspaces auto-resumed |
-| `--with-all` | both of the above | — |
+| `--with-ws-numberer` | `cmux-ws-numberer` | you want a `[N]` suffix and a distinct sidebar color on every cmux workspace |
+| `--with-all` | all of the above | — |
 
 ```bash
 ./install.sh --apply --with-memory          # core + cross-machine memory, no prompt
