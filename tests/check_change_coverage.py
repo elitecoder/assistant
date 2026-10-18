@@ -1,4 +1,5 @@
-"""Require complete coverage of changed Python and embedded dashboard JavaScript."""
+"""Require complete coverage of changed Python and embedded dashboard JavaScript,
+and a targeted mutation for every changed hunk of a mutation-proven shell file."""
 
 from __future__ import annotations
 
@@ -13,7 +14,13 @@ from pathlib import Path
 from coverage import Coverage
 from coverage.parser import PythonParser
 
+from mutation_smoke import CHECKS
 from run_python_coverage import canonical_report_hash
+
+# Shell files with no line-coverage tool; each changed code hunk needs a
+# mutation_smoke check that breaks only changed code lines in it. A check can
+# still be written to dodge this, so review new checks like any test.
+MUTATION_PROVEN = {"install.sh"}
 
 
 def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
@@ -29,6 +36,8 @@ def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
     for name in set(changed_names) - {""}:
         file = Path(name)
         if file.parts[0] in {"tests", "evals", "docs", ".github"}:
+            continue
+        if name in MUTATION_PROVEN:
             continue
         if file.suffix in {".py", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".sh"}:
             if file.suffix != ".py" or file.parts[0] not in {"bin", "src"}:
@@ -68,6 +77,64 @@ def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
         if name.endswith(".py"):
             files[name] = set(range(1, len((repo / name).read_text().splitlines()) + 1))
     return {name: lines for name, lines in files.items() if lines}
+
+
+def changed_hunks(repo: Path, base: str) -> dict[str, list[set[int]]]:
+    base_commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}"],
+        text=True).strip()
+    hunks: dict[str, list[set[int]]] = {}
+    for name in sorted(MUTATION_PROVEN):
+        diff = subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--no-ext-diff", "--no-color", "--unified=0",
+             "--inter-hunk-context=0", base_commit, "--", name],
+            text=True)
+        line = 0
+        for text in diff.splitlines():
+            if text.startswith("@@"):
+                match = re.search(r"\+(\d+)(?:,\d+)?", text)
+                if match is None:
+                    raise ValueError("Git returned an unreadable change range")
+                line = int(match.group(1))
+                hunks.setdefault(name, []).append(set())
+            elif text.startswith("+") and not text.startswith("+++"):
+                hunks[name][-1].add(line)
+                line += 1
+    return {name: kept for name, found in hunks.items() if (kept := [hunk for hunk in found if hunk])}
+
+
+def broken_lines(source: str, original: str, broken: str) -> set[int]:
+    old, new = original.splitlines(keepends=True), broken.splitlines(keepends=True)
+    prefix = 0
+    while prefix < min(len(old), len(new)) and old[prefix] == new[prefix]:
+        prefix += 1
+    suffix = 0
+    while suffix < min(len(old), len(new)) - prefix and old[-1 - suffix] == new[-1 - suffix]:
+        suffix += 1
+    start = source[:source.index(original)].count("\n") + 1
+    return set(range(start + prefix, start + len(old) - suffix))
+
+
+def check_mutation_proof(repo: Path, hunks: dict[str, list[set[int]]], checks) -> list[dict]:
+    results = []
+    for name, file_hunks in sorted(hunks.items()):
+        source = (repo / name).read_text()
+        lines = source.splitlines()
+        spans = []
+        for check, filename, original, broken, _selector in checks:
+            if filename != name:
+                continue
+            if source.count(original) != 1:
+                raise ValueError(f"Mutation target must appear once in {name}: {check}")
+            spans.append(broken_lines(source, original, broken))
+        unproven = []
+        for hunk in file_hunks:
+            code = {line for line in hunk
+                    if lines[line - 1].strip() and not lines[line - 1].lstrip().startswith("#")}
+            if code and not any(span and span <= code for span in spans):
+                unproven.append(sorted(code))
+        results.append({"file": name, "hunks": len(file_hunks), "unproven_hunks": unproven})
+    return results
 
 
 def browser_source(repo: Path) -> ast.Constant:
@@ -194,6 +261,9 @@ def main():
             json.loads(args.python_report.read_text()),
             json.loads(args.browser_report.read_text()) if args.browser_report else None,
             json.loads(manifest_path.read_text()))
+        result["mutation_proven"] = check_mutation_proof(repo, changed_hunks(repo, args.base), CHECKS)
+        result["passed"] = result["passed"] and not any(
+            row["unproven_hunks"] for row in result["mutation_proven"])
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
         parser.exit(2, f"Coverage check failed: {exc}\n")
     payload = json.dumps(result, indent=2) + "\n"
