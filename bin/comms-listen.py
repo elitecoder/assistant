@@ -792,7 +792,9 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
             if rc != 0:
                 log(f"ledger broadcast rc={rc} key={key} err={err.strip()[:160]}")
                 continue
-            _mirror_sent(out, body)
+            # The mirror keeps the stable refs: positions shift, and the warm
+            # session acts on workspaces from conversation.jsonl.
+            _mirror_sent(out, comms_lib.fmt_action_line(entry))
             log(f"broadcast key={key}")
         if overflow:
             body = fmt_overflow(overflow)

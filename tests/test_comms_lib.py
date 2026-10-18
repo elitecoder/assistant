@@ -204,12 +204,12 @@ def test_fmt_workspace_signal_names_the_workspace_by_its_sidebar_number():
         "_workspace:1000010013 · AskUserQuestion_")
 
 
-def test_fmt_action_line_relabels_every_ref_in_the_footer():
+def test_fmt_action_line_names_the_workspace_but_keeps_lookup_ids_raw():
     entry = {"kind": "emit-card", "outcome": "verified", "ws_ref": "workspace:1000010002",
-             "key": "workspace:1000010002-needs_user", "evidence": "card for workspace:10"}
-    line = cl.fmt_action_line(entry, sidebar={"workspace:1000010002": 1, "workspace:1": 7})
-    assert line.endswith("_card for workspace:10 · [1] · emit-card · [1]-needs_user_"), \
-        "workspace:10 is a different ref than workspace:1"
+             "key": "workspace:1000010002-needs_user", "evidence": "card sent"}
+    line = cl.fmt_action_line(entry, sidebar={"workspace:1000010002": 1})
+    # The ledger key stays greppable in actions-ledger.jsonl.
+    assert line.endswith("_card sent · [1] · emit-card · workspace:1000010002-needs_user_")
 
 
 def _fake_cmux(tmp_path: Path, script: str) -> cl.Paths:
@@ -221,9 +221,12 @@ def _fake_cmux(tmp_path: Path, script: str) -> cl.Paths:
 
 def test_sidebar_numbers_maps_refs_to_positions(tmp_path):
     listing = {"workspaces": [
-        {"ref": "workspace:1000010009", "index": 0},
-        {"ref": "workspace:1000010002", "index": 1},
-        {"ref": "workspace:1000010013"},
+        {"ref": "workspace:1000010009", "index": 0, "title": "Feedback [0]"},
+        {"ref": "workspace:1000010002", "index": 1, "title": "✳ Insights [1] "},
+        {"ref": "workspace:1000010013", "title": "No index [2]"},
+        # No numberer, or it hasn't renamed yet: the title has no matching [N].
+        {"ref": "workspace:1000010018", "index": 3, "title": "Weekend R9 [2]"},
+        {"ref": "workspace:1000010017", "index": 4, "title": "Weekend R8"},
     ]}
     paths = _fake_cmux(tmp_path, f"[ \"$*\" = 'workspace list --json' ] || exit 2\n"
                                  f"echo '{json.dumps(listing)}'\n")
@@ -231,8 +234,10 @@ def test_sidebar_numbers_maps_refs_to_positions(tmp_path):
 
 
 def test_sidebar_numbers_is_empty_when_cmux_fails_or_garbles(tmp_path):
-    assert cl.sidebar_numbers(_fake_cmux(tmp_path, "exit 1\n")) == {}
-    assert cl.sidebar_numbers(_fake_cmux(tmp_path, "echo 'Access denied'\n")) == {}
+    for script in ("exit 1\n", "echo 'Access denied'\n", "echo '[]'\n",
+                   "echo '{}'\n", "echo '{\"workspaces\": null}'\n",
+                   "echo '{\"workspaces\": [1]}'\n"):
+        assert cl.sidebar_numbers(_fake_cmux(tmp_path, script)) == {}, script
 
 
 def test_fmt_workspace_signal_headlines_by_signal():

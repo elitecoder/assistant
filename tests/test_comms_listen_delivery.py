@@ -539,11 +539,30 @@ def test_ledger_loop_posts_the_cap_then_one_summary(env, monkeypatch):
 
 def test_ledger_loop_names_workspaces_by_sidebar_number(env, monkeypatch):
     paths, calls = env
-    _ledger(paths, [{"kind": "cleanup", "key": "c1", "outcome": "verified",
-                     "ws_ref": "workspace:1000010013"}])
-    monkeypatch.setattr(cl, "sidebar_numbers", lambda p: {"workspace:1000010013": 4})
+    _ledger(paths, [{"kind": "cleanup", "key": f"c{i}", "outcome": "verified",
+                     "ws_ref": "workspace:1000010013"} for i in (1, 2)])
+    lookups = []
+    monkeypatch.setattr(cl, "sidebar_numbers",
+                        lambda p: lookups.append(p) or {"workspace:1000010013": 4})
     listen.ledger_loop(_one_pass(monkeypatch), {})
-    assert _sends(calls) and _sends(calls)[0].endswith("_[4] · cleanup · c1_")
+    assert [s.splitlines()[-1] for s in _sends(calls)] == [
+        "_[4] · cleanup · c1_", "_[4] · cleanup · c2_"]
+    assert len(lookups) == 1
+    # conversation.jsonl keeps the stable ref; sidebar numbers shift.
+    mirrored = [a[a.index("--text") + 1] for a in calls if "conversation.py" in a[0]]
+    assert mirrored and all("workspace:1000010013 · cleanup" in m for m in mirrored)
+
+
+def test_send_loops_skip_the_lookup_when_nothing_goes_out(env, monkeypatch):
+    paths, calls = env
+    monkeypatch.setattr(cl, "sidebar_numbers", lambda p: pytest.fail("looked up cmux"))
+    _ledger(paths, [{"kind": "decision-transition", "key": "d1"}])
+    listen.ledger_loop(_one_pass(monkeypatch), {})
+    old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 86400))
+    (listen.INBOX_DIR / "cmux-old.json").write_text(json.dumps(
+        {"ts": old, "ws_ref": "workspace:1", "signal_type": "needs_input"}))
+    assert listen._drain_inbox_once({}) == 0
+    assert _sends(calls) == []
 
 
 def test_ledger_loop_without_target_sends_nothing(env, monkeypatch):
