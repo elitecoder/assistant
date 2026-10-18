@@ -206,13 +206,15 @@ def test_help_documents_ws_numberer(tmp_path):
 def test_interactive_apply_offers_ws_numberer(tmp_path):
     env = installer_env(tmp_path)
     (tmp_path / ".assistant").mkdir()
+    # Settle the later memory and machine-config prompts so only the three
+    # feature prompts read answers.
+    (tmp_path / ".assistant" / "memory-repo-config.json").write_text("{}\n")
+    (tmp_path / ".assistant" / "machine-config-configured").write_text("fixture\n")
     controller, terminal = pty.openpty()
-    # Feature prompts (memory, crash-resume, ws-numberer), then memory setup
-    # (3 = skip) and machine-config sync (n).
-    os.write(controller, b"n\nn\ny\n3\nn\n")
+    os.write(controller, b"n\nn\ny\n")
     try:
         r = subprocess.run(["bash", str(INSTALL), "--apply"], stdin=terminal,
-                           capture_output=True, text=True, env=env, timeout=120)
+                           capture_output=True, text=True, env=env, timeout=60)
     finally:
         os.close(terminal)
         os.close(controller)
@@ -229,5 +231,6 @@ def test_apply_removes_the_legacy_ws_numberer_plist(tmp_path):
     legacy.write_text("<!-- fixture: hand-made plist -->\n")
     rc, out, home = _run_install(tmp_path, flags=["--apply"])
     assert not legacy.exists()
-    assert "bootout gui/" in (home / "launchctl.log").read_text()
+    assert f"bootout gui/{os.getuid()}/com.mukuls.cmux-ws-numberer" in (
+        home / "launchctl.log").read_text().splitlines()
     assert "REMOVE legacy LaunchAgent com.mukuls.cmux-ws-numberer" in out

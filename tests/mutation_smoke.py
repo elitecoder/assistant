@@ -67,8 +67,15 @@ CHECKS = (
         "--with-ws-numberer turns the numberer on",
         "install.sh",
         "        --with-ws-numberer) WITH_WS_NUMBERER=1 ;;\n",
-        "",
+        "        --with-ws-numberer) ;;\n",
         "tests/test_install_tiers.py::test_with_ws_numberer_loads_numberer_only",
+    ),
+    (
+        "--with-all turns the numberer on",
+        "install.sh",
+        "WITH_CRASH_RESUME=1; WITH_WS_NUMBERER=1 ;;",
+        "WITH_CRASH_RESUME=1 ;;",
+        "tests/test_install_tiers.py::test_with_all_loads_every_opt_in_feature",
     ),
     (
         "help lists --with-ws-numberer",
