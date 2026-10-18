@@ -362,7 +362,7 @@ def test_each_changed_code_hunk_needs_a_mutation_on_one_of_its_lines(tmp_path):
     script.write_text("a=1\nnew_one=1\n# note\nb=2\nnew_two=2\nthree=3\n")
     hunks = {"install.sh": [{2, 3}, {3}, {5, 6}]}
     proof = [("one", "install.sh", "new_one=1\n", "", "t"),
-             ("multi", "install.sh", "b=2\nnew_two=2", "", "t"),
+             ("multi", "install.sh", "new_two=2\nthree=3", "", "t"),
              ("elsewhere", "other.sh", "new_two=2", "", "t")]
     assert gate.check_mutation_proof(tmp_path, hunks, proof) == [
         {"file": "install.sh", "hunks": 3, "unproven_hunks": []}]
@@ -415,6 +415,13 @@ def test_unchanged_trailing_lines_of_a_target_are_not_proven(tmp_path):
     proof = [("first line only", "install.sh", "a=1\nchanged=1\n", "a=2\nchanged=1\n", "t")]
     assert gate.check_mutation_proof(tmp_path, {"install.sh": [{2}]}, proof) == [
         {"file": "install.sh", "hunks": 1, "unproven_hunks": [[2]]}]
+
+
+def test_a_mutation_that_also_breaks_an_unchanged_line_proves_nothing(tmp_path):
+    (tmp_path / "install.sh").write_text("changed=1\nnext=1\n")
+    proof = [("spill", "install.sh", "changed=1\nnext=1", "changed=1 \nexit 3", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{1}]}, proof) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[1]]}]
 
 
 def test_a_mutation_on_a_comment_cannot_prove_the_code_beside_it(tmp_path):
