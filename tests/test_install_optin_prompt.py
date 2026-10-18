@@ -9,6 +9,8 @@ bash logic install.sh uses.
 """
 from __future__ import annotations
 
+import os
+import pty
 import subprocess
 from pathlib import Path
 
@@ -191,3 +193,41 @@ def test_ws_numberer_legacy_running_survives_apply(tmp_path):
     assert "ws-numberer=yes" in state
     calls = (home / "launchctl.log").read_text()
     assert "Library/LaunchAgents/com.assistant.cmux-ws-numberer.plist" in calls
+
+
+def test_help_documents_ws_numberer(tmp_path):
+    r = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True,
+                       env=installer_env(tmp_path), stdin=subprocess.DEVNULL, timeout=30)
+    assert r.returncode == 0
+    assert "--with-ws-numberer   number and color cmux workspaces" in r.stdout
+    assert "cmux-ws-numberer\n       (--with-ws-numberer); comms +" in r.stdout
+
+
+def test_interactive_apply_offers_ws_numberer(tmp_path):
+    env = installer_env(tmp_path)
+    (tmp_path / ".assistant").mkdir()
+    controller, terminal = pty.openpty()
+    # Feature prompts (memory, crash-resume, ws-numberer), then memory setup
+    # (3 = skip) and machine-config sync (n).
+    os.write(controller, b"n\nn\ny\n3\nn\n")
+    try:
+        r = subprocess.run(["bash", str(INSTALL), "--apply"], stdin=terminal,
+                           capture_output=True, text=True, env=env, timeout=120)
+    finally:
+        os.close(terminal)
+        os.close(controller)
+    assert r.returncode == 0, f"{r.stdout[-2000:]}\n{r.stderr[-1000:]}"
+    assert "The workspace numberer adds a [N] suffix to every cmux workspace title" in r.stderr
+    state = (tmp_path / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert sorted(state) == ["crash-resume=no", "memory=no", "ws-numberer=yes"]
+
+
+def test_apply_removes_the_legacy_ws_numberer_plist(tmp_path):
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    legacy = agents / "com.mukuls.cmux-ws-numberer.plist"
+    legacy.write_text("<!-- fixture: hand-made plist -->\n")
+    rc, out, home = _run_install(tmp_path, flags=["--apply"])
+    assert not legacy.exists()
+    assert "bootout gui/" in (home / "launchctl.log").read_text()
+    assert "REMOVE legacy LaunchAgent com.mukuls.cmux-ws-numberer" in out
