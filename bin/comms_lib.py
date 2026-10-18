@@ -215,10 +215,24 @@ def escape_mrkdwn(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _ref_footer(*refs: Any) -> str:
+_WS_REF_RE = _re.compile(r"workspace:\d+")
+
+
+def _sidebar_label(text: str, sidebar: dict[str, int] | None) -> str:
+    """Swap each `workspace:N` ref that cmux still lists for its sidebar `[N]`,
+    the number cmux-ws-numberer puts at the end of the workspace's title."""
+    if not sidebar:
+        return text
+    return _WS_REF_RE.sub(
+        lambda m: f"[{sidebar[m.group()]}]" if m.group() in sidebar else m.group(), text)
+
+
+def _ref_footer(*refs: Any, sidebar: dict[str, int] | None = None) -> str:
     """The trailing italic line: IDs and labels you only need to look something
-    up, kept after the message itself. Empty and placeholder values are left out."""
-    parts = [escape_mrkdwn(str(r)) for r in refs if r not in (None, "", "-", "?")]
+    up, kept after the message itself. Empty and placeholder values are left out.
+    Workspace refs read as their sidebar numbers when `sidebar` knows them."""
+    parts = [escape_mrkdwn(_sidebar_label(str(r), sidebar))
+             for r in refs if r not in (None, "", "-", "?")]
     return f"_{' · '.join(parts)}_" if parts else ""
 
 
@@ -272,7 +286,7 @@ def _action_sentence(kind: str, outcome: str) -> str:
     return f"I tried to {attempt} (result: {escape_mrkdwn(outcome)})."
 
 
-def fmt_action_line(entry: dict[str, Any]) -> str:
+def fmt_action_line(entry: dict[str, Any], sidebar: dict[str, int] | None = None) -> str:
     """Render one ledger entry for Slack: a plain sentence about what Assistant
     did, then the refs. When something went wrong the recorded evidence is the
     news, so it's quoted under the sentence; otherwise it's machine detail and
@@ -292,7 +306,7 @@ def fmt_action_line(entry: dict[str, Any]) -> str:
     lines.append(_ref_footer(
         None if went_wrong else " ".join(evidence.split()),
         entry.get("ws_ref"), kind, entry.get("key"), entry.get("td"),
-        f"pulse {pulse}" if pulse is not None else None))
+        f"pulse {pulse}" if pulse is not None else None, sidebar=sidebar))
     return "\n".join(ln for ln in lines if ln)
 
 
@@ -333,14 +347,15 @@ _SIGNAL_HEADLINES = {
 }
 
 
-def fmt_workspace_signal(item: dict[str, Any]) -> str:
+def fmt_workspace_signal(item: dict[str, Any], sidebar: dict[str, int] | None = None) -> str:
     """Render a cmux-watcher inbox item (written by bin/cmux-watcher.py) for
     Slack. The watcher drops these the instant cmux reports a workspace needs
     input or finished a notable turn — so the ping arrives in seconds.
 
     Lead with the work: the workspace's title and what it needs, then the
     agent's own last words (or the screen snippet when those are missing).
-    The workspace ref and signal name go last, in the footer."""
+    The workspace's sidebar number (its ref once it's gone) and the signal
+    name go last, in the footer."""
     signal_type = item.get("signal_type") or item.get("signal") or "?"
     pattern = item.get("pattern_matched") or item.get("signal")
     # A `*` inside the title would close the bold early.
@@ -355,7 +370,7 @@ def fmt_workspace_signal(item: dict[str, Any]) -> str:
         headline = ("has a question for you." if asking
                     else _SIGNAL_HEADLINES.get(signal_type, "sent an update."))
         lines = [f"{who} {headline}", _quote(escape_mrkdwn(message or snippet))]
-    lines.append(_ref_footer(item.get("ws_ref"), pattern))
+    lines.append(_ref_footer(item.get("ws_ref"), pattern, sidebar=sidebar))
     return "\n".join(ln for ln in lines if ln)
 
 
@@ -756,6 +771,18 @@ def run_cmd(argv: list[str], timeout: int = 30) -> tuple[int, str, str]:
         return -1, e.stdout or "", f"timeout after {timeout}s"
     except FileNotFoundError as e:
         return -1, "", str(e)
+
+
+def sidebar_numbers(paths: Paths) -> dict[str, int]:
+    """Map each `workspace:N` ref to its 0-based sidebar position. Empty when
+    cmux can't list workspaces, so messages fall back to showing the ref."""
+    _, out, _ = run_cmd([str(paths.cmux_bin), "workspace", "list", "--json"], timeout=15)
+    try:
+        workspaces = json.loads(out).get("workspaces", [])
+    except ValueError:
+        return {}
+    return {w["ref"]: w["index"] for w in workspaces
+            if w.get("ref") and isinstance(w.get("index"), int)}
 
 
 def cmux_read_screen(paths: Paths, workspace_ref: str, lines: int = 50) -> str:

@@ -124,7 +124,9 @@ Format:
 - Use plain section headers (TRIVIAL / QUICK APPROVE / PING A REVIEWER / SKIM + APPROVE / READ A REAL DIFF / INVESTIGATE / DEEP FOCUS)
 - Lead each item with **what the work is** (the project or feature name), not a workspace ID
 - One sentence per item: what it is and what he has to do
-- Add the ws ref at the end in brackets only as a locator, not as the label
+- Add the workspace's sidebar number at the end in brackets, like `[4]`, only as a locator, not as the label
+- The sidebar number is the `[N]` at the end of the workspace's title (`index` in `cmux workspace list --json`)
+- Don't print the `workspace:N` ref; its number doesn't match the sidebar
 - Use an Opus sub-agent to rank the items — it has better judgment on relative cognitive weight
 
 The goal: he reads top-to-bottom and works top-to-bottom. No hunting, no translating IDs.

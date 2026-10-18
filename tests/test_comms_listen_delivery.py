@@ -527,7 +527,7 @@ def test_ledger_loop_posts_the_cap_then_one_summary(env, monkeypatch):
     _ledger(paths, [{"kind": "cleanup", "key": f"c{i}", "outcome": "verified"} for i in range(7)]
             + [{"kind": "decision-transition", "key": "d1"}])
     monkeypatch.setattr(listen, "LEDGER_MAX_PER_PASS", 5)
-    monkeypatch.setattr(cl, "fmt_action_line", lambda e: f"ACTION {e['key']}")
+    monkeypatch.setattr(cl, "fmt_action_line", lambda e, **_: f"ACTION {e['key']}")
     listen.ledger_loop(_one_pass(monkeypatch), {})
     sent = _sends(calls)
     assert sent[:5] == [f"ACTION c{i}" for i in range(5)]
@@ -535,6 +535,15 @@ def test_ledger_loop_posts_the_cap_then_one_summary(env, monkeypatch):
     mirrored = [a for a in calls if "conversation.py" in a[0]]
     assert len(mirrored) == 6, "each post, summary included, is mirrored as an out turn"
     assert "suppressed broadcast key=d1" in _log(paths)
+
+
+def test_ledger_loop_names_workspaces_by_sidebar_number(env, monkeypatch):
+    paths, calls = env
+    _ledger(paths, [{"kind": "cleanup", "key": "c1", "outcome": "verified",
+                     "ws_ref": "workspace:1000010013"}])
+    monkeypatch.setattr(cl, "sidebar_numbers", lambda p: {"workspace:1000010013": 4})
+    listen.ledger_loop(_one_pass(monkeypatch), {})
+    assert _sends(calls) and _sends(calls)[0].endswith("_[4] · cleanup · c1_")
 
 
 def test_ledger_loop_without_target_sends_nothing(env, monkeypatch):
@@ -586,7 +595,7 @@ def test_inbox_pings_a_workspace_once_per_window_except_questions(env, monkeypat
     the window survives a daemon restart (it's on disk)."""
     paths, calls = env
     inbox = listen.INBOX_DIR
-    monkeypatch.setattr(cl, "fmt_workspace_signal", lambda item: f"PING {item['pattern_matched']}")
+    monkeypatch.setattr(cl, "fmt_workspace_signal", lambda item, **_: f"PING {item['pattern_matched']}")
     _signal(inbox, "a1", ws_ref="workspace:244", pattern_matched="Notification")
     _signal(inbox, "a2", ws_ref="workspace:244", pattern_matched="stranded")
     _signal(inbox, "b1", ws_ref="workspace:7", pattern_matched="Notification")
@@ -597,6 +606,19 @@ def test_inbox_pings_a_workspace_once_per_window_except_questions(env, monkeypat
     assert _sends(calls) == ["PING Notification", "PING Notification", "PING AskUserQuestion"]
     assert list(inbox.glob("cmux-*.json")) == [], "held-back signals are removed, not retried"
     assert "held back 1 signal(s)" in _log(paths)
+
+
+def test_inbox_names_workspaces_by_sidebar_number_with_one_lookup(env, monkeypatch):
+    paths, calls = env
+    lookups = []
+    monkeypatch.setattr(cl, "sidebar_numbers",
+                        lambda p: lookups.append(p) or {"workspace:1000010013": 4})
+    _signal(listen.INBOX_DIR, "a1", ws_ref="workspace:1000010013", pattern_matched="Notification")
+    _signal(listen.INBOX_DIR, "b1", ws_ref="workspace:1000010002", pattern_matched="Notification")
+    assert listen._drain_inbox_once({}) == 2
+    assert sorted(s.splitlines()[-1] for s in _sends(calls)) == [
+        "_[4] · Notification_", "_workspace:1000010002 · Notification_"]
+    assert len(lookups) == 1
 
 
 def test_cooldown_file_prunes_old_entries_and_tolerates_corruption(env):

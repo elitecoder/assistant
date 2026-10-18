@@ -784,9 +784,10 @@ def ledger_loop(stop: threading.Event, env: dict) -> None:
         if (to_send or overflow) and not target:
             log(f"no target configured — skipping {len(to_send) + overflow} broadcast(s)")
             to_send, overflow = [], 0
+        sidebar = comms_lib.sidebar_numbers(paths) if to_send else {}
         for entry in to_send:
             key = entry.get("key", "")
-            body = comms_lib.fmt_action_line(entry)
+            body = comms_lib.fmt_action_line(entry, sidebar=sidebar)
             rc, out, err = cli(_send_args(body, "action", target, key), timeout=30, env=env)
             if rc != 0:
                 log(f"ledger broadcast rc={rc} key={key} err={err.strip()[:160]}")
@@ -953,6 +954,7 @@ def _drain_inbox_once(env: dict) -> int:
     n = 0
     stale = 0
     held = 0
+    sidebar = None  # fetched once, on the first ping of this pass
     for p in sorted(INBOX_DIR.glob(INBOX_GLOB)):
         try:
             raw = p.read_text()
@@ -984,7 +986,9 @@ def _drain_inbox_once(env: dict) -> int:
             p.unlink(missing_ok=True)
             held += 1
             continue
-        body = comms_lib.fmt_workspace_signal(item)
+        if sidebar is None:
+            sidebar = comms_lib.sidebar_numbers(paths)
+        body = comms_lib.fmt_workspace_signal(item, sidebar=sidebar)
         ledger_key = f"{item.get('ws_ref') or 'ws'}:{item.get('signal_type') or item.get('signal') or 'signal'}"
         send_argv = _send_args(body, "action", target, ledger_key)
         rc, _out, err = cli(send_argv, timeout=30, env=env)
