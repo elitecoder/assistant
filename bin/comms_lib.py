@@ -222,6 +222,14 @@ def _ref_footer(*refs: Any) -> str:
     return f"_{' · '.join(parts)}_" if parts else ""
 
 
+def _ws_label(ref: Any, sidebar: dict[str, int] | None) -> Any:
+    """A workspace as Slack names it: the `[N]` at the end of its sidebar title
+    when `sidebar` knows the ref, else the ref itself."""
+    if sidebar and ref in sidebar:
+        return f"[{sidebar[ref]}]"
+    return ref
+
+
 def _quote(text: str) -> str:
     """Slack blockquote, so quoted words (the agent's, or recorded evidence)
     read apart from Assistant's own sentence. Blank lines are skipped, so empty
@@ -272,7 +280,7 @@ def _action_sentence(kind: str, outcome: str) -> str:
     return f"I tried to {attempt} (result: {escape_mrkdwn(outcome)})."
 
 
-def fmt_action_line(entry: dict[str, Any]) -> str:
+def fmt_action_line(entry: dict[str, Any], sidebar: dict[str, int] | None = None) -> str:
     """Render one ledger entry for Slack: a plain sentence about what Assistant
     did, then the refs. When something went wrong the recorded evidence is the
     news, so it's quoted under the sentence; otherwise it's machine detail and
@@ -291,7 +299,7 @@ def fmt_action_line(entry: dict[str, Any]) -> str:
     pulse = entry.get("pulse_idx")
     lines.append(_ref_footer(
         None if went_wrong else " ".join(evidence.split()),
-        entry.get("ws_ref"), kind, entry.get("key"), entry.get("td"),
+        _ws_label(entry.get("ws_ref"), sidebar), kind, entry.get("key"), entry.get("td"),
         f"pulse {pulse}" if pulse is not None else None))
     return "\n".join(ln for ln in lines if ln)
 
@@ -333,14 +341,15 @@ _SIGNAL_HEADLINES = {
 }
 
 
-def fmt_workspace_signal(item: dict[str, Any]) -> str:
+def fmt_workspace_signal(item: dict[str, Any], sidebar: dict[str, int] | None = None) -> str:
     """Render a cmux-watcher inbox item (written by bin/cmux-watcher.py) for
     Slack. The watcher drops these the instant cmux reports a workspace needs
     input or finished a notable turn — so the ping arrives in seconds.
 
     Lead with the work: the workspace's title and what it needs, then the
     agent's own last words (or the screen snippet when those are missing).
-    The workspace ref and signal name go last, in the footer."""
+    The workspace's sidebar number (its ref once it's gone) and the signal
+    name go last, in the footer."""
     signal_type = item.get("signal_type") or item.get("signal") or "?"
     pattern = item.get("pattern_matched") or item.get("signal")
     # A `*` inside the title would close the bold early.
@@ -355,7 +364,7 @@ def fmt_workspace_signal(item: dict[str, Any]) -> str:
         headline = ("has a question for you." if asking
                     else _SIGNAL_HEADLINES.get(signal_type, "sent an update."))
         lines = [f"{who} {headline}", _quote(escape_mrkdwn(message or snippet))]
-    lines.append(_ref_footer(item.get("ws_ref"), pattern))
+    lines.append(_ref_footer(_ws_label(item.get("ws_ref"), sidebar), pattern))
     return "\n".join(ln for ln in lines if ln)
 
 
@@ -756,6 +765,22 @@ def run_cmd(argv: list[str], timeout: int = 30) -> tuple[int, str, str]:
         return -1, e.stdout or "", f"timeout after {timeout}s"
     except FileNotFoundError as e:
         return -1, "", str(e)
+
+
+def sidebar_numbers(paths: Paths) -> dict[str, int]:
+    """Map each `workspace:N` ref to the `[N]` its sidebar title ends with.
+
+    Only workspaces whose title already ends in `[index]` count, so a machine
+    without cmux-ws-numberer, or a title the numberer hasn't caught up on, keeps
+    its ref. Empty when cmux can't list workspaces. Any parse error returns
+    empty too: this runs inside comms-listen's send loops, which must not die."""
+    _, out, _ = run_cmd([str(paths.cmux_bin), "workspace", "list", "--json"], timeout=5)
+    try:
+        return {w["ref"]: w["index"] for w in json.loads(out)["workspaces"]
+                if isinstance(w.get("index"), int) and w.get("ref")
+                and str(w.get("title") or "").rstrip().endswith(f"[{w['index']}]")}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {}
 
 
 def cmux_read_screen(paths: Paths, workspace_ref: str, lines: int = 50) -> str:

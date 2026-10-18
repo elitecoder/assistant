@@ -263,7 +263,7 @@ _DEFAULT_WS_TITLE = "Terminal"
 def human_title(title: str | None) -> str:
     """A workspace title as a person reads it, or "" when it names no work.
     cmux-ws-numberer appends the sidebar position (`Fix flaky ruler [3]`); the
-    headline drops it, and the ref travels in the message footer."""
+    headline drops it, and the message footer names the workspace."""
     name = _TITLE_NUMBER_SUFFIX_RE.sub("", title or "").strip()
     return "" if name == _DEFAULT_WS_TITLE else name
 

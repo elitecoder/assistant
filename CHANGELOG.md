@@ -57,6 +57,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Name workspaces in Slack by the same number the sidebar shows. Workspace
+  pings and action lines named the workspace by its `workspace:N` ref, which no
+  longer matches the `[N]` in the title. `comms-listen` now looks up sidebar
+  positions once per pass that sends something, and the footer shows `[4]`
+  instead of `workspace:1000010013`. Only titles that already end in that
+  `[N]` count, so a machine without `cmux-ws-numberer` keeps showing refs.
+  Ledger keys stay raw so they still match `actions-ledger.jsonl`, and
+  `conversation.jsonl` keeps the refs. The warm comms prompt now uses the
+  sidebar number and resolves it to a ref right before acting.
 - Number workspaces by sidebar position. cmux 0.65 numbers workspace refs from
   1000010000, so `cmux-ws-numberer` was adding suffixes like `[1000010009]`.
   The suffix is now the workspace's 0-based position in its window, the number
