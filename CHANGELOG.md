@@ -57,6 +57,14 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Stop the pulse tests from self-updating the checkout they run in. The tests
+  that run the pulse's `main()` called the real self-update, so a checkout
+  behind its remote got pulled. When the pull touched installer files, it also
+  ran `install.sh --apply` with the test's temporary home. That reloaded this
+  machine's daemons from a scratch copy. It also failed a push-to-`main` CI run
+  whenever `main` moved before the run finished. The test loaders in
+  `test_pulse.py` and `test_observer_skip.py` now stub it out, and a
+  `conftest.py` guard fails any test that still reaches it.
 - Keep a killed git from blocking self-updates. The pulse's timeout used to
   SIGKILL a context check mid-`git status`, leaving `.git/index.lock` behind;
   on 2026-09-28 that blocked every self-update, and seven repos on this machine

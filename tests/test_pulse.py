@@ -36,6 +36,8 @@ def load_pulse(home: Path):
     spec = importlib.util.spec_from_file_location("pulse_mod", str(PULSE_PATH))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # main() would otherwise pull this checkout and run install.sh --apply.
+    mod.self_update_pulse = lambda pulse_idx: None
     return mod
 
 
