@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Add the `cmux-ws-numberer` LaunchAgent plist to `launchagents/`. The installer copies it
+  to `~/Library/LaunchAgents/` but never loads it; run `launchctl load` yourself.
 - Check every self-update before it lands: read each runtime file the fetched
   commits add or change straight from git, scan it for leftover merge conflict
   markers, and parse it if it's Python. If a file fails, refuse the update

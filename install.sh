@@ -603,6 +603,9 @@ PLIST_SKIP=(
     # — so a non-interactive `install.sh --apply` (the pulse self-update path)
     # NEVER starts the config-pushing daemon. RunAtLoad: full-auto once activated.
     "com.assistant.machine-config-sync.plist"
+    # cmux workspace titler/colorer: a KeepAlive stream watcher that renames
+    # workspaces and sets sidebar colors. Copied, never auto-loaded; load by hand.
+    "com.mukuls.cmux-ws-numberer.plist"
 )
 
 # ── Daemon tiers ────────────────────────────────────────────────────────────
