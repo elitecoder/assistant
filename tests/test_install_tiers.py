@@ -24,6 +24,7 @@ FEATURE = [
     "com.assistant.workspace-watcher",
     "com.assistant.assistant-comms",
     "com.assistant.slack-reactor",
+    "com.assistant.cmux-ws-numberer",
 ]
 
 
@@ -44,7 +45,7 @@ def _dryrun(*flags: str) -> str:
         (Path(home) / ".assistant").mkdir(parents=True)
         # Seed each committed plist as a differing stub so the installer sees an
         # existing-but-changed target (→ UPDATE → CHANGED_LABELS → would reload).
-        for p in (REPO / "launchagents").glob("com.assistant.*.plist"):
+        for p in (REPO / "launchagents").glob("*.plist"):
             (la / p.name).write_text("<!-- stale stub to force UPDATE -->\n")
         # Pin feature answers to "no" via the state file. This isolates the tier
         # decision from whatever daemons happen to be loaded in the REAL
@@ -53,7 +54,7 @@ def _dryrun(*flags: str) -> str:
         # "load" and make the test machine-dependent). An explicit --with flag in
         # `flags` still wins over this "no" (that's the precedence we assert).
         (Path(home) / ".assistant" / "feature-opt-in").write_text(
-            "memory=no\ncrash-resume=no\n")
+            "memory=no\ncrash-resume=no\nws-numberer=no\n")
         env = {
             "HOME": home,
             "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:"
@@ -83,12 +84,22 @@ def test_bare_install_loads_core_not_features():
         assert not _loads(out, label), f"FEATURE {label} must NOT load by default"
     assert "memory-sync-pull.plist — not enabled" in out
     assert "workspace-watcher.plist — not enabled" in out
+    assert "cmux-ws-numberer.plist — not enabled" in out
 
 
 def test_with_memory_loads_memory_only():
     out = _dryrun("--with-memory")
     assert "would reload com.assistant.memory-sync-pull" in out
     assert "memory-sync-pull.plist — enabled" in out
+    assert "would reload com.assistant.workspace-watcher" not in out
+    assert "would reload com.assistant.cmux-ws-numberer" not in out
+
+
+def test_with_ws_numberer_loads_numberer_only():
+    out = _dryrun("--with-ws-numberer")
+    assert "would reload com.assistant.cmux-ws-numberer" in out
+    assert "cmux-ws-numberer.plist — enabled" in out
+    assert "would reload com.assistant.memory-sync-pull" not in out
     assert "would reload com.assistant.workspace-watcher" not in out
 
 
@@ -98,10 +109,11 @@ def test_with_crash_resume_loads_watcher_only():
     assert "would reload com.assistant.memory-sync-pull" not in out
 
 
-def test_with_all_loads_both_feature_timers():
+def test_with_all_loads_every_opt_in_feature():
     out = _dryrun("--with-all")
     assert "would reload com.assistant.memory-sync-pull" in out
     assert "would reload com.assistant.workspace-watcher" in out
+    assert "would reload com.assistant.cmux-ws-numberer" in out
 
 
 def test_token_gated_daemons_never_auto_load_even_with_all():

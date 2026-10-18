@@ -9,6 +9,8 @@ bash logic install.sh uses.
 """
 from __future__ import annotations
 
+import os
+import pty
 import subprocess
 from pathlib import Path
 
@@ -20,10 +22,28 @@ REPO = Path(__file__).resolve().parent.parent
 INSTALL = REPO / "install.sh"
 
 
-def _run_install(home: Path, extra_env=None, flags=(), timeout=90):
-    """Run the installer with an isolated HOME and recording service commands."""
+def _run_install(home: Path, extra_env=None, flags=(), timeout=90, opt_in="", loaded_label=None):
+    """Run the installer with an isolated HOME and recording service commands.
+
+    `opt_in` seeds ~/.assistant/feature-opt-in; `loaded_label` makes the
+    recording launchctl report that one label as already loaded."""
     env = {**(extra_env or {}), **installer_env(home)}
     (home / ".assistant").mkdir(parents=True)
+    if opt_in:
+        (home / ".assistant" / "feature-opt-in").write_text(opt_in)
+    if loaded_label:
+        Path(env["ASSISTANT_TEST_LAUNCHCTL"]).write_text(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$HOME/launchctl.log"\n'
+            'case "$1 $2" in\n'
+            f'  "print gui/"*"/{loaded_label}") exit 0 ;;\n'
+            'esac\n'
+            'case "$1" in\n'
+            '  print) exit 1 ;;\n'
+            '  bootout|bootstrap|load) exit 0 ;;\n'
+            '  *) exit 2 ;;\n'
+            'esac\n'
+        )
     if "--apply" not in flags:
         plists = home / "Library/LaunchAgents"
         plists.mkdir(parents=True)
@@ -136,3 +156,81 @@ def test_explicit_flag_shows_will_load_in_dryrun(tmp_path):
     assert "com.assistant.memory-sync-pull.plist — enabled" in out or \
            "memory-sync-pull.plist — enabled" in out
     assert "Optional features" not in out  # flag suppresses the prompt
+
+
+# ─── ws-numberer opt-in paths ───────────────────────────────────────────────
+
+def test_ws_numberer_remembered_yes_loads(tmp_path):
+    rc, out, home = _run_install(tmp_path, opt_in="ws-numberer=yes\n")
+    assert "cmux-ws-numberer.plist — enabled" in out
+
+
+def test_ws_numberer_flag_persists_yes_on_apply(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply", "--with-ws-numberer"])
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=yes" in state
+
+
+def test_ws_numberer_adopted_when_already_running(tmp_path):
+    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.cmux-ws-numberer")
+    assert "cmux-ws-numberer.plist — enabled" in out
+
+
+def test_ws_numberer_not_adopted_when_another_label_runs(tmp_path):
+    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.unrelated")
+    assert "cmux-ws-numberer.plist — not enabled" in out
+
+
+def test_ws_numberer_adopted_when_legacy_label_runs(tmp_path):
+    rc, out, home = _run_install(tmp_path, loaded_label="com.mukuls.cmux-ws-numberer")
+    assert "cmux-ws-numberer.plist — enabled" in out
+
+
+def test_ws_numberer_legacy_running_survives_apply(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply"],
+                                 loaded_label="com.mukuls.cmux-ws-numberer")
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=yes" in state
+    calls = (home / "launchctl.log").read_text()
+    assert "Library/LaunchAgents/com.assistant.cmux-ws-numberer.plist" in calls
+
+
+def test_help_documents_ws_numberer(tmp_path):
+    r = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True,
+                       env=installer_env(tmp_path), stdin=subprocess.DEVNULL, timeout=30)
+    assert r.returncode == 0
+    assert "--with-ws-numberer   number and color cmux workspaces" in r.stdout
+    assert "cmux-ws-numberer\n       (--with-ws-numberer); comms +" in r.stdout
+
+
+def test_interactive_apply_offers_ws_numberer(tmp_path):
+    env = installer_env(tmp_path)
+    (tmp_path / ".assistant").mkdir()
+    # Settle the later memory and machine-config prompts so only the three
+    # feature prompts read answers.
+    (tmp_path / ".assistant" / "memory-repo-config.json").write_text("{}\n")
+    (tmp_path / ".assistant" / "machine-config-configured").write_text("fixture\n")
+    controller, terminal = pty.openpty()
+    os.write(controller, b"n\nn\ny\n")
+    try:
+        r = subprocess.run(["bash", str(INSTALL), "--apply"], stdin=terminal,
+                           capture_output=True, text=True, env=env, timeout=60)
+    finally:
+        os.close(terminal)
+        os.close(controller)
+    assert r.returncode == 0, f"{r.stdout[-2000:]}\n{r.stderr[-1000:]}"
+    assert "The workspace numberer adds a [N] suffix to every cmux workspace title" in r.stderr
+    state = (tmp_path / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert sorted(state) == ["crash-resume=no", "memory=no", "ws-numberer=yes"]
+
+
+def test_apply_removes_the_legacy_ws_numberer_plist(tmp_path):
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    legacy = agents / "com.mukuls.cmux-ws-numberer.plist"
+    legacy.write_text("<!-- fixture: hand-made plist -->\n")
+    rc, out, home = _run_install(tmp_path, flags=["--apply"])
+    assert not legacy.exists()
+    assert f"bootout gui/{os.getuid()}/com.mukuls.cmux-ws-numberer" in (
+        home / "launchctl.log").read_text().splitlines()
+    assert "REMOVE legacy LaunchAgent com.mukuls.cmux-ws-numberer" in out
