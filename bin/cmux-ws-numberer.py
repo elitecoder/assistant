@@ -96,7 +96,7 @@ CMUX_ENV = {**os.environ, "CMUX_QUIET": "1"}
 
 
 def list_workspaces() -> list[dict]:
-    """Return [{ref:int, index:int, title:str, color:str|None}] for every workspace.
+    """Return [{ref:int, index:int|None, title:str, color:str|None}] for every workspace.
 
     `title` is glyph-stripped; `color` is the reported `custom_color` (hex or
     None) upper-cased for comparison against PALETTE."""
@@ -113,13 +113,14 @@ def list_workspaces() -> list[dict]:
     rows: list[dict] = []
     for w in data.get("workspaces", []):
         m = re.match(r"workspace:(\d+)$", w.get("ref", ""))
-        if not m or not isinstance(w.get("index"), int):
+        if not m:
             continue
+        index = w.get("index")
         title = GLYPH_PREFIX_RE.sub("", w.get("title", "")).rstrip()
         color = w.get("custom_color")
         rows.append({
             "ref": int(m.group(1)),
-            "index": w["index"],
+            "index": index if isinstance(index, int) else None,
             "title": title,
             "color": color.upper() if isinstance(color, str) else None,
         })
@@ -170,7 +171,8 @@ def reconcile() -> None:
     for r in rows:
         ref = f"workspace:{r['ref']}"
 
-        target = desired_title(r["title"], r["index"])
+        # A cmux that reports no index gets colors but no suffix.
+        target = r["title"] if r["index"] is None else desired_title(r["title"], r["index"])
         if r["title"] != target:
             if _run_action("rename", ref, ["--title", target]):
                 log.info("renamed %s: %r -> %r", ref, r["title"], target)

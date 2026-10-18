@@ -253,19 +253,32 @@ class CmuxWsNumbererTests(unittest.TestCase):
         self.assertIsNone(rows[1]["color"])
 
     def test_list_workspaces_skips_non_matching_lines(self):
-        # Entries without a "workspace:N" ref or an integer index are skipped.
+        # Entries without a "workspace:N" ref are skipped; a missing or
+        # non-integer index is kept as None.
         import json as _json
         data = {"workspaces": [
             {"ref": "not-a-workspace", "index": 0, "title": "Bad"},
             {"ref": "workspace:2", "title": "No index"},
+            {"ref": "workspace:3", "index": "1", "title": "String index"},
             {"ref": "workspace:1", "index": 1, "title": "Title"},
         ]}
         with mock.patch.object(self.mod.subprocess, "run",
                                return_value=mock.Mock(returncode=0,
                                                       stdout=_json.dumps(data))):
             rows = self.mod.list_workspaces()
-        # Only the entry with a valid ref and index is returned.
-        self.assertEqual([r["ref"] for r in rows], [1])
+        self.assertEqual([(r["ref"], r["index"]) for r in rows],
+                         [(2, None), (3, None), (1, 1)])
+
+    def test_workspace_without_index_is_colored_but_not_renamed(self):
+        with mock.patch.object(self.mod, "list_workspaces", return_value=[
+            {"ref": 8, "index": None, "title": "Plain", "color": None},
+        ]):
+            calls = []
+            with mock.patch.object(self.mod.subprocess, "run",
+                                   side_effect=self._fake_run_factory(calls)):
+                self.mod.reconcile()
+        self.assertEqual(self._renames(calls), [])
+        self.assertEqual(len(self._colorings(calls)), 1)
 
     @staticmethod
     def _echo(ref: str) -> str:
@@ -388,18 +401,15 @@ class CmuxWsNumbererTests(unittest.TestCase):
         # If workspace-action echoes a DIFFERENT ref than targeted (cmux fell
         # back to the selected workspace because the target closed mid-poll),
         # the daemon must treat it as a no-op, not a success.
-        with mock.patch.object(self.mod, "list_workspaces", return_value=[
-            {"ref": 8, "title": "Plain", "color": "#1565C0"},
-        ]):
-            def fallback_run(cmd, **k):
-                # Always echo the SELECTED workspace, not the target.
-                return mock.Mock(returncode=0, stdout="OK workspace=workspace:1",
-                                 stderr="")
-            with mock.patch.object(self.mod.subprocess, "run",
-                                   side_effect=fallback_run):
-                # Must not raise; the mismatch is logged and skipped.
-                ok = self.mod._run_action("rename", "workspace:8",
-                                          ["--title", "Plain [8]"])
+        def fallback_run(cmd, **k):
+            # Always echo the SELECTED workspace, not the target.
+            return mock.Mock(returncode=0, stdout="OK workspace=workspace:1",
+                             stderr="")
+        with mock.patch.object(self.mod.subprocess, "run",
+                               side_effect=fallback_run):
+            # Must not raise; the mismatch is logged and skipped.
+            ok = self.mod._run_action("rename", "workspace:8",
+                                      ["--title", "Plain [0]"])
         self.assertFalse(ok)
 
 

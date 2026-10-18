@@ -255,16 +255,16 @@ def cmux_available() -> bool:
     return rc == 0
 
 
-_TITLE_REF_SUFFIX_RE = re.compile(r"\s*\[\d+\]\s*$")
+_TITLE_NUMBER_SUFFIX_RE = re.compile(r"\s*\[\d+\]\s*$")
 # cmux's name for a workspace nobody titled; it says nothing about the work.
 _DEFAULT_WS_TITLE = "Terminal"
 
 
 def human_title(title: str | None) -> str:
     """A workspace title as a person reads it, or "" when it names no work.
-    cmux appends the workspace number (`Fix flaky ruler [244]`); the ref already
-    travels in the message footer, so the headline drops the duplicate."""
-    name = _TITLE_REF_SUFFIX_RE.sub("", title or "").strip()
+    cmux-ws-numberer appends the sidebar position (`Fix flaky ruler [3]`); the
+    headline drops it, and the ref travels in the message footer."""
+    name = _TITLE_NUMBER_SUFFIX_RE.sub("", title or "").strip()
     return "" if name == _DEFAULT_WS_TITLE else name
 
 
