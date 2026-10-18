@@ -43,7 +43,8 @@ class _Base(unittest.TestCase):
         (self._tmp / ".claude" / "cache").mkdir(parents=True)
         self._old_home = os.environ.get("HOME")
         os.environ["HOME"] = str(self._tmp)
-        self.now = time.time()
+        # Start of a UTC day, so a few minutes later stays in the same one.
+        self.now = time.time() // 86400 * 86400
 
     def tearDown(self):
         if self._old_home is not None:
