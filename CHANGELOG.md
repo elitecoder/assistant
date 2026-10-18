@@ -57,6 +57,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Number workspaces by sidebar position. cmux 0.65 numbers workspace refs from
+  1000010000, so `cmux-ws-numberer` was adding suffixes like `[1000010009]`.
+  The suffix is now the workspace's 0-based position in its window, the number
+  `--workspace <index>` accepts. It follows reorders within one poll. Renames
+  and colors still target the stable ref.
 - Stop the pulse tests from self-updating the checkout they run in. The tests
   that run the pulse's `main()` called the real self-update, so a checkout
   behind its remote got pulled. When the pull touched installer files, it also
