@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.mukuls.cmux-ws-numberer</string>
+    <string>com.assistant.cmux-ws-numberer</string>
     <key>ProgramArguments</key>
     <array>
         <string>__PYTHON__</string>
@@ -19,9 +19,9 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>__HOME__/.claude/logs/cmux-ws-numberer.stdout.log</string>
+    <string>__HOME__/.assistant/logs/cmux-ws-numberer.launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>__HOME__/.claude/logs/cmux-ws-numberer.stderr.log</string>
+    <string>__HOME__/.assistant/logs/cmux-ws-numberer.launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>

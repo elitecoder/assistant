@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
 import random
 import re
@@ -40,7 +41,7 @@ import time
 from pathlib import Path
 
 CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
-LOG_PATH = Path.home() / ".claude" / "logs" / "cmux-ws-numberer.log"
+LOG_PATH = Path.home() / ".assistant" / "logs" / "cmux-ws-numberer.log"
 SUFFIX_RE = re.compile(r"\s*\[(\d+)\]\s*$")
 # cmux prepends a transient status glyph (spinner / activity dot) to the
 # DISPLAYED title — e.g. "✳ Foo", "⠐ Foo". It is not part of the name we set,
@@ -78,8 +79,9 @@ PALETTE: dict[str, str] = {
 }
 PALETTE_NAMES = list(PALETTE.keys())
 
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
-    filename=str(LOG_PATH),
+    handlers=[logging.handlers.RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=2)],
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )

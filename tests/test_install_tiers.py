@@ -24,7 +24,7 @@ FEATURE = [
     "com.assistant.workspace-watcher",
     "com.assistant.assistant-comms",
     "com.assistant.slack-reactor",
-    "com.mukuls.cmux-ws-numberer",
+    "com.assistant.cmux-ws-numberer",
 ]
 
 
@@ -92,12 +92,12 @@ def test_with_memory_loads_memory_only():
     assert "would reload com.assistant.memory-sync-pull" in out
     assert "memory-sync-pull.plist — enabled" in out
     assert "would reload com.assistant.workspace-watcher" not in out
-    assert "would reload com.mukuls.cmux-ws-numberer" not in out
+    assert "would reload com.assistant.cmux-ws-numberer" not in out
 
 
 def test_with_ws_numberer_loads_numberer_only():
     out = _dryrun("--with-ws-numberer")
-    assert "would reload com.mukuls.cmux-ws-numberer" in out
+    assert "would reload com.assistant.cmux-ws-numberer" in out
     assert "cmux-ws-numberer.plist — enabled" in out
     assert "would reload com.assistant.memory-sync-pull" not in out
     assert "would reload com.assistant.workspace-watcher" not in out
@@ -113,7 +113,7 @@ def test_with_all_loads_every_opt_in_feature():
     out = _dryrun("--with-all")
     assert "would reload com.assistant.memory-sync-pull" in out
     assert "would reload com.assistant.workspace-watcher" in out
-    assert "would reload com.mukuls.cmux-ws-numberer" in out
+    assert "would reload com.assistant.cmux-ws-numberer" in out
 
 
 def test_token_gated_daemons_never_auto_load_even_with_all():

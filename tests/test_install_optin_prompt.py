@@ -20,10 +20,28 @@ REPO = Path(__file__).resolve().parent.parent
 INSTALL = REPO / "install.sh"
 
 
-def _run_install(home: Path, extra_env=None, flags=(), timeout=90):
-    """Run the installer with an isolated HOME and recording service commands."""
+def _run_install(home: Path, extra_env=None, flags=(), timeout=90, opt_in="", loaded_label=None):
+    """Run the installer with an isolated HOME and recording service commands.
+
+    `opt_in` seeds ~/.assistant/feature-opt-in; `loaded_label` makes the
+    recording launchctl report that one label as already loaded."""
     env = {**(extra_env or {}), **installer_env(home)}
     (home / ".assistant").mkdir(parents=True)
+    if opt_in:
+        (home / ".assistant" / "feature-opt-in").write_text(opt_in)
+    if loaded_label:
+        Path(env["ASSISTANT_TEST_LAUNCHCTL"]).write_text(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$HOME/launchctl.log"\n'
+            'case "$1 $2" in\n'
+            f'  "print gui/"*"/{loaded_label}") exit 0 ;;\n'
+            'esac\n'
+            'case "$1" in\n'
+            '  print) exit 1 ;;\n'
+            '  bootout|bootstrap|load) exit 0 ;;\n'
+            '  *) exit 2 ;;\n'
+            'esac\n'
+        )
     if "--apply" not in flags:
         plists = home / "Library/LaunchAgents"
         plists.mkdir(parents=True)
@@ -136,3 +154,26 @@ def test_explicit_flag_shows_will_load_in_dryrun(tmp_path):
     assert "com.assistant.memory-sync-pull.plist — enabled" in out or \
            "memory-sync-pull.plist — enabled" in out
     assert "Optional features" not in out  # flag suppresses the prompt
+
+
+# ─── ws-numberer opt-in paths ───────────────────────────────────────────────
+
+def test_ws_numberer_remembered_yes_loads(tmp_path):
+    rc, out, home = _run_install(tmp_path, opt_in="ws-numberer=yes\n")
+    assert "cmux-ws-numberer.plist — enabled" in out
+
+
+def test_ws_numberer_flag_persists_yes_on_apply(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply", "--with-ws-numberer"])
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=yes" in state
+
+
+def test_ws_numberer_adopted_when_already_running(tmp_path):
+    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.cmux-ws-numberer")
+    assert "cmux-ws-numberer.plist — enabled" in out
+
+
+def test_ws_numberer_not_adopted_when_another_label_runs(tmp_path):
+    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.unrelated")
+    assert "cmux-ws-numberer.plist — not enabled" in out

@@ -54,6 +54,7 @@ each undecided feature with a one-line explanation and a `[y/N]` prompt:
 Memory sync keeps your lessons + semantic memory identical across all your
 machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N]
 Crash-resume auto-restarts a cmux workspace whose Claude session died … Enable? [y/N]
+The workspace numberer adds a [N] suffix to every cmux workspace title … Enable? [y/N]
 ```
 
 Your answer is remembered in `~/.assistant/feature-opt-in`, so **re-runs never
@@ -72,7 +73,7 @@ You can also decide up front with flags (which skip the prompt):
 
 ```bash
 ./install.sh --apply --with-memory          # core + cross-machine memory, no prompt
-./install.sh --apply --with-all             # core + every feature timer, no prompt
+./install.sh --apply --with-all             # core + every opt-in feature, no prompt
 ```
 
 **Changing your mind:** declined a feature and want it now? Re-run with its

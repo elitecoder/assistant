@@ -13,7 +13,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Add the `cmux-ws-numberer` LaunchAgent as an opt-in feature. It adds a `[N]`
   suffix to cmux workspace titles and gives each workspace an unused sidebar
   color. Enable it with `install.sh --apply --with-ws-numberer`, answer the
-  prompt, or use `--with-all`.
+  prompt, or use `--with-all`. Its label is now `com.assistant.cmux-ws-numberer`;
+  the installer removes the old `com.mukuls.cmux-ws-numberer` plist. Its log
+  moves to `~/.assistant/logs/cmux-ws-numberer.log`, which it creates if
+  missing, and rotates at 5 MB with two old copies.
 - Check every self-update before it lands: read each runtime file the fetched
   commits add or change straight from git, scan it for leftover merge conflict
   markers, and parse it if it's Python. If a file fails, refuse the update

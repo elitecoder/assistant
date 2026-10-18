@@ -162,7 +162,7 @@ _feat_label() {
     case "$1" in
         memory)        echo "com.assistant.memory-sync-pull" ;;
         crash-resume)  echo "com.assistant.workspace-watcher" ;;
-        ws-numberer)   echo "com.mukuls.cmux-ws-numberer" ;;
+        ws-numberer)   echo "com.assistant.cmux-ws-numberer" ;;
     esac
 }
 # daemon_loaded <feat> — 0 if the feature's LaunchAgent is loaded. Called ONLY
@@ -626,23 +626,23 @@ PLIST_SKIP=(
 #   assistant-comms    Slack comms (needs token + assistant-comms-setup.sh)
 #   slack-reactor      Slack emoji→todo (needs SLACK_APP_TOKEN/SLACK_BOT_TOKEN)
 # comms/slack-reactor are never auto-loaded even with a flag — they crash-loop
-# without their tokens, so they activate by hand after setup. memory &
-# crash-resume DO auto-load when their flag is passed.
+# without their tokens, so they activate by hand after setup. memory,
+# crash-resume, and ws-numberer DO auto-load when their flag is passed.
 #
 # feature_of <plist-base> → prints the feature name, or "" if it's core.
 feature_of() {
     case "$1" in
         com.assistant.memory-sync-pull.plist)   echo "memory" ;;
         com.assistant.workspace-watcher.plist)  echo "crash-resume" ;;
-        com.mukuls.cmux-ws-numberer.plist)      echo "ws-numberer" ;;
+        com.assistant.cmux-ws-numberer.plist)   echo "ws-numberer" ;;
         com.assistant.assistant-comms.plist)    echo "comms" ;;
         com.assistant.slack-reactor.plist)      echo "slack-reactor" ;;
         *)                                       echo "" ;;
     esac
 }
 # feature_enabled <feature> → 0 (load it) / 1 (copy-no-load). comms &
-# slack-reactor are ALWAYS copy-no-load (token-gated); memory & crash-resume
-# load only when their --with flag was passed.
+# slack-reactor are ALWAYS copy-no-load (token-gated); memory, crash-resume,
+# and ws-numberer load only when their --with flag was passed.
 feature_enabled() {
     case "$1" in
         memory)        [[ $WITH_MEMORY -eq 1 ]] ;;
@@ -725,6 +725,7 @@ done
 #  - com.mukuls.triage-pulse → com.assistant.assistant-pulse (2026-05-23 rename)
 #  - com.mukuls.{assistant-pulse,assistant-page,assistant-todo-server,
 #    session-context-watcher,world-scanner} → com.assistant.* (2026-05-23 namespacing)
+#  - com.mukuls.cmux-ws-numberer → com.assistant.cmux-ws-numberer (2026-10-18)
 # Leaving any of these loaded would mean two daemons running the same job in
 # parallel after install. Always unload + remove on apply.
 LEGACY_LABELS=(
@@ -734,6 +735,7 @@ LEGACY_LABELS=(
     "com.mukuls.assistant-todo-server"
     "com.mukuls.session-context-watcher"
     "com.mukuls.world-scanner"
+    "com.mukuls.cmux-ws-numberer"
 )
 for legacy in "${LEGACY_LABELS[@]}"; do
     legacy_plist="$HOME_DIR/Library/LaunchAgents/${legacy}.plist"
