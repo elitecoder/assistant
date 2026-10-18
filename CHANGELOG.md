@@ -17,6 +17,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   the installer removes the old `com.mukuls.cmux-ws-numberer` plist. Its log
   moves to `~/.assistant/logs/cmux-ws-numberer.log`, which it creates if
   missing, and rotates at 5 MB with two old copies.
+- Let changes to `install.sh` pass the new-code coverage gate when a targeted
+  mutation proves them. No line-coverage tool can measure it safely here.
+  Each changed hunk that holds code needs a check in `tests/mutation_smoke.py`
+  that breaks one of its lines. The gate fails on any unproven hunk, and the
+  mutation step fails unless a test rejects each break. Other shell scripts
+  still fail the gate.
 - Check every self-update before it lands: read each runtime file the fetched
   commits add or change straight from git, scan it for leftover merge conflict
   markers, and parse it if it's Python. If a file fails, refuse the update
