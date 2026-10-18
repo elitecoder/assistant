@@ -85,7 +85,8 @@ def changed_hunks(repo: Path, base: str) -> dict[str, list[set[int]]]:
     hunks: dict[str, list[set[int]]] = {}
     for name in sorted(MUTATION_PROVEN):
         diff = subprocess.check_output(
-            ["git", "-C", str(repo), "diff", "--no-ext-diff", "--unified=0", base_commit, "--", name],
+            ["git", "-C", str(repo), "diff", "--no-ext-diff", "--no-color", "--unified=0",
+             "--inter-hunk-context=0", base_commit, "--", name],
             text=True)
         line = 0
         for text in diff.splitlines():
@@ -101,19 +102,30 @@ def changed_hunks(repo: Path, base: str) -> dict[str, list[set[int]]]:
     return {name: kept for name, found in hunks.items() if (kept := [hunk for hunk in found if hunk])}
 
 
+def broken_lines(source: str, original: str, broken: str) -> set[int]:
+    old, new = original.splitlines(keepends=True), broken.splitlines(keepends=True)
+    prefix = 0
+    while prefix < min(len(old), len(new)) and old[prefix] == new[prefix]:
+        prefix += 1
+    suffix = 0
+    while suffix < min(len(old), len(new)) - prefix and old[-1 - suffix] == new[-1 - suffix]:
+        suffix += 1
+    start = source[:source.index(original)].count("\n") + 1
+    return set(range(start + prefix, start + len(old) - suffix))
+
+
 def check_mutation_proof(repo: Path, hunks: dict[str, list[set[int]]], checks) -> list[dict]:
     results = []
     for name, file_hunks in sorted(hunks.items()):
         source = (repo / name).read_text()
         lines = source.splitlines()
         spans = []
-        for check, filename, original, _broken, _selector in checks:
+        for check, filename, original, broken, _selector in checks:
             if filename != name:
                 continue
             if source.count(original) != 1:
                 raise ValueError(f"Mutation target must appear once in {name}: {check}")
-            start = source[:source.index(original)].count("\n") + 1
-            spans.append(set(range(start, start + original.rstrip("\n").count("\n") + 1)))
+            spans.append(broken_lines(source, original, broken))
         unproven = []
         for hunk in file_hunks:
             code = {line for line in hunk

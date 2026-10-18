@@ -14,8 +14,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   mutation proves them. No line-coverage tool can measure it safely here.
   Each changed hunk that holds code needs a check in `tests/mutation_smoke.py`
   that breaks one of its lines. The gate fails on any unproven hunk, and the
-  mutation step fails unless a test rejects each break. Other shell scripts
-  still fail the gate.
+  mutation step fails unless a test rejects each break and the broken script
+  still parses. A check proves only the lines its break changes, and one check
+  is enough for a whole hunk, so add more for large hunks. Hunks that only
+  delete lines need no check. Other shell scripts still fail the gate.
 - Check every self-update before it lands: read each runtime file the fetched
   commits add or change straight from git, scan it for leftover merge conflict
   markers, and parse it if it's Python. If a file fails, refuse the update
