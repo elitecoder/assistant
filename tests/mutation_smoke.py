@@ -154,6 +154,48 @@ CHECKS = (
         "",
         "tests/test_install_optin_prompt.py::test_apply_removes_the_legacy_ws_numberer_plist",
     ),
+    (
+        "spawn accepts only FFP experiment switches",
+        "bin/cmux-claude-spawn.sh",
+        "\"${2:-}\" =~ '^(FFP_CHANNEL|FFP_EXP_[A-Z0-9_]+)=[a-z0-9]+$'",
+        "\"${2:-}\" =~ '^[A-Za-z_]+=.+$'",
+        "tests/test_cmux_claude_launcher.py::test_spawn_refuses_env_other_than_ffp_experiment_switches",
+    ),
+    (
+        "spawn requires an auto-mode claude alias",
+        "bin/cmux-claude-spawn.sh",
+        '"$ALIAS" == *"--permission-mode auto"* && ',
+        "",
+        "tests/test_cmux_claude_launcher.py::test_spawn_refuses_an_alias_that_is_not_auto_mode",
+    ),
+    (
+        "spawn reads prompts only from the staging folder",
+        "bin/cmux-claude-spawn.sh",
+        '"$PF" == "${PROMPTS:A}"/*',
+        '"$PF" == "${PROMPTS:A}"*',
+        "tests/test_cmux_claude_launcher.py::test_spawn_refuses_a_sibling_of_the_staging_folder",
+    ),
+    (
+        "spawn keeps the new workspace unfocused",
+        "bin/cmux-claude-spawn.sh",
+        "--focus false",
+        "--focus true",
+        "tests/test_cmux_claude_launcher.py::test_spawn_launches_unfocused_auto_mode_claude_and_returns_the_new_transcript",
+    ),
+    (
+        "send refuses the caller's own surface",
+        "bin/cmux-claude-send.sh",
+        '[[ "${SF:u}" != "${${CMUX_SURFACE_ID:-}:u}" ]] ||',
+        "true ||",
+        "tests/test_cmux_claude_launcher.py::test_send_refuses_its_own_surface_and_short_refs",
+    ),
+    (
+        "send refuses a target in bypass mode",
+        "bin/cmux-claude-send.sh",
+        ' && "$SCREEN" != *"bypass permissions on"*',
+        "",
+        "tests/test_cmux_claude_launcher.py::test_send_refuses_a_target_that_is_not_in_auto_mode",
+    ),
 )
 
 
