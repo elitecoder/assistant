@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import select
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,7 @@ def tmp_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("CMUX_BIN", str(fake_cmux.install(home / "cmux-bin")))
+    monkeypatch.setattr(scw, "CMUX_REGISTRY", home / ".claude/cmux-registry.json")
     orch_reg = home / ".architect/orchestrator-registry.json"
     out_path = home / ".claude/cache/session-context.json"
     world_path = home / ".claude/cache/world.json"
@@ -272,6 +274,48 @@ def test_load_live_sessions_empty_identity_world_does_not_restore_records(tmp_ho
         "workspaces": [{"surfaces": [{"identity_status": "unknown"}]}],
     }))
     assert scw.load_live_agent_sessions() == {}
+
+
+@pytest.fixture
+def agent_pid(tmp_path):
+    """The pid of a live process named `claude` (a renamed sleep)."""
+    impostor = tmp_path / "claude"
+    impostor.symlink_to("/bin/sleep")
+    process = subprocess.Popen([str(impostor), "60"])
+    yield process.pid
+    process.kill()
+    process.wait()
+
+
+def _write_registry(rows):
+    scw.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    scw.CMUX_REGISTRY.write_text(json.dumps(rows))
+
+
+def test_load_live_sessions_falls_back_to_the_registry_for_sessions_cmux_lacks(
+        tmp_home, agent_pid):
+    _write_sessions(tmp_home, [fake_cmux.record("S-CMUX", pid=os.getpid())])
+    _write_registry({
+        "WS-MISSED": {"session_id": "S-MISSED", "claude_pid": str(agent_pid), "cwd": "/m",
+                      "surface_id": "SF-M", "ts": 50, "transcript_path": "/t/m.jsonl"},
+        "WS-CMUX": {"session_id": "S-CMUX", "claude_pid": str(agent_pid), "cwd": "/c"},
+        "WS-REUSED": {"session_id": "S-REUSED", "claude_pid": str(os.getpid())},
+    })
+    out = scw.load_live_agent_sessions()
+    assert set(out) == {"S-CMUX", "S-MISSED"}
+    assert out["S-CMUX"]["pid"] == os.getpid()
+    assert out["S-MISSED"] == {
+        "pid": agent_pid, "cwd": "/m", "transcript_path": "/t/m.jsonl",
+        "provider": "claude", "ts": 50.0, "tab_id": "WS-MISSED",
+    }
+
+
+def test_identity_world_never_reads_the_registry(tmp_home, agent_pid):
+    _write_registry({"WS": {"session_id": "S-MISSED", "claude_pid": str(agent_pid)}})
+    scw.WORLD_PATH.write_text(json.dumps({"live_sessions": [
+        {"session_id": "S-WORLD", "pid": os.getpid(), "identity_status": "verified",
+         "workspace_id": "w", "surface_id": "s"}]}))
+    assert set(scw.load_live_agent_sessions()) == {"S-WORLD"}
 
 
 # ─── load_cron_workers ───────────────────────────────────────────────────────

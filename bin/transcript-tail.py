@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cmux_sessions  # noqa: E402
 
 WORLD = os.path.expanduser("~/.claude/cache/world.json")
+REGISTRY = os.path.expanduser("~/.claude/cmux-registry.json")
 
 
 def find_via_world(ws_ref):
@@ -40,9 +41,11 @@ def find_via_world(ws_ref):
 
 
 def find_via_cmux_sessions(cwd):
-    """The most recently active session cmux recorded in `cwd` (current or launch directory)."""
-    matches = [s for s in cmux_sessions.list_sessions()
-               if s.transcript_path and cwd in (s.cwd, s.launch_cwd)]
+    """The most recently active session recorded in `cwd` (current or launch
+    directory): cmux's records, plus registry rows for sessions cmux lacks."""
+    recorded = cmux_sessions.list_sessions()
+    recorded += cmux_sessions.registry_fallback(REGISTRY, recorded)
+    matches = [s for s in recorded if s.transcript_path and cwd in (s.cwd, s.launch_cwd)]
     if not matches:
         return None
     return max(matches, key=lambda s: s.updated_at or 0).transcript_path

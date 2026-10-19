@@ -706,7 +706,11 @@ def test_record_without_live_binding_is_not_authoritative(ws, monkeypatch):
     assert world["workspaces"][0]["surfaces"][0]["session_id"] is None
 
 
-def _seed_current_hook(ws, monkeypatch, *, changes=None, process_change=None, native=None):
+def _seed_current_hook(ws, monkeypatch, *, changes=None, process_change=None, native=None,
+                       registry=None, cmux=True):
+    """One live claude on ttys001 with no resume binding. cmux's record for it
+    gets `changes`; `cmux=False` drops that record. `registry` (row changes)
+    writes a cmux-registry.json row for the same session and surface."""
     records, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
     registered = ws.utc_now().timestamp() - 60
     cmux_records[0].update({
@@ -717,6 +721,18 @@ def _seed_current_hook(ws, monkeypatch, *, changes=None, process_change=None, na
         "launch_working_directory": "/work/shared",
     })
     cmux_records[0].update(changes or {})
+    if not cmux:
+        cmux_records.clear()
+    if registry is not None:
+        row = {
+            "session_id": "session-1", "cwd": "/work/registry",
+            "surface_id": records[0]["surface_id"].upper(),
+            "tab_id": records[0]["workspace_id"].upper(), "claude_pid": "",
+            "ts": registered, "transcript_path": "/t/session-1.jsonl",
+        }
+        row.update(registry)
+        key = row.pop("key", records[0]["workspace_id"].upper())
+        ws.CMUX_REGISTRY.write_text(json.dumps({key: row}))
     process = {
         "pid": 101, "pgid": 101, "tpgid": 101,
         "started": registered - 2, "command": "/Users/fixture/.local/bin/claude",
@@ -729,6 +745,8 @@ def _seed_current_hook(ws, monkeypatch, *, changes=None, process_change=None, na
         calls.append(args)
         if args[1:4] == ["surface", "resume", "show"]:
             return fake_completed(json.dumps({"binding": native}))
+        if args[:2] == ["ps", "-p"] and args[-1] == "comm=":
+            return fake_completed(process["command"] + "\n")
         if args[:2] == ["ps", "-t"] and "lstart" in args[-1]:
             assert kwargs["env"]["TZ"] == "UTC"
             started = datetime.fromtimestamp(
@@ -783,6 +801,117 @@ def test_hook_fallback_rejects_stale_or_mismatched_process(ws, monkeypatch, chan
     assert world["workspaces"][0]["session_ids"] == []
     assert world["workspaces"][0]["surfaces"][0]["identity_status"] == "unknown"
     assert not any(s["identity_status"] == "verified" for s in world["live_sessions"])
+
+
+def test_registry_fallback_verifies_a_session_cmux_never_recorded(ws, monkeypatch):
+    # Live ee4ee641 on 2026-10-19: started without cmux's wrapper, the forward to
+    # cmux failed, so only mukul-memory's registry hook recorded it.
+    calls = _seed_current_hook(ws, monkeypatch, cmux=False, registry={})
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    session = world["live_sessions"][0]
+    assert (session["session_id"], session["pid"], session["identity_status"],
+            session["identity_source"], session["cwd"]) == (
+        "session-1", 101, "verified", "session_start_registry", "/work/registry")
+    assert session["first_recorded_at"] == ws.iso(datetime.fromtimestamp(
+        ws.utc_now().timestamp() - 60, tz=timezone.utc))
+    assert world["workspaces"][0]["session_ids"] == ["session-1"]
+    assert world["_meta"]["session_record_fallback"] == {
+        "source": str(ws.CMUX_REGISTRY), "hits": 1, "session_ids": ["session-1"]}
+    assert any(args[1:3] == ["sessions", "list"] for args in calls)
+    assert "fallback_hits=1" in (ws.LOG_DIR / "world-scanner.out").read_text()
+
+
+@pytest.mark.parametrize("row", [
+    {"ts": 1},
+    {"claude_pid": "999"},
+    {"surface_id": "different-surface"},
+    {"key": "different-workspace", "tab_id": "different-workspace"},
+])
+def test_registry_fallback_rejects_stale_or_mismatched_rows(ws, monkeypatch, row):
+    _seed_current_hook(ws, monkeypatch, cmux=False, registry=row)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == []
+    assert not any(s["identity_status"] == "verified" for s in world["live_sessions"])
+    # A row with a live agent pid is still reported, as an unverified session.
+    assert world["_meta"]["session_record_fallback"]["hits"] == (1 if "claude_pid" in row else 0)
+
+
+def test_registry_row_for_a_session_cmux_recorded_is_not_a_fallback(ws, monkeypatch):
+    # cmux's record is stale (written before the process started); the registry
+    # row for the same session must not stand in for it.
+    _seed_current_hook(ws, monkeypatch, changes={"updated_at_unix": 1}, registry={})
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == []
+    assert world["_meta"]["session_record_fallback"]["hits"] == 0
+
+
+def test_registry_fallback_replaces_a_stale_cmux_record_for_another_session(ws, monkeypatch):
+    _seed_current_hook(ws, monkeypatch, changes={"session_id": "earlier", "updated_at_unix": 1},
+                       registry={})
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == ["session-1"]
+    assert world["_meta"]["session_record_fallback"]["session_ids"] == ["session-1"]
+
+
+def test_a_resume_binding_verification_is_not_a_fallback_hit(ws, monkeypatch):
+    records, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    cmux_records.clear()
+    ws.CMUX_REGISTRY.write_text(json.dumps({records[0]["workspace_id"].upper(): {
+        "session_id": "session-1", "surface_id": records[0]["surface_id"], "ts": 1}}))
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["live_sessions"][0]["identity_source"] == "cmux_resume_binding"
+    assert world["_meta"]["session_record_fallback"]["hits"] == 0
+
+
+def test_cmux_record_wins_over_a_registry_row_for_the_same_surface(ws, monkeypatch):
+    _seed_current_hook(ws, monkeypatch, registry={"session_id": "registry-session"})
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == ["session-1"]
+    assert world["_meta"]["session_record_fallback"]["hits"] == 0
+
+
+def test_two_active_records_for_one_surface_verify_neither(ws, monkeypatch):
+    # cmux keeps one store per agent, so a claude and a factory record can both
+    # be active for a surface. Neither may verify it.
+    _seed_current_hook(ws, monkeypatch)
+    original_run = ws.subprocess.run
+
+    def run(args, **kwargs):
+        result = original_run(args, **kwargs)
+        if args[1:3] == ["sessions", "list"]:
+            rows = json.loads(result.stdout)["sessions"]
+            rows.append({**rows[0], "session_id": "factory-twin", "agent": "factory"})
+            return fake_completed(json.dumps({"sessions": rows}))
+        return result
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["session_ids"] == []
+    assert not any(s["identity_status"] == "verified" for s in world["live_sessions"])
+
+
+@pytest.mark.parametrize("command,kept", [
+    ("/Users/fixture/.local/bin/claude", True),
+    ("/usr/bin/python3", False),
+])
+def test_registry_row_with_a_live_pid_must_be_an_agent(ws, monkeypatch, command, kept):
+    # The registry outlives its sessions and macOS reuses pids: aea1111b's
+    # pid 2255 belonged to gmail.py on 2026-10-19.
+    _seed_current_hook(ws, monkeypatch, cmux=False, process_change={"command": command},
+                       registry={"claude_pid": "4242", "surface_id": "elsewhere"})
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    sessions = [s for s in world["live_sessions"] if s["pid"] == 4242]
+    assert [(s["identity_status"], s["identity_source"]) for s in sessions] == (
+        [("unknown", "registry")] if kept else [])
+    assert world["_meta"]["session_record_fallback"]["hits"] == (1 if kept else 0)
 
 
 @pytest.mark.parametrize("kind", ["claude", "copilot"])

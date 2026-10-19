@@ -48,6 +48,7 @@ import agent_session
 import cmux_sessions
 
 HOME = Path(os.environ["HOME"])
+CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ORCHESTRATOR_REGISTRY = HOME / ".architect/orchestrator-registry.json"
 OUT_PATH = HOME / ".claude/cache/session-context.json"
@@ -117,7 +118,8 @@ def pid_alive(pid):
 
 
 def load_live_agent_sessions():
-    """Prefer verified world bindings; use cmux's session records without identity data."""
+    """Prefer verified world bindings; without identity data, use cmux's session
+    records plus registry fallback rows for sessions cmux lacks."""
     try:
         world = json.loads(WORLD_PATH.read_text())
     except (OSError, ValueError) as exc:
@@ -134,12 +136,18 @@ def load_live_agent_sessions():
         for workspace in world.get("workspaces", []) or [] if isinstance(workspace, dict)
         for surface in workspace.get("surfaces", []) or []
     )
-    # Each surface's active record is what runs there now; earlier records on
-    # the same surface (a /clear, a finished session) may share its live pid.
-    recorded = [] if identity_schema else cmux_sessions.list_sessions()
+    recorded = []
+    if not identity_schema:
+        recorded = cmux_sessions.list_sessions()
+        recorded += cmux_sessions.registry_fallback(CMUX_REGISTRY, recorded)
     out = {}
     for record in recorded:
+        # Each surface's active record is what runs there now; earlier records
+        # on the same surface (a /clear, a finished session) may share its live
+        # pid. A registry row's pid must still be an agent (pids get reused).
         if not (record.active_for_surface and record.provider and pid_alive(record.pid)):
+            continue
+        if record.source == cmux_sessions.REGISTRY and not cmux_sessions.agent_process(record.pid):
             continue
         out[record.session_id] = {
             "pid": record.pid,

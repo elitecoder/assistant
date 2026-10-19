@@ -11,6 +11,8 @@ Inputs:
   - ps (which Claude PIDs are alive)
   - `cmux sessions list --json --all` (cmux's own agent session records:
     session_id ↔ workspace/surface UUID ↔ cwd ↔ transcript_path ↔ pid ↔ start)
+  - ~/.claude/cmux-registry.json (fallback only, for sessions cmux has no record
+    of; _meta.session_record_fallback counts the sessions it supplied)
   - ~/.architect/orchestrator-registry.json (workers list — for is_cron tag)
   - ~/.claude/cache/session-context.json (transcript turns; maintained by watcher)
   - ~/.claude/cache/dashboard-state.json (workspace classifications + screen hashes)
@@ -27,12 +29,14 @@ Cadence: 30s via LaunchAgent. Stdlib only.
 
 Workspace and surface UUIDs identify current cmux objects. A session's
 identity_status is verified when a live resume binding and process agree, or
-cmux's active session record for the surface matches both UUIDs and a foreground
-provider process that started before the record's latest hook update.
+a session record for the surface (cmux's active one, else a registry fallback
+row) matches both UUIDs and a foreground provider process that started before
+the record's latest update.
 context_status verifies the cached session/provider association, not freshness;
 context_built_at supplies the cache clock. Missing bindings and unsupported
 providers stay unknown. first_recorded_at is cmux's recorded start for the
-session (started_at), which a session restored into another workspace keeps.
+session (started_at), which a session restored into another workspace keeps;
+for a registry fallback row it is that row's SessionStart time.
 Internal session keys include provider, full session ID, workspace UUID, and
 surface UUID, so resumed sessions retain each binding in the exported list.
 """
@@ -72,6 +76,7 @@ except Exception:  # noqa: BLE001 — snapshot resilience over connector fidelit
 
 HOME = Path(os.environ["HOME"])
 OUT_PATH = HOME / ".claude/cache/world.json"
+CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 ORCH_REGISTRY = HOME / ".architect/orchestrator-registry.json"
 SESSION_CTX = HOME / ".claude/cache/session-context.json"
 DASHBOARD_STATE = HOME / ".claude/cache/dashboard-state.json"
@@ -322,11 +327,22 @@ def agent_pid_on_tty(tty, provider):
 
 
 def recorded_binding_for_surface(records, workspace, surface):
-    """Verify cmux's active record for this surface: both UUIDs, pid, and process age.
+    """Verify a session record for this surface: both UUIDs, pid, and process age.
 
-    A resumed session keeps its original started_at, so the age check uses the
-    record's latest hook update, which the current process must have written.
+    cmux's own record goes first; a registry fallback row only when cmux's
+    doesn't verify. A resumed session keeps its original started_at, so the
+    age check uses the record's latest update (cmux's latest hook, or the
+    registry's SessionStart), which the current process must have written.
     """
+    for source in (cmux_sessions.CMUX, cmux_sessions.REGISTRY):
+        binding = _verified_record_binding(
+            [record for record in records if record.source == source], workspace, surface)
+        if binding:
+            return binding
+    return None
+
+
+def _verified_record_binding(records, workspace, surface):
     workspace_id = workspace.get("workspace_id")
     surface_id = surface.get("surface_id")
     tty = surface.get("tty")
@@ -371,16 +387,20 @@ def session_identity_key(session):
 
 
 def build_live_sessions(workspaces=None, records=()):
-    """Build the canonical live-session list from cmux's session records (one
-    per agent session cmux has seen) with a pid-alive filter, then bind each
-    terminal surface. Each entry carries session_id, pid, cwd, tty,
-    transcript_path, and the workspace_ref it lives in (best-effort via tty
-    join with cmux tree)."""
+    """Build the canonical live-session list from session records (cmux's,
+    plus registry fallback rows for sessions cmux lacks) with a pid-alive
+    filter, then bind each terminal surface. Each entry carries session_id,
+    pid, cwd, tty, transcript_path, and the workspace_ref it lives in
+    (best-effort via tty join with cmux tree)."""
     out = {}
     for record in records:
         # Only each surface's active record: earlier sessions on the surface
-        # (a /clear, a finished run) can share its still-live pid.
+        # (a /clear, a finished run) can share its still-live pid. A registry
+        # row's pid must still be an agent: the registry outlives its sessions
+        # and macOS reuses pids.
         if not (record.active_for_surface and record.provider and pid_alive(record.pid)):
+            continue
+        if record.source == cmux_sessions.REGISTRY and not cmux_sessions.agent_process(record.pid):
             continue
         session = {
             "session_id": record.session_id,
@@ -755,11 +775,19 @@ def build():
     tree = cmux_tree()
     workspaces = build_workspace_index(tree)
     records = cmux_sessions.list_sessions()
+    records += cmux_sessions.registry_fallback(CMUX_REGISTRY, records)
     live_sessions = build_live_sessions(workspaces, records)
     join_workspaces_to_sessions(workspaces, live_sessions)
     tag_cron_workers(live_sessions)
     merge_session_context(live_sessions)
     merge_first_recorded(live_sessions, records, now)
+
+    fallback_ids = {r.session_id for r in records if r.source == cmux_sessions.REGISTRY}
+    fallback_hits = sorted(
+        s["session_id"] for s in live_sessions.values()
+        if s["session_id"] in fallback_ids
+        and s["identity_source"] in ("registry", "session_start_registry")
+    )
 
     # Compute per-session activity age and bucket.
     for sess in live_sessions.values():
@@ -803,6 +831,10 @@ def build():
             "built_at": iso(now),
             "scanner_version": 1,
             "memory_pct": read_mem_pct(),
+            "session_record_fallback": {
+                "source": str(CMUX_REGISTRY), "hits": len(fallback_hits),
+                "session_ids": fallback_hits,
+            },
         },
         "counts": {
             "workspaces": len(workspaces),
@@ -834,7 +866,8 @@ def build():
         f"(human={human} cron={cron} active30m={truly_active}) "
         f"proposals_open={payload['counts']['proposals_open']} "
         f"awaiting={len(awaiting)} ledger24h={len(ledger_recent)} "
-        f"todo_open={payload['counts']['todo_open']} mem={payload['_meta']['memory_pct']}%"
+        f"todo_open={payload['counts']['todo_open']} mem={payload['_meta']['memory_pct']}% "
+        f"fallback_hits={len(fallback_hits)}"
     )
 
 

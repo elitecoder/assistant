@@ -431,6 +431,23 @@ class TranscriptTailTests(unittest.TestCase):
         self.assertEqual(self.mod.find_via_cmux_sessions("/x/sub"), "/moved.jsonl")
         self.assertIsNone(self.mod.find_via_cmux_sessions("/x/s"))
 
+    def test_find_via_cmux_sessions_falls_back_to_registry_history(self):
+        # cmux keeps a few dozen records; the registry also has older sessions.
+        fake_cmux.write(self.cmux_dir, [
+            fake_cmux.record("in-cmux", cwd="/x", transcript_path="/cmux.jsonl",
+                             updated_at_unix=100),
+        ])
+        Path(self.mod.REGISTRY).write_text(json.dumps({
+            "WS-OLD": {"session_id": "registry-only", "cwd": "/old",
+                       "transcript_path": "/registry.jsonl", "ts": 50},
+            "WS-NEW": {"session_id": "registry-newer", "cwd": "/x",
+                       "transcript_path": "/registry-newer.jsonl", "ts": 200},
+            "WS-DUP": {"session_id": "in-cmux", "cwd": "/x",
+                       "transcript_path": "/stale-copy.jsonl", "ts": 900},
+        }))
+        self.assertEqual(self.mod.find_via_cmux_sessions("/old"), "/registry.jsonl")
+        self.assertEqual(self.mod.find_via_cmux_sessions("/x"), "/registry-newer.jsonl")
+
     def test_find_via_cmux_sessions_returns_none_when_no_match(self):
         fake_cmux.write(self.cmux_dir, [])
         self.assertIsNone(self.mod.find_via_cmux_sessions("/no/match"))

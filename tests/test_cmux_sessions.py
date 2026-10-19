@@ -2,7 +2,9 @@
 returns typed session records, or [] whenever cmux can't answer."""
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -111,6 +113,17 @@ def test_hung_cli_times_out_to_no_sessions(tmp_path, monkeypatch, capsys):
     assert "timed out" in capsys.readouterr().err
 
 
+def test_a_slow_cli_still_answers_within_the_timeout(tmp_path, monkeypatch):
+    # cmux took 4.8 s to answer on a busy machine; a scan must not blank.
+    directory = tmp_path / "slow"
+    fake_cmux.install(directory, [fake_cmux.record("slow-but-there")])
+    slow = directory / "slow-cmux"
+    slow.write_text(f"#!/bin/sh\nsleep 6\nexec '{directory / 'cmux'}' \"$@\"\n")
+    slow.chmod(0o755)
+    monkeypatch.setenv("CMUX_BIN", str(slow))
+    assert [s.session_id for s in cmux_sessions.list_sessions()] == ["slow-but-there"]
+
+
 def _executable(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\n")
@@ -146,3 +159,73 @@ def test_bundled_cli_is_what_runs_without_an_override(tmp_path, monkeypatch):
     monkeypatch.setenv("CMUX_BUNDLED_CLI_PATH", str(path))
     monkeypatch.setenv("PATH", os.defpath)
     assert [s.session_id for s in cmux_sessions.list_sessions()] == ["from-bundle"]
+
+
+def test_launch_arguments_become_a_tuple(cli):
+    fake_cmux.write(cli, [
+        fake_cmux.record("with-argv", launch_arguments=["/x/claude", "--model", "opus"]),
+        fake_cmux.record("bad-argv", launch_arguments="not a list"),
+    ])
+    sessions = {s.session_id: s for s in cmux_sessions.list_sessions()}
+    assert sessions["with-argv"].launch_argv == ("/x/claude", "--model", "opus")
+    assert sessions["bad-argv"].launch_argv == ()
+    assert {s.source for s in sessions.values()} == {cmux_sessions.CMUX}
+
+
+def _registry(tmp_path, rows):
+    path = tmp_path / "cmux-registry.json"
+    path.write_text(rows if isinstance(rows, str) else json.dumps(rows))
+    return path
+
+
+def test_registry_fallback_keeps_only_sessions_cmux_lacks(tmp_path):
+    path = _registry(tmp_path, {
+        "WS-MISSED": {"session_id": "missed", "cwd": "/repo", "surface_id": "SF-1",
+                      "tab_id": "WS-MISSED", "panel_id": "SF-1", "claude_pid": "",
+                      "ts": 1792107522.13, "transcript_path": "/t/missed.jsonl"},
+        "WS-KNOWN": {"session_id": "known", "surface_id": "SF-2", "claude_pid": "4242",
+                     "ts": 10},
+        "WS-PANEL": {"session_id": "panel-only", "panel_id": "SF-3", "claude_pid": 77,
+                     "ts": "not a time"},
+        "WS-NOSID": {"surface_id": "SF-4"},
+        "WS-JUNK": "not a row",
+    })
+    known = [cmux_sessions.Session(
+        session_id="known", agent="claude", workspace_id=None, surface_id=None, cwd=None,
+        launch_cwd=None, pid=None, transcript_path=None, started_at=None, updated_at=None,
+        active_for_surface=True)]
+    rows = {s.session_id: s for s in cmux_sessions.registry_fallback(path, known)}
+    assert list(rows) == ["missed", "panel-only"]
+    assert rows["missed"] == cmux_sessions.Session(
+        session_id="missed", agent="claude", workspace_id="WS-MISSED", surface_id="SF-1",
+        cwd="/repo", launch_cwd="/repo", pid=None, transcript_path="/t/missed.jsonl",
+        started_at=1792107522.13, updated_at=1792107522.13, active_for_surface=True,
+        source=cmux_sessions.REGISTRY)
+    panel = rows["panel-only"]
+    assert (panel.surface_id, panel.pid, panel.started_at, panel.provider) == (
+        "SF-3", 77, None, "claude")
+
+
+@pytest.mark.parametrize("contents", [None, "{ not json", "[]"])
+def test_unreadable_registry_yields_no_fallback(tmp_path, contents):
+    path = tmp_path / "missing.json" if contents is None else _registry(tmp_path, contents)
+    assert cmux_sessions.registry_fallback(path, []) == []
+
+
+def test_agent_process_requires_a_live_claude_or_droid(tmp_path):
+    impostor = tmp_path / "claude"
+    impostor.symlink_to("/bin/sleep")
+    process = subprocess.Popen([str(impostor), "30"])
+    try:
+        assert cmux_sessions.agent_process(process.pid) is True
+    finally:
+        process.kill()
+        process.wait()
+    assert cmux_sessions.agent_process(os.getpid()) is False  # a reused pid: python
+    assert cmux_sessions.agent_process(process.pid) is False  # exited
+    assert cmux_sessions.agent_process(None) is False
+
+
+def test_agent_process_without_ps_is_false(monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    assert cmux_sessions.agent_process(os.getpid()) is False

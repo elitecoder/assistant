@@ -224,8 +224,9 @@ and next action back to the original session. Copying never sends it automatical
 
 Saved context must match the current workspace and session identities.
 Missing or unsupported session bindings stay unknown instead of borrowing another
-session's notes. **First recorded** is the session's start as cmux recorded it;
-a session restored into another workspace keeps that original start. Pending task
+session's notes. **First recorded** is the session's start as cmux recorded it,
+or its SessionStart in `~/.claude/cmux-registry.json` when cmux has no record; a
+session restored into another workspace keeps its original start. Pending task
 dates come from their creation records. The updated `/back-off` skill saves the
 workspace identity so the overview can confirm **Parked**. If you run the dashboard
 from a separate checkout, use its displayed confirmation command for older pause

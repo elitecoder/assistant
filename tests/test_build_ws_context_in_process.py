@@ -277,6 +277,48 @@ class RecordedTranscriptTests(unittest.TestCase):
             full, agent="codex", pid=os.getpid(), transcript_path=self._mk_transcript(full)))
         self.assertIsNone(lookup("SURF-A"))
 
+    def test_two_active_cmux_records_for_the_surface_are_ambiguous(self):
+        # One store per agent: a claude and a factory record can both be active.
+        claude = "aaaa1111-1111-1111-1111-111111111111"
+        lookup = self._surface(
+            self._record(claude, pid=os.getpid(), transcript_path=self._mk_transcript(claude)),
+            self._record("bbbb2222-2222", agent="factory", pid=os.getpid()),
+        )
+        self.assertIsNone(lookup("SURF-A"))
+
+    def _write_registry(self, rows):
+        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(rows))
+
+    def test_registry_row_stands_in_for_a_session_cmux_missed(self):
+        missed = "ee4ee641-8595-441a-bf3e-5e35ef75f42a"
+        tp = self._mk_transcript(missed)
+        self._write_registry({
+            "WS-OLD": {"session_id": "0ld00000-x", "surface_id": "SURF-A",
+                       "claude_pid": str(os.getpid()), "ts": 10, "transcript_path": tp},
+            "WS-27": {"session_id": missed, "surface_id": "SURF-A",
+                      "claude_pid": str(os.getpid()), "ts": 20, "transcript_path": tp},
+        })
+        lookup = self._surface(fake_cmux.record("other", surface_id="SURF-B", pid=os.getpid()))
+        self.assertEqual(lookup("surf-a"),
+                         {"transcript_path": tp, "session_id8": "ee4ee641", "agent": "claude"})
+
+    def test_registry_is_ignored_while_cmux_has_the_surface(self):
+        live = "aaaa1111-1111-1111-1111-111111111111"
+        missed = "ee4ee641-8595-441a-bf3e-5e35ef75f42a"
+        self._write_registry({"WS": {"session_id": missed, "surface_id": "SURF-A",
+                                     "claude_pid": str(os.getpid()), "ts": 99,
+                                     "transcript_path": self._mk_transcript(missed)}})
+        lookup = self._surface(self._record(
+            live, pid=os.getpid(), transcript_path=self._mk_transcript(live)))
+        self.assertEqual(lookup("SURF-A")["session_id8"], "aaaa1111")
+
+    def test_registry_row_without_a_live_pid_is_rejected(self):
+        missed = "ee4ee641-8595-441a-bf3e-5e35ef75f42a"
+        self._write_registry({"WS": {"session_id": missed, "surface_id": "SURF-A",
+                                     "claude_pid": "", "ts": 1,
+                                     "transcript_path": self._mk_transcript(missed)}})
+        self.assertIsNone(self._surface()("SURF-A"))
+
     def test_unavailable_cmux_resolves_nothing(self):
         # conftest points CMUX_BIN at a binary that doesn't exist.
         self.assertIsNone(self.mod.recorded_transcript_for_surface("SURF-A"))
