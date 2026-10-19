@@ -40,6 +40,9 @@ class TestNoCloseWorkspace(unittest.TestCase):
     # invoke the action.
     FORBIDDEN_INVOCATIONS = [
         re.compile(r'cmux\s+close-workspace\b'),                     # bare command
+        re.compile(r'cmux\s+workspace\s+close\b'),                   # cmux 0.65 canonical form
+        re.compile(r'"workspace"\s*,\s*"close"'),
+        re.compile(r"'workspace'\s*,\s*'close'"),
         re.compile(r'"close-workspace"\s*,?\s*"--workspace"'),        # subprocess argv
         re.compile(r"'close-workspace'\s*,?\s*'--workspace'"),
     ]
@@ -53,7 +56,7 @@ class TestNoCloseWorkspace(unittest.TestCase):
     # close-workspace call (even elsewhere in the same file) still fails.
     ALLOWED_INVOCATION_SUBSTRINGS = {
         'bin/comms_session.py': (
-            '[str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]',
+            'argv = [str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]',
         ),
     }
 
@@ -127,7 +130,7 @@ class TestNoCloseWorkspace(unittest.TestCase):
         self.assertFalse(self._is_allowed(p, rogue),
                          "a non-guarded close-workspace line must NOT be allowed")
         # The real guarded line IS allowed.
-        guarded = '[str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]'
+        guarded = 'argv = [str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]'
         self.assertTrue(self._is_allowed(p, guarded))
         # And the exception does not leak to other files.
         self.assertFalse(self._is_allowed(Path("/repo/bin/pulse.py"), guarded))
