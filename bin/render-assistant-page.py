@@ -312,7 +312,7 @@ def render_live_sessions(world):
         sessions.append({
             "ws_ref": sess.get("ws_ref"),
             "ws_title": sess.get("ws_title", ""),
-            "cwd": sess.get("cwd", ""),
+            "cwd": sess.get("cwd") or "",
             "role": role, "ts": ts, "text": text or "",
             "age_sec": age_sec,
             "user_unanswered": sess.get("user_unanswered"),

@@ -467,6 +467,28 @@ def test_build_identity_keeps_same_cwd_sessions_separate(ws, monkeypatch):
         assert session["last_user"]["text"] == f"Context for {expected['session_id']}"
 
 
+def test_build_reads_cwd_from_the_cmux_065_restore_record(ws, monkeypatch):
+    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    sid = records[0]["session_id"]
+    original_run = ws.subprocess.run
+
+    def run(args, **kwargs):
+        if args[1:4] != ["surface", "resume", "show"]:
+            return original_run(args, **kwargs)
+        # cmux 0.65 order: the restore_record comes before the resume_binding.
+        return fake_completed(json.dumps({
+            "cleared": False, "pane_ref": "pane:1",
+            "restore_record": {"checkpoint_id": sid, "kind": "claude",
+                               "working_directory": "/work/repo"},
+            "resume_binding": {"checkpoint_id": sid, "kind": "claude", "cwd": "/work/repo"},
+        }))
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert [s["cwd"] for s in world["live_sessions"]] == ["/work/repo"]
+
+
 @pytest.mark.parametrize("kind", ["claude", "droid"])
 @pytest.mark.parametrize("process_state", ["unrelated", "background", "ambiguous", "mixed"])
 def test_native_binding_requires_verified_provider_process(ws, monkeypatch, kind, process_state):
