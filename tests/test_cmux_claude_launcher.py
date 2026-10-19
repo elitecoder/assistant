@@ -236,7 +236,7 @@ def test_send_refuses_its_own_surface_and_short_refs(tmp_path, env):
 def test_send_refuses_a_target_that_is_not_in_auto_mode(tmp_path, env):
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
-    env["FAKE_SCREEN"] = "\u23f5\u23f5 bypass permissions on (shift+tab to cycle)"
+    env["FAKE_SCREEN"] = "said: auto mode on\n\u23f5\u23f5 bypass permissions on (shift+tab to cycle)"
     r = run(env, SEND, SURFACE, transcript, prompt(env))
     assert (r.returncode, r.stdout.strip()) == (3, "not-delivered")
     assert not [c for c in calls(env) if c[0] == "paste"]
@@ -264,3 +264,12 @@ def test_send_refuses_a_missing_transcript(tmp_path, env):
     r = run(env, SEND, SURFACE, tmp_path / "missing.jsonl", prompt(env))
     assert r.returncode == 2 and "no such transcript" in r.stderr
     assert calls(env) == []
+
+
+def test_spawn_types_nothing_into_a_bypass_mode_session(tmp_path, env):
+    work = tmp_path / "w"
+    work.mkdir()
+    env["FAKE_SCREEN"] = "earlier output: auto mode on\n\u23f5\u23f5 bypass permissions on (shift+tab to cycle)"
+    r = run(env, SPAWN, work, "t", prompt(env))
+    assert (r.returncode, r.stdout.split()[2]) == (1, "not-ready")
+    assert not [c for c in calls(env) if c[0] in ("paste", "send-key")]

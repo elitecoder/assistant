@@ -35,7 +35,7 @@ echo "spawned $WS $SF" >&2
 READY=0
 for i in {1..90}; do
   SCREEN=$(CMUX_QUIET=1 cmux read-screen --surface "$SF" --lines 60 2>/dev/null)
-  [[ "$SCREEN" == *"auto mode on"* ]] && { READY=1; break; }
+  [[ "$SCREEN" == *"auto mode on"* && "$SCREEN" != *"bypass permissions on"* ]] && { READY=1; break; }
   [[ -z "${SCREEN//[[:space:]]/}" ]] && (( i % 5 == 3 )) && CMUX_QUIET=1 cmux send-key --surface "$SF" enter >/dev/null 2>&1
   sleep 1
 done

@@ -18,7 +18,8 @@ SF="$1"; T="$2"; PF="${3:A}"
 
 MSG="Read $PF and follow it."
 count() { grep -F -- "$MSG" "$T" | grep -cE '"type":"user"|"operation":"enqueue"'; }
-[[ "$(CMUX_QUIET=1 cmux read-screen --surface "$SF" --lines 60 2>/dev/null)" == *"auto mode on"* ]] \
+SCREEN=$(CMUX_QUIET=1 cmux read-screen --surface "$SF" --lines 60 2>/dev/null)
+[[ "$SCREEN" == *"auto mode on"* && "$SCREEN" != *"bypass permissions on"* ]] \
   || { echo not-delivered; echo "refusing: the target session isn't showing auto mode" >&2; exit 3; }
 BEFORE=$(count)
 CMUX_QUIET=1 cmux paste --surface "$SF" --submit -- "$MSG" >/dev/null || { echo not-delivered; echo "cmux refused the paste (draft or dialog open?)" >&2; exit 1; }
