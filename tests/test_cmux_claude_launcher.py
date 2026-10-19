@@ -103,7 +103,7 @@ def test_spawn_without_env_runs_plain_claude(tmp_path, env):
 def test_spawn_ignores_transcripts_that_existed_before_launch(tmp_path, env):
     work = tmp_path / "w"
     work.mkdir()
-    old = project_dir(env, work) / "old.jsonl"
+    old = project_dir(env, work) / "0-old.jsonl"
     old.parent.mkdir(parents=True)
     old.write_text(json.dumps({"message": {"content": "hello"}}) + "\n")
     new = project_dir(env, work) / "new.jsonl"
