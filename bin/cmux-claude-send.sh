@@ -16,7 +16,7 @@ SF="$1"; T="$2"; PF="${3:A}"
   || { echo "prompt file must be a plain-named file under $PROMPTS: $3" >&2; exit 2; }
 
 MSG="Read $PF and follow it."
-count() { grep -F -- "$MSG" "$T" | grep -cF '"type":"user"'; }
+count() { grep -F -- "$MSG" "$T" | grep -cE '"type":"user"|"operation":"enqueue"'; }
 BEFORE=$(count)
 CMUX_QUIET=1 cmux paste --surface "$SF" --submit -- "$MSG" >/dev/null || { echo not-delivered; echo "cmux refused the paste (draft or dialog open?)" >&2; exit 1; }
 for i in {1..60}; do

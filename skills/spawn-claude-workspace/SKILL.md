@@ -40,8 +40,9 @@ bracket number. Leave naming and color to the daemon.
 
 ### `claude`
 
-- Launch via the login-shell `claude` alias PLUS an explicit `--dangerously-skip-permissions`. The alias may drift and drop the flag; adding it explicitly is idempotent and prevents an unattended session stalling on the first permission gate. The alias still supplies `--model`, `--add-dir`, etc.
-- The command must run in a login shell so the alias expands: `zsh -lic 'claude --dangerously-skip-permissions'`.
+- Launch with `/Users/mukuls/.claude/bin/cmux-claude-spawn.sh`. It starts the login-shell `claude` alias, which runs in auto mode, so every child session is checked by the same auto-mode classifier. Never add `--dangerously-skip-permissions`; the script refuses to launch when the alias carries it or isn't auto mode.
+- Run the script by that exact absolute path, as one command with nothing piped, chained, or captured around it, so its `permissions.allow` rule applies. Give it a 5-minute timeout.
+- To message a running child session, stage a file under `~/.assistant/spawn-prompts/` and run `/Users/mukuls/.claude/bin/cmux-claude-send.sh <surface-uuid> <transcript> <prompt-file>`, the same way.
 - Do NOT hardcode `--model`/`--add-dir` — the alias owns them. Override `--model` only when the task genuinely needs a different tier.
 - Claude transcripts: `~/.claude/projects/<project-slug>/<session-id>.jsonl`. `<project-slug>` is the cwd with every `/` replaced by `-` (leading `-` included). Sessions share one project dir; confirmation is a NEW jsonl appearing after spawn.
 - Never fall back to Droid if Claude fails.
@@ -56,14 +57,14 @@ bracket number. Leave naming and color to the daemon.
 
 ## Procedure
 
+For `engine=claude`, do step 3, then run `/Users/mukuls/.claude/bin/cmux-claude-spawn.sh [--env FFP_CHANNEL=<v>|FFP_EXP_<ID>=<v>]... <cwd> <title> <prompt-file>` in place of steps 1, 2, and 4-7. It prints `<workspace-ref> <surface-uuid> <transcript>` and exits 0 only when the transcript shows the instruction. On a nonzero exit, leave the workspace and prompt file intact, report the refs it printed, and don't spawn a duplicate. The steps below are for `engine=droid`.
+
 1. Verify cmux and the engine's prerequisites:
 
 ```bash
 cmux ping >/dev/null
 # engine=droid:
 test -f "$HOME/.assistant/droid-glm-settings.json"
-# engine=claude:
-zsh -lic 'alias claude' | grep -q 'claude --model'
 ```
 
 2. Resolve the cwd physically and derive the engine's transcript directory:
@@ -74,9 +75,6 @@ CWD=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CWD")
 # engine=droid:
 SLUG=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]).replace("/", "-"))' "$CWD")
 SESSION_DIR="$HOME/.factory/sessions/$SLUG"
-# engine=claude (project slug: leading dash + slashes to dashes):
-CSLUG=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]).replace("/", "-"))' "$CWD")
-SESSION_DIR="$HOME/.claude/projects/$CSLUG"
 mkdir -p "$SESSION_DIR" "$HOME/.assistant/spawn-prompts"
 ```
 
@@ -96,8 +94,6 @@ LAUNCH_CMD="droid --settings '$HOME/.assistant/droid-glm-settings.json' --auto h
 if test -f "$HOME/.claude/CLAUDE.md"; then
   LAUNCH_CMD="$LAUNCH_CMD --append-system-prompt-file '$HOME/.claude/CLAUDE.md'"
 fi
-# engine=claude (login shell so the alias expands; explicit dsp for unattended runs):
-LAUNCH_CMD="zsh -lic 'claude --dangerously-skip-permissions'"
 OUT=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$LAUNCH_CMD")
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:[0-9]+' | head -n1)
@@ -107,7 +103,6 @@ test -n "$WS_REF" && test -n "$SURFACE_REF"
 5. Poll the whole screen until the engine is ready. Read 200 lines and accept an engine-appropriate marker:
 
 - **droid**: `GLM-5.2`, `allow all commands`, `Skills (<n>)`, or `? for help`. Do not accept a Claude banner.
-- **claude**: the Claude Code prompt box / `? for shortcuts`, `bypass permissions` (the dsp banner), or the model id `claude-opus`. Do not accept a Droid banner.
 
 ```bash
 READY=0
@@ -115,8 +110,6 @@ for _ in $(seq 1 30); do
   SCREEN=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":200}))' "$SURFACE_REF")" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("text", ""))')
   # engine=droid:
   if printf '%s' "$SCREEN" | grep -Eq 'GLM-?5\.2|allow all commands|Skills \([0-9]+\)|\? for help'; then READY=1; break; fi
-  # engine=claude:
-  if printf '%s' "$SCREEN" | grep -Eiq 'bypass permissions|\? for shortcuts|claude-opus|Welcome to Claude'; then READY=1; break; fi
   sleep 1
 done
 test "$READY" = 1

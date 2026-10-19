@@ -4,7 +4,7 @@
 #   <prompt-file> must be a file under ~/.assistant/spawn-prompts/; the session receives "Read <file> and follow it."
 # stdout: "<workspace-ref> <surface-uuid> <transcript>"
 # exit: 0 submitted and seen in a new transcript; 1 not ready, refused by cmux, or never seen; 2 bad arguments;
-#       3 the claude alias isn't auto mode.
+#       3 the claude alias isn't auto mode. Runs up to about 4 minutes; give the caller a 5-minute timeout.
 set -u
 PROMPTS="$HOME/.assistant/spawn-prompts"
 ENVS=()
@@ -30,6 +30,7 @@ OUT=$(CMUX_QUIET=1 cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false
 WS=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -1)
 [[ -n "$WS" ]] && SF=$(CMUX_QUIET=1 cmux list-pane-surfaces --workspace "$WS" --id-format uuids | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27}' | head -1)
 [[ -n "$WS" && -n "${SF:-}" ]] || { echo "spawn failed: $OUT" >&2; exit 1; }
+echo "spawned $WS $SF" >&2
 
 READY=0
 for i in {1..90}; do
@@ -44,7 +45,7 @@ CMUX_QUIET=1 cmux paste --surface "$SF" --submit -- "$MSG" >/dev/null || { echo 
 
 for i in {1..60}; do
   for f in ${(f)"$(find "$SD" -maxdepth 1 -name '*.jsonl' 2>/dev/null | sort | comm -13 <(print -r -- "$BEFORE") -)"}; do
-    grep -F -- "$MSG" "$f" 2>/dev/null | grep -qF '"type":"user"' && { echo "$WS $SF $f"; exit 0; }
+    grep -F -- "$MSG" "$f" 2>/dev/null | grep -qE '"type":"user"|"operation":"enqueue"' && { echo "$WS $SF $f"; exit 0; }
   done
   sleep 2
 done

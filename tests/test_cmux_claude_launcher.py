@@ -41,8 +41,12 @@ elif args[0] == "paste":
     target = Path(os.environ["FAKE_CMUX_TRANSCRIPT"])
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a") as fh:
-        if os.environ.get("FAKE_BUSY") != "1":
+        mode = os.environ.get("FAKE_MODE", "idle")
+        if mode == "idle":
             fh.write(json.dumps({"type": "user", "message": {"role": "user", "content": text}}, separators=(",", ":")) + "\n")
+        elif mode == "busy":
+            fh.write(json.dumps({"type": "queue-operation", "operation": "enqueue", "content": text}, separators=(",", ":")) + "\n")
+            fh.write(json.dumps({"type": "attachment", "attachment": {"type": "queued_command", "prompt": text}}, separators=(",", ":")) + "\n")
         fh.write(json.dumps({"type": "last-prompt", "lastPrompt": text}, separators=(",", ":")) + "\n")
 '''
 
@@ -188,11 +192,22 @@ def test_send_confirms_delivery_and_ignores_last_prompt_copies(tmp_path, env):
     assert [c for c in calls(env) if c[0] == "paste"] == [["paste", "--surface", SURFACE, "--submit", "--", msg]]
 
 
+def test_send_counts_a_message_queued_to_a_busy_session(tmp_path, env):
+    pf = prompt(env)
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(json.dumps({"type": "queue-operation", "operation": "remove",
+                                      "content": f"Read {pf} and follow it."}, separators=(",", ":")) + "\n")
+    env["FAKE_CMUX_TRANSCRIPT"] = str(transcript)
+    env["FAKE_MODE"] = "busy"
+    r = run(env, SEND, SURFACE, transcript, pf)
+    assert (r.returncode, r.stdout.strip()) == (0, "delivered"), r.stderr
+
+
 def test_send_does_not_count_a_last_prompt_record_as_delivery(tmp_path, env):
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
     env["FAKE_CMUX_TRANSCRIPT"] = str(transcript)
-    env["FAKE_BUSY"] = "1"
+    env["FAKE_MODE"] = "lost"
     r = run(env, SEND, SURFACE, transcript, prompt(env))
     assert (r.returncode, r.stdout.strip()) == (1, "not-delivered")
     assert len([c for c in calls(env) if c[0] == "paste"]) == 1

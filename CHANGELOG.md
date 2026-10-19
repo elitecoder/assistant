@@ -10,12 +10,23 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
-- Add `bin/cmux-claude-spawn.sh` and `bin/cmux-claude-send.sh`. The spawn
-  script starts Claude Code in a new unfocused cmux workspace, submits one
-  message, and prints the workspace, surface, and transcript. The send script
-  types a message into a running session and confirms it reached the
-  transcript. Each is one command, so a narrow `permissions.allow` rule can
-  approve it in auto mode without the classifier.
+- Add `bin/cmux-claude-spawn.sh` and `bin/cmux-claude-send.sh`, one-command
+  launchers that a narrow `permissions.allow` rule can approve in auto mode.
+  The spawn script starts the `claude` alias in a new unfocused cmux workspace
+  and has it read one prompt file; the send script has a running session read
+  one prompt file. Both accept only files under `~/.assistant/spawn-prompts/`,
+  send with `cmux paste --submit` (which refuses over a draft or open dialog),
+  and confirm delivery from the transcript, counting a message queued to a
+  busy session. The spawn script accepts only `FFP_CHANNEL` and `FFP_EXP_*`
+  environment switches, refuses a `claude` alias that isn't auto mode or
+  carries `--dangerously-skip-permissions`, and types nothing until the
+  session shows auto mode. The send script takes surface UUIDs only and
+  refuses its caller's own surface.
+
+### Changed
+- `spawn-claude-workspace` launches `engine=claude` with
+  `bin/cmux-claude-spawn.sh` and no longer adds
+  `--dangerously-skip-permissions`; child sessions run in auto mode.
 - Add the `cmux-ws-numberer` LaunchAgent as an opt-in feature. It adds a `[N]`
   suffix to cmux workspace titles and gives each workspace an unused sidebar
   color. Enable it with `install.sh --apply --with-ws-numberer`, answer the
