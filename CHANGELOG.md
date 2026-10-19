@@ -59,8 +59,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ### Changed
 - Move the `balanced` model tier from Sonnet 4.6 to Sonnet 5.5 on Bedrock, the
   Anthropic API, and Vertex. The warm Slack session, the Observer, the brief
-  narrator, and the strategist use this tier. A live warm session on the old
-  model is replaced before it handles its next Slack message.
+  narrator, and the strategist use this tier. Restart
+  `com.assistant.assistant-comms` to pick it up; the restarted daemon replaces
+  a warm session on the old model before its next Slack message. The Observer
+  and fleet evals now default to this tier's model, and their qualification
+  hashes include `model_tiers.py`. Cost estimates price Sonnet 5 models at $2
+  and $10 per million input and output tokens.
 
 ### Fixed
 - Bring the warm Slack session up again on Claude Code 2.1.303 and cmux 0.65.

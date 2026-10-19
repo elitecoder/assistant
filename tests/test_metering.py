@@ -218,6 +218,11 @@ class UsageCaptureTests(MeteringBase):
         # 1000 in @ $3/M + tokens_out @ $15/M — sonnet rates
         self.assertGreater(u["cost_usd"], 0)
 
+    def test_sonnet_5_is_priced_below_sonnet_4(self):
+        self.assertEqual(self.mod.price_per_mtok("claude-sonnet-5-5[1m]"), (2.0, 10.0))
+        self.assertEqual(self.mod.price_per_mtok("us.anthropic.claude-sonnet-5-5"), (2.0, 10.0))
+        self.assertEqual(self.mod.price_per_mtok("us.anthropic.claude-sonnet-4-6[1m]"), (3.0, 15.0))
+
     def test_sum_usage_source_mixing(self):
         cli = {"tokens_in": 10, "tokens_out": 1, "cost_usd": 0.1, "source": "cli"}
         est = {"tokens_in": 20, "tokens_out": 2, "cost_usd": 0.2, "source": "estimated"}

@@ -9,7 +9,7 @@ workspace states. Each fixture is one test case.
 ./run.py                       # all fixtures
 ./run.py 01-ws97-trap-no-pr-mid-audit
 ./run.py --list                # list fixture names
-EVAL_MODEL=us.anthropic.claude-sonnet-4-6[1m] ./run.py
+EVAL_CLAUDE_MODEL='claude-sonnet-5-5[1m]' ./run.py --provider claude
 ```
 
 `run.py` spawns a one-shot headless `claude --print` per fixture, feeding

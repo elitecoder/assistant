@@ -79,7 +79,7 @@ To stop: `launchctl bootout gui/$UID/com.assistant.assistant-comms`.
 |---|---|---|
 | `SLACK_BOT_TOKEN` | ✅ | `xoxb-` bot token (from `~/.zprofile`). Never stored in config.json. |
 | `SLACK_PING_TARGET` | optional | `C…` private channel (recommended) or `U…` user (DMed); overrides `config.slack.target`. |
-| `COMMS_MODEL` | optional | warm-session model (default Sonnet 4.6 1M). |
+| `COMMS_MODEL` | optional | warm-session model (default Sonnet 5.5 1M). |
 | `COMMS_SLACK_POLL_SEC` | optional | inbound poll interval (default 3s). |
 | `COMMS_SUBMIT_ATTEMPTS` / `COMMS_SUBMIT_WAIT_SEC` | optional | Enter presses to try when a typed prompt doesn't reach the transcript, and seconds to wait after each (default 3 and 15s). |
 | `COMMS_LIVENESS_ATTEMPTS` / `COMMS_LIVENESS_RETRY_SEC` | optional | looks at a workspace cmux didn't answer about before calling it unknown, and seconds between them (default 3 and 3s). |

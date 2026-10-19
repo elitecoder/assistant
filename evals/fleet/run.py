@@ -16,16 +16,19 @@ from pathlib import Path
 EVAL_DIR = Path(__file__).resolve().parent
 REPO = EVAL_DIR.parents[1]
 BIN = REPO / "bin"
-if str(BIN) not in sys.path:
-    sys.path.insert(0, str(BIN))
+SRC = REPO / "src"
+for path in (BIN, SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 import llm_runner
+from assistant import model_tiers
 
 CLAUDE_BIN = os.environ.get(
     "CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 DROID_BIN = os.environ.get(
     "DROID_BIN", str(Path.home() / ".local/bin/droid"))
 CLAUDE_MODEL = os.environ.get(
-    "EVAL_CLAUDE_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
+    "EVAL_CLAUDE_MODEL", model_tiers.model_for("balanced", long_context=True))
 DROID_MODEL = os.environ.get("EVAL_DROID_MODEL", "glm-5.2")
 TIMEOUT = int(os.environ.get("EVAL_TIMEOUT_SEC", "240"))
 REPORT = EVAL_DIR / "last-run.json"
@@ -35,6 +38,7 @@ def qualification_input_hashes() -> dict[str, str]:
     paths = [
         Path(__file__),
         BIN / "llm_runner.py",
+        SRC / "assistant/model_tiers.py",
         REPO / "prompts/triage-batch-prompt.md",
         REPO / "prompts/strategist-draft-prompt.md",
         REPO / "prompts/brief-narrator-prompt.md",
