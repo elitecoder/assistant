@@ -40,6 +40,9 @@ class TestNoCloseWorkspace(unittest.TestCase):
     # invoke the action.
     FORBIDDEN_INVOCATIONS = [
         re.compile(r'cmux\s+close-workspace\b'),                     # bare command
+        re.compile(r'cmux\s+workspace\s+close\b'),                   # cmux 0.65 canonical form
+        re.compile(r'"workspace"\s*,\s*"close"'),
+        re.compile(r"'workspace'\s*,\s*'close'"),
         re.compile(r'"close-workspace"\s*,?\s*"--workspace"'),        # subprocess argv
         re.compile(r"'close-workspace'\s*,?\s*'--workspace'"),
     ]

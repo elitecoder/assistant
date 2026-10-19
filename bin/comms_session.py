@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import mmap
 import os
 import re
 import shlex
@@ -365,23 +364,23 @@ def transcript_has_submission(path: str | Path, marker: str) -> bool:
     within a second of being submitted."""
     needle = marker.encode()
     try:
-        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
-            hit = m.find(needle)
-            while hit != -1:
-                start = m.rfind(b"\n", 0, hit) + 1
-                end = m.find(b"\n", hit)
-                end = len(m) if end == -1 else end
-                if _is_submission(m[start:end], marker):
-                    return True
-                hit = m.find(needle, end)
-    except (OSError, ValueError):  # ValueError: mmap of an empty file
+        data = Path(path).read_bytes()
+    except OSError:
         return False
+    hit = data.find(needle)
+    while hit != -1:
+        start = data.rfind(b"\n", 0, hit) + 1
+        end = data.find(b"\n", hit)
+        end = len(data) if end == -1 else end
+        if _is_submission(data[start:end], marker):
+            return True
+        hit = data.find(needle, end)
     return False
 
 
 def _is_submission(line: bytes, marker: str) -> bool:
     try:
-        rec = json.loads(line)
+        rec = json.loads(line.decode("utf-8", "replace"))
     except json.JSONDecodeError:
         return False
     if not isinstance(rec, dict) or rec.get("entrypoint") == "sdk-cli":

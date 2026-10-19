@@ -125,8 +125,8 @@ def test_submission_skips_corrupt_lines_and_missing_files(tmp_path):
 
 
 def test_submission_found_behind_the_records_claude_writes_after_it(tmp_path):
-    """2026-10-19: Claude Code 2.1.303 wrote ~770 KB of listings and request
-    records within a second of the boot prompt, so a check that read only the
+    """2026-10-19: Claude Code 2.1.303 wrote ~516 KB of listings and request
+    records within 0.7 s of the boot prompt, so a check that read only the
     last 256 KB never saw it and every warm spawn was abandoned."""
     t = _jsonl(tmp_path / "t.jsonl", [
         {"type": "mode"},
@@ -144,6 +144,13 @@ def test_submission_keeps_searching_past_a_non_prompt_match(tmp_path):
         {"type": "assistant", "message": {"role": "assistant", "content": MARK}},
         {"type": "user", "message": {"role": "user", "content": f"hi {MARK}"}},
     ])
+    assert cs.transcript_has_submission(t, MARK)
+
+
+def test_submission_found_after_a_marker_line_that_is_not_utf8(tmp_path):
+    t = tmp_path / "t.jsonl"
+    good = json.dumps({"type": "user", "message": {"role": "user", "content": f"hi {MARK}"}})
+    t.write_bytes(f'{{"type": "user", "x": "{MARK}'.encode() + b"\xff\xfe\"}\n" + good.encode() + b"\n")
     assert cs.transcript_has_submission(t, MARK)
 
 
