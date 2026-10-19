@@ -73,8 +73,8 @@ statement, rather than disappearing from the count. Python coverage
 of an HTML string doesn't count as JavaScript coverage. Layout and CSS still
 need browser measurements and visual inspection.
 
-The current coverage adapters cover Python under `bin/` and `src/` and the
-dashboard's embedded JavaScript. Changes to other executable code fail until
+The current coverage adapters cover Python under `bin/`, `hooks/`, `install/`,
+and `src/` and the dashboard's embedded JavaScript. Changes to other executable code fail until
 an adapter is added; they aren't silently treated as covered.
 
 The checked-in workflow runs these checks for pull requests and pushes to

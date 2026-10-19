@@ -2,10 +2,11 @@
 
 Loaded by file path (hyphenated CLI, not an importable module). HOME is pointed
 at a tmp dir BEFORE import so every module-level path constant (OUT_PATH,
-CMUX_REGISTRY, ORCH_REGISTRY, SESSION_CTX, ...) binds under the tmp HOME. No real
-~/.claude or ~/.architect is touched, and cmux/ps/vm_stat are never shelled out:
-every test monkeypatches the module's cmux_tree / ps_tty / read_mem_pct /
-subprocess.run.
+ORCH_REGISTRY, SESSION_CTX, ...) binds under the tmp HOME. No real ~/.claude or
+~/.architect is touched, and the real cmux/ps/vm_stat are never shelled out:
+tests monkeypatch the module's cmux_tree / ps_tty / read_mem_pct /
+subprocess.run, or point CMUX_BIN at a fake `cmux` (tests/fake_cmux.py) for
+`cmux sessions list`.
 """
 from __future__ import annotations
 
@@ -17,6 +18,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+import cmux_sessions
+import fake_cmux
 
 REPO = Path(__file__).resolve().parent.parent
 SCANNER_PATH = REPO / "bin/world-scanner.py"
@@ -44,6 +48,18 @@ def ws(tmp_path, monkeypatch):
 
 def fake_completed(stdout="", returncode=0):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+
+def native(session_id="session", **fields):
+    """A parsed cmux session record, as bin/cmux_sessions.py returns it."""
+    base = {
+        "session_id": session_id, "agent": "claude", "workspace_id": None,
+        "surface_id": None, "cwd": None, "launch_cwd": None, "pid": None,
+        "transcript_path": None, "started_at": None, "updated_at": None,
+        "active_for_surface": True,
+    }
+    base.update(fields)
+    return cmux_sessions.Session(**base)
 
 
 @pytest.mark.parametrize("provider,root", [
@@ -300,51 +316,35 @@ def test_build_workspace_index_none_tree(ws):
 
 # ─── build_live_sessions ──────────────────────────────────────────────────────
 
-def test_build_live_sessions_filters_dead_and_dedups(ws):
+def test_build_live_sessions_keeps_live_active_fleet_records(ws):
     live = os.getpid()
-    reg = {
-        "tab-live-old": {"claude_pid": live, "session_id": "sess-A",
-                         "cwd": "/work/a", "transcript_path": "/t/a-old.jsonl", "ts": 100},
-        "tab-live-new": {"claude_pid": live, "session_id": "sess-A",
-                         "cwd": "/work/a2", "transcript_path": "/t/a-new.jsonl", "ts": 200},
-        "tab-dead": {"claude_pid": 99999999, "session_id": "sess-B",
-                     "cwd": "/work/b", "transcript_path": "/t/b.jsonl", "ts": 300},
-        "tab-no-sid": {"claude_pid": live, "session_id": None,
-                       "cwd": "/work/c", "ts": 400},
+    records = [
+        native("sess-A", pid=live, cwd="/work/a/sub", launch_cwd="/work/a",
+               transcript_path="/t/a.jsonl",
+               workspace_id="WS-A", surface_id="SF-A", updated_at=200.0),
+        native("sess-dead", pid=99999999, workspace_id="WS-B", surface_id="SF-B"),
+        native("sess-no-pid", workspace_id="WS-C", surface_id="SF-C"),
+        native("sess-cleared", pid=live, active_for_surface=False,
+               workspace_id="WS-A", surface_id="SF-A"),
+        native("sess-codex", agent="codex", pid=live, workspace_id="WS-D", surface_id="SF-D"),
+        native("sess-droid", agent="factory", pid=live, workspace_id="WS-E", surface_id="SF-E"),
+    ]
+    out = ws.build_live_sessions(records=records)
+    assert [s["session_id"] for s in out.values()] == ["sess-A", "sess-droid"]
+    a = out[("claude", "sess-A", "ws-a", "sf-a")]
+    assert a == {
+        "session_id": "sess-A", "pid": live, "cwd": "/work/a",
+        "transcript_path": "/t/a.jsonl", "provider": "claude", "tab_id": "WS-A",
+        "ts": 200.0, "workspace_id": "WS-A", "surface_id": "SF-A",
+        "identity_status": "unknown", "identity_source": "registry",
+        "agent_status": "unknown",
     }
-    ws.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    ws.CMUX_REGISTRY.write_text(json.dumps(reg))
-
-    out = ws.build_live_sessions()
-    # Dead pid filtered, sid-less filtered → only sess-A remains.
-    assert len(out) == 1
-    a = next(iter(out.values()))
-    assert a["session_id"] == "sess-A"
-    # Dedup keeps the most-recent ts (200, cwd /work/a2).
-    assert a["ts"] == 200
-    assert a["cwd"] == "/work/a2"
-    assert a["pid"] == live
-    assert a["tab_id"] == "tab-live-new"
-    assert a["transcript_path"] == "/t/a-new.jsonl"
+    droid = out[("droid", "sess-droid", "ws-e", "sf-e")]
+    assert (droid["provider"], droid["cwd"]) == ("droid", None)
 
 
-def test_build_live_sessions_dedup_keeps_first_when_second_is_older(ws):
-    # When the newer entry is encountered FIRST, the older one that follows must
-    # be skipped (hits the prev.ts > e.ts guard).
-    live = os.getpid()
-    reg = {
-        "tab-new": {"claude_pid": live, "session_id": "sess-A",
-                    "cwd": "/work/new", "ts": 200},
-        "tab-old": {"claude_pid": live, "session_id": "sess-A",
-                    "cwd": "/work/old", "ts": 100},
-    }
-    ws.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    ws.CMUX_REGISTRY.write_text(json.dumps(reg))
-    out = ws.build_live_sessions()
-    assert len(out) == 1
-    session = next(iter(out.values()))
-    assert session["ts"] == 200
-    assert session["cwd"] == "/work/new"
+def test_build_live_sessions_without_records_or_workspaces(ws):
+    assert ws.build_live_sessions() == {}
 
 
 def test_build_live_sessions_adds_bound_droid_session(ws, monkeypatch):
@@ -374,7 +374,7 @@ def test_build_live_sessions_adds_bound_droid_session(ws, monkeypatch):
 def _seed_identity_world(ws, monkeypatch, kinds=("claude", "factory"), session_ids=None):
     now = ws.parse_iso("2026-09-19T09:00:00Z")
     first = ws.parse_iso("2026-09-01T09:00:00Z")
-    workspaces, records, contexts, starts, calls = [], [], {}, [], []
+    workspaces, records, contexts, cmux_records, calls = [], [], {}, [], []
     for index, kind in enumerate(kinds, 1):
         provider = "droid" if kind in {"factory", "droid"} else kind
         sid = session_ids[index - 1] if session_ids else f"session-{index}"
@@ -396,10 +396,10 @@ def _seed_identity_world(ws, monkeypatch, kinds=("claude", "factory"), session_i
             "last_user": {"text": f"Context for {sid}", "ts": ws.iso(now - timedelta(minutes=1))},
             "queue_pending": 0, "user_unanswered": True, "recent_turns": [],
         }
-        starts.append({
-            "event": "start", "ts": first.timestamp(), "session_id": sid,
-            "workspace_id": workspace_id.upper(), "provider": kind,
-        })
+        cmux_records.append(fake_cmux.record(
+            sid, agent=kind, workspace_id=workspace_id.upper(), surface_id=surface_id,
+            started_at=ws.iso(first),
+        ))
         if kind in {"claude", "factory", "droid"}:
             root = ".claude/projects" if provider == "claude" else ".factory/sessions"
             path = ws.HOME / root / "same-cwd" / f"{sid}.jsonl"
@@ -408,6 +408,8 @@ def _seed_identity_world(ws, monkeypatch, kinds=("claude", "factory"), session_i
 
     def run(args, **kwargs):
         calls.append(args)
+        if args[1:3] == ["sessions", "list"]:
+            return fake_completed(json.dumps({"sessions": cmux_records}))
         if "tree" in args:
             return fake_completed(json.dumps({"windows": [{"workspaces": workspaces}]}))
         if args[1:4] == ["surface", "resume", "show"]:
@@ -438,9 +440,7 @@ def _seed_identity_world(ws, monkeypatch, kinds=("claude", "factory"), session_i
     monkeypatch.setattr(ws, "pid_alive", lambda pid: bool(pid))
     ws.SESSION_CTX.parent.mkdir(parents=True)
     ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
-    ledger = ws.HOME / ".cmux-session-ledger.jsonl"
-    ledger.write_text("".join(json.dumps(row) + "\n" for row in starts))
-    return records, contexts, ledger, calls
+    return records, contexts, cmux_records, calls
 
 
 def test_build_identity_keeps_same_cwd_sessions_separate(ws, monkeypatch):
@@ -448,6 +448,8 @@ def test_build_identity_keeps_same_cwd_sessions_separate(ws, monkeypatch):
     ws.build()
     world = json.loads(ws.OUT_PATH.read_text())
     assert any(args[1:4] == ["--id-format", "both", "tree"] for args in calls)
+    assert [args[1:] for args in calls if args[1:3] == ["sessions", "list"]] == [
+        ["sessions", "list", "--json", "--all"]]
     binding_calls = [args for args in calls if args[1:4] == ["surface", "resume", "show"]]
     assert len(binding_calls) == 2
     for args, expected in zip(binding_calls, records):
@@ -603,24 +605,22 @@ def test_context_copies_structured_pending_tool_use(ws, monkeypatch, pending):
     assert session["pending_tool_use"] is pending
 
 
-def test_build_recycled_ref_rejects_old_registry_identity(ws, monkeypatch):
-    _, contexts, ledger, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
-    ws.CMUX_REGISTRY.write_text(json.dumps({
-        "old-tab": {
-            "claude_pid": 999, "session_id": "old-session", "ts": 10,
-            "cwd": "/work/shared", "workspace_id": "old-workspace",
-            "surface_id": "old-surface",
-        },
-    }))
+def test_build_recycled_ref_rejects_old_recorded_identity(ws, monkeypatch):
+    _, contexts, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    cmux_records.append(fake_cmux.record(
+        "old-session", pid=999, updated_at_unix=10, cwd="/work/shared",
+        workspace_id="old-workspace", surface_id="old-surface",
+        started_at="1970-01-01T00:00:01Z",
+    ))
     contexts["old-session"] = {
         "provider": "claude", "last_user": {"text": "Old task", "ts": "2026-01-01T00:00:00Z"},
     }
     ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
-    with ledger.open("a") as f:
-        f.write(json.dumps({
-            "event": "start", "ts": 1, "workspace_id": "old-workspace",
-            "provider": "claude", "session_id": "session-1",
-        }) + "\n")
+    # The same session id recorded earlier in another workspace never counts.
+    cmux_records.append(fake_cmux.record(
+        "session-1", workspace_id="old-workspace", surface_id="old-surface",
+        started_at="1970-01-01T00:00:01Z",
+    ))
     ws.build()
     world = json.loads(ws.OUT_PATH.read_text())
     assert world["workspaces"][0]["session_ids"] == ["session-1"]
@@ -634,14 +634,9 @@ def test_build_recycled_ref_rejects_old_registry_identity(ws, monkeypatch):
 
 
 def test_first_recorded_is_not_last_activity(ws, monkeypatch):
-    _, contexts, ledger, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
-    with ledger.open("a") as f:
-        f.write(json.dumps({
-            "event": "start", "ts": ws.parse_iso("2026-09-18T09:00:00Z").timestamp(),
-            "workspace_id": "aaaaaaaa-0000-0000-0000-000000000001",
-            "provider": "claude", "session_id": "session-1",
-        }) + "\n")
+    _, contexts, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
     for timestamp in ["2026-09-19T08:50:00Z", "2026-09-19T08:59:00Z"]:
+        cmux_records[0]["updated_at_unix"] = ws.parse_iso(timestamp).timestamp()
         contexts["session-1"]["last_user"]["ts"] = timestamp
         ws.SESSION_CTX.write_text(json.dumps({"by_session": contexts}))
         ws.build()
@@ -650,7 +645,7 @@ def test_first_recorded_is_not_last_activity(ws, monkeypatch):
         assert session["last_turn_ts"] == timestamp
 
 
-def test_context_and_ledger_accept_uuid_casing_differences(ws, monkeypatch):
+def test_context_and_recorded_start_accept_uuid_casing_differences(ws, monkeypatch):
     records, contexts, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
     contexts["session-1"].update({
         "workspace_id": records[0]["workspace_id"].upper(),
@@ -697,12 +692,10 @@ def test_unsupported_or_missing_binding_stays_unknown(ws, monkeypatch, kind):
     assert world["workspaces"][0]["session_ids"] == []
 
 
-def test_registry_without_live_binding_is_not_authoritative(ws, monkeypatch):
-    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+def test_record_without_live_binding_is_not_authoritative(ws, monkeypatch):
+    _, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
     monkeypatch.setattr(ws, "surface_resume_binding", lambda *_: None)
-    ws.CMUX_REGISTRY.write_text(json.dumps({
-        "tab": {**records[0], "claude_pid": 101, "ts": 1, "cwd": "/work/shared"},
-    }))
+    cmux_records[0].update(pid=101, updated_at_unix=1, cwd="/work/shared")
     ws.build()
     world = json.loads(ws.OUT_PATH.read_text())
     session = world["live_sessions"][0]
@@ -714,17 +707,16 @@ def test_registry_without_live_binding_is_not_authoritative(ws, monkeypatch):
 
 
 def _seed_current_hook(ws, monkeypatch, *, changes=None, process_change=None, native=None):
-    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    records, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
     registered = ws.utc_now().timestamp() - 60
-    row = {
-        "session_id": "session-1",
+    cmux_records[0].update({
         "surface_id": records[0]["surface_id"].upper(),
-        "claude_pid": "",
-        "ts": registered,
-        "cwd": "/work/shared",
-    }
-    row.update(changes or {})
-    ws.CMUX_REGISTRY.write_text(json.dumps({records[0]["workspace_id"].upper(): row}))
+        "pid": None,
+        "updated_at_unix": registered,
+        "cwd": "/work/shared/later",
+        "launch_working_directory": "/work/shared",
+    })
+    cmux_records[0].update(changes or {})
     process = {
         "pid": 101, "pgid": 101, "tpgid": 101,
         "started": registered - 2, "command": "/Users/fixture/.local/bin/claude",
@@ -752,14 +744,15 @@ def _seed_current_hook(ws, monkeypatch, *, changes=None, process_change=None, na
     return calls
 
 
-@pytest.mark.parametrize("recorded_pid", ["", "101"])
-def test_current_session_start_hook_verifies_missing_native_binding(ws, monkeypatch, recorded_pid):
-    calls = _seed_current_hook(ws, monkeypatch, changes={"claude_pid": recorded_pid})
+@pytest.mark.parametrize("recorded_pid", [None, 101])
+def test_current_session_record_verifies_missing_native_binding(ws, monkeypatch, recorded_pid):
+    calls = _seed_current_hook(ws, monkeypatch, changes={"pid": recorded_pid})
     ws.build()
     world = json.loads(ws.OUT_PATH.read_text())
     session = world["live_sessions"][0]
     assert session["session_id"] == "session-1"
     assert session["pid"] == 101
+    assert session["cwd"] == "/work/shared"
     assert session["identity_status"] == "verified"
     assert session["identity_source"] == "session_start_registry"
     assert session["context_status"] == "verified"
@@ -772,12 +765,14 @@ def test_current_session_start_hook_verifies_missing_native_binding(ws, monkeypa
 @pytest.mark.parametrize("changes,process_change", [
     ({"surface_id": "different-surface"}, {}),
     ({"workspace_id": "different-workspace"}, {}),
-    ({"claude_pid": "999"}, {}),
-    ({"ts": 1}, {}),
-    ({"ts": "not-a-timestamp"}, {}),
-    ({"provider": "copilot"}, {}),
+    ({"active_for_surface": False}, {}),
+    ({"pid": 999}, {}),
+    ({"updated_at_unix": 1}, {}),
+    ({"updated_at_unix": "not-a-timestamp"}, {}),
+    ({"updated_at_unix": datetime.fromisoformat("2026-09-19T09:00:02+00:00").timestamp()}, {}),
+    ({"agent": "copilot"}, {}),
     ({}, {"started": datetime.fromisoformat("2026-09-19T08:59:30+00:00").timestamp()}),
-    ({"claude_pid": "101"}, {"started": datetime.fromisoformat("2026-09-19T08:59:30+00:00").timestamp()}),
+    ({"pid": 101}, {"started": datetime.fromisoformat("2026-09-19T08:59:30+00:00").timestamp()}),
     ({}, {"tpgid": 202}),
     ({}, {"command": "/usr/bin/login"}),
 ])
@@ -820,7 +815,7 @@ def test_failed_native_lookup_does_not_fall_back_to_hook(ws, monkeypatch):
 
 
 @pytest.mark.parametrize("failure", ["invalid_json", "wrong_shape", "io_error"])
-def test_unreadable_native_binding_does_not_restore_registry_identity(ws, monkeypatch, failure):
+def test_unreadable_native_binding_does_not_restore_recorded_identity(ws, monkeypatch, failure):
     _seed_current_hook(ws, monkeypatch)
     original_run = ws.subprocess.run
 
@@ -872,16 +867,14 @@ def test_unsupported_provider_and_missing_tty_do_not_invoke_process_lookup(ws, m
 
 
 @pytest.mark.parametrize("override", [
-    {"provider": "droid"},
+    {"agent": "factory"},
     {"workspace_id": "different-workspace"},
     {"surface_id": "different-surface"},
     {"surface_id": None},
 ])
 def test_tty_join_rejects_conflicting_or_missing_identity(ws, monkeypatch, override):
-    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
-    ws.CMUX_REGISTRY.write_text(json.dumps({
-        "old-tab": {**records[0], **override, "claude_pid": 999, "ts": 1},
-    }))
+    _, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    cmux_records[0].update(override, pid=999, updated_at_unix=1)
     ws.build()
     world = json.loads(ws.OUT_PATH.read_text())
     historical = next(session for session in world["live_sessions"] if session["pid"] == 999)
@@ -892,29 +885,39 @@ def test_tty_join_rejects_conflicting_or_missing_identity(ws, monkeypatch, overr
     assert world["workspaces"][0]["session_ids"] == ["session-1"]
 
 
-def test_unsupported_registry_provider_cannot_inherit_claude_context(ws, monkeypatch):
-    records, _, _, _ = _seed_identity_world(ws, monkeypatch, (None,))
-    ws.CMUX_REGISTRY.write_text(json.dumps({
-        "old-tab": {**records[0], "provider": "copilot", "claude_pid": 999, "ts": 1},
-    }))
+def test_record_for_an_agent_the_fleet_does_not_run_is_not_a_live_session(ws, monkeypatch):
+    _, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, (None,))
+    cmux_records[0].update(agent="copilot", pid=999, updated_at_unix=1)
     ws.build()
-    session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
-    assert session["provider"] == "copilot"
-    assert session["context_status"] == "unknown"
-    assert session["guidance_context"] is None
-    assert "last_user" not in session
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["live_sessions"] == []
+    assert world["workspaces"][0]["surfaces"][0]["identity_status"] == "unknown"
 
 
 def test_recorded_start_requires_complete_verified_identity(ws):
-    ws.SESSION_LEDGER.write_text(json.dumps({
-        "event": "start", "workspace_id": "", "provider": "claude",
-        "session_id": "session", "ts": 1,
-    }) + "\n")
+    records = [native("session", workspace_id=None, started_at=1.0)]
     sessions = {"session": {
         "session_id": "session", "provider": "claude", "identity_status": "verified",
     }}
-    ws.merge_first_recorded(sessions, ws.utc_now())
+    ws.merge_first_recorded(sessions, records, ws.utc_now())
     assert sessions["session"]["first_recorded_at"] is None
+    sessions["session"].update(workspace_id="WS", identity_status="unknown")
+    ws.merge_first_recorded(sessions, [native("session", workspace_id="ws", started_at=1.0)],
+                            ws.utc_now())
+    assert sessions["session"]["first_recorded_at"] is None
+
+
+def test_first_recorded_is_the_earliest_matching_start(ws):
+    sessions = {"session": {
+        "session_id": "session", "provider": "claude", "identity_status": "verified",
+        "workspace_id": "WS",
+    }}
+    early = ws.parse_iso("2026-09-01T09:00:00Z").timestamp()
+    records = [native("session", workspace_id="ws", started_at=early + 60),
+               native("session", workspace_id="WS", started_at=early),
+               native("session", workspace_id="ws", started_at=early + 30)]
+    ws.merge_first_recorded(sessions, records, ws.utc_now())
+    assert sessions["session"]["first_recorded_at"] == "2026-09-01T09:00:00Z"
 
 
 @pytest.mark.parametrize("override", [
@@ -935,9 +938,16 @@ def test_context_with_wrong_identity_is_not_attached(ws, monkeypatch, override):
     assert "last_user" not in session
 
 
-def test_missing_ledger_keeps_first_recorded_unknown(ws, monkeypatch):
+def test_unavailable_cmux_sessions_keep_first_recorded_unknown(ws, monkeypatch):
     _seed_identity_world(ws, monkeypatch, ("claude",))
-    monkeypatch.setattr(ws, "SESSION_LEDGER", ws.HOME / "missing-ledger.jsonl")
+    original_run = ws.subprocess.run
+
+    def run(args, **kwargs):
+        if args[1:3] == ["sessions", "list"]:
+            return fake_completed("Error: sessions list failed", returncode=1)
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
     ws.build()
     session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
     assert session["first_recorded_at"] is None
@@ -948,17 +958,17 @@ def test_missing_ledger_keeps_first_recorded_unknown(ws, monkeypatch):
     {"workspace_id": "different-workspace"},
     {"session_id": "different-session"},
     {"session_id": "SESSION-1"},
-    {"provider": "droid"},
-    {"provider": None},
-    {"event": "end"},
-    {"ts": "not-a-time"},
-    {"ts": 999999999999999},
+    {"agent": "factory"},
+    {"agent": None},
+    {"started_at": None},
+    {"started_at": "not-a-time"},
+    {"started_at": "1970-01-01T00:00:00Z"},
+    {"started_at": "2999-01-01T00:00:00Z"},
 ])
 def test_unmatched_recorded_start_stays_unknown(ws, monkeypatch, override):
-    _, _, ledger, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
-    record = json.loads(ledger.read_text())
-    record.update(override)
-    ledger.write_text("invalid\n[]\n" + json.dumps(record) + "\n")
+    _, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    cmux_records[0].update(override)
+    cmux_records[:0] = ["invalid", []]
     ws.build()
     session = json.loads(ws.OUT_PATH.read_text())["live_sessions"][0]
     assert session["first_recorded_at"] is None
@@ -1221,14 +1231,13 @@ def _seed_world(ws, monkeypatch, now):
     monkeypatch.setattr(ws, "ps_tty", lambda pid: "ttys010")
     monkeypatch.setattr(ws, "read_mem_pct", lambda: 42.0)
 
-    # cmux-registry: one live human session.
-    ws.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    ws.CMUX_REGISTRY.write_text(json.dumps({
-        "tab-1": {"claude_pid": live, "session_id": "sess-A",
-                  "cwd": "/work/repo", "transcript_path": "/t/a.jsonl", "ts": 100},
-        "tab-dead": {"claude_pid": 99999999, "session_id": "sess-dead",
-                     "cwd": "/work/x", "ts": 50},
-    }))
+    # cmux sessions (a real fake-cmux subprocess): one live human session.
+    monkeypatch.setenv("CMUX_BIN", str(fake_cmux.install(ws.HOME / "cmux-bin", [
+        fake_cmux.record("sess-A", pid=live, cwd="/work/repo", transcript_path="/t/a.jsonl",
+                         workspace_id="tab-1", surface_id="surface-a", updated_at_unix=100),
+        fake_cmux.record("sess-dead", pid=99999999, cwd="/work/x",
+                         workspace_id="tab-dead", surface_id="surface-dead"),
+    ])))
 
     # orch-registry: a cron worker bound to workspace:9 (no live session there).
     ws.ORCH_REGISTRY.parent.mkdir(parents=True, exist_ok=True)

@@ -92,7 +92,7 @@ def test_missing_or_line_only_reports_are_explicit_errors(source_repo):
               {"meta": {"branch_coverage": True}, "files": {}})
 
 
-@pytest.mark.parametrize("unsupported", ["hooks/new.py", "src/new.js", "bin/new.sh"])
+@pytest.mark.parametrize("unsupported", ["slack-reactor/new.py", "src/new.js", "bin/new.sh"])
 def test_git_diff_and_untracked_production_files_are_both_measured(tmp_path, unsupported):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / "src").mkdir()
@@ -104,8 +104,11 @@ def test_git_diff_and_untracked_production_files_are_both_measured(tmp_path, uns
                    check=True)
     file.write_text("one = 1\ntwo = 2\n")
     (tmp_path / "src/new.py").write_text("new = True\n")
+    for directory in ("install", "hooks"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "new.py").write_text("added = True\n")
     assert gate.changed_lines(tmp_path, "HEAD") == {
-        "src/example.py": {2}, "src/new.py": {1}}
+        "src/example.py": {2}, "src/new.py": {1}, "install/new.py": {1}, "hooks/new.py": {1}}
     (tmp_path / unsupported).parent.mkdir(exist_ok=True)
     (tmp_path / unsupported).write_text("run_hook()\n")
     with pytest.raises(ValueError, match="not configured"):

@@ -9,6 +9,48 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Changed
+- Read agent sessions from cmux instead of from two hook-written files. cmux
+  0.64.25 records every agent session itself, and `cmux sessions list --json --all`
+  prints those records without the cmux socket. The new `bin/cmux_sessions.py`
+  is the one place that runs it, and it returns nothing when cmux is missing or
+  fails. `world-scanner.py`, `session-context-watcher.py`, `build-ws-context.py`,
+  and `transcript-tail.py --closed-cwd` now read it instead of
+  `~/.claude/cmux-registry.json` (950 stale entries on this machine) and
+  `~/.cmux-session-ledger.jsonl` (29 MB and growing). Only the session cmux
+  marks active on a surface counts as running there, so a session left behind
+  by `/clear` in the same process no longer looks live. Output fields keep their
+  names, and `registry_live_pid` and `session_start_registry` keep their
+  values. Some values now come from different sources:
+  - **First recorded** comes from cmux's `started_at`. A session restored into
+    another workspace shows its original start, not when it arrived there.
+  - A session's `cwd` is its launch directory, and `ts` is cmux's latest hook
+    update instead of the last SessionStart.
+  - `transcript-tail.py --closed-cwd` picks the most recently active session.
+  - Sessions of agents the fleet doesn't run, such as Copilot, are left out.
+  - Claude sessions that cmux has no record for can no longer be verified. This
+    happens when `cmux-auto-resume.py` failed for a session started outside
+    cmux's wrapper; one live session on this machine is affected.
+- Keep `hooks/cmux-auto-resume.py`. cmux's Claude wrapper injects cmux's hooks,
+  but agents started without it get none. That includes an absolute
+  `~/.local/bin/claude` like the warm comms session, and the scheduled fleet
+  spawns. This hook forwards their SessionStart to cmux, so cmux still records
+  them.
+- Log one stderr line when `cmux sessions list` can't be run or read, instead
+  of silently reporting no sessions.
+- Measure Python under `install/` and `hooks/` in the new-code coverage gate,
+  so changes there can pass it.
+
+### Removed
+- Remove `hooks/cmux-session-ledger.py` and `bin/cmux-restore-sessions.py`. Use
+  `cmux restore-session`, or `cmux restore --surface` for one pane.
+  `install.sh --apply` removes the links an older install made to them.
+  `install/patch-settings.py` now removes the ledger hook's registrations, and
+  `cmux-registry.py`'s, from `~/.claude/settings.json` and
+  `~/.factory/hooks.json` instead of adding them. It reports a file it can't
+  read and still cleans the others. The installer still installs cmux's own
+  Factory hooks.
+
 ### Added
 - Add the `cmux-ws-numberer` LaunchAgent as an opt-in feature. It adds a `[N]`
   suffix to cmux workspace titles and gives each workspace an unused sidebar

@@ -30,11 +30,13 @@ class CoverageCaptureTests(TestCase):
         self.root = Path(directory.name)
         self.repo = self.root / "repo"
         self.output = self.root / "results"
-        for name in ("bin", "src/package", "tests"):
+        for name in ("bin", "hooks", "install", "src/package", "tests"):
             (self.repo / name).mkdir(parents=True)
         self.source = self.repo / "src/package/example.py"
         self.source.write_text("answer = 42\n")
         (self.repo / "bin/tool.py").write_text("print('tool')\n")
+        (self.repo / "install/patch.py").write_text("print('patch')\n")
+        (self.repo / "hooks/hook.py").write_text("print('hook')\n")
         (self.repo / "src/data.txt").write_text("not code")
         (self.repo / "tests/test_example.py").write_text("assert True\n")
         self.report = {
@@ -74,7 +76,7 @@ class CoverageCaptureTests(TestCase):
     def test_fingerprints_include_all_production_python_and_hash_bytes(self):
         expected = {
             name: hashlib.sha256((self.repo / name).read_bytes()).hexdigest()
-            for name in ("bin/tool.py", "src/package/example.py")
+            for name in ("bin/tool.py", "hooks/hook.py", "install/patch.py", "src/package/example.py")
         }
         self.assertEqual(capture.source_fingerprints(self.repo), expected)
         self.source.write_bytes(b"answer = 42\r\n")
@@ -101,6 +103,8 @@ class CoverageCaptureTests(TestCase):
         command, options = self.calls[1]
         self.assertEqual(command[:7], [sys.executable, "-m", "pytest", "tests/", "-q", "-k", "example"])
         self.assertIn(f"--cov={self.repo / 'bin'}", command)
+        self.assertIn(f"--cov={self.repo / 'hooks'}", command)
+        self.assertIn(f"--cov={self.repo / 'install'}", command)
         self.assertIn(f"--cov={self.repo / 'src'}", command)
         self.assertIn(f"--cov-config={self.repo / 'tests/coverage.ini'}", command)
         self.assertEqual(options["cwd"], self.repo)

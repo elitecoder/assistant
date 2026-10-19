@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Layer 1: register a provider-correct cmux resume binding on SessionStart.
+"""Register a provider-correct cmux session record and resume binding on SessionStart.
 
-Supports both Claude Code and Factory Droid.  The hook is deliberately silent
-on every failure because a restore helper must never break the agent session.
+cmux's Claude wrapper injects its own hooks, but an agent started without the
+wrapper (an absolute `~/.local/bin/claude`, or `claude` ahead of the wrapper on
+PATH) gets none. This hook forwards SessionStart to cmux's own
+`cmux hooks <provider> session-start` so cmux still records that session (what
+`cmux sessions list` and `surface resume show` read), and sets a resume binding
+when the wrapper didn't. Supports both Claude Code and Factory Droid. The hook
+is deliberately silent on every failure: it must never break the agent session.
 """
 import json
 import os
@@ -115,7 +120,7 @@ def main():
 
     # Fallback: if wrapper didn't set a binding, set one ourselves.
     # We can't set autoResume=true via the CLI, but we set the correct resume
-    # command so Layer 3 (cmux-restore-sessions) can find and respawn this panel.
+    # command so `cmux restore --surface` can respawn this panel.
     if not os.environ.get("CMUX_AGENT_LAUNCH_ARGV_B64"):
         default_executable = "droid" if provider == "factory" else "claude"
         executable = os.environ.get(

@@ -759,7 +759,7 @@ class SyntaxGateTests(unittest.TestCase):
                              f"{new_sha} python{sys.version_info[0]}.{sys.version_info[1]}")
 
     def test_broken_runtime_python_outside_bin_is_refused(self):
-        for rel in ("src/assistant/model_tiers.py", "hooks/cmux-session-ledger.py",
+        for rel in ("src/assistant/model_tiers.py", "hooks/example-hook.py",
                     "install/patch-settings.py"):
             with self.subTest(rel=rel), TemporaryDirectory() as t:
                 tmp = Path(t)

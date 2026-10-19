@@ -15,7 +15,7 @@ from coverage import Coverage
 from coverage.parser import PythonParser
 
 from mutation_smoke import CHECKS
-from run_python_coverage import canonical_report_hash
+from run_python_coverage import PYTHON_SOURCE_DIRS, canonical_report_hash
 
 # Shell files with no line-coverage tool; each changed code hunk needs a
 # mutation_smoke check that breaks only changed code lines in it. A check can
@@ -40,11 +40,11 @@ def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
         if name in MUTATION_PROVEN:
             continue
         if file.suffix in {".py", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".sh"}:
-            if file.suffix != ".py" or file.parts[0] not in {"bin", "src"}:
+            if file.suffix != ".py" or file.parts[0] not in PYTHON_SOURCE_DIRS:
                 raise ValueError(f"Coverage is not configured for changed executable code: {name}")
     result = subprocess.run(
         ["git", "-C", str(repo), "diff", "--no-ext-diff", "--unified=0", base_commit,
-         "--", "bin", "src"], check=True, capture_output=True, text=True)
+         "--", *PYTHON_SOURCE_DIRS], check=True, capture_output=True, text=True)
     files: dict[str, set[int]] = {}
     name = None
     line = 0
@@ -72,7 +72,7 @@ def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
             line += 1
     untracked = subprocess.check_output(
         ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z",
-         "--", "bin", "src"], text=True)
+         "--", *PYTHON_SOURCE_DIRS], text=True)
     for name in untracked.split("\0"):
         if name.endswith(".py"):
             files[name] = set(range(1, len((repo / name).read_text().splitlines()) + 1))

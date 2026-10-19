@@ -3,9 +3,10 @@
 The script is a hyphenated CLI (not an importable module name), so it's loaded
 by file path via importlib. The module binds HOME-derived path constants AT
 IMPORT, so we set os.environ["HOME"] to a tmp dir BEFORE the first import — every
-constant (CMUX_REGISTRY, ORCHESTRATOR_REGISTRY, OUT_PATH, LOG_DIR, LOCK_FILE)
-then resolves under that tmp dir. Per-test we monkeypatch individual
-module-level constants so nothing ever touches the real ~/.claude or ~/.architect.
+constant (ORCHESTRATOR_REGISTRY, OUT_PATH, LOG_DIR, LOCK_FILE) then resolves
+under that tmp dir. Per-test we monkeypatch individual module-level constants so
+nothing ever touches the real ~/.claude or ~/.architect, and CMUX_BIN points at
+a fake `cmux` (tests/fake_cmux.py) that answers `sessions list`.
 
 kqueue is real here (macOS); we exercise add_watch / drop_watch / handle_event /
 discover / flush against real tmp files and a real select.kqueue.
@@ -25,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import fake_cmux
 from assistant.session_guidance import matching_note
 
 REPO = Path(__file__).resolve().parent.parent
@@ -58,14 +60,13 @@ def tmp_home(tmp_path, monkeypatch):
     so log() writes are safe."""
     home = tmp_path / "home"
     home.mkdir()
-    cmux_reg = home / ".claude/cmux-registry.json"
+    monkeypatch.setenv("CMUX_BIN", str(fake_cmux.install(home / "cmux-bin")))
     orch_reg = home / ".architect/orchestrator-registry.json"
     out_path = home / ".claude/cache/session-context.json"
     world_path = home / ".claude/cache/world.json"
     log_dir = home / ".assistant/logs"
     lock_file = home / ".architect/.session-context-watcher.lock"
     monkeypatch.setattr(scw, "HOME", home)
-    monkeypatch.setattr(scw, "CMUX_REGISTRY", cmux_reg)
     monkeypatch.setattr(scw, "ORCHESTRATOR_REGISTRY", orch_reg)
     monkeypatch.setattr(scw, "OUT_PATH", out_path)
     monkeypatch.setattr(scw, "WORLD_PATH", world_path)
@@ -139,17 +140,24 @@ def test_pid_alive_non_int():
 
 # ─── load_live_claude_sessions ───────────────────────────────────────────────
 
-def test_load_live_sessions_missing_registry(tmp_home):
-    # No file → empty dict, no crash.
+def test_load_live_sessions_without_cmux_records(tmp_home):
+    # No records → empty dict, no crash.
     assert scw.load_live_claude_sessions() == {}
 
 
+def test_load_live_sessions_when_cmux_fails(tmp_home):
+    live = fake_cmux.record("S-LIVE", pid=os.getpid(), transcript_path="/t/live.jsonl")
+    _write_sessions(tmp_home, stdout=json.dumps({"sessions": [live]}), returncode=1)
+    assert scw.load_live_claude_sessions() == {}
+    _write_sessions(tmp_home, [live])
+    assert set(scw.load_live_claude_sessions()) == {"S-LIVE"}
+
+
 @pytest.mark.parametrize("contents", [None, "{incomplete", "[]", "null"])
-def test_unreadable_world_never_restores_historical_registry(tmp_home, monkeypatch, contents):
-    _write_registry(tmp_home, {
-        "historical": {"claude_pid": os.getpid(), "session_id": "old-session",
-                       "transcript_path": "/history.jsonl"},
-    })
+def test_unreadable_world_never_restores_historical_records(tmp_home, monkeypatch, contents):
+    _write_sessions(tmp_home, [
+        fake_cmux.record("old-session", pid=os.getpid(), transcript_path="/history.jsonl"),
+    ])
     if contents is None:
         monkeypatch.setattr(scw, "WORLD_PATH", scw.WORLD_PATH.with_name("missing.json"))
     else:
@@ -161,18 +169,50 @@ def test_unreadable_world_never_restores_historical_registry(tmp_home, monkeypat
 def test_load_live_sessions_filters_dead_keeps_live(tmp_home):
     live_pid = os.getpid()
     dead_pid = 2_000_000_000
-    scw.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    scw.CMUX_REGISTRY.write_text(json.dumps({
-        "tab-live": {"claude_pid": live_pid, "session_id": "S-LIVE",
-                     "cwd": "/x", "transcript_path": "/t/live.jsonl", "ts": 100},
-        "tab-dead": {"claude_pid": dead_pid, "session_id": "S-DEAD",
-                     "cwd": "/y", "transcript_path": "/t/dead.jsonl", "ts": 100},
-        "tab-nosid": {"claude_pid": live_pid, "cwd": "/z", "ts": 100},  # no sid
-    }))
+    _write_sessions(tmp_home, [
+        fake_cmux.record("S-LIVE", pid=live_pid, cwd="/x/later", launch_working_directory="/x",
+                         transcript_path="/t/live.jsonl",
+                         workspace_id="ws-live", surface_id="sf-live", updated_at_unix=100),
+        fake_cmux.record("S-NO-LAUNCH", pid=live_pid, cwd="/only-cwd",
+                         launch_working_directory=None, transcript_path="/t/x.jsonl",
+                         workspace_id="ws-x", surface_id="sf-x", updated_at_unix=100),
+        fake_cmux.record("S-DEAD", pid=dead_pid, cwd="/y", transcript_path="/t/dead.jsonl",
+                         workspace_id="ws-dead", surface_id="sf-dead"),
+        fake_cmux.record("S-NOPID", cwd="/z", workspace_id="ws-nopid", surface_id="sf-nopid"),
+    ])
     out = scw.load_live_claude_sessions()
-    assert set(out.keys()) == {"S-LIVE"}
-    assert out["S-LIVE"]["pid"] == live_pid
-    assert out["S-LIVE"]["tab_id"] == "tab-live"
+    assert out == {
+        "S-LIVE": {
+            "pid": live_pid, "cwd": "/x", "transcript_path": "/t/live.jsonl",
+            "provider": "claude", "ts": 100.0, "tab_id": "ws-live",
+        },
+        "S-NO-LAUNCH": {
+            "pid": live_pid, "cwd": "/only-cwd", "transcript_path": "/t/x.jsonl",
+            "provider": "claude", "ts": 100.0, "tab_id": "ws-x",
+        },
+    }
+
+
+def test_load_live_sessions_keeps_only_each_surfaces_active_record(tmp_home):
+    # A /clear starts a new session in the same process: the earlier record on
+    # that surface shares the live pid but no longer runs there.
+    live_pid = os.getpid()
+    _write_sessions(tmp_home, [
+        fake_cmux.record("before-clear", pid=live_pid, active_for_surface=False),
+        fake_cmux.record("after-clear", pid=live_pid, active_for_surface=True),
+    ])
+    assert set(scw.load_live_claude_sessions()) == {"after-clear"}
+
+
+def test_load_live_sessions_maps_droid_and_skips_agents_the_fleet_does_not_run(tmp_home):
+    live_pid = os.getpid()
+    _write_sessions(tmp_home, [
+        fake_cmux.record("droid-session", agent="factory", pid=live_pid, surface_id="sf-1"),
+        fake_cmux.record("codex-session", agent="codex", pid=live_pid, surface_id="sf-2"),
+    ])
+    out = scw.load_live_agent_sessions()
+    assert set(out) == {"droid-session"}
+    assert out["droid-session"]["provider"] == "droid"
 
 
 def test_load_live_sessions_includes_droid_from_world(tmp_home):
@@ -196,11 +236,11 @@ def test_load_live_sessions_includes_droid_from_world(tmp_home):
 @pytest.mark.parametrize("binding", [
     "unknown", "missing_status", "missing_workspace", "missing_surface", "verified", "dead",
 ])
-def test_load_live_sessions_identity_world_excludes_reused_registry_pids(tmp_home, binding):
-    _write_registry(tmp_home, {
-        "old": {"claude_pid": os.getpid(), "session_id": "historical",
-                "cwd": "/old", "transcript_path": "/history.jsonl", "ts": 100},
-    })
+def test_load_live_sessions_identity_world_excludes_reused_record_pids(tmp_home, binding):
+    _write_sessions(tmp_home, [
+        fake_cmux.record("historical", pid=os.getpid(), cwd="/old",
+                         transcript_path="/history.jsonl"),
+    ])
     entry = {"session_id": "current", "pid": os.getpid(), "provider": "claude",
              "workspace_id": "workspace", "surface_id": "surface",
              "identity_status": "verified", "transcript_path": "/current.jsonl"}
@@ -222,46 +262,16 @@ def test_load_live_sessions_identity_world_excludes_reused_registry_pids(tmp_hom
     assert set(scw.load_live_agent_sessions()) == ({"current"} if binding == "verified" else set())
 
 
-def test_load_live_sessions_empty_identity_world_does_not_restore_registry(tmp_home):
-    _write_registry(tmp_home, {
-        "old": {"claude_pid": os.getpid(), "session_id": "historical",
-                "transcript_path": "/history.jsonl"},
-    })
+def test_load_live_sessions_empty_identity_world_does_not_restore_records(tmp_home):
+    _write_sessions(tmp_home, [
+        fake_cmux.record("historical", pid=os.getpid(), transcript_path="/history.jsonl"),
+    ])
     scw.WORLD_PATH.parent.mkdir(parents=True, exist_ok=True)
     scw.WORLD_PATH.write_text(json.dumps({
         "live_sessions": [],
         "workspaces": [{"surfaces": [{"identity_status": "unknown"}]}],
     }))
     assert scw.load_live_agent_sessions() == {}
-
-
-def test_load_live_sessions_dup_keeps_most_recent_ts(tmp_home):
-    live_pid = os.getpid()
-    scw.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    scw.CMUX_REGISTRY.write_text(json.dumps({
-        "tab-old": {"claude_pid": live_pid, "session_id": "S", "cwd": "/old",
-                    "transcript_path": "/t/old.jsonl", "ts": 100},
-        "tab-new": {"claude_pid": live_pid, "session_id": "S", "cwd": "/new",
-                    "transcript_path": "/t/new.jsonl", "ts": 200},
-    }))
-    out = scw.load_live_claude_sessions()
-    # Same session_id; the higher-ts entry wins regardless of iteration order.
-    assert out["S"]["cwd"] == "/new"
-    assert out["S"]["ts"] == 200
-
-
-def test_load_live_sessions_dup_reverse_order(tmp_home):
-    # newer entry first, older second — the older must NOT clobber the newer.
-    live_pid = os.getpid()
-    scw.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    scw.CMUX_REGISTRY.write_text(json.dumps({
-        "tab-new": {"claude_pid": live_pid, "session_id": "S", "cwd": "/new",
-                    "transcript_path": "/t/new.jsonl", "ts": 200},
-        "tab-old": {"claude_pid": live_pid, "session_id": "S", "cwd": "/old",
-                    "transcript_path": "/t/old.jsonl", "ts": 100},
-    }))
-    out = scw.load_live_claude_sessions()
-    assert out["S"]["cwd"] == "/new"
 
 
 # ─── load_cron_workers ───────────────────────────────────────────────────────
@@ -1505,18 +1515,16 @@ def test_to_dict_recent_turns_capped(tmp_path):
 
 # ─── Watcher.find_active_transcripts ─────────────────────────────────────────
 
-def _write_registry(tmp_home, entries):
-    scw.CMUX_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    scw.CMUX_REGISTRY.write_text(json.dumps(entries))
+def _write_sessions(tmp_home, records=(), **kwargs):
+    fake_cmux.write(tmp_home / "cmux-bin", records, **kwargs)
 
 
 def test_find_active_transcripts_recent_returned(tmp_home, tmp_path):
     tfile = tmp_path / "live.jsonl"
     tfile.write_text(_user_line("hi") + "\n")
-    _write_registry(tmp_home, {
-        "tab-1": {"claude_pid": os.getpid(), "session_id": "S1", "cwd": "/proj",
-                  "transcript_path": str(tfile), "ts": 1},
-    })
+    _write_sessions(tmp_home, [
+        fake_cmux.record("S1", pid=os.getpid(), cwd="/proj", transcript_path=str(tfile)),
+    ])
     w = scw.Watcher()
     try:
         cutoff = (scw.utc_now() - timedelta(hours=scw.ACTIVITY_HOURS)).timestamp()
@@ -1536,10 +1544,9 @@ def test_find_active_transcripts_old_mtime_retained(tmp_home, tmp_path):
     # Backdate mtime well past the activity window.
     old = time.time() - (scw.ACTIVITY_HOURS + 5) * 3600
     os.utime(tfile, (old, old))
-    _write_registry(tmp_home, {
-        "tab-1": {"claude_pid": os.getpid(), "session_id": "S1", "cwd": "/proj",
-                  "transcript_path": str(tfile), "ts": 1},
-    })
+    _write_sessions(tmp_home, [
+        fake_cmux.record("S1", pid=os.getpid(), cwd="/proj", transcript_path=str(tfile)),
+    ])
     w = scw.Watcher()
     try:
         cutoff = (scw.utc_now() - timedelta(hours=scw.ACTIVITY_HOURS)).timestamp()
@@ -1549,11 +1556,11 @@ def test_find_active_transcripts_old_mtime_retained(tmp_home, tmp_path):
 
 
 def test_find_active_transcripts_missing_file_skipped(tmp_home, tmp_path):
-    _write_registry(tmp_home, {
-        "tab-1": {"claude_pid": os.getpid(), "session_id": "S1", "cwd": "/proj",
-                  "transcript_path": str(tmp_path / "ghost.jsonl"), "ts": 1},
-        "tab-2": {"claude_pid": os.getpid(), "session_id": "S2", "cwd": "/proj"},
-    })  # tab-2 has no transcript_path
+    _write_sessions(tmp_home, [
+        fake_cmux.record("S1", pid=os.getpid(), cwd="/proj",
+                         transcript_path=str(tmp_path / "ghost.jsonl"), surface_id="sf-1"),
+        fake_cmux.record("S2", pid=os.getpid(), cwd="/proj", surface_id="sf-2"),
+    ])  # S2 has no transcript_path
     w = scw.Watcher()
     try:
         cutoff = (scw.utc_now() - timedelta(hours=scw.ACTIVITY_HOURS)).timestamp()
@@ -1566,11 +1573,10 @@ def test_find_active_transcripts_cron_tagging(tmp_home, tmp_path):
     tfile = tmp_path / "cron.jsonl"
     tfile.write_text(_user_line("cron work") + "\n")
     # cron cwd is derived from the (patched) module HOME — build it portably
-    _write_registry(tmp_home, {
-        "tab-c": {"claude_pid": os.getpid(), "session_id": "SC",
-                  "cwd": str(tmp_home / ".architect"),
-                  "transcript_path": str(tfile), "ts": 1},
-    })
+    _write_sessions(tmp_home, [
+        fake_cmux.record("SC", pid=os.getpid(), cwd=str(tmp_home / ".architect"),
+                         transcript_path=str(tfile)),
+    ])
     w = scw.Watcher()
     try:
         cutoff = (scw.utc_now() - timedelta(hours=scw.ACTIVITY_HOURS)).timestamp()
@@ -1587,10 +1593,9 @@ def test_find_active_transcripts_stat_oserror_skipped(tmp_home, tmp_path, monkey
     is skipped (lines 325-326)."""
     tfile = tmp_path / "racey.jsonl"
     tfile.write_text(_user_line("hi") + "\n")
-    _write_registry(tmp_home, {
-        "tab-1": {"claude_pid": os.getpid(), "session_id": "S1", "cwd": "/proj",
-                  "transcript_path": str(tfile), "ts": 1},
-    })
+    _write_sessions(tmp_home, [
+        fake_cmux.record("S1", pid=os.getpid(), cwd="/proj", transcript_path=str(tfile)),
+    ])
     real_stat = Path.stat
 
     def flaky_stat(self, *a, **k):
@@ -1789,20 +1794,20 @@ def test_handle_event_delete_drops_watch(tmp_home, tmp_path):
 
 # ─── Watcher.discover ─────────────────────────────────────────────────────────
 
-def test_discover_identity_world_keeps_idle_verified_session_not_registry_ghosts(
+def test_discover_identity_world_keeps_idle_verified_session_not_record_ghosts(
         tmp_home, tmp_path):
     paths = {}
     old = scw.utc_now() - timedelta(hours=72)
-    for name in ("verified", "unknown", "registry-only"):
+    for name in ("verified", "unknown", "record-only"):
         path = tmp_path / f"{name}.jsonl"
         path.write_text(_user_line("Resume this work.", scw.iso(old)) + "\n")
         os.utime(path, (old.timestamp(), old.timestamp()))
         paths[name] = path
-    _write_registry(tmp_home, {
-        name: {"claude_pid": os.getpid(), "session_id": name,
-               "transcript_path": str(path), "cwd": "/project"}
+    _write_sessions(tmp_home, [
+        fake_cmux.record(name, pid=os.getpid(), transcript_path=str(path), cwd="/project",
+                         surface_id=f"surface-{name}")
         for name, path in paths.items()
-    })
+    ])
     scw.WORLD_PATH.parent.mkdir(parents=True, exist_ok=True)
     scw.WORLD_PATH.write_text(json.dumps({"live_sessions": [
         {"session_id": name, "pid": os.getpid(), "transcript_path": str(paths[name]),
@@ -1834,9 +1839,9 @@ def test_discover_keeps_days_old_live_guidance_and_scanner_verifies_it(
     os.utime(path, (old.timestamp(), old.timestamp()))
     historical = tmp_path / "unregistered-history.jsonl"
     historical.write_text(_user_line("Do not watch historical sessions.") + "\n")
-    registration = {"claude_pid": os.getpid(), "session_id": path.stem,
-                    "cwd": "/project", "transcript_path": str(path), "ts": 1}
-    _write_registry(tmp_home, {"tab-live": registration})
+    registration = fake_cmux.record(path.stem, pid=os.getpid(), cwd="/project",
+                                    transcript_path=str(path))
+    _write_sessions(tmp_home, [registration])
     spec = importlib.util.spec_from_file_location(
         "scanner_for_idle_watcher", str(REPO / "bin/world-scanner.py"))
     scanner = importlib.util.module_from_spec(spec)
@@ -1864,10 +1869,10 @@ def test_discover_keeps_days_old_live_guidance_and_scanner_verifies_it(
         assert live[path.stem]["context_checked_at"] == scanner.iso(checked)
         assert live[path.stem]["context_built_at"] == cached["_meta"]["built_at"]
         if drop_reason == "dead_pid":
-            registration["claude_pid"] = 2_000_000_000
+            registration["pid"] = 2_000_000_000
         else:
             registration.pop("session_id")
-        _write_registry(tmp_home, {"tab-live": registration})
+        _write_sessions(tmp_home, [registration])
         watcher.discover()
         watcher.flush()
         assert watcher.path_to_fd == {}
@@ -1881,10 +1886,9 @@ def test_discover_keeps_days_old_live_guidance_and_scanner_verifies_it(
 def test_discover_adds_live_and_drops_dead(tmp_home, tmp_path):
     live_file = tmp_path / "live.jsonl"
     live_file.write_text(_user_line("active") + "\n")
-    _write_registry(tmp_home, {
-        "tab-1": {"claude_pid": os.getpid(), "session_id": "S1", "cwd": "/proj",
-                  "transcript_path": str(live_file), "ts": 1},
-    })
+    _write_sessions(tmp_home, [
+        fake_cmux.record("S1", pid=os.getpid(), cwd="/proj", transcript_path=str(live_file)),
+    ])
     w = scw.Watcher()
     try:
         w.discover()
@@ -2010,17 +2014,16 @@ def test_flush_recent_inputs_sorted_and_limited(tmp_home, tmp_path):
 def test_main_once_writes_out_path(tmp_home, tmp_path, monkeypatch, capsys):
     tfile = tmp_path / "live.jsonl"
     tfile.write_text(_user_line("hi", ts=scw.iso(scw.utc_now())) + "\n")
-    _write_registry(tmp_home, {
-        "tab-1": {"claude_pid": os.getpid(), "session_id": "S1", "cwd": "/proj",
-                  "transcript_path": str(tfile), "ts": 1},
-    })
+    _write_sessions(tmp_home, [
+        fake_cmux.record("S1", pid=os.getpid(), cwd="/proj", transcript_path=str(tfile)),
+    ])
     monkeypatch.setattr(sys, "argv", ["session-context-watcher.py", "--once"])
     scw.main()
     out = capsys.readouterr().out
     assert "flushed 1 sessions" in out
     assert scw.OUT_PATH.exists()
     payload = json.loads(scw.OUT_PATH.read_text())
-    # by_session is keyed by the transcript file stem, not the registry sid.
+    # by_session is keyed by the transcript file stem, not the record's sid.
     assert "live" in payload["by_session"]
     assert payload["by_session"]["live"]["cwd"] == "/proj"
 
