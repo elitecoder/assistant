@@ -240,3 +240,27 @@ def test_send_refuses_a_target_that_is_not_in_auto_mode(tmp_path, env):
     r = run(env, SEND, SURFACE, transcript, prompt(env))
     assert (r.returncode, r.stdout.strip()) == (3, "not-delivered")
     assert not [c for c in calls(env) if c[0] == "paste"]
+
+
+def test_spawn_refuses_an_alias_that_is_not_auto_mode(tmp_path, env):
+    (Path(env["HOME"]) / ".zprofile").write_text("alias claude='claude --model x --permission-mode bypassPermissions'\n")
+    r = run(env, SPAWN, tmp_path, "t", prompt(env))
+    assert r.returncode == 3
+    assert "isn't auto mode" in r.stderr
+    assert calls(env) == []
+
+
+def test_spawn_refuses_a_sibling_of_the_staging_folder(tmp_path, env):
+    sibling = Path(env["HOME"]) / ".assistant" / "spawn-prompts-x"
+    sibling.mkdir()
+    pf = sibling / "p.md"
+    pf.write_text("x")
+    r = run(env, SPAWN, tmp_path, "t", pf)
+    assert r.returncode == 2
+    assert calls(env) == []
+
+
+def test_send_refuses_a_missing_transcript(tmp_path, env):
+    r = run(env, SEND, SURFACE, tmp_path / "missing.jsonl", prompt(env))
+    assert r.returncode == 2 and "no such transcript" in r.stderr
+    assert calls(env) == []
