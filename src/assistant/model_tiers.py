@@ -41,17 +41,17 @@ TIERS = ("frontier", "balanced", "cheap")
 _DEFAULTS = {
     "bedrock": {
         "frontier": "us.anthropic.claude-opus-4-8",
-        "balanced": "us.anthropic.claude-sonnet-4-6",
+        "balanced": "us.anthropic.claude-sonnet-5-5",
         "cheap":    "us.anthropic.claude-haiku-4-5",
     },
     "anthropic": {
         "frontier": "claude-opus-4-8",
-        "balanced": "claude-sonnet-4-6",
+        "balanced": "claude-sonnet-5-5",
         "cheap":    "claude-haiku-4-5",
     },
     "vertex": {
         "frontier": "claude-opus-4-8",
-        "balanced": "claude-sonnet-4-6",
+        "balanced": "claude-sonnet-5-5",
         "cheap":    "claude-haiku-4-5",
     },
 }

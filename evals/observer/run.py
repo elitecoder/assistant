@@ -14,7 +14,7 @@ Runs every fixture by default. Pass a fixture name as argv to run one.
 Usage:
   ./run.py                       # all fixtures
   ./run.py ws97-trap             # one fixture
-  EVAL_MODEL=us.anthropic.claude-sonnet-4-6[1m] ./run.py
+  EVAL_CLAUDE_MODEL='claude-sonnet-5-5[1m]' ./run.py --provider claude
 """
 from __future__ import annotations
 
@@ -33,14 +33,17 @@ FIXTURES_DIR = EVAL_DIR / "fixtures"
 REPO = EVAL_DIR.parents[1]
 OBSERVER_PROMPT = REPO / "prompts/observer-batch-prompt.md"
 BIN = REPO / "bin"
-if str(BIN) not in sys.path:
-    sys.path.insert(0, str(BIN))
+SRC = REPO / "src"
+for path in (BIN, SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 import llm_runner
+from assistant import model_tiers
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 DROID_BIN = os.environ.get("DROID_BIN", str(Path.home() / ".local/bin/droid"))
 CLAUDE_MODEL = os.environ.get(
-    "EVAL_CLAUDE_MODEL", "us.anthropic.claude-sonnet-4-6[1m]")
+    "EVAL_CLAUDE_MODEL", model_tiers.model_for("balanced", long_context=True))
 DROID_MODEL = os.environ.get("EVAL_DROID_MODEL", "glm-5.2")
 TIMEOUT_SEC = int(os.environ.get("EVAL_TIMEOUT_SEC", "180"))
 REPORT_PATH = EVAL_DIR / "last-run.json"
@@ -76,6 +79,7 @@ def qualification_input_hashes() -> dict[str, str]:
         Path(__file__),
         BIN / "llm_runner.py",
         BIN / "pulse.py",
+        SRC / "assistant/model_tiers.py",
         *sorted(path for path in FIXTURES_DIR.rglob("*") if path.is_file()),
     ]
     return {

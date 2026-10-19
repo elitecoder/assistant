@@ -68,7 +68,7 @@ def test_warm_launch_declares_bedrock_backend_and_keeps_1m_context(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     cmd = cs._warm_launch(ag.CLAUDE)
     assert cmd.startswith("CLAUDE_CODE_USE_BEDROCK=1 ")
-    assert "us.anthropic.claude-sonnet-4-6[1m]" in cmd
+    assert "us.anthropic.claude-sonnet-5-5[1m]" in cmd
 
 
 def test_warm_launch_declares_non_bedrock_backend_and_still_gets_1m_context(monkeypatch):
@@ -120,13 +120,13 @@ def test_resolve_warm_model_and_backend_respects_env(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     model, backend, pinned = cs._resolve_warm_model_and_backend()
     assert backend == "bedrock"
-    assert model == "us.anthropic.claude-sonnet-4-6[1m]"
+    assert model == "us.anthropic.claude-sonnet-5-5[1m]"
     assert pinned is False
 
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "0")
     model, backend, pinned = cs._resolve_warm_model_and_backend()
     assert backend == "anthropic"
-    assert model == "claude-sonnet-4-6[1m]"
+    assert model == "claude-sonnet-5-5[1m]"
     assert pinned is False
 
     monkeypatch.setenv("COMMS_MODEL", "my-pinned-id")
