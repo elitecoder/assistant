@@ -124,12 +124,39 @@ def test_submission_skips_corrupt_lines_and_missing_files(tmp_path):
     assert not cs.transcript_has_submission(tmp_path / "missing.jsonl", MARK)
 
 
-def test_submission_reads_only_the_tail(tmp_path, monkeypatch):
-    monkeypatch.setattr(cs, "TRANSCRIPT_TAIL_BYTES", 200)
-    rec = {"type": "user", "message": {"role": "user", "content": f"old {MARK}"}}
+def test_submission_found_behind_the_records_claude_writes_after_it(tmp_path):
+    """2026-10-19: Claude Code 2.1.303 wrote ~770 KB of listings and request
+    records within a second of the boot prompt, so a check that read only the
+    last 256 KB never saw it and every warm spawn was abandoned."""
+    t = _jsonl(tmp_path / "t.jsonl", [
+        {"type": "mode"},
+        {"type": "user", "entrypoint": "cli",
+         "message": {"role": "user", "content": f"Read the prompt. {MARK}"}},
+        *({"type": "attachment", "attachment": {"type": kind, "content": "x" * 200_000}}
+          for kind in ("agent_listing_delta", "skill_listing", "instructions", "prompt_snapshot")),
+    ])
+    assert t.stat().st_size > 800_000
+    assert cs.transcript_has_submission(t, MARK)
+
+
+def test_submission_keeps_searching_past_a_non_prompt_match(tmp_path):
+    t = _jsonl(tmp_path / "t.jsonl", [
+        {"type": "assistant", "message": {"role": "assistant", "content": MARK}},
+        {"type": "user", "message": {"role": "user", "content": f"hi {MARK}"}},
+    ])
+    assert cs.transcript_has_submission(t, MARK)
+
+
+def test_submission_false_for_an_empty_transcript(tmp_path):
     t = tmp_path / "t.jsonl"
-    t.write_text(json.dumps(rec) + "\n" + ("x" * 400) + "\n")
+    t.write_text("")
     assert not cs.transcript_has_submission(t, MARK)
+
+
+def test_submission_matches_a_last_line_without_a_newline(tmp_path):
+    t = tmp_path / "t.jsonl"
+    t.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": MARK}}))
+    assert cs.transcript_has_submission(t, MARK)
 
 
 def test_submission_droid_schema(tmp_path):
@@ -430,3 +457,38 @@ def test_close_own_workspace_matches_whole_refs_only(monkeypatch):
     assert closed == [] and "skip close workspace:25" in logs[0]
     cs.close_own_workspace(PATHS, "workspace:258", log=logs.append)
     assert closed == ["workspace:258"]
+
+
+def _close_with(monkeypatch, close_results):
+    """Run close_own_workspace on a listed warm workspace whose close attempts
+    return `close_results` in turn; returns (close argvs, log lines)."""
+    calls: list = []
+    results = iter(close_results)
+
+    def fake_run(argv, timeout=30):
+        if argv[1] == "list-workspaces":
+            return 0, "  workspace:1000010024  assistant-comms (warm) #ea290b [2]\n", ""
+        calls.append(argv[1:])
+        return next(results)
+
+    monkeypatch.setattr(cl, "run_cmd", fake_run)
+    logs: list = []
+    cs.close_own_workspace(PATHS, "workspace:1000010024", log=logs.append)
+    return calls, logs
+
+
+def test_close_own_workspace_forces_when_cmux_asks_to_confirm(monkeypatch):
+    """cmux 0.65 refuses to close a workspace with a running process unless
+    forced, which left every failed warm spawn open (2026-10-19)."""
+    refused = (1, "", "Error: confirmation_required: Workspace has a running process; "
+                      "retry with --force")
+    calls, logs = _close_with(monkeypatch, [refused, (0, "OK workspace:1000010024", "")])
+    assert calls == [["close-workspace", "--workspace", "workspace:1000010024"],
+                     ["close-workspace", "--workspace", "workspace:1000010024", "--force"]]
+    assert logs == ["closed prior warm workspace workspace:1000010024"]
+
+
+def test_close_own_workspace_never_forces_past_other_errors(monkeypatch):
+    calls, logs = _close_with(monkeypatch, [(1, "", "Error: not_found")])
+    assert calls == [["close-workspace", "--workspace", "workspace:1000010024"]]
+    assert logs == ["close workspace:1000010024 rc=1: Error: not_found"]

@@ -57,6 +57,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Bring the warm Slack session up again on Claude Code 2.1.303 and cmux 0.65.
+  Claude Code now writes several hundred KB of records right after each prompt,
+  so the check that read only the last 256 KB of the transcript never saw the
+  boot prompt. Every spawn was abandoned, and cmux 0.65 refused to close the
+  abandoned workspace, so each retry left another one open. The check now
+  searches the whole transcript, and the daemon retries the close with
+  `--force` when cmux asks to confirm, still only for its own warm workspace.
 - Stop two time-of-day test failures. The Observer audit tests failed in the
   last minute of a two-hour window, and five Strategist tests that count calls
   per UTC day failed in the last minutes of the day. Each test now starts its clock at the

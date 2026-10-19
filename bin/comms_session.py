@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
 import os
 import re
 import shlex
@@ -301,9 +302,6 @@ def should_clear(transcript_path: str | Path,
 
 # --------------------------------------------------------------------------- submission (pure)
 
-# Only the transcript tail is read: a submitted prompt is always among the
-# newest records, and warm transcripts grow to megabytes.
-TRANSCRIPT_TAIL_BYTES = 262_144
 _RULE_RE = re.compile(r"^\s*─{8,}\s*$")
 _WS_RE = re.compile(r"\s+")
 
@@ -360,27 +358,36 @@ def transcript_has_submission(path: str | Path, marker: str) -> bool:
 
     Headless `claude -p` transcripts never count: the proofgate Stop hook runs
     one in this cwd after every warm turn, and it quotes the warm session's
-    prompts back."""
+    prompts back.
+
+    The whole file is searched. Claude Code writes several hundred KB of
+    records right after each prompt, so a prompt can be far from the end
+    within a second of being submitted."""
+    needle = marker.encode()
     try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            f.seek(max(0, f.tell() - TRANSCRIPT_TAIL_BYTES))
-            tail = f.read().decode("utf-8", "replace")
-    except OSError:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            hit = m.find(needle)
+            while hit != -1:
+                start = m.rfind(b"\n", 0, hit) + 1
+                end = m.find(b"\n", hit)
+                end = len(m) if end == -1 else end
+                if _is_submission(m[start:end], marker):
+                    return True
+                hit = m.find(needle, end)
+    except (OSError, ValueError):  # ValueError: mmap of an empty file
         return False
-    for line in tail.splitlines():
-        if marker not in line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict) or rec.get("entrypoint") == "sdk-cli":
-            continue
-        text = _prompt_text(rec)
-        if text and marker in text:
-            return True
     return False
+
+
+def _is_submission(line: bytes, marker: str) -> bool:
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(rec, dict) or rec.get("entrypoint") == "sdk-cli":
+        return False
+    text = _prompt_text(rec)
+    return bool(text and marker in text)
 
 
 def find_submission(project_dir: Path, marker: str, since: float) -> str | None:
@@ -555,8 +562,11 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
     if not is_warm:
         log(f"skip close {ws_ref}: not a '{SESSION_TITLE}' workspace (ref reissued?)")
         return
-    rc, _, err = comms_lib.run_cmd(
-        [str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref], timeout=15)
+    argv = [str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]
+    rc, _, err = comms_lib.run_cmd(argv, timeout=15)
+    if rc != 0 and "confirmation_required" in err:
+        # cmux 0.65 won't close a workspace with a running process unless forced.
+        rc, _, err = comms_lib.run_cmd([*argv, "--force"], timeout=15)
     log(f"closed prior warm workspace {ws_ref}" if rc == 0
         else f"close {ws_ref} rc={rc}: {err.strip()[:120]}")
 
