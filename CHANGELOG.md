@@ -10,6 +10,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Add `bin/cmux-claude-spawn.sh` and `bin/cmux-claude-send.sh`. The spawn
+  script starts Claude Code in a new unfocused cmux workspace, submits one
+  message, and prints the workspace, surface, and transcript. The send script
+  types a message into a running session and confirms it reached the
+  transcript. Each is one command, so a narrow `permissions.allow` rule can
+  approve it in auto mode without the classifier.
 - Add the `cmux-ws-numberer` LaunchAgent as an opt-in feature. It adds a `[N]`
   suffix to cmux workspace titles and gives each workspace an unused sidebar
   color. Enable it with `install.sh --apply --with-ws-numberer`, answer the
