@@ -56,6 +56,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Add an attention overview with compact task cards, expandable return notes,
   and reminders to finish older pending work before starting another task.
 
+### Changed
+- `spawn-claude-workspace` no longer adds `--dangerously-skip-permissions`
+  for `engine=claude`. Child sessions use the `claude` alias, which runs in
+  auto mode, and the ready check waits for `auto mode on`.
+
 ### Fixed
 - Bring the warm Slack session up again on Claude Code 2.1.303 and cmux 0.65.
   Claude Code now writes several hundred KB of records right after each prompt,
