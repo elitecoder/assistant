@@ -56,6 +56,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Add an attention overview with compact task cards, expandable return notes,
   and reminders to finish older pending work before starting another task.
 
+### Changed
+- Move the `balanced` model tier from Sonnet 4.6 to Sonnet 5.5 on Bedrock, the
+  Anthropic API, and Vertex. The warm Slack session, the Observer, the brief
+  narrator, and the strategist use this tier. A live warm session on the old
+  model is replaced before it handles its next Slack message.
+
 ### Fixed
 - Bring the warm Slack session up again on Claude Code 2.1.303 and cmux 0.65.
   Claude Code now writes several hundred KB of records right after each prompt,
