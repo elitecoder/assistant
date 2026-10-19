@@ -20,13 +20,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   busy session. The spawn script accepts only `FFP_CHANNEL` and `FFP_EXP_*`
   environment switches, refuses a `claude` alias that isn't auto mode or
   carries `--dangerously-skip-permissions`, and types nothing until the
-  session shows auto mode. The send script takes surface UUIDs only and
-  refuses its caller's own surface.
+  session shows auto mode. The send script takes surface UUIDs only, refuses
+  its caller's own surface, and refuses a target that isn't showing auto mode.
 
-### Changed
-- `spawn-claude-workspace` launches `engine=claude` with
-  `bin/cmux-claude-spawn.sh` and no longer adds
-  `--dangerously-skip-permissions`; child sessions run in auto mode.
 - Add the `cmux-ws-numberer` LaunchAgent as an opt-in feature. It adds a `[N]`
   suffix to cmux workspace titles and gives each workspace an unused sidebar
   color. Enable it with `install.sh --apply --with-ws-numberer`, answer the
@@ -72,6 +68,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   private audit receipt that cannot trigger outgoing notification broadcasts.
 - Add an attention overview with compact task cards, expandable return notes,
   and reminders to finish older pending work before starting another task.
+
+### Changed
+- `spawn-claude-workspace` launches `engine=claude` with
+  `bin/cmux-claude-spawn.sh` and no longer adds
+  `--dangerously-skip-permissions`; child sessions run in auto mode.
 
 ### Fixed
 - Bring the warm Slack session up again on Claude Code 2.1.303 and cmux 0.65.

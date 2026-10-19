@@ -3,7 +3,8 @@
 # usage: cmux-claude-send.sh <surface-uuid> <transcript> <prompt-file>
 #   <prompt-file> must be a file under ~/.assistant/spawn-prompts/; the session receives "Read <file> and follow it."
 # stdout: "delivered" or "not-delivered"
-# exit: 0 delivered; 1 refused by cmux (draft or dialog open) or not seen within 120s; 2 bad arguments.
+# exit: 0 delivered; 1 refused by cmux (draft or dialog open) or not seen within 120s; 2 bad arguments;
+#       3 the target isn't showing auto mode.
 set -u
 PROMPTS="$HOME/.assistant/spawn-prompts"
 [[ $# -eq 3 ]] || { echo "usage: ${0:t} <surface-uuid> <transcript> <prompt-file>" >&2; exit 2; }
@@ -17,6 +18,8 @@ SF="$1"; T="$2"; PF="${3:A}"
 
 MSG="Read $PF and follow it."
 count() { grep -F -- "$MSG" "$T" | grep -cE '"type":"user"|"operation":"enqueue"'; }
+[[ "$(CMUX_QUIET=1 cmux read-screen --surface "$SF" --lines 60 2>/dev/null)" == *"auto mode on"* ]] \
+  || { echo not-delivered; echo "refusing: the target session isn't showing auto mode" >&2; exit 3; }
 BEFORE=$(count)
 CMUX_QUIET=1 cmux paste --surface "$SF" --submit -- "$MSG" >/dev/null || { echo not-delivered; echo "cmux refused the paste (draft or dialog open?)" >&2; exit 1; }
 for i in {1..60}; do

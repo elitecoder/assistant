@@ -16,7 +16,7 @@ Two engines are supported, selected by the `engine` input:
 
 - Always pass `--focus false` to `cmux new-workspace`.
 - Never stream a long prompt through cmux. Stage it under `~/.assistant/spawn-prompts/` and send a short `Read <path>...` instruction.
-- Use `surface.send_text` followed by an explicit `surface.send_key` Enter.
+- `engine=droid`: use `surface.send_text` followed by an explicit `surface.send_key` Enter. `engine=claude`: the scripts below use `cmux paste --submit`, which refuses over a draft or open dialog.
 - Never select the new workspace automatically.
 - The transcript is the authoritative submission signal — a cmux success response alone is NOT confirmation.
 
@@ -44,7 +44,7 @@ bracket number. Leave naming and color to the daemon.
 - Run the script by that exact absolute path, as one command with nothing piped, chained, or captured around it, so its `permissions.allow` rule applies. Give it a 5-minute timeout.
 - To message a running child session, stage a file under `~/.assistant/spawn-prompts/` and run `/Users/mukuls/.claude/bin/cmux-claude-send.sh <surface-uuid> <transcript> <prompt-file>`, the same way.
 - Do NOT hardcode `--model`/`--add-dir` — the alias owns them. Override `--model` only when the task genuinely needs a different tier.
-- Claude transcripts: `~/.claude/projects/<project-slug>/<session-id>.jsonl`. `<project-slug>` is the cwd with every `/` replaced by `-` (leading `-` included). Sessions share one project dir; confirmation is a NEW jsonl appearing after spawn.
+- Claude transcripts: `~/.claude/projects/<project-slug>/<session-id>.jsonl`. `<project-slug>` is the cwd with every non-alphanumeric character replaced by `-` (leading `-` included). Sessions share one project dir; confirmation is a NEW jsonl appearing after spawn.
 - Never fall back to Droid if Claude fails.
 
 ## Inputs
