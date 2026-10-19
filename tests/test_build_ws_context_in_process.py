@@ -10,8 +10,9 @@ ABSOLUTE INVARIANT: never attach a transcript from an old or wrong workspace.
   - find_agent_pane: picks the Claude pane out of a multi-pane workspace, not
     the focused shell; falls back to a booting agent.
   - transcript_from_session_id: glob + internal-sessionId verification.
-  - registry_transcript_for_surface: live-pid gate, screen-agreement gate,
-    internal-sid gate — rejects the stale-registry trap.
+  - recorded_transcript_for_surface: cmux session record (fake `cmux`,
+    tests/fake_cmux.py) behind the live-pid, active-record, screen-agreement,
+    and internal-sid gates — rejects the stale-record trap.
   - resolve_workspace_screen_and_transcript: end-to-end, never-guess priority.
   - transcript_signals / cwd_state / screen_shows_error / main().
 """
@@ -28,6 +29,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
+
+import fake_cmux
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "bin/build-ws-context.py"
@@ -46,6 +49,14 @@ def fixture_home(tmp: Path) -> Path:
     (tmp / ".claude/projects").mkdir(parents=True)
     (tmp / ".factory/sessions").mkdir(parents=True)
     return tmp
+
+
+def use_fake_cmux(test: unittest.TestCase, records=()) -> None:
+    """Point CMUX_BIN at a fake cmux whose `sessions list` returns `records`."""
+    cli = fake_cmux.install(test._tmp / "cmux-bin", records)
+    patcher = mock.patch.dict(os.environ, {"CMUX_BIN": str(cli)})
+    patcher.start()
+    test.addCleanup(patcher.stop)
 
 
 def _status_bar(sid8: str, branch: str = "main") -> str:
@@ -158,9 +169,9 @@ class TranscriptFromSessionIdTests(unittest.TestCase):
             self.mod.transcript_from_session_id(full), str(tp))
 
 
-class RegistryTranscriptTests(unittest.TestCase):
-    """The stale-registry trap (ws:12): the registry maps surface→session, but
-    a reused surface leaves a DEAD-pid row pointing at the old session."""
+class RecordedTranscriptTests(unittest.TestCase):
+    """The stale-record trap (ws:12): cmux records which session runs on each
+    surface, but a reused surface leaves a DEAD-pid record for the old session."""
 
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
@@ -170,10 +181,6 @@ class RegistryTranscriptTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def _write_registry(self, entries: list[dict]):
-        reg = {f"tab-{i}": e for i, e in enumerate(entries)}
-        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
-
     def _mk_transcript(self, sid_full: str) -> str:
         proj = self._tmp / ".claude/projects/-Users-x-dev"
         proj.mkdir(parents=True, exist_ok=True)
@@ -182,75 +189,139 @@ class RegistryTranscriptTests(unittest.TestCase):
                                   "message": {"role": "user", "content": "hi"}}) + "\n")
         return str(tp)
 
-    def test_live_pid_entry_resolves(self):
+    def _surface(self, *records):
+        use_fake_cmux(self, records)
+        return self.mod.recorded_transcript_for_surface
+
+    @staticmethod
+    def _record(sid: str, **fields) -> dict:
+        return fake_cmux.record(sid, surface_id="SURF-A", **fields)
+
+    def test_live_pid_record_resolves(self):
         full = "11112222-aaaa-bbbb-cccc-dddddddddddd"
         tp = self._mk_transcript(full)
-        self._write_registry([{
-            "surface_id": "SURF-A", "session_id": full,
-            "claude_pid": str(os.getpid()),  # our own pid → alive
-            "ts": 100, "transcript_path": tp,
-        }])
-        out = self.mod.registry_transcript_for_surface("surf-a")  # case-insensitive
-        self.assertIsNotNone(out)
-        self.assertEqual(out["transcript_path"], tp)
-        self.assertEqual(out["session_id8"], "11112222")
+        lookup = self._surface(self._record(full, pid=os.getpid(), transcript_path=tp))
+        self.assertEqual(lookup("surf-a"),  # case-insensitive
+                         {"transcript_path": tp, "session_id8": "11112222", "agent": "claude"})
 
-    def test_dead_pid_entry_rejected(self):
-        # This is the ws:12 trap: a stale row whose process is gone.
+    def test_dead_pid_record_rejected(self):
+        # This is the ws:12 trap: a stale record whose process is gone.
         full = "deadbeef-aaaa-bbbb-cccc-dddddddddddd"
         tp = self._mk_transcript(full)
-        self._write_registry([{
-            "surface_id": "SURF-A", "session_id": full,
-            "claude_pid": "999999",  # not a live pid
-            "ts": 100, "transcript_path": tp,
-        }])
-        self.assertIsNone(self.mod.registry_transcript_for_surface("SURF-A"))
+        lookup = self._surface(self._record(full, pid=999999, transcript_path=tp))
+        self.assertIsNone(lookup("SURF-A"))
+
+    def test_record_without_pid_rejected(self):
+        full = "0bddcd25-aaaa-bbbb-cccc-dddddddddddd"
+        tp = self._mk_transcript(full)
+        lookup = self._surface(self._record(full, pid=None, transcript_path=tp))
+        self.assertIsNone(lookup("SURF-A"))
 
     def test_disagreement_with_screen_id_rejected(self):
-        # Live pid, but the registry's session != the live status-bar id →
-        # the screen wins, registry path is NOT used.
+        # Live pid, but the record's session != the live status-bar id →
+        # the screen wins, the record's path is NOT used.
         full = "11112222-aaaa-bbbb-cccc-dddddddddddd"
         tp = self._mk_transcript(full)
-        self._write_registry([{
-            "surface_id": "SURF-A", "session_id": full,
-            "claude_pid": str(os.getpid()), "ts": 100, "transcript_path": tp,
-        }])
-        self.assertIsNone(self.mod.registry_transcript_for_surface(
-            "SURF-A", expect_sid8="99999999"))
+        lookup = self._surface(self._record(full, pid=os.getpid(), transcript_path=tp))
+        self.assertIsNone(lookup("SURF-A", expect_sid8="99999999"))
 
     def test_agreement_with_screen_id_accepted(self):
         full = "11112222-aaaa-bbbb-cccc-dddddddddddd"
         tp = self._mk_transcript(full)
-        self._write_registry([{
-            "surface_id": "SURF-A", "session_id": full,
-            "claude_pid": str(os.getpid()), "ts": 100, "transcript_path": tp,
-        }])
-        out = self.mod.registry_transcript_for_surface("SURF-A", expect_sid8="11112222")
-        self.assertIsNotNone(out)
+        lookup = self._surface(self._record(full, pid=os.getpid(), transcript_path=tp))
+        self.assertEqual(lookup("SURF-A", expect_sid8="11112222")["transcript_path"], tp)
 
     def test_missing_transcript_file_rejected(self):
-        self._write_registry([{
-            "surface_id": "SURF-A", "session_id": "11112222-x",
-            "claude_pid": str(os.getpid()), "ts": 100,
-            "transcript_path": "/no/such/file.jsonl",
-        }])
-        self.assertIsNone(self.mod.registry_transcript_for_surface("SURF-A"))
+        lookup = self._surface(self._record(
+            "11112222-x", pid=os.getpid(), transcript_path="/no/such/file.jsonl"))
+        self.assertIsNone(lookup("SURF-A"))
 
-    def test_no_entry_for_surface(self):
-        self._write_registry([])
-        self.assertIsNone(self.mod.registry_transcript_for_surface("SURF-A"))
+    def test_no_record_for_surface(self):
+        full = "11112222-aaaa-bbbb-cccc-dddddddddddd"
+        lookup = self._surface(fake_cmux.record(
+            full, surface_id="SURF-B", pid=os.getpid(), transcript_path=self._mk_transcript(full)))
+        self.assertIsNone(lookup("SURF-A"))
+        self.assertIsNone(lookup(""))
 
-    def test_picks_newest_entry_for_surface(self):
+    def test_uses_the_surfaces_active_record(self):
+        # A /clear leaves the earlier session's record on the surface with the
+        # same live pid; only the surface's active record runs there now.
+        cleared = "0ld00000-1111-1111-1111-111111111111"
         live = "aaaa1111-1111-1111-1111-111111111111"
-        tp = self._mk_transcript(live)
-        self._write_registry([
-            {"surface_id": "SURF-A", "session_id": "old00000-x",
-             "claude_pid": "999999", "ts": 50, "transcript_path": "/old.jsonl"},
-            {"surface_id": "SURF-A", "session_id": live,
-             "claude_pid": str(os.getpid()), "ts": 200, "transcript_path": tp},
-        ])
-        out = self.mod.registry_transcript_for_surface("SURF-A")
-        self.assertEqual(out["session_id8"], "aaaa1111")
+        lookup = self._surface(
+            self._record(cleared, pid=os.getpid(), active_for_surface=False,
+                         transcript_path=self._mk_transcript(cleared)),
+            self._record(live, pid=os.getpid(), transcript_path=self._mk_transcript(live)),
+        )
+        self.assertEqual(lookup("SURF-A")["session_id8"], "aaaa1111")
+
+    def test_inactive_record_alone_rejected(self):
+        full = "aaaa1111-1111-1111-1111-111111111111"
+        lookup = self._surface(self._record(
+            full, pid=os.getpid(), active_for_surface=False,
+            transcript_path=self._mk_transcript(full)))
+        self.assertIsNone(lookup("SURF-A"))
+
+    def test_droid_record_reports_droid(self):
+        full = "d0d01234-7134-4060-bcf1-6c509c9983cd"
+        tp = self._tmp / ".factory/sessions/-Users-x-dev" / f"{full}.jsonl"
+        tp.parent.mkdir(parents=True, exist_ok=True)
+        tp.write_text(json.dumps({"type": "session_start", "id": full}) + "\n")
+        lookup = self._surface(self._record(
+            full, agent="factory", pid=os.getpid(), transcript_path=str(tp)))
+        self.assertEqual(lookup("SURF-A")["agent"], "droid")
+
+    def test_agent_the_fleet_does_not_run_is_ignored(self):
+        full = "c0dec0de-1111-1111-1111-111111111111"
+        lookup = self._surface(self._record(
+            full, agent="codex", pid=os.getpid(), transcript_path=self._mk_transcript(full)))
+        self.assertIsNone(lookup("SURF-A"))
+
+    def test_two_active_cmux_records_for_the_surface_are_ambiguous(self):
+        # One store per agent: a claude and a factory record can both be active.
+        claude = "aaaa1111-1111-1111-1111-111111111111"
+        lookup = self._surface(
+            self._record(claude, pid=os.getpid(), transcript_path=self._mk_transcript(claude)),
+            self._record("bbbb2222-2222", agent="factory", pid=os.getpid()),
+        )
+        self.assertIsNone(lookup("SURF-A"))
+
+    def _write_registry(self, rows):
+        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(rows))
+
+    def test_registry_row_stands_in_for_a_session_cmux_missed(self):
+        missed = "ee4ee641-8595-441a-bf3e-5e35ef75f42a"
+        tp = self._mk_transcript(missed)
+        self._write_registry({
+            "WS-OLD": {"session_id": "0ld00000-x", "surface_id": "SURF-A",
+                       "claude_pid": str(os.getpid()), "ts": 10, "transcript_path": tp},
+            "WS-27": {"session_id": missed, "surface_id": "SURF-A",
+                      "claude_pid": str(os.getpid()), "ts": 20, "transcript_path": tp},
+        })
+        lookup = self._surface(fake_cmux.record("other", surface_id="SURF-B", pid=os.getpid()))
+        self.assertEqual(lookup("surf-a"),
+                         {"transcript_path": tp, "session_id8": "ee4ee641", "agent": "claude"})
+
+    def test_registry_is_ignored_while_cmux_has_the_surface(self):
+        live = "aaaa1111-1111-1111-1111-111111111111"
+        missed = "ee4ee641-8595-441a-bf3e-5e35ef75f42a"
+        self._write_registry({"WS": {"session_id": missed, "surface_id": "SURF-A",
+                                     "claude_pid": str(os.getpid()), "ts": 99,
+                                     "transcript_path": self._mk_transcript(missed)}})
+        lookup = self._surface(self._record(
+            live, pid=os.getpid(), transcript_path=self._mk_transcript(live)))
+        self.assertEqual(lookup("SURF-A")["session_id8"], "aaaa1111")
+
+    def test_registry_row_without_a_live_pid_is_rejected(self):
+        missed = "ee4ee641-8595-441a-bf3e-5e35ef75f42a"
+        self._write_registry({"WS": {"session_id": missed, "surface_id": "SURF-A",
+                                     "claude_pid": "", "ts": 1,
+                                     "transcript_path": self._mk_transcript(missed)}})
+        self.assertIsNone(self._surface()("SURF-A"))
+
+    def test_unavailable_cmux_resolves_nothing(self):
+        # conftest points CMUX_BIN at a binary that doesn't exist.
+        self.assertIsNone(self.mod.recorded_transcript_for_surface("SURF-A"))
 
 
 class TranscriptSignalsTests(unittest.TestCase):
@@ -603,15 +674,13 @@ class ResolveWorkspaceTests(unittest.TestCase):
         self.assertEqual(res["transcript_path"], tp)
         self.assertEqual(res["session_id8"], "6fb0c668")
 
-    def test_falls_back_to_registry_when_no_screen_id_but_pid_alive(self):
-        # Booting agent: status bar not rendered yet (sid None), but the
-        # registry has a LIVE-pid row for its surface UUID.
+    def test_falls_back_to_cmux_record_when_no_screen_id_but_pid_alive(self):
+        # Booting agent: status bar not rendered yet (sid None), but cmux has
+        # a LIVE-pid record for its surface UUID.
         full = "1d27a528-aaaa-bbbb-cccc-dddddddddddd"
         tp = self._mk_transcript(full)
-        reg = {"tab-0": {"surface_id": "U2", "session_id": full,
-                         "claude_pid": str(os.getpid()), "ts": 100,
-                         "transcript_path": tp}}
-        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
+        use_fake_cmux(self, [fake_cmux.record(
+            full, surface_id="U2", pid=os.getpid(), transcript_path=tp)])
         with mock.patch.object(self.mod, "find_agent_pane", return_value={
                 "surface_ref": "surface:2", "surface_uuid": "U2",
                 "screen_text": "booting…", "sid8": None}), \
@@ -621,19 +690,50 @@ class ResolveWorkspaceTests(unittest.TestCase):
         self.assertEqual(res["transcript_source"], "registry_live_pid")
         self.assertEqual(res["transcript_path"], tp)
         self.assertEqual(res["session_id8"], "1d27a528")
+        self.assertEqual(res["agent_provider"], "claude")
 
-    def test_stale_registry_never_wins_over_live_screen(self):
-        # THE ws:12 SCENARIO: live screen says 6fb0c668, but the registry's
-        # surface row is a DEAD-pid pointer at a different (old) session. The
-        # screen id resolves; the stale registry path is never emitted.
+    def test_cmux_record_for_another_agent_than_the_pane_is_not_used(self):
+        full = "1d27a528-aaaa-bbbb-cccc-dddddddddddd"
+        use_fake_cmux(self, [fake_cmux.record(
+            full, surface_id="U2", pid=os.getpid(), transcript_path=self._mk_transcript(full))])
+        with mock.patch.object(self.mod, "find_agent_pane", return_value={
+                "surface_ref": "surface:2", "surface_uuid": "U2",
+                "screen_text": "GLM-5.2 · allow all commands", "sid8": None,
+                "agent": "droid"}), \
+                mock.patch.object(self.mod, "resume_binding_for_surface",
+                                  return_value=None):
+            res = self.mod.resolve_workspace_screen_and_transcript("workspace:9")
+        self.assertIsNone(res["transcript_path"])
+        self.assertIsNone(res["transcript_source"])
+        self.assertEqual(res["agent_provider"], "droid")
+
+    def test_droid_cmux_record_names_the_provider_for_an_unidentified_pane(self):
+        full = "d0d01234-7134-4060-bcf1-6c509c9983cd"
+        tp = self._tmp / ".factory/sessions/-Users-x-dev" / f"{full}.jsonl"
+        tp.parent.mkdir(parents=True, exist_ok=True)
+        tp.write_text(json.dumps({"type": "session_start", "id": full}) + "\n")
+        use_fake_cmux(self, [fake_cmux.record(
+            full, agent="factory", surface_id="U2", pid=os.getpid(), transcript_path=str(tp))])
+        with mock.patch.object(self.mod, "find_agent_pane", return_value={
+                "surface_ref": "surface:2", "surface_uuid": "U2",
+                "screen_text": "", "sid8": None}), \
+                mock.patch.object(self.mod, "resume_binding_for_surface",
+                                  return_value=None):
+            res = self.mod.resolve_workspace_screen_and_transcript("workspace:9")
+        self.assertEqual(res["transcript_source"], "registry_live_pid")
+        self.assertEqual(res["transcript_path"], str(tp))
+        self.assertEqual(res["agent_provider"], "droid")
+
+    def test_stale_record_never_wins_over_live_screen(self):
+        # THE ws:12 SCENARIO: live screen says 6fb0c668, but cmux's record for
+        # the surface is a DEAD-pid pointer at a different (old) session. The
+        # screen id resolves; the stale record's path is never emitted.
         live = "6fb0c668-7134-4060-bcf1-6c509c9983cd"
         stale = "b5f8d913-a9cb-433e-989d-63df9e14c253"
         live_tp = self._mk_transcript(live)
         stale_tp = self._mk_transcript(stale, project="-Users-x-dev-assistant")
-        reg = {"tab-0": {"surface_id": "U2", "session_id": stale,
-                         "claude_pid": "999999",  # dead
-                         "ts": 100, "transcript_path": stale_tp}}
-        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
+        use_fake_cmux(self, [fake_cmux.record(
+            stale, surface_id="U2", pid=999999, transcript_path=stale_tp)])  # dead
         with mock.patch.object(self.mod, "find_agent_pane", return_value={
                 "surface_ref": "surface:2", "surface_uuid": "U2",
                 "screen_text": self.CLAUDE, "sid8": "6fb0c668"}):
@@ -643,7 +743,7 @@ class ResolveWorkspaceTests(unittest.TestCase):
         self.assertEqual(res["transcript_source"], "screen_session_id")
 
     def test_no_verified_signal_yields_null_transcript(self):
-        # Agent found, but no transcript on disk yet and no registry row →
+        # Agent found, but no transcript on disk yet and no cmux record →
         # transcript_path MUST be None (never a guess). screen still provided.
         with mock.patch.object(self.mod, "find_agent_pane", return_value={
                 "surface_ref": "surface:2", "surface_uuid": "U2",
@@ -966,19 +1066,18 @@ class CmuxHelperEdgeCases(unittest.TestCase):
         result = self.mod.transcript_from_session_id("aabbccdd")
         self.assertIsNone(result)
 
-    def test_registry_transcript_empty_uuid_returns_none(self):
-        result = self.mod.registry_transcript_for_surface("")
+    def test_recorded_transcript_empty_uuid_returns_none(self):
+        result = self.mod.recorded_transcript_for_surface("")
         self.assertIsNone(result)
 
-    def test_registry_transcript_internal_sid_disagreement(self):
-        # Registry entry has a live pid, but transcript's own sid disagrees.
+    def test_recorded_transcript_internal_sid_disagreement(self):
+        # The record has a live pid, but the transcript's own sid disagrees.
         tp = str(self._tmp / ".claude/projects/-p/aabbccdd-t.jsonl")
         Path(tp).parent.mkdir(parents=True, exist_ok=True)
         Path(tp).write_text(json.dumps({"sessionId": "11223344-diff"}) + "\n")
-        reg = {"S1": {"surface_id": "AAAA-BBBB", "claude_pid": os.getpid(),
-                      "ts": 1, "session_id": "aabbccdd", "transcript_path": tp}}
-        (self._tmp / ".claude/cmux-registry.json").write_text(json.dumps(reg))
-        result = self.mod.registry_transcript_for_surface("AAAA-BBBB")
+        use_fake_cmux(self, [fake_cmux.record(
+            "aabbccdd", surface_id="AAAA-BBBB", pid=os.getpid(), transcript_path=tp)])
+        result = self.mod.recorded_transcript_for_surface("AAAA-BBBB")
         # Internal sid "11223344" doesn't start with "aabbccdd" → rejected.
         self.assertIsNone(result)
 

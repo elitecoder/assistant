@@ -1,15 +1,13 @@
-"""patch-settings.py — hook patcher coverage.
+"""install/patch-settings.py — cmux session hook patcher.
 
-Two layers:
-  - Direct patch_path() unit tests: preserves existing hooks, no backup for a
-    newly-created file, and (the load-bearing one) writes THROUGH a symlinked
-    target instead of severing it (machine-config sync must survive an --apply).
-  - Fresh-machine CLI tests (subprocess, exercising main()'s multi-path loop):
-    on a truly fresh machine ~/.claude/settings.json does not exist, so an
-    unconditional `shutil.copy2(path, bak)` backup crashed with FileNotFoundError
-    (caught by a live fresh-install run 2026-07-07). The installer must create
-    the file fresh instead of backing up a nonexistent one, stay idempotent on a
-    second run, and preserve unrelated user settings.
+It registers hooks/cmux-auto-resume.py on SessionStart (Claude settings and
+Factory hooks) when missing, removes the retired cmux-session-ledger.py
+registrations, and never touches hooks other installers own, such as
+mukul-memory's cmux-registry.py. Direct patch_path() tests pin what is added,
+removed, and kept; CLI tests run main() over several paths, as install.sh does.
+On a fresh machine ~/.claude/settings.json does not exist: the file is created
+without a backup (an unconditional backup crashed a fresh install on
+2026-07-07), and a second run changes nothing.
 """
 from __future__ import annotations
 
@@ -22,100 +20,210 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PATCH = REPO / "install" / "patch-settings.py"
 
+AUTO_RESUME = "python3 $HOME/.claude/hooks/cmux-auto-resume.py"
+LEDGER_START = "python3 $HOME/.claude/hooks/cmux-session-ledger.py start"
+LEDGER_END = "python3 $HOME/.claude/hooks/cmux-session-ledger.py end"
+REGISTRY = "$HOME/.claude/hooks/cmux-registry.py"
+AUTO_RESUME_BLOCK = {"matcher": "", "hooks": [
+    {"type": "command", "command": AUTO_RESUME, "timeout": 10}]}
+
 
 def load_module():
-    spec = importlib.util.spec_from_file_location(
-        "patch_settings_test", REPO / "install" / "patch-settings.py"
-    )
+    spec = importlib.util.spec_from_file_location("patch_settings_test", PATCH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def hook(command, timeout=5):
+    return {"type": "command", "command": command, "timeout": timeout}
+
+
+def block(*commands, matcher=""):
+    return {"matcher": matcher, "hooks": [hook(c) for c in commands]}
+
+
 def commands(document, event):
     return [
-        hook["command"]
-        for block in document.get("hooks", {}).get(event, [])
-        for hook in block.get("hooks", [])
+        entry["command"]
+        for item in document.get("hooks", {}).get(event, [])
+        for entry in item.get("hooks", [])
     ]
 
 
-def _run(path: Path):
-    return subprocess.run([sys.executable, str(PATCH), str(path)],
+def live_claude_settings():
+    """The shape this machine had on 2026-10-19 (install.sh plus mukul-memory)."""
+    return {
+        "permissions": {"allow": ["Read"]},
+        "statusLine": {"command": "echo — status"},
+        "hooks": {
+            "SessionStart": [
+                block(REGISTRY),
+                {"matcher": "", "hooks": [hook(AUTO_RESUME, 10)]},
+                block(LEDGER_START),
+                block("python3 $HOME/.claude/hooks/memory-boot.py"),
+            ],
+            "SessionEnd": [block(LEDGER_END)],
+            "PreToolUse": [block("python3 $HOME/.claude/hooks/block-hook-bypass.py",
+                                 matcher="Bash")],
+        },
+    }
+
+
+def _run(*paths: Path):
+    return subprocess.run([sys.executable, str(PATCH), *map(str, paths)],
                           capture_output=True, text=True, timeout=30)
 
 
-def _session_start_cmds(data):
-    out = []
-    for block in data["hooks"].get("SessionStart", []):
-        for h in block.get("hooks", []):
-            out.append(h.get("command", ""))
-    return out
-
-
-# --------------------------------------------------------------------------- direct patch_path()
-
-def test_patches_claude_and_factory_without_deleting_existing_hooks(tmp_path):
+def test_live_settings_lose_the_ledger_and_keep_everything_else(tmp_path):
     module = load_module()
-    claude = tmp_path / ".claude" / "settings.json"
-    factory = tmp_path / ".factory" / "hooks.json"
-    claude.parent.mkdir()
-    factory.parent.mkdir()
-    claude.write_text(json.dumps({
-        "permissions": {"allow": ["Read"]},
-        "hooks": {
-            "SessionStart": [{
-                "matcher": "",
-                "hooks": [{"type": "command", "command": "existing-claude"}],
-            }],
-            "Stop": [{
-                "matcher": "",
-                "hooks": [{
-                    "type": "command",
-                    "command": module.LEDGER_END_CMD,
-                }],
-            }],
-        },
-    }))
-    factory.write_text(json.dumps({
-        "custom": True,
-        "hooks": {
-            "PostToolUse": [{
-                "matcher": "Edit",
-                "hooks": [{"type": "command", "command": "existing-factory"}],
-            }],
-        },
-    }))
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps(live_claude_settings(), ensure_ascii=False))
 
-    assert module.patch_path(claude)
-    assert module.patch_path(factory)
+    assert module.patch_path(settings) is True
 
-    claude_doc = json.loads(claude.read_text())
-    factory_doc = json.loads(factory.read_text())
-    assert claude_doc["permissions"] == {"allow": ["Read"]}
-    assert "existing-claude" in commands(claude_doc, "SessionStart")
-    assert module.LEDGER_END_CMD not in commands(claude_doc, "Stop")
-    assert factory_doc["custom"] is True
-    assert "existing-factory" in commands(factory_doc, "PostToolUse")
-    for document in (claude_doc, factory_doc):
-        assert module.LEDGER_START_CMD in commands(document, "SessionStart")
-        assert module.LEDGER_END_CMD in commands(document, "SessionEnd")
-
-    assert len(list(claude.parent.glob("settings.json.bak-*"))) == 1
-    assert len(list(factory.parent.glob("hooks.json.bak-*"))) == 1
+    document = json.loads(settings.read_text())
+    assert document["permissions"] == {"allow": ["Read"]}
+    assert document["hooks"]["SessionStart"] == [
+        block(REGISTRY),
+        {"matcher": "", "hooks": [hook(AUTO_RESUME, 10)]},
+        block("python3 $HOME/.claude/hooks/memory-boot.py"),
+    ]
+    assert "SessionEnd" not in document["hooks"]
+    assert document["hooks"]["PreToolUse"] == [
+        block("python3 $HOME/.claude/hooks/block-hook-bypass.py", matcher="Bash")]
+    assert "echo — status" in settings.read_text()  # not escaped to \\u2014
+    backups = list(settings.parent.glob("settings.json.bak-*"))
+    assert len(backups) == 1
+    assert json.loads(backups[0].read_text()) == live_claude_settings()
 
 
-def test_new_factory_hooks_file_has_no_backup_and_is_idempotent(tmp_path):
+def test_auto_resume_is_registered_when_missing(tmp_path):
+    module = load_module()
+    path = tmp_path / ".factory" / "hooks.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"custom": True, "hooks": {
+        "SessionStart": [block(LEDGER_START, "existing-factory", matcher="startup")],
+        "Stop": [block("keep-stop")],
+    }}))
+
+    assert module.patch_path(path) is True
+
+    assert json.loads(path.read_text()) == {"custom": True, "hooks": {
+        "SessionStart": [block("existing-factory", matcher="startup"), AUTO_RESUME_BLOCK],
+        "Stop": [block("keep-stop")],
+    }}
+
+
+def test_auto_resume_under_another_path_counts_as_registered(tmp_path):
+    module = load_module()
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"hooks": {"SessionStart": [
+        block("/usr/bin/python3 /custom/hooks/cmux-auto-resume.py")]}}))
+    assert module.patch_path(path) is False
+    assert not list(tmp_path.glob("settings.json.bak-*"))
+
+
+def test_only_the_retired_script_is_removed(tmp_path):
+    module = load_module()
+    kept = [
+        REGISTRY,
+        "python3 $HOME/bin/not-cmux-session-ledger.py",
+        "python3 $HOME/.claude/hooks/cmux-session-ledger.py.disabled",
+        "echo cmux-session-ledger",
+        "cmux hooks claude session-start",
+    ]
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"hooks": {"SessionStart": [block(*kept), AUTO_RESUME_BLOCK]}}))
+
+    assert module.patch_path(path) is False
+    assert commands(json.loads(path.read_text()), "SessionStart") == kept + [AUTO_RESUME]
+
+
+def test_leaves_untouched_events_and_blocks_alone(tmp_path):
+    module = load_module()
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"hooks": {
+        "SessionStart": [AUTO_RESUME_BLOCK],
+        "Stop": [],
+        "Notification": [{"matcher": "", "hooks": []}, {"matcher": "x"}],
+        "SessionEnd": [block(LEDGER_END)],
+    }}))
+
+    assert module.patch_path(path) is True
+
+    assert json.loads(path.read_text()) == {"hooks": {
+        "SessionStart": [AUTO_RESUME_BLOCK],
+        "Stop": [],
+        "Notification": [{"matcher": "", "hooks": []}, {"matcher": "x"}],
+    }}
+
+
+def test_unexpected_shapes_are_skipped_not_fatal(tmp_path):
+    module = load_module()
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"hooks": {
+        "Stop": {"not": "a list"},
+        "Notification": ["not a block", {"matcher": "", "hooks": "not a list"}],
+        "PreToolUse": [{"matcher": "", "hooks": ["not an entry", hook(LEDGER_START)]}],
+        "SessionStart": ["not a block", AUTO_RESUME_BLOCK],
+    }}))
+
+    assert module.patch_path(path) is True
+
+    assert json.loads(path.read_text()) == {"hooks": {
+        "Stop": {"not": "a list"},
+        "Notification": ["not a block", {"matcher": "", "hooks": "not a list"}],
+        "PreToolUse": [{"matcher": "", "hooks": ["not an entry"]}],
+        "SessionStart": ["not a block", AUTO_RESUME_BLOCK],
+    }}
+
+
+def test_a_non_list_session_start_is_left_alone(tmp_path):
+    module = load_module()
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"hooks": {"SessionStart": {"odd": True}}}))
+    assert module.patch_path(path) is False
+    assert json.loads(path.read_text()) == {"hooks": {"SessionStart": {"odd": True}}}
+
+
+def test_a_non_object_hooks_value_is_left_alone(tmp_path):
+    module = load_module()
+    path = tmp_path / "settings.json"
+    path.write_text('{"hooks": []}')
+    assert module.patch_path(path) is False
+    assert path.read_text() == '{"hooks": []}'
+
+
+def test_fresh_files_are_created_without_a_backup_and_stay_idempotent(tmp_path, capsys):
     module = load_module()
     path = tmp_path / ".factory" / "hooks.json"
 
-    assert module.patch_path(path)
+    assert module.patch_path(path) is True
     first = path.read_text()
+    assert json.loads(first) == {"hooks": {"SessionStart": [AUTO_RESUME_BLOCK]}}
     assert not list(path.parent.glob("hooks.json.bak-*"))
 
     assert module.patch_path(path) is False
     assert path.read_text() == first
     assert not list(path.parent.glob("hooks.json.bak-*"))
+    assert capsys.readouterr().out.rstrip().endswith("no changes needed")
+
+
+def test_malformed_or_non_object_files_are_backed_up_and_rebuilt(tmp_path):
+    module = load_module()
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{ not json")
+    assert module.patch_path(corrupt) is True
+    assert json.loads(corrupt.read_text()) == {"hooks": {"SessionStart": [AUTO_RESUME_BLOCK]}}
+    [saved] = tmp_path.glob("corrupt.json.corrupt-*")
+    assert saved.read_text() == "{ not json"
+
+    listed = tmp_path / "list.json"
+    listed.write_text("[]")
+    assert module.patch_path(listed) is True
+    assert json.loads(listed.read_text()) == {"hooks": {"SessionStart": [AUTO_RESUME_BLOCK]}}
 
 
 def test_symlinked_target_is_written_through_not_severed(tmp_path):
@@ -125,63 +233,56 @@ def test_symlinked_target_is_written_through_not_severed(tmp_path):
     module = load_module()
     real = tmp_path / "machine-config" / "settings.json"
     real.parent.mkdir(parents=True)
-    real.write_text(json.dumps({"existing": "keep"}))
+    real.write_text(json.dumps({"existing": "keep", "hooks": {
+        "SessionStart": [block(LEDGER_START), block("keep-me")]}}))
     link = tmp_path / ".claude" / "settings.json"
     link.parent.mkdir(parents=True)
     link.symlink_to(real)
 
-    assert module.patch_path(link)
-    # The symlink is intact and still points at the real file.
+    assert module.patch_path(link) is True
+
     assert link.is_symlink()
     assert Path(link).resolve() == real.resolve()
-    # The hooks landed in the REAL file (written through), preserving prior keys.
-    doc = json.loads(real.read_text())
-    assert doc["existing"] == "keep"
-    assert "SessionStart" in doc["hooks"]
+    assert json.loads(real.read_text()) == {"existing": "keep", "hooks": {
+        "SessionStart": [block("keep-me"), AUTO_RESUME_BLOCK]}}
+    assert len(list(real.parent.glob("settings.json.bak-*"))) == 1
 
 
-# --------------------------------------------------------------------------- fresh-machine CLI (main())
+def test_cli_patches_claude_and_creates_factory_hooks_in_one_run(tmp_path):
+    claude = tmp_path / ".claude" / "settings.json"
+    factory = tmp_path / ".factory" / "hooks.json"
+    claude.parent.mkdir()
+    claude.write_text(json.dumps(live_claude_settings()))
 
-def test_fresh_machine_no_settings_file(tmp_path):
-    # settings.json absent (+ a not-yet-created .claude dir) — the fresh case.
-    settings = tmp_path / ".claude" / "settings.json"
-    r = _run(settings)
-    assert r.returncode == 0, f"patch-settings crashed on a fresh machine:\n{r.stderr}"
-    assert settings.exists(), "settings.json should be created fresh"
-    data = json.loads(settings.read_text())
-    hooks = data["hooks"]
-    assert "SessionStart" in hooks and "SessionEnd" in hooks
-    # commands live at SessionStart[].hooks[].command (nested matcher blocks)
-    cmds = _session_start_cmds(data)
-    assert any("cmux-session-ledger.py start" in c for c in cmds)
+    result = _run(claude, factory)
 
-
-def test_no_backup_created_when_file_absent(tmp_path):
-    settings = tmp_path / ".claude" / "settings.json"
-    _run(settings)
-    baks = list((tmp_path / ".claude").glob("settings.json.bak-*"))
-    assert not baks, f"no .bak should be made for a file that never existed: {baks}"
+    assert result.returncode == 0, result.stderr
+    assert f"  - SessionStart: {LEDGER_START}" in result.stdout
+    assert f"  - SessionEnd: {LEDGER_END}" in result.stdout
+    assert "  = SessionStart already runs cmux-auto-resume.py" in result.stdout
+    assert f"  + SessionStart: {AUTO_RESUME}" in result.stdout
+    assert json.loads(factory.read_text()) == {"hooks": {"SessionStart": [AUTO_RESUME_BLOCK]}}
+    remaining = json.loads(claude.read_text())
+    assert commands(remaining, "SessionStart") == [
+        REGISTRY, AUTO_RESUME, "python3 $HOME/.claude/hooks/memory-boot.py"]
+    assert "SessionEnd" not in remaining["hooks"]
 
 
-def test_idempotent_second_run(tmp_path):
-    settings = tmp_path / ".claude" / "settings.json"
-    _run(settings)                      # fresh create
-    first = json.loads(settings.read_text())
-    r2 = _run(settings)                 # re-run on existing file
-    assert r2.returncode == 0
-    second = json.loads(settings.read_text())
-    # no duplicate hook commands added on the second pass
-    assert _session_start_cmds(first) == _session_start_cmds(second), \
-        "second run must not duplicate hooks"
+def test_cli_patches_the_other_paths_when_one_is_unreadable(tmp_path):
+    unreadable = tmp_path / ".claude" / "settings.json"
+    unreadable.mkdir(parents=True)
+    factory = tmp_path / ".factory" / "hooks.json"
+    factory.parent.mkdir()
+    factory.write_text(json.dumps({"hooks": {"SessionEnd": [block(LEDGER_END)]}}))
+
+    result = _run(unreadable, factory)
+
+    assert result.returncode == 1
+    assert f"{unreadable} could not be patched:" in result.stderr
+    assert json.loads(factory.read_text()) == {"hooks": {"SessionStart": [AUTO_RESUME_BLOCK]}}
 
 
-def test_preserves_existing_user_settings(tmp_path):
-    settings = tmp_path / ".claude" / "settings.json"
-    settings.parent.mkdir(parents=True)
-    settings.write_text(json.dumps({"model": "opus", "hooks": {}}))
-    r = _run(settings)
-    assert r.returncode == 0
-    data = json.loads(settings.read_text())
-    assert data["model"] == "opus", "must preserve unrelated user settings"
-    # and a backup of the pre-existing file WAS made
-    assert list((tmp_path / ".claude").glob("settings.json.bak-*")), "existing file should be backed up"
+def test_cli_requires_a_path():
+    result = _run()
+    assert result.returncode == 2
+    assert "usage: patch-settings.py PATH" in result.stderr

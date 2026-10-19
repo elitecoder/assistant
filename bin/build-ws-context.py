@@ -12,7 +12,8 @@ Output JSON to stdout:
     "title": "...",
     "cwd": "...",
     "transcript_path": "/Users/.../<session>.jsonl" | null,
-    "transcript_source": "screen_session_id" | "registry_live_pid" | null,
+    "transcript_source": "screen_session_id" | "cmux_resume_binding"
+                         | "registry_live_pid" | null,
     "session_id8": "<8hex>" | null,
     "agent_surface": "surface:N" | null,
     "observation_identity": {
@@ -44,10 +45,13 @@ that caused the ws:12 misattribution has been DELETED):
     one carrying a Claude status bar / boot banner. Its screen is `screen_text`.
   - `transcript_path` resolves from the session-id the agent stamps on its OWN
     status bar (`… │ #<8hex>`), then confirms the file's internal `sessionId`
-    matches — exact, self-verifying. Fallback: a cmux-registry row for the
-    agent pane's surface UUID, but ONLY when its `claude_pid` is still alive
-    AND it agrees with the live screen (the registry goes stale on surface
-    reuse — the ws:12 trap). `transcript_source` records which gate passed.
+    matches — exact, self-verifying. Next: the live cmux resume binding for
+    the pane. Last: cmux's own session record for the agent pane's surface
+    UUID (`cmux sessions list`), or the cmux-registry.json row for a session
+    cmux missed, but ONLY when its pid is still alive AND it
+    agrees with the live screen (a record goes stale on surface reuse — the
+    ws:12 trap). `transcript_source` records which gate passed; that last gate
+    keeps its historical name, `registry_live_pid`.
 
 The Observer is still told to trust the screen over transcript-derived signals
 on conflict — the screen is what the agent is showing RIGHT NOW.
@@ -63,7 +67,11 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cmux_sessions  # noqa: E402
+
 HOME = Path(os.environ["HOME"])
+CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 PROTECTED_REFS = {"workspace:3", "workspace:108", "workspace:7"}
 CMUX_BIN = os.environ.get(
     "CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
@@ -119,10 +127,10 @@ _ERROR_LINE_RE = re.compile(
 #   - `read-screen --workspace` reads only the FOCUSED pane; in a split
 #     workspace the focused pane is often a shell, not the agent. We enumerate
 #     ALL panes and pick the agent.
-#   - The cmux registry's surface→session map goes STALE when a surface is
-#     reused (ws:12: registry pointed at a dead headless pulse's session while
-#     the live agent ran a different one). Registry entries are trusted only
-#     when their claude_pid is still alive AND they agree with the live screen.
+#   - A surface→session record goes STALE when a surface is reused (ws:12: the
+#     record pointed at a dead headless pulse's session while the live agent
+#     ran a different one). cmux session records are trusted only when their
+#     pid is still alive AND they agree with the live screen.
 
 # The Claude Code status bar's last cell is the running session-id prefix,
 # rendered as `… │ #<8hex>` at the END of a box-drawing line. Anchoring to that
@@ -340,44 +348,47 @@ def transcript_from_session_id(sid8: str | None) -> str | None:
     return None
 
 
-def registry_transcript_for_surface(surface_uuid: str, expect_sid8: str | None = None) -> dict | None:
-    """Transcript for a surface via the cmux registry — SAFE variant.
+def recorded_transcript_for_surface(surface_uuid: str, expect_sid8: str | None = None) -> dict | None:
+    """Transcript for a surface via its session record — SAFE variant.
 
-    The registry maps surface UUID → {session_id, claude_pid, transcript_path},
-    but the mapping goes stale when a surface is reused. We therefore return an
-    entry ONLY when its claude_pid is still ALIVE (a dead pid means the entry
-    describes a session that no longer occupies the surface — the ws:12 trap).
-    When `expect_sid8` is given (a live status-bar id), the registry must AGREE
-    with it; on disagreement we trust the screen and return None here.
+    cmux records which session is active on each surface UUID, with its pid
+    and transcript; for a session cmux missed, the registry's row for the
+    surface stands in (the newest, if several). A record goes stale when a
+    surface is reused, so we return one ONLY when its pid is still ALIVE (a
+    dead pid means the record describes a session that no longer occupies the
+    surface — the ws:12 trap). Two cmux records for the surface are ambiguous
+    and return None. When
+    `expect_sid8` is given (a live status-bar id), the record must AGREE with
+    it; on disagreement we trust the screen and return None here.
 
-    Returns {transcript_path, session_id8} or None.
+    Returns {transcript_path, session_id8, agent} or None.
     """
     if not surface_uuid:
         return None
-    try:
-        reg = json.load(open(HOME / ".claude/cmux-registry.json"))
-    except Exception:
-        return None
     want = surface_uuid.upper()
-    entries = [e for e in reg.values()
-               if (e.get("surface_id") or "").upper() == want]
-    if not entries:
+    cmux = cmux_sessions.list_sessions()
+    records = [r for r in cmux if r.active_for_surface and r.provider
+               and (r.surface_id or "").upper() == want]
+    if not records:
+        rows = [r for r in cmux_sessions.registry_fallback(CMUX_REGISTRY, cmux)
+                if (r.surface_id or "").upper() == want]
+        records = [max(rows, key=lambda r: r.updated_at or 0)] if rows else []
+    if len(records) != 1:
         return None
-    entry = max(entries, key=lambda e: e.get("ts", 0))
-    if not _pid_alive(entry.get("agent_pid") or entry.get("claude_pid")):
-        return None  # stale registry row — do NOT trust
-    sid = (entry.get("session_id") or "")
-    sid8 = sid[:8] if sid else None
-    if expect_sid8 and sid8 and sid8 != expect_sid8:
-        return None  # registry disagrees with the live screen → screen wins
-    tp = entry.get("transcript_path")
+    record = records[0]
+    if not _pid_alive(record.pid):
+        return None  # stale record — do NOT trust
+    sid8 = record.session_id[:8]
+    if expect_sid8 and sid8 != expect_sid8:
+        return None  # the record disagrees with the live screen → screen wins
+    tp = record.transcript_path
     if not tp or not os.path.exists(tp):
         return None
     # Final identity gate: the file must self-identify as this session.
     internal = _transcript_internal_sid(tp)
-    if internal and sid8 and not internal.startswith(sid8):
+    if internal and not internal.startswith(sid8):
         return None
-    return {"transcript_path": tp, "session_id8": sid8}
+    return {"transcript_path": tp, "session_id8": sid8, "agent": record.provider}
 
 
 def resume_binding_for_surface(surface_ref: str, ws_ref: str) -> dict | None:
@@ -498,10 +509,13 @@ def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
     Resolution priority (first verified wins; otherwise None):
       1. screen_session_id — id from the agent's own status bar, glob+verified.
          Strongest: it's what the running agent says about itself, right now.
-      2. registry_live_pid — registry row for the agent pane's surface UUID,
-         but only with a LIVE pid and agreement with the screen. Covers a
-         booting agent whose status bar hasn't rendered yet.
-      3. None — no verified signal. The Observer falls back to screen_text.
+      2. cmux_resume_binding — the live cmux resume binding for the pane.
+      3. registry_live_pid — cmux's session record for the agent pane's
+         surface UUID (or the registry's row, for a session cmux missed),
+         but only with a LIVE pid and agreement with the screen
+         and pane agent. Covers a booting agent whose status bar hasn't
+         rendered yet.
+      4. None — no verified signal. The Observer falls back to screen_text.
          (We deliberately do NOT guess by mtime/cwd/title — that was the bug.)
     """
     pane = find_agent_pane(ws_ref)
@@ -530,11 +544,11 @@ def resolve_workspace_screen_and_transcript(ws_ref: str) -> dict:
                 source = "cmux_resume_binding"
 
     if transcript is None and surface_uuid:
-        reg = registry_transcript_for_surface(surface_uuid, expect_sid8=sid8)
-        if reg:
-            transcript = reg["transcript_path"]
-            sid8 = sid8 or reg["session_id8"]
-            agent = agent or "claude"
+        recorded = recorded_transcript_for_surface(surface_uuid, expect_sid8=sid8)
+        if recorded and (not agent or recorded["agent"] == agent):
+            transcript = recorded["transcript_path"]
+            sid8 = sid8 or recorded["session_id8"]
+            agent = agent or recorded["agent"]
             source = "registry_live_pid"
 
     return {
@@ -641,8 +655,8 @@ def main() -> int:
     args = ap.parse_args()
 
     # Find the agent pane, read its screen, and resolve its transcript using
-    # ONLY verified signals (status-bar session id, or a live-pid registry row
-    # that agrees with the screen). transcript_path is None when nothing
+    # ONLY verified signals (status-bar session id, cmux resume binding, or a
+    # live-pid cmux session record that agrees with the screen). transcript_path is None when nothing
     # verifies — by design: a wrong transcript is worse than none.
     observed_at = time.time()
     identity_before = workspace_identity_snapshot(args.ws_ref)

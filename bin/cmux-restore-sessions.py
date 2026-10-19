@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Layer 3: cmux-restore-sessions — one-shot session recovery CLI.
+cmux-restore-sessions — one-shot session recovery CLI.
 
 Run after a manual cmux restart (or at boot) to respawn Claude Code or
 Factory Droid panels whose sessions did not auto-resume.
@@ -10,8 +10,10 @@ Algorithm:
 2. For each panel that has a resumeBinding but NO live agent PID:
    a. If autoResume=true, cmux handles it, so skip.
    b. If the resumeBinding has a checkpointId (session_id), respawn.
-3. For panels with NO resumeBinding at all, fall back to the ledger
-   (~/.cmux-session-ledger.jsonl) to find the last session for that panel.
+3. For panels with NO resumeBinding at all, fall back to the session last
+   recorded for that panel: cmux's own record (`cmux sessions list`), or the
+   ~/.claude/cmux-registry.json row for a session cmux never recorded. Native
+   `cmux restore --surface` needs a binding, so this covers what it can't.
 4. Respawn by sending the resume command to the panel's surface.
 
 Usage:
@@ -25,7 +27,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-LEDGER = Path.home() / ".cmux-session-ledger.jsonl"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cmux_sessions  # noqa: E402
+
+REGISTRY = Path.home() / ".claude/cmux-registry.json"
 CMUX_STATE = Path.home() / "Library/Application Support/cmux/session-com.cmuxterm.app.json"
 
 
@@ -45,33 +50,28 @@ def load_state():
         return json.load(f)
 
 
-def load_ledger():
-    """Returns {panel_id: last_start_entry} from the ledger."""
-    if not LEDGER.exists():
-        return {}
-    starts = {}
-    with open(LEDGER) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except Exception:
-                continue
-            if entry.get("event") == "start":
-                panel_id = entry.get("panel_id") or entry.get("surface_id", "")
-                if panel_id:
-                    existing = starts.get(panel_id)
-                    if not existing or entry.get("ts", 0) > existing.get("ts", 0):
-                        starts[panel_id] = entry
-            elif entry.get("event") == "end":
-                # Mark the session as ended
-                sid = entry.get("session_id", "")
-                for pid, e in list(starts.items()):
-                    if e.get("session_id") == sid:
-                        starts[pid]["ended"] = True
-    return starts
+def load_recorded():
+    """Returns {panel_id: entry} for the newest session recorded on each panel."""
+    records = cmux_sessions.list_sessions()
+    records += cmux_sessions.registry_fallback(REGISTRY, records)
+    newest = {}
+    for record in records:
+        if not (record.active_for_surface and record.provider and record.surface_id):
+            continue
+        current = newest.get(record.surface_id)
+        if current is None or (record.updated_at or 0) > (current.updated_at or 0):
+            newest[record.surface_id] = record
+    return {
+        surface_id: {
+            "session_id": record.session_id,
+            "cwd": record.launch_cwd or record.cwd,
+            "provider": "factory" if record.provider == "droid" else "claude",
+            "launch_argv": list(record.launch_argv),
+            "transcript_path": record.transcript_path,
+            "pid": record.pid,
+        }
+        for surface_id, record in newest.items()
+    }
 
 
 def is_agent_alive(pid: int) -> bool:
@@ -342,9 +342,9 @@ def main():
         print(f"Error reading cmux state: {e}", file=sys.stderr)
         sys.exit(1)
 
-    ledger = load_ledger()
+    ledger = load_recorded()
     if args.verbose:
-        print(f"Ledger entries: {len(ledger)}")
+        print(f"Recorded sessions: {len(ledger)}")
 
     restored = 0
     skipped = 0

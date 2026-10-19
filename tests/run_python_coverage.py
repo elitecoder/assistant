@@ -11,11 +11,15 @@ import sys
 import uuid
 from pathlib import Path
 
+# Production Python this adapter measures; the change-coverage gate rejects
+# changed executable code anywhere else.
+PYTHON_SOURCE_DIRS = ("bin", "hooks", "install", "src")
+
 
 def source_fingerprints(repo: Path) -> dict[str, str]:
     return {
         path.relative_to(repo).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for directory in ("bin", "src")
+        for directory in PYTHON_SOURCE_DIRS
         for path in sorted((repo / directory).rglob("*.py"))
         if path.is_file()
     }
@@ -38,12 +42,12 @@ def capture_coverage(repo: Path, output_dir: Path, pytest_args=(), *,
     head = runner(head_command, check=True, capture_output=True, text=True).stdout.strip()
     before = source_fingerprints(repo)
     if not before:
-        raise ValueError("No Python sources found under bin/ or src/")
+        raise ValueError("No Python sources found under bin/, hooks/, install/, or src/")
     environment = os.environ.copy()
     environment["COVERAGE_FILE"] = str(output_dir / f"python.{run_id}.data")
     command = [
         sys.executable, "-m", "pytest", "tests/", *pytest_args,
-        f"--cov={repo / 'bin'}", f"--cov={repo / 'src'}",
+        *(f"--cov={repo / directory}" for directory in PYTHON_SOURCE_DIRS),
         f"--cov-config={repo / 'tests/coverage.ini'}",
         f"--cov-report=json:{report_path}",
     ]

@@ -18,6 +18,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+import fake_cmux
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -385,6 +387,11 @@ class TranscriptTailTests(unittest.TestCase):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = fixture_home(Path(self._tmp_obj.name))
         self.mod = load_module(self._tmp, "transcript-tail.py")
+        self.cmux_dir = self._tmp / "cmux-bin"
+        cli = fake_cmux.install(self.cmux_dir)
+        env = mock.patch.dict(os.environ, {"CMUX_BIN": str(cli)})
+        env.start()
+        self.addCleanup(env.stop)
 
     def tearDown(self):
         self._tmp_obj.cleanup()
@@ -402,23 +409,52 @@ class TranscriptTailTests(unittest.TestCase):
         Path(self.mod.WORLD).write_text("{ bad")
         self.assertIsNone(self.mod.find_via_world("workspace:1"))
 
-    def test_find_via_registry_returns_most_recent(self):
+    def test_find_via_cmux_sessions_returns_most_recently_active_in_cwd(self):
+        # "resumed" started first but ran last, so its transcript is the one to read.
+        fake_cmux.write(self.cmux_dir, [
+            fake_cmux.record("resumed", cwd="/x", transcript_path="/resumed.jsonl",
+                             started_at="2026-01-01T00:00:00Z", updated_at_unix=300),
+            fake_cmux.record("newer-start", cwd="/x", transcript_path="/newer-start.jsonl",
+                             started_at="2026-05-01T00:00:00Z", updated_at_unix=200),
+            fake_cmux.record("latest-elsewhere", cwd="/y", transcript_path="/other.jsonl",
+                             updated_at_unix=900),
+            fake_cmux.record("no-transcript", cwd="/x", updated_at_unix=900),
+        ])
+        self.assertEqual(self.mod.find_via_cmux_sessions("/x"), "/resumed.jsonl")
+
+    def test_find_via_cmux_sessions_matches_the_launch_directory(self):
+        fake_cmux.write(self.cmux_dir, [
+            fake_cmux.record("moved", cwd="/x/sub", launch_working_directory="/x",
+                             transcript_path="/moved.jsonl"),
+        ])
+        self.assertEqual(self.mod.find_via_cmux_sessions("/x"), "/moved.jsonl")
+        self.assertEqual(self.mod.find_via_cmux_sessions("/x/sub"), "/moved.jsonl")
+        self.assertIsNone(self.mod.find_via_cmux_sessions("/x/s"))
+
+    def test_find_via_cmux_sessions_falls_back_to_registry_history(self):
+        # cmux keeps a few dozen records; the registry also has older sessions.
+        fake_cmux.write(self.cmux_dir, [
+            fake_cmux.record("in-cmux", cwd="/x", transcript_path="/cmux.jsonl",
+                             updated_at_unix=100),
+        ])
         Path(self.mod.REGISTRY).write_text(json.dumps({
-            "tab1": {"cwd": "/x", "transcript_path": "/old.jsonl",
-                      "started_at": "2026-01-01T00:00:00Z"},
-            "tab2": {"cwd": "/x", "transcript_path": "/new.jsonl",
-                      "started_at": "2026-05-01T00:00:00Z"},
-            "tab3": {"cwd": "/y", "transcript_path": "/other.jsonl"},
+            "WS-OLD": {"session_id": "registry-only", "cwd": "/old",
+                       "transcript_path": "/registry.jsonl", "ts": 50},
+            "WS-NEW": {"session_id": "registry-newer", "cwd": "/x",
+                       "transcript_path": "/registry-newer.jsonl", "ts": 200},
+            "WS-DUP": {"session_id": "in-cmux", "cwd": "/x",
+                       "transcript_path": "/stale-copy.jsonl", "ts": 900},
         }))
-        self.assertEqual(self.mod.find_via_registry("/x"), "/new.jsonl")
+        self.assertEqual(self.mod.find_via_cmux_sessions("/old"), "/registry.jsonl")
+        self.assertEqual(self.mod.find_via_cmux_sessions("/x"), "/registry-newer.jsonl")
 
-    def test_find_via_registry_returns_none_when_no_match(self):
-        Path(self.mod.REGISTRY).write_text(json.dumps({}))
-        self.assertIsNone(self.mod.find_via_registry("/no/match"))
+    def test_find_via_cmux_sessions_returns_none_when_no_match(self):
+        fake_cmux.write(self.cmux_dir, [])
+        self.assertIsNone(self.mod.find_via_cmux_sessions("/no/match"))
 
-    def test_find_via_registry_handles_corrupt_json(self):
-        Path(self.mod.REGISTRY).write_text("{ bad")
-        self.assertIsNone(self.mod.find_via_registry("/x"))
+    def test_find_via_cmux_sessions_returns_none_when_cmux_fails(self):
+        fake_cmux.write(self.cmux_dir, stdout="{ bad", returncode=1)
+        self.assertIsNone(self.mod.find_via_cmux_sessions("/x"))
 
     def test_read_tail_extracts_last_messages(self):
         path = self._tmp / "t.jsonl"
@@ -497,9 +533,9 @@ class TranscriptTailTests(unittest.TestCase):
         path = self._tmp / "t.jsonl"
         path.write_text(json.dumps({
             "timestamp": "t1", "message": {"role": "user", "content": "hi"}}))
-        Path(self.mod.REGISTRY).write_text(json.dumps({
-            "tab1": {"cwd": "/x", "transcript_path": str(path)}
-        }))
+        fake_cmux.write(self.cmux_dir, [
+            fake_cmux.record("closed", cwd="/x", transcript_path=str(path)),
+        ])
         sys.argv = ["transcript-tail.py", "--closed-cwd", "/x"]
         out = io.StringIO()
         with mock.patch("sys.stdout", out):

@@ -97,9 +97,10 @@ After --apply:
        (--with-memory), workspace-watcher (--with-crash-resume), cmux-ws-numberer
        (--with-ws-numberer); comms +
        slack-reactor copied but hand-loaded after token setup
-  - cmux session-restore (vendored): hooks/ → ~/.claude/hooks/ (symlinks),
+  - cmux session hooks: hooks/ → ~/.claude/hooks/ (symlinks),
        bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
-       and ~/.claude/settings.json SessionStart/SessionEnd hooks patched in
+       and Claude + Factory SessionStart patched to run cmux-auto-resume.py
+       (the retired ledger hook's registrations removed)
   - launchd: kickstart -k each agent (load if not loaded)
 
 Skills are symlinked (not copied), so the repo is the single source of truth:
@@ -775,19 +776,22 @@ else
 fi
 log ""
 
-# --- 4. cmux session-restore (vendored) -------------------------------------
-# Three layers that make Claude and Factory Droid panes survive restart/reboot:
-#   Layer 1+2  hooks/cmux-auto-resume.py + cmux-session-ledger.py
-#              → symlinked into ~/.claude/hooks/ (a MIXED dir — symlink the
-#                files individually, never the directory)
-#   Layer 3    bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions
-#   settings   install/patch-settings.py registers the SessionStart/SessionEnd
-#              hook commands in Claude settings and Factory hooks (idempotent)
-# Vendored from the former elitecoder/cmux-session-restore repo so a single
-# `assistant install --apply` rebuilds all three layers from git on any machine
-# — claude.tgz-style home backups only capture ~/.claude and silently drop the
-# ~/.local/bin CLI, leaving a deceptive half-working state.
-log "[4/5] Wiring cmux session-restore (hooks + CLI + settings)"
+# --- 4. cmux session hooks + restore CLI -----------------------------------
+# cmux records agent sessions itself (`cmux sessions list`, read through
+# bin/cmux_sessions.py). Its Claude wrapper injects its hooks; Factory Droid
+# gets them from `cmux hooks factory install`. The pieces kept here:
+#   hooks/cmux-auto-resume.py   forwards SessionStart to cmux for agents started
+#                               WITHOUT the wrapper, verifying it landed
+#   hooks/cmux-session-ledger.py  retired; a no-op for one release so a
+#                               registration that outlives the pull still exits 0
+#   bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions, for
+#                               panels with no resume binding
+#   settings  install/patch-settings.py registers cmux-auto-resume.py and drops
+#             the ledger registrations in Claude settings and Factory hooks
+# ~/.claude/hooks is a MIXED dir: symlink the files individually, never the
+# directory. A single `install.sh --apply` rebuilds all of this from git;
+# claude.tgz-style home backups only capture ~/.claude and drop ~/.local/bin.
+log "[4/5] Wiring cmux session hooks (hooks + CLI + settings)"
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hooks/cmux-auto-resume.py"
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
 ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
@@ -805,9 +809,9 @@ if [[ $APPLY -eq 1 ]]; then
     python3 "$REPO_ROOT/install/patch-settings.py" \
         "$HOME_DIR/.claude/settings.json" "$HOME_DIR/.factory/hooks.json" \
         2>&1 | sed 's/^/  /' \
-        || warn "patch-settings failed (continuing — session-restore hooks may be incomplete)"
+        || warn "patch-settings failed (continuing — cmux session hooks may be incomplete)"
 else
-    note "would install cmux Factory hooks and patch Claude + Factory lifecycle hooks"
+    note "would install cmux Factory hooks and patch Claude + Factory session hooks"
 fi
 log ""
 

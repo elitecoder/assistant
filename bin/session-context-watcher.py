@@ -45,6 +45,7 @@ from pathlib import Path
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_session
+import cmux_sessions
 
 HOME = Path(os.environ["HOME"])
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
@@ -117,7 +118,8 @@ def pid_alive(pid):
 
 
 def load_live_agent_sessions():
-    """Prefer verified world bindings; use legacy registrations without identity data."""
+    """Prefer verified world bindings; without identity data, use cmux's session
+    records plus registry fallback rows for sessions cmux lacks."""
     try:
         world = json.loads(WORLD_PATH.read_text())
     except (OSError, ValueError) as exc:
@@ -134,32 +136,26 @@ def load_live_agent_sessions():
         for workspace in world.get("workspaces", []) or [] if isinstance(workspace, dict)
         for surface in workspace.get("surfaces", []) or []
     )
-    reg = {}
+    recorded = []
     if not identity_schema:
-        try:
-            reg = json.loads(CMUX_REGISTRY.read_text())
-        except Exception:
-            pass
+        recorded = cmux_sessions.list_sessions()
+        recorded += cmux_sessions.registry_fallback(CMUX_REGISTRY, recorded)
     out = {}
-    for tab_id, entry in reg.items():
-        pid = entry.get("claude_pid")
-        if not pid_alive(pid):
+    for record in recorded:
+        # Each surface's active record is what runs there now; earlier records
+        # on the same surface (a /clear, a finished session) may share its live
+        # pid. A registry row's pid must still be an agent (pids get reused).
+        if not (record.active_for_surface and record.provider and pid_alive(record.pid)):
             continue
-        sid = entry.get("session_id")
-        if not sid:
+        if record.source == cmux_sessions.REGISTRY and not cmux_sessions.agent_process(record.pid):
             continue
-        # Multiple registry entries can share a session_id (re-registration on resume).
-        # Keep the most recent.
-        prev = out.get(sid)
-        if prev and prev.get("ts", 0) > entry.get("ts", 0):
-            continue
-        out[sid] = {
-            "pid": int(pid),
-            "cwd": entry.get("cwd"),
-            "transcript_path": entry.get("transcript_path"),
-            "provider": entry.get("provider") or "claude",
-            "ts": entry.get("ts"),
-            "tab_id": tab_id,
+        out[record.session_id] = {
+            "pid": record.pid,
+            "cwd": record.launch_cwd or record.cwd,
+            "transcript_path": record.transcript_path,
+            "provider": record.provider,
+            "ts": record.updated_at,
+            "tab_id": record.workspace_id,
         }
     for entry in world_sessions:
         if not isinstance(entry, dict):
@@ -636,16 +632,9 @@ class Watcher:
         The cutoff argument remains accepted for compatibility.
         """
         live = load_live_agent_sessions()
-        # Tag the cron workers so we can mark them. We need session_id for that
-        # join. The orchestrator-registry has workspace_ref; correlate by the
-        # cmux-registry tab→workspace mapping. Easier: for now, infer by the
-        # known cmux workspaces of the cron workers (workspace:104/105/106/97).
-        # The cmux-registry doesn't store workspace_ref directly, so we tag
-        # cron sessions by matching the live session's transcript path stem
-        # against known orchestrator workspace session IDs we've seen recently.
-        # Simpler approach: read orchestrator-registry → workspace_ref names, but
-        # to map workspace_ref → session_id we need cmux tree. Skip the precise
-        # mapping; just tag by cwd heuristic for now.
+        # Tag the cron workers so we can mark them. The orchestrator-registry
+        # names workers by workspace_ref, and mapping a ref to a session needs
+        # the cmux tree, so skip the precise join and tag by cwd instead.
         cron_cwds = {str(HOME / ".architect")}
         out = []
         for sid, meta in live.items():

@@ -9,6 +9,81 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Changed
+- Read agent sessions from cmux first, with mukul-memory's registry as a
+  fallback. cmux 0.64.25 records agent sessions itself, and
+  `cmux sessions list --json --all` prints those records without the cmux
+  socket. The new `bin/cmux_sessions.py` is the one place that runs it. It
+  waits up to 15 seconds, and when cmux can't answer it returns no records and
+  writes one stderr line. `world-scanner.py`, `session-context-watcher.py`,
+  `build-ws-context.py`, `transcript-tail.py --closed-cwd`, and
+  `cmux-restore-sessions` read it instead of `~/.cmux-session-ledger.jsonl`.
+  - cmux misses a session whose SessionStart never reached it. On 2026-10-19
+    that was ee4ee641 in workspace:27. For such sessions every reader also
+    takes the row from `~/.claude/cmux-registry.json`, written by mukul-memory's
+    `cmux-registry.py` hook.
+  - `world.json` `_meta.session_record_fallback` counts the sessions that came
+    from that fallback, and the scanner log shows `fallback_hits=N`. Retire the
+    fallback after a soak period with zero hits.
+  - A registry row with a live pid must still be a `claude` or `droid` process.
+    This drops sessions like aea1111b, whose recorded pid now belongs to another
+    program.
+  - On live state the scanner verifies the same 10 sessions as before. Only
+    the aea1111b ghost drops.
+  - Only the session cmux marks active on a surface counts as running there, so
+    a session left behind by `/clear` in the same process no longer looks live.
+  - Output fields keep their names, and `registry_live_pid` and
+    `session_start_registry` keep their values. Some values now come from
+    different sources:
+    - **First recorded** comes from cmux's `started_at`, and from a registry
+      row's SessionStart time for fallback sessions. A session restored into
+      another workspace shows its original start, not when it arrived there.
+    - A session's `cwd` is its launch directory, and `ts` is the record's
+      latest update.
+    - `transcript-tail.py --closed-cwd` picks the most recently active session.
+    - Sessions of agents the fleet doesn't run, such as Copilot, are left out.
+- Make `hooks/cmux-auto-resume.py` forward reliably. It's what makes cmux
+  record agents started without cmux's Claude wrapper, such as an absolute
+  `~/.local/bin/claude` like the warm comms session, and the scheduled fleet
+  spawns.
+  - The hook now starts a detached worker and returns at once.
+  - The worker checks each `cmux hooks <provider> session-start` exit code.
+    It then confirms the record with `cmux sessions list --session <id>`.
+  - It retries after 0, 2, 5, 15, and 30 seconds.
+  - A session cmux still lacks gets one `cmux-session-forward-fail` entry in
+    `~/.assistant/actions-ledger.jsonl`.
+  - Before, one try was made, with a 5-second timeout and its errors ignored.
+- `install/patch-settings.py` registers `cmux-auto-resume.py` on SessionStart in
+  Claude settings and Factory hooks when it's missing. A fresh machine used to
+  link the hook without registering it. The file is written without escaping
+  non-ASCII text.
+- `cmux-restore-sessions` finds a session for a panel with no resume binding in
+  cmux's records, then in the registry. The ledger is no longer used. Native
+  `cmux restore --surface` needs a binding, so this CLI stays.
+- Measure Python under `install/` and `hooks/` in the new-code coverage gate,
+  so changes there can pass it.
+
+### Removed
+- Retire `hooks/cmux-session-ledger.py`. For this release it's a no-op, so a
+  registration that outlives `git pull` still exits 0.
+  `install/patch-settings.py` now removes its SessionStart and SessionEnd
+  registrations from `~/.claude/settings.json` and `~/.factory/hooks.json`
+  instead of adding them. Delete the stub and its install.sh link next release.
+  `~/.cmux-session-ledger.jsonl` stays on disk, but nothing writes to it any
+  more. mukul-memory's `cmux-registry.py` registration is left alone.
+
+### Rollback
+- Revert the merge commit, then run `install.sh --apply`. That restores the
+  readers on registry and ledger, `cmux-restore-sessions` on the ledger, and
+  the single fire-and-forget forward. The base `patch-settings.py` also
+  re-registers the ledger hooks on SessionStart and SessionEnd, and the ledger
+  file resumes from where it stopped.
+- The `cmux-auto-resume.py` registration this release added on a fresh machine
+  stays, because the base installer never removes hooks. It's harmless: the
+  base hook makes the same single forward.
+- Ledger events between deploy and rollback are lost, so **First recorded**
+  for sessions started in that window is unknown until they restart.
+
 ### Added
 - Add the `cmux-ws-numberer` LaunchAgent as an opt-in feature. It adds a `[N]`
   suffix to cmux workspace titles and gives each workspace an unused sidebar

@@ -9,7 +9,10 @@ side effects beyond writing world.json.
 Inputs:
   - cmux tree (live workspaces + surfaces + tty)
   - ps (which Claude PIDs are alive)
-  - ~/.claude/cmux-registry.json (session_id ↔ tab_id ↔ cwd ↔ transcript_path)
+  - `cmux sessions list --json --all` (cmux's own agent session records:
+    session_id ↔ workspace/surface UUID ↔ cwd ↔ transcript_path ↔ pid ↔ start)
+  - ~/.claude/cmux-registry.json (fallback only, for sessions cmux has no record
+    of; _meta.session_record_fallback counts the sessions it supplied)
   - ~/.architect/orchestrator-registry.json (workers list — for is_cron tag)
   - ~/.claude/cache/session-context.json (transcript turns; maintained by watcher)
   - ~/.claude/cache/dashboard-state.json (workspace classifications + screen hashes)
@@ -21,17 +24,19 @@ Inputs:
   - vm_stat (memory pressure)
   - ~/.assistant/events.jsonl (event-spine health: counts + latest-event age
                                per source, so a stalled spine is visible)
-  - ~/.cmux-session-ledger.jsonl (first recorded start for a verified identity)
 
 Cadence: 30s via LaunchAgent. Stdlib only.
 
 Workspace and surface UUIDs identify current cmux objects. A session's
-identity_status is verified when a live resume binding and process agree, or a
-SessionStart registry entry matches both UUIDs and a foreground provider process
-whose start predates that hook. Registry keys are workspace UUIDs, not surfaces.
+identity_status is verified when a live resume binding and process agree, or
+a session record for the surface (cmux's active one, else a registry fallback
+row) matches both UUIDs and a foreground provider process that started before
+the record's latest update.
 context_status verifies the cached session/provider association, not freshness;
 context_built_at supplies the cache clock. Missing bindings and unsupported
-providers stay unknown. first_recorded_at is not a session creation timestamp.
+providers stay unknown. first_recorded_at is cmux's recorded start for the
+session (started_at), which a session restored into another workspace keeps;
+for a registry fallback row it is that row's SessionStart time.
 Internal session keys include provider, full session ID, workspace UUID, and
 surface UUID, so resumed sessions retain each binding in the exported list.
 """
@@ -45,6 +50,9 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cmux_sessions  # noqa: E402
 
 # The canonical connector tri-state (not_configured|ok|error) + the known-
 # connector registry live in the connector base, so world-scanner, the brief
@@ -71,7 +79,6 @@ OUT_PATH = HOME / ".claude/cache/world.json"
 CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 ORCH_REGISTRY = HOME / ".architect/orchestrator-registry.json"
 SESSION_CTX = HOME / ".claude/cache/session-context.json"
-SESSION_LEDGER = HOME / ".cmux-session-ledger.jsonl"
 DASHBOARD_STATE = HOME / ".claude/cache/dashboard-state.json"
 TODO_PATH = HOME / ".claude/assistant-todo.json"
 PROPOSALS_DIR = HOME / ".architect/orchestrator-proposals"
@@ -319,40 +326,52 @@ def agent_pid_on_tty(tty, provider):
     return process[0] if process else None
 
 
-def registry_binding_for_surface(registry, workspace, surface):
-    """Verify the hook's workspace key, surface UUID, session, and process age."""
+def recorded_binding_for_surface(records, workspace, surface):
+    """Verify a session record for this surface: both UUIDs, pid, and process age.
+
+    cmux's own record goes first; a registry fallback row only when cmux's
+    doesn't verify. A resumed session keeps its original started_at, so the
+    age check uses the record's latest update (cmux's latest hook, or the
+    registry's SessionStart), which the current process must have written.
+    """
+    for source in (cmux_sessions.CMUX, cmux_sessions.REGISTRY):
+        binding = _verified_record_binding(
+            [record for record in records if record.source == source], workspace, surface)
+        if binding:
+            return binding
+    return None
+
+
+def _verified_record_binding(records, workspace, surface):
     workspace_id = workspace.get("workspace_id")
     surface_id = surface.get("surface_id")
     tty = surface.get("tty")
     if not workspace_id or not surface_id or not tty:
         return None
     matches = [
-        entry for key, entry in registry.items()
-        if key.lower() == str(workspace_id).lower()
-        and str(entry.get("surface_id") or "").lower() == str(surface_id).lower()
+        record for record in records
+        if record.active_for_surface
+        and str(record.workspace_id or "").lower() == str(workspace_id).lower()
+        and str(record.surface_id or "").lower() == str(surface_id).lower()
     ]
     if len(matches) != 1:
         return None
-    entry = matches[0]
-    if entry.get("workspace_id") and str(entry["workspace_id"]).lower() != str(workspace_id).lower():
-        return None
-    sid = entry.get("session_id")
-    provider = normalize_provider(entry.get("provider") or "claude")
-    recorded = entry.get("ts")
-    if not isinstance(sid, str) or not sid or provider not in {"claude", "droid"}:
-        return None
-    if isinstance(recorded, bool) or not isinstance(recorded, (int, float)):
+    record = matches[0]
+    provider = record.provider
+    recorded = record.updated_at
+    if provider is None or recorded is None:
         return None
     process = foreground_provider_process(tty, provider)
     if process is None:
         return None
     pid, started = process
-    if entry.get("claude_pid") and str(entry["claude_pid"]) != str(pid):
+    if record.pid and record.pid != pid:
         return None
     if not started <= recorded < utc_now().timestamp() + 1:
         return None
     return {
-        "session_id": sid, "provider": provider, "cwd": entry.get("cwd"),
+        "session_id": record.session_id, "provider": provider,
+        "cwd": record.launch_cwd or record.cwd,
         "pid": pid, "ts": recorded, "tab_id": workspace_id,
         "identity_source": "session_start_registry",
     }
@@ -367,39 +386,37 @@ def session_identity_key(session):
     )
 
 
-def build_live_sessions(workspaces=None):
-    """Build the canonical live-session list by joining cmux-registry (records
-    every Claude session ever) with pid-alive filter. Each entry carries
-    session_id, pid, cwd, tty, transcript_path, and the workspace_ref it lives
-    in (best-effort via tty join with cmux tree)."""
-    reg = load_json(CMUX_REGISTRY, {})
+def build_live_sessions(workspaces=None, records=()):
+    """Build the canonical live-session list from session records (cmux's,
+    plus registry fallback rows for sessions cmux lacks) with a pid-alive
+    filter, then bind each terminal surface. Each entry carries session_id,
+    pid, cwd, tty, transcript_path, and the workspace_ref it lives in
+    (best-effort via tty join with cmux tree)."""
     out = {}
-    for tab_id, e in reg.items():
-        pid = e.get("claude_pid")
-        if not pid_alive(pid):
+    for record in records:
+        # Only each surface's active record: earlier sessions on the surface
+        # (a /clear, a finished run) can share its still-live pid. A registry
+        # row's pid must still be an agent: the registry outlives its sessions
+        # and macOS reuses pids.
+        if not (record.active_for_surface and record.provider and pid_alive(record.pid)):
             continue
-        sid = e.get("session_id")
-        if not sid:
+        if record.source == cmux_sessions.REGISTRY and not cmux_sessions.agent_process(record.pid):
             continue
         session = {
-            "session_id": sid,
-            "pid": int(pid),
-            "cwd": e.get("cwd"),
-            "transcript_path": e.get("transcript_path"),
-            "provider": normalize_provider(e.get("provider") or "claude"),
-            "tab_id": tab_id,
-            "ts": e.get("ts"),
-            "workspace_id": e.get("workspace_id") or (tab_id if e.get("surface_id") else None),
-            "surface_id": e.get("surface_id"),
+            "session_id": record.session_id,
+            "pid": record.pid,
+            "cwd": record.launch_cwd or record.cwd,
+            "transcript_path": record.transcript_path,
+            "provider": record.provider,
+            "tab_id": record.workspace_id,
+            "ts": record.updated_at,
+            "workspace_id": record.workspace_id,
+            "surface_id": record.surface_id,
             "identity_status": "unknown",
             "identity_source": "registry",
             "agent_status": "unknown",
         }
-        key = session_identity_key(session)
-        prev = out.get(key)
-        if prev and prev.get("ts", 0) > e.get("ts", 0):
-            continue
-        out[key] = session
+        out[session_identity_key(session)] = session
     for ws in workspaces or []:
         for surface in ws.get("surfaces", []):
             if surface.get("type") != "terminal":
@@ -409,7 +426,7 @@ def build_live_sessions(workspaces=None):
                 ws.get("workspace_id") or ws.get("ws_ref"),
             )
             if binding is None:
-                binding = registry_binding_for_surface(reg, ws, surface)
+                binding = recorded_binding_for_surface(records, ws, surface)
             if not binding or binding.get("unverified"):
                 continue
             sid = binding["session_id"]
@@ -586,8 +603,8 @@ def normalize_provider(provider):
     return "droid" if provider in {"factory", "droid"} else provider
 
 
-def merge_first_recorded(live_sessions, now):
-    """Join recorded starts by workspace UUID, provider, and full session ID."""
+def merge_first_recorded(live_sessions, records, now):
+    """Join cmux's recorded starts by workspace UUID, provider, and full session ID."""
     targets = {}
     for session in live_sessions.values():
         session["first_recorded_at"] = None
@@ -600,34 +617,14 @@ def merge_first_recorded(live_sessions, now):
         )
         if all(key):
             targets.setdefault(key, []).append(session)
-    if not targets:
-        return
     first = {}
-    try:
-        with SESSION_LEDGER.open(errors="replace") as ledger:
-            for line in ledger:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(row, dict) or row.get("event") != "start":
-                    continue
-                key = (
-                    str(row.get("workspace_id") or "").lower(),
-                    normalize_provider(row.get("provider")),
-                    row.get("session_id"),
-                )
-                if not isinstance(key[2], str) or key not in targets:
-                    continue
-                timestamp = row.get("ts")
-                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
-                    continue
-                if not 0 < timestamp <= now.timestamp():
-                    continue
-                if key not in first or timestamp < first[key]:
-                    first[key] = timestamp
-    except OSError:
-        return
+    for record in records:
+        key = (str(record.workspace_id or "").lower(), record.provider, record.session_id)
+        timestamp = record.started_at
+        if key not in targets or timestamp is None or not 0 < timestamp <= now.timestamp():
+            continue
+        if key not in first or timestamp < first[key]:
+            first[key] = timestamp
     for key, timestamp in first.items():
         recorded = datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(microsecond=0)
         for session in targets[key]:
@@ -777,11 +774,20 @@ def build():
 
     tree = cmux_tree()
     workspaces = build_workspace_index(tree)
-    live_sessions = build_live_sessions(workspaces)
+    records = cmux_sessions.list_sessions()
+    records += cmux_sessions.registry_fallback(CMUX_REGISTRY, records)
+    live_sessions = build_live_sessions(workspaces, records)
     join_workspaces_to_sessions(workspaces, live_sessions)
     tag_cron_workers(live_sessions)
     merge_session_context(live_sessions)
-    merge_first_recorded(live_sessions, now)
+    merge_first_recorded(live_sessions, records, now)
+
+    fallback_ids = {r.session_id for r in records if r.source == cmux_sessions.REGISTRY}
+    fallback_hits = sorted(
+        s["session_id"] for s in live_sessions.values()
+        if s["session_id"] in fallback_ids
+        and s["identity_source"] in ("registry", "session_start_registry")
+    )
 
     # Compute per-session activity age and bucket.
     for sess in live_sessions.values():
@@ -825,6 +831,10 @@ def build():
             "built_at": iso(now),
             "scanner_version": 1,
             "memory_pct": read_mem_pct(),
+            "session_record_fallback": {
+                "source": str(CMUX_REGISTRY), "hits": len(fallback_hits),
+                "session_ids": fallback_hits,
+            },
         },
         "counts": {
             "workspaces": len(workspaces),
@@ -856,7 +866,8 @@ def build():
         f"(human={human} cron={cron} active30m={truly_active}) "
         f"proposals_open={payload['counts']['proposals_open']} "
         f"awaiting={len(awaiting)} ledger24h={len(ledger_recent)} "
-        f"todo_open={payload['counts']['todo_open']} mem={payload['_meta']['memory_pct']}%"
+        f"todo_open={payload['counts']['todo_open']} mem={payload['_meta']['memory_pct']}% "
+        f"fallback_hits={len(fallback_hits)}"
     )
 
 
