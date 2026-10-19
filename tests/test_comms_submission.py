@@ -95,9 +95,35 @@ def test_submission_counts_text_blocks_and_queued_prompts(tmp_path):
         {"type": "user", "message": {"role": "user",
                                      "content": [{"type": "text", "text": f"hi {MARK}"}]}}])
     queued = _jsonl(tmp_path / "b.jsonl", [
+        {"type": "mode"},
+        {"type": "user", "entrypoint": "cli", "message": {"role": "user", "content": "boot"}},
         {"type": "queue-operation", "operation": "enqueue", "content": f"hi {MARK}"}])
     assert cs.transcript_has_submission(blocks, MARK)
     assert cs.transcript_has_submission(queued, MARK)
+
+
+def test_submission_ignores_a_headless_runs_queued_prompt(tmp_path):
+    """2026-10-19: 8 of 159 proofgate `claude -p` transcripts held a Slack
+    marker in a queue-operation record. Those records carry no entrypoint, and
+    26 of them came before the first sdk-cli record."""
+    queued = {"type": "queue-operation", "operation": "enqueue",
+              "content": f"You are a verification gate. Trace: {MARK}"}
+    before = _jsonl(tmp_path / "before.jsonl", [{"type": "atis-latch"}, queued])
+    after = _jsonl(tmp_path / "after.jsonl", [
+        {"type": "attachment", "entrypoint": "sdk-cli"}, queued])
+    assert not cs.transcript_has_submission(before, MARK)
+    assert not cs.transcript_has_submission(after, MARK)
+
+
+def test_first_entrypoint_skips_records_that_only_nest_the_key(tmp_path):
+    """Only a record's own top-level `entrypoint` counts."""
+    t = _jsonl(tmp_path / "t.jsonl", [
+        {"type": "attachment", "attachment": {"entrypoint": "cli"}},
+        {"type": "attachment", "entrypoint": ["cli"]},
+        {"type": "attachment", "entrypoint": "sdk-cli"},
+        {"type": "queue-operation", "operation": "enqueue", "content": f"hi {MARK}"}])
+    assert cs._first_entrypoint(t.read_bytes()) == "sdk-cli"
+    assert not cs.transcript_has_submission(t, MARK)
 
 
 def test_submission_ignores_tool_results_headless_runs_and_assistant_text(tmp_path):

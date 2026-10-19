@@ -70,6 +70,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `working_directory` and saved no folder for those sessions. The renderer then
   failed on every run. The scanner now reads either name, and the open-sessions
   list shows a session even when its folder is unknown.
+- Stop the Slack daemon from following a headless run's copy of a Slack
+  message. The proofgate check's `claude -p` run records the warm session's
+  prompts as queued prompts with no entrypoint, so the daemon could bind to
+  that transcript and watch it for the reply. A queued prompt now counts only
+  in a transcript whose first entrypoint is interactive.
+- Match each terminal to its session through the `resume_binding`, which agent
+  hooks keep current, before the `restore_record` that cmux 0.65 lists first.
+  The restore record is a snapshot from when cmux restored the surface, so
+  `world-scanner.py` and `build-ws-context.py` could name an old session.
 - Stop two time-of-day test failures. The Observer audit tests failed in the
   last minute of a two-hour window, and five Strategist tests that count calls
   per UTC day failed in the last minutes of the day. Each test now starts its clock at the

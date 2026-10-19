@@ -236,7 +236,9 @@ def surface_resume_binding(surface_ref, ws_ref):
         return {"unverified": True}
     if not isinstance(doc, dict):
         return {"unverified": True}
-    queue = [doc]
+    # Agent hooks keep resume_binding current; cmux 0.65's restore_record, listed
+    # first, is a snapshot from when cmux restored the surface.
+    queue = [doc.get("resume_binding"), doc]
     binding = None
     has_kind = False
     while queue:
@@ -257,8 +259,8 @@ def surface_resume_binding(surface_ref, ws_ref):
     return {
         "session_id": str(sid),
         "provider": "droid" if kind in {"factory", "droid"} else "claude",
-        # cmux 0.65 lists a restore_record, which names it working_directory,
-        # before the resume_binding.
+        # A restore_record, the fallback without a resume_binding, names it
+        # working_directory.
         "cwd": binding.get("cwd") or binding.get("working_directory"),
     }
 
