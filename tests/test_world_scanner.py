@@ -475,12 +475,11 @@ def test_build_reads_cwd_from_the_cmux_065_restore_record(ws, monkeypatch):
     def run(args, **kwargs):
         if args[1:4] != ["surface", "resume", "show"]:
             return original_run(args, **kwargs)
-        # cmux 0.65 order: the restore_record comes before the resume_binding.
+        # A restored surface whose agent hooks haven't written a resume_binding yet.
         return fake_completed(json.dumps({
             "cleared": False, "pane_ref": "pane:1",
             "restore_record": {"checkpoint_id": sid, "kind": "claude",
                                "working_directory": "/work/repo"},
-            "resume_binding": {"checkpoint_id": sid, "kind": "claude", "cwd": "/work/repo"},
         }))
 
     monkeypatch.setattr(ws.subprocess, "run", run)

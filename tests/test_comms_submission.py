@@ -115,10 +115,11 @@ def test_submission_ignores_a_headless_runs_queued_prompt(tmp_path):
     assert not cs.transcript_has_submission(after, MARK)
 
 
-def test_first_entrypoint_skips_lines_that_only_mention_it(tmp_path):
-    """A prompt that quotes `"entrypoint"` isn't the record's own field."""
+def test_first_entrypoint_skips_records_that_only_nest_the_key(tmp_path):
+    """Only a record's own top-level `entrypoint` counts."""
     t = _jsonl(tmp_path / "t.jsonl", [
-        {"type": "user", "message": {"role": "user", "content": '"entrypoint": "cli"'}},
+        {"type": "attachment", "attachment": {"entrypoint": "cli"}},
+        {"type": "attachment", "entrypoint": ["cli"]},
         {"type": "attachment", "entrypoint": "sdk-cli"},
         {"type": "queue-operation", "operation": "enqueue", "content": f"hi {MARK}"}])
     assert cs._first_entrypoint(t.read_bytes()) == "sdk-cli"
