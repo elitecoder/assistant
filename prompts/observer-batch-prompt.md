@@ -163,6 +163,8 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 
    Idle time does NOT gate this verdict — a recap that ends with "want me to…?" is awaiting you whether it landed 10 seconds or 10 hours ago. Do NOT downgrade a fresh awaiting-review recap to `active` just because `last_turn_age_sec` is small; the agent has stopped and will not move without you.
 
+   **B1 re-fires after a stall nudge**: a workspace that responds to a stall nudge with a question or "your call" close is in B1 state. Do NOT re-classify as `stranded` on the next idle cycle. Emit `needs_user`.
+
    **B1 vs B2 (cleanup vs awaiting-review) — the dividing line:** cleanup is for work that is *finished and disposable* — the deliverable was an action already taken (probe ran, PR merged, test executed) and nothing is left to look at. Awaiting-review is for work whose *deliverable is a thing you must still consume or authorize*. When a recap says "done" AND names something for you to read/decide/approve/activate/merge, it is B2 (`needs_user`), not B1. When in doubt between cleanup and awaiting-review, choose `needs_user` — an extra card is cheap; a wrongly-sent `/cleanup` destroys the deliverable.
 
 2. **Definitive workspace-level recap + idle >30 min + clean cwd + nothing left for the user** → `ready_for_cleanup`. ALL must hold:
@@ -185,6 +187,7 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
    - `last_turn_age_sec > 1800` (strictly greater than 30 minutes).
    - `agent_status == "idle"`.
    - Last assistant text is **mid-narrative** — it trailed off inside a step ("now running…", "checking X", "moving to spec 5") with no handoff to the user, NOT a recap and NOT a question.
+   - A turn ending with "your call", "which would you prefer", "let me know", or any question is a handoff — B5 does NOT fire for it.
 
    If all four hold → `stranded` with `nudge_text` grounded in the transcript. Otherwise → `active`.
 
@@ -201,6 +204,7 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 | recap hands back a deliverable / decision / go-ahead (any idle time) | `needs_user` (B1 — awaiting your review) |
 | idle ≤ 1800s AND not an awaiting-review recap | `active` (between turns) |
 | idle > 1800s + mid-narrative (trailed off, no handoff) | `stranded` |
+| idle > 1800s + last assistant text is a question or "your call" | `needs_user` (NOT `stranded`) |
 | idle > 1800s + recap + clean cwd + nothing left for the user | `ready_for_cleanup` |
 | idle > 1800s + bare question | `needs_user` |
 | cleanup already ran | `no_action` (wins over `ready_for_cleanup`) |

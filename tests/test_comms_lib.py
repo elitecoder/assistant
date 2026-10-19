@@ -193,6 +193,53 @@ def test_fmt_workspace_signal_prefers_last_message_over_snippet():
                     "_workspace:244 · Notification_")
 
 
+def test_fmt_workspace_signal_names_the_workspace_by_its_sidebar_number():
+    item = {"ws_ref": "workspace:1000010013", "signal_type": "needs_input",
+            "pattern_matched": "AskUserQuestion", "ws_title": "Fix ruler",
+            "last_message": "Rebase or merge?"}
+    assert cl.fmt_workspace_signal(item, sidebar={"workspace:1000010013": 4}) == (
+        "*Fix ruler* is asking you: Rebase or merge?\n_[4] · AskUserQuestion_")
+    # A workspace cmux no longer lists keeps its ref.
+    assert cl.fmt_workspace_signal(item, sidebar={"workspace:1000010009": 0}).endswith(
+        "_workspace:1000010013 · AskUserQuestion_")
+
+
+def test_fmt_action_line_names_the_workspace_but_keeps_lookup_ids_raw():
+    entry = {"kind": "emit-card", "outcome": "verified", "ws_ref": "workspace:1000010002",
+             "key": "workspace:1000010002-needs_user", "evidence": "card sent"}
+    line = cl.fmt_action_line(entry, sidebar={"workspace:1000010002": 1})
+    # The ledger key stays greppable in actions-ledger.jsonl.
+    assert line.endswith("_card sent · [1] · emit-card · workspace:1000010002-needs_user_")
+
+
+def _fake_cmux(tmp_path: Path, script: str) -> cl.Paths:
+    fake = tmp_path / "cmux"
+    fake.write_text("#!/bin/sh\n" + script)
+    fake.chmod(0o755)
+    return cl.Paths.from_env({"HOME": str(tmp_path), "CMUX_BIN": str(fake)})
+
+
+def test_sidebar_numbers_maps_refs_to_positions(tmp_path):
+    listing = {"workspaces": [
+        {"ref": "workspace:1000010009", "index": 0, "title": "Feedback [0]"},
+        {"ref": "workspace:1000010002", "index": 1, "title": "✳ Insights [1] "},
+        {"ref": "workspace:1000010013", "title": "No index [2]"},
+        # No numberer, or it hasn't renamed yet: the title has no matching [N].
+        {"ref": "workspace:1000010018", "index": 3, "title": "Weekend R9 [2]"},
+        {"ref": "workspace:1000010017", "index": 4, "title": "Weekend R8"},
+    ]}
+    paths = _fake_cmux(tmp_path, f"[ \"$*\" = 'workspace list --json' ] || exit 2\n"
+                                 f"echo '{json.dumps(listing)}'\n")
+    assert cl.sidebar_numbers(paths) == {"workspace:1000010009": 0, "workspace:1000010002": 1}
+
+
+def test_sidebar_numbers_is_empty_when_cmux_fails_or_garbles(tmp_path):
+    for script in ("exit 1\n", "echo 'Access denied'\n", "echo '[]'\n",
+                   "echo '{}'\n", "echo '{\"workspaces\": null}'\n",
+                   "echo '{\"workspaces\": [1]}'\n"):
+        assert cl.sidebar_numbers(_fake_cmux(tmp_path, script)) == {}, script
+
+
 def test_fmt_workspace_signal_headlines_by_signal():
     def first_line(signal_type):
         return cl.fmt_workspace_signal({"ws_title": "T", "signal_type": signal_type}).split("\n")[0]

@@ -10,6 +10,23 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Add the `cmux-ws-numberer` LaunchAgent as an opt-in feature. It adds a `[N]`
+  suffix to cmux workspace titles and gives each workspace an unused sidebar
+  color. Enable it with `install.sh --apply --with-ws-numberer`, answer the
+  prompt, or use `--with-all`. Its label is now `com.assistant.cmux-ws-numberer`;
+  the installer removes the old `com.mukuls.cmux-ws-numberer` plist. Its log
+  moves to `~/.assistant/logs/cmux-ws-numberer.log`, which it creates if
+  missing, and rotates at 5 MB with two old copies.
+- Let changes to `install.sh` pass the new-code coverage gate when a targeted
+  mutation proves them. No line-coverage tool can measure it safely here.
+  Each changed hunk that holds code needs a check in `tests/mutation_smoke.py`
+  that breaks one of its lines. The gate fails on any unproven hunk, and the
+  mutation step fails unless a test rejects each break and the broken script
+  still parses. A check proves a hunk only when every line it breaks is changed
+  code in that hunk. One check is enough for a whole hunk, so add more for
+  large hunks. Review new checks like any test, because a check written to
+  dodge the gate can still pass it. Hunks that only
+  delete lines need no check. Other shell scripts still fail the gate.
 - Check every self-update before it lands: read each runtime file the fetched
   commits add or change straight from git, scan it for leftover merge conflict
   markers, and parse it if it's Python. If a file fails, refuse the update
@@ -40,6 +57,50 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Bring the warm Slack session up again on Claude Code 2.1.303 and cmux 0.65.
+  Claude Code now writes several hundred KB of records right after each prompt,
+  so the check that read only the last 256 KB of the transcript never saw the
+  boot prompt. Every spawn was abandoned, and cmux 0.65 refused to close the
+  abandoned workspace, so each retry left another one open. The check now
+  searches the whole transcript, and the daemon retries the close with
+  `--force` when cmux asks to confirm, still only for its own warm workspace.
+- Stop the dashboard from crashing on sessions with no working folder. cmux
+  0.65 lists a `restore_record` before the `resume_binding`, so
+  `world-scanner.py` read the folder from a record that names it
+  `working_directory` and saved no folder for those sessions. The renderer then
+  failed on every run. The scanner now reads either name, and the open-sessions
+  list shows a session even when its folder is unknown.
+- Stop two time-of-day test failures. The Observer audit tests failed in the
+  last minute of a two-hour window, and five Strategist tests that count calls
+  per UTC day failed in the last minutes of the day. Each test now starts its clock at the
+  beginning of its window, so calls a few minutes later stay in the same one.
+  The audit tests also set their own window length.
+- Keep a Strategist test from writing a row to the real
+  `~/.assistant/actions-ledger.jsonl`. It now runs with a temporary home.
+- Name workspaces in Slack by the same number the sidebar shows. Workspace
+  pings and action lines named the workspace by its `workspace:N` ref, which no
+  longer matches the `[N]` in the title. `comms-listen` now looks up sidebar
+  positions once per pass that sends something, and the footer shows `[4]`
+  instead of `workspace:1000010013`. Only titles that already end in that
+  `[N]` count, so a machine without `cmux-ws-numberer` keeps showing refs.
+  Ledger keys stay raw so they still match `actions-ledger.jsonl`, and
+  `conversation.jsonl` keeps the refs. The warm comms prompt now uses the
+  sidebar number and resolves it to a ref right before acting.
+- Number workspaces by sidebar position. cmux 0.65 numbers workspace refs from
+  1000010000, so `cmux-ws-numberer` was adding suffixes like `[1000010009]`.
+  The suffix is now the workspace's 0-based position in its window, the number
+  `--workspace <index>` accepts. It follows reorders within one poll. Renames
+  and colors still target the stable ref, and a cmux that reports no index
+  gets colors without a suffix. The `spawn-claude-workspace` skill now says the
+  bracket number isn't the ref.
+- Stop the pulse tests from self-updating the checkout they run in. The tests
+  that run the pulse's `main()` called the real self-update, so a checkout
+  behind its remote got pulled. When the pull touched installer files, it also
+  ran `install.sh --apply` with the test's temporary home. That reloaded this
+  machine's daemons from a scratch copy. It also failed a push-to-`main` CI run
+  whenever `main` moved before the run finished. The test loaders in
+  `test_pulse.py` and `test_observer_skip.py` now stub it out, and a
+  `conftest.py` guard fails any test that still reaches it.
 - Keep a killed git from blocking self-updates. The pulse's timeout used to
   SIGKILL a context check mid-`git status`, leaving `.git/index.lock` behind;
   on 2026-09-28 that blocked every self-update, and seven repos on this machine

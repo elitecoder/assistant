@@ -350,6 +350,16 @@ class LiveSessionsTests(_Base):
         self.assertEqual(n, 1)
         self.assertIn(">quiet<", html)
 
+    def test_session_with_unknown_cwd_renders(self):
+        now = datetime.now(timezone.utc)
+        world = {"live_sessions": [
+            {"ws_ref": "workspace:13", "cwd": None, "is_cron": False,
+             "last_assistant": {"ts": _iso(now - timedelta(seconds=30)), "text": "no folder"}},
+        ]}
+        html, n = self.mod.render_live_sessions(world)
+        self.assertEqual(n, 1)
+        self.assertIn('<span class="pill scope" title="">workspace:13</span>', html)
+
     def test_errored_session_hidden(self):
         now = datetime.now(timezone.utc)
         world = {"live_sessions": [

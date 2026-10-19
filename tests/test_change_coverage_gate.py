@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
+import mutation_smoke
+
 import pytest
 
 
@@ -90,7 +92,7 @@ def test_missing_or_line_only_reports_are_explicit_errors(source_repo):
               {"meta": {"branch_coverage": True}, "files": {}})
 
 
-@pytest.mark.parametrize("unsupported", ["hooks/new.py", "src/new.js"])
+@pytest.mark.parametrize("unsupported", ["hooks/new.py", "src/new.js", "bin/new.sh"])
 def test_git_diff_and_untracked_production_files_are_both_measured(tmp_path, unsupported):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / "src").mkdir()
@@ -329,3 +331,120 @@ def test_raw_literal_preserves_escaped_newlines_and_template_line_mapping(tmp_pa
     result = check(tmp_path, {"bin/render-assistant-page.py": {4}}, python, browser)
     assert result["browser"]["missing_lines"] == [4]
     assert result["passed"] is False
+
+
+def shell_repo(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    script = tmp_path / "install.sh"
+    script.write_text("a=1\nb=2\nc=3\nd=4\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "install.sh"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Coverage fixture",
+                    "-c", "user.email=coverage@example.invalid", "commit", "-qm", "Initial fixture"],
+                   check=True)
+    return script
+
+
+def test_mutation_proven_shell_is_not_line_coverage_and_reports_its_hunks(tmp_path):
+    script = shell_repo(tmp_path)
+    script.write_text("a=1\nnew_one=1\n# note\nb=2\nd=4\nnew_two=2\n")
+    assert gate.changed_lines(tmp_path, "HEAD") == {}
+    assert gate.changed_hunks(tmp_path, "HEAD") == {"install.sh": [{2, 3}, {6}]}
+
+
+def test_deletion_only_shell_changes_have_no_hunks(tmp_path):
+    script = shell_repo(tmp_path)
+    script.write_text("a=1\nb=2\n")
+    assert gate.changed_hunks(tmp_path, "HEAD") == {}
+
+
+def test_each_changed_code_hunk_needs_a_mutation_on_one_of_its_lines(tmp_path):
+    script = tmp_path / "install.sh"
+    script.write_text("a=1\nnew_one=1\n# note\nb=2\nnew_two=2\nthree=3\n")
+    hunks = {"install.sh": [{2, 3}, {3}, {5, 6}]}
+    proof = [("one", "install.sh", "new_one=1\n", "", "t"),
+             ("multi", "install.sh", "new_two=2\nthree=3", "", "t"),
+             ("elsewhere", "other.sh", "new_two=2", "", "t")]
+    assert gate.check_mutation_proof(tmp_path, hunks, proof) == [
+        {"file": "install.sh", "hunks": 3, "unproven_hunks": []}]
+    assert gate.check_mutation_proof(tmp_path, hunks, proof[:1]) == [
+        {"file": "install.sh", "hunks": 3, "unproven_hunks": [[5, 6]]}]
+
+
+def test_ambiguous_mutation_targets_are_errors(tmp_path):
+    (tmp_path / "install.sh").write_text("x=1\nx=1\n")
+    with pytest.raises(ValueError, match="appear once"):
+        gate.check_mutation_proof(tmp_path, {"install.sh": [{1}]},
+                                  [("dup", "install.sh", "x=1", "", "t")])
+
+
+@pytest.mark.parametrize("proven", [True, False])
+def test_cli_fails_on_an_unproven_shell_hunk(tmp_path, monkeypatch, capsys, proven):
+    script = shell_repo(tmp_path)
+    script.write_text("a=1\nb=2\nc=3\nd=4\ne=5\n")
+    report = {"meta": {"branch_coverage": True}, "files": {}}
+    path = tmp_path / "coverage.json"
+    path.write_text(json.dumps(report))
+    path.with_name("coverage.sources.json").write_text(json.dumps(manifest(tmp_path, report)))
+    checks = [("e", "install.sh", "e=5\n", "", "t")] if proven else []
+    monkeypatch.setattr(gate, "CHECKS", checks)
+    monkeypatch.setattr(gate, "__file__", str(tmp_path / "tests/check_change_coverage.py"))
+    monkeypatch.setattr("sys.argv", ["check", "--base", "HEAD", "--python-report", str(path)])
+    with pytest.raises(SystemExit) as result:
+        gate.main()
+    assert result.value.code == (0 if proven else 1)
+    assert json.loads(capsys.readouterr().out)["mutation_proven"] == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [] if proven else [[5]]}]
+
+
+def test_a_mutation_proves_only_the_lines_it_changes(tmp_path):
+    (tmp_path / "install.sh").write_text("keep=1\nchanged=1\nnext=1\n")
+    hunks = {"install.sh": [{2}]}
+    sneaky = [("next only", "install.sh", "changed=1\nnext=1", "changed=1\nexit 3", "t"),
+              ("insertion only", "install.sh", "keep=1\n", "keep=1\nexit 0\n", "t")]
+    for check in sneaky:
+        assert gate.check_mutation_proof(tmp_path, hunks, [check])[0]["unproven_hunks"] == [[2]], check[0]
+    leading_newline = [("leading newline", "install.sh", "\nchanged=1", "\nchanged=2", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{1}]}, leading_newline) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[1]]}]
+    assert gate.check_mutation_proof(tmp_path, hunks, leading_newline) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": []}]
+
+
+def test_unchanged_trailing_lines_of_a_target_are_not_proven(tmp_path):
+    (tmp_path / "install.sh").write_text("a=1\nchanged=1\n")
+    proof = [("first line only", "install.sh", "a=1\nchanged=1\n", "a=2\nchanged=1\n", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{2}]}, proof) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[2]]}]
+
+
+def test_a_mutation_that_also_breaks_an_unchanged_line_proves_nothing(tmp_path):
+    (tmp_path / "install.sh").write_text("changed=1\nnext=1\n")
+    proof = [("spill", "install.sh", "changed=1\nnext=1", "changed=1 \nexit 3", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{1}]}, proof) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[1]]}]
+
+
+def test_a_mutation_on_a_comment_cannot_prove_the_code_beside_it(tmp_path):
+    (tmp_path / "install.sh").write_text("# why\ncode=1\n")
+    proof = [("comment", "install.sh", "# why\n", "", "t")]
+    assert gate.check_mutation_proof(tmp_path, {"install.sh": [{1, 2}]}, proof) == [
+        {"file": "install.sh", "hunks": 1, "unproven_hunks": [[2]]}]
+
+
+def test_hunks_stay_separate_when_git_merges_nearby_hunks(tmp_path):
+    script = shell_repo(tmp_path)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "diff.interHunkContext", "5"], check=True)
+    script.write_text("a=1\nnew_one=1\nb=2\nc=3\nnew_two=2\nd=4\n")
+    assert gate.changed_hunks(tmp_path, "HEAD") == {"install.sh": [{2}, {5}]}
+
+
+def test_shell_mutants_must_still_parse(tmp_path):
+    valid = tmp_path / "ok.sh"
+    valid.write_text("f() { echo hi; }\n")
+    mutation_smoke.reject_invalid_shell("valid", valid)
+    invalid = tmp_path / "bad.sh"
+    invalid.write_text("f() { echo (((; }\n")
+    with pytest.raises(RuntimeError, match="not valid shell"):
+        mutation_smoke.reject_invalid_shell("invalid", invalid)
+    (tmp_path / "notes.py").write_text("(((\n")
+    mutation_smoke.reject_invalid_shell("python", tmp_path / "notes.py")

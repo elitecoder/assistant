@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Append `[N]` workspace-ref suffix to every cmux workspace name, and give any
+"""Append the `[N]` sidebar position to every cmux workspace name, and give any
 workspace that has no color yet a sidebar color.
 
 Polls `cmux list-workspaces --json` every few seconds and:
   1. renames any workspace whose title is not `<base-title> [N]`, where N is the
-     stable `workspace:N` ref, and
+     workspace's 0-based `index` in its window — the number
+     `--workspace <index>` accepts — and
   2. assigns a sidebar color to any workspace whose `custom_color` is null,
      picking a palette color not already in use (shuffle-without-replacement;
      falls back to a ref-derived choice once all 16 are taken).
+
+The suffix used to be the `workspace:N` ref. cmux 0.65 numbers refs from
+1000010000, so the index is the short number that still works in commands. It
+shifts when workspaces move or close; the next poll renames to match.
 
 Idempotent: a workspace whose title already ends with the correct `[N]` is left
 alone, and a workspace that already has ANY color is never recolored — so the
@@ -15,11 +20,10 @@ color the spawn-claude-workspace skill assigns at spawn is preserved, and this
 daemon only fills the gaps (python-spawned probe workspaces, manually-created
 ones). A poll that finds nothing to do is a no-op.
 
-Targets the cmux 0.64.8 CLI: `list-workspaces --json` for reads and
+Targets the cmux 0.65 CLI: `list-workspaces --json` for reads and
 `workspace-action --action {rename,set-color} --workspace <ref>` for writes.
-The list exposes a stable `ref` ("workspace:N") but no UUID, and the actions
-accept that ref directly — so we key everything off the ref and never need a
-UUID.
+Writes target the stable `ref` ("workspace:N"), never the index, so a workspace
+that moves mid-poll can't send a rename to its neighbor.
 
 SAFETY: `workspace-action` silently falls back to the SELECTED workspace when
 `--workspace <ref>` does not resolve (e.g. the workspace closed between the list
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
 import random
 import re
@@ -40,7 +45,7 @@ import time
 from pathlib import Path
 
 CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
-LOG_PATH = Path.home() / ".claude" / "logs" / "cmux-ws-numberer.log"
+LOG_PATH = Path.home() / ".assistant" / "logs" / "cmux-ws-numberer.log"
 SUFFIX_RE = re.compile(r"\s*\[(\d+)\]\s*$")
 # cmux prepends a transient status glyph (spinner / activity dot) to the
 # DISPLAYED title — e.g. "✳ Foo", "⠐ Foo". It is not part of the name we set,
@@ -78,8 +83,9 @@ PALETTE: dict[str, str] = {
 }
 PALETTE_NAMES = list(PALETTE.keys())
 
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
-    filename=str(LOG_PATH),
+    handlers=[logging.handlers.RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=2)],
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
@@ -90,7 +96,7 @@ CMUX_ENV = {**os.environ, "CMUX_QUIET": "1"}
 
 
 def list_workspaces() -> list[dict]:
-    """Return [{ref:int, title:str, color:str|None}] for every workspace.
+    """Return [{ref:int, index:int|None, title:str, color:str|None}] for every workspace.
 
     `title` is glyph-stripped; `color` is the reported `custom_color` (hex or
     None) upper-cased for comparison against PALETTE."""
@@ -109,20 +115,22 @@ def list_workspaces() -> list[dict]:
         m = re.match(r"workspace:(\d+)$", w.get("ref", ""))
         if not m:
             continue
+        index = w.get("index")
         title = GLYPH_PREFIX_RE.sub("", w.get("title", "")).rstrip()
         color = w.get("custom_color")
         rows.append({
             "ref": int(m.group(1)),
+            "index": index if isinstance(index, int) else None,
             "title": title,
             "color": color.upper() if isinstance(color, str) else None,
         })
     return rows
 
 
-def desired_title(base: str, ref: int) -> str:
+def desired_title(base: str, number: int) -> str:
     base = GLYPH_PREFIX_RE.sub("", base)
     base = SUFFIX_RE.sub("", base).rstrip()
-    return f"{base} [{ref}]"
+    return f"{base} [{number}]"
 
 
 def pick_color(ref: int, used_hexes: set[str]) -> str:
@@ -163,7 +171,8 @@ def reconcile() -> None:
     for r in rows:
         ref = f"workspace:{r['ref']}"
 
-        target = desired_title(r["title"], r["ref"])
+        # A cmux that reports no index gets colors but no suffix.
+        target = r["title"] if r["index"] is None else desired_title(r["title"], r["index"])
         if r["title"] != target:
             if _run_action("rename", ref, ["--title", target]):
                 log.info("renamed %s: %r -> %r", ref, r["title"], target)

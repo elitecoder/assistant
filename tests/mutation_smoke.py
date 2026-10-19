@@ -56,6 +56,104 @@ CHECKS = (
         "tools_complete = bool(associated) and all(",
         "tests/test_dashboard_overview.py::OverviewTests::test_unknown_second_terminal_blocks_observed_and_reviewed_close_out",
     ),
+    (
+        "ws-numberer is off by default",
+        "install.sh",
+        "WITH_WS_NUMBERER=0\n",
+        "WITH_WS_NUMBERER=1\n",
+        "tests/test_install_tiers.py::test_bare_install_loads_core_not_features",
+    ),
+    (
+        "--with-ws-numberer turns the numberer on",
+        "install.sh",
+        "        --with-ws-numberer) WITH_WS_NUMBERER=1 ;;\n",
+        "        --with-ws-numberer) ;;\n",
+        "tests/test_install_tiers.py::test_with_ws_numberer_loads_numberer_only",
+    ),
+    (
+        "--with-all turns the numberer on",
+        "install.sh",
+        "WITH_CRASH_RESUME=1; WITH_WS_NUMBERER=1 ;;",
+        "WITH_CRASH_RESUME=1 ;;",
+        "tests/test_install_tiers.py::test_with_all_loads_every_opt_in_feature",
+    ),
+    (
+        "help lists --with-ws-numberer",
+        "install.sh",
+        "  --with-ws-numberer   number and color cmux workspaces (cmux-ws-numberer).\n",
+        "",
+        "tests/test_install_optin_prompt.py::test_help_documents_ws_numberer",
+    ),
+    (
+        "help lists the numberer among feature plists",
+        "install.sh",
+        "(--with-ws-numberer); comms +",
+        "comms +",
+        "tests/test_install_optin_prompt.py::test_help_documents_ws_numberer",
+    ),
+    (
+        "--with-ws-numberer is remembered as yes",
+        "install.sh",
+        '        ws-numberer)   echo "$WITH_WS_NUMBERER" ;;\n',
+        "",
+        "tests/test_install_optin_prompt.py::test_ws_numberer_flag_persists_yes_on_apply",
+    ),
+    (
+        "a running numberer is adopted",
+        "install.sh",
+        '        ws-numberer)   echo "com.assistant.cmux-ws-numberer" ;;\n',
+        "",
+        "tests/test_install_optin_prompt.py::test_ws_numberer_adopted_when_already_running",
+    ),
+    (
+        "a running legacy numberer is adopted",
+        "install.sh",
+        '    [[ "$1" == "ws-numberer" ]] && launchctl print "gui/$UID/com.mukuls.cmux-ws-numberer" >/dev/null 2>&1\n',
+        "    return 1\n",
+        "tests/test_install_optin_prompt.py::test_ws_numberer_adopted_when_legacy_label_runs",
+    ),
+    (
+        "the numberer prompt explains the feature",
+        "install.sh",
+        '        ws-numberer)   echo "The workspace numberer adds a [N] suffix to every cmux workspace title and gives each an unused sidebar color. Enable? [y/N] " ;;\n',
+        "",
+        "tests/test_install_optin_prompt.py::test_interactive_apply_offers_ws_numberer",
+    ),
+    (
+        "a remembered numberer answer is read",
+        "install.sh",
+        " 'ws-numberer:WITH_WS_NUMBERER'; do",
+        "; do",
+        "tests/test_install_optin_prompt.py::test_ws_numberer_remembered_yes_loads",
+    ),
+    (
+        "the numberer plist is a feature, not core",
+        "install.sh",
+        '        com.assistant.cmux-ws-numberer.plist)   echo "ws-numberer" ;;\n',
+        "",
+        "tests/test_install_tiers.py::test_bare_install_loads_core_not_features",
+    ),
+    (
+        "the numberer loads only when enabled",
+        "install.sh",
+        "        ws-numberer)   [[ $WITH_WS_NUMBERER -eq 1 ]] ;;\n",
+        "",
+        "tests/test_install_tiers.py::test_with_ws_numberer_loads_numberer_only",
+    ),
+    (
+        "an unenabled numberer says how to enable it",
+        "install.sh",
+        "memory|crash-resume|ws-numberer)",
+        "memory|crash-resume)",
+        "tests/test_install_tiers.py::test_bare_install_loads_core_not_features",
+    ),
+    (
+        "the legacy numberer plist is removed",
+        "install.sh",
+        '    "com.mukuls.cmux-ws-numberer"\n',
+        "",
+        "tests/test_install_optin_prompt.py::test_apply_removes_the_legacy_ws_numberer_plist",
+    ),
 )
 
 
@@ -69,6 +167,14 @@ def copy_sources(destination: Path):
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.is_file():
             shutil.copy2(source, target)
+
+
+def reject_invalid_shell(name: str, target: Path):
+    if target.suffix != ".sh":
+        return
+    syntax = subprocess.run(["bash", "-n", str(target)], capture_output=True, text=True)
+    if syntax.returncode != 0:
+        raise RuntimeError(f"{name}: mutant is not valid shell\n{syntax.stderr}")
 
 
 def run_test(repo: Path, home: Path, selector: str):
@@ -103,6 +209,7 @@ def main():
             if source.count(original) != 1:
                 raise RuntimeError(f"{name}: expected one mutation target")
             target.write_text(source.replace(original, broken, 1))
+            reject_invalid_shell(name, target)
             mutant = run_test(repo, home, selector)
             if mutant.returncode != 1 or "FAILED" not in mutant.stdout:
                 raise RuntimeError(f"{name}: mutant was not rejected\n{mutant.stdout}\n{mutant.stderr}")

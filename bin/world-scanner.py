@@ -257,7 +257,9 @@ def surface_resume_binding(surface_ref, ws_ref):
     return {
         "session_id": str(sid),
         "provider": "droid" if kind in {"factory", "droid"} else "claude",
-        "cwd": binding.get("cwd"),
+        # cmux 0.65 lists a restore_record, which names it working_directory,
+        # before the resume_binding.
+        "cwd": binding.get("cwd") or binding.get("working_directory"),
     }
 
 
