@@ -396,7 +396,9 @@ def resume_binding_for_surface(surface_ref: str, ws_ref: str) -> dict | None:
         doc = json.loads(r.stdout)
     except Exception:
         return None
-    queue = [doc]
+    # Agent hooks keep resume_binding current; cmux 0.65's restore_record, listed
+    # first, is a snapshot from when cmux restored the surface.
+    queue = [doc.get("resume_binding"), doc] if isinstance(doc, dict) else [doc]
     binding = None
     while queue:
         value = queue.pop(0)

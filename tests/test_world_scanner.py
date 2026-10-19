@@ -489,6 +489,29 @@ def test_build_reads_cwd_from_the_cmux_065_restore_record(ws, monkeypatch):
     assert [s["cwd"] for s in world["live_sessions"]] == ["/work/repo"]
 
 
+def test_build_prefers_the_resume_binding_over_a_stale_restore_record(ws, monkeypatch):
+    """Agent hooks keep resume_binding current; restore_record is a snapshot
+    from when cmux restored the surface."""
+    records, _, _, _ = _seed_identity_world(ws, monkeypatch, ("claude",))
+    sid = records[0]["session_id"]
+    original_run = ws.subprocess.run
+
+    def run(args, **kwargs):
+        if args[1:4] != ["surface", "resume", "show"]:
+            return original_run(args, **kwargs)
+        return fake_completed(json.dumps({
+            "restore_record": {"checkpoint_id": "0ld00000-0000-4000-8000-000000000000",
+                               "kind": "claude", "working_directory": "/old/repo"},
+            "resume_binding": {"checkpoint_id": sid, "kind": "claude", "cwd": "/work/repo"},
+        }))
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    ws.build()
+    world = json.loads(ws.OUT_PATH.read_text())
+    assert world["workspaces"][0]["surfaces"][0]["session_id"] == sid
+    assert [s["cwd"] for s in world["live_sessions"]] == ["/work/repo"]
+
+
 @pytest.mark.parametrize("kind", ["claude", "droid"])
 @pytest.mark.parametrize("process_state", ["unrelated", "background", "ambiguous", "mixed"])
 def test_native_binding_requires_verified_provider_process(ws, monkeypatch, kind, process_state):

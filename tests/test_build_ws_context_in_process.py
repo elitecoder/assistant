@@ -425,6 +425,24 @@ class SurfaceHelperTests(unittest.TestCase):
         self.assertEqual(binding["agent"], "droid")
         self.assertEqual(binding["session_id"][:8], "d0d01234")
 
+    def test_resume_binding_beats_a_stale_restore_record(self):
+        fake = mock.Mock(returncode=0, stdout=json.dumps({
+            "restore_record": {"kind": "claude",
+                               "checkpoint_id": "0ld00000-0000-4000-8000-000000000000"},
+            "resume_binding": {"kind": "claude",
+                               "checkpoint_id": "11ve0000-0000-4000-8000-000000000000"},
+        }))
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            binding = self.mod.resume_binding_for_surface(
+                "surface:21", "workspace:9")
+        self.assertEqual(binding["session_id"][:8], "11ve0000")
+
+    def test_resume_binding_none_for_a_non_object_reply(self):
+        fake = mock.Mock(returncode=0, stdout="[]")
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            self.assertIsNone(self.mod.resume_binding_for_surface(
+                "surface:21", "workspace:9"))
+
 
 class FindAgentPaneTests(unittest.TestCase):
     """The multi-pane trap: the agent is NOT always the focused/first pane.

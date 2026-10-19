@@ -357,36 +357,47 @@ def transcript_has_submission(path: str | Path, marker: str) -> bool:
 
     Headless `claude -p` transcripts never count: the proofgate Stop hook runs
     one in this cwd after every warm turn, and it quotes the warm session's
-    prompts back.
+    prompts back. Queued-prompt records carry no entrypoint, and a headless run
+    can write one before any record that does, so a queued prompt counts only
+    once the transcript's first entrypoint shows an interactive session.
 
     The whole file is searched. Claude Code writes several hundred KB of
     records right after each prompt, so a prompt can be far from the end
     within a second of being submitted."""
-    needle = marker.encode()
     try:
         data = Path(path).read_bytes()
     except OSError:
         return False
+    queued = False
+    for rec in _records_containing(data, marker.encode()):
+        text = _prompt_text(rec)
+        if rec.get("entrypoint") == "sdk-cli" or not (text and marker in text):
+            continue
+        if rec.get("type") != "queue-operation":
+            return True
+        queued = True
+    return queued and _first_entrypoint(data) not in (None, "sdk-cli")
+
+
+def _records_containing(data: bytes, needle: bytes):
+    """Each JSON object record in `data` whose line contains `needle`."""
     hit = data.find(needle)
     while hit != -1:
         start = data.rfind(b"\n", 0, hit) + 1
         end = data.find(b"\n", hit)
         end = len(data) if end == -1 else end
-        if _is_submission(data[start:end], marker):
-            return True
+        try:
+            rec = json.loads(data[start:end].decode("utf-8", "replace"))
+        except json.JSONDecodeError:
+            rec = None
+        if isinstance(rec, dict):
+            yield rec
         hit = data.find(needle, end)
-    return False
 
 
-def _is_submission(line: bytes, marker: str) -> bool:
-    try:
-        rec = json.loads(line.decode("utf-8", "replace"))
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(rec, dict) or rec.get("entrypoint") == "sdk-cli":
-        return False
-    text = _prompt_text(rec)
-    return bool(text and marker in text)
+def _first_entrypoint(data: bytes) -> str | None:
+    return next((rec["entrypoint"] for rec in _records_containing(data, b'"entrypoint"')
+                 if isinstance(rec.get("entrypoint"), str)), None)
 
 
 def find_submission(project_dir: Path, marker: str, since: float) -> str | None:
