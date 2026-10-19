@@ -57,6 +57,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and reminders to finish older pending work before starting another task.
 
 ### Fixed
+- Stop the dashboard from crashing on sessions with no working folder. cmux
+  0.65 lists a `restore_record` before the `resume_binding`, so
+  `world-scanner.py` read the folder from a record that names it
+  `working_directory` and saved no folder for those sessions. The renderer then
+  failed on every run. The scanner now reads either name, and the open-sessions
+  list shows a session even when its folder is unknown.
 - Stop two time-of-day test failures. The Observer audit tests failed in the
   last minute of a two-hour window, and five Strategist tests that count calls
   per UTC day failed in the last minutes of the day. Each test now starts its clock at the
