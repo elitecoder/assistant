@@ -88,7 +88,9 @@ from assistant import model_tiers  # noqa: E402
 # instead of going through model_tiers like pulse.py/strategist.py/
 # lesson-extractor.py/narrate-brief.py already do — it broke the moment the
 # operator's alias stopped defaulting to Bedrock).
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
+# Unset: the pane runs `command claude`, a PATH lookup that reaches cmux's claude
+# shim (its wrapper registers the session with cmux) and skips the shell alias.
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN")
 
 
 def _resolve_warm_model_and_backend() -> tuple[str, str, bool]:
@@ -838,7 +840,7 @@ def _warm_launch(agent: str, resolved: tuple[str, str, bool] | None = None) -> s
     prefix = "" if pinned else f"CLAUDE_CODE_USE_BEDROCK={'1' if backend == 'bedrock' else '0'} "
     return (
         f"{prefix}"
-        f"{shlex.quote(CLAUDE_BIN)} --model {shlex.quote(model)} "
+        f"{shlex.quote(CLAUDE_BIN) if CLAUDE_BIN else 'command claude'} --model {shlex.quote(model)} "
         f"--dangerously-skip-permissions "
         f"--add-dir {shlex.quote(str(REPO_ROOT))} --add-dir {shlex.quote(str(HOME / '.assistant'))} "
         f"--add-dir {shlex.quote(str(HOME / '.architect'))} --add-dir /tmp"

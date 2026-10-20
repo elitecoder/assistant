@@ -116,6 +116,22 @@ def test_warm_launch_pinned_model_skips_the_backend_prefix(monkeypatch):
     assert "us.anthropic.claude-sonnet-4-6[1m]" in cmd
 
 
+def test_warm_launch_finds_claude_on_path_so_cmux_wraps_it(monkeypatch):
+    # The pane's login shell must resolve `claude` through PATH (cmux's shim) — a
+    # hardcoded ~/.local/bin/claude skips cmux's wrapper and its session hooks.
+    monkeypatch.setattr(cs, "CLAUDE_BIN", None)
+    cmd = cs._warm_launch(ag.CLAUDE)
+    assert " command claude --model " in f" {cmd}"
+    assert ".local/bin/claude" not in cmd
+
+
+def test_warm_launch_honors_an_explicit_claude_bin(monkeypatch):
+    monkeypatch.setattr(cs, "CLAUDE_BIN", "/opt/agents/claude code")
+    cmd = cs._warm_launch(ag.CLAUDE)
+    assert "'/opt/agents/claude code' --model " in cmd
+    assert "command claude" not in cmd
+
+
 def test_resolve_warm_model_and_backend_respects_env(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     model, backend, pinned = cs._resolve_warm_model_and_backend()
