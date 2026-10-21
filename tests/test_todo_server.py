@@ -874,3 +874,22 @@ def test_slack_focus_spawn_failure_is_recorded(server, slack_home, monkeypatch):
     state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
     assert (state["running"], state["ok"]) == (False, False)
     assert state["error"].startswith("The refresh couldn't start: ")
+
+
+def test_slack_focus_done_rerenders_the_dashboard(server, slack_home, monkeypatch):
+    renders = []
+    monkeypatch.setattr(mod, "rerender_dashboard", lambda: renders.append(1))
+    _request(server.base, "POST", "/slack-focus/done", json.dumps({"fp": "b" * 64}))
+    _request(server.base, "POST", "/slack-focus/undone", json.dumps({"fp": "b" * 64}))
+    assert renders == [1, 1]
+
+
+def test_slack_focus_reap_leaves_a_started_childs_state_alone(server, slack_home):
+    store = slack_home
+    _request(server.base, "POST", "/slack-focus/refresh")
+    store.write_state(server.env.tmp, running=True, pid=_FakeProc.made[0].pid,
+                      started="2026-10-20T10:00:00+00:00", error=None)
+    _FakeProc.made[0].exit = -9
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, False)
+    assert state["error"] == "The refresh stopped before it finished."

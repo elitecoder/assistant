@@ -24,7 +24,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   - The pipeline lives in `src/assistant/slack_focus/`. Collect and triage are
     rules only; the judge is one model call over the surfaced candidates,
     tools off, metered as `caller="slack_focus"`, with verdicts cached by
-    content. If the model fails, the raw rows show.
+    content. If the model fails, the raw rows show. It uses the balanced
+    model tier with one attempt; the focus-board ran your `claude` alias and
+    retried once. `bin/assistant-llm.py` routes it as the `slack_judge`
+    feature.
   - The Slack client refuses any method outside a read allowlist before a
     request leaves the machine, and a test checks no module names a write
     method.
@@ -34,7 +37,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     name, and workspace come from the token. Jira project keys and GitHub
     hosts used to be hard-coded.
   - Files live in `~/.assistant/slack-focus/`.
-  - `bin/assistant-llm.py` accepts `--feature slack_focus`.
+  - Each row stores its thread's latest message, so a check-off keeps its
+    key while a new pull renumbers threads. The key formula matches the
+    focus-board's, so its `done.json` carries over.
+  - A refresh counts as running only while it holds `refresh.lock`, so a
+    crash or a reused process ID can't leave the button stuck.
+  - Any Slack error other than a deleted or private thread or channel stops
+    the refresh with that error; `ratelimited` answers are retried. The
+    focus-board carried on with a partial pull. A refresh stops after 20
+    minutes.
+  - The Slack routes refuse `Origin: null`, which the other routes allow
+    for file:// pages.
+  - Times on the tab show in local time.
+  - Promises made in DMs read "DM" or "group DM" instead of a channel ID.
+  - Jira uses a bearer token unless `email_env` names the env var with your
+    account email; the focus-board always looked for `$JIRA_EMAIL`.
 - A row's text now quotes the other person's latest message, not yours, and
   the short-ack hint ignores your own replies. The focus-board compared
   author names with the label "you", which never matched a real name.

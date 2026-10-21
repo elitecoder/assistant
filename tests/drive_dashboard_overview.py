@@ -598,12 +598,8 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                     assert page.locator("#sf-status").inner_text() == message
                 slack_script["status"] = [{"running": True}, 500]
                 page.evaluate("() => { slackFocusPoll(); }")
-                try:
-                    page.wait_for_function("() => document.getElementById('sf-status').textContent === 'Refreshing: Starting.'",
-                                           timeout=5000)
-                except Exception:
-                    print("DEBUG", page.locator('#sf-status').inner_text(), slack_calls, slack_script)
-                    raise
+                page.wait_for_function(
+                    "() => document.getElementById('sf-status').textContent === 'Refreshing: Starting.'")
                 page.clock.fast_forward(2000)
                 page.wait_for_function("text => document.getElementById('sf-status').textContent === text",
                                        arg="Couldn't check the refresh: the server returned 500")
@@ -626,7 +622,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 slack_script["mark"] = 400
                 page.locator('.sf-do .sf-mark').click()
                 page.wait_for_function("text => document.querySelector('.sf-do .sf-mark').textContent === text",
-                                       arg="Couldn't save. Try again")
+                                       arg="Couldn't save. Try again.")
                 assert not page.locator('.sf-do .sf-mark').is_disabled()
                 slack_script["mark"] = 200
                 page.evaluate("""() => {

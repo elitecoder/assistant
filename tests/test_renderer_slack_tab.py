@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,11 @@ SCRIPT = Path(__file__).resolve().parent.parent / "bin/render-assistant-page.py"
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    return tmp_path
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    yield tmp_path
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.fixture
@@ -84,11 +89,11 @@ def test_board_renders_lanes_escaped_and_safe(mod, home):
     assert "1 to do first" in html
     assert "Answer &lt;Tim&gt;" in html and "<Tim>" not in html
     assert '<span class="sf-tag">@you</span>' in html
-    assert "he asked · #team · Tim Beauchamp · 10-18 09:30" in html
+    assert "he asked · #team · Tim Beauchamp · Oct 18, 09:30" in html
     assert 'class="sf-effort sf-quick">Quick' in html and 'class="sf-effort sf-medium">Medium' in html
     assert "Huge" not in html
     assert 'href="#"' in html and "javascript:" not in html
-    assert "Last pulled Oct 20, 14:03 UTC from the last 7 days. A model wrote the titles" in html
+    assert "Last pulled Oct 20, 14:03 from the last 7 days. A model wrote the titles" in html
     for label in ("Do first", "Promise", "This week", "Optional", "Done by you", "Just read", "Set aside",
                   "Auto-resolved"):
         assert label in html, label
@@ -105,7 +110,7 @@ def test_checked_off_rows_move_to_done_by_you(mod, home):
     assert count == 0
     done = html[html.index('data-context-key="sf-done"'):]
     assert "Answer &lt;Tim&gt;" in done[:done.index("</details>")]
-    assert "checked off 10-20 15:00" in html and 'data-done="false"' in html and ">Undo<" in html
+    assert "checked off Oct 20, 15:00" in html and 'data-done="false"' in html and ">Undo<" in html
 
 
 def test_running_and_failed_states(mod, home):
@@ -119,7 +124,7 @@ def test_running_and_failed_states(mod, home):
     seed(home, board_focus(judge={"ran": False}), state={"running": False, "ok": False, "error": "invalid <auth>"})
     html, _ = mod.render_slack_focus_tab()
     assert "The last refresh didn't finish: invalid &lt;auth&gt;" in html
-    assert "These are the raw rows" in html
+    assert "The model didn't run, so these rows aren't summarized." in html
     seed(home, board_focus(generated="garbage"), state={"running": False, "ok": False})
     html, _ = mod.render_slack_focus_tab()
     assert "at an unknown time" in html and "unknown error" in html
@@ -154,3 +159,15 @@ def test_full_render_adds_the_slack_tab(mod, home):
     assert 'data-tab="slack"' in html and 'data-panel="slack"' in html
     assert 'Slack <span class="tab-count">1</span>' in html
     assert "'slack', 'todos'" in html and "function slackFocusRefresh()" in html
+
+
+def test_times_show_in_local_time(mod, home, monkeypatch):
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    write_config(home, CONFIG)
+    seed(home, board_focus())
+    html, _ = mod.render_slack_focus_tab()
+    assert "Last pulled Oct 20, 07:03 from" in html
+    assert "Tim Beauchamp · Oct 18, 02:30" in html
+    assert mod._slack_local_time("2026-10-20T14:03:00+00:00", "%H:%M") == "07:03"
+    assert mod._slack_local_time("not a time") == "" and mod._slack_local_time(None) == ""

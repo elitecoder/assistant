@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from assistant.slack_focus import store, triage
-from slack_focus_fixtures import CONFIG, FakeSlack, write_config
+from slack_focus_fixtures import CONFIG, NOW, FakeSlack, write_config
 
 BIN = Path(__file__).resolve().parent.parent / "bin"
 
@@ -53,17 +53,20 @@ def model_keep_first(prompt):
 
 def test_full_refresh_writes_every_file(home):
     focus = cli.refresh(home, pull=True, use_judge=True, token="xoxp-t", transport=FakeSlack(),
-                        model=model_keep_first, resolver=offline_resolver(home))
+                        model=model_keep_first, resolver=offline_resolver(home), now=NOW)
     root = store.base_dir(home)
     for name in ("threads.json", "mine.json", "focus.json", "judge-cache.json"):
         assert (root / name).exists(), name
     assert [i["text"] for i in focus["active"]] == ["Answer Aalia"]
+    assert len(store.read_json(root / "threads.json")["threads"]) == 10
+    assert len(focus["judge_dropped"]) > 5
     assert store.read_json(root / "focus.json") == focus
     assert store.read_state(home)["phase"] == "Asking the model which threads need you"
 
 
 def test_triage_only_refresh_reuses_the_last_pull(home):
-    cli.refresh(home, pull=True, use_judge=False, token="t", transport=FakeSlack(), resolver=offline_resolver(home))
+    cli.refresh(home, pull=True, use_judge=False, token="t", transport=FakeSlack(), resolver=offline_resolver(home),
+                now=NOW)
     calls = FakeSlack()
     focus = cli.refresh(home, pull=False, use_judge=False, token="", transport=calls,
                         resolver=offline_resolver(home))

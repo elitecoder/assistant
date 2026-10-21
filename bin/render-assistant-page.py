@@ -2467,12 +2467,22 @@ def _slack_href(url):
     return "#"
 
 
+def _slack_local_time(value, fmt="%b %d, %H:%M"):
+    """A stored UTC time in this machine's local time, or "" if unreadable."""
+    when = parse_iso(value) if isinstance(value, str) else None
+    if when is None:
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone().strftime(fmt)
+
+
 def _slack_focus_row(item, action=None):
     tag = '<span class="sf-tag">@you</span>' if item.get("mention") else ""
     meta = [x for x in (item.get("why"), item.get("channel"), item.get("who"),
-                        (item.get("last") or "")[5:].replace("T", " ")) if x]
-    if action == "undo" and item.get("done_at"):
-        meta.append("checked off " + str(item["done_at"])[5:16].replace("T", " "))
+                        _slack_local_time(item.get("last"))) if x]
+    if action == "undo" and _slack_local_time(item.get("done_at")):
+        meta.append("checked off " + _slack_local_time(item["done_at"]))
     effort = item.get("effort")
     pill = f'<span class="sf-effort sf-{e(effort.lower())}">{e(effort)}</span>' if effort in ("Quick", "Small", "Medium") else ""
     button = ""
@@ -2506,10 +2516,9 @@ def _render_slack_focus_tab_inner():
               f'{" disabled" if running else ""}>{"Refreshing…" if running else "Refresh from Slack"}</button>')
     focus = view["focus"]
     if focus:
-        when = parse_iso(focus.get("generated"))
-        pulled = when.strftime("%b %d, %H:%M UTC") if when else "at an unknown time"
+        pulled = _slack_local_time(focus.get("generated")) or "at an unknown time"
         how = ("A model wrote the titles and set aside noise." if view["judged"]
-               else "These are the raw rows; the model step didn't run.")
+               else "The model didn't run, so these rows aren't summarized.")
         status = f'Last pulled {e(pulled)} from the last {e(str(focus.get("window_days", "?")))} days. {how}'
     else:
         status = "Not checked yet. Select Refresh from Slack to build your list."
@@ -2541,7 +2550,7 @@ def _render_slack_focus_tab_inner():
              [_slack_focus_row(i, "undo") for i in view["done_by_you"]]),
             ("sf-read", "Just read", "Worth knowing. No reply needed.",
              [_slack_focus_row(i) for i in view["read"]]),
-            ("sf-aside", "Set aside", "The model judged these not actionable. Scan them to be sure.",
+            ("sf-aside", "Set aside", "The model found nothing for you to do here. Scan them to be sure.",
              [_slack_focus_row(i) for i in view["set_aside"]]),
             ("sf-resolved", "Auto-resolved", "A linked pull request or ticket closed.",
              [_slack_focus_row(i) for i in view["handled"]]),
@@ -4085,7 +4094,7 @@ async function slackFocusMark(button) {
     await refreshDashboard(true);
   } catch (error) {
     button.disabled = false;
-    button.textContent = "Couldn't save. Try again";
+    button.textContent = "Couldn't save. Try again.";
   }
 }
 

@@ -189,7 +189,7 @@ The Slack tab needs a Slack **user** token, because only user tokens can search 
     "github_repos": ["my-org/my-repo"],
     "github_hosts": ["github.com"],
     "jira": {"enabled": false, "base_url": "https://jira.example.com", "project_keys": ["ABC"],
-             "token_env": "JIRA_API_TOKEN", "email_env": "JIRA_EMAIL"}
+             "token_env": "JIRA_API_TOKEN"}
   }
 }
 ```
@@ -197,15 +197,15 @@ The Slack tab needs a Slack **user** token, because only user tokens can search 
 | Setting | What it does |
 |---|---|
 | `days` | How far back to look, 1–30. Default 7. |
-| `title` | The tab's heading. |
-| `watched_channels` | Channel ID → your label. Every thread there counts, not only the ones that mention you. Mentions and DMs are always checked. |
-| `bot_authors` | Display names whose last word means the thread is a bot post. |
+| `title` | The heading inside the Slack tab. The tab itself is always labeled **Slack**. |
+| `watched_channels` | Channel ID → a label for your own reference. Every thread there counts, not only the ones that mention you. Mentions and DMs are always checked. |
+| `bot_authors` | Display names of bots. A thread whose latest message is from one of them is treated as a bot post. |
 | `skip_channels` | Channel-name fragments to treat as bot noise, such as `deployments`. |
 | `github_repos` | Repos where your merged PRs can retire an ask ("already done"). Uses `gh`. |
 | `github_hosts` | Hosts whose pull request links count, for GitHub Enterprise. Default `github.com`. |
-| `jira` | Optional. With `enabled` and `project_keys`, a thread whose linked tickets are all done is auto-resolved. The token comes from the env var named in `token_env`; with `email_env` set, it uses Jira Cloud basic auth, otherwise a bearer token. `base_url` falls back to `$JIRA_BASE_URL`. |
+| `jira` | Optional. With `enabled` and `project_keys`, a thread whose linked tickets are all done is auto-resolved. The token comes from the env var named in `token_env` (default `JIRA_API_TOKEN`), sent as a bearer token. For Jira Cloud, set `email_env` to the env var that holds your account email, such as `JIRA_EMAIL`, to use basic auth. `base_url` must start with `https://`; it falls back to `$JIRA_BASE_URL`. |
 
-Open the **Slack** tab and select **Refresh from Slack**. The first pull of 7 days takes a minute or two. To refresh from a terminal, run `python3 bin/slack-focus.py` (`--triage` reuses the last pull, `--no-judge` skips the model). Files live in `~/.assistant/slack-focus/`. To route the model step to Droid, run `bin/assistant-llm.py set droid --feature slack_focus`.
+Open the **Slack** tab and select **Refresh from Slack**. A 7-day pull takes about 4 minutes, plus up to a minute for the model step; a refresh stops after 20 minutes. A Slack error, such as a missing scope or a rate limit that doesn't clear, stops the refresh and shows the error on the tab, so the list is never built from a partial pull. To refresh from a terminal, run `python3 bin/slack-focus.py` (`--triage` reuses the last pull, `--no-judge` skips the model). Files live in `~/.assistant/slack-focus/`. To route the model step to Droid, run `bin/assistant-llm.py set droid --feature slack_judge`. Moving from the standalone focus board? Copy its `out/done.json` to `~/.assistant/slack-focus/done.json` to keep your check-offs.
 
 ## Config knobs you own
 

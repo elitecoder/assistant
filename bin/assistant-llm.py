@@ -23,7 +23,7 @@ FEATURES = (
     "strategist",
     "narrator",
     "lessons",
-    "slack_focus",
+    "slack_judge",
 )
 
 

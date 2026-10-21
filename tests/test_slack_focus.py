@@ -431,6 +431,17 @@ def test_judge_applies_lanes_and_caches(slack, cfg):
     assert calls  # a new merged PR invalidates every cached verdict
 
 
+def test_judge_rejudges_a_row_whose_text_changed(slack, cfg):
+    focus, threads = _focus_and_threads(slack, cfg)
+    _, cache = judge.judge(focus, threads, [], None, lambda p: _answer(focus, {0: "Do first"}))
+    changed = json.loads(json.dumps(focus))
+    changed["active"][0]["text"] = "a brand new reply"
+    prompts = []
+    judged, _ = judge.judge(changed, threads, [], cache, lambda p: prompts.append(p) or _answer(changed, {0: "Read"}))
+    assert len(prompts) == 1 and "a brand new reply" in prompts[0]
+    assert judged["judge"]["rejudged"] == 1 and judged["read"][0]["text"] == "title 0"
+
+
 def test_judge_keeps_raw_rows_when_the_model_fails(slack, cfg):
     focus, threads = _focus_and_threads(slack, cfg)
     for answer in ("", "no json here", "[{bad json]", "[]"):
@@ -587,5 +598,7 @@ def test_package_never_names_a_write_method():
 
     src = pathlib.Path(client.__file__).parent
     text = "".join(p.read_text() for p in src.glob("*.py"))
-    for method in ('"chat.', '"reactions.', '"conversations.mark', '"files.', '"pins.'):
-        assert method not in text
+    import re
+
+    assert not re.search(r"""["'](chat|reactions|files|pins|reminders|stars)\.\w+|conversations\.(mark|join|leave)""",
+                         text)

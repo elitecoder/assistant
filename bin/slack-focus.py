@@ -75,7 +75,7 @@ def run(cmd: list[str], *, input_text: str | None = None, timeout: int = 30,
 def call_model(prompt: str) -> str:
     """The judge's one model call. Tools are off, so Slack text can't steer it
     into acting. Returns "" on any failure, which keeps the raw rows."""
-    route = llm_runner.load_route_config(llm_runner.config_path(home=_home()), "slack_focus")
+    route = llm_runner.load_route_config(llm_runner.config_path(home=_home()), "slack_judge")
     provider = llm_runner.select_provider(route, [])
     model = route.droid_model if provider == "droid" else model_tiers.model_for("balanced")
     run_dir = store.base_dir(_home()) / "judge-run"
@@ -107,7 +107,7 @@ def phase(home: Path, text: str) -> None:
 
 def refresh(home: Path, *, pull: bool, use_judge: bool, token: str,
             transport=slack_client.http_transport, model=call_model,
-            resolver: triage.Resolver | None = None) -> dict:
+            resolver: triage.Resolver | None = None, now: float | None = None) -> dict:
     """Run the pipeline and return the board it wrote."""
     root = store.base_dir(home)
     cfg = settings.load(home)
@@ -117,7 +117,7 @@ def refresh(home: Path, *, pull: bool, use_judge: bool, token: str,
         phase(home, "Pulling Slack")
         client = slack_client.Client(token, transport)
         threads_doc, mine = collect.collect(
-            client, cfg, progress=lambda i, n: store.write_state(home, phase=f"Pulling Slack ({i} of {n} threads)"))
+            client, cfg, now=now, progress=lambda i, n: store.write_state(home, phase=f"Pulling Slack ({i} of {n} threads)"))
         store.write_json(root / "threads.json", threads_doc)
         store.write_json(root / "mine.json", mine)
     threads_doc = store.read_json(root / "threads.json")
