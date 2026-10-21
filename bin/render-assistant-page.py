@@ -2457,6 +2457,117 @@ def _render_connections_panel_inner(world):
     return html, n_connected
 
 
+def _slack_href(url):
+    try:
+        parts = urlsplit(url) if isinstance(url, str) else None
+    except ValueError:
+        return "#"
+    if parts and parts.scheme == "https" and parts.hostname and not any(c.isspace() for c in url):
+        return e(url)
+    return "#"
+
+
+def _slack_local_time(value, fmt="%b %d, %H:%M"):
+    """A stored UTC time in this machine's local time, or "" if unreadable."""
+    when = parse_iso(value) if isinstance(value, str) else None
+    if when is None:
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone().strftime(fmt)
+
+
+def _slack_focus_row(item, action=None):
+    tag = '<span class="sf-tag">@you</span>' if item.get("mention") else ""
+    meta = [x for x in (item.get("why"), item.get("channel"), item.get("who"),
+                        _slack_local_time(item.get("last"))) if x]
+    if action == "undo" and _slack_local_time(item.get("done_at")):
+        meta.append("checked off " + _slack_local_time(item["done_at"]))
+    effort = item.get("effort")
+    pill = f'<span class="sf-effort sf-{e(effort.lower())}">{e(effort)}</span>' if effort in ("Quick", "Small", "Medium") else ""
+    button = ""
+    if action:
+        done = action == "done"
+        button = (f'<button class="btn sf-mark" data-fp="{e(item["fp"])}" data-done="{str(done).lower()}" '
+                  f'onclick="slackFocusMark(this)">{"Done" if done else "Undo"}</button>')
+    return (f'<div class="sf-row"><a class="sf-link" href="{_slack_href(item.get("link"))}" target="_blank" '
+            f'rel="noopener noreferrer"><span class="sf-title">{tag}{e(item.get("text") or "")}</span>'
+            f'<span class="sf-meta">{e(" · ".join(meta))}</span></a>{pill}{button}</div>')
+
+
+def render_slack_focus_tab():
+    """The Slack tab: the threads where the next move is yours, ported from the
+    focus board. Reads ~/.assistant/slack-focus/ through slack_focus.board.
+    Every Slack-derived string is escaped. Any failure degrades to one message.
+    Returns (html, n_do_first or None)."""
+    try:
+        return _render_slack_focus_tab_inner()
+    except Exception as exc:  # noqa: BLE001 — the tab must never break the page
+        return (f'<div class="empty">The Slack list is unavailable: {e(str(exc)[:200])}.</div>'), None
+
+
+def _render_slack_focus_tab_inner():
+    from assistant.slack_focus import board  # noqa: PLC0415
+
+    view = board.load(HOME)
+    state = view["state"]
+    running = bool(state.get("running"))
+    button = (f'<button class="btn" id="sf-refresh" onclick="slackFocusRefresh()"'
+              f'{" disabled" if running else ""}>{"Refreshing…" if running else "Refresh from Slack"}</button>')
+    focus = view["focus"]
+    if focus:
+        pulled = _slack_local_time(focus.get("generated")) or "at an unknown time"
+        how = ("A model wrote the titles and set aside noise." if view["judged"]
+               else "The model didn't run, so these rows aren't summarized.")
+        status = f'Last pulled {e(pulled)} from the last {e(str(focus.get("window_days", "?")))} days. {how}'
+    else:
+        status = "Not checked yet. Select Refresh from Slack to build your list."
+    if running:
+        status = f'Refreshing: {e(state.get("phase") or "Starting")}.'
+    error = ""
+    if state.get("ok") is False and not running:
+        error = (f'<p class="sf-error" role="status">The last refresh didn\'t finish: '
+                 f'{e(str(state.get("error") or "unknown error"))}</p>')
+    count = f' <span class="count">{view["do_first"]} to do first</span>' if focus else ""
+    head = (f'<div class="sf-head"><h2>{e(view["title"])}{count}</h2>'
+            f'<div class="sf-controls">{button}<span class="meta" id="sf-status" role="status">{status}</span></div>'
+            f'</div>{error}')
+    if view["problem"]:
+        body = f'<div class="empty sf-setup">{e(view["problem"])} Fix it, then refresh.</div>'
+    elif not view["configured"]:
+        body = ('<div class="empty sf-setup">Set up the Slack list: add a <code>slack_focus</code> block to '
+                '<code>~/.assistant/comms/config.json</code> and export <code>SLACK_USER_TOKEN</code> in '
+                '<code>~/.zprofile</code>. The README lists every setting.</div>')
+    elif not focus:
+        body = '<div class="empty">Nothing pulled from Slack yet.</div>'
+    else:
+        lanes = []
+        for name, cls, hint, items in view["lanes"]:
+            rows = "".join(_slack_focus_row(i, "done") for i in items) \
+                or '<p class="sf-none">Nothing here.</p>'
+            lanes.append(f'<div class="sf-lane sf-{cls}"><h3>{e(name)} <span class="count">{len(items)}</span></h3>'
+                         f'<p class="meta">{e(hint)}</p><div class="sf-list">{rows}</div></div>')
+        extras = (
+            ("sf-done", "Done by you", "Comes back if its thread gets a new reply.",
+             [_slack_focus_row(i, "undo") for i in view["done_by_you"]]),
+            ("sf-read", "Just read", "Worth knowing. No reply needed.",
+             [_slack_focus_row(i) for i in view["read"]]),
+            ("sf-aside", "Set aside", "The model found nothing for you to do here. Scan them to be sure.",
+             [_slack_focus_row(i) for i in view["set_aside"]]),
+            ("sf-resolved", "Auto-resolved", "A linked pull request or ticket closed.",
+             [_slack_focus_row(i) for i in view["handled"]]),
+        )
+        details = "".join(
+            f'<details class="sf-more" data-context-key="{key}"><summary>{e(label)} '
+            f'<span class="count">{len(rows)}</span></summary><p class="meta">{e(hint)}</p>'
+            f'<div class="sf-list">{"".join(rows) or "<p class=sf-none>Nothing here.</p>"}</div></details>'
+            for key, label, hint, rows in extras)
+        body = "".join(lanes) + details
+    html = (f'<div class="section" id="slack-focus" data-running="{str(running).lower()}">'
+            f'{head}{body}</div>')
+    return html, (view["do_first"] if focus else None)
+
+
 def render():
     if not WORLD_PATH.exists():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
@@ -2471,6 +2582,8 @@ def render():
     fleet_html, fleet_n = render_fleet_tab()
     brief_html, brief_n = render_brief_tab()
     connections_html, connected_n = render_connections_panel(world)
+    slack_html, slack_n = render_slack_focus_tab()
+    slack_count = f' <span class="tab-count">{slack_n}</span>' if slack_n is not None else ""
     pulse_health_html = render_pulse_health()
     pulse_alert_html = render_pulse_alert()
     counts = world.get("counts", {})
@@ -3602,6 +3715,37 @@ h1 {
 button:focus-visible, summary:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 @media (max-width: 1100px) { .attention-board { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 620px) { .attention-board { grid-template-columns: 1fr; } .attention-intro { flex-direction: column; gap: 12px; } .attention-filter { align-self: stretch; } .attention-filter input { width: 100%; } .attention-hint { min-height: auto; } }
+
+/* ─── Slack tab ─── */
+.sf-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
+.sf-head h2 { margin: 0; border: 0; padding: 0; }
+.sf-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.sf-controls .meta { margin: 0; }
+.sf-error { color: var(--amber); margin: 0 0 16px; }
+.sf-lane { margin-bottom: 24px; }
+.sf-lane h3 { font: 600 13px/1.4 var(--sans); margin: 0 0 2px; color: var(--text); }
+.sf-lane h3 .count, .sf-more summary .count { color: var(--muted); font: 500 11px/1 var(--mono); margin-left: 6px; }
+.sf-lane .meta, .sf-more .meta { margin: 0 0 8px; }
+.sf-list { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.sf-do .sf-list { border-left: 3px solid var(--green); }
+.sf-promise .sf-list { border-left: 3px solid var(--pink); }
+.sf-week .sf-list { border-left: 3px solid var(--blue); }
+.sf-optional .sf-list { border-left: 3px solid var(--purple); }
+.sf-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.sf-row:first-child { border-top: 0; }
+.sf-row:hover { background: var(--hover); }
+.sf-link { flex: 1; min-width: 0; color: inherit; text-decoration: none; display: flex; flex-direction: column; gap: 2px; }
+.sf-title { color: var(--text); overflow-wrap: anywhere; }
+.sf-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.sf-tag { font: 600 10px/1 var(--mono); color: var(--green); background: var(--green-bg); border-radius: 4px; padding: 2px 5px; margin-right: 6px; }
+.sf-effort { flex: none; font: 500 10px/1 var(--mono); border-radius: 4px; padding: 3px 6px; color: var(--blue); background: var(--blue-bg); }
+.sf-medium { color: var(--amber); background: var(--amber-bg); }
+.sf-mark { flex: none; }
+.sf-none { color: var(--muted); margin: 0; padding: 10px 14px; }
+.sf-more { margin-bottom: 14px; }
+.sf-more summary { cursor: pointer; color: var(--text-2); font: 600 13px/1.4 var(--sans); padding: 4px 0; }
+.sf-more[data-context-key="sf-done"] .sf-title { text-decoration: line-through; opacity: 0.7; }
+@media (max-width: 620px) { .sf-row { flex-wrap: wrap; } .sf-link { flex-basis: 100%; } }
 """
 
     js = r"""
@@ -3846,6 +3990,7 @@ function showTab(name) {
       }
       document.getElementById('refresh-error').textContent = '';
       updateFreshness();
+      if (document.querySelector('#slack-focus[data-running="true"]')) slackFocusPoll();
     } catch (error) {
       document.getElementById('refresh-error').textContent = 'Refresh failed: ' + error.message;
     } finally {
@@ -3873,10 +4018,88 @@ function pingBriefSeen() {
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#overview').replace('#', '');
-  showTab(['overview', 'brief', 'decisions', 'workspaces', 'fleet', 'connections', 'todos'].includes(initial) ? initial : 'overview');
+  showTab(['overview', 'brief', 'decisions', 'workspaces', 'fleet', 'connections', 'slack', 'todos'].includes(initial) ? initial : 'overview');
   updateFreshness();
   setInterval(refreshDashboard, 15000);
+  if (document.querySelector('#slack-focus[data-running="true"]')) slackFocusPoll();
 });
+// Slack tab: the Refresh button starts a background pull through the
+// todo-server, then polls its state every 2 seconds and reloads the page
+// content when the pull ends. Done and Undo save a check-off the same way.
+let slackFocusPolling = false;
+function slackFocusPost(path, body) {
+  return fetch(path, body === undefined ? {method: 'POST'}
+    : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+}
+function slackFocusShow(state, message) {
+  const button = document.getElementById('sf-refresh');
+  const status = document.getElementById('sf-status');
+  if (!button || !status) return;
+  button.disabled = Boolean(state.running);
+  button.textContent = state.running ? 'Refreshing…' : 'Refresh from Slack';
+  if (message) status.textContent = message;
+  else if (state.running) status.textContent = 'Refreshing: ' + (state.phase || 'Starting') + '.';
+}
+async function slackFocusPoll() {
+  if (slackFocusPolling) return;
+  slackFocusPolling = true;
+  try {
+    let state;
+    for (;;) {
+      const response = await slackFocusPost('/slack-focus/status');
+      if (!response.ok) throw new Error('the server returned ' + response.status);
+      state = await response.json();
+      if (!state.running) break;
+      slackFocusShow(state);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    slackFocusShow(state, 'Loading the new list…');
+    // The run records that it finished, then re-renders the page. Reload
+    // briefly until the page is at least as new as the finish.
+    const finished = Date.parse(state.finished || '') / 1000;
+    for (let tries = 0; tries < 15; tries++) {
+      await refreshDashboard(true);
+      const rendered = Number(document.getElementById('dashboard-content').dataset.renderedAt);
+      if (!(rendered < finished)) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    const status = document.getElementById('sf-status');
+    if (status.textContent === 'Loading the new list…') {
+      status.textContent = state.ok === false
+        ? "The refresh didn't finish: " + (state.error || 'unknown error')
+        : 'Refresh finished. The list updates within a minute.';
+    }
+  } catch (error) {
+    slackFocusShow({running: false}, "Couldn't check the refresh: " + error.message);
+  } finally {
+    slackFocusPolling = false;
+  }
+}
+async function slackFocusRefresh() {
+  slackFocusShow({running: true, phase: 'Starting'});
+  try {
+    const response = await slackFocusPost('/slack-focus/refresh');
+    if (!response.ok) throw new Error('the server returned ' + response.status);
+  } catch (error) {
+    slackFocusShow({running: false}, "Couldn't start the refresh: " + error.message);
+    return;
+  }
+  await slackFocusPoll();
+}
+async function slackFocusMark(button) {
+  button.disabled = true;
+  try {
+    const path = button.dataset.done === 'true' ? '/slack-focus/done' : '/slack-focus/undone';
+    const response = await slackFocusPost(path, {fp: button.dataset.fp});
+    if (!response.ok) throw new Error(await response.text());
+    button.textContent = 'Saved';
+    await refreshDashboard(true);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Couldn't save. Try again.";
+  }
+}
+
 async function openWs(btn) {
   const requests = btn.closest('#assistant-requests');
   if (requests) {
@@ -4123,6 +4346,9 @@ document.addEventListener('click', handleTodoToolsClick);
   <button class="tab" data-tab="connections" onclick="showTab('connections')">
     Connected apps <span class="tab-count">{connected_n}</span>
   </button>
+  <button class="tab" data-tab="slack" onclick="showTab('slack')">
+    Slack{slack_count}
+  </button>
   <button class="tab" data-tab="todos" onclick="showTab('todos')">
     Tasks <span class="tab-count">{p0_p1}</span>
   </button>
@@ -4150,6 +4376,10 @@ document.addEventListener('click', handleTodoToolsClick);
 
 <div class="tab-panel" data-panel="connections">
 {connections_html}
+</div>
+
+<div class="tab-panel" data-panel="slack">
+{slack_html}
 </div>
 
 <div class="tab-panel" data-panel="todos">

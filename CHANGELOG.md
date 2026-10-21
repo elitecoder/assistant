@@ -9,6 +9,74 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Add a **Slack** tab to the dashboard, ported from the standalone focus-board
+  tool. It lists the Slack threads where the next move is yours, in Do first,
+  Promise, This week, and Optional, plus Done by you, Just read, Set aside, and
+  Auto-resolved.
+  - **Refresh from Slack** POSTs `/slack-focus/refresh` to `todo-server.py`,
+    which starts `bin/slack-focus.py` in the background under zsh with
+    `~/.zprofile` sourced, so `$SLACK_USER_TOKEN` and `gh` resolve under
+    launchd. The page polls `/slack-focus/status` and shows each step. A second
+    click while a refresh runs starts nothing.
+  - **Done** and **Undo** POST `/slack-focus/done` and `/slack-focus/undone`.
+    A checked-off row comes back when its thread gets a new reply or edit.
+  - The pipeline lives in `src/assistant/slack_focus/`. Collect and triage are
+    rules only; the judge is one model call over the surfaced candidates,
+    tools off, metered as `caller="slack_focus"`, with verdicts cached by
+    content. If the model fails, the raw rows show. It uses the balanced
+    model tier with one attempt; the focus-board ran your `claude` alias and
+    retried once. `bin/assistant-llm.py` routes it as the `slack_judge`
+    feature.
+  - The Slack client refuses any method outside a read allowlist before a
+    request leaves the machine, and a test checks that no module names a
+    common Slack write method.
+  - Everything about the user is in the new `slack_focus` block of
+    `~/.assistant/comms/config.json`: watched channels, bot names, skipped
+    channel names, GitHub repos and hosts, and Jira projects. The Slack ID,
+    name, and workspace come from the token. Jira project keys and GitHub
+    hosts used to be hard-coded.
+  - Files live in `~/.assistant/slack-focus/`.
+  - Each row stores its thread's latest message, so a check-off keeps its
+    key while a new pull renumbers threads. The key formula matches the
+    focus-board's, so its `done.json` carries over.
+  - A refresh counts as running only while it holds `refresh.lock`, so a
+    crash or a reused process ID can't leave the button stuck.
+  - Any Slack error other than a deleted or private thread or channel stops
+    the refresh with that error; `ratelimited` answers are retried. The
+    focus-board carried on with a partial pull. A refresh stops after 20
+    minutes.
+  - The Slack routes refuse `Origin: null`, which the other routes allow
+    for file:// pages.
+  - Times on the tab show in local time.
+  - Promises made in DMs read "DM" or "group DM" instead of a channel ID.
+  - Jira uses a bearer token unless `email_env` names the env var with your
+    account email; the focus-board always looked for `$JIRA_EMAIL`.
+  - A new reply in a DM thread that started before the window now shows up.
+    The focus-board dropped it.
+  - A message counts as answered only when you posted after it. The
+    focus-board also counted a message of yours from up to 60 seconds
+    before, which hid quick DM asks.
+  - A direct @-mention of you outranks an earlier group mention in the same
+    thread.
+  - DMs and threads are read to the end. The focus-board stopped at 200
+    messages.
+  - A model answer of `[]` sets every new row aside as noise. The
+    focus-board treated it as a failure and showed raw rows.
+  - A promise the model moves to Do first ranks below direct asks instead
+    of above every row.
+  - A refresh error never includes the Slack token.
+  - If a refresh launch hangs before it starts, the next **Refresh from
+    Slack** stops it and starts a new one.
+  - The unused low-signal hints are gone.
+  - A `config.json` that isn't valid JSON shows that on the tab, with the
+    line, instead of the setup steps next to the last list.
+  - "Last pulled" shows when Slack was last pulled, also after a
+    `--triage` run.
+- A row's text now quotes the other person's latest message, not yours. The
+  focus-board compared author names with the label "you", which never
+  matched a real name.
+
 ### Changed
 - Read agent sessions from cmux first, with mukul-memory's registry as a
   fallback. cmux 0.64.25 records agent sessions itself, and

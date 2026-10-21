@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import threading
 import urllib.error
@@ -763,3 +764,155 @@ def test_read_body_reads_n_bytes():
 def test_read_body_zero_length():
     h = _make_handler("0", b"hello")
     assert h._read_body() == ""
+
+
+# ─── Slack tab routes ─────────────────────────────────────────────────────────
+
+
+class _FakeProc:
+    def __init__(self, cmd, **kwargs):
+        self.cmd, self.kwargs, self.pid, self.exit = cmd, kwargs, 424242, None
+        _FakeProc.made.append(self)
+
+    def poll(self):
+        return self.exit
+
+    def wait(self):
+        self.waited = True
+        return self.exit
+
+
+@pytest.fixture
+def slack_home(env, monkeypatch):
+    _FakeProc.made = []
+    monkeypatch.setattr(mod, "HOME", env.tmp)
+    monkeypatch.setattr(mod, "_slack_focus_proc", None)
+    monkeypatch.setattr(mod.subprocess, "Popen", _FakeProc)
+    from assistant.slack_focus import store
+    return store
+
+
+def test_slack_focus_refresh_starts_once_and_reports_state(server, slack_home):
+    store = slack_home
+    assert _request(server.base, "POST", "/slack-focus/status") == (200, "{}")
+    status, body = _request(server.base, "POST", "/slack-focus/refresh")
+    assert (status, json.loads(body)) == (200, {"started": True})
+    proc = _FakeProc.made[0]
+    assert proc.cmd[:2] == ["/bin/zsh", "-c"] and ". \"$HOME/.zprofile\"" in proc.cmd[2]
+    assert proc.cmd[3:] == [sys.executable, str(mod.SLACK_FOCUS_SCRIPT)]
+    assert proc.kwargs["start_new_session"] is True
+    assert (store.base_dir(server.env.tmp) / "refresh.log").exists()
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["phase"], state["pid"]) == (True, "Starting", os.getpid())
+    # A second click while it runs starts nothing.
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": False}
+    assert len(_FakeProc.made) == 1
+
+
+@pytest.mark.parametrize("already_gone", [False, True])
+def test_slack_focus_refresh_replaces_a_launch_that_never_took_the_lock(server, slack_home, monkeypatch,
+                                                                        already_gone):
+    store = slack_home
+    killed = []
+
+    def killpg(pgid, sig):
+        killed.append((pgid, sig))
+        if already_gone:
+            raise ProcessLookupError(pgid)
+
+    monkeypatch.setattr(mod.os, "killpg", killpg)
+    _request(server.base, "POST", "/slack-focus/refresh")
+    store.write_state(server.env.tmp, started="2026-10-20T10:00:00+00:00")
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": True}
+    assert killed == [(424242, mod.signal.SIGKILL)] and _FakeProc.made[0].waited
+    assert len(_FakeProc.made) == 2 and mod._slack_focus_proc is _FakeProc.made[1]
+
+
+def test_slack_focus_refresh_that_never_starts_is_reported(server, slack_home):
+    _request(server.base, "POST", "/slack-focus/refresh")
+    _FakeProc.made[0].exit = 1
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, False)
+    assert "didn't start" in state["error"]
+
+
+def test_slack_focus_finished_refresh_keeps_its_own_state(server, slack_home):
+    store = slack_home
+    _request(server.base, "POST", "/slack-focus/refresh")
+    store.write_state(server.env.tmp, running=False, ok=True, pid=_FakeProc.made[0].pid)
+    _FakeProc.made[0].exit = 0
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, True)
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": True}
+
+
+def test_slack_focus_refresh_skips_when_a_run_holds_the_lock(server, slack_home):
+    store = slack_home
+    with store.locked(store.base_dir(server.env.tmp) / "refresh.lock"):
+        assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": False}
+    assert _FakeProc.made == []
+
+
+def test_slack_focus_mutations_refuse_foreign_origins(server, slack_home):
+    for path in ("/slack-focus/refresh", "/slack-focus/done", "/slack-focus/undone"):
+        status, _ = _request(server.base, "POST", path, headers={"Origin": "https://evil.example"})
+        assert status == 403, path
+    assert _FakeProc.made == []
+
+
+def test_slack_focus_done_and_undone(server, slack_home):
+    store = slack_home
+    fp = "a" * 64
+    status, body = _request(server.base, "POST", "/slack-focus/done", json.dumps({"fp": fp}))
+    assert (status, body) == (200, "marked done")
+    assert list(store.read_json(store.base_dir(server.env.tmp) / "done.json")) == [fp]
+    status, body = _request(server.base, "POST", "/slack-focus/undone", json.dumps({"fp": fp}))
+    assert (status, body) == (200, "marked not done")
+    assert store.read_json(store.base_dir(server.env.tmp) / "done.json") == {}
+    assert _request(server.base, "POST", "/slack-focus/done", json.dumps({"fp": "../x"}))[0] == 400
+    assert _request(server.base, "POST", "/slack-focus/done", "{bad")[0] == 400
+
+
+def test_slack_focus_store_import_adds_src_to_the_path(slack_home, monkeypatch):
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != str(mod.SRC_DIR)])
+    assert mod._slack_focus_store() is slack_home
+    assert sys.path[0] == str(mod.SRC_DIR)
+
+
+def test_slack_focus_routes_refuse_a_null_origin(server, slack_home):
+    for path in ("/slack-focus/status", "/slack-focus/refresh", "/slack-focus/done"):
+        status, _ = _request(server.base, "POST", path, json.dumps({"fp": "a" * 64}), headers={"Origin": "null"})
+        assert status == 403, path
+    status, _ = _request(server.base, "POST", "/slack-focus/status", headers={"Origin": f"http://127.0.0.1:{mod.PORT}"})
+    assert status == 200
+    assert _FakeProc.made == []
+
+
+def test_slack_focus_spawn_failure_is_recorded(server, slack_home, monkeypatch):
+    def no_zsh(*args, **kwargs):
+        raise FileNotFoundError("/bin/zsh")
+
+    monkeypatch.setattr(mod.subprocess, "Popen", no_zsh)
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": False}
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, False)
+    assert state["error"].startswith("The refresh couldn't start: ")
+
+
+def test_slack_focus_done_rerenders_the_dashboard(server, slack_home, monkeypatch):
+    renders = []
+    monkeypatch.setattr(mod, "rerender_dashboard", lambda: renders.append(1))
+    _request(server.base, "POST", "/slack-focus/done", json.dumps({"fp": "b" * 64}))
+    _request(server.base, "POST", "/slack-focus/undone", json.dumps({"fp": "b" * 64}))
+    assert renders == [1, 1]
+
+
+def test_slack_focus_reap_leaves_a_started_childs_state_alone(server, slack_home):
+    store = slack_home
+    _request(server.base, "POST", "/slack-focus/refresh")
+    store.write_state(server.env.tmp, running=True, pid=_FakeProc.made[0].pid,
+                      started="2026-10-20T10:00:00+00:00", error=None)
+    _FakeProc.made[0].exit = -9
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, False)
+    assert state["error"] == "The refresh stopped before it finished."
