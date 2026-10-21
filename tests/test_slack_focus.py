@@ -112,6 +112,8 @@ def test_client_identity_and_helpers(slack):
     assert slack.mentions_me("hey <@U1>") == "direct"
     assert slack.mentions_me("<!subteam^S1|@leads> look") == "group"
     assert slack.mentions_me("<!subteam^S2|@other> look") is None
+    assert slack.mentions_me("<!subteam^S1|@leads> again") == "group"
+    assert [p["usergroup"] for m, p in slack._transport.calls if m == "usergroups.users.list"] == ["S1", "S2"]
     assert slack.clean("<@U2> see <https://x.test|the doc> :tada:  now") == "@Aalia Habib see the doc now"
     assert slack.clean("<!subteam^S1|@leads> hi") == "@group hi"
     assert slack.permalink("C1", "1.000002", "1.000002") == "https://acme.slack.com/archives/C1/p1000002"
