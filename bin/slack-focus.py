@@ -61,15 +61,22 @@ def run(cmd: list[str], *, input_text: str | None = None, timeout: int = 30,
         out, err = proc.communicate(input=input_text, timeout=timeout)
         return proc.returncode, out or "", err or ""
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            proc.kill()
+        _kill_group(proc)
         try:
             out, err = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             out, err = "", ""
         return 124, out or "", (err or "") + f"\ntimeout after {timeout}s"
+    except BaseException:
+        _kill_group(proc)
+        raise
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        proc.kill()
 
 
 def call_model(prompt: str) -> str:
@@ -137,8 +144,13 @@ def refresh(home: Path, *, pull: bool, use_judge: bool, token: str,
     return focus
 
 
+class RefreshTooSlow(BaseException):
+    """Raised by the alarm. A BaseException, so the retry and error handlers
+    that catch OSError (TimeoutError included) along the way can't swallow it."""
+
+
 def _too_slow(signum, frame):
-    raise TimeoutError(f"The refresh took longer than {REFRESH_TIMEOUT_SEC // 60} minutes.")
+    raise RefreshTooSlow(f"The refresh took longer than {REFRESH_TIMEOUT_SEC // 60} minutes.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     home = _home()
     root = store.base_dir(home)
-    with store.locked(root / "refresh.lock", blocking=False) as got:
+    with store.locked(root / "refresh.lock", blocking=False, wait=1.0) as got:
         if not got:
             print("A refresh is already running.", file=sys.stderr)
             return 0
@@ -162,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             focus = refresh(home, pull=not args.triage, use_judge=not args.no_judge,
                             token=os.environ.get("SLACK_USER_TOKEN", ""))
             print(json.dumps(focus["counts"]))
-        except Exception as e:  # noqa: BLE001 — every run must record how it ended
+        except (Exception, RefreshTooSlow) as e:  # noqa: BLE001 — every run must record how it ended
             error = str(e)[:300] or type(e).__name__
             print(f"refresh failed: {error}", file=sys.stderr)
         finally:

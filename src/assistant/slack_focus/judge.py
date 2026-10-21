@@ -86,7 +86,8 @@ def usable_cache(saved, evidence: list[str], rubric_sig: str) -> dict:
     if not isinstance(saved, dict) or set(saved.get("done_evidence", [])) != set(evidence) \
             or saved.get("rubric") != rubric_sig or not isinstance(saved.get("verdicts"), dict):
         return {}
-    return {k: v for k, v in saved["verdicts"].items() if v == "DROP" or isinstance(v, dict)}
+    return {k: v for k, v in saved["verdicts"].items()
+            if v == "DROP" or (isinstance(v, dict) and isinstance(v.get("title"), str) and v["title"].strip())}
 
 
 def parse(raw: str) -> dict[int, dict] | None:

@@ -52,15 +52,21 @@ def write_json(path: Path, data) -> None:
 
 
 @contextmanager
-def locked(path: Path, blocking: bool = True):
-    """An exclusive flock on `path`. Yields False when non-blocking and taken."""
+def locked(path: Path, blocking: bool = True, wait: float = 0.0):
+    """An exclusive flock on `path`. Non-blocking, it retries for `wait`
+    seconds, then yields False if the lock is still taken."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + wait
     with open(path, "a+") as f:
-        try:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-        except BlockingIOError:
-            yield False
-            return
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    yield False
+                    return
+                time.sleep(0.05)
         try:
             yield True
         finally:

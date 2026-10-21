@@ -465,8 +465,9 @@ def test_judge_effort_and_missing_fields(slack, cfg):
 
 def test_usable_cache_rejects_mismatches():
     sig = "s"
-    good = {"done_evidence": ["a"], "rubric": sig, "verdicts": {"x": "DROP", "y": {"lane": "Read"}, "z": 3}}
-    assert judge.usable_cache(good, ["a"], sig) == {"x": "DROP", "y": {"lane": "Read"}}
+    good = {"done_evidence": ["a"], "rubric": sig, "verdicts": {
+        "x": "DROP", "y": {"lane": "Read", "title": "t"}, "z": 3, "n": {"title": 5}, "b": {"title": " "}}}
+    assert judge.usable_cache(good, ["a"], sig) == {"x": "DROP", "y": {"lane": "Read", "title": "t"}}
     assert judge.usable_cache(good, ["b"], sig) == {}
     assert judge.usable_cache(good, ["a"], "other") == {}
     assert judge.usable_cache(good | {"verdicts": []}, ["a"], sig) == {}
@@ -533,8 +534,30 @@ def test_lock_is_exclusive(tmp_path):
         assert first
         with store.locked(path, blocking=False) as second:
             assert second is False
+        with store.locked(path, blocking=False, wait=0.2) as waited:
+            assert waited is False
     with store.locked(path, blocking=False) as again:
         assert again
+
+
+def test_lock_wait_takes_a_lock_released_meanwhile(tmp_path):
+    import threading
+
+    path = tmp_path / "x.lock"
+    holding, release = threading.Event(), threading.Event()
+
+    def hold():
+        with store.locked(path):
+            holding.set()
+            release.wait(5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    holding.wait(5)
+    threading.Timer(0.2, release.set).start()
+    with store.locked(path, blocking=False, wait=3) as got:
+        assert got
+    t.join(5)
 
 
 def test_state_is_live_only_while_a_run_holds_the_lock(tmp_path):

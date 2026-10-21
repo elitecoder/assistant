@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -202,7 +203,37 @@ def test_script_entry_point_reports_missing_setup(tmp_path):
 
 
 def test_main_stops_a_refresh_that_runs_too_long(home, monkeypatch):
+    def hangs_inside_a_retry_loop(h, **kw):
+        for _ in range(5):
+            try:
+                time.sleep(5)
+            except OSError:  # the Slack transport retries TimeoutError like this
+                continue
+        return {"counts": {}}
+
     monkeypatch.setattr(cli, "REFRESH_TIMEOUT_SEC", 1)
-    monkeypatch.setattr(cli, "refresh", lambda h, **kw: __import__("time").sleep(5))
+    monkeypatch.setattr(cli, "refresh", hangs_inside_a_retry_loop)
+    started = time.time()
     assert cli.main([]) == 1
+    assert time.time() - started < 4
     assert store.read_state(home)["error"] == "The refresh took longer than 0 minutes."
+
+
+def test_run_kills_the_model_when_the_refresh_times_out(home, monkeypatch):
+    killed = []
+
+    class Hung:
+        pid = 4242
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def communicate(self, input=None, timeout=None):
+            raise cli.RefreshTooSlow("too slow")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", Hung)
+    monkeypatch.setattr(cli.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(cli.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+    with pytest.raises(cli.RefreshTooSlow):
+        cli.run(["claude"], timeout=60)
+    assert killed == [(4242, cli.signal.SIGKILL)]
