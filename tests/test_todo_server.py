@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import threading
 import urllib.error
@@ -763,3 +764,87 @@ def test_read_body_reads_n_bytes():
 def test_read_body_zero_length():
     h = _make_handler("0", b"hello")
     assert h._read_body() == ""
+
+
+# ─── Slack tab routes ─────────────────────────────────────────────────────────
+
+
+class _FakeProc:
+    def __init__(self, cmd, **kwargs):
+        self.cmd, self.kwargs, self.pid, self.exit = cmd, kwargs, 424242, None
+        _FakeProc.made.append(self)
+
+    def poll(self):
+        return self.exit
+
+
+@pytest.fixture
+def slack_home(env, monkeypatch):
+    _FakeProc.made = []
+    monkeypatch.setattr(mod, "HOME", env.tmp)
+    monkeypatch.setattr(mod, "_slack_focus_proc", None)
+    monkeypatch.setattr(mod.subprocess, "Popen", _FakeProc)
+    from assistant.slack_focus import store
+    return store
+
+
+def test_slack_focus_refresh_starts_once_and_reports_state(server, slack_home):
+    store = slack_home
+    assert _request(server.base, "POST", "/slack-focus/status") == (200, "{}")
+    status, body = _request(server.base, "POST", "/slack-focus/refresh")
+    assert (status, json.loads(body)) == (200, {"started": True})
+    proc = _FakeProc.made[0]
+    assert proc.cmd[:2] == ["/bin/zsh", "-c"] and ". \"$HOME/.zprofile\"" in proc.cmd[2]
+    assert proc.cmd[3:] == [sys.executable, str(mod.SLACK_FOCUS_SCRIPT)]
+    assert proc.kwargs["start_new_session"] is True
+    assert (store.base_dir(server.env.tmp) / "refresh.log").exists()
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["phase"], state["pid"]) == (True, "Starting", os.getpid())
+    # A second click while it runs starts nothing.
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": False}
+    assert len(_FakeProc.made) == 1
+
+
+def test_slack_focus_refresh_that_never_starts_is_reported(server, slack_home):
+    _request(server.base, "POST", "/slack-focus/refresh")
+    _FakeProc.made[0].exit = 1
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, False)
+    assert "didn't start" in state["error"]
+
+
+def test_slack_focus_finished_refresh_keeps_its_own_state(server, slack_home):
+    store = slack_home
+    _request(server.base, "POST", "/slack-focus/refresh")
+    store.write_state(server.env.tmp, running=False, ok=True, pid=_FakeProc.made[0].pid)
+    _FakeProc.made[0].exit = 0
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, True)
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": True}
+
+
+def test_slack_focus_refresh_skips_when_a_run_holds_the_lock(server, slack_home):
+    store = slack_home
+    with store.locked(store.base_dir(server.env.tmp) / "refresh.lock"):
+        assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": False}
+    assert _FakeProc.made == []
+
+
+def test_slack_focus_mutations_refuse_foreign_origins(server, slack_home):
+    for path in ("/slack-focus/refresh", "/slack-focus/done", "/slack-focus/undone"):
+        status, _ = _request(server.base, "POST", path, headers={"Origin": "https://evil.example"})
+        assert status == 403, path
+    assert _FakeProc.made == []
+
+
+def test_slack_focus_done_and_undone(server, slack_home):
+    store = slack_home
+    fp = "a" * 64
+    status, body = _request(server.base, "POST", "/slack-focus/done", json.dumps({"fp": fp}))
+    assert (status, body) == (200, "marked done")
+    assert list(store.read_json(store.base_dir(server.env.tmp) / "done.json")) == [fp]
+    status, body = _request(server.base, "POST", "/slack-focus/undone", json.dumps({"fp": fp}))
+    assert (status, body) == (200, "marked not done")
+    assert store.read_json(store.base_dir(server.env.tmp) / "done.json") == {}
+    assert _request(server.base, "POST", "/slack-focus/done", json.dumps({"fp": "../x"}))[0] == 400
+    assert _request(server.base, "POST", "/slack-focus/done", "{bad")[0] == 400

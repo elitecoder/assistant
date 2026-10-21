@@ -105,6 +105,8 @@ The whole thing optimizes one number downward, computed mechanically each day: *
 
 **🧠 Turn corrections into rules, then into memory.** `lesson-extractor.py` scans your recent Claude Code transcripts and the action ledger for corrections, confirmations, and recurring questions, and distills lesson candidates into a proposals queue for you to review. Confirm one and it's routed to the right store (one of `claude` / `assistant` / `ffp` / `archffp` / `assistant-repo`), then mirrored into the Obsidian vault and synced to the cross-machine memory repo that feeds Mem0 semantic memory. Nothing is added without your confirmation.
 
+**📌 See which Slack threads need you.** The dashboard's **Slack** tab lists the threads where the next move is yours: direct asks, @-mentions, DMs, promises you made, and unread posts in channels you watch. Rules sort every thread for free; one bounded model call writes short titles and sets noise aside. Threads whose linked pull request merged or ticket closed drop to **Auto-resolved**. Select **Done** to check a row off; it comes back if the thread gets a new reply. It's read-only: it never posts, reacts, or marks anything read. See [Slack focus list](#slack-focus-list).
+
 **👋 Nudge stalled work and move the safe stuff forward.** Each pulse the Observer emits one verdict per workspace, and Python — not the model — turns it into an action. `ready_for_merge` queues `/merge-when-ready`; `ready_for_cleanup` sends `/cleanup` (only on workspaces *it* queued the merge for, and only once a work receipt exists); `stranded` nudges the idle agent with what failed and a retry; `needs_user` surfaces an awaiting card and does nothing else. Autonomy is fenced by a back-off list, the work-receipt gate, the assistant-merge ledger, and `NO_INGEST_GUARD`.
 
 ## Setup — connect your sources (opt-in)
@@ -168,6 +170,43 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 
 </details>
 
+### Slack focus list
+
+The Slack tab needs a Slack **user** token, because only user tokens can search messages, and a `slack_focus` block that says what to watch. Nothing about you is hard-coded: your Slack ID, name, and workspace come from the token.
+
+1. Create or reuse a Slack app with these **user** token scopes: `search:read`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `users:read`, and `usergroups:read`. Install it and copy the `xoxp-` token.
+2. Add `export SLACK_USER_TOKEN=xoxp-…` to `~/.zprofile`. The Refresh button sources that file, so the token never lands in a config file or plist.
+3. Add a `slack_focus` block to `~/.assistant/comms/config.json`:
+
+```json
+{
+  "slack_focus": {
+    "days": 7,
+    "title": "Slack focus",
+    "watched_channels": {"C0123456789": "my-team"},
+    "bot_authors": ["Deploy Bot"],
+    "skip_channels": ["deployments"],
+    "github_repos": ["my-org/my-repo"],
+    "github_hosts": ["github.com"],
+    "jira": {"enabled": false, "base_url": "https://jira.example.com", "project_keys": ["ABC"],
+             "token_env": "JIRA_API_TOKEN", "email_env": "JIRA_EMAIL"}
+  }
+}
+```
+
+| Setting | What it does |
+|---|---|
+| `days` | How far back to look, 1–30. Default 7. |
+| `title` | The tab's heading. |
+| `watched_channels` | Channel ID → your label. Every thread there counts, not only the ones that mention you. Mentions and DMs are always checked. |
+| `bot_authors` | Display names whose last word means the thread is a bot post. |
+| `skip_channels` | Channel-name fragments to treat as bot noise, such as `deployments`. |
+| `github_repos` | Repos where your merged PRs can retire an ask ("already done"). Uses `gh`. |
+| `github_hosts` | Hosts whose pull request links count, for GitHub Enterprise. Default `github.com`. |
+| `jira` | Optional. With `enabled` and `project_keys`, a thread whose linked tickets are all done is auto-resolved. The token comes from the env var named in `token_env`; with `email_env` set, it uses Jira Cloud basic auth, otherwise a bearer token. `base_url` falls back to `$JIRA_BASE_URL`. |
+
+Open the **Slack** tab and select **Refresh from Slack**. The first pull of 7 days takes a minute or two. To refresh from a terminal, run `python3 bin/slack-focus.py` (`--triage` reuses the last pull, `--no-judge` skips the model). Files live in `~/.assistant/slack-focus/`. To route the model step to Droid, run `bin/assistant-llm.py set droid --feature slack_focus`.
+
 ## Config knobs you own
 
 | Knob | Default | Where | What it does |
@@ -177,6 +216,7 @@ Default ingestion is **@-mentions + DMs only**. For full channel/group message i
 | Planner autoDispatch | **OFF** | `~/.assistant/comms/config.json` → `{"planner":{"autoDispatch":true}}` | OFF (safe default) = a stalled goal *stages a decision* for your review. ON = whitelisted steps dispatch unattended overnight. Flip it on only after watching the planner behave. |
 | JIRA scope | your own issues | `JIRA_JQL` env var | Widens the JQL beyond `assignee/reporter/watcher = you`. |
 | Slack channel ingest | mentions + DMs only | `SLACK_INGEST_CHANNELS=1` env (+ manifest edit) | Opts into full-channel message ingestion. |
+| Slack focus list | not set up | `~/.assistant/comms/config.json` → `slack_focus` block + `SLACK_USER_TOKEN` | Which channels, bots, repos, and Jira projects the Slack tab uses. See [Slack focus list](#slack-focus-list). |
 | Connector cadence / caps | 60s · 200 events · 10 pages | `~/.assistant/comms/config.json` → `connectors` block | Per-connector poll cadence and batch caps (module constants are only the fallback). |
 
 **Strategist (M6, the LLM drafter).** In `~/.assistant/comms/config.json` → `{"strategist": {…}}`: `enabled` (default `true`), `dailyCostCeilingUsd` (the day's LLM budget — the Strategist is *shed first* when it's hit, never the Observer), plus per-goal `budget.maxStrategistCallsPerDay` (default `1`) in `assistant-goals.json`. It ships enabled, but on the safe `autoDispatch`-off default it only upgrades *staged-decision* text you review — never unattended work.
@@ -187,6 +227,7 @@ Open the dashboard at **http://127.0.0.1:9876** (localhost only; served by `bin/
 
 - **Sessions tab** — your default view counts open cmux workspaces, not GitHub alerts. It groups workspaces into **Needs your answer**, **Assistant tasks**, **Ready to close**, and **Paused**. Each card shows one next action. Click **Go to session** to focus its workspace, or expand the card for details. The finish prompt highlights older pending work without interrupting productive sessions or automatically closing anything.
 - **Notifications tab** — a separate inbox for GitHub pull requests and other alerts. Its counts don't add to your session workload. Expand a group's history for its existing controls; receipts, the FYI digest, and health remain available here.
+- **Slack tab** — the threads where the next move is yours, in **Do first**, **Promise**, **This week**, and **Optional**. Select **Refresh from Slack** to pull again; the button shows each step. **Done** checks a row off until its thread gets a new reply.
 - **Connections tab** — every connector as **Connected** / **Available, not connected** / **Needs attention**, with the how-to-connect hint inline.
 - **`/goal` skill** — add / list / rerank / pause goals (`/goal add "…" --outcome "…"`). Goals feed the planner and boost decision ranking. Automation can only *propose* goal changes; only you (this skill) edit the store in place.
 - **One-tap accept** on a decision routes through the todo-server, executes the recommended action class (draft-only for any external send in this tree), and ledgers the transition. Reject / snooze do the same.
@@ -276,6 +317,7 @@ expanded original questions, and unchanged controls.
 - `bin/build-morning-brief.py` — rebuild today's brief on demand; `bin/plan-next-actions.py` — run the goals planner on demand
 - `bin/interrupt-gate.py` — the sole push chokepoint (consulted for every would-be notification)
 - `bin/todo-server.py` — the localhost dashboard + JSON API at http://127.0.0.1:9876
+- `bin/slack-focus.py` — refresh the Slack tab's list on demand (the dashboard's Refresh button runs it)
 - `bin/assistant-curator.py` — lesson/rule management across all five stores
 - `bin/tool-dispatch.py` — named tool dispatcher (`bin/tools-manifest.json`)
 - `install.sh --apply` — wires everything up; symlinks skills; writes/copies plists (never loads them)

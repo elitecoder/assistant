@@ -9,6 +9,36 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Add a **Slack** tab to the dashboard, ported from the standalone focus-board
+  tool. It lists the Slack threads where the next move is yours, in Do first,
+  Promise, This week, and Optional, plus Done by you, Just read, Set aside, and
+  Auto-resolved.
+  - **Refresh from Slack** POSTs `/slack-focus/refresh` to `todo-server.py`,
+    which starts `bin/slack-focus.py` in the background under zsh with
+    `~/.zprofile` sourced, so `$SLACK_USER_TOKEN` and `gh` resolve under
+    launchd. The page polls `/slack-focus/status` and shows each step. A second
+    click while a refresh runs starts nothing.
+  - **Done** and **Undo** POST `/slack-focus/done` and `/slack-focus/undone`.
+    A checked-off row comes back when its thread gets a new reply or edit.
+  - The pipeline lives in `src/assistant/slack_focus/`. Collect and triage are
+    rules only; the judge is one model call over the surfaced candidates,
+    tools off, metered as `caller="slack_focus"`, with verdicts cached by
+    content. If the model fails, the raw rows show.
+  - The Slack client refuses any method outside a read allowlist before a
+    request leaves the machine, and a test checks no module names a write
+    method.
+  - Everything about the user is in the new `slack_focus` block of
+    `~/.assistant/comms/config.json`: watched channels, bot names, skipped
+    channel names, GitHub repos and hosts, and Jira projects. The Slack ID,
+    name, and workspace come from the token. Jira project keys and GitHub
+    hosts used to be hard-coded.
+  - Files live in `~/.assistant/slack-focus/`.
+  - `bin/assistant-llm.py` accepts `--feature slack_focus`.
+- A row's text now quotes the other person's latest message, not yours, and
+  the short-ack hint ignores your own replies. The focus-board compared
+  author names with the label "you", which never matched a real name.
+
 ### Changed
 - Read agent sessions from cmux first, with mukul-memory's registry as a
   fallback. cmux 0.64.25 records agent sessions itself, and

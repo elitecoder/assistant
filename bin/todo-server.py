@@ -46,6 +46,14 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
                                                           unseen-degradation
                                                           pass knows the brief
                                                           was looked at
+  POST /slack-focus/status                                Slack tab refresh state
+                                                          (JSON)
+  POST /slack-focus/refresh                               start a background
+                                                          Slack focus refresh
+                                                          (no-op while one runs)
+  POST /slack-focus/done | /slack-focus/undone            check an item off or
+                                                          back on (body =
+                                                          {"fp": "<sha256>"})
   GET  /                                                  health check ("ok")
 
 On every successful TODO mutation, the JSON file is atomically rewritten and the
@@ -107,6 +115,10 @@ DASHBOARD_HTML_PATH = HOME / ".claude" / "assistant-dashboard.html"
 RENDER_SCRIPT = Path(__file__).resolve().parent / "render-assistant-page.py"
 RENDER_DASHBOARD_SCRIPT = RENDER_SCRIPT
 PROPOSALS_DIR = HOME / ".architect" / "orchestrator-proposals"
+SLACK_FOCUS_SCRIPT = Path(__file__).resolve().parent / "slack-focus.py"
+SLACK_FOCUS_LAUNCH = '[ -f "$HOME/.zprofile" ] && . "$HOME/.zprofile" >/dev/null 2>&1; exec "$0" "$@"'
+SLACK_FOCUS_FP_RE = re.compile(r"^[a-f0-9]{64}$")
+_slack_focus_proc = None
 ALLOWED_FLAGS = {"autoDispatch", "closeOnMerge"}
 PORT = 9876
 HOST = "127.0.0.1"
@@ -517,6 +529,66 @@ def brief_seen(params):
         return False, f"brief store unavailable: {e}"
 
 
+def _slack_focus_store():
+    if str(SRC_DIR) not in sys.path:
+        sys.path.insert(0, str(SRC_DIR))
+    from assistant.slack_focus import store  # noqa: PLC0415
+    return store
+
+
+def _reap_slack_focus():
+    """Collect a finished refresh. If it exited before recording its own
+    state, the state still names this server, so record the failure here."""
+    global _slack_focus_proc
+    if _slack_focus_proc is None or _slack_focus_proc.poll() is None:
+        return
+    _slack_focus_proc = None
+    store = _slack_focus_store()
+    state = store.read_json(store.base_dir(HOME) / "state.json", {})
+    if isinstance(state, dict) and state.get("running") and state.get("pid") == os.getpid():
+        store.write_state(HOME, running=False, ok=False, phase=None, finished=store.now_iso(),
+                          error="The refresh didn't start. See ~/.assistant/slack-focus/refresh.log.")
+
+
+def slack_focus_status():
+    """POST /slack-focus/status: the refresh state the Slack tab's button polls."""
+    _reap_slack_focus()
+    return json.dumps(_slack_focus_store().read_state(HOME))
+
+
+def slack_focus_refresh():
+    """POST /slack-focus/refresh: start a refresh in the background, unless one
+    is already running. It runs under zsh with ~/.zprofile sourced, because
+    launchd doesn't give this server $SLACK_USER_TOKEN or the gh PATH."""
+    global _slack_focus_proc
+    _reap_slack_focus()
+    store = _slack_focus_store()
+    root = store.base_dir(HOME)
+    with store.locked(root / "refresh.lock", blocking=False) as free:
+        if not free or _slack_focus_proc is not None:
+            return json.dumps({"started": False})
+    store.write_state(HOME, running=True, pid=os.getpid(), started=store.now_iso(),
+                      finished=None, ok=None, error=None, phase="Starting")
+    with open(root / "refresh.log", "w") as log:
+        _slack_focus_proc = subprocess.Popen(
+            ["/bin/zsh", "-c", SLACK_FOCUS_LAUNCH, sys.executable, str(SLACK_FOCUS_SCRIPT)],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    return json.dumps({"started": True})
+
+
+def slack_focus_mark(body, done):
+    """POST /slack-focus/done | /slack-focus/undone  (body = {"fp": "<sha256>"})."""
+    data, err = _parse_json_body(body)
+    if err:
+        return False, err
+    fp = data.get("fp")
+    if not isinstance(fp, str) or not SLACK_FOCUS_FP_RE.match(fp):
+        return False, "fp must be a 64-character hex fingerprint"
+    _slack_focus_store().set_done(HOME, fp, done)
+    rerender_dashboard()
+    return True, "marked done" if done else "marked not done"
+
+
 class WorkspaceIdentityConflict(ValueError):
     """The requested workspace identity cannot be verified."""
 
@@ -682,6 +754,7 @@ class Handler(BaseHTTPRequestHandler):
             or (len(parts) == 3 and parts[0] == "goal" and parts[1] == "update")
             or (len(parts) == 3 and parts[0] == "decision" and parts[1] == "act")
             or parts == ["brief", "seen"]
+            or parts in (["slack-focus", "refresh"], ["slack-focus", "done"], ["slack-focus", "undone"])
         )
         if _mutation and not self._origin_allowed_for_mutation():
             self._reply(403, "cross-origin mutation refused")
@@ -777,6 +850,21 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["brief", "seen"]:
             ok, msg = brief_seen(qs)
             self._reply(200 if ok else (404 if "no brief" in msg else 400), msg)
+            return
+
+        # POST /slack-focus/{status,refresh,done,undone} — the Slack tab.
+        if parts in (["slack-focus", "status"], ["slack-focus", "refresh"]):
+            body = (slack_focus_status() if parts[1] == "status" else slack_focus_refresh()).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parts in (["slack-focus", "done"], ["slack-focus", "undone"]):
+            ok, msg = slack_focus_mark(self._read_body(), parts[1] == "done")
+            self._reply(200 if ok else 400, msg)
             return
 
         # POST /focus/<workspace_ref>

@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import os
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -114,6 +115,31 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 "repo": "example/project", "pr": index,
             },
         }) + "\n" for index in range(1, 50)))
+        slack_root = home / ".assistant/slack-focus"
+        slack_root.mkdir(parents=True)
+        (home / ".assistant/comms").mkdir(parents=True)
+        (home / ".assistant/comms/config.json").write_text(json.dumps({"slack_focus": {
+            "watched_channels": {"C1": "team"}}}))
+        slack_threads = [{"id": n, "first": {"text": f"thread {n}", "at": "1"}, "latest": []} for n in (1, 2, 3)]
+        slack_items = [
+            {"lane": "Do first", "text": "Answer Aalia about the take-trim design, which she asked about twice "
+             "in the thread and again in a DM", "link": "https://acme.slack.com/archives/D1/p1",
+             "thread_id": 1, "channel": "DM Aalia Habib", "who": "Aalia Habib", "last": "2026-10-18T09:30",
+             "mention": True, "why": "she is waiting", "effort": "Quick"},
+            {"lane": "This week", "text": "Share the roadmap", "link": "https://acme.slack.com/archives/C1/p2",
+             "thread_id": 2, "channel": "#team", "who": "Tim Beauchamp", "last": "2026-10-17T10:00",
+             "effort": "Medium"},
+            {"lane": "Promise", "text": "Send the freeze plan", "link": "https://acme.slack.com/archives/C1/p3",
+             "thread_id": 3, "channel": "#team", "who": "you", "last": ""},
+        ]
+        (slack_root / "threads.json").write_text(json.dumps({"threads": slack_threads}))
+        (slack_root / "focus.json").write_text(json.dumps({
+            "generated": now.isoformat(), "window_days": 7, "judge": {"ran": True}, "active": slack_items,
+            "read": [], "judge_dropped": [], "handled": []}))
+        sys.path.insert(0, str(REPO / "src"))
+        from assistant.slack_focus import store as slack_store
+        (slack_root / "done.json").write_text(json.dumps({
+            slack_store.fingerprint(slack_items[2], {t["id"]: t for t in slack_threads}): now.isoformat()}))
         with mock.patch.dict(os.environ, {"HOME": str(home)}):
             spec = importlib.util.spec_from_file_location(
                 "browser_renderer", REPO / "bin/render-assistant-page.py")
@@ -305,13 +331,16 @@ def drive(output_dir, browser_executable, coverage_dir=None):
 
                 render_version = 100
 
-                def refresh_fixture():
+                def render_only():
                     nonlocal render_version
                     render_version += 1
                     (output / "cache/world.json").write_text(json.dumps(world))
                     with mock.patch.dict(os.environ, {"HOME": str(home)}), mock.patch.object(
                             renderer, "utc_now", return_value=now + timedelta(seconds=render_version)):
                         renderer.render()
+
+                def refresh_fixture():
+                    render_only()
                     page.evaluate("refreshDashboard(true)")
 
                 refresh_fixture()
@@ -505,6 +534,160 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 refresh_fixture()
                 assert page.locator('[data-panel="overview"]').is_visible()
 
+                slack_calls = []
+                slack_script = {"status": [], "refresh": 200, "mark": 200}
+
+                def slack_route(route):
+                    action = route.request.url.rsplit("/slack-focus/", 1)[1]
+                    slack_calls.append((action, route.request.post_data))
+                    if action == "status":
+                        answer = slack_script["status"].pop(0) if slack_script["status"] else {"running": False}
+                        if answer == 500:
+                            route.fulfill(status=500, body="down")
+                        else:
+                            route.fulfill(status=200, content_type="application/json", body=json.dumps(answer))
+                    elif action == "refresh":
+                        route.fulfill(status=slack_script["refresh"], content_type="application/json",
+                                      body='{"started": true}')
+                    elif slack_script["mark"] == 200:
+                        slack_store.set_done(home, json.loads(route.request.post_data)["fp"], action == "done")
+                        render_only()
+                        route.fulfill(status=200, body="saved")
+                    else:
+                        route.fulfill(status=slack_script["mark"], body="fp must be a 64-character hex fingerprint")
+
+                page.route("**/slack-focus/*", slack_route)
+                page.locator('[data-tab="slack"]').click()
+                slack_panel = page.locator('[data-panel="slack"]')
+                assert page.locator('[data-tab="slack"] .tab-count').inner_text() == "1"
+                assert slack_panel.locator(".sf-do .sf-row").count() == 1
+                assert "@you" in slack_panel.locator(".sf-do .sf-row").inner_text()
+                assert slack_panel.locator('[data-context-key="sf-done"] .sf-row').count() == 1
+                for width in (390, 820, 1440):
+                    page.set_viewport_size({"width": width, "height": 1000})
+                    measurement = page.evaluate("""() => ({
+                        offsetWidth: document.documentElement.offsetWidth,
+                        scrollWidth: document.documentElement.scrollWidth,
+                        overflowingRows: [...document.querySelectorAll('[data-panel="slack"] .sf-row')]
+                            .filter(row => row.offsetWidth && row.scrollWidth > row.offsetWidth).length
+                    })""")
+                    assert measurement["scrollWidth"] == measurement["offsetWidth"], measurement
+                    assert measurement["overflowingRows"] == 0, measurement
+                    page.screenshot(path=str(output_dir / f"slack-{width}.png"), full_page=True)
+                slack_script["status"] = [{"running": True, "phase": "Pulling Slack (1 of 2 threads)"},
+                                          {"running": False, "ok": True}]
+                page.locator("#sf-refresh").click()
+                page.wait_for_function("""() => document.getElementById('sf-status')
+                    .textContent === 'Refreshing: Pulling Slack (1 of 2 threads).'""")
+                assert page.locator("#sf-refresh").is_disabled()
+                assert page.locator("#sf-refresh").inner_text() == "Refreshing…"
+                page.evaluate("() => { slackFocusPoll(); }")
+                page.clock.fast_forward(2000)
+                page.wait_for_function("text => document.getElementById('sf-status').textContent === text",
+                                       arg="Refresh finished. The list updates within a minute.")
+                assert [a for a, _ in slack_calls] == ["refresh", "status", "status"], slack_calls
+                assert page.locator("#sf-refresh").inner_text() == "Refresh from Slack"
+                for answer, message in (({"running": False, "ok": False, "error": "Slack search.messages failed"},
+                                         "The refresh didn't finish: Slack search.messages failed"),
+                                        ({"running": False, "ok": False},
+                                         "The refresh didn't finish: unknown error")):
+                    slack_script["status"] = [answer]
+                    page.evaluate("slackFocusPoll()")
+                    assert page.locator("#sf-status").inner_text() == message
+                slack_script["status"] = [{"running": True}, 500]
+                page.evaluate("() => { slackFocusPoll(); }")
+                try:
+                    page.wait_for_function("() => document.getElementById('sf-status').textContent === 'Refreshing: Starting.'",
+                                           timeout=5000)
+                except Exception:
+                    print("DEBUG", page.locator('#sf-status').inner_text(), slack_calls, slack_script)
+                    raise
+                page.clock.fast_forward(2000)
+                page.wait_for_function("text => document.getElementById('sf-status').textContent === text",
+                                       arg="Couldn't check the refresh: the server returned 500")
+                slack_script["refresh"] = 500
+                page.locator("#sf-refresh").click()
+                page.wait_for_function("text => document.getElementById('sf-status').textContent === text",
+                                       arg="Couldn't start the refresh: the server returned 500")
+                assert not page.locator("#sf-refresh").is_disabled()
+                slack_script["refresh"] = 200
+                fingerprint = page.locator('.sf-do .sf-mark').get_attribute("data-fp")
+                page.locator('.sf-do .sf-mark').click()
+                page.wait_for_function("() => document.querySelectorAll('[data-context-key=\"sf-done\"] .sf-row').length === 2")
+                assert slack_calls[-1] == ("done", json.dumps({"fp": fingerprint}, separators=(",", ":")))
+                assert page.locator(".sf-do .sf-row").count() == 0
+                assert page.locator('[data-tab="slack"] .tab-count').inner_text() == "0"
+                page.locator('[data-context-key="sf-done"] > summary').click()
+                page.locator(f'[data-context-key="sf-done"] .sf-mark[data-fp="{fingerprint}"]').click()
+                page.wait_for_function("() => document.querySelectorAll('.sf-do .sf-row').length === 1")
+                assert slack_calls[-1][0] == "undone"
+                slack_script["mark"] = 400
+                page.locator('.sf-do .sf-mark').click()
+                page.wait_for_function("text => document.querySelector('.sf-do .sf-mark').textContent === text",
+                                       arg="Couldn't save. Try again")
+                assert not page.locator('.sf-do .sf-mark').is_disabled()
+                slack_script["mark"] = 200
+                page.evaluate("""() => {
+                    document.getElementById('sf-status').remove();
+                    slackFocusShow({running: true});
+                }""")
+                assert not page.locator("#sf-refresh").is_disabled()
+                def advance_until(predicate, steps=20):
+                    for _ in range(steps):
+                        if page.evaluate(predicate):
+                            return
+                        page.clock.fast_forward(1000)
+                        page.wait_for_timeout(50)
+                    raise AssertionError(predicate)
+
+                def wait_for_calls(count):
+                    for _ in range(100):
+                        if len(slack_calls) >= count:
+                            return
+                        page.wait_for_timeout(20)
+                    raise AssertionError((count, slack_calls))
+
+                running_state = json.dumps({"running": True, "pid": os.getpid(), "phase": "Sorting threads"})
+                shows_running = "() => document.getElementById('slack-focus').dataset.running === 'true'"
+
+                def finished_at(seconds):
+                    return {"running": False, "ok": True,
+                            "finished": (now + timedelta(seconds=seconds)).isoformat()}
+
+                for resume in ("refresh", "load"):
+                    (slack_root / "state.json").write_text(running_state)
+                    before_resume = len(slack_calls)
+                    slack_script["status"] = [finished_at(render_version + 2)]
+                    if resume == "refresh":
+                        refresh_fixture()
+                    else:
+                        render_only()
+                        page.reload()
+                    wait_for_calls(before_resume + 1)
+                    assert page.evaluate(shows_running), resume
+                    assert page.locator("#sf-status").inner_text() == "Loading the new list…"
+                    (slack_root / "state.json").unlink()
+                    render_only()
+                    advance_until("() => document.getElementById('slack-focus').dataset.running === 'false'")
+                    assert [a for a, _ in slack_calls[before_resume:]] == ["status"], slack_calls[before_resume:]
+                    assert not page.locator("#sf-refresh").is_disabled()
+                    assert page.locator("#sf-status").inner_text().startswith("Last pulled")
+                (slack_root / "state.json").write_text(running_state)
+                slack_script["status"] = [finished_at(10 ** 6)]
+                before_stuck = len(slack_calls)
+                refresh_fixture()
+                wait_for_calls(before_stuck + 1)
+                for _ in range(17):
+                    page.clock.fast_forward(1000)
+                    page.wait_for_timeout(30)
+                assert page.evaluate(shows_running)
+                assert page.locator("#sf-status").inner_text() == "Refresh finished. The list updates within a minute."
+                (slack_root / "state.json").unlink()
+                refresh_fixture()
+                page.unroute("**/slack-focus/*")
+                page.locator('[data-tab="overview"]').click()
+                assert not errors, errors
+
                 file_page = page.context.new_page()
                 file_errors = []
                 file_page.on("pageerror", lambda error: file_errors.append(str(error)))
@@ -540,7 +723,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                                   "explicit_focus_requests": len(mutations),
                                   "intercepted_brief_seen_requests": len(seen),
                                   "coverage_script_instances": len(scripts) if profiler is not None else 0,
-                                  "checks": "grouping, density, search restoration, expansion, clipboard denial and expiry, reading stability, legacy focus, missing task guards, refresh errors and concurrency, brief date changes, file protocol, observation expiry, stale request gating"}))
+                                  "checks": "grouping, density, search restoration, expansion, clipboard denial and expiry, reading stability, legacy focus, missing task guards, refresh errors and concurrency, brief date changes, file protocol, observation expiry, stale request gating, Slack refresh, check-off, and errors"}))
         finally:
             server.shutdown()
             server.server_close()
