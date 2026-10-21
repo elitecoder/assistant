@@ -4,7 +4,7 @@
   - a thread resolves to "Auto-resolved" when every linked PR is merged or
     closed, or every linked Jira ticket is done
   - your own messages that read like a commitment become Promises
-  - nothing is dropped here; low-signal threads only carry a hint for the judge
+  - nothing is dropped here; the judge sets noise aside
 """
 from __future__ import annotations
 
@@ -23,8 +23,6 @@ from .store import signature
 LANE = {"ball_mine_dm": "Do first", "ball_mine_mention": "Do first",
         "thread_moved_on": "This week", "group_mention": "This week", "unread_watched": "Optional"}
 LANE_ORDER = ["Do first", "Promise", "This week", "Optional"]
-DIGEST_RE = re.compile(
-    r"standup|TL;DR|KEY (DECISIONS|TOPICS|OUTCOMES)|:clipboard:|weekly sync|e-?scrum|:pushpin:", re.I)
 PROMISE_RE = re.compile(
     r"\b(i'?ll|i will|let me|i can (?:get|take|look|help|make|add|fix|do|share|send)|"
     r"i'?m (?:on|looking|working)|will (?:do|send|share|fix|add|look|get|create|remove|update|report|sync|merge)|"
@@ -114,18 +112,6 @@ def resolution(t: dict, resolver: Resolver, prs_re: re.Pattern, keys_re: re.Patt
     return None
 
 
-def noise(t: dict, me_name: str) -> str | None:
-    """A hint for the judge that a thread looks low-signal. It never drops."""
-    if DIGEST_RE.search(t["first"]["text"]):
-        return "digest or standup post"
-    recent = t.get("latest") or []
-    if t["bucket"] == "thread_moved_on" and "?" not in " ".join(m["text"] for m in recent):
-        return "discussion, no open question"
-    if recent and len(recent[-1]["text"]) < 40 and recent[-1]["author"] != me_name:
-        return "trailed off (short ack)"
-    return None
-
-
 def rank(t: dict) -> float:
     score = 0.0
     if t["mentioned_after_my_last_reply"] == "direct" or t.get("kind") == "dm":
@@ -156,7 +142,7 @@ def triage(threads_doc: dict, mine: list[dict], settings: Settings, resolver: Re
                 and not t["mentioned_after_my_last_reply"]:
             lane = "This week"
         active.append({
-            "low_signal": noise(t, me_name), "lane": lane, "channel": t["channel"], "who": t["last_author"],
+            "lane": lane, "channel": t["channel"], "who": t["last_author"],
             "text": (ask["text"] or t["first"]["text"])[:160], "link": t["permalink"],
             "mention": t["mentioned_after_my_last_reply"] == "direct",
             "rank": rank(t), "last": t["last_activity"][:16], "thread_id": t["id"], "sig": signature(t),
@@ -180,7 +166,7 @@ def triage(threads_doc: dict, mine: list[dict], settings: Settings, resolver: Re
                             "why": "linked PR merged or closed"})
             continue
         active.append({"lane": "Promise", "channel": channel, "who": "you", "text": text[:200],
-                       "link": m["permalink"], "mention": False, "rank": float(m["ts"]), "last": ""})
+                       "link": m["permalink"], "mention": False, "rank": float(m["ts"]) / 1e9, "last": ""})
 
     active.sort(key=lambda i: (LANE_ORDER.index(i["lane"]), -i["rank"]))
     return {

@@ -37,6 +37,19 @@ def bucket(t: dict, settings: Settings) -> str:
     return "read_fyi"
 
 
+def _messages(client: Client, method: str, params: dict) -> list[dict]:
+    """Every page of a history or replies call, oldest first, each message once."""
+    seen: dict[str, dict] = {}
+    cursor = ""
+    while True:
+        r = client.call(method, params | ({"cursor": cursor} if cursor else {}))
+        for m in r.get("messages", []):
+            seen.setdefault(m["ts"], m)
+        cursor = r.get("response_metadata", {}).get("next_cursor", "")
+        if not cursor:
+            return sorted(seen.values(), key=lambda m: float(m["ts"]))
+
+
 def _shape(client: Client, m: dict) -> dict:
     author = client.user_name(m["user"]) if m.get("user") else m.get("username", "bot")
     return {"author": author, "at": iso(m["ts"])[:16], "text": client.clean(m.get("text", ""))[:400]}
@@ -49,8 +62,8 @@ def _summarize(client: Client, settings: Settings, cid: str, msgs: list[dict], t
     my_last = max(mine) if mine else 0.0
     last = msgs[-1]
     after_me = [m for m in msgs if float(m["ts"]) > my_last and m.get("user") != client.me]
-    mention_after = next((client.mentions_me(m.get("text", "")) for m in after_me
-                          if client.mentions_me(m.get("text", ""))), None)
+    kinds = {client.mentions_me(m.get("text", "")) for m in after_me}
+    mention_after = "direct" if "direct" in kinds else "group" if "group" in kinds else None
     last_read = parent_last_read if parent_last_read is not None else ch["last_read"]
     return {
         "cid": cid, "root": msgs[0]["ts"], "channel": ch["name"], "kind": ch["kind"],
@@ -89,29 +102,25 @@ def collect(client: Client, settings: Settings, now: float | None = None,
                 candidates.setdefault((m["channel"]["id"], thread_ts), None)
 
     for cid in settings.watched_channels:
-        cursor = ""
-        while True:
-            r = client.call("conversations.history",
-                            {"channel": cid, "oldest": since - 14 * 86400, "limit": 200, "cursor": cursor})
-            for m in r.get("messages", []):
-                if float(m.get("latest_reply") or m["ts"]) >= since \
-                        and m.get("subtype") not in ("channel_join", "bot_message"):
-                    candidates.setdefault((cid, m.get("thread_ts") or m["ts"]), None)
-            cursor = r.get("response_metadata", {}).get("next_cursor", "")
-            if not cursor:
-                break
+        for m in _messages(client, "conversations.history", {"channel": cid, "oldest": since - 14 * 86400, "limit": 200}):
+            if float(m.get("latest_reply") or m["ts"]) >= since \
+                    and m.get("subtype") not in ("channel_join", "bot_message"):
+                candidates.setdefault((cid, m.get("thread_ts") or m["ts"]), None)
 
     threads = []
     # A DM surfaced any way gets its full in-window history, so a DM ask isn't
-    # cut down to the one message search matched.
+    # cut down to the one message search matched. That history covers threads
+    # that start in the window; an older thread with a new reply keeps its own
+    # fetch.
     dm_hits = set(dm_channels)
     for cid, thread_ts in list(candidates):
         if client.channel(cid)["kind"] in ("dm", "mpim"):
             dm_hits.add(cid)
-            del candidates[(cid, thread_ts)]
+            if float(thread_ts) >= since:
+                del candidates[(cid, thread_ts)]
     for cid in sorted(dm_hits):
-        h = client.call("conversations.history", {"channel": cid, "oldest": since, "limit": 200})
-        top = sorted((m for m in h.get("messages", []) if not m.get("subtype")), key=lambda m: float(m["ts"]))
+        h = _messages(client, "conversations.history", {"channel": cid, "oldest": since, "limit": 200})
+        top = [m for m in h if not m.get("subtype")]
         if not top:
             continue
         for m in top:
@@ -123,8 +132,8 @@ def collect(client: Client, settings: Settings, now: float | None = None,
     for i, (cid, thread_ts) in enumerate(candidates):
         if progress and i % 10 == 0:
             progress(i + 1, total)
-        r = client.call("conversations.replies", {"channel": cid, "ts": thread_ts, "limit": 200})
-        msgs = [m for m in r.get("messages", []) if m.get("subtype") not in SKIP_SUBTYPES]
+        msgs = [m for m in _messages(client, "conversations.replies", {"channel": cid, "ts": thread_ts, "limit": 200})
+                if m.get("subtype") not in SKIP_SUBTYPES]
         if not msgs or float(msgs[-1]["ts"]) < since:
             continue
         parent = msgs[0]
@@ -139,7 +148,7 @@ def collect(client: Client, settings: Settings, now: float | None = None,
     for t in threads:
         last = datetime.fromisoformat(t["last_activity"]).timestamp()
         t["i_posted_after_in_channel"] = any(
-            c == t["cid"] and ts >= last - 60 and (dm or f"thread_ts={t['root']}" in link)
+            c == t["cid"] and ts > last and (dm or f"thread_ts={t['root']}" in link)
             for c, ts, link, dm in mine_ts)
 
     threads.sort(key=lambda t: t["last_activity"], reverse=True)

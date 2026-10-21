@@ -777,6 +777,10 @@ class _FakeProc:
     def poll(self):
         return self.exit
 
+    def wait(self):
+        self.waited = True
+        return self.exit
+
 
 @pytest.fixture
 def slack_home(env, monkeypatch):
@@ -803,6 +807,25 @@ def test_slack_focus_refresh_starts_once_and_reports_state(server, slack_home):
     # A second click while it runs starts nothing.
     assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": False}
     assert len(_FakeProc.made) == 1
+
+
+@pytest.mark.parametrize("already_gone", [False, True])
+def test_slack_focus_refresh_replaces_a_launch_that_never_took_the_lock(server, slack_home, monkeypatch,
+                                                                        already_gone):
+    store = slack_home
+    killed = []
+
+    def killpg(pgid, sig):
+        killed.append((pgid, sig))
+        if already_gone:
+            raise ProcessLookupError(pgid)
+
+    monkeypatch.setattr(mod.os, "killpg", killpg)
+    _request(server.base, "POST", "/slack-focus/refresh")
+    store.write_state(server.env.tmp, started="2026-10-20T10:00:00+00:00")
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": True}
+    assert killed == [(424242, mod.signal.SIGKILL)] and _FakeProc.made[0].waited
+    assert len(_FakeProc.made) == 2 and mod._slack_focus_proc is _FakeProc.made[1]
 
 
 def test_slack_focus_refresh_that_never_starts_is_reported(server, slack_home):

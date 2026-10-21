@@ -112,6 +112,20 @@ def test_main_passes_flags_and_token(home, monkeypatch):
     assert seen == {"pull": False, "use_judge": False, "token": "xoxp-env"}
 
 
+def test_main_keeps_the_token_out_of_the_recorded_error(home, monkeypatch):
+    def bad_header(h, **kw):
+        raise ValueError("Invalid header value b'Bearer xoxp-secret\\n'")
+
+    monkeypatch.setattr(cli, "refresh", bad_header)
+    monkeypatch.setenv("SLACK_USER_TOKEN", "xoxp-secret\n")
+    assert cli.main([]) == 1
+    assert store.read_state(home)["error"] == "Invalid header value b'Bearer [token]\\n'"
+    assert "xoxp-secret" not in (store.base_dir(home) / "state.json").read_text()
+    monkeypatch.delenv("SLACK_USER_TOKEN")
+    assert cli.main([]) == 1
+    assert store.read_state(home)["error"] == "Invalid header value b'Bearer xoxp-secret\\n'"
+
+
 def test_main_skips_while_another_refresh_runs(home, capsys):
     with store.locked(store.base_dir(home) / "refresh.lock"):
         assert cli.main([]) == 0

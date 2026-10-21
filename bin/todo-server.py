@@ -72,6 +72,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -565,8 +566,19 @@ def slack_focus_refresh():
     store = _slack_focus_store()
     root = store.base_dir(HOME)
     with store.locked(root / "refresh.lock", blocking=False) as free:
-        if not free or _slack_focus_proc is not None:
+        if not free:
             return json.dumps({"started": False})
+    if store.read_state(HOME).get("running"):
+        return json.dumps({"started": False})
+    if _slack_focus_proc is not None:
+        # The last launch never took the lock (a hung ~/.zprofile, say), and
+        # its startup grace is over. Stop it so this one can run.
+        try:
+            os.killpg(_slack_focus_proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        _slack_focus_proc.wait()
+        _slack_focus_proc = None
     store.write_state(HOME, running=True, pid=os.getpid(), started=store.now_iso(),
                       finished=None, ok=None, error=None, phase="Starting")
     try:

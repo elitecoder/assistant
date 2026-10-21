@@ -13,7 +13,7 @@ from datetime import datetime
 import pytest
 
 from assistant.slack_focus import board, client, collect, judge, settings, store, triage
-from slack_focus_fixtures import CONFIG, NOW, FakeSlack, ts, write_config
+from slack_focus_fixtures import CONFIG, NOW, FakeSlack, _hit, msg, ts, write_config
 
 
 @pytest.fixture
@@ -225,6 +225,47 @@ def test_collect_skips_empty_dms_and_deleted_threads(cfg):
     assert ("conversations.replies", {"channel": "C1", "ts": ts(2), "limit": 200}) in sl._transport.calls
 
 
+def test_a_new_reply_in_an_old_dm_thread_is_collected(cfg):
+    threads = {("D1", ts(10)): [msg("U2", ts(10), "old thread"), msg("U2", ts(0.5), "can you approve my promo packet?")]}
+    search = {"to:me": [_hit("D1", ts(0.5), "can you approve my promo packet?", thread_ts=ts(10), is_im=True)]}
+    sl = client.Client("t", FakeSlack(threads=threads, history={}, search=search))
+    doc, _ = collect.collect(sl, cfg, now=NOW)
+    assert [(t["first"]["text"], t["bucket"]) for t in doc["threads"]] == [("old thread", "ball_mine_dm")]
+
+
+def test_a_dm_that_arrives_right_after_yours_still_needs_you(cfg):
+    asked = f"{float(ts(1)) + 20:.6f}"
+    history = {"D1": [msg("U1", ts(1), "hey Aalia"), msg("U2", asked, "can you review my design doc today?")]}
+    search = {"is:dm": [_hit("D1", asked, "can you review", is_im=True)],
+              "from:me": [_hit("D1", ts(1), "hey Aalia", user="U1", is_im=True)]}
+    sl = client.Client("t", FakeSlack(threads={}, history=history, search=search))
+    doc, _ = collect.collect(sl, cfg, now=NOW)
+    assert [t["bucket"] for t in doc["threads"]] == ["ball_mine_dm"]
+
+
+def test_a_direct_mention_outranks_an_earlier_group_mention(cfg):
+    threads = {("C1", ts(1)): [msg("U3", ts(1), "<!subteam^S1|@leads> heads-up on the freeze"),
+                               msg("U3", ts(0.9), "<@U1> can you sign off today?")]}
+    search = {"<@U1>": [_hit("C1", ts(0.9), "sign off", thread_ts=ts(1))]}
+    sl = client.Client("t", FakeSlack(threads=threads, history={}, search=search))
+    doc, _ = collect.collect(sl, settings.parse({}), now=NOW)
+    t = doc["threads"][0]
+    assert (t["mentioned_after_my_last_reply"], t["bucket"]) == ("direct", "ball_mine_mention")
+
+
+def test_long_threads_and_dms_are_read_to_the_end():
+    replies = [msg("U3", ts(1), "<@U1> kickoff")] + [msg("U2", ts(1, n), f"reply {n}") for n in range(1, 6)]
+    dm = [msg("U2", ts(2, n), f"dm {n}") for n in range(5)]
+    fake = FakeSlack(threads={("C1", ts(1)): replies}, history={"D1": dm},
+                     search={"<@U1>": [_hit("C1", ts(1), "kickoff")], "is:dm": [_hit("D1", ts(2), "dm 0", is_im=True)]})
+    fake.page_size = 2
+    doc, _ = collect.collect(client.Client("t", fake), settings.parse({}), now=NOW)
+    thread = by_text(doc["threads"], "kickoff")
+    assert thread["messages"] == 6 and thread["latest"][-1]["text"] == "reply 5"
+    dm_row = by_text(doc["threads"], "dm 0")
+    assert dm_row["messages"] == 5 and dm_row["latest"][-1]["text"] == "dm 4"
+
+
 def test_search_stops_at_its_page_limit():
     fake = FakeSlack(search={"<@U1>": [{"ts": str(n), "text": "x", "channel": {"id": "C1"}} for n in range(6)]})
     sl = client.Client("t", fake)
@@ -332,18 +373,6 @@ def test_promises_in_dms_name_the_conversation_kind(cfg):
     assert [i["channel"] for i in focus["active"]] == ["DM", "group DM", "#"]
 
 
-def test_noise_hints_never_drop():
-    me = "Mukul Sharma"
-    t = {"bucket": "ball_mine_mention", "first": {"text": "TL;DR of standup"}, "latest": []}
-    assert triage.noise(t, me) == "digest or standup post"
-    t = {"bucket": "thread_moved_on", "first": {"text": "x"}, "latest": [{"text": "ok then", "author": "Tim"}]}
-    assert triage.noise(t, me) == "discussion, no open question"
-    t = {"bucket": "ball_mine_dm", "first": {"text": "x"}, "latest": [{"text": "thanks", "author": "Tim"}]}
-    assert triage.noise(t, me) == "trailed off (short ack)"
-    t["latest"] = [{"text": "thanks", "author": me}]
-    assert triage.noise(t, me) is None
-
-
 def test_regexes_use_configured_hosts_and_keys():
     assert triage.pr_regex(["git.corp.example"]).findall("https://git.corp.example/o/r/pull/3") == \
         [("git.corp.example", "o/r", "3")]
@@ -444,12 +473,31 @@ def test_judge_rejudges_a_row_whose_text_changed(slack, cfg):
 
 def test_judge_keeps_raw_rows_when_the_model_fails(slack, cfg):
     focus, threads = _focus_and_threads(slack, cfg)
-    for answer in ("", "no json here", "[{bad json]", "[]"):
+    for answer in ("", "no json here", "[{bad json]", '[{"id": 0, "lane": "Read"}]'):
         judged, cache = judge.judge(focus, threads, [], {"keep": 1}, lambda p: answer)
         assert judged["judge"]["ran"] is False and judged["active"] == focus["active"]
         assert cache == {"keep": 1}
     judged, cache = judge.judge(focus, threads, [], None, lambda p: "")
     assert cache == {}
+
+
+def test_judge_reads_an_empty_answer_as_all_noise(slack, cfg):
+    focus, threads = _focus_and_threads(slack, cfg)
+    _, cache = judge.judge(focus, threads, [], None, lambda p: _answer(focus, {0: "Do first"}))
+    changed = json.loads(json.dumps(focus))
+    changed["active"][1]["text"] = "thanks!"
+    judged, cache = judge.judge(changed, threads, [], cache, lambda p: "[]")
+    assert judged["judge"]["ran"] is True and judged["judge"]["rejudged"] == 1
+    assert [i["text"] for i in judged["active"]] == ["title 0"]
+    again, _ = judge.judge(changed, threads, [], cache, lambda p: pytest.fail("re-judged"))
+    assert again["active"] == judged["active"]
+
+
+def test_a_promise_moved_to_do_first_ranks_below_direct_asks(slack, cfg):
+    focus, threads = _focus_and_threads(slack, cfg)
+    p = next(i for i, item in enumerate(focus["active"]) if item["lane"] == "Promise")
+    judged, _ = judge.judge(focus, threads, [], None, lambda _: _answer(focus, {p: "Do first", 0: "Do first"}))
+    assert [i["text"] for i in judged["active"]] == ["title 0", f"title {p}"]
 
 
 def test_judge_effort_and_missing_fields(slack, cfg):

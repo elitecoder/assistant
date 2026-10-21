@@ -33,6 +33,16 @@ class FakeSlack:
         self.history = history if history is not None else default_history()
         self.search_results = search if search is not None else default_search()
         self.auth = auth or {"ok": True, "user_id": "U1", "url": "https://acme.slack.com/"}
+        self.page_size = 0  # when set, DM history and replies come back in pages
+
+    def _paged(self, msgs, params, parent_on_every_page=False):
+        if not self.page_size:
+            return {"messages": msgs}
+        head, rest = (msgs[:1], msgs[1:]) if parent_on_every_page else ([], msgs)
+        start = int(params.get("cursor") or 0)
+        more = start + self.page_size < len(rest)
+        return {"messages": head + rest[start:start + self.page_size],
+                "response_metadata": {"next_cursor": str(start + self.page_size) if more else ""}}
 
     def __call__(self, method, params, token):
         self.calls.append((method, dict(params)))
@@ -54,13 +64,14 @@ class FakeSlack:
             return {"messages": {"matches": chunk, "paging": {"pages": pages}}}
         if method == "conversations.history":
             msgs = self.history.get(params["channel"], [])
-            if params.get("cursor") == "" and params["channel"] == "C1" and len(msgs) > 1:
+            if "cursor" not in params and params["channel"] == "C1" and len(msgs) > 1:
                 return {"messages": msgs[:1], "response_metadata": {"next_cursor": "next"}}
             if params.get("cursor") == "next":
                 return {"messages": msgs[1:], "response_metadata": {"next_cursor": ""}}
-            return {"messages": msgs}
+            return self._paged(msgs, params)
         if method == "conversations.replies":
-            return {"messages": self.threads.get((params["channel"], params["ts"]), [])}
+            return self._paged(self.threads.get((params["channel"], params["ts"]), []), params,
+                               parent_on_every_page=True)
         raise AssertionError(f"unexpected method {method}")
 
 

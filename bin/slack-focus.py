@@ -168,14 +168,16 @@ def main(argv: list[str] | None = None) -> int:
                           ok=None, error=None, phase="Starting")
         started = time.time()
         error = None
+        token = os.environ.get("SLACK_USER_TOKEN", "")
         signal.signal(signal.SIGALRM, _too_slow)
         signal.alarm(REFRESH_TIMEOUT_SEC)
         try:
-            focus = refresh(home, pull=not args.triage, use_judge=not args.no_judge,
-                            token=os.environ.get("SLACK_USER_TOKEN", ""))
+            focus = refresh(home, pull=not args.triage, use_judge=not args.no_judge, token=token)
             print(json.dumps(focus["counts"]))
         except (Exception, RefreshTooSlow) as e:  # noqa: BLE001 — every run must record how it ended
-            error = str(e)[:300] or type(e).__name__
+            # The error shows on the page, so it never carries the token.
+            text = str(e).replace(token.strip(), "[token]") if token.strip() else str(e)
+            error = text[:300] or type(e).__name__
             print(f"refresh failed: {error}", file=sys.stderr)
         finally:
             signal.alarm(0)

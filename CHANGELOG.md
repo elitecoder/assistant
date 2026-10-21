@@ -52,9 +52,26 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   - Promises made in DMs read "DM" or "group DM" instead of a channel ID.
   - Jira uses a bearer token unless `email_env` names the env var with your
     account email; the focus-board always looked for `$JIRA_EMAIL`.
-- A row's text now quotes the other person's latest message, not yours, and
-  the short-ack hint ignores your own replies. The focus-board compared
-  author names with the label "you", which never matched a real name.
+  - A new reply in a DM thread that started before the window now shows up.
+    The focus-board dropped it.
+  - A message counts as answered only when you posted after it. The
+    focus-board also counted a message of yours from up to 60 seconds
+    before, which hid quick DM asks.
+  - A direct @-mention of you outranks an earlier group mention in the same
+    thread.
+  - DMs and threads are read to the end. The focus-board stopped at 200
+    messages.
+  - A model answer of `[]` sets every new row aside as noise. The
+    focus-board treated it as a failure and showed raw rows.
+  - A promise the model moves to Do first ranks below direct asks instead
+    of above every row.
+  - A refresh error never includes the Slack token.
+  - If a refresh launch hangs before it starts, the next **Refresh from
+    Slack** stops it and starts a new one.
+  - The unused low-signal hints are gone.
+- A row's text now quotes the other person's latest message, not yours. The
+  focus-board compared author names with the label "you", which never
+  matched a real name.
 
 ### Changed
 - Read agent sessions from cmux first, with mukul-memory's registry as a

@@ -91,15 +91,18 @@ def usable_cache(saved, evidence: list[str], rubric_sig: str) -> dict:
 
 
 def parse(raw: str) -> dict[int, dict] | None:
+    """The model's rows by id. `[]` means every candidate is noise; an answer
+    with rows but none usable is a failure, like no answer."""
     m = re.search(r"\[.*\]", raw or "", re.S)
     if not m:
         return None
     try:
         data = json.loads(m.group(0))
-        return {int(d["id"]): d for d in data
+        rows = {int(d["id"]): d for d in data
                 if isinstance(d, dict) and "id" in d and isinstance(d.get("title"), str) and d["title"].strip()}
     except (ValueError, TypeError):
         return None
+    return rows if rows or data == [] else None
 
 
 def judge(focus: dict, threads: dict[int, dict], evidence: list[str], saved_cache, llm: LLM) -> tuple[dict, dict]:
@@ -120,7 +123,7 @@ def judge(focus: dict, threads: dict[int, dict], evidence: list[str], saved_cach
               f"{chr(10).join(evidence) or '(none found)'}\n\nCANDIDATES:\n{json.dumps(payload, indent=0)}\n")
     model = parse(llm(prompt)) if to_judge else {}
 
-    if to_judge and not model:
+    if model is None:
         focus["judge"] = {"ran": False, "note": "The model didn't return usable rows, so these are the raw ones."}
         return focus, saved_cache if isinstance(saved_cache, dict) else {}
 
