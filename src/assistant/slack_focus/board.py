@@ -18,9 +18,10 @@ def load(home: Path | None = None) -> dict:
     root = store.base_dir(home)
     cfg = settings_mod.load(home)
     focus = store.read_json(root / "focus.json")
-    focus = focus if isinstance(focus, dict) and isinstance(focus.get("active"), list) else None
+    focus = focus if cfg.configured and isinstance(focus, dict) and isinstance(focus.get("active"), list) else None
     view = {
         "configured": cfg.configured,
+        "problem": cfg.problem,
         "title": cfg.title,
         "state": store.read_state(home),
         "focus": focus,

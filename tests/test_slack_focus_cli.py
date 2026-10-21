@@ -126,6 +126,32 @@ def test_main_keeps_the_token_out_of_the_recorded_error(home, monkeypatch):
     assert store.read_state(home)["error"] == "Invalid header value b'Bearer xoxp-secret\\n'"
 
 
+def test_main_waits_briefly_for_a_lock_someone_is_probing(home, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(cli, "refresh", lambda h, **kw: {"counts": {}})
+    holding, release = threading.Event(), threading.Event()
+
+    def probe():
+        with store.locked(store.base_dir(home) / "refresh.lock"):
+            holding.set()
+            release.wait(5)
+
+    t = threading.Thread(target=probe)
+    t.start()
+    holding.wait(5)
+    threading.Timer(0.2, release.set).start()
+    assert cli.main([]) == 0
+    t.join(5)
+    assert store.read_state(home)["ok"] is True
+
+
+def test_refresh_reports_a_broken_config(home):
+    (home / ".assistant/comms/config.json").write_text("{bad")
+    with pytest.raises(RuntimeError, match="isn't valid JSON"):
+        cli.refresh(home, pull=True, use_judge=False, token="t")
+
+
 def test_main_skips_while_another_refresh_runs(home, capsys):
     with store.locked(store.base_dir(home) / "refresh.lock"):
         assert cli.main([]) == 0
@@ -147,6 +173,23 @@ def test_call_model_runs_tools_off_and_meters(home, monkeypatch):
     assert seen["prompt"] == "judge these" and seen["timeout"] == cli.JUDGE_TIMEOUT_SEC
     row = json.loads((home / ".assistant/cost-ledger.jsonl").read_text().splitlines()[-1])
     assert (row["caller"], row["status"], row["est_usd"]) == ("slack_focus", "ok", 0.01)
+
+
+def test_the_documented_droid_command_routes_the_judge(home, monkeypatch):
+    done = subprocess.run([sys.executable, str(BIN / "assistant-llm.py"), "set", "droid", "--feature", "slack_judge"],
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    seen = {}
+
+    def invoke(**kw):
+        seen.update(kw)
+        return cli.llm_runner.LLMResult(provider="droid", model=kw["model"], rc=1, stdout="", stderr="no",
+                                        wall_ms=1, tokens_in=0, tokens_out=0, cost_usd=None, usage_source="none",
+                                        session_id=None, result_text="[1]", usable=False)
+
+    monkeypatch.setattr(cli.llm_runner, "invoke", invoke)
+    assert cli.call_model("judge these") == ""  # text from an unusable run is never used
+    assert seen["provider"] == "droid" and seen["disable_tools"] is True
 
 
 def test_call_model_failure_returns_nothing(home, monkeypatch, capsys):
@@ -221,7 +264,7 @@ def test_main_stops_a_refresh_that_runs_too_long(home, monkeypatch):
         for _ in range(5):
             try:
                 time.sleep(5)
-            except OSError:  # the Slack transport retries TimeoutError like this
+            except Exception:  # noqa: BLE001 — the retry and Jira handlers catch this broadly
                 continue
         return {"counts": {}}
 

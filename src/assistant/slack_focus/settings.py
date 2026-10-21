@@ -35,6 +35,7 @@ class Settings:
     github_repos: tuple[str, ...] = ()
     github_hosts: tuple[str, ...] = ("github.com",)
     jira: JiraSettings = field(default_factory=JiraSettings)
+    problem: str = ""
 
 
 def config_path(home: Path | None = None) -> Path:
@@ -76,10 +77,13 @@ def parse(block) -> Settings:
 
 
 def load(home: Path | None = None) -> Settings:
-    """Read the live settings. A missing or unreadable config means the board
-    isn't set up yet, which the tab shows as setup steps, never as an error."""
+    """Read the live settings. A missing config means the board isn't set up
+    yet, which the tab shows as setup steps. A config that isn't valid JSON
+    names the problem instead."""
     try:
         doc = json.loads(config_path(home).read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError:
         return Settings()
+    except json.JSONDecodeError as e:
+        return Settings(problem=f"~/.assistant/comms/config.json isn't valid JSON: {e.msg} on line {e.lineno}.")
     return parse(doc.get("slack_focus") if isinstance(doc, dict) else None)

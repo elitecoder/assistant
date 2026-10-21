@@ -119,7 +119,7 @@ def refresh(home: Path, *, pull: bool, use_judge: bool, token: str,
     root = store.base_dir(home)
     cfg = settings.load(home)
     if not cfg.configured:
-        raise RuntimeError("Add a slack_focus block to ~/.assistant/comms/config.json first.")
+        raise RuntimeError(cfg.problem or "Add a slack_focus block to ~/.assistant/comms/config.json first.")
     if pull:
         phase(home, "Pulling Slack")
         client = slack_client.Client(token, transport)
@@ -145,8 +145,8 @@ def refresh(home: Path, *, pull: bool, use_judge: bool, token: str,
 
 
 class RefreshTooSlow(BaseException):
-    """Raised by the alarm. A BaseException, so the retry and error handlers
-    that catch OSError (TimeoutError included) along the way can't swallow it."""
+    """Raised by the alarm. A BaseException, so the `except Exception` and
+    `except OSError` handlers along the way can't swallow it."""
 
 
 def _too_slow(signum, frame):

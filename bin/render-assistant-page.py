@@ -2532,7 +2532,9 @@ def _render_slack_focus_tab_inner():
     head = (f'<div class="sf-head"><h2>{e(view["title"])}{count}</h2>'
             f'<div class="sf-controls">{button}<span class="meta" id="sf-status" role="status">{status}</span></div>'
             f'</div>{error}')
-    if not view["configured"]:
+    if view["problem"]:
+        body = f'<div class="empty sf-setup">{e(view["problem"])} Fix it, then refresh.</div>'
+    elif not view["configured"]:
         body = ('<div class="empty sf-setup">Set up the Slack list: add a <code>slack_focus</code> block to '
                 '<code>~/.assistant/comms/config.json</code> and export <code>SLACK_USER_TOKEN</code> in '
                 '<code>~/.zprofile</code>. The README lists every setting.</div>')

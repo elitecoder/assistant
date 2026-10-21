@@ -74,6 +74,15 @@ def test_setup_steps_before_configuration(mod):
     assert 'id="sf-refresh"' in html and 'data-running="false"' in html
 
 
+def test_a_broken_config_names_the_problem(mod, home):
+    write_config(home, CONFIG)
+    seed(home, focus=board_focus())
+    (home / ".assistant/comms/config.json").write_text("{bad")
+    html, count = mod.render_slack_focus_tab()
+    assert count is None and "isn&#x27;t valid JSON" in html and "Fix it, then refresh." in html
+    assert "Set up the Slack list" not in html and "Last pulled" not in html and "to do first" not in html
+
+
 def test_not_checked_yet_once_configured(mod, home):
     write_config(home, CONFIG | {"title": "Mukul's Slack"})
     html, count = mod.render_slack_focus_tab()

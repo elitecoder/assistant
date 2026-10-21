@@ -670,6 +670,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                     else:
                         render_only()
                         load_page.goto(url + "#slack")
+                        assert load_page.locator('[data-panel="slack"]').is_visible()
                     wait_for_calls(before_resume + 1, on)
                     assert on.evaluate(shows_running), resume
                     assert on.locator("#sf-status").inner_text() == "Loading the new list…"

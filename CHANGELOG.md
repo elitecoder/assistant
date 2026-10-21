@@ -29,8 +29,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     retried once. `bin/assistant-llm.py` routes it as the `slack_judge`
     feature.
   - The Slack client refuses any method outside a read allowlist before a
-    request leaves the machine, and a test checks no module names a write
-    method.
+    request leaves the machine, and a test checks that no module names a
+    common Slack write method.
   - Everything about the user is in the new `slack_focus` block of
     `~/.assistant/comms/config.json`: watched channels, bot names, skipped
     channel names, GitHub repos and hosts, and Jira projects. The Slack ID,
@@ -69,6 +69,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   - If a refresh launch hangs before it starts, the next **Refresh from
     Slack** stops it and starts a new one.
   - The unused low-signal hints are gone.
+  - A `config.json` that isn't valid JSON shows that on the tab, with the
+    line, instead of the setup steps next to the last list.
+  - "Last pulled" shows when Slack was last pulled, also after a
+    `--triage` run.
 - A row's text now quotes the other person's latest message, not yours. The
   focus-board compared author names with the label "you", which never
   matched a real name.

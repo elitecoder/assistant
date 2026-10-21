@@ -170,7 +170,8 @@ def triage(threads_doc: dict, mine: list[dict], settings: Settings, resolver: Re
 
     active.sort(key=lambda i: (LANE_ORDER.index(i["lane"]), -i["rank"]))
     return {
-        "generated": datetime.now(timezone.utc).isoformat(), "window_days": threads_doc["days"],
+        "generated": threads_doc.get("generated") or datetime.now(timezone.utc).isoformat(),
+        "window_days": threads_doc["days"],
         "me_name": me_name, "active": active, "handled": handled,
         "counts": {"active": len(active), "handled": len(handled), "threads": len(threads_doc["threads"])},
     }

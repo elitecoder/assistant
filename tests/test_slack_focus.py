@@ -79,8 +79,12 @@ def test_load_reads_comms_config(tmp_path):
     assert settings.load(tmp_path).watched_channels == {"C1": "team"}
     (tmp_path / ".assistant/comms/config.json").write_text("[1]")
     assert not settings.load(tmp_path).configured
-    (tmp_path / ".assistant/comms/config.json").write_text("{bad")
-    assert not settings.load(tmp_path).configured
+    assert settings.load(tmp_path).problem == ""
+    (tmp_path / ".assistant/comms/config.json").write_text('{"slack_focus": {"days": 7,}}')
+    broken = settings.load(tmp_path)
+    assert not broken.configured
+    assert broken.problem.startswith("~/.assistant/comms/config.json isn't valid JSON: ")
+    assert broken.problem.endswith(" on line 1.")
 
 
 # ─── client ──────────────────────────────────────────────────────────────────
@@ -359,6 +363,29 @@ def test_triage_resolves_threads_by_pr_or_ticket(cfg):
     no_jira = settings.parse(CONFIG | {"jira": {"enabled": False, "project_keys": ["ABC"]}})
     focus = triage.triage(doc, [], no_jira, triage.Resolver(no_jira, run=gh_runner({"7": "OPEN"}), env={}))
     assert focus["handled"] == [] and len(focus["active"]) == 3
+
+
+def test_a_thread_resolves_only_when_every_link_is_closed(cfg):
+    def thread(text):
+        return {"id": 1, "bucket": "ball_mine_mention", "channel": "#team", "kind": "channel", "permalink": "https://a/1",
+                "last_author": "Tim", "mentioned_after_my_last_reply": "direct", "last_activity": "2026-10-01T00:00:00",
+                "first": {"author": "Tim", "text": text, "at": "x"}, "latest": []}
+
+    def jira(req, timeout):
+        key = "done" if "ABC-1" in req.full_url else "indeterminate"
+        return _Resp(json.dumps({"fields": {"status": {"statusCategory": {"key": key}}}}).encode())
+
+    resolver = triage.Resolver(cfg, run=gh_runner({"7": "MERGED", "8": "OPEN"}), env={"JIRA_API_TOKEN": "t"},
+                               urlopen=jira)
+    doc = {"days": 7, "me_name": "Mukul Sharma", "threads": [
+        thread("github.com/acme/app/pull/7 and github.com/acme/app/pull/8"), thread("ABC-1 and ABC-2")]}
+    focus = triage.triage(doc, [], cfg, resolver)
+    assert focus["handled"] == [] and len(focus["active"]) == 2
+
+
+def test_triage_keeps_the_pull_time(cfg):
+    doc = {"days": 7, "generated": "2026-10-20T04:24:02+00:00", "threads": []}
+    assert triage.triage(doc, [], cfg, triage.Resolver(cfg, run=gh_runner(), env={}))["generated"] == doc["generated"]
 
 
 def test_promises_in_dms_name_the_conversation_kind(cfg):
@@ -652,7 +679,17 @@ def test_board_splits_open_and_checked_off(tmp_path, slack, cfg):
     assert view["judged"] is False and view["handled"] == focus["handled"]
 
 
+def test_board_hides_the_last_list_when_the_config_breaks(tmp_path, slack, cfg):
+    write_config(tmp_path, CONFIG)
+    store.write_json(store.base_dir(tmp_path) / "focus.json", {"active": [], "handled": []})
+    assert board.load(tmp_path)["focus"] is not None
+    (tmp_path / ".assistant/comms/config.json").write_text("{bad")
+    view = board.load(tmp_path)
+    assert view["focus"] is None and view["problem"].startswith("~/.assistant/comms/config.json isn't valid JSON")
+
+
 def test_board_ignores_malformed_files(tmp_path):
+    write_config(tmp_path, CONFIG)
     root = store.base_dir(tmp_path)
     store.write_json(root / "focus.json", {"active": "nope"})
     assert board.load(tmp_path)["focus"] is None
@@ -660,7 +697,7 @@ def test_board_ignores_malformed_files(tmp_path):
     store.write_json(root / "threads.json", [])
     store.write_json(root / "done.json", [])
     view = board.load(tmp_path)
-    assert view["do_first"] == 1 and view["done_by_you"] == [] and not view["configured"]
+    assert view["do_first"] == 1 and view["done_by_you"] == [] and view["configured"]
 
 
 def test_package_never_names_a_write_method():
