@@ -6,7 +6,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import os
 import subprocess
 import urllib.error
 from datetime import datetime
@@ -60,6 +59,7 @@ def test_parse_reads_every_user_setting():
     assert s.bot_authors == ("Deploy Bot",) and s.skip_channels == ("deployments",)
     assert s.github_repos == ("acme/app",) and s.github_hosts == ("git.corp.example",)
     assert s.jira.enabled and s.jira.base_url == "https://jira.acme.test" and s.jira.project_keys == ("ABC",)
+    assert (s.jira.token_env, s.jira.email_env) == ("JIRA_API_TOKEN", "")
 
 
 def test_parse_falls_back_per_field_on_bad_types():
@@ -214,6 +214,24 @@ def test_collect_buckets_every_thread(slack, cfg):
     assert len(mine) == 6 and mine[0]["cid"] == "C1" and mine[-1]["dm"]
 
 
+def test_collect_skips_empty_dms_and_deleted_threads(cfg):
+    search = {"is:dm": [{"ts": ts(1), "text": "x", "permalink": "https://acme.slack.com/archives/D1/p1",
+                         "channel": {"id": "D1"}}],
+              "<@U1>": [{"ts": ts(1), "text": "x", "channel": {"id": "C1"},
+                         "permalink": f"https://acme.slack.com/archives/C1/p1?thread_ts={ts(2)}&cid=C1"}]}
+    sl = client.Client("t", FakeSlack(threads={}, history={}, search=search))
+    doc, _ = collect.collect(sl, cfg, now=NOW)
+    assert doc["threads"] == []
+    assert ("conversations.replies", {"channel": "C1", "ts": ts(2), "limit": 200}) in sl._transport.calls
+
+
+def test_search_stops_at_its_page_limit():
+    fake = FakeSlack(search={"<@U1>": [{"ts": str(n), "text": "x", "channel": {"id": "C1"}} for n in range(6)]})
+    sl = client.Client("t", fake)
+    assert len(list(sl.search("<@U1>", max_pages=1))) == 2
+    assert [p["page"] for m, p in fake.calls if m == "search.messages"] == [1]
+
+
 def test_bucket_rule_order(cfg):
     base = {"last_author": "Aalia Habib", "channel": "#team", "last_is_me": False, "i_posted_after_in_channel": False,
             "i_reacted_to_last": False, "kind": "channel", "mentioned_after_my_last_reply": None,
@@ -354,14 +372,15 @@ def test_resolver_jira_auth_and_failures(cfg, monkeypatch):
             raise urllib.error.URLError("down")
         return _Resp(json.dumps({"fields": {"status": {"statusCategory": {"key": "indeterminate"}}}}).encode())
 
-    r = triage.Resolver(cfg, env={"JIRA_API_TOKEN": "tok", "JIRA_EMAIL": "me@acme.test"}, urlopen=urlopen)
+    cloud = settings.parse(CONFIG | {"jira": CONFIG["jira"] | {"email_env": "JIRA_EMAIL"}})
+    r = triage.Resolver(cloud, env={"JIRA_API_TOKEN": "tok", "JIRA_EMAIL": "me@acme.test"}, urlopen=urlopen)
     assert not r.jira_done("ABC-1") and not r.jira_done("ABC-1") and len(seen) == 1
     assert seen[0] == ("https://jira.acme.test/rest/api/2/issue/ABC-1?fields=status",
                        "Basic " + base64.b64encode(b"me@acme.test:tok").decode())
     assert not r.jira_done("BAD-1")
     env_base = settings.parse(CONFIG | {"jira": {"enabled": True, "project_keys": ["ABC"]}})
-    r = triage.Resolver(env_base, env={"JIRA_BASE_URL": "https://env.acme.test/", "JIRA_API_TOKEN": "t"},
-                        urlopen=urlopen)
+    r = triage.Resolver(env_base, env={"JIRA_BASE_URL": "https://env.acme.test/", "JIRA_API_TOKEN": "t",
+                                       "JIRA_EMAIL": "someone-else@acme.test"}, urlopen=urlopen)
     r.jira_done("ABC-2")
     assert seen[-1] == ("https://env.acme.test/rest/api/2/issue/ABC-2?fields=status", "Bearer t")
     assert not triage.Resolver(cfg, env={}, urlopen=urlopen).jira_done("ABC-3")  # no token: no request
@@ -424,9 +443,13 @@ def test_judge_keeps_raw_rows_when_the_model_fails(slack, cfg):
 
 def test_judge_effort_and_missing_fields(slack, cfg):
     focus, threads = _focus_and_threads(slack, cfg)
-    answer = json.dumps([{"id": 0, "lane": "Do first", "title": "t", "effort": "Huge"}, {"id": 1}, "junk"])
+    answer = json.dumps([{"id": 0, "lane": "Do first", "title": "t", "effort": "Huge", "why": 7},
+                         {"id": 1}, {"id": 2, "title": 42}, {"id": 3, "title": "  "}, "junk",
+                         {"id": 4, "lane": "Done", "title": "done", "why": ["x"]}])
     judged, _ = judge.judge(focus, threads, [], None, lambda p: answer)
+    assert [i["text"] for i in judged["active"]] == ["t"]
     assert judged["active"][0]["effort"] == "" and judged["active"][0]["why"] == ""
+    assert judged["handled"][-1]["why"] == "already done"
 
 
 def test_usable_cache_rejects_mismatches():
@@ -453,15 +476,25 @@ def test_done_evidence_lists_merged_prs(cfg):
 # ─── store ───────────────────────────────────────────────────────────────────
 
 def test_fingerprint_changes_with_a_new_reply():
-    threads = {1: {"first": {"text": "a", "at": "1"}, "latest": [{"text": "b", "at": "2"}]},
-               2: {"first": {"text": "a", "at": "1"}, "latest": []}}
-    item = {"link": "https://x/1", "thread_id": 1}
-    fp = store.fingerprint(item, threads)
-    assert len(fp) == 64 and fp == store.fingerprint(item, threads)
-    threads[1]["latest"].append({"text": "c", "at": "3"})
-    assert store.fingerprint(item, threads) != fp
-    assert store.fingerprint({"link": "https://x/1", "thread_id": 2}, threads) != \
-        store.fingerprint({"link": "https://x/1"}, threads)
+    thread = {"first": {"text": "a", "at": "1"}, "latest": [{"text": "b", "at": "2"}]}
+    assert store.signature(thread) == "b|2"
+    assert store.signature({"first": {"text": "a", "at": "1"}, "latest": []}) == "a|1"
+    assert store.signature(None) == ""
+    item = {"link": "https://x/1", "sig": store.signature(thread)}
+    fp = store.fingerprint(item)
+    assert len(fp) == 64 and fp == store.fingerprint(dict(item))
+    thread["latest"].append({"text": "c", "at": "3"})
+    assert store.fingerprint(dict(item, sig=store.signature(thread))) != fp
+    assert store.fingerprint({"link": "https://x/1"}) == store.fingerprint({"link": "https://x/1", "sig": ""})
+
+
+def test_fingerprint_matches_the_focus_board_formula():
+    """A focus-board done.json keeps working: same link, same last message, same key."""
+    import hashlib
+
+    link = "https://acme.slack.com/archives/C1/p1"
+    old = hashlib.sha256((link + "||" + "thanks!|2026-10-20T10:00").encode()).hexdigest()
+    assert store.fingerprint({"link": link, "sig": "thanks!|2026-10-20T10:00"}) == old
 
 
 def test_done_marks_and_json_io(tmp_path):
@@ -493,29 +526,26 @@ def test_lock_is_exclusive(tmp_path):
         assert again
 
 
-def test_state_reports_a_dead_run_as_failed(tmp_path):
+def test_state_is_live_only_while_a_run_holds_the_lock(tmp_path):
+    root = store.base_dir(tmp_path)
     assert store.read_state(tmp_path) == {}
-    store.write_state(tmp_path, running=True, pid=os.getpid(), phase="Pulling Slack")
-    assert store.read_state(tmp_path)["running"] is True
-    store.write_state(tmp_path, pid=2 ** 22 + 12345)
-    state = store.read_state(tmp_path)
+    started = "2026-10-20T10:00:00+00:00"
+    at = datetime.fromisoformat(started).timestamp()
+    store.write_state(tmp_path, running=True, started=started, phase="Pulling Slack")
+    assert store.read_state(tmp_path, now=at + 30)["running"] is True  # still starting up
+    with store.locked(root / "refresh.lock"):
+        assert store.read_state(tmp_path, now=at + 3600)["running"] is True
+    state = store.read_state(tmp_path, now=at + 61)
     assert (state["running"], state["ok"], state["phase"]) == (False, False, None)
     assert "stopped before it finished" in state["error"]
-    (store.base_dir(tmp_path) / "state.json").write_text("[]")
+    store.write_state(tmp_path, started=None)
+    assert store.read_state(tmp_path)["running"] is False
+    store.write_state(tmp_path, started="garbage", error="Slack refused the token")
+    assert store.read_state(tmp_path)["error"] == "Slack refused the token"
+    (root / "state.json").write_text("[]")
     assert store.write_state(tmp_path, ok=True) == {"ok": True}
-    (store.base_dir(tmp_path) / "state.json").write_text("[]")
+    (root / "state.json").write_text("[]")
     assert store.read_state(tmp_path) == {}
-
-
-def test_pid_alive(monkeypatch):
-    assert store.pid_alive(os.getpid())
-    assert not store.pid_alive(None) and not store.pid_alive(0) and not store.pid_alive("12")
-
-    def denied(pid, sig):
-        raise PermissionError()
-
-    monkeypatch.setattr(store.os, "kill", denied)
-    assert store.pid_alive(1)
 
 
 # ─── board ───────────────────────────────────────────────────────────────────
@@ -527,9 +557,11 @@ def test_board_splits_open_and_checked_off(tmp_path, slack, cfg):
     focus, threads = _focus_and_threads(slack, cfg)
     root = store.base_dir(tmp_path)
     store.write_json(root / "focus.json", focus)
-    store.write_json(root / "threads.json", {"threads": list(threads.values())})
     first = focus["active"][0]
-    store.set_done(tmp_path, store.fingerprint(first, threads), True)
+    assert first["sig"] == store.signature(threads[first["thread_id"]])
+    store.set_done(tmp_path, store.fingerprint(first), True)
+    # A newer pull renumbers threads.json; the check-off still holds.
+    store.write_json(root / "threads.json", {"threads": [dict(t, id=t["id"] + 100) for t in threads.values()]})
     view = board.load(tmp_path)
     assert [d["text"] for d in view["done_by_you"]] == [first["text"]] and view["done_by_you"][0]["done_at"]
     names = [name for name, *_ in view["lanes"]]

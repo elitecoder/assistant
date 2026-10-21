@@ -132,14 +132,15 @@ def drive(output_dir, browser_executable, coverage_dir=None):
             {"lane": "Promise", "text": "Send the freeze plan", "link": "https://acme.slack.com/archives/C1/p3",
              "thread_id": 3, "channel": "#team", "who": "you", "last": ""},
         ]
+        sys.path.insert(0, str(REPO / "src"))
+        from assistant.slack_focus import store as slack_store
+        for slack_item in slack_items:
+            slack_item["sig"] = slack_store.signature(slack_threads[slack_item["thread_id"] - 1])
         (slack_root / "threads.json").write_text(json.dumps({"threads": slack_threads}))
         (slack_root / "focus.json").write_text(json.dumps({
             "generated": now.isoformat(), "window_days": 7, "judge": {"ran": True}, "active": slack_items,
             "read": [], "judge_dropped": [], "handled": []}))
-        sys.path.insert(0, str(REPO / "src"))
-        from assistant.slack_focus import store as slack_store
-        (slack_root / "done.json").write_text(json.dumps({
-            slack_store.fingerprint(slack_items[2], {t["id"]: t for t in slack_threads}): now.isoformat()}))
+        (slack_root / "done.json").write_text(json.dumps({slack_store.fingerprint(slack_items[2]): now.isoformat()}))
         with mock.patch.dict(os.environ, {"HOME": str(home)}):
             spec = importlib.util.spec_from_file_location(
                 "browser_renderer", REPO / "bin/render-assistant-page.py")
@@ -534,6 +535,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 refresh_fixture()
                 assert page.locator('[data-panel="overview"]').is_visible()
 
+                load_profiler = None
                 slack_calls = []
                 slack_script = {"status": [], "refresh": 200, "mark": 200}
 
@@ -632,29 +634,38 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                     slackFocusShow({running: true});
                 }""")
                 assert not page.locator("#sf-refresh").is_disabled()
-                def advance_until(predicate, steps=20):
+                def advance_until(predicate, on, steps=20):
                     for _ in range(steps):
-                        if page.evaluate(predicate):
+                        if on.evaluate(predicate):
                             return
-                        page.clock.fast_forward(1000)
-                        page.wait_for_timeout(50)
+                        on.clock.fast_forward(1000)
+                        on.wait_for_timeout(50)
                     raise AssertionError(predicate)
 
-                def wait_for_calls(count):
+                def wait_for_calls(count, on=page):
                     for _ in range(100):
                         if len(slack_calls) >= count:
                             return
-                        page.wait_for_timeout(20)
+                        on.wait_for_timeout(20)
                     raise AssertionError((count, slack_calls))
 
-                running_state = json.dumps({"running": True, "pid": os.getpid(), "phase": "Sorting threads"})
+                running_state = json.dumps({"running": True, "started": slack_store.now_iso(), "phase": "Sorting threads"})
                 shows_running = "() => document.getElementById('slack-focus').dataset.running === 'true'"
 
                 def finished_at(seconds):
                     return {"running": False, "ok": True,
                             "finished": (now + timedelta(seconds=seconds)).isoformat()}
 
-                for resume in ("refresh", "load"):
+                load_page = page.context.new_page()
+                load_page.on("pageerror", lambda error: errors.append(str(error)))
+                load_page.clock.install()
+                load_page.route("**/slack-focus/*", slack_route)
+                if profiler is not None:
+                    load_profiler = page.context.new_cdp_session(load_page)
+                    load_profiler.send("Profiler.enable")
+                    load_profiler.send("Debugger.enable")
+                    load_profiler.send("Profiler.startPreciseCoverage", {"callCount": True, "detailed": True})
+                for resume, on in (("refresh", page), ("load", load_page)):
                     (slack_root / "state.json").write_text(running_state)
                     before_resume = len(slack_calls)
                     slack_script["status"] = [finished_at(render_version + 2)]
@@ -662,16 +673,16 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                         refresh_fixture()
                     else:
                         render_only()
-                        page.reload()
-                    wait_for_calls(before_resume + 1)
-                    assert page.evaluate(shows_running), resume
-                    assert page.locator("#sf-status").inner_text() == "Loading the new list…"
+                        load_page.goto(url + "#slack")
+                    wait_for_calls(before_resume + 1, on)
+                    assert on.evaluate(shows_running), resume
+                    assert on.locator("#sf-status").inner_text() == "Loading the new list…"
                     (slack_root / "state.json").unlink()
                     render_only()
-                    advance_until("() => document.getElementById('slack-focus').dataset.running === 'false'")
+                    advance_until("() => document.getElementById('slack-focus').dataset.running === 'false'", on)
                     assert [a for a, _ in slack_calls[before_resume:]] == ["status"], slack_calls[before_resume:]
-                    assert not page.locator("#sf-refresh").is_disabled()
-                    assert page.locator("#sf-status").inner_text().startswith("Last pulled")
+                    assert not on.locator("#sf-refresh").is_disabled()
+                    assert on.locator("#sf-status").inner_text().startswith("Last pulled")
                 (slack_root / "state.json").write_text(running_state)
                 slack_script["status"] = [finished_at(10 ** 6)]
                 before_stuck = len(slack_calls)
@@ -708,7 +719,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 assert not errors, errors
                 if profiler is not None:
                     scripts = []
-                    for collector in (profiler, file_profiler):
+                    for collector in (profiler, file_profiler, load_profiler):
                         entries = collector.send("Profiler.takePreciseCoverage")["result"]
                         for entry in entries:
                             source = collector.send("Debugger.getScriptSource", {

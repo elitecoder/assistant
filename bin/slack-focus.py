@@ -27,9 +27,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 SRC = REPO / "src"
-for path in (SRC, BIN):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+sys.path[:0] = [str(SRC), str(BIN)]
 
 import comms_lib  # noqa: E402
 import llm_runner  # noqa: E402
@@ -40,6 +38,7 @@ from assistant.slack_focus import collect, judge, settings, store, triage  # noq
 
 RENDER_SCRIPT = BIN / "render-assistant-page.py"
 JUDGE_TIMEOUT_SEC = int(os.environ.get("SLACK_FOCUS_JUDGE_TIMEOUT_SEC", "420"))
+REFRESH_TIMEOUT_SEC = 1200
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 
 
@@ -138,6 +137,10 @@ def refresh(home: Path, *, pull: bool, use_judge: bool, token: str,
     return focus
 
 
+def _too_slow(signum, frame):
+    raise TimeoutError(f"The refresh took longer than {REFRESH_TIMEOUT_SEC // 60} minutes.")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Refresh the Slack focus board.")
     ap.add_argument("--triage", action="store_true", help="re-triage the last pull without calling Slack")
@@ -153,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
                           ok=None, error=None, phase="Starting")
         started = time.time()
         error = None
+        signal.signal(signal.SIGALRM, _too_slow)
+        signal.alarm(REFRESH_TIMEOUT_SEC)
         try:
             focus = refresh(home, pull=not args.triage, use_judge=not args.no_judge,
                             token=os.environ.get("SLACK_USER_TOKEN", ""))
@@ -160,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:  # noqa: BLE001 — every run must record how it ended
             error = str(e)[:300] or type(e).__name__
             print(f"refresh failed: {error}", file=sys.stderr)
+        finally:
+            signal.alarm(0)
         store.write_state(home, running=False, finished=store.now_iso(), ok=error is None, error=error,
                           phase=None, seconds=round(time.time() - started))
         rerender()

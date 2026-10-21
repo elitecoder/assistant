@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,13 +67,19 @@ def locked(path: Path, blocking: bool = True):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def fingerprint(item: dict, threads: dict[int, dict]) -> str:
+def signature(thread: dict | None) -> str:
+    """The thread's latest message as "text|time". Triage stores it on each
+    row, so a row's key never depends on a later pull's thread numbering."""
+    if not thread:
+        return ""
+    last = (thread.get("latest") or [thread["first"]])[-1]
+    return last.get("text", "") + "|" + last.get("at", "")
+
+
+def fingerprint(item: dict) -> str:
     """Key a checked-off item by its link plus its thread's latest message. A
     new reply or an edit changes the key, so the item comes back on its own."""
-    t = threads.get(item.get("thread_id"))
-    last = (t.get("latest") or [t["first"]])[-1] if t else {}
-    signature = (last.get("text", "") + "|" + last.get("at", "")) if t else ""
-    return hashlib.sha256((item["link"] + "||" + signature).encode()).hexdigest()
+    return hashlib.sha256((item["link"] + "||" + item.get("sig", "")).encode()).hexdigest()
 
 
 def set_done(home: Path | None, fp: str, done: bool) -> None:
@@ -87,23 +94,24 @@ def set_done(home: Path | None, fp: str, done: bool) -> None:
         write_json(root / "done.json", marks)
 
 
-def pid_alive(pid) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+STARTUP_GRACE_SEC = 60
 
 
-def read_state(home: Path | None = None) -> dict:
-    """The refresh state. A run whose process died mid-way reads as failed."""
-    state = read_json(base_dir(home) / "state.json", {})
+def read_state(home: Path | None = None, now: float | None = None) -> dict:
+    """The refresh state. A run holds refresh.lock while it works, so a run
+    that isn't holding it a minute after it started has stopped."""
+    root = base_dir(home)
+    state = read_json(root / "state.json", {})
     state = state if isinstance(state, dict) else {}
-    if state.get("running") and not pid_alive(state.get("pid")):
+    if not state.get("running"):
+        return state
+    with locked(root / "refresh.lock", blocking=False) as free:
+        held = not free
+    try:
+        age = (now if now is not None else time.time()) - datetime.fromisoformat(state["started"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        age = float("inf")
+    if not held and age > STARTUP_GRACE_SEC:
         state.update(running=False, ok=False, phase=None,
                      error=state.get("error") or "The refresh stopped before it finished.")
     return state

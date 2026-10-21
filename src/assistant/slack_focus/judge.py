@@ -95,7 +95,8 @@ def parse(raw: str) -> dict[int, dict] | None:
         return None
     try:
         data = json.loads(m.group(0))
-        return {int(d["id"]): d for d in data if isinstance(d, dict) and "id" in d and d.get("title")}
+        return {int(d["id"]): d for d in data
+                if isinstance(d, dict) and "id" in d and isinstance(d.get("title"), str) and d["title"].strip()}
     except (ValueError, TypeError):
         return None
 
@@ -142,11 +143,12 @@ def judge(focus: dict, threads: dict[int, dict], evidence: list[str], saved_cach
             continue
         item = dict(item)
         lane = v.get("lane") if v.get("lane") in LANES else item["lane"]
-        item.update(lane=lane, text=v["title"], why=v.get("why", ""),
+        why = v.get("why")
+        item.update(lane=lane, text=v["title"], why=why if isinstance(why, str) else "",
                     effort=v["effort"] if v.get("effort") in EFFORTS else "")
         if lane == "Done":
             focus["handled"].append({"text": item["text"], "channel": item["channel"], "link": item["link"],
-                                     "why": v.get("why", "already done")})
+                                     "why": why if isinstance(why, str) else "already done"})
         else:
             (read if lane == "Read" else kept).append(item)
     kept.sort(key=lambda i: (LANE_ORDER.index(i["lane"]) if i["lane"] in LANE_ORDER else 9, -i.get("rank", 0)))

@@ -27,14 +27,11 @@ def load(home: Path | None = None) -> dict:
     }
     if focus is None:
         return view
-    threads_doc = store.read_json(root / "threads.json", {})
-    threads = {t["id"]: t for t in (threads_doc.get("threads") or []) if isinstance(t, dict) and "id" in t} \
-        if isinstance(threads_doc, dict) else {}
     marks = store.read_json(root / "done.json", {})
     marks = marks if isinstance(marks, dict) else {}
     open_items, done_items = [], []
     for item in focus["active"]:
-        item = dict(item, fp=store.fingerprint(item, threads))
+        item = dict(item, fp=store.fingerprint(item))
         if item["fp"] in marks:
             done_items.append(dict(item, done_at=marks[item["fp"]]))
         else:

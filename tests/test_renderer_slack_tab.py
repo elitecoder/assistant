@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -51,7 +50,7 @@ def seed(home, focus=None, threads=None, state=None, done=None):
 def board_focus(**extra):
     return {
         "generated": "2026-10-20T14:03:00+00:00", "window_days": 7, "judge": {"ran": True},
-        "active": [item("Answer <Tim>", mention=True, why="he asked", effort="Quick"),
+        "active": [item("Answer <Tim>", mention=True, why="he asked", effort="Quick", sig="a|1"),
                    item("Ship the plan", lane="Promise", thread_id=2, effort="Medium"),
                    item("Odd effort", lane="This week", effort="Huge", link="javascript:alert(1)")],
         "read": [item("FYI build green", lane="Read")],
@@ -100,7 +99,7 @@ def test_board_renders_lanes_escaped_and_safe(mod, home):
 def test_checked_off_rows_move_to_done_by_you(mod, home):
     write_config(home, CONFIG)
     focus = board_focus()
-    fp = store.fingerprint(focus["active"][0], {1: {"first": {"text": "a", "at": "1"}, "latest": []}})
+    fp = store.fingerprint(focus["active"][0])
     seed(home, focus, done={fp: "2026-10-20T15:00:00+00:00"})
     html, count = mod.render_slack_focus_tab()
     assert count == 0
@@ -111,8 +110,9 @@ def test_checked_off_rows_move_to_done_by_you(mod, home):
 
 def test_running_and_failed_states(mod, home):
     write_config(home, CONFIG)
+    started = store.now_iso()
     seed(home, board_focus(judge={"ran": False}),
-         state={"running": True, "pid": os.getpid(), "phase": "Pulling Slack (11 of 40 threads)"})
+         state={"running": True, "started": started, "phase": "Pulling Slack (11 of 40 threads)"})
     html, _ = mod.render_slack_focus_tab()
     assert 'data-running="true"' in html and " disabled>Refreshing…" in html
     assert "Refreshing: Pulling Slack (11 of 40 threads)." in html
@@ -123,7 +123,7 @@ def test_running_and_failed_states(mod, home):
     seed(home, board_focus(generated="garbage"), state={"running": False, "ok": False})
     html, _ = mod.render_slack_focus_tab()
     assert "at an unknown time" in html and "unknown error" in html
-    seed(home, board_focus(), state={"running": True, "pid": os.getpid()})
+    seed(home, board_focus(), state={"running": True, "started": started})
     assert "Refreshing: Starting." in mod.render_slack_focus_tab()[0]
 
 

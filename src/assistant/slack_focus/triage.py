@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .settings import Settings
+from .store import signature
 
 LANE = {"ball_mine_dm": "Do first", "ball_mine_mention": "Do first",
         "thread_moved_on": "This week", "group_mention": "This week", "unread_watched": "Optional"}
@@ -82,7 +83,7 @@ class Resolver:
         if key not in self._jira:
             base = jira.base_url or self._env.get("JIRA_BASE_URL", "").rstrip("/")
             token = self._env.get(jira.token_env, "")
-            email = self._env.get(jira.email_env, "")
+            email = self._env.get(jira.email_env, "") if jira.email_env else ""
             done = False
             if base.startswith("https://") and token:
                 auth = ("Basic " + base64.b64encode(f"{email}:{token}".encode()).decode()) if email \
@@ -158,7 +159,7 @@ def triage(threads_doc: dict, mine: list[dict], settings: Settings, resolver: Re
             "low_signal": noise(t, me_name), "lane": lane, "channel": t["channel"], "who": t["last_author"],
             "text": (ask["text"] or t["first"]["text"])[:160], "link": t["permalink"],
             "mention": t["mentioned_after_my_last_reply"] == "direct",
-            "rank": rank(t), "last": t["last_activity"][:16], "thread_id": t["id"],
+            "rank": rank(t), "last": t["last_activity"][:16], "thread_id": t["id"], "sig": signature(t),
         })
 
     seen_prs = set()

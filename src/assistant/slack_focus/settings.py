@@ -20,7 +20,7 @@ class JiraSettings:
     enabled: bool = False
     base_url: str = ""
     token_env: str = "JIRA_API_TOKEN"
-    email_env: str = "JIRA_EMAIL"
+    email_env: str = ""
     project_keys: tuple[str, ...] = ()
 
 
@@ -69,7 +69,7 @@ def parse(block) -> Settings:
             enabled=jira.get("enabled") is True,
             base_url=str(jira.get("base_url") or "").rstrip("/"),
             token_env=str(jira.get("token_env") or "JIRA_API_TOKEN"),
-            email_env=str(jira.get("email_env") or "JIRA_EMAIL"),
+            email_env=str(jira.get("email_env") or ""),
             project_keys=tuple(k.upper() for k in _strings(jira.get("project_keys"))),
         ),
     )

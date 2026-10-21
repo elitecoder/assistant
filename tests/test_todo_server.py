@@ -848,3 +848,29 @@ def test_slack_focus_done_and_undone(server, slack_home):
     assert store.read_json(store.base_dir(server.env.tmp) / "done.json") == {}
     assert _request(server.base, "POST", "/slack-focus/done", json.dumps({"fp": "../x"}))[0] == 400
     assert _request(server.base, "POST", "/slack-focus/done", "{bad")[0] == 400
+
+
+def test_slack_focus_store_import_adds_src_to_the_path(slack_home, monkeypatch):
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != str(mod.SRC_DIR)])
+    assert mod._slack_focus_store() is slack_home
+    assert sys.path[0] == str(mod.SRC_DIR)
+
+
+def test_slack_focus_routes_refuse_a_null_origin(server, slack_home):
+    for path in ("/slack-focus/status", "/slack-focus/refresh", "/slack-focus/done"):
+        status, _ = _request(server.base, "POST", path, json.dumps({"fp": "a" * 64}), headers={"Origin": "null"})
+        assert status == 403, path
+    status, _ = _request(server.base, "POST", "/slack-focus/status", headers={"Origin": f"http://127.0.0.1:{mod.PORT}"})
+    assert status == 200
+    assert _FakeProc.made == []
+
+
+def test_slack_focus_spawn_failure_is_recorded(server, slack_home, monkeypatch):
+    def no_zsh(*args, **kwargs):
+        raise FileNotFoundError("/bin/zsh")
+
+    monkeypatch.setattr(mod.subprocess, "Popen", no_zsh)
+    assert json.loads(_request(server.base, "POST", "/slack-focus/refresh")[1]) == {"started": False}
+    state = json.loads(_request(server.base, "POST", "/slack-focus/status")[1])
+    assert (state["running"], state["ok"]) == (False, False)
+    assert state["error"].startswith("The refresh couldn't start: ")

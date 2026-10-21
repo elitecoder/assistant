@@ -569,10 +569,15 @@ def slack_focus_refresh():
             return json.dumps({"started": False})
     store.write_state(HOME, running=True, pid=os.getpid(), started=store.now_iso(),
                       finished=None, ok=None, error=None, phase="Starting")
-    with open(root / "refresh.log", "w") as log:
-        _slack_focus_proc = subprocess.Popen(
-            ["/bin/zsh", "-c", SLACK_FOCUS_LAUNCH, sys.executable, str(SLACK_FOCUS_SCRIPT)],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        with open(root / "refresh.log", "w") as log:
+            _slack_focus_proc = subprocess.Popen(
+                ["/bin/zsh", "-c", SLACK_FOCUS_LAUNCH, sys.executable, str(SLACK_FOCUS_SCRIPT)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as e:
+        store.write_state(HOME, running=False, ok=False, phase=None, finished=store.now_iso(),
+                          error=f"The refresh couldn't start: {e}")
+        return json.dumps({"started": False})
     return json.dumps({"started": True})
 
 
@@ -758,6 +763,11 @@ class Handler(BaseHTTPRequestHandler):
         )
         if _mutation and not self._origin_allowed_for_mutation():
             self._reply(403, "cross-origin mutation refused")
+            return
+        # The Slack tab's routes reach Slack, gh, and the model, so they also
+        # refuse Origin: null (a sandboxed frame); the tab never sends it.
+        if parts[:1] == ["slack-focus"] and self.headers.get("Origin", "") == "null":
+            self._reply(403, "cross-origin request refused")
             return
 
         # POST /proposal/<id>/<action>

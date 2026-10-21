@@ -170,3 +170,36 @@ def test_rerender_runs_the_dashboard_renderer(monkeypatch):
     cli.rerender()
     assert calls[0][0] == [sys.executable, str(BIN / "render-assistant-page.py")]
     assert calls[0][1]["check"] is False
+
+
+def test_run_gives_up_on_output_after_the_kill(home, monkeypatch):
+    class Stuck:
+        pid = 1
+
+        def __init__(self, *args, **kwargs):
+            self.calls = 0
+
+        def communicate(self, input=None, timeout=None):
+            raise subprocess.TimeoutExpired("cmd", timeout)
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(cli.subprocess, "Popen", Stuck)
+    monkeypatch.setattr(cli.os, "getpgid", lambda pid: (_ for _ in ()).throw(ProcessLookupError()))
+    assert cli.run(["x"], timeout=1) == (124, "", "\ntimeout after 1s")
+
+
+def test_script_entry_point_reports_missing_setup(tmp_path):
+    env = {**os.environ, "HOME": str(tmp_path)}
+    done = subprocess.run([sys.executable, str(BIN / "slack-focus.py"), "--triage", "--no-judge"],
+                          capture_output=True, text=True, env=env, timeout=60)
+    assert done.returncode == 1 and "slack_focus block" in done.stderr
+    assert store.read_state(tmp_path)["error"].startswith("Add a slack_focus block")
+
+
+def test_main_stops_a_refresh_that_runs_too_long(home, monkeypatch):
+    monkeypatch.setattr(cli, "REFRESH_TIMEOUT_SEC", 1)
+    monkeypatch.setattr(cli, "refresh", lambda h, **kw: __import__("time").sleep(5))
+    assert cli.main([]) == 1
+    assert store.read_state(home)["error"] == "The refresh took longer than 0 minutes."
