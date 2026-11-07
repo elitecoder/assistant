@@ -39,6 +39,7 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
                                                           switch (Keel M4; the
                                                           REAL switch, not a
                                                           no-op ping)
+  POST /brief/refresh                                     rebuild the page now
   POST /brief/seen?date=YYYY-MM-DD                        Brief-tab view signal
                                                           (Keel M3): stamps the
                                                           seen sidecar next to
@@ -770,7 +771,7 @@ class Handler(BaseHTTPRequestHandler):
                           ["goal", "pause"], ["goal", "resume"])
             or (len(parts) == 3 and parts[0] == "goal" and parts[1] == "update")
             or (len(parts) == 3 and parts[0] == "decision" and parts[1] == "act")
-            or parts == ["brief", "seen"]
+            or parts in (["brief", "seen"], ["brief", "refresh"])
             or parts in (["slack-focus", "refresh"], ["slack-focus", "done"], ["slack-focus", "undone"])
         )
         if _mutation and not self._origin_allowed_for_mutation():
@@ -866,6 +867,11 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = goal_update(goal_id, self._read_body(),
                                   is_human=self._is_human())
             self._reply(200 if ok else (404 if "not found" in msg else 400), msg)
+            return
+
+        if parts == ["brief", "refresh"]:
+            rerender_dashboard()
+            self._reply(200, "rebuilt")
             return
 
         # POST /brief/seen?date=YYYY-MM-DD — Brief-tab view signal (Keel M3).
