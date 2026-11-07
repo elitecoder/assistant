@@ -1,0 +1,62 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="dark.js"></script>
+<style>.k{font-size:15px}svg text{font-size:17px}svg text.t{font-size:15px}</style></head>
+<body><div id="fig" style="width:1200px">
+<div class="k">how an item gets decided</div>
+<div class="h"><em>Rules</em> pick the lane. The model only suggests.</div>
+<p class="cap">Every event gets exactly one of five lanes, and an unmatched event is escalated first.</p>
+<svg viewBox="0 0 1104 560" width="1104" height="560" style="margin-top:28px">
+<defs>
+<marker id="a" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto"><path d="M2 2 L10 6 L2 10"/></marker>
+<marker id="am" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto"><path class="m" d="M2 2 L10 6 L2 10"/></marker>
+</defs>
+
+<!-- input -->
+<circle class="f" cx="10" cy="190" r="6"/>
+<text x="0" y="226">WorldEvent</text>
+<text class="t" x="0" y="248">source + kind</text>
+<path d="M16 190 H168" marker-end="url(#a)"/>
+
+<!-- rules box -->
+<rect class="f m" x="180" y="30" width="350" height="320" rx="4"/>
+<text class="mt" x="200" y="62">policy rules</text>
+<text class="t" x="200" y="86">in order · first match wins</text>
+<path class="thin faint" d="M200 102 H510"/>
+<text class="t" x="200" y="132">cmux-needs-input-escalate</text>
+<text class="t" x="200" y="162">gh-review-requested-staged</text>
+<text class="t" x="200" y="192">gh-mention-escalate</text>
+<text class="t" x="200" y="222">gh-ci-activity-digest</text>
+<text class="t" x="200" y="252">gmail-newsletter-drop</text>
+<text class="t" x="200" y="282">slack-dm-escalate</text>
+<text class="t" x="200" y="318">… 25 starter rules</text>
+
+<!-- fan to lanes -->
+<path d="M530 190 C580 190 570 60 628 60" marker-end="url(#a)"/>
+<path d="M530 190 C580 190 570 125 628 125" marker-end="url(#a)"/>
+<path d="M530 190 H628" marker-end="url(#a)"/>
+<path d="M530 190 C580 190 570 255 628 255" marker-end="url(#a)"/>
+<path d="M530 190 C580 190 570 320 628 320" marker-end="url(#a)"/>
+
+<text x="640" y="66">auto</text>
+<text class="t" x="740" y="66">reversible action, recorded</text>
+<text x="640" y="131">staged</text>
+<text class="t" x="740" y="131">a decision for you to review</text>
+<text x="640" y="196">escalate</text>
+<text class="t" x="740" y="196">a decision at the top of the brief</text>
+<text x="640" y="261">digest</text>
+<text class="t" x="740" y="261">an FYI line; expires in 24 h</text>
+<text x="640" y="326">drop</text>
+<text class="t" x="740" y="326">a receipt only, from an explicit rule</text>
+
+<!-- unmatched path -->
+<path d="M355 350 V408" marker-end="url(#a)"/>
+<text class="t" x="368" y="386">no rule matched</text>
+<rect class="w" x="180" y="420" width="350" height="64" rx="4"/>
+<text x="200" y="448">open as escalate</text>
+<text class="t" x="200" y="470">fail-safe, before any model</text>
+
+<path class="d" d="M530 452 H628" marker-end="url(#a)"/>
+<rect class="f d" x="640" y="420" width="380" height="64" rx="4"/>
+<text x="660" y="448">triage model</text>
+<text class="t" x="660" y="470">may attach staged · escalate · digest</text>
+<text class="si" x="640" y="526">Its lane map has no auto or drop, so it can't act or discard.</text>
+</svg></div></body></html>

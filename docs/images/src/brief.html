@@ -1,0 +1,68 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="dark.js"></script>
+<style>.k{font-size:15px}svg text{font-size:17px}svg text.t{font-size:15px}</style></head>
+<body><div id="fig" style="width:1200px">
+<div class="k">what a morning looks like</div>
+<div class="h">Seven events overnight. <em>Four</em> need you.</div>
+<p class="cap">Lanes and scores from the repo's policy fixtures, run through the real triage and brief code.</p>
+<svg viewBox="0 0 1104 672" width="1104" height="672" style="margin-top:28px">
+<defs>
+<marker id="a" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto"><path d="M2 2 L10 6 L2 10"/></marker>
+</defs>
+
+<!-- events in -->
+<text class="t" x="0" y="34">events in</text>
+<g>
+<circle class="f" cx="8" cy="82" r="5"/><text x="24" y="88">slack</text><text class="t" x="24" y="110">dm</text>
+<circle class="f" cx="8" cy="142" r="5"/><text x="24" y="148">github</text><text class="t" x="24" y="170">mention</text>
+<circle class="f" cx="8" cy="202" r="5"/><text x="24" y="208">cmux</text><text class="t" x="24" y="230">needs_input</text>
+<circle class="f" cx="8" cy="262" r="5"/><text x="24" y="268">github</text><text class="t" x="24" y="290">review_requested</text>
+<circle class="f" cx="8" cy="322" r="5"/><text x="24" y="328">gcal</text><text class="t" x="24" y="350">event in 24 h</text>
+<circle class="f" cx="8" cy="382" r="5"/><text x="24" y="388">github</text><text class="t" x="24" y="410">ci_activity</text>
+<circle class="f" cx="8" cy="442" r="5"/><text x="24" y="448">gmail</text><text class="t" x="24" y="470">newsletter</text>
+</g>
+<path d="M190 82 C290 82 280 262 368 262"/>
+<path d="M190 142 C290 142 280 262 368 262"/>
+<path d="M190 202 C290 202 280 262 368 262"/>
+<path d="M190 262 H368"/>
+<path d="M190 322 C290 322 280 262 368 262"/>
+<path d="M190 382 C290 382 280 262 368 262"/>
+<path d="M190 442 C290 442 280 262 356 262" marker-end="url(#a)"/>
+
+<!-- the brief -->
+<rect class="f" x="380" y="0" width="724" height="500" rx="4"/>
+<text class="t" x="404" y="34">morning brief · first pulse after 7:00</text>
+<text class="big" x="404" y="76"><tspan style="fill:var(--mark);stroke:none">4</tspan> decisions pending</text>
+<path class="thin faint" d="M404 96 H1080"/>
+
+<text class="t" x="404" y="126">queue · ranked</text>
+<text class="t" x="404" y="158">escalate</text><text x="540" y="158" text-anchor="end">170</text><text x="564" y="158">Slack DM</text>
+<text class="t" x="404" y="188">escalate</text><text x="540" y="188" text-anchor="end">170</text><text x="564" y="188">GitHub: “can you take a look?”</text>
+<text class="t" x="404" y="218">escalate</text><text x="540" y="218" text-anchor="end">170</text><text x="564" y="218">workspace:7 needs input</text>
+<text class="t" x="404" y="248">staged</text><text x="540" y="248" text-anchor="end">80</text><text x="564" y="248">Review requested: web-app #12</text>
+
+<text class="t" x="404" y="290">digest · FYI</text>
+<text class="t" x="404" y="320">digest</text><text x="540" y="320" text-anchor="end">40</text><text x="564" y="320">Meeting in 24 hours</text>
+<text class="t" x="404" y="350">digest</text><text x="540" y="350" text-anchor="end">40</text><text x="564" y="350">CI passed on main</text>
+
+<text class="t" x="404" y="392">handled overnight</text>
+<text x="404" y="422">dropped gmail/newsletter</text><text class="t" x="680" y="422">rule gmail-newsletter-drop</text>
+
+<text class="t" x="404" y="458">health</text>
+<text x="404" y="486">interrupts 0 delivered · 0 denied</text><text class="t" x="780" y="486">budget page 0, notify 0</text>
+
+<!-- score -->
+<path class="thin faint" d="M0 540 H1104"/>
+<text class="big" x="0" y="600">score =</text>
+<text x="120" y="586">lane</text>
+<text class="t" x="120" y="610">escalate 100 · staged 60 · digest 20</text>
+<text class="big" x="468" y="600">+</text>
+<text x="504" y="586">urgency</text>
+<text class="t" x="504" y="610">now 50 · high 20</text>
+<text class="big" x="666" y="600">+</text>
+<text x="702" y="586">freshness</text>
+<text class="t" x="702" y="610">20, minus 5 a day</text>
+<text class="big" x="876" y="600">+</text>
+<text x="912" y="586">goal boost</text>
+<text class="t" x="912" y="610">up to 20</text>
+<text class="si" x="0" y="660">The queue sorts by lane first, so no score can lift a staged item above an escalation.</text>
+</svg></div></body></html>
