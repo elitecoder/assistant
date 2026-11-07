@@ -30,11 +30,6 @@ decisions that you review. It never starts unattended work.
 
 ## Opt-in daemons
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/install-dark.png">
-  <img alt="Setup diagram: the installer loads the core set for you, loads memory-sync-pull, workspace-watcher, and cmux-ws-numberer only if you opt in, and never starts connectors, assistant-comms, slack-reactor, or cmux-watcher until you run launchctl load." src="images/install-light.png">
-</picture>
-
 A bare `./install.sh --apply` loads the core set only. Turn on a feature daemon
 at the installer's `[y/N]` prompt or with a flag:
 
@@ -46,5 +41,6 @@ at the installer's `[y/N]` prompt or with a flag:
 | `--with-all` | All of the above |
 
 Slack comms and the Slack reactor are never auto-loaded, even with
-`--with-all`. [ONBOARDING.md](../ONBOARDING.md) covers how answers are
+`--with-all`. Connectors and `cmux-watcher` also wait until you run
+`launchctl load`. [ONBOARDING.md](../ONBOARDING.md) covers how answers are
 remembered and how to change your mind.

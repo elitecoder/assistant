@@ -2,14 +2,22 @@
 
 This page collects the reasoning behind Assistant's structure, the rules it
 never breaks, and a map of the code. For the short version, see the
-[README](../README.md#how-it-works).
+[README](../README.md#features).
 
 ## The five lanes
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/lanes-dark.png">
-  <img alt="Diagram: a WorldEvent enters the ordered policy rules, first match wins, which fan out to five lanes: auto, staged, escalate, digest, and drop. An unmatched event opens as escalate first; a triage model may then attach staged, escalate, or digest as a suggestion, and its lane map has no auto or drop." src="images/lanes-light.png">
-</picture>
+Every WorldEvent goes through the ordered policy rules, and the first match
+wins. A rule sends the event to one of five lanes:
+
+- **auto**: a reversible action, recorded.
+- **staged**: a decision for you to review.
+- **escalate**: a decision at the top of the brief.
+- **digest**: an FYI line that expires in 24 hours.
+- **drop**: a receipt only, from an explicit rule.
+
+An event that no rule matches opens as escalate first. A triage model may then
+attach staged, escalate, or digest as a suggestion; its lane map has no auto or
+drop.
 
 Pure Python assigns lanes (`src/assistant/policy.py` plus
 `config/policies.bootstrap.json`), and decisions land in an append-only log at
@@ -23,10 +31,12 @@ your own rules.
 
 ## Ranking the brief
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/brief-dark.png">
-  <img alt="Mock of a morning brief: seven overnight events become four pending decisions, ranked by score. The score is lane (escalate 100, staged 60, digest 20) plus urgency (now 50, high 20) plus freshness (20, minus 5 a day) plus goal boost (up to 20), and the queue sorts by lane first." src="images/brief-light.png">
-</picture>
+Each open decision scores its lane (escalate 100, staged 60, digest 20) plus
+urgency (now 50, high 20) plus freshness (20, minus 5 a day) plus a goal boost
+(up to 20), and the queue sorts by lane first. Here's a rebuild against sample
+data:
+
+![Terminal output of bin/build-morning-brief.py --print piped through jq, run against sample data: five escalations at score 169, three staged items at 79, and five digest items at 39, each with the rule that placed it.](images/brief-queue.png)
 
 `src/assistant/brief.py` ranks open decisions with the fixed formula above. The
 brief is a pure derivation of other stores: delete
@@ -35,17 +45,22 @@ the same bytes. The daily metrics row in
 `~/.assistant/brief/brief-metrics.jsonl` records `decisions_pending_at_brief`,
 interrupts delivered and denied, expired-unseen decisions, and goal progress.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/pulse-dark.png">
-  <img alt="Diagram of the 5-minute pulse loop and a three-day timeline: a brief unseen for 48 hours moves its open non-escalated decisions to the digest and seeds rule proposals." src="images/pulse-light.png">
-</picture>
+The pulse runs every 5 minutes. A brief that stays unseen for 48 hours moves
+its open, non-escalated decisions to the digest and seeds rule proposals.
 
 ## Outbound actions
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/gates-dark.png">
-  <img alt="Diagram of the interrupt gate (level check, dedup, budget of page 0 and notify 0) and the outbound dispatcher (accepted decision, enabled action class, class gate). email.send and slack.reply.send are forbidden, draft_only stages a local draft, and confirm and standing aren't wired yet. Every refusal is recorded." src="images/gates-light.png">
-</picture>
+Two paths lead out of Assistant:
+
+- **Notifications** go through the interrupt gate: a level check, a
+  once-per-key-per-day dedup, and a budget with a default of page 0, notify 0.
+  Only if all three pass does a macOS alert fire.
+- **Actions** go through the outbound dispatcher: you must have accepted the
+  decision, the action class must be enabled, and the class gate decides.
+  `email.send` and `slack.reply.send` are forbidden, `draft_only` classes stage
+  a local draft, and `confirm` and `standing` classes aren't wired yet.
+
+Every refusal is recorded.
 
 `bin/outbound-dispatch.py` is the only sanctioned way to act on an accepted
 decision, and `bin/interrupt-gate.py` is the only path to a notification. Sends
@@ -56,10 +71,9 @@ can't loosen `github.merge` or `ws.close` below `confirm`.
 
 ## Fleet actions
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/verdicts-dark.png">
-  <img alt="Table diagram of Observer verdicts and the Python action for each: ready_for_merge, ready_for_cleanup, stranded, needs_user, and active or no_action, split into what Assistant handles and what it hands to you as a card." src="images/verdicts-light.png">
-</picture>
+With the Observer on (`ASSISTANT_WATCHER=1`), it gives each workspace one
+verdict: `ready_for_merge`, `ready_for_cleanup`, `stranded`, `needs_user`,
+`active`, or `no_action`.
 
 A Python lookup table in `bin/pulse.py` turns each verdict into an action. A
 `stranded` verdict must carry `nudge_text`, but the pulse sends a fixed, safe

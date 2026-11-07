@@ -4,10 +4,17 @@ Connectors are optional, read-only daemons. Each one turns a single source into
 WorldEvents, and `tests/test_keel_connector_readonly.py` fails the build if a
 connector script contains a mutation or send call.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/connectors-dark.png">
-  <img alt="Table diagram of the five connectors, how each signs in, and which event kinds the starter rules send to each lane. GitHub uses the gh CLI token: mention, team_mention, and security_alert escalate; review_requested, assign, and comment are staged; ci_activity and author go to the digest. Gmail uses Google desktop OAuth with a read-only scope: direct escalates, message goes to the digest, and newsletter is dropped. Calendar uses the same Google client: an event in 1 hour is staged and an event in 24 hours goes to the digest. Outlook uses an Azure public client with Mail.Read: direct escalates; cc, message, and newsletter go to the digest. Slack uses a bot token through the Slack reactor: app_mention and dm escalate, and opt-in channel messages go to the digest. On the Connected apps tab, each connector shows as Connected, Available, not connected, or Needs attention." src="images/connectors-light.png">
-</picture>
+![The Connected apps tab, rendered from sample data: GitHub notifications, Gmail, Google Calendar, and Slack show as Connected with their last poll time, and Outlook mail shows as Available with the command to authorize it.](images/dashboard-connections.png)
+
+The starter rules send each connector's event kinds to these lanes:
+
+| Connector | Signs in with | Escalate | Staged | Digest | Drop |
+|---|---|---|---|---|---|
+| GitHub | The `gh` CLI token | `mention`, `team_mention`, `security_alert` | `review_requested`, `assign`, `comment` | `ci_activity`, `author` | |
+| Gmail | Google desktop OAuth, read-only scope | `direct` | | `message` | `newsletter` |
+| Google Calendar | The same Google client | | Event in 1 hour | Event in 24 hours | |
+| Outlook | Azure public client with `Mail.Read` | `direct` | | `cc`, `message`, `newsletter` | |
+| Slack | Bot token through the Slack reactor | `app_mention`, `dm` | | Opt-in channel `message` | |
 
 `install.sh --apply` copies every connector plist into `~/Library/LaunchAgents/`
 but never loads one, so the last step for any connector is a manual
