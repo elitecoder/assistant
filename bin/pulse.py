@@ -209,7 +209,7 @@ LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
 # Off by default. Set the variable to 1 to turn a job back on.
 OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST",
-               "watcher": "ASSISTANT_WATCHER"}
+               "watcher": "ASSISTANT_WATCHER", "narrator": "ASSISTANT_BRIEF_NARRATOR"}
 
 
 def job_enabled(job: str) -> bool:
@@ -792,6 +792,8 @@ def run_narrator_step(pulse_idx: int) -> None:
     gate. Imported lazily and fully fenced, same contract as the brief: a broken
     narrator costs one morning's VOICE, never a pulse (and never the brief
     itself)."""
+    if not job_enabled("narrator"):
+        return
     try:
         if str(BIN) not in sys.path:
             sys.path.insert(0, str(BIN))
