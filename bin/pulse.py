@@ -207,6 +207,13 @@ LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 # leaves the dashboard and the heartbeat fresh. The transcript pass gets a
 # longer leash since it reads many files before any LLM draft.
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
+# Off by default: their output went unread. Set to 1 to turn either back on.
+OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST"}
+
+
+def job_enabled(job: str) -> bool:
+    return os.environ.get(OPT_IN_JOBS[job], "0").strip().lower() in ("1", "true", "yes", "on")
+
 LESSON_TRANSCRIPT_TIMEOUT_SEC = int(os.environ.get("LESSON_TRANSCRIPT_TIMEOUT_SEC", "600"))
 
 # Cap concurrent active workspaces (matches old prompt's rule).
@@ -824,16 +831,17 @@ def run_planner_step(pulse_idx: int) -> None:
             sys.path.insert(0, src_dir)
         from assistant import goals  # noqa: PLC0415
         strategist_draft = None
-        try:
-            if str(BIN) not in sys.path:
-                sys.path.insert(0, str(BIN))
-            import strategist as strategist_bin  # noqa: PLC0415
-            strategist_draft = (
-                lambda goal, step_class, tt, td, now:
-                strategist_bin.draft_for_planner(
-                    goal, step_class, tt, td, now, pulse_idx))
-        except Exception as e:  # noqa: BLE001 — no drafter → pure-M4 templates
-            log.warning("strategist drafter unavailable (M4 templates): %s", e)
+        if job_enabled("strategist"):
+            try:
+                if str(BIN) not in sys.path:
+                    sys.path.insert(0, str(BIN))
+                import strategist as strategist_bin  # noqa: PLC0415
+                strategist_draft = (
+                    lambda goal, step_class, tt, td, now:
+                    strategist_bin.draft_for_planner(
+                        goal, step_class, tt, td, now, pulse_idx))
+            except Exception as e:  # noqa: BLE001 — no drafter → pure-M4 templates
+                log.warning("strategist drafter unavailable (M4 templates): %s", e)
         summary = goals.pulse_step(strategist_draft=strategist_draft)
     except Exception as e:  # noqa: BLE001 — the planner must never break the pulse
         log.exception("planner step failed (retried next pulse): %s", e)
@@ -858,6 +866,8 @@ def run_strategist_context_step(pulse_idx: int) -> None:
     ceiling-gated, and auto-pausable exactly like the staging drafts. Imported
     lazily and fully fenced: a broken pre-research pass costs one pulse's
     pre-research, never the pulse — and when the fleet is busy it is a no-op."""
+    if not job_enabled("strategist"):
+        return
     try:
         if str(BIN) not in sys.path:
             sys.path.insert(0, str(BIN))
@@ -2287,7 +2297,7 @@ def run_lesson_extractor(pulse_idx: int) -> None:
     so a timeout here leaves the dashboard and heartbeat fresh. Failures are
     logged and swallowed — extraction is a nice-to-have, never load-bearing."""
     extractor = BIN / "lesson-extractor.py"
-    if not extractor.exists():
+    if not job_enabled("lessons") or not extractor.exists():
         return
     transcript_pass = (LESSON_TRANSCRIPT_EVERY > 0
                        and pulse_idx % LESSON_TRANSCRIPT_EVERY == 0)

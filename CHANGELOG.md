@@ -9,6 +9,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Changed
+- Turn off the lessons extractor and the strategist by default. Their output
+  went unread: 689 lesson proposals sat pending, and the strategist's notes
+  covered 9 items 119 times. Set `ASSISTANT_LESSON_EXTRACTOR=1` or
+  `ASSISTANT_STRATEGIST=1` to turn either back on. With the strategist off, the
+  goals planner uses its built-in step templates.
+
 ### Added
 - Add a **Slack** tab to the dashboard, ported from the standalone focus-board
   tool. It lists the Slack threads where the next move is yours, in Do first,
