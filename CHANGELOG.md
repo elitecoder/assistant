@@ -10,6 +10,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Changed
+- Turn off the daily Sonnet call that writes the morning brief's wording. Its
+  summary never showed on the dashboard, and its advice showed only when the
+  live queue couldn't be read. The Brief tab still builds without a model. Set
+  `ASSISTANT_BRIEF_NARRATOR=1` to turn it back on.
 - Turn off the watcher (the Observer) by default, along with its Opus
   double-check. It sent 40–75K tokens per check, about 870 checks a day. The
   dashboard's **Waiting on you** tab covers its view without a model. Set

@@ -536,6 +536,25 @@ def test_strategist_is_off_by_default(mod, monkeypatch):
     assert seen == {"strategist_draft": None}
 
 
+def test_brief_narrator_is_off_by_default_and_runs_when_switched_on(mod, monkeypatch):
+    calls = []
+    original = importlib.util.spec_from_file_location
+
+    def spy(name, *a, **k):
+        if name == "narrate_brief":
+            calls.append(name)
+            raise RuntimeError("stop here")
+        return original(name, *a, **k)
+
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", spy)
+    monkeypatch.delenv("ASSISTANT_BRIEF_NARRATOR", raising=False)
+    mod.run_narrator_step(1)
+    assert calls == []
+    monkeypatch.setenv("ASSISTANT_BRIEF_NARRATOR", "1")
+    mod.run_narrator_step(1)
+    assert calls == ["narrate_brief"]
+
+
 def test_strategist_runs_when_switched_on(mod, monkeypatch):
     monkeypatch.setenv("ASSISTANT_STRATEGIST", "1")
     sys.path.insert(0, str(mod.REPO / "src"))
