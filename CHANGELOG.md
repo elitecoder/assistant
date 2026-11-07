@@ -10,6 +10,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Changed
+- Turn off the watcher (the Observer) by default, along with its Opus
+  double-check. It sent 40–75K tokens per check, about 870 checks a day. The
+  dashboard's **Waiting on you** tab covers its view without a model. Set
+  `ASSISTANT_WATCHER=1` to turn it back on.
 - Turn off the lessons extractor and the strategist by default. Their output
   went unread: 689 lesson proposals sat pending, and the strategist's notes
   covered 9 items 119 times. Set `ASSISTANT_LESSON_EXTRACTOR=1` or

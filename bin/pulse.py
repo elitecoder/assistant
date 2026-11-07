@@ -207,8 +207,9 @@ LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 # leaves the dashboard and the heartbeat fresh. The transcript pass gets a
 # longer leash since it reads many files before any LLM draft.
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
-# Off by default: their output went unread. Set to 1 to turn either back on.
-OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST"}
+# Off by default. Set the variable to 1 to turn a job back on.
+OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST",
+               "watcher": "ASSISTANT_WATCHER"}
 
 
 def job_enabled(job: str) -> bool:
@@ -2480,7 +2481,7 @@ def main() -> int:
         # force-observed (the cap is the defense against any hash blind
         # spot). Fenced per-ws — a hash failure just means that ws gets
         # observed normally.
-        for ws_ref, ctx in ctxs_by_ref.items():
+        for ws_ref, ctx in (ctxs_by_ref.items() if job_enabled("watcher") else ()):
             try:
                 obs_hashes[ws_ref] = obs_input_hash(ctx)
             except Exception as e:  # noqa: BLE001 — skip is an optimization only
@@ -2510,7 +2511,7 @@ def main() -> int:
         # Phase 2: parallel batched Observer calls (skipped ws excluded — an
         # unchanged fleet spawns ZERO Observer subprocesses this pulse).
         ctxs_to_observe = [ctx for ws_ref, ctx in ctxs_by_ref.items()
-                           if ws_ref not in carried]
+                           if ws_ref not in carried and job_enabled("watcher")]
         batches = chunk(ctxs_to_observe, WS_BATCH_SIZE) if ctxs_to_observe else []
         log.info("observing %d ws in %d batch(es) of <=%d in parallel",
                  len(ctxs_to_observe), len(batches), WS_BATCH_SIZE)
@@ -2585,6 +2586,8 @@ def main() -> int:
                 })
                 continue
             verdict = verdicts_by_ref.get(ws_ref)
+            if not verdict and not job_enabled("watcher"):
+                continue
             if not verdict:
                 # Old-prompt behavior: an Observer failure (timeout / no verdict
                 # for this ws) defaults to `active` — a benign no-op send-wise.
