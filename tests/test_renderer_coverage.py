@@ -211,6 +211,8 @@ class RendererCoverageTests(unittest.TestCase):
 
     def test_nonobject_brief_keeps_the_live_queue(self):
         self.notifications([{"id": "live", "title": "Still available"}])
+        self.enterContext(patch.object(self.renderer.brief_store, "build_brief",
+                                            side_effect=OSError("store unreadable")))
         for value in ([], None, 7):
             with self.subTest(value=value):
                 self.write(".assistant/brief/brief-2026-09-20.json", value)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -103,6 +104,13 @@ class BriefTabTests(unittest.TestCase):
             os.environ["HOME"] = self._old_home
         self._tmp_obj.cleanup()
 
+    def live(self, doc):
+        self.enterContext(patch.object(self.mod.brief_store, "build_brief", return_value=doc))
+
+    def no_live(self):
+        self.enterContext(patch.object(self.mod.brief_store, "build_brief",
+                                       side_effect=OSError("store unreadable")))
+
     def write_brief(self, doc):
         (self.home / ".assistant/brief" / f"brief-{doc['date']}.json"
          ).write_text(json.dumps(doc))
@@ -180,6 +188,7 @@ class BriefTabTests(unittest.TestCase):
                 self.assertNotIn("Queue clear", html)
 
     def test_current_queue_without_readable_brief(self):
+        self.no_live()
         self.write_log([{"id": "live", "title": "Live notification"}])
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 1)
@@ -364,7 +373,28 @@ class BriefTabTests(unittest.TestCase):
                     self.assertLess(html.index("<h3>Urgent other topic"),
                                     html.index("<h3>New topic alert"))
 
+    def test_brief_is_rebuilt_from_current_stores_on_every_render(self):
+        old = brief_fixture()
+        old["handled_overnight"] = []
+        self.write_brief(old)
+        self.write_log([{"id": "live", "title": "Live notification"}])
+        ledger = self.mod.brief_store.decisions.ledger_path()
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().astimezone().isoformat()
+        ledger.write_text(json.dumps({
+            "ts": stamp, "kind": "merge-dispatched", "key": "merge:live-receipt",
+            "ws_ref": "workspace:9", "outcome": "verified", "evidence": "fresh receipt"}) + "\n")
+        html, n = self.mod.render_brief_tab()
+        self.assertEqual(n, 1)
+        self.assertIn("fresh receipt", html)
+        self.assertIn("Brief · built", html)
+        self.assertIn(f'data-brief-date="{self.mod.brief_store.local_date(time.time())}"', html)
+        self.assertNotIn("No saved summary yet", html)
+        self.assertEqual(sorted(p.name for p in (self.home / ".assistant/brief").iterdir()),
+                         ["brief-2026-07-02.json"])
+
     def test_no_brief_yet_degrades_to_message(self):
+        self.no_live()
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 0)
         self.assertIn("No saved summary yet", html)
@@ -373,6 +403,7 @@ class BriefTabTests(unittest.TestCase):
         self.assertNotIn("data-brief-date=", html)
 
     def test_corrupt_brief_degrades_to_message(self):
+        self.no_live()
         (self.home / ".assistant/brief/brief-2026-07-02.json"
          ).write_text("{torn write")
         html, n = self.mod.render_brief_tab()
@@ -402,6 +433,7 @@ class BriefTabTests(unittest.TestCase):
                       "token_expired": False, "errors": [], "last_poll": None},
         }
         self.write_brief(doc)
+        self.live(doc)
         html, _ = self.mod.render_brief_tab()
         self.assertEqual(html.count("connector heartbeat · github"), 1)  # one chip
         self.assertIn("github · error", html)                    # alarming
@@ -422,12 +454,14 @@ class BriefTabTests(unittest.TestCase):
                        "failing": False, "last_failed_caller": None},
         }
         self.write_brief(doc)
+        self.live(doc)
         html, _ = self.mod.render_brief_tab()
         self.assertIn("droid · FAILING", html)       # loud
         self.assertIn("cold", html)                  # alarming class
         self.assertNotIn("claude · FAILING", html)   # healthy provider stays quiet
 
     def test_full_brief_renders_all_four_sections(self):
+        self.live(brief_fixture())
         self.write_brief(brief_fixture())
         html, n = self.mod.render_brief_tab()
         self.assertEqual(n, 2)
@@ -458,6 +492,7 @@ class BriefTabTests(unittest.TestCase):
         self.assertIn("noise budget", html)
 
     def test_seen_state_reflected(self):
+        self.live(brief_fixture())
         doc = brief_fixture()
         self.write_brief(doc)
         html, _ = self.mod.render_brief_tab()
@@ -481,6 +516,7 @@ class BriefTabTests(unittest.TestCase):
         self.assertNotIn("brief-spark", html2)
 
     def test_latest_brief_wins(self):
+        self.no_live()
         old = brief_fixture()
         old["date"] = "2026-07-01"
         old["queue"] = []
