@@ -511,7 +511,42 @@ def test_pre_cleanup_check_blocks_on_bad_json(mod):
 
 # ─── run_lesson_extractor ─────────────────────────────────────────────────────
 
-def test_run_lesson_extractor_missing_file_returns_early(mod, home):
+@pytest.fixture()
+def lessons_on(monkeypatch):
+    monkeypatch.setenv("ASSISTANT_LESSON_EXTRACTOR", "1")
+
+
+def test_lesson_extractor_is_off_by_default(mod, monkeypatch):
+    monkeypatch.delenv("ASSISTANT_LESSON_EXTRACTOR", raising=False)
+    with mock.patch.object(mod, "run", side_effect=AssertionError("extractor must not run")):
+        mod.run_lesson_extractor(12)
+
+
+def test_strategist_is_off_by_default(mod, monkeypatch):
+    monkeypatch.delenv("ASSISTANT_STRATEGIST", raising=False)
+    import strategist as strategist_bin
+    with mock.patch.object(strategist_bin, "_load_strategist") as load:
+        mod.run_strategist_context_step(1)
+    load.assert_not_called()
+    sys.path.insert(0, str(mod.REPO / "src"))
+    from assistant import goals
+    seen = {}
+    with mock.patch.object(goals, "pulse_step", side_effect=lambda **k: seen.update(k) or {}):
+        mod.run_planner_step(1)
+    assert seen == {"strategist_draft": None}
+
+
+def test_strategist_runs_when_switched_on(mod, monkeypatch):
+    monkeypatch.setenv("ASSISTANT_STRATEGIST", "1")
+    sys.path.insert(0, str(mod.REPO / "src"))
+    from assistant import goals
+    seen = {}
+    with mock.patch.object(goals, "pulse_step", side_effect=lambda **k: seen.update(k) or {}):
+        mod.run_planner_step(1)
+    assert callable(seen["strategist_draft"])
+
+
+def test_run_lesson_extractor_missing_file_returns_early(mod, home, lessons_on):
     # Point BIN at a dir with no lesson-extractor.py.
     mod.BIN = home / "empty-bin"
     (home / "empty-bin").mkdir()
@@ -522,7 +557,7 @@ def test_run_lesson_extractor_missing_file_returns_early(mod, home):
     assert called["n"] == 0, "run() must not be invoked when extractor is missing"
 
 
-def test_run_lesson_extractor_success_logs(mod, home):
+def test_run_lesson_extractor_success_logs(mod, home, lessons_on):
     extractor = mod.BIN / "lesson-extractor.py"
     # BIN is the real repo bin/ where lesson-extractor.py exists; ensure it does.
     assert extractor.exists()
@@ -539,7 +574,7 @@ def test_run_lesson_extractor_success_logs(mod, home):
     assert "--ledger-only" in seen["cmd"]
 
 
-def test_run_lesson_extractor_transcript_pass_drops_ledger_only(mod, home):
+def test_run_lesson_extractor_transcript_pass_drops_ledger_only(mod, home, lessons_on):
     seen = {}
 
     def fake_run(cmd, **k):
@@ -554,13 +589,13 @@ def test_run_lesson_extractor_transcript_pass_drops_ledger_only(mod, home):
     assert seen["timeout"] == mod.LESSON_TRANSCRIPT_TIMEOUT_SEC
 
 
-def test_run_lesson_extractor_rc_nonzero_warns_no_raise(mod, home):
+def test_run_lesson_extractor_rc_nonzero_warns_no_raise(mod, home, lessons_on):
     with mock.patch.object(mod, "run", return_value=(2, "", "extractor boom")):
         # Must not raise.
         mod.run_lesson_extractor(12)
 
 
-def test_run_lesson_extractor_bad_json_swallowed(mod, home):
+def test_run_lesson_extractor_bad_json_swallowed(mod, home, lessons_on):
     with mock.patch.object(mod, "run", return_value=(0, "not json", "")):
         mod.run_lesson_extractor(12)  # no raise on unparseable output
 
