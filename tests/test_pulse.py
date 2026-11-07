@@ -1302,6 +1302,31 @@ class MainPipelineTests(unittest.TestCase):
         # the ThreadPoolExecutor branch).
         # State-write was invoked via run() — exercise the success path.
 
+    def test_watcher_off_by_default_makes_no_model_calls_or_summaries(self):
+        os.environ.pop("ASSISTANT_WATCHER", None)
+        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/"}],
+                "reuse_cached": [], "backed_off": [], "total_ws": 1,
+            }), mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                mock.patch.object(self.mod, "build_ctx", return_value={
+                    "ws_ref": "workspace:1", "transcript_path": None,
+                    "agent_status": "idle", "last_turn_age_sec": 0,
+                    "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                    "title": "t", "cwd": "/"}), \
+                mock.patch.object(self.mod, "call_observer_batch") as observe, \
+                mock.patch.object(self.mod, "run_observer_audit", return_value={}) as audit, \
+                mock.patch.object(self.mod, "save_summary") as save_mock, \
+                mock.patch.object(self.mod, "load_prior_summary",
+                                  return_value={"verdict": "needs_user"}) as prior, \
+                mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                mock.patch.object(self.mod, "run", return_value=(0, "", "")):
+            rc = self._run_main([])
+        self.assertEqual(rc, 0)
+        observe.assert_not_called()
+        save_mock.assert_not_called()
+        prior.assert_not_called()
+        self.assertEqual(audit.call_args[0][0], [])
+
     def test_observer_returns_no_verdict_for_ws_records_skipped(self):
         with mock.patch.object(self.mod, "pick_ws_batch", return_value={
                 "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/"}],
