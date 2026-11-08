@@ -7,7 +7,7 @@ connector script contains a mutation or send call.
 Connectors are part of Pro mode. While Pro mode is off, a connector you've set
 up pauses before its next check, and it resumes at the first check after you
 turn Pro mode back on. Alerts from while it was off are skipped, not fetched
-later. A paused connector still reports in, so the Connected apps tab doesn't
+later, even when the connector restarts in between. A paused connector still reports in, so the Connected apps tab doesn't
 mark it stale.
 
 ![The Connected apps tab, rendered from sample data: GitHub notifications, Gmail, Google Calendar, and Slack show as Connected with their last poll time, and Outlook mail shows as Available with the command to authorize it.](images/dashboard-connections.png)

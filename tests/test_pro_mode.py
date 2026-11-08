@@ -112,8 +112,11 @@ def test_switch_saves_nothing_when_it_cant_change_the_skills(home):
     with pytest.raises(ValueError):
         mode.switch("pro")
     assert not (home / ".claude/skills/goal").exists()
+    set_mode(home, "pro")
+    mode.switch("pro")
     with pytest.raises(ValueError):
         mode.switch("turbo")
+    assert (home / ".claude/skills/goal").is_symlink()
 
 
 def test_a_looping_skill_link_never_breaks_the_mode(home, monkeypatch):
