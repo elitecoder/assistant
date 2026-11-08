@@ -67,7 +67,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import eventspine
+from . import eventspine, mode
 
 # ─── fallback defaults (all overridable via config; never the sole source) ───
 
@@ -1018,6 +1018,7 @@ class Connector:
         self.dry_run = dry_run
         self.record = record
         self._log = log or (lambda msg: None)
+        self.skip_events_before = 0.0
 
     # ── paths (per-call so a tmp $HOME is honored) ──────────────────────────
 
@@ -1116,6 +1117,8 @@ class Connector:
         or None in --dry-run (which prints instead). --record additionally
         writes a sanitized {raw, expected} fixture."""
         now = now if now is not None else time.time()
+        if event.get("epoch", now) < self.skip_events_before:
+            return None
         ext = event.get("external_id") or event.get("id") or "unknown"
         # The raw archive is a real side effect (writes raw/<day>/…). In
         # --dry-run we skip it so a dry run is side-effect-free except printing
@@ -1249,8 +1252,31 @@ class Connector:
             "not_configured_recheck_sec", DEFAULT_NOT_CONFIGURED_RECHECK_SEC))
         i = 0
         backoff = 0.0
+        try:
+            paused = json.loads(self.heartbeat_path().read_text()).get("paused") is True
+        except (OSError, ValueError, AttributeError):
+            paused = False
+        pro = False
         while max_iterations is None or i < max_iterations:
             i += 1
+            try:
+                pro = mode.is_pro()
+            except Exception as e:  # noqa: BLE001 — keep the last known mode
+                self._log(f"{self.name}: couldn't read the mode, keeping "
+                          f"{'pro' if pro else 'default'}: {e}")
+            if not pro:
+                if not paused:
+                    self._log(f"{self.name}: paused — Pro mode is off")
+                paused = True
+                backoff = 0.0
+                self.write_heartbeat(extra={"paused": True})
+                if max_iterations is None or i < max_iterations:
+                    sleep(cadence)
+                continue
+            if paused:
+                self.skip_events_before = time.time()
+                self._log(f"{self.name}: resumed — skipping events from while it was paused")
+            paused = False
             errored = True
             not_configured = False
             retry_after = None

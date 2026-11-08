@@ -34,6 +34,9 @@ PULL_SKILLS=0
 WITH_MEMORY=0
 WITH_CRASH_RESUME=0
 WITH_WS_NUMBERER=0
+NO_WS_NUMBERER=0
+SET_MODE=""
+PRO_SKILLS=" goal attend back-off lesson "
 TS="$(date +%s)"
 
 log() { printf '%s\n' "$*"; }
@@ -49,6 +52,9 @@ for arg in "$@"; do
         --with-memory) WITH_MEMORY=1 ;;
         --with-crash-resume) WITH_CRASH_RESUME=1 ;;
         --with-ws-numberer) WITH_WS_NUMBERER=1 ;;
+        --no-ws-numberer) NO_WS_NUMBERER=1 ;;
+        --pro) SET_MODE=pro ;;
+        --no-pro) SET_MODE=default ;;
         --with-all) WITH_MEMORY=1; WITH_CRASH_RESUME=1; WITH_WS_NUMBERER=1 ;;
         -h|--help)
             cat <<USAGE
@@ -56,6 +62,15 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
   --dry-run         (default) Show what would change. No mutation.
   --apply           Actually create symlinks/copies, copy plists, reload launchd.
+  --pro             Turn on Pro mode: notifications and triage, goals and the
+                    planner, the Notifications, Decisions, Background work, and
+                    Connected apps tabs, and the /goal, /attend, /back-off, and
+                    /lesson skills. Connectors you've set up start polling.
+                    Saved as {"mode": "pro"} in ~/.assistant/config.json. The
+                    dashboard's settings area has the same switch.
+  --no-pro          Switch to default mode and unlink the Pro skills.
+                    Without either flag, an install that already has goals,
+                    notifications, or the Pro skills stays in Pro mode.
   --pull-skills     Pull edits from a live ~/.claude/skills/<name>/ directory
                     BACK into the repo. Only needed to recover edits made while
                     a skill was still a real directory (e.g. backups left by the
@@ -74,6 +89,7 @@ install.sh — install/update the Assistant system from $REPO_ROOT
                        if you run Assistant on more than one machine.
   --with-crash-resume  auto-resume crashed cmux workspaces (workspace-watcher).
   --with-ws-numberer   number and color cmux workspaces (cmux-ws-numberer).
+                       On by default; --no-ws-numberer turns it off.
   --with-all           enable all of the above (and suppress their prompts).
   (Slack comms + slack-reactor are always copied but hand-loaded after their
    token setup — see ONBOARDING.md — never auto-loaded even with a flag.)
@@ -94,8 +110,8 @@ After --apply:
   - CORE plists loaded: com.assistant.{assistant-pulse,world-scanner,
        session-context-watcher,assistant-page,assistant-todo-server}
   - FEATURE plists copied, loaded only with their --with flag: memory-sync-pull
-       (--with-memory), workspace-watcher (--with-crash-resume), cmux-ws-numberer
-       (--with-ws-numberer); comms +
+       (--with-memory), workspace-watcher (--with-crash-resume); cmux-ws-numberer
+       loads by default (--no-ws-numberer to skip); comms +
        slack-reactor copied but hand-loaded after token setup
   - cmux session hooks: hooks/ → ~/.claude/hooks/ (symlinks),
        bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
@@ -178,7 +194,6 @@ feat_desc() {
     case "$1" in
         memory)        echo "Memory sync keeps your lessons + semantic memory identical across all your machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N] " ;;
         crash-resume)  echo "Crash-resume auto-restarts a cmux workspace whose Claude session died, so long jobs survive a crash or reboot. Enable? [y/N] " ;;
-        ws-numberer)   echo "The workspace numberer adds a [N] suffix to every cmux workspace title and gives each an unused sidebar color. Enable? [y/N] " ;;
     esac
 }
 # prompt_yn <question> → 0 on yes. Sets PROMPT_TIMED_OUT=1 iff read timed out
@@ -216,8 +231,17 @@ _optin_header() {
     _optin_header_shown=1
     log "[2.5] Optional features (safe to skip; enable later with --with-<name>)"
 }
+WS_NUMBERER_FLAG=$WITH_WS_NUMBERER
 for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:WITH_WS_NUMBERER'; do
     _feat="${_pair%%:*}"; _var="${_pair##*:}"
+    if [[ "$_feat" == "ws-numberer" && $NO_WS_NUMBERER -eq 1 ]]; then
+        WITH_WS_NUMBERER=0; state_set "$_feat" no
+        if [[ $APPLY -eq 1 ]]; then
+            launchctl bootout "gui/$UID/com.assistant.cmux-ws-numberer" 2>/dev/null || true
+            launchctl bootout "gui/$UID/com.mukuls.cmux-ws-numberer" 2>/dev/null || true
+        fi
+        continue
+    fi
     if [[ "$(explicit_flag_for "$_feat")" == "1" ]]; then
         state_set "$_feat" yes                      # (a) explicit flag wins
         continue
@@ -226,6 +250,11 @@ for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:
     if [[ "$_saved" == "yes" ]]; then eval "$_var=1"; continue; fi   # (b) remembered yes
     if [[ "$_saved" == "no"  ]]; then continue; fi                  # (b) remembered no
     if daemon_loaded "$_feat"; then                                # (c) adopt already-running
+        eval "$_var=1"; state_set "$_feat" yes; continue
+    fi
+    # On by default, except during a self-update: an automatic update never
+    # starts a service the user hasn't chosen.
+    if [[ "$_feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ]]; then
         eval "$_var=1"; state_set "$_feat" yes; continue
     fi
     if feature_should_prompt "$_feat"; then                        # (d) discovery prompt
@@ -480,12 +509,34 @@ log ""
 # ~/.claude/skills/ as a skill — leaving .bak entries there pollutes the
 # registry. (ensure_symlink's default <target>.bak-<ts> would land inside
 # ~/.claude/skills/, so we back up by hand here before symlinking.)
+# Mode. --pro / --no-pro switch it and sync the Pro skills. Otherwise save
+# the current mode once (an install with Pro data stays Pro) and never remove
+# skills, so an automatic update can't take anything away.
+MODE_CLI="$REPO_ROOT/bin/assistant-mode.py"
+if [[ $APPLY -eq 1 ]]; then
+    if [[ -n "$SET_MODE" ]]; then
+        python3 "$MODE_CLI" "$SET_MODE" >/dev/null || warn "mode not changed — fix ~/.assistant/config.json and re-run"
+    else
+        python3 "$MODE_CLI" --ensure >/dev/null || warn "mode not saved — fix ~/.assistant/config.json"
+    fi
+fi
+MODE="$(python3 "$MODE_CLI" 2>/dev/null || echo default)"
+[[ $APPLY -eq 0 && -n "$SET_MODE" ]] && MODE="$SET_MODE"
+log "Mode: $MODE"
+
 log "[2/5] Symlinking skills into ~/.claude/skills/"
 mkdir -p "$HOME_DIR/.claude/skills" "$HOME_DIR/.claude/skills-backups"
 for skill_dir in "$REPO_ROOT"/skills/*/; do
     skill_name="$(basename "$skill_dir")"
     target="$HOME_DIR/.claude/skills/$skill_name"
     expected="$REPO_ROOT/skills/$skill_name"
+
+    # Pro mode skills aren't linked in default mode. --no-pro (through
+    # assistant-mode.py) is the only thing that unlinks them.
+    if [[ "$MODE" != "pro" && "$PRO_SKILLS" == *" $skill_name "* ]]; then
+        note "SKIP $skill_name (Pro mode only)"
+        continue
+    fi
 
     # Already the correct symlink — nothing to do.
     if [[ -L "$target" ]]; then
@@ -628,7 +679,7 @@ PLIST_SKIP=(
 # problem not every user has, so none is forced on a fresh install:
 #   memory-sync-pull   cross-machine memory sync   → --with-memory
 #   workspace-watcher  auto-resume crashed cmux ws → --with-crash-resume
-#   cmux-ws-numberer   number + color cmux workspaces → --with-ws-numberer
+#   cmux-ws-numberer   number + color cmux workspaces → on unless declined (--no-ws-numberer)
 #   assistant-comms    Slack comms (needs token + assistant-comms-setup.sh)
 #   slack-reactor      Slack emoji→todo (needs SLACK_APP_TOKEN/SLACK_BOT_TOKEN)
 # comms/slack-reactor are never auto-loaded even with a flag — they crash-loop
@@ -707,6 +758,12 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     # CHANGED_LABELS, so Section 5 never reloads it (the never-auto-load contract).
     no_load=0
     [[ $skip -eq 1 || $copy_no_load -eq 1 ]] && no_load=1
+    # The hourly update never starts workspace numbers you stopped by hand,
+    # unless this run passed --with-ws-numberer.
+    if [[ "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" == "1" && $WS_NUMBERER_FLAG -eq 0 ]] \
+            && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+        no_load=1
+    fi
 
     # A symlinked target (legacy install pointing into the repo) must be turned
     # into a real file regardless of content — cmp reads THROUGH the link, so
@@ -714,6 +771,10 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     if [[ ! -L "$target" && -f "$target" ]] && cmp -s "$staged" "$target"; then
         if [[ $no_load -eq 1 ]]; then
             note "OK   $target (matches repo; not auto-loaded — activate by hand)"
+        elif [[ "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ]] \
+                && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+            note "OK   $target (matches repo; enabled but not running → will load)"
+            CHANGED_LABELS+=("$label")
         else
             note "OK   $target (matches repo, no reload needed)"
         fi
@@ -822,6 +883,7 @@ log ""
 # it applies on the next manual install or reboot. Plist changes are rare;
 # code changes (symlinked bin/, no reload needed) are the common case.
 SELF_PLIST_LABEL="com.assistant.assistant-pulse"
+
 log "[5/5] Reloading launchd agents that changed"
 if [[ ${#CHANGED_LABELS[@]} -eq 0 ]]; then
     note "no plists changed — nothing to reload"
@@ -833,6 +895,37 @@ else
         fi
         launchctl_reload "$label" "$HOME_DIR/Library/LaunchAgents/${label}.plist"
     done
+fi
+
+# The dashboard server and the app connectors keep old code until restarted.
+# Restart the running ones when their code changed since the last install
+# recorded it; record it only once every restart worked. A failed restart
+# leaves a note that the dashboard shows and the hourly update retries.
+CODE_STAMP="$HOME_DIR/.assistant/service-code.sha256"
+RESTART_NOTE="$HOME_DIR/.assistant/service-restart-failed"
+CODE_SHA="$(cd "$REPO_ROOT" && find bin/todo-server.py bin/connectors src/assistant -type f \( -name '*.py' -o -name '*.sh' \) \
+    | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
+if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
+    failed_labels=()
+    for label in com.assistant.assistant-todo-server com.assistant.connector-{github,gmail,gcal,slack,outlook}; do
+        [[ " ${CHANGED_LABELS[*]:-} " == *" $label "* ]] && continue
+        launchctl print "gui/$UID/$label" 2>/dev/null | grep -q "state = running" || continue
+        if [[ $APPLY -eq 0 ]]; then
+            note "would restart $label (its code changed)"
+        elif launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1; then
+            note "restarted $label (its code changed)"
+        else
+            warn "couldn't restart $label; the hourly update retries"
+            failed_labels+=("$label")
+        fi
+    done
+    if [[ $APPLY -eq 1 && ${#failed_labels[@]} -eq 0 ]]; then
+        mkdir -p "$(dirname "$CODE_STAMP")"
+        printf '%s\n' "$CODE_SHA" > "$CODE_STAMP"
+        rm -f "$RESTART_NOTE"
+    elif [[ $APPLY -eq 1 ]]; then
+        printf '%s\n' "${failed_labels[@]}" > "$RESTART_NOTE"
+    fi
 fi
 log ""
 
@@ -1076,6 +1169,11 @@ else
     log "   ── Slack emoji → todo capture ─────────────────────────────────────"
     log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"
     log "     launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
+    log ""
+    log "   ── Pro mode (now: $MODE) ─────────────────────────────────────────"
+    log "   • Switch it in the dashboard's Settings and background services, or"
+    log "     run ./install.sh --apply --pro (or --no-pro). Pro mode adds"
+    log "     notifications and triage, goals and the planner, and their tabs."
     log ""
     log "   Re-run anytime:  ./bin/assistant-doctor.py         (preflight health)"
     log "   Full guide:      ONBOARDING.md"

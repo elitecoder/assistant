@@ -109,6 +109,10 @@ class ClassifyTests(unittest.TestCase):
     def test_installer_change_needs_install(self):
         self.assertTrue(su.classify_changed_paths(["install.sh"])["needs_install"])
 
+    def test_long_running_service_code_needs_install(self):
+        for path in ("bin/todo-server.py", "bin/connectors/gmail.py", "src/assistant/mode.py"):
+            self.assertTrue(su.classify_changed_paths([path])["needs_install"], path)
+
     def test_self_plist_change_flagged(self):
         c = su.classify_changed_paths(["launchagents/com.assistant.assistant-pulse.plist"])
         self.assertTrue(c["needs_install"])
@@ -188,6 +192,26 @@ class MaybeUpdateTests(unittest.TestCase):
             text = log.read_text()
             self.assertIn("--apply", text)
             self.assertIn("self=1", text, "ASSISTANT_SELF_UPDATE=1 must be exported to install.sh")
+
+    def test_a_failed_service_restart_reruns_the_installer_until_it_works(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            log = stub_installer(clone)
+            git(clone, "add", "-A"); git(clone, "commit", "-m", "local installer stub")
+            git(clone, "push", "origin", "main")
+            marker = tmp / "m.json"
+            su.maybe_update(clone, interval_sec=0, marker_path=marker, install_sh=clone / "install.sh")
+            self.assertFalse(log.exists())
+            (tmp / "service-restart-failed").write_text("com.assistant.connector-gmail\n")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker, install_sh=clone / "install.sh")
+            self.assertEqual((r["behind"], r["install_rc"]), (0, 0))
+            self.assertIn("self=1", log.read_text())
+            log.unlink()
+            advance_remote(tmp, remote, {"bin/pulse.py": "# pulse v2\n"}, "code change")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=marker, install_sh=clone / "install.sh")
+            self.assertTrue(r["changed"] and r["installed"])
+            self.assertTrue(log.exists())
 
     def test_dirty_tree_refuses_pull(self):
         with TemporaryDirectory() as t:

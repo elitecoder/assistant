@@ -9,6 +9,31 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
+  Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
+  `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds
+  notifications and triage, goals and the planner, the Notifications,
+  Decisions, Background work, and Connected apps tabs, and the `/goal`,
+  `/attend`, `/back-off`, and `/lesson` skills. The watcher, strategist,
+  lessons extractor, and brief narrator also need Pro mode, and connectors
+  pause before their next check while it's off. Alerts that arrive while Pro
+  mode is off are skipped, not saved for later. Switch modes in the dashboard's
+  **Settings and background services**, or with `./install.sh --apply --pro`
+  and `--no-pro`. The mode is saved as `"mode"` in `~/.assistant/config.json`.
+  If that file can't be read, Assistant uses default mode and the dashboard
+  shows the error next to the switch.
+- **Upgrading:** every existing install stays in Pro mode, because earlier
+  versions installed the Pro skills for everyone. Default mode is for new
+  installs and for anyone who switches. An automatic update never removes
+  skills. When the code of the dashboard server or a connector changes, an
+  update restarts the ones that are running, so the switch works right away.
+  If a restart fails, the dashboard says so and the hourly update retries.
+- Install workspace numbers by default. The installer no longer asks and keeps
+  a remembered "no". An automatic update never starts them if they aren't
+  running. Install with `--no-ws-numberer` to turn them off and stop a running
+  copy.
+
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work
   stats. The model-heavy background jobs that drove that cost are off.

@@ -167,7 +167,7 @@ def test_full_render_adds_the_slack_tab(mod, home):
     html = (home / ".claude/assistant-dashboard.html").read_text()
     assert 'data-tab="slack"' in html and 'data-panel="slack"' in html
     assert 'Slack <span class="tab-count">1</span>' in html
-    assert "'slack', 'todos'" in html and "function slackFocusRefresh()" in html
+    assert "function slackFocusRefresh()" in html
 
 
 def test_times_show_in_local_time(mod, home, monkeypatch):

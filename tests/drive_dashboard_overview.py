@@ -251,8 +251,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 assert "A detailed return note" in page.locator("#task-workspace-id-1").inner_text()
                 assert "Keep the failure as a blocker." in page.locator("#task-workspace-id-1").inner_text()
                 assert "Investigate" in page.locator("#task-workspace-id-1 .session-question").inner_text()
-                awaitable = page.evaluate("refreshDashboard()")
-                assert awaitable is None
+                assert page.evaluate("refreshDashboard()") is False
                 assert page.locator('#task-workspace-id-1 details').get_attribute("open") is not None
                 summary_path = home / ".assistant/observer-summaries/workspace_1.json"
                 updated_summary = json.loads(summary_path.read_text())
@@ -696,6 +695,80 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 page.locator('[data-tab="overview"]').click()
                 assert not errors, errors
 
+                mode_reply = {}
+                page.route("**/mode?value=*", lambda route: route.fulfill(
+                    status=mode_reply["status"], body=mode_reply["body"]))
+
+                def switch_state():
+                    return page.evaluate("""() => ({
+                        label: document.getElementById('mode-toggle').textContent,
+                        disabled: document.getElementById('mode-toggle').disabled,
+                        heading: document.querySelector('.mode-switch strong').textContent,
+                        mode: document.querySelector('.mode-switch').dataset.mode,
+                        status: document.getElementById('mode-status').textContent,
+                        replaced: !document.getElementById('dashboard-content').dataset.modeMark})""")
+
+                def mark_page():
+                    page.evaluate("document.getElementById('dashboard-content').dataset.modeMark = '1'")
+
+                mode_reply.update(status=400, body="mode must be default or pro")
+                page.evaluate("setMode('turbo')")
+                assert switch_state()["status"] == "Couldn't switch: mode must be default or pro"
+                assert not switch_state()["disabled"]
+
+                for value, label, heading, other in (
+                        ("default", "Turn Pro mode on", "Pro mode is off.", "pro"),
+                        ("pro", "Turn Pro mode off", "Pro mode is on.", "default")):
+                    mode_reply.update(status=200, body=value)
+                    mark_page()
+                    page.route("**/assistant-dashboard.html", lambda route: route.fulfill(status=503, body="down"))
+                    page.evaluate(f"setMode('{value}')")
+                    page.unroute("**/assistant-dashboard.html")
+                    assert switch_state() == {
+                        "label": label, "disabled": False, "heading": heading, "mode": value,
+                        "status": f"Switched to {value}. Reload the page to see the change.", "replaced": False}
+                    assert page.evaluate("document.getElementById('mode-toggle').getAttribute('onclick')") \
+                        == f"setMode('{other}')"
+
+                mode_reply.update(status=200, body="Switched to pro. The page updates within 5 minutes.")
+                mark_page()
+                page.evaluate("setMode('pro')")
+                assert switch_state() == {
+                    "label": "Turn Pro mode off", "disabled": False, "heading": "Pro mode is on.",
+                    "mode": "pro", "status": "Switched to pro. The page updates within 5 minutes.", "replaced": True}
+
+                mode_reply.update(status=200, body="default")
+                mark_page()
+                page.evaluate("dashboardRefreshing = true; window.modeDone = false;"
+                              "setMode('default').then(() => { window.modeDone = true; }); 0")
+                page.clock.fast_forward(300)
+                page.wait_for_timeout(30)
+                assert not page.evaluate("window.modeDone")
+                page.evaluate("dashboardRefreshing = false")
+                for _ in range(5):
+                    page.clock.fast_forward(100)
+                    page.wait_for_timeout(30)
+                page.wait_for_function("window.modeDone")
+                settled = switch_state()
+                assert settled["replaced"] and settled["status"] == "" and not settled["disabled"], settled
+
+                mark_page()
+                page.evaluate("dashboardRefreshing = true; window.modeDone = false;"
+                              "setMode('default').then(() => { window.modeDone = true; }); 0")
+                for _ in range(11):
+                    page.clock.fast_forward(1000)
+                    page.wait_for_timeout(30)
+                page.wait_for_function("window.modeDone")
+                assert switch_state()["status"] == "Switched to default. Reload the page to see the change."
+                assert not switch_state()["disabled"] and not switch_state()["replaced"]
+                page.evaluate("dashboardRefreshing = false")
+                page.unroute("**/mode?value=*")
+                page.evaluate("history.replaceState(null, '', '#brief-tab-gone')")
+                assert page.evaluate("refreshDashboard(true, true)") is True
+                assert page.locator('[data-panel="overview"]').is_visible()
+                refresh_fixture()
+                assert not errors, errors
+
                 file_page = page.context.new_page()
                 file_errors = []
                 file_page.on("pageerror", lambda error: file_errors.append(str(error)))
@@ -731,7 +804,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                                   "explicit_focus_requests": len(mutations),
                                   "intercepted_brief_seen_requests": len(seen),
                                   "coverage_script_instances": len(scripts) if profiler is not None else 0,
-                                  "checks": "grouping, density, search restoration, expansion, clipboard denial and expiry, reading stability, legacy focus, missing task guards, refresh errors and concurrency, brief date changes, file protocol, observation expiry, stale request gating, Slack refresh, check-off, and errors"}))
+                                  "checks": "grouping, density, search restoration, expansion, clipboard denial and expiry, reading stability, legacy focus, missing task guards, refresh errors and concurrency, brief date changes, file protocol, observation expiry, stale request gating, Slack refresh, check-off, the Pro mode switch, and errors"}))
         finally:
             server.shutdown()
             server.server_close()

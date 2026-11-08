@@ -24,10 +24,14 @@ os.environ["CMUX_BIN"] = str(_ROOT / "tests" / "no-real-cmux-in-tests")
 # and run install.sh --apply. On 2026-10-18 that reloaded live daemons from a
 # scratch clone. pytest.fail is a BaseException, so the pulse can't swallow it.
 # Tests that need a fake self_update still replace this one in sys.modules.
-# The watcher is off by default in production. Tests written for its behavior
-# run with it on; tests of the default clear this variable themselves.
+# Fresh installs start in default mode with the watcher off. Tests written for
+# Pro mode behavior run with both on; tests marked `real_mode` read the real
+# setting, and tests of the defaults clear ASSISTANT_WATCHER themselves.
 @pytest.fixture(autouse=True)
-def _watcher_on(monkeypatch):
+def _watcher_on(request, monkeypatch):
+    if "real_mode" not in request.keywords:
+        from assistant import mode
+        monkeypatch.setattr(mode, "current", lambda: "pro")
     monkeypatch.setenv("ASSISTANT_WATCHER", "1")
 
 
