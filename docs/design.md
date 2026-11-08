@@ -33,10 +33,10 @@ your own rules.
 
 Each open decision scores its lane (escalate 100, staged 60, digest 20) plus
 urgency (now 50, high 20) plus freshness (20, minus 5 a day) plus a goal boost
-(up to 20), and the queue sorts by lane first. Here's a rebuild against sample
-data:
+(up to 20), and the queue sorts by lane first. Each decision card shows its
+lane, the rule that placed it, and its score:
 
-![Terminal output of bin/build-morning-brief.py --print piped through jq, run against sample data: five escalations at score 169, three staged items at 79, and five digest items at 39, each with the rule that placed it.](images/brief-queue.png)
+![A decision card with sample data: escalate via gh-mention-escalate, score 168, with Accept, Snooze 1h, Reject, and Wrong lane buttons.](images/decision-card.png)
 
 `src/assistant/brief.py` ranks open decisions with the fixed formula above. The
 brief is a pure derivation of other stores: delete

@@ -5,114 +5,47 @@
 
 **Assistant is a chief of staff for your fleet of Claude Code agents.**
 
-You start a dozen agents, walk away, and come back to a wall of terminals, pull
-requests, Slack pings, and email. Assistant watches your agents, inbox, Slack,
-GitHub, calendar, and goals, handles what's safe, and hands you one morning
-brief with only the decisions you need to make. It runs on your own Mac as a few
-small LaunchAgents and a dashboard at `http://127.0.0.1:9876`.
+It watches your agents, inbox, Slack, GitHub, and calendar, and turns them into
+one morning brief and a local dashboard that shows only what needs you.
 
-![The Assistant dashboard's Sessions tab, rendered from sample data. Seven cmux workspaces sit in four columns: Needs your answer holds two sessions with open questions, such as "Which transition should the order and profile screens use?"; Assistant tasks holds three sessions in progress with their next step; Ready to close holds a merged docs rewrite; and Paused holds a backfill you set aside. A banner above suggests finishing the oldest session before starting another.](docs/images/dashboard-sessions.png)
-
-Plain Python decides what happens to every item and is the only thing that can
-act. Out of the box, Assistant is silent: you read the brief when you're ready.
+![The Sessions tab of the Assistant dashboard with sample data: four columns of cmux workspaces. Needs your answer holds a flaky-test fix waiting on a question, Assistant tasks holds a rate-limiting change in progress, Ready to close holds a merged docs rewrite, and Paused holds a backfill you set aside.](docs/images/dashboard-sessions.png)
 
 ## Features
 
-### See every agent sorted by what it needs from you
+### Answer your agents without opening every terminal
 
-The **Sessions** tab counts your open cmux workspaces and sorts them into
-**Needs your answer**, **Assistant tasks**, **Ready to close**, and **Paused**.
-When an agent asks you something, the card quotes its question and its choices,
-so you can decide before you switch to the session. The dashboard never answers,
-closes, or sends instructions for you. See [Use the dashboard](docs/dashboard.md).
+When an agent asks you something, its card quotes the question and the choices.
+You decide in seconds, then jump straight to the right session.
 
-<img width="400" alt="A Needs your answer card, rendered from sample data, opened to show the agent's question: &quot;Keep the test-level retry as a safety net, or remove it now that the race is fixed?&quot; with two choices, Remove the retry and Keep the retry, and a note that you answer in your session because the page doesn't send a reply." src="docs/images/session-question.png">
+<img width="520" alt="A Needs your answer card with sample data, opened to the agent's question: keep the test-level retry as a safety net, or remove it now that the race is fixed? Two choices follow, Remove the retry and Keep the retry." src="docs/images/session-question.png">
 
-Questions come from your session transcripts without a model call. To also get a
-one-line status and next step for every workspace, turn on the Observer with
-`ASSISTANT_WATCHER=1`; it's off by default because it reads a lot of transcript
-per check.
+### Get one ranked brief instead of a dozen inboxes
 
-### Get one morning brief instead of a dozen inboxes
+Plain Python rules sort every notification into escalate, staged, digest, or
+drop, and rank what's left. You see the few decisions that matter, and **Wrong
+lane** teaches the rules with one tap.
 
-Every GitHub notification, email, calendar reminder, Slack message, and agent
-signal becomes one kind of record. Ordered Python rules give each one a lane:
-**escalate** goes to the top, **staged** waits for your review, **digest** is an
-FYI that expires in 24 hours, and **drop** leaves only a receipt. The first pulse
-at or after 7:00 builds the brief.
+![A decision card from the brief with sample data: "@you can you sanity-check the new rate-limit headers?" marked escalate by the gh-mention-escalate rule, with Accept, Snooze 1h, Reject, and Wrong lane buttons.](docs/images/decision-card.png)
 
-![The Notifications tab, rendered from sample data. Tiles show 13 notification groups, a trend line of daily alert totals, 1 item handled overnight, 5 FYI digest rows, $0.00 a day, 0 interrupts delivered or denied, and 0 expired unseen. Below, the top groups are a GitHub mention on acme/api #311, an email about a renewal quote, and a workspace waiting for input. Under Completed actions, the rule gmail-newsletter-drop dropped a newsletter.](docs/images/dashboard-notifications.png)
+### See the Slack threads where the next move is yours
 
-The brief is a pure derivation, so you can rebuild it on demand and see exactly
-which rule placed each item and how it scored:
+The **Slack** tab pulls out the threads where someone is waiting on you or
+you promised something. You stop scrolling channels to find them.
 
-![Terminal output of bin/build-morning-brief.py --print piped through jq, run against sample data. It lists 13 open decisions: five escalations at score 169 from rules such as gh-mention-escalate, gmail-direct-escalate, cmux-needs-input-escalate, slack-dm-escalate, and gh-security-alert-escalate; three staged items at 79, including two review requests and a design review in an hour; and five digest items at 39, such as CI passed on main and Sprint planning.](docs/images/brief-queue.png)
-
-The rules live in
-[`config/policies.bootstrap.json`](config/policies.bootstrap.json), and every
-rule has a fixture in `evals/policy/`. No starter rule uses an `auto` lane; only
-a rule you confirm can. An event that no rule matches opens as an escalation,
-and a triage model may then suggest a gentler lane.
-
-### Teach it with one tap
-
-Open a decision to accept, snooze, or reject it. **Wrong lane** rejects it and
-files a rule proposal for that source and kind. Repeated identical triage
-suggestions and briefs you ignore also become proposals, and nothing becomes a
-rule until you confirm it.
-
-![A decision card, rendered from sample data, for "@you can you sanity-check the new rate-limit headers?" It reads escalate, via gh-mention-escalate, score 169, 6.7 hours old, with a TODAY badge, a recommendation to accept today, and Accept, Snooze 1h, Reject, and Wrong lane buttons.](docs/images/decision-card.png)
-
-A brief still unseen after 48 hours moves its open, non-escalated decisions to
-the digest instead of nagging you.
-
-### Find the Slack threads where the next move is yours
-
-The **Slack** tab sorts recent threads into **Do first**, **Promise**, **This
-week**, and **Optional**. Rules collect and triage the threads, and one model
-call writes the titles and sets aside noise. **Done** checks a row off until its
-thread gets a new reply. The Slack client refuses any method outside a read
-allowlist. See [Slack focus list](docs/connectors.md#slack-focus-list).
-
-![The Slack tab, rendered from sample data with an invented workspace. Do first holds "Reply to Ops about the stuck staging migration," marked as mentioning you; Promise holds "Send the load-test numbers you said you'd share"; This week holds "Weigh in on the API versioning proposal"; and Optional holds "Vote on the team offsite dates." Each row shows an effort tag and a Done button.](docs/images/dashboard-slack.png)
-
-### Connect only the sources you want
-
-Connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack are optional,
-read-only daemons. The installer copies them but never loads one, so each
-connector starts only when you run `launchctl load`. The **Connected apps** tab
-shows each one as **Connected**, **Available**, or **Needs attention**, with the
-command to connect it. See [Connect your sources](docs/connectors.md).
-
-![The Connected apps tab, rendered from sample data. GitHub notifications, Gmail, Google Calendar, and Slack show as Connected with their last poll between 1 and 4 minutes ago. Outlook mail shows as Available, with the command to authorize it.](docs/images/dashboard-connections.png)
+![The Slack tab with sample data. Do first: reply to Ops about the stuck staging migration, which mentions you. Promise: send the load-test numbers you said you'd share. Each row has an effort tag and a Done button.](docs/images/dashboard-slack.png)
 
 ### Also in the box
 
-- **Goals and a planner.** The `/goal` skill keeps ranked goals. The planner
-  stages the next step for a stalled goal as a decision for you, and goals lift
-  a decision's rank within its lane.
-- **Tasks.** A TODO list on the dashboard and through the `/todo` skill. A task
-  flagged to start automatically gets its own cmux workspace, with caps on how
-  many run at once.
-- **Fleet actions.** With the Observer on, a Python table turns each
-  workspace's verdict into a nudge, a `/cleanup`, a narrow merge command, or a
-  card for you.
-- **`/back-off` and `/attend`.** Tell Assistant to leave a workspace alone, or
-  to start watching it again.
-- **A noise budget.** `bin/interrupt-gate.py` is the only path to a macOS
-  notification, and the default budget is zero pages and zero notifications a
-  day. Every denial is recorded in the brief.
-
-## Python owns every gate and every send
-
-Sends are forbidden in config and again in code, so a config edit can't turn
-them on. Assistant never sends mail or Slack as you, never closes a workspace,
-and never loads a daemon you didn't ask for. Tests fail the build if a
-connector contains a send call, if any code closes a workspace, or if anything
-other than `bin/interrupt-gate.py` pushes a notification. Automatic merges are
-narrow and written for the author's own repository, so expect to adapt
-`bin/merge-pr-dispatch.py`. The [design reference](docs/design.md) covers the
-details.
+- Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack.
+  See [Connect your sources](docs/connectors.md).
+- Ranked goals with the `/goal` skill, and a task list with the `/todo` skill.
+- `/back-off` and `/attend` to tell Assistant to leave a workspace alone or
+  watch it again.
+- An optional Observer (`ASSISTANT_WATCHER=1`) that writes a status and next
+  step for every workspace.
+- Silent by default: the notification budget is zero, Assistant never sends mail
+  or Slack as you, and it never closes a workspace. See the
+  [design reference](docs/design.md).
 
 ## Quick start
 

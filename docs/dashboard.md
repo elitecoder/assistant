@@ -3,7 +3,7 @@
 Open the dashboard at http://127.0.0.1:9876. `bin/todo-server.py` serves it on
 localhost only.
 
-![The Sessions tab, rendered from sample data. A tab bar lists Sessions, Notifications, Saved requests, Session details, Background work, Connected apps, Slack, and Tasks. Four columns sort seven cmux workspaces: Needs your answer, Assistant tasks, Ready to close, and Paused. Each card shows its state, a title, the next step, when it was first seen, and a Go to session button.](images/dashboard-sessions.png)
+![The Sessions tab with sample data: four columns of cmux workspaces, Needs your answer, Assistant tasks, Ready to close, and Paused. Each card shows its state, a title, the next step, when it was first seen, and a Go to session button.](images/dashboard-sessions.png)
 
 Nothing pushes or notifies you by default. Neglected decisions fall back to the
 digest instead of nagging you.
