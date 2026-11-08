@@ -9,6 +9,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Removed
+- Remove the dollars-per-day boxes from the Brief tab and the background-work
+  stats. The model-heavy background jobs that drove that cost are off.
+
 ### Changed
 - The Brief tab now rebuilds from your current notifications, completed
   actions, and service status every time the dashboard updates, instead of

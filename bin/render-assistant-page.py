@@ -359,9 +359,9 @@ def render_live_sessions(world):
 
 
 def render_metering_stats():
-    """Fleet cost/behavior tiles from the last 7 days of the pulse metering
+    """Fleet behavior tiles from the last 7 days of the pulse metering
     log (~/.assistant/metrics.jsonl, written by pulse.py each pulse):
-    Observer calls/day, $/day estimate, verdict-change rate, skip rate.
+    Observer calls/day, verdict-change rate, skip rate.
     The aggregation math AND the log path live in bin/metering.py (single
     source of truth, shared with the pulse); any failure — no log yet,
     module missing, aggregate missing a key — degrades to an empty string,
@@ -382,7 +382,6 @@ def render_metering_stats():
         return f"""
 <div class="stats">
   <div class="stat"><div class="v">{agg['observer_calls_per_day']:.0f}</div><div class="k">Summary requests per day</div></div>
-  <div class="stat"><div class="v">${agg['cost_per_day_usd']:.2f}</div><div class="k">$/day est · 7d (incl. triage ${agg['cost_ledger_per_day_usd']:.2f})</div></div>
   <div class="stat"><div class="v">{agg['verdict_change_rate'] * 100:.0f}%</div><div class="k">Checks that changed a status</div></div>
   <div class="stat"><div class="v">{agg['skip_rate'] * 100:.0f}%</div><div class="k">Checks that reused an earlier result</div></div>
 </div>
@@ -603,7 +602,6 @@ def _render_brief_tab_inner():
     digest = brief.get("digest") or {}
     health = brief.get("health") or {}
     interrupts = health.get("interrupts") or {}
-    cost = health.get("cost") or {}
 
     # Saved narration belongs to the dated snapshot, not the current log.
     narrator = None
@@ -650,7 +648,6 @@ def _render_brief_tab_inner():
   {trend_tile}
   <div class="stat"><div class="v">{len(receipts)}</div><div class="k">Handled overnight</div></div>
   <div class="stat"><div class="v">{sum(len(v) for v in digest.values())}</div><div class="k">FYI digest rows</div></div>
-  <div class="stat"><div class="v">${float(cost.get('cost_per_day_usd') or 0.0):.2f}</div><div class="k">$/day · 7d</div></div>
   <div class="stat"><div class="v">{int(interrupts.get('delivered_24h') or 0)} / {int(interrupts.get('denied_24h') or 0)}</div><div class="k">Interrupts delivered / denied</div></div>
   <div class="stat"><div class="v">{int(health.get('expired_unseen_24h') or 0)}</div><div class="k">Expired unseen · 24h</div></div>
 </div>"""
