@@ -23,7 +23,8 @@ starting sessions, answering you on Slack, and cleaning up after them.
 | **Talk to your Mac from Slack** | A Claude session answers your messages in a private Slack channel and pings you when a workspace needs you. |
 | **Save a Slack thread as a task** | React with your machine's emoji, and the thread becomes a task, which then gets its own session. |
 | **Find Slack threads that need you** | The **Slack** tab lists threads where someone is waiting on you or you promised something. |
-| **One list for your inbox** | The **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. |
+| **One list for your inbox** (Pro mode) | The **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. |
+| **Track ranked goals** (Pro mode) | `/goal` records your goals, and a planner suggests the next step when one stalls. |
 | **Recover from crashes** | Workspaces that crash come back on their own. Opt in with `--with-crash-resume`. |
 | **Keep your Macs in sync** | Claude memory syncs across your Macs. Opt in with `--with-memory`. |
 
@@ -43,7 +44,7 @@ you promised something. You stop scrolling channels to find them.
 
 ![The Slack tab with sample data. Do first: reply to Ops about the stuck staging migration, which mentions you. Promise: send the load-test numbers you said you'd share. Each row has an effort tag and a Done button.](docs/images/dashboard-slack.png)
 
-### Rank your notifications instead of reading them all
+### Rank your notifications instead of reading them all (Pro mode)
 
 Rules sort every notification into escalate, staged, digest, or drop, and rank
 what's left. You see the few decisions that matter, and **Wrong lane** teaches
@@ -53,14 +54,28 @@ the rules with one tap.
 
 ### Also in the box
 
-- Ranked goals with the `/goal` skill.
-- `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
-  it again. `/lesson` saves a rule that future sessions follow.
 - `[N]` numbers and colors for your cmux sidebar. Opt in with
   `--with-ws-numberer`.
 - Silent by default: Assistant never sends mail or posts Slack as you, and the
   Slack bot can post only in your private channel. See the
   [design reference](docs/design.md).
+
+## Pro mode
+
+To turn on Pro mode, run `./install.sh --apply --pro`. To switch back, run
+`./install.sh --apply --no-pro`. Pro mode adds:
+
+- The **Notifications**, **Decisions**, **Background work**, and **Connected
+  apps** tabs, with triage ranking your notifications.
+- Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack.
+  See [Connect your sources](docs/connectors.md).
+- Ranked goals with the `/goal` skill, and a planner that suggests next steps.
+- `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
+  it again. `/lesson` saves a rule that future sessions follow.
+- Background jobs that each need their own setting: the Observer
+  (`ASSISTANT_WATCHER=1`), the strategist (`ASSISTANT_STRATEGIST=1`), the
+  lessons extractor (`ASSISTANT_LESSON_EXTRACTOR=1`), and the brief narrator
+  (`ASSISTANT_BRIEF_NARRATOR=1`).
 
 ## Quick start
 
