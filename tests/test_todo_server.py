@@ -899,6 +899,16 @@ def test_slack_focus_spawn_failure_is_recorded(server, slack_home, monkeypatch):
     assert state["error"].startswith("The refresh couldn't start: ")
 
 
+def test_brief_refresh_rebuilds_the_page_for_same_origin_only(server, monkeypatch):
+    renders = []
+    monkeypatch.setattr(mod, "rerender_dashboard", lambda: renders.append(1))
+    assert _request(server.base, "POST", "/brief/refresh",
+                    headers={"Origin": "https://evil.example"})[0] == 403
+    assert renders == []
+    assert _request(server.base, "POST", "/brief/refresh") == (200, "rebuilt")
+    assert renders == [1]
+
+
 def test_slack_focus_done_rerenders_the_dashboard(server, slack_home, monkeypatch):
     renders = []
     monkeypatch.setattr(mod, "rerender_dashboard", lambda: renders.append(1))

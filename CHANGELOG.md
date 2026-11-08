@@ -10,6 +10,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Changed
+- The Brief tab now rebuilds from your current notifications, completed
+  actions, and service status every time the dashboard updates, instead of
+  showing the copy saved at 7 AM. A **Refresh now** button rebuilds it on the
+  spot. If the live build fails, the tab falls back to the saved copy.
 - Turn off the daily Sonnet call that writes the morning brief's wording. Its
   summary never showed on the dashboard, and its advice showed only when the
   live queue couldn't be read. The Brief tab still builds without a model. Set

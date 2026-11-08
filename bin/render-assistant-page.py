@@ -425,6 +425,13 @@ def _brief_trend_svg(width=140, height=30, n=14):
             f'stroke-width="1.5" stroke-linejoin="round"/></svg>')
 
 
+def _local_hhmm(epoch) -> str:
+    try:
+        return datetime.fromtimestamp(float(epoch)).strftime("%-I:%M %p")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "just now"
+
+
 def _greeting_for(epoch) -> str:
     """A time-of-day greeting keyed on the brief's build hour (LOCAL, like the
     brief's date key). The brief is a morning artifact, so 'Good morning' is the
@@ -535,38 +542,46 @@ def render_brief_tab():
                 f'</div>'), 0
 
 
-def _render_brief_tab_inner():
+def _saved_brief():
+    """The newest saved daily brief: (brief, date, notice)."""
     briefs = sorted(BRIEF_DIR.glob("brief-????-??-??.json"))
-    brief = {}
-    date_str = ""
-    snapshot_available = False
-    snapshot_notice = ""
     if not briefs:
-        snapshot_notice = "No saved summary yet. Completed actions and service details aren't available."
-    else:
-        path = briefs[-1]
-        date_str = path.name[len("brief-"):-len(".json")]
-        try:
-            brief = json.loads(path.read_text())
-            if not isinstance(brief, dict):
-                raise ValueError("not a brief object")
-            snapshot_available = True
-        except (OSError, ValueError):
-            brief = {}
-            snapshot_notice = f"The saved summary from {date_str} couldn't be read. Service details aren't available."
+        return {}, "", "No saved summary yet. Completed actions and service details aren't available."
+    date_str = briefs[-1].name[len("brief-"):-len(".json")]
+    try:
+        brief = json.loads(briefs[-1].read_text())
+        if not isinstance(brief, dict):
+            raise ValueError("not a brief object")
+        return brief, date_str, ""
+    except (OSError, ValueError):
+        return {}, date_str, f"The saved summary from {date_str} couldn't be read. Service details aren't available."
+
+
+def _render_brief_tab_inner():
+    saved, saved_date, snapshot_notice = _saved_brief()
+    try:
+        brief = brief_store.build_brief()
+        live = True
+        snapshot_notice = ""
+    except Exception:  # noqa: BLE001 — fall back to the saved daily brief
+        brief, live = saved, False
+    date_str = brief.get("date") or saved_date
+    snapshot_available = bool(brief)
+    built_at = _local_hhmm(brief.get("epoch")) if live else ""
     current = False
     try:
         queue = brief_store.read_current_queue()
         current = True
-        queue_notice = "This list uses your saved notifications, read when the page was built."
+        queue_notice = (f"Built {built_at} from your current notifications."
+                        if live else "This list uses your saved notifications, read when the page was built.")
     except (OSError, ValueError, TypeError, OverflowError) as exc:
-        queue = brief.get("queue") or []
+        queue = saved.get("queue") or []
         queue_notice = (
             f"Current notifications unavailable ({exc}). "
-            + (f"Showing the saved list from {date_str}; it hasn't been checked for changes."
-               if brief else "No saved notification list is available."))
+            + (f"Showing the saved list from {saved_date}; it hasn't been checked for changes."
+               if saved else "No saved notification list is available."))
     topics, focus_notice = _review_topics(queue, current)
-    counts_available = current or (snapshot_available and "queue" in brief)
+    counts_available = current or "queue" in saved
     topic_count = len(topics) if counts_available else "?"
     alert_count = len(queue) if counts_available else "?"
     github_topics = sum(
@@ -894,7 +909,7 @@ def _render_brief_tab_inner():
     summary_html = (
         f'<p class="brief-summary template-voice">{e(summary_txt)}{voice_tag}</p>')
     header_html = (
-        f'<div class="brief-eyebrow">Notification history · saved {e(date_str)}</div>'
+        f'<div class="brief-eyebrow">{e(f"Brief · built {built_at}" if built_at else f"Brief · saved {date_str}")}</div>'
         '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
         f'{summary_html}')
 
@@ -903,6 +918,7 @@ def _render_brief_tab_inner():
 <div class="brief-root"{date_attribute}>
 {header_html}
 <p class="meta">GitHub alerts can include closed pull requests with follow-ups. They do not add sessions to your workload.</p>
+<button class="btn" id="brief-refresh" onclick="briefRefresh()">Refresh now</button>
 <button class="btn" onclick="showTab('overview')">Back to sessions</button>
 <p class="snapshot-status" data-current-queue="{str(current).lower()}">{e(queue_notice)}</p>
 <p class="meta">{e(snapshot_notice)} {e(focus_notice)}</p>
@@ -929,9 +945,9 @@ def _render_brief_tab_inner():
   {budget_note}
 </div>
 
-<div class="brief-footer">Summary saved {e(brief.get('ts') or '?')}. {e(seen_note)}.</div>
+<div class="brief-footer">{e("Built" if live else "Summary saved")} {e(brief.get('ts') or '?')}. {e(seen_note)}.</div>
 <details class="brief-footer"><summary>Technical details</summary>
-<p>To rebuild the saved summary, run <code>python3 bin/build-morning-brief.py</code>.</p>
+<p>The brief rebuilds every time the page updates. To save today's copy, run <code>python3 bin/build-morning-brief.py</code>.</p>
 </details>
 </div>
 """
@@ -4004,6 +4020,16 @@ function showTab(name) {
 // (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
 // as a file:// page — a relative fetch resolves to file:///brief/seen and
 // never arrives, silently arming the destructive unseen-TTL (F19).
+async function briefRefresh() {
+  const button = document.getElementById('brief-refresh');
+  if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
+  try {
+    await fetch('http://127.0.0.1:9876/brief/refresh', {method: 'POST', mode: 'cors'});
+  } catch (e) { /* the next page update still rebuilds the brief */ }
+  await refreshDashboard(true);
+  const fresh = document.getElementById('brief-refresh');
+  if (fresh) { fresh.disabled = false; fresh.textContent = 'Refresh now'; }
+}
 let briefSeenSent = false;
 function pingBriefSeen() {
   if (briefSeenSent) return;
