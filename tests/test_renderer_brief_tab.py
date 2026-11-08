@@ -484,10 +484,11 @@ class BriefTabTests(unittest.TestCase):
         # 3. digest grouped + collapsed.
         self.assertIn("digest-group", html)
         self.assertIn("<details", html)
-        # 4. health: staleness chip, interrupts tile, $/day, expired-unseen.
+        # 4. health: staleness chip, interrupts tile, expired-unseen; no cost.
         self.assertIn("cmux · 2m", html)
         self.assertIn("0 / 7", html)
-        self.assertIn("$12.34", html)
+        self.assertNotIn("$12.34", html)
+        self.assertNotIn("$/day", html)
         self.assertIn("quarantine · 2", html)
         self.assertIn("noise budget", html)
 

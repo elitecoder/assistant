@@ -467,7 +467,7 @@ class RendererMeteringTilesTests(unittest.TestCase):
         self._plant_metrics()
         html = self.renderer.render_metering_stats()
         self.assertIn("Summary requests per day", html)
-        self.assertIn("$/day est", html)
+        self.assertNotIn("$", html)
         self.assertIn("Checks that changed a status", html)
         self.assertIn("Checks that reused an earlier result", html)
         self.assertIn('class="stat"', html)
