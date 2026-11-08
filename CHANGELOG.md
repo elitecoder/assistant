@@ -9,6 +9,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
+  Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
+  `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds
+  notifications and triage, goals and the planner, the Notifications,
+  Decisions, Background work, and Connected apps tabs, and the `/goal`,
+  `/attend`, `/back-off`, and `/lesson` skills. The watcher, strategist,
+  lessons extractor, and brief narrator also need Pro mode. Turn it on with
+  `./install.sh --apply --pro`, which saves `{"mode": "pro"}` in
+  `~/.assistant/config.json`; `--no-pro` switches back.
+
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work
   stats. The model-heavy background jobs that drove that cost are off.

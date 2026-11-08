@@ -34,6 +34,8 @@ PULL_SKILLS=0
 WITH_MEMORY=0
 WITH_CRASH_RESUME=0
 WITH_WS_NUMBERER=0
+SET_MODE=""
+PRO_SKILLS=" goal attend back-off lesson "
 TS="$(date +%s)"
 
 log() { printf '%s\n' "$*"; }
@@ -49,6 +51,8 @@ for arg in "$@"; do
         --with-memory) WITH_MEMORY=1 ;;
         --with-crash-resume) WITH_CRASH_RESUME=1 ;;
         --with-ws-numberer) WITH_WS_NUMBERER=1 ;;
+        --pro) SET_MODE=pro ;;
+        --no-pro) SET_MODE=default ;;
         --with-all) WITH_MEMORY=1; WITH_CRASH_RESUME=1; WITH_WS_NUMBERER=1 ;;
         -h|--help)
             cat <<USAGE
@@ -56,6 +60,11 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
   --dry-run         (default) Show what would change. No mutation.
   --apply           Actually create symlinks/copies, copy plists, reload launchd.
+  --pro             Turn on Pro mode: notifications and triage, connectors,
+                    goals and the planner, the background-work and connected-
+                    apps tabs, and the /goal, /attend, /back-off, and /lesson
+                    skills. Saved as {"mode": "pro"} in ~/.assistant/config.json.
+  --no-pro          Switch back to default mode.
   --pull-skills     Pull edits from a live ~/.claude/skills/<name>/ directory
                     BACK into the repo. Only needed to recover edits made while
                     a skill was still a real directory (e.g. backups left by the
@@ -480,12 +489,46 @@ log ""
 # ~/.claude/skills/ as a skill — leaving .bak entries there pollutes the
 # registry. (ensure_symlink's default <target>.bak-<ts> would land inside
 # ~/.claude/skills/, so we back up by hand here before symlinking.)
+CONFIG_JSON="$HOME_DIR/.assistant/config.json"
+if [[ -n "$SET_MODE" && $APPLY -eq 1 ]]; then
+    mkdir -p "$HOME_DIR/.assistant"
+    python3 - "$CONFIG_JSON" "$SET_MODE" <<'PY'
+import json, sys
+from pathlib import Path
+path, mode = Path(sys.argv[1]), sys.argv[2]
+try:
+    data = json.loads(path.read_text())
+except (OSError, ValueError):
+    data = {}
+data = data if isinstance(data, dict) else {}
+data["mode"] = mode
+path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+fi
+if [[ -n "$SET_MODE" ]]; then
+    MODE="$SET_MODE"
+else
+    MODE="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("mode","default") if isinstance(d,dict) else "default")' "$CONFIG_JSON" 2>/dev/null || echo default)"
+fi
+log "Mode: $MODE"
+
 log "[2/5] Symlinking skills into ~/.claude/skills/"
 mkdir -p "$HOME_DIR/.claude/skills" "$HOME_DIR/.claude/skills-backups"
 for skill_dir in "$REPO_ROOT"/skills/*/; do
     skill_name="$(basename "$skill_dir")"
     target="$HOME_DIR/.claude/skills/$skill_name"
     expected="$REPO_ROOT/skills/$skill_name"
+
+    # Pro mode skills: skip them in default mode, and unlink our own copy.
+    if [[ "$MODE" != "pro" && "$PRO_SKILLS" == *" $skill_name "* ]]; then
+        if [[ -L "$target" && "$(readlink "$target")" == "$expected" ]]; then
+            note "OFF  $target (Pro mode only)"
+            [[ $APPLY -eq 1 ]] && rm "$target"
+        else
+            note "SKIP $skill_name (Pro mode only)"
+        fi
+        continue
+    fi
 
     # Already the correct symlink — nothing to do.
     if [[ -L "$target" ]]; then
@@ -1076,6 +1119,11 @@ else
     log "   ── Slack emoji → todo capture ─────────────────────────────────────"
     log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"
     log "     launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
+    log ""
+    log "   ── Pro mode (now: $MODE) ─────────────────────────────────────────"
+    log "   • ./install.sh --apply --pro adds notifications and triage, the"
+    log "     connectors, goals and the planner, and their dashboard tabs."
+    log "     ./install.sh --apply --no-pro switches back."
     log ""
     log "   Re-run anytime:  ./bin/assistant-doctor.py         (preflight health)"
     log "   Full guide:      ONBOARDING.md"

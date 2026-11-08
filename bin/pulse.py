@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import model_tiers  # noqa: E402
+from assistant import mode, model_tiers  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -207,12 +207,18 @@ LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 # leaves the dashboard and the heartbeat fresh. The transcript pass gets a
 # longer leash since it reads many files before any LLM draft.
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
-# Off by default. Set the variable to 1 to turn a job back on.
+# Pro mode jobs. PRO_JOBS run whenever Pro mode is on; OPT_IN_JOBS also need
+# their variable set to 1.
+PRO_JOBS = ("triage", "brief", "planner")
 OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST",
                "watcher": "ASSISTANT_WATCHER", "narrator": "ASSISTANT_BRIEF_NARRATOR"}
 
 
 def job_enabled(job: str) -> bool:
+    if not mode.is_pro():
+        return False
+    if job in PRO_JOBS:
+        return True
     return os.environ.get(OPT_IN_JOBS[job], "0").strip().lower() in ("1", "true", "yes", "on")
 
 LESSON_TRANSCRIPT_TIMEOUT_SEC = int(os.environ.get("LESSON_TRANSCRIPT_TIMEOUT_SEC", "600"))
@@ -739,6 +745,8 @@ def run_triage_step(pulse_idx: int) -> dict:
     as drain_inbox — a broken triage layer can never stop the pulse (events
     stay un-disposition'd and are retried next pulse). Returns the triage
     summary; its `cards` list seeds this pulse's awaiting_input."""
+    if not job_enabled("triage"):
+        return {"cards": []}
     try:
         src_dir = str(REPO / "src")
         if src_dir not in sys.path:
@@ -765,6 +773,8 @@ def run_brief_step(pulse_idx: int) -> None:
     runs the unseen-brief degradation pass. Imported lazily and fully
     fenced, same contract as drain_inbox: the brief is a pure derivation, so
     a broken builder costs one morning's brief, never a pulse."""
+    if not job_enabled("brief"):
+        return
     try:
         src_dir = str(REPO / "src")
         if src_dir not in sys.path:
@@ -828,6 +838,8 @@ def run_planner_step(pulse_idx: int) -> None:
     the governance (≤1/goal/day throttle, daily ceiling shed, auto-pause) inside
     the pure strategist module and falls back to the M4 template on every gate
     or invalid draft — so a broken/absent Strategist reduces exactly to M4."""
+    if not job_enabled("planner"):
+        return
     try:
         src_dir = str(REPO / "src")
         if src_dir not in sys.path:

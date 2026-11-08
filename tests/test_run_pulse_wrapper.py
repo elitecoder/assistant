@@ -38,6 +38,7 @@ def _layout(tmp: Path, pulse_body: str, model_tiers: str = "TIERS = {}\n") -> Pa
     (tmp / "src/assistant").mkdir(parents=True)
     (tmp / "src/assistant/__init__.py").write_text("")
     (tmp / "src/assistant/model_tiers.py").write_text(model_tiers)
+    (tmp / "src/assistant/mode.py").write_text("")
     return tmp / "bin/run-pulse.py"
 
 

@@ -29,6 +29,7 @@ if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
 from assistant import brief as brief_store
+from assistant import mode
 from assistant import session_guidance
 
 WORLD_PATH = HOME / ".claude/cache/world.json"
@@ -2586,17 +2587,38 @@ def render():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
         return
     world = json.loads(WORLD_PATH.read_text())
+    pro = mode.is_pro()
+    awaiting_n = None
     overview_html, overview_n = render_overview_tab(world)
-    decisions_html, awaiting_n = render_decisions_tab(world)
-    requests_tab = (f'Decisions <span class="tab-count">{awaiting_n}</span>'
-                    if awaiting_n is not None else "Saved requests")
     todos_html, p0_p1 = render_todos_tab(world)
     workspaces_html, ws_n = render_workspaces_tab()
-    fleet_html, fleet_n = render_fleet_tab()
-    brief_html, brief_n = render_brief_tab()
-    connections_html, connected_n = render_connections_panel(world)
     slack_html, slack_n = render_slack_focus_tab()
     slack_count = f' <span class="tab-count">{slack_n}</span>' if slack_n is not None else ""
+    tabs = [("overview", f'Sessions <span class="tab-count" title="cmux workspaces in the saved list">{overview_n}</span>',
+             overview_html)]
+    if pro:
+        decisions_html, awaiting_n = render_decisions_tab(world)
+        fleet_html, fleet_n = render_fleet_tab()
+        brief_html, _ = render_brief_tab()
+        connections_html, connected_n = render_connections_panel(world)
+        tabs += [
+            ("brief", "Notifications", brief_html),
+            ("decisions", f'Decisions <span class="tab-count">{awaiting_n}</span>'
+             if awaiting_n is not None else "Saved requests", decisions_html),
+        ]
+    tabs.append(("workspaces", "Session details", workspaces_html))
+    if pro:
+        tabs += [
+            ("fleet", f'Background work <span class="tab-count">{fleet_n}</span>', fleet_html),
+            ("connections", f'Connected apps <span class="tab-count">{connected_n}</span>', connections_html),
+        ]
+    tabs += [("slack", f"Slack{slack_count}", slack_html),
+             ("todos", f'Tasks <span class="tab-count">{p0_p1}</span>', todos_html)]
+    tab_buttons = "\n".join(
+        f'  <button class="tab" data-tab="{name}" onclick="showTab(\'{name}\')">\n    {label}\n  </button>'
+        for name, label, _ in tabs)
+    tab_panels = "\n\n".join(
+        f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
     pulse_alert_html = render_pulse_alert()
     counts = world.get("counts", {})
@@ -4041,7 +4063,7 @@ function pingBriefSeen() {
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#overview').replace('#', '');
-  showTab(['overview', 'brief', 'decisions', 'workspaces', 'fleet', 'connections', 'slack', 'todos'].includes(initial) ? initial : 'overview');
+  showTab(document.querySelector(`.tab[data-tab="${CSS.escape(initial)}"]`) ? initial : 'overview');
   updateFreshness();
   setInterval(refreshDashboard, 15000);
   if (document.querySelector('#slack-focus[data-running="true"]')) slackFocusPoll();
@@ -4351,63 +4373,10 @@ document.addEventListener('click', handleTodoToolsClick);
 </details>
 
 <div class="tabs">
-  <button class="tab" data-tab="overview" onclick="showTab('overview')">
-    Sessions <span class="tab-count" title="cmux workspaces in the saved list">{overview_n}</span>
-  </button>
-  <button class="tab" data-tab="brief" onclick="showTab('brief')">
-    Notifications
-  </button>
-  <button class="tab" data-tab="decisions" onclick="showTab('decisions')">
-    {requests_tab}
-  </button>
-  <button class="tab" data-tab="workspaces" onclick="showTab('workspaces')">
-    Session details
-  </button>
-  <button class="tab" data-tab="fleet" onclick="showTab('fleet')">
-    Background work <span class="tab-count">{fleet_n}</span>
-  </button>
-  <button class="tab" data-tab="connections" onclick="showTab('connections')">
-    Connected apps <span class="tab-count">{connected_n}</span>
-  </button>
-  <button class="tab" data-tab="slack" onclick="showTab('slack')">
-    Slack{slack_count}
-  </button>
-  <button class="tab" data-tab="todos" onclick="showTab('todos')">
-    Tasks <span class="tab-count">{p0_p1}</span>
-  </button>
+{tab_buttons}
 </div>
 
-<div class="tab-panel" data-panel="overview">
-{overview_html}
-</div>
-
-<div class="tab-panel" data-panel="brief">
-{brief_html}
-</div>
-
-<div class="tab-panel" data-panel="decisions">
-{decisions_html}
-</div>
-
-<div class="tab-panel" data-panel="workspaces">
-{workspaces_html}
-</div>
-
-<div class="tab-panel" data-panel="fleet">
-{fleet_html}
-</div>
-
-<div class="tab-panel" data-panel="connections">
-{connections_html}
-</div>
-
-<div class="tab-panel" data-panel="slack">
-{slack_html}
-</div>
-
-<div class="tab-panel" data-panel="todos">
-{todos_html}
-</div>
+{tab_panels}
 
 <details class="footer"><summary>Technical details</summary>
 <p>Session data: <code>~/.claude/cache/world.json</code>.
