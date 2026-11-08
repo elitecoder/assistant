@@ -19,6 +19,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   lessons extractor, and brief narrator also need Pro mode. Turn it on with
   `./install.sh --apply --pro`, which saves `{"mode": "pro"}` in
   `~/.assistant/config.json`; `--no-pro` switches back.
+- Install workspace numbers by default. The installer no longer asks, and it
+  keeps a remembered "no". Install with `--no-ws-numberer` to turn them off.
 
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work

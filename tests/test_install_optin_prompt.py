@@ -176,9 +176,24 @@ def test_ws_numberer_adopted_when_already_running(tmp_path):
     assert "cmux-ws-numberer.plist — enabled" in out
 
 
-def test_ws_numberer_not_adopted_when_another_label_runs(tmp_path):
-    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.unrelated")
+def test_ws_numberer_is_on_by_default(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply"], loaded_label="com.assistant.unrelated")
+    assert "cmux-ws-numberer.plist — enabled" in out
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=yes" in state
+    assert "Library/LaunchAgents/com.assistant.cmux-ws-numberer.plist" in (home / "launchctl.log").read_text()
+
+
+def test_ws_numberer_respects_a_remembered_no(tmp_path):
+    rc, out, home = _run_install(tmp_path, opt_in="ws-numberer=no\n")
     assert "cmux-ws-numberer.plist — not enabled" in out
+
+
+def test_no_ws_numberer_flag_turns_it_off_and_remembers(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply", "--no-ws-numberer"])
+    assert "cmux-ws-numberer.plist — not enabled" in out
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=no" in state
 
 
 def test_ws_numberer_adopted_when_legacy_label_runs(tmp_path):
@@ -200,18 +215,18 @@ def test_help_documents_ws_numberer(tmp_path):
                        env=installer_env(tmp_path), stdin=subprocess.DEVNULL, timeout=30)
     assert r.returncode == 0
     assert "--with-ws-numberer   number and color cmux workspaces" in r.stdout
-    assert "cmux-ws-numberer\n       (--with-ws-numberer); comms +" in r.stdout
+    assert "On by default; --no-ws-numberer turns it off." in r.stdout
 
 
-def test_interactive_apply_offers_ws_numberer(tmp_path):
+def test_interactive_apply_turns_on_ws_numberer_without_asking(tmp_path):
     env = installer_env(tmp_path)
     (tmp_path / ".assistant").mkdir()
-    # Settle the later memory and machine-config prompts so only the three
+    # Settle the later memory and machine-config prompts so only the two
     # feature prompts read answers.
     (tmp_path / ".assistant" / "memory-repo-config.json").write_text("{}\n")
     (tmp_path / ".assistant" / "machine-config-configured").write_text("fixture\n")
     controller, terminal = pty.openpty()
-    os.write(controller, b"n\nn\ny\n")
+    os.write(controller, b"n\nn\n")
     try:
         r = subprocess.run(["bash", str(INSTALL), "--apply"], stdin=terminal,
                            capture_output=True, text=True, env=env, timeout=60)
@@ -219,7 +234,7 @@ def test_interactive_apply_offers_ws_numberer(tmp_path):
         os.close(terminal)
         os.close(controller)
     assert r.returncode == 0, f"{r.stdout[-2000:]}\n{r.stderr[-1000:]}"
-    assert "The workspace numberer adds a [N] suffix to every cmux workspace title" in r.stderr
+    assert "The workspace numberer adds a [N] suffix to every cmux workspace title" not in r.stderr
     state = (tmp_path / ".assistant" / "feature-opt-in").read_text().splitlines()
     assert sorted(state) == ["crash-resume=no", "memory=no", "ws-numberer=yes"]
 

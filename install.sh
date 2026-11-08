@@ -34,6 +34,7 @@ PULL_SKILLS=0
 WITH_MEMORY=0
 WITH_CRASH_RESUME=0
 WITH_WS_NUMBERER=0
+NO_WS_NUMBERER=0
 SET_MODE=""
 PRO_SKILLS=" goal attend back-off lesson "
 TS="$(date +%s)"
@@ -51,6 +52,7 @@ for arg in "$@"; do
         --with-memory) WITH_MEMORY=1 ;;
         --with-crash-resume) WITH_CRASH_RESUME=1 ;;
         --with-ws-numberer) WITH_WS_NUMBERER=1 ;;
+        --no-ws-numberer) NO_WS_NUMBERER=1 ;;
         --pro) SET_MODE=pro ;;
         --no-pro) SET_MODE=default ;;
         --with-all) WITH_MEMORY=1; WITH_CRASH_RESUME=1; WITH_WS_NUMBERER=1 ;;
@@ -83,6 +85,7 @@ install.sh — install/update the Assistant system from $REPO_ROOT
                        if you run Assistant on more than one machine.
   --with-crash-resume  auto-resume crashed cmux workspaces (workspace-watcher).
   --with-ws-numberer   number and color cmux workspaces (cmux-ws-numberer).
+                       On by default; --no-ws-numberer turns it off.
   --with-all           enable all of the above (and suppress their prompts).
   (Slack comms + slack-reactor are always copied but hand-loaded after their
    token setup — see ONBOARDING.md — never auto-loaded even with a flag.)
@@ -103,8 +106,8 @@ After --apply:
   - CORE plists loaded: com.assistant.{assistant-pulse,world-scanner,
        session-context-watcher,assistant-page,assistant-todo-server}
   - FEATURE plists copied, loaded only with their --with flag: memory-sync-pull
-       (--with-memory), workspace-watcher (--with-crash-resume), cmux-ws-numberer
-       (--with-ws-numberer); comms +
+       (--with-memory), workspace-watcher (--with-crash-resume); cmux-ws-numberer
+       loads by default (--no-ws-numberer to skip); comms +
        slack-reactor copied but hand-loaded after token setup
   - cmux session hooks: hooks/ → ~/.claude/hooks/ (symlinks),
        bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,
@@ -227,6 +230,10 @@ _optin_header() {
 }
 for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:WITH_WS_NUMBERER'; do
     _feat="${_pair%%:*}"; _var="${_pair##*:}"
+    if [[ "$_feat" == "ws-numberer" && $NO_WS_NUMBERER -eq 1 ]]; then
+        WITH_WS_NUMBERER=0; state_set "$_feat" no
+        continue
+    fi
     if [[ "$(explicit_flag_for "$_feat")" == "1" ]]; then
         state_set "$_feat" yes                      # (a) explicit flag wins
         continue
@@ -235,6 +242,9 @@ for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:
     if [[ "$_saved" == "yes" ]]; then eval "$_var=1"; continue; fi   # (b) remembered yes
     if [[ "$_saved" == "no"  ]]; then continue; fi                  # (b) remembered no
     if daemon_loaded "$_feat"; then                                # (c) adopt already-running
+        eval "$_var=1"; state_set "$_feat" yes; continue
+    fi
+    if [[ "$_feat" == "ws-numberer" ]]; then                       # on by default
         eval "$_var=1"; state_set "$_feat" yes; continue
     fi
     if feature_should_prompt "$_feat"; then                        # (d) discovery prompt
@@ -671,7 +681,7 @@ PLIST_SKIP=(
 # problem not every user has, so none is forced on a fresh install:
 #   memory-sync-pull   cross-machine memory sync   → --with-memory
 #   workspace-watcher  auto-resume crashed cmux ws → --with-crash-resume
-#   cmux-ws-numberer   number + color cmux workspaces → --with-ws-numberer
+#   cmux-ws-numberer   number + color cmux workspaces → on unless declined (--no-ws-numberer)
 #   assistant-comms    Slack comms (needs token + assistant-comms-setup.sh)
 #   slack-reactor      Slack emoji→todo (needs SLACK_APP_TOKEN/SLACK_BOT_TOKEN)
 # comms/slack-reactor are never auto-loaded even with a flag — they crash-loop

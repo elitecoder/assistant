@@ -54,8 +54,8 @@ the rules with one tap.
 
 ### Also in the box
 
-- `[N]` numbers and colors for your cmux sidebar. Opt in with
-  `--with-ws-numberer`.
+- `[N]` numbers and colors for your cmux sidebar. To turn them off, install
+  with `--no-ws-numberer`.
 - Silent by default: Assistant never sends mail or posts Slack as you, and the
   Slack bot can post only in your private channel. See the
   [design reference](docs/design.md).

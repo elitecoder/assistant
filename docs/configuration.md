@@ -30,14 +30,14 @@ decisions that you review. It never starts unattended work.
 
 ## Opt-in daemons
 
-A bare `./install.sh --apply` loads the core set only. Turn on a feature daemon
+A bare `./install.sh --apply` loads the core set and workspace numbers. Turn on a feature daemon
 at the installer's `[y/N]` prompt or with a flag:
 
 | Flag | Turns on |
 |---|---|
 | `--with-memory` | `memory-sync-pull`: cross-machine lesson and memory sync |
 | `--with-crash-resume` | `workspace-watcher`: auto-resumes crashed cmux workspaces |
-| `--with-ws-numberer` | `cmux-ws-numberer`: a `[N]` suffix and color on every workspace |
+| `--no-ws-numberer` | Turns off `cmux-ws-numberer`, the `[N]` suffix and color on every workspace. It's on by default. |
 | `--with-all` | All of the above |
 
 Slack comms and the Slack reactor are never auto-loaded, even with
