@@ -58,10 +58,23 @@ def _link_state(link: Path, name: str, repo: Path) -> str:
     return "other"
 
 
+def _is_old_copy(folder: Path, name: str) -> bool:
+    """A real folder an early installer copied in instead of linking."""
+    if folder.is_symlink() or not folder.is_dir():
+        return False
+    try:
+        text = (folder / "SKILL.md").read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return f"\nname: {name}\n" in text and "Assistant" in text
+
+
 def has_pro_state() -> bool:
     home = _home()
-    if any(_link_state(home / ".claude/skills" / name, name, REPO) == "ours" for name in PRO_SKILLS):
-        return True
+    for name in PRO_SKILLS:
+        link = home / ".claude/skills" / name
+        if _link_state(link, name, REPO) == "ours" or _is_old_copy(link, name):
+            return True
     for path in (home / ".claude/assistant-goals.json",
                  home / ".assistant/decisions/decisions.jsonl"):
         try:
@@ -98,14 +111,14 @@ def save(value: str) -> None:
 def sync_skills(pro: bool, repo: Path = REPO) -> list[str]:
     """Link the Pro skills in Pro mode; unlink our own links in default mode.
 
-    Leaves anything that isn't a link into this repo alone. Returns the
-    changes made."""
+    Pro mode also replaces broken links left by a moved Assistant checkout.
+    Leaves everything else alone. Returns the changes made."""
     skills = _home() / ".claude/skills"
     changes = []
     for name in PRO_SKILLS:
         target, source = skills / name, repo / "skills" / name
         state = _link_state(target, name, repo)
-        if state == "stale" or (state == "ours" and not pro):
+        if (state == "stale" and pro) or (state == "ours" and not pro):
             target.unlink()
             changes.append(f"unlinked {name}")
         if pro and not target.exists() and not target.is_symlink() and source.is_dir():

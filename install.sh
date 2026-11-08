@@ -194,7 +194,6 @@ feat_desc() {
     case "$1" in
         memory)        echo "Memory sync keeps your lessons + semantic memory identical across all your machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N] " ;;
         crash-resume)  echo "Crash-resume auto-restarts a cmux workspace whose Claude session died, so long jobs survive a crash or reboot. Enable? [y/N] " ;;
-        ws-numberer)   echo "The workspace numberer adds a [N] suffix to every cmux workspace title and gives each an unused sidebar color. Enable? [y/N] " ;;
     esac
 }
 # prompt_yn <question> → 0 on yes. Sets PROMPT_TIMED_OUT=1 iff read timed out
@@ -758,6 +757,11 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     # CHANGED_LABELS, so Section 5 never reloads it (the never-auto-load contract).
     no_load=0
     [[ $skip -eq 1 || $copy_no_load -eq 1 ]] && no_load=1
+    # The hourly update never starts workspace numbers you stopped by hand.
+    if [[ "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]] \
+            && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+        no_load=1
+    fi
 
     # A symlinked target (legacy install pointing into the repo) must be turned
     # into a real file regardless of content — cmp reads THROUGH the link, so
@@ -878,22 +882,6 @@ log ""
 # code changes (symlinked bin/, no reload needed) are the common case.
 SELF_PLIST_LABEL="com.assistant.assistant-pulse"
 
-# The dashboard server is long-running, so it keeps old code until restarted.
-# Restart it when its code changed since the last install recorded it.
-SERVER_LABEL="com.assistant.assistant-todo-server"
-SERVER_STAMP="$HOME_DIR/.assistant/todo-server-code.sha256"
-SERVER_SHA="$(shasum -a 256 "$REPO_ROOT/bin/todo-server.py" | cut -d' ' -f1)"
-if [[ "$(cat "$SERVER_STAMP" 2>/dev/null || true)" != "$SERVER_SHA" ]]; then
-    if [[ " ${CHANGED_LABELS[*]:-} " != *" $SERVER_LABEL "* ]]; then
-        CHANGED_LABELS+=("$SERVER_LABEL")
-    fi
-    note "dashboard server code changed → will restart $SERVER_LABEL"
-    if [[ $APPLY -eq 1 ]]; then
-        mkdir -p "$(dirname "$SERVER_STAMP")"
-        printf '%s\n' "$SERVER_SHA" > "$SERVER_STAMP"
-    fi
-fi
-
 log "[5/5] Reloading launchd agents that changed"
 if [[ ${#CHANGED_LABELS[@]} -eq 0 ]]; then
     note "no plists changed — nothing to reload"
@@ -905,6 +893,32 @@ else
         fi
         launchctl_reload "$label" "$HOME_DIR/Library/LaunchAgents/${label}.plist"
     done
+fi
+
+# The dashboard server and the app connectors keep old code until restarted.
+# Restart the running ones when their code changed since the last install
+# recorded it; record it only once every restart worked.
+CODE_STAMP="$HOME_DIR/.assistant/service-code.sha256"
+CODE_SHA="$(cd "$REPO_ROOT" && find bin/todo-server.py bin/connectors src/assistant -type f \( -name '*.py' -o -name '*.sh' \) \
+    | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
+if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
+    restarted_all=1
+    for label in com.assistant.assistant-todo-server com.assistant.connector-{github,gmail,gcal,slack,outlook}; do
+        [[ " ${CHANGED_LABELS[*]:-} " == *" $label "* ]] && continue
+        launchctl print "gui/$UID/$label" >/dev/null 2>&1 || continue
+        if [[ $APPLY -eq 0 ]]; then
+            note "would restart $label (its code changed)"
+        elif launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1; then
+            note "restarted $label (its code changed)"
+        else
+            warn "couldn't restart $label; the next install retries"
+            restarted_all=0
+        fi
+    done
+    if [[ $APPLY -eq 1 && $restarted_all -eq 1 ]]; then
+        mkdir -p "$(dirname "$CODE_STAMP")"
+        printf '%s\n' "$CODE_SHA" > "$CODE_STAMP"
+    fi
 fi
 log ""
 

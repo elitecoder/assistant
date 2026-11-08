@@ -129,8 +129,7 @@ def skip_to_end() -> None:
         size = events_path().stat().st_size
     except OSError:
         return
-    if _load_cursor() != size:
-        _save_cursor(size)
+    _save_cursor(size)
 
 
 def scan_new_events(max_events: int = MAX_EVENTS_PER_PULSE) -> tuple[list[dict], int]:

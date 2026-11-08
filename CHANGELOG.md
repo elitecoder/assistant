@@ -24,11 +24,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - **Upgrading:** every existing install stays in Pro mode, because earlier
   versions installed the Pro skills for everyone. Default mode is for new
   installs and for anyone who switches. An automatic update never removes
-  skills, and it restarts the dashboard server so the switch works right away.
-- Install workspace numbers by default. The installer no longer asks, keeps a
-  remembered "no", and never starts or restarts them during an automatic
-  update. Install
-  with `--no-ws-numberer` to turn them off and stop a running copy.
+  skills. When the code of the dashboard server or a connector changes, an
+  update restarts the ones that are running, so the switch works right away.
+- Install workspace numbers by default. The installer no longer asks and keeps
+  a remembered "no". An automatic update never starts them if they aren't
+  running. Install with `--no-ws-numberer` to turn them off and stop a running
+  copy.
 
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work

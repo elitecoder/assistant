@@ -1540,10 +1540,7 @@ def render_todos_tab(world):
 
 def _dispatch_cap_notice() -> str:
     """The pulse's "tasks held back" card, shown on the Tasks tab."""
-    try:
-        cards = load_assistant_state().get("awaiting_input") or []
-    except Exception:  # noqa: BLE001 — the notice is optional
-        return ""
+    cards = load_assistant_state().get("awaiting_input") or []
     card = next((c for c in cards if isinstance(c, dict) and c.get("key") == "dispatch-cap-hit"), None)
     if not card:
         return ""
@@ -4013,9 +4010,9 @@ function showTab(name) {
   let dashboardRefreshing = false;
   async function refreshDashboard(force = false, replace = false) {
     updateFreshness();
-    if (dashboardRefreshing || location.protocol === 'file:') return;
+    if (dashboardRefreshing || location.protocol === 'file:') return false;
     if (!force && (document.querySelector('.tab-panel.active details[open], .service-details[open]')
-        || document.activeElement?.matches('input,textarea,select'))) return;
+        || document.activeElement?.matches('input,textarea,select'))) return false;
     dashboardRefreshing = true;
     try {
       const expanded = [...document.querySelectorAll('details[open][data-context-key]')]
@@ -4056,8 +4053,10 @@ function showTab(name) {
       document.getElementById('refresh-error').textContent = '';
       updateFreshness();
       if (document.querySelector('#slack-focus[data-running="true"]')) slackFocusPoll();
+      return true;
     } catch (error) {
       document.getElementById('refresh-error').textContent = 'Refresh failed: ' + error.message;
+      return false;
     } finally {
       dashboardRefreshing = false;
     }
@@ -4072,10 +4071,19 @@ async function setMode(value) {
       {method: 'POST', headers: {'X-Assistant-Human': '1'}});
     const message = await response.text();
     if (!response.ok) throw new Error(message);
-    while (dashboardRefreshing) await new Promise(resolve => setTimeout(resolve, 100));
-    await refreshDashboard(true, true);
-    const fresh = document.getElementById('mode-status');
-    if (fresh && message !== value) fresh.textContent = message;
+    for (let waited = 0; dashboardRefreshing && waited < 10000; waited += 100) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const refreshed = await refreshDashboard(true, true);
+    if (refreshed && message === value) return;
+    const fresh = document.getElementById('mode-toggle');
+    fresh.textContent = value === 'pro' ? 'Turn Pro mode off' : 'Turn Pro mode on';
+    fresh.setAttribute('onclick', `setMode('${value === 'pro' ? 'default' : 'pro'}')`);
+    fresh.disabled = false;
+    fresh.closest('.mode-switch').querySelector('strong').textContent =
+      `Pro mode is ${value === 'pro' ? 'on' : 'off'}.`;
+    document.getElementById('mode-status').textContent = refreshed ? message
+      : `Switched to ${value}. Reload the page to see the change.`;
   } catch (error) {
     status.textContent = "Couldn't switch: " + error.message;
     button.disabled = false;

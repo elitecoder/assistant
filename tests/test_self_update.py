@@ -109,6 +109,10 @@ class ClassifyTests(unittest.TestCase):
     def test_installer_change_needs_install(self):
         self.assertTrue(su.classify_changed_paths(["install.sh"])["needs_install"])
 
+    def test_long_running_service_code_needs_install(self):
+        for path in ("bin/todo-server.py", "bin/connectors/gmail.py", "src/assistant/mode.py"):
+            self.assertTrue(su.classify_changed_paths([path])["needs_install"], path)
+
     def test_self_plist_change_flagged(self):
         c = su.classify_changed_paths(["launchagents/com.assistant.assistant-pulse.plist"])
         self.assertTrue(c["needs_install"])

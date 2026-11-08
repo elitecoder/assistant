@@ -50,11 +50,13 @@ import sys
 import time
 from pathlib import Path
 
-# A pull that changes any of these COPIED / install-time artifacts needs
-# `install.sh --apply` to take effect. bin/, prompts/, hooks/, and docs/ are
-# symlinked or read live, so a bare pull already makes them current.
-INSTALL_REQUIRING_PREFIXES = ("skills/", "launchagents/", "install/")
-INSTALL_REQUIRING_FILES = ("install.sh",)
+# A pull that changes any of these needs `install.sh --apply` to take effect:
+# copied install-time files, and code that long-running services (the
+# dashboard server, the app connectors) load once at start. The rest of bin/,
+# prompts/, hooks/, and docs/ are read live, so a bare pull makes them current.
+INSTALL_REQUIRING_PREFIXES = ("skills/", "launchagents/", "install/",
+                              "bin/connectors/", "src/assistant/")
+INSTALL_REQUIRING_FILES = ("install.sh", "bin/todo-server.py")
 
 # Reloading this label mid-pulse would SIGTERM the updater. install.sh honors
 # ASSISTANT_SELF_UPDATE=1 by skipping it; the plist change applies on the next

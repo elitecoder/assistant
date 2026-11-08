@@ -79,6 +79,24 @@ def test_save_keeps_other_settings_and_refuses_an_unreadable_file(home):
     with pytest.raises(ValueError):
         mode.save("default")
     assert config(home).read_text() == broken
+    assert mode.saved_mode() is None
+    config(home).write_text("[]")
+    with pytest.raises(ValueError):
+        mode.save("pro")
+    with pytest.raises(ValueError):
+        mode.save("turbo")
+
+
+def test_an_early_installers_real_skill_copy_counts_as_pro(home):
+    lesson = home / ".claude/skills/lesson"
+    lesson.mkdir(parents=True)
+    (home / ".claude/skills/goal").mkdir()
+    (home / ".claude/assistant-goals.json").write_text("")
+    assert mode.current() == "default"
+    (lesson / "SKILL.md").write_text("---\nname: lesson\ndescription: someone else's rule keeper\n---\n")
+    assert mode.current() == "default"
+    (lesson / "SKILL.md").write_text((REPO / "skills/lesson/SKILL.md").read_text())
+    assert mode.current() == "pro"
 
 
 def test_switch_matches_links_through_a_symlinked_repo_path(home, tmp_path):
@@ -101,6 +119,8 @@ def test_stale_links_from_a_moved_checkout_are_replaced_and_foreign_links_ignore
     (skills / "goal").symlink_to(tmp_path / "old-checkout/skills/goal")
     (skills / "lesson").symlink_to(tmp_path)
     assert mode.current() == "default"
+    mode.switch("default")
+    assert (skills / "goal").is_symlink()
     mode.switch("pro")
     assert (skills / "goal").resolve() == REPO / "skills/goal"
     assert (skills / "lesson").resolve() == tmp_path
@@ -123,6 +143,21 @@ def test_switch_links_and_unlinks_only_our_pro_skills(home):
 def run_cli(home: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(REPO / "bin/assistant-mode.py"), *args],
                           capture_output=True, text=True, env={**os.environ, "HOME": str(home)})
+
+
+def test_cli_commands(home, capsys):
+    spec = importlib.util.spec_from_file_location("assistant_mode_cli", REPO / "bin/assistant-mode.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    assert cli.main([]) == 0 and capsys.readouterr().out == "default\n"
+    assert cli.main(["--ensure"]) == 0 and mode.saved_mode() == "default"
+    set_mode(home, "pro")
+    assert cli.main(["--ensure"]) == 0 and capsys.readouterr().out.endswith("pro\n")
+    assert cli.main(["default"]) == 0 and capsys.readouterr().out == "default\n"
+    assert cli.main(["pro"]) == 0 and "linked goal" in capsys.readouterr().out
+    assert cli.main(["turbo"]) == 2
+    config(home).write_text("{torn")
+    assert cli.main(["default"]) == 1 and "Couldn't change the mode" in capsys.readouterr().err
 
 
 def test_cli_ensure_saves_the_inferred_mode_and_keeps_a_broken_file(home):
@@ -175,6 +210,15 @@ def test_default_mode_skips_the_alert_backlog_and_expires_old_requests(home):
     expire.assert_called_once()
 
 
+def test_default_mode_triage_housekeeping_never_breaks_the_pulse(home):
+    pulse = load_pulse()
+    from assistant import decisions
+    with mock.patch.object(decisions, "expire_open", side_effect=RuntimeError("locked")), \
+            mock.patch.object(pulse.log, "warning") as warning:
+        assert pulse.run_triage_step(1) == {"cards": []}
+    assert "housekeeping failed" in warning.call_args[0][0]
+
+
 def test_the_pulse_reads_the_mode_once(home):
     pulse = load_pulse()
     set_mode(home, "pro")
@@ -202,10 +246,10 @@ def test_default_mode_still_auto_starts_tasks(tmp_path):
 
 # ─── the dashboard ───────────────────────────────────────────────────────────
 
-def render_page(home: Path, state: dict | None = None) -> str:
+def render_page(home: Path, state: dict | None = None, workspaces: list | None = None) -> str:
     (home / ".claude/cache").mkdir(parents=True, exist_ok=True)
     (home / ".claude/cache/world.json").write_text(json.dumps(
-        {"counts": {}, "live_sessions": [], "workspaces": [], "todo": {}}))
+        {"counts": {}, "live_sessions": [], "workspaces": workspaces or [], "todo": {}}))
     if state is not None:
         (home / ".claude/cache/assistant-state.json").write_text(json.dumps(state))
     spec = importlib.util.spec_from_file_location("render_pro_mode", REPO / "bin/render-assistant-page.py")
@@ -249,6 +293,17 @@ def test_unpause_hint_points_to_a_command_that_exists_in_each_mode(home):
     assert "/attend" in module._unpause_hint("workspace:3")
 
 
+def test_each_paused_workspace_card_shows_the_unpause_command(home):
+    (home / ".assistant/observer-summaries").mkdir()
+    (home / ".assistant/observer-summaries/workspace_1.json").write_text(json.dumps(
+        {"ws_ref": "workspace:1", "title": "Other work", "verdict": "active", "ts": 1}))
+    (home / ".assistant/back-off.json").write_text(json.dumps(
+        {"workspaces": [{"ws_ref": "workspace:3", "reason": "too noisy"}]}))
+    page = render_page(home, workspaces=[{"ws_ref": "workspace:1"}, {"ws_ref": "workspace:3"}])
+    card = page[page.index('<div class="backoff-card">'):]
+    assert "back-off.py remove workspace:3" in card[card.index('class="backoff-hint"'):]
+
+
 # ─── the server switch ───────────────────────────────────────────────────────
 
 def test_server_switch_changes_mode_and_skills(home, monkeypatch):
@@ -265,6 +320,10 @@ def test_server_switch_changes_mode_and_skills(home, monkeypatch):
     assert renders == [1, 1]
     monkeypatch.setattr(server, "rerender_dashboard", lambda: False)
     assert server.set_mode("pro") == (True, "Switched to pro. The page updates within 5 minutes.")
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != str(server.SRC_DIR)])
+    config(home).write_text("{torn")
+    ok, message = server.set_mode("default")
+    assert not ok and message.startswith("Couldn't change the mode") and str(server.SRC_DIR) in sys.path
 
 
 # ─── connectors ──────────────────────────────────────────────────────────────
@@ -286,6 +345,77 @@ def test_connectors_pause_while_pro_mode_is_off(home):
     set_mode(home, "pro")
     fake.run_forever(max_iterations=3, sleep=lambda s: None)
     assert Fake.polls == 1
+    heartbeat = json.loads(fake.heartbeat_path().read_text())
+    assert heartbeat["paused"] is True and heartbeat["ok"] is True
+
+
+def test_a_resumed_connector_skips_what_happened_while_paused(home):
+    from assistant import connector
+    now = time.time()
+
+    class Fake(connector.Connector):
+        polls = 0
+
+        def poll_once(self, now=None):
+            Fake.polls += 1
+            for name, epoch in ((f"old-{Fake.polls}", time.time() - 3600),
+                                (f"new-{Fake.polls}", time.time() + 1)):
+                self.emit(connector.build_world_event(
+                    source="fake", kind="note", external_id=name, ts_epoch=epoch))
+            return {"status": "error"}
+
+    set_mode(home, "default")
+    delays = []
+    fake = Fake("fake", "fake", config={"cadence_sec": 60})
+
+    def sleep(seconds):
+        delays.append(seconds)
+        set_mode(home, "pro")
+
+    fake.run_forever(max_iterations=3, sleep=sleep)
+    drops = sorted(json.loads(p.read_text())["external_id"] for p in fake.inbox_dir().glob("evt-*.json"))
+    assert drops == ["new-1", "new-2"]
+    assert fake.skip_events_before >= now
+    assert delays == [60, 60]
+
+
+def test_a_paused_connector_retries_at_the_normal_pace_after_it_resumes(home):
+    from assistant import connector
+
+    class Failing(connector.Connector):
+        def poll_once(self, now=None):
+            return {"status": "error"}
+
+    delays = []
+    modes = iter([True, True, False, True, True])
+    fake = Failing("fake", "fake", config={"cadence_sec": 60})
+    with mock.patch.object(mode, "is_pro", lambda: next(modes)):
+        fake.run_forever(max_iterations=5, sleep=delays.append)
+    assert delays == [60, 120, 60, 60]
+
+
+def test_a_connector_keeps_the_last_mode_when_it_cant_read_it(home):
+    from assistant import connector
+
+    class Fake(connector.Connector):
+        polls = 0
+
+        def poll_once(self, now=None):
+            Fake.polls += 1
+            return {"status": "ok"}
+
+    fake = Fake("fake", "fake", config={"cadence_sec": 1})
+    reads = iter([True, RuntimeError("symlink loop"), KeyError("HOME")])
+
+    def is_pro():
+        value = next(reads)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    with mock.patch.object(mode, "is_pro", is_pro):
+        fake.run_forever(max_iterations=3, sleep=lambda s: None)
+    assert Fake.polls == 3
 
 
 # ─── the installer ───────────────────────────────────────────────────────────
@@ -308,13 +438,21 @@ def test_installer_modes_and_skills(tmp_path):
     assert (skills / "todo").is_symlink() and (skills / "cleanup").is_symlink()
     assert not any((skills / n).exists() for n in mode.PRO_SKILLS)
 
-    run_installer(env, "--pro")
+    proc = run_installer(env, "--pro")
+    assert "run ./install.sh --apply --pro (or --no-pro)" in proc.stdout
     assert json.loads(config(home).read_text())["mode"] == "pro"
     assert all((skills / n).is_symlink() for n in mode.PRO_SKILLS)
 
     run_installer(env, "--no-pro")
     assert json.loads(config(home).read_text())["mode"] == "default"
     assert not (skills / "goal").exists() and (skills / "todo").is_symlink()
+
+
+def test_help_documents_pro_mode(tmp_path):
+    proc = subprocess.run(["bash", str(REPO / "install.sh"), "--help"], capture_output=True, text=True,
+                          env=installer_env(tmp_path / "home"), stdin=subprocess.DEVNULL, timeout=30)
+    assert "  --pro             Turn on Pro mode" in proc.stdout
+    assert "  --no-pro          Switch to default mode and unlink the Pro skills." in proc.stdout
 
 
 def test_self_update_keeps_an_existing_pro_install_and_its_skills(tmp_path):
@@ -341,18 +479,76 @@ def test_installer_leaves_an_unreadable_config_alone(tmp_path):
     assert "mode not changed" in proc.stderr
 
 
-def test_installer_restarts_the_dashboard_server_only_when_its_code_changes(tmp_path):
+def fake_launchctl(env: dict, running: set[str], failing: set[str] = frozenset()) -> Path:
+    """Answer `print` for running labels and fail `kickstart` for failing ones."""
+    home = Path(env["HOME"])
+    (home / "running").write_text("\n".join(running) + "\n")
+    (home / "failing").write_text("\n".join(failing) + "\n")
+    Path(env["ASSISTANT_TEST_LAUNCHCTL"]).write_text(
+        '#!/bin/sh\n'
+        'printf "%s\\n" "$*" >> "$HOME/launchctl.log"\n'
+        'label="${2##*/}"\n'
+        'case "$1" in\n'
+        '  print) grep -qx "$label" "$HOME/running" ;;\n'
+        '  kickstart) label="${3##*/}"; ! grep -qx "$label" "$HOME/failing" ;;\n'
+        '  bootout|bootstrap|load) exit 0 ;;\n'
+        '  *) exit 2 ;;\n'
+        'esac\n')
+    return home / "launchctl.log"
+
+
+def test_installer_restarts_running_services_only_when_their_code_changes(tmp_path):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    server, gmail = "com.assistant.assistant-todo-server", "com.assistant.connector-gmail"
+    log = fake_launchctl(env, running={server, gmail})
+    run_installer(env)
+    stamp = home / ".assistant/service-code.sha256"
+    stamp.write_text("old\n")
+    log.write_text("")
+    run_installer(env)
+    kicks = [line for line in log.read_text().splitlines() if line.startswith("kickstart")]
+    assert sorted(kicks) == sorted(f"kickstart -k gui/{os.getuid()}/{label}" for label in (server, gmail))
+
+    log.write_text("")
+    run_installer(env)
+    assert "kickstart" not in log.read_text()
+
+    stamp.write_text("old\n")
+    fake_launchctl(env, running={gmail}, failing={gmail})
+    log.write_text("")
+    proc = run_installer(env)
+    assert f"couldn't restart {gmail}" in proc.stderr
+    assert f"kickstart -k gui/{os.getuid()}/{server}" not in log.read_text()
+    assert stamp.read_text() == "old\n"
+
+    fake_launchctl(env, running={gmail})
+    run_installer(env)
+    assert stamp.read_text() != "old\n"
+
+
+def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
     home = tmp_path / "home"
     (home / ".assistant").mkdir(parents=True)
     env = installer_env(home)
-    label = "com.assistant.assistant-todo-server"
-    log = home / "launchctl.log"
+    label = "com.assistant.cmux-ws-numberer"
+    plist = home / f"Library/LaunchAgents/{label}.plist"
+    log = fake_launchctl(env, running=set())
     run_installer(env)
+    assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
     log.write_text("")
-    first = run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
-    assert f"will restart {label}" not in first.stdout
-    (home / ".assistant/todo-server-code.sha256").write_text("old\n")
+    run_installer(env)
+    assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
+
+    plist.write_text("<plist>an older copy</plist>")
     log.write_text("")
-    second = run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
-    assert f"will restart {label}" in second.stdout
+    run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
+    assert not any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
+    assert "an older copy" not in plist.read_text()
+
+    plist.write_text("<plist>an older copy</plist>")
+    fake_launchctl(env, running={label})
+    log.write_text("")
+    run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
     assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())

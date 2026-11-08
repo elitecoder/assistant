@@ -166,13 +166,15 @@ def test_ws_numberer_remembered_yes_loads(tmp_path):
 
 
 def test_ws_numberer_flag_persists_yes_on_apply(tmp_path):
-    rc, out, home = _run_install(tmp_path, flags=["--apply", "--with-ws-numberer"])
+    rc, out, home = _run_install(tmp_path, opt_in="ws-numberer=no\n",
+                                 flags=["--apply", "--with-ws-numberer"])
     state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
     assert "ws-numberer=yes" in state
 
 
 def test_ws_numberer_adopted_when_already_running(tmp_path):
-    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.cmux-ws-numberer")
+    rc, out, home = _run_install(tmp_path, extra_env={"ASSISTANT_SELF_UPDATE": "1"},
+                                 loaded_label="com.assistant.cmux-ws-numberer")
     assert "cmux-ws-numberer.plist — enabled" in out
 
 
@@ -243,7 +245,8 @@ def test_no_ws_numberer_flag_turns_it_off_and_remembers(tmp_path):
 
 
 def test_ws_numberer_adopted_when_legacy_label_runs(tmp_path):
-    rc, out, home = _run_install(tmp_path, loaded_label="com.mukuls.cmux-ws-numberer")
+    rc, out, home = _run_install(tmp_path, extra_env={"ASSISTANT_SELF_UPDATE": "1"},
+                                 loaded_label="com.mukuls.cmux-ws-numberer")
     assert "cmux-ws-numberer.plist — enabled" in out
 
 
@@ -262,6 +265,7 @@ def test_help_documents_ws_numberer(tmp_path):
     assert r.returncode == 0
     assert "--with-ws-numberer   number and color cmux workspaces" in r.stdout
     assert "On by default; --no-ws-numberer turns it off." in r.stdout
+    assert "loads by default (--no-ws-numberer to skip)" in r.stdout
 
 
 def test_interactive_apply_turns_on_ws_numberer_without_asking(tmp_path):
