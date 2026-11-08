@@ -359,6 +359,16 @@ def render_live_sessions(world):
     return "".join(rows), len(sessions)
 
 
+def render_mode_switch(pro: bool) -> str:
+    state, verb, target = ("on", "off", "default") if pro else ("off", "on", "pro")
+    return (f'<div class="mode-switch" data-mode="{"pro" if pro else "default"}">'
+            f'<p><strong>Pro mode is {state}.</strong> Pro mode adds the Notifications, Decisions, '
+            'Background work, and Connected apps tabs, goals, and the /goal, /attend, /back-off, '
+            'and /lesson skills.</p>'
+            f'<button class="btn" id="mode-toggle" onclick="setMode(\'{target}\')">Turn Pro mode {verb}</button> '
+            '<span class="meta" id="mode-status" role="status"></span></div>')
+
+
 def render_metering_stats():
     """Fleet behavior tiles from the last 7 days of the pulse metering
     log (~/.assistant/metrics.jsonl, written by pulse.py each pulse):
@@ -430,6 +440,12 @@ def _local_hhmm(epoch) -> str:
         return datetime.fromtimestamp(float(epoch)).strftime("%-I:%M %p")
     except (TypeError, ValueError, OSError, OverflowError):
         return "just now"
+
+
+def _unpause_hint(ref: str) -> str:
+    if mode.is_pro():
+        return "Run <code>/attend</code> inside the workspace to remove the pause."
+    return (f"To remove the pause, run <code>{e(shlex.join([str(REPO / 'bin/back-off.py'), 'remove', ref]))}</code>.")
 
 
 def _greeting_for(epoch) -> str:
@@ -566,7 +582,6 @@ def _render_brief_tab_inner():
     except Exception:  # noqa: BLE001 — fall back to the saved daily brief
         brief, live = saved, False
     date_str = brief.get("date") or saved_date
-    snapshot_available = bool(brief)
     built_at = _local_hhmm(brief.get("epoch")) if live else ""
     current = False
     try:
@@ -897,7 +912,7 @@ def _render_brief_tab_inner():
         f'notify {int(budget.get("notify") or 0)}/day — denials are ledgered, '
         f'silence is verified, not assumed</div>')
 
-    seen = (BRIEF_DIR / f"brief-{date_str}.seen.json").exists()
+    seen = (BRIEF_DIR / f"brief-{saved_date}.seen.json").exists()
     seen_note = "seen" if seen else "unseen — viewing this tab records it"
 
     # ─── editorial header: eyebrow · good morning · voice summary ───
@@ -911,7 +926,7 @@ def _render_brief_tab_inner():
         '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
         f'{summary_html}')
 
-    date_attribute = f' data-brief-date="{e(date_str)}"' if snapshot_available else ""
+    date_attribute = f' data-brief-date="{e(saved_date)}"' if saved else ""
     html = f"""
 <div class="brief-root"{date_attribute}>
 {header_html}
@@ -1380,7 +1395,7 @@ def render_workspaces_tab():
             f'<div class="backoff-section">'
             f'  <div class="backoff-section-head">'
             f'    <span class="backoff-label">Backed off · {len(backed_off)}</span>'
-            f'    <span class="backoff-hint">run <code>/attend</code> inside the workspace to re-enable</span>'
+            f'    <span class="backoff-hint">{_unpause_hint("workspace:N")}</span>'
             f'  </div>'
             f'  {"".join(cards)}'
             f'</div>'
@@ -1520,7 +1535,20 @@ def render_todos_tab(world):
   <h2>Recently completed <span class="count">10 newest</span></h2>
   <div class="feed">{''.join(rows)}</div>
 </div>""")
-    return "".join(sections), p0_p1
+    return _dispatch_cap_notice() + "".join(sections), p0_p1
+
+
+def _dispatch_cap_notice() -> str:
+    """The pulse's "tasks held back" card, shown on the Tasks tab."""
+    try:
+        cards = load_assistant_state().get("awaiting_input") or []
+    except Exception:  # noqa: BLE001 — the notice is optional
+        return ""
+    card = next((c for c in cards if isinstance(c, dict) and c.get("key") == "dispatch-cap-hit"), None)
+    if not card:
+        return ""
+    return (f'<div class="section dispatch-cap"><h2>{e(card.get("title") or "Tasks held back")}</h2>'
+            f'<p class="meta">{e(card.get("detail") or "")}</p></div>')
 
 
 def _cmux_workspaces() -> dict[str, dict]:
@@ -1803,7 +1831,7 @@ def render_overview_tab(world):
             ])
             reason += (
                 '<dt>Confirm the pause</dt><dd>After checking this workspace, run '
-                f'<code>{e(command)}</code>. Run /attend inside the workspace to remove the pause.</dd>')
+                f'<code>{e(command)}</code>. {_unpause_hint(ref)}</dd>')
         history = (f'<dt>Earlier note (may be out of date)</dt><dd>{e(card["history"])}</dd>'
                    if card["history"] else "")
         session_text = ", ".join(s.get("session_id") or s.get("tab_id") or "unidentified"
@@ -2620,6 +2648,7 @@ def render():
     tab_panels = "\n\n".join(
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
+    mode_html = render_mode_switch(pro)
     pulse_alert_html = render_pulse_alert()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
@@ -4010,7 +4039,8 @@ function showTab(name) {
         }
         current.replaceWith(incoming);
         document.getElementById('attention-search').value = query;
-        showTab((location.hash || '#overview').slice(1));
+        const wanted = (location.hash || '#overview').slice(1);
+        showTab(document.querySelector(`.tab[data-tab="${CSS.escape(wanted)}"]`) ? wanted : 'overview');
         filterAttention(query);
         document.querySelectorAll('details[data-context-key]').forEach(element => {
           if (expanded.includes(element.dataset.contextKey)) element.open = true;
@@ -4039,6 +4069,21 @@ function showTab(name) {
 // (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
 // as a file:// page — a relative fetch resolves to file:///brief/seen and
 // never arrives, silently arming the destructive unseen-TTL (F19).
+async function setMode(value) {
+  const button = document.getElementById('mode-toggle');
+  const status = document.getElementById('mode-status');
+  button.disabled = true;
+  status.textContent = 'Switching…';
+  try {
+    const response = await fetch('/mode?value=' + encodeURIComponent(value),
+      {method: 'POST', headers: {'X-Assistant-Human': '1'}});
+    if (!response.ok) throw new Error(await response.text());
+    await refreshDashboard(true);
+  } catch (error) {
+    status.textContent = "Couldn't switch: " + error.message;
+    button.disabled = false;
+  }
+}
 async function briefRefresh() {
   const button = document.getElementById('brief-refresh');
   if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
@@ -4367,7 +4412,8 @@ document.addEventListener('click', handleTodoToolsClick);
   <span class="meta" id="refresh-note">Checks for updates every 15 seconds.</span>
 </div>
 {pulse_alert_html}
-<details class="service-details" data-context-key="service-health"><summary>Background services and saved data</summary>
+<details class="service-details" data-context-key="service-health"><summary>Settings and background services</summary>
+{mode_html}
 {pulse_health_html}
 <p>The page checks for updates every 15 seconds, except while you're reading expanded details.</p>
 </details>

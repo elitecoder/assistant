@@ -123,6 +123,16 @@ def _save_cursor(offset: int) -> None:
     os.replace(tmp, p)
 
 
+def skip_to_end() -> None:
+    """Move the cursor to the end of the event log without laning anything."""
+    try:
+        size = events_path().stat().st_size
+    except OSError:
+        return
+    if _load_cursor() != size:
+        _save_cursor(size)
+
+
 def scan_new_events(max_events: int = MAX_EVENTS_PER_PULSE) -> tuple[list[dict], int]:
     """New (never-disposition'd) WorldEvents past the cursor, plus the byte
     offset the cursor should advance to once they are all processed.

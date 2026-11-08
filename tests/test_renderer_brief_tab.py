@@ -388,7 +388,7 @@ class BriefTabTests(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertIn("fresh receipt", html)
         self.assertIn("Brief · built", html)
-        self.assertIn(f'data-brief-date="{self.mod.brief_store.local_date(time.time())}"', html)
+        self.assertIn('data-brief-date="2026-07-02"', html)
         self.assertNotIn("No saved summary yet", html)
         self.assertEqual(sorted(p.name for p in (self.home / ".assistant/brief").iterdir()),
                          ["brief-2026-07-02.json"])
@@ -502,6 +502,15 @@ class BriefTabTests(unittest.TestCase):
          ).write_text(json.dumps({"seen_ts": "2026-07-02T15:00:00Z"}))
         html2, _ = self.mod.render_brief_tab()
         self.assertNotIn("unseen —", html2)
+
+    def test_seen_marker_names_the_saved_brief_not_today(self):
+        live = brief_fixture()
+        live["date"] = "2026-07-03"
+        self.live(live)
+        self.write_brief(brief_fixture())
+        html, _ = self.mod.render_brief_tab()
+        self.assertIn('data-brief-date="2026-07-02"', html)
+        self.assertNotIn('data-brief-date="2026-07-03"', html)
 
     def test_trend_sparkline_from_metrics_rows(self):
         self.write_brief(brief_fixture())

@@ -62,11 +62,15 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
   --dry-run         (default) Show what would change. No mutation.
   --apply           Actually create symlinks/copies, copy plists, reload launchd.
-  --pro             Turn on Pro mode: notifications and triage, connectors,
-                    goals and the planner, the background-work and connected-
-                    apps tabs, and the /goal, /attend, /back-off, and /lesson
-                    skills. Saved as {"mode": "pro"} in ~/.assistant/config.json.
-  --no-pro          Switch back to default mode.
+  --pro             Turn on Pro mode: notifications and triage, goals and the
+                    planner, the Notifications, Decisions, Background work, and
+                    Connected apps tabs, and the /goal, /attend, /back-off, and
+                    /lesson skills. Connectors you've set up start polling.
+                    Saved as {"mode": "pro"} in ~/.assistant/config.json. The
+                    dashboard's settings area has the same switch.
+  --no-pro          Switch to default mode and unlink the Pro skills.
+                    Without either flag, an install that already has goals,
+                    notifications, or the Pro skills stays in Pro mode.
   --pull-skills     Pull edits from a live ~/.claude/skills/<name>/ directory
                     BACK into the repo. Only needed to recover edits made while
                     a skill was still a real directory (e.g. backups left by the
@@ -232,6 +236,10 @@ for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:
     _feat="${_pair%%:*}"; _var="${_pair##*:}"
     if [[ "$_feat" == "ws-numberer" && $NO_WS_NUMBERER -eq 1 ]]; then
         WITH_WS_NUMBERER=0; state_set "$_feat" no
+        if [[ $APPLY -eq 1 ]]; then
+            launchctl bootout "gui/$UID/com.assistant.cmux-ws-numberer" 2>/dev/null || true
+            launchctl bootout "gui/$UID/com.mukuls.cmux-ws-numberer" 2>/dev/null || true
+        fi
         continue
     fi
     if [[ "$(explicit_flag_for "$_feat")" == "1" ]]; then
@@ -244,7 +252,9 @@ for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:
     if daemon_loaded "$_feat"; then                                # (c) adopt already-running
         eval "$_var=1"; state_set "$_feat" yes; continue
     fi
-    if [[ "$_feat" == "ws-numberer" ]]; then                       # on by default
+    # On by default, except during a self-update: an automatic update never
+    # starts a service the user hasn't chosen.
+    if [[ "$_feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ]]; then
         eval "$_var=1"; state_set "$_feat" yes; continue
     fi
     if feature_should_prompt "$_feat"; then                        # (d) discovery prompt
@@ -499,27 +509,19 @@ log ""
 # ~/.claude/skills/ as a skill — leaving .bak entries there pollutes the
 # registry. (ensure_symlink's default <target>.bak-<ts> would land inside
 # ~/.claude/skills/, so we back up by hand here before symlinking.)
-CONFIG_JSON="$HOME_DIR/.assistant/config.json"
-if [[ -n "$SET_MODE" && $APPLY -eq 1 ]]; then
-    mkdir -p "$HOME_DIR/.assistant"
-    python3 - "$CONFIG_JSON" "$SET_MODE" <<'PY'
-import json, sys
-from pathlib import Path
-path, mode = Path(sys.argv[1]), sys.argv[2]
-try:
-    data = json.loads(path.read_text())
-except (OSError, ValueError):
-    data = {}
-data = data if isinstance(data, dict) else {}
-data["mode"] = mode
-path.write_text(json.dumps(data, indent=2) + "\n")
-PY
+# Mode. --pro / --no-pro switch it and sync the Pro skills. Otherwise save
+# the current mode once (an install with Pro data stays Pro) and never remove
+# skills, so an automatic update can't take anything away.
+MODE_CLI="$REPO_ROOT/bin/assistant-mode.py"
+if [[ $APPLY -eq 1 ]]; then
+    if [[ -n "$SET_MODE" ]]; then
+        python3 "$MODE_CLI" "$SET_MODE" >/dev/null || warn "mode not changed — fix ~/.assistant/config.json and re-run"
+    else
+        python3 "$MODE_CLI" --ensure >/dev/null || warn "mode not saved — fix ~/.assistant/config.json"
+    fi
 fi
-if [[ -n "$SET_MODE" ]]; then
-    MODE="$SET_MODE"
-else
-    MODE="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("mode","default") if isinstance(d,dict) else "default")' "$CONFIG_JSON" 2>/dev/null || echo default)"
-fi
+MODE="$(python3 "$MODE_CLI" 2>/dev/null || echo default)"
+[[ $APPLY -eq 0 && -n "$SET_MODE" ]] && MODE="$SET_MODE"
 log "Mode: $MODE"
 
 log "[2/5] Symlinking skills into ~/.claude/skills/"
@@ -529,14 +531,10 @@ for skill_dir in "$REPO_ROOT"/skills/*/; do
     target="$HOME_DIR/.claude/skills/$skill_name"
     expected="$REPO_ROOT/skills/$skill_name"
 
-    # Pro mode skills: skip them in default mode, and unlink our own copy.
+    # Pro mode skills aren't linked in default mode. --no-pro (through
+    # assistant-mode.py) is the only thing that unlinks them.
     if [[ "$MODE" != "pro" && "$PRO_SKILLS" == *" $skill_name "* ]]; then
-        if [[ -L "$target" && "$(readlink "$target")" == "$expected" ]]; then
-            note "OFF  $target (Pro mode only)"
-            [[ $APPLY -eq 1 ]] && rm "$target"
-        else
-            note "SKIP $skill_name (Pro mode only)"
-        fi
+        note "SKIP $skill_name (Pro mode only)"
         continue
     fi
 
@@ -767,6 +765,9 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     if [[ ! -L "$target" && -f "$target" ]] && cmp -s "$staged" "$target"; then
         if [[ $no_load -eq 1 ]]; then
             note "OK   $target (matches repo; not auto-loaded — activate by hand)"
+        elif [[ "$feat" == "ws-numberer" ]] && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+            note "OK   $target (matches repo; enabled but not running → will load)"
+            CHANGED_LABELS+=("$label")
         else
             note "OK   $target (matches repo, no reload needed)"
         fi
@@ -1131,9 +1132,9 @@ else
     log "     launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
     log ""
     log "   ── Pro mode (now: $MODE) ─────────────────────────────────────────"
-    log "   • ./install.sh --apply --pro adds notifications and triage, the"
-    log "     connectors, goals and the planner, and their dashboard tabs."
-    log "     ./install.sh --apply --no-pro switches back."
+    log "   • Switch it in the dashboard's Settings and background services, or"
+    log "     run ./install.sh --apply --pro (or --no-pro). Pro mode adds"
+    log "     notifications and triage, goals and the planner, and their tabs."
     log ""
     log "   Re-run anytime:  ./bin/assistant-doctor.py         (preflight health)"
     log "   Full guide:      ONBOARDING.md"

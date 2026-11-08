@@ -62,13 +62,14 @@ the rules with one tap.
 
 ## Pro mode
 
-To turn on Pro mode, run `./install.sh --apply --pro`. To switch back, run
-`./install.sh --apply --no-pro`. Pro mode adds:
+Turn Pro mode on or off in the dashboard's **Settings and background
+services**, or run `./install.sh --apply --pro` (or `--no-pro`). Pro mode adds:
 
 - The **Notifications**, **Decisions**, **Background work**, and **Connected
   apps** tabs, with triage ranking your notifications.
-- Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack.
-  See [Connect your sources](docs/connectors.md).
+- Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack,
+  which you set up separately. See [Connect your sources](docs/connectors.md).
+  In default mode they wait without polling.
 - Ranked goals with the `/goal` skill, and a planner that suggests next steps.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.

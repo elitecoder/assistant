@@ -40,6 +40,7 @@ Bound to 127.0.0.1:9876 (localhost only). Endpoints:
                                                           REAL switch, not a
                                                           no-op ping)
   POST /brief/refresh                                     rebuild the page now
+  POST /mode?value=pro|default                            switch Pro mode
   POST /brief/seen?date=YYYY-MM-DD                        Brief-tab view signal
                                                           (Keel M3): stamps the
                                                           seen sidecar next to
@@ -229,6 +230,21 @@ def dispatch_now(td_id):
         save_json(data)
     rerender()
     return True, f"{td_id}: queued for next-pulse Bucket B dispatch"
+
+
+def set_mode(value):
+    """Switch default/Pro mode, sync the Pro skills, and rebuild the page."""
+    try:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        from assistant import mode  # noqa: PLC0415
+        if value not in mode.MODES:
+            return False, f"mode must be one of {', '.join(mode.MODES)}"
+        mode.switch(value)
+    except (OSError, ValueError) as exc:
+        return False, f"Couldn't change the mode: {exc}"
+    rerender_dashboard()
+    return True, value
 
 
 def rerender_dashboard():
@@ -771,7 +787,7 @@ class Handler(BaseHTTPRequestHandler):
                           ["goal", "pause"], ["goal", "resume"])
             or (len(parts) == 3 and parts[0] == "goal" and parts[1] == "update")
             or (len(parts) == 3 and parts[0] == "decision" and parts[1] == "act")
-            or parts in (["brief", "seen"], ["brief", "refresh"])
+            or parts in (["brief", "seen"], ["brief", "refresh"], ["mode"])
             or parts in (["slack-focus", "refresh"], ["slack-focus", "done"], ["slack-focus", "undone"])
         )
         if _mutation and not self._origin_allowed_for_mutation():
@@ -779,6 +795,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         # The Slack tab's routes reach Slack, gh, and the model, so they also
         # refuse Origin: null (a sandboxed frame); the tab never sends it.
+        if parts[:1] in (["slack-focus"], ["mode"]) or parts == ["brief", "refresh"]:
+            if self.headers.get("Origin", "") == "null":
+                self._reply(403, "cross-origin request refused")
+                return
         if parts[:1] == ["slack-focus"] and self.headers.get("Origin", "") == "null":
             self._reply(403, "cross-origin request refused")
             return
@@ -867,6 +887,15 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = goal_update(goal_id, self._read_body(),
                                   is_human=self._is_human())
             self._reply(200 if ok else (404 if "not found" in msg else 400), msg)
+            return
+
+        # POST /mode?value=pro|default — the dashboard's Pro mode switch.
+        if parts == ["mode"]:
+            if not self._is_human():
+                self._reply(403, "mode changes need the dashboard's X-Assistant-Human header")
+                return
+            ok, msg = set_mode((qs.get("value") or [""])[0])
+            self._reply(200 if ok else 400, msg)
             return
 
         if parts == ["brief", "refresh"]:

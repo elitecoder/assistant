@@ -16,11 +16,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   notifications and triage, goals and the planner, the Notifications,
   Decisions, Background work, and Connected apps tabs, and the `/goal`,
   `/attend`, `/back-off`, and `/lesson` skills. The watcher, strategist,
-  lessons extractor, and brief narrator also need Pro mode. Turn it on with
-  `./install.sh --apply --pro`, which saves `{"mode": "pro"}` in
-  `~/.assistant/config.json`; `--no-pro` switches back.
-- Install workspace numbers by default. The installer no longer asks, and it
-  keeps a remembered "no". Install with `--no-ws-numberer` to turn them off.
+  lessons extractor, and brief narrator also need Pro mode, and connectors
+  wait without polling until it's on. Switch modes in the dashboard's
+  **Settings and background services**, or with `./install.sh --apply --pro`
+  and `--no-pro`. The mode is saved as `"mode"` in `~/.assistant/config.json`.
+- **Upgrading:** an existing install with goals, notifications, a saved brief,
+  or the Pro skills stays in Pro mode, and an automatic update never removes
+  skills. Fresh installs start in default mode.
+- Install workspace numbers by default. The installer no longer asks, keeps a
+  remembered "no", and never starts them during an automatic update. Install
+  with `--no-ws-numberer` to turn them off and stop a running copy.
 
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work

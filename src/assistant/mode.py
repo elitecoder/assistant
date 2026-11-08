@@ -1,8 +1,10 @@
 """Default or Pro mode.
 
-Pro mode turns on notifications and triage, the connectors, goals and the
-planner, and the model-heavy background jobs. Set it with
-`{"mode": "pro"}` in ~/.assistant/config.json, or `ASSISTANT_MODE=pro`.
+Pro mode turns on notifications and triage, goals and the planner, and the
+model-heavy background jobs. The setting is `{"mode": "pro"}` or
+`{"mode": "default"}` in ~/.assistant/config.json. When the key is missing,
+an install that already has Pro data (goals, notifications, a saved brief, or
+the Pro skills) counts as Pro, and a fresh install counts as default.
 """
 from __future__ import annotations
 
@@ -10,19 +12,96 @@ import json
 import os
 from pathlib import Path
 
-PRO_TABS = ("brief", "decisions", "fleet", "connections")
+MODES = ("default", "pro")
+PRO_SKILLS = ("goal", "attend", "back-off", "lesson")
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _home() -> Path:
+    return Path(os.environ["HOME"])
 
 
 def config_path() -> Path:
-    return Path(os.environ["HOME"]) / ".assistant" / "config.json"
+    return _home() / ".assistant" / "config.json"
+
+
+def _read_config() -> dict:
+    """The config as a dict; {} when absent. Raises ValueError when unreadable."""
+    try:
+        text = config_path().read_text()
+    except FileNotFoundError:
+        return {}
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"{config_path()} isn't a JSON object")
+    return data
+
+
+def saved_mode() -> str | None:
+    try:
+        value = _read_config().get("mode")
+    except (OSError, ValueError):
+        return None
+    return value if value in MODES else None
+
+
+def has_pro_state() -> bool:
+    home = _home()
+    if any((home / ".claude/skills" / name).is_symlink() for name in PRO_SKILLS):
+        return True
+    for path in (home / ".claude/assistant-goals.json",
+                 home / ".assistant/decisions/decisions.jsonl"):
+        try:
+            if path.stat().st_size > 0:
+                return True
+        except OSError:
+            pass
+    return any((home / ".assistant/brief").glob("brief-????-??-??.json"))
+
+
+def current() -> str:
+    return saved_mode() or ("pro" if has_pro_state() else "default")
 
 
 def is_pro() -> bool:
-    override = os.environ.get("ASSISTANT_MODE", "").strip().lower()
-    if override:
-        return override == "pro"
-    try:
-        data = json.loads(config_path().read_text())
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, dict) and data.get("mode") == "pro"
+    return current() == "pro"
+
+
+def save(value: str) -> None:
+    """Write the mode into config.json, keeping every other key.
+
+    Refuses (ValueError) to touch a config it can't parse."""
+    if value not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    data = _read_config()
+    data["mode"] = value
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def sync_skills(pro: bool, repo: Path = REPO) -> list[str]:
+    """Link the Pro skills in Pro mode; unlink our own links in default mode.
+
+    Leaves anything that isn't a link into this repo alone. Returns the
+    changes made."""
+    skills = _home() / ".claude/skills"
+    changes = []
+    for name in PRO_SKILLS:
+        target, source = skills / name, repo / "skills" / name
+        ours = target.is_symlink() and Path(os.readlink(target)) == source
+        if pro and not target.exists() and not target.is_symlink() and source.is_dir():
+            skills.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source)
+            changes.append(f"linked {name}")
+        elif not pro and ours:
+            target.unlink()
+            changes.append(f"unlinked {name}")
+    return changes
+
+
+def switch(value: str, repo: Path = REPO) -> list[str]:
+    save(value)
+    return sync_skills(value == "pro", repo)

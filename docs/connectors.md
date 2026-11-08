@@ -4,6 +4,9 @@ Connectors are optional, read-only daemons. Each one turns a single source into
 WorldEvents, and `tests/test_keel_connector_readonly.py` fails the build if a
 connector script contains a mutation or send call.
 
+Connectors are part of Pro mode. In default mode, a connector you've set up
+waits without polling and starts within 5 minutes of turning Pro mode on.
+
 ![The Connected apps tab, rendered from sample data: GitHub notifications, Gmail, Google Calendar, and Slack show as Connected with their last poll time, and Outlook mail shows as Available with the command to authorize it.](images/dashboard-connections.png)
 
 The starter rules send each connector's event kinds to these lanes:
