@@ -470,9 +470,13 @@ def maybe_update(
         _log(f"local is {status['ahead']} commit(s) ahead of {remote}/{branch} "
              "— refusing to pull (unpushed work)")
         return result
+    restart_failed = (marker_path.parent / "service-restart-failed").exists()
     if status["behind"] == 0:
         # Nothing to pull — leave a dirty tree untouched (no reason to stash).
         _log("already up to date")
+        if restart_failed:
+            _log("retrying the service restart an earlier install couldn't do")
+            _run_install(install_sh, repo, result, False, _log)
         return result
 
     if status["dirty"] and result["dirty_age_sec"] < dirty_stash_after_sec:
@@ -549,15 +553,20 @@ def maybe_update(
 
     cls = classify_changed_paths(files)
     result["needs_install"] = cls["needs_install"]
-    if not cls["needs_install"]:
+    if not (cls["needs_install"] or restart_failed):
         # bin/ + prompts/ are live via symlink — nothing else to do.
         return result
 
+    _run_install(install_sh, repo, result, cls["touches_self_plist"], _log)
+    return result
+
+def _run_install(install_sh: Path, repo: Path, result: dict, touches_self_plist: bool,
+                 _log) -> None:
     if not install_sh.exists():
         result["install_rc"] = None
         result["error"] = f"install.sh not found at {install_sh}"
         _log(result["error"])
-        return result
+        return
 
     import os
     env = dict(os.environ)
@@ -580,7 +589,7 @@ def maybe_update(
             _log(f"install.sh --apply rc={p.returncode}")
         else:
             _log("install.sh --apply ok")
-        if cls["touches_self_plist"]:
+        if touches_self_plist:
             result["self_plist_reload_deferred"] = True
             _log(f"{SELF_PLIST_LABEL}.plist changed — reload deferred "
                  "(applies on next manual install or reboot)")
@@ -588,8 +597,6 @@ def maybe_update(
         result["install_rc"] = -1
         result["error"] = "install.sh --apply timed out after 300s"
         _log(result["error"])
-
-    return result
 
 
 if __name__ == "__main__":  # manual run: ./self_update.py [--force]

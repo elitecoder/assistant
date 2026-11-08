@@ -704,6 +704,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                         label: document.getElementById('mode-toggle').textContent,
                         disabled: document.getElementById('mode-toggle').disabled,
                         heading: document.querySelector('.mode-switch strong').textContent,
+                        mode: document.querySelector('.mode-switch').dataset.mode,
                         status: document.getElementById('mode-status').textContent,
                         replaced: !document.getElementById('dashboard-content').dataset.modeMark})""")
 
@@ -724,7 +725,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                     page.evaluate(f"setMode('{value}')")
                     page.unroute("**/assistant-dashboard.html")
                     assert switch_state() == {
-                        "label": label, "disabled": False, "heading": heading,
+                        "label": label, "disabled": False, "heading": heading, "mode": value,
                         "status": f"Switched to {value}. Reload the page to see the change.", "replaced": False}
                     assert page.evaluate("document.getElementById('mode-toggle').getAttribute('onclick')") \
                         == f"setMode('{other}')"
@@ -734,7 +735,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 page.evaluate("setMode('pro')")
                 assert switch_state() == {
                     "label": "Turn Pro mode off", "disabled": False, "heading": "Pro mode is on.",
-                    "status": "Switched to pro. The page updates within 5 minutes.", "replaced": True}
+                    "mode": "pro", "status": "Switched to pro. The page updates within 5 minutes.", "replaced": True}
 
                 mode_reply.update(status=200, body="default")
                 mark_page()

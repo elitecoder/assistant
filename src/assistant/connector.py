@@ -1252,7 +1252,10 @@ class Connector:
             "not_configured_recheck_sec", DEFAULT_NOT_CONFIGURED_RECHECK_SEC))
         i = 0
         backoff = 0.0
-        paused = False
+        try:
+            paused = json.loads(self.heartbeat_path().read_text()).get("paused") is True
+        except (OSError, ValueError, AttributeError):
+            paused = False
         pro = False
         while max_iterations is None or i < max_iterations:
             i += 1

@@ -2,9 +2,10 @@
 
 Pro mode turns on notifications and triage, goals and the planner, and the
 model-heavy background jobs. The setting is `{"mode": "pro"}` or
-`{"mode": "default"}` in ~/.assistant/config.json. When the key is missing,
-an install that already has Pro data (goals, notifications, a saved brief, or
-the Pro skills) counts as Pro, and a fresh install counts as default.
+`{"mode": "default"}` in ~/.assistant/config.json. When the file or the key
+is missing, an install that already has Pro data (goals, notifications, a saved
+brief, or the Pro skills) counts as Pro, and a fresh install counts as default.
+An unreadable file counts as default.
 """
 from __future__ import annotations
 
@@ -31,10 +32,21 @@ def _read_config() -> dict:
         text = config_path().read_text()
     except FileNotFoundError:
         return {}
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"{config_path()} isn't valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{config_path()} isn't a JSON object")
     return data
+
+
+def config_error() -> str | None:
+    try:
+        _read_config()
+    except (OSError, ValueError) as exc:
+        return str(exc)
+    return None
 
 
 def saved_mode() -> str | None:
@@ -50,8 +62,11 @@ def _link_state(link: Path, name: str, repo: Path) -> str:
     checkout), or "other"."""
     if not link.is_symlink():
         return "other"
-    if link.resolve() == (repo / "skills" / name).resolve():
-        return "ours"
+    try:
+        if link.resolve() == (repo / "skills" / name).resolve():
+            return "ours"
+    except (OSError, RuntimeError):
+        return "other"
     target = Path(os.readlink(link))
     if not link.exists() and target.parts[-2:] == ("skills", name):
         return "stale"
@@ -86,7 +101,13 @@ def has_pro_state() -> bool:
 
 
 def current() -> str:
-    return saved_mode() or ("pro" if has_pro_state() else "default")
+    try:
+        value = _read_config().get("mode")
+    except (OSError, ValueError):
+        return "default"
+    if value is None:
+        return "pro" if has_pro_state() else "default"
+    return value if value in MODES else "default"
 
 
 def is_pro() -> bool:
@@ -129,5 +150,11 @@ def sync_skills(pro: bool, repo: Path = REPO) -> list[str]:
 
 
 def switch(value: str, repo: Path = REPO) -> list[str]:
+    """Link or unlink the Pro skills, then save the mode. Saves nothing when
+    the config can't be read or the skills can't be changed."""
+    if value not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    _read_config()
+    changes = sync_skills(value == "pro", repo)
     save(value)
-    return sync_skills(value == "pro", repo)
+    return changes

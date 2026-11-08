@@ -359,14 +359,30 @@ def render_live_sessions(world):
     return "".join(rows), len(sessions)
 
 
-def render_mode_switch(pro: bool) -> str:
+def render_mode_switch(pro: bool, error: str | None = None) -> str:
     state, verb, target = ("on", "off", "default") if pro else ("off", "on", "pro")
+    problem = (f'<p class="mode-error" role="alert">Your settings file can\'t be read, so '
+               f'Assistant uses default mode. Fix it to switch modes: {e(error)}</p>'
+               if error else "")
     return (f'<div class="mode-switch" data-mode="{"pro" if pro else "default"}">'
             f'<p><strong>Pro mode is {state}.</strong> Pro mode adds the Notifications, Decisions, '
             'Background work, and Connected apps tabs, goals, and the /goal, /attend, /back-off, '
-            'and /lesson skills.</p>'
+            f'and /lesson skills.</p>{problem}'
             f'<button class="btn" id="mode-toggle" onclick="setMode(\'{target}\')">Turn Pro mode {verb}</button> '
             '<span class="meta" id="mode-status" role="status"></span></div>')
+
+
+def render_restart_alert() -> str:
+    """A top-of-page alert while an update couldn't restart a service."""
+    try:
+        labels = (HOME / ".assistant/service-restart-failed").read_text().split()
+    except OSError:
+        return ""
+    return ('<div class="pulse-health pulse-bad" role="alert">'
+            '<span class="pulse-dot"></span>'
+            f'<span class="pulse-text">An update couldn\'t restart {e(", ".join(labels))}, so it '
+            'still runs old code. The hourly update retries; run ./install.sh --apply to '
+            'retry now.</span></div>')
 
 
 def render_metering_stats():
@@ -2645,8 +2661,8 @@ def render():
     tab_panels = "\n\n".join(
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
-    mode_html = render_mode_switch(pro)
-    pulse_alert_html = render_pulse_alert()
+    mode_html = render_mode_switch(pro, mode.config_error())
+    pulse_alert_html = render_pulse_alert() + render_restart_alert()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()
@@ -2763,6 +2779,7 @@ h1 {
 .pulse-warn .pulse-dot {
   background: #d4a04c;
 }
+.mode-error { color: var(--red); }
 .pulse-bad {
   background: rgba(220, 60, 60, 0.08);
   border-color: rgba(220, 60, 60, 0.32);
@@ -4080,8 +4097,9 @@ async function setMode(value) {
     fresh.textContent = value === 'pro' ? 'Turn Pro mode off' : 'Turn Pro mode on';
     fresh.setAttribute('onclick', `setMode('${value === 'pro' ? 'default' : 'pro'}')`);
     fresh.disabled = false;
-    fresh.closest('.mode-switch').querySelector('strong').textContent =
-      `Pro mode is ${value === 'pro' ? 'on' : 'off'}.`;
+    const box = fresh.closest('.mode-switch');
+    box.dataset.mode = value;
+    box.querySelector('strong').textContent = `Pro mode is ${value === 'pro' ? 'on' : 'off'}.`;
     document.getElementById('mode-status').textContent = refreshed ? message
       : `Switched to ${value}. Reload the page to see the change.`;
   } catch (error) {

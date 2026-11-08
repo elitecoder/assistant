@@ -897,27 +897,32 @@ fi
 
 # The dashboard server and the app connectors keep old code until restarted.
 # Restart the running ones when their code changed since the last install
-# recorded it; record it only once every restart worked.
+# recorded it; record it only once every restart worked. A failed restart
+# leaves a note that the dashboard shows and the hourly update retries.
 CODE_STAMP="$HOME_DIR/.assistant/service-code.sha256"
+RESTART_NOTE="$HOME_DIR/.assistant/service-restart-failed"
 CODE_SHA="$(cd "$REPO_ROOT" && find bin/todo-server.py bin/connectors src/assistant -type f \( -name '*.py' -o -name '*.sh' \) \
     | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
 if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
-    restarted_all=1
+    failed_labels=()
     for label in com.assistant.assistant-todo-server com.assistant.connector-{github,gmail,gcal,slack,outlook}; do
         [[ " ${CHANGED_LABELS[*]:-} " == *" $label "* ]] && continue
-        launchctl print "gui/$UID/$label" >/dev/null 2>&1 || continue
+        launchctl print "gui/$UID/$label" 2>/dev/null | grep -q "state = running" || continue
         if [[ $APPLY -eq 0 ]]; then
             note "would restart $label (its code changed)"
         elif launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1; then
             note "restarted $label (its code changed)"
         else
-            warn "couldn't restart $label; the next install retries"
-            restarted_all=0
+            warn "couldn't restart $label; the hourly update retries"
+            failed_labels+=("$label")
         fi
     done
-    if [[ $APPLY -eq 1 && $restarted_all -eq 1 ]]; then
+    if [[ $APPLY -eq 1 && ${#failed_labels[@]} -eq 0 ]]; then
         mkdir -p "$(dirname "$CODE_STAMP")"
         printf '%s\n' "$CODE_SHA" > "$CODE_STAMP"
+        rm -f "$RESTART_NOTE"
+    elif [[ $APPLY -eq 1 ]]; then
+        printf '%s\n' "${failed_labels[@]}" > "$RESTART_NOTE"
     fi
 fi
 log ""

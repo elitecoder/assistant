@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -85,6 +86,49 @@ def test_save_keeps_other_settings_and_refuses_an_unreadable_file(home):
         mode.save("pro")
     with pytest.raises(ValueError):
         mode.save("turbo")
+
+
+def test_an_unreadable_config_means_default_mode_and_names_the_file(home):
+    (home / ".claude").mkdir()
+    (home / ".claude/assistant-goals.json").write_text('{"goals": []}')
+    assert mode.current() == "pro" and mode.config_error() is None
+    for broken in ("{torn", "[]"):
+        config(home).write_text(broken)
+        assert mode.current() == "default"
+        assert str(config(home)) in mode.config_error()
+    set_mode(home, "turbo")
+    assert mode.current() == "default"
+
+
+def test_switch_saves_nothing_when_it_cant_change_the_skills(home):
+    set_mode(home, "default")
+    (home / ".claude").mkdir()
+    (home / ".claude/skills").write_text("not a folder")
+    with pytest.raises(OSError):
+        mode.switch("pro")
+    assert mode.saved_mode() == "default"
+    (home / ".claude/skills").unlink()
+    config(home).write_text("{torn")
+    with pytest.raises(ValueError):
+        mode.switch("pro")
+    assert not (home / ".claude/skills/goal").exists()
+    with pytest.raises(ValueError):
+        mode.switch("turbo")
+
+
+def test_a_looping_skill_link_never_breaks_the_mode(home, monkeypatch):
+    skills = home / ".claude/skills"
+    skills.mkdir(parents=True)
+    (skills / "goal").symlink_to(skills / "goal")
+    real_resolve = Path.resolve
+
+    def resolve(self, strict=False):
+        if self == skills / "goal":
+            raise RuntimeError("Symlink loop")
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    assert mode.current() == "default"
 
 
 def test_an_early_installers_real_skill_copy_counts_as_pro(home):
@@ -276,6 +320,18 @@ def test_pro_dashboard_shows_every_tab_and_the_switch(home):
     assert "Pro mode is on." in page and "setMode('default')" in page
 
 
+def test_dashboard_shows_an_unreadable_settings_file_and_a_failed_restart(home):
+    assert "can't be read" not in render_page(home)
+    config(home).write_text("{torn")
+    (home / ".assistant/service-restart-failed").write_text(
+        "com.assistant.connector-gmail\ncom.assistant.assistant-todo-server\n")
+    page = render_page(home)
+    switch = page[page.index('<div class="mode-switch"'):]
+    assert "Your settings file can't be read" in switch and str(config(home)) in switch
+    assert ("couldn't restart com.assistant.connector-gmail, com.assistant.assistant-todo-server"
+            in page)
+
+
 def test_tasks_tab_shows_the_held_back_warning(home):
     page = render_page(home, {"awaiting_input": [{
         "key": "dispatch-cap-hit", "title": "Dispatch capped — 2 TODO(s) waiting",
@@ -324,6 +380,7 @@ def test_server_switch_changes_mode_and_skills(home, monkeypatch):
     config(home).write_text("{torn")
     ok, message = server.set_mode("default")
     assert not ok and message.startswith("Couldn't change the mode") and str(server.SRC_DIR) in sys.path
+    assert str(config(home)) in message
 
 
 # ─── connectors ──────────────────────────────────────────────────────────────
@@ -379,6 +436,25 @@ def test_a_resumed_connector_skips_what_happened_while_paused(home):
     assert delays == [60, 60]
 
 
+def test_a_connector_restarted_after_a_pause_skips_what_happened_while_paused(home):
+    from assistant import connector
+
+    class Fake(connector.Connector):
+        def poll_once(self, now=None):
+            for name, epoch in (("old", time.time() - 3600), ("new", time.time() + 1)):
+                self.emit(connector.build_world_event(
+                    source="fake", kind="note", external_id=name, ts_epoch=epoch))
+            return {"status": "error"}
+
+    set_mode(home, "default")
+    Fake("fake", "fake", config={"cadence_sec": 60}).run_forever(max_iterations=1)
+    set_mode(home, "pro")
+    fake = Fake("fake", "fake", config={"cadence_sec": 60})
+    fake.run_forever(max_iterations=1)
+    drops = [json.loads(p.read_text())["external_id"] for p in fake.inbox_dir().glob("evt-*.json")]
+    assert drops == ["new"]
+
+
 def test_a_paused_connector_retries_at_the_normal_pace_after_it_resumes(home):
     from assistant import connector
 
@@ -420,8 +496,8 @@ def test_a_connector_keeps_the_last_mode_when_it_cant_read_it(home):
 
 # ─── the installer ───────────────────────────────────────────────────────────
 
-def run_installer(env: dict, *flags: str) -> subprocess.CompletedProcess:
-    proc = subprocess.run(["bash", str(REPO / "install.sh"), "--apply", *flags],
+def run_installer(env: dict, *flags: str, repo: Path = REPO) -> subprocess.CompletedProcess:
+    proc = subprocess.run(["bash", str(repo / "install.sh"), "--apply", *flags],
                           capture_output=True, text=True, env=env,
                           stdin=subprocess.DEVNULL, timeout=120)
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-1000:]
@@ -479,17 +555,22 @@ def test_installer_leaves_an_unreadable_config_alone(tmp_path):
     assert "mode not changed" in proc.stderr
 
 
-def fake_launchctl(env: dict, running: set[str], failing: set[str] = frozenset()) -> Path:
-    """Answer `print` for running labels and fail `kickstart` for failing ones."""
+def fake_launchctl(env: dict, running: set[str], failing: set[str] = frozenset(),
+                   stopped: set[str] = frozenset()) -> Path:
+    """Answer `print` for running and loaded-but-stopped labels, and fail
+    `kickstart` for failing ones."""
     home = Path(env["HOME"])
     (home / "running").write_text("\n".join(running) + "\n")
+    (home / "stopped").write_text("\n".join(stopped) + "\n")
     (home / "failing").write_text("\n".join(failing) + "\n")
     Path(env["ASSISTANT_TEST_LAUNCHCTL"]).write_text(
         '#!/bin/sh\n'
         'printf "%s\\n" "$*" >> "$HOME/launchctl.log"\n'
         'label="${2##*/}"\n'
         'case "$1" in\n'
-        '  print) grep -qx "$label" "$HOME/running" ;;\n'
+        '  print) if grep -qx "$label" "$HOME/running"; then echo "	state = running";\n'
+        '         elif grep -qx "$label" "$HOME/stopped"; then echo "	state = not running";\n'
+        '         else exit 1; fi ;;\n'
         '  kickstart) label="${3##*/}"; ! grep -qx "$label" "$HOME/failing" ;;\n'
         '  bootout|bootstrap|load) exit 0 ;;\n'
         '  *) exit 2 ;;\n'
@@ -502,9 +583,10 @@ def test_installer_restarts_running_services_only_when_their_code_changes(tmp_pa
     (home / ".assistant").mkdir(parents=True)
     env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
     server, gmail = "com.assistant.assistant-todo-server", "com.assistant.connector-gmail"
-    log = fake_launchctl(env, running={server, gmail})
+    log = fake_launchctl(env, running={server, gmail}, stopped={"com.assistant.connector-github"})
     run_installer(env)
     stamp = home / ".assistant/service-code.sha256"
+    note = home / ".assistant/service-restart-failed"
     stamp.write_text("old\n")
     log.write_text("")
     run_installer(env)
@@ -522,10 +604,29 @@ def test_installer_restarts_running_services_only_when_their_code_changes(tmp_pa
     assert f"couldn't restart {gmail}" in proc.stderr
     assert f"kickstart -k gui/{os.getuid()}/{server}" not in log.read_text()
     assert stamp.read_text() == "old\n"
+    assert note.read_text() == f"{gmail}\n"
 
     fake_launchctl(env, running={gmail})
     run_installer(env)
     assert stamp.read_text() != "old\n"
+    assert not note.exists()
+
+
+def test_the_installer_restarts_a_service_when_any_of_its_code_changes(tmp_path):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    shutil.copytree(REPO, repo, ignore=shutil.ignore_patterns(".git", ".venv", ".worktrees", "__pycache__"))
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    server = "com.assistant.assistant-todo-server"
+    log = fake_launchctl(env, running={server})
+    run_installer(env, repo=repo)
+    for path in ("src/assistant/mode.py", "bin/connectors/gmail.py", "bin/todo-server.py"):
+        log.write_text("")
+        with (repo / path).open("a") as f:
+            f.write("\n# changed\n")
+        run_installer(env, repo=repo)
+        assert f"kickstart -k gui/{os.getuid()}/{server}" in log.read_text(), path
 
 
 def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
