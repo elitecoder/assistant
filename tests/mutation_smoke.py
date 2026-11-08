@@ -351,6 +351,20 @@ CHECKS = (
         'tests/test_pro_mode.py::test_the_hourly_update_never_starts_workspace_numbers_you_stopped',
     ),
     (
+        'an explicit --with-ws-numberer wins over the update rule',
+        "install.sh",
+        ' && $WS_NUMBERER_FLAG -eq 0 ]]',
+        ' ]]',
+        'tests/test_pro_mode.py::test_the_hourly_update_never_starts_workspace_numbers_you_stopped',
+    ),
+    (
+        'the --with-ws-numberer flag is remembered before the opt-in loop',
+        "install.sh",
+        'WS_NUMBERER_FLAG=$WITH_WS_NUMBERER\n',
+        'WS_NUMBERER_FLAG=0\n',
+        'tests/test_pro_mode.py::test_the_hourly_update_never_starts_workspace_numbers_you_stopped',
+    ),
+    (
         'a failed restart keeps the old code stamp',
         "install.sh",
         '            failed_labels+=("$label")\n',

@@ -231,6 +231,7 @@ _optin_header() {
     _optin_header_shown=1
     log "[2.5] Optional features (safe to skip; enable later with --with-<name>)"
 }
+WS_NUMBERER_FLAG=$WITH_WS_NUMBERER
 for _pair in 'memory:WITH_MEMORY' 'crash-resume:WITH_CRASH_RESUME' 'ws-numberer:WITH_WS_NUMBERER'; do
     _feat="${_pair%%:*}"; _var="${_pair##*:}"
     if [[ "$_feat" == "ws-numberer" && $NO_WS_NUMBERER -eq 1 ]]; then
@@ -757,8 +758,9 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     # CHANGED_LABELS, so Section 5 never reloads it (the never-auto-load contract).
     no_load=0
     [[ $skip -eq 1 || $copy_no_load -eq 1 ]] && no_load=1
-    # The hourly update never starts workspace numbers you stopped by hand.
-    if [[ "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]] \
+    # The hourly update never starts workspace numbers you stopped by hand,
+    # unless this run passed --with-ws-numberer.
+    if [[ "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" == "1" && $WS_NUMBERER_FLAG -eq 0 ]] \
             && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
         no_load=1
     fi

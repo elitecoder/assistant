@@ -652,6 +652,11 @@ def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
     assert "an older copy" not in plist.read_text()
 
     plist.write_text("<plist>an older copy</plist>")
+    log.write_text("")
+    run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"}, "--with-ws-numberer")
+    assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
+
+    plist.write_text("<plist>an older copy</plist>")
     fake_launchctl(env, running={label})
     log.write_text("")
     run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
