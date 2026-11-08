@@ -45,9 +45,22 @@ def saved_mode() -> str | None:
     return value if value in MODES else None
 
 
+def _link_state(link: Path, name: str, repo: Path) -> str:
+    """"ours" (into this repo), "stale" (a dangling link to an old Assistant
+    checkout), or "other"."""
+    if not link.is_symlink():
+        return "other"
+    if link.resolve() == (repo / "skills" / name).resolve():
+        return "ours"
+    target = Path(os.readlink(link))
+    if not link.exists() and target.parts[-2:] == ("skills", name):
+        return "stale"
+    return "other"
+
+
 def has_pro_state() -> bool:
     home = _home()
-    if any((home / ".claude/skills" / name).is_symlink() for name in PRO_SKILLS):
+    if any(_link_state(home / ".claude/skills" / name, name, REPO) == "ours" for name in PRO_SKILLS):
         return True
     for path in (home / ".claude/assistant-goals.json",
                  home / ".assistant/decisions/decisions.jsonl"):
@@ -91,14 +104,14 @@ def sync_skills(pro: bool, repo: Path = REPO) -> list[str]:
     changes = []
     for name in PRO_SKILLS:
         target, source = skills / name, repo / "skills" / name
-        ours = target.is_symlink() and Path(os.readlink(target)) == source
+        state = _link_state(target, name, repo)
+        if state == "stale" or (state == "ours" and not pro):
+            target.unlink()
+            changes.append(f"unlinked {name}")
         if pro and not target.exists() and not target.is_symlink() and source.is_dir():
             skills.mkdir(parents=True, exist_ok=True)
             target.symlink_to(source)
             changes.append(f"linked {name}")
-        elif not pro and ours:
-            target.unlink()
-            changes.append(f"unlinked {name}")
     return changes
 
 

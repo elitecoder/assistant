@@ -212,6 +212,18 @@ def test_enabled_ws_numberer_loads_even_when_its_plist_is_unchanged(tmp_path):
     assert _bootstraps(tmp_path, "cmux-ws-numberer")
 
 
+def test_self_update_leaves_a_hand_stopped_ws_numberer_stopped(tmp_path):
+    env = installer_env(tmp_path)
+    (tmp_path / ".assistant").mkdir()
+    (tmp_path / ".assistant" / "feature-opt-in").write_text("ws-numberer=yes\n")
+    for extra in ({}, {"ASSISTANT_SELF_UPDATE": "1"}):
+        (tmp_path / "launchctl.log").write_text("")
+        r = subprocess.run(["bash", str(INSTALL), "--apply"], capture_output=True, text=True,
+                           env={**env, **extra}, stdin=subprocess.DEVNULL, timeout=90)
+        assert r.returncode == 0, r.stdout[-1500:]
+    assert _bootstraps(tmp_path, "cmux-ws-numberer") == []
+
+
 def test_no_ws_numberer_stops_a_running_copy(tmp_path):
     rc, out, home = _run_install(tmp_path, flags=["--apply", "--no-ws-numberer"],
                                  loaded_label="com.assistant.cmux-ws-numberer")

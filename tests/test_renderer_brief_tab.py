@@ -511,6 +511,9 @@ class BriefTabTests(unittest.TestCase):
         html, _ = self.mod.render_brief_tab()
         self.assertIn('data-brief-date="2026-07-02"', html)
         self.assertNotIn('data-brief-date="2026-07-03"', html)
+        (self.home / ".assistant/brief/brief-2026-07-02.seen.json").write_text("{}")
+        html, _ = self.mod.render_brief_tab()
+        self.assertNotIn("unseen —", html)
 
     def test_trend_sparkline_from_metrics_rows(self):
         self.write_brief(brief_fixture())

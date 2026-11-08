@@ -81,6 +81,33 @@ def test_save_keeps_other_settings_and_refuses_an_unreadable_file(home):
     assert config(home).read_text() == broken
 
 
+def test_switch_matches_links_through_a_symlinked_repo_path(home, tmp_path):
+    real = tmp_path / "real-repo"
+    for name in mode.PRO_SKILLS:
+        (real / "skills" / name).mkdir(parents=True)
+    alias = tmp_path / "alias-repo"
+    alias.symlink_to(real)
+    skills = home / ".claude/skills"
+    skills.mkdir(parents=True)
+    for name in mode.PRO_SKILLS:
+        (skills / name).symlink_to(alias / "skills" / name)
+    mode.switch("default", repo=real)
+    assert not any((skills / n).is_symlink() for n in mode.PRO_SKILLS)
+
+
+def test_stale_links_from_a_moved_checkout_are_replaced_and_foreign_links_ignored(home, tmp_path):
+    skills = home / ".claude/skills"
+    skills.mkdir(parents=True)
+    (skills / "goal").symlink_to(tmp_path / "old-checkout/skills/goal")
+    (skills / "lesson").symlink_to(tmp_path)
+    assert mode.current() == "default"
+    mode.switch("pro")
+    assert (skills / "goal").resolve() == REPO / "skills/goal"
+    assert (skills / "lesson").resolve() == tmp_path
+    mode.switch("default")
+    assert not (skills / "goal").is_symlink() and (skills / "lesson").is_symlink()
+
+
 def test_switch_links_and_unlinks_only_our_pro_skills(home):
     skills = home / ".claude/skills"
     skills.mkdir(parents=True)
@@ -229,33 +256,36 @@ def test_server_switch_changes_mode_and_skills(home, monkeypatch):
     server = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server)
     renders = []
-    monkeypatch.setattr(server, "rerender_dashboard", lambda: renders.append(1))
+    monkeypatch.setattr(server, "rerender_dashboard", lambda: renders.append(1) or True)
     assert server.set_mode("pro") == (True, "pro")
     assert (home / ".claude/skills/goal").is_symlink() and mode.is_pro()
     assert server.set_mode("default") == (True, "default")
     assert not (home / ".claude/skills/goal").exists() and not mode.is_pro()
     assert server.set_mode("turbo")[0] is False
     assert renders == [1, 1]
+    monkeypatch.setattr(server, "rerender_dashboard", lambda: False)
+    assert server.set_mode("pro") == (True, "Switched to pro. The page updates within 5 minutes.")
 
 
-# ─── the connector launcher ──────────────────────────────────────────────────
+# ─── connectors ──────────────────────────────────────────────────────────────
 
-def test_connectors_wait_in_default_mode_and_start_in_pro(home, tmp_path):
-    repo = tmp_path / "repo"
-    (repo / "bin/connectors").mkdir(parents=True)
-    for rel in ("bin/connectors/spawn-connector.sh", "bin/assistant-mode.py"):
-        (repo / rel).write_text((REPO / rel).read_text())
-    (repo / "src").symlink_to(REPO / "src")
-    (repo / "bin/connectors/fake.py").write_text("print('POLLING')\n")
-    env = {"HOME": str(home), "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
-           "ASSISTANT_CONNECTOR_MODE_CHECK_SECONDS": "0.2"}
-    proc = subprocess.Popen(["/bin/zsh", str(repo / "bin/connectors/spawn-connector.sh"), "fake.py"],
-                            env=env, stdout=subprocess.PIPE, text=True)
-    time.sleep(1)
-    assert proc.poll() is None
+def test_connectors_pause_while_pro_mode_is_off(home):
+    from assistant import connector
+
+    class Fake(connector.Connector):
+        polls = 0
+
+        def poll_once(self, now=None):
+            Fake.polls += 1
+            set_mode(home, "default")
+            return {"status": "ok"}
+
+    fake = Fake("fake", "fake", config={"cadence_sec": 1})
+    fake.run_forever(max_iterations=2, sleep=lambda s: None)
+    assert Fake.polls == 0
     set_mode(home, "pro")
-    out, _ = proc.communicate(timeout=10)
-    assert out.strip() == "POLLING"
+    fake.run_forever(max_iterations=3, sleep=lambda s: None)
+    assert Fake.polls == 1
 
 
 # ─── the installer ───────────────────────────────────────────────────────────
@@ -309,3 +339,20 @@ def test_installer_leaves_an_unreadable_config_alone(tmp_path):
     proc = run_installer(installer_env(home), "--pro")
     assert config(home).read_text() == broken
     assert "mode not changed" in proc.stderr
+
+
+def test_installer_restarts_the_dashboard_server_only_when_its_code_changes(tmp_path):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    env = installer_env(home)
+    label = "com.assistant.assistant-todo-server"
+    log = home / "launchctl.log"
+    run_installer(env)
+    log.write_text("")
+    first = run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
+    assert f"will restart {label}" not in first.stdout
+    (home / ".assistant/todo-server-code.sha256").write_text("old\n")
+    log.write_text("")
+    second = run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
+    assert f"will restart {label}" in second.stdout
+    assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())

@@ -765,7 +765,8 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     if [[ ! -L "$target" && -f "$target" ]] && cmp -s "$staged" "$target"; then
         if [[ $no_load -eq 1 ]]; then
             note "OK   $target (matches repo; not auto-loaded — activate by hand)"
-        elif [[ "$feat" == "ws-numberer" ]] && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+        elif [[ "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ]] \
+                && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
             note "OK   $target (matches repo; enabled but not running → will load)"
             CHANGED_LABELS+=("$label")
         else
@@ -876,6 +877,23 @@ log ""
 # it applies on the next manual install or reboot. Plist changes are rare;
 # code changes (symlinked bin/, no reload needed) are the common case.
 SELF_PLIST_LABEL="com.assistant.assistant-pulse"
+
+# The dashboard server is long-running, so it keeps old code until restarted.
+# Restart it when its code changed since the last install recorded it.
+SERVER_LABEL="com.assistant.assistant-todo-server"
+SERVER_STAMP="$HOME_DIR/.assistant/todo-server-code.sha256"
+SERVER_SHA="$(shasum -a 256 "$REPO_ROOT/bin/todo-server.py" | cut -d' ' -f1)"
+if [[ "$(cat "$SERVER_STAMP" 2>/dev/null || true)" != "$SERVER_SHA" ]]; then
+    if [[ " ${CHANGED_LABELS[*]:-} " != *" $SERVER_LABEL "* ]]; then
+        CHANGED_LABELS+=("$SERVER_LABEL")
+    fi
+    note "dashboard server code changed → will restart $SERVER_LABEL"
+    if [[ $APPLY -eq 1 ]]; then
+        mkdir -p "$(dirname "$SERVER_STAMP")"
+        printf '%s\n' "$SERVER_SHA" > "$SERVER_STAMP"
+    fi
+fi
+
 log "[5/5] Reloading launchd agents that changed"
 if [[ ${#CHANGED_LABELS[@]} -eq 0 ]]; then
     note "no plists changed — nothing to reload"

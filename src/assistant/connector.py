@@ -67,7 +67,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import eventspine
+from . import eventspine, mode
 
 # ─── fallback defaults (all overridable via config; never the sole source) ───
 
@@ -1249,8 +1249,17 @@ class Connector:
             "not_configured_recheck_sec", DEFAULT_NOT_CONFIGURED_RECHECK_SEC))
         i = 0
         backoff = 0.0
+        paused = False
         while max_iterations is None or i < max_iterations:
             i += 1
+            if not mode.is_pro():
+                if not paused:
+                    self._log(f"{self.name}: paused — Pro mode is off")
+                paused = True
+                if max_iterations is None or i < max_iterations:
+                    sleep(cadence)
+                continue
+            paused = False
             errored = True
             not_configured = False
             retry_after = None

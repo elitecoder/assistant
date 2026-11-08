@@ -1388,6 +1388,7 @@ def render_workspaces_tab():
                 f'    {since_chip}'
                 f'  </div>'
                 f'  <div class="backoff-card-reason">{e(reason)}</div>'
+                f'  <div class="backoff-hint">{_unpause_hint(ref)}</div>'
                 f'</div>'
             )
 
@@ -1395,7 +1396,6 @@ def render_workspaces_tab():
             f'<div class="backoff-section">'
             f'  <div class="backoff-section-head">'
             f'    <span class="backoff-label">Backed off · {len(backed_off)}</span>'
-            f'    <span class="backoff-hint">{_unpause_hint("workspace:N")}</span>'
             f'  </div>'
             f'  {"".join(cards)}'
             f'</div>'
@@ -4011,7 +4011,7 @@ function showTab(name) {
     }
   }
   let dashboardRefreshing = false;
-  async function refreshDashboard(force = false) {
+  async function refreshDashboard(force = false, replace = false) {
     updateFreshness();
     if (dashboardRefreshing || location.protocol === 'file:') return;
     if (!force && (document.querySelector('.tab-panel.active details[open], .service-details[open]')
@@ -4031,7 +4031,7 @@ function showTab(name) {
       const incoming = page.getElementById('dashboard-content');
       const current = document.getElementById('dashboard-content');
       if (!incoming) throw new Error('Dashboard content is unavailable');
-      if (incoming.dataset.renderedAt !== current.dataset.renderedAt) {
+      if (replace || incoming.dataset.renderedAt !== current.dataset.renderedAt) {
         const query = document.getElementById('attention-search').value;
         if (incoming.querySelector('[data-brief-date]')?.dataset.briefDate
             !== current.querySelector('[data-brief-date]')?.dataset.briefDate) {
@@ -4062,13 +4062,6 @@ function showTab(name) {
       dashboardRefreshing = false;
     }
   }
-// /brief/seen signal (Keel M3): viewing the Brief tab stamps the seen
-// sidecar so the unseen-degradation pass knows the brief was looked at.
-// Fired at most once per page load; failures (server down) are swallowed —
-// the signal is best-effort by design. The URL is ABSOLUTE to the todo-server
-// (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
-// as a file:// page — a relative fetch resolves to file:///brief/seen and
-// never arrives, silently arming the destructive unseen-TTL (F19).
 async function setMode(value) {
   const button = document.getElementById('mode-toggle');
   const status = document.getElementById('mode-status');
@@ -4077,13 +4070,24 @@ async function setMode(value) {
   try {
     const response = await fetch('/mode?value=' + encodeURIComponent(value),
       {method: 'POST', headers: {'X-Assistant-Human': '1'}});
-    if (!response.ok) throw new Error(await response.text());
-    await refreshDashboard(true);
+    const message = await response.text();
+    if (!response.ok) throw new Error(message);
+    while (dashboardRefreshing) await new Promise(resolve => setTimeout(resolve, 100));
+    await refreshDashboard(true, true);
+    const fresh = document.getElementById('mode-status');
+    if (fresh && message !== value) fresh.textContent = message;
   } catch (error) {
     status.textContent = "Couldn't switch: " + error.message;
     button.disabled = false;
   }
 }
+// /brief/seen signal (Keel M3): viewing the Brief tab stamps the seen
+// sidecar so the unseen-degradation pass knows the brief was looked at.
+// Fired at most once per page load; failures (server down) are swallowed —
+// the signal is best-effort by design. The URL is ABSOLUTE to the todo-server
+// (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
+// as a file:// page — a relative fetch resolves to file:///brief/seen and
+// never arrives, silently arming the destructive unseen-TTL (F19).
 async function briefRefresh() {
   const button = document.getElementById('brief-refresh');
   if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }

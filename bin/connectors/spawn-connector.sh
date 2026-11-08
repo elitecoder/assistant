@@ -20,11 +20,4 @@ shift || true
 REPO_ROOT="$(cd "$(dirname "${(%):-%x}")/../.." && pwd)"
 PY="$(command -v python3.12 || command -v python3 || echo /opt/homebrew/bin/python3)"
 
-# Connectors feed Pro mode only. In default mode, wait without polling and
-# start once Pro mode is turned on.
-MODE_CHECK_SECONDS="${ASSISTANT_CONNECTOR_MODE_CHECK_SECONDS:-300}"
-while [ "$("$PY" "$REPO_ROOT/bin/assistant-mode.py" 2>/dev/null)" != "pro" ]; do
-    sleep "$MODE_CHECK_SECONDS"
-done
-
 exec "$PY" "$REPO_ROOT/bin/connectors/$CONNECTOR" "$@"

@@ -243,18 +243,19 @@ def set_mode(value):
         mode.switch(value)
     except (OSError, ValueError) as exc:
         return False, f"Couldn't change the mode: {exc}"
-    rerender_dashboard()
+    if not rerender_dashboard():
+        return True, f"Switched to {value}. The page updates within 5 minutes."
     return True, value
 
 
 def rerender_dashboard():
     try:
-        subprocess.run(
+        return subprocess.run(
             ["python3", str(RENDER_DASHBOARD_SCRIPT)],
             check=False, timeout=6, capture_output=True,
-        )
+        ).returncode == 0
     except Exception:
-        pass
+        return False
 
 
 def load_proposal(prop_id):
@@ -793,13 +794,10 @@ class Handler(BaseHTTPRequestHandler):
         if _mutation and not self._origin_allowed_for_mutation():
             self._reply(403, "cross-origin mutation refused")
             return
-        # The Slack tab's routes reach Slack, gh, and the model, so they also
-        # refuse Origin: null (a sandboxed frame); the tab never sends it.
-        if parts[:1] in (["slack-focus"], ["mode"]) or parts == ["brief", "refresh"]:
-            if self.headers.get("Origin", "") == "null":
-                self._reply(403, "cross-origin request refused")
-                return
-        if parts[:1] == ["slack-focus"] and self.headers.get("Origin", "") == "null":
+        # These routes rebuild the page, change settings, or reach Slack, gh,
+        # and the model, so they also refuse Origin: null (a sandboxed frame).
+        if (parts[:1] in (["slack-focus"], ["mode"]) or parts == ["brief", "refresh"]) \
+                and self.headers.get("Origin", "") == "null":
             self._reply(403, "cross-origin request refused")
             return
 
