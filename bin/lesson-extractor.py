@@ -780,12 +780,12 @@ def _claude_oneshot(prompt: str) -> str:
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=HOME), "lessons")
     provider = llm_runner.select_provider(route, [str(time.time_ns())])
-    model = route.droid_model if provider == "droid" else EXTRACTOR_MODEL
+    model = route.model_for(EXTRACTOR_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=120, run=_run, claude_bin=CLAUDE_BIN,
         droid_bin=route.droid_bin,
-        reasoning_effort=route.droid_reasoning_effort,
+        reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-lessons")
     (run_dir / "stdout.txt").write_text(result.stdout)
     (run_dir / "stderr.txt").write_text(result.stderr)

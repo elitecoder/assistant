@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import time
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -21,6 +23,24 @@ class RouteConfig:
     droid_bin: str = "~/.local/bin/droid"
     droid_model: str = "glm-5.2"
     droid_reasoning_effort: str = "high"
+    local_url: str = "http://127.0.0.1:8091/v1"
+    local_model: str = "local"
+    local_reasoning_effort: str = "high"
+
+    @property
+    def reasoning_effort(self) -> str:
+        return (self.local_reasoning_effort if self.provider == "local"
+                else self.droid_reasoning_effort)
+
+    def model_for(self, claude_model: str) -> str:
+        """The model id for this route's provider."""
+        return {"droid": self.droid_model, "local": self.local_model}.get(
+            self.provider, claude_model)
+
+
+DEFAULT_LOCAL_URL = RouteConfig.local_url
+DEFAULT_LOCAL_MODEL = RouteConfig.local_model
+LOCAL_MAX_TOKENS = 16384
 
 
 @dataclass(frozen=True)
@@ -56,7 +76,7 @@ def _provider(value) -> str:
     # Unrecognized / empty coerces to claude (fail-closed to the always-present
     # agent), NOT droid — an opt-in binary that may be absent.
     value = str(value or "").strip().lower()
-    if value in {"claude", "droid"}:
+    if value in {"claude", "droid", "local"}:
         return value
     if value:
         logging.getLogger("llm_runner").warning(
@@ -135,11 +155,23 @@ def load_route_config(path: Path, section: str = "triage",
             ),
         ),
     )
+    global_local = llm.get("local") if isinstance(llm.get("local"), dict) else {}
+    feature_local = feature.get("local") \
+        if isinstance(feature.get("local"), dict) else {}
+    local_url = env.get("ASSISTANT_LOCAL_LLM_URL", feature_local.get(
+        "url", global_local.get("url", DEFAULT_LOCAL_URL)))
+    local_model = env.get(f"{prefix}_LOCAL_MODEL", feature_local.get(
+        "model", global_local.get("model", DEFAULT_LOCAL_MODEL)))
+    local_reasoning = env.get(f"{prefix}_LOCAL_REASONING_EFFORT", feature_local.get(
+        "reasoning_effort", global_local.get("reasoning_effort", "high")))
     return RouteConfig(
         provider=_provider(provider),
         droid_bin=str(droid_bin),
         droid_model=str(droid_model or "glm-5.2"),
         droid_reasoning_effort=_reasoning_effort(reasoning),
+        local_url=str(local_url or DEFAULT_LOCAL_URL),
+        local_model=str(local_model or DEFAULT_LOCAL_MODEL),
+        local_reasoning_effort=_reasoning_effort(local_reasoning),
     )
 
 
@@ -201,6 +233,50 @@ def parse_result_envelope(provider: str, stdout: str) -> dict | None:
     return parsed
 
 
+def invoke_local(*, prompt: str, model: str, url: str, timeout: int,
+                 reasoning_effort: str = "high",
+                 json_schema: dict | None = None) -> LLMResult:
+    """One chat completion from an OpenAI-compatible local server
+    (llama-server, Ollama, LM Studio). It has no tools."""
+    started = time.time()
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": LOCAL_MAX_TOKENS,
+        "chat_template_kwargs": {
+            "enable_thinking": _reasoning_effort(reasoning_effort) != "off"},
+    }
+    if json_schema is not None:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "result", "schema": json_schema}}
+    request = urllib.request.Request(
+        url.rstrip("/") + "/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode()
+        doc = json.loads(raw)
+        text = doc["choices"][0]["message"].get("content") or ""
+        usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
+        rc, stderr = 0, ""
+    except (OSError, ValueError, KeyError, IndexError, TypeError,
+            AttributeError) as exc:
+        raw, text, usage, rc = "", "", {}, 1
+        stderr = f"local model at {url} failed: {exc}"
+    text = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
+    return LLMResult(
+        provider="local", model=model, rc=rc, stdout=raw, stderr=stderr,
+        wall_ms=int((time.time() - started) * 1000),
+        tokens_in=int(usage.get("prompt_tokens") or 0),
+        tokens_out=int(usage.get("completion_tokens") or 0),
+        cost_usd=0.0, usage_source="local", session_id=None,
+        result_text=text, usable=rc == 0 and bool(text),
+    )
+
+
 def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
            timeout: int, run: Callable, claude_bin: str,
            droid_bin: str = "~/.local/bin/droid",
@@ -208,9 +284,14 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
            disable_tools: bool = False,
            json_schema: dict | None = None,
            extra_dirs: list[Path] | None = None,
-           tag: str = "assistant") -> LLMResult:
+           tag: str = "assistant",
+           local_url: str = DEFAULT_LOCAL_URL) -> LLMResult:
     started = time.time()
     provider = _provider(provider)
+    if provider == "local":
+        return invoke_local(prompt=prompt, model=model, url=local_url,
+                            timeout=timeout, reasoning_effort=reasoning_effort,
+                            json_schema=json_schema)
     if provider == "droid":
         # Explicit binary pre-flight so a missing/non-executable droid produces
         # ONE unambiguous failure row (rc=127) that the cost ledger + the brief's

@@ -84,13 +84,13 @@ def call_model(prompt: str) -> str:
     into acting. Returns "" on any failure, which keeps the raw rows."""
     route = llm_runner.load_route_config(llm_runner.config_path(home=_home()), "slack_judge")
     provider = llm_runner.select_provider(route, [])
-    model = route.droid_model if provider == "droid" else model_tiers.model_for("balanced")
+    model = route.model_for(model_tiers.model_for("balanced"))
     run_dir = store.base_dir(_home()) / "judge-run"
     run_dir.mkdir(parents=True, exist_ok=True)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir, timeout=JUDGE_TIMEOUT_SEC, run=run,
-        claude_bin=CLAUDE_BIN, droid_bin=route.droid_bin, reasoning_effort=route.droid_reasoning_effort,
-        disable_tools=True, tag="assistant-slack-focus")
+        claude_bin=CLAUDE_BIN, droid_bin=route.droid_bin, reasoning_effort=route.reasoning_effort,
+        disable_tools=True, tag="assistant-slack-focus", local_url=route.local_url)
     try:
         usage = metering.observer_usage(result.stdout, len(prompt), model)
         metering.append_cost_row(caller="slack_focus", model=model, usage=usage, wall_ms=result.wall_ms,

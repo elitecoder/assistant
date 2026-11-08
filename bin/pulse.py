@@ -678,12 +678,12 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=HOME), "triage")
     provider = llm_runner.select_provider(route, sorted(requested_ids))
-    model = route.droid_model if provider == "droid" else TRIAGE_MODEL
+    model = route.model_for(TRIAGE_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=TRIAGE_TIMEOUT_SEC, run=run, claude_bin=DEFAULT_CLAUDE_BIN,
         droid_bin=route.droid_bin,
-        reasoning_effort=route.droid_reasoning_effort,
+        reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-triage")
     parsed_suggestions = parse_lane_suggestions(result.result_text)
     if not parsed_suggestions:
@@ -1337,7 +1337,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
         llm_runner.config_path(home=HOME), section)
     provider = llm_runner.select_provider(
         route, [str(c.get("ws_ref") or "") for c in ctxs])
-    selected_model = route.droid_model if provider == "droid" else model
+    selected_model = route.model_for(model)
     # When the driver is Claude (Sonnet), the `model` arg passed by the caller
     # is OBSERVER_AUDIT_MODEL (Opus) — a stronger independent model for a
     # genuine second opinion. When the driver is Droid (GLM-5.2), the audit
@@ -1348,7 +1348,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
         provider=provider, prompt=prompt, model=selected_model,
         run_dir=run_dir, timeout=OBSERVER_TIMEOUT_SEC, run=run,
         claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
-        reasoning_effort=route.droid_reasoning_effort,
+        reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, json_schema=OBSERVER_RESPONSE_SCHEMA,
         extra_dirs=[run_dir],
         tag=f"assistant-{section}")

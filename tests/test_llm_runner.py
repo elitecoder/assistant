@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from local_llm_server import FakeLocalModel
+
 REPO = Path(__file__).resolve().parent.parent
 RUNNER_PATH = REPO / "bin/llm_runner.py"
 
@@ -481,3 +483,79 @@ class InvokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalModelTests(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_runner()
+        self._tmp_obj = TemporaryDirectory()
+        self.tmp = Path(self._tmp_obj.name)
+        self.path = self.tmp / "config.json"
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def invoke(self, url, **extra):
+        def no_subprocess(*args, **kwargs):
+            raise AssertionError("the local provider never starts a subprocess")
+        return self.mod.invoke(
+            provider="local", prompt="classify this", model="qwen", run_dir=self.tmp,
+            timeout=10, run=no_subprocess, claude_bin="claude", local_url=url, **extra)
+
+    def test_a_feature_can_route_to_a_local_model(self):
+        self.path.write_text(json.dumps({"llm": {
+            "provider": "claude",
+            "local": {"url": "http://127.0.0.1:9000/v1", "model": "qwen", "reasoning_effort": "off"},
+            "features": {"triage": {"provider": "local", "local": {"model": "small"}}}}}))
+        triage = self.mod.load_route_config(self.path, "triage", env={})
+        self.assertEqual((triage.provider, triage.local_url, triage.model_for("haiku")),
+                         ("local", "http://127.0.0.1:9000/v1", "small"))
+        self.assertEqual(triage.reasoning_effort, "off")
+        observer = self.mod.load_route_config(self.path, "observer", env={})
+        self.assertEqual((observer.provider, observer.model_for("sonnet")), ("claude", "sonnet"))
+        self.assertEqual(observer.reasoning_effort, "high")
+        env = {"OBSERVER_LLM_PROVIDER": "local", "OBSERVER_LOCAL_MODEL": "big",
+               "OBSERVER_LOCAL_REASONING_EFFORT": "max",
+               "ASSISTANT_LOCAL_LLM_URL": "http://127.0.0.1:9001/v1"}
+        observer = self.mod.load_route_config(self.path, "observer", env=env)
+        self.assertEqual((observer.provider, observer.local_url, observer.model_for("sonnet"),
+                          observer.reasoning_effort),
+                         ("local", "http://127.0.0.1:9001/v1", "big", "max"))
+        defaults = self.mod.load_route_config(self.tmp / "missing.json", "triage",
+                                              env={"TRIAGE_LLM_PROVIDER": "local"})
+        self.assertEqual((defaults.local_url, defaults.model_for("haiku")),
+                         ("http://127.0.0.1:8091/v1", "local"))
+        droid = self.mod.load_route_config(self.path, "triage", env={"TRIAGE_LLM_PROVIDER": "droid"})
+        self.assertEqual(droid.model_for("haiku"), "glm-5.2")
+
+    def test_a_local_call_sends_the_prompt_schema_and_thinking_setting(self):
+        schema = {"type": "object", "properties": {"lane": {"type": "string"}}}
+        with FakeLocalModel(reply="<think>hmm</think>\n{\"lane\": \"digest\"}") as server:
+            result = self.invoke(server.url + "/", json_schema=schema, reasoning_effort="off")
+            plain = self.invoke(server.url)
+        self.assertTrue(result.usable)
+        self.assertEqual(result.result_text, '{"lane": "digest"}')
+        self.assertEqual((result.provider, result.model, result.cost_usd, result.tokens_in,
+                          result.tokens_out), ("local", "qwen", 0.0, 120, 7))
+        first, second = server.requests
+        self.assertEqual(first["path"], "/v1/chat/completions")
+        self.assertEqual(first["body"]["model"], "qwen")
+        self.assertEqual(first["body"]["messages"], [{"role": "user", "content": "classify this"}])
+        self.assertEqual(first["body"]["response_format"]["json_schema"]["schema"], schema)
+        self.assertFalse(first["body"]["chat_template_kwargs"]["enable_thinking"])
+        self.assertTrue(second["body"]["chat_template_kwargs"]["enable_thinking"])
+        self.assertNotIn("response_format", second["body"])
+        self.assertTrue(plain.usable)
+
+    def test_a_failed_local_call_is_unusable_and_names_the_server(self):
+        with FakeLocalModel(status=500) as server:
+            broken = self.invoke(server.url)
+        with FakeLocalModel(raw=b"not json") as server:
+            garbled = self.invoke(server.url)
+        with FakeLocalModel(reply="") as server:
+            empty = self.invoke(server.url)
+        down = self.invoke(server.url)
+        for result in (broken, garbled, down):
+            self.assertEqual((result.rc, result.usable), (1, False))
+            self.assertIn(server.url if result is down else "local model at", result.stderr)
+        self.assertEqual((empty.rc, empty.usable), (0, False))

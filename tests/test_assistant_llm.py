@@ -53,6 +53,21 @@ class AssistantLLMCommandTests(unittest.TestCase):
         self.assertEqual(document["llm"]["droid"]["model"], "glm-5.2")
         self.assertIn("triage: droid", result.stdout)
 
+    def test_set_local_for_one_feature(self):
+        result = self.run_cli("set", "local", "--feature", "triage")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        document = json.loads(self.config.read_text())
+        self.assertEqual(document["llm"]["features"]["triage"]["provider"], "local")
+        self.assertEqual(document["llm"]["local"],
+                         {"url": "http://127.0.0.1:8091/v1", "model": "local", "reasoning_effort": "high"})
+        self.assertNotIn("droid", document["llm"])
+        self.assertIn("triage: local (local at http://127.0.0.1:8091/v1, high reasoning)", result.stdout)
+        self.assertIn("observer: claude", result.stdout)
+        self.config.write_text(json.dumps({"llm": {"local": "broken"}}))
+        result = self.run_cli("set", "local")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("'llm.local' must be an object", result.stderr)
+
     def test_set_claude_is_immediate_rollback(self):
         self.assertEqual(self.run_cli("set", "droid").returncode, 0)
         result = self.run_cli("set", "claude")
