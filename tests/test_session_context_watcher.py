@@ -1807,6 +1807,27 @@ def test_handle_event_write_reads_new_data(tmp_home, tmp_path):
         w.kq.close()
 
 
+def test_a_transcript_touched_without_new_text_stays_verified(tmp_home, tmp_path):
+    f = tmp_path / "w.jsonl"
+    f.write_text(_user_line("one") + "\n" + _assistant_line("two") + "\n")
+    w = scw.Watcher()
+    try:
+        w.add_watch(f, "/cwd")
+        w.dirty = False
+        fd = w.path_to_fd[str(f)]
+        before = f.stat()
+        os.utime(f, ns=(before.st_atime_ns, before.st_mtime_ns + 5_000_000_000))
+        for ev in w.kq.control(None, 8, 1.0):
+            w.handle_event(ev)
+        state = w.fd_to_state[fd].to_dict(scw.utc_now())["transcript_state"]
+        assert state["mtime_ns"] == f.stat().st_mtime_ns
+        assert state["size_read"] == f.stat().st_size
+        assert w.fd_to_state[fd].last_assistant["text"] == "two"
+        assert w.dirty is True
+    finally:
+        w.kq.close()
+
+
 def test_handle_event_unknown_ident_noop(tmp_home):
     w = scw.Watcher()
     try:
