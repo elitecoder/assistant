@@ -1857,6 +1857,26 @@ def test_handle_event_delete_drops_watch(tmp_home, tmp_path):
         w.kq.close()
 
 
+def test_handle_event_ignores_link_count_change(tmp_home, tmp_path):
+    f = tmp_path / "w.jsonl"
+    f.write_text(_user_line("one") + "\n")
+    w = scw.Watcher()
+    try:
+        w.add_watch(f, "/cwd")
+        fd = w.path_to_fd[str(f)]
+        w.dirty = False
+        with f.open("a") as out:
+            out.write(_assistant_line("two") + "\n")
+        ev = select.kevent(fd, filter=select.KQ_FILTER_VNODE,
+                           fflags=select.KQ_NOTE_LINK)
+        w.handle_event(ev)
+        assert fd in w.fd_to_state
+        assert w.fd_to_state[fd].last_assistant is None
+        assert w.dirty is False
+    finally:
+        w.kq.close()
+
+
 # ─── Watcher.discover ─────────────────────────────────────────────────────────
 
 def test_discover_identity_world_keeps_idle_verified_session_not_record_ghosts(
