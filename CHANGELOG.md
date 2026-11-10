@@ -57,6 +57,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `ASSISTANT_STRATEGIST=1` to turn either back on. With the strategist off, the
   goals planner uses its built-in step templates.
 
+### Fixed
+- Keep idle sessions on the Sessions tab. When a transcript's timestamp changed
+  without new text, the session context watcher never noticed, so the session
+  stayed under Sessions not checked yet. On one Mac, 19 of 26 sessions were
+  stuck there. The watcher now rereads a transcript when its timestamp changes.
+
 ### Added
 - Add a **Slack** tab to the dashboard, ported from the standalone focus-board
   tool. It lists the Slack threads where the next move is yours, in Do first,
