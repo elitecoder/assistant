@@ -243,6 +243,26 @@ class ExecuteVerdictTests(unittest.TestCase):
             )
         self.assertEqual(called["n"], 0)
 
+    def test_held_actions_never_merge_or_send(self):
+        self.mod.record_assistant_merge("workspace:99", ["10000"])
+        seed_receipt(self._tmp, "workspace:99")
+        calls = []
+        ws = {**self._ws(), "pr_refs": ["10000"]}
+        verdicts = [
+            {"verdict": "ready_for_merge", "summary": "s", "next": "n"},
+            {"verdict": "ready_for_cleanup", "summary": "s", "next": "n"},
+            {"verdict": "stranded", "nudge_text": "go", "summary": "s", "next": "n"},
+        ]
+        with mock.patch.dict(os.environ, {"ASSISTANT_OBSERVER_HOLD_ACTIONS": "1"}), \
+                mock.patch.object(self.mod, "cmux_send",
+                                  lambda *a, **k: calls.append(a) or {"outcome": "sent"}), \
+                mock.patch.object(self.mod, "run_merge_pr_dispatch",
+                                  lambda *a, **k: calls.append(a) or {"outcome": "submitted"}), \
+                mock.patch.object(self.mod, "previous_send_ingested", lambda *a: True):
+            kinds = [self.mod.execute_verdict(ws, v, [])["kind"] for v in verdicts]
+        self.assertEqual(calls, [])
+        self.assertEqual(kinds, ["skipped", "skipped", "skipped"])
+
     def test_stranded_without_nudge_skips(self):
         with mock.patch.object(self.mod, "cmux_send", lambda *a, **k: {}):
             action = self.mod.execute_verdict(

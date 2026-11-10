@@ -215,6 +215,13 @@ OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT
 def job_enabled(job: str) -> bool:
     return os.environ.get(OPT_IN_JOBS[job], "0").strip().lower() in ("1", "true", "yes", "on")
 
+
+def observer_actions_held() -> bool:
+    """ASSISTANT_OBSERVER_HOLD_ACTIONS=1 keeps Observer verdicts to cards:
+    no merge dispatch, no /cleanup, no nudges."""
+    return os.environ.get("ASSISTANT_OBSERVER_HOLD_ACTIONS", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
 LESSON_TRANSCRIPT_TIMEOUT_SEC = int(os.environ.get("LESSON_TRANSCRIPT_TIMEOUT_SEC", "600"))
 
 # Cap concurrent active workspaces (matches old prompt's rule).
@@ -1828,6 +1835,9 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
             # was earned; a carry re-running it would re-submit the merge.
             return {**base, "kind": "skipped",
                     "evidence": "carried verdict; merge dispatch not re-run"}
+        if observer_actions_held():
+            return {**base, "kind": "skipped",
+                    "evidence": "Observer actions held; merge dispatch not run"}
         pr_refs = ws.get("pr_refs") or []
         if not pr_refs:
             return {**base, "kind": "skipped", "outcome": "failed",
@@ -1857,6 +1867,9 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
         # (or NO_INGEST_GUARD is already holding it).
         return {**base, "kind": "skipped",
                 "evidence": "carried verdict; send not re-run"}
+    if observer_actions_held():
+        return {**base, "kind": "skipped",
+                "evidence": "Observer actions held; send not run"}
     if kind == "ready_for_cleanup":
         text = "/cleanup"
     elif kind == "stranded":
