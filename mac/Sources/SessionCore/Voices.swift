@@ -34,7 +34,7 @@ public enum Voices {
     /// Ties in quality go to the system's default voice, then to US English.
     public static func usable(_ all: [VoiceInfo], systemDefault: String? = nil) -> [VoiceInfo] {
         func rank(_ v: VoiceInfo) -> (Int, Int, Int) {
-            (v.addOn ? 4 : v.quality, v.id == systemDefault ? 1 : 0, v.language == "en-US" ? 1 : 0)
+            (v.addOn ? 10 + v.quality : v.quality, v.id == systemDefault ? 1 : 0, v.language == "en-US" ? 1 : 0)
         }
         return all.filter { $0.language.hasPrefix("en") && !$0.novelty && !$0.id.contains(".siri.") }
             .sorted { rank($0) != rank($1) ? rank($0) > rank($1) : $0.name < $1.name }

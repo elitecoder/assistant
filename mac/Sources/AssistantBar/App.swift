@@ -1,4 +1,6 @@
 import AppKit
+import KokoroSwift
+import AVFoundation
 import Carbon.HIToolbox
 import ServiceManagement
 import SessionCore
@@ -14,6 +16,9 @@ enum Main {
             printScan()
             return
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 2 < CommandLine.arguments.count {
+            exit(render(CommandLine.arguments[i + 1], to: URL(fileURLWithPath: CommandLine.arguments[i + 2])) ? 0 : 1)
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 1 < CommandLine.arguments.count {
             let spoken = CommandLine.arguments.contains("--spoken")
             let reply = Asker.ask(Asker.prompt(question: CommandLine.arguments[i + 1],
@@ -27,6 +32,32 @@ enum Main {
         app.setActivationPolicy(.accessory)
         app.delegate = delegate
         app.run()
+    }
+
+    /// Saves `text` spoken by the current Kokoro voice as a WAV file.
+    static func render(_ text: String, to url: URL) -> Bool {
+        let engine = KokoroEngine()
+        let voice = Kokoro.voices[0].id
+        var samples: [Float] = []
+        var ok = false
+        let done = DispatchSemaphore(value: 0)
+        let started = Date()
+        engine.speak(text, voiceID: voice, isCurrent: { true }, chunk: { samples += $0 }, done: { ok = $0; done.signal() })
+        done.wait()
+        guard ok, let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate),
+                                             channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+              let file = try? AVAudioFile(forWriting: url, settings: format.settings) else {
+            print("Kokoro didn't produce audio. Is the voice downloaded?")
+            return false
+        }
+        buffer.frameLength = buffer.frameCapacity
+        samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        try? file.write(from: buffer)
+        print(String(format: "Wrote %.1f seconds of speech in %.1f seconds to %@",
+                     Double(samples.count) / Double(KokoroTTS.Constants.samplingRate), Date().timeIntervalSince(started),
+                     url.path))
+        return true
     }
 
     static func printScan() {
@@ -91,6 +122,7 @@ final class Model: NSObject, ObservableObject {
 
     func listen() {
         speaker.stop()
+        speaker.prepare()
         listener.toggle()
     }
 

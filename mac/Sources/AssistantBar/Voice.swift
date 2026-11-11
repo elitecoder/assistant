@@ -1,5 +1,6 @@
 import AudioToolbox
 import AVFoundation
+import KokoroSwift
 import SessionCore
 import os
 import Speech
@@ -189,17 +190,29 @@ final class Listener: ObservableObject {
 
 final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var speaking = false
-    private let synth = AVSpeechSynthesizer()
+    @Published var kokoroStatus: KokoroEngine.Status
     static let preferenceKey = "voice"
 
-    static var systemDefault: String? { AVSpeechSynthesisVoice(language: "en-US")?.identifier }
+    private let synth = AVSpeechSynthesizer()
+    private let kokoro = KokoroEngine()
+    private let audio = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    private let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate),
+                                       channels: 1)!
+    private var generation = 0
+    private var queued = 0
+    private var synthesized = false
 
-    var voices: [VoiceInfo] { Voices.usable(Self.installed(), systemDefault: Self.systemDefault) }
-
-    var current: VoiceInfo? {
-        Voices.choose(Self.installed(), preferred: UserDefaults.standard.string(forKey: Self.preferenceKey),
-                      systemDefault: Self.systemDefault)
+    override init() {
+        kokoroStatus = kokoro.status
+        super.init()
+        synth.delegate = self
+        audio.attach(player)
+        audio.connect(player, to: audio.mainMixerNode, format: format)
+        kokoro.onStatus = { [weak self] in self?.kokoroStatus = $0 }
     }
+
+    static var systemDefault: String? { AVSpeechSynthesisVoice(language: "en-US")?.identifier }
 
     static func installed() -> [VoiceInfo] {
         AVSpeechSynthesisVoice.speechVoices().map {
@@ -208,20 +221,77 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         }
     }
 
+    private var all: [VoiceInfo] { (KokoroEngine.supported ? Kokoro.voices : []) + Self.installed() }
+
+    var voices: [VoiceInfo] { Voices.usable(all, systemDefault: Self.systemDefault) }
+
+    var current: VoiceInfo? {
+        Voices.choose(all, preferred: UserDefaults.standard.string(forKey: Self.preferenceKey),
+                      systemDefault: Self.systemDefault)
+    }
+
+    /// Starts the one-time Kokoro download when a Kokoro voice is in use.
+    func prepare() {
+        if current.map({ Kokoro.npzKey($0.id) != nil }) == true { kokoro.download() }
+    }
+
     func use(_ voice: VoiceInfo) {
         UserDefaults.standard.set(voice.id, forKey: Self.preferenceKey)
         objectWillChange.send()
-        say("Hi, this is how I'll sound.")
-    }
-
-    override init() {
-        super.init()
-        synth.delegate = self
+        prepare()
+        say(Kokoro.npzKey(voice.id) != nil && !KokoroEngine.installed
+            ? "I'm downloading that voice. Until it's ready, I'll sound like this."
+            : "Hi, this is how I'll sound.")
     }
 
     func say(_ markdown: String) {
-        synth.stopSpeaking(at: .immediate)
-        let utterance = AVSpeechUtterance(string: Spoken.plain(markdown))
+        stop()
+        let text = Spoken.plain(markdown)
+        guard let voice = current, Kokoro.npzKey(voice.id) != nil, KokoroEngine.installed else {
+            prepare()
+            sayWithApple(text)
+            return
+        }
+        generation += 1
+        let mine = generation
+        queued = 0
+        synthesized = false
+        speaking = true
+        kokoro.speak(text, voiceID: voice.id, isCurrent: { [weak self] in self?.generation == mine },
+                     chunk: { [weak self] samples in DispatchQueue.main.async { self?.play(samples, mine) } },
+                     done: { [weak self] ok in
+                         DispatchQueue.main.async {
+                             guard let self, self.generation == mine else { return }
+                             self.synthesized = true
+                             if !ok && self.queued == 0 { self.sayWithApple(text) } else { self.finishIfDrained() }
+                         }
+                     })
+    }
+
+    private func play(_ samples: [Float], _ mine: Int) {
+        guard generation == mine, !samples.isEmpty,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))
+        else { return }
+        buffer.frameLength = buffer.frameCapacity
+        samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        if !audio.isRunning { try? audio.start() }
+        queued += 1
+        player.scheduleBuffer(buffer) { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.generation == mine else { return }
+                self.queued -= 1
+                self.finishIfDrained()
+            }
+        }
+        if !player.isPlaying { player.play() }
+    }
+
+    private func finishIfDrained() {
+        if synthesized && queued == 0 { speaking = false }
+    }
+
+    private func sayWithApple(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
         utterance.voice = current.flatMap { AVSpeechSynthesisVoice(identifier: $0.id) }
             ?? AVSpeechSynthesisVoice(language: "en-US")
         speaking = true
@@ -229,6 +299,8 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
 
     func stop() {
+        generation += 1
+        player.stop()
         synth.stopSpeaking(at: .immediate)
         speaking = false
     }
@@ -238,6 +310,6 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) {
-        DispatchQueue.main.async { self.speaking = false }
+        DispatchQueue.main.async { if self.queued == 0 { self.speaking = false } }
     }
 }

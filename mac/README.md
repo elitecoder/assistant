@@ -24,14 +24,11 @@ early. Speech recognition runs on your Mac. It needs Dictation turned on in
 **System Settings > Keyboard > Dictation**. Pick the microphone from the menu at
 the top of the chat. It doesn't change your Mac's input for other apps.
 
-Assistant answers with the most natural English voice you have installed.
-The most human-sounding free option is Kokoro: install
-[KokoroVoice](https://github.com/vicnaum/kokoro-tts-macos/releases/latest),
-open it once, and Assistant switches to Kokoro Heart. It runs on your Mac. The
-first answer after a restart takes a few extra seconds while the voice loads.
-For a human-sounding voice, download a Premium voice, such as Zoe or Ava, in
-**System Settings > Accessibility > Spoken Content > System voice > Manage
-Voices**. Then pick it from the voice menu. Siri voices don't work in apps. The first time, macOS asks for
+Assistant answers with Kokoro, a natural voice that runs on your Mac. The
+voice (340 MB) downloads once, the first time you talk, into
+`~/Library/Application Support/Assistant/Kokoro`. Until then, it uses Apple's
+voice. Pick another Kokoro voice, or an Apple voice, from the voice menu.
+Kokoro needs Apple Silicon. The first time, macOS asks for
 microphone and speech recognition access.
 
 ## Ask about your sessions
@@ -53,6 +50,13 @@ same chat. The panel shows what each answer cost. Nothing runs until you ask.
   Add `--spoken` to get the answer in the short style it uses for speech.
 
 ## Build and install
+
+Building needs Xcode and its Metal Toolchain. Install the toolchain once:
+
+```bash
+xcodebuild -runFirstLaunch
+xcodebuild -downloadComponent MetalToolchain
+```
 
 ```bash
 cd mac

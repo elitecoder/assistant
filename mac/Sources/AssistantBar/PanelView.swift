@@ -282,6 +282,16 @@ struct MicrophoneMenu: View {
 struct VoiceMenu: View {
     @ObservedObject var speaker: Speaker
 
+    var downloadNote: String {
+        guard speaker.current.map({ Kokoro.npzKey($0.id) != nil }) == true else { return "" }
+        switch speaker.kokoroStatus {
+        case .downloading(let f): return " (downloading \(Int(f * 100))%)"
+        case .failed: return " (download failed)"
+        case .notDownloaded: return " (downloads on first use)"
+        case .ready: return ""
+        }
+    }
+
     var body: some View {
         Menu {
             ForEach(speaker.voices) { voice in
@@ -297,7 +307,7 @@ struct VoiceMenu: View {
                 }
             }
         } label: {
-            Label(speaker.current?.label ?? "Voice", systemImage: "speaker.wave.2").font(.caption)
+            Label((speaker.current?.label ?? "Voice") + downloadNote, systemImage: "speaker.wave.2").font(.caption)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

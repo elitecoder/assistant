@@ -37,8 +37,14 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Answer with the most natural voice installed: Premium, then Enhanced, then
   the system default. Pick another from the voice menu, which plays a short
   sample. Siri voices aren't offered, because macOS refuses them to apps.
-- Prefer add-on neural voices, such as Kokoro from the KokoroVoice app, over
-  Apple's voices. They run on the Mac and cost nothing per answer.
+- Speak with Kokoro, a natural neural voice built into Assistant for Mac. It
+  runs on the Mac and costs nothing per answer. The 340 MB voice downloads once,
+  the first time you talk, and its checksum is verified. Until it's ready,
+  Assistant uses Apple's voice. Kokoro loads when it speaks and unloads after
+  five idle minutes. Pick Heart, Bella, Michael, Emma, or George from the voice
+  menu. Requires Apple Silicon and macOS 15. Building now needs Xcode's Metal
+  Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
+- `AssistantBar --render "<text>" <file.wav>` saves Kokoro speech to a file.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds
