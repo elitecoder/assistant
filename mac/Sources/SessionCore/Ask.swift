@@ -92,6 +92,7 @@ public enum Asker {
         Send what the operator asks for, and the follow-ups it needs. Write messages the way the operator would.
         Bring the operator any decision about merging, deleting, spending money, or product behavior. Don't answer those for them.
         If a send prints NOT SENT or STILL WORKING, tell the operator what happened.
+        For status questions, list every session that waits on the operator, with the exact decision each needs.
         Lead with the answer. Use plain language. Keep it to 6 lines unless the operator asks for more.
         Name workspaces by title and number, for example "Version Bump Conflicts [25]".
         """
@@ -126,7 +127,7 @@ public enum Asker {
         + "--allowedTools \"Bash($ASSISTANT_TOOL --sessions)\" \"Bash($ASSISTANT_TOOL --send:*)\" "
         + "\"Bash($ASSISTANT_TOOL --wait:*)\" --permission-mode dontAsk --strict-mcp-config --disable-slash-commands "
         + "--append-system-prompt \"$ASSISTANT_INSTRUCTIONS\" ${ASSISTANT_RESUME:+--resume} $ASSISTANT_RESUME "
-        + "${ASSISTANT_MODEL:+--model} $ASSISTANT_MODEL"
+        + "${ASSISTANT_MODEL:+--model} $ASSISTANT_MODEL ${ASSISTANT_EFFORT:+--effort} $ASSISTANT_EFFORT"
 
     public static let defaultModel = "haiku"
     public static let models = [("haiku", "Haiku"), ("sonnet", "Sonnet"), ("opus", "Opus")]
@@ -136,6 +137,10 @@ public enum Asker {
         get { settings?.string(forKey: "model") ?? defaultModel }
         set { settings?.set(newValue, forKey: "model") }
     }
+
+    /// Haiku runs at high effort: on 12 real operator questions it scored 25 of 36 against 19 at default effort,
+    /// for about 3 cents a question.
+    public static func effort(for model: String) -> String? { model == "haiku" ? "high" : nil }
 
     /// Runs one turn through the operator's `claude` alias. Its only Bash access is `tool`'s messaging commands.
     public static func ask(_ prompt: String, resume: String?, tool: String, step: @escaping (ChatStep) -> Void,
@@ -148,6 +153,7 @@ public enum Asker {
         env["ASSISTANT_TOOL"] = tool
         env["ASSISTANT_RESUME"] = resume ?? ""
         env["ASSISTANT_MODEL"] = env["ASSISTANT_MODEL"] ?? model
+        env["ASSISTANT_EFFORT"] = env["ASSISTANT_EFFORT"] ?? effort(for: env["ASSISTANT_MODEL"]!) ?? ""
         p.environment = env
         p.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/projects")
         let input = Pipe()

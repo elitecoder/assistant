@@ -52,10 +52,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   finds each session's pane exactly from the Claude process on that terminal,
   skips `/back-off` workspaces, and its only command access is its own
   `--sessions`, `--send`, and `--wait`.
-- Answer with Claude Haiku by default instead of Opus. On the same question,
-  Haiku cost $0.01, Sonnet $0.13, and Opus $0.23, and Haiku found the same
-  top items as Opus. It also handled a back-and-forth with a session. Switch
-  models from the panel's model menu.
+- Answer with Claude Haiku at high effort by default instead of Opus. On 12 of
+  the operator's real Slack questions, it scored 24 to 25 of 36 against 19 for
+  Haiku at default effort and 21 for Sonnet, for about 2 cents a question
+  against 15 for Sonnet. Status answers now list every session that waits on
+  you, with the exact decision. Switch models from the panel's model menu.
+- Add `evals/mac-chat/`, which asks the real questions on several setups for
+  grading. The questions stay in `~/.assistant/evals/mac-chat/`.
 - Fix garbled spots in Kokoro speech. Numbers, percentages, dollar amounts,
   version numbers, and PR numbers are now written as words before speaking,
   and long sentences are split at commas. Transcribing Kokoro output with

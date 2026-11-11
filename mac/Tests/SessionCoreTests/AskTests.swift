@@ -88,5 +88,7 @@ final class AskModelTests: XCTestCase {
         p.waitUntilExit()
         XCTAssertEqual(Array(args.suffix(2)), ["--model", "haiku"])
         XCTAssertEqual(Asker.defaultModel, "haiku")
+        XCTAssertEqual(Asker.effort(for: "haiku"), "high")
+        XCTAssertNil(Asker.effort(for: "opus"))
     }
 }
