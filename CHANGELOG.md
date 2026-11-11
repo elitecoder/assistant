@@ -10,6 +10,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Add Assistant for Mac, a menu bar app in `mac/` that lists the cmux sessions
+  that need you, the ones that are done, and the quiet ones. It reads
+  transcripts and `gh` directly, with no model and no background service.
+  Select a row, or **Take me to the next one**, to switch cmux to that
+  workspace. Open it with Control-Option-Space. It sends one notification per
+  batch of newly waiting sessions and can open at login. Build it with
+  `mac/build-app.sh`.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds
