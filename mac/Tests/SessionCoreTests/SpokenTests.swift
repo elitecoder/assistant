@@ -116,3 +116,15 @@ final class VoiceTieTests: XCTestCase {
         XCTAssertEqual(Voices.choose([eddy, samantha], preferred: nil, systemDefault: samantha.id), samantha)
     }
 }
+
+final class AddOnVoiceTests: XCTestCase {
+    func testKokoroOutranksApplePremiumAndHeartComesFirst() {
+        let zoe = VoiceInfo(id: "com.apple.voice.premium.en-US.Zoe", name: "Zoe", language: "en-US", quality: 3, novelty: false)
+        let michael = VoiceInfo(id: "com.kokorovoice.am_michael", name: "Kokoro Michael", language: "en-US", quality: 1,
+                                novelty: false)
+        let heart = VoiceInfo(id: "com.kokorovoice.af_heart", name: "Kokoro Heart", language: "en-US", quality: 1,
+                              novelty: false)
+        XCTAssertEqual(Voices.usable([zoe, michael, heart]).map(\.name), ["Kokoro Heart", "Kokoro Michael", "Zoe"])
+        XCTAssertEqual(heart.label, "Kokoro Heart")
+    }
+}
