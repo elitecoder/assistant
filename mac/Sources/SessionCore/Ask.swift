@@ -125,7 +125,17 @@ public enum Asker {
     static let command = "claude -p --output-format stream-json --verbose --tools Read,Grep,Glob,Bash "
         + "--allowedTools \"Bash($ASSISTANT_TOOL --sessions)\" \"Bash($ASSISTANT_TOOL --send:*)\" "
         + "\"Bash($ASSISTANT_TOOL --wait:*)\" --permission-mode dontAsk --strict-mcp-config --disable-slash-commands "
-        + "--append-system-prompt \"$ASSISTANT_INSTRUCTIONS\" ${ASSISTANT_RESUME:+--resume} $ASSISTANT_RESUME"
+        + "--append-system-prompt \"$ASSISTANT_INSTRUCTIONS\" ${ASSISTANT_RESUME:+--resume} $ASSISTANT_RESUME "
+        + "${ASSISTANT_MODEL:+--model} $ASSISTANT_MODEL"
+
+    public static let defaultModel = "haiku"
+    public static let models = [("haiku", "Haiku"), ("sonnet", "Sonnet"), ("opus", "Opus")]
+    public static let settings = UserDefaults(suiteName: "com.assistant.sessions")
+
+    public static var model: String {
+        get { settings?.string(forKey: "model") ?? defaultModel }
+        set { settings?.set(newValue, forKey: "model") }
+    }
 
     /// Runs one turn through the operator's `claude` alias. Its only Bash access is `tool`'s messaging commands.
     public static func ask(_ prompt: String, resume: String?, tool: String, step: @escaping (ChatStep) -> Void,
@@ -137,6 +147,7 @@ public enum Asker {
         env["ASSISTANT_INSTRUCTIONS"] = instructions(tool: tool)
         env["ASSISTANT_TOOL"] = tool
         env["ASSISTANT_RESUME"] = resume ?? ""
+        env["ASSISTANT_MODEL"] = env["ASSISTANT_MODEL"] ?? model
         p.environment = env
         p.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/projects")
         let input = Pipe()

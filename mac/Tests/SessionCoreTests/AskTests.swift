@@ -74,3 +74,19 @@ final class AskCommandTests: XCTestCase {
         XCTAssertFalse(try arguments(resume: "").contains("--resume"))
     }
 }
+
+final class AskModelTests: XCTestCase {
+    func testModelFlagFollowsTheSetting() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-fc", "claude() { printf '%s\\n' \"$@\" }; " + Asker.command]
+        p.environment = ["ASSISTANT_MODEL": "haiku", "ASSISTANT_RESUME": ""]
+        let out = Pipe()
+        p.standardOutput = out
+        try p.run()
+        let args = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).split(separator: "\n")
+        p.waitUntilExit()
+        XCTAssertEqual(Array(args.suffix(2)), ["--model", "haiku"])
+        XCTAssertEqual(Asker.defaultModel, "haiku")
+    }
+}

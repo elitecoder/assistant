@@ -150,6 +150,7 @@ struct ChatView: View {
             HStack(spacing: 12) {
                 MicrophoneMenu(listener: listener, prefix: "")
                 VoiceMenu(speaker: speaker)
+                ModelMenu()
                 Spacer()
             }
             if !model.chat.isEmpty || model.asking || listener.listening {
@@ -319,5 +320,27 @@ struct VoiceMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Pick the voice Assistant answers with")
+    }
+}
+
+struct ModelMenu: View {
+    @State private var model = Asker.model
+
+    var body: some View {
+        Menu {
+            ForEach(Asker.models, id: \.0) { id, name in
+                Button {
+                    Asker.model = id
+                    model = id
+                } label: {
+                    if id == model { Label(name, systemImage: "checkmark") } else { Text(name) }
+                }
+            }
+        } label: {
+            Label(Asker.models.first { $0.0 == model }?.1 ?? model, systemImage: "cpu").font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Model for answers. Haiku is fast and costs about a cent per question.")
     }
 }

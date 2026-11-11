@@ -56,8 +56,8 @@ Type a question in the box at the bottom of the panel, for example "What does
 the version bump session need from me?" To ask about one session, select the
 speech bubble on its row first. Dictation works in the box too.
 
-Each question runs your `claude` command with read-only tools: Read, Grep,
-and Glob. The first question sends a summary of every workspace. A question
+Each question runs your `claude` command with Claude Haiku, about a cent
+per question. Pick Sonnet or Opus from the model menu for harder questions. with Read, Grep, and Glob, plus its own messaging commands. The first question sends a summary of every workspace. A question
 about one session also sends its recent conversation. Follow-ups continue the
 same chat. The panel shows what each answer cost. Nothing runs until you ask.
 
