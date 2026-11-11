@@ -31,3 +31,21 @@ final class VoiceProblemTests: XCTestCase {
                        "Voice didn't work: No speech detected")
     }
 }
+
+final class MeterTests: XCTestCase {
+    func level(_ samples: [Float]) -> Float { samples.withUnsafeBufferPointer { Meter.level($0) } }
+
+    func testSilenceIsZeroAndFullScaleIsOne() {
+        XCTAssertEqual(level([0, 0, 0]), 0)
+        XCTAssertEqual(level([1, -1, 1, -1]), 1, accuracy: 0.001)
+    }
+
+    func testSpeechLevelLandsInTheMiddle() {
+        XCTAssertEqual(level([0.03, -0.03, 0.03, -0.03]), 0.45, accuracy: 0.02)
+    }
+
+    func testWindowKeepsTheNewestLevels() {
+        XCTAssertEqual(Meter.window([0.1, 0.2, 0.3], adding: 0.4, count: 3), [0.2, 0.3, 0.4])
+        XCTAssertEqual(Meter.window([], adding: 0.5, count: 3), [0, 0, 0.5])
+    }
+}

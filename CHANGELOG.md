@@ -24,6 +24,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Talk to Assistant for Mac. Press Control-Option-V and ask out loud. It
   stops listening when you pause, answers in a few spoken sentences, and
   reads the answer aloud. Speech recognition runs on your Mac.
+- Show a live waveform and the microphone's name while Assistant for Mac
+  listens. When it hears nothing, it names the microphone to check. When
+  speech recognition fails, it names the setting to turn on.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds

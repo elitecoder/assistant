@@ -152,9 +152,12 @@ struct ChatView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(model.chat) { Bubble(turn: $0).id($0.id) }
                             if listener.listening {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "waveform").foregroundStyle(.red)
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Waveform(levels: listener.levels)
                                     Text(listener.heard.isEmpty ? "Listening…" : listener.heard).font(.callout)
+                                    if let mic = listener.microphone {
+                                        Text("Using \(mic)").font(.caption2).foregroundStyle(.secondary)
+                                    }
                                 }.frame(maxWidth: .infinity, alignment: .trailing).id("listening")
                             }
                             if model.asking {
@@ -229,5 +232,22 @@ struct Bubble: View {
         (try? AttributedString(markdown: turn.text,
                                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(turn.text)
+    }
+}
+
+struct Waveform: View {
+    let levels: [Float]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(levels.indices, id: \.self) { i in
+                Capsule()
+                    .fill(Color.red.opacity(0.35 + 0.65 * Double(levels[i])))
+                    .frame(width: 4, height: 3 + 29 * CGFloat(levels[i]))
+            }
+        }
+        .frame(height: 32)
+        .animation(.linear(duration: 0.08), value: levels)
+        .accessibilityLabel("Microphone level")
     }
 }

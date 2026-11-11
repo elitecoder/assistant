@@ -9,6 +9,10 @@ let voiceLog = Logger(subsystem: "com.assistant.sessions", category: "voice")
 final class Listener: ObservableObject {
     @Published var listening = false
     @Published var heard = ""
+    @Published var levels = [Float](repeating: 0, count: Listener.bars)
+    @Published var microphone: String?
+    static let bars = 36
+    private var loudest: Float = 0
     var onHeard: ((String) -> Void)?
     var onProblem: ((String) -> Void)?
 
@@ -49,13 +53,23 @@ final class Listener: ObservableObject {
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
         let input = engine.inputNode
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
+        microphone = InputDevice.defaultName()
+        levels = [Float](repeating: 0, count: Self.bars)
+        loudest = 0
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
             request.append(buffer)
+            guard let channel = buffer.floatChannelData?[0] else { return }
+            let level = Meter.level(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+            DispatchQueue.main.async {
+                guard let self, self.listening else { return }
+                self.loudest = max(self.loudest, level)
+                self.levels = Meter.window(self.levels, adding: level, count: Self.bars)
+            }
         }
         engine.prepare()
         do {
             try engine.start()
-            voiceLog.notice("engine started, input format \(input.outputFormat(forBus: 0).description)")
+            voiceLog.notice("engine started on \(self.microphone ?? "unknown", privacy: .public), format \(input.outputFormat(forBus: 0).description, privacy: .public)")
         } catch {
             voiceLog.error("engine failed: \(error.localizedDescription)")
             input.removeTap(onBus: 0)
@@ -101,7 +115,12 @@ final class Listener: ObservableObject {
         request = nil
         task = nil
         let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-        voiceLog.notice("stopped, heard \(text.count) characters")
+        voiceLog.notice("stopped, heard \(text.count) characters, loudest level \(self.loudest)")
+        if text.isEmpty {
+            onProblem?(loudest < 0.15
+                ? "I didn't hear anything from \(microphone ?? "the microphone"). Check the input in System Settings, Sound."
+                : "I heard sound but no words. Try again a little closer to the microphone.")
+        }
         if !text.isEmpty { onHeard?(text) }
     }
 }
