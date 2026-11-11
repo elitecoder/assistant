@@ -31,6 +31,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   changing the system input. With no pick, it uses the system input, but
   skips the built-in microphone when the lid is closed and skips virtual
   devices.
+- When the microphone sends pure silence, Assistant for Mac switches to the
+  next one within a second and says so. The microphone menu also appears
+  while it listens, so you can switch mid-question. It remembers your pick.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds

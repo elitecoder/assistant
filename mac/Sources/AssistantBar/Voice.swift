@@ -7,13 +7,15 @@ import Speech
 let voiceLog = Logger(subsystem: "com.assistant.sessions", category: "voice")
 
 /// Hears one spoken question, then hands its text to `onHeard` after a pause in speech.
+/// A microphone that sends pure silence is skipped for the next one, the way call apps do.
 final class Listener: ObservableObject {
     @Published var listening = false
     @Published var heard = ""
     @Published var levels = [Float](repeating: 0, count: Listener.bars)
     @Published var microphone: String?
+    @Published var note: String?
     static let bars = 36
-    private var loudest: Float = 0
+    static let silenceBeforeSwitch: TimeInterval = 0.7
     var onHeard: ((String) -> Void)?
     var onProblem: ((String) -> Void)?
 
@@ -22,30 +24,40 @@ final class Listener: ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var pause: Timer?
+    private var loudest: Float = 0
+    private var micID: UInt32?
+    private var tried = Set<UInt32>()
+    private var startedAt = Date()
+    private var gotSignal = false
+    private var session = UUID()
 
     func toggle() { listening ? stop() : start() }
 
     var choices: [String] { InputDevice.all().filter { !$0.virtual }.map(\.name) }
 
-    var current: String? { InputDevice.chosen()?.name }
+    var current: String? { listening ? microphone : InputDevice.chosen()?.name }
 
     func use(_ name: String) {
         InputDevice.preferred = name
+        note = nil
         objectWillChange.send()
+        guard listening else { return }
+        teardown()
+        tried = []
+        begin()
     }
 
     func start() {
-        voiceLog.notice("start: mic status \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue), speech status \(SFSpeechRecognizer.authorizationStatus().rawValue)")
         AVCaptureDevice.requestAccess(for: .audio) { mic in
-            voiceLog.notice("mic access: \(mic)")
             SFSpeechRecognizer.requestAuthorization { speech in
-                voiceLog.notice("speech access: \(speech.rawValue)")
                 DispatchQueue.main.async {
                     if !mic {
                         self.onProblem?("Assistant can't use the microphone. Allow it in System Settings, Privacy & Security, Microphone.")
                     } else if speech != .authorized {
                         self.onProblem?("Assistant can't use speech recognition. Allow it in System Settings, Privacy & Security, Speech Recognition.")
                     } else {
+                        self.tried = []
+                        self.note = nil
                         self.begin()
                     }
                 }
@@ -54,9 +66,12 @@ final class Listener: ObservableObject {
     }
 
     private func begin() {
-        voiceLog.notice("begin: listening \(self.listening), recognizer \(self.recognizer != nil), available \(self.recognizer?.isAvailable ?? false), on-device \(self.recognizer?.supportsOnDeviceRecognition ?? false)")
         guard !listening, let recognizer, recognizer.isAvailable else {
             onProblem?("Speech recognition isn't available right now.")
+            return
+        }
+        guard let mic = InputDevice.chosen(excluding: tried) else {
+            onProblem?("None of your microphones sent any sound. Check them in System Settings, Sound.")
             return
         }
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -64,34 +79,40 @@ final class Listener: ObservableObject {
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
         engine = AVAudioEngine()
         let input = engine.inputNode
-        let mic = InputDevice.chosen()
-        if let mic, let unit = input.audioUnit {
+        if let unit = input.audioUnit {
             var device = AudioDeviceID(mic.id)
             let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
                                               &device, UInt32(MemoryLayout<AudioDeviceID>.size))
             if status != noErr { voiceLog.error("couldn't select \(mic.name, privacy: .public): \(status)") }
         }
-        microphone = mic?.name
+        micID = mic.id
+        microphone = mic.name
         levels = [Float](repeating: 0, count: Self.bars)
         loudest = 0
+        startedAt = Date()
+        gotSignal = false
+        let token = UUID()
+        session = token
         input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
             request.append(buffer)
             guard let channel = buffer.floatChannelData?[0] else { return }
-            let level = Meter.level(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+            let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+            let level = Meter.level(samples)
+            let silent = samples.allSatisfy { $0 == 0 }
             DispatchQueue.main.async {
-                guard let self, self.listening else { return }
-                self.loudest = max(self.loudest, level)
-                self.levels = Meter.window(self.levels, adding: level, count: Self.bars)
+                guard let self, self.session == token else { return }
+                self.took(level: level, silent: silent)
             }
         }
         engine.prepare()
         do {
             try engine.start()
-            voiceLog.notice("engine started on \(self.microphone ?? "unknown", privacy: .public), format \(input.outputFormat(forBus: 0).description, privacy: .public)")
+            voiceLog.notice("listening on \(mic.name, privacy: .public)")
         } catch {
-            voiceLog.error("engine failed: \(error.localizedDescription)")
+            voiceLog.error("engine failed on \(mic.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
             input.removeTap(onBus: 0)
-            onProblem?("The microphone didn't start: \(error.localizedDescription)")
+            tried.insert(mic.id)
+            begin()
             return
         }
         self.request = request
@@ -99,13 +120,13 @@ final class Listener: ObservableObject {
         listening = true
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             DispatchQueue.main.async {
-                guard let self, self.listening else { return }
-                if let error { voiceLog.error("recognition error: \((error as NSError).domain, privacy: .public) \((error as NSError).code, privacy: .public) \(error.localizedDescription, privacy: .public)") }
+                guard let self, self.session == token, self.listening else { return }
                 if let result {
                     self.heard = result.bestTranscription.formattedString
                     self.waitForPause()
                     if result.isFinal { self.stop() }
                 } else if let error = error as NSError? {
+                    voiceLog.error("recognition error: \(error.domain, privacy: .public) \(error.code)")
                     self.stop()
                     self.onProblem?(Spoken.problem(domain: error.domain, code: error.code,
                                                    description: error.localizedDescription))
@@ -115,6 +136,23 @@ final class Listener: ObservableObject {
         waitForPause()
     }
 
+    private func took(level: Float, silent: Bool) {
+        guard listening else { return }
+        loudest = max(loudest, level)
+        levels = Meter.window(levels, adding: level, count: Self.bars)
+        if !silent { gotSignal = true }
+        if !gotSignal, Date().timeIntervalSince(startedAt) >= Self.silenceBeforeSwitch { skipSilentMicrophone() }
+    }
+
+    private func skipSilentMicrophone() {
+        let silentName = microphone ?? "That microphone"
+        voiceLog.notice("\(silentName, privacy: .public) sent pure silence, trying the next one")
+        if let micID { tried.insert(micID) }
+        teardown()
+        begin()
+        if listening, let microphone { note = "\(silentName) sent no sound, so I switched to \(microphone)." }
+    }
+
     private func waitForPause() {
         pause?.invalidate()
         pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? 6 : 1.8, repeats: false) { [weak self] _ in
@@ -122,9 +160,9 @@ final class Listener: ObservableObject {
         }
     }
 
-    func stop() {
-        guard listening else { return }
+    private func teardown() {
         listening = false
+        session = UUID()
         pause?.invalidate()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
@@ -132,14 +170,20 @@ final class Listener: ObservableObject {
         task?.cancel()
         request = nil
         task = nil
+    }
+
+    func stop() {
+        guard listening else { return }
+        teardown()
         let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         voiceLog.notice("stopped, heard \(text.count) characters, loudest level \(self.loudest)")
-        if text.isEmpty {
+        if !text.isEmpty {
+            onHeard?(text)
+        } else {
             onProblem?(loudest < 0.15
-                ? "I didn't hear anything from \(microphone ?? "the microphone"). Check the input in System Settings, Sound."
+                ? "I didn't hear anything from \(microphone ?? "the microphone"). Pick another one from the microphone menu."
                 : "I heard sound but no words. Try again a little closer to the microphone.")
         }
-        if !text.isEmpty { onHeard?(text) }
     }
 }
 

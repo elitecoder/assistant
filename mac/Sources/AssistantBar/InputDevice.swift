@@ -68,7 +68,8 @@ enum InputDevice {
         set { UserDefaults.standard.set(newValue, forKey: preferenceKey) }
     }
 
-    static func chosen() -> Microphone? {
-        Microphones.choose(all(), preferred: preferred, defaultID: defaultID(), lidClosed: lidClosed())
+    static func chosen(excluding: Set<UInt32> = []) -> Microphone? {
+        Microphones.choose(all(), preferred: preferred, defaultID: defaultID(), lidClosed: lidClosed(),
+                           excluding: excluding)
     }
 }

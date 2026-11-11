@@ -73,3 +73,19 @@ final class MicrophoneChoiceTests: XCTestCase {
         XCTAssertEqual(Microphones.choose([builtIn, brio], preferred: "Gone", defaultID: 2, lidClosed: false), brio)
     }
 }
+
+final class SilentMicrophoneTests: XCTestCase {
+    let builtIn = Microphone(id: 1, name: "MacBook Pro Microphone", builtIn: true, virtual: false)
+    let brio = Microphone(id: 2, name: "Logitech BRIO", builtIn: false, virtual: false)
+    let phone = Microphone(id: 4, name: "iPhone Microphone", builtIn: false, virtual: false)
+
+    func testSilentPickIsSkippedForTheNextUsableMicrophone() {
+        XCTAssertEqual(Microphones.choose([builtIn, brio, phone], preferred: "Logitech BRIO", defaultID: 1,
+                                          lidClosed: true, excluding: [2]), phone)
+    }
+
+    func testNothingLeftWhenEveryMicrophoneWasSilent() {
+        XCTAssertNil(Microphones.choose([builtIn, brio], preferred: nil, defaultID: 1, lidClosed: false,
+                                        excluding: [1, 2]))
+    }
+}

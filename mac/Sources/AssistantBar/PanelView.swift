@@ -142,18 +142,7 @@ struct ChatView: View {
                     Text("Ask about any session. Press ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Menu {
-                    ForEach(listener.choices, id: \.self) { name in
-                        Button { listener.use(name) } label: {
-                            if name == listener.current { Label(name, systemImage: "checkmark") } else { Text(name) }
-                        }
-                    }
-                } label: {
-                    Label(listener.current ?? "No microphone", systemImage: "mic").font(.caption)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Microphone for talking to Assistant")
+                MicrophoneMenu(listener: listener, prefix: "")
                 if !model.chat.isEmpty {
                     Button("New chat") { model.newChat() }.buttonStyle(.borderless).font(.caption)
                 }
@@ -167,8 +156,9 @@ struct ChatView: View {
                                 VStack(alignment: .trailing, spacing: 4) {
                                     Waveform(levels: listener.levels)
                                     Text(listener.heard.isEmpty ? "Listening…" : listener.heard).font(.callout)
-                                    if let mic = listener.microphone {
-                                        Text("Using \(mic)").font(.caption2).foregroundStyle(.secondary)
+                                    MicrophoneMenu(listener: listener, prefix: "Using ")
+                                    if let note = listener.note {
+                                        Text(note).font(.caption2).foregroundStyle(.orange)
                                     }
                                 }.frame(maxWidth: .infinity, alignment: .trailing).id("listening")
                             }
@@ -261,5 +251,25 @@ struct Waveform: View {
         .frame(height: 32)
         .animation(.linear(duration: 0.08), value: levels)
         .accessibilityLabel("Microphone level")
+    }
+}
+
+struct MicrophoneMenu: View {
+    @ObservedObject var listener: Listener
+    let prefix: String
+
+    var body: some View {
+        Menu {
+            ForEach(listener.choices, id: \.self) { name in
+                Button { listener.use(name) } label: {
+                    if name == listener.current { Label(name, systemImage: "checkmark") } else { Text(name) }
+                }
+            }
+        } label: {
+            Label(prefix + (listener.current ?? "No microphone"), systemImage: "mic").font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Pick the microphone. Assistant remembers your pick.")
     }
 }
