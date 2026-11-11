@@ -24,7 +24,7 @@ struct PanelView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.return, modifiers: .command)
             } else if model.lastScan == nil {
                 Text("Looking through your sessions…").foregroundStyle(.secondary)
             } else {
@@ -44,6 +44,9 @@ struct PanelView: View {
             }
 
             Divider()
+            ChatView(model: model)
+
+            Divider()
             HStack {
                 Text(footer).font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -54,7 +57,7 @@ struct PanelView: View {
             }
         }
         .padding(14)
-        .frame(width: 440, height: 560)
+        .frame(width: 440, height: 720)
     }
 
     var footer: String {
@@ -69,7 +72,7 @@ struct PanelView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("\(title) (\(items.count))").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                 ForEach(items) { item in
-                    Row(item: item) { model.focus(item.workspace) }
+                    Row(item: item, open: { model.focus(item.workspace) }, ask: { model.about = item })
                 }
             }
         }
@@ -79,9 +82,20 @@ struct PanelView: View {
 struct Row: View {
     let item: Item
     let open: () -> Void
+    let ask: () -> Void
     @State private var hovering = false
 
     var body: some View {
+        HStack(alignment: .top, spacing: 2) {
+            main
+            Button(action: ask) { Image(systemName: "text.bubble") }
+                .buttonStyle(.borderless)
+                .padding(.top, 9)
+                .help("Ask about this session")
+        }
+    }
+
+    var main: some View {
         Button(action: open) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
@@ -106,5 +120,93 @@ struct Row: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Open this workspace in cmux")
+    }
+}
+
+struct ChatView: View {
+    @ObservedObject var model: Model
+    @State private var draft = ""
+    @FocusState private var typing: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                if let about = model.about {
+                    Label("About \(about.workspace.title)", systemImage: "scope")
+                        .font(.caption).lineLimit(1)
+                    Button { model.about = nil } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless).font(.caption).help("Ask about all sessions")
+                } else {
+                    Text("Ask about any session").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !model.chat.isEmpty {
+                    Button("New chat") { model.newChat() }.buttonStyle(.borderless).font(.caption)
+                }
+            }
+            if !model.chat.isEmpty || model.asking {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(model.chat) { Bubble(turn: $0).id($0.id) }
+                            if model.asking {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Reading your sessions…").font(.caption).foregroundStyle(.secondary)
+                                }.id("asking")
+                            }
+                        }
+                    }
+                    .frame(height: 200)
+                    .onChange(of: model.chat.count) { _, _ in
+                        withAnimation { proxy.scrollTo(model.chat.last?.id, anchor: .bottom) }
+                    }
+                }
+            }
+            HStack {
+                TextField("What's going on in…? What do you need from me?", text: $draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+                    .focused($typing)
+                    .onSubmit(send)
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    .buttonStyle(.borderless)
+                    .disabled(model.asking || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Send")
+            }
+        }
+        .onChange(of: model.about?.id) { _, _ in typing = true }
+    }
+
+    func send() {
+        model.ask(draft)
+        draft = ""
+    }
+}
+
+struct Bubble: View {
+    let turn: ChatTurn
+
+    var body: some View {
+        VStack(alignment: turn.role == .you ? .trailing : .leading, spacing: 2) {
+            Text(rendered)
+                .font(.callout)
+                .textSelection(.enabled)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(fill))
+                .foregroundStyle(turn.role == .error ? Color.red : Color.primary)
+            if let cost = turn.cost {
+                Text(String(format: "$%.2f", cost)).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: turn.role == .you ? .trailing : .leading)
+    }
+
+    var fill: Color { turn.role == .you ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06) }
+
+    var rendered: AttributedString {
+        (try? AttributedString(markdown: turn.text,
+                               options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(turn.text)
     }
 }

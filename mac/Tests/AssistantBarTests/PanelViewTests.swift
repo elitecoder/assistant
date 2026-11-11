@@ -12,7 +12,7 @@ final class PanelViewTests: XCTestCase {
         s.lastSaid = said
         let ws = Workspace(id: id, ref: "workspace:\(id)", title: title, directory: nil, submittedAt: nil,
                            submittedMessage: nil)
-        return Item(workspace: ws, summary: s, attention: attention, idleMinutes: idle, pullRequests: prs)
+        return Item(workspace: ws, transcript: "/tmp/\(id).jsonl", summary: s, attention: attention, idleMinutes: idle, pullRequests: prs)
     }
 
     @MainActor
@@ -35,7 +35,13 @@ final class PanelViewTests: XCTestCase {
             panel.section("Done, ready to clean up", r.items(.done))
             panel.section("Quiet", r.items(.idle))
         }.padding(14).frame(width: 440)
-        for (name, view) in [("assistant-panel", AnyView(panel)), ("assistant-list", AnyView(list))] {
+        let chat = VStack(spacing: 8) {
+            Bubble(turn: ChatTurn(role: .you, text: "What do you need from me on the version bump?"))
+            Bubble(turn: ChatTurn(role: .assistant, text: "**Version Bump [25]** waits on one choice: `your token` or a bot app.",
+                                  cost: 0.24))
+        }.padding(14).frame(width: 440)
+        for (name, view) in [("assistant-panel", AnyView(panel)), ("assistant-list", AnyView(list)),
+                             ("assistant-chat", AnyView(chat))] {
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             let image = try XCTUnwrap(renderer.nsImage)

@@ -14,6 +14,13 @@ enum Main {
             printScan()
             return
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 1 < CommandLine.arguments.count {
+            let reply = Asker.ask(Asker.prompt(question: CommandLine.arguments[i + 1],
+                                               fleet: Digest.fleet(SessionScanner().scan()), focus: nil), resume: nil)
+            print(reply.text)
+            if let cost = reply.cost { print(String(format: "($%.2f)", cost)) }
+            return
+        }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.delegate = delegate
@@ -40,6 +47,11 @@ final class Model: ObservableObject {
     @Published var scanning = false
     @Published var lastScan: Date?
     @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var chat: [ChatTurn] = []
+    @Published var asking = false
+    @Published var about: Item?
+    private var chatSession: String?
+    private var sentAbout: String?
     var onScan: ((ScanResult) -> Void)?
     var onFocus: (() -> Void)?
 
@@ -65,6 +77,38 @@ final class Model: ObservableObject {
         queue.async { SessionScanner.focus(ws) }
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/Applications/cmux.app"),
                                            configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    func ask(_ question: String) {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !asking else { return }
+        chat.append(ChatTurn(role: .you, text: q))
+        asking = true
+        let fleet = chatSession == nil ? Digest.fleet(result) : nil
+        let target = about
+        let newFocus = target.map(\.id) != sentAbout ? target : nil
+        let resume = chatSession
+        DispatchQueue.global(qos: .userInitiated).async {
+            let focus = newFocus.flatMap { item in
+                FileManager.default.contents(atPath: item.transcript)
+                    .map { (title: item.workspace.title, exchange: Digest.exchange($0)) }
+            }
+            let reply = Asker.ask(Asker.prompt(question: q, fleet: fleet, focus: focus), resume: resume)
+            DispatchQueue.main.async {
+                self.asking = false
+                self.chat.append(ChatTurn(role: reply.failed ? .error : .assistant, text: reply.text, cost: reply.cost))
+                guard !reply.failed else { return }
+                self.chatSession = reply.sessionID
+                if newFocus != nil { self.sentAbout = newFocus?.id }
+            }
+        }
+    }
+
+    func newChat() {
+        chat = []
+        chatSession = nil
+        sentAbout = nil
+        about = nil
     }
 
     func setOpensAtLogin(_ on: Bool) {

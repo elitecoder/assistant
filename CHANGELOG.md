@@ -17,6 +17,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   workspace. Open it with Control-Option-Space. It sends one notification per
   batch of newly waiting sessions and can open at login. Build it with
   `mac/build-app.sh`.
+- Ask Assistant for Mac about your sessions. Type a question in the panel, or
+  select a row's speech bubble to ask about that session. It answers through
+  your `claude` command with read-only tools, keeps follow-ups in one chat,
+  and shows each answer's cost. `AssistantBar --ask` asks from the terminal.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds

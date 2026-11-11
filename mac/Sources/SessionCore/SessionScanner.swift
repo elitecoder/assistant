@@ -24,6 +24,7 @@ public struct Workspace: Equatable, Identifiable {
 public struct Item: Identifiable {
     public var id: String { workspace.id }
     public let workspace: Workspace
+    public let transcript: String
     public let summary: SessionSummary
     public let attention: Attention
     public let idleMinutes: Double
@@ -173,20 +174,20 @@ public final class SessionScanner {
             result.error = "cmux isn't running."
             return result
         }
-        var found: [(Workspace, SessionSummary)] = []
+        var found: [(Workspace, String, SessionSummary)] = []
         for ws in Workspace.parseList(data) {
             guard let path = locator.transcript(for: ws), let s = locator.summary(at: path), s.goal != nil,
                   s.lastActivity != nil else {
                 result.untracked.append(ws)
                 continue
             }
-            found.append((ws, s))
+            found.append((ws, path, s))
         }
-        let states = prStates(Array(Set(found.flatMap { $0.1.pullRequests.keys })).sorted())
-        result.items = found.map { ws, s in
+        let states = prStates(Array(Set(found.flatMap { $0.2.pullRequests.keys })).sorted())
+        result.items = found.map { ws, path, s in
             let idle = now.timeIntervalSince(s.lastActivity!) / 60
             let prs = s.pullRequests.sorted { $0.value < $1.value }.map { (number: $0.value, state: states[$0.key] ?? "unknown") }
-            return Item(workspace: ws, summary: s,
+            return Item(workspace: ws, transcript: path, summary: s,
                         attention: Classifier.status(s, prStates: states, idleMinutes: idle, threshold: threshold),
                         idleMinutes: idle, pullRequests: prs)
         }.sorted { ($0.attention, $0.idleMinutes) < ($1.attention, $1.idleMinutes) }

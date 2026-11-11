@@ -1,7 +1,8 @@
 # Assistant for Mac
 
-A menu bar app that shows which Claude sessions in cmux need you. It runs
-without a model and without a background service.
+A menu bar app that shows which Claude sessions in cmux need you, and answers
+questions about them. The list runs without a model and without a background
+service. Claude runs only when you ask a question.
 
 ## What it shows
 
@@ -14,10 +15,22 @@ The menu bar shows how many sessions need you. Select a row, or **Take me to
 the next one**, to switch cmux to that workspace. When a session newly needs
 you, you get one notification for the batch.
 
+## Ask about your sessions
+
+Type a question in the box at the bottom of the panel, for example "What does
+the version bump session need from me?" To ask about one session, select the
+speech bubble on its row first. Dictation works in the box too.
+
+Each question runs your `claude` command with read-only tools: Read, Grep,
+and Glob. The first question sends a summary of every workspace. A question
+about one session also sends its recent conversation. Follow-ups continue the
+same chat. The panel shows what each answer cost. Nothing runs until you ask.
+
 ## Use it
 
 - Open the panel: select the icon in the menu bar, or press Control-Option-Space.
 - Check from the terminal: `.build/release/AssistantBar --print`.
+- Ask from the terminal: `.build/release/AssistantBar --ask "What needs me?"`.
 
 ## Build and install
 
