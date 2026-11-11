@@ -140,7 +140,7 @@ struct ChatView: View {
                     Button { model.about = nil } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless).font(.caption).help("Ask about all sessions")
                 } else {
-                    Text("Ask about any session. Press ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
+                    Text("Ask or tell it to work with a session. ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if !model.chat.isEmpty {
@@ -170,7 +170,8 @@ struct ChatView: View {
                             if model.asking {
                                 HStack(spacing: 6) {
                                     ProgressView().controlSize(.small)
-                                    Text("Reading your sessions…").font(.caption).foregroundStyle(.secondary)
+                                    Text("Working…").font(.caption).foregroundStyle(.secondary)
+                                    Button("Stop") { model.stopAsking() }.buttonStyle(.borderless).font(.caption)
                                 }.id("asking")
                             }
                         }
@@ -182,7 +183,7 @@ struct ChatView: View {
                 }
             }
             HStack {
-                TextField("What's going on in…? What do you need from me?", text: $draft, axis: .vertical)
+                TextField("Tell workspace 25 to use my token, then report back", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
                     .focused($typing)
@@ -221,7 +222,7 @@ struct Bubble: View {
     var body: some View {
         VStack(alignment: turn.role == .you ? .trailing : .leading, spacing: 2) {
             Text(rendered)
-                .font(.callout)
+                .font(turn.role == .step ? .caption : .callout)
                 .textSelection(.enabled)
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(fill))
@@ -233,7 +234,13 @@ struct Bubble: View {
         .frame(maxWidth: .infinity, alignment: turn.role == .you ? .trailing : .leading)
     }
 
-    var fill: Color { turn.role == .you ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06) }
+    var fill: Color {
+        switch turn.role {
+        case .you: Color.accentColor.opacity(0.18)
+        case .step: Color.orange.opacity(0.10)
+        default: Color.primary.opacity(0.06)
+        }
+    }
 
     var rendered: AttributedString {
         (try? AttributedString(markdown: turn.text,

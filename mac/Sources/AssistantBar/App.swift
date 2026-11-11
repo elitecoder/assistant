@@ -16,6 +16,20 @@ enum Main {
             printScan()
             return
         }
+        let args = CommandLine.arguments
+        let timeout = args.firstIndex(of: "--timeout").flatMap { $0 + 1 < args.count ? TimeInterval(args[$0 + 1]) : nil } ?? 900
+        if args.contains("--sessions") {
+            print(Messenger.list())
+            return
+        }
+        if let i = args.firstIndex(of: "--send"), i + 2 < args.count {
+            print(Messenger.send(args[i + 1], args[i + 2], timeout: timeout))
+            return
+        }
+        if let i = args.firstIndex(of: "--wait"), i + 1 < args.count {
+            print(Messenger.wait(args[i + 1], timeout: timeout))
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 2 < CommandLine.arguments.count {
             exit(render(CommandLine.arguments[i + 1], to: URL(fileURLWithPath: CommandLine.arguments[i + 2])) ? 0 : 1)
         }
@@ -23,7 +37,8 @@ enum Main {
             let spoken = CommandLine.arguments.contains("--spoken")
             let reply = Asker.ask(Asker.prompt(question: CommandLine.arguments[i + 1],
                                                fleet: Digest.fleet(SessionScanner().scan()), focus: nil,
-                                               spoken: spoken), resume: nil)
+                                               spoken: spoken), resume: nil, tool: Main.tool,
+                                  step: { print("  · " + Main.describe($0)) })
             print(spoken ? Spoken.plain(reply.text) : reply.text)
             if let cost = reply.cost { print(String(format: "($%.2f)", cost)) }
             return
@@ -60,6 +75,16 @@ enum Main {
         return true
     }
 
+    static var tool: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }
+
+    static func describe(_ step: ChatStep) -> String {
+        switch step {
+        case let .sent(workspace, message): "Sent to \(workspace): \(message)"
+        case let .replied(text): "Reply: " + String(text.prefix(300))
+        case let .note(text): text
+        }
+    }
+
     static func printScan() {
         let result = SessionScanner().scan()
         if let error = result.error { print(error) }
@@ -85,6 +110,7 @@ final class Model: NSObject, ObservableObject {
     @Published var about: Item?
     let listener = Listener()
     let speaker = Speaker()
+    private var running: Process?
     private var chatSession: String?
     private var sentAbout: String?
     var onScan: ((ScanResult) -> Void)?
@@ -141,9 +167,16 @@ final class Model: NSObject, ObservableObject {
                     .map { (title: item.workspace.title, exchange: Digest.exchange($0)) }
             }
             let reply = Asker.ask(Asker.prompt(question: q, fleet: fleet, focus: focus, spoken: spoken),
-                                  resume: resume)
+                                  resume: resume, tool: Main.tool,
+                                  step: { step in
+                                      DispatchQueue.main.async {
+                                          self.chat.append(ChatTurn(role: .step, text: Main.describe(step)))
+                                      }
+                                  },
+                                  running: { p in DispatchQueue.main.async { self.running = p } })
             DispatchQueue.main.async {
                 self.asking = false
+                self.running = nil
                 self.chat.append(ChatTurn(role: reply.failed ? .error : .assistant, text: reply.text, cost: reply.cost))
                 if spoken { self.speaker.say(reply.text) }
                 guard !reply.failed else { return }
@@ -151,6 +184,10 @@ final class Model: NSObject, ObservableObject {
                 if newFocus != nil { self.sentAbout = newFocus?.id }
             }
         }
+    }
+
+    func stopAsking() {
+        running?.terminate()
     }
 
     func newChat() {

@@ -31,6 +31,25 @@ voice. Pick another Kokoro voice, or an Apple voice, from the voice menu.
 Kokoro needs Apple Silicon. The first time, macOS asks for
 microphone and speech recognition access.
 
+## Work with your sessions
+
+Assistant can message a session for you, wait for its reply, and keep going
+back and forth until the job is done. Say or type something like "Tell the
+version bump session to use my token, then tell me when it has pushed." Each
+message it sends, and each reply, shows in the panel. Select **Stop** to end it.
+
+- It sends with `cmux send`, which refuses while you're typing in that session
+  or a question or permission prompt is open there.
+- It skips workspaces on your `/back-off` list.
+- It brings you any decision about merging, deleting, spending money, or
+  product behavior instead of answering for you.
+- Its only command access is Assistant's own `--sessions`, `--send`, and
+  `--wait`. Everything else is denied.
+
+From the terminal: `AssistantBar --send workspace:25 "go"` sends a message and
+prints the reply. `AssistantBar --wait workspace:25` waits for a session to
+finish. `AssistantBar --sessions` lists the sessions it can reach.
+
 ## Ask about your sessions
 
 Type a question in the box at the bottom of the panel, for example "What does

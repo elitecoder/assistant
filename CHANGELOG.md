@@ -45,6 +45,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   menu. Requires Apple Silicon and macOS 15. Building now needs Xcode's Metal
   Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
 - `AssistantBar --render "<text>" <file.wav>` saves Kokoro speech to a file.
+- Let Assistant for Mac work with your sessions. It messages a workspace's
+  Claude session through `cmux send`, confirms delivery, waits for the turn to
+  finish, and reads the reply, so it can go back and forth until a request is
+  done. The panel shows every message and reply, and **Stop** ends the run. It
+  finds each session's pane exactly from the Claude process on that terminal,
+  skips `/back-off` workspaces, and its only command access is its own
+  `--sessions`, `--send`, and `--wait`.
 - Fix garbled spots in Kokoro speech. Numbers, percentages, dollar amounts,
   version numbers, and PR numbers are now written as words before speaking,
   and long sentences are split at commas. Transcribing Kokoro output with

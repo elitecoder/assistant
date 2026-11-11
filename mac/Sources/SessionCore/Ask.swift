@@ -1,7 +1,7 @@
 import Foundation
 
 public struct ChatTurn: Identifiable, Equatable {
-    public enum Role { case you, assistant, error }
+    public enum Role { case you, assistant, error, step }
 
     public let id = UUID()
     public let role: Role
@@ -80,15 +80,22 @@ public enum Digest {
 }
 
 public enum Asker {
-    public static let instructions = """
-    You are Assistant. You answer the operator's questions about their Claude Code sessions, each running in a cmux workspace.
-    Answer from the workspace digest in the message. For detail it lacks, read or grep the transcript file it lists.
-    Transcripts are JSONL. Operator messages are type "user" with string content. Claude's replies are type "assistant" text blocks.
-    Lead with the answer. Use plain language. Keep it to 6 lines unless the operator asks for more.
-    Name workspaces by title and number, for example "Version Bump Conflicts [25]".
-    When a session waits on the operator, quote the exact decision it needs.
-    You can't act on sessions. When asked to act, name the workspace to open and the reply to give it.
-    """
+    public static func instructions(tool: String) -> String {
+        """
+        You are Assistant. You work alongside the operator on their Claude Code sessions, each running in a cmux workspace.
+        Answer from the workspace digest in the message. For detail it lacks, read or grep the transcript file it lists.
+        Transcripts are JSONL. Operator messages are type "user" with string content. Claude's replies are type "assistant" text blocks.
+        List workspaces with Claude sessions: \(tool) --sessions
+        Message a session and get its reply: \(tool) --send <workspace-ref> "<message>"
+        Keep waiting on a session that is still working: \(tool) --wait <workspace-ref>
+        A send waits for the session to finish its turn and prints REPLY with its answer. Keep going back and forth until the operator's request is done.
+        Send what the operator asks for, and the follow-ups it needs. Write messages the way the operator would.
+        Bring the operator any decision about merging, deleting, spending money, or product behavior. Don't answer those for them.
+        If a send prints NOT SENT or STILL WORKING, tell the operator what happened.
+        Lead with the answer. Use plain language. Keep it to 6 lines unless the operator asks for more.
+        Name workspaces by title and number, for example "Version Bump Conflicts [25]".
+        """
+    }
 
     public static func prompt(question: String, fleet: String?, focus: (title: String, exchange: String)?,
                               spoken: Bool = false) -> String {
@@ -102,28 +109,33 @@ public enum Asker {
         return parts.joined(separator: "\n\n")
     }
 
+    /// Reads the final `result` event of a stream-json run.
     public static func parse(_ data: Data) -> Reply {
-        let last = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).last.map(String.init) ?? ""
-        guard let d = (try? JSONSerialization.jsonObject(with: Data(last.utf8))) as? [String: Any] else {
+        let lines = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).map(String.init)
+        guard let d = lines.reversed().lazy.compactMap({
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }).first(where: { $0["type"] as? String == "result" || $0["result"] != nil }) else {
             return Reply(text: "Claude didn't answer. Check that `claude` works in a terminal.", sessionID: nil,
                          cost: nil, failed: true)
         }
-        let failed = d["is_error"] as? Bool ?? false
         return Reply(text: (d["result"] as? String) ?? "No answer.", sessionID: d["session_id"] as? String,
-                     cost: d["total_cost_usd"] as? Double, failed: failed)
+                     cost: d["total_cost_usd"] as? Double, failed: d["is_error"] as? Bool ?? false)
     }
 
-    static let command = "claude -p --output-format json --tools Read,Grep,Glob --strict-mcp-config "
-        + "--disable-slash-commands --append-system-prompt \"$ASSISTANT_INSTRUCTIONS\" "
-        + "${ASSISTANT_RESUME:+--resume} $ASSISTANT_RESUME"
+    static let command = "claude -p --output-format stream-json --verbose --tools Read,Grep,Glob,Bash "
+        + "--allowedTools \"Bash($ASSISTANT_TOOL --sessions)\" \"Bash($ASSISTANT_TOOL --send:*)\" "
+        + "\"Bash($ASSISTANT_TOOL --wait:*)\" --permission-mode dontAsk --strict-mcp-config --disable-slash-commands "
+        + "--append-system-prompt \"$ASSISTANT_INSTRUCTIONS\" ${ASSISTANT_RESUME:+--resume} $ASSISTANT_RESUME"
 
-    /// Runs one turn through the operator's `claude` alias with read-only tools.
-    public static func ask(_ prompt: String, resume: String?) -> Reply {
+    /// Runs one turn through the operator's `claude` alias. Its only Bash access is `tool`'s messaging commands.
+    public static func ask(_ prompt: String, resume: String?, tool: String, step: @escaping (ChatStep) -> Void,
+                           running: ((Process) -> Void)? = nil) -> Reply {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = ["-lc", command]
         var env = ProcessInfo.processInfo.environment
-        env["ASSISTANT_INSTRUCTIONS"] = instructions
+        env["ASSISTANT_INSTRUCTIONS"] = instructions(tool: tool)
+        env["ASSISTANT_TOOL"] = tool
         env["ASSISTANT_RESUME"] = resume ?? ""
         p.environment = env
         p.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/projects")
@@ -136,12 +148,28 @@ public enum Asker {
             return Reply(text: "Couldn't start claude: \(error.localizedDescription)", sessionID: nil, cost: nil,
                          failed: true)
         }
+        running?(p)
         DispatchQueue.global().async {
             input.fileHandleForWriting.write(Data(prompt.utf8))
             try? input.fileHandleForWriting.close()
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        var all = Data()
+        var pending = Data()
+        while true {
+            let chunk = output.fileHandleForReading.availableData
+            if chunk.isEmpty { break }
+            all.append(chunk)
+            pending.append(chunk)
+            while let nl = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = String(decoding: pending[pending.startIndex..<nl], as: UTF8.self)
+                pending.removeSubrange(pending.startIndex...nl)
+                if let s = Messaging.step(line, sendCommand: tool) { step(s) }
+            }
+        }
         p.waitUntilExit()
-        return parse(data)
+        if p.terminationReason == .uncaughtSignal {
+            return Reply(text: "Stopped.", sessionID: nil, cost: nil, failed: true)
+        }
+        return parse(all)
     }
 }
