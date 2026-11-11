@@ -89,3 +89,30 @@ final class SilentMicrophoneTests: XCTestCase {
                                         excluding: [1, 2]))
     }
 }
+
+final class VoiceChoiceTests: XCTestCase {
+    let siri = VoiceInfo(id: "com.apple.siri.natural.Nora", name: "Voice 4", language: "en-US", quality: 2, novelty: false)
+    let samantha = VoiceInfo(id: "com.apple.voice.compact.en-US.Samantha", name: "Samantha", language: "en-US", quality: 1, novelty: false)
+    let zoe = VoiceInfo(id: "com.apple.voice.premium.en-US.Zoe", name: "Zoe", language: "en-US", quality: 3, novelty: false)
+    let karen = VoiceInfo(id: "com.apple.voice.enhanced.en-AU.Karen", name: "Karen", language: "en-AU", quality: 2, novelty: false)
+    let zarvox = VoiceInfo(id: "com.apple.speech.synthesis.voice.Zarvox", name: "Zarvox", language: "en-US", quality: 1, novelty: true)
+
+    func testBestVoiceSkipsSiriAndNoveltyAndPrefersPremium() {
+        XCTAssertEqual(Voices.choose([siri, samantha, zarvox, karen, zoe], preferred: nil), zoe)
+        XCTAssertEqual(Voices.usable([siri, samantha, zarvox, karen, zoe]).map(\.name), ["Zoe", "Karen", "Samantha"])
+    }
+
+    func testPickWinsOnlyWhileInstalled() {
+        XCTAssertEqual(Voices.choose([samantha, zoe], preferred: samantha.id), samantha)
+        XCTAssertEqual(Voices.choose([samantha], preferred: zoe.id), samantha)
+    }
+}
+
+final class VoiceTieTests: XCTestCase {
+    func testSameQualityPrefersTheSystemDefaultOverOlderVoices() {
+        let eddy = VoiceInfo(id: "com.apple.eloquence.en-US.Eddy", name: "Eddy", language: "en-US", quality: 1, novelty: false)
+        let samantha = VoiceInfo(id: "com.apple.voice.compact.en-US.Samantha", name: "Samantha", language: "en-US",
+                                 quality: 1, novelty: false)
+        XCTAssertEqual(Voices.choose([eddy, samantha], preferred: nil, systemDefault: samantha.id), samantha)
+    }
+}

@@ -22,7 +22,12 @@ question out loud. Assistant stops listening when you pause, then reads the
 answer aloud and shows it in the panel. Press Control-Option-V again to stop
 early. Speech recognition runs on your Mac. It needs Dictation turned on in
 **System Settings > Keyboard > Dictation**. Pick the microphone from the menu at
-the top of the chat. It doesn't change your Mac's input for other apps. The first time, macOS asks for
+the top of the chat. It doesn't change your Mac's input for other apps.
+
+Assistant answers with the most natural English voice you have installed.
+For a human-sounding voice, download a Premium voice, such as Zoe or Ava, in
+**System Settings > Accessibility > Spoken Content > System voice > Manage
+Voices**. Then pick it from the voice menu. Siri voices don't work in apps. The first time, macOS asks for
 microphone and speech recognition access.
 
 ## Ask about your sessions

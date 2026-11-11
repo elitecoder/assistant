@@ -1,3 +1,4 @@
+import AppKit
 import SessionCore
 import SwiftUI
 
@@ -142,10 +143,14 @@ struct ChatView: View {
                     Text("Ask about any session. Press ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                MicrophoneMenu(listener: listener, prefix: "")
                 if !model.chat.isEmpty {
                     Button("New chat") { model.newChat() }.buttonStyle(.borderless).font(.caption)
                 }
+            }
+            HStack(spacing: 12) {
+                MicrophoneMenu(listener: listener, prefix: "")
+                VoiceMenu(speaker: speaker)
+                Spacer()
             }
             if !model.chat.isEmpty || model.asking || listener.listening {
                 ScrollViewReader { proxy in
@@ -271,5 +276,31 @@ struct MicrophoneMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Pick the microphone. Assistant remembers your pick.")
+    }
+}
+
+struct VoiceMenu: View {
+    @ObservedObject var speaker: Speaker
+
+    var body: some View {
+        Menu {
+            ForEach(speaker.voices) { voice in
+                Button { speaker.use(voice) } label: {
+                    if voice.id == speaker.current?.id { Label(voice.label, systemImage: "checkmark") } else { Text(voice.label) }
+                }
+            }
+            Divider()
+            Button("Get more natural voices…") {
+                let settings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension")!
+                if !NSWorkspace.shared.open(settings) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+                }
+            }
+        } label: {
+            Label(speaker.current?.label ?? "Voice", systemImage: "speaker.wave.2").font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Pick the voice Assistant answers with")
     }
 }

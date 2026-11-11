@@ -190,6 +190,29 @@ final class Listener: ObservableObject {
 final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var speaking = false
     private let synth = AVSpeechSynthesizer()
+    static let preferenceKey = "voice"
+
+    static var systemDefault: String? { AVSpeechSynthesisVoice(language: "en-US")?.identifier }
+
+    var voices: [VoiceInfo] { Voices.usable(Self.installed(), systemDefault: Self.systemDefault) }
+
+    var current: VoiceInfo? {
+        Voices.choose(Self.installed(), preferred: UserDefaults.standard.string(forKey: Self.preferenceKey),
+                      systemDefault: Self.systemDefault)
+    }
+
+    static func installed() -> [VoiceInfo] {
+        AVSpeechSynthesisVoice.speechVoices().map {
+            VoiceInfo(id: $0.identifier, name: $0.name, language: $0.language, quality: $0.quality.rawValue,
+                      novelty: $0.voiceTraits.contains(.isNoveltyVoice))
+        }
+    }
+
+    func use(_ voice: VoiceInfo) {
+        UserDefaults.standard.set(voice.id, forKey: Self.preferenceKey)
+        objectWillChange.send()
+        say("Hi, this is how I'll sound.")
+    }
 
     override init() {
         super.init()
@@ -199,7 +222,8 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     func say(_ markdown: String) {
         synth.stopSpeaking(at: .immediate)
         let utterance = AVSpeechUtterance(string: Spoken.plain(markdown))
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.voice = current.flatMap { AVSpeechSynthesisVoice(identifier: $0.id) }
+            ?? AVSpeechSynthesisVoice(language: "en-US")
         speaking = true
         synth.speak(utterance)
     }
