@@ -15,9 +15,11 @@ enum Main {
             return
         }
         if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 1 < CommandLine.arguments.count {
+            let spoken = CommandLine.arguments.contains("--spoken")
             let reply = Asker.ask(Asker.prompt(question: CommandLine.arguments[i + 1],
-                                               fleet: Digest.fleet(SessionScanner().scan()), focus: nil), resume: nil)
-            print(reply.text)
+                                               fleet: Digest.fleet(SessionScanner().scan()), focus: nil,
+                                               spoken: spoken), resume: nil)
+            print(spoken ? Spoken.plain(reply.text) : reply.text)
             if let cost = reply.cost { print(String(format: "($%.2f)", cost)) }
             return
         }
@@ -42,7 +44,7 @@ enum Main {
     }
 }
 
-final class Model: ObservableObject {
+final class Model: NSObject, ObservableObject {
     @Published var result = ScanResult()
     @Published var scanning = false
     @Published var lastScan: Date?
@@ -50,6 +52,8 @@ final class Model: ObservableObject {
     @Published var chat: [ChatTurn] = []
     @Published var asking = false
     @Published var about: Item?
+    let listener = Listener()
+    let speaker = Speaker()
     private var chatSession: String?
     private var sentAbout: String?
     var onScan: ((ScanResult) -> Void)?
@@ -79,7 +83,18 @@ final class Model: ObservableObject {
                                            configuration: NSWorkspace.OpenConfiguration())
     }
 
-    func ask(_ question: String) {
+    override init() {
+        super.init()
+        listener.onHeard = { [weak self] text in self?.ask(text, spoken: true) }
+        listener.onProblem = { [weak self] text in self?.chat.append(ChatTurn(role: .error, text: text)) }
+    }
+
+    func listen() {
+        speaker.stop()
+        listener.toggle()
+    }
+
+    func ask(_ question: String, spoken: Bool = false) {
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !asking else { return }
         chat.append(ChatTurn(role: .you, text: q))
@@ -93,10 +108,12 @@ final class Model: ObservableObject {
                 FileManager.default.contents(atPath: item.transcript)
                     .map { (title: item.workspace.title, exchange: Digest.exchange($0)) }
             }
-            let reply = Asker.ask(Asker.prompt(question: q, fleet: fleet, focus: focus), resume: resume)
+            let reply = Asker.ask(Asker.prompt(question: q, fleet: fleet, focus: focus, spoken: spoken),
+                                  resume: resume)
             DispatchQueue.main.async {
                 self.asking = false
                 self.chat.append(ChatTurn(role: reply.failed ? .error : .assistant, text: reply.text, cost: reply.cost))
+                if spoken { self.speaker.say(reply.text) }
                 guard !reply.failed else { return }
                 self.chatSession = reply.sessionID
                 if newFocus != nil { self.sentAbout = newFocus?.id }
@@ -128,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var notified = Set<String>()
     var timer: Timer?
     var hotKey: EventHotKeyRef?
+    var talkKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -207,14 +225,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         done([.banner, .sound])
     }
 
+    func talk() {
+        if !popover.isShown { show() }
+        model.listen()
+    }
+
     func registerHotKey() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            DispatchQueue.main.async { Main.delegate.toggle() }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            var id = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &id)
+            DispatchQueue.main.async { id.id == 2 ? Main.delegate.talk() : Main.delegate.toggle() }
             return noErr
         }, 1, &spec, nil, nil)
-        let id = EventHotKeyID(signature: OSType(0x4153_5354), id: 1)
-        RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0,
-                            &hotKey)
+        let signature = OSType(0x4153_5354)
+        RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 1),
+                            GetApplicationEventTarget(), 0, &hotKey)
+        RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 2),
+                            GetApplicationEventTarget(), 0, &talkKey)
     }
 }

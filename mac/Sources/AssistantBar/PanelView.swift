@@ -44,7 +44,7 @@ struct PanelView: View {
             }
 
             Divider()
-            ChatView(model: model)
+            ChatView(model: model, listener: model.listener, speaker: model.speaker)
 
             Divider()
             HStack {
@@ -63,7 +63,7 @@ struct PanelView: View {
     var footer: String {
         let working = model.result.items(.working).count
         let untracked = model.result.untracked.count
-        return "\(working) working · \(untracked) not tracked · ⌃⌥Space"
+        return "\(working) working · \(untracked) not tracked · ⌃⌥Space opens · ⌃⌥V talks"
     }
 
     @ViewBuilder
@@ -125,6 +125,8 @@ struct Row: View {
 
 struct ChatView: View {
     @ObservedObject var model: Model
+    @ObservedObject var listener: Listener
+    @ObservedObject var speaker: Speaker
     @State private var draft = ""
     @FocusState private var typing: Bool
 
@@ -137,18 +139,24 @@ struct ChatView: View {
                     Button { model.about = nil } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless).font(.caption).help("Ask about all sessions")
                 } else {
-                    Text("Ask about any session").font(.caption).foregroundStyle(.secondary)
+                    Text("Ask about any session. Press ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if !model.chat.isEmpty {
                     Button("New chat") { model.newChat() }.buttonStyle(.borderless).font(.caption)
                 }
             }
-            if !model.chat.isEmpty || model.asking {
+            if !model.chat.isEmpty || model.asking || listener.listening {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(model.chat) { Bubble(turn: $0).id($0.id) }
+                            if listener.listening {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "waveform").foregroundStyle(.red)
+                                    Text(listener.heard.isEmpty ? "Listening…" : listener.heard).font(.callout)
+                                }.frame(maxWidth: .infinity, alignment: .trailing).id("listening")
+                            }
                             if model.asking {
                                 HStack(spacing: 6) {
                                     ProgressView().controlSize(.small)
@@ -169,6 +177,19 @@ struct ChatView: View {
                     .lineLimit(1...4)
                     .focused($typing)
                     .onSubmit(send)
+                Button { model.listen() } label: {
+                    Image(systemName: listener.listening ? "stop.circle.fill" : "mic.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(listener.listening ? Color.red : Color.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.asking)
+                .help(listener.listening ? "Stop listening" : "Talk (⌃⌥V)")
+                if speaker.speaking {
+                    Button { speaker.stop() } label: { Image(systemName: "speaker.slash.circle.fill").font(.title2) }
+                        .buttonStyle(.borderless)
+                        .help("Stop speaking")
+                }
                 Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
                     .buttonStyle(.borderless)
                     .disabled(model.asking || draft.trimmingCharacters(in: .whitespaces).isEmpty)

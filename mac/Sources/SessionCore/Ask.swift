@@ -90,12 +90,14 @@ public enum Asker {
     You can't act on sessions. When asked to act, name the workspace to open and the reply to give it.
     """
 
-    public static func prompt(question: String, fleet: String?, focus: (title: String, exchange: String)?) -> String {
+    public static func prompt(question: String, fleet: String?, focus: (title: String, exchange: String)?,
+                              spoken: Bool = false) -> String {
         var parts: [String] = []
         if let fleet { parts.append(fleet) }
         if let focus {
             parts.append("# Recent conversation in \(focus.title)\n\n\(focus.exchange)")
         }
+        if spoken { parts.append(Spoken.style) }
         parts.append("# Question\n\n\(question)")
         return parts.joined(separator: "\n\n")
     }

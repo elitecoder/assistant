@@ -15,6 +15,14 @@ The menu bar shows how many sessions need you. Select a row, or **Take me to
 the next one**, to switch cmux to that workspace. When a session newly needs
 you, you get one notification for the batch.
 
+## Talk to it
+
+Press Control-Option-V, or select the microphone in the panel, and ask your
+question out loud. Assistant stops listening when you pause, then reads the
+answer aloud and shows it in the panel. Press Control-Option-V again to stop
+early. Speech recognition runs on your Mac. The first time, macOS asks for
+microphone and speech recognition access.
+
 ## Ask about your sessions
 
 Type a question in the box at the bottom of the panel, for example "What does
@@ -31,6 +39,7 @@ same chat. The panel shows what each answer cost. Nothing runs until you ask.
 - Open the panel: select the icon in the menu bar, or press Control-Option-Space.
 - Check from the terminal: `.build/release/AssistantBar --print`.
 - Ask from the terminal: `.build/release/AssistantBar --ask "What needs me?"`.
+  Add `--spoken` to get the answer in the short style it uses for speech.
 
 ## Build and install
 
