@@ -105,7 +105,7 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
             }
             let language: Language = key.hasPrefix("b") ? .enGB : .enUS
             var produced = false
-            for sentence in Kokoro.sentences(text) where isCurrent() {
+            for sentence in Kokoro.chunks(text) where isCurrent() {
                 for samples in self.generate(sentence, voice: voice, language: language, depth: 0) where isCurrent() {
                     produced = true
                     chunk(samples)

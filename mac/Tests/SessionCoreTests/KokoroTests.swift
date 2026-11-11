@@ -31,3 +31,24 @@ final class KokoroTests: XCTestCase {
                        "Kokoro Heart")
     }
 }
+
+final class KokoroWordsTests: XCTestCase {
+    func testNumbersAndSymbolsBecomeWords() {
+        XCTAssertEqual(Kokoro.wordsForSpeech("Workspace 25 uses 60 GB, 45% of memory."),
+                       "Workspace twenty five uses sixty GB, forty five percent of memory.")
+        XCTAssertEqual(Kokoro.wordsForSpeech("It cost $0.24, then $3, then $1.50."),
+                       "It cost twenty four cents, then three dollars, then one dollar and fifty cents.")
+        XCTAssertEqual(Kokoro.wordsForSpeech("Version 1.0.11 and 2.5 seconds on PR #56."),
+                       "Version one point zero point eleven and two point five seconds on PR number fifty six.")
+        XCTAssertEqual(Kokoro.wordsForSpeech("1,200 files and/or more"), "one thousand two hundred files and or more")
+    }
+
+    func testLongSentencesSplitAtCommas() {
+        let long = "Start with Remove Me As Work Bottleneck, workspace 3, because the model there is using about 60 gigabytes of memory."
+        XCTAssertEqual(Kokoro.chunks(long), [
+            "Start with Remove Me As Work Bottleneck, workspace three,",
+            "because the model there is using about sixty gigabytes of memory.",
+        ])
+        XCTAssertEqual(Kokoro.chunks("Yes. Which account?"), ["Yes.", "Which account?"])
+    }
+}

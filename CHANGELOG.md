@@ -45,6 +45,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   menu. Requires Apple Silicon and macOS 15. Building now needs Xcode's Metal
   Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
 - `AssistantBar --render "<text>" <file.wav>` saves Kokoro speech to a file.
+- Fix garbled spots in Kokoro speech. Numbers, percentages, dollar amounts,
+  version numbers, and PR numbers are now written as words before speaking,
+  and long sentences are split at commas. Transcribing Kokoro output with
+  Apple's recognizer confirmed digits were misread ("workspace 25" came out as
+  "workspace 5") and "%", "$0.24", and "1.0.11" were dropped.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds

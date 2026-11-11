@@ -2,6 +2,10 @@ import CryptoKit
 import Foundation
 import NaturalLanguage
 
+extension String {
+    func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
+}
+
 public struct KokoroFile: Equatable {
     public let name: String
     public let url: URL
@@ -42,6 +46,78 @@ public enum Kokoro {
         var hash = SHA256()
         while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty { hash.update(data: chunk) }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    static let speller: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .spellOut
+        f.locale = Locale(identifier: "en_US")
+        return f
+    }()
+
+    static func spell(_ digits: String) -> String {
+        guard let n = Int(digits) else { return digits }
+        return (speller.string(from: NSNumber(value: n)) ?? digits).replacingOccurrences(of: "-", with: " ")
+    }
+
+    static func replace(_ text: String, _ pattern: String, _ transform: ([String]) -> String) -> String {
+        let regex = try! NSRegularExpression(pattern: pattern)
+        var out = text
+        for m in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+            let groups = (0..<m.numberOfRanges).map { i in
+                Range(m.range(at: i), in: text).map { String(text[$0]) } ?? ""
+            }
+            out.replaceSubrange(Range(m.range, in: out)!, with: transform(groups))
+        }
+        return out
+    }
+
+    /// Writes numbers and symbols as words. Kokoro garbles or drops digits, %, $, and version numbers.
+    public static func wordsForSpeech(_ text: String) -> String {
+        var s = text.replacingOccurrences(of: #"(\d),(\d{3})"#, with: "$1$2", options: .regularExpression)
+        s = replace(s, #"\$(\d+)\.(\d{2})\b"#) { g in
+            let dollars = Int(g[1]) ?? 0, cents = Int(g[2]) ?? 0
+            let d = dollars == 0 ? "" : spell(g[1]) + (dollars == 1 ? " dollar" : " dollars")
+            let c = cents == 0 ? "" : spell(String(cents)) + (cents == 1 ? " cent" : " cents")
+            return [d, c].filter { !$0.isEmpty }.joined(separator: " and ").ifEmpty("zero dollars")
+        }
+        s = replace(s, #"\$(\d+)"#) { g in spell(g[1]) + (g[1] == "1" ? " dollar" : " dollars") }
+        s = replace(s, #"\b(\d+(?:\.\d+){2,})\b"#) { g in
+            g[1].split(separator: ".").map { spell(String($0)) }.joined(separator: " point ")
+        }
+        s = replace(s, #"\b(\d+)\.(\d+)\b"#) { g in
+            spell(g[1]) + " point " + g[2].map { spell(String($0)) }.joined(separator: " ")
+        }
+        s = replace(s, #"(\d+)\s?%"#) { g in spell(g[1]) + " percent" }
+        s = replace(s, #"#(\d+)"#) { g in "number " + spell(g[1]) }
+        s = replace(s, #"\b(\d+)\b"#) { g in spell(g[1]) }
+        return s.replacingOccurrences(of: "&", with: " and ")
+            .replacingOccurrences(of: #"[/\\|<>{}\[\]~^=+]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Pieces to synthesize one at a time: sentences, with long ones split at commas.
+    /// Kokoro mumbles the start of long inputs, and speech starts as soon as the first piece is ready.
+    public static func chunks(_ text: String, maxLength: Int = 90) -> [String] {
+        sentences(wordsForSpeech(text)).flatMap { sentence -> [String] in
+            guard sentence.count > maxLength else { return [sentence] }
+            var pieces: [String] = []
+            var current = ""
+            for clause in sentence.split(separator: ",", omittingEmptySubsequences: true) {
+                let part = clause.trimmingCharacters(in: .whitespaces)
+                if current.isEmpty {
+                    current = part
+                } else if current.count + part.count + 2 <= maxLength || part.count < 15 {
+                    current += ", " + part
+                } else {
+                    pieces.append(current + ",")
+                    current = part
+                }
+            }
+            if !current.isEmpty { pieces.append(current) }
+            return pieces
+        }
     }
 
     /// Sentences to synthesize one at a time, so speech starts after the first one is ready.
