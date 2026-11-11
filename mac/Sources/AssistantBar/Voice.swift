@@ -1,6 +1,9 @@
 import AVFoundation
 import SessionCore
+import os
 import Speech
+
+let voiceLog = Logger(subsystem: "com.assistant.sessions", category: "voice")
 
 /// Hears one spoken question, then hands its text to `onHeard` after a pause in speech.
 final class Listener: ObservableObject {
@@ -18,8 +21,11 @@ final class Listener: ObservableObject {
     func toggle() { listening ? stop() : start() }
 
     func start() {
+        voiceLog.notice("start: mic status \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue), speech status \(SFSpeechRecognizer.authorizationStatus().rawValue)")
         AVCaptureDevice.requestAccess(for: .audio) { mic in
+            voiceLog.notice("mic access: \(mic)")
             SFSpeechRecognizer.requestAuthorization { speech in
+                voiceLog.notice("speech access: \(speech.rawValue)")
                 DispatchQueue.main.async {
                     if !mic {
                         self.onProblem?("Assistant can't use the microphone. Allow it in System Settings, Privacy & Security, Microphone.")
@@ -34,6 +40,7 @@ final class Listener: ObservableObject {
     }
 
     private func begin() {
+        voiceLog.notice("begin: listening \(self.listening), recognizer \(self.recognizer != nil), available \(self.recognizer?.isAvailable ?? false), on-device \(self.recognizer?.supportsOnDeviceRecognition ?? false)")
         guard !listening, let recognizer, recognizer.isAvailable else {
             onProblem?("Speech recognition isn't available right now.")
             return
@@ -46,7 +53,11 @@ final class Listener: ObservableObject {
             request.append(buffer)
         }
         engine.prepare()
-        do { try engine.start() } catch {
+        do {
+            try engine.start()
+            voiceLog.notice("engine started, input format \(input.outputFormat(forBus: 0).description)")
+        } catch {
+            voiceLog.error("engine failed: \(error.localizedDescription)")
             input.removeTap(onBus: 0)
             onProblem?("The microphone didn't start: \(error.localizedDescription)")
             return
@@ -57,12 +68,15 @@ final class Listener: ObservableObject {
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self, self.listening else { return }
+                if let error { voiceLog.error("recognition error: \((error as NSError).domain, privacy: .public) \((error as NSError).code, privacy: .public) \(error.localizedDescription, privacy: .public)") }
                 if let result {
                     self.heard = result.bestTranscription.formattedString
                     self.waitForPause()
                     if result.isFinal { self.stop() }
-                } else if error != nil {
+                } else if let error = error as NSError? {
                     self.stop()
+                    self.onProblem?(Spoken.problem(domain: error.domain, code: error.code,
+                                                   description: error.localizedDescription))
                 }
             }
         }
@@ -87,6 +101,7 @@ final class Listener: ObservableObject {
         request = nil
         task = nil
         let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        voiceLog.notice("stopped, heard \(text.count) characters")
         if !text.isEmpty { onHeard?(text) }
     }
 }

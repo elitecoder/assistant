@@ -172,6 +172,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.show() }
         }
+        if CommandLine.arguments.contains("--listen") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.talk() }
+        }
     }
 
     @objc func toggle() {

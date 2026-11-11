@@ -19,3 +19,15 @@ final class SpokenTests: XCTestCase {
         XCTAssertFalse(Asker.prompt(question: "q", fleet: nil, focus: nil).contains("read aloud"))
     }
 }
+
+final class VoiceProblemTests: XCTestCase {
+    func testDictationOffPointsToTheSetting() {
+        XCTAssertEqual(Spoken.problem(domain: "kLSRErrorDomain", code: 201, description: "Siri and Dictation are disabled"),
+                       "Voice needs Dictation. Turn it on in System Settings, Keyboard, Dictation, then try again.")
+    }
+
+    func testOtherFailuresSayWhatHappened() {
+        XCTAssertEqual(Spoken.problem(domain: "x", code: 1, description: "No speech detected"),
+                       "Voice didn't work: No speech detected")
+    }
+}

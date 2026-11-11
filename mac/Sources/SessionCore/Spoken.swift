@@ -20,3 +20,13 @@ public enum Spoken {
             .filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
+
+extension Spoken {
+    /// What to tell the operator when speech recognition fails.
+    public static func problem(domain: String, code: Int, description: String) -> String {
+        if domain == "kLSRErrorDomain" && code == 201 {
+            return "Voice needs Dictation. Turn it on in System Settings, Keyboard, Dictation, then try again."
+        }
+        return "Voice didn't work: \(description)"
+    }
+}
