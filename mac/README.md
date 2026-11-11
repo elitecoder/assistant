@@ -21,7 +21,8 @@ Press Control-Option-V, or select the microphone in the panel, and ask your
 question out loud. Assistant stops listening when you pause, then reads the
 answer aloud and shows it in the panel. Press Control-Option-V again to stop
 early. Speech recognition runs on your Mac. It needs Dictation turned on in
-**System Settings > Keyboard > Dictation**. The first time, macOS asks for
+**System Settings > Keyboard > Dictation**. Pick the microphone from the menu at
+the top of the chat. It doesn't change your Mac's input for other apps. The first time, macOS asks for
 microphone and speech recognition access.
 
 ## Ask about your sessions

@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import SessionCore
 import os
@@ -16,13 +17,22 @@ final class Listener: ObservableObject {
     var onHeard: ((String) -> Void)?
     var onProblem: ((String) -> Void)?
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var pause: Timer?
 
     func toggle() { listening ? stop() : start() }
+
+    var choices: [String] { InputDevice.all().filter { !$0.virtual }.map(\.name) }
+
+    var current: String? { InputDevice.chosen()?.name }
+
+    func use(_ name: String) {
+        InputDevice.preferred = name
+        objectWillChange.send()
+    }
 
     func start() {
         voiceLog.notice("start: mic status \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue), speech status \(SFSpeechRecognizer.authorizationStatus().rawValue)")
@@ -52,8 +62,16 @@ final class Listener: ObservableObject {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
+        engine = AVAudioEngine()
         let input = engine.inputNode
-        microphone = InputDevice.defaultName()
+        let mic = InputDevice.chosen()
+        if let mic, let unit = input.audioUnit {
+            var device = AudioDeviceID(mic.id)
+            let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                              &device, UInt32(MemoryLayout<AudioDeviceID>.size))
+            if status != noErr { voiceLog.error("couldn't select \(mic.name, privacy: .public): \(status)") }
+        }
+        microphone = mic?.name
         levels = [Float](repeating: 0, count: Self.bars)
         loudest = 0
         input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in

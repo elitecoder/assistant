@@ -27,6 +27,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Show a live waveform and the microphone's name while Assistant for Mac
   listens. When it hears nothing, it names the microphone to check. When
   speech recognition fails, it names the setting to turn on.
+- Pick the microphone Assistant for Mac listens with from the panel, without
+  changing the system input. With no pick, it uses the system input, but
+  skips the built-in microphone when the lid is closed and skips virtual
+  devices.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds

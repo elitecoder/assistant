@@ -49,3 +49,27 @@ final class MeterTests: XCTestCase {
         XCTAssertEqual(Meter.window([], adding: 0.5, count: 3), [0, 0, 0.5])
     }
 }
+
+final class MicrophoneChoiceTests: XCTestCase {
+    let builtIn = Microphone(id: 1, name: "MacBook Pro Microphone", builtIn: true, virtual: false)
+    let brio = Microphone(id: 2, name: "Logitech BRIO", builtIn: false, virtual: false)
+    let teams = Microphone(id: 3, name: "Microsoft Teams Audio", builtIn: false, virtual: true)
+    let phone = Microphone(id: 4, name: "iPhone Microphone", builtIn: false, virtual: false)
+
+    func testOperatorPickWins() {
+        XCTAssertEqual(Microphones.choose([builtIn, brio, phone], preferred: "iPhone Microphone", defaultID: 1,
+                                          lidClosed: false), phone)
+    }
+
+    func testClosedLidSkipsTheBuiltInDefaultAndVirtualDevices() {
+        XCTAssertEqual(Microphones.choose([builtIn, teams, brio], preferred: nil, defaultID: 1, lidClosed: true), brio)
+    }
+
+    func testOpenLidKeepsTheSystemDefault() {
+        XCTAssertEqual(Microphones.choose([builtIn, brio], preferred: nil, defaultID: 1, lidClosed: false), builtIn)
+    }
+
+    func testMissingPickFallsBackToTheDefault() {
+        XCTAssertEqual(Microphones.choose([builtIn, brio], preferred: "Gone", defaultID: 2, lidClosed: false), brio)
+    }
+}

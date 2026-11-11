@@ -142,6 +142,18 @@ struct ChatView: View {
                     Text("Ask about any session. Press ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Menu {
+                    ForEach(listener.choices, id: \.self) { name in
+                        Button { listener.use(name) } label: {
+                            if name == listener.current { Label(name, systemImage: "checkmark") } else { Text(name) }
+                        }
+                    }
+                } label: {
+                    Label(listener.current ?? "No microphone", systemImage: "mic").font(.caption)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Microphone for talking to Assistant")
                 if !model.chat.isEmpty {
                     Button("New chat") { model.newChat() }.buttonStyle(.borderless).font(.caption)
                 }
