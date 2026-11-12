@@ -243,3 +243,88 @@ final class TurnModelsLoadingTests: XCTestCase {
         XCTAssertEqual(fetched, ["silero_vad.onnx"])
     }
 }
+
+/// `--send` and `--wait` against a stand-in session, with time scaled down 100 to 1: the call limit (100 s, here 1 s)
+/// stays under Claude Code's 120-second Bash timeout (here 1.2 s), and a session that replies after 150 s (here
+/// 1.5 s) is reached by looping on --wait, never by sending again.
+final class CallLimitTests: XCTestCase {
+    var folder: URL!
+
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("limit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    static let scale = 0.01
+    static let bashTimeout: TimeInterval = 120
+
+    func stamp(_ date: Date) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: date)
+    }
+
+    func record(_ object: [String: Any]) -> String {
+        String(decoding: try! JSONSerialization.data(withJSONObject: object), as: UTF8.self) + "\n"
+    }
+
+    func append(_ text: String, to file: URL) {
+        guard let h = try? FileHandle(forWritingTo: file) else { return }
+        h.seekToEndOfFile()
+        h.write(Data(text.utf8))
+        try? h.close()
+    }
+
+    /// The stand-in session: the message shows `showAfter` seconds in, and the reply is finished `replyAfter` seconds in.
+    func session(_ file: URL, message: String, showAfter: TimeInterval, replyAfter: TimeInterval) throws {
+        try "".write(to: file, atomically: true, encoding: .utf8)
+        DispatchQueue.global().asyncAfter(deadline: .now() + showAfter) {
+            self.append(self.record(["type": "user", "timestamp": self.stamp(Date()), "message": ["content": message]]), to: file)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + replyAfter) {
+            self.append(self.record(["type": "assistant", "timestamp": self.stamp(Date()), "message": ["content": [["type": "text", "text": "All green."]]]])
+                + self.record(["type": "system", "subtype": "turn_duration", "timestamp": self.stamp(Date())]), to: file)
+        }
+    }
+
+    func target(_ file: URL) -> Messenger.Target {
+        Messenger.Target(terminal: Terminal(workspace: "workspace:3", title: "Trim", surface: "surface:1", tty: "ttys001"), transcript: file)
+    }
+
+    func testTheLimitStaysUnderClaudeCodesBashTimeout() {
+        XCTAssertLessThan(Messaging.callLimit, Self.bashTimeout)
+    }
+
+    func testASlowReplyIsReachedByWaitingAgainNotBySendingAgain() throws {
+        let file = folder.appendingPathComponent("s.jsonl")
+        let limit = Messaging.callLimit * Self.scale
+        let started = Date()
+        try session(file, message: "run the tests", showAfter: 50 * Self.scale, replyAfter: 150 * Self.scale)
+        let first = Messenger.confirmAndWait(target(file), workspace: "workspace:3", message: "run the tests", since: started,
+                                             started: started, timeout: limit)
+        XCTAssertLessThan(Date().timeIntervalSince(started), Self.bashTimeout * Self.scale, "the call outlived the Bash timeout")
+        XCTAssertTrue(first.hasPrefix("STILL WORKING: the message was delivered; run --wait workspace:3 to keep waiting. Don't send it again.\n"), first)
+        XCTAssertTrue(Asker.instructions(tool: "/A").contains("run --wait on that workspace again, and keep going while it prints STILL WORKING. Never send that message again."))
+        var reply = ""
+        for _ in 0..<5 where !reply.hasPrefix("REPLY") {
+            let callStarted = Date()
+            reply = Messenger.wait(target(file), sent: "run the tests", since: started, timeout: limit)
+            XCTAssertLessThan(Date().timeIntervalSince(callStarted), Self.bashTimeout * Self.scale)
+        }
+        XCTAssertTrue(reply.hasPrefix("REPLY"), reply)
+        XCTAssertTrue(Untrusted.unwrap(Messaging.replyBody(reply)).contains("All green."), reply)
+    }
+
+    /// Not seen in the transcript within the limit: NOT CONFIRMED, never STILL WORKING.
+    func testAnUnconfirmedSendSaysSoInsteadOfStillWorking() throws {
+        let file = folder.appendingPathComponent("s.jsonl")
+        try "".write(to: file, atomically: true, encoding: .utf8)
+        let started = Date()
+        let result = Messenger.confirmAndWait(target(file), workspace: "workspace:3", message: "run the tests", since: started,
+                                              started: started, timeout: Messaging.callLimit * Self.scale)
+        XCTAssertEqual(result, Messaging.unconfirmed("workspace:3"))
+        XCTAssertLessThan(Date().timeIntervalSince(started), Self.bashTimeout * Self.scale)
+    }
+}

@@ -193,6 +193,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- `--send` and `--wait` stop waiting after 100 seconds, under the 2-minute
+  timeout of Claude Code's Bash tool, and print "STILL WORKING: the message was
+  delivered; run --wait <workspace> to keep waiting. Don't send it again." The
+  chat's Claude keeps calling `--wait` instead of resending. A send whose
+  message never showed in the transcript still prints NOT CONFIRMED.
 - In Talk Mode, starting a question by key closes the echo-cancelled watcher,
   so other apps aren't left ducked and only one microphone is open while you
   talk; it opens again for the next answer. An interruption that comes while

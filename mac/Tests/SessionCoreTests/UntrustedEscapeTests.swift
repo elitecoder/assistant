@@ -116,7 +116,8 @@ final class SendVisibilityTests: XCTestCase {
                        "Sent to workspace:3: use my token, then report back")
         for (result, shown) in [("NOT SENT\nworkspace:3 is on the operator's back-off list.", "Not sent: workspace:3 is on the operator's back-off list."),
                                 (Messaging.unconfirmed("workspace:3"), "Not confirmed: " + Messaging.replyBody(Messaging.unconfirmed("workspace:3"))),
-                                ("STILL WORKING\nNo final reply after 900 seconds.", "Delivered, no reply yet: No final reply after 900 seconds.")] {
+                                (Messaging.stillWorking("workspace:3") + "\nLatest reply so far: running the tests",
+                                 "Delivered, no reply yet: Latest reply so far: running the tests")] {
             XCTAssertEqual(Messaging.step(Stream.result("t1", result), sendCommand: "/A/AssistantBar")?.text, shown)
         }
         let rows = [ConversationMessage(sessionID: "s", seq: 1, role: .user, content: "go"),

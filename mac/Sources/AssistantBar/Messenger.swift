@@ -138,6 +138,7 @@ enum Messenger {
 
     /// Pastes `message` into the session, presses Enter, confirms it arrived, then waits for the reply.
     static func send(_ workspace: String, _ message: String, timeout: TimeInterval) -> String {
+        let started = Date()
         if let refusal = Messaging.sendRefusal(message) { return "NOT SENT\n" + refusal }
         let target = target(workspace)
         let names = [workspace] + [target?.terminal.workspace, target?.terminal.workspaceID, target?.terminal.title].compactMap { $0 }
@@ -159,10 +160,17 @@ enum Messenger {
                 + String(decoding: out, as: UTF8.self)
         }
         // Enter is pressed once. If the transcript doesn't show the message, pressing it again could submit it twice.
-        guard waitFor(target.transcript, timeout: 30, until: { Messaging.turn($0, sent: message, since: since).delivered }) else {
-            return Messaging.unconfirmed(workspace)
-        }
-        return wait(target, sent: message, since: since, timeout: timeout)
+        return confirmAndWait(target, workspace: workspace, message: message, since: since, started: started, timeout: timeout)
+    }
+
+    /// After the paste and Enter: confirms the message reached the transcript, then waits for the reply, all within
+    /// `timeout` of `started`. Not confirmed in time is NOT CONFIRMED; confirmed but unanswered is STILL WORKING.
+    static func confirmAndWait(_ target: Target, workspace: String, message: String, since: Date, started: Date,
+                               timeout: TimeInterval) -> String {
+        func left() -> TimeInterval { max(0, timeout - Date().timeIntervalSince(started)) }
+        guard waitFor(target.transcript, timeout: min(30, left()), until: { Messaging.turn($0, sent: message, since: since).delivered })
+        else { return Messaging.unconfirmed(workspace) }
+        return wait(target, sent: message, since: since, timeout: left())
     }
 
     static func wait(_ workspace: String, timeout: TimeInterval) -> String {
@@ -179,8 +187,8 @@ enum Messenger {
         let reply = state.replies.last ?? "(no reply text yet)"
         let note = target.note.map { "\nNOTE: " + $0 } ?? ""
         return done ? "REPLY\n" + Untrusted.wrap(reply) + note
-            : "STILL WORKING\nNo final reply after \(Int(timeout)) seconds. Latest:\n" + Untrusted.wrap(reply) + "\n"
-                + "It may be waiting on a permission prompt. Run --wait \(target.terminal.workspace) to keep waiting."
+            : Messaging.stillWorking(target.terminal.workspace) + "\nLatest reply so far:\n" + Untrusted.wrap(reply)
+                + "\nIt may be waiting on a permission prompt."
     }
 
     /// Re-reads `file` each time it changes until `until` holds or `timeout` passes.

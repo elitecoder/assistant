@@ -24,8 +24,8 @@ enum Main {
         case .app: break
         case .print: return printScan()
         case .sessions: return print(Messenger.list())
-        case let .send(ref, message, timeout): return print(Messenger.send(ref, message, timeout: timeout ?? 900))
-        case let .wait(ref, timeout): return print(Messenger.wait(ref, timeout: timeout ?? 900))
+        case let .send(ref, message, timeout): return print(Messenger.send(ref, message, timeout: timeout ?? Messaging.callLimit))
+        case let .wait(ref, timeout): return print(Messenger.wait(ref, timeout: timeout ?? Messaging.callLimit))
         case let .render(text, file): exit(render(text, to: URL(fileURLWithPath: file)) ? 0 : 1)
         case let .transcribe(file, legacy): exit(transcribe(URL(fileURLWithPath: file), legacy: legacy) ? 0 : 1)
         case let .turnEval(files): exit(turnEval(files.map { URL(fileURLWithPath: $0) }) ? 0 : 1)

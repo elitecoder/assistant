@@ -138,6 +138,9 @@ Select **Stop** to end it.
   or joining mark in its first three characters.
 - It presses Enter once. If the message doesn't show in the session's
   transcript, it says so and doesn't send it again.
+- Each `--send` or `--wait` waits at most 100 seconds, under Claude Code's
+  2-minute command limit. A session still working after that gets more
+  `--wait` calls, never the message again.
 - Pasting and pressing Enter happen together: **Stop**, Quit, or talking over
   the answer waits for both, so a message is never left half-sent in the
   session's prompt. If the run ends while a send is still waiting on its

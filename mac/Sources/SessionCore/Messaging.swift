@@ -116,6 +116,15 @@ public enum Messaging {
         return nil
     }
 
+    /// How long one `--send` or `--wait` call waits in all, kept under the 120-second default timeout of Claude Code's
+    /// Bash tool, so the chat's Claude always gets an answer from the call instead of a timeout.
+    public static let callLimit: TimeInterval = 100
+
+    /// The first line `--send` and `--wait` print when the session got the message but hasn't finished replying.
+    public static func stillWorking(_ workspace: String) -> String {
+        "STILL WORKING: the message was delivered; run --wait \(workspace) to keep waiting. Don't send it again."
+    }
+
     /// What `--send` says when Enter was pressed but the transcript doesn't show the message: it may have gone in.
     public static func unconfirmed(_ workspace: String) -> String {
         "NOT CONFIRMED\nThe message was pasted into \(workspace) and Enter was pressed, but it doesn't show in the session's "
@@ -309,8 +318,9 @@ public enum Messaging {
         case "REPLY": return .replied(rest)
         case "NOT SENT": return .note("Not sent: " + rest)
         case "NOT CONFIRMED": return .note("Not confirmed: " + rest)
-        case "STILL WORKING": return .note("Delivered, no reply yet: " + String(rest.prefix(300)))
-        default: return nil
+        default:
+            guard first.hasPrefix("STILL WORKING") else { return nil }
+            return .note("Delivered, no reply yet: " + String(rest.prefix(300)))
         }
     }
 
