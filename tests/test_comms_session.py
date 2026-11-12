@@ -133,7 +133,8 @@ def test_warm_launch_honors_an_explicit_claude_bin(monkeypatch):
     assert "command claude" not in cmd
 
 
-def test_warm_launch_starts_copilot_with_its_own_scope(monkeypatch):
+def test_warm_launch_starts_copilot_with_its_own_scope(monkeypatch, tmp_path):
+    monkeypatch.setattr(cs, "HOME", tmp_path)
     monkeypatch.delenv("COPILOT_BIN", raising=False)
     monkeypatch.setenv("COPILOT_MODEL", "gpt-6.1-sol")
     cmd = cs._warm_launch(ag.COPILOT)

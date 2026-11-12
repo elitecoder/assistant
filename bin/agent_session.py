@@ -114,6 +114,10 @@ def copilot_session_field(session_dir: str | Path, field: str) -> str | None:
     if not m:
         return None
     value = m.group(1)
+    if value in ("|", "|-", ">", ">-"):
+        block = re.match(r"((?:[ \t]+.*\n?)+)", text[m.end() + 1:])
+        lines = [line.strip() for line in (block.group(1) if block else "").splitlines()]
+        return (" " if value.startswith(">") else "\n").join(lines).strip() or None
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
         value = value[1:-1]
     return value
@@ -585,11 +589,40 @@ def session_argv(agent: str, *, home: str | Path | None = None,
     return argv
 
 
+def copilot_instructions_dir(home: str | Path | None = None) -> Path | None:
+    """A folder Copilot reads as custom instructions, holding a link to
+    ~/.claude/CLAUDE.md, so Copilot sessions get the user's rules (Copilot
+    reads a CLAUDE.md only in the repo root or cwd). None without a CLAUDE.md.
+    Copilot loads a linked `.github/instructions/*.instructions.md` from a
+    COPILOT_CUSTOM_INSTRUCTIONS_DIRS folder; a top-level AGENTS.md there only
+    counts as a nested source."""
+    base = _home(home)
+    rules = base / ".claude" / "CLAUDE.md"
+    if not rules.is_file():
+        return None
+    folder = base / ".assistant" / "copilot-instructions"
+    link = folder / ".github" / "instructions" / "lessons.instructions.md"
+    if not (link.is_symlink() and os.readlink(link) == str(rules)):
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(rules)
+    return folder
+
+
+def _copilot_env(home: str | Path | None) -> str:
+    folder = copilot_instructions_dir(home)
+    return f"COPILOT_CUSTOM_INSTRUCTIONS_DIRS={shlex.quote(str(folder))} " if folder else ""
+
+
 def session_command(agent: str, *, home: str | Path | None = None,
                     model: str | None = None, add_dirs: tuple | list = (),
                     env_prefix: str = "") -> str:
-    """The cmux ``--command`` string for an interactive `agent` session."""
+    """The cmux ``--command`` string for an interactive `agent` session.
+    Copilot gets the user's rules through COPILOT_CUSTOM_INSTRUCTIONS_DIRS."""
     argv = session_argv(agent, home=home, model=model, add_dirs=add_dirs)
+    if agent == COPILOT:
+        env_prefix += _copilot_env(home)
     return f"{env_prefix}{shlex.join(argv)}"
 
 
@@ -648,7 +681,8 @@ def resume_command(agent: str, session_id: str, cwd: str | Path,
                    home: str | Path | None = None) -> str:
     """Shell command that cds into `cwd` and resumes the session."""
     argv = resume_argv(agent, session_id, preserved, executable, home)
-    return f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
+    env = _copilot_env(home) if agent == COPILOT else ""
+    return f"cd {shlex.quote(str(cwd))} && {env}{shlex.join(argv)}"
 
 
 # Readiness markers seen on the live boot screen via cmux `surface.read_text`.

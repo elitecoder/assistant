@@ -64,6 +64,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   own name.
 - Interactive Copilot sessions start with `--no-ask-user`, so questions come
   as text Assistant can read, not a form.
+- Copilot sessions Assistant starts get your rules from `~/.claude/CLAUDE.md`
+  through `~/.assistant/copilot-instructions`, linked as a Copilot
+  instructions file; your own Copilot setup isn't touched.
+- The notification watcher reads cmux's `cmux-feed-v1:` session ids, so a
+  ping again carries the agent's last message for Claude and Copilot (the
+  format change in cmux had broken this since October).
 - Spending and Slack-session context reads go through `bin/agent_session.py`,
   and the launch check also flags Claude-only transcript and usage parsing.
 - Task sessions now answer the first-launch folder-trust question whenever it

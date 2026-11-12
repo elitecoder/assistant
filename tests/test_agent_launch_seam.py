@@ -557,6 +557,7 @@ def test_pulse_dispatch_falls_back_to_claude_when_copilot_does_not_start(home, m
 def test_comms_warm_session_spawns_copilot_when_picked(home, copilot_bin, monkeypatch):
     _pick(home, "copilot")
     monkeypatch.delenv("COPILOT_BIN")
+    monkeypatch.setattr(cs, "HOME", home)
     paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
     commands, waits = [], []
 
@@ -1643,3 +1644,72 @@ def test_resume_hook_stays_quiet_when_the_seam_wont_load(monkeypatch, capsys):
 def test_eval_fingerprints_cover_the_agent_seam(runner):
     mod = _load(REPO / runner, "seam_eval_" + runner.split("/")[1])
     assert any(str(p).endswith("agent_session.py") for p in mod.qualification_input_hashes())
+
+
+def _feed_id(kind, sid):
+    import base64
+    enc = lambda s: base64.b64encode(s.encode()).decode()
+    return f"cmux-feed-v1:{enc(kind)}:{enc(sid)}"
+
+
+def test_watcher_reads_cmuxs_feed_session_ids(home, tmp_path):
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_feed")
+    sid = "9d49bf4e-1111-2222-3333-444455556666"
+    copilot_dir = tmp_path / "session-state"
+    (copilot_dir / sid).mkdir(parents=True)
+    events = copilot_dir / sid / "events.jsonl"
+    events.write_text("")
+    projects = tmp_path / "projects"
+    (projects / "-w").mkdir(parents=True)
+    claude = projects / "-w" / f"{sid}.jsonl"
+    claude.write_text("")
+    assert watcher.payload_session(_feed_id("copilot", sid)) == ("copilot", sid)
+    assert watcher.transcript_path("/w", _feed_id("copilot", sid), projects, copilot_dir) == events
+    assert watcher.transcript_path("/w", _feed_id("claude", sid), projects, copilot_dir) == claude
+    assert watcher.transcript_path("/w", f"claude-{sid}", projects, copilot_dir) == claude
+    assert watcher.payload_session("cmux-feed-v1:%%%:zz") == (None, None)
+
+
+def test_copilot_sessions_get_the_users_rules(home):
+    assert "COPILOT_CUSTOM_INSTRUCTIONS_DIRS" not in ag.session_command(ag.COPILOT, model="")
+    rules = home / ".claude" / "CLAUDE.md"
+    rules.write_text("# rules\n")
+    folder = home / ".assistant" / "copilot-instructions"
+    command = ag.session_command(ag.COPILOT, model="")
+    assert command.startswith(f"COPILOT_CUSTOM_INSTRUCTIONS_DIRS={folder} command copilot ")
+    link = folder / ".github" / "instructions" / "lessons.instructions.md"
+    assert link.is_symlink() and link.resolve() == rules.resolve()
+    assert f"&& COPILOT_CUSTOM_INSTRUCTIONS_DIRS={folder} " in ag.resume_command(ag.COPILOT, "s", "/w")
+    assert "COPILOT_CUSTOM_INSTRUCTIONS_DIRS" not in ag.session_command(ag.CLAUDE)
+    assert ag.copilot_instructions_dir() == folder
+
+
+def test_comms_copilot_runs_the_model_picked_for_comms(home, monkeypatch):
+    monkeypatch.setattr(cs, "HOME", home)
+    monkeypatch.setenv("COPILOT_MODEL", "everyone")
+    monkeypatch.setenv("COMMS_COPILOT_MODEL", "comms-only")
+    assert "--model comms-only" in cs._warm_launch(ag.COPILOT)
+
+
+def test_picking_copilot_for_the_slack_session_by_env_counts_as_picked(home, monkeypatch):
+    _pick(home, "claude")
+    assert not ag.copilot_chosen()
+    monkeypatch.setenv("ASSISTANT_COMMS_AGENT", "copilot")
+    assert ag.copilot_chosen()
+
+
+def test_a_default_copilot_path_names_copilot_when_copilot_home_moved(monkeypatch, tmp_path):
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "elsewhere"))
+    assert ag.agent_from_transcript("/Users/x/.copilot/session-state/s/events.jsonl") == ag.COPILOT
+
+
+def test_copilot_block_style_names_read_as_text(tmp_path):
+    (tmp_path / "workspace.yaml").write_text("cwd: /w\nname: |-\n  Fix the trim\n  snapping bug\nbranch: main\n")
+    assert ag.copilot_session_field(tmp_path, "name") == "Fix the trim\nsnapping bug"
+    (tmp_path / "workspace.yaml").write_text("name: >-\n  Fold\n  me\n")
+    assert ag.copilot_session_field(tmp_path, "name") == "Fold me"
+
+
+def test_watcher_snippets_drop_copilots_typing_bar():
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_typing")
+    assert watcher._is_tui_noise(" Interactive · Allow All · @ files/sessions · # issues")

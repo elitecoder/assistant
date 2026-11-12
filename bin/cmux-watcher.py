@@ -40,6 +40,8 @@ never calls `launchctl load`.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -351,7 +353,8 @@ _CHROME_RE = re.compile(r"^[\s│─╭╮╰╯┌┐└┘├┤┬┴┼▔�
 _STATUS_BAR_RE = re.compile(
     r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply"
     r"|← open sidebar · |/ commands · \? help|ctrl\+e change environment"
-    r"|Session: [\d.]+ AIC used|ctrl\+c interrupt|^\s*\S+ \[⎇ [^\]]*\]\s*$")
+    r"|Session: [\d.]+ AIC used|ctrl\+c interrupt|^\s*\S+ \[⎇ [^\]]*\]\s*$"
+    r"|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · ")
 # Claude Code's live spinner (`✽ Boogieing… (12m 1s · ↓ 48.9k tokens)`) and its
 # turn-done line (`✻ Baked for 2m 10s · done 10:40 PM`) only say the agent is or
 # was busy.
@@ -395,6 +398,26 @@ def last_lines(text: str, n: int = 3) -> str:
 # ─── agent's last message (Claude transcript tail) ───────────────────────────
 
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+_FEED_ID_PREFIX = "cmux-feed-v1:"
+
+
+def payload_session(session_id: str | None) -> tuple[str | None, str | None]:
+    """(agent kind or None, bare session id or None) for a hook payload's
+    session id: cmux's `cmux-feed-v1:<base64 kind>:<base64 id>`, or the older
+    `claude-<id>` / `copilot-<id>` / bare id."""
+    if not session_id:
+        return None, None
+    if session_id.startswith(_FEED_ID_PREFIX):
+        parts = session_id[len(_FEED_ID_PREFIX):].split(":")
+        try:
+            kind, bare = (base64.b64decode(p, validate=True).decode() for p in parts)
+        except (ValueError, binascii.Error, UnicodeDecodeError):
+            return None, None
+        return kind, bare
+    for kind in ("claude", "copilot"):
+        if session_id.startswith(f"{kind}-"):
+            return kind, session_id.removeprefix(f"{kind}-")
+    return None, session_id
 
 
 def transcript_path(cwd: str | None, session_id: str | None,
@@ -402,21 +425,24 @@ def transcript_path(cwd: str | None, session_id: str | None,
                     copilot_dir: Path = COPILOT_SESSIONS) -> Path | None:
     """Locate the Claude Code or Copilot transcript for a hook payload's session.
 
-    cmux prefixes the payload's session id with its source
-    (`claude-6746dc4f-…`); the file on disk is named by the bare id. The hook's
-    cwd is the session's current dir, which drifts from the launch dir after a
-    `cd`, so a miss looks for the session id under every project dir. Copilot
-    keeps each session at `<id>/events.jsonl`."""
-    if not session_id or not _SESSION_ID_RE.fullmatch(session_id):
+    cmux tags the payload's session id with its source (payload_session); the
+    file on disk is named by the bare id. The hook's cwd is the session's
+    current dir, which drifts from the launch dir after a `cd`, so a miss looks
+    for the session id under every project dir. Copilot keeps each session at
+    `<id>/events.jsonl`."""
+    kind, bare = payload_session(session_id)
+    if not bare or not _SESSION_ID_RE.fullmatch(bare):
         return None
-    name = f"{session_id.removeprefix('claude-')}.jsonl"
-    if cwd:
+    name = f"{bare}.jsonl"
+    if kind != "copilot" and cwd:
         direct = projects_dir / agent_session.claude_project_slug(cwd) / name
         if direct.is_file():
             return direct
-    events = copilot_dir / session_id.removeprefix("copilot-") / "events.jsonl"
-    if events.is_file():
+    events = copilot_dir / bare / "events.jsonl"
+    if kind != "claude" and events.is_file():
         return events
+    if kind == "copilot":
+        return None
     return next((d / name for d in projects_dir.iterdir() if (d / name).is_file()), None)
 
 
