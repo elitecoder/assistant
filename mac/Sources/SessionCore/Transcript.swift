@@ -33,7 +33,9 @@ public enum Transcript {
         (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
     }
 
-    static func humanText(_ r: [String: Any]) -> String? {
+    /// The operator's text in a user record. `skipping` leaves out app-written lines such as command output (which
+    /// start with "<"); delivery checks match the raw text instead, so a message that starts with "<" still counts.
+    static func humanText(_ r: [String: Any], skipping: Bool = true) -> String? {
         guard r["type"] as? String == "user", r["isMeta"] as? Bool != true, r["isSidechain"] as? Bool != true,
               let message = r["message"] as? [String: Any] else { return nil }
         var text: String?
@@ -45,7 +47,7 @@ public enum Transcript {
                 .joined(separator: " ")
         }
         guard let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty,
-              !skipPrefixes.contains(where: { t.hasPrefix($0) }) else { return nil }
+              !skipping || !skipPrefixes.contains(where: { t.hasPrefix($0) }) else { return nil }
         return t
     }
 

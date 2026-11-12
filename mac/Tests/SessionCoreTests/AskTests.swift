@@ -36,10 +36,10 @@ final class AskTests: XCTestCase {
         XCTAssertTrue(digest.contains("- Spawned run (workspace:9), folder /x"))
     }
 
-    func testPromptSendsFleetOnlyWhenGivenAndQuestionLast() {
-        XCTAssertEqual(Asker.prompt(question: "why?", fleet: nil, focus: nil), "# Question\n\nwhy?")
-        let p = Asker.prompt(question: "why?", fleet: "FLEET", focus: (title: "T [1]", exchange: "EX"))
-        XCTAssertEqual(p, "FLEET\n\n# Recent conversation in T [1]\n\nEX\n\n# Question\n\nwhy?")
+    func testContextRowCarriesFleetAndFocusUnderTheMarker() {
+        XCTAssertNil(TurnContext.row(fleet: nil, focus: nil))
+        let row = TurnContext.row(fleet: "FLEET", focus: (title: "T [1]", exchange: "EX"))
+        XCTAssertEqual(row, TurnContext.marker + "\n\nFLEET\n\n# Recent conversation in T [1]\n\nEX")
     }
 
     func testParseReadsTheFinalJSONLine() {
@@ -50,45 +50,49 @@ final class AskTests: XCTestCase {
     }
 }
 
+/// The chat's and the summarizer's `claude` command lines, pinned exactly: any widening (more tools, a looser
+/// permission mode, user settings, a missing guard hook) fails here.
 final class AskCommandTests: XCTestCase {
-    func arguments(resume: String) throws -> [String] {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-fc", "claude() { printf '%s\\n' \"$@\" }; " + Asker.command]
-        p.environment = ["ASSISTANT_INSTRUCTIONS": "Be brief. Use \"quotes\".", "ASSISTANT_RESUME": resume]
-        let out = Pipe()
-        p.standardOutput = out
-        try p.run()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+    let turn = ClaudeInvocation(systemPrompt: "Be brief. Use \"quotes\".", input: Data(), model: "haiku", effort: "high")
+
+    func testTheChatRunsSandboxedWithOnlyItsOwnCommands() {
+        let guardJSON = #"{"hooks":{"PreToolUse":[{"hooks":[{"command":"'/A/Assistant Bar' --pretooluse-guard","type":"command"}],"matcher":"*"}]}}"#
+        XCTAssertEqual(Asker.arguments(turn, tool: "/A/Assistant Bar"), [
+            "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--setting-sources", "", "--settings", guardJSON,
+            "--tools", "Bash",
+            "--allowedTools", "Bash(/A/Assistant Bar --sessions)", "Bash(/A/Assistant Bar --send:*)", "Bash(/A/Assistant Bar --wait:*)",
+            "Bash(/A/Assistant Bar --transcript:*)", "Bash(/A/Assistant Bar --find:*)",
+            "Bash(/A/Assistant Bar --search:*)", "Bash(/A/Assistant Bar --memory:*)",
+            "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
+            "--append-system-prompt", "Be brief. Use \"quotes\".", "--model", "haiku", "--effort", "high",
+        ])
     }
 
-    func testFollowUpPassesResumeAndIdAsSeparateArguments() throws {
-        let args = try arguments(resume: "abc-123")
-        XCTAssertEqual(Array(args.suffix(2)), ["--resume", "abc-123"])
-        XCTAssertTrue(args.contains("Be brief. Use \"quotes\"."))
+    func testTheGuardHookQuotesTheToolPathForTheShell() throws {
+        let settings = try JSONSerialization.jsonObject(with: Data(ClaudeSandbox.guardSettings(tool: "/A/it's").utf8)) as? [String: Any]
+        let hook = ((((settings?["hooks"] as? [String: Any])?["PreToolUse"] as? [[String: Any]])?.first?["hooks"]) as? [[String: Any]])?.first
+        XCTAssertEqual(hook?["command"] as? String, #"'/A/it'\''s' --pretooluse-guard"#)
     }
 
-    func testFirstQuestionHasNoResume() throws {
-        XCTAssertFalse(try arguments(resume: "").contains("--resume"))
+    func testTheSummarizerRunsWithoutToolsOrUserSettings() {
+        XCTAssertEqual(ClaudeSummarizer.arguments(model: "haiku"), [
+            "-p", "--output-format", "json", "--setting-sources", "", "--tools", "", "--permission-mode", "dontAsk",
+            "--strict-mcp-config", "--disable-slash-commands", "--system-prompt", ClaudeSummarizer.system, "--model", "haiku",
+        ])
     }
-}
 
-final class AskModelTests: XCTestCase {
-    func testModelFlagFollowsTheSetting() throws {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-fc", "claude() { printf '%s\\n' \"$@\" }; " + Asker.command]
-        p.environment = ["ASSISTANT_MODEL": "haiku", "ASSISTANT_RESUME": ""]
-        let out = Pipe()
-        p.standardOutput = out
-        try p.run()
-        let args = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).split(separator: "\n")
-        p.waitUntilExit()
-        XCTAssertEqual(Array(args.suffix(2)), ["--model", "haiku"])
+    func testTheBinaryIsResolvedWithoutTheAlias() {
+        let exists: (String) -> Bool = { ["/opt/c", "/h/.local/bin/claude", "/w/claude"].contains($0) }
+        XCTAssertEqual(ClaudeSandbox.resolve(environment: ["ASSISTANT_CLAUDE": "/opt/c", "HOME": "/h"], whence: { "/w/claude" }, isExecutable: exists), "/opt/c")
+        XCTAssertEqual(ClaudeSandbox.resolve(environment: ["HOME": "/h"], whence: { "/w/claude\n" }, isExecutable: exists), "/w/claude")
+        XCTAssertEqual(ClaudeSandbox.resolve(environment: ["HOME": "/h"], whence: { "claude: aliased to claude --model x" }, isExecutable: exists),
+                       "/h/.local/bin/claude")
+        XCTAssertNil(ClaudeSandbox.resolve(environment: ["HOME": "/none"], whence: { nil }, isExecutable: { _ in false }))
+    }
+
+    func testEffortIsAlwaysExplicit() {
         XCTAssertEqual(Asker.defaultModel, "haiku")
-        XCTAssertEqual(Asker.effort(for: "haiku"), "high")
-        XCTAssertNil(Asker.effort(for: "opus"))
+        for model in ["haiku", "sonnet", "opus"] { XCTAssertEqual(Asker.effort(for: model), "high") }
     }
 }

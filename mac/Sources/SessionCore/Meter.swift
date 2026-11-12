@@ -12,6 +12,22 @@ public enum Meter {
         return min(1, max(0, (db - floorDB) / -floorDB))
     }
 
+    /// The level of the loudest channel, so a microphone that records on its second channel still shows.
+    public static func loudest(_ channels: [UnsafeBufferPointer<Float>]) -> Float {
+        channels.map(level).max() ?? 0
+    }
+
+    /// All channels averaged into one, so speech on any channel reaches the recognizer.
+    public static func mono(_ channels: [UnsafeBufferPointer<Float>], into out: UnsafeMutableBufferPointer<Float>) {
+        guard let first = channels.first else { return }
+        let scale = 1 / Float(channels.count)
+        for i in 0..<min(out.count, first.count) {
+            var sum: Float = 0
+            for channel in channels where i < channel.count { sum += channel[i] }
+            out[i] = sum * scale
+        }
+    }
+
     /// The newest `count` levels, padded with silence at the front.
     public static func window(_ levels: [Float], adding level: Float, count: Int) -> [Float] {
         let all = levels + [level]

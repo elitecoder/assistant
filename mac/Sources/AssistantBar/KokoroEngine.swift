@@ -23,6 +23,8 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
     private var tts: KokoroTTS?
     private var embeddings: [String: MLXArray] = [:]
     private var unload: DispatchWorkItem?
+    /// Download state, touched from the main thread and URLSession's queue, under `lock`.
+    private let lock = NSLock()
     private var pending: [KokoroFile] = []
     private var current: KokoroFile?
     private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
@@ -35,7 +37,16 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
         return arm
     }
 
-    override init() {
+    /// The files that fail their checksum, checked once before the first load; tests stand in a result.
+    private let damaged: () -> [KokoroFile]
+    private var verified = false
+    /// Downloads damaged files again; tests record the call instead.
+    private let redownload: (([KokoroFile]) -> Void)?
+
+    init(damaged: @escaping () -> [KokoroFile] = { ModelFiles.needed(Kokoro.files, in: KokoroEngine.folder) },
+         redownload: (([KokoroFile]) -> Void)? = nil) {
+        self.damaged = damaged
+        self.redownload = redownload
         super.init()
         if Self.installed { status = .ready }
     }
@@ -48,53 +59,61 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
 
     func download() {
         guard Self.supported else { return }
-        if case .downloading = status { return }
-        if Self.installed { status = .ready; return }
+        let begin: Bool = lock.withLock {
+            if case .downloading = status { return false }
+            if Self.installed {
+                status = .ready
+                return false
+            }
+            pending = Kokoro.files.filter { !FileManager.default.fileExists(atPath: Self.path($0).path) }
+            status = .downloading(0)
+            return true
+        }
+        guard begin else { return }
         try? FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
-        pending = Kokoro.files.filter { !FileManager.default.fileExists(atPath: Self.path($0).path) }
-        status = .downloading(0)
         next()
     }
 
     private func next() {
-        guard !pending.isEmpty else {
-            status = .ready
-            return
+        let file: KokoroFile? = lock.withLock {
+            current = pending.isEmpty ? nil : pending.removeFirst()
+            if current == nil { status = .ready }
+            return current
         }
-        current = pending.removeFirst()
-        session.downloadTask(with: current!.url).resume()
+        if let file { session.downloadTask(with: file.url).resume() }
     }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64,
                     totalBytesWritten written: Int64, totalBytesExpectedToWrite expected: Int64) {
-        guard expected > 0, current == Kokoro.model else { return }
-        status = .downloading(Double(written) / Double(expected))
+        lock.withLock {
+            guard expected > 0, current == Kokoro.model else { return }
+            status = .downloading(Double(written) / Double(expected))
+        }
     }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let file = current else { return }
-        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200, (try? Kokoro.sha256(of: location)) == file.sha256 else {
-            self.status = .failed("The natural voice download was incomplete (\(file.name)). It retries next time.")
-            pending = []
+        guard let file = lock.withLock({ current }) else { return }
+        let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+        guard ModelFiles.accept(location, as: file, status: code, in: Self.folder) else {
+            lock.withLock {
+                status = .failed("The natural voice download was incomplete (\(file.name)). It retries next time.")
+                pending = []
+            }
             return
         }
-        do {
-            try FileManager.default.moveItem(at: location, to: Self.path(file))
-            next()
-        } catch {
-            self.status = .failed("Couldn't save the natural voice: \(error.localizedDescription)")
-        }
+        next()
     }
 
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error else { return }
-        status = .failed("The natural voice didn't download: \(error.localizedDescription). It retries next time.")
-        pending = []
+        lock.withLock {
+            status = .failed("The natural voice didn't download: \(error.localizedDescription). It retries next time.")
+            pending = []
+        }
     }
 
     /// Speaks `text` with `voiceID` one sentence at a time. `chunk` gets 24 kHz samples; `done` reports success.
-    func speak(_ text: String, voiceID: String, isCurrent: @escaping () -> Bool,
+    func speak(_ text: String, voiceID: String, speed: Float = 1, isCurrent: @escaping () -> Bool,
                chunk: @escaping ([Float]) -> Void, done: @escaping (Bool) -> Void) {
         queue.async {
             self.unload?.cancel()
@@ -106,7 +125,7 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
             let language: Language = key.hasPrefix("b") ? .enGB : .enUS
             var produced = false
             for sentence in Kokoro.chunks(text) where isCurrent() {
-                for samples in self.generate(sentence, voice: voice, language: language, depth: 0) where isCurrent() {
+                for samples in self.generate(sentence, voice: voice, language: language, speed: speed, depth: 0) where isCurrent() {
                     produced = true
                     chunk(samples)
                 }
@@ -115,12 +134,12 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
         }
     }
 
-    private func generate(_ text: String, voice: MLXArray, language: Language, depth: Int) -> [[Float]] {
+    private func generate(_ text: String, voice: MLXArray, language: Language, speed: Float, depth: Int) -> [[Float]] {
         do {
-            let (audio, _) = try tts!.generateAudio(voice: voice, language: language, text: text)
+            let (audio, _) = try tts!.generateAudio(voice: voice, language: language, text: text, speed: speed)
             return [audio]
         } catch KokoroTTS.KokoroTTSError.tooManyTokens where depth < 6 {
-            return Kokoro.halves(text).flatMap { generate($0, voice: voice, language: language, depth: depth + 1) }
+            return Kokoro.halves(text).flatMap { generate($0, voice: voice, language: language, speed: speed, depth: depth + 1) }
         } catch {
             voiceLog.error("kokoro failed: \(error.localizedDescription, privacy: .public)")
             return []
@@ -129,6 +148,16 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
 
     private func load() -> Bool {
         guard Self.supported, Self.installed else { return false }
+        if !verified {
+            let bad = damaged()
+            guard bad.isEmpty else {
+                voiceLog.error("kokoro: \(bad.map(\.name).joined(separator: ", "), privacy: .public) failed its checksum; downloading again")
+                lock.withLock { status = .notDownloaded }
+                if let redownload { redownload(bad) } else { download() }
+                return false
+            }
+            verified = true
+        }
         if tts == nil {
             tts = KokoroTTS(modelPath: Self.path(Kokoro.model))
             embeddings = NpyzReader.read(fileFromPath: Self.path(Kokoro.voicePack)) ?? [:]

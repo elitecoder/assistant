@@ -10,6 +10,110 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- A pause mid-sentence no longer cuts your question off. Assistant still ends
+  a question 2.5 seconds after you stop talking, but 0.2 seconds into each
+  pause it asks Pipecat's Smart Turn v3.2 (BSD 2-Clause) whether you've
+  finished, and when it says you haven't (below 0.5), Assistant waits up to 4
+  seconds of silence. Silero VAD (MIT) notices when you stop talking; both run
+  on your Mac with ONNX Runtime. Smart Turn never ends a question early. On 40
+  questions it wasn't tuned on (clean, and with brown, pink, fan, and babble
+  noise at 10 to 25 dB), ending early cut off 1 to 3 paused questions in every
+  condition but babble, even with the recognizer's punctuation and last word
+  as a second check. What shipped cut off none of them and none of 32 more,
+  where the 2.5-second timer cut off 2 or 3 in six of nine conditions; it held 0 to 4
+  of 20 finished questions longer than the timer. When noise sounds like
+  speech to the voice detector, the timer after your last recognized word
+  still ends the question. The models (35 MB) download once into
+  `~/Library/Application Support/Assistant/SmartTurn` and are checked by
+  SHA-256; until then, and if they can't load, only the timer decides.
+  `AssistantBar --turn-eval <file.wav>...` prints the timer's decision, the
+  shipped one, and early ending's for each file.
+- Talk Mode: select the waveform button, hold Control-Option-V, or start the
+  app with `--talk`, and Assistant listens, answers, speaks, and listens again
+  until you select **Stop** or press Esc. While it speaks, the microphone stays
+  open with Apple's voice processing, which cancels Assistant's own voice, only
+  to notice you talking over the answer: half a second of voice above the
+  room's noise stops the answer, drops the rest of it, and asks your next
+  question as soon as the interrupted answer is saved, while a cough or an
+  "mm-hmm" doesn't. **Stop speaking**, **Stop**, and Esc also drop the rest of
+  an answer that's still streaming. Nothing is transcribed while Assistant speaks. A turn
+  with no question ends Talk Mode.
+- A spoken answer starts on its first sentence instead of waiting for the
+  whole reply. Assistant runs Claude with `--include-partial-messages` and
+  speaks each sentence as it's written; the stored chat and the reply are
+  unchanged. On five real questions, the first audio came 0.8 to 1.3 seconds
+  sooner (for example 3.9 seconds instead of 5.2). Try it with
+  `AssistantBar --ask "<question>" --spoken --say-to answer.wav`, which renders
+  the answer to a file and prints both timings.
+- Assistant for Mac transcribes your voice with Apple's SpeechAnalyzer and
+  SpeechTranscriber on macOS 26 and later. On a test set of 32 spoken
+  questions, half with room noise added, it got 25 of 444 words wrong, down
+  from 69 with the older SFSpeechRecognizer. It no longer repeats words after
+  a pause. Live text shows the model's guess, and words it has finalized stay
+  put. If the speech model isn't installed, Assistant downloads it on first
+  use and shows its progress, and uses the older recognizer until it's ready.
+  On older macOS, or without the model, it keeps the older recognizer, now
+  with your workspace titles and terms such as PR, Kokoro, and cmux as hints.
+- A question you ask while an answer is running waits its turn: Assistant
+  shows it, says it will ask it next, and asks it when the answer is done.
+- If the microphone disconnects mid-question, Assistant stops listening, says
+  so, and puts what it heard in the chat box for you to send or clear.
+- Select **Play again**, or press Control-Option-R, to hear the last answer
+  again with the current voice and speed. It starts over if Assistant is
+  already speaking. Each answer in the chat also has a play button.
+- `AssistantBar --transcribe <file.wav>` prints what voice input hears in a
+  sound file, through the same SpeechAnalyzer path. Add `--legacy` to use the
+  older recognizer.
+- Pick a talkback speed from 1× to 2× in the voice menu. It applies to Kokoro
+  and Apple's voices, and Assistant plays a short sample at the new speed.
+- Assistant for Mac now keeps its own chat history, the way Hermes Agent (MIT,
+  Nous Research) does, instead of resuming a Claude Code session. It saves each
+  question, each command Claude runs, what the command printed, and each answer
+  in `~/Library/Application Support/Assistant/conversations.db`, and reopens
+  your last chat when the app starts. Select **History** to continue an earlier
+  chat. **New chat** starts one linked to the last.
+- Each question runs a fresh `claude -p` with the chat so far, oldest first,
+  and the new question last, so each request extends the previous one word for
+  word and reuses Claude's prompt cache. The first question sends every
+  workspace, and later questions send only the workspaces that changed.
+- Show how full the chat's context is, from the prompt size Claude reports. At
+  150,000 tokens with Haiku or Sonnet (75% of a 200,000-token window), or
+  500,000 with Opus (half of 1,000,000), Assistant summarizes older turns with
+  Haiku before the next question and
+  says how many messages it compressed. Select **Compress**, or **Compress with
+  focus** to name what to keep in detail. Set `ASSISTANT_CONTEXT_WINDOW` or the
+  `contextWindow` setting to try a smaller window.
+- Let the chat's Claude search earlier chats, including compressed turns, with
+  `AssistantBar --search`, and save lasting facts to `~/.assistant/mac-memory`
+  with `AssistantBar --memory`. A chat reads memory once, when it starts.
+- `AssistantBar --ask` takes `--session NAME` to continue a named chat, and
+  `AssistantBar --compress --session NAME` compresses it. `ASSISTANT_DB` and
+  `ASSISTANT_MEMORY_DIR` point the terminal commands at another history and
+  memory folder.
+- Sandbox the chat's Claude. Assistant runs the `claude` binary directly
+  instead of your alias, and passes `--setting-sources ""`, so your allow list,
+  hooks, and `CLAUDE.md` no longer reach the chat. A PreToolUse guard,
+  `AssistantBar --pretooluse-guard`, allows only Assistant's own commands in
+  their exact shapes, and Read, Grep, and Glob only under `~/.claude/projects`.
+  Assistant runs a command only when it's the first argument, with an exact
+  argument count, so `--search '{}' --render x /tmp/f` is refused. The
+  summarizer also skips your settings and has no tools. Effort is now always
+  explicit (high), since your settings' effort level no longer applies. Set
+  `ASSISTANT_CLAUDE` if Assistant can't find `claude`.
+- Save each question, and its workspace context, before Claude runs, so a crash
+  or quitting mid-answer keeps it and any message Claude already sent. A failed
+  answer is saved as a no-reply note. History hides failed questions.
+- Compress before a turn when this turn's question and workspace context would
+  push the chat past the limit, not only the stored turns. When Claude refuses
+  a prompt as too long, compress and try once more.
+- A compaction now reloads memory into the chat's system prompt, as Hermes
+  does, so a fact saved mid-chat applies after the next compaction.
+- When a compaction can't be saved, the chat keeps going uncompressed and
+  automatic compression pauses for five minutes. The pause, and the pause after
+  a failed summary, now hold across the app and terminal commands.
+- The spoken reply style is sent only with the spoken question, not saved, so it
+  no longer shapes later typed answers.
+
 - Add Assistant for Mac, a menu bar app in `mac/` that lists the cmux sessions
   that need you, the ones that are done, and the quiet ones. It reads
   transcripts and `gh` directly, with no model and no background service.
@@ -87,6 +191,195 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   a remembered "no". An automatic update never starts them if they aren't
   running. Install with `--no-ws-numberer` to turn them off and stop a running
   copy.
+
+### Fixed
+- A Stop or interruption that lands just after an answer ends can't cancel
+  your next question: each ask has its own token, and a cancel reaches only
+  that ask. `--wait` counts the time spent finding the workspace against its
+  100-second limit, as `--send` does, and a newer transcript that names the
+  session but can't be followed gets the "may be old" note.
+- When two running sessions were resumed from one conversation, Assistant no
+  longer follows either one's newer transcript; it keeps the transcript the
+  process names and says so. A linked transcript is followed only after the
+  current one stopped growing, and a session started with both `--session-id`
+  and `--resume` is read from its `--session-id` transcript.
+- `--send` and `--wait` stop waiting after 100 seconds, under the 2-minute
+  timeout of Claude Code's Bash tool, and print "STILL WORKING: the message was
+  delivered; run --wait <workspace> to keep waiting. Don't send it again." The
+  chat's Claude keeps calling `--wait` instead of resending. A send whose
+  message never showed in the transcript still prints NOT CONFIRMED.
+- In Talk Mode, starting a question by key closes the echo-cancelled watcher,
+  so other apps aren't left ducked and only one microphone is open while you
+  talk; it opens again for the next answer. An interruption that comes while
+  the chat is compacting, or before Claude starts, cancels that answer instead
+  of letting it run muted. A line indented four or more spaces in a streamed
+  answer is read as text, not taken for a code fence.
+- Pressing the microphone or Control-Option-V during a spoken answer ends the
+  run, as talking over it does, so your next question doesn't wait for it.
+- After a barge-in or **Stop**, the chat keeps what the answer had already
+  said, including text still streaming when it ended, above the note that says
+  why, and Control-Option-R can replay it.
+- Code fences in spoken answers follow CommonMark: a fence opens only on a line
+  of its own and closes only with the same mark, at least as long, so a stray
+  ```` ``` ```` in a sentence no longer drops the rest of the answer.
+- The speed test uses its own settings store, and the rolling room-level test
+  now fails if the level just follows the last buffer.
+- Kokoro and Smart Turn files are hashed once per install. A checked file's
+  size, modification time, and checksum are stamped next to it, so the first
+  spoken answer after launch no longer hashes 340 MB; a changed file is hashed
+  again, and one that fails its check downloads again right away.
+- Talking over an answer ends only the chat's `claude` run. A compaction
+  running beside it keeps going; **Stop** still ends both.
+- Ending a run mid-`--send` (Stop, Quit, or talking over the answer) no
+  longer leaves the message pasted without its Enter: `--send` holds off
+  SIGTERM, SIGINT, and SIGHUP, in itself and in its two `cmux` calls, until
+  both finish, then exits. A send still open when the run ends is stored as
+  "Delivery unknown", and the chat's Claude checks with `--wait` before
+  sending it again.
+- Untrusted session text reaches the chat's Claude as one JSON string per
+  block instead of quoted lines. Line breaks, `<`, `>`, `[`, `]`, anything
+  whose compatibility form is one of those, and control and invisible
+  characters are escaped, so no Unicode trick can start a line, form a tag, or
+  forge a label inside a block. The old line-quoting code is gone.
+- `--send` checks how a message starts with an allow list instead of a list of
+  bad prefixes. After leading spaces, the first character must be a letter or
+  digit, or one of `"`, `'`, `(`, or `@`, and none of the first three may be a
+  combining mark or an invisible character. It reads Unicode scalars, so an
+  accent or joiner after `!`, `#`, or `/` can no longer hide it.
+- Kokoro's files are checked against their SHA-256 before the first load, and
+  a damaged one downloads again. **Stop** reads the process table off the main
+  thread, and it freezes the processes it ends first, so none can start another
+  in between, then looks once more after ending them.
+- Untrusted session text can no longer escape its block: every line break
+  (CRLF, CR, U+2028, U+2029, next line, vertical tab, form feed) is normalized,
+  labels after invisible or no-break characters are quoted, and block tags
+  anywhere in a line are escaped. Within the turn, `--send`, `--wait`,
+  `--sessions`, and `--search` print session text already marked, compaction
+  summaries are marked too, and Read, Grep, and Glob are replaced by
+  `--transcript <workspace>` and `--find '<json>'`, which print it marked.
+- Every `--send` shows in the chat with its workspace and exact text, then its
+  result: the reply, or that it wasn't sent, wasn't confirmed, or has no reply
+  yet. Plain-language sends stay unconfirmed by design.
+- `--send` refuses messages that start with `/` (a slash command), `!` (a
+  shell command), or `#` (a memory note), even behind invisible or control
+  characters, and says why, passes the message after `--`, checks the
+  back-off list against the workspace a name resolves to, presses Enter only
+  once (a message it can't confirm is reported, not resent), recognizes
+  delivery of messages that start with `<`, and follows a session to its new
+  transcript after `/clear` only when the new file's own entries carry the
+  session ID its process started with, which Claude Code keeps stamping after
+  `/clear`. A cleared file from another session, live or exited, is never
+  followed. When it can't tell (no prompt since the `/clear` yet, or the
+  session changed directory first), it keeps the named transcript and says so
+  in the reply.
+- Text from other sessions reaches the chat's Claude in marked blocks that a
+  session can't close or use to fake one of your turns.
+- Stopping an answer, or `claude` exiting before it read the chat, no longer
+  kills the app with SIGPIPE; the turn's record, including any message
+  already sent to another session, is kept.
+- **Stop** and quitting now end every process Assistant started and what those
+  started in turn: the chat's `claude`, the summarizer, and `--send` and
+  `--wait`. A `claude` crash is recorded as a crash, not as a Stop, and the
+  `cmux`, `ps`, `gh`, and `lsof` calls time out instead of hanging a scan.
+- **Stop speaking**, **Stop**, Esc, and talking over an answer now stop a
+  streamed answer completely: the sentences Claude hasn't written yet aren't
+  read either. Talking over an answer also ends Claude's run and everything it
+  started, as **Stop** does, even mid-command, and saves what it wrote with
+  "Interrupted by voice.", so your new question is asked as soon as you finish
+  it. Talk Mode no longer listens again before asking that question.
+- **Stop** and Esc also drop the questions waiting for the answer they end, and
+  pressing the microphone or Control-Option-V while an answer streams, even
+  between its sentences, silences the rest of it.
+- Talk Mode listens for interruptions only while Assistant's voice is playing,
+  and starts over for each sentence, so talking while Claude is still writing
+  no longer uses up the interruption. Stopping Talk Mode mid-question drops
+  the half question, a disconnected microphone ends Talk Mode with a note, and
+  interrupting while you're already asking keeps your question. The room's
+  noise level comes from the second before the answer plays, not from its
+  first moment, which can hold the answer's own echo.
+- The panel says when Talk Mode watches a different microphone than the one
+  picked (voice processing uses the Mac's default input), or when that
+  microphone sends no sound. Only a microphone sending nothing at all counts;
+  a quiet room doesn't.
+- Code blocks in a spoken answer aren't read aloud, whether fenced with
+  backticks or tildes. A block left open ends with its part of the answer, so
+  what Claude writes after a command is still read.
+- Control-Option-R while an answer streams replays the previous answer, and
+  the streaming one isn't read after it.
+- The microphone menu notices the lid opening or closing, so it stops picking
+  the built-in microphone while the lid is closed.
+- Smart Turn and Kokoro downloads are refused unless their SHA-256 matches, a
+  damaged Smart Turn file is downloaded again before it's loaded, and Kokoro
+  now downloads from a pinned commit. Loading Smart Turn no longer holds a
+  lock the main thread waits on.
+- The microphone menu reads the device list only when Core Audio reports a
+  change, not on every redraw while listening.
+- Apple's voices now play at the speed you pick. Their rate isn't linear:
+  1.5× used to play at about 2.5×, and 2× at about 4×. Assistant now uses a
+  map measured from rendered speech, within 15% of each speed.
+- Assistant never speaks into an open microphone. A spoken answer that arrives
+  while you're talking waits until you finish, and voice and speed samples and
+  **Play again** wait for listening to end.
+- Long questions and files are transcribed in full. `--transcribe` waits for
+  the recognizer to finish the whole file, reads it a little at a time, and
+  exits with an error when it hears no words. A spoken question waits for
+  final text as long as the recognizer still has audio, from 2 to 30 seconds.
+- The older recognizer no longer drops the first sentence after a pause when
+  the next one starts with the same word, or repeats a phrase it revised. It
+  now detects a restart from the recognizer's word timings.
+- When Apple's speech model isn't ready within 1.5 seconds of a press, the
+  question goes to the older recognizer, with the audio heard so far. A failed
+  download is retried a minute later, and repeated failures to prepare the
+  model switch to the older recognizer until then.
+- A microphone that records only on its second channel is heard: Assistant
+  mixes every channel for recognition and meters the loudest one.
+- AirPods are no longer skipped because a silent buffer from before they
+  started was counted against them, and a late result or a stale retry from
+  one question no longer leaks into the next.
+- **Stop speaking** stays up until speech ends, even after **Play again**
+  cuts off an Apple voice.
+- The context window uses the window reported for the model that answered,
+  and ignores reports under 8,000 or over 10,000,000 tokens.
+- Workspace titles longer than 60 characters aren't sent to the recognizer as
+  one phrase, a failed turn's "No reply" note isn't replayed, and the chat
+  scrolls when the live text is revised or the speech model's download
+  progress changes.
+- Start listening in 0.2 to 0.3 seconds, down from 1 to 1.7 seconds. Assistant gets the microphone and the speech model ready when it
+  starts and when you open the panel, without turning the microphone on, and
+  skips the permission check when access is already granted. The listening
+  row appears the moment you press, and says **Starting…** until the
+  microphone sends sound.
+- Listen through AirPods and other Bluetooth headsets. Assistant used to tap
+  them at the rate the previous device used, which failed and fell back to
+  another microphone. It now uses the headset's own rate, and gives a
+  Bluetooth headset 3 seconds, not 0.7, to switch into call mode before it
+  tries another microphone. AirPods still send silence for about 1.6 seconds
+  while they switch, so wait for **Listening…** before you talk.
+- Keep the Mac chat scrolled to the newest message: it now follows new
+  replies, the Working and Listening rows, and reopened chats.
+- Keep everything you said when you pause mid-sentence. Apple's on-device
+  recognizer can start a fresh transcript after a pause; Assistant now joins
+  it to what it already heard. It also waits 2.5 seconds of silence, up from
+  1.8, before it treats you as done.
+- Use the context window the provider reports for each model: 1,000,000
+  tokens for Haiku, Sonnet, and Opus today, up from a fixed 200,000 for Haiku
+  and Sonnet. Compression starts at half the window.
+- Stop Assistant for Mac from crashing when it starts listening right after
+  microphone access is granted. It now waits for a microphone whose format
+  isn't ready, skips one that delivers no audio, and catches audio errors
+  macOS raises instead of quitting.
+- A reply or tool output containing U+2028, U+2029, or U+0085 is no longer cut
+  at that character and lost. Stream-json lines now end only at a line feed.
+- A summary folded into a kept message no longer strips that message's
+  `[Operator]` or `[You]` label from the prompt.
+- Workspace context rows are no longer taken for the operator's request in a
+  summary, and session search no longer offers them as matches.
+- Two Assistant processes on one chat no longer both send the full workspace
+  digest, or both save a memory snapshot: they take turns on a per-chat lock.
+- History no longer shows a compressed question twice.
+- Long tool-call commands are capped at 20,000 characters, like tool output.
+- **New chat** and **History** wait while an answer is running, so the late
+  reply can't land in another chat.
 
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work

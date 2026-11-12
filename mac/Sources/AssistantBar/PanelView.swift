@@ -59,12 +59,13 @@ struct PanelView: View {
         }
         .padding(14)
         .frame(width: 440, height: 720)
+        .onExitCommand { model.stopTalkMode() }
     }
 
     var footer: String {
         let working = model.result.items(.working).count
         let untracked = model.result.untracked.count
-        return "\(working) working · \(untracked) not tracked · ⌃⌥Space opens · ⌃⌥V talks"
+        return "\(working) working · \(untracked) not tracked · ⌃⌥Space opens · ⌃⌥V talks · ⌃⌥R replays"
     }
 
     @ViewBuilder
@@ -128,7 +129,6 @@ struct ChatView: View {
     @ObservedObject var model: Model
     @ObservedObject var listener: Listener
     @ObservedObject var speaker: Speaker
-    @State private var draft = ""
     @FocusState private var typing: Bool
 
     var body: some View {
@@ -143,30 +143,45 @@ struct ChatView: View {
                     Text("Ask or tell it to work with a session. ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                HistoryMenu(model: model)
                 if !model.chat.isEmpty {
                     Button("New chat") { model.newChat() }.buttonStyle(.borderless).font(.caption)
+                        .disabled(model.asking || model.compressing)
                 }
             }
             HStack(spacing: 12) {
                 MicrophoneMenu(listener: listener, prefix: "")
                 VoiceMenu(speaker: speaker)
-                ModelMenu()
+                ModelMenu(chat: model)
                 Spacer()
             }
-            if !model.chat.isEmpty || model.asking || listener.listening {
+            if !model.chat.isEmpty {
+                ContextBar(model: model)
+            }
+            if model.talkMode {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform").foregroundStyle(.red)
+                    Text("Talk Mode: I listen again after each answer. Talk over an answer to interrupt it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Stop") { model.stopTalkMode() }
+                        .buttonStyle(.borderless).font(.caption)
+                        .keyboardShortcut(.cancelAction)
+                }
+                if let note = model.talkNote {
+                    Text(note).font(.caption2).foregroundStyle(.orange)
+                }
+            }
+            if !model.chat.isEmpty || model.asking || listener.listening || listener.finishing {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(model.chat) { Bubble(turn: $0).id($0.id) }
-                            if listener.listening {
-                                VStack(alignment: .trailing, spacing: 4) {
-                                    Waveform(levels: listener.levels)
-                                    Text(listener.heard.isEmpty ? "Listening…" : listener.heard).font(.callout)
-                                    MicrophoneMenu(listener: listener, prefix: "Using ")
-                                    if let note = listener.note {
-                                        Text(note).font(.caption2).foregroundStyle(.orange)
-                                    }
-                                }.frame(maxWidth: .infinity, alignment: .trailing).id("listening")
+                            ForEach(model.chat) { turn in
+                                Bubble(turn: turn, replay: turn.role == .assistant ? { model.play(turn.text) } : nil)
+                                    .id(turn.id)
+                            }
+                            if listener.listening || listener.finishing {
+                                ListeningRow(listener: listener).id("listening")
                             }
                             if model.asking {
                                 HStack(spacing: 6) {
@@ -175,16 +190,17 @@ struct ChatView: View {
                                     Button("Stop") { model.stopAsking() }.buttonStyle(.borderless).font(.caption)
                                 }.id("asking")
                             }
+                            Color.clear.frame(height: 1).id(Self.bottom)
                         }
                     }
+                    .defaultScrollAnchor(.bottom)
                     .frame(height: 200)
-                    .onChange(of: model.chat.count) { _, _ in
-                        withAnimation { proxy.scrollTo(model.chat.last?.id, anchor: .bottom) }
-                    }
+                    .onAppear { scrollToBottom(proxy, animated: false) }
+                    .onChange(of: scrollKey) { _, _ in scrollToBottom(proxy, animated: true) }
                 }
             }
             HStack {
-                TextField("Tell workspace 25 to use my token, then report back", text: $draft, axis: .vertical)
+                TextField("Tell workspace 25 to use my token, then report back", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
                     .focused($typing)
@@ -197,28 +213,89 @@ struct ChatView: View {
                 .buttonStyle(.borderless)
                 .disabled(model.asking)
                 .help(listener.listening ? "Stop listening" : "Talk (⌃⌥V)")
+                Button { model.talkMode ? model.stopTalkMode() : model.toggleTalkMode() } label: {
+                    Image(systemName: model.talkMode ? "waveform.circle.fill" : "waveform.circle")
+                        .font(.title2)
+                        .foregroundStyle(model.talkMode ? Color.red : Color.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.asking && !model.talkMode)
+                .help(model.talkMode ? "Stop Talk Mode (Esc)" : "Talk Mode: talk back and forth hands-free (hold ⌃⌥V)")
+                .accessibilityLabel(model.talkMode ? "Stop Talk Mode" : "Talk Mode")
+                Button { model.replay() } label: {
+                    Image(systemName: "arrow.counterclockwise.circle.fill").font(.title2)
+                }
+                .buttonStyle(.borderless)
+                .disabled(Replay.target(model.chat) == nil || listener.listening)
+                .help("Play again (⌃⌥R)")
+                .accessibilityLabel("Play again")
                 if speaker.speaking {
-                    Button { speaker.stop() } label: { Image(systemName: "speaker.slash.circle.fill").font(.title2) }
+                    Button { model.stopSpeaking() } label: { Image(systemName: "speaker.slash.circle.fill").font(.title2) }
                         .buttonStyle(.borderless)
                         .help("Stop speaking")
                 }
                 Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
                     .buttonStyle(.borderless)
-                    .disabled(model.asking || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(model.asking || model.draft.trimmingCharacters(in: .whitespaces).isEmpty)
                     .help("Send")
             }
         }
         .onChange(of: model.about?.id) { _, _ in typing = true }
     }
 
+    static let bottom = "chat-bottom"
+
+    var scrollKey: [String] {
+        Self.scrollKey(chat: model.chat, asking: model.asking, listening: listener.listening || listener.finishing,
+                       heard: listener.heard, note: listener.note, soundArrived: listener.soundArrived,
+                       modelNote: ListeningText.modelNote(listener.model))
+    }
+
+    /// Anything that adds or grows content at the bottom of the chat.
+    static func scrollKey(chat: [ChatTurn], asking: Bool, listening: Bool, heard: String, note: String?,
+                          soundArrived: Bool, modelNote: String?) -> [String] {
+        [String(chat.count), chat.last.map { "\($0.id)" } ?? "", String(asking), String(listening), heard,
+         note ?? "", String(soundArrived), modelNote ?? ""]
+    }
+
+    func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+            } else {
+                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            }
+        }
+    }
+
     func send() {
-        model.ask(draft)
-        draft = ""
+        model.ask(model.draft)
+        model.draft = ""
+    }
+}
+
+/// The waveform and live text while listening. Shows "Starting…" from the press until the microphone's first sound.
+struct ListeningRow: View {
+    @ObservedObject var listener: Listener
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Waveform(levels: listener.levels)
+            Text(ListeningText.label(heard: listener.heard, soundArrived: listener.soundArrived)).font(.callout)
+            MicrophoneMenu(listener: listener, prefix: "Using ")
+            if let note = listener.note {
+                Text(note).font(.caption2).foregroundStyle(.orange)
+            }
+            if let note = ListeningText.modelNote(listener.model) {
+                Text(note).font(.caption2).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
 struct Bubble: View {
     let turn: ChatTurn
+    var replay: (() -> Void)?
 
     var body: some View {
         VStack(alignment: turn.role == .you ? .trailing : .leading, spacing: 2) {
@@ -228,8 +305,19 @@ struct Bubble: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(fill))
                 .foregroundStyle(turn.role == .error ? Color.red : Color.primary)
-            if let cost = turn.cost {
-                Text(String(format: "$%.2f", cost)).font(.caption2).foregroundStyle(.secondary)
+            if turn.cost != nil || replay != nil {
+                HStack(spacing: 6) {
+                    if let replay {
+                        Button(action: replay) { Image(systemName: "play.circle") }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .help("Play this answer")
+                            .accessibilityLabel("Play this answer")
+                    }
+                    if let cost = turn.cost {
+                        Text(String(format: "$%.2f", cost)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: turn.role == .you ? .trailing : .leading)
@@ -308,6 +396,17 @@ struct VoiceMenu: View {
                 }
             }
             Divider()
+            Menu("Speed: \(SpeechSpeed.label(speaker.speed))") {
+                ForEach(SpeechSpeed.choices, id: \.self) { value in
+                    Button { speaker.setSpeed(value) } label: {
+                        if value == speaker.speed {
+                            Label(SpeechSpeed.label(value), systemImage: "checkmark")
+                        } else {
+                            Text(SpeechSpeed.label(value))
+                        }
+                    }
+                }
+            }
             Button("Get more natural voices…") {
                 let settings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension")!
                 if !NSWorkspace.shared.open(settings) {
@@ -324,13 +423,14 @@ struct VoiceMenu: View {
 }
 
 struct ModelMenu: View {
+    let chat: Model
     @State private var model = Asker.model
 
     var body: some View {
         Menu {
             ForEach(Asker.models, id: \.0) { id, name in
                 Button {
-                    Asker.model = id
+                    chat.useModel(id)
                     model = id
                 } label: {
                     if id == model { Label(name, systemImage: "checkmark") } else { Text(name) }
@@ -342,5 +442,74 @@ struct ModelMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Model for answers. Haiku is fast and costs about a cent per question.")
+    }
+}
+
+/// The chats Assistant has stored, most recent first. Pick one to continue it.
+struct HistoryMenu: View {
+    @ObservedObject var model: Model
+
+    var body: some View {
+        if !model.history.isEmpty {
+            Menu {
+                ForEach(model.history, id: \.session.id) { item in
+                    Button(item.session.title) { model.openChat(item.session.id) }
+                }
+            } label: {
+                Label("History", systemImage: "clock.arrow.circlepath").font(.caption)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(model.asking)
+            .help("Open an earlier chat")
+        }
+    }
+}
+
+/// How full the chat's context is, from the model's last reported prompt size, and the Compress controls.
+struct ContextBar: View {
+    @ObservedObject var model: Model
+    @State private var focusing = false
+    @State private var focus = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if let meter = model.meter {
+                    ProgressView(value: min(1, Double(meter.tokens) / Double(max(1, meter.window))))
+                        .frame(width: 60)
+                    Text(meter.text).font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Context: shown after the next answer").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.compressing { ProgressView().controlSize(.mini) }
+                Menu {
+                    Button("Compress") { model.compress(focus: nil) }
+                    Button("Compress with focus…") { focusing = true }
+                } label: {
+                    Label("Compress", systemImage: "arrow.down.right.and.arrow.up.left").font(.caption)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(model.asking || model.compressing)
+                .help("Summarize older turns to free up context")
+            }
+            if focusing {
+                HStack {
+                    TextField("What to keep in detail, for example the deploy token", text: $focus)
+                        .textFieldStyle(.roundedBorder).font(.caption)
+                        .onSubmit(run)
+                    Button("Compress", action: run).font(.caption).disabled(focus.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Cancel") { focusing = false }.buttonStyle(.borderless).font(.caption)
+                }
+            }
+        }
+    }
+
+    func run() {
+        model.compress(focus: focus)
+        focus = ""
+        focusing = false
     }
 }

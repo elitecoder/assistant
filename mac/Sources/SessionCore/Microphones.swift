@@ -5,12 +5,14 @@ public struct Microphone: Equatable, Identifiable {
     public let name: String
     public let builtIn: Bool
     public let virtual: Bool
+    public let bluetooth: Bool
 
-    public init(id: UInt32, name: String, builtIn: Bool, virtual: Bool) {
+    public init(id: UInt32, name: String, builtIn: Bool, virtual: Bool, bluetooth: Bool = false) {
         self.id = id
         self.name = name
         self.builtIn = builtIn
         self.virtual = virtual
+        self.bluetooth = bluetooth
     }
 }
 
@@ -24,5 +26,11 @@ public enum Microphones {
         if let preferred, let pick = candidates.first(where: { $0.name == preferred }) { return pick }
         let usable = candidates.filter { !$0.virtual && !($0.builtIn && lidClosed) }
         return usable.first { $0.id == defaultID } ?? usable.first { !$0.builtIn } ?? usable.first
+    }
+
+    /// A microphone format AVAudioEngine can tap. Right after access is granted, macOS can briefly
+    /// report a device with a zero sample rate or no channels.
+    public static func usable(sampleRate: Double, channels: UInt32) -> Bool {
+        sampleRate.isFinite && sampleRate > 0 && channels > 0
     }
 }

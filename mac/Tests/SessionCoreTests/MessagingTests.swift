@@ -26,6 +26,17 @@ final class MessagingTests: XCTestCase {
         ])
     }
 
+    /// A process started with both flags writes its --session-id transcript, not the --resume one.
+    func testBothFlagsMapToTheSessionID() {
+        let ps = """
+          20112 ttys004  /Users/m/.local/bin/claude --session-id 1a2da506-0ed0-4cd0-bcb3-dea93475f7fd --resume ef29cafb-042f-46ab-8a6d-a78e42d82264
+          20113 ttys005  /Users/m/.local/bin/claude --resume ef29cafb-042f-46ab-8a6d-a78e42d82264 --session-id 2b2da506-0ed0-4cd0-bcb3-dea93475f7fd
+        """
+        XCTAssertEqual(Messaging.claudeSessions(ps)["ttys004"]?.id, "1a2da506-0ed0-4cd0-bcb3-dea93475f7fd")
+        XCTAssertEqual(Messaging.claudeSessions(ps)["ttys005"]?.id, "2b2da506-0ed0-4cd0-bcb3-dea93475f7fd", "whatever the order")
+        XCTAssertEqual(Messaging.claudeProcesses(ps).map(\.sessionID), ["1a2da506-0ed0-4cd0-bcb3-dea93475f7fd", "2b2da506-0ed0-4cd0-bcb3-dea93475f7fd"])
+    }
+
     func testProjectFolderMatchesClaudesNaming() {
         XCTAssertEqual(Messaging.projectFolder("/Users/mukuls/dev/firefly-platform"), "-Users-mukuls-dev-firefly-platform")
         XCTAssertEqual(Messaging.projectFolder("/private/tmp/claude-501/-Users-x"), "-private-tmp-claude-501--Users-x")
@@ -62,5 +73,12 @@ final class MessagingTests: XCTestCase {
 
     func testShellWordsHonorQuotes() {
         XCTAssertEqual(Messaging.shellWords(#"a --send ws:1 "it's \"done\"" 'x y'"#), ["a", "--send", "ws:1", #"it's "done""#, "x y"])
+    }
+}
+
+final class ShellWordsTabTests: XCTestCase {
+    func testTabsSeparateWordsLikeTheShell() {
+        XCTAssertEqual(Messaging.shellWords("tool\t--wait\tworkspace:1"), ["tool", "--wait", "workspace:1"])
+        XCTAssertEqual(Messaging.shellWords("tool --send ws:1 'a\tb'"), ["tool", "--send", "ws:1", "a\tb"])
     }
 }

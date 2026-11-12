@@ -1,0 +1,948 @@
+import AVFoundation
+import KokoroSwift
+import Speech
+import XCTest
+@testable import AssistantBar
+@testable import SessionCore
+
+// Stand-ins for the microphone and the recognizers, so the Listener's states can be driven without audio.
+
+final class FakeSession: SpeechSession {
+    let onText: (String) -> Void
+    let onError: (NSError) -> Void
+    private let lock = NSLock()
+    private var _appended: [AVAudioPCMBuffer] = []
+    var finishing: ((String) -> Void)?
+    var cancelled = false
+    var finished = false
+    let pending = 0
+
+    init(onText: @escaping (String) -> Void, onError: @escaping (NSError) -> Void) {
+        self.onText = onText
+        self.onError = onError
+    }
+
+    var appended: [AVAudioPCMBuffer] { lock.withLock { _appended } }
+    func append(_ buffer: AVAudioPCMBuffer) { lock.withLock { _appended.append(buffer) } }
+
+    func finish(_ limit: FinishLimit, _ done: @escaping (String) -> Void) {
+        finished = true
+        finishing = done
+    }
+
+    func cancel() { cancelled = true }
+}
+
+final class FakeRecognizers: Recognizers {
+    var state = SpeechModelState.ready
+    var onState: ((SpeechModelState) -> Void)?
+    var vocabulary: [String] = []
+    let needsSpeechAccess = false
+    var sessions: [FakeSession] = []
+
+    func warm() {}
+
+    func session(onText: @escaping (String) -> Void, onError: @escaping (NSError) -> Void) -> SpeechSession? {
+        let session = FakeSession(onText: onText, onError: onError)
+        sessions.append(session)
+        return session
+    }
+}
+
+final class FakeMic: MicrophoneSource {
+    let mic: Microphone
+    let stale = false
+    var sink: ((AVAudioPCMBuffer) -> Void)?
+    var lost: (() -> Void)?
+    /// Runs inside `start`, before it returns, the way a real tap can fire while the engine starts.
+    var duringStart: ((FakeMic) -> Void)?
+
+    init(_ mic: Microphone) { self.mic = mic }
+
+    func start(_ sink: @escaping (AVAudioPCMBuffer) -> Void, lost: @escaping () -> Void) -> String? {
+        self.sink = sink
+        self.lost = lost
+        duringStart?(self)
+        return nil
+    }
+
+    func stop() { sink = nil }
+    func discard() { sink = nil }
+}
+
+func buffer(rate: Double = 16_000, channels: [[Float]]) -> AVAudioPCMBuffer {
+    let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: AVAudioChannelCount(channels.count))!
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(channels[0].count))!
+    buffer.frameLength = buffer.frameCapacity
+    for (i, samples) in channels.enumerated() {
+        samples.withUnsafeBufferPointer { buffer.floatChannelData![i].update(from: $0.baseAddress!, count: samples.count) }
+    }
+    return buffer
+}
+
+func silence(_ frames: Int = 1600) -> AVAudioPCMBuffer { buffer(channels: [[Float](repeating: 0, count: frames)]) }
+func tone(_ frames: Int = 1600) -> [Float] { (0..<frames).map { sin(Float($0) / 5) * 0.4 } }
+
+@MainActor
+final class ListenerFlowTests: XCTestCase {
+    let brio = Microphone(id: 1, name: "Logitech BRIO", builtIn: false, virtual: false)
+    let airPods = Microphone(id: 2, name: "AirPods Pro", builtIn: false, virtual: false, bluetooth: true)
+    var recognizers = FakeRecognizers()
+    var mics: [UInt32: FakeMic] = [:]
+    var opened: [UInt32] = []
+    var excluded: [Set<UInt32>] = []
+    var openResults: [Result<Void, MicrophoneFailure>] = []
+    var heard: [String] = []
+    var problems: [String] = []
+    var interrupted: [(String, String)] = []
+
+    func listener(_ choices: [Microphone]) -> Listener {
+        for mic in choices { mics[mic.id] = FakeMic(mic) }
+        let deps = Listener.Dependencies(access: { (.granted, .granted) }, requestAccess: { _, done in done(true, true) },
+                                         choose: { [unowned self] excluding in
+                                             self.excluded.append(excluding)
+                                             return choices.first { !excluding.contains($0.id) }
+                                         }, open: { [unowned self] mic in
+                                             DispatchQueue.main.sync { self.opened.append(mic.id) }
+                                             let next = DispatchQueue.main.sync { self.openResults.isEmpty ? nil : self.openResults.removeFirst() }
+                                             if case .failure(let failure)? = next { return .failure(failure) }
+                                             return .success(self.mics[mic.id]!)
+                                         }, recognizers: recognizers)
+        let listener = Listener(deps)
+        listener.pauseBeforeWords = 30
+        listener.pauseAfterWords = 30
+        listener.onHeard = { [unowned self] in self.heard.append($0) }
+        listener.onProblem = { [unowned self] in self.problems.append($0) }
+        listener.onInterrupted = { [unowned self] in self.interrupted.append(($0, $1)) }
+        return listener
+    }
+
+    func eventually(_ timeout: TimeInterval = 3, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) {
+        let end = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertTrue(condition(), file: file, line: line)
+    }
+
+    func spin(_ seconds: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+
+    func testTheListeningRowShowsStartingTheMomentYouPress() {
+        let l = listener([brio])
+        l.start()
+        XCTAssertTrue(l.listening, "the row appears before the microphone starts")
+        XCTAssertFalse(l.soundArrived)
+        XCTAssertEqual(ListeningText.label(heard: l.heard, soundArrived: l.soundArrived), "Starting…")
+    }
+
+    /// A late final result from the previous question goes to onHeard, but doesn't overwrite the new question's text.
+    func testALateResultFromThePreviousQuestionDoesNotOverwriteTheNextOne() {
+        let l = listener([brio])
+        l.start()
+        eventually { mics[1]?.sink != nil }
+        recognizers.sessions[0].onText("tell the trim session")
+        l.stop()
+        XCTAssertTrue(l.finishing)
+        l.start()
+        eventually { recognizers.sessions.count == 2 && mics[1]?.sink != nil }
+        recognizers.sessions[1].onText("what about the deploy")
+        recognizers.sessions[0].finishing?("Tell the trim session to merge main.")
+        XCTAssertEqual(l.heard, "what about the deploy")
+        XCTAssertTrue(l.listening)
+        XCTAssertEqual(heard, ["Tell the trim session to merge main."])
+    }
+
+    /// A press that ended while a format retry was pending: the retry must not start a second recognizer.
+    func testAStaleFormatRetryDoesNotStartAnotherRecognizer() {
+        let l = listener([brio])
+        l.formatRetryDelay = 0.2
+        openResults = [.failure(.notReady)]
+        l.start()
+        eventually { opened.count == 1 }
+        spin(0.05)
+        l.stop()
+        l.start()
+        eventually { recognizers.sessions.count == 2 && mics[1]?.sink != nil }
+        spin(0.5)
+        XCTAssertEqual(recognizers.sessions.count, 2, "the stale retry started a recognizer")
+        XCTAssertTrue(recognizers.sessions[0].cancelled || recognizers.sessions[0].finished)
+        XCTAssertTrue(l.listening)
+    }
+
+    /// The tap can fire before `start` returns. That first zero buffer must not be judged against an old clock, so
+    /// AirPods aren't skipped while they switch into call mode.
+    func testAZeroBufferBeforeTheMicrophoneStartsDoesNotSkipIt() {
+        let l = listener([airPods, brio])
+        l.start()
+        eventually { mics[2]?.sink != nil }
+        mics[2]?.sink?(silence())
+        spin(0.1)
+        l.stop()
+        spin(3.2)
+        mics[2]?.duringStart = { $0.sink?(silence()) }
+        excluded = []
+        l.start()
+        eventually { mics[2]?.sink != nil }
+        spin(0.3)
+        mics[2]?.sink?(silence())
+        spin(0.2)
+        XCTAssertEqual(l.microphone, "AirPods Pro")
+        XCTAssertFalse(excluded.contains { $0.contains(2) }, "AirPods were skipped")
+    }
+
+    func testAMicrophoneThatSendsOnlySilenceIsSkipped() {
+        let l = listener([brio, airPods])
+        l.start()
+        eventually { mics[1]?.sink != nil }
+        for _ in 0..<10 {
+            mics[1]?.sink?(silence())
+            spin(0.1)
+        }
+        eventually { l.microphone == "AirPods Pro" }
+        XCTAssertTrue(recognizers.sessions[0].cancelled)
+    }
+
+    func testSpeechOnlyOnTheSecondChannelReachesTheRecognizerAndTheMeter() {
+        let l = listener([brio])
+        l.start()
+        eventually { mics[1]?.sink != nil }
+        mics[1]?.sink?(buffer(channels: [[Float](repeating: 0, count: 1600), tone()]))
+        eventually { recognizers.sessions[0].appended.count == 1 }
+        let sent = recognizers.sessions[0].appended[0]
+        XCTAssertEqual(sent.format.channelCount, 1)
+        let samples = UnsafeBufferPointer(start: sent.floatChannelData![0], count: Int(sent.frameLength))
+        XCTAssertGreaterThan(Meter.level(samples), 0.3)
+        eventually { (l.levels.last ?? 0) > 0.5 }
+        XCTAssertTrue(l.soundArrived)
+    }
+
+    /// Unplugging mid-question stops listening with a note and keeps what was heard.
+    func testADisconnectedMicrophoneEndsTheQuestionAndKeepsItsText() {
+        let l = listener([brio])
+        l.start()
+        eventually { mics[1]?.sink != nil }
+        recognizers.sessions[0].onText("tell the trim")
+        mics[1]?.lost?()
+        eventually { recognizers.sessions[0].finishing != nil }
+        XCTAssertFalse(l.listening)
+        recognizers.sessions[0].finishing?("tell the trim session")
+        XCTAssertEqual(interrupted.map(\.0), ["tell the trim session"])
+        XCTAssertEqual(interrupted.map(\.1), [Listener.disconnectedNote])
+        XCTAssertEqual(heard, [], "a cut-off question isn't sent on its own")
+    }
+}
+
+@available(macOS 26, *)
+final class FakeBackend: AnalyzerBackend {
+    let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
+    let finalDelay: TimeInterval
+    private let lock = NSLock()
+    private var _frames: AVAudioFrameCount = 0
+    private var _cancelled = false
+    private var consumer: Task<Void, Never>?
+    private var result: ((String, Bool, TimeInterval) -> Void)?
+
+    init(finalDelay: TimeInterval) { self.finalDelay = finalDelay }
+
+    var frames: AVAudioFrameCount { lock.withLock { _frames } }
+    var cancelled: Bool { lock.withLock { _cancelled } }
+
+    func start(_ input: AsyncStream<AnalyzerInput>, result: @escaping (String, Bool, TimeInterval) -> Void) async throws {
+        self.result = result
+        consumer = Task {
+            for await item in input {
+                let frames = item.buffer.frameLength
+                lock.withLock { _frames += frames }
+                result("partial", false, 0)
+            }
+        }
+    }
+
+    func finish() async throws {
+        await consumer?.value
+        try await Task.sleep(nanoseconds: UInt64(finalDelay * 1_000_000_000))
+        result?("every word", true, Double(frames) / 16_000)
+    }
+
+    func cancel() async { lock.withLock { _cancelled = true } }
+}
+
+@MainActor
+final class AnalyzerSessionTests: XCTestCase {
+    func wait(_ timeout: TimeInterval, until condition: () -> Bool) {
+        let end = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    /// The final result can come well after the question ends; finish waits for it instead of cutting it off.
+    func testFinishWaitsForTheFinalResult() throws {
+        guard #available(macOS 26, *) else { throw XCTSkip("needs macOS 26") }
+        let backend = FakeBackend(finalDelay: 0.6)
+        var texts: [String] = []
+        let session = AnalyzerSession(take: { backend }, fallback: { nil }, onText: { texts.append($0) }, onError: { _ in })
+        for _ in 0..<5 { session.append(silence()) }
+        wait(2) { !texts.isEmpty }
+        var final: String?
+        session.finish(.live) { final = $0 }
+        wait(3) { final != nil }
+        XCTAssertEqual(final, "every word")
+        XCTAssertEqual(backend.frames, 8_000)
+    }
+
+    /// A file waits for the analyzer however long it takes, past the live ceiling's 2-second floor.
+    func testAFileWaitsPastTheLiveWait() throws {
+        guard #available(macOS 26, *) else { throw XCTSkip("needs macOS 26") }
+        let backend = FakeBackend(finalDelay: 2.5)
+        let session = AnalyzerSession(take: { backend }, fallback: { nil }, onText: { _ in }, onError: { _ in })
+        session.append(silence())
+        var final: String?
+        session.finish(.none) { final = $0 }
+        wait(5) { final != nil }
+        XCTAssertEqual(final, "every word")
+    }
+
+    /// The analyzer isn't ready in time: the audio heard so far, then the rest, go to the older recognizer.
+    func testAnUnreadyAnalyzerHandsAllTheAudioToTheFallback() throws {
+        guard #available(macOS 26, *) else { throw XCTSkip("needs macOS 26") }
+        let fallback = FakeSession(onText: { _ in }, onError: { _ in })
+        let session = AnalyzerSession(take: {
+            try await Task.sleep(nanoseconds: 200_000_000)
+            throw ReadyPool<SpeechBackend>.NotReady()
+        }, fallback: { fallback }, onText: { _ in }, onError: { _ in })
+        session.append(silence())
+        session.append(silence())
+        wait(2) { fallback.appended.count == 2 }
+        session.append(silence())
+        XCTAssertEqual(fallback.appended.count, 3)
+        var final: String?
+        session.finish(.live) { final = $0 }
+        XCTAssertTrue(fallback.finished)
+        fallback.finishing?("from the older recognizer")
+        XCTAssertEqual(final, "from the older recognizer")
+    }
+
+    func testCancellingBeforeTheAnalyzerIsReadyCancelsItWhenItArrives() throws {
+        guard #available(macOS 26, *) else { throw XCTSkip("needs macOS 26") }
+        let backend = FakeBackend(finalDelay: 0)
+        var texts: [String] = []
+        let session = AnalyzerSession(take: {
+            try await Task.sleep(nanoseconds: 200_000_000)
+            return backend
+        }, fallback: { nil }, onText: { texts.append($0) }, onError: { _ in })
+        session.append(silence())
+        session.cancel()
+        wait(2) { backend.cancelled }
+        XCTAssertTrue(backend.cancelled)
+        XCTAssertEqual(texts, [])
+    }
+
+    func testAMicrophoneFormatItCantConvertFailsThePress() throws {
+        guard #available(macOS 26, *) else { throw XCTSkip("needs macOS 26") }
+        let backend = FakeBackend(finalDelay: 0)
+        var errors: [NSError] = []
+        let session = AnalyzerSession(take: { backend }, fallback: { nil }, onText: { _ in }, onError: { errors.append($0) })
+        let odd = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 10_000_000, channels: 1, interleaved: false)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: odd, frameCapacity: 160)!
+        buffer.frameLength = 160
+        session.append(buffer)
+        wait(2) { !errors.isEmpty || backend.frames > 0 }
+        XCTAssertEqual(backend.frames, 0, "unconverted audio never reaches the analyzer")
+        XCTAssertEqual(errors.count, 1)
+    }
+}
+
+@MainActor
+final class ModelVoiceTests: XCTestCase {
+    var said: [String] = []
+
+    func model() -> Model {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "voice-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.talk = { [unowned self] in self.said.append($0) }
+        return model
+    }
+
+    func testReplayIsIgnoredWhileListening() {
+        let m = model()
+        m.chat = [ChatTurn(role: .assistant, text: "The PR merged.")]
+        m.listener.listening = true
+        m.replay()
+        XCTAssertEqual(said, [])
+        m.listener.listening = false
+        m.replay()
+        XCTAssertEqual(said, ["The PR merged."])
+    }
+
+    func testASpokenAnswerWaitsForListeningToEnd() {
+        let m = model()
+        m.listener.listening = true
+        m.answered("The PR merged.")
+        XCTAssertEqual(said, [])
+        XCTAssertEqual(m.chat.last?.text, VoiceTurns.deferredNote)
+        m.listeningEnded()
+        XCTAssertEqual(said, [], "still listening")
+        m.listener.listening = false
+        m.listeningEnded()
+        XCTAssertEqual(said, ["The PR merged."])
+    }
+
+    /// A streamed answer starts on its first sentence and queues the rest; nothing plays while listening.
+    func testAStreamedAnswerStartsOnItsFirstSentenceAndQueuesTheRest() {
+        let m = model()
+        var more: [String] = []
+        m.talkMore = { more.append($0) }
+        m.spokenPart("The version bump needs your token.")
+        m.spokenPart("The trim fix merged.")
+        XCTAssertEqual(said, ["The version bump needs your token."])
+        XCTAssertEqual(more, ["The trim fix merged."])
+        m.listener.listening = true
+        m.spokenPart("One more thing.")
+        XCTAssertEqual(more, ["The trim fix merged."], "nothing plays into the open microphone")
+        m.listener.listening = false
+        m.listeningEnded()
+        XCTAssertEqual(said.last, "One more thing.")
+    }
+
+    func testAQuestionHeardWhileAnsweringIsQueuedWithANote() {
+        let m = model()
+        m.asking = true
+        m.heard("And the trim fix?")
+        XCTAssertEqual(m.chat.map(\.text), ["And the trim fix?", VoiceTurns.queuedNote])
+        XCTAssertTrue(m.asking)
+    }
+}
+
+final class SpeakerTests: XCTestCase {
+    func testAppleUtterancesAndKokoroUseTheChosenSpeed() {
+        let suite = "speed-test-\(UUID().uuidString)"
+        let settings = UserDefaults(suiteName: suite)!
+        defer { settings.removePersistentDomain(forName: suite) }
+        let speaker = Speaker(settings: settings)
+        speaker.speed = 1.5
+        XCTAssertEqual(settings.double(forKey: Speaker.speedKey), 1.5, "the speed lives in the speaker's own store")
+        XCTAssertEqual(speaker.utterance("hi").rate,
+                       SpeechSpeed.appleRate(1.5, defaultRate: AVSpeechUtteranceDefaultSpeechRate,
+                                             maximumRate: AVSpeechUtteranceMaximumSpeechRate))
+        XCTAssertEqual(speaker.kokoroSpeed, 1.5)
+        speaker.speed = 2
+        XCTAssertEqual(speaker.kokoroSpeed, 2)
+        XCTAssertGreaterThan(speaker.utterance("hi").rate, AVSpeechUtteranceDefaultSpeechRate)
+    }
+
+    /// Cutting an utterance off for a replay reports the old one cancelled; that mustn't end the new one.
+    func testACallbackForAnEarlierUtteranceDoesNotEndTheCurrentOne() {
+        let speaker = Speaker()
+        let old = AVSpeechUtterance(string: "old")
+        let current = AVSpeechUtterance(string: "current")
+        speaker.appleUtterance = current
+        speaker.speaking = true
+        speaker.speechSynthesizer(AVSpeechSynthesizer(), didCancel: old)
+        speaker.speechSynthesizer(AVSpeechSynthesizer(), didFinish: old)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertTrue(speaker.speaking)
+        speaker.speechSynthesizer(AVSpeechSynthesizer(), didFinish: current)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertFalse(speaker.speaking)
+    }
+}
+
+/// Renders speech with AVSpeechSynthesizer.write (nothing plays) and checks each speed's length.
+final class AppleSpeechSpeedTests: XCTestCase {
+    func seconds(rate: Float) throws -> Double {
+        let synth = AVSpeechSynthesizer()
+        let utterance = AVSpeechUtterance(string: "Tell the version bump session to use my token, then report back when it has pushed the branch.")
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = rate
+        var frames = 0.0
+        var sampleRate = 0.0
+        let done = expectation(description: "rendered")
+        synth.write(utterance) { buffer in
+            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+            if pcm.frameLength == 0 { return done.fulfill() }
+            frames += Double(pcm.frameLength)
+            sampleRate = pcm.format.sampleRate
+        }
+        wait(for: [done], timeout: 30)
+        return try XCTUnwrap(sampleRate > 0 ? frames / sampleRate : nil)
+    }
+
+    func testEachSpeedPlaysWithinFifteenPercentOfItsMultiplier() throws {
+        try XCTSkipIf(AVSpeechSynthesisVoice(language: "en-US") == nil, "no English voice")
+        let rate = { (m: Double) in SpeechSpeed.appleRate(m, defaultRate: AVSpeechUtteranceDefaultSpeechRate,
+                                                           maximumRate: AVSpeechUtteranceMaximumSpeechRate) }
+        let normal = try seconds(rate: rate(1))
+        for multiplier in [1.5, 2.0] {
+            let speedup = normal / (try seconds(rate: rate(multiplier)))
+            XCTAssertEqual(speedup, multiplier, accuracy: multiplier * 0.15, "\(multiplier)× played at \(speedup)×")
+        }
+    }
+}
+
+final class ChatScrollTests: XCTestCase {
+    func key(heard: String = "", modelNote: String? = nil) -> [String] {
+        ChatView.scrollKey(chat: [], asking: false, listening: true, heard: heard, note: nil, soundArrived: true,
+                           modelNote: modelNote)
+    }
+
+    func testGrowingLiveTextAndTheModelNoteScrollTheChat() {
+        XCTAssertNotEqual(key(heard: "tell"), key(heard: "tell me"))
+        XCTAssertNotEqual(key(heard: "tell them"), key(heard: "tell then"), "a revision the same length still scrolls")
+        XCTAssertNotEqual(key(), key(modelNote: ListeningText.modelNote(.downloading(0.5))))
+        XCTAssertEqual(key(heard: "same"), key(heard: "same"))
+    }
+}
+
+@MainActor
+final class StoppingStreamedAnswersTests: XCTestCase {
+    var events: [String] = []
+    var bargeIn: (() -> Void)?
+
+    func model() -> Model {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "stop-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.talk = { [unowned self] in self.events.append("say \($0)") }
+        model.talkMore = { [unowned self] in self.events.append("more \($0)") }
+        model.startListening = { [unowned self] in self.events.append("listen") }
+        model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
+        model.askNext = { [unowned self] in self.events.append("ask \($0)") }
+        model.speakingNow = { false }
+        model.endChildren = { _, _ in }
+        model.watch = { [unowned self] in
+            self.bargeIn = $0
+            return true
+        }
+        model.unwatch = {}
+        return model
+    }
+
+    static let reply = "The version bump session needs your token. The trim fix merged this morning, and the probe is green."
+
+    func outcome(spoken: Int) -> TurnOutcome {
+        TurnOutcome(reply: Self.reply, failed: false, cost: nil, meter: nil, spokenSentences: spoken)
+    }
+
+    func testStopSpeakingStopsTheRestOfAStreamedAnswer() {
+        let m = model()
+        m.asking = true
+        m.spokenPart("The version bump session needs your token.")
+        m.stopSpeaking()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertEqual(events, ["say The version bump session needs your token.", "stop speaking"])
+        XCTAssertEqual(m.chat.last?.text, Self.reply, "the whole reply is still shown")
+    }
+
+    func testStoppingTalkModeStopsTheRestOfAStreamedAnswer() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.stopTalkMode()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertFalse(events.contains { $0.hasPrefix("more") || $0.hasSuffix("probe is green.") }, "\(events)")
+        XCTAssertFalse(m.talkMode)
+    }
+
+    /// Talking over a streaming answer drops the rest of it and asks the new question next, ahead of anything else.
+    func testBargeInDropsTheRestAndAsksTheNewQuestionNext() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.speechChanged(true)
+        bargeIn?()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.heard("Stop. Tell me about the playhead session instead.")
+        m.listeningEnded()
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertFalse(events.contains { $0.hasSuffix("probe is green.") }, "the interrupted answer kept reading: \(events)")
+        XCTAssertEqual(events.last, "ask Stop. Tell me about the playhead session instead.")
+        XCTAssertTrue(m.chat.contains { $0.text == VoiceTurns.interruptedNote })
+        XCTAssertTrue(m.chat.contains { $0.role == .assistant && $0.text == Self.reply }, "the full reply is kept in the chat")
+    }
+
+    /// Stop drops the questions waiting for the answer it ends.
+    func testStopDropsQueuedQuestions() {
+        let m = model()
+        m.asking = true
+        m.heard("What needs me?")
+        m.stopAsking()
+        m.answerCompleted(outcome(spoken: 0), spoken: false)
+        XCTAssertFalse(events.contains("ask What needs me?"), "\(events)")
+    }
+
+    /// Esc drops them too, in Talk Mode or not.
+    func testEscDropsQueuedQuestions() {
+        let m = model()
+        m.asking = true
+        m.heard("What needs me?")
+        m.stopTalkMode()
+        m.answerCompleted(outcome(spoken: 0), spoken: false)
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("Is the probe green?")
+        m.stopTalkMode()
+        m.answerCompleted(outcome(spoken: 0), spoken: false)
+        XCTAssertFalse(events.contains { $0.hasPrefix("ask") }, "\(events)")
+    }
+
+    /// Control-Option-V in the silent gap between a streamed answer's sentences (say, while Claude runs a tool)
+    /// silences the rest of that answer, as it does while a sentence plays.
+    func testPressingTheMicrophoneBetweenSentencesMutesTheAnswer() {
+        let m = model()
+        m.toggleListening = { [unowned self] in self.events.append("toggle listening") }
+        m.asking = true
+        m.answeringSpoken = true
+        m.spokenPart("The version bump session needs your token.")
+        m.listen()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.listeningEnded()
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertEqual(events, ["say The version bump session needs your token.", "stop speaking", "toggle listening"])
+    }
+
+    /// Control-Option-R while an answer streams replays the previous complete answer, and the streaming one isn't
+    /// read after it.
+    func testReplayDuringAStreamedAnswerPlaysOnlyThePreviousAnswer() {
+        let m = model()
+        m.chat.append(ChatTurn(role: .assistant, text: "The playhead fix is in review."))
+        m.asking = true
+        m.answeringSpoken = true
+        m.spokenPart("The version bump session needs your token.")
+        m.replay()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertEqual(events, ["say The version bump session needs your token.", "say The playhead fix is in review."])
+    }
+}
+
+/// Talking over an answer ends the chat's `claude` run, so the next question doesn't wait for it, and Talk Mode keeps
+/// going in the right order.
+@MainActor
+final class BargeInEndsTheRunTests: XCTestCase {
+    var events: [String] = []
+    var bargeIn: (() -> Void)?
+
+    func model() -> Model {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "barge-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.talk = { [unowned self] in self.events.append("say \($0)") }
+        model.talkMore = { [unowned self] in self.events.append("more \($0)") }
+        model.startListening = { [unowned self] in self.events.append("listen") }
+        model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
+        model.speakingNow = { false }
+        model.watch = { [unowned self] in
+            self.bargeIn = $0
+            self.events.append("watch")
+            return true
+        }
+        model.unwatch = { [unowned self] in self.events.append("unwatch") }
+        let asked: (String) -> Void = { [unowned self, unowned model] in
+            self.events.append("ask \($0)")
+            model.asking = true
+            model.answeringSpoken = true
+            model.turns.newReply()
+        }
+        model.askNow = asked
+        model.askNext = asked
+        model.cancelPending = { [unowned self] in self.events.append("cancel \($0)") }
+        model.endChildren = { [unowned self] reason, kinds in
+            let what = kinds.contains(.background) ? " and the summarizer" : ""
+            DispatchQueue.main.async { self.events.append("end \(reason)\(what)") }
+        }
+        return model
+    }
+
+    func interrupted() -> TurnOutcome {
+        TurnOutcome(reply: TalkLoop.interruptedReason, failed: true, cost: nil, meter: nil, spokenSentences: 1)
+    }
+
+    func waitFor(_ event: String) {
+        let deadline = Date().addingTimeInterval(2)
+        while !events.contains(event) && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    func startAnswering(_ m: Model) {
+        m.toggleTalkMode()
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.speechChanged(true)
+        bargeIn?()
+        waitFor("end \(TalkLoop.interruptedReason)")
+    }
+
+    /// The run is stuck in a tool call, so the new question is heard before the ended run comes back: it's asked the
+    /// moment the run is saved, and Talk Mode doesn't open the microphone again in between.
+    func testARunStuckInAToolCallIsEndedAndTheNewQuestionGoesNext() {
+        let m = model()
+        startAnswering(m)
+        m.heard("Tell me about the playhead session instead.")
+        m.spokenPart("The trim fix merged this morning.")
+        m.answerCompleted(interrupted(), spoken: true)
+        XCTAssertEqual(events, [
+            "listen", "watch", "ask What needs me?", "say The version bump session needs your token.",
+            "unwatch", "stop speaking", "cancel \(TalkLoop.interruptedReason)", "listen", "end \(TalkLoop.interruptedReason)",
+            "watch", "ask Tell me about the playhead session instead.",
+        ])
+        XCTAssertTrue(m.talkMode)
+        XCTAssertEqual(m.chat.last?.text, TalkLoop.interruptedReason)
+        m.answerCompleted(TurnOutcome(reply: "The playhead fix is in review.", failed: false, cost: nil, meter: nil,
+                                      spokenSentences: 0), spoken: true)
+        XCTAssertEqual(Array(events.suffix(3)), ["say The playhead fix is in review.", "unwatch", "listen"])
+        XCTAssertTrue(m.talkMode)
+    }
+
+    /// The ended run comes back first: nothing more happens until the question is heard, and then it's asked at once.
+    func testTheEndedRunComesBackFirstAndTheQuestionIsAskedWhenHeard() {
+        let m = model()
+        startAnswering(m)
+        m.answerCompleted(interrupted(), spoken: true)
+        XCTAssertEqual(events.last, "end \(TalkLoop.interruptedReason)")
+        XCTAssertTrue(m.talkMode)
+        m.heard("Tell me about the playhead session instead.")
+        XCTAssertEqual(Array(events.suffix(2)), ["watch", "ask Tell me about the playhead session instead."])
+        XCTAssertTrue(m.talkMode)
+    }
+
+    /// Control-Option-V during a spoken answer ends the run exactly as talking over it does, and the next question
+    /// goes next.
+    func testTheMicrophoneKeyEndsTheRunLikeTalkingOver() {
+        func interrupt(_ how: (Model) -> Void) -> [String] {
+            events = []
+            let m = model()
+            m.toggleListening = { [unowned self] in self.events.append("listen") }
+            m.toggleTalkMode()
+            m.heard("What needs me?")
+            m.spokenPart("The version bump session needs your token.")
+            m.speechChanged(true)
+            how(m)
+            waitFor("end \(TalkLoop.interruptedReason)")
+            m.heard("Tell me about the playhead session instead.")
+            m.answerCompleted(interrupted(), spoken: true)
+            return events.filter { $0.hasPrefix("end") || $0.hasPrefix("cancel") || $0.hasPrefix("ask") || $0 == "stop speaking" }
+        }
+        let byVoice = interrupt { _ in bargeIn?() }
+        let byKey = interrupt { $0.listen() }
+        XCTAssertEqual(byKey, byVoice)
+        XCTAssertEqual(byKey, ["ask What needs me?", "stop speaking", "cancel \(TalkLoop.interruptedReason)", "end \(TalkLoop.interruptedReason)",
+                               "ask Tell me about the playhead session instead."])
+    }
+
+    /// In Talk Mode, a question started by key closes the echo-cancelled watcher, so other apps aren't left ducked
+    /// and only one engine holds a microphone; the next question opens it again for its answer.
+    func testAQuestionByKeyInTalkModeClosesTheWatcher() {
+        let m = model()
+        m.toggleListening = { [unowned self] in self.events.append("toggle listening") }
+        m.toggleTalkMode()
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.speechChanged(true)
+        events = []
+        m.listen()
+        XCTAssertEqual(events.filter { $0 == "unwatch" || $0 == "toggle listening" }, ["unwatch", "toggle listening"])
+        waitFor("end \(TalkLoop.interruptedReason)")
+        m.answerCompleted(interrupted(), spoken: true)
+        m.heard("Tell me about the playhead session instead.")
+        XCTAssertEqual(Array(events.suffix(2)), ["watch", "ask Tell me about the playhead session instead."])
+        XCTAssertTrue(m.talkMode)
+    }
+
+    /// The chat keeps what an interrupted answer had said (and read aloud) above the note, and Control-Option-R
+    /// replays it.
+    func testAnInterruptedAnswerKeepsWhatItSaid() {
+        let m = model()
+        m.asking = true
+        var outcome = interrupted()
+        outcome.partial = "The version bump session needs your token."
+        m.answerCompleted(outcome, spoken: true)
+        XCTAssertEqual(Array(m.chat.suffix(2).map(\.text)), ["The version bump session needs your token.", TalkLoop.interruptedReason])
+        XCTAssertEqual(m.chat.suffix(2).map(\.role), [.assistant, .error])
+        m.replay()
+        XCTAssertEqual(events.last, "say The version bump session needs your token.")
+    }
+
+    /// Stop records "Stopped." and ends the summarizer too; talking over the answer ends only the chat's run (the
+    /// barge-in tests above expect "end Interrupted by voice." with no summarizer), so a compaction in progress
+    /// isn't lost.
+    func testStopAndBargeInRecordTheirReasons() {
+        let m = model()
+        m.stopAsking()
+        waitFor("end \(ChildProcesses.stoppedReason) and the summarizer")
+        XCTAssertTrue(events.contains("end \(ChildProcesses.stoppedReason) and the summarizer"), "\(events)")
+    }
+}
+
+@MainActor
+final class TalkModeFlowTests: XCTestCase {
+    var events: [String] = []
+    var bargeIn: (() -> Void)?
+
+    func model() -> Model {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "talk-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.talk = { [unowned self] in self.events.append("say \($0)") }
+        model.talkMore = { [unowned self] in self.events.append("more \($0)") }
+        model.startListening = { [unowned self] in self.events.append("listen") }
+        model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
+        model.watch = { [unowned self] in
+            self.bargeIn = $0
+            self.events.append("watch")
+            return true
+        }
+        model.unwatch = { [unowned self] in self.events.append("unwatch") }
+        return model
+    }
+
+    func testTalkModeLoopsAndTalkingOverTheAnswerInterruptsIt() {
+        let m = model()
+        m.toggleTalkMode()
+        XCTAssertTrue(m.talkMode)
+        XCTAssertEqual(events, ["listen"])
+        m.asking = true
+        m.heard("What needs me?")
+        XCTAssertEqual(events.last, "watch", "the echo-cancelled microphone opens before the answer plays")
+        m.speechChanged(true)
+        bargeIn?()
+        XCTAssertEqual(Array(events.suffix(3)), ["unwatch", "stop speaking", "listen"])
+        XCTAssertTrue(m.talkMode)
+    }
+
+    func testTheNextQuestionIsListenedForOnceTheAnswerEnds() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.speechChanged(true)
+        m.speechChanged(false)
+        XCTAssertEqual(events.last, "watch", "still answering: the speech gap between sentences doesn't count")
+        m.asking = false
+        m.speechChanged(false)
+        XCTAssertEqual(Array(events.suffix(2)), ["unwatch", "listen"])
+    }
+
+    /// Stopping Talk Mode mid-question drops the half question instead of asking it.
+    func testStoppingMidQuestionDropsIt() {
+        let m = model()
+        var heard: [String] = []
+        m.cancelListening = { [unowned self] in self.events.append("cancel") }
+        m.listener.onHeard = { heard.append($0) }
+        m.toggleTalkMode()
+        m.listener.listening = true
+        m.stopTalkMode()
+        XCTAssertTrue(events.contains("cancel"))
+        XCTAssertEqual(heard, [])
+        XCTAssertFalse(m.talkMode)
+    }
+
+    /// Talking over the answer while already asking the next question doesn't restart the listener.
+    func testBargeInWhileListeningKeepsTheQuestion() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.speechChanged(true)
+        m.listener.listening = true
+        events = []
+        bargeIn?()
+        XCTAssertFalse(events.contains("listen"), "\(events)")
+        XCTAssertTrue(events.contains("stop speaking"))
+    }
+
+    func testADisconnectedMicrophoneEndsTalkModeWithANote() {
+        let m = model()
+        m.toggleTalkMode()
+        m.listener.onInterrupted?("tell the trim", Listener.disconnectedNote)
+        XCTAssertFalse(m.talkMode)
+        XCTAssertEqual(m.chat.last?.text, TalkLoop.micLostNote)
+        XCTAssertEqual(m.draft, "tell the trim")
+    }
+
+    func testStopOrSilenceEndsTalkMode() {
+        let m = model()
+        m.toggleTalkMode()
+        m.stopTalkMode()
+        XCTAssertFalse(m.talkMode)
+        XCTAssertTrue(events.contains("unwatch"))
+        m.toggleTalkMode()
+        m.listener.onProblem?("I didn't hear anything.")
+        XCTAssertFalse(m.talkMode)
+        XCTAssertEqual(m.chat.last?.text, TalkLoop.nothingHeardNote)
+    }
+}
+
+/// Assistant's own voice, as the echo-cancelled microphone would hear it. Voice processing can't run offline (manual
+/// rendering refuses it, -10863), so this checks the gate on Kokoro's rendered reply: at full level it would interrupt
+/// (which is why echo cancellation is needed), and at 30 dB down, a typical floor for Apple's echo cancellation, it
+/// doesn't.
+final class OwnVoiceGateTests: XCTestCase {
+    func testAssistantsOwnReplyAfterEchoCancellationDoesNotInterrupt() throws {
+        try XCTSkipUnless(KokoroEngine.installed && KokoroEngine.supported, "Kokoro voice isn't downloaded on this Mac")
+        var samples: [Float] = []
+        let done = expectation(description: "rendered")
+        KokoroEngine().speak("The version bump session is waiting on your token, and the trim fix merged this morning.",
+                             voiceID: Kokoro.voices[0].id, isCurrent: { true }, chunk: { samples += $0 },
+                             done: { _ in done.fulfill() })
+        wait(for: [done], timeout: 120)
+        let window = Int(KokoroTTS.Constants.samplingRate) / 10
+        func levels(_ gain: Float) -> [Float] {
+            stride(from: 0, to: samples.count - window, by: window).map { start in
+                let chunk = samples[start..<start + window].map { $0 * gain }
+                return chunk.withUnsafeBufferPointer { Meter.level($0) }
+            }
+        }
+        var full = BargeInGate()
+        XCTAssertTrue(levels(1).contains { full.take(level: $0, duration: 0.1) }, "unfiltered, the reply would interrupt itself")
+        var cancelled = BargeInGate()
+        XCTAssertFalse(levels(pow(10, -30 / 20)).contains { cancelled.take(level: $0, duration: 0.1) })
+    }
+}
+
+/// Opens the real echo-cancelled microphone for a moment (nothing plays). Set ASSISTANT_LIVE_AUDIO=1 to run it.
+final class VoiceProcessingLiveTests: XCTestCase {
+    func testTheEchoCancelledMicrophoneStartsAndStops() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ASSISTANT_LIVE_AUDIO"] == "1", "needs a microphone")
+        let speaker = Speaker()
+        XCTAssertTrue(speaker.watchForBargeIn {})
+        XCTAssertTrue(speaker.watching)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+        speaker.stopWatching()
+        XCTAssertFalse(speaker.watching)
+    }
+}
+
+@MainActor
+final class ListenerCancelTests: XCTestCase {
+    /// Cancelling (Stop or Esc in Talk Mode) drops the half question: nothing is asked or reported, and the recognizer
+    /// is cancelled, not finished.
+    func testCancelDropsTheHalfQuestion() {
+        let recognizers = FakeRecognizers()
+        let mic = Microphone(id: 1, name: "Logitech BRIO", builtIn: false, virtual: false)
+        let fake = FakeMic(mic)
+        let listener = Listener(Listener.Dependencies(access: { (.granted, .granted) }, requestAccess: { _, done in done(true, true) },
+                                                      choose: { $0.contains(1) ? nil : mic }, open: { _ in .success(fake) },
+                                                      recognizers: recognizers))
+        var said: [String] = []
+        var ended = 0
+        listener.onHeard = { said.append($0) }
+        listener.onProblem = { said.append("problem: \($0)") }
+        listener.onEnded = { ended += 1 }
+        listener.start()
+        let deadline = Date().addingTimeInterval(3)
+        while fake.sink == nil && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        recognizers.sessions[0].onText("Tell the trim fix session to")
+        listener.cancel()
+        recognizers.sessions[0].finishing?("Tell the trim fix session to")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertFalse(listener.listening)
+        XCTAssertEqual(said, [])
+        XCTAssertTrue(recognizers.sessions[0].cancelled)
+        XCTAssertFalse(recognizers.sessions[0].finished)
+        XCTAssertEqual(listener.heard, "")
+        XCTAssertEqual(ended, 1)
+    }
+}
