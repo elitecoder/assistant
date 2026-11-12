@@ -10,6 +10,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- A spoken answer starts on its first sentence instead of waiting for the
+  whole reply. Assistant runs Claude with `--include-partial-messages` and
+  speaks each sentence as it's written; the stored chat and the reply are
+  unchanged. On five real questions, the first audio came 0.8 to 1.3 seconds
+  sooner (for example 3.9 seconds instead of 5.2). Try it with
+  `AssistantBar --ask "<question>" --spoken --say-to answer.wav`, which renders
+  the answer to a file and prints both timings.
 - Assistant for Mac transcribes your voice with Apple's SpeechAnalyzer and
   SpeechTranscriber on macOS 26 and later. On a test set of 32 spoken
   questions, half with room noise added, it got 25 of 444 words wrong, down

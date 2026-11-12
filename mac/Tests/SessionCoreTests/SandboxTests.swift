@@ -92,7 +92,9 @@ final class AppCommandTests: XCTestCase {
         XCTAssertEqual(AppCommand.parse([a, "--search", "{}"]), .search("{}"))
         XCTAssertEqual(AppCommand.parse([a, "--memory", "{}"]), .memory("{}"))
         XCTAssertEqual(AppCommand.parse([a, "--render", "hi", "/tmp/a.wav"]), .render(text: "hi", file: "/tmp/a.wav"))
-        XCTAssertEqual(AppCommand.parse([a, "--ask", "q", "--spoken", "--session", "work"]), .ask(question: "q", session: "work", spoken: true))
+        XCTAssertEqual(AppCommand.parse([a, "--ask", "q", "--spoken", "--session", "work"]), .ask(question: "q", session: "work", spoken: true, sayTo: nil))
+        XCTAssertEqual(AppCommand.parse([a, "--ask", "q", "--spoken", "--say-to", "/tmp/a.wav"]),
+                       .ask(question: "q", session: nil, spoken: true, sayTo: "/tmp/a.wav"))
         XCTAssertEqual(AppCommand.parse([a, "--compress", "--focus", "token"]), .compress(session: nil, focus: "token"))
         XCTAssertEqual(AppCommand.parse([a, "--pretooluse-guard"]), .toolGuard)
         XCTAssertEqual(AppCommand.parse([a, "--transcribe", "/tmp/q.wav"]), .transcribe(file: "/tmp/q.wav", legacy: false))

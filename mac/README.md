@@ -25,6 +25,11 @@ Control-Option-V again to stop early. To hear the last answer again, select
 **Play again** or press Control-Option-R; it starts over if Assistant is still
 speaking. Each answer in the chat also has a play button.
 
+Assistant reads a spoken answer as Claude writes it: the first sentence plays
+while the rest is still coming. `AssistantBar --ask "<question>" --spoken
+--say-to answer.wav` renders the answer to a file instead of playing it, and
+prints when the first audio was ready, streamed and waiting for the whole reply.
+
 Assistant never speaks while the microphone is open. If an answer arrives while
 you're talking, it reads it when you finish. If you ask a question while an
 answer is still running, Assistant shows it and asks it next. If the

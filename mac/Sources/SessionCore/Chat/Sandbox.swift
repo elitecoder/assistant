@@ -192,7 +192,7 @@ public enum AppCommand: Equatable {
     case memory(String)
     case render(text: String, file: String)
     case transcribe(file: String, legacy: Bool)
-    case ask(question: String, session: String?, spoken: Bool)
+    case ask(question: String, session: String?, spoken: Bool, sayTo: String?)
     case compress(session: String?, focus: String?)
     case toolGuard
 
@@ -200,7 +200,7 @@ public enum AppCommand: Equatable {
     Usage: AssistantBar [--show] [--listen]
            AssistantBar --print | --sessions
            AssistantBar --send <workspace> "<message>" [--timeout <seconds>] | --wait <workspace> [--timeout <seconds>]
-           AssistantBar --ask "<question>" [--session <name>] [--spoken]
+           AssistantBar --ask "<question>" [--session <name>] [--spoken] [--say-to <file.wav>]
            AssistantBar --compress [--session <name>] [--focus "<topic>"]
            AssistantBar --search '<json>' | --memory '<json>' | --render "<text>" <file.wav>
            AssistantBar --transcribe <file.wav> [--legacy]
@@ -232,10 +232,12 @@ public enum AppCommand: Equatable {
             guard tail.count >= 1, let timeout = timeout(Array(tail.dropFirst())) else { return nil }
             return .wait(ref: tail[0], timeout: timeout.value)
         case "--ask":
-            guard let question = tail.first, let options = options(Array(tail.dropFirst()), values: ["--session"], flags: ["--spoken"]) else {
+            guard let question = tail.first,
+                  let options = options(Array(tail.dropFirst()), values: ["--session", "--say-to"], flags: ["--spoken"]) else {
                 return nil
             }
-            return .ask(question: question, session: options["--session"] ?? nil, spoken: options.keys.contains("--spoken"))
+            return .ask(question: question, session: options["--session"] ?? nil, spoken: options.keys.contains("--spoken"),
+                        sayTo: options["--say-to"] ?? nil)
         case "--compress":
             guard let options = options(tail, values: ["--session", "--focus"], flags: []) else { return nil }
             return .compress(session: options["--session"] ?? nil, focus: options["--focus"] ?? nil)

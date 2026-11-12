@@ -27,7 +27,8 @@ enum Main {
         case let .transcribe(file, legacy): exit(transcribe(URL(fileURLWithPath: file), legacy: legacy) ? 0 : 1)
         case .search(let json): return print(ChatTools.search(json))
         case .memory(let json): return print(ChatTools.memory(json))
-        case let .ask(question, session, spoken): exit(ask(question, session: session, spoken: spoken) ? 0 : 1)
+        case let .ask(question, session, spoken, sayTo):
+            exit(ask(question, session: session, spoken: spoken, sayTo: sayTo.map { URL(fileURLWithPath: $0) }) ? 0 : 1)
         case let .compress(session, focus):
             guard let (engine, throwaway) = cliEngine(session: session) else { exit(1) }
             print(engine.compressNow(focus: focus))
@@ -130,13 +131,27 @@ enum Main {
         }
     }
 
-    static func ask(_ question: String, session: String?, spoken: Bool) -> Bool {
+    /// `sayTo` renders the spoken answer with Kokoro into a WAV file as it streams, instead of playing it, and prints
+    /// when the first audio was ready, then when it would have been ready had Assistant waited for the whole reply.
+    static func ask(_ question: String, session: String?, spoken: Bool, sayTo: URL?) -> Bool {
         guard let (engine, throwaway) = cliEngine(session: session) else { return false }
         defer { if let throwaway { try? FileManager.default.removeItem(at: throwaway) } }
-        let outcome = engine.ask(question, fleet: SessionScanner().scan(), spoken: spoken, step: { print("  · " + $0.text) })
+        let fleet = SessionScanner().scan()
+        let renderer = sayTo.map { _ in SpokenRenderer() }
+        let started = Date()
+        let outcome = engine.ask(question, fleet: fleet, spoken: spoken, speak: renderer.map { r in { r.add($0, at: started) } },
+                                 step: { print("  · " + $0.text) })
+        let replied = Date().timeIntervalSince(started)
         print(spoken ? Spoken.plain(outcome.reply) : outcome.reply)
         if let cost = outcome.cost { print(String(format: "($%.2f)", cost)) }
         if let meter = outcome.meter { print("  · " + meter.text) }
+        if let renderer, let sayTo {
+            renderer.finish()
+            let whole = renderer.firstChunkSeconds(of: outcome.reply)
+            print(String(format: "  · first sentence after %.2f s, first audio after %.2f s (streamed); whole reply after %.2f s, its first audio after %.2f s (waiting)",
+                         renderer.firstSentence ?? .nan, renderer.firstAudio ?? .nan, replied, replied + whole))
+            guard renderer.write(to: sayTo) else { return false }
+        }
         return !outcome.failed
     }
 
@@ -172,6 +187,8 @@ final class Model: NSObject, ObservableObject {
     let speaker = Speaker()
     /// Speaks text aloud; tests replace it so nothing plays.
     lazy var talk: (String) -> Void = { [weak self] in self?.speaker.say($0) }
+    /// Speaks text after what's already playing; tests replace it too.
+    lazy var talkMore: (String) -> Void = { [weak self] in self?.speaker.append($0) }
     private var turns = VoiceTurns()
     private var running: Process?
     private var sentAbout: String?
@@ -274,6 +291,15 @@ final class Model: NSObject, ObservableObject {
         }
     }
 
+    /// One sentence of a spoken answer that's still being written.
+    func spokenPart(_ sentence: String) {
+        switch turns.part(sentence, listening: listener.listening) {
+        case .start(let text): talk(text)
+        case .add(let text): talkMore(text)
+        case .deferred(let note): if note { chat.append(ChatTurn(role: .step, text: VoiceTurns.deferredNote)) }
+        }
+    }
+
     func listeningEnded() {
         guard !listener.listening, let reply = turns.listeningEnded() else { return }
         talk(reply)
@@ -293,6 +319,10 @@ final class Model: NSObject, ObservableObject {
             return
         }
         asking = true
+        if spoken { turns.newReply() }
+        let speak: ((String) -> Void)? = spoken ? { [weak self] sentence in
+            DispatchQueue.main.async { self?.spokenPart(sentence) }
+        } : nil
         let fleet = result
         let target = about
         let newFocus = target.map(\.id) != sentAbout ? target : nil
@@ -301,7 +331,7 @@ final class Model: NSObject, ObservableObject {
                 FileManager.default.contents(atPath: item.transcript)
                     .map { (title: item.workspace.title, exchange: Digest.exchange($0)) }
             }
-            let outcome = engine.ask(q, fleet: fleet, focus: focus, spoken: spoken) { step in
+            let outcome = engine.ask(q, fleet: fleet, focus: focus, spoken: spoken, speak: speak) { step in
                 DispatchQueue.main.async { self.chat.append(ChatTurn(role: .step, text: step.text)) }
             }
             let history = engine.sessions()
@@ -311,7 +341,7 @@ final class Model: NSObject, ObservableObject {
                 self.chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
                 self.meter = outcome.meter
                 self.history = history
-                if spoken { self.answered(outcome.reply) }
+                if spoken && outcome.spokenSentences == 0 { self.answered(outcome.reply) }
                 if !outcome.failed && newFocus != nil { self.sentAbout = newFocus?.id }
                 if let next = self.turns.answerFinished() { self.ask(next, spoken: true, shown: true) }
             }
@@ -494,5 +524,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                             GetApplicationEventTarget(), 0, &talkKey)
         RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 3),
                             GetApplicationEventTarget(), 0, &replayKey)
+    }
+}
+
+/// Renders streamed sentences with Kokoro into memory, for `--ask --say-to`, timing the first sentence and audio.
+final class SpokenRenderer {
+    private let engine = KokoroEngine()
+    private let voice: String
+    private let lock = NSLock()
+    private let group = DispatchGroup()
+    private var samples: [Float] = []
+    private(set) var firstSentence: TimeInterval?
+    private(set) var firstAudio: TimeInterval?
+
+    init() {
+        voice = UserDefaults.standard.string(forKey: Speaker.preferenceKey).flatMap { Kokoro.npzKey($0) != nil ? $0 : nil }
+            ?? Kokoro.voices[0].id
+        _ = firstChunkSeconds(of: "Getting ready.")
+    }
+
+    func add(_ sentence: String, at start: Date) {
+        lock.withLock { if firstSentence == nil { firstSentence = Date().timeIntervalSince(start) } }
+        group.enter()
+        engine.speak(Spoken.plain(sentence), voiceID: voice, isCurrent: { true }, chunk: { [self] chunk in
+            lock.withLock {
+                if firstAudio == nil { firstAudio = Date().timeIntervalSince(start) }
+                samples += chunk
+            }
+        }, done: { [group] _ in group.leave() })
+    }
+
+    func finish() { group.wait() }
+
+    /// How long Kokoro takes to produce the first audio of `text`, with the model already loaded.
+    func firstChunkSeconds(of text: String) -> TimeInterval {
+        let started = Date()
+        var first: TimeInterval?
+        let done = DispatchSemaphore(value: 0)
+        engine.speak(Spoken.plain(text), voiceID: voice, isCurrent: { first == nil },
+                     chunk: { _ in if first == nil { first = Date().timeIntervalSince(started) } }, done: { _ in done.signal() })
+        done.wait()
+        return first ?? .nan
+    }
+
+    func write(to url: URL) -> Bool {
+        let all = lock.withLock { samples }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate), channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(max(1, all.count))),
+              let file = try? AVAudioFile(forWriting: url, settings: format.settings) else { return false }
+        buffer.frameLength = AVAudioFrameCount(all.count)
+        all.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: all.count) }
+        return (try? file.write(from: buffer)) != nil
     }
 }

@@ -384,6 +384,23 @@ final class ModelVoiceTests: XCTestCase {
         XCTAssertEqual(said, ["The PR merged."])
     }
 
+    /// A streamed answer starts on its first sentence and queues the rest; nothing plays while listening.
+    func testAStreamedAnswerStartsOnItsFirstSentenceAndQueuesTheRest() {
+        let m = model()
+        var more: [String] = []
+        m.talkMore = { more.append($0) }
+        m.spokenPart("The version bump needs your token.")
+        m.spokenPart("The trim fix merged.")
+        XCTAssertEqual(said, ["The version bump needs your token."])
+        XCTAssertEqual(more, ["The trim fix merged."])
+        m.listener.listening = true
+        m.spokenPart("One more thing.")
+        XCTAssertEqual(more, ["The trim fix merged."], "nothing plays into the open microphone")
+        m.listener.listening = false
+        m.listeningEnded()
+        XCTAssertEqual(said.last, "One more thing.")
+    }
+
     func testAQuestionHeardWhileAnsweringIsQueuedWithANote() {
         let m = model()
         m.asking = true

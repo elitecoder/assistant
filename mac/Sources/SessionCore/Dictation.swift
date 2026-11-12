@@ -265,6 +265,32 @@ public struct VoiceTurns: Equatable {
         return .deferred
     }
 
+    public enum Part: Equatable {
+        /// The reply's first sentence: start speaking, cutting off anything still playing.
+        case start(String)
+        /// A later sentence: queue it after the ones already speaking.
+        case add(String)
+        /// Kept until listening ends; `note` is true for the first sentence kept.
+        case deferred(note: Bool)
+    }
+
+    private var replyStarted = false
+
+    /// A new spoken reply is about to stream in.
+    public mutating func newReply() { replyStarted = false }
+
+    /// One sentence of a reply that's still being written. Once a sentence has waited for listening to end, the rest
+    /// of the reply waits too, so it's read in order.
+    public mutating func part(_ sentence: String, listening: Bool) -> Part {
+        if listening || deferredReply != nil {
+            let first = deferredReply == nil
+            deferredReply = [deferredReply, sentence].compactMap { $0 }.joined(separator: " ")
+            return .deferred(note: first)
+        }
+        defer { replyStarted = true }
+        return replyStarted ? .add(sentence) : .start(sentence)
+    }
+
     /// The reply to read now that listening has ended.
     public mutating func listeningEnded() -> String? {
         defer { deferredReply = nil }

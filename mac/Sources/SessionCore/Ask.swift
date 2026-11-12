@@ -106,6 +106,8 @@ public struct ClaudeInvocation: Equatable {
     public var effort: String?
     /// Extra environment for the run, which its Bash commands inherit.
     public var environment: [String: String]
+    /// Stream the reply as it's written, so a spoken answer can start before it's done.
+    public var partialMessages = false
 
     public init(systemPrompt: String, input: Data, model: String, effort: String?, environment: [String: String] = [:]) {
         self.systemPrompt = systemPrompt
@@ -203,6 +205,7 @@ public enum Asker {
          "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
          "--append-system-prompt", invocation.systemPrompt, "--model", invocation.model]
             + (invocation.effort.map { ["--effort", $0] } ?? [])
+            + (invocation.partialMessages ? ["--include-partial-messages"] : [])
     }
 
     public static let defaultModel = "haiku"

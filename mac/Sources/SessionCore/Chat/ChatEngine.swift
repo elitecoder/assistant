@@ -8,6 +8,8 @@ public struct TurnOutcome: Equatable {
     public var failed: Bool
     public var cost: Double?
     public var meter: ContextMeter?
+    /// Sentences handed to `speak` as the reply was written.
+    public var spokenSentences = 0
 }
 
 /// What a chat remembers between processes besides its rows: the fleet baseline and a compression pause.
@@ -125,8 +127,10 @@ public final class ChatEngine {
     /// run, so a crash or a second window never loses them or a session message the run already sent. `step` gets
     /// the session messages Claude sends and compaction notes. The usage anchor is the turn's first model call; the
     /// meter adds a rough count of the rows the turn stored after it.
+    /// `speak` gets the reply's sentences as Claude writes them, then whatever is left when it's done; the stored rows
+    /// and the reply are the same either way.
     public func ask(_ question: String, fleet: ScanResult, focus: (title: String, exchange: String)? = nil, spoken: Bool = false,
-                    step: @escaping (ChatStep) -> Void) -> TurnOutcome {
+                    speak: ((String) -> Void)? = nil, step: @escaping (ChatStep) -> Void) -> TurnOutcome {
         do {
             let sid = try ensureSession(question)
             let active = try store.resumeMessages(sessionID: sid)
@@ -150,7 +154,7 @@ public final class ChatEngine {
                     try saveChatState(sid, state)
                 }
             }
-            return try runTurn(sid, spoken: spoken, step: step, retried: false)
+            return try runTurn(sid, spoken: spoken, speak: speak, step: step, retried: false)
         } catch {
             return TurnOutcome(reply: "The chat couldn't be saved: \(error)", failed: true, cost: nil, meter: meter)
         }
@@ -169,11 +173,15 @@ public final class ChatEngine {
 
     /// Runs `claude` on the stored transcript and stores what it did. A first call refused as too long forces a
     /// compaction and runs once more, as Hermes does.
-    private func runTurn(_ sid: String, spoken: Bool, step: @escaping (ChatStep) -> Void, retried: Bool) throws -> TurnOutcome {
+    private func runTurn(_ sid: String, spoken: Bool, speak: ((String) -> Void)?, step: @escaping (ChatStep) -> Void,
+                         retried: Bool) throws -> TurnOutcome {
         let active = try store.resumeMessages(sessionID: sid)
-        let invocation = self.invocation(sid, active: active, tail: spoken ? [TurnContext.marker + "\n\n" + Spoken.style] : [])
+        var invocation = self.invocation(sid, active: active, tail: spoken ? [TurnContext.marker + "\n\n" + Spoken.style] : [])
+        invocation.partialMessages = speak != nil
+        var stream = SpokenStream()
         let run = runner(invocation) { [tool] line in
             if let s = Messaging.step(line, sendCommand: tool) { step(s) }
+            if let speak { stream.take(line: line).forEach(speak) }
         }
         if let error = run.launchError {
             try store.append(sessionID: sid, [TurnRecord.noReplyNote(error, timestamp: now())])
@@ -187,7 +195,7 @@ public final class ChatEngine {
         if record.promptTooLong && !retried {
             step(.note("The chat is too long for the model. Compressing it and trying again…"))
             if let note = compact(sid, active, focus: nil, force: true) { step(.note(note)) }
-            return try runTurn(sid, spoken: spoken, step: step, retried: true)
+            return try runTurn(sid, spoken: spoken, speak: speak, step: step, retried: true)
         }
         try store.append(sessionID: sid, record.rowsToStore(timestamp: now()))
         if let tokens = record.promptTokens, tokens > 0, let priced = active.last {
@@ -197,7 +205,9 @@ public final class ChatEngine {
             meter = ContextMeter(tokens: UsageAnchor.contextTokens(try store.resumeMessages(sessionID: sid), anchor: anchor),
                                  window: window)
         }
-        return TurnOutcome(reply: record.reply, failed: record.failed, cost: record.cost, meter: meter)
+        if let speak, !record.failed { stream.finish(reply: record.reply).forEach(speak) }
+        return TurnOutcome(reply: record.reply, failed: record.failed, cost: record.cost, meter: meter,
+                           spokenSentences: stream.sentences)
     }
 
     /// The `claude -p` run for the stored transcript, plus `tail` blocks that are sent this turn only.

@@ -662,7 +662,8 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
                                        channels: 1)!
     private var generation = 0
     private var queued = 0
-    private var synthesized = false
+    /// Kokoro syntheses still running for the current reply.
+    private var pending = 0
     /// The Apple utterance playing now; callbacks for an earlier one, cut off by a replay or a sample, are ignored.
     var appleUtterance: AVSpeechUtterance?
     /// False while the microphone is open: a voice or speed sample would play into it.
@@ -730,26 +731,35 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             : "Hi, this is how I'll sound.")
     }
 
+    /// Speaks `markdown` from the start, cutting off anything still playing.
     func say(_ markdown: String) {
         stop()
-        let text = Spoken.plain(markdown)
+        queued = 0
+        pending = 0
+        speak(Spoken.plain(markdown))
+    }
+
+    /// Speaks `markdown` after what's already playing, for a reply that arrives a sentence at a time.
+    func append(_ markdown: String) {
+        speaking ? speak(Spoken.plain(markdown)) : say(markdown)
+    }
+
+    private func speak(_ text: String) {
         guard let voice = current, Kokoro.npzKey(voice.id) != nil, KokoroEngine.installed else {
             prepare()
             sayWithApple(text)
             return
         }
-        generation += 1
         let mine = generation
-        queued = 0
-        synthesized = false
+        pending += 1
         speaking = true
         kokoro.speak(text, voiceID: voice.id, speed: kokoroSpeed, isCurrent: { [weak self] in self?.generation == mine },
                      chunk: { [weak self] samples in DispatchQueue.main.async { self?.play(samples, mine) } },
                      done: { [weak self] ok in
                          DispatchQueue.main.async {
                              guard let self, self.generation == mine else { return }
-                             self.synthesized = true
-                             if !ok && self.queued == 0 { self.sayWithApple(text) } else { self.finishIfDrained() }
+                             self.pending -= 1
+                             if !ok && self.queued == 0 && self.pending == 0 { self.sayWithApple(text) } else { self.finishIfDrained() }
                          }
                      })
     }
@@ -773,7 +783,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
 
     private func finishIfDrained() {
-        if synthesized && queued == 0 { speaking = false }
+        if pending == 0 && queued == 0 && appleUtterance == nil { speaking = false }
     }
 
     /// `text` as an Apple utterance at the chosen voice and speed.
@@ -802,7 +812,11 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) {
-        DispatchQueue.main.async { if u === self.appleUtterance { self.speaking = false } }
+        DispatchQueue.main.async {
+            guard u === self.appleUtterance else { return }
+            self.appleUtterance = nil
+            self.finishIfDrained()
+        }
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) {
