@@ -72,8 +72,8 @@ public struct LiveTranscript: Equatable {
 
 /// Words the operator says that a general speech model gets wrong, for the recognizer's contextual strings.
 public enum Vocabulary {
-    public static let terms = ["PR", "pull request", "Assembler", "Kokoro", "Haiku", "Sonnet", "Opus", "Claude", "cmux",
-                               "workspace"]
+    public static let terms = ["PR", "pull request", "Assembler", "Kokoro", "Haiku", "Sonnet", "Opus", "Claude", "cmux", "Talos",
+                               "main", "workspace"]
     public static let limit = 100
     /// Longer titles, such as a pasted log, aren't useful as one phrase; their words still count.
     public static let longestPhrase = 60

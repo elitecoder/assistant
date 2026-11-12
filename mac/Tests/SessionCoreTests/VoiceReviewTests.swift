@@ -255,3 +255,10 @@ final class StoppedReplyTests: XCTestCase {
         XCTAssertEqual(turns.answerFinished(), "older?")
     }
 }
+
+final class VocabularyTermsTests: XCTestCase {
+    /// The terms recognition got wrong in every rendering: Kokoro, cmux, Talos, and main.
+    func testAssistantsOwnTermsAreHints() {
+        for term in ["Kokoro", "cmux", "Talos", "main"] { XCTAssertTrue(Vocabulary.terms.contains(term), term) }
+    }
+}
