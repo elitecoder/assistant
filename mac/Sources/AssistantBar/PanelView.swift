@@ -143,15 +143,20 @@ struct ChatView: View {
                     Text("Ask or tell it to work with a session. ⌃⌥V to talk.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                HistoryMenu(model: model)
                 if !model.chat.isEmpty {
                     Button("New chat") { model.newChat() }.buttonStyle(.borderless).font(.caption)
+                        .disabled(model.asking || model.compressing)
                 }
             }
             HStack(spacing: 12) {
                 MicrophoneMenu(listener: listener, prefix: "")
                 VoiceMenu(speaker: speaker)
-                ModelMenu()
+                ModelMenu(chat: model)
                 Spacer()
+            }
+            if !model.chat.isEmpty {
+                ContextBar(model: model)
             }
             if !model.chat.isEmpty || model.asking || listener.listening {
                 ScrollViewReader { proxy in
@@ -175,12 +180,13 @@ struct ChatView: View {
                                     Button("Stop") { model.stopAsking() }.buttonStyle(.borderless).font(.caption)
                                 }.id("asking")
                             }
+                            Color.clear.frame(height: 1).id(Self.bottom)
                         }
                     }
+                    .defaultScrollAnchor(.bottom)
                     .frame(height: 200)
-                    .onChange(of: model.chat.count) { _, _ in
-                        withAnimation { proxy.scrollTo(model.chat.last?.id, anchor: .bottom) }
-                    }
+                    .onAppear { scrollToBottom(proxy, animated: false) }
+                    .onChange(of: scrollKey) { _, _ in scrollToBottom(proxy, animated: true) }
                 }
             }
             HStack {
@@ -209,6 +215,24 @@ struct ChatView: View {
             }
         }
         .onChange(of: model.about?.id) { _, _ in typing = true }
+    }
+
+    static let bottom = "chat-bottom"
+
+    /// Anything that adds or grows content at the bottom of the chat.
+    var scrollKey: [String] {
+        [String(model.chat.count), model.chat.last.map { "\($0.id)" } ?? "", String(model.asking),
+         String(listener.listening), String(listener.heard.count), String(listener.note != nil)]
+    }
+
+    func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+            } else {
+                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            }
+        }
     }
 
     func send() {
@@ -308,6 +332,17 @@ struct VoiceMenu: View {
                 }
             }
             Divider()
+            Menu("Speed: \(SpeechSpeed.label(speaker.speed))") {
+                ForEach(SpeechSpeed.choices, id: \.self) { value in
+                    Button { speaker.setSpeed(value) } label: {
+                        if value == speaker.speed {
+                            Label(SpeechSpeed.label(value), systemImage: "checkmark")
+                        } else {
+                            Text(SpeechSpeed.label(value))
+                        }
+                    }
+                }
+            }
             Button("Get more natural voices…") {
                 let settings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension")!
                 if !NSWorkspace.shared.open(settings) {
@@ -324,13 +359,14 @@ struct VoiceMenu: View {
 }
 
 struct ModelMenu: View {
+    let chat: Model
     @State private var model = Asker.model
 
     var body: some View {
         Menu {
             ForEach(Asker.models, id: \.0) { id, name in
                 Button {
-                    Asker.model = id
+                    chat.useModel(id)
                     model = id
                 } label: {
                     if id == model { Label(name, systemImage: "checkmark") } else { Text(name) }
@@ -342,5 +378,74 @@ struct ModelMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Model for answers. Haiku is fast and costs about a cent per question.")
+    }
+}
+
+/// The chats Assistant has stored, most recent first. Pick one to continue it.
+struct HistoryMenu: View {
+    @ObservedObject var model: Model
+
+    var body: some View {
+        if !model.history.isEmpty {
+            Menu {
+                ForEach(model.history, id: \.session.id) { item in
+                    Button(item.session.title) { model.openChat(item.session.id) }
+                }
+            } label: {
+                Label("History", systemImage: "clock.arrow.circlepath").font(.caption)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(model.asking)
+            .help("Open an earlier chat")
+        }
+    }
+}
+
+/// How full the chat's context is, from the model's last reported prompt size, and the Compress controls.
+struct ContextBar: View {
+    @ObservedObject var model: Model
+    @State private var focusing = false
+    @State private var focus = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if let meter = model.meter {
+                    ProgressView(value: min(1, Double(meter.tokens) / Double(max(1, meter.window))))
+                        .frame(width: 60)
+                    Text(meter.text).font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Context: shown after the next answer").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.compressing { ProgressView().controlSize(.mini) }
+                Menu {
+                    Button("Compress") { model.compress(focus: nil) }
+                    Button("Compress with focus…") { focusing = true }
+                } label: {
+                    Label("Compress", systemImage: "arrow.down.right.and.arrow.up.left").font(.caption)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(model.asking || model.compressing)
+                .help("Summarize older turns to free up context")
+            }
+            if focusing {
+                HStack {
+                    TextField("What to keep in detail, for example the deploy token", text: $focus)
+                        .textFieldStyle(.roundedBorder).font(.caption)
+                        .onSubmit(run)
+                    Button("Compress", action: run).font(.caption).disabled(focus.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Cancel") { focusing = false }.buttonStyle(.borderless).font(.caption)
+                }
+            }
+        }
+    }
+
+    func run() {
+        model.compress(focus: focus)
+        focus = ""
+        focusing = false
     }
 }

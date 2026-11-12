@@ -1,5 +1,6 @@
 import AudioToolbox
 import AVFoundation
+import ObjCExceptions
 import KokoroSwift
 import SessionCore
 import os
@@ -28,6 +29,10 @@ final class Listener: ObservableObject {
     private var loudest: Float = 0
     private var micID: UInt32?
     private var tried = Set<UInt32>()
+    private var formatRetried = Set<UInt32>()
+    private var transcript = TranscriptAccumulator()
+    private var buffers = 0
+    private var droppedBuffers = 0
     private var startedAt = Date()
     private var gotSignal = false
     private var session = UUID()
@@ -48,7 +53,14 @@ final class Listener: ObservableObject {
         begin()
     }
 
+    private var pressedAt = Date()
+    private var firstBufferLogged = false
+
+    private func elapsed() -> String { String(format: "%.0f ms", Date().timeIntervalSince(pressedAt) * 1000) }
+
     func start() {
+        pressedAt = Date()
+        voiceLog.notice("timing: pressed")
         AVCaptureDevice.requestAccess(for: .audio) { mic in
             SFSpeechRecognizer.requestAuthorization { speech in
                 DispatchQueue.main.async {
@@ -58,6 +70,7 @@ final class Listener: ObservableObject {
                         self.onProblem?("Assistant can't use speech recognition. Allow it in System Settings, Privacy & Security, Speech Recognition.")
                     } else {
                         self.tried = []
+                        self.formatRetried = []
                         self.note = nil
                         self.begin()
                     }
@@ -67,6 +80,7 @@ final class Listener: ObservableObject {
     }
 
     private func begin() {
+        voiceLog.notice("timing: permissions done after \(self.elapsed(), privacy: .public)")
         guard !listening, let recognizer, recognizer.isAvailable else {
             onProblem?("Speech recognition isn't available right now.")
             return
@@ -90,40 +104,60 @@ final class Listener: ObservableObject {
         microphone = mic.name
         levels = [Float](repeating: 0, count: Self.bars)
         loudest = 0
+        buffers = 0
+        droppedBuffers = 0
         startedAt = Date()
         gotSignal = false
         let token = UUID()
         session = token
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
-            request.append(buffer)
-            guard let channel = buffer.floatChannelData?[0] else { return }
-            let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
-            let level = Meter.level(samples)
-            let silent = samples.allSatisfy { $0 == 0 }
-            DispatchQueue.main.async {
-                guard let self, self.session == token else { return }
-                self.took(level: level, silent: silent)
-            }
+        let hardware = input.inputFormat(forBus: 0)
+        let format = input.outputFormat(forBus: 0)
+        guard Microphones.usable(sampleRate: hardware.sampleRate, channels: hardware.channelCount),
+              Microphones.usable(sampleRate: format.sampleRate, channels: format.channelCount) else {
+            voiceLog.error("\(mic.name, privacy: .public) has no usable format yet (\(format.sampleRate) Hz, \(format.channelCount) ch)")
+            retryOrSkip(mic)
+            return
         }
-        engine.prepare()
-        do {
-            try engine.start()
-            voiceLog.notice("listening on \(mic.name, privacy: .public)")
-        } catch {
-            voiceLog.error("engine failed on \(mic.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            input.removeTap(onBus: 0)
+        var startError: Error?
+        let raised = AssistantCatchException {
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+                request.append(buffer)
+                guard let channel = buffer.floatChannelData?[0] else { return }
+                let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+                let level = Meter.level(samples)
+                let silent = samples.allSatisfy { $0 == 0 }
+                DispatchQueue.main.async {
+                    guard let self, self.session == token else { return }
+                    self.took(level: level, silent: silent)
+                }
+            }
+            self.engine.prepare()
+            do { try self.engine.start() } catch { startError = error }
+        }
+        if raised != nil || startError != nil {
+            let reason = raised.map { "\($0.name.rawValue): \($0.reason ?? "")" } ?? startError!.localizedDescription
+            voiceLog.error("microphone \(mic.name, privacy: .public) failed: \(reason, privacy: .public)")
+            _ = AssistantCatchException { input.removeTap(onBus: 0) }
             tried.insert(mic.id)
             begin()
             return
         }
+        voiceLog.notice("listening on \(mic.name, privacy: .public) after \(self.elapsed(), privacy: .public)")
+        firstBufferLogged = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.silenceBeforeSwitch + 0.3) { [weak self] in
+            guard let self, self.session == token, self.listening, self.buffers == 0 else { return }
+            voiceLog.notice("\(mic.name, privacy: .public) delivered no audio, trying the next one")
+            self.skipSilentMicrophone()
+        }
         self.request = request
+        transcript = TranscriptAccumulator()
         heard = ""
         listening = true
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self, self.session == token, self.listening else { return }
                 if let result {
-                    self.heard = result.bestTranscription.formattedString
+                    self.heard = self.transcript.update(result.bestTranscription.formattedString)
                     self.waitForPause()
                     if result.isFinal { self.stop() }
                 } else if let error = error as NSError? {
@@ -138,11 +172,29 @@ final class Listener: ObservableObject {
     }
 
     private func took(level: Float, silent: Bool) {
-        guard listening else { return }
+        guard listening else {
+            droppedBuffers += 1
+            return
+        }
+        buffers += 1
+        if !firstBufferLogged {
+            firstBufferLogged = true
+            voiceLog.notice("timing: first audio after \(self.elapsed(), privacy: .public)")
+        }
         loudest = max(loudest, level)
         levels = Meter.window(levels, adding: level, count: Self.bars)
         if !silent { gotSignal = true }
         if !gotSignal, Date().timeIntervalSince(startedAt) >= Self.silenceBeforeSwitch { skipSilentMicrophone() }
+    }
+
+    /// Waits once for a microphone whose format isn't ready (common right after access is granted), then moves on.
+    private func retryOrSkip(_ mic: Microphone) {
+        if formatRetried.insert(mic.id).inserted {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.begin() }
+            return
+        }
+        tried.insert(mic.id)
+        begin()
     }
 
     private func skipSilentMicrophone() {
@@ -156,7 +208,7 @@ final class Listener: ObservableObject {
 
     private func waitForPause() {
         pause?.invalidate()
-        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? 6 : 1.8, repeats: false) { [weak self] _ in
+        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? 6 : 2.5, repeats: false) { [weak self] _ in
             self?.stop()
         }
     }
@@ -177,7 +229,7 @@ final class Listener: ObservableObject {
         guard listening else { return }
         teardown()
         let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-        voiceLog.notice("stopped, heard \(text.count) characters, loudest level \(self.loudest)")
+        voiceLog.notice("stopped, heard \(text.count) characters, loudest level \(self.loudest), \(self.buffers) buffers, \(self.droppedBuffers) before listening")
         if !text.isEmpty {
             onHeard?(text)
         } else {
@@ -235,6 +287,21 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if current.map({ Kokoro.npzKey($0.id) != nil }) == true { kokoro.download() }
     }
 
+    static let speedKey = "speechSpeed"
+
+    var speed: Double {
+        get { SpeechSpeed.clamped(UserDefaults.standard.object(forKey: Self.speedKey) as? Double ?? SpeechSpeed.defaultValue) }
+        set {
+            UserDefaults.standard.set(SpeechSpeed.clamped(newValue), forKey: Self.speedKey)
+            objectWillChange.send()
+        }
+    }
+
+    func setSpeed(_ value: Double) {
+        speed = value
+        say("This is how fast I'll talk.")
+    }
+
     func use(_ voice: VoiceInfo) {
         UserDefaults.standard.set(voice.id, forKey: Self.preferenceKey)
         objectWillChange.send()
@@ -257,7 +324,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         queued = 0
         synthesized = false
         speaking = true
-        kokoro.speak(text, voiceID: voice.id, isCurrent: { [weak self] in self?.generation == mine },
+        kokoro.speak(text, voiceID: voice.id, speed: Float(speed), isCurrent: { [weak self] in self?.generation == mine },
                      chunk: { [weak self] samples in DispatchQueue.main.async { self?.play(samples, mine) } },
                      done: { [weak self] ok in
                          DispatchQueue.main.async {
@@ -292,6 +359,8 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 
     private func sayWithApple(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
+        utterance.rate = SpeechSpeed.appleRate(speed, defaultRate: AVSpeechUtteranceDefaultSpeechRate,
+                                               maximumRate: AVSpeechUtteranceMaximumSpeechRate)
         utterance.voice = current.flatMap { AVSpeechSynthesisVoice(identifier: $0.id) }
             ?? AVSpeechSynthesisVoice(language: "en-US")
         speaking = true

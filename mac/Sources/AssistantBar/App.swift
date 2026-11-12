@@ -12,36 +12,28 @@ enum Main {
     static let delegate = AppDelegate()
 
     static func main() {
-        if CommandLine.arguments.contains("--print") {
-            printScan()
-            return
+        guard let command = AppCommand.parse(CommandLine.arguments) else {
+            FileHandle.standardError.write(Data((AppCommand.usage + "\n").utf8))
+            exit(2)
         }
-        let args = CommandLine.arguments
-        let timeout = args.firstIndex(of: "--timeout").flatMap { $0 + 1 < args.count ? TimeInterval(args[$0 + 1]) : nil } ?? 900
-        if args.contains("--sessions") {
-            print(Messenger.list())
+        switch command {
+        case .app: break
+        case .print: return printScan()
+        case .sessions: return print(Messenger.list())
+        case let .send(ref, message, timeout): return print(Messenger.send(ref, message, timeout: timeout ?? 900))
+        case let .wait(ref, timeout): return print(Messenger.wait(ref, timeout: timeout ?? 900))
+        case let .render(text, file): exit(render(text, to: URL(fileURLWithPath: file)) ? 0 : 1)
+        case .search(let json): return print(ChatTools.search(json))
+        case .memory(let json): return print(ChatTools.memory(json))
+        case let .ask(question, session, spoken): exit(ask(question, session: session, spoken: spoken) ? 0 : 1)
+        case let .compress(session, focus):
+            guard let (engine, throwaway) = cliEngine(session: session) else { exit(1) }
+            print(engine.compressNow(focus: focus))
+            if let throwaway { try? FileManager.default.removeItem(at: throwaway) }
             return
-        }
-        if let i = args.firstIndex(of: "--send"), i + 2 < args.count {
-            print(Messenger.send(args[i + 1], args[i + 2], timeout: timeout))
-            return
-        }
-        if let i = args.firstIndex(of: "--wait"), i + 1 < args.count {
-            print(Messenger.wait(args[i + 1], timeout: timeout))
-            return
-        }
-        if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 2 < CommandLine.arguments.count {
-            exit(render(CommandLine.arguments[i + 1], to: URL(fileURLWithPath: CommandLine.arguments[i + 2])) ? 0 : 1)
-        }
-        if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 1 < CommandLine.arguments.count {
-            let spoken = CommandLine.arguments.contains("--spoken")
-            let reply = Asker.ask(Asker.prompt(question: CommandLine.arguments[i + 1],
-                                               fleet: Digest.fleet(SessionScanner().scan()), focus: nil,
-                                               spoken: spoken), resume: nil, tool: Main.tool,
-                                  step: { print("  · " + Main.describe($0)) })
-            print(spoken ? Spoken.plain(reply.text) : reply.text)
-            if let cost = reply.cost { print(String(format: "($%.2f)", cost)) }
-            return
+        case .toolGuard:
+            let decision = ToolGuard.decide(hookInput: FileHandle.standardInput.readDataToEndOfFile(), tool: tool)
+            return print(ToolGuard.hookOutput(decision), terminator: "")
         }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
@@ -77,12 +69,54 @@ enum Main {
 
     static var tool: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }
 
-    static func describe(_ step: ChatStep) -> String {
-        switch step {
-        case let .sent(workspace, message): "Sent to \(workspace): \(message)"
-        case let .replied(text): "Reply: " + String(text.prefix(300))
-        case let .note(text): text
+    static var memoryFolder: URL {
+        ProcessInfo.processInfo.environment["ASSISTANT_MEMORY_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? MemoryStore.defaultFolder
+    }
+
+    /// `ASSISTANT_MODEL` and `ASSISTANT_EFFORT` override the model menu (the evals use them); an empty effort runs the
+    /// model's default.
+    static func engine(store: ConversationStore, running: ((Process) -> Void)? = nil) -> ChatEngine {
+        let env = ProcessInfo.processInfo.environment
+        let model = env["ASSISTANT_MODEL"] ?? Asker.model
+        let effort: String? = env["ASSISTANT_EFFORT"].map { $0.isEmpty ? nil : $0 } ?? Asker.effort(for: model)
+        return ChatEngine(store: store, memoryFolder: memoryFolder, tool: tool, model: model, effort: effort,
+                          runner: { invocation, onLine in Asker.run(invocation, tool: tool, onLine: onLine, running: running) },
+                          summarizer: ClaudeSummarizer.make())
+    }
+
+    /// `--session NAME` continues the chat `cli-NAME` in the default history; without it the chat is thrown away.
+    /// `ASSISTANT_DB` points both at another database. Returns the throwaway folder to delete afterwards.
+    static func cliEngine(session name: String?) -> (ChatEngine, URL?)? {
+        var throwaway: URL?
+        let url: URL
+        if let path = ProcessInfo.processInfo.environment["ASSISTANT_DB"] {
+            url = URL(fileURLWithPath: path)
+        } else if name != nil {
+            url = ConversationStore.defaultURL
+        } else {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("assistant-ask-\(UUID().uuidString)")
+            throwaway = folder
+            url = folder.appendingPathComponent("conversations.db")
         }
+        do {
+            let engine = engine(store: try ConversationStore(url: url))
+            if let name { try engine.use("cli-" + name) }
+            return (engine, throwaway)
+        } catch {
+            print("Couldn't open the chat history: \(error)")
+            return nil
+        }
+    }
+
+    static func ask(_ question: String, session: String?, spoken: Bool) -> Bool {
+        guard let (engine, throwaway) = cliEngine(session: session) else { return false }
+        defer { if let throwaway { try? FileManager.default.removeItem(at: throwaway) } }
+        let outcome = engine.ask(question, fleet: SessionScanner().scan(), spoken: spoken, step: { print("  · " + $0.text) })
+        print(spoken ? Spoken.plain(outcome.reply) : outcome.reply)
+        if let cost = outcome.cost { print(String(format: "($%.2f)", cost)) }
+        if let meter = outcome.meter { print("  · " + meter.text) }
+        return !outcome.failed
     }
 
     static func printScan() {
@@ -108,11 +142,15 @@ final class Model: NSObject, ObservableObject {
     @Published var chat: [ChatTurn] = []
     @Published var asking = false
     @Published var about: Item?
+    @Published var meter: ContextMeter?
+    @Published var history: [ConversationListItem] = []
+    @Published var compressing = false
     let listener = Listener()
     let speaker = Speaker()
     private var running: Process?
-    private var chatSession: String?
     private var sentAbout: String?
+    private var engine: ChatEngine?
+    private let chatQueue = DispatchQueue(label: "assistant.chat")
     var onScan: ((ScanResult) -> Void)?
     var onFocus: (() -> Void)?
 
@@ -144,6 +182,30 @@ final class Model: NSObject, ObservableObject {
         super.init()
         listener.onHeard = { [weak self] text in self?.ask(text, spoken: true) }
         listener.onProblem = { [weak self] text in self?.chat.append(ChatTurn(role: .error, text: text)) }
+        let url = ProcessInfo.processInfo.environment["ASSISTANT_DB"].map { URL(fileURLWithPath: $0) } ?? ConversationStore.defaultURL
+        do {
+            engine = Main.engine(store: try ConversationStore(url: url),
+                                 running: { [weak self] p in DispatchQueue.main.async { self?.running = p } })
+        } catch {
+            chat.append(ChatTurn(role: .error, text: "Chat history is unavailable: \(error)"))
+        }
+        reload { try $0.openLatest() }
+    }
+
+    /// Runs `change` on the chat queue, then shows the engine's chat, meter, and history.
+    private func reload(_ change: @escaping (ChatEngine) throws -> Void) {
+        guard let engine else { return }
+        chatQueue.async {
+            try? change(engine)
+            let turns = engine.displayTurns()
+            let meter = engine.meter
+            let history = engine.sessions()
+            DispatchQueue.main.async {
+                self.chat = turns
+                self.meter = meter
+                self.history = history
+            }
+        }
     }
 
     func listen() {
@@ -156,32 +218,31 @@ final class Model: NSObject, ObservableObject {
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !asking else { return }
         chat.append(ChatTurn(role: .you, text: q))
+        guard let engine else {
+            chat.append(ChatTurn(role: .error, text: "Chat history is unavailable, so Assistant can't answer."))
+            return
+        }
         asking = true
-        let fleet = chatSession == nil ? Digest.fleet(result) : nil
+        let fleet = result
         let target = about
         let newFocus = target.map(\.id) != sentAbout ? target : nil
-        let resume = chatSession
-        DispatchQueue.global(qos: .userInitiated).async {
+        chatQueue.async {
             let focus = newFocus.flatMap { item in
                 FileManager.default.contents(atPath: item.transcript)
                     .map { (title: item.workspace.title, exchange: Digest.exchange($0)) }
             }
-            let reply = Asker.ask(Asker.prompt(question: q, fleet: fleet, focus: focus, spoken: spoken),
-                                  resume: resume, tool: Main.tool,
-                                  step: { step in
-                                      DispatchQueue.main.async {
-                                          self.chat.append(ChatTurn(role: .step, text: Main.describe(step)))
-                                      }
-                                  },
-                                  running: { p in DispatchQueue.main.async { self.running = p } })
+            let outcome = engine.ask(q, fleet: fleet, focus: focus, spoken: spoken) { step in
+                DispatchQueue.main.async { self.chat.append(ChatTurn(role: .step, text: step.text)) }
+            }
+            let history = engine.sessions()
             DispatchQueue.main.async {
                 self.asking = false
                 self.running = nil
-                self.chat.append(ChatTurn(role: reply.failed ? .error : .assistant, text: reply.text, cost: reply.cost))
-                if spoken { self.speaker.say(reply.text) }
-                guard !reply.failed else { return }
-                self.chatSession = reply.sessionID
-                if newFocus != nil { self.sentAbout = newFocus?.id }
+                self.chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
+                self.meter = outcome.meter
+                self.history = history
+                if spoken { self.speaker.say(outcome.reply) }
+                if !outcome.failed && newFocus != nil { self.sentAbout = newFocus?.id }
             }
         }
     }
@@ -190,11 +251,46 @@ final class Model: NSObject, ObservableObject {
         running?.terminate()
     }
 
+    /// Ignored while an answer is running, so its reply can't land in the next chat.
     func newChat() {
+        guard !asking, !compressing else { return }
         chat = []
-        chatSession = nil
         sentAbout = nil
         about = nil
+        meter = nil
+        reload { $0.newChat() }
+    }
+
+    func openChat(_ id: String) {
+        guard !asking, !compressing else { return }
+        sentAbout = nil
+        about = nil
+        reload { try $0.open(id) }
+    }
+
+    func useModel(_ id: String) {
+        Asker.model = id
+        guard let engine else { return }
+        chatQueue.async {
+            engine.setModel(id, effort: Asker.effort(for: id))
+            let meter = engine.meter
+            DispatchQueue.main.async { self.meter = meter }
+        }
+    }
+
+    /// Compresses the chat now, keeping `focus` in more detail when given.
+    func compress(focus: String?) {
+        guard let engine, !asking, !compressing else { return }
+        compressing = true
+        chatQueue.async {
+            let note = engine.compressNow(focus: focus)
+            let meter = engine.meter
+            DispatchQueue.main.async {
+                self.compressing = false
+                self.chat.append(ChatTurn(role: .step, text: note))
+                self.meter = meter
+            }
+        }
     }
 
     func setOpensAtLogin(_ on: Bool) {

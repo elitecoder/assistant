@@ -11,14 +11,16 @@ let package = Package(
     ],
     targets: [
         .target(name: "SessionCore"),
+        .target(name: "ObjCExceptions"),
         .executableTarget(name: "AssistantBar", dependencies: [
             "SessionCore",
+            "ObjCExceptions",
             .product(name: "KokoroSwift", package: "kokoro-ios"),
             .product(name: "MLXUtilsLibrary", package: "MLXUtilsLibrary"),
             .product(name: "MLX", package: "mlx-swift"),
         ]),
         .testTarget(name: "SessionCoreTests", dependencies: ["SessionCore"]),
-        .testTarget(name: "AssistantBarTests", dependencies: ["AssistantBar", "SessionCore"]),
+        .testTarget(name: "AssistantBarTests", dependencies: ["AssistantBar", "SessionCore", "ObjCExceptions"]),
     ],
     swiftLanguageModes: [.v5]
 )

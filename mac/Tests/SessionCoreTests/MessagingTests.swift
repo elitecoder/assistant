@@ -64,3 +64,10 @@ final class MessagingTests: XCTestCase {
         XCTAssertEqual(Messaging.shellWords(#"a --send ws:1 "it's \"done\"" 'x y'"#), ["a", "--send", "ws:1", #"it's "done""#, "x y"])
     }
 }
+
+final class ShellWordsTabTests: XCTestCase {
+    func testTabsSeparateWordsLikeTheShell() {
+        XCTAssertEqual(Messaging.shellWords("tool\t--wait\tworkspace:1"), ["tool", "--wait", "workspace:1"])
+        XCTAssertEqual(Messaging.shellWords("tool --send ws:1 'a\tb'"), ["tool", "--send", "ws:1", "a\tb"])
+    }
+}

@@ -17,6 +17,15 @@ public enum ChatStep: Equatable {
     case sent(workspace: String, message: String)
     case replied(String)
     case note(String)
+
+    /// The line the panel and the terminal show for the step.
+    public var text: String {
+        switch self {
+        case let .sent(workspace, message): "Sent to \(workspace): \(message)"
+        case let .replied(text): "Reply: " + String(text.prefix(300))
+        case let .note(text): text
+        }
+    }
 }
 
 public enum Messaging {
@@ -96,14 +105,8 @@ public enum Messaging {
         if r["type"] as? String == "assistant" {
             for b in blocks where b["type"] as? String == "tool_use" {
                 guard let command = (b["input"] as? [String: Any])?["command"] as? String,
-                      command.contains(sendCommand) else { continue }
-                let args = shellWords(command)
-                if let i = args.firstIndex(of: "--send"), i + 2 < args.count {
-                    return .sent(workspace: args[i + 1], message: args[i + 2])
-                }
-                if let i = args.firstIndex(of: "--wait"), i + 1 < args.count {
-                    return .note("Waiting on \(args[i + 1])…")
-                }
+                      let step = step(command: command, sendCommand: sendCommand) else { continue }
+                return step
             }
         }
         if r["type"] as? String == "user" {
@@ -111,11 +114,29 @@ public enum Messaging {
                 let content = b["content"]
                 let text = (content as? String)
                     ?? (content as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined(separator: "\n") ?? ""
-                if text.hasPrefix("REPLY") { return .replied(String(text.drop { $0 != "\n" }.dropFirst())) }
+                if text.hasPrefix("REPLY") { return .replied(replyBody(text)) }
             }
         }
         return nil
     }
+
+    /// The step a Bash command of Assistant's own shows, or nil for any other command.
+    public static func step(command: String, sendCommand: String) -> ChatStep? {
+        guard command.contains(sendCommand) else { return nil }
+        let args = shellWords(command)
+        if let i = args.firstIndex(of: "--send"), i + 2 < args.count {
+            return .sent(workspace: args[i + 1], message: args[i + 2])
+        }
+        if let i = args.firstIndex(of: "--wait"), i + 1 < args.count {
+            return .note("Waiting on \(args[i + 1])…")
+        }
+        if args.contains("--search") { return .note("Searching earlier chats…") }
+        if args.contains("--memory") { return .note("Updating memory…") }
+        return nil
+    }
+
+    /// A `--send` result without its first line, which is the REPLY marker.
+    public static func replyBody(_ text: String) -> String { String(text.drop { $0 != "\n" }.dropFirst()) }
 
     /// Splits a shell command into words, honoring single and double quotes.
     public static func shellWords(_ command: String) -> [String] {
@@ -132,7 +153,7 @@ public enum Messaging {
             } else if c == "\"" || c == "'" {
                 quote = c
                 inWord = true
-            } else if c == " " {
+            } else if c == " " || c == "\t" {
                 if inWord { words.append(current); current = ""; inWord = false }
             } else {
                 current.append(c)

@@ -27,7 +27,7 @@ the top of the chat. It doesn't change your Mac's input for other apps.
 Assistant answers with Kokoro, a natural voice that runs on your Mac. The
 voice (340 MB) downloads once, the first time you talk, into
 `~/Library/Application Support/Assistant/Kokoro`. Until then, it uses Apple's
-voice. Pick another Kokoro voice, or an Apple voice, from the voice menu.
+voice. Pick another Kokoro voice, or an Apple voice, from the voice menu. Set the talkback speed, from 1× to 2×, in the same menu.
 Kokoro needs Apple Silicon. The first time, macOS asks for
 microphone and speech recognition access.
 
@@ -43,8 +43,9 @@ message it sends, and each reply, shows in the panel. Select **Stop** to end it.
 - It skips workspaces on your `/back-off` list.
 - It brings you any decision about merging, deleting, spending money, or
   product behavior instead of answering for you.
-- Its only command access is Assistant's own `--sessions`, `--send`, and
-  `--wait`. Everything else is denied.
+- Its only command access is Assistant's own `--sessions`, `--send`,
+  `--wait`, `--search`, and `--memory`. Everything else is denied. See
+  [What the chat's Claude can do](#what-the-chats-claude-can-do).
 
 From the terminal: `AssistantBar --send workspace:25 "go"` sends a message and
 prints the reply. `AssistantBar --wait workspace:25` waits for a session to
@@ -56,10 +57,77 @@ Type a question in the box at the bottom of the panel, for example "What does
 the version bump session need from me?" To ask about one session, select the
 speech bubble on its row first. Dictation works in the box too.
 
-Each question runs your `claude` command with Claude Haiku, about a cent
-per question. Pick Sonnet or Opus from the model menu for harder questions. with Read, Grep, and Glob, plus its own messaging commands. The first question sends a summary of every workspace. A question
-about one session also sends its recent conversation. Follow-ups continue the
-same chat. The panel shows what each answer cost. Nothing runs until you ask.
+Each question runs Claude Code with Claude Haiku, about a cent per question.
+Pick Sonnet or Opus from the model menu for harder questions. Claude gets Read,
+Grep, and Glob on session transcripts, plus Assistant's own commands. The first
+question in a chat sends a summary of every workspace. Later questions send
+only the workspaces that changed. A question about one session also sends its
+recent conversation. The panel shows what each answer cost. Nothing runs until
+you ask.
+
+## What the chat's Claude can do
+
+Workspace transcripts can hold anything, including text written to trick a
+model, so the chat's Claude runs in a tight sandbox:
+
+- Assistant runs the `claude` binary directly, not your shell alias, so the
+  alias's extra folders and permission mode don't apply.
+- It passes `--setting-sources ""`, so your `settings.json` allow list, your
+  hooks, and your `CLAUDE.md` don't load. MCP servers and slash commands are off.
+- Every tool call first goes through `AssistantBar --pretooluse-guard`, a hook
+  that allows only these:
+  - Bash: exactly `AssistantBar --sessions`, `--send <workspace> "<message>"`,
+    `--wait <workspace>`, `--search '<json>'`, or `--memory '<json>'`, with no
+    pipes, redirection, command substitution, extra arguments, or line breaks.
+  - Read, Grep, and Glob: only under `~/.claude/projects`, where the
+    transcripts live.
+- What the guard allows still needs Claude Code's own permission check, in
+  `dontAsk` mode.
+- Assistant runs each command only as its first argument, with an exact
+  argument count, so an allowed command can't carry a second one.
+
+The summarizer that writes compaction summaries also skips your settings, and it
+has no tools. Claude Code signs in with your saved login, so no settings are
+needed for that. Set `ASSISTANT_CLAUDE` if `claude` isn't in your login shell's
+`PATH` or in `~/.local/bin`.
+
+## Chat history, compression, and memory
+
+Assistant keeps the chat itself, the way Hermes Agent does. It saves each
+question, each command Claude runs, what the command printed, and each answer
+in `~/Library/Application Support/Assistant/conversations.db`. Quit and reopen
+the app, and your last chat is still there. Select **History** to continue an
+earlier chat, or **New chat** to start a fresh one.
+
+Each question runs a fresh `claude -p` with the chat so far, oldest first, and
+the new question last. Each request repeats the previous one word for word
+before adding to it, so Claude reads most of it from its prompt cache.
+
+The bar under the menus shows how full the chat's context is, for example
+"Context 23,456 of 200,000 tokens (12%)". The number is the prompt size Claude
+reported for the last question, plus an estimate for the answer that followed.
+When a chat reaches 150,000 tokens with Haiku or Sonnet (75% of a 200,000-token
+window), or 500,000 with Opus (half of 1,000,000), Assistant summarizes the
+older turns with Haiku before the next question. It then says, for example,
+"Compressed 42 messages into a summary." Select **Compress** to summarize now,
+or **Compress with focus** to say what the summary should keep in detail.
+Compressed turns stay saved, and Claude can still search them.
+
+Claude can search earlier chats with `AssistantBar --search`, and save lasting
+facts about you and your setup with `AssistantBar --memory`. Memory lives in
+`~/.assistant/mac-memory`, in `MEMORY.md` and `USER.md`. A chat reads memory
+once, when it starts, so a fact saved during a chat shows up in the next chat.
+
+To try compression without a long chat, set a small window:
+`ASSISTANT_CONTEXT_WINDOW=60000`, or
+`defaults write com.assistant.sessions contextWindow 60000`. A window under
+about 85,000 tokens compresses at 85%. Claude's own instructions take about
+23,000 tokens and the first workspace summary about 8,000, so keep the window
+well above that.
+
+The conversation store, compressor, memory, and session search are ported from
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,
+under the MIT license.
 
 ## Use it
 
@@ -67,6 +135,11 @@ same chat. The panel shows what each answer cost. Nothing runs until you ask.
 - Check from the terminal: `.build/release/AssistantBar --print`.
 - Ask from the terminal: `.build/release/AssistantBar --ask "What needs me?"`.
   Add `--spoken` to get the answer in the short style it uses for speech.
+  Without `--session`, the question runs in a throwaway chat. Add
+  `--session work` to continue the chat named "work" across questions.
+- Compress a terminal chat: `AssistantBar --compress --session work --focus "the deploy token"`.
+- Point the terminal commands at another history and memory folder with
+  `ASSISTANT_DB` and `ASSISTANT_MEMORY_DIR`.
 
 ## Build and install
 

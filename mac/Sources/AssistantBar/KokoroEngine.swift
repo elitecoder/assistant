@@ -94,7 +94,7 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
     }
 
     /// Speaks `text` with `voiceID` one sentence at a time. `chunk` gets 24 kHz samples; `done` reports success.
-    func speak(_ text: String, voiceID: String, isCurrent: @escaping () -> Bool,
+    func speak(_ text: String, voiceID: String, speed: Float = 1, isCurrent: @escaping () -> Bool,
                chunk: @escaping ([Float]) -> Void, done: @escaping (Bool) -> Void) {
         queue.async {
             self.unload?.cancel()
@@ -106,7 +106,7 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
             let language: Language = key.hasPrefix("b") ? .enGB : .enUS
             var produced = false
             for sentence in Kokoro.chunks(text) where isCurrent() {
-                for samples in self.generate(sentence, voice: voice, language: language, depth: 0) where isCurrent() {
+                for samples in self.generate(sentence, voice: voice, language: language, speed: speed, depth: 0) where isCurrent() {
                     produced = true
                     chunk(samples)
                 }
@@ -115,12 +115,12 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
         }
     }
 
-    private func generate(_ text: String, voice: MLXArray, language: Language, depth: Int) -> [[Float]] {
+    private func generate(_ text: String, voice: MLXArray, language: Language, speed: Float, depth: Int) -> [[Float]] {
         do {
-            let (audio, _) = try tts!.generateAudio(voice: voice, language: language, text: text)
+            let (audio, _) = try tts!.generateAudio(voice: voice, language: language, text: text, speed: speed)
             return [audio]
         } catch KokoroTTS.KokoroTTSError.tooManyTokens where depth < 6 {
-            return Kokoro.halves(text).flatMap { generate($0, voice: voice, language: language, depth: depth + 1) }
+            return Kokoro.halves(text).flatMap { generate($0, voice: voice, language: language, speed: speed, depth: depth + 1) }
         } catch {
             voiceLog.error("kokoro failed: \(error.localizedDescription, privacy: .public)")
             return []

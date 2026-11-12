@@ -25,4 +25,10 @@ public enum Microphones {
         let usable = candidates.filter { !$0.virtual && !($0.builtIn && lidClosed) }
         return usable.first { $0.id == defaultID } ?? usable.first { !$0.builtIn } ?? usable.first
     }
+
+    /// A microphone format AVAudioEngine can tap. Right after access is granted, macOS can briefly
+    /// report a device with a zero sample rate or no channels.
+    public static func usable(sampleRate: Double, channels: UInt32) -> Bool {
+        sampleRate.isFinite && sampleRate > 0 && channels > 0
+    }
 }

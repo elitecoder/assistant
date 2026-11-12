@@ -10,6 +10,56 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Pick a talkback speed from 1× to 2× in the voice menu. It applies to Kokoro
+  and Apple's voices, and Assistant plays a short sample at the new speed.
+- Assistant for Mac now keeps its own chat history, the way Hermes Agent (MIT,
+  Nous Research) does, instead of resuming a Claude Code session. It saves each
+  question, each command Claude runs, what the command printed, and each answer
+  in `~/Library/Application Support/Assistant/conversations.db`, and reopens
+  your last chat when the app starts. Select **History** to continue an earlier
+  chat. **New chat** starts one linked to the last.
+- Each question runs a fresh `claude -p` with the chat so far, oldest first,
+  and the new question last, so each request extends the previous one word for
+  word and reuses Claude's prompt cache. The first question sends every
+  workspace, and later questions send only the workspaces that changed.
+- Show how full the chat's context is, from the prompt size Claude reports. At
+  150,000 tokens with Haiku or Sonnet (75% of a 200,000-token window), or
+  500,000 with Opus (half of 1,000,000), Assistant summarizes older turns with
+  Haiku before the next question and
+  says how many messages it compressed. Select **Compress**, or **Compress with
+  focus** to name what to keep in detail. Set `ASSISTANT_CONTEXT_WINDOW` or the
+  `contextWindow` setting to try a smaller window.
+- Let the chat's Claude search earlier chats, including compressed turns, with
+  `AssistantBar --search`, and save lasting facts to `~/.assistant/mac-memory`
+  with `AssistantBar --memory`. A chat reads memory once, when it starts.
+- `AssistantBar --ask` takes `--session NAME` to continue a named chat, and
+  `AssistantBar --compress --session NAME` compresses it. `ASSISTANT_DB` and
+  `ASSISTANT_MEMORY_DIR` point the terminal commands at another history and
+  memory folder.
+- Sandbox the chat's Claude. Assistant runs the `claude` binary directly
+  instead of your alias, and passes `--setting-sources ""`, so your allow list,
+  hooks, and `CLAUDE.md` no longer reach the chat. A PreToolUse guard,
+  `AssistantBar --pretooluse-guard`, allows only Assistant's own commands in
+  their exact shapes, and Read, Grep, and Glob only under `~/.claude/projects`.
+  Assistant runs a command only when it's the first argument, with an exact
+  argument count, so `--search '{}' --render x /tmp/f` is refused. The
+  summarizer also skips your settings and has no tools. Effort is now always
+  explicit (high), since your settings' effort level no longer applies. Set
+  `ASSISTANT_CLAUDE` if Assistant can't find `claude`.
+- Save each question, and its workspace context, before Claude runs, so a crash
+  or quitting mid-answer keeps it and any message Claude already sent. A failed
+  answer is saved as a no-reply note. History hides failed questions.
+- Compress before a turn when this turn's question and workspace context would
+  push the chat past the limit, not only the stored turns. When Claude refuses
+  a prompt as too long, compress and try once more.
+- A compaction now reloads memory into the chat's system prompt, as Hermes
+  does, so a fact saved mid-chat applies after the next compaction.
+- When a compaction can't be saved, the chat keeps going uncompressed and
+  automatic compression pauses for five minutes. The pause, and the pause after
+  a failed summary, now hold across the app and terminal commands.
+- The spoken reply style is sent only with the spoken question, not saved, so it
+  no longer shapes later typed answers.
+
 - Add Assistant for Mac, a menu bar app in `mac/` that lists the cmux sessions
   that need you, the ones that are done, and the quiet ones. It reads
   transcripts and `gh` directly, with no model and no background service.
@@ -87,6 +137,33 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   a remembered "no". An automatic update never starts them if they aren't
   running. Install with `--no-ws-numberer` to turn them off and stop a running
   copy.
+
+### Fixed
+- Keep the Mac chat scrolled to the newest message: it now follows new
+  replies, the Working and Listening rows, and reopened chats.
+- Keep everything you said when you pause mid-sentence. Apple's on-device
+  recognizer can start a fresh transcript after a pause; Assistant now joins
+  it to what it already heard. It also waits 2.5 seconds of silence, up from
+  1.8, before it treats you as done.
+- Use the context window the provider reports for each model: 1,000,000
+  tokens for Haiku, Sonnet, and Opus today, up from a fixed 200,000 for Haiku
+  and Sonnet. Compression starts at half the window.
+- Stop Assistant for Mac from crashing when it starts listening right after
+  microphone access is granted. It now waits for a microphone whose format
+  isn't ready, skips one that delivers no audio, and catches audio errors
+  macOS raises instead of quitting.
+- A reply or tool output containing U+2028, U+2029, or U+0085 is no longer cut
+  at that character and lost. Stream-json lines now end only at a line feed.
+- A summary folded into a kept message no longer strips that message's
+  `[Operator]` or `[You]` label from the prompt.
+- Workspace context rows are no longer taken for the operator's request in a
+  summary, and session search no longer offers them as matches.
+- Two Assistant processes on one chat no longer both send the full workspace
+  digest, or both save a memory snapshot: they take turns on a per-chat lock.
+- History no longer shows a compressed question twice.
+- Long tool-call commands are capped at 20,000 characters, like tool output.
+- **New chat** and **History** wait while an answer is running, so the late
+  reply can't land in another chat.
 
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work

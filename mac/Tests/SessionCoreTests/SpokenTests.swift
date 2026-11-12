@@ -15,8 +15,8 @@ final class SpokenTests: XCTestCase {
     }
 
     func testSpokenQuestionsAskForASpeakableReply() {
-        XCTAssertTrue(Asker.prompt(question: "q", fleet: nil, focus: nil, spoken: true).contains("read aloud"))
-        XCTAssertFalse(Asker.prompt(question: "q", fleet: nil, focus: nil).contains("read aloud"))
+        XCTAssertTrue(Spoken.style.contains("read aloud"))
+        XCTAssertNil(TurnContext.row(fleet: nil, focus: nil))
     }
 }
 
