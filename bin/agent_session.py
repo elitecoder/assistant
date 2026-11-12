@@ -644,11 +644,12 @@ _COPILOT_BANNER_RE = re.compile(r"^│\s+\S+\s+Copilot v\d+\.\d+\.\d+ uses AI\."
 def shows_copilot(screen: str) -> bool:
     """True when `screen` is a Copilot pane: its status bar (idle, typing, or
     working) is one of the last three non-blank lines, or its boxed boot
-    banner is on screen (the trust dialog hides the bar). Text a Claude pane prints about Copilot doesn't
+    banner and its trust dialog are on screen (the dialog hides the bar). Text a Claude pane prints about Copilot doesn't
     match: it isn't the bottom line or inside the banner box."""
     bottom = [line for line in screen.splitlines() if line.strip()][-3:]
     return (any(_COPILOT_BAR_RE.search(line) for line in bottom)
-            or bool(_COPILOT_BANNER_RE.search(screen)))
+            or (bool(_COPILOT_BANNER_RE.search(screen))
+                and _TRUST_MARKER[COPILOT] in screen))
 
 
 def ready_re(agent: str) -> "re.Pattern[str]":

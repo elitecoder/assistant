@@ -315,15 +315,17 @@ _RULE_RE = re.compile(r"^\s*─{8,}\s*$")
 _WS_RE = re.compile(r"\s+")
 
 
-def input_box_text(screen: str) -> str | None:
+def input_box_text(screen: str, agent: str | None = None) -> str | None:
     """The text in Claude's prompt box, or None when the screen shows no box.
 
     The box is the region between the last two horizontal rules, and its first
     line starts with ❯. Earlier prompts in the scrollback also start with ❯ but
     aren't fenced by rules, so they never match. Wrapped lines are joined."""
     lines = screen.splitlines()
+    if agent == agent_session.COPILOT:
+        return _copilot_box_text(lines)
     rules = [i for i, line in enumerate(lines) if _RULE_RE.match(line)]
-    tops = [i for i, line in enumerate(lines) if line.lstrip().startswith("╻")]
+    tops = [] if agent else [i for i, line in enumerate(lines) if line.lstrip().startswith("╻")]
     if len(rules) < 2 or (tops and tops[-1] > rules[-1]):
         copilot = _copilot_box_text(lines)
         if copilot is not None or len(rules) < 2:
@@ -627,7 +629,7 @@ def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:
 
 
 def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
-           confirmed) -> bool:
+           confirmed, agent: str | None = None) -> bool:
     """Type text into the warm session and press Enter until `confirmed()` sees
     it in the transcript (see submit_until_confirmed). The trailing newline is
     stripped: send_text streams keystrokes, so a trailing \\n would submit
@@ -636,7 +638,7 @@ def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
         send_text=lambda: _cmux_rpc(paths, "surface.send_text",
                                     {"surface_id": surface_ref, "text": text.rstrip("\n")}),
         press_enter=lambda: send_enter(paths, surface_ref),
-        read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60)),
+        read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent),
         confirmed=confirmed,
         marker=marker,
     )
@@ -661,7 +663,8 @@ def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt
             found.append(hit)
         return hit is not None
 
-    if not submit_fn(paths, surface_ref, boot_instruction(boot_prompt, nonce), marker, confirmed):
+    if not submit_fn(paths, surface_ref, boot_instruction(boot_prompt, nonce), marker, confirmed,
+                     agent=agent):
         return None
     return found[-1]
 

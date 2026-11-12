@@ -2001,15 +2001,16 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
     return True
 
 
-_FFP_RE = re.compile(r"firefly-platform|architect-ffp|archffp|\bffp\b|\bsquirrel\b", re.I)
+_FFP_RE = re.compile(r"firefly-platform|architect-ffp|archffp|\bFFP\b")
 
 
 def _needs_claude(item: dict) -> bool:
-    """True when a TODO looks like FFP Squirrel work, which the dispatch rules
-    route through /architect-ffp:archffp — a Claude Code plugin."""
+    """True when a TODO names FFP work (firefly-platform, archffp, or the FFP
+    project key/tag), which the dispatch rules route through
+    /architect-ffp:archffp — a Claude Code plugin."""
     text = " ".join(str(item.get(k) or "") for k in ("title", "detail", "url"))
-    text += " " + " ".join(str(t) for t in item.get("tags") or [])
-    return bool(_FFP_RE.search(text))
+    tags = {str(t).strip().lower() for t in item.get("tags") or []}
+    return bool(_FFP_RE.search(text)) or bool(tags & {"ffp", "firefly-platform"})
 
 
 _NOT_CLAUDE_NOTE = (
@@ -2088,7 +2089,7 @@ def _build_dispatch_prompt(item: dict, agent: str = "claude") -> str:
             "Otherwise implement directly, validate end-to-end, open a PR. "
             f"Reference {tid} in your branch / PR."
         )
-    note = "" if agent == "claude" else "\n" + _NOT_CLAUDE_NOTE.format(agent=agent)
+    note = "\n" + _NOT_CLAUDE_NOTE.format(agent=agent) if agent == "copilot" else ""
     return f"{work}\n{rules}\n{note}"
 
 
@@ -2161,7 +2162,7 @@ def dispatch_todo(todo_id: str) -> bool:
         sys.path.insert(0, str(BIN))
     import agent_session  # noqa: PLC0415
     agent = agent_session.dispatch_agent()
-    if agent != agent_session.CLAUDE and _needs_claude(item):
+    if agent == agent_session.COPILOT and _needs_claude(item):
         log.info("dispatch %s: FFP work runs /architect-ffp:archffp, a Claude "
                  "Code plugin — dispatching to claude instead of %s", todo_id, agent)
         agent = agent_session.CLAUDE

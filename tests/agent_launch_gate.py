@@ -32,7 +32,7 @@ _ROOT_PARTS = {(".claude", "projects"), (".factory", "sessions"), (".copilot", "
 _PROSE_CALLS = {"print", "debug", "info", "warning", "warn", "error", "exception",
                 "critical", "log", "add_argument", "add_parser", "write", "echo",
                 "fail", "skip", "notify", "compile", "search", "match", "fullmatch",
-                "findall", "finditer", "sub", "split"}
+                "findall", "finditer", "sub"}
 _TYPE_FIELD_ROLES = {"assistant", "user"}
 # Flags other tools share; they count only right after an agent name.
 SHARED_FLAGS = {"-p", "--print", "--resume", "-r", "--model", "--continue",

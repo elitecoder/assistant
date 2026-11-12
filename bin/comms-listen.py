@@ -370,7 +370,7 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
 
     t0 = time.time()
     delivered = comms_session.submit(paths, sess["surface_ref"], feed_text(recs, channel),
-                                     marker, confirmed)
+                                     marker, confirmed, agent=agent)
     log(f"reply channel={channel} msg={recs[-1].get('msg_ts')} n={len(recs)} "
         f"submitted={delivered} wall_ms={int((time.time() - t0) * 1000)}")
     if not delivered:

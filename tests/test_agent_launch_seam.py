@@ -139,6 +139,7 @@ CAUGHT = {
         'AGENT = "claude"\nrun([AGENT] + ["-p", p])',
         'run(["npx", "@anthropic-ai/claude-code", "-p", p])',
         'root = Path(HOME, ".copilot", "session-state")',
+        'subprocess.run(shlex.split("claude -p hi"))',
         'if rec.get("type") == "assistant":\n    pass',
         'if d["type"] in ("user", "assistant"):\n    pass',
     ],
@@ -1369,3 +1370,60 @@ def test_the_slack_session_alone_can_run_copilot(home, monkeypatch):
     assert cli.main(["set", "copilot", "--feature", "comms"]) == 0
     assert (ag.warm_agent(), ag.dispatch_agent()) == (ag.COPILOT, ag.CLAUDE)
     assert cli.main(["set", "local", "--feature", "comms"]) == 2
+
+
+def test_ffp_routing_leaves_horizon_squirrel_and_droid_alone(home, monkeypatch):
+    pulse = _load(BIN / "pulse.py", "seam_pulse_ffp_scope")
+    assert not pulse._needs_claude({"title": "Port Horizon squirrel ruler fix in hz-bazel",
+                                     "detail": "DVAWV-1234"})
+    assert not pulse._needs_claude({"title": "Update the diffpatch tool"})
+    assert pulse._needs_claude({"title": "FFP trim bug", "detail": ""})
+    assert "NEEDS CLAUDE" not in pulse._build_dispatch_prompt({"id": "t", "title": "x"}, ag.DROID)
+
+
+def test_droid_keeps_ffp_dispatches_like_before(home, monkeypatch):
+    _pick(home, "droid")
+    _stub(home / ".local" / "bin" / "droid")
+    (home / ".assistant" / "droid-glm-settings.json").write_text("{}")
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: str(home / ".local/bin/droid"))
+    item = {"id": "td-7", "title": "FFP trim bug"}
+
+    def droid_transcript(cwd, text):
+        d = home / ".factory" / "sessions" / ag.project_slug(cwd)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "s.jsonl").write_text(json.dumps(
+            {"type": "message", "message": {"role": "user", "content": text}}) + "\n")
+
+    ok, launch = _dispatch(home, monkeypatch, "seam_pulse_droid_ffp", "GLM-5.2", droid_transcript,
+                           item=item)
+    assert ok and launch.startswith("droid --settings")
+
+
+def test_a_droid_or_claude_pane_with_copilots_banner_in_scrollback_stays_itself():
+    bwc = _load(BIN / "build-ws-context.py", "seam_bwc_scrollback")
+    banner = "│ ⬢  Copilot v1.0.3 uses AI.  │\n"
+    assert bwc._agent_for_screen(banner + "output\n  ? for help  GLM-5.2") == "droid"
+    assert bwc._agent_for_screen(banner + "⏺ done\n  ⏵⏵ bypass permissions on") == "claude"
+
+
+def test_comms_reads_the_box_of_the_agent_it_runs():
+    claude_screen = "\n".join(["────────────", "❯ typed", "────────────",
+                               "╻▄▄", "┃ todo list item", "╹▀▀"])
+    assert cs.input_box_text(claude_screen, ag.CLAUDE) == "typed"
+    assert cs.input_box_text(claude_screen, ag.COPILOT) == "todo list item"
+
+
+def test_comms_types_into_the_session_with_its_agents_box(monkeypatch):
+    boxes = []
+    monkeypatch.setattr(cs, "submit_until_confirmed", lambda **kw: boxes.append(kw["read_box"]()) or True)
+    monkeypatch.setattr(cs, "_surface_read_text", lambda p, ref, lines=60: "\n".join(
+        ["────────────", "❯ quoted", "────────────", "╻▄", "┃ live", "╹▀"]))
+    cs.submit(None, "surface:1", "hi", "m", lambda: True, agent=ag.CLAUDE)
+    cs.submit(None, "surface:1", "hi", "m", lambda: True, agent=ag.COPILOT)
+    assert boxes == ["quoted", "live"]
+
+
+def test_background_claude_runs_the_home_install_or_claude_bin(home, monkeypatch):
+    assert ag.binary(ag.CLAUDE) == str(home / ".local" / "bin" / "claude")
+    monkeypatch.setenv("CLAUDE_BIN", "/opt/agents/claude")
+    assert ag.binary(ag.CLAUDE) == "/opt/agents/claude"

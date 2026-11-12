@@ -46,9 +46,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   context used, not when its log reaches 2 MB.
 - A Claude pane that shows Copilot's banner or status bar in its output is
   no longer taken for a Copilot pane, and a busy Copilot pane is recognized.
-- FFP to-dos still go to Claude when you pick another agent, because they run
-  the `/architect-ffp:archffp` Claude Code plugin. Other agents are told to
-  stop and say so if a to-do turns out to be FFP work.
+- FFP to-dos still go to Claude when you pick Copilot, because they run the
+  `/architect-ffp:archffp` Claude Code plugin. A Copilot session is told to
+  stop and say so if a to-do turns out to be FFP work. Droid dispatch is
+  unchanged.
 - The dashboard's latest-reply text and the merge flow's send check read
   Copilot conversations.
 - Background Copilot jobs run at the configured thinking effort instead of

@@ -420,8 +420,9 @@ def test_deliver_boot_binds_the_transcript_holding_this_boots_nonce(tmp_path, mo
     old = _jsonl(tmp_path / "old.jsonl", [_prompt(cs.boot_instruction(Path("/p.md"), "earlier"))])
     typed: list[str] = []
 
-    def fake_submit(paths, surface_ref, text, marker, confirmed):
+    def fake_submit(paths, surface_ref, text, marker, confirmed, agent=None):
         typed.append(text)
+        assert agent == "claude", "the prompt box is read as the session's agent"
         assert not confirmed(), "nothing has recorded this boot yet"
         _jsonl(tmp_path / "new.jsonl", [_prompt(text)])
         return confirmed()
@@ -434,7 +435,7 @@ def test_deliver_boot_binds_the_transcript_holding_this_boots_nonce(tmp_path, mo
 def test_deliver_boot_none_when_never_submitted(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "project_dir_for_cwd", lambda cwd, agent="claude": tmp_path)
     got = cs.deliver_boot(PATHS, "surface:1", "/cwd", Path("/p.md"), "claude",
-                          submit_fn=lambda *a: False)
+                          submit_fn=lambda *a, **k: False)
     assert got is None
 
 
