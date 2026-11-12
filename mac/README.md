@@ -18,18 +18,45 @@ you, you get one notification for the batch.
 ## Talk to it
 
 Press Control-Option-V, or select the microphone in the panel, and ask your
-question out loud. Assistant stops listening when you pause, then reads the
-answer aloud and shows it in the panel. Press Control-Option-V again to stop
-early. Speech recognition runs on your Mac. It needs Dictation turned on in
-**System Settings > Keyboard > Dictation**. Pick the microphone from the menu at
-the top of the chat. It doesn't change your Mac's input for other apps.
+question out loud. The listening row shows **Starting…** until the
+microphone sends sound, then **Listening…**. Assistant stops listening when
+you pause, then reads the answer aloud and shows it in the panel. Press
+Control-Option-V again to stop early. To hear the last answer again, select
+**Play again** or press Control-Option-R; it starts over if Assistant is still
+speaking. Each answer in the chat also has a play button.
+
+Speech recognition runs on your Mac. On macOS 26 and later, Assistant uses
+Apple's SpeechAnalyzer with SpeechTranscriber. If its English model isn't
+installed, Assistant downloads it the first time you talk and shows the
+progress; until then, and on older macOS, it uses the older
+SFSpeechRecognizer, which needs Dictation turned on in
+**System Settings > Keyboard > Dictation**. The older recognizer gets your
+workspace titles and terms such as PR, Assembler, Kokoro, and cmux as hints.
+Assistant passes the same hints to SpeechTranscriber, but in testing they
+didn't change its output.
+
+Pick the microphone from the menu at the top of the chat. It doesn't change
+your Mac's input for other apps. Assistant gets that microphone and the speech
+model ready when it starts and when you open the panel, without turning the
+microphone on, so listening starts in 0.2 to 0.3 seconds. A microphone that
+sends only silence is skipped for the next one. A Bluetooth headset gets 3
+seconds to switch into call mode first: AirPods send silence for about 1.6
+seconds after they start, so wait for **Listening…** before you talk.
 
 Assistant answers with Kokoro, a natural voice that runs on your Mac. The
 voice (340 MB) downloads once, the first time you talk, into
 `~/Library/Application Support/Assistant/Kokoro`. Until then, it uses Apple's
 voice. Pick another Kokoro voice, or an Apple voice, from the voice menu. Set the talkback speed, from 1× to 2×, in the same menu.
 Kokoro needs Apple Silicon. The first time, macOS asks for
-microphone and speech recognition access.
+microphone access, and for speech recognition access if Assistant uses the
+older recognizer.
+
+To check what voice input hears without a microphone, run
+`AssistantBar --transcribe question.wav`. It runs the same SpeechAnalyzer path
+on the file. Add `--legacy` to use the older recognizer. Make a test file with
+`AssistantBar --render "<text>" question.wav` or `say -o question.aiff "<text>"`.
+The timing of each press is in the log:
+`log show --last 10m --info --predicate 'subsystem == "com.assistant.sessions" AND category == "voice"'`.
 
 ## Work with your sessions
 

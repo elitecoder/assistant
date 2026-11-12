@@ -4,6 +4,7 @@ import AVFoundation
 import Carbon.HIToolbox
 import ServiceManagement
 import SessionCore
+import Speech
 import SwiftUI
 import UserNotifications
 
@@ -23,6 +24,7 @@ enum Main {
         case let .send(ref, message, timeout): return print(Messenger.send(ref, message, timeout: timeout ?? 900))
         case let .wait(ref, timeout): return print(Messenger.wait(ref, timeout: timeout ?? 900))
         case let .render(text, file): exit(render(text, to: URL(fileURLWithPath: file)) ? 0 : 1)
+        case let .transcribe(file, legacy): exit(transcribe(URL(fileURLWithPath: file), legacy: legacy) ? 0 : 1)
         case .search(let json): return print(ChatTools.search(json))
         case .memory(let json): return print(ChatTools.memory(json))
         case let .ask(question, session, spoken): exit(ask(question, session: session, spoken: spoken) ? 0 : 1)
@@ -65,6 +67,25 @@ enum Main {
                      Double(samples.count) / Double(KokoroTTS.Constants.samplingRate), Date().timeIntervalSince(started),
                      url.path))
         return true
+    }
+
+    /// Prints what the voice recognizer hears in a sound file: SpeechAnalyzer, or SFSpeechRecognizer with `legacy`.
+    static func transcribe(_ url: URL, legacy: Bool) -> Bool {
+        if legacy, SFSpeechRecognizer.authorizationStatus() != .authorized {
+            var asked = false
+            SFSpeechRecognizer.requestAuthorization { _ in asked = true }
+            while !asked { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
+        }
+        let started = Date()
+        var heard: String?
+        if let problem = Listener.transcribe(url, legacy: legacy, vocabulary: Vocabulary.terms, done: { heard = $0 }) {
+            print(problem)
+            return false
+        }
+        while heard == nil { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
+        print(heard ?? "")
+        FileHandle.standardError.write(Data("(\(legacy ? "SFSpeechRecognizer" : "SpeechAnalyzer"), \(milliseconds(since: started)))\n".utf8))
+        return heard?.hasPrefix("error:") == false
     }
 
     static var tool: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }
@@ -164,6 +185,8 @@ final class Model: NSObject, ObservableObject {
             let r = self.scanner.scan()
             DispatchQueue.main.async {
                 self.result = r
+                self.listener.vocabulary = Vocabulary.contextualStrings(titles: r.items.map(\.workspace.title)
+                    + r.untracked.map(\.title))
                 self.scanning = false
                 self.lastScan = Date()
                 self.onScan?(r)
@@ -212,6 +235,18 @@ final class Model: NSObject, ObservableObject {
         speaker.stop()
         speaker.prepare()
         listener.toggle()
+    }
+
+    /// Says `text` again with the current voice and speed, from the start. Ignored while listening, so the answer
+    /// doesn't talk into the microphone.
+    func play(_ text: String) {
+        guard !listener.listening else { return }
+        speaker.say(text)
+    }
+
+    /// Plays the last answer again.
+    func replay() {
+        if let text = Replay.target(chat) { play(text) }
     }
 
     func ask(_ question: String, spoken: Bool = false) {
@@ -311,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var timer: Timer?
     var hotKey: EventHotKeyRef?
     var talkKey: EventHotKeyRef?
+    var replayKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -334,6 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         }
         registerHotKey()
+        model.listener.prepare()
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.show() }
         }
@@ -353,6 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func show() {
         guard let button = statusItem.button else { return }
         model.refresh()
+        model.listener.prepare()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
@@ -404,7 +442,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             var id = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
                               MemoryLayout<EventHotKeyID>.size, nil, &id)
-            DispatchQueue.main.async { id.id == 2 ? Main.delegate.talk() : Main.delegate.toggle() }
+            DispatchQueue.main.async {
+                switch id.id {
+                case 2: Main.delegate.talk()
+                case 3: Main.delegate.model.replay()
+                default: Main.delegate.toggle()
+                }
+            }
             return noErr
         }, 1, &spec, nil, nil)
         let signature = OSType(0x4153_5354)
@@ -412,5 +456,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                             GetApplicationEventTarget(), 0, &hotKey)
         RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 2),
                             GetApplicationEventTarget(), 0, &talkKey)
+        RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 3),
+                            GetApplicationEventTarget(), 0, &replayKey)
     }
 }

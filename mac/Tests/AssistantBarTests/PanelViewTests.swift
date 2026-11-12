@@ -104,4 +104,29 @@ final class PanelViewTests: XCTestCase {
             try png.write(to: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(name).png"))
         }
     }
+
+    /// The listening row says "Starting…" from the press until sound arrives, and only answers get a play button.
+    @MainActor
+    func testTheListeningRowAndReplayButtonsRender() throws {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "listen-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.chat = [ChatTurn(role: .you, text: "What needs me?"),
+                      ChatTurn(role: .assistant, text: "**Alpha [1]** waits on a merge call.", cost: 0.01)]
+        model.listener.listening = true
+        let view = AnyView(VStack(spacing: 8) {
+            ForEach(model.chat) { turn in
+                Bubble(turn: turn, replay: turn.role == .assistant ? { model.play(turn.text) } : nil)
+            }
+            ListeningRow(listener: model.listener)
+        }.padding(14).frame(width: 440))
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        let image = try XCTUnwrap(renderer.nsImage)
+        XCTAssertEqual(image.size.width, 440)
+        let png = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation))?.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("assistant-listening.png"))
+        XCTAssertEqual(ListeningText.label(heard: model.listener.heard, soundArrived: model.listener.soundArrived), "Starting…")
+        XCTAssertEqual(Replay.target(model.chat), "**Alpha [1]** waits on a merge call.")
+    }
 }

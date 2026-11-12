@@ -10,6 +10,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Assistant for Mac transcribes your voice with Apple's SpeechAnalyzer and
+  SpeechTranscriber on macOS 26 and later. On a test set of 32 spoken
+  questions, half with room noise added, it got 25 of 444 words wrong, down
+  from 69 with the older SFSpeechRecognizer. It no longer repeats words after
+  a pause. Live text shows the model's guess, and words it has finalized stay
+  put. If the speech model isn't installed, Assistant downloads it on first
+  use and shows its progress, and uses the older recognizer until it's ready.
+  On older macOS, or without the model, it keeps the older recognizer, now
+  with your workspace titles and terms such as PR, Kokoro, and cmux as hints.
+- Select **Play again**, or press Control-Option-R, to hear the last answer
+  again with the current voice and speed. It starts over if Assistant is
+  already speaking. Each answer in the chat also has a play button.
+- `AssistantBar --transcribe <file.wav>` prints what voice input hears in a
+  sound file, through the same SpeechAnalyzer path. Add `--legacy` to use the
+  older recognizer.
 - Pick a talkback speed from 1× to 2× in the voice menu. It applies to Kokoro
   and Apple's voices, and Assistant plays a short sample at the new speed.
 - Assistant for Mac now keeps its own chat history, the way Hermes Agent (MIT,
@@ -139,6 +154,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Start listening in 0.2 to 0.3 seconds, down from 1 to 1.7 seconds. Assistant gets the microphone and the speech model ready when it
+  starts and when you open the panel, without turning the microphone on, and
+  skips the permission check when access is already granted. The listening
+  row appears the moment you press, and says **Starting…** until the
+  microphone sends sound.
+- Listen through AirPods and other Bluetooth headsets. Assistant used to tap
+  them at the rate the previous device used, which failed and fell back to
+  another microphone. It now uses the headset's own rate, and gives a
+  Bluetooth headset 3 seconds, not 0.7, to switch into call mode before it
+  tries another microphone. AirPods still send silence for about 1.6 seconds
+  while they switch, so wait for **Listening…** before you talk.
 - Keep the Mac chat scrolled to the newest message: it now follows new
   replies, the Working and Listening rows, and reopened chats.
 - Keep everything you said when you pause mid-sentence. Apple's on-device

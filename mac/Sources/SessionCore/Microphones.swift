@@ -5,12 +5,14 @@ public struct Microphone: Equatable, Identifiable {
     public let name: String
     public let builtIn: Bool
     public let virtual: Bool
+    public let bluetooth: Bool
 
-    public init(id: UInt32, name: String, builtIn: Bool, virtual: Bool) {
+    public init(id: UInt32, name: String, builtIn: Bool, virtual: Bool, bluetooth: Bool = false) {
         self.id = id
         self.name = name
         self.builtIn = builtIn
         self.virtual = virtual
+        self.bluetooth = bluetooth
     }
 }
 

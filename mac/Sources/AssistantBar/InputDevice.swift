@@ -40,6 +40,21 @@ enum InputDevice {
         return AudioObjectGetPropertyDataSize(device, &a, 0, nil, &size) == noErr && size > 0
     }
 
+    /// The device's own input rate and channel count, which AVAudioEngine can misreport right after a device switch.
+    static func inputShape(_ device: AudioDeviceID) -> AudioShape? {
+        var rate = Float64(0)
+        var size = UInt32(MemoryLayout<Float64>.size)
+        var a = address(kAudioDevicePropertyNominalSampleRate)
+        guard AudioObjectGetPropertyData(device, &a, 0, nil, &size, &rate) == noErr else { return nil }
+        var c = address(kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyScopeInput)
+        guard AudioObjectGetPropertyDataSize(device, &c, 0, nil, &size) == noErr, size > 0 else { return nil }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(device, &c, 0, nil, &size, raw) == noErr else { return nil }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return AudioShape(sampleRate: rate, channels: list.reduce(0) { $0 + $1.mNumberChannels })
+    }
+
     static func all() -> [Microphone] {
         var a = address(kAudioHardwarePropertyDevices)
         var size = UInt32(0)
@@ -52,7 +67,8 @@ enum InputDevice {
             guard let name = name(id) else { return nil }
             let t = transport(id)
             return Microphone(id: id, name: name, builtIn: t == kAudioDeviceTransportTypeBuiltIn,
-                              virtual: t == kAudioDeviceTransportTypeVirtual || t == kAudioDeviceTransportTypeAggregate)
+                              virtual: t == kAudioDeviceTransportTypeVirtual || t == kAudioDeviceTransportTypeAggregate,
+                              bluetooth: t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE)
         }
     }
 

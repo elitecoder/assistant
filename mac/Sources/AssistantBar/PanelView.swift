@@ -64,7 +64,7 @@ struct PanelView: View {
     var footer: String {
         let working = model.result.items(.working).count
         let untracked = model.result.untracked.count
-        return "\(working) working · \(untracked) not tracked · ⌃⌥Space opens · ⌃⌥V talks"
+        return "\(working) working · \(untracked) not tracked · ⌃⌥Space opens · ⌃⌥V talks · ⌃⌥R replays"
     }
 
     @ViewBuilder
@@ -158,20 +158,16 @@ struct ChatView: View {
             if !model.chat.isEmpty {
                 ContextBar(model: model)
             }
-            if !model.chat.isEmpty || model.asking || listener.listening {
+            if !model.chat.isEmpty || model.asking || listener.listening || listener.finishing {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(model.chat) { Bubble(turn: $0).id($0.id) }
-                            if listener.listening {
-                                VStack(alignment: .trailing, spacing: 4) {
-                                    Waveform(levels: listener.levels)
-                                    Text(listener.heard.isEmpty ? "Listening…" : listener.heard).font(.callout)
-                                    MicrophoneMenu(listener: listener, prefix: "Using ")
-                                    if let note = listener.note {
-                                        Text(note).font(.caption2).foregroundStyle(.orange)
-                                    }
-                                }.frame(maxWidth: .infinity, alignment: .trailing).id("listening")
+                            ForEach(model.chat) { turn in
+                                Bubble(turn: turn, replay: turn.role == .assistant ? { model.play(turn.text) } : nil)
+                                    .id(turn.id)
+                            }
+                            if listener.listening || listener.finishing {
+                                ListeningRow(listener: listener).id("listening")
                             }
                             if model.asking {
                                 HStack(spacing: 6) {
@@ -203,6 +199,13 @@ struct ChatView: View {
                 .buttonStyle(.borderless)
                 .disabled(model.asking)
                 .help(listener.listening ? "Stop listening" : "Talk (⌃⌥V)")
+                Button { model.replay() } label: {
+                    Image(systemName: "arrow.counterclockwise.circle.fill").font(.title2)
+                }
+                .buttonStyle(.borderless)
+                .disabled(Replay.target(model.chat) == nil || listener.listening)
+                .help("Play again (⌃⌥R)")
+                .accessibilityLabel("Play again")
                 if speaker.speaking {
                     Button { speaker.stop() } label: { Image(systemName: "speaker.slash.circle.fill").font(.title2) }
                         .buttonStyle(.borderless)
@@ -222,7 +225,8 @@ struct ChatView: View {
     /// Anything that adds or grows content at the bottom of the chat.
     var scrollKey: [String] {
         [String(model.chat.count), model.chat.last.map { "\($0.id)" } ?? "", String(model.asking),
-         String(listener.listening), String(listener.heard.count), String(listener.note != nil)]
+         String(listener.listening), String(listener.heard.count), String(listener.note != nil),
+         String(listener.soundArrived)]
     }
 
     func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -241,8 +245,28 @@ struct ChatView: View {
     }
 }
 
+/// The waveform and live text while listening. Shows "Starting…" from the press until the microphone's first sound.
+struct ListeningRow: View {
+    @ObservedObject var listener: Listener
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Waveform(levels: listener.levels)
+            Text(ListeningText.label(heard: listener.heard, soundArrived: listener.soundArrived)).font(.callout)
+            MicrophoneMenu(listener: listener, prefix: "Using ")
+            if let note = listener.note {
+                Text(note).font(.caption2).foregroundStyle(.orange)
+            }
+            if let note = ListeningText.modelNote(listener.model) {
+                Text(note).font(.caption2).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
 struct Bubble: View {
     let turn: ChatTurn
+    var replay: (() -> Void)?
 
     var body: some View {
         VStack(alignment: turn.role == .you ? .trailing : .leading, spacing: 2) {
@@ -252,8 +276,19 @@ struct Bubble: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(fill))
                 .foregroundStyle(turn.role == .error ? Color.red : Color.primary)
-            if let cost = turn.cost {
-                Text(String(format: "$%.2f", cost)).font(.caption2).foregroundStyle(.secondary)
+            if turn.cost != nil || replay != nil {
+                HStack(spacing: 6) {
+                    if let replay {
+                        Button(action: replay) { Image(systemName: "play.circle") }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .help("Play this answer")
+                            .accessibilityLabel("Play this answer")
+                    }
+                    if let cost = turn.cost {
+                        Text(String(format: "$%.2f", cost)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: turn.role == .you ? .trailing : .leading)

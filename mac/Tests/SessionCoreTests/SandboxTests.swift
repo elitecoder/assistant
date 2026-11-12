@@ -95,6 +95,8 @@ final class AppCommandTests: XCTestCase {
         XCTAssertEqual(AppCommand.parse([a, "--ask", "q", "--spoken", "--session", "work"]), .ask(question: "q", session: "work", spoken: true))
         XCTAssertEqual(AppCommand.parse([a, "--compress", "--focus", "token"]), .compress(session: nil, focus: "token"))
         XCTAssertEqual(AppCommand.parse([a, "--pretooluse-guard"]), .toolGuard)
+        XCTAssertEqual(AppCommand.parse([a, "--transcribe", "/tmp/q.wav"]), .transcribe(file: "/tmp/q.wav", legacy: false))
+        XCTAssertEqual(AppCommand.parse([a, "--transcribe", "/tmp/q.wav", "--legacy"]), .transcribe(file: "/tmp/q.wav", legacy: true))
     }
 
     func testASmuggledSecondCommandIsRejected() {
@@ -102,7 +104,9 @@ final class AppCommandTests: XCTestCase {
                      [a, "--sessions", "--render", "x", "/tmp/v"], [a, "--send", "w", "m", "--render", "x"],
                      [a, "--wait", "w", "--timeout"], [a, "--ask", "q", "--session"], [a, "--ask", "q", "--spoken", "--spoken"],
                      [a, "--render", "x"], [a, "--print", "--render", "x", "y"], [a, "--show", "--render", "x", "y"],
-                     [a, "hello", "--sessions"], [a, "--search"], [a, "--compress", "--render", "x"]] {
+                     [a, "hello", "--sessions"], [a, "--search"], [a, "--compress", "--render", "x"],
+                     [a, "--transcribe"], [a, "--transcribe", "q.wav", "--render", "x", "y"],
+                     [a, "--transcribe", "q.wav", "--legacy", "--legacy"]] {
             XCTAssertNil(AppCommand.parse(args), "\(args)")
         }
     }

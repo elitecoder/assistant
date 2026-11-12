@@ -191,6 +191,7 @@ public enum AppCommand: Equatable {
     case search(String)
     case memory(String)
     case render(text: String, file: String)
+    case transcribe(file: String, legacy: Bool)
     case ask(question: String, session: String?, spoken: Bool)
     case compress(session: String?, focus: String?)
     case toolGuard
@@ -202,6 +203,7 @@ public enum AppCommand: Equatable {
            AssistantBar --ask "<question>" [--session <name>] [--spoken]
            AssistantBar --compress [--session <name>] [--focus "<topic>"]
            AssistantBar --search '<json>' | --memory '<json>' | --render "<text>" <file.wav>
+           AssistantBar --transcribe <file.wav> [--legacy]
     """
 
     /// nil for anything that isn't exactly one of the forms in `usage`.
@@ -218,6 +220,11 @@ public enum AppCommand: Equatable {
         case "--search": return tail.count == 1 ? .search(tail[0]) : nil
         case "--memory": return tail.count == 1 ? .memory(tail[0]) : nil
         case "--render": return tail.count == 2 ? .render(text: tail[0], file: tail[1]) : nil
+        case "--transcribe":
+            guard let file = tail.first, let options = options(Array(tail.dropFirst()), values: [], flags: ["--legacy"]) else {
+                return nil
+            }
+            return .transcribe(file: file, legacy: options.keys.contains("--legacy"))
         case "--send":
             guard tail.count >= 2, let timeout = timeout(Array(tail.dropFirst(2))) else { return nil }
             return .send(ref: tail[0], message: tail[1], timeout: timeout.value)
