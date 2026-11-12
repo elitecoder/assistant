@@ -69,6 +69,20 @@ on the file. Add `--legacy` to use the older recognizer. Make a test file with
 The timing of each press is in the log:
 `log show --last 10m --info --predicate 'subsystem == "com.assistant.sessions" AND category == "voice"'`.
 
+Assistant knows you've finished a question from how it sounds, not just from
+silence. [Silero VAD](https://github.com/snakers4/silero-vad) (MIT license)
+notices when you stop talking, and Pipecat's
+[Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn) (BSD 2-Clause
+license) judges whether you finished or paused mid-sentence. A finished
+question ends about a quarter of a second after you stop. When you pause
+mid-sentence, Assistant keeps listening, for up to 3 seconds of silence. Both
+models run on your Mac with [ONNX Runtime](https://onnxruntime.ai). They
+download once, the first time you talk, into
+`~/Library/Application Support/Assistant/SmartTurn` (35 MB), and Assistant
+checks each file's SHA-256. Until then, it stops 2.5 seconds after your last
+word. To compare the two on recorded speech, run
+`AssistantBar --turn-eval question.wav`.
+
 ### Talk Mode
 
 To talk back and forth without pressing anything, select the waveform button

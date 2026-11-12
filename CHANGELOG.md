@@ -10,6 +10,18 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Assistant decides you've finished a question from the sound of your voice
+  instead of waiting a fixed 2.5 seconds. Silero VAD (MIT) notices when you
+  stop talking, and Pipecat's Smart Turn v3.2 (BSD 2-Clause) judges whether
+  you finished or paused mid-sentence; both run on your Mac with ONNX Runtime.
+  On 32 rendered questions, half with a pause of 0.8 to 2.6 seconds
+  mid-sentence, 31 of 32 "done" decisions were right, against 29 of 32 for
+  the timer, and a finished question ended 0.23 seconds after the voice
+  stopped (median), down from 2.5. When Smart Turn isn't sure, Assistant
+  waits up to 3 seconds of silence. The models (35 MB) download once into
+  `~/Library/Application Support/Assistant/SmartTurn` and are checked by
+  SHA-256; until then, and if they can't load, the 2.5-second timer stays.
+  `AssistantBar --turn-eval <file.wav>...` prints both decisions for each file.
 - Talk Mode: select the waveform button, hold Control-Option-V, or start the
   app with `--talk`, and Assistant listens, answers, speaks, and listens again
   until you select **Stop** or press Esc. While it speaks, the microphone stays

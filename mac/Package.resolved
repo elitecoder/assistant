@@ -1,5 +1,5 @@
 {
-  "originHash" : "93a4c54ab804721fc8c0c78484d208d0985c47125906f5c0afaccf3b6bed33db",
+  "originHash" : "1c67c5235b26796d3f7592c9f9e2105d490d87a7869fa6dcbd3af88c75a74fa4",
   "pins" : [
     {
       "identity" : "kokoro-ios",
@@ -35,6 +35,15 @@
       "state" : {
         "revision" : "41f6cfd5d68b65aa3c65a34efe3b71c371ed915b",
         "version" : "0.0.6"
+      }
+    },
+    {
+      "identity" : "onnxruntime-swift-package-manager",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/microsoft/onnxruntime-swift-package-manager",
+      "state" : {
+        "revision" : "b7fb7f7dea8a2469e6335d95a61b8f36d0dc83b2",
+        "version" : "1.24.2"
       }
     },
     {

@@ -192,6 +192,7 @@ public enum AppCommand: Equatable {
     case memory(String)
     case render(text: String, file: String)
     case transcribe(file: String, legacy: Bool)
+    case turnEval(files: [String])
     case ask(question: String, session: String?, spoken: Bool, sayTo: String?)
     case compress(session: String?, focus: String?)
     case toolGuard
@@ -203,7 +204,7 @@ public enum AppCommand: Equatable {
            AssistantBar --ask "<question>" [--session <name>] [--spoken] [--say-to <file.wav>]
            AssistantBar --compress [--session <name>] [--focus "<topic>"]
            AssistantBar --search '<json>' | --memory '<json>' | --render "<text>" <file.wav>
-           AssistantBar --transcribe <file.wav> [--legacy]
+           AssistantBar --transcribe <file.wav> [--legacy] | --turn-eval <file.wav>...
     """
 
     /// nil for anything that isn't exactly one of the forms in `usage`.
@@ -220,6 +221,7 @@ public enum AppCommand: Equatable {
         case "--search": return tail.count == 1 ? .search(tail[0]) : nil
         case "--memory": return tail.count == 1 ? .memory(tail[0]) : nil
         case "--render": return tail.count == 2 ? .render(text: tail[0], file: tail[1]) : nil
+        case "--turn-eval": return tail.isEmpty || tail.contains(where: { $0.hasPrefix("--") }) ? nil : .turnEval(files: tail)
         case "--transcribe":
             guard let file = tail.first, let options = options(Array(tail.dropFirst()), values: [], flags: ["--legacy"]) else {
                 return nil

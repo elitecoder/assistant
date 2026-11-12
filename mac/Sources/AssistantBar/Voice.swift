@@ -212,6 +212,8 @@ final class Listener: ObservableObject {
         var choose: (_ excluding: Set<UInt32>) -> Microphone?
         var open: (Microphone) -> Result<MicrophoneSource, MicrophoneFailure>
         var recognizers: Recognizers
+        /// Smart Turn and its voice detector, once downloaded; nil keeps the fixed pause timer.
+        var turnModels: () -> OnnxTurn? = { nil }
 
         static func live() -> Dependencies {
             Dependencies(access: { (Listener.micAccess, Listener.speechAccess) }, requestAccess: { needsSpeech, done in
@@ -219,7 +221,11 @@ final class Listener: ObservableObject {
                     guard needsSpeech else { return done(mic, true) }
                     SFSpeechRecognizer.requestAuthorization { done(mic, $0 == .authorized) }
                 }
-            }, choose: { InputDevice.chosen(excluding: $0) }, open: MicrophoneInput.make, recognizers: LiveRecognizers())
+            }, choose: { InputDevice.chosen(excluding: $0) }, open: MicrophoneInput.make, recognizers: LiveRecognizers(),
+               turnModels: {
+                TurnModels.shared.download()
+                return TurnModels.shared.ready()
+            })
         }
     }
 
@@ -260,6 +266,10 @@ final class Listener: ObservableObject {
     /// Recognizers finishing earlier questions, kept alive until their final text arrives.
     private var closing: [UUID: SpeechSession] = [:]
     private var pause: Timer?
+    /// Decides when the question is over from the sound of it; nil without Smart Turn.
+    private var turn: TurnDetector?
+    /// Smart Turn said the question is over before any words were recognized: stop as soon as they are.
+    private var turnOver = false
     private var loudest: Float = 0
     private var micID: UInt32?
     private var tried = Set<UInt32>()
@@ -317,6 +327,7 @@ final class Listener: ObservableObject {
     /// Gets the speech model and the chosen microphone ready without starting either, so the next press is quick.
     func prepare() {
         deps.recognizers.warm()
+        _ = deps.turnModels()
         prewarm()
     }
 
@@ -408,6 +419,20 @@ final class Listener: ObservableObject {
             return
         }
         self.speech = speech
+        let turn = deps.turnModels().map { models in
+            TurnDetector(models: models) { [weak self] byModel in
+                guard let self, self.session == token, self.listening else { return }
+                guard !self.heard.isEmpty else {
+                    voiceLog.notice("turn: over, but no words yet; stopping when they arrive")
+                    self.turnOver = true
+                    return
+                }
+                voiceLog.notice("turn: \(byModel ? "Smart Turn" : "the silence limit", privacy: .public) ended the question after \(self.elapsed(), privacy: .public)")
+                self.stop()
+            }
+        }
+        self.turn = turn
+        turnOver = false
         audio.async {
             let result = self.input(for: mic)
             var failure: MicrophoneFailure?
@@ -418,7 +443,10 @@ final class Listener: ObservableObject {
                 let reason = input.start({ [weak self, weak speech] buffer in
                     guard let self else { return }
                     let (mono, level, silent) = Self.measure(buffer)
-                    if let mono { speech?.append(mono) }
+                    if let mono {
+                        speech?.append(mono)
+                        turn?.append(mono)
+                    }
                     DispatchQueue.main.async { self.took(level: level, silent: silent, token) }
                 }, lost: { [weak self] in
                     DispatchQueue.main.async { self?.lost(token) }
@@ -440,6 +468,7 @@ final class Listener: ObservableObject {
         let onText = { [weak self] (text: String) in
             guard let self, self.session == token, self.listening else { return }
             self.heard = text
+            if self.turnOver && !text.isEmpty { return self.stop() }
             self.waitForPause()
         }
         let onError = { [weak self] (error: NSError) in
@@ -552,7 +581,9 @@ final class Listener: ObservableObject {
 
     private func waitForPause() {
         pause?.invalidate()
-        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? pauseBeforeWords : pauseAfterWords,
+        // With Smart Turn deciding, the timer after words is only a backstop beyond its own silence limit.
+        let afterWords = turn == nil ? pauseAfterWords : max(pauseAfterWords, TurnEnd.limit + 1)
+        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? pauseBeforeWords : afterWords,
                                      repeats: false) { [weak self] _ in
             self?.stop()
         }
@@ -563,6 +594,7 @@ final class Listener: ObservableObject {
         listening = false
         session = UUID()
         pause?.invalidate()
+        turn = nil
         audio.async {
             self.running?.stop()
             self.running = nil

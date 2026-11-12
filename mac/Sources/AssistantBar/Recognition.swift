@@ -2,6 +2,19 @@ import AVFoundation
 import SessionCore
 import Speech
 
+/// A copy of a microphone buffer, which the engine may reuse once its tap returns.
+func copyBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return nil }
+    copy.frameLength = buffer.frameLength
+    let source = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList))
+    let target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+    for (from, to) in zip(source, target) {
+        guard let src = from.mData, let dst = to.mData else { continue }
+        dst.copyMemory(from: src, byteCount: Int(min(from.mDataByteSize, to.mDataByteSize)))
+    }
+    return copy
+}
+
 func milliseconds(since start: Date) -> String { String(format: "%.0f ms", Date().timeIntervalSince(start) * 1000) }
 
 /// How long `finish` waits for the final text.
@@ -283,7 +296,7 @@ final class AnalyzerSession: SpeechSession {
         lock.lock()
         defer { lock.unlock() }
         if let forward { return forward.append(buffer) }
-        guard let copy = Self.copy(buffer) else { return }
+        guard let copy = copyBuffer(buffer) else { return }
         if !started { held.append(copy) }
         queued += 1
         queuedSeconds += Double(copy.frameLength) / copy.format.sampleRate
@@ -396,18 +409,6 @@ final class AnalyzerSession: SpeechSession {
             return nil
         }
         return status == .error || out.frameLength == 0 ? nil : out
-    }
-
-    static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return nil }
-        copy.frameLength = buffer.frameLength
-        let source = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList))
-        let target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
-        for (from, to) in zip(source, target) {
-            guard let src = from.mData, let dst = to.mData else { continue }
-            dst.copyMemory(from: src, byteCount: Int(min(from.mDataByteSize, to.mDataByteSize)))
-        }
-        return copy
     }
 
     private func took(_ text: String, isFinal: Bool, end: TimeInterval) {

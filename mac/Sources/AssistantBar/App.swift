@@ -26,6 +26,7 @@ enum Main {
         case let .wait(ref, timeout): return print(Messenger.wait(ref, timeout: timeout ?? 900))
         case let .render(text, file): exit(render(text, to: URL(fileURLWithPath: file)) ? 0 : 1)
         case let .transcribe(file, legacy): exit(transcribe(URL(fileURLWithPath: file), legacy: legacy) ? 0 : 1)
+        case let .turnEval(files): exit(turnEval(files.map { URL(fileURLWithPath: $0) }) ? 0 : 1)
         case .search(let json): return print(ChatTools.search(json))
         case .memory(let json): return print(ChatTools.memory(json))
         case let .ask(question, session, spoken, sayTo):
@@ -88,6 +89,33 @@ enum Main {
         print(heard ?? "")
         FileHandle.standardError.write(Data("(\(legacy ? "SFSpeechRecognizer" : "SpeechAnalyzer"), \(milliseconds(since: started)))\n".utf8))
         return Transcription.succeeded(heard)
+    }
+
+    /// For each file, when Smart Turn and the 2.5-second timer each decide the turn is over, and when speech last
+    /// ended, as tab-separated seconds. Downloads the models first if needed.
+    static func turnEval(_ files: [URL]) -> Bool {
+        TurnModels.shared.download()
+        let started = Date()
+        while !TurnModels.installed && Date().timeIntervalSince(started) < 120 {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1))
+        }
+        guard let models = TurnModels.shared.loaded() else {
+            print("Smart Turn isn't available.")
+            return false
+        }
+        print("file\tsmart_turn\tby_model\ttimer\tlast_speech\tmodel_ms\tasked")
+        for url in files {
+            guard let samples = TurnEval.samples(url) else {
+                print("\(url.lastPathComponent)\tunreadable")
+                continue
+            }
+            let r = TurnEval.run(samples, models: models)
+            let f = { (t: TimeInterval?) in t.map { String(format: "%.2f", $0) } ?? "-" }
+            let ms = r.turnSeconds.isEmpty ? "-" : String(format: "%.0f", r.turnSeconds.reduce(0, +) / Double(r.turnSeconds.count) * 1000)
+            let asked = r.asks.map { String(format: "%.2f:%.3f", $0.at, $0.probability) }.joined(separator: " ")
+            print("\(url.lastPathComponent)\t\(f(r.model))\t\(r.modelDecided)\t\(f(r.timer))\t\(f(r.lastSpeech))\t\(ms)\t\(asked)")
+        }
+        return true
     }
 
     static var tool: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }
