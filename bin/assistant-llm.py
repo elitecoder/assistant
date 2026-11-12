@@ -208,6 +208,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"{current['global_provider']}")
                 for name, feature in current["features"].items():
                     detail = feature["provider"]
+                    if name == "comms":
+                        print(f"{name}: {detail} (interactive session; its own launch settings)")
+                        continue
                     if detail == "droid":
                         detail += f" ({feature['droid_model']}, " \
                             f"{feature['droid_reasoning_effort']} reasoning)"

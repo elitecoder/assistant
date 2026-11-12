@@ -185,6 +185,9 @@ CAUGHT = {
         'while droid exec --model m; do :; done',
         'until claude --print x; do sleep 1; done',
         'exec "${AGENT:-claude}" -p "$x"',
+        "python3 <<PYEOF\nimport subprocess\nsubprocess.run(['claude', '-p', 'x'])\nPYEOF",
+        "python3 - <<'PY'\nrun = 'droid exec --model m'\nPY",
+        'python3 -c "import subprocess; subprocess.run([\'claude\', \'-p\', \'x\'])"',
     ],
     "js": [
         "spawn('claude', ['-p', prompt])",
@@ -241,6 +244,8 @@ PASSED = {
         'echo "tip: run claude --resume"',
         'grep -- "--dangerously-skip-permissions" ~/.zprofile',
         'printf "%s\\n" "copilot --allow-all is set"',
+        "python3 <<PYEOF\nprint('claude is the default agent')\nPYEOF",
+        'python3 -c "import json; print(1)"',
         'cat <<EOF\nrun claude --resume by hand\nEOF',
         'HELP="run claude -p to test"',
     ],
@@ -1787,3 +1792,18 @@ def test_set_copilot_names_a_dispatch_pin(home, capsys, monkeypatch):
     config.write_text(json.dumps({"dispatch": {"agent": "claude"}}))
     assert cli.main(["set", "copilot"]) == 0
     assert "task dispatch stays on claude" in capsys.readouterr().err
+
+
+def test_gate_points_at_the_right_line_of_a_python_fence():
+    text = "# Skill\n\nIntro.\n\n```python\nsubprocess.run(['claude', '-p', 'x'])\n```\n"
+    assert [line for line, _ in gate.markdown_problems(text)] == [6]
+    bash = "# Skill\n\n```bash\nclaude -p x\n```\n"
+    assert [line for line, _ in gate.markdown_problems(bash)] == [4]
+
+
+def test_status_shows_the_slack_sessions_agent_without_job_settings(home, capsys, monkeypatch):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_status_text")
+    _pick(home, "droid")
+    assert cli.main(["status"]) == 0
+    line = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("comms:"))
+    assert line == "comms: droid (interactive session; its own launch settings)"

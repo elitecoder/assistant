@@ -412,6 +412,32 @@ def _shell_words(text: str) -> list[str]:
         return text.split()
 
 
+def _python_text_problems(code: str) -> list[tuple[int, str]]:
+    """python_problems for code that may not parse on its own (a snippet in a
+    skill or shell file); line by line string checks when it doesn't."""
+    try:
+        return python_problems(code)
+    except SyntaxError:
+        return [(n, f"python: {why}") for n, line in enumerate(code.splitlines(), 1)
+                for why in _string_problems(line)]
+
+
+def _python_heredocs(text: str) -> list[tuple[int, str]]:
+    """Problems in Python fed to an interpreter through a here-document."""
+    found, lines, i = [], text.splitlines(), 0
+    while i < len(lines):
+        m = re.search(r"<<-?\s*['\"]?([A-Za-z_]\w*)['\"]?", lines[i])
+        first = _shell_words(lines[i][:m.start()]) if m else []
+        if m and first and os.path.basename(first[0]).startswith("python"):
+            j = i + 1
+            while j < len(lines) and lines[j].strip() != m.group(1):
+                j += 1
+            found += [(i + 1 + n, why) for n, why in _python_text_problems("\n".join(lines[i + 1:j]))]
+            i = j
+        i += 1
+    return found
+
+
 def _blank_heredocs(text: str) -> str:
     """`text` with here-document bodies blanked (they're data, often help
     text); line numbers are kept."""
@@ -434,8 +460,8 @@ def _blank_heredocs(text: str) -> str:
 
 
 def shell_problems(text: str) -> list[tuple[int, str]]:
+    found = _python_heredocs(text)
     text = _blank_heredocs(text)
-    found = []
     aliases = {m.group(1): m.group(2) for m in re.finditer(
         r"(?:^|[\s;&|(])([A-Za-z_]\w*)=['\"]?(claude|copilot|droid)['\"]?(?=[\s;&|)]|$)", text)}
     aliases.update({m.group(1): m.group(2) for m in re.finditer(
@@ -497,6 +523,10 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
                         for r in rest:
                             found += [(n, f"piped {why}") for _, why in shell_problems(r)]
                     rest = []
+                if os.path.basename(w).startswith("python") and "-c" in rest[:-1]:
+                    code = rest[rest.index("-c") + 1]
+                    found += [(n, f"python -c: {why}") for _, why in _python_text_problems(code)]
+                    rest = []
                 if os.path.basename(w) in SHELLS and any(
                         _agent_word(_first_word(r)) for r in rest if not r.startswith("-")):
                     found.append((n, "shell runs an agent"))
@@ -551,12 +581,7 @@ def markdown_problems(text: str) -> list[tuple[int, str]]:
                 j += 1
             block = "\n".join(lines[start:j])
             if m.group(1) in ("python", "py"):
-                try:
-                    found += [(start + n - 1, why) for n, why in python_problems(block)]
-                except SyntaxError:
-                    found += [(start + n - 1, f"python block: {why}")
-                              for n, line in enumerate(block.splitlines(), 1)
-                              for why in _string_problems(line)]
+                found += [(start + n, why) for n, why in _python_text_problems(block)]
             else:
                 found += [(start + n, why) for n, why in shell_problems(block)]
             i = j + 1
