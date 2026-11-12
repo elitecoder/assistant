@@ -504,6 +504,7 @@ final class StoppingStreamedAnswersTests: XCTestCase {
         model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
         model.askNext = { [unowned self] in self.events.append("ask \($0)") }
         model.speakingNow = { false }
+        model.endChildren = { _ in }
         model.watch = { [unowned self] in
             self.bargeIn = $0
             return true
@@ -559,6 +560,46 @@ final class StoppingStreamedAnswersTests: XCTestCase {
         XCTAssertEqual(events.last, "ask Stop. Tell me about the playhead session instead.")
         XCTAssertTrue(m.chat.contains { $0.text == VoiceTurns.interruptedNote })
         XCTAssertTrue(m.chat.contains { $0.role == .assistant && $0.text == Self.reply }, "the full reply is kept in the chat")
+    }
+
+    /// Stop drops the questions waiting for the answer it ends.
+    func testStopDropsQueuedQuestions() {
+        let m = model()
+        m.asking = true
+        m.heard("What needs me?")
+        m.stopAsking()
+        m.answerCompleted(outcome(spoken: 0), spoken: false)
+        XCTAssertFalse(events.contains("ask What needs me?"), "\(events)")
+    }
+
+    /// Esc drops them too, in Talk Mode or not.
+    func testEscDropsQueuedQuestions() {
+        let m = model()
+        m.asking = true
+        m.heard("What needs me?")
+        m.stopTalkMode()
+        m.answerCompleted(outcome(spoken: 0), spoken: false)
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("Is the probe green?")
+        m.stopTalkMode()
+        m.answerCompleted(outcome(spoken: 0), spoken: false)
+        XCTAssertFalse(events.contains { $0.hasPrefix("ask") }, "\(events)")
+    }
+
+    /// Control-Option-V in the silent gap between a streamed answer's sentences (say, while Claude runs a tool)
+    /// silences the rest of that answer, as it does while a sentence plays.
+    func testPressingTheMicrophoneBetweenSentencesMutesTheAnswer() {
+        let m = model()
+        m.toggleListening = { [unowned self] in self.events.append("toggle listening") }
+        m.asking = true
+        m.answeringSpoken = true
+        m.spokenPart("The version bump session needs your token.")
+        m.listen()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.listeningEnded()
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertEqual(events, ["say The version bump session needs your token.", "stop speaking", "toggle listening"])
     }
 }
 

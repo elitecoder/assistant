@@ -229,6 +229,8 @@ final class Model: NSObject, ObservableObject {
     @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
     @Published var chat: [ChatTurn] = []
     @Published var asking = false
+    /// The answer running was asked by voice and is read aloud as it streams.
+    var answeringSpoken = false
     @Published var about: Item?
     @Published var meter: ContextMeter?
     @Published var history: [ConversationListItem] = []
@@ -334,11 +336,18 @@ final class Model: NSObject, ObservableObject {
         }
     }
 
+    /// The microphone button and Control-Option-V. Pressed during an answer, even in a silent gap between its
+    /// sentences, it silences the rest of that answer.
     func listen() {
-        if speaker.speaking { turns.mute() }
+        if speakingNow() || answeringSpoken { turns.mute() }
         stopTalking()
-        speaker.prepare()
-        listener.toggle()
+        toggleListening()
+    }
+
+    /// Starts or ends a question; tests replace it so no microphone opens.
+    lazy var toggleListening: () -> Void = { [weak self] in
+        self?.speaker.prepare()
+        self?.listener.toggle()
     }
 
     /// "Stop speaking": silence this answer, including the sentences Claude hasn't written yet.
@@ -355,8 +364,9 @@ final class Model: NSObject, ObservableObject {
 
     func toggleTalkMode() { step { $0.toggle() } }
 
-    /// The Stop button and Esc end Talk Mode.
+    /// The Stop button and Esc end Talk Mode and drop the questions waiting for the answer.
     func stopTalkMode() {
+        turns.clearQueue()
         guard loop.on else { return }
         step { $0.stop() }
         if listener.listening { cancelListening() }
@@ -448,6 +458,7 @@ final class Model: NSObject, ObservableObject {
             return
         }
         asking = true
+        answeringSpoken = spoken
         if spoken { turns.newReply() }
         let speak: ((String) -> Void)? = spoken ? { [weak self] sentence in
             DispatchQueue.main.async { self?.spokenPart(sentence) }
@@ -477,6 +488,7 @@ final class Model: NSObject, ObservableObject {
     /// over, so it doesn't listen again while that question is being answered.
     func answerCompleted(_ outcome: TurnOutcome, spoken: Bool) {
         asking = false
+        answeringSpoken = false
         chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
         meter = outcome.meter
         if spoken && outcome.spokenSentences == 0 { answered(outcome.reply) }
@@ -495,7 +507,10 @@ final class Model: NSObject, ObservableObject {
 
     /// Stop: ends the chat's `claude`, the summarizer, and everything they started, such as `--send` and `--wait`.
     /// Reading the process table can take a moment, so it happens off the main thread.
-    func stopAsking() { endRun(ChildProcesses.stoppedReason) }
+    func stopAsking() {
+        turns.clearQueue()
+        endRun(ChildProcesses.stoppedReason)
+    }
 
     /// Ends the running answer's processes off the main thread; the stored reply says `reason`.
     private func endRun(_ reason: String) {

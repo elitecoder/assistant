@@ -260,6 +260,9 @@ public struct VoiceTurns: Equatable {
         deferredReply = nil
     }
 
+    /// Stop and Esc: questions waiting for the answer aren't asked.
+    public mutating func clearQueue() { queued = [] }
+
     /// The next question to ask once an answer is done.
     public mutating func answerFinished() -> String? {
         queued.isEmpty ? nil : queued.removeFirst()
