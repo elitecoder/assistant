@@ -73,16 +73,27 @@ public final class ChildProcesses: @unchecked Sendable {
 
     public var pids: [Int32] { lock.withLock { Array(running.keys) } }
 
-    /// Ends every tracked process and all of their descendants: descendants first, so a `--send` can't press Enter
-    /// once more after `claude` is gone.
-    public func endAll(tree: [Int32: Int32] = ProcessTree.current()) {
+    /// Ends every tracked process and all of their descendants. It first freezes them (SIGSTOP), looking again until
+    /// no new process appears below them, so none can start another while they're being ended; then sends SIGTERM and
+    /// lets them run to handle it. A last look catches anything started in between.
+    public func endAll(tree: () -> [Int32: Int32] = ProcessTree.current) {
         let roots: [Int32] = lock.withLock {
             stopRequested.formUnion(running.keys)
             return Array(running.keys)
         }
-        for root in roots {
-            for pid in ProcessTree.descendants(of: root, parents: tree).reversed() { kill(pid, SIGTERM) }
-            kill(root, SIGTERM)
+        guard !roots.isEmpty else { return }
+        func below(_ parents: [Int32: Int32]) -> [Int32] { roots.flatMap { ProcessTree.descendants(of: $0, parents: parents) } }
+        var frozen: [Int32] = []
+        var next = roots
+        for _ in 0..<5 where !next.isEmpty {
+            next.forEach { kill($0, SIGSTOP) }
+            frozen += next
+            next = below(tree()).filter { !frozen.contains($0) }
+        }
+        frozen.reversed().forEach { kill($0, SIGTERM) }
+        frozen.forEach { kill($0, SIGCONT) }
+        for pid in below(tree()) where !frozen.contains(pid) {
+            kill(pid, SIGTERM)
         }
     }
 }

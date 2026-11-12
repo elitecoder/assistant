@@ -467,9 +467,14 @@ final class Model: NSObject, ObservableObject {
     lazy var speakingNow: () -> Bool = { [weak self] in self?.speaker.speaking ?? false }
 
     /// Stop: ends the chat's `claude`, the summarizer, and everything they started, such as `--send` and `--wait`.
+    /// Reading the process table can take a moment, so it happens off the main thread.
     func stopAsking() {
-        ChildProcesses.shared.endAll()
+        let end = endChildren
+        DispatchQueue.global(qos: .userInitiated).async { end() }
     }
+
+    /// Ends every process the app started; tests replace it.
+    lazy var endChildren: () -> Void = { ChildProcesses.shared.endAll() }
 
     /// Ignored while an answer is running, so its reply can't land in the next chat.
     func newChat() {

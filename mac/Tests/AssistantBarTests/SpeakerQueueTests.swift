@@ -110,3 +110,40 @@ final class SpeakerQueueTests: XCTestCase {
         XCTAssertEqual(output.spokenApple, ["Outside Talk Mode."])
     }
 }
+
+final class KokoroVerificationTests: XCTestCase {
+    /// A Kokoro file that fails its checksum isn't loaded; the engine says it needs downloading again.
+    func testADamagedVoiceIsNotLoaded() throws {
+        try XCTSkipUnless(KokoroEngine.installed && KokoroEngine.supported, "Kokoro voice isn't downloaded on this Mac")
+        let engine = KokoroEngine(damaged: { [Kokoro.model] })
+        var result: Bool?
+        let done = expectation(description: "done")
+        engine.speak("Hello there.", voiceID: Kokoro.voices[0].id, isCurrent: { true }, chunk: { _ in }, done: {
+            result = $0
+            done.fulfill()
+        })
+        wait(for: [done], timeout: 60)
+        XCTAssertEqual(result, false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(engine.status, .notDownloaded)
+    }
+}
+
+@MainActor
+final class StopOffMainTests: XCTestCase {
+    /// Stop reads the process table off the main thread, so a slow `ps` can't freeze the panel.
+    func testStopDoesNotWaitForTheProcessWalk() {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "stopwalk-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        let ended = expectation(description: "ended")
+        model.endChildren = {
+            Thread.sleep(forTimeInterval: 0.5)
+            ended.fulfill()
+        }
+        let started = Date()
+        model.stopAsking()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.1)
+        wait(for: [ended], timeout: 2)
+    }
+}

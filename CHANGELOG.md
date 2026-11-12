@@ -191,6 +191,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Kokoro's files are checked against their SHA-256 before the first load, and
+  a damaged one downloads again. **Stop** reads the process table off the main
+  thread, and it freezes the processes it ends first, so none can start another
+  in between, then looks once more after ending them.
 - Untrusted session text can no longer escape its block: every line break
   (CRLF, CR, U+2028, U+2029, next line, vertical tab, form feed) is normalized,
   labels after invisible or no-break characters are quoted, and block tags

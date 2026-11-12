@@ -104,3 +104,61 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 }
+
+final class LateChildTests: XCTestCase {
+    func sleeper() throws -> Process {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        p.arguments = ["30"]
+        try p.run()
+        return p
+    }
+
+    /// A child that shows up while the tree is being frozen is frozen and ended too.
+    func testAChildStartedDuringTheFreezeIsEnded() throws {
+        let root = try sleeper(), late = try sleeper()
+        defer { root.terminate(); late.terminate() }
+        let children = ChildProcesses()
+        children.add(root)
+        var looks = 0
+        children.endAll {
+            looks += 1
+            return looks == 1 ? [late.processIdentifier: root.processIdentifier] : [:]
+        }
+        late.waitUntilExit()
+        XCTAssertEqual(late.terminationReason, .uncaughtSignal)
+    }
+
+    /// One started after the freeze, just as SIGTERM goes out, is caught by the last look.
+    func testAChildStartedAfterTheFreezeIsEndedByTheLastLook() throws {
+        let root = try sleeper(), late = try sleeper()
+        defer { root.terminate(); late.terminate() }
+        let children = ChildProcesses()
+        children.add(root)
+        var looks = 0
+        children.endAll {
+            looks += 1
+            return looks >= 2 ? [late.processIdentifier: root.processIdentifier] : [:]
+        }
+        late.waitUntilExit()
+        XCTAssertEqual(late.terminationReason, .uncaughtSignal)
+        root.waitUntilExit()
+    }
+
+    /// A child that handles SIGTERM (to save its state) gets to run its handler: it's let go after the freeze.
+    func testAFrozenProcessRunsItsTermHandler() throws {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent("term-\(UUID().uuidString)").path
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "trap 'echo handled > \(marker); exit 0' TERM; while true; do sleep 0.1; done"]
+        try p.run()
+        Thread.sleep(forTimeInterval: 0.2)
+        let children = ChildProcesses()
+        children.add(p)
+        children.endAll { [:] }
+        let deadline = Date().addingTimeInterval(3)
+        while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker), "the TERM handler never ran")
+    }
+}

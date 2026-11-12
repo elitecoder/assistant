@@ -37,7 +37,12 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
         return arm
     }
 
-    override init() {
+    /// The files that fail their checksum, checked once before the first load; tests stand in a result.
+    private let damaged: () -> [KokoroFile]
+    private var verified = false
+
+    init(damaged: @escaping () -> [KokoroFile] = { ModelFiles.needed(Kokoro.files, in: KokoroEngine.folder) }) {
+        self.damaged = damaged
         super.init()
         if Self.installed { status = .ready }
     }
@@ -139,6 +144,15 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
 
     private func load() -> Bool {
         guard Self.supported, Self.installed else { return false }
+        if !verified {
+            let bad = damaged()
+            guard bad.isEmpty else {
+                voiceLog.error("kokoro: \(bad.map(\.name).joined(separator: ", "), privacy: .public) failed its checksum; it downloads again")
+                lock.withLock { status = .notDownloaded }
+                return false
+            }
+            verified = true
+        }
         if tts == nil {
             tts = KokoroTTS(modelPath: Self.path(Kokoro.model))
             embeddings = NpyzReader.read(fileFromPath: Self.path(Kokoro.voicePack)) ?? [:]
