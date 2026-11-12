@@ -69,6 +69,24 @@ on the file. Add `--legacy` to use the older recognizer. Make a test file with
 The timing of each press is in the log:
 `log show --last 10m --info --predicate 'subsystem == "com.assistant.sessions" AND category == "voice"'`.
 
+### Talk Mode
+
+To talk back and forth without pressing anything, select the waveform button
+next to the microphone, or hold Control-Option-V for about half a second.
+Assistant listens, answers, speaks, and then listens for your next question.
+To interrupt an answer, start talking: about half a second of your voice stops
+it and starts the next question. Coughs and short sounds like "mm-hmm" don't.
+Select **Stop**, or press Esc, to end Talk Mode. A turn where you don't ask
+anything also ends it. Start the app in Talk Mode with `AssistantBar --show --talk`.
+
+While it speaks in Talk Mode, Assistant keeps the microphone open with Apple's
+voice processing, which removes Assistant's own voice from what the microphone
+hears. That microphone only watches for you talking; nothing is transcribed
+until the answer stops. Voice processing uses your Mac's default input and
+output devices, not the microphone picked in the menu, and it lowers other
+apps' audio while it's on. The first half second you say while interrupting
+isn't part of your next question, so pause for **Listening…**, or repeat it.
+
 ## Work with your sessions
 
 Assistant can message a session for you, wait for its reply, and keep going

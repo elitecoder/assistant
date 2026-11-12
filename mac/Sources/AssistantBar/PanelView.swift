@@ -59,6 +59,7 @@ struct PanelView: View {
         }
         .padding(14)
         .frame(width: 440, height: 720)
+        .onExitCommand { model.stopTalkMode() }
     }
 
     var footer: String {
@@ -157,6 +158,17 @@ struct ChatView: View {
             if !model.chat.isEmpty {
                 ContextBar(model: model)
             }
+            if model.talkMode {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform").foregroundStyle(.red)
+                    Text("Talk Mode: I listen again after each answer. Talk over an answer to interrupt it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Stop") { model.stopTalkMode() }
+                        .buttonStyle(.borderless).font(.caption)
+                        .keyboardShortcut(.cancelAction)
+                }
+            }
             if !model.chat.isEmpty || model.asking || listener.listening || listener.finishing {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -198,6 +210,15 @@ struct ChatView: View {
                 .buttonStyle(.borderless)
                 .disabled(model.asking)
                 .help(listener.listening ? "Stop listening" : "Talk (⌃⌥V)")
+                Button { model.talkMode ? model.stopTalkMode() : model.toggleTalkMode() } label: {
+                    Image(systemName: model.talkMode ? "waveform.circle.fill" : "waveform.circle")
+                        .font(.title2)
+                        .foregroundStyle(model.talkMode ? Color.red : Color.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.asking && !model.talkMode)
+                .help(model.talkMode ? "Stop Talk Mode (Esc)" : "Talk Mode: talk back and forth hands-free (hold ⌃⌥V)")
+                .accessibilityLabel(model.talkMode ? "Stop Talk Mode" : "Talk Mode")
                 Button { model.replay() } label: {
                     Image(systemName: "arrow.counterclockwise.circle.fill").font(.title2)
                 }

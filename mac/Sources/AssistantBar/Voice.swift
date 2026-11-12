@@ -668,6 +668,9 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     var appleUtterance: AVSpeechUtterance?
     /// False while the microphone is open: a voice or speed sample would play into it.
     var mayTalk: () -> Bool = { true }
+    /// True while this engine's echo-cancelled microphone watches for the operator talking over the answer.
+    private(set) var watching = false
+    private var appleConverter: AVAudioConverter?
 
     override init() {
         kokoroStatus = kokoro.status
@@ -770,6 +773,10 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         else { return }
         buffer.frameLength = buffer.frameCapacity
         samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        play(buffer, mine)
+    }
+
+    private func play(_ buffer: AVAudioPCMBuffer, _ mine: Int) {
         if !audio.isRunning { try? audio.start() }
         queued += 1
         player.scheduleBuffer(buffer) { [weak self] in
@@ -798,9 +805,96 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 
     private func sayWithApple(_ text: String) {
         let utterance = utterance(text)
-        appleUtterance = utterance
         speaking = true
-        synth.speak(utterance)
+        guard watching else {
+            appleUtterance = utterance
+            synth.speak(utterance)
+            return
+        }
+        // Played through this engine, so echo cancellation knows to remove it from the microphone.
+        let mine = generation
+        pending += 1
+        synth.write(utterance) { [weak self] buffer in
+            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+            let last = pcm.frameLength == 0
+            let converted = last ? nil : self?.convertApple(pcm)
+            DispatchQueue.main.async {
+                guard let self, self.generation == mine else { return }
+                if let converted { self.play(converted, mine) }
+                if last {
+                    self.pending -= 1
+                    self.finishIfDrained()
+                }
+            }
+        }
+    }
+
+    private func convertApple(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        if appleConverter?.inputFormat != buffer.format { appleConverter = AVAudioConverter(from: buffer.format, to: format) }
+        guard let converter = appleConverter else { return nil }
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * format.sampleRate / buffer.format.sampleRate) + 1024
+        guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+        var consumed = false
+        var error: NSError?
+        converter.convert(to: out, error: &error) { _, status in
+            if consumed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        return out.frameLength > 0 ? out : nil
+    }
+
+    /// Opens this engine's microphone with Apple's voice processing, which cancels the answer this engine plays,
+    /// and calls `onBargeIn` when the operator talks over it. Nothing it hears is transcribed. Voice processing uses
+    /// the Mac's default input and output devices. False when it can't start.
+    func watchForBargeIn(_ onBargeIn: @escaping () -> Void) -> Bool {
+        guard !watching else { return true }
+        audio.stop()
+        let input = audio.inputNode
+        var started = false
+        let raised = AssistantCatchException {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+                guard let mono = AVAudioFormat(standardFormatWithSampleRate: input.outputFormat(forBus: 0).sampleRate,
+                                               channels: 1) else { return }
+                var gate = BargeInGate()
+                var buffers = 0
+                input.installTap(onBus: 0, bufferSize: 4800, format: mono) { buffer, _ in
+                    guard let data = buffer.floatChannelData?[0] else { return }
+                    let level = Meter.level(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
+                    buffers += 1
+                    if buffers % 50 == 1 { voiceLog.notice("barge-in: echo-cancelled level \(level)") }
+                    if gate.take(level: level, duration: Double(buffer.frameLength) / buffer.format.sampleRate) {
+                        voiceLog.notice("barge-in: the operator is talking over the answer")
+                        DispatchQueue.main.async(execute: onBargeIn)
+                    }
+                }
+                self.audio.prepare()
+                try self.audio.start()
+                started = true
+            } catch {
+                voiceLog.error("barge-in: voice processing failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        if let raised { voiceLog.error("barge-in: \(raised.name.rawValue, privacy: .public): \(raised.reason ?? "", privacy: .public)") }
+        watching = started && raised == nil
+        if !watching { stopWatching(force: true) }
+        voiceLog.notice("barge-in: watching \(self.watching ? "on" : "off", privacy: .public)")
+        return watching
+    }
+
+    func stopWatching(force: Bool = false) {
+        guard watching || force else { return }
+        watching = false
+        _ = AssistantCatchException {
+            self.audio.inputNode.removeTap(onBus: 0)
+            self.audio.stop()
+            try? self.audio.inputNode.setVoiceProcessingEnabled(false)
+        }
     }
 
     func stop() {

@@ -197,7 +197,7 @@ public enum AppCommand: Equatable {
     case toolGuard
 
     public static let usage = """
-    Usage: AssistantBar [--show] [--listen]
+    Usage: AssistantBar [--show] [--listen] [--talk]
            AssistantBar --print | --sessions
            AssistantBar --send <workspace> "<message>" [--timeout <seconds>] | --wait <workspace> [--timeout <seconds>]
            AssistantBar --ask "<question>" [--session <name>] [--spoken] [--say-to <file.wav>]
@@ -212,8 +212,8 @@ public enum AppCommand: Equatable {
         guard let first = rest.first else { return .app }
         let tail = Array(rest.dropFirst())
         switch first {
-        case "--show", "--listen":
-            return Set(rest).isSubset(of: ["--show", "--listen"]) && Set(rest).count == rest.count ? .app : nil
+        case "--show", "--listen", "--talk":
+            return Set(rest).isSubset(of: ["--show", "--listen", "--talk"]) && Set(rest).count == rest.count ? .app : nil
         case "--print": return tail.isEmpty ? .print : nil
         case "--sessions": return tail.isEmpty ? .sessions : nil
         case "--pretooluse-guard": return tail.isEmpty ? .toolGuard : nil

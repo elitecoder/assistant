@@ -2,6 +2,7 @@ import AppKit
 import KokoroSwift
 import AVFoundation
 import Carbon.HIToolbox
+import Combine
 import ServiceManagement
 import SessionCore
 import Speech
@@ -190,6 +191,15 @@ final class Model: NSObject, ObservableObject {
     /// Speaks text after what's already playing; tests replace it too.
     lazy var talkMore: (String) -> Void = { [weak self] in self?.speaker.append($0) }
     private var turns = VoiceTurns()
+    /// Talk Mode: listen, answer, speak, and listen again, until Stop or Esc.
+    @Published var talkMode = false
+    private var loop = TalkLoop()
+    private var speakingWatch: AnyCancellable?
+    /// Opens the echo-cancelled microphone that notices the operator talking over an answer; tests replace these.
+    lazy var watch: (@escaping () -> Void) -> Bool = { [weak self] in self?.speaker.watchForBargeIn($0) ?? false }
+    lazy var unwatch: () -> Void = { [weak self] in self?.speaker.stopWatching() }
+    lazy var stopTalking: () -> Void = { [weak self] in self?.speaker.stop() }
+    lazy var startListening: () -> Void = { [weak self] in self?.listener.start() }
     private var running: Process?
     private var sentAbout: String?
     private var engine: ChatEngine?
@@ -226,7 +236,10 @@ final class Model: NSObject, ObservableObject {
     override init() {
         super.init()
         listener.onHeard = { [weak self] text in self?.heard(text) }
-        listener.onProblem = { [weak self] text in self?.chat.append(ChatTurn(role: .error, text: text)) }
+        listener.onProblem = { [weak self] text in
+            self?.chat.append(ChatTurn(role: .error, text: text))
+            self?.step { $0.nothingHeard() }
+        }
         listener.onInterrupted = { [weak self] text, note in
             guard let self else { return }
             if !text.isEmpty { self.draft = text }
@@ -234,6 +247,9 @@ final class Model: NSObject, ObservableObject {
         }
         listener.onEnded = { [weak self] in self?.listeningEnded() }
         speaker.mayTalk = { [weak self] in self?.listener.listening != true }
+        speakingWatch = speaker.$speaking.removeDuplicates().dropFirst().sink { [weak self] speaking in
+            DispatchQueue.main.async { self?.speechChanged(speaking) }
+        }
         let url = ProcessInfo.processInfo.environment["ASSISTANT_DB"].map { URL(fileURLWithPath: $0) } ?? ConversationStore.defaultURL
         do {
             engine = Main.engine(store: try ConversationStore(url: url),
@@ -272,8 +288,46 @@ final class Model: NSObject, ObservableObject {
         if case .speak(let text) = turns.say(text, listening: listener.listening, isReply: false) { talk(text) }
     }
 
+    func toggleTalkMode() { step { $0.toggle() } }
+
+    /// The Stop button and Esc end Talk Mode.
+    func stopTalkMode() {
+        guard loop.on else { return }
+        step { $0.stop() }
+        if listener.listening { listener.stop() }
+        stopTalking()
+    }
+
+    /// Steps Talk Mode's loop and carries out what it says.
+    private func step(_ change: (inout TalkLoop) -> [TalkLoop.Action]) {
+        for action in change(&loop) {
+            switch action {
+            case .listen:
+                if !listener.listening { startListening() }
+            case .interrupt:
+                stopTalking()
+                startListening()
+            case .watch:
+                if !watch({ [weak self] in self?.step { $0.bargedIn() } }) {
+                    chat.append(ChatTurn(role: .step, text: "Talking over the answer won't stop it: voice processing isn't available."))
+                }
+            case .stopWatching:
+                unwatch()
+            case .exit(let note):
+                if let note { chat.append(ChatTurn(role: .step, text: note)) }
+            }
+        }
+        talkMode = loop.on
+    }
+
+    /// The answer started or stopped playing. Talk Mode listens again once it stops and the answer is complete.
+    func speechChanged(_ speaking: Bool) {
+        if speaking { step { $0.startedSpeaking() } } else if !asking { step { $0.finishedSpeaking() } }
+    }
+
     /// A spoken question: asked now, or after the answer that's running.
     func heard(_ question: String) {
+        step { $0.heard() }
         switch turns.heard(question, asking: asking) {
         case .ask(let q): ask(q, spoken: true)
         case .queued(let note):
@@ -342,6 +396,7 @@ final class Model: NSObject, ObservableObject {
                 self.meter = outcome.meter
                 self.history = history
                 if spoken && outcome.spokenSentences == 0 { self.answered(outcome.reply) }
+                if !self.speaker.speaking { self.speechChanged(false) }
                 if !outcome.failed && newFocus != nil { self.sentAbout = newFocus?.id }
                 if let next = self.turns.answerFinished() { self.ask(next, spoken: true, shown: true) }
             }
@@ -442,6 +497,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if CommandLine.arguments.contains("--listen") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.talk() }
+        } else if CommandLine.arguments.contains("--talk") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if !self.popover.isShown { self.show() }
+                self.model.toggleTalkMode()
+            }
         }
     }
 
@@ -497,26 +557,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         done([.banner, .sound])
     }
 
+    private var talkPressedAt: Date?
+
+    /// Control-Option-V: a press talks; holding it for `TalkLoop.longPress` also turns on Talk Mode.
+    func talkPressed() {
+        talkPressedAt = Date()
+        talk()
+    }
+
+    func talkReleased() {
+        guard let pressed = talkPressedAt else { return }
+        talkPressedAt = nil
+        if TalkLoop.isLongPress(held: Date().timeIntervalSince(pressed)), !model.talkMode, model.listener.listening {
+            model.toggleTalkMode()
+        }
+    }
+
     func talk() {
         if !popover.isShown { show() }
         model.listen()
     }
 
     func registerHotKey() {
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var specs = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                     EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
         InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
             var id = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
                               MemoryLayout<EventHotKeyID>.size, nil, &id)
+            let released = GetEventKind(event) == UInt32(kEventHotKeyReleased)
             DispatchQueue.main.async {
-                switch id.id {
-                case 2: Main.delegate.talk()
-                case 3: Main.delegate.model.replay()
-                default: Main.delegate.toggle()
+                switch (id.id, released) {
+                case (2, false): Main.delegate.talkPressed()
+                case (2, true): Main.delegate.talkReleased()
+                case (3, false): Main.delegate.model.replay()
+                case (1, false): Main.delegate.toggle()
+                default: break
                 }
             }
             return noErr
-        }, 1, &spec, nil, nil)
+        }, 2, &specs, nil, nil)
         let signature = OSType(0x4153_5354)
         RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 1),
                             GetApplicationEventTarget(), 0, &hotKey)

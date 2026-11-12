@@ -1,4 +1,5 @@
 import AVFoundation
+import KokoroSwift
 import Speech
 import XCTest
 @testable import AssistantBar
@@ -485,5 +486,107 @@ final class ChatScrollTests: XCTestCase {
         XCTAssertNotEqual(key(heard: "tell them"), key(heard: "tell then"), "a revision the same length still scrolls")
         XCTAssertNotEqual(key(), key(modelNote: ListeningText.modelNote(.downloading(0.5))))
         XCTAssertEqual(key(heard: "same"), key(heard: "same"))
+    }
+}
+
+@MainActor
+final class TalkModeFlowTests: XCTestCase {
+    var events: [String] = []
+    var bargeIn: (() -> Void)?
+
+    func model() -> Model {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "talk-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.talk = { [unowned self] in self.events.append("say \($0)") }
+        model.talkMore = { [unowned self] in self.events.append("more \($0)") }
+        model.startListening = { [unowned self] in self.events.append("listen") }
+        model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
+        model.watch = { [unowned self] in
+            self.bargeIn = $0
+            self.events.append("watch")
+            return true
+        }
+        model.unwatch = { [unowned self] in self.events.append("unwatch") }
+        return model
+    }
+
+    func testTalkModeLoopsAndTalkingOverTheAnswerInterruptsIt() {
+        let m = model()
+        m.toggleTalkMode()
+        XCTAssertTrue(m.talkMode)
+        XCTAssertEqual(events, ["listen"])
+        m.asking = true
+        m.heard("What needs me?")
+        XCTAssertEqual(events.last, "watch", "the echo-cancelled microphone opens before the answer plays")
+        m.speechChanged(true)
+        bargeIn?()
+        XCTAssertEqual(Array(events.suffix(3)), ["unwatch", "stop speaking", "listen"])
+        XCTAssertTrue(m.talkMode)
+    }
+
+    func testTheNextQuestionIsListenedForOnceTheAnswerEnds() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.speechChanged(true)
+        m.speechChanged(false)
+        XCTAssertEqual(events.last, "watch", "still answering: the speech gap between sentences doesn't count")
+        m.asking = false
+        m.speechChanged(false)
+        XCTAssertEqual(Array(events.suffix(2)), ["unwatch", "listen"])
+    }
+
+    func testStopOrSilenceEndsTalkMode() {
+        let m = model()
+        m.toggleTalkMode()
+        m.stopTalkMode()
+        XCTAssertFalse(m.talkMode)
+        XCTAssertTrue(events.contains("unwatch"))
+        m.toggleTalkMode()
+        m.listener.onProblem?("I didn't hear anything.")
+        XCTAssertFalse(m.talkMode)
+        XCTAssertEqual(m.chat.last?.text, TalkLoop.nothingHeardNote)
+    }
+}
+
+/// Assistant's own voice, as the echo-cancelled microphone would hear it. Voice processing can't run offline (manual
+/// rendering refuses it, -10863), so this checks the gate on Kokoro's rendered reply: at full level it would interrupt
+/// (which is why echo cancellation is needed), and at 30 dB down, a typical floor for Apple's echo cancellation, it
+/// doesn't.
+final class OwnVoiceGateTests: XCTestCase {
+    func testAssistantsOwnReplyAfterEchoCancellationDoesNotInterrupt() throws {
+        try XCTSkipUnless(KokoroEngine.installed && KokoroEngine.supported, "Kokoro voice isn't downloaded on this Mac")
+        var samples: [Float] = []
+        let done = expectation(description: "rendered")
+        KokoroEngine().speak("The version bump session is waiting on your token, and the trim fix merged this morning.",
+                             voiceID: Kokoro.voices[0].id, isCurrent: { true }, chunk: { samples += $0 },
+                             done: { _ in done.fulfill() })
+        wait(for: [done], timeout: 120)
+        let window = Int(KokoroTTS.Constants.samplingRate) / 10
+        func levels(_ gain: Float) -> [Float] {
+            stride(from: 0, to: samples.count - window, by: window).map { start in
+                let chunk = samples[start..<start + window].map { $0 * gain }
+                return chunk.withUnsafeBufferPointer { Meter.level($0) }
+            }
+        }
+        var full = BargeInGate()
+        XCTAssertTrue(levels(1).contains { full.take(level: $0, duration: 0.1) }, "unfiltered, the reply would interrupt itself")
+        var cancelled = BargeInGate()
+        XCTAssertFalse(levels(pow(10, -30 / 20)).contains { cancelled.take(level: $0, duration: 0.1) })
+    }
+}
+
+/// Opens the real echo-cancelled microphone for a moment (nothing plays). Set ASSISTANT_LIVE_AUDIO=1 to run it.
+final class VoiceProcessingLiveTests: XCTestCase {
+    func testTheEchoCancelledMicrophoneStartsAndStops() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ASSISTANT_LIVE_AUDIO"] == "1", "needs a microphone")
+        let speaker = Speaker()
+        XCTAssertTrue(speaker.watchForBargeIn {})
+        XCTAssertTrue(speaker.watching)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+        speaker.stopWatching()
+        XCTAssertFalse(speaker.watching)
     }
 }

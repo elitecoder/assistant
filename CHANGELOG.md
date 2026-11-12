@@ -10,6 +10,14 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Talk Mode: select the waveform button, hold Control-Option-V, or start the
+  app with `--talk`, and Assistant listens, answers, speaks, and listens again
+  until you select **Stop** or press Esc. While it speaks, the microphone stays
+  open with Apple's voice processing, which cancels Assistant's own voice, only
+  to notice you talking over the answer: half a second of voice above the
+  room's noise stops the answer and starts your next question, while a cough
+  or an "mm-hmm" doesn't. Nothing is transcribed while Assistant speaks. A turn
+  with no question ends Talk Mode.
 - A spoken answer starts on its first sentence instead of waiting for the
   whole reply. Assistant runs Claude with `--include-partial-messages` and
   speaks each sentence as it's written; the stored chat and the reply are

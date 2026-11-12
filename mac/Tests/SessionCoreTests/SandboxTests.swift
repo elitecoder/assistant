@@ -85,6 +85,7 @@ final class AppCommandTests: XCTestCase {
     func testEachCommandIsRecognizedOnlyFirstWithItsExactArguments() {
         XCTAssertEqual(AppCommand.parse([a]), .app)
         XCTAssertEqual(AppCommand.parse([a, "--show", "--listen"]), .app)
+        XCTAssertEqual(AppCommand.parse([a, "--show", "--talk"]), .app)
         XCTAssertEqual(AppCommand.parse([a, "--sessions"]), .sessions)
         XCTAssertEqual(AppCommand.parse([a, "--send", "workspace:1", "go"]), .send(ref: "workspace:1", message: "go", timeout: nil))
         XCTAssertEqual(AppCommand.parse([a, "--send", "workspace:1", "go", "--timeout", "60"]), .send(ref: "workspace:1", message: "go", timeout: 60))
