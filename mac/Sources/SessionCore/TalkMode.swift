@@ -91,6 +91,8 @@ public struct TalkLoop: Equatable {
 
     public static let nothingHeardNote = "Talk Mode is off: I didn't hear a question."
     public static let micLostNote = "Talk Mode is off: the microphone disconnected."
+    /// Stored as the reply of a run that ended because the operator talked over it.
+    public static let interruptedReason = "Interrupted by voice."
     public static let longPress: TimeInterval = 0.6
 
     /// Holding Control-Option-V this long turns on Talk Mode.

@@ -56,29 +56,33 @@ public final class ChildProcesses: @unchecked Sendable {
     public static let shared = ChildProcesses()
     private let lock = NSLock()
     private var running: [Int32: Process] = [:]
-    private var stopRequested: Set<Int32> = []
+    /// Why each process was ended, by pid.
+    private var stopRequested: [Int32: String] = [:]
+
+    public static let stoppedReason = "Stopped."
 
     public init() {}
 
     public func add(_ process: Process) { lock.withLock { running[process.processIdentifier] = process } }
 
-    /// Forgets a finished process; returns whether Stop or Quit ended it.
+    /// Forgets a finished process; returns why it was ended (Stop, Quit, or talking over the answer), or nil when
+    /// nothing ended it.
     @discardableResult
-    public func remove(_ process: Process) -> Bool {
+    public func remove(_ process: Process) -> String? {
         lock.withLock {
             running[process.processIdentifier] = nil
-            return stopRequested.remove(process.processIdentifier) != nil
+            return stopRequested.removeValue(forKey: process.processIdentifier)
         }
     }
 
     public var pids: [Int32] { lock.withLock { Array(running.keys) } }
 
-    /// Ends every tracked process and all of their descendants. It first freezes them (SIGSTOP), looking again until
-    /// no new process appears below them, so none can start another while they're being ended; then sends SIGTERM and
-    /// lets them run to handle it. A last look catches anything started in between.
-    public func endAll(tree: () -> [Int32: Int32] = ProcessTree.current) {
+    /// Ends every tracked process and all of their descendants, recording `reason` for each. It first freezes them
+    /// (SIGSTOP), looking again until no new process appears below them, so none can start another while they're
+    /// being ended; then sends SIGTERM and lets them run to handle it. A last look catches anything started in between.
+    public func endAll(reason: String = ChildProcesses.stoppedReason, tree: () -> [Int32: Int32] = ProcessTree.current) {
         let roots: [Int32] = lock.withLock {
-            stopRequested.formUnion(running.keys)
+            for pid in running.keys { stopRequested[pid] = reason }
             return Array(running.keys)
         }
         guard !roots.isEmpty else { return }

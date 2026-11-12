@@ -191,6 +191,7 @@ public final class ChatEngine {
         if let signal = run.crashSignal, record.failed {
             record.reply = "Claude Code quit unexpectedly (signal \(signal)), so there's no answer. Ask again."
         }
+        if run.stopped, let reason = run.stopReason { record.reply = reason }
         if let reported = record.contextWindow, ContextWindow.remember(reported, for: model),
            windowFor(model) != compressor.config.contextLength {
             compressor.updateModel(Self.config(model: model, window: windowFor(model)))

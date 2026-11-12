@@ -74,6 +74,31 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertNil(stopped.crashSignal)
     }
 
+    /// Talking over the answer ends a `claude` stuck in a tool call; the turn is stored like a Stop, with its partial
+    /// text, the tool call closed, and a reply saying the operator's voice interrupted it.
+    func testARunInterruptedByVoiceIsStoredWithItsReason() throws {
+        let text = #"{"type":"assistant","message":{"content":[{"type":"text","text":"Checking the trim session."}]}}"#
+        let call = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"/A/AssistantBar --wait workspace:3"}}]}}"#
+        let fake = try script("claude", "printf '%s\\n' '\(text)' '\(call)'\nsleep 30")
+        let children = ChildProcesses()
+        let store = try ConversationStore(url: folder.appendingPathComponent("conversations.db"))
+        let engine = ChatEngine(store: store, memoryFolder: folder.appendingPathComponent("memory"), tool: "/A/AssistantBar",
+                                model: "haiku", effort: nil, windowFor: { _ in 1_000_000 },
+                                runner: { invocation, onLine in
+                                    Asker.run(invocation, tool: "/A/AssistantBar", binary: fake, children: children, onLine: onLine)
+                                }, summarizer: { _ in "## Goal\nx" })
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { children.endAll(reason: TalkLoop.interruptedReason) }
+        let started = Date()
+        let outcome = engine.ask("What needs me?", fleet: ScanResult()) { _ in }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "the run wasn't ended")
+        XCTAssertTrue(outcome.failed)
+        XCTAssertEqual(outcome.reply, TalkLoop.interruptedReason)
+        let rows = try store.messages(sessionID: try XCTUnwrap(store.sessions().first?.session.id))
+        XCTAssertTrue(rows.contains { $0.role == .assistant && $0.content == "Checking the trim session." })
+        XCTAssertTrue(rows.contains { $0.role == .tool && $0.content == StreamTurn.interruptedOutput })
+        XCTAssertTrue(rows.last?.content.contains(TalkLoop.interruptedReason) == true, "\(rows.last?.content ?? "")")
+    }
+
     /// Stop and Quit end the processes the app started and everything below them, like `--send` under `claude`.
     func testEndingAllAlsoEndsGrandchildren() throws {
         let children = ChildProcesses()

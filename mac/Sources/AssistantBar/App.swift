@@ -241,7 +241,7 @@ final class Model: NSObject, ObservableObject {
     lazy var talk: (String) -> Void = { [weak self] in self?.speaker.say($0) }
     /// Speaks text after what's already playing; tests replace it too.
     lazy var talkMore: (String) -> Void = { [weak self] in self?.speaker.append($0) }
-    private var turns = VoiceTurns()
+    var turns = VoiceTurns()
     /// Talk Mode: listen, answer, speak, and listen again, until Stop or Esc.
     @Published var talkMode = false
     /// A note about the microphone Talk Mode watches for interruptions, when it isn't the one picked or is silent.
@@ -371,6 +371,7 @@ final class Model: NSObject, ObservableObject {
                 if !listener.listening { startListening() }
             case .interrupt:
                 stopSpeaking()
+                if asking { endRun(TalkLoop.interruptedReason) }
                 if !listener.listening { startListening() }
             case .watch:
                 if !watch({ [weak self] in self?.step { $0.bargedIn() } }) {
@@ -399,12 +400,15 @@ final class Model: NSObject, ObservableObject {
     func heard(_ question: String) {
         step { $0.heard() }
         switch turns.heard(question, asking: asking) {
-        case .ask(let q): ask(q, spoken: true)
+        case .ask(let q): askNow(q)
         case .queued(let note):
             chat.append(ChatTurn(role: .you, text: question))
             chat.append(ChatTurn(role: .step, text: note))
         }
     }
+
+    /// Asks a spoken question right away; tests replace it so no `claude` runs.
+    lazy var askNow: (String) -> Void = { [weak self] in self?.ask($0, spoken: true) }
 
     /// Reads a spoken answer, or keeps it until listening ends so it doesn't play into the microphone.
     func answered(_ reply: String) {
@@ -469,14 +473,18 @@ final class Model: NSObject, ObservableObject {
     }
 
     /// An answer is done: show it in full (even if it was stopped while being read), read it if nothing streamed,
-    /// then ask the next question waiting.
+    /// then ask the next question waiting. A waiting question is asked before Talk Mode hears that the answer is
+    /// over, so it doesn't listen again while that question is being answered.
     func answerCompleted(_ outcome: TurnOutcome, spoken: Bool) {
         asking = false
         chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
         meter = outcome.meter
         if spoken && outcome.spokenSentences == 0 { answered(outcome.reply) }
-        if !speakingNow() { speechChanged(false) }
-        if let next = turns.answerFinished() { askNext(next) }
+        if let next = turns.answerFinished() {
+            askNext(next)
+        } else if !speakingNow() {
+            speechChanged(false)
+        }
     }
 
     /// Asks a question that waited for the last answer; tests replace it so no `claude` runs.
@@ -487,13 +495,16 @@ final class Model: NSObject, ObservableObject {
 
     /// Stop: ends the chat's `claude`, the summarizer, and everything they started, such as `--send` and `--wait`.
     /// Reading the process table can take a moment, so it happens off the main thread.
-    func stopAsking() {
+    func stopAsking() { endRun(ChildProcesses.stoppedReason) }
+
+    /// Ends the running answer's processes off the main thread; the stored reply says `reason`.
+    private func endRun(_ reason: String) {
         let end = endChildren
-        DispatchQueue.global(qos: .userInitiated).async { end() }
+        DispatchQueue.global(qos: .userInitiated).async { end(reason) }
     }
 
-    /// Ends every process the app started; tests replace it.
-    lazy var endChildren: () -> Void = { ChildProcesses.shared.endAll() }
+    /// Ends every process the app started, recording why; tests replace it.
+    lazy var endChildren: (String) -> Void = { ChildProcesses.shared.endAll(reason: $0) }
 
     /// Ignored while an answer is running, so its reply can't land in the next chat.
     func newChat() {

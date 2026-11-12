@@ -562,6 +562,99 @@ final class StoppingStreamedAnswersTests: XCTestCase {
     }
 }
 
+/// Talking over an answer ends the chat's `claude` run, so the next question doesn't wait for it, and Talk Mode keeps
+/// going in the right order.
+@MainActor
+final class BargeInEndsTheRunTests: XCTestCase {
+    var events: [String] = []
+    var bargeIn: (() -> Void)?
+
+    func model() -> Model {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "barge-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.talk = { [unowned self] in self.events.append("say \($0)") }
+        model.talkMore = { [unowned self] in self.events.append("more \($0)") }
+        model.startListening = { [unowned self] in self.events.append("listen") }
+        model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
+        model.speakingNow = { false }
+        model.watch = { [unowned self] in
+            self.bargeIn = $0
+            self.events.append("watch")
+            return true
+        }
+        model.unwatch = { [unowned self] in self.events.append("unwatch") }
+        let asked: (String) -> Void = { [unowned self, unowned model] in
+            self.events.append("ask \($0)")
+            model.asking = true
+            model.turns.newReply()
+        }
+        model.askNow = asked
+        model.askNext = asked
+        model.endChildren = { [unowned self] reason in DispatchQueue.main.async { self.events.append("end \(reason)") } }
+        return model
+    }
+
+    func interrupted() -> TurnOutcome {
+        TurnOutcome(reply: TalkLoop.interruptedReason, failed: true, cost: nil, meter: nil, spokenSentences: 1)
+    }
+
+    func waitFor(_ event: String) {
+        let deadline = Date().addingTimeInterval(2)
+        while !events.contains(event) && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    func startAnswering(_ m: Model) {
+        m.toggleTalkMode()
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.speechChanged(true)
+        bargeIn?()
+        waitFor("end \(TalkLoop.interruptedReason)")
+    }
+
+    /// The run is stuck in a tool call, so the new question is heard before the ended run comes back: it's asked the
+    /// moment the run is saved, and Talk Mode doesn't open the microphone again in between.
+    func testARunStuckInAToolCallIsEndedAndTheNewQuestionGoesNext() {
+        let m = model()
+        startAnswering(m)
+        m.heard("Tell me about the playhead session instead.")
+        m.spokenPart("The trim fix merged this morning.")
+        m.answerCompleted(interrupted(), spoken: true)
+        XCTAssertEqual(events, [
+            "listen", "watch", "ask What needs me?", "say The version bump session needs your token.",
+            "unwatch", "stop speaking", "listen", "end \(TalkLoop.interruptedReason)",
+            "watch", "ask Tell me about the playhead session instead.",
+        ])
+        XCTAssertTrue(m.talkMode)
+        XCTAssertEqual(m.chat.last?.text, TalkLoop.interruptedReason)
+        m.answerCompleted(TurnOutcome(reply: "The playhead fix is in review.", failed: false, cost: nil, meter: nil,
+                                      spokenSentences: 0), spoken: true)
+        XCTAssertEqual(Array(events.suffix(3)), ["say The playhead fix is in review.", "unwatch", "listen"])
+        XCTAssertTrue(m.talkMode)
+    }
+
+    /// The ended run comes back first: nothing more happens until the question is heard, and then it's asked at once.
+    func testTheEndedRunComesBackFirstAndTheQuestionIsAskedWhenHeard() {
+        let m = model()
+        startAnswering(m)
+        m.answerCompleted(interrupted(), spoken: true)
+        XCTAssertEqual(events.last, "end \(TalkLoop.interruptedReason)")
+        XCTAssertTrue(m.talkMode)
+        m.heard("Tell me about the playhead session instead.")
+        XCTAssertEqual(Array(events.suffix(2)), ["watch", "ask Tell me about the playhead session instead."])
+        XCTAssertTrue(m.talkMode)
+    }
+
+    /// Stop records "Stopped."; talking over the answer records why the run ended.
+    func testStopAndBargeInRecordTheirReasons() {
+        let m = model()
+        m.stopAsking()
+        waitFor("end \(ChildProcesses.stoppedReason)")
+        XCTAssertTrue(events.contains("end \(ChildProcesses.stoppedReason)"))
+    }
+}
+
 @MainActor
 final class TalkModeFlowTests: XCTestCase {
     var events: [String] = []

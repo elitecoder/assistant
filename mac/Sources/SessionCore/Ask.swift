@@ -120,15 +120,19 @@ public struct ClaudeInvocation: Equatable {
 
 public struct ClaudeRun: Equatable {
     public var output: Data
-    /// The run was terminated (Stop or Quit) before it finished.
+    /// The run was terminated (Stop, Quit, or talking over the answer) before it finished.
     public var stopped: Bool
+    /// Why it was terminated, for the stored reply: "Stopped." or "Interrupted by voice."
+    public var stopReason: String?
     public var launchError: String?
     /// `claude` died of this signal without being stopped: a crash, not a Stop.
     public var crashSignal: Int32?
 
-    public init(output: Data, stopped: Bool = false, launchError: String? = nil, crashSignal: Int32? = nil) {
+    public init(output: Data, stopped: Bool = false, stopReason: String? = nil, launchError: String? = nil,
+                crashSignal: Int32? = nil) {
         self.output = output
         self.stopped = stopped
+        self.stopReason = stopReason
         self.launchError = launchError
         self.crashSignal = crashSignal
     }
@@ -267,8 +271,9 @@ public enum Asker {
             }
         }
         p.waitUntilExit()
-        let stopped = children.remove(p)
+        let reason = children.remove(p)
         let signaled = p.terminationReason == .uncaughtSignal
-        return ClaudeRun(output: all, stopped: signaled && stopped, crashSignal: signaled && !stopped ? p.terminationStatus : nil)
+        return ClaudeRun(output: all, stopped: signaled && reason != nil, stopReason: signaled ? reason : nil,
+                         crashSignal: signaled && reason == nil ? p.terminationStatus : nil)
     }
 }

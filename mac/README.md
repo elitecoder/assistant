@@ -89,9 +89,9 @@ To talk back and forth without pressing anything, select the waveform button
 next to the microphone, or hold Control-Option-V for about half a second.
 Assistant listens, answers, speaks, and then listens for your next question.
 To interrupt an answer, start talking: about half a second of your voice stops
-it, and the rest of that answer isn't read. Your new question is asked next,
-as soon as Claude has finished writing the answer you interrupted, which stays
-in the chat. Coughs and short sounds like "mm-hmm" don't interrupt.
+it, and the rest of that answer isn't read. Assistant also ends Claude's run,
+as **Stop** does, and saves what it wrote so far with "Interrupted by voice.",
+so your new question is asked as soon as you finish it. Coughs and short sounds like "mm-hmm" don't interrupt.
 **Stop speaking**, **Stop**, and Esc also drop the rest of an answer that's
 still being written.
 Select **Stop**, or press Esc, to end Talk Mode; a question you're in the middle

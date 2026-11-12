@@ -137,7 +137,7 @@ final class StopOffMainTests: XCTestCase {
         defer { unsetenv("ASSISTANT_DB") }
         let model = Model()
         let ended = expectation(description: "ended")
-        model.endChildren = {
+        model.endChildren = { _ in
             Thread.sleep(forTimeInterval: 0.5)
             ended.fulfill()
         }

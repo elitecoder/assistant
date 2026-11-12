@@ -228,8 +228,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `cmux`, `ps`, `gh`, and `lsof` calls time out instead of hanging a scan.
 - **Stop speaking**, **Stop**, Esc, and talking over an answer now stop a
   streamed answer completely: the sentences Claude hasn't written yet aren't
-  read either. Talking over an answer asks your new question first, as soon as
-  the interrupted answer is saved; the whole answer stays in the chat.
+  read either. Talking over an answer also ends Claude's run and everything it
+  started, as **Stop** does, even mid-command, and saves what it wrote with
+  "Interrupted by voice.", so your new question is asked as soon as you finish
+  it. Talk Mode no longer listens again before asking that question.
 - Talk Mode listens for interruptions only while Assistant's voice is playing,
   and starts over for each sentence, so talking while Claude is still writing
   no longer uses up the interruption. Stopping Talk Mode mid-question drops
