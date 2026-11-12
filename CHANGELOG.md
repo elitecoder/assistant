@@ -193,6 +193,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- A Stop or interruption that lands just after an answer ends can't cancel
+  your next question: each ask has its own token, and a cancel reaches only
+  that ask. `--wait` counts the time spent finding the workspace against its
+  100-second limit, as `--send` does, and a newer transcript that names the
+  session but can't be followed gets the "may be old" note.
 - When two running sessions were resumed from one conversation, Assistant no
   longer follows either one's newer transcript; it keeps the transcript the
   process names and says so. A linked transcript is followed only after the

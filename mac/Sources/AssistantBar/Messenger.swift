@@ -173,11 +173,14 @@ enum Messenger {
         return wait(target, sent: message, since: since, timeout: left())
     }
 
-    static func wait(_ workspace: String, timeout: TimeInterval) -> String {
-        guard let target = target(workspace) else { return "No Claude session found in \(workspace)." }
+    /// `--wait`: the whole call, finding the workspace included, fits in `timeout`, as `--send` does. `lookup` finds
+    /// the workspace's session; tests stand in a slow one.
+    static func wait(_ workspace: String, timeout: TimeInterval, lookup: (String) -> Target? = target) -> String {
+        let started = Date()
+        guard let target = lookup(workspace) else { return "No Claude session found in \(workspace)." }
         let data = (try? Data(contentsOf: target.transcript)) ?? Data()
         let last = Transcript.summarize(data).lastAsk ?? ""
-        return wait(target, sent: last, since: .distantPast, timeout: timeout)
+        return wait(target, sent: last, since: .distantPast, timeout: max(0, timeout - Date().timeIntervalSince(started)))
     }
 
     static func wait(_ target: Target, sent: String, since: Date, timeout: TimeInterval) -> String {

@@ -41,8 +41,10 @@ public final class ChatEngine {
     private var pendingID: String?
     private var anchor: UsageAnchor?
     private let cancelLock = NSLock()
-    /// Why the ask in progress was ended before its `claude` started (Stop, or interrupting a spoken answer).
-    private var cancelled: String?
+    /// The ask in progress, and a cancel aimed at one ask (Stop, or interrupting a spoken answer): it applies only
+    /// while that ask is the one running, so a late cancel can't end the next question.
+    private var running: UUID?
+    private var cancelled: (ask: UUID, reason: String)?
 
     /// How long automatic compression pauses after a compaction couldn't be saved.
     static let saveFailurePause: TimeInterval = 300
@@ -135,8 +137,9 @@ public final class ChatEngine {
     /// `speak` gets the reply's sentences as Claude writes them, then whatever is left when it's done; the stored rows
     /// and the reply are the same either way.
     public func ask(_ question: String, fleet: ScanResult, focus: (title: String, exchange: String)? = nil, spoken: Bool = false,
-                    speak: ((String) -> Void)? = nil, step: @escaping (ChatStep) -> Void) -> TurnOutcome {
-        defer { cancelLock.withLock { cancelled = nil } }
+                    speak: ((String) -> Void)? = nil, token: UUID = UUID(), step: @escaping (ChatStep) -> Void) -> TurnOutcome {
+        cancelLock.withLock { running = token }
+        defer { cancelLock.withLock { running = nil } }
         do {
             let sid = try ensureSession(question)
             let active = try store.resumeMessages(sessionID: sid)
@@ -166,9 +169,10 @@ public final class ChatEngine {
         }
     }
 
-    /// Ends the ask in progress before its `claude` starts, if it hasn't yet (it may still be compacting the chat):
-    /// the turn is stored as ended for `reason` and no run starts. Safe from any thread.
-    public func cancelPending(_ reason: String) { cancelLock.withLock { cancelled = reason } }
+    /// Ends the ask with `token` before its `claude` starts, if it hasn't yet (it may still be compacting the chat):
+    /// the turn is stored as ended for `reason` and no run starts. A cancel for an ask that has ended does nothing to
+    /// the next one. Safe from any thread.
+    public func cancelPending(_ reason: String, ask token: UUID) { cancelLock.withLock { cancelled = (token, reason) } }
 
     /// This turn's rows to store before the run: the context row when there is any, then the question. `marks` is
     /// the fleet the context row shows, when it shows one.
@@ -185,7 +189,7 @@ public final class ChatEngine {
     /// compaction and runs once more, as Hermes does.
     private func runTurn(_ sid: String, spoken: Bool, speak: ((String) -> Void)?, step: @escaping (ChatStep) -> Void,
                          retried: Bool) throws -> TurnOutcome {
-        if let reason = cancelLock.withLock({ cancelled }) {
+        if let reason = cancelLock.withLock({ cancelled.flatMap { $0.ask == running ? $0.reason : nil } }) {
             try store.append(sessionID: sid, [TurnRecord.noReplyNote(reason, timestamp: now())])
             return TurnOutcome(reply: reason, failed: true, cost: nil, meter: meter)
         }

@@ -143,8 +143,9 @@ public enum AppCommand: Equatable {
     case app
     case print
     case sessions
-    case send(ref: String, message: String, timeout: TimeInterval?)
-    case wait(ref: String, timeout: TimeInterval?)
+    /// `timeout` is how long the whole call may take: `Messaging.callLimit` unless the operator passes `--timeout`.
+    case send(ref: String, message: String, timeout: TimeInterval)
+    case wait(ref: String, timeout: TimeInterval)
     case search(String)
     case transcript(String)
     case find(String)
@@ -191,10 +192,10 @@ public enum AppCommand: Equatable {
             return .transcribe(file: file, legacy: options.keys.contains("--legacy"))
         case "--send":
             guard tail.count >= 2, let timeout = timeout(Array(tail.dropFirst(2))) else { return nil }
-            return .send(ref: tail[0], message: tail[1], timeout: timeout.value)
+            return .send(ref: tail[0], message: tail[1], timeout: timeout.value ?? Messaging.callLimit)
         case "--wait":
             guard tail.count >= 1, let timeout = timeout(Array(tail.dropFirst())) else { return nil }
-            return .wait(ref: tail[0], timeout: timeout.value)
+            return .wait(ref: tail[0], timeout: timeout.value ?? Messaging.callLimit)
         case "--ask":
             guard let question = tail.first,
                   let options = options(Array(tail.dropFirst()), values: ["--session", "--say-to"], flags: ["--spoken"]) else {

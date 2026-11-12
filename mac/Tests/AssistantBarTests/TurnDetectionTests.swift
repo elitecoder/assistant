@@ -317,6 +317,20 @@ final class CallLimitTests: XCTestCase {
         XCTAssertTrue(Untrusted.unwrap(Messaging.replyBody(reply)).contains("All green."), reply)
     }
 
+    /// A slow workspace lookup (cmux stalling) counts against --wait's limit, as it does for --send.
+    func testWaitCountsTheLookupAgainstItsLimit() throws {
+        let file = folder.appendingPathComponent("s.jsonl")
+        try session(file, message: "run the tests", showAfter: 0, replyAfter: 150 * Self.scale)
+        Thread.sleep(forTimeInterval: 0.05)
+        let started = Date()
+        let result = Messenger.wait("workspace:3", timeout: Messaging.callLimit * Self.scale) { _ in
+            Thread.sleep(forTimeInterval: 60 * Self.scale)
+            return self.target(file)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), Self.bashTimeout * Self.scale, "the lookup's time wasn't counted")
+        XCTAssertTrue(result.hasPrefix("STILL WORKING"), result)
+    }
+
     /// Not seen in the transcript within the limit: NOT CONFIRMED, never STILL WORKING.
     func testAnUnconfirmedSendSaysSoInsteadOfStillWorking() throws {
         let file = folder.appendingPathComponent("s.jsonl")

@@ -24,8 +24,8 @@ enum Main {
         case .app: break
         case .print: return printScan()
         case .sessions: return print(Messenger.list())
-        case let .send(ref, message, timeout): return print(Messenger.send(ref, message, timeout: timeout ?? Messaging.callLimit))
-        case let .wait(ref, timeout): return print(Messenger.wait(ref, timeout: timeout ?? Messaging.callLimit))
+        case let .send(ref, message, timeout): return print(Messenger.send(ref, message, timeout: timeout))
+        case let .wait(ref, timeout): return print(Messenger.wait(ref, timeout: timeout))
         case let .render(text, file): exit(render(text, to: URL(fileURLWithPath: file)) ? 0 : 1)
         case let .transcribe(file, legacy): exit(transcribe(URL(fileURLWithPath: file), legacy: legacy) ? 0 : 1)
         case let .turnEval(files): exit(turnEval(files.map { URL(fileURLWithPath: $0) }) ? 0 : 1)
@@ -465,6 +465,8 @@ final class Model: NSObject, ObservableObject {
         }
         asking = true
         answeringSpoken = spoken
+        let token = UUID()
+        askToken = token
         if spoken { turns.newReply() }
         let speak: ((String) -> Void)? = spoken ? { [weak self] sentence in
             DispatchQueue.main.async { self?.spokenPart(sentence) }
@@ -477,7 +479,7 @@ final class Model: NSObject, ObservableObject {
                 FileManager.default.contents(atPath: item.transcript)
                     .map { (title: item.workspace.title, exchange: Digest.exchange($0)) }
             }
-            let outcome = engine.ask(q, fleet: fleet, focus: focus, spoken: spoken, speak: speak) { step in
+            let outcome = engine.ask(q, fleet: fleet, focus: focus, spoken: spoken, speak: speak, token: token) { step in
                 DispatchQueue.main.async { self.chat.append(ChatTurn(role: .step, text: step.text)) }
             }
             let history = engine.sessions()
@@ -528,7 +530,12 @@ final class Model: NSObject, ObservableObject {
     }
 
     /// Keeps an ask that hasn't started its `claude` yet (compacting, or about to launch) from starting it.
-    lazy var cancelPending: (String) -> Void = { [weak self] in self?.engine?.cancelPending($0) }
+    lazy var cancelPending: (String) -> Void = { [weak self] reason in
+        guard let self, let token = self.askToken else { return }
+        self.engine?.cancelPending(reason, ask: token)
+    }
+    /// The ask running now, so a cancel reaches only it.
+    private var askToken: UUID?
 
     /// Ends the processes the app started, recording why; tests replace it.
     lazy var endChildren: (String, Set<ChildProcesses.Kind>) -> Void = { ChildProcesses.shared.endAll(reason: $0, kinds: $1) }

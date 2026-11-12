@@ -218,7 +218,9 @@ public enum Messaging {
                 seen.insert(next.url)
                 continue
             }
-            let unsure = pool.contains { $0.startsWithClear && $0.linkedSessions.isEmpty && $0.created >= stopped.addingTimeInterval(-2) }
+            // A linked file that began while the current one still grew can't be this session's clear, but names it.
+            let unsure = !linked.isEmpty
+                || pool.contains { $0.startsWithClear && $0.linkedSessions.isEmpty && $0.created >= stopped.addingTimeInterval(-2) }
             return LiveTranscript(url: current, note: unsure ? ambiguousTranscriptNote : nil)
         }
     }

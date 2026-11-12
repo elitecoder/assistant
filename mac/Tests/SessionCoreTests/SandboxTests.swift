@@ -93,9 +93,10 @@ final class AppCommandTests: XCTestCase {
         XCTAssertNil(AppCommand.parse([a, "--turn-eval"]))
         XCTAssertNil(AppCommand.parse([a, "--turn-eval", "a.wav", "--render", "x", "y"]))
         XCTAssertEqual(AppCommand.parse([a, "--sessions"]), .sessions)
-        XCTAssertEqual(AppCommand.parse([a, "--send", "workspace:1", "go"]), .send(ref: "workspace:1", message: "go", timeout: nil))
+        XCTAssertEqual(AppCommand.parse([a, "--send", "workspace:1", "go"]), .send(ref: "workspace:1", message: "go", timeout: 100),
+                       "the chat's calls wait 100 s at most, under Claude Code's 120-second Bash timeout")
         XCTAssertEqual(AppCommand.parse([a, "--send", "workspace:1", "go", "--timeout", "60"]), .send(ref: "workspace:1", message: "go", timeout: 60))
-        XCTAssertEqual(AppCommand.parse([a, "--wait", "workspace:1"]), .wait(ref: "workspace:1", timeout: nil))
+        XCTAssertEqual(AppCommand.parse([a, "--wait", "workspace:1"]), .wait(ref: "workspace:1", timeout: 100))
         XCTAssertEqual(AppCommand.parse([a, "--search", "{}"]), .search("{}"))
         XCTAssertEqual(AppCommand.parse([a, "--memory", "{}"]), .memory("{}"))
         XCTAssertEqual(AppCommand.parse([a, "--render", "hi", "/tmp/a.wav"]), .render(text: "hi", file: "/tmp/a.wav"))

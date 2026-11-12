@@ -179,7 +179,9 @@ final class DeliveryTests: XCTestCase {
     /// A linked file that began while the current one was still being written (a fork, say) isn't a /clear of it.
     func testALinkedFileFromWhileTheNamedOneGrewIsNotFollowed() {
         let fork = candidate("ffff", created: 50, modified: 300)
-        XCTAssertEqual(live([fork], namedModified: 100).url.lastPathComponent, "aaaa.jsonl")
+        XCTAssertEqual(live([fork], namedModified: 100), Messaging.LiveTranscript(url: folder.appendingPathComponent("aaaa.jsonl"),
+                                                                                note: Messaging.ambiguousTranscriptNote),
+                       "it names this session but isn't followed, so the reply may be old")
     }
 
     /// After /clear the session writes a new transcript whose entries still carry the process's session ID.
