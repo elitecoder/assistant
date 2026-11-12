@@ -46,6 +46,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   context used, not when its log reaches 2 MB.
 - A Claude pane that shows Copilot's banner or status bar in its output is
   no longer taken for a Copilot pane, and a busy Copilot pane is recognized.
+- FFP to-dos still go to Claude when you pick another agent, because they run
+  the `/architect-ffp:archffp` Claude Code plugin. Other agents are told to
+  stop and say so if a to-do turns out to be FFP work.
+- The dashboard's latest-reply text and the merge flow's send check read
+  Copilot conversations.
+- Background Copilot jobs run at the configured thinking effort instead of
+  Copilot's saved default.
+- `assistant-llm.py set <agent>` names any job still pinned to another
+  provider, and `--feature comms` picks the agent for the Slack session alone.
 - Task sessions now answer the first-launch folder-trust question whenever it
   appears during boot, not only in one check 2 seconds after launch. Copilot
   shows it about 4 seconds in, so the old check missed it and the session sat

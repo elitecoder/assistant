@@ -220,6 +220,18 @@ def record_content(obj: object):
     return m.get("content") if isinstance(m, dict) else None
 
 
+def record_text(obj: object) -> str:
+    """The text of a transcript turn of any agent's schema: a string content
+    as is, or its text blocks joined by newlines ('' for none)."""
+    content = record_content(obj)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
 # ── binaries ──────────────────────────────────────────────────────────────────
 
 _BIN_ENV = {CLAUDE: "CLAUDE_BIN", COPILOT: "COPILOT_BIN", DROID: "DROID_BIN"}
@@ -737,6 +749,8 @@ def headless_argv(provider: str, *, binary_path: str, model: str,
                "--no-auto-update", "--no-color", "-C", str(run_dir)]
         if model:
             cmd += ["--model", model]
+        if reasoning_effort:
+            cmd += ["--reasoning-effort", {"off": "none"}.get(reasoning_effort, reasoning_effort)]
         if disable_tools:
             cmd += [f"--available-tools={COPILOT_NO_TOOLS}",
                     "--disable-builtin-mcps", "--no-custom-instructions"]

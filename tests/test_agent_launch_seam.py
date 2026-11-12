@@ -134,6 +134,13 @@ CAUGHT = {
         'cmd = ["copilot"]\ncmd.extend(["--model", m])',
         'root = Path.home().joinpath(".factory", "sessions")',
         'root = os.path.join(HOME, ".copilot", "session-state")',
+        'launch = "claude"\nrun([CMUX, "new-workspace", "--command", launch])',
+        'run(["env", "CLAUDE_CODE_USE_BEDROCK=1", "claude", "-p", "hi"])',
+        'AGENT = "claude"\nrun([AGENT] + ["-p", p])',
+        'run(["npx", "@anthropic-ai/claude-code", "-p", p])',
+        'root = Path(HOME, ".copilot", "session-state")',
+        'if rec.get("type") == "assistant":\n    pass',
+        'if d["type"] in ("user", "assistant"):\n    pass',
     ],
     "sh": [
         'claude -p "hi"',
@@ -152,6 +159,9 @@ CAUGHT = {
         'xargs claude -p',
         'cmux new-workspace --command claude',
         'zsh -lic claude',
+        'echo hi | xargs -I{} claude -p {}',
+        'A=claude\neval "$A -p hi"',
+        'printf "claude -p hi" | sh',
     ],
     "js": [
         "spawn('claude', ['-p', prompt])",
@@ -184,6 +194,11 @@ PASSED = {
         'msg = "{} finished".format("claude")',
         'path = os.path.join(HOME, ".claude", "CLAUDE.md")',
         'print("run " + "claude --resume " + sid)',
+        'lines.append("- `claude --resume <id>` resumes")',
+        'reply("droid exec --help is the docs")',
+        'PAT = re.compile(r"--allow-all")',
+        'NAMES = ("claude", "-", "copilot")',
+        'if rec.get("type") == "result":\n    pass',
     ],
     "sh": [
         'command -v copilot >/dev/null',
@@ -425,14 +440,29 @@ def test_pulse_dispatch_spawns_copilot_and_confirms_from_its_transcript(home, co
     monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: {"id": tid, "title": "x"})
     monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: True)
     monkeypatch.setattr(pulse.time, "sleep", lambda s: None)
+    logged = _record_log(pulse, monkeypatch)
     assert pulse.dispatch_todo("td-1") is True
+    assert any(m.startswith("dispatch td-1 → workspace:9") for m in logged["info"])
+    assert not any("unconfirmed" in m for m in logged["warning"])
     spawn = next(c for c in commands if "new-workspace" in c)
     launch = spawn[spawn.index("--command") + 1]
     assert launch.startswith(f"{copilot_bin} --allow-all --model gpt-test")
     assert ("surface.send_text", "2") in keys, "copilot trust prompt answered, remembered"
 
 
-def _dispatch(home, monkeypatch, name, screens, transcript):
+def _record_log(module, monkeypatch) -> dict:
+    """Replace `module.log` with one that keeps each formatted message."""
+    logged = {"info": [], "warning": [], "error": []}
+
+    class Log:
+        def __getattr__(self, level):
+            return lambda msg, *a, **k: logged.setdefault(level, []).append(msg % a if a else msg)
+
+    monkeypatch.setattr(module, "log", Log())
+    return logged
+
+
+def _dispatch(home, monkeypatch, name, screens, transcript, item=None):
     cwd = home / "dev"
     cwd.mkdir(exist_ok=True)
     monkeypatch.setenv("DISPATCH_CWD", str(cwd))
@@ -456,11 +486,13 @@ def _dispatch(home, monkeypatch, name, screens, transcript):
     monkeypatch.setattr(pulse, "run", run)
     monkeypatch.setattr(pulse, "_cmux_rpc", rpc)
     monkeypatch.setattr(pulse, "_surface_read_text", lambda ref, lines=200: screens)
-    monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: {"id": tid, "title": "x"})
+    monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: item or {"id": tid, "title": "x"})
     monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: True)
     monkeypatch.setattr(pulse.time, "sleep", lambda s: None)
+    logged = _record_log(pulse, monkeypatch)
     ok = pulse.dispatch_todo("td-3")
     spawn = next(c for c in commands if "new-workspace" in c)
+    assert not any("unconfirmed" in m for m in logged["warning"]), logged["warning"]
     return ok, spawn[spawn.index("--command") + 1]
 
 
@@ -1259,3 +1291,81 @@ def test_pulse_answers_trust_before_trusting_a_ready_marker_on_the_same_screen(h
     assert pulse.dispatch_todo("td-4") is True
     texts = [t for m, t in sent if m == "surface.send_text"]
     assert texts[0] == "2" and texts[1].startswith("Read ")
+
+
+def test_pulse_sends_ffp_work_to_claude_even_when_copilot_is_picked(home, copilot_bin, monkeypatch):
+    _pick(home, "copilot")
+    item = {"id": "td-5", "title": "Fix trim snapping in Squirrel",
+            "url": "https://git.corp.adobe.com/Adobe-Firefly/firefly-platform/issues/1"}
+    ok, launch = _dispatch(home, monkeypatch, "seam_pulse_ffp", "Claude Code v9",
+                           _claude_transcript(home), item=item)
+    assert (ok, launch) == (True, "claude")
+
+
+def test_dispatch_prompt_warns_a_non_claude_agent_off_claude_plugins():
+    pulse = _load(BIN / "pulse.py", "seam_pulse_prompt")
+    item = {"id": "td-6", "title": "Tidy the README"}
+    assert not pulse._needs_claude(item)
+    assert "NEEDS CLAUDE" in pulse._build_dispatch_prompt(item, ag.COPILOT)
+    assert "NEEDS CLAUDE" not in pulse._build_dispatch_prompt(item, ag.CLAUDE)
+    assert pulse._needs_claude({"title": "x", "tags": ["FFP"]})
+
+
+def _copilot_reply_log(tmp_path, padding_bytes=0):
+    events = [
+        {"type": "user.message", "timestamp": "t1", "data": {"content": "/merge-when-ready 12"}},
+        {"type": "assistant.message", "timestamp": "t2", "data": {"content": "Queued PR 12."}},
+        {"type": "model.messages_snapshot", "data": {"blob": "x" * padding_bytes}},
+    ]
+    path = tmp_path / "events.jsonl"
+    path.write_text("".join(json.dumps(e) + "\n" for e in events))
+    return path
+
+
+def test_transcript_tail_reads_copilots_last_turns(tmp_path):
+    tail = _load(BIN / "transcript-tail.py", "seam_transcript_tail")
+    user, reply = tail.read_tail(_copilot_reply_log(tmp_path), 200_000)
+    assert (user["text"], user["ts"]) == ("/merge-when-ready 12", "t1")
+    assert reply["text"] == "Queued PR 12."
+
+
+def test_dashboard_shows_copilots_latest_reply_past_its_model_log(tmp_path):
+    page = _load(BIN / "render-assistant-page.py", "seam_render_page")
+    assert page.last_activity(str(_copilot_reply_log(tmp_path, padding_bytes=40_000))) == "Queued PR 12."
+
+
+@pytest.mark.parametrize("effort,flag", [("high", "high"), ("max", "max"), ("off", "none")])
+def test_headless_copilot_runs_at_the_configured_thinking_effort(home, copilot_bin, tmp_path, effort, flag):
+    seen = {}
+    llm_runner.invoke(provider="copilot", prompt="p", model="", run_dir=tmp_path, timeout=30,
+                      run=lambda cmd, **k: seen.update(cmd=cmd) or (0, copilot_stdout("x"), ""),
+                      disable_tools=True, reasoning_effort=effort)
+    assert seen["cmd"][seen["cmd"].index("--reasoning-effort") + 1] == flag
+
+
+def test_a_running_copilot_counts_as_an_agent_process(monkeypatch):
+    import cmux_sessions
+    comm = "/x/@github/copilot-darwin-arm64/copilot\n"
+    monkeypatch.setattr(cmux_sessions.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, comm, ""))
+    assert cmux_sessions.agent_process(41)
+    comm = "/usr/bin/node\n"
+    assert not cmux_sessions.agent_process(41)
+
+
+def test_set_copilot_names_the_jobs_still_pinned_elsewhere(home, capsys, monkeypatch):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_pins")
+    monkeypatch.setattr(ag.subprocess, "run", _fake_cmux_install([]))
+    config = home / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"llm": {"features": {"slack_judge": {"provider": "claude"}}}}))
+    assert cli.main(["set", "copilot"]) == 0
+    assert "slack_judge stays on claude" in capsys.readouterr().err
+
+
+def test_the_slack_session_alone_can_run_copilot(home, monkeypatch):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_comms")
+    monkeypatch.setattr(ag.subprocess, "run", _fake_cmux_install([]))
+    assert cli.main(["set", "copilot", "--feature", "comms"]) == 0
+    assert (ag.warm_agent(), ag.dispatch_agent()) == (ag.COPILOT, ag.CLAUDE)
+    assert cli.main(["set", "local", "--feature", "comms"]) == 2

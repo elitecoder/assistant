@@ -2001,7 +2001,26 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
     return True
 
 
-def _build_dispatch_prompt(item: dict) -> str:
+_FFP_RE = re.compile(r"firefly-platform|architect-ffp|archffp|\bffp\b|\bsquirrel\b", re.I)
+
+
+def _needs_claude(item: dict) -> bool:
+    """True when a TODO looks like FFP Squirrel work, which the dispatch rules
+    route through /architect-ffp:archffp — a Claude Code plugin."""
+    text = " ".join(str(item.get(k) or "") for k in ("title", "detail", "url"))
+    text += " " + " ".join(str(t) for t in item.get("tags") or [])
+    return bool(_FFP_RE.search(text))
+
+
+_NOT_CLAUDE_NOTE = (
+    "# Your agent\n"
+    "You are running in {agent}, not Claude Code, so Claude Code plugin skills "
+    "such as `/architect-ffp:archffp` aren't available. If this turns out to be "
+    "FFP Squirrel work, don't do it yourself: stop and reply "
+    "`NEEDS CLAUDE: FFP work` so Mukul can re-dispatch it to Claude.\n")
+
+
+def _build_dispatch_prompt(item: dict, agent: str = "claude") -> str:
     """Self-contained prompt for a dispatched TODO.
 
     Two halves: the work description (this TODO's fields) followed by the
@@ -2069,7 +2088,8 @@ def _build_dispatch_prompt(item: dict) -> str:
             "Otherwise implement directly, validate end-to-end, open a PR. "
             f"Reference {tid} in your branch / PR."
         )
-    return f"{work}\n{rules}\n"
+    note = "" if agent == "claude" else "\n" + _NOT_CLAUDE_NOTE.format(agent=agent)
+    return f"{work}\n{rules}\n{note}"
 
 
 def _cmux_rpc(method: str, params: dict, timeout: int = 15) -> dict | None:
@@ -2137,16 +2157,14 @@ def dispatch_todo(todo_id: str) -> bool:
                 p.unlink()
     except Exception:
         pass
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    prompt_file = SPAWN_PROMPT_DIR / f"prompt-dispatch-{todo_id}-{stamp}.md"
-    prompt_file.write_text(_build_dispatch_prompt(item))
-
-    # 2. Create the workspace with the configured coding agent baked into
-    #    --command. The agent_session seam owns model and permission parity.
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
     import agent_session  # noqa: PLC0415
     agent = agent_session.dispatch_agent()
+    if agent != agent_session.CLAUDE and _needs_claude(item):
+        log.info("dispatch %s: FFP work runs /architect-ffp:archffp, a Claude "
+                 "Code plugin — dispatching to claude instead of %s", todo_id, agent)
+        agent = agent_session.CLAUDE
     # Pre-flight the opt-in droid binary: if droid is selected but not installed
     # here, degrade to claude rather than spawn a workspace that can never reach
     # readiness (the never-ready return precedes the idempotency stamp, so it
@@ -2158,6 +2176,12 @@ def dispatch_todo(todo_id: str) -> bool:
                     "droid-glm-settings.json) — falling back to claude",
                     todo_id, agent)
         agent = agent_session.CLAUDE
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    prompt_file = SPAWN_PROMPT_DIR / f"prompt-dispatch-{todo_id}-{stamp}.md"
+    prompt_file.write_text(_build_dispatch_prompt(item, agent))
+
+    # 2. Create the workspace with the configured coding agent baked into
+    #    --command. The agent_session seam owns model and permission parity.
     launch_cmd = agent_session.launch_command(agent, home=HOME)
     cwd = str(DISPATCH_CWD)
     title = f"{todo_id}: {item.get('title','')}"[:40]

@@ -356,7 +356,8 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
         cmd = agent_session.headless_argv(
             provider, binary_path=exe, model=model, run_dir=run_dir,
             disable_tools=disable_tools, json_schema=json_schema,
-            extra_dirs=extra_dirs, tag=tag)
+            extra_dirs=extra_dirs, tag=tag,
+            reasoning_effort=_reasoning_effort(reasoning_effort))
 
     rc, stdout, stderr = run(
         cmd,

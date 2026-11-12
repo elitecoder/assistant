@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import cmux_sessions  # noqa: E402
 
 WORLD = os.path.expanduser("~/.claude/cache/world.json")
@@ -67,18 +68,9 @@ def read_tail(path, n_bytes):
             d = json.loads(line)
         except Exception:
             continue
-        msg = d.get("message")
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        content = msg.get("content")
-        if isinstance(content, list):
-            text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-            text = "\n".join(text_parts)
-        elif isinstance(content, str):
-            text = content
-        else:
-            text = ""
+        role = agent_session.record_role(d) or (
+            d.get("message", {}).get("role") if isinstance(d.get("message"), dict) else None)
+        text = agent_session.record_text(d)
         if role == "user":
             # Only count user messages that have actual TEXT content. Tool
             # results land as user messages with type=tool_result and no

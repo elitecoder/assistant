@@ -24,6 +24,7 @@ FEATURES = (
     "narrator",
     "lessons",
     "slack_judge",
+    "comms",
 )
 
 
@@ -63,7 +64,19 @@ def write_document(path: Path, update) -> dict:
         return document
 
 
+def feature_pins(path: Path, provider: str) -> list[tuple[str, str]]:
+    """(feature, provider) for each feature pinned to a provider other than
+    `provider` in the config."""
+    features = (load_document(path).get("llm") or {}).get("features") or {}
+    return [(name, str(cfg.get("provider"))) for name, cfg in features.items()
+            if isinstance(cfg, dict) and cfg.get("provider")
+            and cfg.get("provider") != provider]
+
+
 def set_provider(path: Path, provider: str, feature: str | None) -> None:
+    if feature == "comms" and provider not in llm_runner.agent_session.AGENTS:
+        raise ValueError("the comms session runs an agent: claude, copilot, or droid")
+
     def update(document: dict) -> None:
         llm = document.setdefault("llm", {})
         if not isinstance(llm, dict):
@@ -213,6 +226,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "set":
             set_provider(
                 path, args.provider, args.feature)
+            if not args.feature:
+                for name, pinned in feature_pins(path, args.provider):
+                    print(f"note: {name} stays on {pinned} (llm.features.{name}); "
+                          f"run `assistant-llm.py inherit --feature {name}` to follow "
+                          f"{args.provider}", file=sys.stderr)
             if args.provider == llm_runner.agent_session.COPILOT:
                 failed = llm_runner.agent_session.install_copilot_hooks()
                 if failed:

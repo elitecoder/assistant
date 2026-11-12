@@ -138,7 +138,8 @@ def registry_fallback(path: Path, records) -> list[Session]:
 
 
 def agent_process(pid) -> bool:
-    """True when `pid` is a running claude or droid process, not a reused pid."""
+    """True when `pid` is a running claude, copilot, or droid process, not a
+    reused pid."""
     if not pid:
         return False
     try:

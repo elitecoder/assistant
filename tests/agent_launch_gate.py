@@ -31,7 +31,9 @@ _ROOT_PARTS = {(".claude", "projects"), (".factory", "sessions"), (".copilot", "
 # Calls whose string arguments are messages or option names, not commands.
 _PROSE_CALLS = {"print", "debug", "info", "warning", "warn", "error", "exception",
                 "critical", "log", "add_argument", "add_parser", "write", "echo",
-                "fail", "skip", "notify"}
+                "fail", "skip", "notify", "compile", "search", "match", "fullmatch",
+                "findall", "finditer", "sub", "split"}
+_TYPE_FIELD_ROLES = {"assistant", "user"}
 # Flags other tools share; they count only right after an agent name.
 SHARED_FLAGS = {"-p", "--print", "--resume", "-r", "--model", "--continue",
                 "-c", "--output-format", "--settings", "--auto", "exec",
@@ -52,6 +54,10 @@ _EXEC_FUNCS = {"run", "Popen", "call", "check_call", "check_output", "spawn",
 
 def _agent_word(word: str) -> str | None:
     """The agent a shell word or path names (`$CLAUDE_BIN`, `~/x/copilot`)."""
+    if re.search(r"@anthropic-ai/claude-code\b", word):
+        return "claude"
+    if re.search(r"@github/copilot\b", word):
+        return "copilot"
     base = os.path.basename(word.strip("'\"{}$()").rstrip("}"))
     low = base.lower()
     if low in AGENTS:
@@ -69,7 +75,10 @@ def _string_problems(text: str) -> list[str]:
     if _flags_in(text):
         out.append(f"agent flag {sorted(_flags_in(text))[0]}")
     m = _AGENT_THEN_FLAG_RE.search(text)
-    if m and m.group(2) not in HARMLESS:
+    following = text[m.end():].split()[:1] if m else []
+    quoted = m and text[:m.start()].count("`") % 2 == 1
+    if m and m.group(2) not in HARMLESS and not (following and following[0] in HARMLESS) \
+            and not quoted:
         out.append(f"agent command '{m.group(0)}'")
     if _PINNED_RE.search(text):
         out.append("pinned agent binary path")
@@ -126,9 +135,11 @@ def _elt_word(node: ast.AST) -> str:
 
 
 def _argv_problem(elts: list[ast.AST], aliases: dict[str, str]) -> str | None:
-    words = [_elt_word(e) for e in elts]
-    if words and isinstance(elts[0], ast.Name) and elts[0].id in aliases:
-        words[0] = aliases[elts[0].id]
+    words = [aliases.get(e.id, _elt_word(e)) if isinstance(e, ast.Name) else _elt_word(e)
+             for e in elts]
+    while words and (os.path.basename(words[0]) in ("env", "npx", "exec", "command", "nohup")
+                     or re.fullmatch(r"[A-Za-z_]\w*=.*", words[0] or "")):
+        words = words[1:]
     flags = [w for w in words if w in AGENT_FLAGS]
     if flags:
         return f"agent argv with {flags[0]}"
@@ -140,7 +151,7 @@ def _argv_problem(elts: list[ast.AST], aliases: dict[str, str]) -> str | None:
             return "shell runs an agent"
     if words and _agent_word(words[0]) and len(words) > 1:
         rest = [w for w in words[1:] if w]
-        if any(w in SHARED_FLAGS or w.startswith("-") for w in rest) \
+        if any(w in SHARED_FLAGS or (w.startswith("-") and len(w) > 1) for w in rest) \
                 and not set(rest) <= HARMLESS:
             return f"agent argv starting {words[0]!r}"
     return None
@@ -158,6 +169,14 @@ def _joined_text(node: ast.AST) -> str | None:
     if all(t is None for t in texts):
         return None
     return "".join("{}" if t is None else t for t in texts)
+
+
+def _is_type_field(node: ast.AST) -> bool:
+    """`x.get("type")` or `x["type"]`."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+            and node.func.attr == "get" and node.args and _const_str(node.args[0]) == "type":
+        return True
+    return isinstance(node, ast.Subscript) and _const_str(node.slice) == "type"
 
 
 def _path_parts_problem(parts: list[str | None]) -> str | None:
@@ -224,6 +243,19 @@ def python_problems(text: str) -> list[tuple[int, str]]:
             joined = _joined_text(node)
             if joined:
                 found += [(line, f"joined {why}") for why in _string_problems(joined)]
+            if isinstance(node.left, (ast.List, ast.Tuple)) or isinstance(node.right, (ast.List, ast.Tuple)):
+                elts = [*(node.left.elts if isinstance(node.left, (ast.List, ast.Tuple)) else [node.left]),
+                        *(node.right.elts if isinstance(node.right, (ast.List, ast.Tuple)) else [node.right])]
+                why = _argv_problem(elts, aliases)
+                if why:
+                    found.append((line, f"joined {why}"))
+        elif isinstance(node, ast.Compare) and _is_type_field(node.left):
+            values = set()
+            for comp in node.comparators:
+                for c in (comp.elts if isinstance(comp, (ast.Tuple, ast.List, ast.Set)) else [comp]):
+                    values.add(_const_str(c))
+            if values & _TYPE_FIELD_ROLES:
+                found.append((line, "reads a transcript role by agent schema; use agent_session.record_role"))
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
@@ -232,6 +264,10 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                     found.append((line, f"per-file agent binary {name}"))
         elif isinstance(node, ast.Call):
             fname = _elt_word(node.func)
+            if fname in ("Path", "PurePath", "PosixPath"):
+                why = _path_parts_problem([_const_str(a) for a in node.args])
+                if why:
+                    found.append((line, why))
             if isinstance(node.func, ast.Attribute):
                 attr = node.func.attr
                 base = _const_str(node.func.value)
@@ -323,6 +359,21 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
                 i += 1
                 if w == "command" and i < len(words) and words[i] == "-v":
                     at_command = False
+                    continue
+                if w in _PREFIX_WORDS:
+                    while i < len(words) and words[i].startswith("-"):
+                        i += 1
+                continue
+            if at_command and w == "eval":
+                j = i + 1
+                while j < len(words) and words[j] not in _SEPARATORS:
+                    j += 1
+                code = " ".join(words[i + 1:j])
+                for alias, agent in aliases.items():
+                    code = re.sub(r"\$\{?" + alias + r"\b\}?", agent, code)
+                found += [(n, f"eval {why}") for _, why in shell_problems(code)]
+                i = j
+                at_command = False
                 continue
             if at_command:
                 var = re.fullmatch(r"\$\{?([A-Za-z_]\w*)\}?", w)
@@ -339,6 +390,11 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
                 elif agent and _PINNED_RE.search(w):
                     found.append((n, f"pinned agent binary {w}"))
                 if os.path.basename(w) in _PROSE_COMMANDS:
+                    piped_to_shell = (j + 1 < len(words) and words[j] == "|"
+                                      and os.path.basename(words[j + 1]) in SHELLS)
+                    if piped_to_shell:
+                        for r in rest:
+                            found += [(n, f"piped {why}") for _, why in shell_problems(r)]
                     rest = []
                 if os.path.basename(w) in SHELLS and any(
                         _agent_word(_first_word(r)) for r in rest if not r.startswith("-")):

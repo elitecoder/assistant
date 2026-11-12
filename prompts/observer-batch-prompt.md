@@ -122,6 +122,7 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 
 0. **Cleanup has already run.** If the transcript contains any of these signals AND no later turn re-opens work, emit `no_action`:
    - A `<command-name>/cleanup</command-name>` user turn followed by an assistant turn confirming teardown ("cleanup done", "worktree removed", "branch deleted", "ledger cleanup-NNNNNNNN-NNNNNN").
+   - The same with a user turn that is just `/cleanup` (how Copilot sessions record it).
    - A direct assistant statement of completed teardown.
    - Any prior Observer summary saying "/cleanup ran" or "cleanup confirmed".
 
