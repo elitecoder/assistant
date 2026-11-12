@@ -23,7 +23,8 @@ COMMAND = re.compile(r"<command-name>\s*([^<]*?)\s*</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 SYSTEM_PREFIXES = ("<task-notification>", "<local-command-", "<bash-stdout>",
                    "<bash-stderr>", "Caveat:", "This session is being continued",
-                   "Another Claude session sent a message")
+                   "Another Claude session sent a message",
+                   "[System: context from Assistant")
 
 
 def _clip(text: str, limit: int) -> str:
