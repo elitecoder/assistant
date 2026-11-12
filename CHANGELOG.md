@@ -193,6 +193,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- In Talk Mode, starting a question by key closes the echo-cancelled watcher,
+  so other apps aren't left ducked and only one microphone is open while you
+  talk; it opens again for the next answer. An interruption that comes while
+  the chat is compacting, or before Claude starts, cancels that answer instead
+  of letting it run muted. A line indented four or more spaces in a streamed
+  answer is read as text, not taken for a code fence.
 - Pressing the microphone or Control-Option-V during a spoken answer ends the
   run, as talking over it does, so your next question doesn't wait for it.
 - After a barge-in or **Stop**, the chat keeps what the answer had already

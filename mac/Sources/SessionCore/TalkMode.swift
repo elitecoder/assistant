@@ -170,6 +170,15 @@ public struct TalkLoop: Equatable {
         return [.stopWatching, .interrupt]
     }
 
+    /// The operator started a question by key during an answer. The question has the microphone, so the watch for
+    /// interruptions closes (other apps stop being ducked, and only one engine holds a microphone); the next question
+    /// heard opens it again for its answer.
+    public mutating func listenedByKey() -> [Action] {
+        guard phase == .answering || phase == .speaking else { return [] }
+        phase = .listening
+        return [.stopWatching]
+    }
+
     /// The microphone went away mid-question: nothing is listening, so Talk Mode ends.
     public mutating func micLost() -> [Action] {
         guard on else { return [] }

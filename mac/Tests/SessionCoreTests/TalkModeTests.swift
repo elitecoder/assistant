@@ -71,6 +71,24 @@ final class TalkLoopTests: XCTestCase {
         XCTAssertEqual(loop.finishedSpeaking(), [], "the interrupted answer ending doesn't start another listen")
     }
 
+    /// A question started by key during an answer closes the watch for interruptions; the next question heard opens
+    /// it again, and the old answer ending doesn't start another listen.
+    func testAQuestionByKeyClosesTheWatchUntilTheNextAnswer() {
+        var loop = TalkLoop()
+        _ = loop.toggle()
+        _ = loop.heard()
+        _ = loop.startedSpeaking()
+        XCTAssertEqual(loop.listenedByKey(), [.stopWatching])
+        XCTAssertEqual(loop.phase, .listening)
+        XCTAssertEqual(loop.finishedSpeaking(), [])
+        XCTAssertEqual(loop.heard(), [.watch])
+        XCTAssertEqual(loop.listenedByKey(), [.stopWatching], "while the next answer is being written, too")
+        var off = TalkLoop()
+        XCTAssertEqual(off.listenedByKey(), [], "outside Talk Mode there's nothing to close")
+        _ = off.toggle()
+        XCTAssertEqual(off.listenedByKey(), [], "already listening")
+    }
+
     func testAnAnswerWithNothingToSayStillListensAgain() {
         var loop = TalkLoop()
         _ = loop.toggle()

@@ -732,6 +732,25 @@ final class BargeInEndsTheRunTests: XCTestCase {
                                "ask Tell me about the playhead session instead."])
     }
 
+    /// In Talk Mode, a question started by key closes the echo-cancelled watcher, so other apps aren't left ducked
+    /// and only one engine holds a microphone; the next question opens it again for its answer.
+    func testAQuestionByKeyInTalkModeClosesTheWatcher() {
+        let m = model()
+        m.toggleListening = { [unowned self] in self.events.append("toggle listening") }
+        m.toggleTalkMode()
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.speechChanged(true)
+        events = []
+        m.listen()
+        XCTAssertEqual(events.filter { $0 == "unwatch" || $0 == "toggle listening" }, ["unwatch", "toggle listening"])
+        waitFor("end \(TalkLoop.interruptedReason)")
+        m.answerCompleted(interrupted(), spoken: true)
+        m.heard("Tell me about the playhead session instead.")
+        XCTAssertEqual(Array(events.suffix(2)), ["watch", "ask Tell me about the playhead session instead."])
+        XCTAssertTrue(m.talkMode)
+    }
+
     /// The chat keeps what an interrupted answer had said (and read aloud) above the note, and Control-Option-R
     /// replays it.
     func testAnInterruptedAnswerKeepsWhatItSaid() {

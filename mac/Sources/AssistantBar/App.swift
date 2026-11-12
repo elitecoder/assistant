@@ -343,6 +343,7 @@ final class Model: NSObject, ObservableObject {
         stopTalking()
         // Interrupting by key works like interrupting by voice: the run ends, so the new question doesn't wait for it.
         if asking && answeringSpoken && !listener.listening { endRun(TalkLoop.interruptedReason, kinds: [.chat]) }
+        if !listener.listening { step { $0.listenedByKey() } }
         toggleListening()
     }
 
