@@ -243,6 +243,26 @@ class ExecuteVerdictTests(unittest.TestCase):
             )
         self.assertEqual(called["n"], 0)
 
+    def test_held_actions_never_merge_or_send(self):
+        self.mod.record_assistant_merge("workspace:99", ["10000"])
+        seed_receipt(self._tmp, "workspace:99")
+        calls = []
+        ws = {**self._ws(), "pr_refs": ["10000"]}
+        verdicts = [
+            {"verdict": "ready_for_merge", "summary": "s", "next": "n"},
+            {"verdict": "ready_for_cleanup", "summary": "s", "next": "n"},
+            {"verdict": "stranded", "nudge_text": "go", "summary": "s", "next": "n"},
+        ]
+        with mock.patch.dict(os.environ, {"ASSISTANT_OBSERVER_HOLD_ACTIONS": "1"}), \
+                mock.patch.object(self.mod, "cmux_send",
+                                  lambda *a, **k: calls.append(a) or {"outcome": "sent"}), \
+                mock.patch.object(self.mod, "run_merge_pr_dispatch",
+                                  lambda *a, **k: calls.append(a) or {"outcome": "submitted"}), \
+                mock.patch.object(self.mod, "previous_send_ingested", lambda *a: True):
+            kinds = [self.mod.execute_verdict(ws, v, [])["kind"] for v in verdicts]
+        self.assertEqual(calls, [])
+        self.assertEqual(kinds, ["skipped", "skipped", "skipped"])
+
     def test_stranded_without_nudge_skips(self):
         with mock.patch.object(self.mod, "cmux_send", lambda *a, **k: {}):
             action = self.mod.execute_verdict(
@@ -1037,7 +1057,8 @@ class CallObserverBatchTests(unittest.TestCase):
         prompt_file.write_text("# fake observer prompt\n")
         transcript = self._tmp / "session.jsonl"
         marker = "UNIQUE_TRANSCRIPT_MARKER"
-        transcript.write_text(marker + "\n")
+        transcript.write_text(json.dumps({"type": "user", "message": {
+            "role": "user", "content": marker}}) + "\n")
         original = self.mod.OBSERVER_BATCH_PROMPT
         self.mod.OBSERVER_BATCH_PROMPT = prompt_file
         try:
@@ -1080,23 +1101,6 @@ class CallObserverBatchTests(unittest.TestCase):
                 )
         finally:
             self.mod.OBSERVER_BATCH_PROMPT = original
-
-    def test_transcript_excerpt_reads_only_bounded_windows(self):
-        transcript = self._tmp / "large.jsonl"
-        transcript.write_bytes(
-            b'{"head":"HEAD_MARKER"}\n'
-            + b"x" * 1_000_000
-            + b'\n{"tail":"TAIL_MARKER"}\n'
-        )
-        with mock.patch.object(
-            Path, "read_bytes",
-            side_effect=AssertionError("must not read entire transcript"),
-        ):
-            excerpt = self.mod._observer_transcript_excerpt(
-                transcript, max_bytes=1024)
-        self.assertIn("HEAD_MARKER", excerpt)
-        self.assertIn("TAIL_MARKER", excerpt)
-        self.assertLessEqual(len(excerpt.encode()), 1024)
 
     def test_prunes_expired_observer_runs_but_preserves_current(self):
         root = self.mod.OBSERVER_RUNS_DIR

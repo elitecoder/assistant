@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
@@ -1824,6 +1825,23 @@ def test_a_transcript_touched_without_new_text_stays_verified(tmp_home, tmp_path
         assert state["size_read"] == f.stat().st_size
         assert w.fd_to_state[fd].last_assistant["text"] == "two"
         assert w.dirty is True
+    finally:
+        w.kq.close()
+
+
+def test_an_event_with_no_watched_flag_leaves_the_transcript_alone(tmp_home, tmp_path):
+    f = tmp_path / "w.jsonl"
+    f.write_text(_user_line("one") + "\n")
+    w = scw.Watcher()
+    try:
+        w.add_watch(f, "/cwd")
+        w.dirty = False
+        fd = w.path_to_fd[str(f)]
+        with open(f, "a") as out:
+            out.write(_assistant_line("two") + "\n")
+        w.handle_event(SimpleNamespace(ident=fd, fflags=scw.select.KQ_NOTE_LINK))
+        assert w.fd_to_state[fd].last_assistant is None
+        assert w.dirty is False
     finally:
         w.kq.close()
 

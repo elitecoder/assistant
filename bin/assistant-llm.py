@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure the Assistant's headless LLM provider."""
+"""Configure the Assistant's headless LLM provider: claude, droid, or local."""
 from __future__ import annotations
 
 import argparse
@@ -78,6 +78,14 @@ def set_provider(path: Path, provider: str, feature: str | None) -> None:
                 raise ValueError(
                     f"config key 'llm.features.{feature}' must be an object")
         target["provider"] = provider
+        if provider == "local":
+            local = llm.setdefault("local", {})
+            if not isinstance(local, dict):
+                raise ValueError("config key 'llm.local' must be an object")
+            local.setdefault("url", llm_runner.DEFAULT_LOCAL_URL)
+            local.setdefault("model", llm_runner.DEFAULT_LOCAL_MODEL)
+            local.setdefault("reasoning_effort", "high")
+            return
         droid = llm.setdefault("droid", {})
         if not isinstance(droid, dict):
             raise ValueError("config key 'llm.droid' must be an object")
@@ -127,6 +135,9 @@ def status(path: Path) -> dict:
                 f"{prefix}_LLM_PROVIDER",
                 f"{prefix}_DROID_MODEL",
                 f"{prefix}_DROID_REASONING_EFFORT",
+                f"{prefix}_LOCAL_MODEL",
+                f"{prefix}_LOCAL_REASONING_EFFORT",
+                "ASSISTANT_LOCAL_LLM_URL",
                 "DROID_BIN",
             ) if (value := os.environ.get(key)) is not None
         }
@@ -135,6 +146,9 @@ def status(path: Path) -> dict:
             "configured_provider": configured.provider,
             "droid_model": route.droid_model,
             "droid_reasoning_effort": route.droid_reasoning_effort,
+            "local_url": route.local_url,
+            "local_model": route.local_model,
+            "local_reasoning_effort": route.local_reasoning_effort,
             "environment_override": environment_overrides.get(
                 f"{prefix}_LLM_PROVIDER"),
             "environment_overrides": environment_overrides,
@@ -148,13 +162,13 @@ def status(path: Path) -> dict:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Choose Claude or Factory Droid for Assistant LLM work.")
+        description="Choose Claude, Factory Droid, or a local model for Assistant LLM work.")
     commands = result.add_subparsers(dest="command", required=True)
     show = commands.add_parser("status")
     show.add_argument("--json", action="store_true")
 
     set_cmd = commands.add_parser("set")
-    set_cmd.add_argument("provider", choices=("claude", "droid"))
+    set_cmd.add_argument("provider", choices=("claude", "droid", "local"))
     set_cmd.add_argument("--feature", choices=FEATURES)
 
     inherit = commands.add_parser("inherit")
@@ -179,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
                     if detail == "droid":
                         detail += f" ({feature['droid_model']}, " \
                             f"{feature['droid_reasoning_effort']} reasoning)"
+                    if detail == "local":
+                        detail += f" ({feature['local_model']} at " \
+                            f"{feature['local_url']}, " \
+                            f"{feature['local_reasoning_effort']} reasoning)"
                     print(f"{name}: {detail}")
                     for key, value in feature[
                         "environment_overrides"

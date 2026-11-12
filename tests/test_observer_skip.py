@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 import os
 import shutil
 import sys
@@ -353,6 +354,97 @@ class SkipWiringTests(unittest.TestCase):
         self.assertIs(save_mock.call_args.kwargs["observation_complete"], True)
         self.assertEqual(saved["obs_input_hash"],
                          self.mod.obs_input_hash(changed))
+
+    IDENTITY = {"workspace_id": "WS-1", "observed_sessions": [
+        {"surface_id": "S-1", "provider": "claude", "session_id": "sess-1"}]}
+
+    def _plant_checked(self, verdict, minutes_ago, **extra):
+        fields = {"obs_hash": self.mod.obs_input_hash(self._ctx()),
+                  "observed_at": time.time() - minutes_ago * 60,
+                  "observation_complete": True, **self.IDENTITY}
+        fields.update(extra)
+        self._plant_summary("workspace:1", verdict, **fields)
+
+    def _ctx(self, **over):
+        return ctx(observation_identity={"ws_ref": "workspace:1", **self.IDENTITY}, **over)
+
+    def _verdict(self, kind="active"):
+        return ({"workspace:1": {"ws_ref": "workspace:1", "verdict": kind,
+                                 "summary": "s", "next": "n"}}, {})
+
+    def test_a_changed_workspace_waits_for_the_check_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("needs_user", 10)
+        rc, obs_mock, save_mock, _, _ = self._run_pulse(
+            self._ctx(screen_text="brand new output"))
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        self.assertEqual(save_mock.call_args[0][1]["verdict"], "needs_user")
+
+    def test_a_changed_workspace_is_checked_once_the_interval_passes(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("needs_user", 62)
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            self._ctx(screen_text="brand new output"), observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_the_carry_cap_waits_for_the_check_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("active", 10, carry_count=self.mod.MAX_CONSECUTIVE_CARRIES)
+        rc, obs_mock, _, _, _ = self._run_pulse(self._ctx())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+
+    def test_a_failed_check_is_retried_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("active", 5, obs_hash=None, observation_complete=False)
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            self._ctx(screen_text="brand new output"), observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_an_incomplete_hashed_check_is_retried_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("active", 5, observation_complete=False)
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            self._ctx(screen_text="brand new output"), observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_a_reused_workspace_ref_is_checked_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("ready_for_cleanup", 2, workspace_id="OLD-WS")
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            self._ctx(screen_text="brand new output"), observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_a_workspace_with_unknown_sessions_is_checked_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("needs_user", 2, workspace_id=None, observed_sessions=[])
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            ctx(observation_identity={"ws_ref": "workspace:1"}, screen_text="new"),
+            observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_a_check_with_no_recorded_time_is_redone_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("needs_user", 2, observed_at=None)
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            self._ctx(screen_text="brand new output"), observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_a_new_session_in_the_workspace_is_checked_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("needs_user", 2, observed_sessions=[
+            {"surface_id": "S-1", "provider": "claude", "session_id": "old-session"}])
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            self._ctx(screen_text="brand new output"), observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
 
     def test_prior_summary_without_hash_never_skips(self):
         # Pre-M2 summaries (and synthesized fallback verdicts, which are

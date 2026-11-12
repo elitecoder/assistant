@@ -74,10 +74,13 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
 - Ranked goals with the `/goal` skill, and a planner that suggests next steps.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.
-- Background jobs that each need their own setting: the Observer
-  (`ASSISTANT_WATCHER=1`), the strategist (`ASSISTANT_STRATEGIST=1`), the
-  lessons extractor (`ASSISTANT_LESSON_EXTRACTOR=1`), and the brief narrator
+- Background jobs that each need their own setting: the strategist
+  (`ASSISTANT_STRATEGIST=1`), the lessons extractor
+  (`ASSISTANT_LESSON_EXTRACTOR=1`), and the brief narrator
   (`ASSISTANT_BRIEF_NARRATOR=1`).
+- The session check acting on its results: merging PRs, closing finished
+  workspaces, and nudging stuck ones. The check itself runs in either mode
+  with `ASSISTANT_WATCHER=1`; in default mode it only adds cards.
 
 ## Quick start
 

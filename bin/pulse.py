@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import mode, model_tiers  # noqa: E402
+from assistant import mode, model_tiers, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -178,6 +178,8 @@ OBSERVER_AUDIT_MODEL = (os.environ.get("OBSERVER_AUDIT_MODEL")
 OBSERVER_AUDIT_INTERVAL_HOURS = _env_num(
     "OBSERVER_AUDIT_INTERVAL_HOURS", "2", float)
 OBSERVER_AUDIT_SAMPLE = _env_num("OBSERVER_AUDIT_SAMPLE", "6", int)
+# Minutes before a changed workspace is checked again. 0 checks every pulse.
+OBSERVER_EVERY_MIN = _env_num("OBSERVER_EVERY_MIN", "0", float)
 OBSERVER_RUN_RETENTION_DAYS = _env_num(
     "OBSERVER_RUN_RETENTION_DAYS", "7", float)
 OBSERVER_RUN_MAX_PULSES = _env_num(
@@ -219,11 +221,23 @@ PULSE_PRO: bool | None = None
 
 
 def job_enabled(job: str) -> bool:
-    if not (PULSE_PRO if PULSE_PRO is not None else mode.is_pro()):
-        return False
+    """PRO_JOBS run in Pro mode. OPT_IN_JOBS need their variable set to 1, and
+    every one but the watcher also needs Pro mode."""
+    pro = PULSE_PRO if PULSE_PRO is not None else mode.is_pro()
     if job in PRO_JOBS:
+        return pro
+    opted_in = os.environ.get(OPT_IN_JOBS[job], "0").strip().lower() in (
+        "1", "true", "yes", "on")
+    return opted_in and (pro or job == "watcher")
+
+
+def observer_actions_held() -> bool:
+    """True in default mode or with ASSISTANT_OBSERVER_HOLD_ACTIONS=1: Observer
+    verdicts stay cards, with no merge dispatch, no /cleanup, and no nudges."""
+    if not (PULSE_PRO if PULSE_PRO is not None else mode.is_pro()):
         return True
-    return os.environ.get(OPT_IN_JOBS[job], "0").strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get("ASSISTANT_OBSERVER_HOLD_ACTIONS", "0").strip().lower() in (
+        "1", "true", "yes", "on")
 
 LESSON_TRANSCRIPT_TIMEOUT_SEC = int(os.environ.get("LESSON_TRANSCRIPT_TIMEOUT_SEC", "600"))
 
@@ -688,12 +702,12 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=HOME), "triage")
     provider = llm_runner.select_provider(route, sorted(requested_ids))
-    model = route.droid_model if provider == "droid" else TRIAGE_MODEL
+    model = route.model_for(TRIAGE_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=TRIAGE_TIMEOUT_SEC, run=run, claude_bin=DEFAULT_CLAUDE_BIN,
         droid_bin=route.droid_bin,
-        reasoning_effort=route.droid_reasoning_effort,
+        reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-triage")
     parsed_suggestions = parse_lane_suggestions(result.result_text)
     if not parsed_suggestions:
@@ -1118,6 +1132,34 @@ _SUMMARY_META_KEYS = {"ws_ref", "title", "cwd", "pr_refs", "last_updated_ts",
                       "state_hash", "state_unchanged_since_ts"}
 
 
+def checked_within(prior: dict, seconds: float, now: float | None = None) -> bool:
+    """True when the prior verdict came from a check less than seconds ago."""
+    observed = prior.get("observed_at")
+    if not isinstance(observed, (int, float)):
+        return False
+    return 0 <= (time.time() if now is None else now) - observed < seconds
+
+
+def _observed_sessions(identity: dict) -> tuple[str, set]:
+    sessions = {
+        (str(s.get("surface_id") or "").casefold(), s.get("provider"), s.get("session_id"))
+        for s in identity.get("observed_sessions") or [] if isinstance(s, dict)}
+    return str(identity.get("workspace_id") or "").casefold(), sessions
+
+
+def interval_carry_ok(prior: dict, ctx: dict) -> bool:
+    """True when OBSERVER_EVERY_MIN lets a changed workspace keep its prior
+    verdict: a complete check of the same workspace and sessions,
+    made less than OBSERVER_EVERY_MIN minutes ago."""
+    if OBSERVER_EVERY_MIN <= 0 or prior.get("observation_complete") is not True:
+        return False
+    identity = ctx.get("observation_identity") or {}
+    if not identity.get("workspace_id") or \
+            _observed_sessions(identity) != _observed_sessions(prior):
+        return False
+    return checked_within(prior, OBSERVER_EVERY_MIN * 60)
+
+
 def carry_forward_verdict(prior: dict) -> dict:
     """The prior summary reduced back to a bare verdict dict, ready for
     save_summary (which refreshes last_updated_ts so the LRU rotates and
@@ -1160,27 +1202,6 @@ def build_ctx(ws: dict) -> dict | None:
     except Exception as e:
         log.error("build-ws-context %s bad json: %s", ws.get("ref"), e)
         return None
-
-
-def _observer_transcript_excerpt(source: Path,
-                                 max_bytes: int = 131072) -> str:
-    """Read a bounded first+last JSONL window without duplicating it on disk."""
-    with open(source, "rb") as stream:
-        size = os.fstat(stream.fileno()).st_size
-        if size <= max_bytes:
-            data = stream.read(max_bytes)
-        else:
-            head_size = min(24576, max_bytes // 4)
-            head = stream.read(head_size)
-            head_end = head.rfind(b"\n")
-            head = head[:head_end + 1] if head_end >= 0 else b""
-            tail_size = max_bytes - len(head)
-            stream.seek(max(0, size - tail_size))
-            tail = stream.read(tail_size)
-            tail_start = tail.find(b"\n")
-            tail = tail[tail_start + 1:] if tail_start >= 0 else tail
-            data = head + tail
-    return data.decode("utf-8", errors="replace")
 
 
 def _write_private_text(path: Path, text: str) -> None:
@@ -1315,7 +1336,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
         if raw_path:
             source = Path(str(raw_path))
             try:
-                ctx["transcript_excerpt"] = _observer_transcript_excerpt(
+                ctx["transcript_excerpt"] = transcript_slice.read_conversation(
                     source)
             except OSError:
                 ctx["transcript_path"] = None
@@ -1362,7 +1383,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
         llm_runner.config_path(home=HOME), section)
     provider = llm_runner.select_provider(
         route, [str(c.get("ws_ref") or "") for c in ctxs])
-    selected_model = route.droid_model if provider == "droid" else model
+    selected_model = route.model_for(model)
     # When the driver is Claude (Sonnet), the `model` arg passed by the caller
     # is OBSERVER_AUDIT_MODEL (Opus) — a stronger independent model for a
     # genuine second opinion. When the driver is Droid (GLM-5.2), the audit
@@ -1373,7 +1394,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
         provider=provider, prompt=prompt, model=selected_model,
         run_dir=run_dir, timeout=OBSERVER_TIMEOUT_SEC, run=run,
         claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
-        reasoning_effort=route.droid_reasoning_effort,
+        reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, json_schema=OBSERVER_RESPONSE_SCHEMA,
         extra_dirs=[run_dir],
         tag=f"assistant-{section}")
@@ -1853,6 +1874,9 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
             # was earned; a carry re-running it would re-submit the merge.
             return {**base, "kind": "skipped",
                     "evidence": "carried verdict; merge dispatch not re-run"}
+        if observer_actions_held():
+            return {**base, "kind": "skipped",
+                    "evidence": "Observer actions held; merge dispatch not run"}
         pr_refs = ws.get("pr_refs") or []
         if not pr_refs:
             return {**base, "kind": "skipped", "outcome": "failed",
@@ -1882,6 +1906,9 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
         # (or NO_INGEST_GUARD is already holding it).
         return {**base, "kind": "skipped",
                 "evidence": "carried verdict; send not re-run"}
+    if observer_actions_held():
+        return {**base, "kind": "skipped",
+                "evidence": "Observer actions held; send not run"}
     if kind == "ready_for_cleanup":
         text = "/cleanup"
     elif kind == "stranded":
@@ -2518,14 +2545,17 @@ def main() -> int:
                             ws_ref, e)
                 continue
             prior = load_prior_summary(ws_ref)
-            if not (prior and prior.get("verdict")
-                    and prior.get("obs_input_hash") == obs_hashes[ws_ref]):
+            if not (prior and prior.get("verdict")):
+                continue
+            checked_recently = interval_carry_ok(prior, ctx)
+            if not (checked_recently
+                    or prior.get("obs_input_hash") == obs_hashes[ws_ref]):
                 continue
             try:
                 prior_carries = int(prior.get("carry_count") or 0)
             except (TypeError, ValueError):
                 prior_carries = 0
-            if prior_carries >= MAX_CONSECUTIVE_CARRIES:
+            if not checked_recently and prior_carries >= MAX_CONSECUTIVE_CARRIES:
                 log.info("carry cap hit for %s (%d consecutive skips) — "
                          "force-observing", ws_ref, prior_carries)
                 continue

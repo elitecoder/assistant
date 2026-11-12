@@ -143,7 +143,7 @@ class OverviewTests(unittest.TestCase):
                 self.assertIn("This information is too old", html)
 
     def test_old_context_is_not_a_current_completion_claim(self):
-        self.workspace(1, "ready_for_cleanup", age=601)
+        self.workspace(1, "ready_for_cleanup", age=6 * 3600 + 1)
         html, _ = self.render()
         self.assertIn("Not checked yet", html)
         self.assertNotIn("Check before closing", html)
@@ -449,7 +449,7 @@ class OverviewTests(unittest.TestCase):
                 self.assertNotIn("Check before closing", html)
 
     def test_save_time_cannot_refresh_an_old_observation(self):
-        self.workspace(1, "ready_for_cleanup", age=1000,
+        self.workspace(1, "ready_for_cleanup", age=6 * 3600 + 1,
                        ts=NOW.timestamp(), last_updated_ts=NOW.timestamp())
         html, _ = self.render()
         self.assertIn("Not checked yet", html)

@@ -45,6 +45,7 @@ FEED_LIMIT = 30  # was 80 — kept overflowing the page
 NOISE_EVENT_KINDS = {"pulse-rollup", "heartbeat", "tick", "noop", "worker-heartbeat-stale"}
 LIVE_SESSIONS_LIMIT = 20
 OVERVIEW_FRESH_SECONDS = 600
+OVERVIEW_VERDICT_KEEP_SECONDS = 6 * 3600
 OVERVIEW_VISIBLE_CARDS = 4
 
 
@@ -1695,7 +1696,8 @@ def overview_cards(world):
         matches = bool(workspace_id and identities and observed == identities
                        and _overview_identity(summary.get("workspace_id")) == _overview_identity(workspace_id))
         context_fresh = (matches and summary.get("observation_complete") is True
-                         and _overview_fresh(context_at, now))
+                         and context_at is not None
+                         and 0 <= now - context_at <= OVERVIEW_VERDICT_KEEP_SECONDS)
         if not matches:
             summary = {}
             context_at = None

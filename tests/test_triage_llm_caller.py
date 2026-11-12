@@ -20,6 +20,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+from local_llm_server import FakeLocalModel
+
 REPO = Path(__file__).resolve().parent.parent
 PULSE_PATH = REPO / "bin/pulse.py"
 
@@ -64,9 +66,29 @@ class TriageCallerTests(unittest.TestCase):
                 "TRIAGE_DROID_REASONING_EFFORT",
                 "DROID_BIN",
                 "ASSISTANT_LLM_CONFIG",
+                "ASSISTANT_LOCAL_LLM_URL",
+                "TRIAGE_LOCAL_MODEL",
             )
         }
         self.mod = load_pulse(self._tmp)
+
+    def test_triage_can_run_on_a_local_model(self):
+        reply = json.dumps({"event_id": "eid-1", "suggested_lane": "digest",
+                            "rationale": "FYI only"})
+        config = self._tmp / ".assistant/comms/config.json"
+        config.parent.mkdir(parents=True)
+        with FakeLocalModel(reply=reply) as server:
+            config.write_text(json.dumps({"llm": {
+                "features": {"triage": {"provider": "local"}},
+                "local": {"url": server.url, "model": "qwen-small"}}}))
+            with mock.patch.object(self.mod, "run", side_effect=AssertionError("no subprocess")):
+                suggestions = self.mod.call_triage_batch([make_event(1)], pulse_idx=7)
+        self.assertEqual(suggestions["eid-1"]["suggested_lane"], "digest")
+        body = server.requests[0]["body"]
+        self.assertEqual(body["model"], "qwen-small")
+        self.assertIn("eid-1", body["messages"][0]["content"])
+        meta = json.loads((self._tmp / ".assistant/triage-runs/0007/meta.json").read_text())
+        self.assertEqual((meta["provider"], meta["model"]), ("local", "qwen-small"))
 
     def tearDown(self):
         if self._old_home is not None:
@@ -480,3 +502,4 @@ class ReadLaneSuggestionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

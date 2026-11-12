@@ -15,6 +15,7 @@ Usage:
   ./run.py                       # all fixtures
   ./run.py ws97-trap             # one fixture
   EVAL_CLAUDE_MODEL='claude-sonnet-5-5[1m]' ./run.py --provider claude
+  EVAL_LOCAL_URL=http://127.0.0.1:8091/v1 ./run.py --provider local
 """
 from __future__ import annotations
 
@@ -38,13 +39,15 @@ for path in (BIN, SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 import llm_runner
-from assistant import model_tiers
+from assistant import model_tiers, transcript_slice
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 DROID_BIN = os.environ.get("DROID_BIN", str(Path.home() / ".local/bin/droid"))
 CLAUDE_MODEL = os.environ.get(
     "EVAL_CLAUDE_MODEL", model_tiers.model_for("balanced", long_context=True))
 DROID_MODEL = os.environ.get("EVAL_DROID_MODEL", "glm-5.2")
+LOCAL_URL = os.environ.get("EVAL_LOCAL_URL", llm_runner.DEFAULT_LOCAL_URL)
+LOCAL_MODEL = os.environ.get("EVAL_LOCAL_MODEL", llm_runner.DEFAULT_LOCAL_MODEL)
 TIMEOUT_SEC = int(os.environ.get("EVAL_TIMEOUT_SEC", "180"))
 REPORT_PATH = EVAL_DIR / "last-run.json"
 OBSERVER_RESPONSE_SCHEMA = {
@@ -197,7 +200,8 @@ def run_one(fixture_dir: Path, provider: str) -> tuple[bool, str, dict]:
         staged_transcript = run_dir / "transcript.jsonl"
         stage_transcript(transcript_path, staged_transcript)
         ctx["transcript_path"] = str(staged_transcript)
-        ctx["transcript_excerpt"] = staged_transcript.read_text(errors="replace")
+        ctx["transcript_excerpt"] = transcript_slice.read_conversation(
+            staged_transcript)
     ctx.setdefault("ws_ref", f"workspace:eval-{fixture_dir.name}")
 
     env = dict(os.environ)
@@ -208,7 +212,7 @@ def run_one(fixture_dir: Path, provider: str) -> tuple[bool, str, dict]:
     (run_dir / "ctx.json").write_text(json.dumps(ctx, indent=2))
     prompt = build_eval_prompt(fixture_dir, ctx)
 
-    model = DROID_MODEL if provider == "droid" else CLAUDE_MODEL
+    model = {"droid": DROID_MODEL, "local": LOCAL_MODEL}.get(provider, CLAUDE_MODEL)
 
     def run_cmd(cmd, *, input_text=None, timeout=None, env=None,
                 merge_bedrock=False):
@@ -230,6 +234,7 @@ def run_one(fixture_dir: Path, provider: str) -> tuple[bool, str, dict]:
             json_schema=OBSERVER_RESPONSE_SCHEMA,
             extra_dirs=[run_dir],
             tag=f"assistant-observer-eval-{fixture_dir.name}",
+            local_url=LOCAL_URL,
         )
     except subprocess.TimeoutExpired:
         message = f"timeout after {TIMEOUT_SEC}s"
@@ -328,7 +333,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("fixture", nargs="?", default=None, help="Run one fixture by name (default: all)")
     ap.add_argument("--list", action="store_true", help="List fixtures and exit")
-    ap.add_argument("--provider", choices=("claude", "droid"),
+    ap.add_argument("--provider", choices=("claude", "droid", "local"),
                     default=os.environ.get("EVAL_PROVIDER", "droid"))
     ap.add_argument("--shadow", action="store_true",
                     help="Score Claude and Droid on identical fixtures")

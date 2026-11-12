@@ -1,6 +1,7 @@
 ---
 name: lesson
-description: Capture a rule so future sessions or the Assistant's Observer obey it. Use whenever the user corrects you ("no", "don't", "stop", "wrong", "that's not", "I told you", "you keep", "again", "actually"), names a rule out loud ("always X", "never Y", "from now on Z", "remember this", "this needs to be a lesson", "make this an enforced lesson"), or you discover a non-obvious constraint. Also use when the user explicitly types /lesson. The skill writes a block via the assistant-curator CLI to one of two stores: ~/.claude/CLAUDE.md (every session) or the Assistant's Observer prompt (orchestration / verdict rules like "never send /cleanup to a session awaiting my review").
+description: >-
+  Capture a rule so future sessions or the Assistant's Observer obey it. Use whenever the user corrects you ("no", "don't", "stop", "wrong", "that's not", "I told you", "you keep", "again", "actually"), names a rule out loud ("always X", "never Y", "from now on Z", "remember this", "this needs to be a lesson", "make this an enforced lesson"), or you discover a non-obvious constraint. Also use when the user explicitly types /lesson. The skill writes a block via the assistant-curator CLI to one of two stores: ~/.claude/CLAUDE.md (every session) or the Assistant's Observer prompt (orchestration / verdict rules like "never send /cleanup to a session awaiting my review").
 ---
 
 # /lesson — capture a rule into the right store

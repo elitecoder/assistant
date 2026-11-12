@@ -216,12 +216,12 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str, in
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=_home()), "strategist")
     provider = llm_runner.select_provider(route, [str(run_dir)])
-    model = route.droid_model if provider == "droid" else DEFAULT_MODEL
+    model = route.model_for(DEFAULT_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=STRATEGIST_TIMEOUT_SEC, run=run,
         claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
-        reasoning_effort=route.droid_reasoning_effort,
+        reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-strategist")
     if result.result_text:
         (run_dir / out_name).write_text(result.result_text)
