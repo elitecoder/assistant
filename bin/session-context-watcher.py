@@ -69,6 +69,7 @@ RECENT_INPUTS_LIMIT = 30
 DISCOVERY_INTERVAL_SEC = 30  # how often we look for brand-new transcript files
 FLUSH_DEBOUNCE_SEC = 0.5     # batch writes during a burst of fs events
 MAX_WATCHED_FDS = 256        # cap on simultaneously-watched files
+COPILOT_TOOL_EVENTS = ("tool.execution_start", "tool.execution_complete")
 CLAUDE_PREAMBLE_TYPES = {
     "mode", "permission-mode", "atis-latch", "last-prompt", "ai-title",
     "pr-link", "file-history-snapshot",
@@ -152,7 +153,10 @@ def load_live_agent_sessions():
         out[record.session_id] = {
             "pid": record.pid,
             "cwd": record.launch_cwd or record.cwd,
-            "transcript_path": record.transcript_path,
+            "transcript_path": record.transcript_path or (
+                agent_session.transcript_for_session(
+                    record.provider, record.session_id, home=HOME)
+                if record.provider == agent_session.COPILOT else None),
             "provider": record.provider,
             "ts": record.updated_at,
             "tab_id": record.workspace_id,
@@ -334,7 +338,9 @@ class TranscriptState:
                  tab_id=None, provider="claude"):
         self.path = path
         self.cwd = cwd
-        self.session_id = path.stem
+        # Copilot names the session directory, not the file (<id>/events.jsonl).
+        self.session_id = (path.parent.name if provider == agent_session.COPILOT
+                           else path.stem)
         self.pos = 0
         self.turns = []  # rolling window of recent (role, ts, text) dicts
         self.queue_pending = 0
@@ -379,7 +385,7 @@ class TranscriptState:
         }
 
     def track_guidance(self, record, role):
-        text = guidance_text(record.get("message"))
+        text = guidance_text({"content": agent_session.record_content(record)})
         if role == "user":
             if record.get("isMeta") or record.get("isCompactSummary"):
                 return
@@ -411,13 +417,24 @@ class TranscriptState:
         self.tool_history_complete = False
 
     def track_tools(self, record, role, first_record):
+        kind = record.get("type")
         if first_record and (
-                record.get("type") == "session_start"
+                kind in ("session_start", "session.start")
                 or ((role in ("user", "assistant")
                      or (record.get("type") == "attachment" and record.get("uuid")))
                     and "parentUuid" in record and record["parentUuid"] is None)):
             self.tool_history_complete = True
-        if role not in ("user", "assistant"):
+        if kind in COPILOT_TOOL_EVENTS:
+            data = record.get("data")
+            tool_id = data.get("toolCallId") if isinstance(data, dict) else None
+            if not isinstance(tool_id, str) or not tool_id:
+                self.invalidate_tool_history()
+            elif kind == "tool.execution_start":
+                self.pending_tools.add(tool_id)
+            else:
+                self.pending_tools.discard(tool_id)
+            return
+        if role not in ("user", "assistant") or kind in ("user.message", "assistant.message"):
             return
         message = record.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -494,8 +511,7 @@ class TranscriptState:
         if role not in ("user", "assistant"):
             return False
         self.track_guidance(record, role)
-        message = record.get("message", {})
-        text = text_from_message(message)
+        text = text_from_message({"content": agent_session.record_content(record)})
         if not text:
             return False
         entry = {"role": role, "ts": record.get("timestamp") or record.get("ts"),

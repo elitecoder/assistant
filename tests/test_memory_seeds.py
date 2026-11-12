@@ -429,6 +429,29 @@ def test_decision_seeds_scans_droid_transcripts(ms, tmp_path, monkeypatch):
     assert any("GLM" in seed["content"] for seed in seeds)
 
 
+def test_decision_seeds_scans_copilot_sessions_of_the_assistant_repo(ms, tmp_path, monkeypatch):
+    repo = tmp_path / "assistant"
+    repo.mkdir()
+    claude_dir = tmp_path / "claude"
+    for sid, cwd, text in (("s1", repo, "let's go with Copilot"),
+                           ("s2", tmp_path / "elsewhere", "let's go with elsewhere")):
+        session = tmp_path / ".copilot" / "session-state" / sid
+        session.mkdir(parents=True)
+        (session / "workspace.yaml").write_text(f"id: {sid}\ncwd: {cwd}\n")
+        (session / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in (
+            {"type": "session.start", "data": {"sessionId": sid}},
+            {"type": "user.message", "data": {"content": text}},
+            {"type": "assistant.message", "data": {"content": "let's go with the reply"}},
+        )))
+    monkeypatch.setattr(ms, "HOME", tmp_path)
+    monkeypatch.setattr(ms, "ASSISTANT_CWD", str(repo))
+    monkeypatch.setattr(ms, "TRANSCRIPT_DIR", claude_dir)
+    monkeypatch.setattr(ms, "DEFAULT_TRANSCRIPT_DIR", claude_dir)
+    monkeypatch.setattr(ms, "DROID_TRANSCRIPT_DIR", tmp_path / "droid")
+    assert [s["content"].split(": ", 1)[1] for s in ms.decision_seeds()] == [
+        "let's go with Copilot"]
+
+
 def test_decision_seeds_prose_pattern_limit(ms, tmp_path, monkeypatch):
     # exercise the inner-pattern _emit return-early path
     tdir = tmp_path / "transcripts"

@@ -20,7 +20,8 @@ Output JSON to stdout:
       "ws_ref": "workspace:N",
       "workspace_id": "<UUID>" | null,
       "observed_at": <epoch seconds>,
-      "observed_sessions": [{"surface_id": "<UUID>", "provider": "claude|droid",
+      "observed_sessions": [{"surface_id": "<UUID>",
+                             "provider": "claude|copilot|droid",
                              "session_id": "<full session ID>"}]
     },
     "last_turn_age_sec": <int|null>,
@@ -68,6 +69,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import cmux_sessions  # noqa: E402
 
 HOME = Path(os.environ["HOME"])
@@ -155,6 +157,11 @@ _DROID_PANE_MARKERS = (
     "GLM-5.2",
     "GLM5.2",
 )
+# Copilot's bottom status bar is the steady-state tell; the boot banner covers
+# a pane whose status bar the folder-trust dialog still hides. The banner can
+# name a Claude model, so it outranks the Claude markers.
+_COPILOT_STATUS_BAR = "/ commands · ? help"
+_COPILOT_BANNER = "Copilot v"
 _SURFACE_LINE_RE = re.compile(r"(surface:\d+)\s+([0-9A-Fa-f-]{36})")
 
 
@@ -200,8 +207,12 @@ def _agent_for_screen(text: str) -> str | None:
         return None
     if status_bar_session_id(text):
         return "claude"
+    if _COPILOT_STATUS_BAR in text:
+        return "copilot"
     if any(m in text for m in _DROID_PANE_MARKERS):
         return "droid"
+    if _COPILOT_BANNER in text:
+        return "copilot"
     if any(m in text for m in _CLAUDE_PANE_MARKERS):
         return "claude"
     return None
@@ -300,7 +311,7 @@ def _pid_alive(pid) -> bool:
 
 def _transcript_internal_sid(path: str) -> str | None:
     """The sessionId recorded INSIDE the transcript (Claude Code writes it on
-    every line). Used to confirm a file's identity matches the id we resolved
+    every line; Droid and Copilot on their session-start record). Used to confirm a file's identity matches the id we resolved
     from — the last verification gate before we trust a path."""
     try:
         with open(path, "rb") as f:
@@ -317,6 +328,9 @@ def _transcript_internal_sid(path: str) -> str | None:
         sid = d.get("sessionId") or d.get("session_id")
         if not sid and d.get("type") == "session_start":
             sid = d.get("id")
+        if not sid and d.get("type") == "session.start":
+            data = d.get("data")
+            sid = data.get("sessionId") if isinstance(data, dict) else None
         if sid:
             return sid
     return None
@@ -333,9 +347,11 @@ def transcript_from_session_id(sid8: str | None) -> str | None:
     if not sid8:
         return None
     roots = [HOME / ".claude/projects", HOME / ".factory/sessions"]
+    copilot_root = agent_session.transcript_root(agent_session.COPILOT, home=HOME)
     candidates = sorted(
-        (str(p) for root in roots if root.is_dir()
-         for p in root.glob(f"*/{sid8}*.jsonl")),
+        [*(str(p) for root in roots if root.is_dir()
+           for p in root.glob(f"*/{sid8}*.jsonl")),
+         *(str(p) for p in copilot_root.glob(f"{sid8}*/events.jsonl"))],
         key=os.path.getmtime, reverse=True,
     )
     for path in candidates:
@@ -382,6 +398,9 @@ def recorded_transcript_for_surface(surface_uuid: str, expect_sid8: str | None =
     if expect_sid8 and sid8 != expect_sid8:
         return None  # the record disagrees with the live screen → screen wins
     tp = record.transcript_path
+    if not tp and record.provider == agent_session.COPILOT:
+        tp = agent_session.transcript_for_session(
+            agent_session.COPILOT, record.session_id, home=HOME)
     if not tp or not os.path.exists(tp):
         return None
     # Final identity gate: the file must self-identify as this session.
@@ -422,10 +441,9 @@ def resume_binding_for_surface(surface_ref: str, ws_ref: str) -> dict | None:
     if not binding:
         return None
     sid = binding.get("checkpointId") or binding.get("checkpoint_id")
-    kind = str(binding.get("kind") or "").lower()
-    if kind not in {"claude", "factory", "droid"}:
+    agent = agent_session.agent_from_kind(binding.get("kind"))
+    if agent is None:
         return None
-    agent = "droid" if kind in {"factory", "droid"} else "claude"
     return {"session_id": str(sid), "agent": agent}
 
 
@@ -490,7 +508,7 @@ def observation_identity(ws_ref: str, before: dict | None,
         return identity
     transcript = resolved.get("transcript_path")
     if transcript:
-        root = HOME / (".factory/sessions" if provider == "droid" else ".claude/projects")
+        root = agent_session.transcript_root(provider, home=HOME)
         if (not Path(transcript).is_relative_to(root)
                 or _transcript_internal_sid(transcript) != sid):
             return identity
@@ -576,8 +594,9 @@ def screen_shows_error(screen_text: str) -> bool:
 def transcript_signals(path: str | None) -> tuple[int | None, str]:
     """Returns (last_turn_age_sec, agent_status) by scanning the JSONL.
 
-    agent_status='working' means a tool_use is in flight (last entry is
-    assistant emitting tool_use, no matching tool_result yet). Otherwise 'idle'.
+    agent_status='working' means a tool call is in flight: a tool_use with no
+    matching tool_result yet, or a Copilot tool.execution_start with no
+    tool.execution_complete. Otherwise 'idle'.
     """
     if not path or not os.path.exists(path):
         return None, "idle"
@@ -605,10 +624,18 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
             d = json.loads(line)
         except Exception:
             continue
-        msg = d.get("message")
-        if not isinstance(msg, dict):
+        if not isinstance(d, dict):
             continue
-        content = msg.get("content")
+        kind = d.get("type")
+        if kind in ("tool.execution_start", "tool.execution_complete"):
+            data = d.get("data")
+            tid = data.get("toolCallId") if isinstance(data, dict) else None
+            if kind == "tool.execution_start" and tid:
+                pending_tool_ids.add(tid)
+            else:
+                pending_tool_ids.discard(tid)
+            continue
+        content = agent_session.record_content(d)
         if not isinstance(content, list):
             continue
         for c in content:

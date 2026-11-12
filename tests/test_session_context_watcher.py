@@ -2159,3 +2159,61 @@ def test_log_info_only_to_out(tmp_home):
     err_file = scw.LOG_DIR / "session-context-watcher.err"
     assert "just info" in out_file.read_text()
     assert not err_file.exists()
+
+
+# ─── Copilot sessions ─────────────────────────────────────────────────────────
+
+def _copilot_events(home, sid, *events):
+    session_dir = home / ".copilot/session-state" / sid
+    session_dir.mkdir(parents=True)
+    (session_dir / "workspace.yaml").write_text(f"id: {sid}\ncwd: /proj\n")
+    path = session_dir / "events.jsonl"
+    start = {"type": "session.start", "id": "event-0", "data": {"sessionId": sid}}
+    path.write_text("".join(json.dumps(e) + "\n" for e in (start, *events)))
+    return path
+
+
+def _copilot_turn(role, text, ts):
+    return {"type": f"{role}.message", "timestamp": ts, "data": {"content": text}}
+
+
+def test_discover_and_flush_read_copilot_sessions_from_session_state(tmp_home):
+    now = scw.iso(scw.utc_now())
+    busy_sid = "c0b11071-1111-4111-8111-111111111111"
+    idle_sid = "c0b11071-2222-4222-8222-222222222222"
+    _copilot_events(
+        tmp_home, busy_sid,
+        _copilot_turn("user", "Run the release checks.", now),
+        _copilot_turn("assistant", "Running the checks now.", now),
+        {"type": "tool.execution_start",
+         "data": {"toolCallId": "call-1", "toolName": "bash"}})
+    _copilot_events(
+        tmp_home, idle_sid,
+        _copilot_turn("user", "Which branch is this?", now),
+        {"type": "tool.execution_start", "data": {"toolCallId": "call-2"}},
+        {"type": "tool.execution_complete", "data": {"toolCallId": "call-2"}},
+        _copilot_turn("assistant", "You're on main.", now))
+    _write_sessions(tmp_home, [
+        fake_cmux.record(busy_sid, agent="copilot", pid=os.getpid(), cwd="/proj",
+                         surface_id="sf-1"),
+        fake_cmux.record(idle_sid, agent="copilot", pid=os.getpid(), cwd="/proj",
+                         surface_id="sf-2"),
+    ])
+    w = scw.Watcher()
+    try:
+        w.discover()
+        w.flush()
+    finally:
+        w.kq.close()
+    sessions = json.loads(scw.OUT_PATH.read_text())["by_session"]
+    assert set(sessions) == {busy_sid, idle_sid}
+    busy, idle = sessions[busy_sid], sessions[idle_sid]
+    assert busy["provider"] == "copilot"
+    assert busy["last_user"]["text"] == "Run the release checks."
+    assert busy["last_assistant"]["text"] == "Running the checks now."
+    assert busy["guidance_context"]["initial_request"]["text"] == "Run the release checks."
+    assert busy["guidance_context"]["last_response"]["text"] == "Running the checks now."
+    assert busy["pending_tool_use"] is True
+    assert idle["last_assistant"]["text"] == "You're on main."
+    assert idle["user_unanswered"] is False
+    assert idle["pending_tool_use"] is False
