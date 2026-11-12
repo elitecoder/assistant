@@ -125,9 +125,12 @@ Select **Stop** to end it.
   a session that gets a message acts on it with its own permissions, so a
   request like "I'm done here, clean up" can lead it to run a skill that
   deletes things. Back off a workspace to keep Assistant out of it.
-- It won't send a message that starts with `/`, `!`, or `#`, which would run a
-  slash command or a shell command, or save a memory note, in that session. Hidden
-  characters in front don't change that.
+- It sends only messages that start like plain language: after any leading
+  spaces, a letter or digit in any language, or one of `"`, `'`, `(`, or `@`.
+  So a message that starts with `/`, `!`, or `#`, which would run a slash
+  command or a shell command, or save a memory note, in that session, is
+  refused, and so is one that starts with a hidden character, or has an accent
+  or joining mark in its first three characters.
 - It presses Enter once. If the message doesn't show in the session's
   transcript, it says so and doesn't send it again.
 - Everything it reads from other sessions (the workspace digest, their replies,
@@ -151,8 +154,8 @@ the version bump session need from me?" To ask about one session, select the
 speech bubble on its row first. Dictation works in the box too.
 
 Each question runs Claude Code with Claude Haiku, about a cent per question.
-Pick Sonnet or Opus from the model menu for harder questions. Claude gets Read,
-Grep, and Glob on session transcripts, plus Assistant's own commands. The first
+Pick Sonnet or Opus from the model menu for harder questions. Claude gets only
+Assistant's own commands, which read session transcripts for it. The first
 question in a chat sends a summary of every workspace. Later questions send
 only the workspaces that changed. A question about one session also sends its
 recent conversation. The panel shows what each answer cost. Nothing runs until

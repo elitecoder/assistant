@@ -73,28 +73,47 @@ public enum Messaging {
         return out
     }
 
-    /// The first character that counts in a message: leading whitespace (including no-break space), control
-    /// characters, and invisible format characters (zero-width space, BOM) are skipped, since `cmux send --paste`
-    /// turns control characters into spaces and Claude Code ignores leading blanks.
-    static func firstVisible(_ message: String) -> Character? {
-        let skipped = message.unicodeScalars.drop { scalar in
-            scalar.properties.isWhitespace || [.control, .format].contains(scalar.properties.generalCategory)
+    /// Besides letters and digits, the only scalars a message may start with.
+    static let allowedFirst: Set<Unicode.Scalar> = ["\"", "'", "(", "@"]
+    /// How many scalars at the start may hold no combining mark or invisible character.
+    static let cleanStart = 3
+
+    static func isLetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+             .decimalNumber, .letterNumber, .otherNumber: true
+        default: false
         }
-        return String(String.UnicodeScalarView(skipped)).first
+    }
+
+    /// Combining marks (Mn, Me, which include U+FE0F and U+034F) and invisible format characters (Cf, which include
+    /// U+200D).
+    static func hidesSomething(_ scalar: Unicode.Scalar) -> Bool {
+        [.nonspacingMark, .enclosingMark, .format].contains(scalar.properties.generalCategory)
     }
 
     /// Why a message can't be sent into another session, or nil when it can. A message starting with "/" runs as a
     /// slash command there (/clear, /cleanup, /merge-when-ready…), one starting with "!" runs in its shell, and one
     /// starting with "#" can save a standing memory, all with that session's permissions. Policy: the operator accepts
-    /// plain-language messages sent without asking them first; only these three prefixes are refused.
+    /// plain-language messages sent without asking them first; only plain-language starts are allowed. Working on
+    /// Unicode scalars after leading whitespace, the first must be a letter or digit, or one of `" ' ( @`, and none of
+    /// the first three may be a combining mark or an invisible character that could join with or hide a prefix.
     public static func sendRefusal(_ message: String) -> String? {
-        switch firstVisible(message) {
+        let start = Array(message.unicodeScalars.drop { $0.properties.isWhitespace }.prefix(cleanStart))
+        guard let first = start.first else { return "The message is empty." }
+        switch first {
         case "#": return "Messages can't start with \"#\": that can save a standing instruction to the session's memory. Ask in plain words, or ask the operator."
         case "/": return "Messages can't start with \"/\": that would run a slash command in the session. Describe what you want in plain words, or ask the operator to run the command."
         case "!": return "Messages can't start with \"!\": that would run a shell command in the session. Ask in plain words, or ask the operator."
-        case nil: return "The message is empty."
-        default: return nil
+        default: break
         }
+        guard isLetterOrDigit(first) || allowedFirst.contains(first) else {
+            return "Messages must start with a letter, a digit, or one of \" ' ( @. Write it in plain words."
+        }
+        if start.contains(where: hidesSomething) {
+            return "Messages can't have combining marks or invisible characters in their first three characters. Write it in plain words."
+        }
+        return nil
     }
 
     /// What `--send` says when Enter was pressed but the transcript doesn't show the message: it may have gone in.

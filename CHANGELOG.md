@@ -193,6 +193,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- `--send` checks how a message starts with an allow list instead of a list of
+  bad prefixes. After leading spaces, the first character must be a letter or
+  digit, or one of `"`, `'`, `(`, or `@`, and none of the first three may be a
+  combining mark or an invisible character. It reads Unicode scalars, so an
+  accent or joiner after `!`, `#`, or `/` can no longer hide it.
 - Kokoro's files are checked against their SHA-256 before the first load, and
   a damaged one downloads again. **Stop** reads the process table off the main
   thread, and it freezes the processes it ends first, so none can start another
