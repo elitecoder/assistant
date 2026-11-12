@@ -329,10 +329,17 @@ final class DeliveryHoldTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cmux.path)
         var result: (paste: (Int32, Data), interrupted: Bool)?
         let finished = expectation(description: "delivered")
-        DispatchQueue.global().async {
+        // Like --send's main thread, this thread takes termination signals; a dispatch worker would block them and
+        // hide whether the cmux calls are shielded.
+        let sender = Thread {
+            var signals = sigset_t()
+            sigemptyset(&signals)
+            [SIGTERM, SIGINT, SIGHUP].forEach { sigaddset(&signals, $0) }
+            pthread_sigmask(SIG_UNBLOCK, &signals, nil)
             result = TerminationHold.pasteAndEnter(cmux.path, paste: ["paste"], enter: ["enter"])
             finished.fulfill()
         }
+        sender.start()
         Thread.sleep(forTimeInterval: 0.5)
         let below = ProcessTree.descendants(of: getpid(), parents: ProcessTree.current())
         XCTAssertFalse(below.isEmpty, "the paste isn't running")
