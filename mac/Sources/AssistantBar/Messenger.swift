@@ -146,15 +146,19 @@ enum Messenger {
         guard let target else {
             return "NOT SENT\nNo Claude session found in \(workspace). Run --sessions to list them."
         }
+        guard let cmux = SessionScanner.cmux else { return "NOT SENT\ncmux isn't installed." }
         let pane = ["--workspace", target.terminal.workspace, "--surface", target.terminal.surface]
         let since = Date()
-        let (rc, out) = cmux(Messaging.pasteArguments(workspace: target.terminal.workspace, surface: target.terminal.surface,
-                                                      message: message))
+        let delivery = TerminationHold.pasteAndEnter(cmux, paste: Messaging.pasteArguments(
+            workspace: target.terminal.workspace, surface: target.terminal.surface, message: message),
+                                                     enter: ["send"] + pane + ["\\r"])
+        // The run was ended while pasting: both steps finished, and now this exits too.
+        if delivery.interrupted { exit(143) }
+        let (rc, out) = delivery.paste
         guard rc == 0 else {
             return "NOT SENT\nThe session is busy: someone is typing there, or a question or permission prompt is open.\n"
                 + String(decoding: out, as: UTF8.self)
         }
-        _ = cmux(["send"] + pane + ["\\r"])
         // Enter is pressed once. If the transcript doesn't show the message, pressing it again could submit it twice.
         guard waitFor(target.transcript, timeout: 30, until: { Messaging.turn($0, sent: message, since: since).delivered }) else {
             return Messaging.unconfirmed(workspace)

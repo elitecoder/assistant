@@ -188,10 +188,13 @@ public struct TurnRecord: Equatable {
 public enum StreamTurn {
     public static let maxToolOutputChars = 20_000
     static let interruptedOutput = "(No output: the run stopped before this command finished.)"
+    /// Stored for a `--send` the run was ended in the middle of: it may or may not have gone in.
+    public static let deliveryUnknown = "Delivery unknown: the run was interrupted. Check with --wait before sending again."
 
     public static func record(_ data: Data, stopped: Bool, model: String? = nil, now: Date = Date()) -> TurnRecord {
         var rows: [MessageDraft] = []
         var open: [String] = []
+        var sends: Set<String> = []
         var firstPrompt: Int?
         var result: [String: Any]?
         for event in events(data) {
@@ -215,6 +218,7 @@ public enum StreamTurn {
                         rows.append(MessageDraft(role: .assistant, content: callText(name, block["input"]), toolName: name,
                                                  toolCallID: id, timestamp: now))
                         open.append(id)
+                        if isSend(block["input"]) { sends.insert(id) }
                     default: continue
                     }
                 }
@@ -233,7 +237,8 @@ public enum StreamTurn {
         }
         for id in open {
             let name = rows.last { $0.toolCallID == id }?.toolName
-            rows.append(MessageDraft(role: .tool, content: interruptedOutput, toolName: name, toolCallID: id, timestamp: now))
+            rows.append(MessageDraft(role: .tool, content: sends.contains(id) ? deliveryUnknown : interruptedOutput,
+                                     toolName: name, toolCallID: id, timestamp: now))
         }
         guard let result, !stopped else {
             return TurnRecord(rows: rows, reply: stopped ? "Stopped." : Asker.noAnswer, failed: true, cost: nil,
@@ -276,6 +281,12 @@ public enum StreamTurn {
     }
 
     /// The command, or the input as JSON, capped like tool output.
+    /// A Bash call of Assistant's own `--send`.
+    static func isSend(_ input: Any?) -> Bool {
+        guard let command = (input as? [String: Any])?["command"] as? String else { return false }
+        return Messaging.shellWords(command).dropFirst().first == "--send"
+    }
+
     static func callText(_ name: String, _ input: Any?) -> String {
         if let command = (input as? [String: Any])?["command"] as? String { return capped(command) }
         guard let input, let data = try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys, .withoutEscapingSlashes]) else {

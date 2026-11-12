@@ -158,7 +158,7 @@ public enum Asker {
         A send waits for the session to finish its turn and prints REPLY with its answer. Keep going back and forth until the operator's request is done.
         Send what the operator asks for, and the follow-ups it needs. Write messages the way the operator would.
         Bring the operator any decision about merging, deleting, spending money, or product behavior. Don't answer those for them.
-        If a send prints NOT SENT, NOT CONFIRMED, or STILL WORKING, tell the operator what happened. Never resend a message that printed NOT CONFIRMED.
+        If a send prints NOT SENT, NOT CONFIRMED, or STILL WORKING, tell the operator what happened. Never resend a message that printed NOT CONFIRMED, or whose result says "Delivery unknown": run --wait on that workspace first, and resend only if the session never got it.
         For status questions, list every session that waits on the operator, with the exact decision each needs.
         Lead with the answer. Use plain language. Keep it to 6 lines unless the operator asks for more.
         Name workspaces by title and number, for example "Version Bump Conflicts [25]".

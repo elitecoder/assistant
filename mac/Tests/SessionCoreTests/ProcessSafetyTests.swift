@@ -99,6 +99,26 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertTrue(rows.last?.content.contains(TalkLoop.interruptedReason) == true, "\(rows.last?.content ?? "")")
     }
 
+    /// A `--send` that was still running when the run ended may have gone in: its stored result says so, and the
+    /// chat's instructions say to check with --wait before sending it again.
+    func testAnInterruptedSendIsStoredAsDeliveryUnknown() throws {
+        let call = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"/A/AssistantBar --send workspace:3 \"run the tests\""}}]}}"#
+        let fake = try script("claude", "printf '%s\\n' '\(call)'\nsleep 30")
+        let children = ChildProcesses()
+        let store = try ConversationStore(url: folder.appendingPathComponent("conversations.db"))
+        let engine = ChatEngine(store: store, memoryFolder: folder.appendingPathComponent("memory"), tool: "/A/AssistantBar",
+                                model: "haiku", effort: nil, windowFor: { _ in 1_000_000 },
+                                runner: { invocation, onLine in
+                                    Asker.run(invocation, tool: "/A/AssistantBar", binary: fake, children: children, onLine: onLine)
+                                }, summarizer: { _ in "## Goal\nx" })
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { children.endAll(reason: TalkLoop.interruptedReason) }
+        _ = engine.ask("Ask workspace 3 to run the tests", fleet: ScanResult()) { _ in }
+        let rows = try store.messages(sessionID: try XCTUnwrap(store.sessions().first?.session.id))
+        XCTAssertTrue(rows.contains { $0.role == .tool && $0.content == StreamTurn.deliveryUnknown }, "\(rows.map(\.content))")
+        XCTAssertFalse(rows.contains { $0.content == StreamTurn.interruptedOutput })
+        XCTAssertTrue(Asker.instructions(tool: "/A/AssistantBar").contains("\"Delivery unknown\": run --wait"))
+    }
+
     /// Stop and Quit end the processes the app started and everything below them, like `--send` under `claude`.
     func testEndingAllAlsoEndsGrandchildren() throws {
         let children = ChildProcesses()
@@ -185,5 +205,77 @@ final class LateChildTests: XCTestCase {
         while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
         if p.isRunning { kill(p.processIdentifier, SIGKILL) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker), "the TERM handler never ran")
+    }
+}
+
+final class FreezeTests: XCTestCase {
+    /// endAll freezes the tree before it looks at it again, so a process can't start another one meanwhile.
+    func testTheTreeIsFrozenBeforeItsWalkedAgain() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        p.arguments = ["30"]
+        try p.run()
+        defer { p.terminate() }
+        let children = ChildProcesses()
+        children.add(p)
+        var states: [String] = []
+        children.endAll {
+            let (_, out) = Shell.run("/bin/ps", ["-o", "stat=", "-p", String(p.processIdentifier)], timeout: 5)
+            states.append(String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+            return [:]
+        }
+        p.waitUntilExit()
+        XCTAssertTrue(states.first?.hasPrefix("T") == true, "not frozen while the tree was walked: \(states)")
+    }
+}
+
+final class DeliveryHoldTests: XCTestCase {
+    var folder: URL!
+
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("hold-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    /// The reviewer's stand-in probe: the run is ended (each process frozen, sent SIGTERM, and let go, as endAll does)
+    /// half a second into a paste whose Enter comes a second later. Pasted without Enter must be impossible: both
+    /// steps finish, and the send learns it should exit.
+    func testEndingTheRunMidSendFinishesThePasteAndTheEnter() throws {
+        let log = folder.appendingPathComponent("log").path
+        let cmux = folder.appendingPathComponent("cmux")
+        try "#!/bin/sh\necho \"start $1\" >> \(log)\nsleep 1\necho \"done $1\" >> \(log)\n".write(to: cmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cmux.path)
+        var result: (paste: (Int32, Data), interrupted: Bool)?
+        let finished = expectation(description: "delivered")
+        DispatchQueue.global().async {
+            result = TerminationHold.pasteAndEnter(cmux.path, paste: ["paste"], enter: ["enter"])
+            finished.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+        let below = ProcessTree.descendants(of: getpid(), parents: ProcessTree.current())
+        XCTAssertFalse(below.isEmpty, "the paste isn't running")
+        below.forEach { kill($0, SIGSTOP) }
+        kill(getpid(), SIGTERM)
+        below.forEach { kill($0, SIGTERM) }
+        below.forEach { kill($0, SIGCONT) }
+        wait(for: [finished], timeout: 10)
+        let lines = (try? String(contentsOfFile: log, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+        XCTAssertEqual(lines, ["start paste", "done paste", "start enter", "done enter"])
+        XCTAssertEqual(result?.paste.0, 0)
+        XCTAssertEqual(result?.interrupted, true)
+    }
+
+    /// Without an interruption the send just carries on, and a failed paste never presses Enter.
+    func testAFailedPasteIsNotFollowedByEnter() throws {
+        let log = folder.appendingPathComponent("log").path
+        let cmux = folder.appendingPathComponent("cmux")
+        try "#!/bin/sh\necho \"$1\" >> \(log)\n[ \"$1\" = paste ] && exit 1\nexit 0\n".write(to: cmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cmux.path)
+        let result = TerminationHold.pasteAndEnter(cmux.path, paste: ["paste"], enter: ["enter"])
+        XCTAssertEqual(result.paste.0, 1)
+        XCTAssertFalse(result.interrupted)
+        XCTAssertEqual(try String(contentsOfFile: log, encoding: .utf8), "paste\n")
     }
 }

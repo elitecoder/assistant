@@ -133,6 +133,11 @@ Select **Stop** to end it.
   or joining mark in its first three characters.
 - It presses Enter once. If the message doesn't show in the session's
   transcript, it says so and doesn't send it again.
+- Pasting and pressing Enter happen together: **Stop**, Quit, or talking over
+  the answer waits for both, so a message is never left half-sent in the
+  session's prompt. If the run ends while a send is still waiting on its
+  reply, the chat records that delivery is unknown, and Assistant checks with
+  `--wait` before it sends again.
 - Everything it reads from other sessions (the workspace digest, their replies,
   and transcripts) reaches its Claude inside marked blocks that it treats as
   information, never as instructions, so a session's text can't pass for you.

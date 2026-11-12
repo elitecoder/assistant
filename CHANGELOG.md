@@ -193,6 +193,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Ending a run mid-`--send` (Stop, Quit, or talking over the answer) no
+  longer leaves the message pasted without its Enter: `--send` holds off
+  SIGTERM, SIGINT, and SIGHUP, in itself and in its two `cmux` calls, until
+  both finish, then exits. A send still open when the run ends is stored as
+  "Delivery unknown", and the chat's Claude checks with `--wait` before
+  sending it again.
 - Untrusted session text reaches the chat's Claude as one JSON string per
   block instead of quoted lines. Line breaks, `<`, `>`, `[`, `]`, anything
   whose compatibility form is one of those, and control and invisible
