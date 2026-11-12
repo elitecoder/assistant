@@ -36,12 +36,6 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - `evals/observer/replay.py` replays past Sonnet checks with the new
   conversation slice and scores other models against them.
 
-### Fixed
-- Keep idle sessions on the Sessions tab. When a transcript's timestamp changed
-  without new text, the session context watcher never noticed, so the session
-  stayed under Sessions not checked yet. On one Mac, 19 of 26 sessions were
-  stuck there. The watcher now rereads a transcript when its timestamp changes.
-
 ### Added
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
@@ -89,6 +83,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   covered 9 items 119 times. Set `ASSISTANT_LESSON_EXTRACTOR=1` or
   `ASSISTANT_STRATEGIST=1` to turn either back on. With the strategist off, the
   goals planner uses its built-in step templates.
+
+### Fixed
+- Keep idle sessions on the Sessions tab. When a transcript's timestamp changed
+  without new text, the session context watcher never noticed, so the session
+  stayed under Sessions not checked yet. On one Mac, 19 of 26 sessions were
+  stuck there. The watcher now rereads a transcript when its timestamp changes.
 
 ### Added
 - Add a **Slack** tab to the dashboard, ported from the standalone focus-board
