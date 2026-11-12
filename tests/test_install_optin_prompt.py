@@ -166,23 +166,87 @@ def test_ws_numberer_remembered_yes_loads(tmp_path):
 
 
 def test_ws_numberer_flag_persists_yes_on_apply(tmp_path):
-    rc, out, home = _run_install(tmp_path, flags=["--apply", "--with-ws-numberer"])
+    rc, out, home = _run_install(tmp_path, opt_in="ws-numberer=no\n",
+                                 flags=["--apply", "--with-ws-numberer"])
     state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
     assert "ws-numberer=yes" in state
 
 
 def test_ws_numberer_adopted_when_already_running(tmp_path):
-    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.cmux-ws-numberer")
+    rc, out, home = _run_install(tmp_path, extra_env={"ASSISTANT_SELF_UPDATE": "1"},
+                                 loaded_label="com.assistant.cmux-ws-numberer")
     assert "cmux-ws-numberer.plist — enabled" in out
 
 
-def test_ws_numberer_not_adopted_when_another_label_runs(tmp_path):
-    rc, out, home = _run_install(tmp_path, loaded_label="com.assistant.unrelated")
+def test_ws_numberer_is_on_by_default(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply"], loaded_label="com.assistant.unrelated")
+    assert "cmux-ws-numberer.plist — enabled" in out
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=yes" in state
+    assert "Library/LaunchAgents/com.assistant.cmux-ws-numberer.plist" in (home / "launchctl.log").read_text()
+
+
+def _bootstraps(home: Path, label: str) -> list[str]:
+    log = home / "launchctl.log"
+    lines = log.read_text().splitlines() if log.exists() else []
+    return [line for line in lines if line.startswith("bootstrap") and label in line]
+
+
+def test_self_update_never_starts_an_undecided_ws_numberer(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply"],
+                                 extra_env={"ASSISTANT_SELF_UPDATE": "1"})
+    assert "cmux-ws-numberer.plist — not enabled" in out
+    state = home / ".assistant" / "feature-opt-in"
+    assert "ws-numberer" not in (state.read_text() if state.exists() else "")
+    assert _bootstraps(home, "cmux-ws-numberer") == []
+
+
+def test_enabled_ws_numberer_loads_even_when_its_plist_is_unchanged(tmp_path):
+    env = installer_env(tmp_path)
+    (tmp_path / ".assistant").mkdir()
+    (tmp_path / ".assistant" / "feature-opt-in").write_text("ws-numberer=yes\n")
+    for _ in range(2):
+        (tmp_path / "launchctl.log").write_text("")
+        r = subprocess.run(["bash", str(INSTALL), "--apply"], capture_output=True, text=True,
+                           env=env, stdin=subprocess.DEVNULL, timeout=90)
+        assert r.returncode == 0, r.stdout[-1500:]
+    assert "enabled but not running → will load" in r.stdout
+    assert _bootstraps(tmp_path, "cmux-ws-numberer")
+
+
+def test_self_update_leaves_a_hand_stopped_ws_numberer_stopped(tmp_path):
+    env = installer_env(tmp_path)
+    (tmp_path / ".assistant").mkdir()
+    (tmp_path / ".assistant" / "feature-opt-in").write_text("ws-numberer=yes\n")
+    for extra in ({}, {"ASSISTANT_SELF_UPDATE": "1"}):
+        (tmp_path / "launchctl.log").write_text("")
+        r = subprocess.run(["bash", str(INSTALL), "--apply"], capture_output=True, text=True,
+                           env={**env, **extra}, stdin=subprocess.DEVNULL, timeout=90)
+        assert r.returncode == 0, r.stdout[-1500:]
+    assert _bootstraps(tmp_path, "cmux-ws-numberer") == []
+
+
+def test_no_ws_numberer_stops_a_running_copy(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply", "--no-ws-numberer"],
+                                 loaded_label="com.assistant.cmux-ws-numberer")
+    assert f"bootout gui/{os.getuid()}/com.assistant.cmux-ws-numberer" in (home / "launchctl.log").read_text()
+
+
+def test_ws_numberer_respects_a_remembered_no(tmp_path):
+    rc, out, home = _run_install(tmp_path, opt_in="ws-numberer=no\n")
     assert "cmux-ws-numberer.plist — not enabled" in out
 
 
+def test_no_ws_numberer_flag_turns_it_off_and_remembers(tmp_path):
+    rc, out, home = _run_install(tmp_path, flags=["--apply", "--no-ws-numberer"])
+    assert "cmux-ws-numberer.plist — not enabled" in out
+    state = (home / ".assistant" / "feature-opt-in").read_text().splitlines()
+    assert "ws-numberer=no" in state
+
+
 def test_ws_numberer_adopted_when_legacy_label_runs(tmp_path):
-    rc, out, home = _run_install(tmp_path, loaded_label="com.mukuls.cmux-ws-numberer")
+    rc, out, home = _run_install(tmp_path, extra_env={"ASSISTANT_SELF_UPDATE": "1"},
+                                 loaded_label="com.mukuls.cmux-ws-numberer")
     assert "cmux-ws-numberer.plist — enabled" in out
 
 
@@ -200,18 +264,19 @@ def test_help_documents_ws_numberer(tmp_path):
                        env=installer_env(tmp_path), stdin=subprocess.DEVNULL, timeout=30)
     assert r.returncode == 0
     assert "--with-ws-numberer   number and color cmux workspaces" in r.stdout
-    assert "cmux-ws-numberer\n       (--with-ws-numberer); comms +" in r.stdout
+    assert "On by default; --no-ws-numberer turns it off." in r.stdout
+    assert "loads by default (--no-ws-numberer to skip)" in r.stdout
 
 
-def test_interactive_apply_offers_ws_numberer(tmp_path):
+def test_interactive_apply_turns_on_ws_numberer_without_asking(tmp_path):
     env = installer_env(tmp_path)
     (tmp_path / ".assistant").mkdir()
-    # Settle the later memory and machine-config prompts so only the three
+    # Settle the later memory and machine-config prompts so only the two
     # feature prompts read answers.
     (tmp_path / ".assistant" / "memory-repo-config.json").write_text("{}\n")
     (tmp_path / ".assistant" / "machine-config-configured").write_text("fixture\n")
     controller, terminal = pty.openpty()
-    os.write(controller, b"n\nn\ny\n")
+    os.write(controller, b"n\nn\n")
     try:
         r = subprocess.run(["bash", str(INSTALL), "--apply"], stdin=terminal,
                            capture_output=True, text=True, env=env, timeout=60)
@@ -219,7 +284,7 @@ def test_interactive_apply_offers_ws_numberer(tmp_path):
         os.close(terminal)
         os.close(controller)
     assert r.returncode == 0, f"{r.stdout[-2000:]}\n{r.stderr[-1000:]}"
-    assert "The workspace numberer adds a [N] suffix to every cmux workspace title" in r.stderr
+    assert "The workspace numberer adds a [N] suffix to every cmux workspace title" not in r.stderr
     state = (tmp_path / ".assistant" / "feature-opt-in").read_text().splitlines()
     assert sorted(state) == ["crash-resume=no", "memory=no", "ws-numberer=yes"]
 

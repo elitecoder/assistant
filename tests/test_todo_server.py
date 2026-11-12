@@ -905,8 +905,24 @@ def test_brief_refresh_rebuilds_the_page_for_same_origin_only(server, monkeypatc
     assert _request(server.base, "POST", "/brief/refresh",
                     headers={"Origin": "https://evil.example"})[0] == 403
     assert renders == []
+    assert _request(server.base, "POST", "/brief/refresh",
+                    headers={"Origin": "null"})[0] == 403
+    assert renders == []
     assert _request(server.base, "POST", "/brief/refresh") == (200, "rebuilt")
     assert renders == [1]
+
+
+def test_mode_switch_needs_the_dashboard_header_and_a_real_origin(server, monkeypatch):
+    calls = []
+    monkeypatch.setattr(mod, "set_mode", lambda value: calls.append(value) or (True, value))
+    assert _request(server.base, "POST", "/mode?value=pro")[0] == 403
+    for origin in ("null", "https://evil.example"):
+        assert _request(server.base, "POST", "/mode?value=pro",
+                        headers={"Origin": origin, "X-Assistant-Human": "1"})[0] == 403
+    assert calls == []
+    assert _request(server.base, "POST", "/mode?value=pro",
+                    headers={"X-Assistant-Human": "1"}) == (200, "pro")
+    assert calls == ["pro"]
 
 
 def test_slack_focus_done_rerenders_the_dashboard(server, slack_home, monkeypatch):

@@ -67,7 +67,9 @@ class InstallPlistCopyContractTests(unittest.TestCase):
             home = Path(td)
             launchctl_log = self._run_installer(home)
             agents = home / "Library" / "LaunchAgents"
-            loaded = launchctl_log.read_text() if launchctl_log.exists() else ""
+            loaded = "\n".join(
+                line for line in (launchctl_log.read_text() if launchctl_log.exists() else "").splitlines()
+                if not line.startswith("print "))
 
             for base in SKIP_PLISTS:
                 # COPIED: the file must actually land so a manual load can work.

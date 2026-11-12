@@ -29,6 +29,7 @@ if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
 from assistant import brief as brief_store
+from assistant import mode
 from assistant import session_guidance
 
 WORLD_PATH = HOME / ".claude/cache/world.json"
@@ -359,6 +360,32 @@ def render_live_sessions(world):
     return "".join(rows), len(sessions)
 
 
+def render_mode_switch(pro: bool, error: str | None = None) -> str:
+    state, verb, target = ("on", "off", "default") if pro else ("off", "on", "pro")
+    problem = (f'<p class="mode-error" role="alert">Your settings file can\'t be read, so '
+               f'Assistant uses default mode. Fix it to switch modes: {e(error)}</p>'
+               if error else "")
+    return (f'<div class="mode-switch" data-mode="{"pro" if pro else "default"}">'
+            f'<p><strong>Pro mode is {state}.</strong> Pro mode adds the Notifications, Decisions, '
+            'Background work, and Connected apps tabs, goals, and the /goal, /attend, /back-off, '
+            f'and /lesson skills.</p>{problem}'
+            f'<button class="btn" id="mode-toggle" onclick="setMode(\'{target}\')">Turn Pro mode {verb}</button> '
+            '<span class="meta" id="mode-status" role="status"></span></div>')
+
+
+def render_restart_alert() -> str:
+    """A top-of-page alert while an update couldn't restart a service."""
+    try:
+        labels = (HOME / ".assistant/service-restart-failed").read_text().split()
+    except OSError:
+        return ""
+    return ('<div class="pulse-health pulse-bad" role="alert">'
+            '<span class="pulse-dot"></span>'
+            f'<span class="pulse-text">An update couldn\'t restart {e(", ".join(labels))}, so it '
+            'still runs old code. The hourly update retries; run ./install.sh --apply to '
+            'retry now.</span></div>')
+
+
 def render_metering_stats():
     """Fleet behavior tiles from the last 7 days of the pulse metering
     log (~/.assistant/metrics.jsonl, written by pulse.py each pulse):
@@ -430,6 +457,12 @@ def _local_hhmm(epoch) -> str:
         return datetime.fromtimestamp(float(epoch)).strftime("%-I:%M %p")
     except (TypeError, ValueError, OSError, OverflowError):
         return "just now"
+
+
+def _unpause_hint(ref: str) -> str:
+    if mode.is_pro():
+        return "Run <code>/attend</code> inside the workspace to remove the pause."
+    return (f"To remove the pause, run <code>{e(shlex.join([str(REPO / 'bin/back-off.py'), 'remove', ref]))}</code>.")
 
 
 def _greeting_for(epoch) -> str:
@@ -566,7 +599,6 @@ def _render_brief_tab_inner():
     except Exception:  # noqa: BLE001 — fall back to the saved daily brief
         brief, live = saved, False
     date_str = brief.get("date") or saved_date
-    snapshot_available = bool(brief)
     built_at = _local_hhmm(brief.get("epoch")) if live else ""
     current = False
     try:
@@ -897,7 +929,7 @@ def _render_brief_tab_inner():
         f'notify {int(budget.get("notify") or 0)}/day — denials are ledgered, '
         f'silence is verified, not assumed</div>')
 
-    seen = (BRIEF_DIR / f"brief-{date_str}.seen.json").exists()
+    seen = (BRIEF_DIR / f"brief-{saved_date}.seen.json").exists()
     seen_note = "seen" if seen else "unseen — viewing this tab records it"
 
     # ─── editorial header: eyebrow · good morning · voice summary ───
@@ -911,7 +943,7 @@ def _render_brief_tab_inner():
         '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
         f'{summary_html}')
 
-    date_attribute = f' data-brief-date="{e(date_str)}"' if snapshot_available else ""
+    date_attribute = f' data-brief-date="{e(saved_date)}"' if saved else ""
     html = f"""
 <div class="brief-root"{date_attribute}>
 {header_html}
@@ -1373,6 +1405,7 @@ def render_workspaces_tab():
                 f'    {since_chip}'
                 f'  </div>'
                 f'  <div class="backoff-card-reason">{e(reason)}</div>'
+                f'  <div class="backoff-hint">{_unpause_hint(ref)}</div>'
                 f'</div>'
             )
 
@@ -1380,7 +1413,6 @@ def render_workspaces_tab():
             f'<div class="backoff-section">'
             f'  <div class="backoff-section-head">'
             f'    <span class="backoff-label">Backed off · {len(backed_off)}</span>'
-            f'    <span class="backoff-hint">run <code>/attend</code> inside the workspace to re-enable</span>'
             f'  </div>'
             f'  {"".join(cards)}'
             f'</div>'
@@ -1520,7 +1552,17 @@ def render_todos_tab(world):
   <h2>Recently completed <span class="count">10 newest</span></h2>
   <div class="feed">{''.join(rows)}</div>
 </div>""")
-    return "".join(sections), p0_p1
+    return _dispatch_cap_notice() + "".join(sections), p0_p1
+
+
+def _dispatch_cap_notice() -> str:
+    """The pulse's "tasks held back" card, shown on the Tasks tab."""
+    cards = load_assistant_state().get("awaiting_input") or []
+    card = next((c for c in cards if isinstance(c, dict) and c.get("key") == "dispatch-cap-hit"), None)
+    if not card:
+        return ""
+    return (f'<div class="section dispatch-cap"><h2>{e(card.get("title") or "Tasks held back")}</h2>'
+            f'<p class="meta">{e(card.get("detail") or "")}</p></div>')
 
 
 def _cmux_workspaces() -> dict[str, dict]:
@@ -1804,7 +1846,7 @@ def render_overview_tab(world):
             ])
             reason += (
                 '<dt>Confirm the pause</dt><dd>After checking this workspace, run '
-                f'<code>{e(command)}</code>. Run /attend inside the workspace to remove the pause.</dd>')
+                f'<code>{e(command)}</code>. {_unpause_hint(ref)}</dd>')
         history = (f'<dt>Earlier note (may be out of date)</dt><dd>{e(card["history"])}</dd>'
                    if card["history"] else "")
         session_text = ", ".join(s.get("session_id") or s.get("tab_id") or "unidentified"
@@ -2588,19 +2630,41 @@ def render():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
         return
     world = json.loads(WORLD_PATH.read_text())
+    pro = mode.is_pro()
+    awaiting_n = None
     overview_html, overview_n = render_overview_tab(world)
-    decisions_html, awaiting_n = render_decisions_tab(world)
-    requests_tab = (f'Decisions <span class="tab-count">{awaiting_n}</span>'
-                    if awaiting_n is not None else "Saved requests")
     todos_html, p0_p1 = render_todos_tab(world)
     workspaces_html, ws_n = render_workspaces_tab()
-    fleet_html, fleet_n = render_fleet_tab()
-    brief_html, brief_n = render_brief_tab()
-    connections_html, connected_n = render_connections_panel(world)
     slack_html, slack_n = render_slack_focus_tab()
     slack_count = f' <span class="tab-count">{slack_n}</span>' if slack_n is not None else ""
+    tabs = [("overview", f'Sessions <span class="tab-count" title="cmux workspaces in the saved list">{overview_n}</span>',
+             overview_html)]
+    if pro:
+        decisions_html, awaiting_n = render_decisions_tab(world)
+        fleet_html, fleet_n = render_fleet_tab()
+        brief_html, _ = render_brief_tab()
+        connections_html, connected_n = render_connections_panel(world)
+        tabs += [
+            ("brief", "Notifications", brief_html),
+            ("decisions", f'Decisions <span class="tab-count">{awaiting_n}</span>'
+             if awaiting_n is not None else "Saved requests", decisions_html),
+        ]
+    tabs.append(("workspaces", "Session details", workspaces_html))
+    if pro:
+        tabs += [
+            ("fleet", f'Background work <span class="tab-count">{fleet_n}</span>', fleet_html),
+            ("connections", f'Connected apps <span class="tab-count">{connected_n}</span>', connections_html),
+        ]
+    tabs += [("slack", f"Slack{slack_count}", slack_html),
+             ("todos", f'Tasks <span class="tab-count">{p0_p1}</span>', todos_html)]
+    tab_buttons = "\n".join(
+        f'  <button class="tab" data-tab="{name}" onclick="showTab(\'{name}\')">\n    {label}\n  </button>'
+        for name, label, _ in tabs)
+    tab_panels = "\n\n".join(
+        f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
-    pulse_alert_html = render_pulse_alert()
+    mode_html = render_mode_switch(pro, mode.config_error())
+    pulse_alert_html = render_pulse_alert() + render_restart_alert()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()
@@ -2717,6 +2781,7 @@ h1 {
 .pulse-warn .pulse-dot {
   background: #d4a04c;
 }
+.mode-error { color: var(--red); }
 .pulse-bad {
   background: rgba(220, 60, 60, 0.08);
   border-color: rgba(220, 60, 60, 0.32);
@@ -3962,11 +4027,11 @@ function showTab(name) {
     }
   }
   let dashboardRefreshing = false;
-  async function refreshDashboard(force = false) {
+  async function refreshDashboard(force = false, replace = false) {
     updateFreshness();
-    if (dashboardRefreshing || location.protocol === 'file:') return;
+    if (dashboardRefreshing || location.protocol === 'file:') return false;
     if (!force && (document.querySelector('.tab-panel.active details[open], .service-details[open]')
-        || document.activeElement?.matches('input,textarea,select'))) return;
+        || document.activeElement?.matches('input,textarea,select'))) return false;
     dashboardRefreshing = true;
     try {
       const expanded = [...document.querySelectorAll('details[open][data-context-key]')]
@@ -3982,7 +4047,7 @@ function showTab(name) {
       const incoming = page.getElementById('dashboard-content');
       const current = document.getElementById('dashboard-content');
       if (!incoming) throw new Error('Dashboard content is unavailable');
-      if (incoming.dataset.renderedAt !== current.dataset.renderedAt) {
+      if (replace || incoming.dataset.renderedAt !== current.dataset.renderedAt) {
         const query = document.getElementById('attention-search').value;
         if (incoming.querySelector('[data-brief-date]')?.dataset.briefDate
             !== current.querySelector('[data-brief-date]')?.dataset.briefDate) {
@@ -3990,7 +4055,8 @@ function showTab(name) {
         }
         current.replaceWith(incoming);
         document.getElementById('attention-search').value = query;
-        showTab((location.hash || '#overview').slice(1));
+        const wanted = (location.hash || '#overview').slice(1);
+        showTab(document.querySelector(`.tab[data-tab="${CSS.escape(wanted)}"]`) ? wanted : 'overview');
         filterAttention(query);
         document.querySelectorAll('details[data-context-key]').forEach(element => {
           if (expanded.includes(element.dataset.contextKey)) element.open = true;
@@ -4006,12 +4072,43 @@ function showTab(name) {
       document.getElementById('refresh-error').textContent = '';
       updateFreshness();
       if (document.querySelector('#slack-focus[data-running="true"]')) slackFocusPoll();
+      return true;
     } catch (error) {
       document.getElementById('refresh-error').textContent = 'Refresh failed: ' + error.message;
+      return false;
     } finally {
       dashboardRefreshing = false;
     }
   }
+async function setMode(value) {
+  const button = document.getElementById('mode-toggle');
+  const status = document.getElementById('mode-status');
+  button.disabled = true;
+  status.textContent = 'Switching…';
+  try {
+    const response = await fetch('/mode?value=' + encodeURIComponent(value),
+      {method: 'POST', headers: {'X-Assistant-Human': '1'}});
+    const message = await response.text();
+    if (!response.ok) throw new Error(message);
+    for (let waited = 0; dashboardRefreshing && waited < 10000; waited += 100) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const refreshed = await refreshDashboard(true, true);
+    if (refreshed && message === value) return;
+    const fresh = document.getElementById('mode-toggle');
+    fresh.textContent = value === 'pro' ? 'Turn Pro mode off' : 'Turn Pro mode on';
+    fresh.setAttribute('onclick', `setMode('${value === 'pro' ? 'default' : 'pro'}')`);
+    fresh.disabled = false;
+    const box = fresh.closest('.mode-switch');
+    box.dataset.mode = value;
+    box.querySelector('strong').textContent = `Pro mode is ${value === 'pro' ? 'on' : 'off'}.`;
+    document.getElementById('mode-status').textContent = refreshed ? message
+      : `Switched to ${value}. Reload the page to see the change.`;
+  } catch (error) {
+    status.textContent = "Couldn't switch: " + error.message;
+    button.disabled = false;
+  }
+}
 // /brief/seen signal (Keel M3): viewing the Brief tab stamps the seen
 // sidecar so the unseen-degradation pass knows the brief was looked at.
 // Fired at most once per page load; failures (server down) are swallowed —
@@ -4043,7 +4140,7 @@ function pingBriefSeen() {
 }
 window.addEventListener('DOMContentLoaded', () => {
   const initial = (window.location.hash || '#overview').replace('#', '');
-  showTab(['overview', 'brief', 'decisions', 'workspaces', 'fleet', 'connections', 'slack', 'todos'].includes(initial) ? initial : 'overview');
+  showTab(document.querySelector(`.tab[data-tab="${CSS.escape(initial)}"]`) ? initial : 'overview');
   updateFreshness();
   setInterval(refreshDashboard, 15000);
   if (document.querySelector('#slack-focus[data-running="true"]')) slackFocusPoll();
@@ -4347,69 +4444,17 @@ document.addEventListener('click', handleTodoToolsClick);
   <span class="meta" id="refresh-note">Checks for updates every 15 seconds.</span>
 </div>
 {pulse_alert_html}
-<details class="service-details" data-context-key="service-health"><summary>Background services and saved data</summary>
+<details class="service-details" data-context-key="service-health"><summary>Settings and background services</summary>
+{mode_html}
 {pulse_health_html}
 <p>The page checks for updates every 15 seconds, except while you're reading expanded details.</p>
 </details>
 
 <div class="tabs">
-  <button class="tab" data-tab="overview" onclick="showTab('overview')">
-    Sessions <span class="tab-count" title="cmux workspaces in the saved list">{overview_n}</span>
-  </button>
-  <button class="tab" data-tab="brief" onclick="showTab('brief')">
-    Notifications
-  </button>
-  <button class="tab" data-tab="decisions" onclick="showTab('decisions')">
-    {requests_tab}
-  </button>
-  <button class="tab" data-tab="workspaces" onclick="showTab('workspaces')">
-    Session details
-  </button>
-  <button class="tab" data-tab="fleet" onclick="showTab('fleet')">
-    Background work <span class="tab-count">{fleet_n}</span>
-  </button>
-  <button class="tab" data-tab="connections" onclick="showTab('connections')">
-    Connected apps <span class="tab-count">{connected_n}</span>
-  </button>
-  <button class="tab" data-tab="slack" onclick="showTab('slack')">
-    Slack{slack_count}
-  </button>
-  <button class="tab" data-tab="todos" onclick="showTab('todos')">
-    Tasks <span class="tab-count">{p0_p1}</span>
-  </button>
+{tab_buttons}
 </div>
 
-<div class="tab-panel" data-panel="overview">
-{overview_html}
-</div>
-
-<div class="tab-panel" data-panel="brief">
-{brief_html}
-</div>
-
-<div class="tab-panel" data-panel="decisions">
-{decisions_html}
-</div>
-
-<div class="tab-panel" data-panel="workspaces">
-{workspaces_html}
-</div>
-
-<div class="tab-panel" data-panel="fleet">
-{fleet_html}
-</div>
-
-<div class="tab-panel" data-panel="connections">
-{connections_html}
-</div>
-
-<div class="tab-panel" data-panel="slack">
-{slack_html}
-</div>
-
-<div class="tab-panel" data-panel="todos">
-{todos_html}
-</div>
+{tab_panels}
 
 <details class="footer"><summary>Technical details</summary>
 <p>Session data: <code>~/.claude/cache/world.json</code>.

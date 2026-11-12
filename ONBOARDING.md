@@ -41,9 +41,10 @@ is idempotent and dry-run by default; re-run it freely.
 
 ### Choose your daemons (opt-in)
 
-A bare `install.sh --apply` installs **CORE only** — the fleet loop and its
+A bare `install.sh --apply` installs **CORE** — the fleet loop and its
 dashboard (pulse, world-scanner, session-context-watcher, assistant-page,
-todo-server). Feature daemons are **off by default**.
+todo-server) — plus workspace numbers. Other feature daemons are **off by
+default**.
 
 **You'll be asked.** When you run `./install.sh --apply` from a normal terminal
 (including the `bash <(curl …)` bootstrap, which runs on your TTY), it offers
@@ -54,13 +55,15 @@ each undecided feature with a one-line explanation and a `[y/N]` prompt:
 Memory sync keeps your lessons + semantic memory identical across all your
 machines (needs a private git repo; only useful on 2+ machines). Enable? [y/N]
 Crash-resume auto-restarts a cmux workspace whose Claude session died … Enable? [y/N]
-The workspace numberer adds a [N] suffix to every cmux workspace title … Enable? [y/N]
 ```
+
+Workspace numbers turn on without a prompt, except during an automatic update,
+which never starts a feature you haven't chosen.
 
 Your answer is remembered in `~/.assistant/feature-opt-in`, so **re-runs never
 re-ask**. A walk-away (60s timeout) leaves it undecided and re-asks next time.
 Headless runs never prompt — the pulse self-update, `curl … | bash` (piped, no
-TTY), and CI all default the features **off**.
+TTY), and CI all default memory sync and crash-resume **off**.
 
 You can also decide up front with flags (which skip the prompt):
 
@@ -68,7 +71,7 @@ You can also decide up front with flags (which skip the prompt):
 |---|---|---|
 | `--with-memory` | `memory-sync-pull` | you run Assistant on **more than one machine** and want lessons/memory to sync between them |
 | `--with-crash-resume` | `workspace-watcher` | you want crashed cmux workspaces auto-resumed |
-| `--with-ws-numberer` | `cmux-ws-numberer` | you want a `[N]` suffix and a distinct sidebar color on every cmux workspace |
+| `--no-ws-numberer` | turns off `cmux-ws-numberer`, which is on by default | you don't want a `[N]` suffix and a distinct sidebar color on every cmux workspace |
 | `--with-all` | all of the above | — |
 
 ```bash

@@ -10,6 +10,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Changed
+- The session check (`ASSISTANT_WATCHER=1`) now runs in default mode too.
+  The other opt-in jobs still need Pro mode.
 - The session check now reads each conversation as plain text: the first
   request plus the latest turns, with attachments, hook output, and thinking
   removed. It used to send a fixed 128 KB slice of the raw log, which was
@@ -52,6 +54,54 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   without new text, the session context watcher never noticed, so the session
   stayed under Sessions not checked yet. On one Mac, 19 of 26 sessions were
   stuck there. The watcher now rereads a transcript when its timestamp changes.
+
+### Added
+- Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
+  Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
+  `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds
+  notifications and triage, goals and the planner, the Notifications,
+  Decisions, Background work, and Connected apps tabs, and the `/goal`,
+  `/attend`, `/back-off`, and `/lesson` skills. The watcher, strategist,
+  lessons extractor, and brief narrator also need Pro mode, and connectors
+  pause before their next check while it's off. Alerts that arrive while Pro
+  mode is off are skipped, not saved for later. Switch modes in the dashboard's
+  **Settings and background services**, or with `./install.sh --apply --pro`
+  and `--no-pro`. The mode is saved as `"mode"` in `~/.assistant/config.json`.
+  If that file can't be read, Assistant uses default mode and the dashboard
+  shows the error next to the switch.
+- **Upgrading:** every existing install stays in Pro mode, because earlier
+  versions installed the Pro skills for everyone. Default mode is for new
+  installs and for anyone who switches. An automatic update never removes
+  skills. When the code of the dashboard server or a connector changes, an
+  update restarts the ones that are running, so the switch works right away.
+  If a restart fails, the dashboard says so and the hourly update retries.
+- Install workspace numbers by default. The installer no longer asks and keeps
+  a remembered "no". An automatic update never starts them if they aren't
+  running. Install with `--no-ws-numberer` to turn them off and stop a running
+  copy.
+
+### Removed
+- Remove the dollars-per-day boxes from the Brief tab and the background-work
+  stats. The model-heavy background jobs that drove that cost are off.
+
+### Changed
+- The Brief tab now rebuilds from your current notifications, completed
+  actions, and service status every time the dashboard updates, instead of
+  showing the copy saved at 7 AM. A **Refresh now** button rebuilds it on the
+  spot. If the live build fails, the tab falls back to the saved copy.
+- Turn off the daily Sonnet call that writes the morning brief's wording. Its
+  summary never showed on the dashboard, and its advice showed only when the
+  live queue couldn't be read. The Brief tab still builds without a model. Set
+  `ASSISTANT_BRIEF_NARRATOR=1` to turn it back on.
+- Turn off the watcher (the Observer) by default, along with its Opus
+  double-check. It sent 40–75K tokens per check, about 870 checks a day. The
+  dashboard's **Waiting on you** tab covers its view without a model. Set
+  `ASSISTANT_WATCHER=1` to turn it back on.
+- Turn off the lessons extractor and the strategist by default. Their output
+  went unread: 689 lesson proposals sat pending, and the strategist's notes
+  covered 9 items 119 times. Set `ASSISTANT_LESSON_EXTRACTOR=1` or
+  `ASSISTANT_STRATEGIST=1` to turn either back on. With the strategist off, the
+  goals planner uses its built-in step templates.
 
 ### Added
 - Add a **Slack** tab to the dashboard, ported from the standalone focus-board
