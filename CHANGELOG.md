@@ -193,6 +193,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Kokoro and Smart Turn files are hashed once per install. A checked file's
+  size, modification time, and checksum are stamped next to it, so the first
+  spoken answer after launch no longer hashes 340 MB; a changed file is hashed
+  again, and one that fails its check downloads again right away.
+- Talking over an answer ends only the chat's `claude` run. A compaction
+  running beside it keeps going; **Stop** still ends both.
 - Ending a run mid-`--send` (Stop, Quit, or talking over the answer) no
   longer leaves the message pasted without its Enter: `--send` holds off
   SIGTERM, SIGINT, and SIGHUP, in itself and in its two `cmux` calls, until

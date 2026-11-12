@@ -40,9 +40,13 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
     /// The files that fail their checksum, checked once before the first load; tests stand in a result.
     private let damaged: () -> [KokoroFile]
     private var verified = false
+    /// Downloads damaged files again; tests record the call instead.
+    private let redownload: (([KokoroFile]) -> Void)?
 
-    init(damaged: @escaping () -> [KokoroFile] = { ModelFiles.needed(Kokoro.files, in: KokoroEngine.folder) }) {
+    init(damaged: @escaping () -> [KokoroFile] = { ModelFiles.needed(Kokoro.files, in: KokoroEngine.folder) },
+         redownload: (([KokoroFile]) -> Void)? = nil) {
         self.damaged = damaged
+        self.redownload = redownload
         super.init()
         if Self.installed { status = .ready }
     }
@@ -147,8 +151,9 @@ final class KokoroEngine: NSObject, URLSessionDownloadDelegate {
         if !verified {
             let bad = damaged()
             guard bad.isEmpty else {
-                voiceLog.error("kokoro: \(bad.map(\.name).joined(separator: ", "), privacy: .public) failed its checksum; it downloads again")
+                voiceLog.error("kokoro: \(bad.map(\.name).joined(separator: ", "), privacy: .public) failed its checksum; downloading again")
                 lock.withLock { status = .notDownloaded }
+                if let redownload { redownload(bad) } else { download() }
                 return false
             }
             verified = true

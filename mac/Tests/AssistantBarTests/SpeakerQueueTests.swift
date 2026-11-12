@@ -112,10 +112,11 @@ final class SpeakerQueueTests: XCTestCase {
 }
 
 final class KokoroVerificationTests: XCTestCase {
-    /// A Kokoro file that fails its checksum isn't loaded; the engine says it needs downloading again.
+    /// A Kokoro file that fails its checksum isn't loaded, and its download starts again.
     func testADamagedVoiceIsNotLoaded() throws {
         try XCTSkipUnless(KokoroEngine.installed && KokoroEngine.supported, "Kokoro voice isn't downloaded on this Mac")
-        let engine = KokoroEngine(damaged: { [Kokoro.model] })
+        var fetched: [String] = []
+        let engine = KokoroEngine(damaged: { [Kokoro.model] }, redownload: { fetched += $0.map(\.name) })
         var result: Bool?
         let done = expectation(description: "done")
         engine.speak("Hello there.", voiceID: Kokoro.voices[0].id, isCurrent: { true }, chunk: { _ in }, done: {
@@ -126,6 +127,7 @@ final class KokoroVerificationTests: XCTestCase {
         XCTAssertEqual(result, false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertEqual(engine.status, .notDownloaded)
+        XCTAssertEqual(fetched, [Kokoro.model.name])
     }
 }
 
@@ -137,7 +139,7 @@ final class StopOffMainTests: XCTestCase {
         defer { unsetenv("ASSISTANT_DB") }
         let model = Model()
         let ended = expectation(description: "ended")
-        model.endChildren = { _ in
+        model.endChildren = { _, _ in
             Thread.sleep(forTimeInterval: 0.5)
             ended.fulfill()
         }

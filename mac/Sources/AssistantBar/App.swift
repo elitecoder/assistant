@@ -381,7 +381,7 @@ final class Model: NSObject, ObservableObject {
                 if !listener.listening { startListening() }
             case .interrupt:
                 stopSpeaking()
-                if asking { endRun(TalkLoop.interruptedReason) }
+                if asking { endRun(TalkLoop.interruptedReason, kinds: [.chat]) }
                 if !listener.listening { startListening() }
             case .watch:
                 if !watch({ [weak self] in self?.step { $0.bargedIn() } }) {
@@ -512,17 +512,18 @@ final class Model: NSObject, ObservableObject {
     /// Reading the process table can take a moment, so it happens off the main thread.
     func stopAsking() {
         turns.clearQueue()
-        endRun(ChildProcesses.stoppedReason)
+        endRun(ChildProcesses.stoppedReason, kinds: [.chat, .background])
     }
 
-    /// Ends the running answer's processes off the main thread; the stored reply says `reason`.
-    private func endRun(_ reason: String) {
+    /// Ends the running answer's processes of `kinds` off the main thread; the stored reply says `reason`. Talking
+    /// over an answer ends only the chat's run; Stop ends the summarizer too.
+    private func endRun(_ reason: String, kinds: Set<ChildProcesses.Kind>) {
         let end = endChildren
-        DispatchQueue.global(qos: .userInitiated).async { end(reason) }
+        DispatchQueue.global(qos: .userInitiated).async { end(reason, kinds) }
     }
 
-    /// Ends every process the app started, recording why; tests replace it.
-    lazy var endChildren: (String) -> Void = { ChildProcesses.shared.endAll(reason: $0) }
+    /// Ends the processes the app started, recording why; tests replace it.
+    lazy var endChildren: (String, Set<ChildProcesses.Kind>) -> Void = { ChildProcesses.shared.endAll(reason: $0, kinds: $1) }
 
     /// Ignored while an answer is running, so its reply can't land in the next chat.
     func newChat() {

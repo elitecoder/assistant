@@ -159,11 +159,13 @@ final class TurnAssemblyTests: XCTestCase {
     }
 
     func testAStoppedRunClosesItsOpenCallAndKeepsTheTurn() {
-        let lines = [Stream.call("a", "/A --send workspace:1 \"go\"")].joined(separator: "\n")
+        let lines = [Stream.call("a", "/A --wait workspace:1")].joined(separator: "\n")
         let record = StreamTurn.record(Data(lines.utf8), stopped: true)
         XCTAssertTrue(record.failed)
         XCTAssertEqual(record.rows.map(\.toolCallID), ["a", "a"])
         XCTAssertEqual(record.rows.last?.content, StreamTurn.interruptedOutput)
+        let send = StreamTurn.record(Data(Stream.call("b", "/A --send workspace:1 \"go\"").utf8), stopped: true)
+        XCTAssertEqual(send.rows.last?.content, StreamTurn.deliveryUnknown, "an open send may have gone in")
         let stored = record.rowsToStore(timestamp: Date())
         XCTAssertEqual(stored.map(\.role), [.assistant, .tool, .assistant])
         XCTAssertEqual(stored.last?.content, "[No reply: Stopped.]")

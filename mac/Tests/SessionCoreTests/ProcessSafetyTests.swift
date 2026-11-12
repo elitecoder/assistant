@@ -208,6 +208,62 @@ final class LateChildTests: XCTestCase {
     }
 }
 
+final class ChildKindTests: XCTestCase {
+    /// Talking over the answer ends only the chat's run: the summarizer compacting the chat beside it keeps going.
+    func testEndingTheChatLeavesBackgroundWorkRunning() throws {
+        func sleeper() throws -> Process {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            p.arguments = ["30"]
+            try p.run()
+            return p
+        }
+        let chat = try sleeper(), summarizer = try sleeper()
+        defer { chat.terminate(); summarizer.terminate() }
+        let children = ChildProcesses()
+        children.add(chat)
+        children.add(summarizer, kind: .background)
+        children.endAll(reason: TalkLoop.interruptedReason, kinds: [.chat])
+        chat.waitUntilExit()
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(summarizer.isRunning, "the summarizer was ended")
+        XCTAssertNil(children.remove(summarizer), "and not marked as stopped")
+        children.add(summarizer, kind: .background)
+        children.endAll()
+        summarizer.waitUntilExit()
+        XCTAssertEqual(summarizer.terminationReason, .uncaughtSignal, "Stop ends it")
+    }
+}
+
+final class SummarizerKindTests: XCTestCase {
+    /// The summarizer is tracked as background work, so talking over an answer doesn't end a compaction.
+    func testTheSummarizerSurvivesTheEndOfTheChatRun() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("summ-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fake = folder.appendingPathComponent("claude")
+        try #"""
+        #!/bin/sh
+        cat > /dev/null
+        sleep 1
+        printf '%s' '{"type":"result","is_error":false,"result":"summary"}'
+        """#
+            .write(to: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+        let children = ChildProcesses()
+        var summary: String?
+        let done = expectation(description: "summarized")
+        DispatchQueue.global().async {
+            summary = try? ClaudeSummarizer.summarize("compact this", model: "haiku", timeout: 30, binary: fake.path, children: children)
+            done.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.4)
+        children.endAll(reason: TalkLoop.interruptedReason, kinds: [.chat])
+        wait(for: [done], timeout: 10)
+        XCTAssertNotNil(summary, "the compaction was ended")
+    }
+}
+
 final class FreezeTests: XCTestCase {
     /// endAll freezes the tree before it looks at it again, so a process can't start another one meanwhile.
     func testTheTreeIsFrozenBeforeItsWalkedAgain() throws {

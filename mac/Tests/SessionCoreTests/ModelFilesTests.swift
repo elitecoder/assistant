@@ -45,6 +45,44 @@ final class ModelFilesTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("model.onnx").path))
     }
 
+    /// A file is hashed once per install: its stamp (size, modification time, checksum) skips the hash on later
+    /// checks, and a changed or damaged file is hashed again.
+    func testAStampedFileIsHashedOncePerInstall() throws {
+        let (model, download) = try file("model.onnx", "weights")
+        XCTAssertTrue(ModelFiles.accept(download, as: model, status: 200, in: folder))
+        var hashed = 0
+        let counting: (URL) throws -> String = { hashed += 1; return try Kokoro.sha256(of: $0) }
+        XCTAssertEqual(ModelFiles.needed([model], in: folder, hash: counting), [])
+        XCTAssertEqual(ModelFiles.needed([model], in: folder, hash: counting), [])
+        XCTAssertEqual(hashed, 0, "the download was stamped when it arrived")
+        let path = folder.appendingPathComponent("model.onnx")
+        let touched = Date(timeIntervalSinceNow: 60)
+        try FileManager.default.setAttributes([.modificationDate: touched], ofItemAtPath: path.path)
+        XCTAssertEqual(ModelFiles.needed([model], in: folder, hash: counting), [])
+        XCTAssertEqual(hashed, 1, "touched: hashed again, then stamped")
+        XCTAssertEqual(ModelFiles.needed([model], in: folder, hash: counting), [])
+        XCTAssertEqual(hashed, 1)
+        try Data("damaged".utf8).write(to: path)
+        XCTAssertEqual(ModelFiles.needed([model], in: folder, hash: counting), [model])
+        XCTAssertEqual(hashed, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path.path))
+        try Data("damaged".utf8).write(to: path)
+        try FileManager.default.setAttributes([.modificationDate: touched], ofItemAtPath: path.path)
+        XCTAssertEqual(ModelFiles.needed([model], in: folder, hash: counting), [model],
+                       "a damaged file's stamp is dropped, so a same-size file with its old time is still checked")
+    }
+
+    /// A file put in place without a stamp (an older install) is hashed once and stamped.
+    func testAnUnstampedFileIsHashedOnceThenStamped() throws {
+        let (model, download) = try file("model.onnx", "weights")
+        try FileManager.default.moveItem(at: download, to: folder.appendingPathComponent("model.onnx"))
+        var hashed = 0
+        let counting: (URL) throws -> String = { hashed += 1; return try Kokoro.sha256(of: $0) }
+        _ = ModelFiles.needed([model], in: folder, hash: counting)
+        _ = ModelFiles.needed([model], in: folder, hash: counting)
+        XCTAssertEqual(hashed, 1)
+    }
+
     /// Every model downloads from a pinned commit or revision, never a moving branch.
     func testModelURLsArePinned() {
         for file in Kokoro.files + SmartTurn.files {

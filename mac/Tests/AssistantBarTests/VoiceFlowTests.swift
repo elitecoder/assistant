@@ -504,7 +504,7 @@ final class StoppingStreamedAnswersTests: XCTestCase {
         model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
         model.askNext = { [unowned self] in self.events.append("ask \($0)") }
         model.speakingNow = { false }
-        model.endChildren = { _ in }
+        model.endChildren = { _, _ in }
         model.watch = { [unowned self] in
             self.bargeIn = $0
             return true
@@ -646,7 +646,10 @@ final class BargeInEndsTheRunTests: XCTestCase {
         }
         model.askNow = asked
         model.askNext = asked
-        model.endChildren = { [unowned self] reason in DispatchQueue.main.async { self.events.append("end \(reason)") } }
+        model.endChildren = { [unowned self] reason, kinds in
+            let what = kinds.contains(.background) ? " and the summarizer" : ""
+            DispatchQueue.main.async { self.events.append("end \(reason)\(what)") }
+        }
         return model
     }
 
@@ -701,12 +704,14 @@ final class BargeInEndsTheRunTests: XCTestCase {
         XCTAssertTrue(m.talkMode)
     }
 
-    /// Stop records "Stopped."; talking over the answer records why the run ended.
+    /// Stop records "Stopped." and ends the summarizer too; talking over the answer ends only the chat's run (the
+    /// barge-in tests above expect "end Interrupted by voice." with no summarizer), so a compaction in progress
+    /// isn't lost.
     func testStopAndBargeInRecordTheirReasons() {
         let m = model()
         m.stopAsking()
-        waitFor("end \(ChildProcesses.stoppedReason)")
-        XCTAssertTrue(events.contains("end \(ChildProcesses.stoppedReason)"))
+        waitFor("end \(ChildProcesses.stoppedReason) and the summarizer")
+        XCTAssertTrue(events.contains("end \(ChildProcesses.stoppedReason) and the summarizer"), "\(events)")
     }
 }
 

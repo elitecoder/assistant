@@ -409,8 +409,9 @@ public enum ClaudeSummarizer {
         { request in try summarize(request.prompt, model: model, timeout: timeout) }
     }
 
-    static func summarize(_ prompt: String, model: String, timeout: TimeInterval) throws -> String {
-        guard let claude = ClaudeSandbox.binary else { throw SummaryError.noProvider }
+    static func summarize(_ prompt: String, model: String, timeout: TimeInterval, binary: String? = ClaudeSandbox.binary,
+                          children: ChildProcesses = .shared) throws -> String {
+        guard let claude = binary else { throw SummaryError.noProvider }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: claude)
         p.arguments = arguments(model: model)
@@ -421,8 +422,8 @@ public enum ClaudeSummarizer {
         p.standardOutput = output
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { throw SummaryError.noProvider }
-        ChildProcesses.shared.add(p)
-        defer { ChildProcesses.shared.remove(p) }
+        children.add(p, kind: .background)
+        defer { children.remove(p) }
         var timedOut = false
         let killer = DispatchWorkItem { timedOut = true; p.terminate() }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
