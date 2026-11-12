@@ -58,15 +58,14 @@ enum Messenger {
         if let found = folders.filter({ !$0.hasPrefix("-private-") })
             .map({ projects.appendingPathComponent($0).appendingPathComponent(session.id + ".jsonl") })
             .first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
-            guard let cwd else { return (found, nil) }
-            let live = live(found, session, cwd: cwd, processes)
+            let live = live(found, session, processes)
             return (live.url, live.note)
         }
         guard let cwd else { return nil }
         return (projects.appendingPathComponent(Messaging.projectFolder(cwd)).appendingPathComponent(session.id + ".jsonl"), nil)
     }
 
-    static func live(_ named: URL, _ session: Messaging.Session, cwd: String, _ processes: Processes) -> Messaging.LiveTranscript {
+    static func live(_ named: URL, _ session: Messaging.Session, _ processes: Processes) -> Messaging.LiveTranscript {
         guard let start = processStart(session.pid) else { return Messaging.LiveTranscript(url: named, note: nil) }
         let folder = named.deletingLastPathComponent()
         let keys: Set<URLResourceKey> = [.creationDateKey, .contentModificationDateKey]
@@ -79,13 +78,13 @@ enum Messenger {
             if url == named { namedModified = m }
             guard url != named, c >= start, let handle = try? FileHandle(forReadingFrom: url) else { return nil }
             defer { try? handle.close() }
-            let head = Messaging.transcriptStart((try? handle.read(upToCount: 64 * 1024)) ?? Data())
-            return Messaging.TranscriptCandidate(url: url, created: c, modified: m, cwd: head.cwd, startsWithClear: head.startsWithClear)
+            let head = Messaging.transcriptStart((try? handle.read(upToCount: 1 << 20)) ?? Data())
+            return Messaging.TranscriptCandidate(url: url, created: c, modified: m, startsWithClear: head.startsWithClear,
+                                                 linkedSessions: head.linkedSessions)
         }
         let others = processes.all.filter { $0.pid != session.pid }
-        return Messaging.liveTranscript(named: named, namedModified: namedModified, cwd: cwd, processStart: start,
-                                        candidates: candidates, ownedByOthers: Set(others.compactMap(\.sessionID)),
-                                        othersInSameDirectory: others.contains { processes.cwds[$0.pid] == cwd })
+        return Messaging.liveTranscript(named: named, sessionID: session.id, namedModified: namedModified, processStart: start,
+                                        candidates: candidates, ownedByOthers: Set(others.compactMap(\.sessionID)))
     }
 
     static func processStart(_ pid: Int32) -> Date? {

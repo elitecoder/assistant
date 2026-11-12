@@ -144,23 +144,26 @@ public enum Messaging {
         public let url: URL
         public let created: Date
         public let modified: Date
-        /// The working directory its first entries record.
-        public let cwd: String?
         /// Its first entries hold the /clear command, as a transcript started by /clear does.
         public let startsWithClear: Bool
+        /// The process-level session IDs its entries carry (`session_id`) other than the file's own: after /clear,
+        /// Claude Code keeps stamping the new file's entries with the ID the process was started with.
+        public let linkedSessions: Set<String>
 
-        public init(url: URL, created: Date, modified: Date, cwd: String?, startsWithClear: Bool) {
+        public init(url: URL, created: Date, modified: Date, startsWithClear: Bool, linkedSessions: Set<String>) {
             self.url = url
             self.created = created
             self.modified = modified
-            self.cwd = cwd
             self.startsWithClear = startsWithClear
+            self.linkedSessions = linkedSessions
         }
+
+        var id: String { url.deletingPathExtension().lastPathComponent }
     }
 
     public struct LiveTranscript: Equatable {
         public let url: URL
-        /// Set when there may have been a /clear but the new transcript can't be told apart from another session's.
+        /// Set when there may have been a /clear but the new transcript can't be tied to this session.
         public let note: String?
 
         public init(url: URL, note: String?) {
@@ -169,38 +172,33 @@ public enum Messaging {
         }
     }
 
-    public static let ambiguousTranscriptNote = "This session may have been cleared, and its new transcript can't be told "
-        + "apart from another session's in the same folder, so this uses the transcript its process names. Its reply may be old."
+    public static let ambiguousTranscriptNote = "This session may have been cleared, and no newer transcript can be tied "
+        + "to it yet, so this uses the transcript its process names. Its reply may be old."
 
     /// The transcript a session writes now. After /clear Claude writes to a new file, but the process arguments still
-    /// name the old one. Switch only on evidence: a file in the same folder whose first entries are the /clear
-    /// command in this session's working directory, created after this process started and after the current file
-    /// stopped growing, and not named by any other live `claude` process. If another live `claude` process works in
-    /// the same directory (it could own a file it doesn't name), or two files that fit overlap in time, keep the
-    /// current file and say so. Follows a session cleared more than once, one file after another.
-    public static func liveTranscript(named: URL, namedModified: Date?, cwd: String, processStart: Date,
-                                      candidates: [TranscriptCandidate], ownedByOthers: Set<String>,
-                                      othersInSameDirectory: Bool) -> LiveTranscript {
+    /// name the old one. Switch only to a file whose own entries name this session's process: they carry its session
+    /// ID, or the ID of a file already followed (a session cleared more than once). A file whose entries name another
+    /// session is someone else's, whether that session still runs or has exited, and is never followed. A file that
+    /// starts with /clear after the current one stopped growing but doesn't name any session yet (a cleared session
+    /// that hasn't had a prompt, another session in the folder, or this one after changing directory) can't be told
+    /// apart: keep the current file and say so.
+    public static func liveTranscript(named: URL, sessionID: String, namedModified: Date?, processStart: Date,
+                                      candidates: [TranscriptCandidate], ownedByOthers: Set<String>) -> LiveTranscript {
         var current = named
         var stopped = namedModified ?? .distantPast
+        var chain: Set<String> = [sessionID, named.deletingPathExtension().lastPathComponent]
         var seen: Set<URL> = [named]
         while true {
-            let next = candidates.filter { c in
-                !seen.contains(c.url) && c.startsWithClear && c.cwd == cwd && c.created >= processStart
-                    && c.created >= stopped.addingTimeInterval(-2)
-                    && !ownedByOthers.contains(c.url.deletingPathExtension().lastPathComponent)
+            let pool = candidates.filter { !seen.contains($0.url) && $0.created >= processStart && !ownedByOthers.contains($0.id) }
+            if let next = pool.filter({ !$0.linkedSessions.isDisjoint(with: chain) }).min(by: { $0.created < $1.created }) {
+                current = next.url
+                stopped = next.modified
+                chain.insert(next.id)
+                seen.insert(next.url)
+                continue
             }
-            let ordered = next.sorted { $0.created < $1.created }
-            guard let first = ordered.first else { return LiveTranscript(url: current, note: nil) }
-            // A later file is a second /clear only if it began after this one stopped growing; overlapping files
-            // are two sessions.
-            let overlaps = ordered.dropFirst().contains { $0.created < first.modified.addingTimeInterval(-2) }
-            guard !overlaps, !othersInSameDirectory else {
-                return LiveTranscript(url: current, note: ambiguousTranscriptNote)
-            }
-            current = first.url
-            stopped = first.modified
-            seen.insert(first.url)
+            let unsure = pool.contains { $0.startsWithClear && $0.linkedSessions.isEmpty && $0.created >= stopped.addingTimeInterval(-2) }
+            return LiveTranscript(url: current, note: unsure ? ambiguousTranscriptNote : nil)
         }
     }
 
@@ -218,17 +216,20 @@ public enum Messaging {
         }
     }
 
-    /// Reads a candidate's first entries: the working directory they record and whether they hold /clear.
-    public static func transcriptStart(_ data: Data) -> (cwd: String?, startsWithClear: Bool) {
-        var cwd: String?
+    /// Reads a candidate's first entries: whether they hold /clear, and the process-level session IDs they carry
+    /// other than the file's own.
+    public static func transcriptStart(_ data: Data) -> (startsWithClear: Bool, linkedSessions: Set<String>) {
         var clear = false
-        for line in Transcript.lines(data).prefix(12) {
+        var own: Set<String> = []
+        var stamped: Set<String> = []
+        for (i, line) in Transcript.lines(data).prefix(400).enumerated() {
             guard let r = Transcript.record(line) else { continue }
-            if cwd == nil { cwd = r["cwd"] as? String }
-            if r["type"] as? String == "user", let text = Transcript.humanText(r, skipping: false),
+            if let id = r["sessionId"] as? String { own.insert(id) }
+            if let id = r["session_id"] as? String { stamped.insert(id) }
+            if i < 12, r["type"] as? String == "user", let text = Transcript.humanText(r, skipping: false),
                text.contains("<command-name>/clear</command-name>") { clear = true }
         }
-        return (cwd, clear)
+        return (clear, stamped.subtracting(own))
     }
 
     /// The ~/.claude/projects folder name Claude uses for a working directory.
