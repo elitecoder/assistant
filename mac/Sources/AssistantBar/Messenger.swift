@@ -84,7 +84,7 @@ enum Messenger {
         }
         let others = processes.all.filter { $0.pid != session.pid }
         return Messaging.liveTranscript(named: named, sessionID: session.id, namedModified: namedModified, processStart: start,
-                                        candidates: candidates, ownedByOthers: Set(others.compactMap(\.sessionID)))
+                                        candidates: candidates, others: others.map(\.sessionID))
     }
 
     static func processStart(_ pid: Int32) -> Date? {

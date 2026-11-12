@@ -64,10 +64,13 @@ public enum Messaging {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
             guard parts.count > 4, let pid = Int32(parts[0]), parts[1] != "??",
                   parts[2].hasSuffix("/claude") || parts[2] == "claude" else { continue }
-            for flag in ["--session-id", "--resume"] {
-                if let i = parts.firstIndex(of: flag), i + 1 < parts.count, UUID(uuidString: parts[i + 1]) != nil {
-                    out[parts[1]] = Session(id: parts[i + 1], pid: pid)
-                }
+            // With both flags, Claude Code writes the --session-id transcript (checked on a live session); --resume
+            // names the conversation it was started from.
+            if let id = ["--session-id", "--resume"].lazy.compactMap({ flag -> String? in
+                guard let i = parts.firstIndex(of: flag), i + 1 < parts.count, UUID(uuidString: parts[i + 1]) != nil else { return nil }
+                return parts[i + 1]
+            }).first {
+                out[parts[1]] = Session(id: id, pid: pid)
             }
         }
         return out
@@ -184,22 +187,31 @@ public enum Messaging {
     public static let ambiguousTranscriptNote = "This session may have been cleared, and no newer transcript can be tied "
         + "to it yet, so this uses the transcript its process names. Its reply may be old."
 
+    public static let sharedSessionNote = "More than one running session was started from this conversation, so its "
+        + "newer transcripts can't be told apart, and this uses the transcript its process names. Its reply may be old."
+
     /// The transcript a session writes now. After /clear Claude writes to a new file, but the process arguments still
     /// name the old one. Switch only to a file whose own entries name this session's process: they carry its session
     /// ID, or the ID of a file already followed (a session cleared more than once). A file whose entries name another
     /// session is someone else's, whether that session still runs or has exited, and is never followed. A file that
     /// starts with /clear after the current one stopped growing but doesn't name any session yet (a cleared session
     /// that hasn't had a prompt, another session in the folder, or this one after changing directory) can't be told
-    /// apart: keep the current file and say so.
+    /// apart: keep the current file and say so. A linked file is followed only once the current one stopped growing,
+    /// and never when more than one live process claims this session's ID (two resumes of one conversation stamp the
+    /// same ID), since then either could have written it.
     public static func liveTranscript(named: URL, sessionID: String, namedModified: Date?, processStart: Date,
-                                      candidates: [TranscriptCandidate], ownedByOthers: Set<String>) -> LiveTranscript {
+                                      candidates: [TranscriptCandidate], others: [String?]) -> LiveTranscript {
+        let ownedByOthers = Set(others.compactMap { $0 })
+        let sharedID = ownedByOthers.contains(sessionID)
         var current = named
         var stopped = namedModified ?? .distantPast
         var chain: Set<String> = [sessionID, named.deletingPathExtension().lastPathComponent]
         var seen: Set<URL> = [named]
         while true {
             let pool = candidates.filter { !seen.contains($0.url) && $0.created >= processStart && !ownedByOthers.contains($0.id) }
-            if let next = pool.filter({ !$0.linkedSessions.isDisjoint(with: chain) }).min(by: { $0.created < $1.created }) {
+            let linked = pool.filter { !$0.linkedSessions.isDisjoint(with: chain) }
+            if sharedID && !linked.isEmpty { return LiveTranscript(url: current, note: sharedSessionNote) }
+            if let next = linked.filter({ $0.created >= stopped.addingTimeInterval(-2) }).min(by: { $0.created < $1.created }) {
                 current = next.url
                 stopped = next.modified
                 chain.insert(next.id)

@@ -160,10 +160,26 @@ final class DeliveryTests: XCTestCase {
     }
 
     func live(_ candidates: [Messaging.TranscriptCandidate], namedModified: TimeInterval = 100,
-              owned: Set<String> = []) -> Messaging.LiveTranscript {
+              others: [String?] = []) -> Messaging.LiveTranscript {
         Messaging.liveTranscript(named: folder.appendingPathComponent("aaaa.jsonl"), sessionID: session,
                                  namedModified: start.addingTimeInterval(namedModified), processStart: start,
-                                 candidates: candidates, ownedByOthers: owned)
+                                 candidates: candidates, others: others)
+    }
+
+    /// The reviewer's round-4 case: two live processes resumed from one conversation both stamp its ID, so either
+    /// could have written a linked file. Keep the named file and say so.
+    func testTwoResumesOfOneConversationFollowNeither() {
+        let mine = candidate("bbbb", created: 101, modified: 200), theirs = candidate("cccc", created: 150, modified: 210)
+        let result = live([mine, theirs], others: ["aaaa", nil])
+        XCTAssertEqual(result.url.lastPathComponent, "aaaa.jsonl")
+        XCTAssertEqual(result.note, Messaging.sharedSessionNote)
+        XCTAssertEqual(live([], others: ["aaaa"]).note, nil, "nothing linked, nothing to doubt")
+    }
+
+    /// A linked file that began while the current one was still being written (a fork, say) isn't a /clear of it.
+    func testALinkedFileFromWhileTheNamedOneGrewIsNotFollowed() {
+        let fork = candidate("ffff", created: 50, modified: 300)
+        XCTAssertEqual(live([fork], namedModified: 100).url.lastPathComponent, "aaaa.jsonl")
     }
 
     /// After /clear the session writes a new transcript whose entries still carry the process's session ID.
@@ -205,7 +221,7 @@ final class DeliveryTests: XCTestCase {
     func testOnlyAFileNamingThisSessionSwitches() {
         XCTAssertEqual(live([candidate("bbbb", created: -10, modified: 200)], namedModified: -50).url.lastPathComponent,
                        "aaaa.jsonl", "created before this process started (a resumed session): an exited session's")
-        XCTAssertEqual(live([candidate("bbbb", created: 101, modified: 200)], owned: ["bbbb"]).url.lastPathComponent,
+        XCTAssertEqual(live([candidate("bbbb", created: 101, modified: 200)], others: ["bbbb", nil]).url.lastPathComponent,
                        "aaaa.jsonl", "another live process names it")
         XCTAssertNil(live([candidate("bbbb", created: 50, modified: 200, linked: [])]).note,
                      "a file begun while the named one was still growing isn't this session's clear")

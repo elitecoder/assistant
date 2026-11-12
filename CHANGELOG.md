@@ -193,6 +193,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- When two running sessions were resumed from one conversation, Assistant no
+  longer follows either one's newer transcript; it keeps the transcript the
+  process names and says so. A linked transcript is followed only after the
+  current one stopped growing, and a session started with both `--session-id`
+  and `--resume` is read from its `--session-id` transcript.
 - `--send` and `--wait` stop waiting after 100 seconds, under the 2-minute
   timeout of Claude Code's Bash tool, and print "STILL WORKING: the message was
   delivered; run --wait <workspace> to keep waiting. Don't send it again." The
