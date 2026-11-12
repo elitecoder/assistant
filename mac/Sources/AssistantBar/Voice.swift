@@ -8,27 +8,47 @@ import Speech
 
 let voiceLog = Logger(subsystem: "com.assistant.sessions", category: "voice")
 
+enum MicrophoneFailure: Error {
+    /// No usable format yet, common right after access is granted.
+    case notReady
+    case failed(String)
+}
+
+/// A microphone ready to start, so tests can stand in for the real one.
+protocol MicrophoneSource: AnyObject {
+    var mic: Microphone { get }
+    /// The device changed in a way the tap no longer fits, so the next press builds a new one.
+    var stale: Bool { get }
+    /// Starts the microphone; returns why it failed, if it did. `lost` runs, on any thread, if the microphone goes
+    /// away or stops while running.
+    func start(_ sink: @escaping (AVAudioPCMBuffer) -> Void, lost: @escaping () -> Void) -> String?
+    /// Stops the microphone and prepares it again for the next press.
+    func stop()
+    func discard()
+}
+
 /// One AVAudioEngine bound to one microphone, with its tap installed and the engine prepared but not started, so a
 /// press only has to start it. Building one takes 0.5 to 1.5 seconds, most of it waiting for the device switch.
-final class MicrophoneInput {
-    enum Failure: Error {
-        /// No usable format yet, common right after access is granted.
-        case notReady
-        case failed(String)
-    }
-
+final class MicrophoneInput: MicrophoneSource {
     let mic: Microphone
     let engine = AVAudioEngine()
-    private(set) var stale = false
     private let lock = NSLock()
     private var sink: ((AVAudioPCMBuffer) -> Void)?
+    private var lost: (() -> Void)?
+    private var _stale = false
     private var observer: NSObjectProtocol?
 
     private init(mic: Microphone) { self.mic = mic }
 
     deinit { observer.map(NotificationCenter.default.removeObserver) }
 
-    static func make(_ mic: Microphone) -> Result<MicrophoneInput, Failure> {
+    var stale: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _stale
+    }
+
+    static func make(_ mic: Microphone) -> Result<MicrophoneSource, MicrophoneFailure> {
         let built = MicrophoneInput(mic: mic)
         let input = built.engine.inputNode
         if let unit = input.audioUnit {
@@ -58,12 +78,26 @@ final class MicrophoneInput {
         let tapped = AudioShape(sampleRate: format.sampleRate, channels: format.channelCount)
         built.observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
                                                                 object: built.engine, queue: nil) { [weak built] _ in
-            let now = InputDevice.inputShape(mic.id)
-            let fits = Microphones.tapStillFits(tapped, device: now)
-            voiceLog.notice("\(mic.name, privacy: .public) changed configuration (\(now?.sampleRate ?? 0) Hz), \(fits ? "tap still fits" : "rebuilding", privacy: .public)")
-            if !fits { built?.stale = true }
+            built?.changed(fits: Microphones.tapStillFits(tapped, device: InputDevice.inputShape(mic.id)))
         }
         return .success(built)
+    }
+
+    /// The device changed. A running engine stops itself on a change, so it restarts when the tap still fits and
+    /// reports the microphone lost when it doesn't.
+    private func changed(fits: Bool) {
+        voiceLog.notice("\(self.mic.name, privacy: .public) changed configuration, \(fits ? "tap still fits" : "tap no longer fits", privacy: .public)")
+        lock.lock()
+        if !fits { _stale = true }
+        let running = sink != nil
+        let lost = lost
+        lock.unlock()
+        guard running else { return }
+        var restarted = false
+        if fits, !engine.isRunning {
+            _ = AssistantCatchException { restarted = (try? self.engine.start()) != nil }
+        }
+        if !fits || (!engine.isRunning && !restarted) { lost?() }
     }
 
     private func deliver(_ buffer: AVAudioPCMBuffer) {
@@ -73,10 +107,10 @@ final class MicrophoneInput {
         sink?(buffer)
     }
 
-    /// Starts the microphone; returns why it failed, if it did.
-    func start(_ sink: @escaping (AVAudioPCMBuffer) -> Void) -> String? {
+    func start(_ sink: @escaping (AVAudioPCMBuffer) -> Void, lost: @escaping () -> Void) -> String? {
         lock.lock()
         self.sink = sink
+        self.lost = lost
         lock.unlock()
         var startError: Error?
         let raised = AssistantCatchException {
@@ -88,10 +122,10 @@ final class MicrophoneInput {
         return reason
     }
 
-    /// Stops the microphone and prepares it again for the next press.
     func stop() {
         lock.lock()
         sink = nil
+        lost = nil
         lock.unlock()
         engine.stop()
         _ = AssistantCatchException { self.engine.prepare() }
@@ -103,9 +137,92 @@ final class MicrophoneInput {
     }
 }
 
+/// The speech recognizers a question can use, so tests can stand in for them.
+protocol Recognizers: AnyObject {
+    var state: SpeechModelState { get }
+    var onState: ((SpeechModelState) -> Void)? { get set }
+    var vocabulary: [String] { get set }
+    /// Whether the next question needs speech recognition access (the older recognizer does).
+    var needsSpeechAccess: Bool { get }
+    func warm()
+    func session(onText: @escaping (String) -> Void, onError: @escaping (NSError) -> Void) -> SpeechSession?
+}
+
+/// SpeechAnalyzer when its model is ready, SFSpeechRecognizer otherwise. A question that starts before the analyzer
+/// is ready waits at most `analyzerWait` for it, then goes to the older recognizer with the audio heard so far.
+final class LiveRecognizers: Recognizers {
+    static let analyzerWait: TimeInterval = 1.5
+    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private var model: AnyObject?
+    var onState: ((SpeechModelState) -> Void)?
+    var vocabulary = Vocabulary.terms {
+        didSet { if #available(macOS 26, *) { (model as? AnalyzerModel)?.vocabulary = vocabulary } }
+    }
+
+    init() {
+        if #available(macOS 26, *) {
+            let model = AnalyzerModel()
+            model.pool.onState = { [weak self] in self?.onState?($0) }
+            self.model = model
+        }
+    }
+
+    var state: SpeechModelState {
+        if #available(macOS 26, *), let model = model as? AnalyzerModel { return model.pool.state }
+        return .unavailable
+    }
+
+    var choice: SpeechRecognizerChoice { SpeechRecognizerChoice.choose(analyzerOS: model != nil, model: state) }
+
+    var needsSpeechAccess: Bool { choice == .legacy }
+
+    func warm() {
+        if #available(macOS 26, *), let model = model as? AnalyzerModel { model.pool.warm() }
+    }
+
+    func session(onText: @escaping (String) -> Void, onError: @escaping (NSError) -> Void) -> SpeechSession? {
+        session(limit: Self.analyzerWait, onText: onText, onError: onError)
+    }
+
+    /// `limit` nil waits as long as the analyzer takes to get ready, for a file.
+    func session(limit: TimeInterval?, onText: @escaping (String) -> Void,
+                 onError: @escaping (NSError) -> Void) -> SpeechSession? {
+        let vocabulary = vocabulary
+        let legacy = { [recognizer] () -> SpeechSession? in
+            guard Listener.speechAccess == .granted else { return nil }
+            return LegacySession(recognizer: recognizer, vocabulary: vocabulary, onText: onText, onError: onError)
+        }
+        if choice == .analyzer, #available(macOS 26, *), let model = model as? AnalyzerModel {
+            voiceLog.notice("speech: using SpeechAnalyzer")
+            let pool = model.pool
+            return AnalyzerSession(take: { try await pool.take(within: limit) }, fallback: legacy, onText: onText,
+                                   onError: onError)
+        }
+        voiceLog.notice("speech: using SFSpeechRecognizer")
+        return LegacySession(recognizer: recognizer, vocabulary: vocabulary, onText: onText, onError: onError)
+    }
+}
+
 /// Hears one spoken question, then hands its text to `onHeard` after a pause in speech.
 /// A microphone that sends pure silence is skipped for the next one, the way call apps do.
 final class Listener: ObservableObject {
+    struct Dependencies {
+        var access: () -> (mic: Access, speech: Access)
+        var requestAccess: (_ needsSpeech: Bool, _ done: @escaping (_ mic: Bool, _ speech: Bool) -> Void) -> Void
+        var choose: (_ excluding: Set<UInt32>) -> Microphone?
+        var open: (Microphone) -> Result<MicrophoneSource, MicrophoneFailure>
+        var recognizers: Recognizers
+
+        static func live() -> Dependencies {
+            Dependencies(access: { (Listener.micAccess, Listener.speechAccess) }, requestAccess: { needsSpeech, done in
+                AVCaptureDevice.requestAccess(for: .audio) { mic in
+                    guard needsSpeech else { return done(mic, true) }
+                    SFSpeechRecognizer.requestAuthorization { done(mic, $0 == .authorized) }
+                }
+            }, choose: { InputDevice.chosen(excluding: $0) }, open: MicrophoneInput.make, recognizers: LiveRecognizers())
+        }
+    }
+
     @Published var listening = false
     @Published var soundArrived = false
     @Published var finishing = false
@@ -117,20 +234,31 @@ final class Listener: ObservableObject {
     static let bars = 36
     var onHeard: ((String) -> Void)?
     var onProblem: ((String) -> Void)?
+    /// The microphone went away mid-question: what was heard so far, and a note saying so.
+    var onInterrupted: ((_ heard: String, _ note: String) -> Void)?
+    /// Listening has ended, whatever the outcome.
+    var onEnded: (() -> Void)?
+
+    var pauseAfterWords: TimeInterval = 2.5
+    var pauseBeforeWords: TimeInterval = 6
+    var formatRetryDelay: TimeInterval = 0.5
+
+    static let disconnectedNote = "The microphone disconnected. What I heard is in the box: send it or clear it."
 
     /// Workspace titles and other words to bias recognition toward.
-    var vocabulary = Vocabulary.terms {
-        didSet { if #available(macOS 26, *) { (analyzerModel as? AnalyzerModel)?.vocabulary = vocabulary } }
+    var vocabulary: [String] {
+        get { deps.recognizers.vocabulary }
+        set { deps.recognizers.vocabulary = newValue }
     }
 
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private let deps: Dependencies
     private let audio = DispatchQueue(label: "assistant.microphone", qos: .userInteractive)
     /// Touched only on `audio`.
-    private var prepared: MicrophoneInput?
-    private var running: MicrophoneInput?
+    private var prepared: MicrophoneSource?
+    private var running: MicrophoneSource?
     private var speech: SpeechSession?
-    /// The recognizer finishing the last question, kept alive until its final text arrives.
-    private var closing: SpeechSession?
+    /// Recognizers finishing earlier questions, kept alive until their final text arrives.
+    private var closing: [UUID: SpeechSession] = [:]
     private var pause: Timer?
     private var loudest: Float = 0
     private var micID: UInt32?
@@ -138,32 +266,24 @@ final class Listener: ObservableObject {
     private var formatRetried = Set<UInt32>()
     private var buffers = 0
     private var droppedBuffers = 0
-    private var startedAt = Date()
-    private var gotSignal = false
-    private var silenceAllowance: TimeInterval = 0.7
+    private var watch = SilenceWatch(allowance: 0.7)
+    /// One microphone attempt; a skip or a retry starts another within the same question.
     private var session = UUID()
+    /// One press.
+    private var question = UUID()
     private var pressedAt = Date()
 
-    private lazy var analyzerModel: AnyObject? = {
-        guard #available(macOS 26, *) else { return nil }
-        let model = AnalyzerModel()
-        model.vocabulary = vocabulary
-        model.onState = { [weak self] in self?.model = $0 }
-        return model
-    }()
-
-    private var analyzerOS: Bool {
-        if #available(macOS 26, *) { return true }
-        return false
+    init(_ deps: Dependencies = .live()) {
+        self.deps = deps
+        model = deps.recognizers.state
+        deps.recognizers.onState = { [weak self] in self?.model = $0 }
     }
-
-    var choice: SpeechRecognizerChoice { SpeechRecognizerChoice.choose(analyzerOS: analyzerOS, model: model) }
 
     func toggle() { listening ? stop() : start() }
 
     var choices: [String] { InputDevice.all().filter { !$0.virtual }.map(\.name) }
 
-    var current: String? { listening ? microphone : InputDevice.chosen()?.name }
+    var current: String? { listening ? microphone : deps.choose([])?.name }
 
     func use(_ name: String) {
         InputDevice.preferred = name
@@ -196,22 +316,22 @@ final class Listener: ObservableObject {
 
     /// Gets the speech model and the chosen microphone ready without starting either, so the next press is quick.
     func prepare() {
-        if #available(macOS 26, *) { (analyzerModel as? AnalyzerModel)?.warm() }
+        deps.recognizers.warm()
         prewarm()
     }
 
     private func prewarm() {
-        guard !listening, Self.micAccess == .granted, let mic = InputDevice.chosen() else { return }
+        guard !listening, deps.access().mic == .granted, let mic = deps.choose([]) else { return }
         audio.async { _ = self.input(for: mic) }
     }
 
     /// The prepared input for `mic`, building one if needed. Runs on `audio`.
-    private func input(for mic: Microphone) -> Result<MicrophoneInput, MicrophoneInput.Failure> {
+    private func input(for mic: Microphone) -> Result<MicrophoneSource, MicrophoneFailure> {
         if let prepared, prepared.mic.id == mic.id, !prepared.stale { return .success(prepared) }
         prepared?.discard()
         prepared = nil
         let started = Date()
-        let made = MicrophoneInput.make(mic)
+        let made = deps.open(mic)
         if case .success(let input) = made {
             prepared = input
             voiceLog.notice("prepared \(mic.name, privacy: .public) in \(milliseconds(since: started), privacy: .public)")
@@ -222,48 +342,56 @@ final class Listener: ObservableObject {
     func start() {
         pressedAt = Date()
         voiceLog.notice("timing: pressed")
+        question = UUID()
         tried = []
         formatRetried = []
         note = nil
         heard = ""
         soundArrived = false
         levels = [Float](repeating: 0, count: Self.bars)
-        let needsSpeech = choice == .legacy
-        switch VoicePermissions.next(mic: Self.micAccess, speech: Self.speechAccess, needsSpeech: needsSpeech) {
+        deps.recognizers.warm()
+        let needsSpeech = deps.recognizers.needsSpeechAccess
+        let access = deps.access()
+        switch VoicePermissions.next(mic: access.mic, speech: access.speech, needsSpeech: needsSpeech) {
         case .problem(let text):
-            onProblem?(text)
+            end(problem: text)
         case .listen:
             listening = true
             begin()
         case .ask:
             listening = true
-            AVCaptureDevice.requestAccess(for: .audio) { mic in
-                let next = { (speech: SFSpeechRecognizerAuthorizationStatus?) in
-                    DispatchQueue.main.async {
-                        guard self.listening else { return }
-                        if !mic {
-                            self.listening = false
-                            self.onProblem?(VoicePermissions.micProblem)
-                        } else if let speech, speech != .authorized {
-                            self.listening = false
-                            self.onProblem?(VoicePermissions.speechProblem)
-                        } else {
-                            self.begin()
-                        }
+            let asked = question
+            deps.requestAccess(needsSpeech) { mic, speech in
+                DispatchQueue.main.async {
+                    guard self.listening, self.question == asked else { return }
+                    if !mic {
+                        self.listening = false
+                        self.end(problem: VoicePermissions.micProblem)
+                    } else if !speech {
+                        self.listening = false
+                        self.end(problem: VoicePermissions.speechProblem)
+                    } else {
+                        self.begin()
                     }
                 }
-                if needsSpeech { SFSpeechRecognizer.requestAuthorization { next($0) } } else { next(nil) }
             }
         }
+    }
+
+    private func end(problem: String) {
+        onProblem?(problem)
+        onEnded?()
     }
 
     /// Starts the chosen microphone and a recognizer. `listening` is already true, so the panel shows the
     /// listening row from the press on.
     private func begin() {
         voiceLog.notice("timing: permissions done after \(self.elapsed(), privacy: .public)")
-        guard let mic = InputDevice.chosen(excluding: tried) else {
+        speech?.cancel()
+        speech = nil
+        guard let mic = deps.choose(tried) else {
             listening = false
-            onProblem?("None of your microphones sent any sound. Check them in System Settings, Sound.")
+            end(problem: "None of your microphones sent any sound. Check them in System Settings, Sound.")
             return
         }
         let token = UUID()
@@ -273,24 +401,28 @@ final class Listener: ObservableObject {
         loudest = 0
         buffers = 0
         droppedBuffers = 0
-        gotSignal = false
+        watch = SilenceWatch(allowance: Microphones.silenceAllowance(mic))
         guard let speech = makeSession(token) else {
             listening = false
-            onProblem?("Speech recognition isn't available right now.")
+            end(problem: "Speech recognition isn't available right now.")
             return
         }
         self.speech = speech
         audio.async {
             let result = self.input(for: mic)
-            var failure: MicrophoneInput.Failure?
+            var failure: MicrophoneFailure?
             switch result {
             case .failure(let f):
                 failure = f
             case .success(let input):
-                let reason = input.start { [weak self, weak speech] buffer in
-                    speech?.append(buffer)
-                    self?.measure(buffer, token)
-                }
+                let reason = input.start({ [weak self, weak speech] buffer in
+                    guard let self else { return }
+                    let (mono, level, silent) = Self.measure(buffer)
+                    if let mono { speech?.append(mono) }
+                    DispatchQueue.main.async { self.took(level: level, silent: silent, token) }
+                }, lost: { [weak self] in
+                    DispatchQueue.main.async { self?.lost(token) }
+                })
                 if let reason {
                     failure = .failed(reason)
                     input.discard()
@@ -314,35 +446,26 @@ final class Listener: ObservableObject {
             guard let self, self.session == token, self.listening else { return }
             voiceLog.error("recognition error: \(error.domain, privacy: .public) \(error.code)")
             self.teardown()?.cancel()
-            self.onProblem?(Spoken.problem(domain: error.domain, code: error.code, description: error.localizedDescription))
+            self.end(problem: Spoken.problem(domain: error.domain, code: error.code, description: error.localizedDescription))
         }
-        if choice == .analyzer, #available(macOS 26, *), let model = analyzerModel as? AnalyzerModel {
-            voiceLog.notice("speech: using SpeechAnalyzer")
-            model.warm()
-            return AnalyzerSession(model: model, onText: onText, onError: onError)
-        }
-        voiceLog.notice("speech: using SFSpeechRecognizer")
-        return LegacySession(recognizer: recognizer, vocabulary: vocabulary, onText: onText, onError: onError)
+        return deps.recognizers.session(onText: onText, onError: onError)
     }
 
-    private func started(_ mic: Microphone, _ token: UUID, _ failure: MicrophoneInput.Failure?) {
+    private func started(_ mic: Microphone, _ token: UUID, _ failure: MicrophoneFailure?) {
         guard session == token, listening else { return }
         switch failure {
         case .notReady?:
             speech?.cancel()
             speech = nil
-            retryOrSkip(mic)
+            retryOrSkip(mic, token)
         case .failed(let reason)?:
             voiceLog.error("microphone \(mic.name, privacy: .public) failed: \(reason, privacy: .public)")
-            speech?.cancel()
-            speech = nil
             tried.insert(mic.id)
             begin()
         case nil:
             voiceLog.notice("listening on \(mic.name, privacy: .public) after \(self.elapsed(), privacy: .public)")
-            startedAt = Date()
-            silenceAllowance = Microphones.silenceAllowance(mic)
-            DispatchQueue.main.asyncAfter(deadline: .now() + silenceAllowance + 0.3) { [weak self] in
+            watch.started(at: Date())
+            DispatchQueue.main.asyncAfter(deadline: .now() + watch.allowance + 0.3) { [weak self] in
                 guard let self, self.session == token, self.listening, self.buffers == 0 else { return }
                 voiceLog.notice("\(mic.name, privacy: .public) delivered no audio, trying the next one")
                 self.skipSilentMicrophone()
@@ -350,39 +473,49 @@ final class Listener: ObservableObject {
         }
     }
 
-    private func measure(_ buffer: AVAudioPCMBuffer, _ token: UUID) {
-        guard let channel = buffer.floatChannelData?[0] else { return }
-        let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
-        let level = Meter.level(samples)
-        let silent = samples.allSatisfy { $0 == 0 }
-        DispatchQueue.main.async {
-            guard self.session == token else { return }
-            self.took(level: level, silent: silent)
-        }
+    /// The buffer for the recognizer (every channel mixed into one), and the meter level of its loudest channel.
+    static func measure(_ buffer: AVAudioPCMBuffer) -> (mono: AVAudioPCMBuffer?, level: Float, silent: Bool) {
+        guard let data = buffer.floatChannelData else { return (buffer, 0, false) }
+        let frames = Int(buffer.frameLength)
+        let channels = (0..<Int(buffer.format.channelCount)).map { UnsafeBufferPointer(start: data[$0], count: frames) }
+        let level = Meter.loudest(channels)
+        let silent = channels.allSatisfy { $0.allSatisfy { $0 == 0 } }
+        guard channels.count > 1 else { return (buffer, level, silent) }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: buffer.format.sampleRate, channels: 1),
+              let mono = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength) else { return (nil, level, silent) }
+        mono.frameLength = buffer.frameLength
+        Meter.mono(channels, into: UnsafeMutableBufferPointer(start: mono.floatChannelData![0], count: frames))
+        return (mono, level, silent)
     }
 
-    private func took(level: Float, silent: Bool) {
+    private func took(level: Float, silent: Bool, _ token: UUID) {
+        guard session == token else { return }
         guard listening else {
             droppedBuffers += 1
             return
         }
+        let verdict = watch.took(silent: silent, at: Date())
+        guard verdict != .ignored else { return }
         buffers += 1
         if buffers == 1 { voiceLog.notice("timing: first audio after \(self.elapsed(), privacy: .public)") }
         loudest = max(loudest, level)
         levels = Meter.window(levels, adding: level, count: Self.bars)
-        if !silent, !gotSignal {
-            gotSignal = true
+        switch verdict {
+        case .firstSound:
             soundArrived = true
             voiceLog.notice("timing: first sound after \(self.elapsed(), privacy: .public)")
+        case .skip:
+            skipSilentMicrophone()
+        case .ignored, .waiting, .sound:
+            break
         }
-        if !gotSignal, Date().timeIntervalSince(startedAt) >= silenceAllowance { skipSilentMicrophone() }
     }
 
     /// Waits once for a microphone whose format isn't ready (common right after access is granted), then moves on.
-    private func retryOrSkip(_ mic: Microphone) {
+    private func retryOrSkip(_ mic: Microphone, _ token: UUID) {
         if formatRetried.insert(mic.id).inserted {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self, self.listening else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + formatRetryDelay) { [weak self] in
+                guard let self, self.listening, self.session == token else { return }
                 self.begin()
             }
             return
@@ -402,9 +535,25 @@ final class Listener: ObservableObject {
         if listening, let microphone { note = "\(silentName) sent no sound, so I switched to \(microphone)." }
     }
 
+    /// The running microphone went away or stopped: end the question and keep what was heard for the operator.
+    private func lost(_ token: UUID) {
+        guard session == token, listening else { return }
+        voiceLog.notice("\(self.microphone ?? "the microphone", privacy: .public) disconnected mid-question")
+        audio.async {
+            self.prepared?.discard()
+            self.prepared = nil
+        }
+        close { [weak self] text in
+            guard let self else { return }
+            self.onInterrupted?(text, Self.disconnectedNote)
+            self.onEnded?()
+        }
+    }
+
     private func waitForPause() {
         pause?.invalidate()
-        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? 6 : 2.5, repeats: false) { [weak self] _ in
+        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? pauseBeforeWords : pauseAfterWords,
+                                     repeats: false) { [weak self] _ in
             self?.stop()
         }
     }
@@ -423,54 +572,78 @@ final class Listener: ObservableObject {
         return speech
     }
 
-    func stop() {
-        guard listening else { return }
+    /// Ends the question and gets its final text. A later press doesn't get this question's text or state.
+    private func close(_ deliver: @escaping (String) -> Void) {
         let speech = teardown()
-        voiceLog.notice("stopped, heard \(self.heard.count) characters so far, loudest level \(self.loudest), \(self.buffers) buffers, \(self.droppedBuffers) before listening")
+        let mine = question
+        let heardSoFar = heard
         let stoppedAt = Date()
         finishing = true
-        let deliver = { [weak self] (final: String) in
+        let done = { [weak self] (final: String) in
             guard let self else { return }
-            self.closing = nil
-            self.finishing = false
-            let text = (final.isEmpty ? self.heard : final).trimmingCharacters(in: .whitespacesAndNewlines)
+            self.closing[mine] = nil
+            let text = (final.isEmpty ? heardSoFar : final).trimmingCharacters(in: .whitespacesAndNewlines)
             voiceLog.notice("final text (\(text.count) characters) after \(milliseconds(since: stoppedAt), privacy: .public)")
-            self.heard = text
+            self.finishing = self.closing[self.question] != nil
+            if self.question == mine {
+                self.heard = text
+                self.prewarm()
+            } else {
+                voiceLog.notice("the final text arrived after the next question began")
+            }
+            deliver(text)
+        }
+        guard let speech else { return done("") }
+        closing[mine] = speech
+        speech.finish(.live, done)
+    }
+
+    func stop() {
+        guard listening else { return }
+        voiceLog.notice("stopped, heard \(self.heard.count) characters so far, loudest level \(self.loudest), \(self.buffers) buffers, \(self.droppedBuffers) before listening")
+        let loudest = loudest
+        let microphone = microphone
+        close { [weak self] text in
+            guard let self else { return }
             if !text.isEmpty {
                 self.onHeard?(text)
             } else {
-                self.onProblem?(self.loudest < 0.15
-                    ? "I didn't hear anything from \(self.microphone ?? "the microphone"). Pick another one from the microphone menu."
+                self.onProblem?(loudest < 0.15
+                    ? "I didn't hear anything from \(microphone ?? "the microphone"). Pick another one from the microphone menu."
                     : "I heard sound but no words. Try again a little closer to the microphone.")
             }
-            self.prewarm()
+            self.onEnded?()
         }
-        closing = speech
-        if let speech { speech.finish(deliver) } else { deliver("") }
     }
 
     /// Transcribes a sound file through the same recognizer path a spoken question takes, for checking accuracy.
+    /// Reads the file a little at a time, and waits for the recognizer to finish all of it.
     static func transcribe(_ url: URL, legacy: Bool, vocabulary: [String], done: @escaping (String) -> Void) -> String? {
         guard let file = try? AVAudioFile(forReading: url) else { return "Couldn't read \(url.path)." }
         let failed = { (error: NSError) in done("error: \(error.domain) \(error.code) \(error.localizedDescription)") }
         let session: SpeechSession?
-        if !legacy, #available(macOS 26, *) {
-            let model = AnalyzerModel()
-            model.vocabulary = vocabulary
-            model.warm()
-            session = AnalyzerSession(model: model, onText: { _ in }, onError: failed)
-        } else {
+        if legacy {
             session = LegacySession(recognizer: SFSpeechRecognizer(locale: Locale(identifier: "en-US")), vocabulary: vocabulary,
                                     onText: { _ in }, onError: failed)
+        } else {
+            let recognizers = LiveRecognizers()
+            recognizers.vocabulary = vocabulary
+            recognizers.warm()
+            session = recognizers.session(limit: nil, onText: { _ in }, onError: failed)
         }
         guard let session else { return "Speech recognition isn't available." }
         let chunk = AVAudioFrameCount(file.processingFormat.sampleRate / 10)
-        while let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunk),
-              (try? file.read(into: buffer)) != nil, buffer.frameLength > 0 {
-            session.append(buffer)
-        }
-        session.finish { text in
-            withExtendedLifetime(session) { done(text) }
+        DispatchQueue.global().async {
+            while let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunk),
+                  (try? file.read(into: buffer)) != nil, buffer.frameLength > 0 {
+                session.append(buffer)
+                while session.pending > 50 { Thread.sleep(forTimeInterval: 0.01) }
+            }
+            DispatchQueue.main.async {
+                session.finish(.none) { text in
+                    withExtendedLifetime(session) { done(text) }
+                }
+            }
         }
         return nil
     }
@@ -490,6 +663,10 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private var generation = 0
     private var queued = 0
     private var synthesized = false
+    /// The Apple utterance playing now; callbacks for an earlier one, cut off by a replay or a sample, are ignored.
+    var appleUtterance: AVSpeechUtterance?
+    /// False while the microphone is open: a voice or speed sample would play into it.
+    var mayTalk: () -> Bool = { true }
 
     override init() {
         kokoroStatus = kokoro.status
@@ -533,16 +710,22 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         }
     }
 
+    var kokoroSpeed: Float { Float(speed) }
+
     func setSpeed(_ value: Double) {
         speed = value
-        say("This is how fast I'll talk.")
+        sample("This is how fast I'll talk.")
+    }
+
+    private func sample(_ text: String) {
+        if mayTalk() { say(text) }
     }
 
     func use(_ voice: VoiceInfo) {
         UserDefaults.standard.set(voice.id, forKey: Self.preferenceKey)
         objectWillChange.send()
         prepare()
-        say(Kokoro.npzKey(voice.id) != nil && !KokoroEngine.installed
+        sample(Kokoro.npzKey(voice.id) != nil && !KokoroEngine.installed
             ? "I'm downloading that voice. Until it's ready, I'll sound like this."
             : "Hi, this is how I'll sound.")
     }
@@ -560,7 +743,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         queued = 0
         synthesized = false
         speaking = true
-        kokoro.speak(text, voiceID: voice.id, speed: Float(speed), isCurrent: { [weak self] in self?.generation == mine },
+        kokoro.speak(text, voiceID: voice.id, speed: kokoroSpeed, isCurrent: { [weak self] in self?.generation == mine },
                      chunk: { [weak self] samples in DispatchQueue.main.async { self?.play(samples, mine) } },
                      done: { [weak self] ok in
                          DispatchQueue.main.async {
@@ -593,28 +776,36 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if synthesized && queued == 0 { speaking = false }
     }
 
-    private func sayWithApple(_ text: String) {
+    /// `text` as an Apple utterance at the chosen voice and speed.
+    func utterance(_ text: String) -> AVSpeechUtterance {
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = SpeechSpeed.appleRate(speed, defaultRate: AVSpeechUtteranceDefaultSpeechRate,
                                                maximumRate: AVSpeechUtteranceMaximumSpeechRate)
         utterance.voice = current.flatMap { AVSpeechSynthesisVoice(identifier: $0.id) }
             ?? AVSpeechSynthesisVoice(language: "en-US")
+        return utterance
+    }
+
+    private func sayWithApple(_ text: String) {
+        let utterance = utterance(text)
+        appleUtterance = utterance
         speaking = true
         synth.speak(utterance)
     }
 
     func stop() {
         generation += 1
+        appleUtterance = nil
         player.stop()
         synth.stopSpeaking(at: .immediate)
         speaking = false
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) {
-        DispatchQueue.main.async { self.speaking = false }
+        DispatchQueue.main.async { if u === self.appleUtterance { self.speaking = false } }
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) {
-        DispatchQueue.main.async { if self.queued == 0 { self.speaking = false } }
+        DispatchQueue.main.async { if u === self.appleUtterance && self.queued == 0 { self.speaking = false } }
     }
 }

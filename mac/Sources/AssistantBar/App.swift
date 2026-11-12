@@ -85,7 +85,7 @@ enum Main {
         while heard == nil { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
         print(heard ?? "")
         FileHandle.standardError.write(Data("(\(legacy ? "SFSpeechRecognizer" : "SpeechAnalyzer"), \(milliseconds(since: started)))\n".utf8))
-        return heard?.hasPrefix("error:") == false
+        return Transcription.succeeded(heard)
     }
 
     static var tool: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }
@@ -166,8 +166,13 @@ final class Model: NSObject, ObservableObject {
     @Published var meter: ContextMeter?
     @Published var history: [ConversationListItem] = []
     @Published var compressing = false
+    /// The text in the chat box; a question cut off by a disconnected microphone lands here.
+    @Published var draft = ""
     let listener = Listener()
     let speaker = Speaker()
+    /// Speaks text aloud; tests replace it so nothing plays.
+    lazy var talk: (String) -> Void = { [weak self] in self?.speaker.say($0) }
+    private var turns = VoiceTurns()
     private var running: Process?
     private var sentAbout: String?
     private var engine: ChatEngine?
@@ -203,8 +208,15 @@ final class Model: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        listener.onHeard = { [weak self] text in self?.ask(text, spoken: true) }
+        listener.onHeard = { [weak self] text in self?.heard(text) }
         listener.onProblem = { [weak self] text in self?.chat.append(ChatTurn(role: .error, text: text)) }
+        listener.onInterrupted = { [weak self] text, note in
+            guard let self else { return }
+            if !text.isEmpty { self.draft = text }
+            self.chat.append(ChatTurn(role: .error, text: note))
+        }
+        listener.onEnded = { [weak self] in self?.listeningEnded() }
+        speaker.mayTalk = { [weak self] in self?.listener.listening != true }
         let url = ProcessInfo.processInfo.environment["ASSISTANT_DB"].map { URL(fileURLWithPath: $0) } ?? ConversationStore.defaultURL
         do {
             engine = Main.engine(store: try ConversationStore(url: url),
@@ -240,8 +252,31 @@ final class Model: NSObject, ObservableObject {
     /// Says `text` again with the current voice and speed, from the start. Ignored while listening, so the answer
     /// doesn't talk into the microphone.
     func play(_ text: String) {
-        guard !listener.listening else { return }
-        speaker.say(text)
+        if case .speak(let text) = turns.say(text, listening: listener.listening, isReply: false) { talk(text) }
+    }
+
+    /// A spoken question: asked now, or after the answer that's running.
+    func heard(_ question: String) {
+        switch turns.heard(question, asking: asking) {
+        case .ask(let q): ask(q, spoken: true)
+        case .queued(let note):
+            chat.append(ChatTurn(role: .you, text: question))
+            chat.append(ChatTurn(role: .step, text: note))
+        }
+    }
+
+    /// Reads a spoken answer, or keeps it until listening ends so it doesn't play into the microphone.
+    func answered(_ reply: String) {
+        switch turns.say(reply, listening: listener.listening, isReply: true) {
+        case .speak(let text): talk(text)
+        case .deferred: chat.append(ChatTurn(role: .step, text: VoiceTurns.deferredNote))
+        case .skipped: break
+        }
+    }
+
+    func listeningEnded() {
+        guard !listener.listening, let reply = turns.listeningEnded() else { return }
+        talk(reply)
     }
 
     /// Plays the last answer again.
@@ -249,10 +284,10 @@ final class Model: NSObject, ObservableObject {
         if let text = Replay.target(chat) { play(text) }
     }
 
-    func ask(_ question: String, spoken: Bool = false) {
+    func ask(_ question: String, spoken: Bool = false, shown: Bool = false) {
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !asking else { return }
-        chat.append(ChatTurn(role: .you, text: q))
+        if !shown { chat.append(ChatTurn(role: .you, text: q)) }
         guard let engine else {
             chat.append(ChatTurn(role: .error, text: "Chat history is unavailable, so Assistant can't answer."))
             return
@@ -276,8 +311,9 @@ final class Model: NSObject, ObservableObject {
                 self.chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
                 self.meter = outcome.meter
                 self.history = history
-                if spoken { self.speaker.say(outcome.reply) }
+                if spoken { self.answered(outcome.reply) }
                 if !outcome.failed && newFocus != nil { self.sentAbout = newFocus?.id }
+                if let next = self.turns.answerFinished() { self.ask(next, spoken: true, shown: true) }
             }
         }
     }

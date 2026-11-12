@@ -184,7 +184,7 @@ public enum StreamTurn {
     public static let maxToolOutputChars = 20_000
     static let interruptedOutput = "(No output: the run stopped before this command finished.)"
 
-    public static func record(_ data: Data, stopped: Bool, now: Date = Date()) -> TurnRecord {
+    public static func record(_ data: Data, stopped: Bool, model: String? = nil, now: Date = Date()) -> TurnRecord {
         var rows: [MessageDraft] = []
         var open: [String] = []
         var firstPrompt: Int?
@@ -241,11 +241,19 @@ public enum StreamTurn {
         }
         let usage = result["usage"] as? [String: Any]
         let iteration = (usage?["iterations"] as? [[String: Any]])?.first
-        let windows = (result["modelUsage"] as? [String: Any])?.values
-            .compactMap { ($0 as? [String: Any])?["contextWindow"] as? Int }.filter { $0 > 0 } ?? []
         return TurnRecord(rows: rows, reply: reply, failed: failed, cost: result["total_cost_usd"] as? Double,
                           promptTokens: firstPrompt ?? iteration.map(promptTokens) ?? usage.map(promptTokens),
-                          contextWindow: windows.max())
+                          contextWindow: reportedWindow(result["modelUsage"] as? [String: Any], model: model))
+    }
+
+    /// The window reported for the model that answered. A turn can also bill a helper model, whose window says nothing
+    /// about this chat's; with no model named, a single entry is the only safe answer.
+    static func reportedWindow(_ usage: [String: Any]?, model: String?) -> Int? {
+        guard let usage else { return nil }
+        let windows = usage.compactMapValues { ($0 as? [String: Any])?["contextWindow"] as? Int }
+            .filter { ContextWindow.plausible($0.value) }
+        guard let model = model?.lowercased() else { return windows.count == 1 ? windows.first?.value : nil }
+        return windows.first { $0.key.lowercased().contains(model) || model.contains($0.key.lowercased()) }?.value
     }
 
     /// The JSON objects of a stream-json run, one per line. Lines end at the LF byte only: a JSON string may carry
@@ -337,12 +345,17 @@ public enum ContextWindow {
 
     static func reportedKey(_ model: String) -> String { "reportedContextWindow." + model.lowercased() }
 
+    /// A reported window outside this range is a malformed report: 1 would compress every turn, and Int.max never.
+    public static let plausibleRange = 8_000...10_000_000
+
+    static func plausible(_ window: Int) -> Bool { plausibleRange.contains(window) }
+
     /// `ASSISTANT_CONTEXT_WINDOW`, then the `contextWindow` setting, then the last reported window, then the table.
     public static func tokens(for model: String, environment: [String: String] = ProcessInfo.processInfo.environment,
                               settings: UserDefaults? = Asker.settings) -> Int {
         if let value = environment["ASSISTANT_CONTEXT_WINDOW"].flatMap(Int.init), value > 0 { return value }
         if let value = settings?.integer(forKey: "contextWindow"), value > 0 { return value }
-        if let value = settings?.integer(forKey: reportedKey(model)), value > 0 { return value }
+        if let value = settings?.integer(forKey: reportedKey(model)), plausible(value) { return value }
         let name = model.lowercased()
         return table.first { name.contains($0.0) }?.1 ?? fallback
     }
@@ -350,7 +363,7 @@ public enum ContextWindow {
     /// Remembers the window the provider reported; returns true when it differs from what was known.
     @discardableResult
     public static func remember(_ window: Int, for model: String, settings: UserDefaults? = Asker.settings) -> Bool {
-        guard window > 0, let settings else { return false }
+        guard plausible(window), let settings else { return false }
         let changed = settings.integer(forKey: reportedKey(model)) != window
         settings.set(window, forKey: reportedKey(model))
         return changed

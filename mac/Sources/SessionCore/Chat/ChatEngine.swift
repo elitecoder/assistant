@@ -179,7 +179,7 @@ public final class ChatEngine {
             try store.append(sessionID: sid, [TurnRecord.noReplyNote(error, timestamp: now())])
             return TurnOutcome(reply: error, failed: true, cost: nil, meter: meter)
         }
-        let record = StreamTurn.record(run.output, stopped: run.stopped, now: now())
+        let record = StreamTurn.record(run.output, stopped: run.stopped, model: model, now: now())
         if let reported = record.contextWindow, ContextWindow.remember(reported, for: model),
            windowFor(model) != compressor.config.contextLength {
             compressor.updateModel(Self.config(model: model, window: windowFor(model)))

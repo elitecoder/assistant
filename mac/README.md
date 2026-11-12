@@ -25,6 +25,12 @@ Control-Option-V again to stop early. To hear the last answer again, select
 **Play again** or press Control-Option-R; it starts over if Assistant is still
 speaking. Each answer in the chat also has a play button.
 
+Assistant never speaks while the microphone is open. If an answer arrives while
+you're talking, it reads it when you finish. If you ask a question while an
+answer is still running, Assistant shows it and asks it next. If the
+microphone disconnects mid-question, what it heard goes into the chat box, for
+you to send or clear.
+
 Speech recognition runs on your Mac. On macOS 26 and later, Assistant uses
 Apple's SpeechAnalyzer with SpeechTranscriber. If its English model isn't
 installed, Assistant downloads it the first time you talk and shows the

@@ -75,6 +75,8 @@ public enum Vocabulary {
     public static let terms = ["PR", "pull request", "Assembler", "Kokoro", "Haiku", "Sonnet", "Opus", "Claude", "cmux",
                                "workspace"]
     public static let limit = 100
+    /// Longer titles, such as a pasted log, aren't useful as one phrase; their words still count.
+    public static let longestPhrase = 60
     static let common: Set<String> = ["the", "and", "for", "with", "from", "into", "that", "this", "fix", "add", "new",
                                       "not", "are", "was", "but", "all", "use", "via", "out", "off", "its"]
 
@@ -82,14 +84,16 @@ public enum Vocabulary {
     /// (ignoring case) and at most `limit` of them.
     public static func contextualStrings(titles: [String], limit: Int = Vocabulary.limit) -> [String] {
         let cleaned = titles.map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }.filter { !$0.isEmpty }
+        let phrases = cleaned.filter { $0.count <= longestPhrase }
         let words = cleaned.flatMap { title in
             title.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "'" })
                 .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-'")) }
-                .filter { $0.count >= 3 && !$0.allSatisfy(\.isNumber) && !common.contains($0.lowercased()) }
+                .filter { $0.count >= 3 && $0.count <= longestPhrase && !$0.allSatisfy(\.isNumber)
+                    && !common.contains($0.lowercased()) }
         }
         var seen = Set<String>()
         var out: [String] = []
-        for phrase in terms + cleaned + words where out.count < limit && seen.insert(phrase.lowercased()).inserted {
+        for phrase in terms + phrases + words where out.count < limit && seen.insert(phrase.lowercased()).inserted {
             out.append(phrase)
         }
         return out
@@ -97,9 +101,13 @@ public enum Vocabulary {
 }
 
 public enum Replay {
-    /// The answer "Play again" speaks: the newest assistant answer with any text.
+    /// The answer "Play again" speaks: the newest assistant answer with any text. A reopened chat shows a failed
+    /// turn's "[No reply: …]" note as an answer; that isn't one to read aloud.
     public static func target(_ chat: [ChatTurn]) -> String? {
-        chat.last { $0.role == .assistant && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?.text
+        chat.last {
+            $0.role == .assistant && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !$0.text.hasPrefix(TurnRecord.noReplyPrefix)
+        }?.text
     }
 }
 
@@ -164,6 +172,110 @@ public enum ListeningText {
     /// The note under the listening row about the newer speech model, if any.
     public static func modelNote(_ state: SpeechModelState) -> String? {
         guard case .downloading(let fraction) = state else { return nil }
-        return "Downloading Apple's speech model (\(Int((fraction * 100).rounded()))%). Until it's ready, I use the older recognizer."
+        let percent = fraction.isFinite ? Int((min(1, max(0, fraction)) * 100).rounded()) : 0
+        return "Downloading Apple's speech model (\(percent)%). Until it's ready, I use the older recognizer."
+    }
+}
+
+/// Decides when a microphone that sends only silence gets skipped. Its clock starts when the microphone has actually
+/// started, so a buffer that arrives earlier, or one meant for the previous question, is never judged against the
+/// wrong start time or the wrong allowance.
+public struct SilenceWatch: Equatable {
+    public enum Verdict: Equatable {
+        /// The microphone hasn't started yet, so the buffer doesn't count.
+        case ignored
+        case waiting
+        /// The first buffer with any sound in it.
+        case firstSound
+        case sound
+        /// Silence for longer than the allowance: try the next microphone.
+        case skip
+    }
+
+    public let allowance: TimeInterval
+    public private(set) var startedAt: Date?
+    public private(set) var heardSound = false
+
+    public init(allowance: TimeInterval) { self.allowance = allowance }
+
+    public mutating func started(at time: Date) { startedAt = time }
+
+    public mutating func took(silent: Bool, at time: Date) -> Verdict {
+        guard let startedAt else { return .ignored }
+        if !silent {
+            defer { heardSound = true }
+            return heardSound ? .sound : .firstSound
+        }
+        if heardSound { return .sound }
+        return time.timeIntervalSince(startedAt) >= allowance ? .skip : .waiting
+    }
+}
+
+public enum RecognitionWait {
+    public static let minimum: TimeInterval = 2
+    public static let ceiling: TimeInterval = 30
+
+    /// How long to wait for the final text after a spoken question ends: at least 2 seconds, more when the recognizer
+    /// still has audio to get through (half again as long as that audio), and never more than 30 seconds.
+    public static func live(backlog: TimeInterval) -> TimeInterval {
+        let backlog = backlog.isFinite ? max(0, backlog) : 0
+        return min(ceiling, max(minimum, backlog * 1.5))
+    }
+}
+
+/// Spoken questions and spoken answers, kept apart: a question heard while an answer is running waits its turn, and an
+/// answer never plays into an open microphone.
+public struct VoiceTurns: Equatable {
+    public private(set) var queued: [String] = []
+    public private(set) var deferredReply: String?
+
+    public static let queuedNote = "I'll ask that when the current answer is done."
+    public static let deferredNote = "I'll read the answer when you finish talking."
+
+    public init() {}
+
+    public enum Heard: Equatable {
+        case ask(String)
+        case queued(note: String)
+    }
+
+    public mutating func heard(_ question: String, asking: Bool) -> Heard {
+        guard asking else { return .ask(question) }
+        queued.append(question)
+        return .queued(note: Self.queuedNote)
+    }
+
+    /// The next question to ask once an answer is done.
+    public mutating func answerFinished() -> String? {
+        queued.isEmpty ? nil : queued.removeFirst()
+    }
+
+    public enum Talk: Equatable {
+        case speak(String)
+        /// Read it once listening ends.
+        case deferred
+        case skipped
+    }
+
+    /// A reply waits for listening to end; a sample or a replay asked for while listening is dropped.
+    public mutating func say(_ text: String, listening: Bool, isReply: Bool) -> Talk {
+        guard listening else { return .speak(text) }
+        guard isReply else { return .skipped }
+        deferredReply = text
+        return .deferred
+    }
+
+    /// The reply to read now that listening has ended.
+    public mutating func listeningEnded() -> String? {
+        defer { deferredReply = nil }
+        return deferredReply
+    }
+}
+
+public enum Transcription {
+    /// `--transcribe` succeeds only with words: an error or empty text exits non-zero.
+    public static func succeeded(_ text: String?) -> Bool {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        return !text.isEmpty && !text.hasPrefix("error:")
     }
 }

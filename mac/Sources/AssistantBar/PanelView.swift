@@ -128,7 +128,6 @@ struct ChatView: View {
     @ObservedObject var model: Model
     @ObservedObject var listener: Listener
     @ObservedObject var speaker: Speaker
-    @State private var draft = ""
     @FocusState private var typing: Bool
 
     var body: some View {
@@ -186,7 +185,7 @@ struct ChatView: View {
                 }
             }
             HStack {
-                TextField("Tell workspace 25 to use my token, then report back", text: $draft, axis: .vertical)
+                TextField("Tell workspace 25 to use my token, then report back", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
                     .focused($typing)
@@ -213,7 +212,7 @@ struct ChatView: View {
                 }
                 Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
                     .buttonStyle(.borderless)
-                    .disabled(model.asking || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(model.asking || model.draft.trimmingCharacters(in: .whitespaces).isEmpty)
                     .help("Send")
             }
         }
@@ -222,11 +221,17 @@ struct ChatView: View {
 
     static let bottom = "chat-bottom"
 
-    /// Anything that adds or grows content at the bottom of the chat.
     var scrollKey: [String] {
-        [String(model.chat.count), model.chat.last.map { "\($0.id)" } ?? "", String(model.asking),
-         String(listener.listening), String(listener.heard.count), String(listener.note != nil),
-         String(listener.soundArrived)]
+        Self.scrollKey(chat: model.chat, asking: model.asking, listening: listener.listening || listener.finishing,
+                       heard: listener.heard, note: listener.note, soundArrived: listener.soundArrived,
+                       modelNote: ListeningText.modelNote(listener.model))
+    }
+
+    /// Anything that adds or grows content at the bottom of the chat.
+    static func scrollKey(chat: [ChatTurn], asking: Bool, listening: Bool, heard: String, note: String?,
+                          soundArrived: Bool, modelNote: String?) -> [String] {
+        [String(chat.count), chat.last.map { "\($0.id)" } ?? "", String(asking), String(listening), heard,
+         note ?? "", String(soundArrived), modelNote ?? ""]
     }
 
     func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -240,8 +245,8 @@ struct ChatView: View {
     }
 
     func send() {
-        model.ask(draft)
-        draft = ""
+        model.ask(model.draft)
+        model.draft = ""
     }
 }
 

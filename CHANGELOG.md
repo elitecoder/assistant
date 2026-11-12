@@ -19,6 +19,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   use and shows its progress, and uses the older recognizer until it's ready.
   On older macOS, or without the model, it keeps the older recognizer, now
   with your workspace titles and terms such as PR, Kokoro, and cmux as hints.
+- A question you ask while an answer is running waits its turn: Assistant
+  shows it, says it will ask it next, and asks it when the answer is done.
+- If the microphone disconnects mid-question, Assistant stops listening, says
+  so, and puts what it heard in the chat box for you to send or clear.
 - Select **Play again**, or press Control-Option-R, to hear the last answer
   again with the current voice and speed. It starts over if Assistant is
   already speaking. Each answer in the chat also has a play button.
@@ -154,6 +158,36 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Apple's voices now play at the speed you pick. Their rate isn't linear:
+  1.5× used to play at about 2.5×, and 2× at about 4×. Assistant now uses a
+  map measured from rendered speech, within 15% of each speed.
+- Assistant never speaks into an open microphone. A spoken answer that arrives
+  while you're talking waits until you finish, and voice and speed samples and
+  **Play again** wait for listening to end.
+- Long questions and files are transcribed in full. `--transcribe` waits for
+  the recognizer to finish the whole file, reads it a little at a time, and
+  exits with an error when it hears no words. A spoken question waits for
+  final text as long as the recognizer still has audio, from 2 to 30 seconds.
+- The older recognizer no longer drops the first sentence after a pause when
+  the next one starts with the same word, or repeats a phrase it revised. It
+  now detects a restart from the recognizer's word timings.
+- When Apple's speech model isn't ready within 1.5 seconds of a press, the
+  question goes to the older recognizer, with the audio heard so far. A failed
+  download is retried a minute later, and repeated failures to prepare the
+  model switch to the older recognizer until then.
+- A microphone that records only on its second channel is heard: Assistant
+  mixes every channel for recognition and meters the loudest one.
+- AirPods are no longer skipped because a silent buffer from before they
+  started was counted against them, and a late result or a stale retry from
+  one question no longer leaks into the next.
+- **Stop speaking** stays up until speech ends, even after **Play again**
+  cuts off an Apple voice.
+- The context window uses the window reported for the model that answered,
+  and ignores reports under 8,000 or over 10,000,000 tokens.
+- Workspace titles longer than 60 characters aren't sent to the recognizer as
+  one phrase, a failed turn's "No reply" note isn't replayed, and the chat
+  scrolls when the live text is revised or the speech model's download
+  progress changes.
 - Start listening in 0.2 to 0.3 seconds, down from 1 to 1.7 seconds. Assistant gets the microphone and the speech model ready when it
   starts and when you open the panel, without turning the microphone on, and
   skips the permission check when access is already granted. The listening
