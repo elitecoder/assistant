@@ -206,6 +206,15 @@ final class SpokenStreamFenceTests: XCTestCase {
         var heard = midLine.take(line: PartialStream.delta("Use a fence for code. ``` is how you open one. Then push it.\n"))
         heard += midLine.finish(reply: "")
         XCTAssertEqual(heard, ["Use a fence for code.", "``` is how you open one.", "Then push it."], "mid-line, it isn't a fence")
+        var indented = SpokenStream()
+        var plainText = indented.take(line: PartialStream.delta("Here is how it looks indented.\n    ```\nThis line is plain text, not code.\n"))
+        plainText += indented.finish(reply: "")
+        XCTAssertEqual(plainText, ["Here is how it looks indented.", "```\nThis line is plain text, not code."],
+                       "four spaces in front: indented text, not a fence, as in Spoken.plain")
+        var threeSpaces = SpokenStream()
+        var fenced = threeSpaces.take(line: PartialStream.delta("Run this in the trim session:\n   ```\ngit push\n   ```\nThen tell me.\n"))
+        fenced += threeSpaces.finish(reply: "")
+        XCTAssertEqual(fenced, ["Run this in the trim session:", "Then tell me."], "up to three spaces still fence")
     }
 
     /// A whole reply read at once drops tilde blocks and a block left open at the end.

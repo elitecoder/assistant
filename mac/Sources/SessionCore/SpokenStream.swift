@@ -52,16 +52,17 @@ public struct SpokenStream: Equatable {
         var from = buffer.startIndex
         var searchFrom = from
         while let end = Self.sentenceEnd(in: buffer, from: searchFrom) {
-            let piece = buffer[searchFrom..<end].trimmingCharacters(in: .whitespacesAndNewlines)
             let startsLine = searchFrom == buffer.startIndex ? lineStart : buffer[buffer.index(before: searchFrom)] == "\n"
             // A fenced code block is never read: a fence line opens it, a matching fence line closes it (CommonMark),
             // and its lines are dropped.
-            let opens = startsLine ? Fence.opening(piece) : nil
+            // The line as written, indent kept: four or more spaces in front make it indented text, not a fence.
+            let line = Self.droppingTrailingSpace(buffer[searchFrom..<end])
+            let opens = startsLine ? Fence.opening(line) : nil
             if fence != nil || opens != nil {
                 let pending = buffer[from..<searchFrom].trimmingCharacters(in: .whitespacesAndNewlines)
                 if !pending.isEmpty { out.append(pending) }
                 if let open = fence {
-                    if startsLine && open.closes(piece) { fence = nil }
+                    if startsLine && open.closes(line) { fence = nil }
                 } else {
                     fence = opens
                 }
@@ -79,7 +80,9 @@ public struct SpokenStream: Equatable {
         buffer = String(buffer[from...])
         if all {
             let rest = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !rest.isEmpty && fence == nil && !(lineStart && Fence.opening(rest) != nil) { out.append(rest) }
+            if !rest.isEmpty && fence == nil && !(lineStart && Fence.opening(Self.droppingTrailingSpace(buffer[...])) != nil) {
+                out.append(rest)
+            }
             buffer = ""
             // A block left open ends with the text it's in, so it can't silence what Claude writes after it.
             fence = nil
@@ -87,6 +90,12 @@ public struct SpokenStream: Equatable {
         }
         sentences += out.count
         return out
+    }
+
+    static func droppingTrailingSpace(_ text: Substring) -> Substring {
+        var end = text.endIndex
+        while end > text.startIndex, text[text.index(before: end)].isWhitespace { end = text.index(before: end) }
+        return text[..<end]
     }
 
     /// Just past the first sentence end at or after `start`: ".", "!", or "?" (and any closing quotes or brackets)
