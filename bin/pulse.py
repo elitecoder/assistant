@@ -129,6 +129,8 @@ CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources
 # --add-dir). That alias is the single source of truth; see step 2 in dispatch_todo.
 # cwd for dispatched work. ~/dev keeps the spawn inside Mukul's permission roots;
 # FFP work re-homes itself into a fresh firefly-platform worktree via archffp.
+# One-second polls a dispatched session gets to show its ready marker.
+READY_POLLS = 60
 DISPATCH_CWD = Path(os.environ.get("DISPATCH_CWD", str(HOME / "dev")))
 
 # The Observer reads many transcripts → BALANCED tier, long-context. OBSERVER_MODEL
@@ -2199,29 +2201,23 @@ def dispatch_todo(todo_id: str) -> bool:
         except OSError:
             continue
 
-    # 4. Trust prompt (first launch in a never-used cwd). --dangerously-skip
-    #    does NOT bypass it; the transcript never appears until it's answered.
-    time.sleep(2)
+    # 4-5. Wait for readiness, answering the first-launch folder-trust prompt
+    #    (once) whenever it appears. Permission-bypass flags (claude's alias,
+    #    copilot --allow-all) don't cover it, and it can render seconds into
+    #    boot, so it's checked on every poll, not once up front. Readiness is
+    #    the agent's ready marker from agent_session.ready_re.
     trust = agent_session.trust_marker(agent)
-    if trust and trust in _surface_read_text(surface_ref):
-        _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": "1"})
-        _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
-
-    # 5. Wait for readiness. Match EITHER pre-submission marker so the gate is
-    #    independent of `/tui` mode and terminal height:
-    #      - "Claude Code v…" — the boot banner. Top-pinned, so in fullscreen it
-    #        can sit above a short read window (see _surface_read_text note).
-    #      - "⏵⏵ bypass permissions on" — the bottom status bar. Present in both
-    #        default-inline and fullscreen /tui, and in both idle and working
-    #        states, so it's always inside a bottom-anchored read window even
-    #        when the banner has scrolled off the top.
-    #    Either marker means claude is up and accepting input.
+    trust_answered = False
     ready = False
-    for _ in range(30):
+    for _ in range(READY_POLLS):
         screen = _surface_read_text(surface_ref)
         if agent_session.ready_re(agent).search(screen):
             ready = True
             break
+        if trust and not trust_answered and trust in screen:
+            _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": "1"})
+            _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+            trust_answered = True
         time.sleep(1)
     if not ready:
         # PARK, don't storm. A spawned-but-never-ready workspace is real; if we

@@ -532,3 +532,45 @@ def test_doctor_checks_copilot_only_when_picked(home, monkeypatch):
     monkeypatch.setenv("COPILOT_BIN", str(_stub(home / "t" / "copilot")))
     assert doctor.check_copilot_binary().status == doctor.PASS
     assert "copilot binary" in {c.name for c in doctor.run_checks("all")}
+
+
+def test_pulse_dispatch_answers_a_trust_prompt_that_renders_late(home, copilot_bin, monkeypatch):
+    """Copilot showed its folder-trust dialog about 4 s into boot. A single
+    check right after launch misses it, and the session never gets ready."""
+    _pick(home, "copilot")
+    cwd = home / "dev"
+    cwd.mkdir()
+    monkeypatch.setenv("DISPATCH_CWD", str(cwd))
+    pulse = _load(BIN / "pulse.py", "seam_pulse_late_trust")
+    pulse.self_update_pulse = lambda pulse_idx: None
+    state = {"reads": 0, "trusted": False}
+
+    def screen(ref, lines=200):
+        state["reads"] += 1
+        if state["trusted"]:
+            return "Interactive · Allow All · / commands · ? help"
+        return "" if state["reads"] <= 4 else "Do you trust the files in this folder?"
+
+    def rpc(method, params, timeout=15):
+        if method == "surface.send_text" and params["text"] == "1":
+            state["trusted"] = True
+        if method == "surface.send_text" and params["text"].startswith("Read "):
+            _copilot_session(home, "cp-late", str(cwd), [
+                {"type": "user.message", "data": {"content": params["text"]}}])
+        return {}
+
+    def run(cmd, *a, **k):
+        if "new-workspace" in cmd:
+            return 0, "OK workspace:9\n", ""
+        if "list-pane-surfaces" in cmd:
+            return 0, "surface:9\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(pulse, "run", run)
+    monkeypatch.setattr(pulse, "_cmux_rpc", rpc)
+    monkeypatch.setattr(pulse, "_surface_read_text", screen)
+    monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: {"id": tid, "title": "x"})
+    monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: True)
+    monkeypatch.setattr(pulse.time, "sleep", lambda s: None)
+    assert pulse.dispatch_todo("td-2") is True
+    assert state["trusted"]

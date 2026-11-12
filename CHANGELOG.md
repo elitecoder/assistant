@@ -23,6 +23,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - `bin/agent_session.py` is now the only place that starts a coding agent.
   `tests/test_agent_launch_seam.py` fails when any other file builds a
   `claude`, `copilot`, or `droid` command line.
+- Task sessions now answer the first-launch folder-trust question whenever it
+  appears during boot, not only in one check 2 seconds after launch. Copilot
+  shows it about 4 seconds in, so the old check missed it and the session sat
+  waiting.
 - `/spawn-claude-workspace` takes its launch command, readiness check, trust
   prompt, and submission check from `bin/agent_session.py`, and defaults to the
   agent you picked.
