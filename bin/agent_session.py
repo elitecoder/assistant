@@ -306,6 +306,23 @@ def runs(path: str, timeout: float = 20.0) -> bool:
         return False
 
 
+def bin_env_var(agent: str) -> str:
+    """The env var that overrides `agent`'s binary path (CLAUDE_BIN, ...)."""
+    return _BIN_ENV[agent]
+
+
+def context_tokens(record: object) -> int | None:
+    """Live context size from a Claude or Droid transcript turn's usage block
+    (input plus cache tokens), or None when the turn has none."""
+    msg = record.get("message") if isinstance(record, dict) else None
+    usage = msg.get("usage") if isinstance(msg, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    return (int(usage.get("input_tokens") or 0)
+            + int(usage.get("cache_creation_input_tokens") or 0)
+            + int(usage.get("cache_read_input_tokens") or 0))
+
+
 def _executable(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
@@ -637,7 +654,8 @@ _READY_RE = {
 _COPILOT_BAR_RE = re.compile(
     r"^\s*← open sidebar · |· / commands · \? help(?: ·|\s*$)"
     r"|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · "
-    r"|^\s*◎ \w+.*ctrl\+c interrupt")
+    r"|^\s*[○◉◎●] \w+.*ctrl\+c interrupt"
+    r"|^\s*[○◉◎●] Retrying model request")
 _COPILOT_BANNER_RE = re.compile(r"^│\s+\S+\s+Copilot v\d+\.\d+\.\d+ uses AI\.", re.M)
 
 

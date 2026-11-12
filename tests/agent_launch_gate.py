@@ -34,6 +34,12 @@ _PROSE_CALLS = {"print", "debug", "info", "warning", "warn", "error", "exception
                 "fail", "skip", "notify", "compile", "search", "match", "fullmatch",
                 "findall", "finditer", "sub"}
 _TYPE_FIELD_ROLES = {"assistant", "user"}
+# Names only the seam may use: agent binary env vars and Claude usage fields.
+_SEAM_STRINGS = {"CLAUDE_BIN", "COPILOT_BIN", "DROID_BIN", "cache_read_input_tokens",
+                 "cache_creation_input_tokens", "total_cost_usd"}
+_TRANSCRIPT_GLOB_RE = re.compile(r"^(projects|sessions|session-state)/")
+# Text before an agent name that makes the string a command, not a sentence.
+_COMMAND_LEAD_RE = re.compile(r"(^|&&|;|\||\(|['\"`]|-l?i?c|\bexec|\bcommand|\bnohup|\benv|=\S*|\{\})\s*$")
 # Flags other tools share; they count only right after an agent name.
 SHARED_FLAGS = {"-p", "--print", "--resume", "-r", "--model", "--continue",
                 "-c", "--output-format", "--settings", "--auto", "exec",
@@ -77,8 +83,9 @@ def _string_problems(text: str) -> list[str]:
     m = _AGENT_THEN_FLAG_RE.search(text)
     following = text[m.end():].split()[:1] if m else []
     quoted = m and text[:m.start()].count("`") % 2 == 1
+    sentence = m and not _COMMAND_LEAD_RE.search(text[:m.start()])
     if m and m.group(2) not in HARMLESS and not (following and following[0] in HARMLESS) \
-            and not quoted:
+            and not quoted and not sentence:
         out.append(f"agent command '{m.group(0)}'")
     if _PINNED_RE.search(text):
         out.append("pinned agent binary path")
@@ -129,14 +136,21 @@ def _elt_word(node: ast.AST) -> str:
         return _elt_word(node.func)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _elt_word(node.right)
+    if isinstance(node, ast.Subscript):
+        return _const_str(node.slice) or ""
     if isinstance(node, ast.Starred):
         return ""
     return ""
 
 
 def _argv_problem(elts: list[ast.AST], aliases: dict[str, str]) -> str | None:
-    words = [aliases.get(e.id, _elt_word(e)) if isinstance(e, ast.Name) else _elt_word(e)
-             for e in elts]
+    def word(e):
+        if isinstance(e, ast.Starred) and isinstance(e.value, ast.Name):
+            return aliases.get(e.value.id, "")
+        if isinstance(e, ast.Name):
+            return aliases.get(e.id, _elt_word(e))
+        return _elt_word(e)
+    words = [word(e) for e in elts]
     while words and (os.path.basename(words[0]) in ("env", "npx", "exec", "command", "nohup")
                      or re.fullmatch(r"[A-Za-z_]\w*=.*", words[0] or "")):
         words = words[1:]
@@ -171,6 +185,25 @@ def _joined_text(node: ast.AST) -> str | None:
     return "".join("{}" if t is None else t for t in texts)
 
 
+def _assigned_agent(value: ast.AST) -> str | None:
+    """The agent a value names: "claude", `x or "claude"`, or a lookup whose
+    default is "claude" (`os.environ.get("CLAUDE_BIN", "claude")`)."""
+    if _const_str(value) in AGENTS:
+        return _const_str(value)
+    if isinstance(value, ast.BoolOp):
+        return next((_const_str(v) for v in value.values if _const_str(v) in AGENTS), None)
+    if isinstance(value, ast.Call) and len(value.args) >= 2 and _const_str(value.args[-1]) in AGENTS:
+        return _const_str(value.args[-1])
+    return None
+
+
+def _is_field(node: ast.AST, field: str) -> bool:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+            and node.func.attr == "get" and node.args and _const_str(node.args[0]) == field:
+        return True
+    return isinstance(node, ast.Subscript) and _const_str(node.slice) == field
+
+
 def _is_type_field(node: ast.AST) -> bool:
     """`x.get("type")` or `x["type"]`."""
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
@@ -194,14 +227,20 @@ def python_problems(text: str) -> list[tuple[int, str]]:
     found: list[tuple[int, str]] = []
     aliases = {}
     seeded = set()
+    type_names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and _const_str(node.value) in AGENTS:
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    aliases[t.id] = _const_str(node.value)
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.List) \
-                and len(node.value.elts) == 1 and _const_str(node.value.elts[0]) in AGENTS:
-            seeded.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        agent = _assigned_agent(node.value)
+        if agent:
+            aliases.update({n: agent for n in names})
+        if isinstance(node.value, ast.List) and len(node.value.elts) == 1 \
+                and _const_str(node.value.elts[0]) in AGENTS:
+            seeded.update(names)
+            aliases.update({n: _const_str(node.value.elts[0]) for n in names})
+        if _is_type_field(node.value):
+            type_names.update(names)
     for node in ast.walk(tree):
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
                 and node.target.id in seeded:
@@ -216,6 +255,8 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                 prose.update(id(n) for n in ast.walk(arg))
         if isinstance(node, ast.keyword) and node.arg == "help":
             prose.update(id(n) for n in ast.walk(node.value))
+        if isinstance(node, ast.Raise) and node.exc is not None:
+            prose.update(id(n) for n in ast.walk(node.exc))
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, (ast.List, ast.Tuple)):
@@ -226,8 +267,16 @@ def python_problems(text: str) -> list[tuple[int, str]]:
             if id(node) in docs or id(node) in in_fstring or id(node) in prose:
                 continue
             s = _const_str(node)
+            if isinstance(node, ast.JoinedStr):
+                s = "".join(
+                    v.value if isinstance(v, ast.Constant)
+                    else aliases.get(v.value.id, "{}") if isinstance(v, ast.FormattedValue)
+                    and isinstance(v.value, ast.Name) else "{}"
+                    for v in node.values)
             if s:
                 found += [(line, why) for why in _string_problems(s)]
+            if s in _SEAM_STRINGS:
+                found.append((line, f"{s} belongs to agent_session"))
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             parts = []
             cur = node
@@ -249,7 +298,10 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                 why = _argv_problem(elts, aliases)
                 if why:
                     found.append((line, f"joined {why}"))
-        elif isinstance(node, ast.Compare) and _is_type_field(node.left):
+        elif isinstance(node, ast.Compare) and (
+                _is_type_field(node.left)
+                or (isinstance(node.left, ast.Call) and _is_field(node.left, "role"))
+                or (isinstance(node.left, ast.Name) and node.left.id in type_names)):
             values = set()
             for comp in node.comparators:
                 for c in (comp.elts if isinstance(comp, (ast.Tuple, ast.List, ast.Set)) else [comp]):
@@ -276,6 +328,9 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                     for arg in node.args:
                         filled = filled.replace("{}", _const_str(arg) or "<>", 1)
                     found += [(line, f"formatted {why}") for why in _string_problems(filled)]
+                if attr in ("glob", "rglob") and node.args \
+                        and _TRANSCRIPT_GLOB_RE.match(_const_str(node.args[0]) or ""):
+                    found.append((line, "agent transcript root"))
                 if attr in ("joinpath", "join"):
                     why = _path_parts_problem(
                         [_const_str(node.func.value), *(_const_str(a) for a in node.args)]
@@ -321,17 +376,21 @@ def _shell_words(text: str) -> list[str]:
 def _blank_heredocs(text: str) -> str:
     """`text` with here-document bodies blanked (they're data, often help
     text); line numbers are kept."""
-    out, end = [], None
+    out, end, keep = [], None, False
     for line in text.splitlines():
         if end is not None:
-            out.append("")
             if line.strip() == end:
                 end = None
+                out.append("")
+            else:
+                out.append(line if keep else "")
             continue
         out.append(line)
         m = re.search(r"<<-?\s*['\"]?([A-Za-z_]\w*)['\"]?", line)
         if m:
             end = m.group(1)
+            first = _shell_words(line[:m.start()])
+            keep = bool(first) and os.path.basename(first[0]) in SHELLS
     return "\n".join(out)
 
 
@@ -340,6 +399,8 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
     found = []
     aliases = {m.group(1): m.group(2) for m in re.finditer(
         r"(?:^|[\s;&|(])([A-Za-z_]\w*)=['\"]?(claude|copilot|droid)['\"]?(?=[\s;&|)]|$)", text)}
+    aliases.update({m.group(1): m.group(2) for m in re.finditer(
+        r"(?:^|[\s;&|(])([A-Za-z_]\w*)=['\"]?\$\((?:command -v|which) (claude|copilot|droid)\)", text)})
     for n, raw in enumerate(_join_continuations(text), 1):
         if not raw.strip():
             continue
@@ -348,7 +409,7 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
         i = 0
         while i < len(words):
             w = words[i]
-            if w in _SEPARATORS or w.endswith(("$(", "`")):
+            if w in _SEPARATORS or w.endswith(("$(", "`")) or re.fullmatch(r"[;&|()`]+", w):
                 at_command = True
                 i += 1
                 continue
@@ -381,7 +442,8 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
                 agent = agent or _agent_word(w)
                 rest = []
                 j = i + 1
-                while j < len(words) and words[j] not in _SEPARATORS:
+                while j < len(words) and words[j] not in _SEPARATORS \
+                        and not re.fullmatch(r"[;&|()`]+", words[j]):
                     rest.append(words[j])
                     j += 1
                 if agent and rest and not set(rest) <= HARMLESS | {">/dev/null", "2>&1"} \
@@ -539,6 +601,12 @@ def scanner_for(path: Path):
     return None
 
 
+# Readers that can't import bin/agent_session.py (src/ never reaches into
+# bin/) keep their own role parsing; a test pins their verdicts to
+# agent_session.record_role.
+ROLE_PARSERS = {"src/assistant/transcript_slice.py"}
+
+
 def scan(repo: Path) -> list[str]:
     problems = []
     for path in gated_files(repo):
@@ -546,6 +614,9 @@ def scan(repo: Path) -> list[str]:
             text = path.read_text()
         except (OSError, UnicodeDecodeError):
             continue
+        rel = str(path.relative_to(repo))
         for line, why in scanner_for(path)(text):
-            problems.append(f"{path.relative_to(repo)}:{line}: {why}")
+            if rel in ROLE_PARSERS and "transcript role" in why:
+                continue
+            problems.append(f"{rel}:{line}: {why}")
     return problems

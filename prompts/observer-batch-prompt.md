@@ -25,7 +25,7 @@ You receive a JSON array of workspace ctxs. Each entry has:
 **Source-of-truth precedence.** Your verdict must reconcile BOTH the transcript and `screen_text`. They usually agree. When they conflict, trust the screen for *current* state (what the agent is doing/showing right now) and the transcript for *history* (how it got there). Concretely:
 
 - `screen_shows_error == true` AND the agent is idle (no live tool spinner on screen, `agent_status != working`) → the agent is halted on an error and will not self-recover. Emit `stranded` with a `nudge_text` that tells it to retry the failed step (e.g. `"You hit an API error after editing the boot prompt — retry the last step and continue."`). This OVERRIDES a transcript whose last narrative line reads like normal mid-work — the error banner is newer than that line. Do NOT emit `ready_for_cleanup`, `no_action`, or `active` for an idle workspace whose screen shows an error banner.
-- The screen shows a live spinner / "esc to interrupt" / an in-flight tool call → the agent IS working regardless of what an old transcript tail says → `active`.
+- The screen shows a live spinner / "esc to interrupt" / Copilot's "Working … ctrl+c interrupt" / an in-flight tool call → the agent IS working regardless of what an old transcript tail says → `active`.
 - The screen shows a clean recap / question / awaiting-review close that the transcript-derived signals missed (e.g. transcript_path was wrong) → judge from the screen.
 - The screen is empty (`""`) → you have no live signal; fall back to transcript + cwd signals as before.
 
@@ -178,10 +178,10 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 3. **Last assistant text asks the user a question** → `needs_user` with the question as the detail. (B1 usually catches this first; this is the fallback for a bare question with no surrounding recap.)
 4. **Stranded on a screen error (fast path, NOT time-gated)** → `stranded`. Fires when:
    - `screen_shows_error == true` (the live terminal is showing an API error / timeout / overloaded / connection error / unhandled traceback banner), AND
-   - the screen has **no live spinner / "esc to interrupt"** (the turn has ended — the agent is halted, not retrying), AND
+   - the screen has **no live spinner / "esc to interrupt" / "ctrl+c interrupt" / "Retrying model request"** (the turn has ended — the agent is halted, not retrying), AND
    - B1 did NOT fire (the screen isn't a recap/question awaiting you).
 
-   This is age-independent: an error banner ends the turn and Claude does NOT auto-retry, so a workspace can be stranded seconds after the error. Do not wait for 1800s. `nudge_text` should name the failed step from the screen and tell it to retry + continue (e.g. `"You hit an API error mid-edit — retry the last step and keep going."`). This path is the ws:12 fix: the transcript tail looked like normal mid-work, but the live screen showed `API Error` and the agent was frozen.
+   This is age-independent: an error banner ends the turn and Claude does NOT auto-retry (Copilot shows "Retrying model request" while it retries; that's still working), so a workspace can be stranded seconds after the error. Do not wait for 1800s. `nudge_text` should name the failed step from the screen and tell it to retry + continue (e.g. `"You hit an API error mid-edit — retry the last step and keep going."`). This path is the ws:12 fix: the transcript tail looked like normal mid-work, but the live screen showed `API Error` and the agent was frozen.
 
 5. **Stranded — mid-narrative idle, ALL FOUR must be true**:
    - B1 did NOT fire — the agent did not hand back a deliverable or a question. A recap awaiting your review is `needs_user`, never `stranded`; nudging "please continue" on top of finished work that's waiting on YOU is exactly the misfire we're avoiding.
@@ -199,7 +199,7 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 | Condition | Verdict |
 |---|---|
 | `screen_shows_error == true` + idle (no live spinner) | `stranded` (halted on error — nudge to retry; overrides transcript) |
-| screen shows live spinner / "esc to interrupt" | `active` (working, even if transcript tail is old) |
+| screen shows live spinner / "esc to interrupt" / "ctrl+c interrupt" | `active` (working, even if transcript tail is old) |
 | `transcript_path` is null | `active` (session likely starting up) — unless `screen_text` clearly shows a stuck/error/recap state, then judge from the screen |
 | `agent_status == working` | `active` (tool_use in flight) |
 | recap hands back a deliverable / decision / go-ahead (any idle time) | `needs_user` (B1 — awaiting your review) |

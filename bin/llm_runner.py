@@ -122,7 +122,7 @@ def load_route_config(path: Path, section: str = "triage",
             "provider", legacy.get("provider", "claude"))),
     )
     droid_bin = env.get(
-        "DROID_BIN",
+        agent_session.bin_env_var(agent_session.DROID),
         feature_droid.get(
             "bin",
             feature.get(

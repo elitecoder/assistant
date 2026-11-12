@@ -345,9 +345,9 @@ def check_copilot_hooks() -> Check:
                      detail=str(agent_session.copilot_hooks_file(HOME)))
     return Check(
         "copilot cmux hooks", FAIL, core=False,
-        detail="~/.copilot/config.json has no cmux hooks; Copilot sessions "
-               "won't show on the dashboard",
-        remedy="cmux hooks copilot install --yes",
+        detail=f"{agent_session.copilot_hooks_file(HOME)} is missing; Copilot "
+               "sessions won't show on the dashboard",
+        remedy="python3 bin/agent_session.py install-copilot-hooks",
     )
 
 

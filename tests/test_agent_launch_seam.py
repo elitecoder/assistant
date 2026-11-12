@@ -140,6 +140,15 @@ CAUGHT = {
         'run(["npx", "@anthropic-ai/claude-code", "-p", p])',
         'root = Path(HOME, ".copilot", "session-state")',
         'subprocess.run(shlex.split("claude -p hi"))',
+        'exe = os.environ.get("X") or "claude"\nsubprocess.run([exe, "--print", p])',
+        'CLAUDE = os.environ.get("CLAUDE_BIN", "claude")',
+        'base = ["claude"]\nrun([*base, "--resume", sid])',
+        'agent = "copilot"\nrun(shlex.split(f"{agent} --resume {sid}"))',
+        'run([BINS["claude"], "-p", p])',
+        't = d.get("type")\nif t == "assistant":\n    pass',
+        'if m.get("role") == "assistant":\n    pass',
+        'n = usage.get("cache_read_input_tokens")',
+        'files = (Path.home() / ".claude").glob("projects/*/*.jsonl")',
         'if rec.get("type") == "assistant":\n    pass',
         'if d["type"] in ("user", "assistant"):\n    pass',
     ],
@@ -163,6 +172,8 @@ CAUGHT = {
         'echo hi | xargs -I{} claude -p {}',
         'A=claude\neval "$A -p hi"',
         'printf "claude -p hi" | sh',
+        'BIN=$(command -v claude); "$BIN" -p hi',
+        'zsh -l <<EOF\nclaude -p hi\nEOF',
     ],
     "js": [
         "spawn('claude', ['-p', prompt])",
@@ -200,6 +211,9 @@ PASSED = {
         'PAT = re.compile(r"--allow-all")',
         'NAMES = ("claude", "-", "copilot")',
         'if rec.get("type") == "result":\n    pass',
+        'raise RuntimeError("run claude --resume to recover")',
+        'raise RuntimeError("claude --resume failed")',
+        'def h():\n    return "Use claude --model opus"',
     ],
     "sh": [
         'command -v copilot >/dev/null',
@@ -212,6 +226,7 @@ PASSED = {
         'grep -- "--dangerously-skip-permissions" ~/.zprofile',
         'printf "%s\\n" "copilot --allow-all is set"',
         'cat <<EOF\nrun claude --resume by hand\nEOF',
+        'HELP="run claude -p to test"',
     ],
     "js": ["// spawn('claude', ['-p'])", "const name = 'claude';"],
     "md": ['Run `claude --resume` by hand if you like.\n'],
@@ -1427,3 +1442,73 @@ def test_background_claude_runs_the_home_install_or_claude_bin(home, monkeypatch
     assert ag.binary(ag.CLAUDE) == str(home / ".local" / "bin" / "claude")
     monkeypatch.setenv("CLAUDE_BIN", "/opt/agents/claude")
     assert ag.binary(ag.CLAUDE) == "/opt/agents/claude"
+
+
+@pytest.mark.parametrize("frame", ["○", "◉", "◎", "●"])
+def test_every_copilot_spinner_frame_marks_a_working_pane(frame):
+    assert ag.shows_copilot(f"output\n {frame} Working · 1.2 KiB ctrl+c interrupt")
+    assert ag.shows_copilot(f"output\n {frame} Retrying model request")
+    bwc = _load(BIN / "build-ws-context.py", f"seam_bwc_spin_{ord(frame)}")
+    assert bwc._agent_for_screen(
+        f"Claude Opus 4.7 is the model\n {frame} Working · 3s ctrl+c interrupt") == "copilot"
+
+
+def test_headless_copilot_never_updates_itself(tmp_path):
+    for tools_off in (True, False):
+        cmd = ag.headless_argv(ag.COPILOT, binary_path="/c", model="", run_dir=tmp_path,
+                               disable_tools=tools_off)
+        assert "--no-auto-update" in cmd
+
+
+def test_doctors_hook_fix_is_the_one_that_works(home, monkeypatch):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_fix")
+    monkeypatch.setattr(doctor, "HOME", home)
+    _pick(home, "copilot")
+    check = doctor.check_copilot_hooks()
+    assert check.remedy == "python3 bin/agent_session.py install-copilot-hooks"
+    assert "hooks/cmux.json" in check.detail
+
+
+def test_prompts_name_copilots_working_signs_and_dont_say_only_claude():
+    observer = (REPO / "prompts/observer-batch-prompt.md").read_text()
+    assert "ctrl+c interrupt" in observer and "Retrying model request" in observer
+    warm = (REPO / "prompts/prompt-assistant-comms-warm.md").read_text()
+    assert "warm Claude session" not in warm and "fleet of Claude workspaces" not in warm
+
+
+def test_the_conversation_slice_agrees_with_the_seam_on_every_agents_roles():
+    from assistant import transcript_slice
+    records = [
+        {"type": "user", "message": {"role": "user", "content": "hi"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "yo"}]}},
+        {"type": "message", "message": {"role": "user", "content": "hi"}},
+        {"type": "message", "message": {"role": "assistant", "content": "yo"}},
+        {"type": "user.message", "data": {"content": "hi"}},
+        {"type": "assistant.message", "data": {"content": "yo"}},
+        {"type": "summary", "summary": "x"},
+        {"type": "session.start", "data": {}},
+    ]
+    for rec in records:
+        turn = transcript_slice._turn(rec)
+        assert (turn[0] if turn else None) == ag.record_role(rec), rec
+    assert gate.ROLE_PARSERS == {"src/assistant/transcript_slice.py"}
+
+
+def test_spending_and_context_reads_come_from_the_seam(tmp_path):
+    import comms_lib
+    import metering
+    claude = json.dumps({"type": "result", "subtype": "success", "total_cost_usd": 0.5,
+                         "usage": {"input_tokens": 1, "cache_read_input_tokens": 2,
+                                   "cache_creation_input_tokens": 3, "output_tokens": 4}})
+    assert metering.parse_cli_result(claude) == {"tokens_in": 6, "tokens_out": 4, "cost_usd": 0.5}
+    failed = json.dumps({"type": "result", "subtype": "error", "usage": {"input_tokens": 1}})
+    assert metering.parse_cli_result(failed) is None
+    assert metering.parse_cli_usage(failed)["tokens_in"] == 1
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "assistant", "message": {"usage": {"input_tokens": 10, "cache_read_input_tokens": 5}}},
+        {"type": "user", "message": {"content": "hi"}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 20, "cache_creation_input_tokens": 1,
+                                                    "cache_read_input_tokens": 100}}},
+    ]))
+    assert comms_lib.read_context_tokens(transcript) == 121

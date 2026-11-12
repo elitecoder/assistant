@@ -56,6 +56,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   Copilot's saved default.
 - `assistant-llm.py set <agent>` names any job still pinned to another
   provider, and `--feature comms` picks the agent for the Slack session alone.
+- A working Copilot pane is recognized on every spinner frame and while it
+  retries, and crash recovery relaunches a Copilot workspace only when you
+  picked Copilot.
+- Spending and Slack-session context reads go through `bin/agent_session.py`,
+  and the launch check also flags Claude-only transcript and usage parsing.
 - Task sessions now answer the first-launch folder-trust question whenever it
   appears during boot, not only in one check 2 seconds after launch. Copilot
   shows it about 4 seconds in, so the old check missed it and the session sat

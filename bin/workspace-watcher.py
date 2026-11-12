@@ -56,6 +56,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
+
 # ---------- paths ----------
 HOME = Path(os.environ["HOME"])
 WATCHER_DIR = HOME / ".assistant" / "workspace-watcher"
@@ -225,6 +228,7 @@ class WorkspaceRegistry:
                 # Pull resume binding from any panel that has one.
                 panels = w.get("panels", []) or []
                 resume_cmd = None
+                agent_kind = None
                 resume_cwd = None
                 checkpoint_id = None
                 was_agent_running = False
@@ -233,6 +237,7 @@ class WorkspaceRegistry:
                 for p in panels:
                     rb = p.get("terminal", {}).get("resumeBinding")
                     if rb:
+                        agent_kind = (p.get("terminal", {}).get("agent") or {}).get("kind")
                         resume_cmd = rb.get("command")
                         resume_cwd = rb.get("cwd")
                         checkpoint_id = rb.get("checkpointId")
@@ -263,6 +268,7 @@ class WorkspaceRegistry:
                     "cwd": cwd,
                     "process_title": process_title,
                     "resume_command": resume_cmd,
+                    "agent_kind": agent_kind,
                     "resume_cwd": resume_cwd,
                     "checkpoint_id": checkpoint_id,
                     "was_agent_running": was_agent_running,
@@ -624,6 +630,11 @@ def handle_close(evt: dict, registry: WorkspaceRegistry,
                "no resumeBinding.command captured",
                key=f"ws-resume-blocked:{ws_ref}")
         drop["resume"] = {"attempted": False, "reason": "no resume_command"}
+        drop_path.write_text(json.dumps(drop, indent=2))
+        return
+    if (agent_session.agent_from_kind(meta.get("agent_kind")) == agent_session.COPILOT
+            and not agent_session.copilot_chosen()):
+        drop["resume"] = {"attempted": False, "reason": "copilot not picked"}
         drop_path.write_text(json.dumps(drop, indent=2))
         return
     ok, why = governor.can_resume(meta.get("uuid", ""))

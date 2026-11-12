@@ -154,7 +154,7 @@ def status(path: Path) -> dict:
                 f"{prefix}_COPILOT_MODEL",
                 "COPILOT_MODEL",
                 "ASSISTANT_LOCAL_LLM_URL",
-                "DROID_BIN",
+                llm_runner.agent_session.bin_env_var(llm_runner.agent_session.DROID),
             ) if (value := os.environ.get(key)) is not None
         }
         features[feature] = {

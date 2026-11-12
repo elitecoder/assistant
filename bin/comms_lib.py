@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import agent_session
+
 
 # --------------------------------------------------------------------------- paths
 
@@ -696,7 +698,7 @@ def read_context_tokens(transcript_path: str | Path) -> int | None:
     p = Path(transcript_path)
     if not p.exists():
         return None
-    last: dict[str, Any] | None = None
+    last: int | None = None
     with open(p) as f:
         for line in f:
             line = line.strip()
@@ -706,17 +708,10 @@ def read_context_tokens(transcript_path: str | Path) -> int | None:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            msg = rec.get("message")
-            if not isinstance(msg, dict):
-                continue
-            usage = msg.get("usage")
-            if isinstance(usage, dict):
-                last = usage
-    if last is None:
-        return None
-    return (int(last.get("input_tokens") or 0)
-            + int(last.get("cache_creation_input_tokens") or 0)
-            + int(last.get("cache_read_input_tokens") or 0))
+            tokens = agent_session.context_tokens(rec)
+            if tokens is not None:
+                last = tokens
+    return last
 
 
 def context_fraction(tokens: int | None, window: int = CONTEXT_WINDOW_TOKENS) -> float:
