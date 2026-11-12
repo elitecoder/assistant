@@ -20,7 +20,8 @@ public struct BargeInGate: Equatable {
     private var gap: TimeInterval = 0
     public private(set) var triggered = false
 
-    public init() {}
+    /// `noise` is the room's level before playback started, when it's known.
+    public init(noise: Float? = nil) { self.noise = noise }
 
     /// Takes one buffer's level; true exactly once, when the operator is talking over the answer.
     public mutating func take(level: Float, duration: TimeInterval) -> Bool {
@@ -50,18 +51,46 @@ public struct BargeInGate: Equatable {
 
 /// The barge-in gate, armed only while Assistant's audio is actually playing. Between answers, between sentences, and
 /// while Claude is still writing, it starts over, so noise then can't use it up, and its settle time starts when
-/// playback does, when echo cancellation is adapting and echo leaks most.
+/// playback does, when echo cancellation is adapting and echo leaks most. While nothing plays it keeps a rolling level
+/// of the room, about the last second, and each playback's gate starts from it instead of from its first buffer, which
+/// may already hold the answer's own echo or the operator's voice.
 public struct BargeInWatch: Equatable {
     private var gate = BargeInGate()
+    public private(set) var room: Float?
+    /// How long the rolling room level remembers.
+    static let roomMemory: TimeInterval = 1
 
     public init() {}
 
     public mutating func take(level: Float, duration: TimeInterval, playing: Bool) -> Bool {
         guard playing else {
-            gate = BargeInGate()
+            if level.isFinite {
+                room = room.map { $0 + (level - $0) * Float(min(1, duration / Self.roomMemory)) } ?? level
+            }
+            gate = BargeInGate(noise: room)
             return false
         }
         return gate.take(level: level, duration: duration)
+    }
+}
+
+/// What the echo-cancelled microphone's tap decides about each buffer: whether the operator is talking over the
+/// answer, and whether the microphone has sent nothing at all (every sample exactly zero) for `TalkModeNote.silentAfter`.
+/// A quiet room under voice processing reads as the meter's floor, not as zeros, so it doesn't count as no sound.
+public struct TalkTap: Equatable {
+    public private(set) var watch = BargeInWatch()
+    private var zeroFor: TimeInterval = 0
+
+    public init() {}
+
+    public var silent: Bool { zeroFor >= TalkModeNote.silentAfter }
+
+    /// `allZero` is true when every sample in the buffer is exactly zero. Returns whether the operator barged in,
+    /// and the new value of `silent` when it changed.
+    public mutating func take(level: Float, allZero: Bool, duration: TimeInterval, playing: Bool) -> (bargeIn: Bool, silent: Bool?) {
+        let was = silent
+        zeroFor = allZero ? zeroFor + duration : 0
+        return (watch.take(level: level, duration: duration, playing: playing), silent != was ? silent : nil)
     }
 }
 

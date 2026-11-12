@@ -834,3 +834,35 @@ final class VoiceProcessingLiveTests: XCTestCase {
         XCTAssertFalse(speaker.watching)
     }
 }
+
+@MainActor
+final class ListenerCancelTests: XCTestCase {
+    /// Cancelling (Stop or Esc in Talk Mode) drops the half question: nothing is asked or reported, and the recognizer
+    /// is cancelled, not finished.
+    func testCancelDropsTheHalfQuestion() {
+        let recognizers = FakeRecognizers()
+        let mic = Microphone(id: 1, name: "Logitech BRIO", builtIn: false, virtual: false)
+        let fake = FakeMic(mic)
+        let listener = Listener(Listener.Dependencies(access: { (.granted, .granted) }, requestAccess: { _, done in done(true, true) },
+                                                      choose: { $0.contains(1) ? nil : mic }, open: { _ in .success(fake) },
+                                                      recognizers: recognizers))
+        var said: [String] = []
+        var ended = 0
+        listener.onHeard = { said.append($0) }
+        listener.onProblem = { said.append("problem: \($0)") }
+        listener.onEnded = { ended += 1 }
+        listener.start()
+        let deadline = Date().addingTimeInterval(3)
+        while fake.sink == nil && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        recognizers.sessions[0].onText("Tell the trim fix session to")
+        listener.cancel()
+        recognizers.sessions[0].finishing?("Tell the trim fix session to")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertFalse(listener.listening)
+        XCTAssertEqual(said, [])
+        XCTAssertTrue(recognizers.sessions[0].cancelled)
+        XCTAssertFalse(recognizers.sessions[0].finished)
+        XCTAssertEqual(listener.heard, "")
+        XCTAssertEqual(ended, 1)
+    }
+}

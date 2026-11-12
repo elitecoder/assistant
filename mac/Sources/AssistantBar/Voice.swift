@@ -775,6 +775,9 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
     /// The same, for the microphone tap's thread.
     private let playingNow = Flag()
+    /// Touched only on the echo-cancelled microphone's tap thread, once the watch starts.
+    private var tap = TalkTap()
+    private var tapBuffers = 0
     /// Kokoro syntheses still running for the current reply.
     private var pending = 0
     /// The Apple utterance playing now; callbacks for an earlier one, cut off by a replay or a sample, are ignored.
@@ -973,22 +976,12 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
                 try input.setVoiceProcessingEnabled(true)
                 guard let mono = AVAudioFormat(standardFormatWithSampleRate: input.outputFormat(forBus: 0).sampleRate,
                                                channels: 1) else { return }
-                var watch = BargeInWatch()
-                let playing = self.playingNow
-                var buffers = 0
-                var silentFor: TimeInterval = 0
+                self.tap = TalkTap()
+                self.tapBuffers = 0
                 input.installTap(onBus: 0, bufferSize: 4800, format: mono) { [weak self] buffer, _ in
-                    guard let data = buffer.floatChannelData?[0] else { return }
-                    let level = Meter.level(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
-                    let wasSilent = silentFor >= TalkModeNote.silentAfter
-                    silentFor = level == 0 ? silentFor + Double(buffer.frameLength) / buffer.format.sampleRate : 0
-                    let isSilent = silentFor >= TalkModeNote.silentAfter
-                    if isSilent != wasSilent { DispatchQueue.main.async { self?.watchSilent = isSilent } }
-                    buffers += 1
-                    if buffers % 50 == 1 { voiceLog.notice("barge-in: echo-cancelled level \(level)") }
-                    if watch.take(level: level, duration: Double(buffer.frameLength) / buffer.format.sampleRate,
-                                  playing: playing.value) {
-                        voiceLog.notice("barge-in: the operator is talking over the answer")
+                    guard let self, let data = buffer.floatChannelData?[0] else { return }
+                    let samples = UnsafeBufferPointer(start: data, count: Int(buffer.frameLength))
+                    if self.watchTook(samples, duration: Double(buffer.frameLength) / buffer.format.sampleRate) {
                         DispatchQueue.main.async(execute: onBargeIn)
                     }
                 }
@@ -1004,6 +997,19 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if !watching { stopWatching(force: true) }
         voiceLog.notice("barge-in: watching \(self.watching ? "on" : "off", privacy: .public)")
         return watching
+    }
+
+    /// Takes one buffer from the echo-cancelled microphone, on the tap's thread: true when the operator is talking
+    /// over audio that's actually playing. Updates `watchSilent` when the microphone starts or stops sending only zeros.
+    func watchTook(_ samples: UnsafeBufferPointer<Float>, duration: TimeInterval) -> Bool {
+        let level = Meter.level(samples)
+        let result = tap.take(level: level, allZero: samples.allSatisfy { $0 == 0 }, duration: duration,
+                              playing: playingNow.value)
+        if let silent = result.silent { DispatchQueue.main.async { self.watchSilent = silent } }
+        tapBuffers += 1
+        if tapBuffers % 50 == 1 { voiceLog.notice("barge-in: echo-cancelled level \(level)") }
+        if result.bargeIn { voiceLog.notice("barge-in: the operator is talking over the answer") }
+        return result.bargeIn
     }
 
     func stopWatching(force: Bool = false) {

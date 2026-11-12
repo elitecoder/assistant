@@ -140,6 +140,16 @@ final class StreamedReplyTurnsTests: XCTestCase {
         turns.newReply()
         XCTAssertEqual(turns.part("Next.", listening: false), .start("Next."))
     }
+
+    /// Muting drops the sentences that were waiting for listening to end, not only the ones still to come.
+    func testMutingDropsTheSentencesWaitingForListeningToEnd() {
+        var turns = VoiceTurns()
+        turns.newReply()
+        XCTAssertEqual(turns.part("One.", listening: true), .deferred(note: true))
+        turns.mute()
+        XCTAssertEqual(turns.part("Two.", listening: false), .dropped)
+        XCTAssertNil(turns.listeningEnded())
+    }
 }
 
 final class SpokenStreamCodeTests: XCTestCase {

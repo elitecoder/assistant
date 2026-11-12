@@ -131,6 +131,44 @@ final class BargeInWatchTests: XCTestCase {
         }
         XCTAssertEqual(fired, 7, "voice counts only from 0.3 s after playback starts")
     }
+
+    /// The room's noise comes from before playback. Playback's first buffer can be loud (echo leaking while
+    /// cancellation adapts); starting the noise from it would hide the operator's voice.
+    func testTheNoiseFloorIsTheRoomBeforePlaybackNotTheFirstBuffer() {
+        var watch = BargeInWatch()
+        _ = run(&watch, Array(repeating: 0.1, count: 20), playing: false)
+        XCTAssertEqual(watch.room ?? 0, 0.1, accuracy: 0.001)
+        XCTAssertTrue(run(&watch, [0.9] + Array(repeating: 0.6, count: 9), playing: true))
+    }
+
+    /// The room level rolls over about a second, so a door slam long before playback doesn't stay in it.
+    func testTheRoomLevelFollowsTheLastSecond() {
+        var watch = BargeInWatch()
+        _ = run(&watch, [0.9] + Array(repeating: 0.1, count: 50), playing: false)
+        XCTAssertEqual(watch.room ?? 0, 0.1, accuracy: 0.01)
+        _ = run(&watch, Array(repeating: 0.4, count: 50), playing: false)
+        XCTAssertEqual(watch.room ?? 0, 0.4, accuracy: 0.01)
+    }
+}
+
+final class TalkTapTests: XCTestCase {
+    /// Only buffers of exact zeros count as no sound; a quiet room at the meter's floor (level 0) doesn't.
+    func testOnlyExactZerosMeanTheMicrophoneSendsNoSound() {
+        var tap = TalkTap()
+        var changes: [Bool] = []
+        for _ in 0..<30 {
+            if let s = tap.take(level: 0, allZero: false, duration: 0.1, playing: false).silent { changes.append(s) }
+        }
+        XCTAssertEqual(changes, [], "a quiet room counted as no sound")
+        for _ in 0..<19 {
+            if let s = tap.take(level: 0, allZero: true, duration: 0.1, playing: false).silent { changes.append(s) }
+        }
+        XCTAssertEqual(changes, [])
+        if let s = tap.take(level: 0, allZero: true, duration: 0.1, playing: false).silent { changes.append(s) }
+        XCTAssertEqual(changes, [true], "two seconds of zeros")
+        if let s = tap.take(level: 0.2, allZero: false, duration: 0.1, playing: false).silent { changes.append(s) }
+        XCTAssertEqual(changes, [true, false])
+    }
 }
 
 final class TalkLoopMicLostTests: XCTestCase {

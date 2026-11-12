@@ -147,3 +147,38 @@ final class StopOffMainTests: XCTestCase {
         wait(for: [ended], timeout: 2)
     }
 }
+
+/// The echo-cancelled microphone's buffers, as the tap hands them to the Speaker.
+final class SpeakerWatchTests: XCTestCase {
+    override func setUp() { UserDefaults.standard.set(Kokoro.voices[0].id, forKey: Speaker.preferenceKey) }
+
+    func took(_ speaker: Speaker, _ amplitude: Float, times: Int) -> Bool {
+        let samples = [Float](repeating: amplitude, count: 4800)
+        return (0..<times).map { _ in samples.withUnsafeBufferPointer { speaker.watchTook($0, duration: 0.1) } }.contains(true)
+    }
+
+    /// Talking while nothing plays (Claude still writing) doesn't interrupt; talking over audio that plays does.
+    func testOnlyAudioThatsPlayingCanBeInterrupted() {
+        let output = FakeOutput()
+        let speaker = Speaker(output: output)
+        XCTAssertFalse(took(speaker, 0.001, times: 30))
+        XCTAssertFalse(took(speaker, 0.5, times: 10), "interrupted with nothing playing")
+        XCTAssertFalse(took(speaker, 0.001, times: 30))
+        speaker.say("The version bump session needs your token.")
+        output.syntheses[0].chunk([0.1, 0.2])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(speaker.playingAudio)
+        XCTAssertTrue(took(speaker, 0.5, times: 10), "talking over the answer didn't interrupt")
+    }
+
+    /// Two seconds of exact zeros set the no-sound note; sound clears it.
+    func testAMicrophoneSendingZerosIsReportedSilent() {
+        let speaker = Speaker(output: FakeOutput())
+        _ = took(speaker, 0, times: 20)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(speaker.watchSilent)
+        _ = took(speaker, 0.0001, times: 1)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertFalse(speaker.watchSilent, "a quiet room isn't no sound")
+    }
+}

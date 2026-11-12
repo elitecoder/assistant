@@ -239,10 +239,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and starts over for each sentence, so talking while Claude is still writing
   no longer uses up the interruption. Stopping Talk Mode mid-question drops
   the half question, a disconnected microphone ends Talk Mode with a note, and
-  interrupting while you're already asking keeps your question.
+  interrupting while you're already asking keeps your question. The room's
+  noise level comes from the second before the answer plays, not from its
+  first moment, which can hold the answer's own echo.
 - The panel says when Talk Mode watches a different microphone than the one
   picked (voice processing uses the Mac's default input), or when that
-  microphone sends no sound.
+  microphone sends no sound. Only a microphone sending nothing at all counts;
+  a quiet room doesn't.
 - Code blocks in a spoken answer aren't read aloud.
 - Smart Turn and Kokoro downloads are refused unless their SHA-256 matches, a
   damaged Smart Turn file is downloaded again before it's loaded, and Kokoro
