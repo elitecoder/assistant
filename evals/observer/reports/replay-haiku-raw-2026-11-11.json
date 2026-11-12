@@ -1,0 +1,1464 @@
+{
+  "summary": {
+    "claude-haiku-4-5:raw": {
+      "agree": 43,
+      "cases": 47,
+      "no_answer": 0,
+      "acting_sonnet_did_not_give": 0,
+      "usd": 9.05,
+      "median_tokens_in": 90268,
+      "sonnet_to_model": {
+        "needs_user->needs_user": 33,
+        "active->active": 10,
+        "no_action->active": 2,
+        "stranded->needs_user": 1,
+        "needs_user->active": 1
+      }
+    },
+    "claude-haiku-4-5:slice": {
+      "agree": 43,
+      "cases": 47,
+      "no_answer": 0,
+      "acting_sonnet_did_not_give": 1,
+      "usd": 3.44,
+      "median_tokens_in": 35773,
+      "sonnet_to_model": {
+        "needs_user->needs_user": 33,
+        "needs_user->ready_for_cleanup": 1,
+        "active->active": 10,
+        "no_action->active": 1,
+        "no_action->needs_user": 1,
+        "stranded->needs_user": 1
+      }
+    },
+    "claude-sonnet-5-5:slice": {
+      "agree": 43,
+      "cases": 47,
+      "no_answer": 0,
+      "acting_sonnet_did_not_give": 1,
+      "usd": 6.72,
+      "median_tokens_in": 35789,
+      "sonnet_to_model": {
+        "needs_user->needs_user": 33,
+        "needs_user->ready_for_cleanup": 1,
+        "active->needs_user": 1,
+        "active->active": 9,
+        "no_action->no_action": 1,
+        "no_action->needs_user": 1,
+        "stranded->needs_user": 1
+      }
+    }
+  },
+  "rows": [
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11390/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 111330,
+      "tokens_out": 921,
+      "usd": 0.2244984,
+      "sec": 9.916
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11390/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 36555,
+      "tokens_out": 1058,
+      "usd": 0.078396,
+      "sec": 9.303
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11390/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 36558,
+      "tokens_out": 468,
+      "usd": 0.150908,
+      "sec": 5.067
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11903/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 114153,
+      "tokens_out": 882,
+      "usd": 0.2299494,
+      "sec": 8.974
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11903/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 41690,
+      "tokens_out": 722,
+      "usd": 0.08422339999999999,
+      "sec": 6.775
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11903/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 41693,
+      "tokens_out": 424,
+      "usd": 0.1649747,
+      "sec": 4.859
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11401/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 119679,
+      "tokens_out": 652,
+      "usd": 0.23985140000000002,
+      "sec": 7.455
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11401/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 37015,
+      "tokens_out": 646,
+      "usd": 0.0744934,
+      "sec": 6.26
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11401/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 37018,
+      "tokens_out": 442,
+      "usd": 0.1464547,
+      "sec": 4.652
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11733/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 113820,
+      "tokens_out": 695,
+      "usd": 0.2283484,
+      "sec": 7.723
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11733/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 38824,
+      "tokens_out": 725,
+      "usd": 0.0785064,
+      "sec": 6.679
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11733/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 38827,
+      "tokens_out": 404,
+      "usd": 0.1533107,
+      "sec": 4.987
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11838/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 77324,
+      "tokens_out": 745,
+      "usd": 0.1556064,
+      "sec": 7.26
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11838/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 38012,
+      "tokens_out": 688,
+      "usd": 0.07669740000000001,
+      "sec": 6.39
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11838/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 38015,
+      "tokens_out": 422,
+      "usd": 0.1502427,
+      "sec": 4.844
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11391/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 113378,
+      "tokens_out": 973,
+      "usd": 0.2288544,
+      "sec": 9.323
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11391/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35409,
+      "tokens_out": 1084,
+      "usd": 0.0734714,
+      "sec": 9.991
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11391/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 71245,
+      "tokens_out": 743,
+      "usd": 0.1482657,
+      "sec": 11.399
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11599/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 139358,
+      "tokens_out": 2451,
+      "usd": 0.28820439999999997,
+      "sec": 19.815
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11599/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "ready_for_cleanup",
+      "tokens_in": 47424,
+      "tokens_out": 973,
+      "usd": 0.0969464,
+      "sec": 8.882
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11599/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "ready_for_cleanup",
+      "tokens_in": 95375,
+      "tokens_out": 696,
+      "usd": 0.1974572,
+      "sec": 12.159
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11833/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 88357,
+      "tokens_out": 897,
+      "usd": 0.17843240000000002,
+      "sec": 8.464
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11833/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 41594,
+      "tokens_out": 675,
+      "usd": 0.0837964,
+      "sec": 5.924
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11833/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 83749,
+      "tokens_out": 912,
+      "usd": 0.17778860000000002,
+      "sec": 16.896
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11673/batch-4",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 90268,
+      "tokens_out": 865,
+      "usd": 0.1820944,
+      "sec": 9.886
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11673/batch-4",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 42305,
+      "tokens_out": 997,
+      "usd": 0.0868284,
+      "sec": 10.424
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11673/batch-4",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 42308,
+      "tokens_out": 381,
+      "usd": 0.16700469999999998,
+      "sec": 4.925
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11579/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 81689,
+      "tokens_out": 751,
+      "usd": 0.1643664,
+      "sec": 7.474
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11579/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34377,
+      "tokens_out": 672,
+      "usd": 0.06934739999999999,
+      "sec": 7.054
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11579/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34380,
+      "tokens_out": 359,
+      "usd": 0.1350727,
+      "sec": 4.115
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11917/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 71473,
+      "tokens_out": 765,
+      "usd": 0.14400439999999998,
+      "sec": 7.112
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11917/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32774,
+      "tokens_out": 697,
+      "usd": 0.06626639999999999,
+      "sec": 6.918
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11917/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32777,
+      "tokens_out": 400,
+      "usd": 0.12907069999999998,
+      "sec": 4.791
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11798/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 89028,
+      "tokens_out": 981,
+      "usd": 0.18019439999999998,
+      "sec": 10.502
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11798/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 39407,
+      "tokens_out": 778,
+      "usd": 0.07993739999999999,
+      "sec": 9.264
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11798/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 39410,
+      "tokens_out": 429,
+      "usd": 0.1558927,
+      "sec": 4.745
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11438/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 89327,
+      "tokens_out": 673,
+      "usd": 0.1792524,
+      "sec": 6.852
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11438/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35543,
+      "tokens_out": 724,
+      "usd": 0.0719394,
+      "sec": 7.079
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11438/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35546,
+      "tokens_out": 362,
+      "usd": 0.1397667,
+      "sec": 4.773
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11856/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 77920,
+      "tokens_out": 1018,
+      "usd": 0.1581634,
+      "sec": 9.868
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11856/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 39691,
+      "tokens_out": 852,
+      "usd": 0.0808754,
+      "sec": 7.757
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11856/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 39694,
+      "tokens_out": 471,
+      "usd": 0.1574487,
+      "sec": 5.043
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11711/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 88840,
+      "tokens_out": 1109,
+      "usd": 0.1804584,
+      "sec": 10.3
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11711/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 33171,
+      "tokens_out": 937,
+      "usd": 0.0682604,
+      "sec": 9.058
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11711/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 33174,
+      "tokens_out": 365,
+      "usd": 0.1303087,
+      "sec": 4.612
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11413/batch-2",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 97386,
+      "tokens_out": 539,
+      "usd": 0.1947004,
+      "sec": 6.3
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11413/batch-2",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 36598,
+      "tokens_out": 472,
+      "usd": 0.07278939999999999,
+      "sec": 6.279
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11413/batch-2",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 36601,
+      "tokens_out": 199,
+      "usd": 0.1423567,
+      "sec": 3.913
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11857/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 124035,
+      "tokens_out": 728,
+      "usd": 0.2489434,
+      "sec": 7.567
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11857/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35773,
+      "tokens_out": 664,
+      "usd": 0.0720994,
+      "sec": 6.623
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11857/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35776,
+      "tokens_out": 427,
+      "usd": 0.1413367,
+      "sec": 5.179
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11853/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 90267,
+      "tokens_out": 1154,
+      "usd": 0.1835374,
+      "sec": 11.254
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11853/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 42304,
+      "tokens_out": 1156,
+      "usd": 0.0876214,
+      "sec": 9.935
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11853/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 42307,
+      "tokens_out": 373,
+      "usd": 0.1669207,
+      "sec": 4.656
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11654/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 100328,
+      "tokens_out": 659,
+      "usd": 0.20118439999999999,
+      "sec": 7.201
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11654/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32311,
+      "tokens_out": 606,
+      "usd": 0.0648854,
+      "sec": 5.648
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11654/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32314,
+      "tokens_out": 336,
+      "usd": 0.1265787,
+      "sec": 4.38
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11542/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 75653,
+      "tokens_out": 771,
+      "usd": 0.15239439999999999,
+      "sec": 7.603
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11542/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34438,
+      "tokens_out": 603,
+      "usd": 0.0691244,
+      "sec": 6.264
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11542/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34441,
+      "tokens_out": 357,
+      "usd": 0.1352967,
+      "sec": 4.07
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11945/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 85322,
+      "tokens_out": 742,
+      "usd": 0.1715874,
+      "sec": 7.028
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11945/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 37135,
+      "tokens_out": 707,
+      "usd": 0.0750384,
+      "sec": 6.473
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11945/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 37138,
+      "tokens_out": 432,
+      "usd": 0.1468347,
+      "sec": 5.564
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11667/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 69857,
+      "tokens_out": 1444,
+      "usd": 0.1441674,
+      "sec": 13.486
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11667/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 68239,
+      "tokens_out": 983,
+      "usd": 0.0743967,
+      "sec": 14.872
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11667/batch-3",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 68125,
+      "tokens_out": 883,
+      "usd": 0.1434335,
+      "sec": 12.972
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11512/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 69868,
+      "tokens_out": 663,
+      "usd": 0.1402844,
+      "sec": 8.466
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11512/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35724,
+      "tokens_out": 679,
+      "usd": 0.0720764,
+      "sec": 7.033
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11512/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35727,
+      "tokens_out": 399,
+      "usd": 0.1408607,
+      "sec": 5.569
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11572/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 119401,
+      "tokens_out": 942,
+      "usd": 0.2407454,
+      "sec": 10.165
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11572/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 31458,
+      "tokens_out": 1091,
+      "usd": 0.0656044,
+      "sec": 10.29
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11572/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 31461,
+      "tokens_out": 360,
+      "usd": 0.12340670000000001,
+      "sec": 4.603
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11830/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 119498,
+      "tokens_out": 676,
+      "usd": 0.2396094,
+      "sec": 7.231
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11830/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35595,
+      "tokens_out": 973,
+      "usd": 0.0732884,
+      "sec": 8.542
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11830/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35598,
+      "tokens_out": 395,
+      "usd": 0.1403047,
+      "sec": 4.403
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11865/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 68881,
+      "tokens_out": 694,
+      "usd": 0.1384654,
+      "sec": 6.837
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11865/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32631,
+      "tokens_out": 1266,
+      "usd": 0.0688254,
+      "sec": 14.404
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11865/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32634,
+      "tokens_out": 448,
+      "usd": 0.1289787,
+      "sec": 5.036
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11696/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 81994,
+      "tokens_out": 970,
+      "usd": 0.16607139999999998,
+      "sec": 8.409
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11696/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34803,
+      "tokens_out": 1032,
+      "usd": 0.0719994,
+      "sec": 8.589
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11696/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34806,
+      "tokens_out": 414,
+      "usd": 0.1373267,
+      "sec": 5.058
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11598/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 106901,
+      "tokens_out": 705,
+      "usd": 0.21456039999999998,
+      "sec": 6.972
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11598/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 36344,
+      "tokens_out": 636,
+      "usd": 0.0731014,
+      "sec": 6.131
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11598/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 73009,
+      "tokens_out": 670,
+      "usd": 0.1528796,
+      "sec": 10.948
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11943/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 60711,
+      "tokens_out": 709,
+      "usd": 0.1222004,
+      "sec": 6.756
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11943/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34653,
+      "tokens_out": 692,
+      "usd": 0.0699994,
+      "sec": 7.412
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11943/batch-2",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 34656,
+      "tokens_out": 468,
+      "usd": 0.1372667,
+      "sec": 4.817
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11507/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 57685,
+      "tokens_out": 756,
+      "usd": 0.1163834,
+      "sec": 7.741
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11507/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35031,
+      "tokens_out": 1028,
+      "usd": 0.0724354,
+      "sec": 8.938
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11507/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35034,
+      "tokens_out": 397,
+      "usd": 0.1380687,
+      "sec": 5.236
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11497/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 123183,
+      "tokens_out": 353,
+      "usd": 0.2453644,
+      "sec": 4.702
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11497/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 28541,
+      "tokens_out": 340,
+      "usd": 0.0560154,
+      "sec": 5.203
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11497/batch-0",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 28544,
+      "tokens_out": 210,
+      "usd": 0.11023870000000001,
+      "sec": 3.313
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11608/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 76071,
+      "tokens_out": 724,
+      "usd": 0.1529954,
+      "sec": 6.8
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11608/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35786,
+      "tokens_out": 884,
+      "usd": 0.0732254,
+      "sec": 8.163
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11608/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35789,
+      "tokens_out": 384,
+      "usd": 0.1409587,
+      "sec": 4.266
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11992/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 53094,
+      "tokens_out": 581,
+      "usd": 0.1063264,
+      "sec": 5.696
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11992/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32224,
+      "tokens_out": 589,
+      "usd": 0.0646264,
+      "sec": 7.047
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11992/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 32227,
+      "tokens_out": 406,
+      "usd": 0.1269307,
+      "sec": 4.863
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11707/batch-4",
+      "sonnet": "no_action",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 115553,
+      "tokens_out": 794,
+      "usd": 0.2323094,
+      "sec": 8.191
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11707/batch-4",
+      "sonnet": "no_action",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 32782,
+      "tokens_out": 627,
+      "usd": 0.0659324,
+      "sec": 6.883
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11707/batch-4",
+      "sonnet": "no_action",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "no_action",
+      "tokens_in": 32785,
+      "tokens_out": 217,
+      "usd": 0.1272727,
+      "sec": 3.906
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11505/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 62877,
+      "tokens_out": 1312,
+      "usd": 0.1295474,
+      "sec": 12.423
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11505/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 36129,
+      "tokens_out": 1252,
+      "usd": 0.0757514,
+      "sec": 10.976
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11505/batch-1",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 73148,
+      "tokens_out": 1224,
+      "usd": 0.15788370000000002,
+      "sec": 18.826
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11756/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 122057,
+      "tokens_out": 864,
+      "usd": 0.2456674,
+      "sec": 8.35
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11756/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 37850,
+      "tokens_out": 792,
+      "usd": 0.0768934,
+      "sec": 7.413
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11756/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 37853,
+      "tokens_out": 464,
+      "usd": 0.1500147,
+      "sec": 5.302
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11793/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 124958,
+      "tokens_out": 812,
+      "usd": 0.25120939999999997,
+      "sec": 8.253
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11793/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35937,
+      "tokens_out": 964,
+      "usd": 0.0739274,
+      "sec": 8.059
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11793/batch-4",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 35940,
+      "tokens_out": 404,
+      "usd": 0.1417627,
+      "sec": 4.584
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11591/batch-1",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 121247,
+      "tokens_out": 565,
+      "usd": 0.2425524,
+      "sec": 6.227
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11591/batch-1",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 31947,
+      "tokens_out": 446,
+      "usd": 0.0633574,
+      "sec": 4.851
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11591/batch-1",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 31950,
+      "tokens_out": 214,
+      "usd": 0.1239027,
+      "sec": 3.395
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11875/batch-1",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 119453,
+      "tokens_out": 411,
+      "usd": 0.2381944,
+      "sec": 4.99
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11875/batch-1",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 39744,
+      "tokens_out": 451,
+      "usd": 0.0789764,
+      "sec": 5.538
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11875/batch-1",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 39747,
+      "tokens_out": 217,
+      "usd": 0.1551207,
+      "sec": 3.12
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11880/batch-3",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 69064,
+      "tokens_out": 450,
+      "usd": 0.1376114,
+      "sec": 5.843
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11880/batch-3",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 34229,
+      "tokens_out": 384,
+      "usd": 0.0676114,
+      "sec": 4.972
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11880/batch-3",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 34232,
+      "tokens_out": 195,
+      "usd": 0.13284069999999998,
+      "sec": 4.056
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11819/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 119026,
+      "tokens_out": 404,
+      "usd": 0.2373054,
+      "sec": 5.359
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11819/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 32366,
+      "tokens_out": 443,
+      "usd": 0.0641804,
+      "sec": 6.112
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11819/batch-0",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 32369,
+      "tokens_out": 211,
+      "usd": 0.1255487,
+      "sec": 3.634
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11759/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 115150,
+      "tokens_out": 520,
+      "usd": 0.23013340000000002,
+      "sec": 11.014
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11759/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 27994,
+      "tokens_out": 346,
+      "usd": 0.054951400000000004,
+      "sec": 5.309
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11759/batch-0",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 27997,
+      "tokens_out": 199,
+      "usd": 0.1079407,
+      "sec": 3.488
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11351/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 110725,
+      "tokens_out": 393,
+      "usd": 0.2206484,
+      "sec": 5.622
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11351/batch-0",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 33341,
+      "tokens_out": 541,
+      "usd": 0.0666204,
+      "sec": 5.88
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11351/batch-0",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 33344,
+      "tokens_out": 210,
+      "usd": 0.1294387,
+      "sec": 3.394
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11812/batch-3",
+      "sonnet": "no_action",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 90267,
+      "tokens_out": 1140,
+      "usd": 0.1834674,
+      "sec": 11.781
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11812/batch-3",
+      "sonnet": "no_action",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 42304,
+      "tokens_out": 1155,
+      "usd": 0.0876164,
+      "sec": 10.084
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11812/batch-3",
+      "sonnet": "no_action",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 42307,
+      "tokens_out": 356,
+      "usd": 0.1667507,
+      "sec": 4.573
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11529/batch-0",
+      "sonnet": "stranded",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "needs_user",
+      "tokens_in": 62878,
+      "tokens_out": 1080,
+      "usd": 0.12838940000000001,
+      "sec": 10.015
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11529/batch-0",
+      "sonnet": "stranded",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 73427,
+      "tokens_out": 1686,
+      "usd": 0.083874,
+      "sec": 22.061
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11529/batch-0",
+      "sonnet": "stranded",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 72870,
+      "tokens_out": 1010,
+      "usd": 0.15462379999999998,
+      "sec": 20.78
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11608/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 104748,
+      "tokens_out": 866,
+      "usd": 0.2110594,
+      "sec": 10.858
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11608/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 31139,
+      "tokens_out": 693,
+      "usd": 0.0629764,
+      "sec": 6.976
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11608/batch-0",
+      "sonnet": "needs_user",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "needs_user",
+      "tokens_in": 31142,
+      "tokens_out": 365,
+      "usd": 0.1221807,
+      "sec": 4.253
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11734/batch-3",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:raw",
+      "verdict": "active",
+      "tokens_in": 109370,
+      "tokens_out": 536,
+      "usd": 0.2186534,
+      "sec": 5.959
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11734/batch-3",
+      "sonnet": "active",
+      "spec": "claude-haiku-4-5:slice",
+      "verdict": "active",
+      "tokens_in": 36359,
+      "tokens_out": 797,
+      "usd": 0.0739364,
+      "sec": 10.361
+    },
+    {
+      "run": "/Users/mukuls/.assistant/observer-runs/11734/batch-3",
+      "sonnet": "active",
+      "spec": "claude-sonnet-5-5:slice",
+      "verdict": "active",
+      "tokens_in": 36362,
+      "tokens_out": 212,
+      "usd": 0.14153069999999998,
+      "sec": 3.44
+    }
+  ]
+}

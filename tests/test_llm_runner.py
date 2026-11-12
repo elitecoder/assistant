@@ -481,9 +481,6 @@ class InvokeTests(unittest.TestCase):
         self.assertEqual(result.usage_source, "cli")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class LocalModelTests(unittest.TestCase):
     def setUp(self):
@@ -559,3 +556,7 @@ class LocalModelTests(unittest.TestCase):
             self.assertEqual((result.rc, result.usable), (1, False))
             self.assertIn(server.url if result is down else "local model at", result.stderr)
         self.assertEqual((empty.rc, empty.usable), (0, False))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -257,6 +257,24 @@ def test_default_mode_runs_the_session_check_only_when_opted_in(home, monkeypatc
     assert not pulse.job_enabled("triage")
 
 
+def test_default_mode_session_check_never_merges_or_sends(home, monkeypatch):
+    pulse = load_pulse()
+    calls = []
+    monkeypatch.setattr(pulse, "cmux_send", lambda *a, **k: calls.append(a) or {"outcome": "sent"})
+    monkeypatch.setattr(pulse, "run_merge_pr_dispatch",
+                        lambda *a, **k: calls.append(a) or {"outcome": "submitted"})
+    monkeypatch.setattr(pulse, "previous_send_ingested", lambda *a: True)
+    ws = {"ref": "workspace:1", "title": "t", "cwd": "/", "pr_refs": ["7"]}
+    merge = {"verdict": "ready_for_merge", "summary": "s", "next": "n"}
+    nudge = {"verdict": "stranded", "nudge_text": "go", "summary": "s", "next": "n"}
+    assert pulse.execute_verdict(ws, merge, [])["kind"] == "skipped"
+    assert pulse.execute_verdict(ws, nudge, [])["kind"] == "skipped"
+    assert calls == []
+    set_mode(home, "pro")
+    pulse.execute_verdict(ws, merge, [])
+    assert calls == [("workspace:1", "7")]
+
+
 def test_default_mode_skips_the_alert_backlog_and_expires_old_requests(home):
     pulse = load_pulse()
     from assistant import decisions, triage
