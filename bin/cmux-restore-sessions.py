@@ -55,8 +55,11 @@ def load_recorded():
     records = cmux_sessions.list_sessions()
     records += cmux_sessions.registry_fallback(REGISTRY, records)
     newest = {}
+    copilot_picked = agent_session.copilot_chosen()
     for record in records:
         if not (record.active_for_surface and record.provider and record.surface_id):
+            continue
+        if record.provider == agent_session.COPILOT and not copilot_picked:
             continue
         current = newest.get(record.surface_id)
         if current is None or (record.updated_at or 0) > (current.updated_at or 0):

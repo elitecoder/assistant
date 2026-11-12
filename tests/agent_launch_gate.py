@@ -146,26 +146,57 @@ def _argv_problem(elts: list[ast.AST], aliases: dict[str, str]) -> str | None:
     return None
 
 
+def _joined_text(node: ast.AST) -> str | None:
+    """The text a `+` chain of strings builds, "{}" for each non-literal part;
+    None when no part is a literal."""
+    parts, cur = [], node
+    while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+        parts.insert(0, cur.right)
+        cur = cur.left
+    parts.insert(0, cur)
+    texts = [_const_str(p) for p in parts]
+    if all(t is None for t in texts):
+        return None
+    return "".join("{}" if t is None else t for t in texts)
+
+
+def _path_parts_problem(parts: list[str | None]) -> str | None:
+    pairs = set(zip(parts, parts[1:]))
+    if pairs & _ROOT_PARTS:
+        return "agent transcript root"
+    if any(a == "bin" and b in AGENTS for a, b in pairs):
+        return "pinned agent binary path"
+    return None
+
+
 def python_problems(text: str) -> list[tuple[int, str]]:
     tree = ast.parse(text)
     docs = _docstring_nodes(tree)
     found: list[tuple[int, str]] = []
     aliases = {}
+    seeded = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and _const_str(node.value) in AGENTS:
             for t in node.targets:
                 if isinstance(t, ast.Name):
                     aliases[t.id] = _const_str(node.value)
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.List) \
+                and len(node.value.elts) == 1 and _const_str(node.value.elts[0]) in AGENTS:
+            seeded.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id in seeded:
+            found.append((node.lineno, f"agent argv grown from {node.target.id!r}"))
     in_fstring: set[int] = set()
     prose: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
             in_fstring.update(id(v) for v in node.values)
         if isinstance(node, ast.Call) and _elt_word(node.func) in _PROSE_CALLS:
-            prose.update(id(a) for a in node.args)
-            prose.update(id(k.value) for k in node.keywords)
+            for arg in [*node.args, *(k.value for k in node.keywords)]:
+                prose.update(id(n) for n in ast.walk(arg))
         if isinstance(node, ast.keyword) and node.arg == "help":
-            prose.add(id(node.value))
+            prose.update(id(n) for n in ast.walk(node.value))
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, (ast.List, ast.Tuple)):
@@ -185,11 +216,14 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                 parts.insert(0, _const_str(cur.right))
                 cur = cur.left
             parts.insert(0, _const_str(cur))
-            pairs = set(zip(parts, parts[1:]))
-            if pairs & _ROOT_PARTS:
-                found.append((line, "agent transcript root"))
-            if any(a == "bin" and b in AGENTS for a, b in pairs):
-                found.append((line, "pinned agent binary path"))
+            why = _path_parts_problem(parts)
+            if why:
+                found.append((line, why))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) \
+                and id(node) not in prose:
+            joined = _joined_text(node)
+            if joined:
+                found += [(line, f"joined {why}") for why in _string_problems(joined)]
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
@@ -198,6 +232,23 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                     found.append((line, f"per-file agent binary {name}"))
         elif isinstance(node, ast.Call):
             fname = _elt_word(node.func)
+            if isinstance(node.func, ast.Attribute):
+                attr = node.func.attr
+                base = _const_str(node.func.value)
+                if attr == "format" and base is not None and id(node) not in prose:
+                    filled = base
+                    for arg in node.args:
+                        filled = filled.replace("{}", _const_str(arg) or "<>", 1)
+                    found += [(line, f"formatted {why}") for why in _string_problems(filled)]
+                if attr in ("joinpath", "join"):
+                    why = _path_parts_problem(
+                        [_const_str(node.func.value), *(_const_str(a) for a in node.args)]
+                        if attr == "joinpath" else [_const_str(a) for a in node.args])
+                    if why:
+                        found.append((line, why))
+                if attr in ("append", "extend", "insert") and isinstance(node.func.value, ast.Name) \
+                        and node.func.value.id in seeded:
+                    found.append((line, f"agent argv grown from {node.func.value.id!r}"))
             if fname in _EXEC_FUNCS and node.args:
                 first = node.args[0]
                 word = _elt_word(first)

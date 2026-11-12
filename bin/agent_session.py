@@ -274,6 +274,8 @@ def binary(agent: str, env: dict | None = None) -> str:
     home = Path(src.get("HOME") or str(Path.home()))
     if agent == CLAUDE:
         return str(home / ".local" / "bin" / CLAUDE)
+    if agent == DROID and _executable(str(home / ".local" / "bin" / DROID)):
+        return str(home / ".local" / "bin" / DROID)
     found = shutil.which(agent)
     if not found:
         found = next((str(c) for c in _bin_candidates(agent, home)
@@ -813,7 +815,7 @@ def _copilot_events(stdout: str) -> list[dict]:
 def _copilot_usage(stdout: str) -> dict | None:
     events = _copilot_events(stdout)
     result = next((e for e in reversed(events) if e.get("type") == "result"), None)
-    if result is None:
+    if result is None or not any("." in str(e.get("type", "")) for e in events):
         return None
     text = ""
     for e in events:

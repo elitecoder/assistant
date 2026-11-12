@@ -2204,21 +2204,22 @@ def dispatch_todo(todo_id: str) -> bool:
     # 4-5. Wait for readiness, answering the first-launch folder-trust prompt
     #    (once) whenever it appears. Permission-bypass flags (claude's alias,
     #    copilot --allow-all) don't cover it, and it can render seconds into
-    #    boot, so it's checked on every poll, not once up front. Readiness is
-    #    the agent's ready marker from agent_session.ready_re.
+    #    boot, so it's checked on every poll, not once up front. An unanswered
+    #    trust prompt outranks the ready marker on the same screen. Readiness
+    #    is the agent's ready marker from agent_session.ready_re.
     trust = agent_session.trust_marker(agent)
     trust_answered = False
     ready = False
     for _ in range(READY_POLLS):
         screen = _surface_read_text(surface_ref)
-        if agent_session.ready_re(agent).search(screen):
-            ready = True
-            break
         if trust and not trust_answered and trust in screen:
             _cmux_rpc("surface.send_text", {"surface_id": surface_ref,
                                             "text": agent_session.trust_answer(agent)})
             _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
             trust_answered = True
+        elif agent_session.ready_re(agent).search(screen):
+            ready = True
+            break
         time.sleep(1)
     if not ready:
         # PARK, don't storm. A spawned-but-never-ready workspace is real; if we

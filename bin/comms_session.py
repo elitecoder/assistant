@@ -325,7 +325,9 @@ def input_box_text(screen: str) -> str | None:
     rules = [i for i, line in enumerate(lines) if _RULE_RE.match(line)]
     tops = [i for i, line in enumerate(lines) if line.lstrip().startswith("╻")]
     if len(rules) < 2 or (tops and tops[-1] > rules[-1]):
-        return _copilot_box_text(lines)
+        copilot = _copilot_box_text(lines)
+        if copilot is not None or len(rules) < 2:
+            return copilot
     body = lines[rules[-2] + 1:rules[-1]]
     if not body or not body[0].lstrip().startswith("❯"):
         return None
@@ -343,6 +345,8 @@ def _copilot_box_text(lines: list[str]) -> str | None:
     bottom = next((i for i in range(top + 1, len(lines))
                    if lines[i].lstrip().startswith("╹")), None)
     if bottom is None:
+        return None
+    if not any(line.lstrip().startswith("┃") for line in lines[top + 1:bottom]):
         return None
     body = [line.strip().lstrip("┃").strip() for line in lines[top + 1:bottom]]
     return " ".join(part for part in body if part).strip()

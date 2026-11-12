@@ -128,6 +128,12 @@ CAUGHT = {
         'root = Path.home() / ".claude" / "projects"',
         'glob = HOME / ".copilot" / "session-state"',
         'path = "~/.factory/sessions/x.jsonl"',
+        'cmd = "claude" + " --resume " + sid',
+        'cmd = "{} --resume {}".format("claude", sid)',
+        'cmd = ["claude"]\ncmd += ["--resume", sid]',
+        'cmd = ["copilot"]\ncmd.extend(["--model", m])',
+        'root = Path.home().joinpath(".factory", "sessions")',
+        'root = os.path.join(HOME, ".copilot", "session-state")',
     ],
     "sh": [
         'claude -p "hi"',
@@ -174,6 +180,10 @@ PASSED = {
         'ap.add_argument("--json-schema")',
         'log.warning("droid exec --model failed: %s", err)',
         'parser.add_argument("--x", help="passes --allow-all to copilot")',
+        'label = "agent: " + provider',
+        'msg = "{} finished".format("claude")',
+        'path = os.path.join(HOME, ".claude", "CLAUDE.md")',
+        'print("run " + "claude --resume " + sid)',
     ],
     "sh": [
         'command -v copilot >/dev/null',
@@ -888,8 +898,10 @@ def test_comms_waits_for_copilots_prompt_box_before_typing():
 
 def test_comms_copilot_warm_session_reaches_the_folders_claude_does(home, monkeypatch):
     _pick(home, "copilot")
+    monkeypatch.setattr(cs, "HOME", home)
+    (home / ".architect").mkdir()
     command = cs._warm_launch(ag.COPILOT)
-    for d in (cs.REPO_ROOT, cs.HOME / ".assistant", cs.HOME / ".architect", "/tmp"):
+    for d in (cs.REPO_ROOT, home / ".assistant", home / ".architect", "/tmp"):
         assert f"--add-dir {d}" in command, d
 
 
@@ -1166,3 +1178,84 @@ def test_memory_seeds_read_the_repos_own_transcript_folders():
     seeds = _load(BIN / "tools" / "memory_seeds.py", "seam_seeds")
     assert seeds.TRANSCRIPT_DIR == Path.home() / ".claude/projects" / ag.claude_project_slug(REPO)
     assert seeds.DROID_TRANSCRIPT_DIR == Path.home() / ".factory/sessions" / ag.project_slug(REPO)
+
+
+def _cmux_record(agent, sid, updated):
+    import cmux_sessions
+    return cmux_sessions.Session(
+        session_id=sid, agent=agent, workspace_id="w", surface_id="S", cwd="/tmp/w",
+        launch_cwd="/tmp/w", pid=None, transcript_path=None, started_at=1.0,
+        updated_at=updated, active_for_surface=True,
+        launch_argv=(f"/bin/{agent}",))
+
+
+@pytest.mark.parametrize("pick,expected", [
+    ("claude", ("claude-sess", "claude")), ("copilot", ("copilot-sess", "copilot"))])
+def test_restore_ignores_a_hand_run_copilot_record_unless_picked(home, monkeypatch, pick, expected):
+    _pick(home, pick)
+    restore = _load(BIN / "cmux-restore-sessions.py", f"seam_restore_records_{pick}")
+    monkeypatch.setattr(restore.cmux_sessions, "list_sessions", lambda: [
+        _cmux_record("claude", "claude-sess", 1.0), _cmux_record("copilot", "copilot-sess", 2.0)])
+    monkeypatch.setattr(restore.cmux_sessions, "registry_fallback", lambda reg, recs: [])
+    entry = restore.load_recorded()["S"]
+    assert (entry["session_id"], entry["provider"]) == expected
+
+
+def test_spending_keeps_a_claude_stream_out_of_the_copilot_parser():
+    claude_stream = "\n".join([
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({"type": "result", "subtype": "success", "result": "ok"})])
+    assert ag.parse_usage(ag.COPILOT, claude_stream) is None
+    import metering
+    assert metering.parse_cli_usage(claude_stream) is None
+
+
+def test_headless_droid_prefers_its_home_install_like_before(home, monkeypatch):
+    local = _stub(home / ".local" / "bin" / "droid")
+    elsewhere = _stub(home / "brew" / "droid")
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: str(elsewhere))
+    assert ag.binary(ag.DROID) == str(local)
+    local.unlink()
+    assert ag.binary(ag.DROID) == str(elsewhere)
+
+
+def test_comms_reads_claudes_box_when_a_stray_copilot_glyph_follows():
+    screen = "\n".join(["────────────", "❯ my prompt", "────────────",
+                        "╻ a quoted glyph", "  some output", "╹ another glyph"])
+    assert cs.input_box_text(screen) == "my prompt"
+
+
+def test_pulse_answers_trust_before_trusting_a_ready_marker_on_the_same_screen(home, copilot_bin, monkeypatch):
+    _pick(home, "copilot")
+    both = "Do you trust the files in this folder?\n ← open sidebar · Interactive"
+    sent = []
+
+    def transcript(cwd, text):
+        _copilot_session(home, "cp-both", str(cwd), [
+            {"type": "user.message", "data": {"content": text}}])
+
+    pulse_screens = iter([both])
+    cwd = home / "dev"
+    cwd.mkdir(exist_ok=True)
+    monkeypatch.setenv("DISPATCH_CWD", str(cwd))
+    pulse = _load(BIN / "pulse.py", "seam_pulse_both")
+    pulse.self_update_pulse = lambda pulse_idx: None
+    monkeypatch.setattr(pulse, "run", lambda cmd, *a, **k: (
+        (0, "OK workspace:9\n", "") if "new-workspace" in cmd else
+        (0, "surface:9\n", "") if "list-pane-surfaces" in cmd else (0, "", "")))
+
+    def rpc(method, params, timeout=15):
+        sent.append((method, params.get("text")))
+        if method == "surface.send_text" and params["text"].startswith("Read "):
+            transcript(cwd, params["text"])
+        return {}
+
+    monkeypatch.setattr(pulse, "_cmux_rpc", rpc)
+    monkeypatch.setattr(pulse, "_surface_read_text", lambda ref, lines=200: next(
+        pulse_screens, " ← open sidebar · Interactive · / commands · ? help"))
+    monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: {"id": tid, "title": "x"})
+    monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: True)
+    monkeypatch.setattr(pulse.time, "sleep", lambda s: None)
+    assert pulse.dispatch_todo("td-4") is True
+    texts = [t for m, t in sent if m == "surface.send_text"]
+    assert texts[0] == "2" and texts[1].startswith("Read ")
