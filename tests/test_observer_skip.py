@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 import os
 import shutil
 import sys
@@ -353,6 +354,40 @@ class SkipWiringTests(unittest.TestCase):
         self.assertIs(save_mock.call_args.kwargs["observation_complete"], True)
         self.assertEqual(saved["obs_input_hash"],
                          self.mod.obs_input_hash(changed))
+
+    def test_a_changed_workspace_waits_for_the_check_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_summary("workspace:1", "needs_user",
+                            obs_hash=self.mod.obs_input_hash(ctx()),
+                            observed_at=time.time() - 600)
+        rc, obs_mock, save_mock, _, _ = self._run_pulse(
+            ctx(screen_text="brand new output"))
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        self.assertEqual(save_mock.call_args[0][1]["verdict"], "needs_user")
+
+    def test_a_changed_workspace_is_checked_once_the_interval_passes(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_summary("workspace:1", "needs_user",
+                            obs_hash=self.mod.obs_input_hash(ctx()),
+                            observed_at=time.time() - 3700)
+        verdict = {"workspace:1": {"ws_ref": "workspace:1", "verdict": "active",
+                                   "summary": "s", "next": "n"}}
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            ctx(screen_text="brand new output"), observer_result=(verdict, {}))
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_the_carry_cap_waits_for_the_check_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        c = ctx()
+        self._plant_summary("workspace:1", "active",
+                            obs_hash=self.mod.obs_input_hash(c),
+                            carry_count=self.mod.MAX_CONSECUTIVE_CARRIES,
+                            observed_at=time.time() - 600)
+        rc, obs_mock, _, _, _ = self._run_pulse(c)
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
 
     def test_prior_summary_without_hash_never_skips(self):
         # Pre-M2 summaries (and synthesized fallback verdicts, which are

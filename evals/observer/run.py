@@ -39,7 +39,7 @@ for path in (BIN, SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 import llm_runner
-from assistant import model_tiers
+from assistant import model_tiers, transcript_slice
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 DROID_BIN = os.environ.get("DROID_BIN", str(Path.home() / ".local/bin/droid"))
@@ -200,7 +200,8 @@ def run_one(fixture_dir: Path, provider: str) -> tuple[bool, str, dict]:
         staged_transcript = run_dir / "transcript.jsonl"
         stage_transcript(transcript_path, staged_transcript)
         ctx["transcript_path"] = str(staged_transcript)
-        ctx["transcript_excerpt"] = staged_transcript.read_text(errors="replace")
+        ctx["transcript_excerpt"] = transcript_slice.read_conversation(
+            staged_transcript)
     ctx.setdefault("ws_ref", f"workspace:eval-{fixture_dir.name}")
 
     env = dict(os.environ)

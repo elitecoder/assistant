@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import model_tiers  # noqa: E402
+from assistant import model_tiers, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -178,6 +178,8 @@ OBSERVER_AUDIT_MODEL = (os.environ.get("OBSERVER_AUDIT_MODEL")
 OBSERVER_AUDIT_INTERVAL_HOURS = _env_num(
     "OBSERVER_AUDIT_INTERVAL_HOURS", "2", float)
 OBSERVER_AUDIT_SAMPLE = _env_num("OBSERVER_AUDIT_SAMPLE", "6", int)
+# Minutes before a changed workspace is checked again. 0 checks every pulse.
+OBSERVER_EVERY_MIN = _env_num("OBSERVER_EVERY_MIN", "0", float)
 OBSERVER_RUN_RETENTION_DAYS = _env_num(
     "OBSERVER_RUN_RETENTION_DAYS", "7", float)
 OBSERVER_RUN_MAX_PULSES = _env_num(
@@ -1100,6 +1102,15 @@ _SUMMARY_META_KEYS = {"ws_ref", "title", "cwd", "pr_refs", "last_updated_ts",
                       "state_hash", "state_unchanged_since_ts"}
 
 
+def checked_within(prior: dict, seconds: float, now: float | None = None) -> bool:
+    """True when the prior verdict came from a check less than seconds ago."""
+    try:
+        observed = float(prior.get("observed_at"))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= (time.time() if now is None else now) - observed < seconds
+
+
 def carry_forward_verdict(prior: dict) -> dict:
     """The prior summary reduced back to a bare verdict dict, ready for
     save_summary (which refreshes last_updated_ts so the LRU rotates and
@@ -1142,27 +1153,6 @@ def build_ctx(ws: dict) -> dict | None:
     except Exception as e:
         log.error("build-ws-context %s bad json: %s", ws.get("ref"), e)
         return None
-
-
-def _observer_transcript_excerpt(source: Path,
-                                 max_bytes: int = 131072) -> str:
-    """Read a bounded first+last JSONL window without duplicating it on disk."""
-    with open(source, "rb") as stream:
-        size = os.fstat(stream.fileno()).st_size
-        if size <= max_bytes:
-            data = stream.read(max_bytes)
-        else:
-            head_size = min(24576, max_bytes // 4)
-            head = stream.read(head_size)
-            head_end = head.rfind(b"\n")
-            head = head[:head_end + 1] if head_end >= 0 else b""
-            tail_size = max_bytes - len(head)
-            stream.seek(max(0, size - tail_size))
-            tail = stream.read(tail_size)
-            tail_start = tail.find(b"\n")
-            tail = tail[tail_start + 1:] if tail_start >= 0 else tail
-            data = head + tail
-    return data.decode("utf-8", errors="replace")
 
 
 def _write_private_text(path: Path, text: str) -> None:
@@ -1297,7 +1287,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
         if raw_path:
             source = Path(str(raw_path))
             try:
-                ctx["transcript_excerpt"] = _observer_transcript_excerpt(
+                ctx["transcript_excerpt"] = transcript_slice.read_conversation(
                     source)
             except OSError:
                 ctx["transcript_path"] = None
@@ -2504,14 +2494,17 @@ def main() -> int:
                             ws_ref, e)
                 continue
             prior = load_prior_summary(ws_ref)
-            if not (prior and prior.get("verdict")
-                    and prior.get("obs_input_hash") == obs_hashes[ws_ref]):
+            if not (prior and prior.get("verdict")):
+                continue
+            checked_recently = checked_within(prior, OBSERVER_EVERY_MIN * 60)
+            if not (checked_recently
+                    or prior.get("obs_input_hash") == obs_hashes[ws_ref]):
                 continue
             try:
                 prior_carries = int(prior.get("carry_count") or 0)
             except (TypeError, ValueError):
                 prior_carries = 0
-            if prior_carries >= MAX_CONSECUTIVE_CARRIES:
+            if not checked_recently and prior_carries >= MAX_CONSECUTIVE_CARRIES:
                 log.info("carry cap hit for %s (%d consecutive skips) — "
                          "force-observing", ws_ref, prior_carries)
                 continue

@@ -9,6 +9,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Changed
+- The session check now reads each conversation as plain text: the first
+  request plus the latest turns, with attachments, hook output, and thinking
+  removed. It used to send a fixed 128 KB slice of the raw log, which was
+  mostly clutter and sometimes held no conversation at all. Prompts are about
+  a third of their old size.
+- Session results on the Sessions tab now stay for up to 6 hours while the
+  session doesn't change, instead of expiring after 10 minutes.
+
+### Added
+- `OBSERVER_EVERY_MIN` sets how many minutes pass before a changed session is
+  checked again. The default, 0, checks on every run.
+- `evals/observer/replay.py` replays past Sonnet checks with the new
+  conversation slice and scores other models against them.
+
 ### Removed
 - Remove the dollars-per-day boxes from the Brief tab and the background-work
   stats. The model-heavy background jobs that drove that cost are off.

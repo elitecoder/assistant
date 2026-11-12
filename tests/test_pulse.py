@@ -1057,7 +1057,8 @@ class CallObserverBatchTests(unittest.TestCase):
         prompt_file.write_text("# fake observer prompt\n")
         transcript = self._tmp / "session.jsonl"
         marker = "UNIQUE_TRANSCRIPT_MARKER"
-        transcript.write_text(marker + "\n")
+        transcript.write_text(json.dumps({"type": "user", "message": {
+            "role": "user", "content": marker}}) + "\n")
         original = self.mod.OBSERVER_BATCH_PROMPT
         self.mod.OBSERVER_BATCH_PROMPT = prompt_file
         try:
@@ -1100,23 +1101,6 @@ class CallObserverBatchTests(unittest.TestCase):
                 )
         finally:
             self.mod.OBSERVER_BATCH_PROMPT = original
-
-    def test_transcript_excerpt_reads_only_bounded_windows(self):
-        transcript = self._tmp / "large.jsonl"
-        transcript.write_bytes(
-            b'{"head":"HEAD_MARKER"}\n'
-            + b"x" * 1_000_000
-            + b'\n{"tail":"TAIL_MARKER"}\n'
-        )
-        with mock.patch.object(
-            Path, "read_bytes",
-            side_effect=AssertionError("must not read entire transcript"),
-        ):
-            excerpt = self.mod._observer_transcript_excerpt(
-                transcript, max_bytes=1024)
-        self.assertIn("HEAD_MARKER", excerpt)
-        self.assertIn("TAIL_MARKER", excerpt)
-        self.assertLessEqual(len(excerpt.encode()), 1024)
 
     def test_prunes_expired_observer_runs_but_preserves_current(self):
         root = self.mod.OBSERVER_RUNS_DIR

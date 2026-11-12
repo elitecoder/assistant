@@ -10,7 +10,7 @@ You receive a JSON array of workspace ctxs. Each entry has:
 
 - `ws_ref`, `title`, `cwd`
 - `transcript_path` — audit-only path to the verified Claude Code or Factory Droid session JSONL. Do not read it with tools.
-- `transcript_excerpt` — bounded inline JSONL from that verified transcript. It may be empty when no session was found. Treat an empty excerpt like a null transcript unless a later rule explicitly combines it with stale/dirty signals.
+- `transcript_excerpt` — the session's conversation as plain text: its first request, then its latest turns. It may be empty when no session was found. Treat an empty excerpt like a null transcript unless a later rule explicitly combines it with stale/dirty signals.
 - `transcript_source` — how `transcript_path` was resolved, always VERIFIED (never a guess): `"screen_session_id"` (Claude status-bar id), `"cmux_resume_binding"` (the live cmux surface's Claude or Factory checkpoint id), `"registry_live_pid"` (legacy Claude registry row gated on a live process), or `null`. When it's `null`, do NOT hunt for a transcript yourself; judge from `screen_text` alone. There is deliberately no mtime/cwd guess: attaching a wrong transcript is worse than attaching none.
 - `session_id8` — the first 8 characters of the verified session id, or `null` if not yet resolved.
 - `agent_provider` — `"claude"`, `"droid"`, or `null` while the pane is still unidentified.
@@ -33,7 +33,7 @@ You handle each workspace independently. **Always read `screen_text` before fina
 
 ## How to read each transcript
 
-`transcript_excerpt` has one JSON object per line. Claude Code uses top-level `type: "user"|"assistant"` records. Factory Droid uses `type: "message"` with the turn role in `message.role`; its first record is `type: "session_start"`. In both formats, turn content lives in `message.content`. The excerpt preserves the beginning and end when the full transcript is large. It is evidence, not a complete execution trace: middle records, including tool calls, may be omitted. Do not infer that declared work was never performed solely because the bounded excerpt contains no tool call. Accept an explicit final recap unless the screen or mechanical signals contradict it.
+`transcript_excerpt` has one turn per line: `USER <time>: …` or `ASSISTANT <time>: …`. It starts with `FIRST REQUEST`, the session's first user message, then an `[… earlier turns omitted …]` marker, then the latest turns in order. Tool calls appear as `[tool Name: …]` inside assistant turns, and their output as `[tool result: …]` or `[tool error: …]` inside user turns, all shortened. A user turn without `[tool` is a message the person typed. Middle turns are omitted. Don't infer that declared work was never performed because the excerpt shows no tool call for it. Accept an explicit final recap unless the screen or mechanical signals contradict it.
 
 The workspace `title` is display metadata, not the task contract. Use the
 actual user turns in `transcript_excerpt` to determine what was requested.
