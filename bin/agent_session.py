@@ -100,11 +100,17 @@ def transcript_roots(agents: tuple[str, ...] = SLUG_AGENTS) -> list[tuple[str, P
 
 def copilot_session_cwd(session_dir: str | Path) -> str | None:
     """The `cwd:` line of a Copilot <session-id>/workspace.yaml, or None."""
+    return copilot_session_field(session_dir, "cwd")
+
+
+def copilot_session_field(session_dir: str | Path, field: str) -> str | None:
+    """One top-level `field:` value of a Copilot <session-id>/workspace.yaml
+    (quotes removed), or None."""
     try:
         text = (Path(session_dir) / "workspace.yaml").read_text()
     except OSError:
         return None
-    m = re.search(r"^cwd:\s*(.+?)\s*$", text, re.M)
+    m = re.search(rf"^{re.escape(field)}:\s*(.+?)\s*$", text, re.M)
     if not m:
         return None
     value = m.group(1)
@@ -560,7 +566,7 @@ def session_argv(agent: str, *, home: str | Path | None = None,
     if agent == DROID:
         return [DROID, *_droid_flags(base)]
     if agent == COPILOT:
-        argv = [*_interactive_exe(COPILOT), "--allow-all"]
+        argv = [*_interactive_exe(COPILOT), "--allow-all", "--no-ask-user"]
         chosen = copilot_model() if model is None else model
         if chosen:
             argv += ["--model", chosen]
@@ -778,7 +784,7 @@ def headless_argv(provider: str, *, binary_path: str, model: str,
         if model:
             cmd += ["--model", model]
         if reasoning_effort:
-            cmd += ["--reasoning-effort", {"off": "none"}.get(reasoning_effort, reasoning_effort)]
+            cmd += ["--reasoning-effort", {"off": "low"}.get(reasoning_effort, reasoning_effort)]
         if disable_tools:
             cmd += [f"--available-tools={COPILOT_NO_TOOLS}",
                     "--disable-builtin-mcps", "--no-custom-instructions"]

@@ -97,7 +97,7 @@ SCREEN_LINES = 120
 # Matched per-line, case-insensitive, against screen_text.
 _ERROR_LINE_RE = re.compile(
     r"""^\s*               # leading indent cmux may render
-        [⏺●·∙•*]\s*        # the assistant-turn bullet glyph (● is Copilot's)
+        [⏺●✗·∙•*]\s*       # the assistant-turn bullet glyph (● and ✗ are Copilot's)
         (?:                # …immediately followed by an error envelope:
             api\ error\b
           | request\ timed\ out\b
@@ -105,6 +105,7 @@ _ERROR_LINE_RE = re.compile(
           | overloaded(?:_error)?\b
           | rate[\ _]limit(?:_error)?\b
           | connection\ error\b
+          | execution\ failed:   # Copilot's failed-turn banner
         )
     """,
     re.IGNORECASE | re.VERBOSE,

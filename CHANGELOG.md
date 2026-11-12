@@ -58,6 +58,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   provider, and `--feature comms` picks the agent for the Slack session alone.
 - A working Copilot pane is recognized on every spinner frame and while it
   retries.
+- Copilot's `✗ Execution failed` banner and `session.error` events count as a
+  stopped session; the dashboard shows a Copilot tool call as working; inbox
+  snippets drop Copilot's footer; the watcher titles a Copilot session by its
+  own name.
+- Interactive Copilot sessions start with `--no-ask-user`, so questions come
+  as text Assistant can read, not a form.
 - Spending and Slack-session context reads go through `bin/agent_session.py`,
   and the launch check also flags Claude-only transcript and usage parsing.
 - Task sessions now answer the first-launch folder-trust question whenever it

@@ -350,7 +350,8 @@ def read_screen(workspace: str, lines: int = SCREEN_LINES) -> str:
 _CHROME_RE = re.compile(r"^[\s│─╭╮╰╯┌┐└┘├┤┬┴┼▔▕>·•⏵◀▶┃╹╻▀▄━]+$")
 _STATUS_BAR_RE = re.compile(
     r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply"
-    r"|← open sidebar · |/ commands · \? help|ctrl\+e change environment")
+    r"|← open sidebar · |/ commands · \? help|ctrl\+e change environment"
+    r"|Session: [\d.]+ AIC used|ctrl\+c interrupt|^\s*\S+ \[⎇ [^\]]*\]\s*$")
 # Claude Code's live spinner (`✽ Boogieing… (12m 1s · ↓ 48.9k tokens)`) and its
 # turn-done line (`✻ Baked for 2m 10s · done 10:40 PM`) only say the agent is or
 # was busy.
@@ -515,8 +516,11 @@ def pending_tool(records: list[dict]) -> str | None:
 
 def ended_on_api_error(records: list[dict]) -> bool:
     """True if the agent's newest message is an API error Claude wrote into the
-    transcript (an expired login, an overloaded API): the session has stopped."""
+    transcript (an expired login, an overloaded API), or a Copilot
+    session.error event: the session has stopped."""
     for rec in reversed(current_turn(records)):
+        if rec.get("type") == "session.error":
+            return True
         if agent_session.record_role(rec) == "assistant":
             return rec.get("isApiErrorMessage") is True
     return False
@@ -552,9 +556,14 @@ def asks_user(text: str | None) -> bool:
     return any(_ASKS_RE.search(_URL_RE.sub("", ln)) for ln in lines[-ASK_TAIL_LINES:])
 
 
-def session_title(records: list[dict]) -> str | None:
+def session_title(records: list[dict], path: Path | None = None) -> str | None:
     """A name for the session when its workspace title is cmux's default:
-    Claude's own session title, else the working folder and git branch."""
+    Claude's own session title, Copilot's session name, else the working
+    folder and git branch."""
+    if path is not None and agent_session.agent_from_transcript(path) == agent_session.COPILOT:
+        name = agent_session.copilot_session_field(Path(path).parent, "name")
+        if name:
+            return name
     for rec in reversed(records):
         title = rec.get("aiTitle") if rec.get("type") == "ai-title" else None
         if isinstance(title, str) and title.strip():
@@ -597,7 +606,7 @@ def read_session(cwd: str | None, session_id: str | None) -> dict | None:
                 "last_text": last_assistant_text(records),
                 "pending_tool": pending_tool(records),
                 "api_error": ended_on_api_error(records),
-                "title": session_title(records)}
+                "title": session_title(records, path)}
     except Exception:  # noqa: BLE001 — transcripts are external; the ping must still go
         return None
 

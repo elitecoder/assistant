@@ -137,7 +137,7 @@ def test_warm_launch_starts_copilot_with_its_own_scope(monkeypatch):
     monkeypatch.delenv("COPILOT_BIN", raising=False)
     monkeypatch.setenv("COPILOT_MODEL", "gpt-6.1-sol")
     cmd = cs._warm_launch(ag.COPILOT)
-    assert cmd.startswith("command copilot --allow-all --model gpt-6.1-sol ")
+    assert cmd.startswith("command copilot --allow-all --no-ask-user --model gpt-6.1-sol ")
     assert f"--add-dir {cs.REPO_ROOT}" in cmd and "--add-dir /tmp" in cmd
     argv = shlex.split(cmd)
     assert not any(os.path.basename(a) == "claude" for a in argv)

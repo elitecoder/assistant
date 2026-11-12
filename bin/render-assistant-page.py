@@ -1084,6 +1084,16 @@ def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | No
     return None
 
 
+def session_agent_status(sess: dict | None) -> str | None:
+    """"working" when the last assistant turn was a tool_use or a tool call
+    is still in flight (Copilot's tool requests carry no text), "idle"
+    otherwise, None with no session."""
+    if not sess:
+        return None
+    text = (sess.get("last_assistant") or {}).get("text", "") or ""
+    return "working" if text.startswith("[tool_use:") or sess.get("pending_tool_use") is True else "idle"
+
+
 def render_workspaces_tab():
     """Read ~/.assistant/observer-summaries/<ws>.json (one file per workspace,
     written each pulse by the Assistant) and render a row per workspace with
@@ -1189,11 +1199,7 @@ def render_workspaces_tab():
         # Live signals from the workspace's session (if found).
         sess = session_for_ws(cwd)
         last_turn_age = sess.get("last_turn_age_sec") if sess else None
-        # Working = last assistant turn was a tool_use (still in flight).
-        last_assistant_text = (sess or {}).get("last_assistant", {}).get("text", "") or ""
-        agent_status = "working" if last_assistant_text.startswith("[tool_use:") else "idle"
-        if not sess:
-            agent_status = None  # unknown
+        agent_status = session_agent_status(sess)
 
         pr_refs = data.get("pr_refs") or []
 

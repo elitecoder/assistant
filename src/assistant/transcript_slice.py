@@ -61,6 +61,10 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
     kind = record.get("type")
     if kind in ("user.message", "assistant.message"):
         return _copilot_turn(record, kind.split(".", 1)[0])
+    if kind == "session.error":
+        data = record.get("data")
+        message = data.get("message") if isinstance(data, dict) else None
+        return _render(record, "assistant", [f"[error] {message or 'session error'}"])
     message = record.get("message")
     if not isinstance(message, dict):
         return None

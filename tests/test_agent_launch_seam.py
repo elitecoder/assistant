@@ -468,7 +468,7 @@ def test_pulse_dispatch_spawns_copilot_and_confirms_from_its_transcript(home, co
     assert not any("unconfirmed" in m for m in logged["warning"])
     spawn = next(c for c in commands if "new-workspace" in c)
     launch = spawn[spawn.index("--command") + 1]
-    assert launch.startswith(f"{copilot_bin} --allow-all --model gpt-test")
+    assert launch.startswith(f"{copilot_bin} --allow-all --no-ask-user --model gpt-test")
     assert ("surface.send_text", "2") in keys, "copilot trust prompt answered, remembered"
 
 
@@ -567,7 +567,7 @@ def test_comms_warm_session_spawns_copilot_when_picked(home, copilot_bin, monkey
     monkeypatch.setattr(cs, "reconcile_warm_workspaces", lambda p, keep, log=None: None)
     sess = cs.spawn_session(paths, Path("/boot.md"))
     spawn = next(c for c in commands if "new-workspace" in c)
-    assert spawn[spawn.index("--command") + 1].startswith("command copilot --allow-all --model gpt-test")
+    assert spawn[spawn.index("--command") + 1].startswith("command copilot --allow-all --no-ask-user --model gpt-test")
     assert sess["agent"] == ag.COPILOT
     assert waits[0] == (ag.ready_re(ag.COPILOT), ag.trust_marker(ag.COPILOT))
 
@@ -625,12 +625,12 @@ def test_seam_cli_prints_the_picked_launch_for_the_spawn_skill(home, copilot_bin
     assert run("agent", "--agent", "claude").stdout.strip() == "claude"
     missing = run("agent", "--agent", "droid")
     assert (missing.returncode, missing.stdout) == (1, "")
-    assert run("launch-command").stdout.strip() == f"{copilot_bin} --allow-all --model gpt-test"
+    assert run("launch-command").stdout.strip() == f"{copilot_bin} --allow-all --no-ask-user --model gpt-test"
     assert run("launch-command", "--agent", "claude").stdout.strip() == "claude"
     assert run("launch-command", "--agent", "claude", "--unattended").stdout.strip() == \
         "zsh -lic 'claude --dangerously-skip-permissions'"
     assert run("launch-command", "--agent", "copilot", "--unattended").stdout.strip() == \
-        f"{copilot_bin} --allow-all --model gpt-test"
+        f"{copilot_bin} --allow-all --no-ask-user --model gpt-test"
     ready = subprocess.run([sys.executable, str(BIN / "agent_session.py"), "is-ready"],
                            input="Allow All · / commands · ? help", capture_output=True,
                            text=True, env=env)
@@ -1356,7 +1356,7 @@ def test_dashboard_shows_copilots_latest_reply_past_its_model_log(tmp_path):
     assert page.last_activity(str(_copilot_reply_log(tmp_path, padding_bytes=40_000))) == "Queued PR 12."
 
 
-@pytest.mark.parametrize("effort,flag", [("high", "high"), ("max", "max"), ("off", "none")])
+@pytest.mark.parametrize("effort,flag", [("high", "high"), ("max", "max"), ("off", "low")])
 def test_headless_copilot_runs_at_the_configured_thinking_effort(home, copilot_bin, tmp_path, effort, flag):
     seen = {}
     llm_runner.invoke(provider="copilot", prompt="p", model="", run_dir=tmp_path, timeout=30,
@@ -1540,3 +1540,81 @@ def test_comms_finds_no_claude_box_without_its_rules():
 def test_dispatch_waits_as_long_as_before_for_a_ready_pane():
     pulse = _load(BIN / "pulse.py", "seam_pulse_polls")
     assert pulse.READY_POLLS == 32
+
+
+@pytest.mark.parametrize("line", [
+    '✗ Execution failed: Model "no-such-model-zz" is not available.',
+    "✗ API error: 500",
+])
+def test_screen_reader_flags_copilots_error_banner(line):
+    bwc = _load(BIN / "build-ws-context.py", "seam_bwc_err_" + str(abs(hash(line))))
+    assert bwc._ERROR_LINE_RE.match(line)
+
+
+def test_a_copilot_turn_that_ended_in_an_error_reads_as_stopped(tmp_path):
+    from assistant import transcript_slice
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_err")
+    records = [{"type": "user.message", "timestamp": "t1", "data": {"content": "go"}},
+               {"type": "session.error", "timestamp": "t2",
+                "data": {"message": 'Model "x" is not available.'}}]
+    assert watcher.ended_on_api_error(records)
+    assert watcher.ended_on_api_error(records[:1]) is False
+    assert transcript_slice._turn(records[1])[2] == '[error] Model "x" is not available.'
+
+
+def test_dashboard_marks_a_copilot_tool_call_as_working():
+    page = _load(BIN / "render-assistant-page.py", "seam_render_working")
+    copilot_mid_tool = {"last_assistant": {"text": "Yes."}, "pending_tool_use": True}
+    assert page.session_agent_status(copilot_mid_tool) == "working"
+    assert page.session_agent_status({"last_assistant": {"text": "[tool_use: Bash]"}}) == "working"
+    assert page.session_agent_status({"last_assistant": {"text": "Done."},
+                                      "pending_tool_use": False}) == "idle"
+    assert page.session_agent_status(None) is None
+
+
+def test_watcher_snippets_drop_copilots_footer_and_spinner():
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_footer")
+    assert watcher._is_tui_noise(" …/work [⎇ main%]  Session: 6.35 AIC used")
+    assert watcher._is_tui_noise(" ◎ Working · 112 B ctrl+c interrupt      GPT-6.1 Sol")
+    assert watcher._is_tui_noise(" /work [⎇ main]")
+    assert not watcher._is_tui_noise(" ● Updated the README [⎇ is a branch glyph]")
+
+
+def test_copilot_sessions_never_open_a_question_form():
+    assert "--no-ask-user" in ag.session_argv(ag.COPILOT, model="")
+
+
+def test_watcher_titles_a_copilot_session_by_its_own_name(home):
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_title")
+    d = home / ".copilot" / "session-state" / "s1"
+    d.mkdir(parents=True)
+    (d / "workspace.yaml").write_text("cwd: /w\nname: Fix the trim bug\n")
+    (d / "events.jsonl").write_text("")
+    assert watcher.session_title([], d / "events.jsonl") == "Fix the trim bug"
+
+
+def test_copilot_usage_adds_up_every_model_in_a_checkpoint():
+    events = [
+        {"type": "assistant.message", "data": {"content": "x"}},
+        {"type": "session.usage_checkpoint", "data": {"providerModelMetrics": [
+            {"metrics": {"usage": {"inputTokens": 100, "outputTokens": 1}}},
+            {"metrics": {"usage": {"inputTokens": 20, "outputTokens": 3}}}]}},
+        {"type": "result", "sessionId": "s", "exitCode": 0},
+    ]
+    parsed = ag.parse_usage(ag.COPILOT, "\n".join(json.dumps(e) for e in events))
+    assert (parsed["tokens_in"], parsed["tokens_out"]) == (120, 4)
+
+
+def test_copilot_hook_timeouts_carry_over_in_seconds(home, monkeypatch):
+    def run(cmd, **kw):
+        (Path(kw["env"]["COPILOT_HOME"]) / "config.json").write_text(json.dumps({"hooks": {
+            "Stop": [{"hooks": [{"command": "cmux hooks enqueue copilot stop", "timeout": 3000}]}]}}))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(ag.subprocess, "run", run)
+    assert ag.install_copilot_hooks() is None
+    hooks = json.loads((home / ".copilot/hooks/cmux.json").read_text())["hooks"]
+    assert hooks["Stop"][0]["timeoutSec"] == 3
+
+
+def test_copilot_bar_counts_when_it_isnt_the_last_line():
+    assert ag.shows_copilot(" ← open sidebar · Interactive · Allow All\n  GPT-6.1 Sol")
