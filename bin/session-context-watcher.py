@@ -690,6 +690,7 @@ class Watcher:
                 fflags=(
                     select.KQ_NOTE_WRITE
                     | select.KQ_NOTE_EXTEND
+                    | select.KQ_NOTE_ATTRIB
                     | select.KQ_NOTE_DELETE
                     | select.KQ_NOTE_RENAME
                 ),
@@ -725,7 +726,7 @@ class Watcher:
             self.drop_watch(ev.ident)
             self.dirty = True
             return
-        if ev.fflags & (select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND):
+        if ev.fflags & (select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND | select.KQ_NOTE_ATTRIB):
             if state.read_new():
                 self.dirty = True
 
