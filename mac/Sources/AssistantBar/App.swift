@@ -336,10 +336,12 @@ final class Model: NSObject, ObservableObject {
         }
     }
 
-    /// The microphone button and Control-Option-V. Pressed during an answer, even in a silent gap between its
-    /// sentences, it silences the rest of that answer.
+    /// The microphone button and Control-Option-V. Pressed during a spoken answer, even in a silent gap between its
+    /// sentences, it silences the rest of that answer and ends its run.
     func listen() {
         if speakingNow() || answeringSpoken { turns.mute() }
+        // Interrupting by key works like interrupting by voice: the run ends, so the new question doesn't wait for it.
+        if asking && answeringSpoken && !listener.listening { endRun(TalkLoop.interruptedReason, kinds: [.chat]) }
         stopTalking()
         toggleListening()
     }
@@ -492,6 +494,7 @@ final class Model: NSObject, ObservableObject {
     func answerCompleted(_ outcome: TurnOutcome, spoken: Bool) {
         asking = false
         answeringSpoken = false
+        if let partial = outcome.partial { chat.append(ChatTurn(role: .assistant, text: partial)) }
         chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
         meter = outcome.meter
         if spoken && outcome.spokenSentences == 0 { answered(outcome.reply) }

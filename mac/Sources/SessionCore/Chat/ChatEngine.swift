@@ -10,6 +10,8 @@ public struct TurnOutcome: Equatable {
     public var meter: ContextMeter?
     /// Sentences handed to `speak` as the reply was written.
     public var spokenSentences = 0
+    /// What a stopped or interrupted run had written before it ended, shown above the note that says why.
+    public var partial: String? = nil
 }
 
 /// What a chat remembers between processes besides its rows: the fleet baseline and a compression pause.
@@ -211,7 +213,7 @@ public final class ChatEngine {
         }
         if let speak, !record.failed { stream.finish(reply: record.reply).forEach(speak) }
         return TurnOutcome(reply: record.reply, failed: record.failed, cost: record.cost, meter: meter,
-                           spokenSentences: stream.sentences)
+                           spokenSentences: stream.sentences, partial: run.stopped && !record.said.isEmpty ? record.said : nil)
     }
 
     /// The `claude -p` run for the stored transcript, plus `tail` blocks that are sent this turn only.

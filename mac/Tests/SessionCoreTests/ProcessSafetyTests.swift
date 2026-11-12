@@ -93,6 +93,7 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 5, "the run wasn't ended")
         XCTAssertTrue(outcome.failed)
         XCTAssertEqual(outcome.reply, TalkLoop.interruptedReason)
+        XCTAssertEqual(outcome.partial, "Checking the trim session.", "what it had said is shown above the note")
         let rows = try store.messages(sessionID: try XCTUnwrap(store.sessions().first?.session.id))
         XCTAssertTrue(rows.contains { $0.role == .assistant && $0.content == "Checking the trim session." })
         XCTAssertTrue(rows.contains { $0.role == .tool && $0.content == StreamTurn.interruptedOutput })

@@ -5,13 +5,14 @@ import Foundation
 public struct SpokenStream: Equatable {
     private var buffer = ""
     private var sawText = false
-    /// The fence (```` ``` ```` or `~~~`) of the code block being written, which isn't read.
-    private var fence: String?
+    /// The fence of the code block being written, which isn't read.
+    private var fence: Fence?
+    /// The buffer starts at the beginning of a line, where a fence can open or close.
+    private var lineStart = true
     public private(set) var sentences = 0
 
     /// A sentence shorter than this waits to be joined to the next one, so "Yes." isn't read on its own.
     static let shortest = 12
-    static let fences = ["```", "~~~"]
     static let abbreviations: Set<String> = ["e.g", "i.e", "etc", "vs", "mr", "mrs", "ms", "dr", "st", "no", "approx"]
 
     public init() {}
@@ -52,14 +53,15 @@ public struct SpokenStream: Equatable {
         var searchFrom = from
         while let end = Self.sentenceEnd(in: buffer, from: searchFrom) {
             let piece = buffer[searchFrom..<end].trimmingCharacters(in: .whitespacesAndNewlines)
-            // A fenced code block is never read: a fence line opens it, the same fence closes it, and its lines are
-            // dropped.
-            let opens = Self.fences.first { piece.hasPrefix($0) }
+            let startsLine = searchFrom == buffer.startIndex ? lineStart : buffer[buffer.index(before: searchFrom)] == "\n"
+            // A fenced code block is never read: a fence line opens it, a matching fence line closes it (CommonMark),
+            // and its lines are dropped.
+            let opens = startsLine ? Fence.opening(piece) : nil
             if fence != nil || opens != nil {
                 let pending = buffer[from..<searchFrom].trimmingCharacters(in: .whitespacesAndNewlines)
                 if !pending.isEmpty { out.append(pending) }
                 if let open = fence {
-                    if piece.hasPrefix(open) { fence = nil }
+                    if startsLine && open.closes(piece) { fence = nil }
                 } else {
                     fence = opens
                 }
@@ -73,13 +75,15 @@ public struct SpokenStream: Equatable {
             out.append(sentence)
             from = end
         }
+        lineStart = from == buffer.startIndex ? lineStart : buffer[buffer.index(before: from)] == "\n"
         buffer = String(buffer[from...])
         if all {
             let rest = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !rest.isEmpty && fence == nil && !Self.fences.contains(where: { rest.hasPrefix($0) }) { out.append(rest) }
+            if !rest.isEmpty && fence == nil && !(lineStart && Fence.opening(rest) != nil) { out.append(rest) }
             buffer = ""
             // A block left open ends with the text it's in, so it can't silence what Claude writes after it.
             fence = nil
+            lineStart = true
         }
         sentences += out.count
         return out

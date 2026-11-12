@@ -193,6 +193,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Pressing the microphone or Control-Option-V during a spoken answer ends the
+  run, as talking over it does, so your next question doesn't wait for it.
+- After a barge-in or **Stop**, the chat keeps what the answer had already
+  said, including text still streaming when it ended, above the note that says
+  why, and Control-Option-R can replay it.
+- Code fences in spoken answers follow CommonMark: a fence opens only on a line
+  of its own and closes only with the same mark, at least as long, so a stray
+  ```` ``` ```` in a sentence no longer drops the rest of the answer.
+- The speed test uses its own settings store, and the rolling room-level test
+  now fails if the level just follows the last buffer.
 - Kokoro and Smart Turn files are hashed once per install. A checked file's
   size, modification time, and checksum are stamped next to it, so the first
   spoken answer after launch no longer hashes 340 MB; a changed file is hashed

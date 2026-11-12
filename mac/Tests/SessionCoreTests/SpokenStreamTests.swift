@@ -188,6 +188,26 @@ final class SpokenStreamFenceTests: XCTestCase {
         XCTAssertEqual(out, ["Run this in the trim session:", "Then tell me when it pushed."])
     }
 
+    /// CommonMark fences: a stray ``` inside a sentence removes nothing, and a block closes only with the same mark,
+    /// at least as long.
+    func testFencesOpenOnTheirOwnLineAndCloseOnlyWithAMatchingMark() {
+        XCTAssertTrue(Spoken.plain("Wrap it in ``` marks. Then push.").hasSuffix("marks. Then push."))
+        XCTAssertEqual(Spoken.plain("Here:\n```````\n```\ncode\n```\nmore code\n```````\nDone."), "Here: Done.")
+        XCTAssertEqual(Spoken.plain("Here:\n~~~\n```\nx\n~~~\nAfter."), "Here: After.")
+        XCTAssertEqual(Spoken.plain("Here:\n```\nx\n~~~\nstill code\n```\nAfter."), "Here: After.")
+        XCTAssertEqual(Spoken.plain("Here:\n    ```\nindented four: not a fence"), "Here: indented four: not a fence")
+        var stream = SpokenStream()
+        var out = stream.take(line: PartialStream.delta("Wrap it in ``` marks so it renders. Then push the branch.\n"))
+        out += stream.take(line: PartialStream.delta("Here:\n```````\n```\ncode\n```\n"))
+        out += stream.take(line: PartialStream.delta("more code.\n```````\nThen tell me when it pushed.\n"))
+        out += stream.finish(reply: "")
+        XCTAssertEqual(out, ["Wrap it in ``` marks so it renders.", "Then push the branch.", "Here:", "Then tell me when it pushed."])
+        var midLine = SpokenStream()
+        var heard = midLine.take(line: PartialStream.delta("Use a fence for code. ``` is how you open one. Then push it.\n"))
+        heard += midLine.finish(reply: "")
+        XCTAssertEqual(heard, ["Use a fence for code.", "``` is how you open one.", "Then push it."], "mid-line, it isn't a fence")
+    }
+
     /// A whole reply read at once drops tilde blocks and a block left open at the end.
     func testPlainTextDropsTildeAndUnclosedBlocks() {
         XCTAssertEqual(Spoken.plain("Run this:\n~~~\ngit push\n~~~\nThen check."), "Run this: Then check.")

@@ -167,6 +167,11 @@ public struct TurnRecord: Equatable {
 
     static let noReplyPrefix = "[No reply: "
 
+    /// Claude's own words in the turn (its text, not its tool calls), for showing what a stopped run had said.
+    public var said: String {
+        rows.filter { $0.role == .assistant && $0.toolCallID == nil }.map(\.content).joined(separator: "\n\n")
+    }
+
     static func noReplyNote(_ reason: String, timestamp: Date) -> MessageDraft {
         MessageDraft(role: .assistant, content: noReplyPrefix + reason + "]", timestamp: timestamp)
     }
@@ -195,6 +200,9 @@ public enum StreamTurn {
         var rows: [MessageDraft] = []
         var open: [String] = []
         var sends: Set<String> = []
+        /// Text streamed since the last complete assistant message: what was written (and maybe read aloud) of a
+        /// message the run was ended in the middle of.
+        var draft = ""
         var firstPrompt: Int?
         var result: [String: Any]?
         for event in events(data) {
@@ -202,7 +210,14 @@ public enum StreamTurn {
             let message = event["message"] as? [String: Any]
             let blocks = message?["content"] as? [[String: Any]] ?? []
             switch event["type"] as? String {
+            case "stream_event":
+                if let inner = event["event"] as? [String: Any], inner["type"] as? String == "content_block_delta",
+                   let delta = inner["delta"] as? [String: Any], delta["type"] as? String == "text_delta",
+                   let text = delta["text"] as? String {
+                    draft += text
+                }
             case "assistant":
+                draft = ""
                 if firstPrompt == nil, let usage = message?["usage"] as? [String: Any], promptTokens(usage) > 0 {
                     firstPrompt = promptTokens(usage)
                 }
@@ -235,6 +250,8 @@ public enum StreamTurn {
             default: continue
             }
         }
+        let unfinished = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stopped && !unfinished.isEmpty { rows.append(MessageDraft(role: .assistant, content: unfinished, timestamp: now)) }
         for id in open {
             let name = rows.last { $0.toolCallID == id }?.toolName
             rows.append(MessageDraft(role: .tool, content: sends.contains(id) ? deliveryUnknown : interruptedOutput,

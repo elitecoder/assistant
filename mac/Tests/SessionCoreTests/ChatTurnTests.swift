@@ -158,6 +158,22 @@ final class TurnAssemblyTests: XCTestCase {
         XCTAssertNil(record.rows.last?.toolCallID)
     }
 
+    /// A run ended in the middle of a message keeps the text streamed so far, and `said` holds Claude's words.
+    func testAStoppedRunKeepsTheTextItHadStreamed() {
+        func delta(_ text: String) -> String {
+            Stream.json(["type": "stream_event", "event": ["type": "content_block_delta", "index": 0,
+                                                           "delta": ["type": "text_delta", "text": text]]])
+        }
+        let lines = [delta("First "), delta("part."),
+                     Stream.json(["type": "assistant", "message": ["content": [["type": "text", "text": "First part."]]]]),
+                     delta("The version bump "), delta("session needs your token.")].joined(separator: "\n")
+        let stopped = StreamTurn.record(Data(lines.utf8), stopped: true)
+        XCTAssertEqual(stopped.said, "First part.\n\nThe version bump session needs your token.")
+        XCTAssertEqual(stopped.rows.last?.content, "The version bump session needs your token.")
+        let finished = StreamTurn.record(Data((lines + "\n" + Stream.done("Done.", lastCall: 1)).utf8), stopped: false)
+        XCTAssertFalse(finished.rows.contains { $0.content.hasPrefix("The version bump") }, "only a stopped run keeps a draft")
+    }
+
     func testAStoppedRunClosesItsOpenCallAndKeepsTheTurn() {
         let lines = [Stream.call("a", "/A --wait workspace:1")].joined(separator: "\n")
         let record = StreamTurn.record(Data(lines.utf8), stopped: true)

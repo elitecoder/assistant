@@ -83,6 +83,11 @@ time you talk, into `~/Library/Application Support/Assistant/SmartTurn`
 2.5-second timer decides. To compare the rules on recorded speech, run
 `AssistantBar --turn-eval question.wav`.
 
+Known limit: with people talking nearby, the speech recognizer transcribes their
+words into your question, and each new word keeps the question open, so it
+doesn't end until they pause too, and their words go to Claude with yours. In a
+room where people are talking, type your question instead.
+
 ### Talk Mode
 
 To talk back and forth without pressing anything, select the waveform button

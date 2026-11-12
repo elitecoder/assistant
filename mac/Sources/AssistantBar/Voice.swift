@@ -790,7 +790,11 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     var playingAudio: Bool { playingNow.value }
     private var appleConverter: AVAudioConverter?
 
-    init(output: SpeechOutput? = nil) {
+    /// The voice and speed the operator picked; tests use a store of their own.
+    private let settings: UserDefaults
+
+    init(output: SpeechOutput? = nil, settings: UserDefaults = .standard) {
+        self.settings = settings
         kokoroStatus = kokoro.status
         super.init()
         self.output = output ?? LiveSpeechOutput(kokoro: kokoro, delegate: self)
@@ -811,7 +815,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     var voices: [VoiceInfo] { Voices.usable(all, systemDefault: Self.systemDefault) }
 
     var current: VoiceInfo? {
-        Voices.choose(all, preferred: UserDefaults.standard.string(forKey: Self.preferenceKey),
+        Voices.choose(all, preferred: settings.string(forKey: Self.preferenceKey),
                       systemDefault: Self.systemDefault)
     }
 
@@ -823,9 +827,9 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     static let speedKey = "speechSpeed"
 
     var speed: Double {
-        get { SpeechSpeed.clamped(UserDefaults.standard.object(forKey: Self.speedKey) as? Double ?? SpeechSpeed.defaultValue) }
+        get { SpeechSpeed.clamped(settings.object(forKey: Self.speedKey) as? Double ?? SpeechSpeed.defaultValue) }
         set {
-            UserDefaults.standard.set(SpeechSpeed.clamped(newValue), forKey: Self.speedKey)
+            settings.set(SpeechSpeed.clamped(newValue), forKey: Self.speedKey)
             objectWillChange.send()
         }
     }
@@ -842,7 +846,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
 
     func use(_ voice: VoiceInfo) {
-        UserDefaults.standard.set(voice.id, forKey: Self.preferenceKey)
+        settings.set(voice.id, forKey: Self.preferenceKey)
         objectWillChange.send()
         prepare()
         sample(Kokoro.npzKey(voice.id) != nil && !KokoroEngine.installed

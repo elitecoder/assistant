@@ -129,7 +129,8 @@ public struct TurnEnd: Equatable {
 
     /// How much longer the Listener's timer after words waits when it runs out: nothing, unless Smart Turn is holding
     /// the turn open, and then until past the longest hold. Noise the voice detector hears as speech keeps Smart Turn
-    /// from deciding, and the timer after words still ends the question on time.
+    /// from deciding, so the timer after words decides, as it does without Smart Turn. That ends the question on time
+    /// only when the noise isn't speech: nearby talk the recognizer transcribes resets the timer and joins the question.
     public static func extraAfterWords(timer: TimeInterval, holding: Bool) -> TimeInterval {
         holding ? max(0, longest + 1 - timer) : 0
     }

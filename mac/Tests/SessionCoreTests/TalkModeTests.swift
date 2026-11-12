@@ -148,6 +148,12 @@ final class BargeInWatchTests: XCTestCase {
         XCTAssertEqual(watch.room ?? 0, 0.1, accuracy: 0.01)
         _ = run(&watch, Array(repeating: 0.4, count: 50), playing: false)
         XCTAssertEqual(watch.room ?? 0, 0.4, accuracy: 0.01)
+        let before = watch.room ?? 0
+        _ = run(&watch, [0.9], playing: false)
+        let after = watch.room ?? 0
+        XCTAssertEqual(after, before + (0.9 - before) * 0.1, accuracy: 0.0001, "one loud tenth of a second moves it a tenth of the way")
+        _ = run(&watch, Array(repeating: 0.4, count: 5), playing: false)
+        XCTAssertEqual(watch.room ?? 0, 0.4 + (after - 0.4) * Float(pow(0.9, 5.0)), accuracy: 0.0001, "and fades over the next half second")
     }
 }
 

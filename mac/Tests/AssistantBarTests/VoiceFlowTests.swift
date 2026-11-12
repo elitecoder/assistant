@@ -413,10 +413,12 @@ final class ModelVoiceTests: XCTestCase {
 
 final class SpeakerTests: XCTestCase {
     func testAppleUtterancesAndKokoroUseTheChosenSpeed() {
-        let speaker = Speaker()
-        let saved = UserDefaults.standard.object(forKey: Speaker.speedKey)
-        defer { UserDefaults.standard.set(saved, forKey: Speaker.speedKey) }
+        let suite = "speed-test-\(UUID().uuidString)"
+        let settings = UserDefaults(suiteName: suite)!
+        defer { settings.removePersistentDomain(forName: suite) }
+        let speaker = Speaker(settings: settings)
         speaker.speed = 1.5
+        XCTAssertEqual(settings.double(forKey: Speaker.speedKey), 1.5, "the speed lives in the speaker's own store")
         XCTAssertEqual(speaker.utterance("hi").rate,
                        SpeechSpeed.appleRate(1.5, defaultRate: AVSpeechUtteranceDefaultSpeechRate,
                                              maximumRate: AVSpeechUtteranceMaximumSpeechRate))
@@ -642,6 +644,7 @@ final class BargeInEndsTheRunTests: XCTestCase {
         let asked: (String) -> Void = { [unowned self, unowned model] in
             self.events.append("ask \($0)")
             model.asking = true
+            model.answeringSpoken = true
             model.turns.newReply()
         }
         model.askNow = asked
@@ -702,6 +705,44 @@ final class BargeInEndsTheRunTests: XCTestCase {
         m.heard("Tell me about the playhead session instead.")
         XCTAssertEqual(Array(events.suffix(2)), ["watch", "ask Tell me about the playhead session instead."])
         XCTAssertTrue(m.talkMode)
+    }
+
+    /// Control-Option-V during a spoken answer ends the run exactly as talking over it does, and the next question
+    /// goes next.
+    func testTheMicrophoneKeyEndsTheRunLikeTalkingOver() {
+        func interrupt(_ how: (Model) -> Void) -> [String] {
+            events = []
+            let m = model()
+            m.toggleListening = { [unowned self] in self.events.append("listen") }
+            m.toggleTalkMode()
+            m.heard("What needs me?")
+            m.spokenPart("The version bump session needs your token.")
+            m.speechChanged(true)
+            how(m)
+            waitFor("end \(TalkLoop.interruptedReason)")
+            m.heard("Tell me about the playhead session instead.")
+            m.answerCompleted(interrupted(), spoken: true)
+            return events.filter { $0.hasPrefix("end") || $0.hasPrefix("ask") || $0 == "stop speaking" }
+        }
+        let byVoice = interrupt { _ in bargeIn?() }
+        let byKey = interrupt { $0.listen() }
+        XCTAssertEqual(byKey, byVoice)
+        XCTAssertEqual(byKey, ["ask What needs me?", "stop speaking", "end \(TalkLoop.interruptedReason)",
+                               "ask Tell me about the playhead session instead."])
+    }
+
+    /// The chat keeps what an interrupted answer had said (and read aloud) above the note, and Control-Option-R
+    /// replays it.
+    func testAnInterruptedAnswerKeepsWhatItSaid() {
+        let m = model()
+        m.asking = true
+        var outcome = interrupted()
+        outcome.partial = "The version bump session needs your token."
+        m.answerCompleted(outcome, spoken: true)
+        XCTAssertEqual(Array(m.chat.suffix(2).map(\.text)), ["The version bump session needs your token.", TalkLoop.interruptedReason])
+        XCTAssertEqual(m.chat.suffix(2).map(\.role), [.assistant, .error])
+        m.replay()
+        XCTAssertEqual(events.last, "say The version bump session needs your token.")
     }
 
     /// Stop records "Stopped." and ends the summarizer too; talking over the answer ends only the chat's run (the
