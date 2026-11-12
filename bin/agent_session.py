@@ -615,6 +615,21 @@ def _copilot_env(home: str | Path | None) -> str:
     return f"COPILOT_CUSTOM_INSTRUCTIONS_DIRS={shlex.quote(str(folder))} " if folder else ""
 
 
+_COPILOT_EXE_RE = re.compile(r"(^|&&\s*)((?:command\s+)?'?(?:[^'\s]*/)?copilot'?(?=\s|$))")
+
+
+def with_copilot_rules(command: str | None, home: str | Path | None = None) -> str | None:
+    """`command` with the rules folder set in front of its `copilot` launch.
+    cmux saves a Copilot resume command without COPILOT_CUSTOM_INSTRUCTIONS_DIRS;
+    anything else (Claude, Droid, an already-set command) comes back as is."""
+    if not command or not _COPILOT_EXE_RE.search(command):
+        return command
+    env = _copilot_env(home)
+    if not env:
+        return command
+    return _COPILOT_EXE_RE.sub(lambda m: m.group(1) + env + m.group(2), command, count=1)
+
+
 def session_command(agent: str, *, home: str | Path | None = None,
                     model: str | None = None, add_dirs: tuple | list = (),
                     env_prefix: str = "") -> str:

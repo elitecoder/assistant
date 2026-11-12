@@ -64,9 +64,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   own name.
 - Interactive Copilot sessions start with `--no-ask-user`, so questions come
   as text Assistant can read, not a form.
-- Copilot sessions Assistant starts get your rules from `~/.claude/CLAUDE.md`
-  through `~/.assistant/copilot-instructions`, linked as a Copilot
-  instructions file; your own Copilot setup isn't touched.
+- Copilot sessions Assistant starts, restores, or brings back after a crash
+  get your rules from `~/.claude/CLAUDE.md` through
+  `~/.assistant/copilot-instructions`, linked as a Copilot instructions file;
+  your own Copilot setup isn't touched. A session cmux itself restores on app
+  restart replays cmux's saved command, which doesn't carry them.
 - The notification watcher reads cmux's `cmux-feed-v1:` session ids, so a
   ping again carries the agent's last message for Claude and Copilot (the
   format change in cmux had broken this since October).

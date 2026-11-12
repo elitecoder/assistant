@@ -228,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
             set_provider(
                 path, args.provider, args.feature)
             if not args.feature:
+                dispatch = (load_document(path).get("dispatch") or {}).get("agent")
+                if dispatch and dispatch != args.provider:
+                    print(f"note: task dispatch stays on {dispatch} (dispatch.agent); "
+                          f"remove it to follow {args.provider}", file=sys.stderr)
                 for name, pinned in feature_pins(path, args.provider):
                     print(f"note: {name} stays on {pinned} (llm.features.{name}); "
                           f"run `assistant-llm.py inherit --feature {name}` to follow "

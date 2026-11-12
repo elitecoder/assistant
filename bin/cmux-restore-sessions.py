@@ -237,7 +237,7 @@ def build_resume_cmd(panel, ledger_entry=None):
         and agent_session.binding_is_current(
             agent_session.agent_from_kind(provider), command)
     ):
-        return cwd, command
+        return cwd, agent_session.with_copilot_rules(command)
 
     if not session_id:
         return None, None

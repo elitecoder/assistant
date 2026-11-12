@@ -1730,3 +1730,60 @@ def test_status_names_the_agent_the_slack_session_really_runs(home, monkeypatch)
     cli = _load(BIN / "assistant-llm.py", "assistant_llm_status_comms")
     _pick(home, "local")
     assert cli.status(llm_runner.config_path(home=home))["features"]["comms"]["provider"] == "claude"
+
+
+def test_saved_copilot_resumes_get_the_users_rules(home):
+    saved = "cd -- '/p' 2>/dev/null || [ ! -d '/p' ] && '/n/copilot-darwin-arm64/copilot' '--resume' 'id'"
+    assert ag.with_copilot_rules(saved) == saved
+    (home / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    rules = home / ".assistant" / "copilot-instructions"
+    with_rules = ag.with_copilot_rules(saved)
+    assert with_rules == saved.replace("&& '/n/", f"&& COPILOT_CUSTOM_INSTRUCTIONS_DIRS={rules} '/n/")
+    assert ag.with_copilot_rules(with_rules) == with_rules
+    for other in ("cd /w && claude --resume s", "cd /w && droid --resume s --settings /x/copilot.json"):
+        assert ag.with_copilot_rules(other) == other
+
+
+def test_restore_gives_a_saved_copilot_binding_the_users_rules(home):
+    _pick(home, "copilot")
+    (home / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    restore = _load(BIN / "cmux-restore-sessions.py", "seam_restore_rules")
+    saved = "cd /repo && '/n/copilot' '--resume' 'cp-9' '--allow-all'"
+    panel = {"id": "p", "directory": "/repo", "terminal": {
+        "surfaceId": "s", "resumeBinding": {"command": saved, "checkpointId": "cp-9", "cwd": "/repo"},
+        "agent": {"kind": "copilot", "sessionId": "cp-9", "workingDirectory": "/repo"}}}
+    assert "COPILOT_CUSTOM_INSTRUCTIONS_DIRS=" in restore.build_resume_cmd(panel)[1]
+
+
+def test_comms_clears_copilot_exactly_at_the_threshold(tmp_path):
+    transcript = tmp_path / "events.jsonl"
+    transcript.write_text(_usage_record(136000, 272000))
+    assert cs.should_clear(transcript, threshold=0.5, agent=ag.COPILOT, droid_clear_bytes=10**9)
+
+
+def test_watcher_never_reads_a_claude_file_for_a_copilot_feed_id(tmp_path):
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_kind_only")
+    sid = "9d49bf4e-1111-2222-3333-444455556666"
+    projects = tmp_path / "projects"
+    (projects / "-w").mkdir(parents=True)
+    (projects / "-w" / f"{sid}.jsonl").write_text("")
+    assert watcher.transcript_path("/w", _feed_id("copilot", sid), projects, tmp_path / "none") is None
+
+
+def test_rules_link_is_left_alone_once_right(home):
+    (home / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    folder = ag.copilot_instructions_dir()
+    link = folder / ".github" / "instructions" / "lessons.instructions.md"
+    first = link.lstat().st_ino
+    ag.copilot_instructions_dir()
+    assert link.lstat().st_ino == first
+
+
+def test_set_copilot_names_a_dispatch_pin(home, capsys, monkeypatch):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_dispatch_pin")
+    monkeypatch.setattr(ag.subprocess, "run", _fake_cmux_install([]))
+    config = home / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"dispatch": {"agent": "claude"}}))
+    assert cli.main(["set", "copilot"]) == 0
+    assert "task dispatch stays on claude" in capsys.readouterr().err
