@@ -48,6 +48,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+import agent_session
+
 # Rotate metrics.jsonl once it exceeds this (one ~350-byte record per 5-min
 # pulse ≈ 100KB/day, so 5MB is ~50 days of history). Old file is kept as
 # metrics.jsonl.1 and read_metrics() reads both, so the 7-day dashboard
@@ -112,8 +114,20 @@ def estimate_cost_usd(tokens_in: int, tokens_out: int, model: str) -> float:
     return tokens_in / 1e6 * p_in + tokens_out / 1e6 * p_out
 
 
+def _copilot(stdout: str, require_success: bool) -> dict | None:
+    """Usage from Copilot's JSONL event stream (`copilot --output-format
+    json`), or None when stdout isn't one."""
+    parse = agent_session.parse_headless if require_success else agent_session.parse_usage
+    parsed = parse(agent_session.COPILOT, stdout)
+    if parsed is None:
+        return None
+    return {"tokens_in": parsed["tokens_in"], "tokens_out": parsed["tokens_out"],
+            "cost_usd": parsed["cost_usd"]}
+
+
 def parse_cli_usage(stdout: str) -> dict | None:
-    """Parse usage from any Claude or Droid result envelope.
+    """Parse usage from any Claude or Droid result envelope, or Copilot's
+    JSONL event stream.
 
     Returns {"tokens_in", "tokens_out", "cost_usd"} or None when stdout is
     not a usage-bearing envelope (plain-text CLI, timeout, empty). tokens_in
@@ -122,7 +136,7 @@ def parse_cli_usage(stdout: str) -> dict | None:
     try:
         d = json.loads((stdout or "").strip())
     except Exception:
-        return None
+        return _copilot(stdout, require_success=False)
     if not isinstance(d, dict) or not isinstance(d.get("usage"), dict):
         return None
     u = d["usage"]
@@ -146,7 +160,7 @@ def parse_cli_result(stdout: str) -> dict | None:
     try:
         d = json.loads((stdout or "").strip())
     except Exception:
-        return None
+        return _copilot(stdout, require_success=True)
     if not isinstance(d, dict):
         return None
     if d.get("type") == "result" and (

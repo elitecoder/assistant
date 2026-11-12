@@ -342,7 +342,7 @@ def check_copilot_hooks() -> Check:
                      detail="Copilot isn't picked anywhere")
     if agent_session.copilot_hooks_installed(HOME):
         return Check("copilot cmux hooks", PASS, core=False,
-                     detail=str(HOME / ".copilot" / "config.json"))
+                     detail=str(agent_session.copilot_hooks_file(HOME)))
     return Check(
         "copilot cmux hooks", FAIL, core=False,
         detail="~/.copilot/config.json has no cmux hooks; Copilot sessions "

@@ -118,6 +118,16 @@ CAUGHT = {
         'cmd += ["--available-tools=x"]',
         'x = {"--command": "claude --resume abc"}',
         'os.system(f"{exe} --json-schema x")',
+        'AGENT = "claude"\nsubprocess.run([AGENT, "-p", prompt])',
+        'tool = "copilot"\nsubprocess.run([tool, "--resume", sid])',
+        'subprocess.run(["cmux", "new-workspace", "--command", "claude"])',
+        'subprocess.run(["zsh", "-lic", "claude"])',
+        'subprocess.run([str(HOME / ".local" / "bin" / "claude"), "-p", p])',
+        'subprocess.run([agent_session.binary("claude"), "-p", p])',
+        'cmd = [exe, "-p", p, "--allow-all-paths"]',
+        'root = Path.home() / ".claude" / "projects"',
+        'glob = HOME / ".copilot" / "session-state"',
+        'path = "~/.factory/sessions/x.jsonl"',
     ],
     "sh": [
         'claude -p "hi"',
@@ -130,12 +140,19 @@ CAUGHT = {
         '${COPILOT_BIN} --resume "$id"',
         'foo && ~/.local/bin/droid --auto high',
         'run_it \\\n  --x 1 && claude \\\n  --print',
+        'AGENT=claude; "$AGENT" -p hello',
+        'A="copilot"\n${A} --resume "$id"',
+        'CLI=claude; $CLI -p x',
+        'xargs claude -p',
+        'cmux new-workspace --command claude',
+        'zsh -lic claude',
     ],
     "js": [
         "spawn('claude', ['-p', prompt])",
         'execFile("copilot", args)',
         "const cmd = `${bin} --allow-all`;",
         'const argv = ["claude", "--print"];',
+        'const bin = "claude";\nspawn(bin, ["-p", p]);',
     ],
     "md": ['text\n```bash\nclaude --resume "$S"\n```\n'],
     "plist": ['<array><string>/Users/x/.local/bin/claude</string><string>-p</string></array>'],
@@ -152,6 +169,11 @@ PASSED = {
         'log.info("dispatch %s using claude", tid)',
         'def f():\n    """Runs claude --print under the hood."""\n    return 1',
         'x = 1  # claude --dangerously-skip-permissions',
+        'CLAUDE_PATH = HOME / ".claude"',
+        'print("Run `claude --resume <id>` to pick it up")',
+        'ap.add_argument("--json-schema")',
+        'log.warning("droid exec --model failed: %s", err)',
+        'parser.add_argument("--x", help="passes --allow-all to copilot")',
     ],
     "sh": [
         'command -v copilot >/dev/null',
@@ -160,6 +182,10 @@ PASSED = {
         'echo "claude is the default # not a comment"',
         'python3 "$SEAM" agent --agent "$ENGINE"',
         '# claude --print old way',
+        'echo "tip: run claude --resume"',
+        'grep -- "--dangerously-skip-permissions" ~/.zprofile',
+        'printf "%s\\n" "copilot --allow-all is set"',
+        'cat <<EOF\nrun claude --resume by hand\nEOF',
     ],
     "js": ["// spawn('claude', ['-p'])", "const name = 'claude';"],
     "md": ['Run `claude --resume` by hand if you like.\n'],
@@ -248,6 +274,7 @@ def test_llm_runner_copilot_with_tools_gets_write_access_to_its_run_dir(home, co
         seen["cmd"] = cmd
         return 0, copilot_stdout("done"), ""
 
+    (tmp_path / "extra").mkdir()
     llm_runner.invoke(provider="copilot", prompt="p", model="", run_dir=tmp_path,
                       timeout=30, run=run, extra_dirs=[tmp_path / "extra"])
     cmd = seen["cmd"]
@@ -392,7 +419,7 @@ def test_pulse_dispatch_spawns_copilot_and_confirms_from_its_transcript(home, co
     spawn = next(c for c in commands if "new-workspace" in c)
     launch = spawn[spawn.index("--command") + 1]
     assert launch.startswith(f"{copilot_bin} --allow-all --model gpt-test")
-    assert ("surface.send_text", "1") in keys, "copilot trust prompt answered"
+    assert ("surface.send_text", "2") in keys, "copilot trust prompt answered, remembered"
 
 
 def _dispatch(home, monkeypatch, name, screens, transcript):
@@ -612,7 +639,20 @@ def test_spawn_skill_takes_every_command_from_the_seam():
 
 # ── resume ────────────────────────────────────────────────────────────────────
 
+def test_restore_sessions_leaves_copilot_panels_alone_unless_picked(home):
+    _pick(home, "claude")
+    restore = _load(BIN / "cmux-restore-sessions.py", "seam_restore_unpicked")
+    panel = {"id": "p", "directory": "/repo", "terminal": {
+        "surfaceId": "s", "resumeBinding": {},
+        "agent": {"kind": "copilot", "sessionId": "cp-9", "workingDirectory": "/repo",
+                  "launchCommand": {"arguments": ["/bin/copilot"]}}}}
+    assert restore.build_resume_cmd(panel) == (None, None)
+    assert restore.infer_ledger_provider(
+        {"transcript_path": f"{home}/.copilot/session-state/cp-9/events.jsonl"}) == ""
+
+
 def test_restore_sessions_resumes_a_copilot_panel_with_copilot(home):
+    _pick(home, "copilot")
     restore = _load(BIN / "cmux-restore-sessions.py", "seam_restore")
     panel = {"id": "p", "directory": "/repo", "terminal": {
         "surfaceId": "s", "resumeBinding": {},
@@ -700,13 +740,14 @@ def test_pulse_dispatch_answers_a_trust_prompt_that_renders_late(home, copilot_b
 
     def screen(ref, lines=200):
         state["reads"] += 1
-        if state["trusted"]:
+        if state["trusted"] and state["reads"] > 8:
             return "Interactive · Allow All · / commands · ? help"
         return "" if state["reads"] <= 4 else "Do you trust the files in this folder?"
 
     def rpc(method, params, timeout=15):
-        if method == "surface.send_text" and params["text"] == "1":
+        if method == "surface.send_text" and params["text"] == "2":
             state["trusted"] = True
+            state["answers"] = state.get("answers", 0) + 1
         if method == "surface.send_text" and params["text"].startswith("Read "):
             _copilot_session(home, "cp-late", str(cwd), [
                 {"type": "user.message", "data": {"content": params["text"]}}])
@@ -726,7 +767,7 @@ def test_pulse_dispatch_answers_a_trust_prompt_that_renders_late(home, copilot_b
     monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: True)
     monkeypatch.setattr(pulse.time, "sleep", lambda s: None)
     assert pulse.dispatch_todo("td-2") is True
-    assert state["trusted"]
+    assert state["trusted"] and state["answers"] == 1, "answered once, though it stayed up"
 
 
 # ── Copilot under launchd, and Copilot's output ───────────────────────────────
@@ -856,7 +897,18 @@ def test_screen_reader_flags_a_copilot_error_and_names_copilot_panes():
     bwc = _load(BIN / "build-ws-context.py", "seam_bwc")
     assert bwc._ERROR_LINE_RE.match(" ● API Error: 500 upstream")
     assert not bwc._ERROR_LINE_RE.match(" ● MCP Servers reloaded: 1 server connected")
-    assert bwc._agent_for_screen(" ← open sidebar · Interactive · Allow") == "copilot"
+    assert bwc._agent_for_screen("output\n ← open sidebar · Interactive · Allow") == "copilot"
+    trust = ("│  ╰─╯╰─╯  Copilot v1.0.109 uses AI.  │\n"
+             "Do you trust the files in this folder?\n 1. Yes")
+    assert bwc._agent_for_screen(trust) == "copilot"
+
+
+def test_screen_reader_keeps_a_claude_pane_that_talks_about_copilot():
+    bwc = _load(BIN / "build-ws-context.py", "seam_bwc_claude")
+    screen = ("⏺ The banner reads Copilot v1.0.109 uses AI.\n"
+              "  ⎿ match: ← open sidebar · Interactive · / commands · ? help\n"
+              "⏺ Done.\n\n❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)")
+    assert bwc._agent_for_screen(screen) == "claude"
 
 
 def test_watcher_drops_copilots_status_bar_from_snippets():
@@ -888,15 +940,64 @@ def test_seam_cli_submitted_reads_the_named_agents_transcripts(home, copilot_bin
     assert run("submitted", "--agent", "claude", "--cwd", cwd, "--needle", "/p/x.md").returncode == 1
 
 
+CMUX_COPILOT_CONFIG = {"hooks": {
+    "SessionStart": [{"hooks": [{"command": "cmux hooks enqueue copilot session-start",
+                                 "timeout": 5000, "type": "command"}]}],
+    "Stop": [{"hooks": [{"command": "cmux hooks enqueue copilot stop",
+                         "timeout": 5000, "type": "command"}]}],
+}}
+
+
+def _fake_cmux_install(calls):
+    """Stands in for `cmux hooks copilot install`: it rewrites
+    $COPILOT_HOME/config.json, refusing one that isn't plain JSON."""
+    def run(cmd, **kw):
+        calls.append(cmd)
+        config = Path(kw["env"]["COPILOT_HOME"]) / "config.json"
+        try:
+            doc = json.loads(config.read_text())
+        except ValueError:
+            return subprocess.CompletedProcess(cmd, 1, "", "config.json is not valid JSON")
+        config.write_text(json.dumps({**doc, **CMUX_COPILOT_CONFIG}))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    return run
+
+
 def test_assistant_llm_set_copilot_installs_cmux_hooks(home, monkeypatch):
     cli = _load(BIN / "assistant-llm.py", "assistant_llm_hooks")
     calls = []
-    monkeypatch.setattr(ag.subprocess, "run",
-                        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(ag.subprocess, "run", _fake_cmux_install(calls))
     assert cli.main(["set", "claude"]) == 0
     assert calls == []
     assert cli.main(["set", "copilot"]) == 0
-    assert calls == [[ag.CMUX_CLI, "hooks", "copilot", "install", "--yes"]]
+    cmux = os.environ.get("CMUX_BIN") or ag.CMUX_CLI
+    assert calls == [[cmux, "hooks", "copilot", "install", "--yes"]]
+    assert ag.copilot_hooks_installed(home)
+
+
+def test_copilot_hooks_go_to_the_hooks_folder_and_leave_config_alone(home, monkeypatch):
+    config = home / ".copilot" / "config.json"
+    config.parent.mkdir(parents=True)
+    managed = "// This file is managed automatically.\n{\"trustedFolders\": []}\n"
+    config.write_text(managed)
+    monkeypatch.setattr(ag.subprocess, "run", _fake_cmux_install([]))
+    assert ag.install_copilot_hooks() is None
+    assert config.read_text() == managed
+    written = json.loads((home / ".copilot" / "hooks" / "cmux.json").read_text())
+    assert written == {"version": 1, "hooks": {
+        "SessionStart": [{"type": "command", "timeoutSec": 5,
+                          "bash": "cmux hooks enqueue copilot session-start"}],
+        "Stop": [{"type": "command", "timeoutSec": 5,
+                  "bash": "cmux hooks enqueue copilot stop"}],
+    }}
+    assert ag.copilot_hooks_installed(home)
+
+
+def test_copilot_hooks_report_a_cmux_that_writes_nothing(home, monkeypatch):
+    monkeypatch.setattr(ag.subprocess, "run",
+                        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", ""))
+    assert ag.install_copilot_hooks() == "cmux wrote no Copilot hooks"
+    assert not (home / ".copilot" / "hooks" / "cmux.json").exists()
 
 
 def test_doctor_checks_copilot_when_only_dispatch_picks_it(home, monkeypatch):
@@ -907,8 +1008,161 @@ def test_doctor_checks_copilot_when_only_dispatch_picks_it(home, monkeypatch):
     assert doctor.check_copilot_binary().status == doctor.FAIL
 
 
+def test_set_droid_saves_a_path_the_daemons_can_run(home, monkeypatch):
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: None)
+    assert ag.binary(ag.DROID) == str(home / ".local" / "bin" / "droid")
+    assert ag.binary(ag.COPILOT) == "copilot"
+
+
+def test_droid_launch_reads_home_at_call_time(home, tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    (other / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(other))
+    assert "--append-system-prompt-file" not in ag.session_argv(ag.DROID)
+    (other / ".claude" / "CLAUDE.md").write_text("rules")
+    assert "--append-system-prompt-file" in ag.session_argv(ag.DROID)
+
+
 def test_droid_resume_keeps_one_settings_flag():
     argv = ag.resume_argv(ag.DROID, "d-1", ["--settings=/old.json", "--auto=high", "-v"],
                           home=Path("/h"))
     assert argv.count("--settings") == 1 and not any(a.startswith("--settings=") for a in argv)
     assert "-v" in argv
+
+
+def test_copilot_home_moves_where_assistant_reads_copilot(home, monkeypatch, tmp_path):
+    elsewhere = tmp_path / "copilot-home"
+    monkeypatch.setenv("COPILOT_HOME", str(elsewhere))
+    target = elsewhere / "session-state" / "s1"
+    target.mkdir(parents=True)
+    (target / "workspace.yaml").write_text("cwd: /w\n")
+    (target / "events.jsonl").write_text("")
+    assert ag.copilot_transcripts("/w", home=home) == [target / "events.jsonl"]
+    assert ag.transcript_for_session(ag.COPILOT, "s1", home=home) == str(target / "events.jsonl")
+    (elsewhere / "config.json").write_text("cmux hooks enqueue copilot stop")
+    assert ag.copilot_hooks_installed(home)
+
+
+def test_spending_reads_copilot_output_as_a_real_successful_run(home):
+    import metering
+    out = copilot_stdout('{"headline": "x"}')
+    assert metering.parse_cli_result(out) == {"tokens_in": 120, "tokens_out": 7, "cost_usd": None}
+    usage = metering.observer_usage(out, prompt_chars=10_000, model="")
+    assert (usage["tokens_in"], usage["tokens_out"]) == (120, 7)
+    assert metering.parse_cli_result(copilot_stdout("", exit_code=1)) is None
+    assert metering.parse_cli_usage(copilot_stdout("", exit_code=1))["tokens_in"] == 120
+
+
+def test_restore_resumes_copilot_with_copilot_when_no_launch_was_recorded(home):
+    _pick(home, "copilot")
+    restore = _load(BIN / "cmux-restore-sessions.py", "seam_restore_bare")
+    panel = {"id": "p", "directory": "/repo", "terminal": {
+        "surfaceId": "s", "resumeBinding": {},
+        "agent": {"kind": "copilot", "sessionId": "cp-9", "workingDirectory": "/repo"}}}
+    assert restore.build_resume_cmd(panel)[1] == "cd /repo && command copilot --resume cp-9"
+
+
+def test_seam_names_the_agent_behind_a_transcript(home, monkeypatch, tmp_path):
+    assert ag.agent_from_transcript(f"{home}/.claude/projects/x/s.jsonl") == ag.CLAUDE
+    assert ag.agent_from_transcript(f"{home}/.factory/sessions/x/s.jsonl") == ag.DROID
+    assert ag.agent_from_transcript(f"{home}/.copilot/session-state/s/events.jsonl") == ag.COPILOT
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "cp"))
+    assert ag.agent_from_transcript(f"{tmp_path}/cp/session-state/s/events.jsonl") == ag.COPILOT
+    assert ag.agent_from_transcript("/var/log/x.jsonl") is None
+
+
+def test_copilot_answers_trust_with_a_lasting_yes():
+    assert (ag.trust_answer(ag.CLAUDE), ag.trust_answer(ag.COPILOT)) == ("1", "2")
+
+
+def test_spawn_skill_types_the_seams_trust_answer():
+    block = _skill_block(2)
+    assert '"$SEAM" trust-answer --agent "$ENGINE"' in block
+    assert '"$TRUST_ANSWER"' in block and '"text":"1"' not in block
+
+
+@pytest.mark.parametrize("screen", [
+    "output\n ◎ Working · 2.6 KiB ctrl+c interrupt",
+    "╹▀▀▀\n Interactive · Allow All · @ files/sessions · # issues",
+])
+def test_screen_reader_names_a_busy_or_typing_copilot_pane(screen):
+    assert ag.shows_copilot(screen)
+
+
+def test_copilot_gets_only_folders_that_exist(tmp_path):
+    there = tmp_path / "there"
+    there.mkdir()
+    argv = ag.session_argv(ag.COPILOT, model="", add_dirs=(there, tmp_path / "missing"))
+    assert argv.count("--add-dir") == 1 and str(there) in argv
+    cmd = ag.headless_argv(ag.COPILOT, binary_path="/c", model="", run_dir=tmp_path,
+                           extra_dirs=[there, tmp_path / "missing"])
+    assert str(tmp_path / "missing") not in cmd and str(there) in cmd
+
+
+def _usage_record(input_tokens, max_tokens=272000):
+    return json.dumps({"type": "session.usage_record", "data": {"usage": {
+        "inputTokens": input_tokens, "maxPromptTokens": max_tokens}}}) + "\n"
+
+
+def test_comms_clears_copilot_by_context_use_not_file_size(home, tmp_path):
+    transcript = tmp_path / "events.jsonl"
+    transcript.write_text(_usage_record(200000) + "x" * 10 + "\n" + _usage_record(20000))
+    assert ag.copilot_context_fraction(transcript) == pytest.approx(20000 / 272000)
+    assert not cs.should_clear(transcript, agent=ag.COPILOT, droid_clear_bytes=5)
+    transcript.write_text(_usage_record(150000))
+    assert cs.should_clear(transcript, agent=ag.COPILOT, droid_clear_bytes=10**9)
+
+
+def test_copilot_lookup_skips_old_sessions_when_given_a_start_time(home):
+    cwd = str(home / "dev")
+    old = _copilot_session(home, "old", cwd, [])
+    os.utime(old, (1, 1))
+    new = _copilot_session(home, "new", cwd, [])
+    assert ag.copilot_transcripts(cwd, home=home, since=1000) == [new]
+    assert sorted(ag.copilot_transcripts(cwd, home=home)) == sorted([old, new])
+
+
+def test_newest_nvm_copilot_wins(home, monkeypatch):
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: None)
+    for version in ("v9.0.0", "v24.1.0", "v18.2.0"):
+        _stub(home / ".nvm/versions/node" / version / "bin/copilot")
+    assert ag.binary(ag.COPILOT) == str(home / ".nvm/versions/node/v24.1.0/bin/copilot")
+
+
+def test_comms_answers_copilots_trust_prompt_with_a_lasting_yes(home, monkeypatch):
+    _pick(home, "copilot")
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+
+    def run_cmd(cmd, timeout=30):
+        if "new-workspace" in cmd:
+            return 0, "workspace:311\n", ""
+        if "list-pane-surfaces" in cmd:
+            return 0, "surface:311\n", ""
+        return 0, "", ""
+
+    sent, screens = [], iter(["Do you trust the files in this folder?"] * 2)
+    monkeypatch.setattr(cl, "run_cmd", run_cmd)
+    monkeypatch.setattr(cs, "_cmux_rpc", lambda p, method, params, **k: sent.append(
+        (method, params.get("text"))) or {})
+    monkeypatch.setattr(cs, "_surface_read_text", lambda p, ref, lines=200: next(
+        screens, " ← open sidebar · Interactive · Allow All · / commands · ? help"))
+    monkeypatch.setattr(cs, "send_enter", lambda p, ref: None)
+    monkeypatch.setattr(cs.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cs, "deliver_boot", lambda *a, **k: "/copilot-events.jsonl")
+    monkeypatch.setattr(cs, "reconcile_warm_workspaces", lambda p, keep, log=None: None)
+    assert cs.spawn_session(paths, Path("/boot.md"))["agent"] == ag.COPILOT
+    assert [t for m, t in sent if m == "surface.send_text"] == ["2"]
+
+
+def test_copilot_hooks_report_a_cmux_that_writes_an_empty_hook_list(home, monkeypatch):
+    def run(cmd, **kw):
+        (Path(kw["env"]["COPILOT_HOME"]) / "config.json").write_text('{"hooks": {}}')
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(ag.subprocess, "run", run)
+    assert ag.install_copilot_hooks() == "cmux wrote no Copilot hooks"
+
+
+def test_memory_seeds_read_the_repos_own_transcript_folders():
+    seeds = _load(BIN / "tools" / "memory_seeds.py", "seam_seeds")
+    assert seeds.TRANSCRIPT_DIR == Path.home() / ".claude/projects" / ag.claude_project_slug(REPO)
+    assert seeds.DROID_TRANSCRIPT_DIR == Path.home() / ".factory/sessions" / ag.project_slug(REPO)

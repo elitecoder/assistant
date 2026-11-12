@@ -36,6 +36,11 @@ def _watcher_on(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_copilot_home(monkeypatch):
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_self_update(monkeypatch):
     guard = types.ModuleType("self_update")
 

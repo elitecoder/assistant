@@ -43,6 +43,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
@@ -69,9 +70,26 @@ _ROOT_SUBDIR = {
 SLUG_AGENTS = (CLAUDE, DROID)
 
 
+def _home(home: str | Path | None) -> Path:
+    """`home`, else $HOME read now (so a caller's HOME change is seen)."""
+    if home is not None:
+        return Path(home)
+    return Path(os.environ.get("HOME") or str(Path.home()))
+
+
+def copilot_home(home: str | Path | None = None) -> Path:
+    """Copilot's config and state dir: $COPILOT_HOME, else <home>/.copilot."""
+    env = (os.environ.get("COPILOT_HOME") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    return _home(home) / ".copilot"
+
+
 def transcript_root(agent: str, home: str | Path | None = None) -> Path:
     """Root dir under which `agent` writes its session transcripts."""
-    base = HOME if home is None else Path(home)
+    if agent == COPILOT:
+        return copilot_home(home) / "session-state"
+    base = _home(home)
     return base / _ROOT_SUBDIR.get(agent, _ROOT_SUBDIR[CLAUDE])
 
 
@@ -95,8 +113,11 @@ def copilot_session_cwd(session_dir: str | Path) -> str | None:
     return value
 
 
-def copilot_transcripts(cwd: str | Path, home: str | Path | None = None) -> list[Path]:
-    """Copilot events.jsonl transcripts whose session cwd is `cwd`."""
+def copilot_transcripts(cwd: str | Path, home: str | Path | None = None,
+                        since: float | None = None) -> list[Path]:
+    """Copilot events.jsonl transcripts whose session cwd is `cwd`. `since`
+    (epoch seconds) skips sessions last written before it without reading
+    their workspace.yaml."""
     root = transcript_root(COPILOT, home=home)
     want = os.path.realpath(str(cwd))
     found = []
@@ -106,6 +127,12 @@ def copilot_transcripts(cwd: str | Path, home: str | Path | None = None) -> list
         return []
     for d in dirs:
         events = d / "events.jsonl"
+        if since is not None:
+            try:
+                if events.stat().st_mtime < since:
+                    continue
+            except OSError:
+                continue
         sess_cwd = copilot_session_cwd(d)
         if sess_cwd and os.path.realpath(sess_cwd) == want and events.is_file():
             found.append(events)
@@ -130,10 +157,12 @@ def transcript_for_session(agent: str, session_id: str,
 
 
 def session_transcripts(agent: str, cwd: str | Path,
-                        home: str | Path | None = None) -> list[Path]:
-    """Every transcript `agent` has written for sessions started in `cwd`."""
+                        home: str | Path | None = None,
+                        since: float | None = None) -> list[Path]:
+    """Every transcript `agent` has written for sessions started in `cwd`
+    (for Copilot, only those written since `since` when given)."""
     if agent == COPILOT:
-        return copilot_transcripts(cwd, home=home)
+        return copilot_transcripts(cwd, home=home, since=since)
     d = confirm_dir(agent, cwd, home=home)
     return sorted(d.rglob("*.jsonl")) if d.is_dir() else []
 
@@ -203,7 +232,9 @@ def _bin_candidates(agent: str, home: Path) -> list[Path]:
     if agent == COPILOT:
         nvm = home / ".nvm" / "versions" / "node"
         try:
-            versions = sorted(nvm.iterdir(), reverse=True)
+            versions = sorted(nvm.iterdir(), reverse=True, key=lambda v: [
+                int(n) if n.isdigit() else -1
+                for n in re.findall(r"\d+|[^\d.]+", v.name.lstrip("v"))])
         except OSError:
             versions = []
         cands += [v / "bin" / COPILOT for v in versions]
@@ -248,7 +279,7 @@ def binary(agent: str, env: dict | None = None) -> str:
         found = next((str(c) for c in _bin_candidates(agent, home)
                       if _executable(str(c))), None)
     if not found:
-        return agent
+        return str(home / ".local" / "bin" / DROID) if agent == DROID else agent
     return _copilot_native(found) if agent == COPILOT else found
 
 
@@ -395,25 +426,62 @@ def copilot_chosen() -> bool:
 CMUX_CLI = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 
+def copilot_hooks_file(home: str | Path | None = None) -> Path:
+    """Where Assistant keeps cmux's Copilot hooks: Copilot's hooks folder."""
+    return copilot_home(home) / "hooks" / "cmux.json"
+
+
 def copilot_hooks_installed(home: str | Path | None = None) -> bool:
-    """True when cmux's Copilot hooks are in ~/.copilot/config.json."""
-    base = HOME if home is None else Path(home)
-    try:
-        text = (base / ".copilot" / "config.json").read_text()
-    except OSError:
-        return False
-    return "hooks enqueue copilot" in text
+    """True when cmux's Copilot hooks are in Copilot's hooks folder or its
+    config.json."""
+    for path in (copilot_hooks_file(home), copilot_home(home) / "config.json"):
+        try:
+            if "hooks enqueue copilot" in path.read_text():
+                return True
+        except OSError:
+            continue
+    return False
 
 
-def install_copilot_hooks(cmux: str = CMUX_CLI) -> str | None:
-    """Run `cmux hooks copilot install --yes`. None on success, else why not."""
-    try:
-        done = subprocess.run([cmux, "hooks", "copilot", "install", "--yes"],
-                              capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return str(exc)
-    if done.returncode != 0:
-        return (done.stderr or done.stdout).strip()[:300] or f"exit {done.returncode}"
+def install_copilot_hooks(cmux: str | None = None,
+                          home: str | Path | None = None) -> str | None:
+    """Write cmux's Copilot hooks to Copilot's hooks folder. None on success,
+    else why not.
+
+    `cmux hooks copilot install` edits config.json, which Copilot 1.0.109
+    manages itself (it starts with // comments, so cmux refuses it). cmux
+    writes into a scratch Copilot home instead, and its hooks are rewritten
+    in the hooks-folder format: {"version": 1, "hooks": {event: [{"type":
+    "command", "bash": ..., "timeoutSec": ...}]}}."""
+    cmux = cmux or os.environ.get("CMUX_BIN") or CMUX_CLI
+    with tempfile.TemporaryDirectory() as scratch:
+        (Path(scratch) / "config.json").write_text("{}")
+        try:
+            done = subprocess.run(
+                [cmux, "hooks", "copilot", "install", "--yes"],
+                capture_output=True, text=True, timeout=30,
+                env={**os.environ, "COPILOT_HOME": scratch})
+        except (OSError, subprocess.SubprocessError) as exc:
+            return str(exc)
+        if done.returncode != 0:
+            return (done.stderr or done.stdout).strip()[:300] or f"exit {done.returncode}"
+        try:
+            generated = json.loads((Path(scratch) / "config.json").read_text())
+        except (OSError, ValueError) as exc:
+            return f"cmux wrote unreadable hooks: {exc}"
+    events = generated.get("hooks") if isinstance(generated, dict) else None
+    if not isinstance(events, dict) or not events:
+        return "cmux wrote no Copilot hooks"
+    hooks = {}
+    for event, blocks in events.items():
+        hooks[event] = [
+            {"type": "command", "bash": h["command"],
+             "timeoutSec": max(1, int(h.get("timeout", 5000)) // 1000)}
+            for block in blocks for h in block.get("hooks", [])
+            if isinstance(h, dict) and h.get("command")]
+    target = copilot_hooks_file(home)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n")
     return None
 
 
@@ -445,9 +513,10 @@ def session_argv(agent: str, *, home: str | Path | None = None,
 
     claude with no model/add_dirs is the bare ``claude`` alias (~/.zprofile owns
     its flags); with either, the explicit binary plus flags. copilot is
-    ``copilot --allow-all`` plus the configured model. droid carries its
+    ``copilot --allow-all`` plus the configured model, and only the add_dirs
+    that exist (Copilot refuses to start on a missing one). droid carries its
     settings file, --auto high, and the lessons file."""
-    base = HOME if home is None else Path(home)
+    base = _home(home)
     if agent == DROID:
         return [DROID, *_droid_flags(base)]
     if agent == COPILOT:
@@ -456,7 +525,8 @@ def session_argv(agent: str, *, home: str | Path | None = None,
         if chosen:
             argv += ["--model", chosen]
         for d in add_dirs:
-            argv += ["--add-dir", str(d)]
+            if Path(d).is_dir():
+                argv += ["--add-dir", str(d)]
         return argv
     if model is None and not add_dirs:
         return [CLAUDE]
@@ -503,7 +573,7 @@ def resume_argv(agent: str, session_id: str, preserved: list[str] | tuple = (),
                 home: str | Path | None = None) -> list[str]:
     """argv that resumes `agent` session `session_id`. `preserved` carries the
     original launch flags (session flags already stripped)."""
-    base = HOME if home is None else Path(home)
+    base = _home(home)
     preserved = list(preserved)
     if agent == DROID:
         drop = ("--settings", "--auto", "--append-system-prompt-file")
@@ -550,6 +620,23 @@ _READY_RE = {
 }
 
 
+_COPILOT_BAR_RE = re.compile(
+    r"^\s*← open sidebar · |· / commands · \? help(?: ·|\s*$)"
+    r"|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · "
+    r"|^\s*◎ \w+.*ctrl\+c interrupt")
+_COPILOT_BANNER_RE = re.compile(r"^│\s+\S+\s+Copilot v\d+\.\d+\.\d+ uses AI\.", re.M)
+
+
+def shows_copilot(screen: str) -> bool:
+    """True when `screen` is a Copilot pane: its status bar (idle, typing, or
+    working) is one of the last three non-blank lines, or its boxed boot
+    banner is on screen (the trust dialog hides the bar). Text a Claude pane prints about Copilot doesn't
+    match: it isn't the bottom line or inside the banner box."""
+    bottom = [line for line in screen.splitlines() if line.strip()][-3:]
+    return (any(_COPILOT_BAR_RE.search(line) for line in bottom)
+            or bool(_COPILOT_BANNER_RE.search(screen)))
+
+
 def ready_re(agent: str) -> "re.Pattern[str]":
     """Compiled regex whose match on the boot screen means the REPL is ready."""
     return _READY_RE.get(agent, _READY_RE[CLAUDE])
@@ -562,6 +649,17 @@ _TRUST_MARKER = {
     COPILOT: "Do you trust the files in this folder?",
     DROID: None,
 }
+
+
+# What to type at the trust prompt. Copilot's "1" trusts the folder for one
+# session only, so a later resume would stop at the prompt again; "2" is
+# "Yes, and remember this folder", like Claude's lasting "1".
+_TRUST_ANSWER = {CLAUDE: "1", COPILOT: "2"}
+
+
+def trust_answer(agent: str) -> str:
+    """The key that answers `agent`'s trust prompt with a lasting yes."""
+    return _TRUST_ANSWER.get(agent, "1")
 
 
 def trust_marker(agent: str) -> str | None:
@@ -579,6 +677,23 @@ _KIND_TO_AGENT = {"claude": CLAUDE, "copilot": COPILOT,
 def agent_from_kind(value: object) -> str | None:
     """Agent name for a cmux kind / provider / agent string, or None."""
     return _KIND_TO_AGENT.get(str(value or "").strip().lower())
+
+
+_TRANSCRIPT_MARKERS = (("/.factory/sessions", DROID),
+                       ("/.copilot/session-state/", COPILOT),
+                       ("/.claude/", CLAUDE))
+
+
+def agent_from_transcript(path: object) -> str | None:
+    """Agent whose transcript `path` is: under that agent's transcript root
+    (Copilot's follows $COPILOT_HOME), or a path naming its default root."""
+    text = str(path or "").replace("\\", "/")
+    if not text:
+        return None
+    for agent in (DROID, COPILOT, CLAUDE):
+        if text.startswith(str(transcript_root(agent)).rstrip("/") + "/"):
+            return agent
+    return next((agent for marker, agent in _TRANSCRIPT_MARKERS if marker in text), None)
 
 
 def agent_from_executable(path: object) -> str | None:
@@ -626,7 +741,8 @@ def headless_argv(provider: str, *, binary_path: str, model: str,
         else:
             cmd += ["--allow-all", "--add-dir", str(run_dir)]
             for directory in extra_dirs or []:
-                cmd += ["--add-dir", str(directory)]
+                if Path(directory).is_dir():
+                    cmd += ["--add-dir", str(directory)]
         return cmd
     cmd = [binary_path, "--model", model, "--print", "--output-format", "json"]
     if json_schema is not None:
@@ -736,6 +852,28 @@ def headless_errors(provider: str, stdout: str) -> str:
     return "\n".join(out)
 
 
+def copilot_context_fraction(transcript: str | Path,
+                             tail_bytes: int = 2_000_000) -> float | None:
+    """How full a Copilot session's context is: the last session.usage_record's
+    inputTokens over its maxPromptTokens, or None when none is recorded."""
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - tail_bytes))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if '"session.usage_record"' not in line:
+            continue
+        try:
+            usage = json.loads(line)["data"]["usage"]
+            return int(usage["inputTokens"]) / int(usage["maxPromptTokens"])
+        except (ValueError, KeyError, TypeError, ZeroDivisionError):
+            continue
+    return None
+
+
 def parse_usage(provider: str, stdout: str) -> dict | None:
     """Token/cost/session/result fields from a headless call's stdout, or None
     when the output is not the agent's JSON envelope."""
@@ -780,7 +918,7 @@ def prompt_submitted(agent: str, cwd: str | Path, needle: str,
     """True when a user turn in any of `agent`'s transcripts for `cwd`
     contains `needle`. `since` (epoch seconds) skips transcripts last written
     before it."""
-    for path in session_transcripts(agent, cwd, home=home):
+    for path in session_transcripts(agent, cwd, home=home, since=since):
         try:
             if since is not None and path.stat().st_mtime < since:
                 continue
@@ -817,8 +955,11 @@ def main(argv: list[str] | None = None) -> int:
             ("launch-command", "print the cmux --command for a session"),
             ("is-ready", "exit 0 when the screen text on stdin shows a ready REPL"),
             ("trust-marker", "print the folder-trust prompt text, if any"),
+            ("trust-answer", "print the key that answers the trust prompt"),
             ("submitted", "exit 0 when a user turn contains --needle"),
-            ("copilot-chosen", "exit 0 when the user picked Copilot anywhere")):
+            ("copilot-chosen", "exit 0 when the user picked Copilot anywhere"),
+            ("install-copilot-hooks", "write cmux's Copilot hooks to Copilot's "
+                                      "hooks folder")):
         cmd = sub.add_parser(name, help=help_text)
         cmd.add_argument("--agent", choices=AGENTS)
         if name == "submitted":
@@ -833,6 +974,13 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "copilot-chosen":
         return 0 if copilot_chosen() else 1
+    if args.cmd == "install-copilot-hooks":
+        failed = install_copilot_hooks()
+        if failed:
+            print(f"cmux Copilot hooks not installed: {failed}", file=sys.stderr)
+            return 1
+        print(f"cmux Copilot hooks installed at {copilot_hooks_file()}")
+        return 0
     if args.cmd == "agent":
         agent = args.agent or dispatch_agent()
         if not agent_available(agent):
@@ -847,6 +995,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ready_re(agent).search(sys.stdin.read()) else 1
     elif args.cmd == "trust-marker":
         print(trust_marker(agent) or "")
+    elif args.cmd == "trust-answer":
+        print(trust_answer(agent))
     else:
         return 0 if prompt_submitted(agent, args.cwd, args.needle,
                                      since=args.since) else 1

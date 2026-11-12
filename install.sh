@@ -865,7 +865,7 @@ if [[ $APPLY -eq 1 ]]; then
         "$CMUX_CLI" hooks factory install --yes 2>&1 | sed 's/^/  /' \
             || warn "cmux Factory hooks install failed (continuing — droid resume may be unbound)"
         if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then
-            "$CMUX_CLI" hooks copilot install --yes 2>&1 | sed 's/^/  /' \
+            CMUX_BIN="${CMUX_BIN:-$CMUX_CLI}" python3 "$REPO_ROOT/bin/agent_session.py" install-copilot-hooks 2>&1 | sed 's/^/  /' \
                 || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"
         fi
     else

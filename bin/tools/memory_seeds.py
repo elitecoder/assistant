@@ -36,12 +36,11 @@ CLAUDE_MD = HOME / ".claude" / "CLAUDE.md"
 PROPOSALS = HOME / ".assistant" / "proposals.jsonl"
 LEDGER = HOME / ".assistant" / "actions-ledger.jsonl"
 OBSERVER_REPORT = HOME / ".assistant" / "observer-latest-report.json"
-TRANSCRIPT_DIR = HOME / ".claude" / "projects" / "-Users-mukuls-dev-assistant"
-DEFAULT_TRANSCRIPT_DIR = TRANSCRIPT_DIR
-DROID_TRANSCRIPT_DIR = (
-    HOME / ".factory" / "sessions" / "-Users-mukuls-dev-assistant")
 # Copilot has no per-project dir; its sessions carry their cwd instead.
 ASSISTANT_CWD = str(Path(__file__).resolve().parents[2])
+TRANSCRIPT_DIR = agent_session.confirm_dir(agent_session.CLAUDE, ASSISTANT_CWD, home=HOME)
+DEFAULT_TRANSCRIPT_DIR = TRANSCRIPT_DIR
+DROID_TRANSCRIPT_DIR = agent_session.confirm_dir(agent_session.DROID, ASSISTANT_CWD, home=HOME)
 
 
 def _seed(title: str, body: str, category: str, tags: list[str],

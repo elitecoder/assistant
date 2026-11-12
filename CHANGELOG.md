@@ -16,9 +16,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   job start Copilot instead of Claude. The dashboard and the session check read
   Copilot sessions too. Set the model with `llm.copilot.model` or
   `COPILOT_MODEL`.
-- `assistant-llm.py set copilot` and the installer add cmux's Copilot hooks,
-  so Copilot sessions show on the dashboard. They're added only when you pick
-  Copilot, so Copilot sessions you start by hand stay yours.
+- `assistant-llm.py set copilot` and the installer add cmux's Copilot hooks
+  as `~/.copilot/hooks/cmux.json`, so Copilot sessions show on the dashboard
+  and can be restored. `cmux hooks copilot install` can't do this itself: it
+  edits `config.json`, which Copilot 1.0.109 manages and marks with comments.
+  The hooks are added only when you pick Copilot, and restore relaunches
+  Copilot sessions only then, so Copilot sessions you start by hand stay yours.
 - The doctor checks that Copilot starts (`copilot --version`) and that its
   cmux hooks are in place whenever you pick Copilot for anything.
 
@@ -32,6 +35,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   folder, and Copilot's errors reach the failure log.
 - Resuming a Copilot session keeps the flags it started with; it no longer
   adds `--allow-all` to sessions you started without it.
+- Assistant answers Copilot's folder-trust question with "Yes, and remember
+  this folder", so a restored session doesn't stop at the question again.
+- The spending ledger reads Copilot's token counts. Copilot jobs used to be
+  booked as failed with a cost estimated from their much longer output.
+- Copilot gets only the extra folders that exist; it refuses to start when
+  one is missing.
+- Assistant reads Copilot sessions from `$COPILOT_HOME` when you set it.
+- The Slack reply session on Copilot clears when Copilot reports half its
+  context used, not when its log reaches 2 MB.
+- A Claude pane that shows Copilot's banner or status bar in its output is
+  no longer taken for a Copilot pane, and a busy Copilot pane is recognized.
 - Task sessions now answer the first-launch folder-trust question whenever it
   appears during boot, not only in one check 2 seconds after launch. Copilot
   shows it about 4 seconds in, so the old check missed it and the session sat

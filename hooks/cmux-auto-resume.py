@@ -49,13 +49,10 @@ def infer_provider(payload):
         if provider:
             return provider
 
-    transcript = str(
-        payload.get("transcript_path") or payload.get("transcriptPath") or ""
-    ).replace("\\", "/")
-    if "/.factory/sessions" in transcript:
-        return "factory"
-    if "/.claude/" in transcript:
-        return "claude"
+    agent = agent_session.agent_from_transcript(
+        payload.get("transcript_path") or payload.get("transcriptPath"))
+    if agent in (agent_session.CLAUDE, agent_session.DROID):
+        return agent_session.CMUX_KIND[agent]
 
     provider = normalize_provider(os.environ.get("CMUX_AGENT_LAUNCH_KIND"))
     if provider:

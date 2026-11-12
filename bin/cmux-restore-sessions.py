@@ -102,8 +102,12 @@ def pgrep_session(session_id: str) -> bool:
 
 
 def normalize_provider(value):
-    """cmux kind (claude, copilot, factory) for an agent/provider name, or ""."""
+    """cmux kind (claude, copilot, factory) for an agent/provider name, or "".
+    Copilot counts only when the user picked it, so Copilot sessions started
+    by hand are never relaunched."""
     agent = agent_session.agent_from_kind(value)
+    if agent == agent_session.COPILOT and not agent_session.copilot_chosen():
+        return ""
     return agent_session.CMUX_KIND[agent] if agent else ""
 
 
@@ -114,15 +118,13 @@ def infer_ledger_provider(entry):
         provider = normalize_provider(entry.get(key))
         if provider:
             return provider
-    transcript = str(entry.get("transcript_path", "")).replace("\\", "/")
-    if "/.factory/sessions" in transcript:
-        return "factory"
-    if "/.copilot/session-state" in transcript:
-        return "copilot"
+    agent = agent_session.agent_from_transcript(entry.get("transcript_path"))
+    if agent in (agent_session.DROID, agent_session.COPILOT):
+        return normalize_provider(agent)
     argv = entry.get("launch_argv") or []
     agent = agent_session.agent_from_executable(argv[0]) if argv else None
     if agent in (agent_session.DROID, agent_session.COPILOT):
-        return agent_session.CMUX_KIND[agent]
+        return normalize_provider(agent)
     return ""
 
 

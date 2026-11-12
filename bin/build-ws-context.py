@@ -157,10 +157,6 @@ _DROID_PANE_MARKERS = (
     "GLM-5.2",
     "GLM5.2",
 )
-# Copilot's bottom status bar is the steady-state tell; the boot banner covers
-# a pane whose status bar the folder-trust dialog still hides. The banner can
-# name a Claude model, so it outranks the Claude markers.
-_COPILOT_BANNER = "Copilot v"
 _SURFACE_LINE_RE = re.compile(r"(surface:\d+)\s+([0-9A-Fa-f-]{36})")
 
 
@@ -206,12 +202,10 @@ def _agent_for_screen(text: str) -> str | None:
         return None
     if status_bar_session_id(text):
         return "claude"
-    if agent_session.ready_re(agent_session.COPILOT).search(text):
+    if agent_session.shows_copilot(text):
         return "copilot"
     if any(m in text for m in _DROID_PANE_MARKERS):
         return "droid"
-    if _COPILOT_BANNER in text:
-        return "copilot"
     if any(m in text for m in _CLAUDE_PANE_MARKERS):
         return "claude"
     return None
@@ -345,7 +339,7 @@ def transcript_from_session_id(sid8: str | None) -> str | None:
     (astronomically unlikely) 8-hex prefix collision."""
     if not sid8:
         return None
-    roots = [HOME / ".claude/projects", HOME / ".factory/sessions"]
+    roots = [agent_session.transcript_root(a, home=HOME) for a in agent_session.SLUG_AGENTS]
     copilot_root = agent_session.transcript_root(agent_session.COPILOT, home=HOME)
     candidates = sorted(
         [*(str(p) for root in roots if root.is_dir()

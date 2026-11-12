@@ -65,11 +65,12 @@ MIN_OCCURRENCES = 3
 WINDOW_SEC = 72 * 3600
 STEM_WORDS = 8
 
-# Where Claude Code writes one JSONL transcript per session.
-CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
 import agent_session  # noqa: E402
+
+# Where Claude Code writes one JSONL transcript per session.
+CLAUDE_PROJECTS = agent_session.transcript_root(agent_session.CLAUDE, home=HOME)
 
 # Strip these noise tokens out of evidence before computing the stem so the
 # grouping keys on the SHAPE of the evidence, not its per-workspace specifics.

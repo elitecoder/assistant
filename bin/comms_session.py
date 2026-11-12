@@ -294,7 +294,14 @@ def should_clear(transcript_path: str | Path,
     None and the fraction path would be perpetually False. Proxy with on-disk
     transcript size instead: >= droid_clear_bytes (COMMS_DROID_CLEAR_BYTES,
     default ~2 MB ≈ 50% window). Deterministic and unit-testable; the "clear" it
-    triggers is a lossless respawn (durable memory lives in conversation.jsonl)."""
+    triggers is a lossless respawn (durable memory lives in conversation.jsonl).
+
+    copilot: the last session.usage_record's share of maxPromptTokens >=
+    threshold; the size proxy only when no usage is recorded yet."""
+    if agent == agent_session.COPILOT:
+        fraction = agent_session.copilot_context_fraction(transcript_path)
+        if fraction is not None:
+            return fraction >= threshold
     if agent in _RESPAWN_TO_CLEAR:
         p = Path(transcript_path)
         return p.exists() and p.stat().st_size >= droid_clear_bytes
@@ -429,7 +436,7 @@ def find_submission(project_dir: Path, marker: str, since: float,
     transcripts are skipped. Copilot has no per-cwd folder, so its candidates
     are the Copilot sessions whose cwd is `cwd`."""
     if agent == agent_session.COPILOT and cwd:
-        files = agent_session.copilot_transcripts(cwd, home=HOME)
+        files = agent_session.copilot_transcripts(cwd, home=HOME, since=since)
     elif project_dir.is_dir():
         files = project_dir.rglob("*.jsonl")
     else:
@@ -993,7 +1000,8 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     # (banner or status bar), answering the first-launch trust prompt if/when it
     # shows. Both are delegated to await_ready so the ordering is unit-tested.
     def _answer_trust() -> None:
-        _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "1"})
+        _cmux_rpc(paths, "surface.send_text",
+                  {"surface_id": surface_ref, "text": agent_session.trust_answer(agent)})
         # send_text streams keystrokes; give "1" a beat to land before Enter so
         # the selection isn't submitted empty (mirrors submit()'s pattern).
         time.sleep(0.5)

@@ -22,14 +22,23 @@ AGENT_FLAGS = {
     "--allow-all-tools", "--available-tools", "--yolo", "--json-schema",
     "--strict-mcp-config", "--list-tools", "--append-system-prompt-file",
     "--disable-builtin-mcps", "--disable-slash-commands", "--no-ask-user",
+    "--allow-all-paths", "--allow-all-urls", "--autopilot", "--trust-folder",
+    "--allow-tool", "--deny-tool", "--no-custom-instructions",
 }
+SHELLS = {"sh", "bash", "zsh"}
+_TRANSCRIPT_ROOT_RE = re.compile(r"\.claude/projects|\.factory/sessions|\.copilot/session-state")
+_ROOT_PARTS = {(".claude", "projects"), (".factory", "sessions"), (".copilot", "session-state")}
+# Calls whose string arguments are messages or option names, not commands.
+_PROSE_CALLS = {"print", "debug", "info", "warning", "warn", "error", "exception",
+                "critical", "log", "add_argument", "add_parser", "write", "echo",
+                "fail", "skip", "notify"}
 # Flags other tools share; they count only right after an agent name.
 SHARED_FLAGS = {"-p", "--print", "--resume", "-r", "--model", "--continue",
                 "-c", "--output-format", "--settings", "--auto", "exec",
                 "--add-dir", "--mcp-config", "-C"}
 HARMLESS = {"--version", "--help", "-h", "-v"}
 
-_BIN_NAME_RE = re.compile(r"^(DEFAULT_)?(CLAUDE|COPILOT|DROID)_(BIN|EXE|PATH|CMD)$")
+_BIN_NAME_RE = re.compile(r"^(DEFAULT_)?(CLAUDE|COPILOT|DROID)_(BIN|EXE|CMD)$")
 _PINNED_RE = re.compile(r"(\.local/bin|/opt/homebrew/bin|/usr/local/bin|\.nvm/[^\s'\"]*/bin)/(claude|copilot|droid)\b")
 _FLAG_TOKEN_RE = re.compile(r"(?<![\w-])(--[a-z][a-z-]*)")
 _AGENT_THEN_FLAG_RE = re.compile(
@@ -64,7 +73,14 @@ def _string_problems(text: str) -> list[str]:
         out.append(f"agent command '{m.group(0)}'")
     if _PINNED_RE.search(text):
         out.append("pinned agent binary path")
+    if _TRANSCRIPT_ROOT_RE.search(text):
+        out.append("agent transcript root")
     return out
+
+
+def _first_word(text: str) -> str:
+    parts = text.strip().split()
+    return parts[0] if parts else ""
 
 
 # ── Python ────────────────────────────────────────────────────────────────────
@@ -98,17 +114,30 @@ def _elt_word(node: ast.AST) -> str:
     if isinstance(node, ast.Attribute):
         return node.attr
     if isinstance(node, ast.Call):
+        for arg in node.args:
+            if _const_str(arg) in AGENTS:
+                return _const_str(arg)
         return _elt_word(node.func)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _elt_word(node.right)
     if isinstance(node, ast.Starred):
         return ""
     return ""
 
 
-def _argv_problem(elts: list[ast.AST]) -> str | None:
+def _argv_problem(elts: list[ast.AST], aliases: dict[str, str]) -> str | None:
     words = [_elt_word(e) for e in elts]
+    if words and isinstance(elts[0], ast.Name) and elts[0].id in aliases:
+        words[0] = aliases[elts[0].id]
     flags = [w for w in words if w in AGENT_FLAGS]
     if flags:
         return f"agent argv with {flags[0]}"
+    for i, w in enumerate(words[:-1]):
+        if w == "--command" and _agent_word(_first_word(words[i + 1])):
+            return f"cmux launch of {words[i + 1]!r}"
+    if words and os.path.basename(words[0]) in SHELLS:
+        if any(_agent_word(_first_word(w)) for w in words[1:]):
+            return "shell runs an agent"
     if words and _agent_word(words[0]) and len(words) > 1:
         rest = [w for w in words[1:] if w]
         if any(w in SHARED_FLAGS or w.startswith("-") for w in rest) \
@@ -121,22 +150,46 @@ def python_problems(text: str) -> list[tuple[int, str]]:
     tree = ast.parse(text)
     docs = _docstring_nodes(tree)
     found: list[tuple[int, str]] = []
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _const_str(node.value) in AGENTS:
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    aliases[t.id] = _const_str(node.value)
     in_fstring: set[int] = set()
+    prose: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
             in_fstring.update(id(v) for v in node.values)
+        if isinstance(node, ast.Call) and _elt_word(node.func) in _PROSE_CALLS:
+            prose.update(id(a) for a in node.args)
+            prose.update(id(k.value) for k in node.keywords)
+        if isinstance(node, ast.keyword) and node.arg == "help":
+            prose.add(id(node.value))
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, (ast.List, ast.Tuple)):
-            why = _argv_problem(node.elts)
+            why = _argv_problem(node.elts, aliases)
             if why:
                 found.append((line, why))
         elif isinstance(node, (ast.Constant, ast.JoinedStr)):
-            if id(node) in docs or id(node) in in_fstring:
+            if id(node) in docs or id(node) in in_fstring or id(node) in prose:
                 continue
             s = _const_str(node)
             if s:
                 found += [(line, why) for why in _string_problems(s)]
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            parts = []
+            cur = node
+            while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Div):
+                parts.insert(0, _const_str(cur.right))
+                cur = cur.left
+            parts.insert(0, _const_str(cur))
+            pairs = set(zip(parts, parts[1:]))
+            if pairs & _ROOT_PARTS:
+                found.append((line, "agent transcript root"))
+            if any(a == "bin" and b in AGENTS for a, b in pairs):
+                found.append((line, "pinned agent binary path"))
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
@@ -148,6 +201,8 @@ def python_problems(text: str) -> list[tuple[int, str]]:
             if fname in _EXEC_FUNCS and node.args:
                 first = node.args[0]
                 word = _elt_word(first)
+                if isinstance(first, ast.Name) and first.id in aliases:
+                    word = aliases[first.id]
                 if isinstance(first, (ast.List, ast.Tuple)):
                     continue
                 if _agent_word(word) and (fname == "which" or fname.startswith(("exec", "spawn"))
@@ -160,7 +215,9 @@ def python_problems(text: str) -> list[tuple[int, str]]:
 
 _SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", "$(", "`", "{", "}", "\n",
                "then", "do", "else", "elif", "!", "|&", ";;"}
-_PREFIX_WORDS = {"command", "exec", "nohup", "time", "env", "sudo", "builtin"}
+_PREFIX_WORDS = {"command", "exec", "nohup", "time", "env", "sudo", "builtin", "xargs"}
+_PROSE_COMMANDS = {"echo", "printf", "grep", "rg", "egrep", "fgrep", "sed", "awk",
+                   "test", "[", "[[", "note", "warn", "log", "die", "say", "info"}
 
 
 def _shell_words(text: str) -> list[str]:
@@ -174,15 +231,32 @@ def _shell_words(text: str) -> list[str]:
         return text.split()
 
 
+def _blank_heredocs(text: str) -> str:
+    """`text` with here-document bodies blanked (they're data, often help
+    text); line numbers are kept."""
+    out, end = [], None
+    for line in text.splitlines():
+        if end is not None:
+            out.append("")
+            if line.strip() == end:
+                end = None
+            continue
+        out.append(line)
+        m = re.search(r"<<-?\s*['\"]?([A-Za-z_]\w*)['\"]?", line)
+        if m:
+            end = m.group(1)
+    return "\n".join(out)
+
+
 def shell_problems(text: str) -> list[tuple[int, str]]:
+    text = _blank_heredocs(text)
     found = []
+    aliases = {m.group(1): m.group(2) for m in re.finditer(
+        r"(?:^|[\s;&|(])([A-Za-z_]\w*)=['\"]?(claude|copilot|droid)['\"]?(?=[\s;&|)]|$)", text)}
     for n, raw in enumerate(_join_continuations(text), 1):
         if not raw.strip():
             continue
         words = _shell_words(raw)
-        code = " ".join(words)
-        found += [(n, why) for why in _string_problems(code) if "pinned" in why
-                  or "flag" in why]
         at_command = True
         i = 0
         while i < len(words):
@@ -200,7 +274,9 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
                     at_command = False
                 continue
             if at_command:
-                agent = _agent_word(w)
+                var = re.fullmatch(r"\$\{?([A-Za-z_]\w*)\}?", w)
+                agent = aliases.get(var.group(1)) if var else None
+                agent = agent or _agent_word(w)
                 rest = []
                 j = i + 1
                 while j < len(words) and words[j] not in _SEPARATORS:
@@ -209,7 +285,18 @@ def shell_problems(text: str) -> list[tuple[int, str]]:
                 if agent and rest and not set(rest) <= HARMLESS | {">/dev/null", "2>&1"} \
                         and any(r.startswith("-") or r in SHARED_FLAGS for r in rest):
                     found.append((n, f"shell runs {agent} {' '.join(rest)[:40]}"))
-                for r in rest:
+                elif agent and _PINNED_RE.search(w):
+                    found.append((n, f"pinned agent binary {w}"))
+                if os.path.basename(w) in _PROSE_COMMANDS:
+                    rest = []
+                if os.path.basename(w) in SHELLS and any(
+                        _agent_word(_first_word(r)) for r in rest if not r.startswith("-")):
+                    found.append((n, "shell runs an agent"))
+                for k, r in enumerate(rest):
+                    if r == "--command" and k + 1 < len(rest) and _agent_word(_first_word(rest[k + 1])):
+                        found.append((n, f"cmux launch of {rest[k + 1]!r}"))
+                    if r in AGENT_FLAGS:
+                        found.append((n, f"agent flag {r}"))
                     for sub in _string_problems(r):
                         found.append((n, f"quoted {sub}"))
                 at_command = False
@@ -274,6 +361,10 @@ _JS_SPAWN_RE = re.compile(
 def js_problems(text: str) -> list[tuple[int, str]]:
     code = _JS_COMMENT_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
     found = []
+    for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=\s*[`'\"](claude|copilot|droid)[`'\"]", code):
+        call = re.search(r"\b(?:spawn|spawnSync|execFile|execFileSync|fork)\s*\(\s*" + m.group(1) + r"\b", code)
+        if call:
+            found.append((code.count("\n", 0, call.start()) + 1, f"spawns {m.group(2)}"))
     for m in _JS_SPAWN_RE.finditer(code):
         found.append((code.count("\n", 0, m.start()) + 1, f"spawns {m.group(1)}"))
     for m in _JS_STRING_RE.finditer(code):

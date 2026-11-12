@@ -655,8 +655,9 @@ class FindAgentPaneTests(unittest.TestCase):
 
     def test_copilot_agent_pane_is_detected_by_status_bar_or_banner(self):
         ready = ("❯ \n ~/work [main] · Claude Opus 4.5 · / commands · ? help")
-        booting = ("Welcome to GitHub Copilot v1.0.4\n"
-                   "Model: Claude Sonnet 4.5\n"
+        # Captured from Copilot CLI 1.0.109 while its trust dialog is up.
+        booting = ("│  ╭─╮╭─╮                             │  Getting started   │\n"
+                   "│  ╰─╯╰─╯  Copilot v1.0.109 uses AI.  │  /model — Switch models │\n"
                    "Do you trust the files in this folder?")
         for screen in (ready, booting):
             p = self._patch(

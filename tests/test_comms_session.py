@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 
 import agent_session as ag
@@ -138,7 +139,9 @@ def test_warm_launch_starts_copilot_with_its_own_scope(monkeypatch):
     cmd = cs._warm_launch(ag.COPILOT)
     assert cmd.startswith("command copilot --allow-all --model gpt-6.1-sol ")
     assert f"--add-dir {cs.REPO_ROOT}" in cmd and "--add-dir /tmp" in cmd
-    assert "claude" not in cmd and "CLAUDE_CODE_USE_BEDROCK" not in cmd
+    argv = shlex.split(cmd)
+    assert not any(os.path.basename(a) == "claude" for a in argv)
+    assert "--dangerously-skip-permissions" not in argv and "CLAUDE_CODE_USE_BEDROCK" not in cmd
 
 
 def test_resolve_warm_model_and_backend_respects_env(monkeypatch):
