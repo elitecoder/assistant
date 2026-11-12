@@ -228,9 +228,12 @@ public enum RecognitionWait {
 public struct VoiceTurns: Equatable {
     public private(set) var queued: [String] = []
     public private(set) var deferredReply: String?
+    /// The operator stopped or talked over the reply being written: none of the rest of it is read.
+    public private(set) var muted = false
 
     public static let queuedNote = "I'll ask that when the current answer is done."
     public static let deferredNote = "I'll read the answer when you finish talking."
+    public static let interruptedNote = "I stopped reading that answer. I'll ask this as soon as it's saved."
 
     public init() {}
 
@@ -239,10 +242,22 @@ public struct VoiceTurns: Equatable {
         case queued(note: String)
     }
 
+    /// A question that interrupted an answer goes first, ahead of anything queued before.
     public mutating func heard(_ question: String, asking: Bool) -> Heard {
         guard asking else { return .ask(question) }
+        if muted {
+            queued.insert(question, at: 0)
+            return .queued(note: Self.interruptedNote)
+        }
         queued.append(question)
         return .queued(note: Self.queuedNote)
+    }
+
+    /// Stop, Esc, "Stop speaking", or talking over the answer: drop whatever of this reply hasn't been read yet,
+    /// and everything still to come.
+    public mutating func mute() {
+        muted = true
+        deferredReply = nil
     }
 
     /// The next question to ask once an answer is done.
@@ -259,6 +274,7 @@ public struct VoiceTurns: Equatable {
 
     /// A reply waits for listening to end; a sample or a replay asked for while listening is dropped.
     public mutating func say(_ text: String, listening: Bool, isReply: Bool) -> Talk {
+        if isReply && muted { return .skipped }
         guard listening else { return .speak(text) }
         guard isReply else { return .skipped }
         deferredReply = text
@@ -272,16 +288,22 @@ public struct VoiceTurns: Equatable {
         case add(String)
         /// Kept until listening ends; `note` is true for the first sentence kept.
         case deferred(note: Bool)
+        /// The reply was stopped: not read now or later.
+        case dropped
     }
 
     private var replyStarted = false
 
     /// A new spoken reply is about to stream in.
-    public mutating func newReply() { replyStarted = false }
+    public mutating func newReply() {
+        replyStarted = false
+        muted = false
+    }
 
     /// One sentence of a reply that's still being written. Once a sentence has waited for listening to end, the rest
     /// of the reply waits too, so it's read in order.
     public mutating func part(_ sentence: String, listening: Bool) -> Part {
+        if muted { return .dropped }
         if listening || deferredReply != nil {
             let first = deferredReply == nil
             deferredReply = [deferredReply, sentence].compactMap { $0 }.joined(separator: " ")

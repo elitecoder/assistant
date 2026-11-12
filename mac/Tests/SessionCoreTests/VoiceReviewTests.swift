@@ -227,3 +227,31 @@ final class TranscriptionResultTests: XCTestCase {
         XCTAssertFalse(Transcription.succeeded("error: kAFAssistantErrorDomain 1110 No speech detected"))
     }
 }
+
+final class StoppedReplyTests: XCTestCase {
+    /// Stop, Esc, "Stop speaking", or barge-in: nothing more of this reply is read, now or after listening.
+    func testAStoppedReplyReadsNothingMore() {
+        var turns = VoiceTurns()
+        turns.newReply()
+        XCTAssertEqual(turns.part("One.", listening: false), .start("One."))
+        XCTAssertEqual(turns.part("Two.", listening: true), .deferred(note: true))
+        turns.mute()
+        XCTAssertEqual(turns.part("Three.", listening: false), .dropped)
+        XCTAssertNil(turns.listeningEnded(), "the deferred sentence is dropped too")
+        XCTAssertEqual(turns.say("Whole reply.", listening: false, isReply: true), .skipped)
+        XCTAssertEqual(turns.say("Replay.", listening: false, isReply: false), .speak("Replay."), "replay still works")
+        turns.newReply()
+        XCTAssertEqual(turns.part("Next answer.", listening: false), .start("Next answer."))
+    }
+
+    /// The question that interrupted an answer is asked first, without waiting for anything queued before it.
+    func testTheInterruptingQuestionGoesFirst() {
+        var turns = VoiceTurns()
+        XCTAssertEqual(turns.heard("older?", asking: true), .queued(note: VoiceTurns.queuedNote))
+        turns.mute()
+        XCTAssertEqual(turns.heard("Tell me about the playhead instead.", asking: true),
+                       .queued(note: VoiceTurns.interruptedNote))
+        XCTAssertEqual(turns.answerFinished(), "Tell me about the playhead instead.")
+        XCTAssertEqual(turns.answerFinished(), "older?")
+    }
+}

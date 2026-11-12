@@ -103,7 +103,7 @@ enum Main {
             print("Smart Turn isn't available.")
             return false
         }
-        print("file\tsmart_turn\tby_model\ttimer\tlast_speech\tmodel_ms\tasked")
+        print("file\tsmart_turn\tby_model\ttimer\tlast_speech\tmodel_ms\tasked\ttimer3")
         for url in files {
             guard let samples = TurnEval.samples(url) else {
                 print("\(url.lastPathComponent)\tunreadable")
@@ -113,7 +113,7 @@ enum Main {
             let f = { (t: TimeInterval?) in t.map { String(format: "%.2f", $0) } ?? "-" }
             let ms = r.turnSeconds.isEmpty ? "-" : String(format: "%.0f", r.turnSeconds.reduce(0, +) / Double(r.turnSeconds.count) * 1000)
             let asked = r.asks.map { String(format: "%.2f:%.3f", $0.at, $0.probability) }.joined(separator: " ")
-            print("\(url.lastPathComponent)\t\(f(r.model))\t\(r.modelDecided)\t\(f(r.timer))\t\(f(r.lastSpeech))\t\(ms)\t\(asked)")
+            print("\(url.lastPathComponent)\t\(f(r.model))\t\(r.modelDecided)\t\(f(r.timer))\t\(f(r.lastSpeech))\t\(ms)\t\(asked)\t\(f(r.timer3))")
         }
         return true
     }
@@ -305,9 +305,16 @@ final class Model: NSObject, ObservableObject {
     }
 
     func listen() {
-        speaker.stop()
+        if speaker.speaking { turns.mute() }
+        stopTalking()
         speaker.prepare()
         listener.toggle()
+    }
+
+    /// "Stop speaking": silence this answer, including the sentences Claude hasn't written yet.
+    func stopSpeaking() {
+        turns.mute()
+        stopTalking()
     }
 
     /// Says `text` again with the current voice and speed, from the start. Ignored while listening, so the answer
@@ -323,7 +330,7 @@ final class Model: NSObject, ObservableObject {
         guard loop.on else { return }
         step { $0.stop() }
         if listener.listening { listener.stop() }
-        stopTalking()
+        stopSpeaking()
     }
 
     /// Steps Talk Mode's loop and carries out what it says.
@@ -333,7 +340,7 @@ final class Model: NSObject, ObservableObject {
             case .listen:
                 if !listener.listening { startListening() }
             case .interrupt:
-                stopTalking()
+                stopSpeaking()
                 startListening()
             case .watch:
                 if !watch({ [weak self] in self?.step { $0.bargedIn() } }) {
@@ -379,6 +386,7 @@ final class Model: NSObject, ObservableObject {
         case .start(let text): talk(text)
         case .add(let text): talkMore(text)
         case .deferred(let note): if note { chat.append(ChatTurn(role: .step, text: VoiceTurns.deferredNote)) }
+        case .dropped: break
         }
     }
 
@@ -418,18 +426,30 @@ final class Model: NSObject, ObservableObject {
             }
             let history = engine.sessions()
             DispatchQueue.main.async {
-                self.asking = false
-                self.running = nil
-                self.chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
-                self.meter = outcome.meter
                 self.history = history
-                if spoken && outcome.spokenSentences == 0 { self.answered(outcome.reply) }
-                if !self.speaker.speaking { self.speechChanged(false) }
                 if !outcome.failed && newFocus != nil { self.sentAbout = newFocus?.id }
-                if let next = self.turns.answerFinished() { self.ask(next, spoken: true, shown: true) }
+                self.answerCompleted(outcome, spoken: spoken)
             }
         }
     }
+
+    /// An answer is done: show it in full (even if it was stopped while being read), read it if nothing streamed,
+    /// then ask the next question waiting.
+    func answerCompleted(_ outcome: TurnOutcome, spoken: Bool) {
+        asking = false
+        running = nil
+        chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
+        meter = outcome.meter
+        if spoken && outcome.spokenSentences == 0 { answered(outcome.reply) }
+        if !speakingNow() { speechChanged(false) }
+        if let next = turns.answerFinished() { askNext(next) }
+    }
+
+    /// Asks a question that waited for the last answer; tests replace it so no `claude` runs.
+    lazy var askNext: (String) -> Void = { [weak self] in self?.ask($0, spoken: true, shown: true) }
+
+    /// Whether the answer is still playing; tests replace it.
+    lazy var speakingNow: () -> Bool = { [weak self] in self?.speaker.speaking ?? false }
 
     func stopAsking() {
         running?.terminate()

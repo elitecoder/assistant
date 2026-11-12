@@ -227,7 +227,7 @@ struct ChatView: View {
                 .help("Play again (⌃⌥R)")
                 .accessibilityLabel("Play again")
                 if speaker.speaking {
-                    Button { speaker.stop() } label: { Image(systemName: "speaker.slash.circle.fill").font(.title2) }
+                    Button { model.stopSpeaking() } label: { Image(systemName: "speaker.slash.circle.fill").font(.title2) }
                         .buttonStyle(.borderless)
                         .help("Stop speaking")
                 }

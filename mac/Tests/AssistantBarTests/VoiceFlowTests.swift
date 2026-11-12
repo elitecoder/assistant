@@ -490,6 +490,79 @@ final class ChatScrollTests: XCTestCase {
 }
 
 @MainActor
+final class StoppingStreamedAnswersTests: XCTestCase {
+    var events: [String] = []
+    var bargeIn: (() -> Void)?
+
+    func model() -> Model {
+        setenv("ASSISTANT_DB", NSTemporaryDirectory() + "stop-\(UUID().uuidString)/conversations.db", 1)
+        defer { unsetenv("ASSISTANT_DB") }
+        let model = Model()
+        model.talk = { [unowned self] in self.events.append("say \($0)") }
+        model.talkMore = { [unowned self] in self.events.append("more \($0)") }
+        model.startListening = { [unowned self] in self.events.append("listen") }
+        model.stopTalking = { [unowned self] in self.events.append("stop speaking") }
+        model.askNext = { [unowned self] in self.events.append("ask \($0)") }
+        model.speakingNow = { false }
+        model.watch = { [unowned self] in
+            self.bargeIn = $0
+            return true
+        }
+        model.unwatch = {}
+        return model
+    }
+
+    static let reply = "The version bump session needs your token. The trim fix merged this morning, and the probe is green."
+
+    func outcome(spoken: Int) -> TurnOutcome {
+        TurnOutcome(reply: Self.reply, failed: false, cost: nil, meter: nil, spokenSentences: spoken)
+    }
+
+    func testStopSpeakingStopsTheRestOfAStreamedAnswer() {
+        let m = model()
+        m.asking = true
+        m.spokenPart("The version bump session needs your token.")
+        m.stopSpeaking()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertEqual(events, ["say The version bump session needs your token.", "stop speaking"])
+        XCTAssertEqual(m.chat.last?.text, Self.reply, "the whole reply is still shown")
+    }
+
+    func testStoppingTalkModeStopsTheRestOfAStreamedAnswer() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.stopTalkMode()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertFalse(events.contains { $0.hasPrefix("more") || $0.hasSuffix("probe is green.") }, "\(events)")
+        XCTAssertFalse(m.talkMode)
+    }
+
+    /// Talking over a streaming answer drops the rest of it and asks the new question next, ahead of anything else.
+    func testBargeInDropsTheRestAndAsksTheNewQuestionNext() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.spokenPart("The version bump session needs your token.")
+        m.speechChanged(true)
+        bargeIn?()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.heard("Stop. Tell me about the playhead session instead.")
+        m.listeningEnded()
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertFalse(events.contains { $0.hasSuffix("probe is green.") }, "the interrupted answer kept reading: \(events)")
+        XCTAssertEqual(events.last, "ask Stop. Tell me about the playhead session instead.")
+        XCTAssertTrue(m.chat.contains { $0.text == VoiceTurns.interruptedNote })
+        XCTAssertTrue(m.chat.contains { $0.role == .assistant && $0.text == Self.reply }, "the full reply is kept in the chat")
+    }
+}
+
+@MainActor
 final class TalkModeFlowTests: XCTestCase {
     var events: [String] = []
     var bargeIn: (() -> Void)?
