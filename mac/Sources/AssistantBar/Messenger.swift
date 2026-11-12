@@ -7,6 +7,8 @@ enum Messenger {
     struct Target {
         let terminal: Terminal
         let transcript: URL
+        /// Said along with a reply when the transcript might not be the session's current one.
+        var note: String? = nil
     }
 
     static let backOff = URL(fileURLWithPath: NSHomeDirectory() + "/.assistant/back-off.json")
@@ -26,34 +28,64 @@ enum Messenger {
 
     static let projects = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/projects")
 
+    /// The live `claude` processes this Mac runs, for telling one session's transcript from another's.
+    struct Processes {
+        let sessions: [String: Messaging.Session]
+        let all: [(pid: Int32, sessionID: String?)]
+        let cwds: [Int32: String]
+
+        static func now() -> Processes {
+            let (_, ps) = Shell.run("/bin/ps", ["-A", "-o", "pid=,tty=,command="])
+            let text = String(decoding: ps, as: UTF8.self)
+            let all = Messaging.claudeProcesses(text)
+            var cwds: [Int32: String] = [:]
+            if !all.isEmpty {
+                let (_, out) = Shell.run("/usr/sbin/lsof", ["-a", "-d", "cwd", "-p", all.map { String($0.pid) }.joined(separator: ","), "-Fpn"])
+                var pid: Int32?
+                for line in String(decoding: out, as: UTF8.self).split(separator: "\n") {
+                    if line.hasPrefix("p") { pid = Int32(line.dropFirst()) } else if line.hasPrefix("n"), let pid { cwds[pid] = String(line.dropFirst()) }
+                }
+            }
+            return Processes(sessions: Messaging.claudeSessions(text), all: all, cwds: cwds)
+        }
+    }
+
     /// The session's transcript, or where Claude will write it once the session gets its first message. After /clear
-    /// the session writes a new file the process arguments don't name; `live` finds it.
-    static func transcript(_ session: Messaging.Session, others: Set<String> = []) -> URL? {
+    /// the session writes a new file the process arguments don't name; `live` finds it when the evidence is clear.
+    static func transcript(_ session: Messaging.Session, _ processes: Processes) -> (URL, String?)? {
+        let cwd = processes.cwds[session.pid]
         let folders = (try? FileManager.default.contentsOfDirectory(atPath: projects.path)) ?? []
         if let found = folders.filter({ !$0.hasPrefix("-private-") })
             .map({ projects.appendingPathComponent($0).appendingPathComponent(session.id + ".jsonl") })
-            .first(where: { FileManager.default.fileExists(atPath: $0.path) }) { return live(found, session, others) }
-        let (_, out) = Shell.run("/usr/sbin/lsof", ["-a", "-p", String(session.pid), "-d", "cwd", "-Fn"])
-        guard let cwd = String(decoding: out, as: UTF8.self).split(separator: "\n")
-            .first(where: { $0.hasPrefix("n") })?.dropFirst() else { return nil }
-        return projects.appendingPathComponent(Messaging.projectFolder(String(cwd)))
-            .appendingPathComponent(session.id + ".jsonl")
+            .first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            guard let cwd else { return (found, nil) }
+            let live = live(found, session, cwd: cwd, processes)
+            return (live.url, live.note)
+        }
+        guard let cwd else { return nil }
+        return (projects.appendingPathComponent(Messaging.projectFolder(cwd)).appendingPathComponent(session.id + ".jsonl"), nil)
     }
 
-    static func live(_ named: URL, _ session: Messaging.Session, _ others: Set<String>) -> URL {
+    static func live(_ named: URL, _ session: Messaging.Session, cwd: String, _ processes: Processes) -> Messaging.LiveTranscript {
+        guard let start = processStart(session.pid) else { return Messaging.LiveTranscript(url: named, note: nil) }
         let folder = named.deletingLastPathComponent()
         let keys: Set<URLResourceKey> = [.creationDateKey, .contentModificationDateKey]
-        let files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys))) ?? [])
+        let urls = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys))) ?? [])
             .filter { $0.pathExtension == "jsonl" }
-            .compactMap { url -> Messaging.TranscriptFile? in
-                guard let v = try? url.resourceValues(forKeys: keys), let c = v.creationDate, let m = v.contentModificationDate
-                else { return nil }
-                return Messaging.TranscriptFile(url: url, created: c, modified: m)
-            }
-        let modified = files.first { $0.url == named }?.modified
-        guard let start = processStart(session.pid) else { return named }
-        return Messaging.liveTranscript(named: named, namedModified: modified, in: files, processStart: start,
-                                        otherSessions: others.subtracting([session.id]))
+        var namedModified: Date?
+        let candidates = urls.compactMap { url -> Messaging.TranscriptCandidate? in
+            guard let v = try? url.resourceValues(forKeys: keys), let c = v.creationDate, let m = v.contentModificationDate
+            else { return nil }
+            if url == named { namedModified = m }
+            guard url != named, c >= start, let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            let head = Messaging.transcriptStart((try? handle.read(upToCount: 64 * 1024)) ?? Data())
+            return Messaging.TranscriptCandidate(url: url, created: c, modified: m, cwd: head.cwd, startsWithClear: head.startsWithClear)
+        }
+        let others = processes.all.filter { $0.pid != session.pid }
+        return Messaging.liveTranscript(named: named, namedModified: namedModified, cwd: cwd, processStart: start,
+                                        candidates: candidates, ownedByOthers: Set(others.compactMap(\.sessionID)),
+                                        othersInSameDirectory: others.contains { processes.cwds[$0.pid] == cwd })
     }
 
     static func processStart(_ pid: Int32) -> Date? {
@@ -68,11 +100,9 @@ enum Messenger {
     /// Every workspace pane running Claude, with its transcript.
     static func targets() -> [Target] {
         let (_, tree) = cmux(["tree", "--json"])
-        let (_, ps) = Shell.run("/bin/ps", ["-A", "-o", "pid=,tty=,command="])
-        let sessions = Messaging.claudeSessions(String(decoding: ps, as: UTF8.self))
-        let ids = Set(sessions.values.map(\.id))
+        let processes = Processes.now()
         return Messaging.terminals(tree).compactMap { t in
-            sessions[t.tty].flatMap { transcript($0, others: ids) }.map { Target(terminal: t, transcript: $0) }
+            processes.sessions[t.tty].flatMap { transcript($0, processes) }.map { Target(terminal: t, transcript: $0.0, note: $0.1) }
         }
     }
 
@@ -122,7 +152,8 @@ enum Messenger {
         let data = (try? Data(contentsOf: target.transcript)) ?? Data()
         let state = Messaging.turn(data, sent: sent, since: since)
         let reply = state.replies.last ?? "(no reply text yet)"
-        return done ? "REPLY\n\(reply)"
+        let note = target.note.map { "\nNOTE: " + $0 } ?? ""
+        return done ? "REPLY\n\(reply)\(note)"
             : "STILL WORKING\nNo final reply after \(Int(timeout)) seconds. Latest:\n\(reply)\n"
                 + "It may be waiting on a permission prompt. Run --wait \(target.terminal.workspace) to keep waiting."
     }

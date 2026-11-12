@@ -197,7 +197,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   back-off list against the workspace a name resolves to, presses Enter only
   once (a message it can't confirm is reported, not resent), recognizes
   delivery of messages that start with `<`, and follows a session to its new
-  transcript after `/clear`.
+  transcript after `/clear` only on evidence: the new file starts with the
+  `/clear` command in the session's own directory after its old file stopped,
+  and no other live `claude` could own it. When it can't tell, it keeps the
+  named transcript and says so in the reply.
 - Text from other sessions reaches the chat's Claude in marked blocks that a
   session can't close or use to fake one of your turns.
 - Stopping an answer, or `claude` exiting before it read the chat, no longer

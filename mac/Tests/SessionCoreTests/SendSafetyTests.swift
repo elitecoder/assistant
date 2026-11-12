@@ -116,25 +116,78 @@ final class DeliveryTests: XCTestCase {
         XCTAssertTrue(text.contains("Don't send it again"))
     }
 
-    /// After /clear the session writes a new transcript the process arguments don't name.
-    func testTheLiveTranscriptIsFoundAfterClear() {
-        let folder = URL(fileURLWithPath: "/p")
-        let old = folder.appendingPathComponent("aaaa.jsonl")
-        let new = folder.appendingPathComponent("bbbb.jsonl")
-        let other = folder.appendingPathComponent("cccc.jsonl")
-        let stale = folder.appendingPathComponent("dddd.jsonl")
-        let start = Date(timeIntervalSince1970: 1_000)
-        let files = [
-            Messaging.TranscriptFile(url: old, created: start, modified: start.addingTimeInterval(100)),
-            Messaging.TranscriptFile(url: new, created: start.addingTimeInterval(150), modified: start.addingTimeInterval(200)),
-            Messaging.TranscriptFile(url: other, created: start.addingTimeInterval(160), modified: start.addingTimeInterval(300)),
-            Messaging.TranscriptFile(url: stale, created: start.addingTimeInterval(-500), modified: start.addingTimeInterval(400)),
-        ]
-        XCTAssertEqual(Messaging.liveTranscript(named: old, namedModified: start.addingTimeInterval(100), in: files,
-                                                processStart: start, otherSessions: ["cccc"]), new,
-                       "not another running session's file, and not one created before this session started")
-        XCTAssertEqual(Messaging.liveTranscript(named: old, namedModified: start.addingTimeInterval(250), in: files,
-                                                processStart: start, otherSessions: ["cccc"]), old,
-                       "the named file is newest: no /clear")
+    let folder = URL(fileURLWithPath: "/p")
+    let start = Date(timeIntervalSince1970: 1_000)
+    let cwd = "/Users/x/dev/repo"
+
+    func candidate(_ id: String, created: TimeInterval, modified: TimeInterval, cwd: String? = "/Users/x/dev/repo",
+                   clear: Bool = true) -> Messaging.TranscriptCandidate {
+        .init(url: folder.appendingPathComponent(id + ".jsonl"), created: start.addingTimeInterval(created),
+              modified: start.addingTimeInterval(modified), cwd: cwd, startsWithClear: clear)
+    }
+
+    func live(_ candidates: [Messaging.TranscriptCandidate], namedModified: TimeInterval = 100, owned: Set<String> = [],
+              sameDirectory: Bool = false) -> Messaging.LiveTranscript {
+        Messaging.liveTranscript(named: folder.appendingPathComponent("aaaa.jsonl"), namedModified: start.addingTimeInterval(namedModified),
+                                 cwd: cwd, processStart: start, candidates: candidates, ownedByOthers: owned,
+                                 othersInSameDirectory: sameDirectory)
+    }
+
+    /// After /clear the session writes a new transcript, which starts with the /clear command, in its own directory.
+    func testTheNewTranscriptIsFollowedAfterClear() {
+        XCTAssertEqual(live([candidate("bbbb", created: 101, modified: 200)]).url.lastPathComponent, "bbbb.jsonl")
+        XCTAssertEqual(live([candidate("bbbb", created: 101, modified: 200), candidate("cccc", created: 201, modified: 300)]).url
+                           .lastPathComponent, "cccc.jsonl", "cleared twice")
+    }
+
+    /// The reviewer's case: another session's newer file in the same folder, with no /clear in it.
+    func testAnotherSessionsNewerFileIsNotTaken() {
+        let other = candidate("bbbb", created: 3_600, modified: 3_900, clear: false)
+        XCTAssertEqual(live([other], namedModified: 1_800).url.lastPathComponent, "aaaa.jsonl")
+        XCTAssertNil(live([other], namedModified: 1_800).note)
+    }
+
+    func testOnlyEvidenceOfThisSessionsClearSwitches() {
+        XCTAssertEqual(live([candidate("bbbb", created: 50, modified: 200)]).url.lastPathComponent, "aaaa.jsonl",
+                       "created while the named file was still growing")
+        XCTAssertEqual(live([candidate("bbbb", created: -10, modified: 200)], namedModified: -50).url.lastPathComponent,
+                       "aaaa.jsonl", "created before this process started (a resumed session): an exited session's")
+        XCTAssertEqual(live([candidate("bbbb", created: 101, modified: 200, cwd: "/Users/x/dev/other")]).url.lastPathComponent,
+                       "aaaa.jsonl", "another directory")
+        XCTAssertEqual(live([candidate("bbbb", created: 101, modified: 200)], owned: ["bbbb"]).url.lastPathComponent,
+                       "aaaa.jsonl", "another live process names it")
+    }
+
+    /// Another live claude in the same directory (it might not name its file), or two files that fit: keep the
+    /// named file and say so.
+    func testWhenItCantTellItKeepsTheNamedFileAndSaysSo() {
+        let ambiguous = live([candidate("bbbb", created: 101, modified: 200)], sameDirectory: true)
+        XCTAssertEqual(ambiguous.url.lastPathComponent, "aaaa.jsonl")
+        XCTAssertEqual(ambiguous.note, Messaging.ambiguousTranscriptNote)
+        let two = live([candidate("bbbb", created: 101, modified: 200), candidate("cccc", created: 102, modified: 210)])
+        XCTAssertEqual(two.url.lastPathComponent, "aaaa.jsonl")
+        XCTAssertNotNil(two.note)
+    }
+
+    /// Every live claude counts, including ones without a terminal or a session ID, and `claude -p` runs.
+    func testEveryLiveClaudeProcessIsCounted() {
+        let ps = """
+          10 ttys001  /Users/x/.local/bin/claude --session-id ef29cafb-042f-46ab-8a6d-a78e42d82264
+          11 ttys010  /Users/x/.local/bin/claude
+          12 ??       /Users/x/.local/bin/claude -p --output-format json
+          13 ttys002  -zsh
+        """
+        let all = Messaging.claudeProcesses(ps)
+        XCTAssertEqual(all.map(\.pid), [10, 11, 12])
+        XCTAssertEqual(all.first?.sessionID, "ef29cafb-042f-46ab-8a6d-a78e42d82264")
+    }
+
+    func testATranscriptStartedByClearIsRecognized() {
+        let first = Stream.json(["type": "user", "cwd": "/Users/x/dev/repo", "timestamp": "2026-10-18T20:06:52.066Z",
+                                 "message": ["role": "user", "content": "<command-name>/clear</command-name>\n<command-message>clear</command-message>"]])
+        let head = Messaging.transcriptStart(Data((Stream.json(["type": "mode"]) + "\n" + first).utf8))
+        XCTAssertEqual(head.cwd, "/Users/x/dev/repo")
+        XCTAssertTrue(head.startsWithClear)
+        XCTAssertFalse(Messaging.transcriptStart(Data(Stream.json(["type": "user", "cwd": "/a", "message": ["role": "user", "content": "hi"]]).utf8)).startsWithClear)
     }
 }
