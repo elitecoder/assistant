@@ -64,6 +64,17 @@ def _status_bar(sid8: str, branch: str = "main") -> str:
     return f"  assistant {branch} │ ●3 ●1 │ context 39% │ $42.20 │ #{sid8}"
 
 
+def _copilot_session(home: Path, sid: str, *lines: dict) -> Path:
+    """A Copilot session-state dir: events.jsonl led by its session.start."""
+    session_dir = home / ".copilot/session-state" / sid
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "workspace.yaml").write_text(f"id: {sid}\ncwd: /work\n")
+    events = session_dir / "events.jsonl"
+    start = {"type": "session.start", "id": "event-0", "data": {"sessionId": sid}}
+    events.write_text("".join(json.dumps(d) + "\n" for d in (start, *lines)))
+    return events
+
+
 class StatusBarSessionIdTests(unittest.TestCase):
     """The #1 wrong-capture trap: a #<8hex> in CONVERSATION CONTENT must not
     be mistaken for the agent's own session id. Only the status-bar line counts."""
@@ -168,6 +179,19 @@ class TranscriptFromSessionIdTests(unittest.TestCase):
         self.assertEqual(
             self.mod.transcript_from_session_id(full), str(tp))
 
+    def test_resolves_copilot_session_by_prefix_and_session_start_id(self):
+        full = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        events = _copilot_session(self._tmp, full)
+        self.assertEqual(
+            self.mod.transcript_from_session_id("c0b11071"), str(events))
+
+    def test_rejects_copilot_session_whose_session_start_disagrees(self):
+        full = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        events = _copilot_session(self._tmp, full)
+        events.write_text(json.dumps({"type": "session.start", "data": {
+            "sessionId": "99999999-0000-0000-0000-000000000000"}}) + "\n")
+        self.assertIsNone(self.mod.transcript_from_session_id("c0b11071"))
+
 
 class RecordedTranscriptTests(unittest.TestCase):
     """The stale-record trap (ws:12): cmux records which session runs on each
@@ -270,6 +294,14 @@ class RecordedTranscriptTests(unittest.TestCase):
         lookup = self._surface(self._record(
             full, agent="factory", pid=os.getpid(), transcript_path=str(tp)))
         self.assertEqual(lookup("SURF-A")["agent"], "droid")
+
+    def test_copilot_record_without_a_transcript_path_finds_its_events(self):
+        full = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        events = _copilot_session(self._tmp, full)
+        lookup = self._surface(self._record(full, agent="copilot", pid=os.getpid()))
+        self.assertEqual(lookup("SURF-A"), {"transcript_path": str(events),
+                                            "session_id8": "c0b11071",
+                                            "agent": "copilot"})
 
     def test_agent_the_fleet_does_not_run_is_ignored(self):
         full = "c0dec0de-1111-1111-1111-111111111111"
@@ -376,6 +408,17 @@ class TranscriptSignalsTests(unittest.TestCase):
         os.utime(path, (time.time() - 500, time.time() - 500))
         age, _ = self.mod.transcript_signals(str(path))
         self.assertGreaterEqual(age, 499)
+
+    def test_copilot_tool_execution_without_completion_is_working(self):
+        sid = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        start = {"type": "tool.execution_start",
+                 "data": {"toolCallId": "call-1", "toolName": "bash"}}
+        events = _copilot_session(self._tmp, sid, start)
+        self.assertEqual(self.mod.transcript_signals(str(events))[1], "working")
+        events = _copilot_session(self._tmp, sid, start, {
+            "type": "tool.execution_complete",
+            "data": {"toolCallId": "call-1", "success": True}})
+        self.assertEqual(self.mod.transcript_signals(str(events))[1], "idle")
 
 
 class CwdStateTests(unittest.TestCase):
@@ -496,6 +539,14 @@ class SurfaceHelperTests(unittest.TestCase):
         self.assertEqual(binding["agent"], "droid")
         self.assertEqual(binding["session_id"][:8], "d0d01234")
 
+    def test_resume_binding_accepts_copilot(self):
+        fake = mock.Mock(returncode=0, stdout=json.dumps({"binding": {
+            "kind": "copilot", "checkpointId": "c0b11071-aaaa-bbbb-cccc-dddddddddddd"}}))
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            binding = self.mod.resume_binding_for_surface("surface:21", "workspace:9")
+        self.assertEqual(binding, {"session_id": "c0b11071-aaaa-bbbb-cccc-dddddddddddd",
+                                   "agent": "copilot"})
+
     def test_resume_binding_beats_a_stale_restore_record(self):
         fake = mock.Mock(returncode=0, stdout=json.dumps({
             "restore_record": {"kind": "claude",
@@ -601,6 +652,22 @@ class FindAgentPaneTests(unittest.TestCase):
             res = self.mod.find_agent_pane("workspace:9")
         self.assertEqual(res["agent"], "droid")
         self.assertEqual(res["surface_ref"], "surface:1")
+
+    def test_copilot_agent_pane_is_detected_by_status_bar_or_banner(self):
+        ready = ("❯ \n ~/work [main] · Claude Opus 4.5 · / commands · ? help")
+        booting = ("Welcome to GitHub Copilot v1.0.4\n"
+                   "Model: Claude Sonnet 4.5\n"
+                   "Do you trust the files in this folder?")
+        for screen in (ready, booting):
+            p = self._patch(
+                panes=["pane:1", "pane:2"],
+                surfaces_by_pane={"pane:1": [("surface:1", "U1")],
+                                  "pane:2": [("surface:2", "U2")]},
+                screen_by_surface={"surface:1": self.SHELL, "surface:2": screen})
+            with p[0], p[1], p[2]:
+                res = self.mod.find_agent_pane("workspace:9")
+            self.assertEqual(res["agent"], "copilot")
+            self.assertEqual(res["surface_ref"], "surface:2")
 
     def test_no_agent_pane_returns_none(self):
         # All shells → None. No agent ⇒ no transcript attached (the invariant).

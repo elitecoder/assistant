@@ -80,6 +80,7 @@ WS_MAP_TTL_SEC = 30
 SCREEN_LINES = 50
 # Claude Code session transcripts; the agent's last words ride on each inbox item.
 CLAUDE_PROJECTS = agent_session.transcript_root(agent_session.CLAUDE, home=HOME)
+COPILOT_SESSIONS = agent_session.transcript_root(agent_session.COPILOT, home=HOME)
 # Only the transcript tail is read — a long session's JSONL runs to many MB and
 # the newest turn is all the ping needs.
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
@@ -395,13 +396,15 @@ _SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 
 
 def transcript_path(cwd: str | None, session_id: str | None,
-                    projects_dir: Path = CLAUDE_PROJECTS) -> Path | None:
-    """Locate the Claude Code transcript for a hook payload's session.
+                    projects_dir: Path = CLAUDE_PROJECTS,
+                    copilot_dir: Path = COPILOT_SESSIONS) -> Path | None:
+    """Locate the Claude Code or Copilot transcript for a hook payload's session.
 
     cmux prefixes the payload's session id with its source
     (`claude-6746dc4f-…`); the file on disk is named by the bare id. The hook's
     cwd is the session's current dir, which drifts from the launch dir after a
-    `cd`, so a miss looks for the session id under every project dir."""
+    `cd`, so a miss looks for the session id under every project dir. Copilot
+    keeps each session at `<id>/events.jsonl`."""
     if not session_id or not _SESSION_ID_RE.fullmatch(session_id):
         return None
     name = f"{session_id.removeprefix('claude-')}.jsonl"
@@ -409,6 +412,9 @@ def transcript_path(cwd: str | None, session_id: str | None,
         direct = projects_dir / agent_session.claude_project_slug(cwd) / name
         if direct.is_file():
             return direct
+    events = copilot_dir / session_id.removeprefix("copilot-") / "events.jsonl"
+    if events.is_file():
+        return events
     return next((d / name for d in projects_dir.iterdir() if (d / name).is_file()), None)
 
 
@@ -432,8 +438,9 @@ def tail_records(path: Path, max_bytes: int = TRANSCRIPT_TAIL_BYTES) -> list[dic
 
 
 def _content_blocks(rec: dict) -> list[dict]:
-    msg = rec.get("message")
-    content = msg.get("content") if isinstance(msg, dict) else None
+    content = agent_session.record_content(rec)
+    if isinstance(content, str) and rec.get("type") == "assistant.message":
+        return [{"type": "text", "text": content}]  # Copilot replies are plain text
     if not isinstance(content, list):
         return []
     return [b for b in content if isinstance(b, dict)]
@@ -461,8 +468,7 @@ def _is_prompt(rec: dict) -> bool:
     """A user turn someone typed, as opposed to a tool result or hook output."""
     if agent_session.record_role(rec) != "user" or rec.get("isMeta"):
         return False
-    msg = rec.get("message")
-    content = msg.get("content") if isinstance(msg, dict) else None
+    content = agent_session.record_content(rec)
     if isinstance(content, str):
         return not content.startswith("<")
     blocks = _content_blocks(rec)

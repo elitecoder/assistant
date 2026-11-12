@@ -365,6 +365,38 @@ def test_transcript_scanner_recurring_question_across_sessions(tmp_path):
     assert [c for c in cands2 if c["signal"] == "recurring_question"] == []
 
 
+def test_transcript_scanner_reads_copilot_sessions_of_priority_projects(tmp_path, monkeypatch):
+    project = tmp_path / "work" / "assistant"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(le.TranscriptScanner, "PRIORITY_DIRS",
+                        (le.agent_session.claude_project_slug(project),))
+    copilot = tmp_path / "copilot"
+    q = "what is the deploy status?"
+
+    def session(sid, cwd, *turns):
+        d = copilot / sid
+        d.mkdir(parents=True)
+        (d / "workspace.yaml").write_text(f"id: {sid}\ncwd: {cwd}\n")
+        _write_transcript(d / "events.jsonl", [json.dumps(
+            {"type": f"{role}.message", "data": {"content": text}}) for role, text in turns])
+
+    session("s0", project, ("assistant", "I'll force-push the branch."),
+            ("user", "No, don't force-push. Never do that without asking."), ("user", q))
+    session("s1", project, ("user", q))
+    session("s2", project, ("user", q))
+    session("s3", tmp_path / "elsewhere", ("user", q))
+    sc = le.TranscriptScanner(projects_dir=tmp_path / "claude", droid_dir=tmp_path / "droid",
+                              copilot_dir=copilot, existing=[])
+    cands = sc.scan()
+    corr = [c for c in cands if c["signal"] == "correction"]
+    assert len(corr) == 1
+    assert corr[0]["source_file"] == "s0/events.jsonl"
+    assert "force-push" in corr[0]["assistant_context"]
+    rq = [c for c in cands if c["signal"] == "recurring_question"]
+    assert len(rq) == 1
+    assert rq[0]["count"] == 3
+
+
 def test_transcript_scanner_malformed_jsonl_does_not_crash(tmp_path):
     cands = _scan_dir(tmp_path, {"g.jsonl": [
         "{not valid json",

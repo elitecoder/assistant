@@ -1,4 +1,4 @@
-"""Plain-text conversation slice of a Claude Code or Factory Droid transcript.
+"""Plain-text conversation slice of a Claude Code, Copilot, or Droid transcript.
 
 The Observer reads this instead of raw JSONL: the first request plus the most
 recent turns, with attachments, hook output, request records, and thinking
@@ -59,6 +59,8 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
     if record.get("isMeta"):
         return None
     kind = record.get("type")
+    if kind in ("user.message", "assistant.message"):
+        return _copilot_turn(record, kind.split(".", 1)[0])
     message = record.get("message")
     if not isinstance(message, dict):
         return None
@@ -70,6 +72,24 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
         return None
     content = message.get("content")
     blocks = [content] if isinstance(content, str) else content or []
+    return _render(record, role, blocks)
+
+
+def _copilot_turn(record: dict, role: str) -> tuple[str, str, str] | None:
+    """A Copilot events.jsonl turn: plain-text content plus its tool requests."""
+    data = record.get("data")
+    if not isinstance(data, dict):
+        return None
+    content = data.get("content")
+    blocks = [content] if isinstance(content, str) else []
+    blocks += [{"type": "tool_use", "name": request.get("name"),
+                "input": request.get("arguments")}
+               for request in data.get("toolRequests") or []
+               if isinstance(request, dict)]
+    return _render(record, role, blocks)
+
+
+def _render(record: dict, role: str, blocks) -> tuple[str, str, str] | None:
     text = " ".join(t for t in (_block_text(b) for b in blocks) if t)
     text = REMINDER.sub("", text).strip()
     if not text:
