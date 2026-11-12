@@ -73,11 +73,23 @@ public enum Messaging {
         return out
     }
 
+    /// The first character that counts in a message: leading whitespace (including no-break space), control
+    /// characters, and invisible format characters (zero-width space, BOM) are skipped, since `cmux send --paste`
+    /// turns control characters into spaces and Claude Code ignores leading blanks.
+    static func firstVisible(_ message: String) -> Character? {
+        let skipped = message.unicodeScalars.drop { scalar in
+            scalar.properties.isWhitespace || [.control, .format].contains(scalar.properties.generalCategory)
+        }
+        return String(String.UnicodeScalarView(skipped)).first
+    }
+
     /// Why a message can't be sent into another session, or nil when it can. A message starting with "/" runs as a
-    /// slash command there (/clear, /cleanup, /merge-when-ready…) and one starting with "!" runs in its shell, both
-    /// with that session's permissions. Plain requests are fine: the session's own permission checks cover them.
+    /// slash command there (/clear, /cleanup, /merge-when-ready…), one starting with "!" runs in its shell, and one
+    /// starting with "#" can save a standing memory, all with that session's permissions. Plain requests are fine:
+    /// the session's own permission checks cover them.
     public static func sendRefusal(_ message: String) -> String? {
-        switch message.first(where: { !$0.isWhitespace }) {
+        switch firstVisible(message) {
+        case "#": return "Messages can't start with \"#\": that can save a standing instruction to the session's memory. Ask in plain words, or ask the operator."
         case "/": return "Messages can't start with \"/\": that would run a slash command in the session. Describe what you want in plain words, or ask the operator to run the command."
         case "!": return "Messages can't start with \"!\": that would run a shell command in the session. Ask in plain words, or ask the operator."
         case nil: return "The message is empty."

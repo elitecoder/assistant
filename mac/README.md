@@ -124,8 +124,9 @@ message it sends, and each reply, shows in the panel. Select **Stop** to end it.
   or a question or permission prompt is open there.
 - It skips workspaces on your `/back-off` list, however the workspace is
   named: by ref, ID, or title.
-- It won't send a message that starts with `/` or `!`, which would run a slash
-  command or a shell command in that session. Plain requests are allowed; the
+- It won't send a message that starts with `/`, `!`, or `#`, which would run a
+  slash command or a shell command, or save a memory note, in that session. Hidden
+  characters in front don't change that. Plain requests are allowed; the
   session's own permission checks handle them.
 - It presses Enter once. If the message doesn't show in the session's
   transcript, it says so and doesn't send it again.

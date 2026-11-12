@@ -191,8 +191,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
-- `--send` refuses messages that start with `/` (a slash command) or `!` (a
-  shell command) and says why, passes the message after `--`, checks the
+- `--send` refuses messages that start with `/` (a slash command), `!` (a
+  shell command), or `#` (a memory note), even behind invisible or control
+  characters, and says why, passes the message after `--`, checks the
   back-off list against the workspace a name resolves to, presses Enter only
   once (a message it can't confirm is reported, not resent), recognizes
   delivery of messages that start with `<`, and follows a session to its new
