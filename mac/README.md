@@ -73,9 +73,14 @@ Assistant knows you've finished a question from how it sounds, not just from
 silence. [Silero VAD](https://github.com/snakers4/silero-vad) (MIT license)
 notices when you stop talking, and Pipecat's
 [Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn) (BSD 2-Clause
-license) judges whether you finished or paused mid-sentence. A finished
-question ends about a quarter of a second after you stop. When you pause
-mid-sentence, Assistant keeps listening, for up to 3 seconds of silence. Both
+license) judges whether you finished or paused mid-sentence. Assistant asks it
+three times during a pause, at 0.2, 0.5, and 0.9 seconds, and ends the
+question only if it's sure every time, so a finished question ends about a
+second after you stop. When it thinks you paused mid-sentence, Assistant keeps
+listening, for up to 3 seconds of silence. On 160 rendered questions (clean,
+and with room noise at 25 and 15 dB), this was right as often as a 2.5-second
+timer or more in every condition, and a plain 3-second timer was right more
+often still, but waits 3 seconds every time. Both
 models run on your Mac with [ONNX Runtime](https://onnxruntime.ai). They
 download once, the first time you talk, into
 `~/Library/Application Support/Assistant/SmartTurn` (35 MB), and Assistant
@@ -89,7 +94,11 @@ To talk back and forth without pressing anything, select the waveform button
 next to the microphone, or hold Control-Option-V for about half a second.
 Assistant listens, answers, speaks, and then listens for your next question.
 To interrupt an answer, start talking: about half a second of your voice stops
-it and starts the next question. Coughs and short sounds like "mm-hmm" don't.
+it, and the rest of that answer isn't read. Your new question is asked next,
+as soon as Claude has finished writing the answer you interrupted, which stays
+in the chat. Coughs and short sounds like "mm-hmm" don't interrupt.
+**Stop speaking**, **Stop**, and Esc also drop the rest of an answer that's
+still being written.
 Select **Stop**, or press Esc, to end Talk Mode. A turn where you don't ask
 anything also ends it. Start the app in Talk Mode with `AssistantBar --show --talk`.
 

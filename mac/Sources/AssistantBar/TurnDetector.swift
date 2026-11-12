@@ -151,6 +151,8 @@ final class TurnCore {
     private(set) var end: TurnEnd
     private(set) var audio: [Float] = []
     private var processed = 0
+    /// Samples dropped from the front of `audio`, so time keeps counting from the start of the question.
+    private var trimmed = 0
     private var state = [Float](repeating: 0, count: 2 * 128)
     private var speaking = false
     private(set) var lastSpeech: TimeInterval = 0
@@ -165,7 +167,7 @@ final class TurnCore {
         end = TurnEnd(modelAvailable: models != nil)
     }
 
-    var seconds: TimeInterval { Double(processed) / Double(SmartTurn.sampleRate) }
+    var seconds: TimeInterval { Double(processed + trimmed) / Double(SmartTurn.sampleRate) }
 
     /// Takes more audio; returns the end of the turn once it's reached.
     func feed(_ samples: [Float]) -> TurnEnd.Decision? {
@@ -198,6 +200,7 @@ final class TurnCore {
             let drop = audio.count - SmartTurn.window - Self.windowSize
             audio.removeFirst(drop)
             processed -= drop
+            trimmed += drop
         }
         return nil
     }
@@ -259,6 +262,7 @@ enum TurnEval {
         let model: TimeInterval?
         let modelDecided: Bool
         let timer: TimeInterval?
+        let timer3: TimeInterval?
         let lastSpeech: TimeInterval
         let turnSeconds: [TimeInterval]
         let asks: [(at: TimeInterval, probability: Float)]
@@ -291,14 +295,23 @@ enum TurnEval {
                 decided = byModel
             }
         }
-        // The timer hears the same voice detector, so the two differ only in how they decide.
-        var timer = TurnEnd(modelAvailable: false)
+        // The timers hear the same voice detector, so they differ from Smart Turn only in how they decide.
         let window = Double(TurnCore.windowSize) / Double(SmartTurn.sampleRate)
-        let timerAt = core.speechFlags.enumerated().first { _, speech in
-            if case .done = timer.take(speech: speech, duration: window) { return true }
-            return false
-        }.map { Double($0.offset + 1) * window }
-        return Result(model: modelAt, modelDecided: decided, timer: timerAt, lastSpeech: core.lastSpeech,
+        func timer(_ seconds: TimeInterval) -> TimeInterval? {
+            var silence: TimeInterval = 0
+            var heard = false
+            for (i, speech) in core.speechFlags.enumerated() {
+                if speech {
+                    heard = true
+                    silence = 0
+                } else if heard {
+                    silence += window
+                    if silence >= seconds - 1e-9 { return Double(i + 1) * window }
+                }
+            }
+            return nil
+        }
+        return Result(model: modelAt, modelDecided: decided, timer: timer(TurnEnd.timer), timer3: timer(3), lastSpeech: core.lastSpeech,
                       turnSeconds: core.turnSeconds, asks: core.asks)
     }
 }

@@ -582,7 +582,7 @@ final class Listener: ObservableObject {
     private func waitForPause() {
         pause?.invalidate()
         // With Smart Turn deciding, the timer after words is only a backstop beyond its own silence limit.
-        let afterWords = turn == nil ? pauseAfterWords : max(pauseAfterWords, TurnEnd.limit + 1)
+        let afterWords = TurnEnd.backstop(timer: pauseAfterWords, smartTurn: turn != nil)
         pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? pauseBeforeWords : afterWords,
                                      repeats: false) { [weak self] _ in
             self?.stop()

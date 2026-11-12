@@ -45,14 +45,16 @@ final class TurnDetectionTests: XCTestCase {
         return try XCTUnwrap(TurnModels.shared.loaded())
     }
 
-    /// A finished question ends about 0.2 s after the voice stops, where the timer takes 2.5 s.
+    /// A finished question ends about 0.9 s after the voice stops (three calls, at 0.2, 0.5, and 0.9 s), where the
+    /// timer takes 2.5 s.
     func testAFinishedQuestionEndsSoonAfterTheVoiceStops() throws {
         let models = try models()
         let audio = SpeechRenderer().render("What does the version bump session need from me right now?")
         let r = TurnEval.run(audio, models: models)
         XCTAssertTrue(r.modelDecided)
         let model = try XCTUnwrap(r.model), timer = try XCTUnwrap(r.timer)
-        XCTAssertLessThan(model - r.lastSpeech, 0.6)
+        XCTAssertLessThan(model - r.lastSpeech, 1.2)
+        XCTAssertGreaterThanOrEqual(r.asks.count, 3, "it takes three agreeing calls")
         XCTAssertGreaterThan(timer - r.lastSpeech, 2.4)
     }
 
@@ -65,6 +67,14 @@ final class TurnDetectionTests: XCTestCase {
         let model = try XCTUnwrap(r.model), timer = try XCTUnwrap(r.timer)
         XCTAssertGreaterThanOrEqual(model, r.lastSpeech, "Smart Turn ended the question in the pause")
         XCTAssertLessThan(timer, r.lastSpeech, "the 2.5 s timer cuts this question off")
+    }
+
+    /// Time keeps counting past the 16 seconds of audio the detector keeps, and the audio it keeps stays bounded.
+    func testLongQuestionsKeepTimeAndBoundedAudio() {
+        let core = TurnCore(models: nil)
+        for _ in 0..<200 { _ = core.feed([Float](repeating: 0, count: 1600)) }
+        XCTAssertEqual(core.seconds, 20, accuracy: 0.05)
+        XCTAssertLessThanOrEqual(core.audio.count, 2 * SmartTurn.window + 1600)
     }
 
     func testWithoutTheModelOnlyTheTimerDecides() {

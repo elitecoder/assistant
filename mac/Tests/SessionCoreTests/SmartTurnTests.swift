@@ -53,35 +53,56 @@ final class TurnEndTests: XCTestCase {
         for _ in 0..<Int(seconds / 0.032) { _ = t.take(speech: true, duration: 0.032) }
     }
 
-    func silence(_ t: inout TurnEnd, _ seconds: TimeInterval) -> [TurnEnd.Decision] {
-        (0..<Int((seconds / 0.032).rounded())).map { _ in t.take(speech: false, duration: 0.032) }.filter { $0 != .wait }
+    /// Silence in 32 ms windows, answering each ask with the next probability; returns the decisions that weren't `wait`.
+    func silence(_ t: inout TurnEnd, _ seconds: TimeInterval, answers: [Float] = []) -> [TurnEnd.Decision] {
+        var answers = answers
+        var out: [TurnEnd.Decision] = []
+        for _ in 0..<Int((seconds / 0.032).rounded()) {
+            let d = t.take(speech: false, duration: 0.032)
+            if d != .wait { out.append(d) }
+            if d == .ask, !answers.isEmpty {
+                let a = t.answer(answers.removeFirst())
+                if a != .wait { out.append(a) }
+            }
+        }
+        return out
     }
 
-    func testTheModelIsAskedAfterAShortPauseAndDecides() {
+    func testThreeConfidentCallsEndTheTurn() {
         var t = TurnEnd(modelAvailable: true)
         XCTAssertEqual(silence(&t, 1), [], "silence before any speech doesn't count")
         speech(&t, 1)
         XCTAssertEqual(silence(&t, 0.16), [], "a gap between words isn't a pause yet")
-        XCTAssertEqual(silence(&t, 0.07), [.ask])
-        XCTAssertEqual(t.answer(0.9), .done(byModel: true))
+        XCTAssertEqual(silence(&t, 0.07, answers: [0.95]), [.ask])
+        XCTAssertEqual(silence(&t, 0.3, answers: [0.95]), [.ask], "asked again at 0.5 s")
+        XCTAssertEqual(silence(&t, 0.42, answers: [0.97]), [.ask, .done(byModel: true)], "and at 0.9 s")
     }
 
-    func testAnUnfinishedSentenceKeepsListeningUntilTheLimit() {
+    /// A call at 0.5 that's sure but not sure enough (0.8) means mid-sentence: keep listening to the limit.
+    func testOneUnsureCallKeepsListeningUntilTheLimit() {
         var t = TurnEnd(modelAvailable: true)
         speech(&t, 1)
-        XCTAssertEqual(silence(&t, 0.25), [.ask])
-        XCTAssertEqual(t.answer(0.2), .wait)
-        XCTAssertEqual(silence(&t, 2.5), [], "still mid-sentence")
-        XCTAssertEqual(silence(&t, 0.3).first, .done(byModel: false), "the hard limit")
+        XCTAssertEqual(silence(&t, 0.25, answers: [0.99]), [.ask])
+        XCTAssertEqual(silence(&t, 0.3, answers: [0.8]), [.ask])
+        XCTAssertEqual(silence(&t, 2.3), [], "no more asks once it doubted")
+        XCTAssertEqual(silence(&t, 0.2).first, .done(byModel: false), "the hard limit")
     }
 
-    func testSpeakingAgainAsksAgainAtTheNextPauseAndDropsAStaleAnswer() {
+    func testSpeakingAgainStartsOverAndDropsAStaleAnswer() {
         var t = TurnEnd(modelAvailable: true)
         speech(&t, 1)
         XCTAssertEqual(silence(&t, 0.25), [.ask])
         speech(&t, 0.5)
         XCTAssertEqual(t.answer(0.99), .wait, "the operator spoke again before the answer came")
-        XCTAssertEqual(silence(&t, 0.25), [.ask])
+        XCTAssertEqual(silence(&t, 0.25, answers: [0.99]), [.ask])
+        XCTAssertEqual(silence(&t, 0.3, answers: [0.99]), [.ask])
+        XCTAssertEqual(silence(&t, 0.42, answers: [0.99]), [.ask, .done(byModel: true)])
+    }
+
+    func testAnAnswerWithNothingAskedIsIgnored() {
+        var t = TurnEnd(modelAvailable: true)
+        speech(&t, 1)
+        XCTAssertEqual(t.answer(0.99), .wait)
     }
 
     func testWithoutTheModelTheOldTimerDecides() {
@@ -89,5 +110,11 @@ final class TurnEndTests: XCTestCase {
         speech(&t, 1)
         XCTAssertEqual(silence(&t, 2.4), [])
         XCTAssertEqual(silence(&t, 0.2).first, .done(byModel: false))
+    }
+
+    func testTheListenersTimerIsOnlyABackstopWithSmartTurn() {
+        XCTAssertEqual(TurnEnd.backstop(timer: 2.5, smartTurn: true), 4)
+        XCTAssertEqual(TurnEnd.backstop(timer: 2.5, smartTurn: false), 2.5)
+        XCTAssertEqual(TurnEnd.backstop(timer: 30, smartTurn: true), 30)
     }
 }

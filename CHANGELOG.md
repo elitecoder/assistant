@@ -14,11 +14,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   instead of waiting a fixed 2.5 seconds. Silero VAD (MIT) notices when you
   stop talking, and Pipecat's Smart Turn v3.2 (BSD 2-Clause) judges whether
   you finished or paused mid-sentence; both run on your Mac with ONNX Runtime.
-  On 32 rendered questions, half with a pause of 0.8 to 2.6 seconds
-  mid-sentence, 31 of 32 "done" decisions were right, against 29 of 32 for
-  the timer, and a finished question ended 0.23 seconds after the voice
-  stopped (median), down from 2.5. When Smart Turn isn't sure, Assistant
-  waits up to 3 seconds of silence. The models (35 MB) download once into
+  Assistant asks Smart Turn at 0.2, 0.5, and 0.9 seconds into a pause and ends
+  the question only if it's sure (above 0.9) every time. On 32 rendered
+  questions, half with a pause of 0.8 to 2.6 seconds mid-sentence, each clean
+  and with brown and pink room noise at 25 and 15 dB, it was right on 30 to 32
+  of 32 in every condition, against 29 to 30 for the 2.5-second timer, and a
+  finished question ended 0.93 seconds after the voice stopped (median),
+  down from 2.53. A 3-second timer was right on 32 of 32 everywhere, but
+  always waits 3 seconds. When Smart Turn isn't sure, Assistant waits up to 3
+  seconds of silence. The models (35 MB) download once into
   `~/Library/Application Support/Assistant/SmartTurn` and are checked by
   SHA-256; until then, and if they can't load, the 2.5-second timer stays.
   `AssistantBar --turn-eval <file.wav>...` prints both decisions for each file.
@@ -27,8 +31,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   until you select **Stop** or press Esc. While it speaks, the microphone stays
   open with Apple's voice processing, which cancels Assistant's own voice, only
   to notice you talking over the answer: half a second of voice above the
-  room's noise stops the answer and starts your next question, while a cough
-  or an "mm-hmm" doesn't. Nothing is transcribed while Assistant speaks. A turn
+  room's noise stops the answer, drops the rest of it, and asks your next
+  question as soon as the interrupted answer is saved, while a cough or an
+  "mm-hmm" doesn't. **Stop speaking**, **Stop**, and Esc also drop the rest of
+  an answer that's still streaming. Nothing is transcribed while Assistant speaks. A turn
   with no question ends Talk Mode.
 - A spoken answer starts on its first sentence instead of waiting for the
   whole reply. Assistant runs Claude with `--include-partial-messages` and

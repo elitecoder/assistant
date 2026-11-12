@@ -106,9 +106,11 @@ public enum SmartTurn {
     }()
 }
 
-/// When a spoken question is over. With Smart Turn: once the voice detector hears `pause` of silence after speech,
-/// ask the model, and end the turn when it says the turn is complete; keep listening when it says the operator
-/// is mid-sentence, up to `limit` of silence. Without the model, the old fixed timer.
+/// When a spoken question is over. With Smart Turn: once the voice detector hears a pause after speech, ask the model
+/// at 0.2, 0.5, and 0.9 seconds of silence, and end the turn only when it says the turn is complete (above 0.9) every
+/// time. Once it says the operator is mid-sentence, keep listening, up to `limit` of silence. Without the model, the
+/// old fixed timer. On 160 rendered questions (clean, and with brown and pink room noise at 25 and 15 dB), this
+/// matched or beat the 2.5-second timer in every condition; a single call above 0.5 didn't, once there was noise.
 public struct TurnEnd: Equatable {
     public enum Decision: Equatable {
         case wait
@@ -118,15 +120,25 @@ public struct TurnEnd: Equatable {
         case done(byModel: Bool)
     }
 
-    public static let pause: TimeInterval = 0.2
+    public static let asks: [TimeInterval] = [0.2, 0.5, 0.9]
+    public static let threshold: Float = 0.9
     public static let limit: TimeInterval = 3
     public static let timer: TimeInterval = 2.5
-    public static let threshold: Float = 0.5
+
+    /// The Listener's own timer after words: with Smart Turn deciding it's only a backstop past the silence limit.
+    public static func backstop(timer: TimeInterval, smartTurn: Bool) -> TimeInterval {
+        smartTurn ? max(timer, limit + 1) : timer
+    }
 
     public let modelAvailable: Bool
     public private(set) var heardSpeech = false
     public private(set) var silence: TimeInterval = 0
-    private var asked = false
+    /// Calls in this pause that said the turn is complete.
+    private var agreed = 0
+    /// An ask is out and its answer hasn't come.
+    private var pending = false
+    /// A call in this pause said the operator is mid-sentence.
+    private var doubted = false
 
     public init(modelAvailable: Bool) { self.modelAvailable = modelAvailable }
 
@@ -135,15 +147,17 @@ public struct TurnEnd: Equatable {
         if speech {
             heardSpeech = true
             silence = 0
-            asked = false
+            agreed = 0
+            pending = false
+            doubted = false
             return .wait
         }
         guard heardSpeech else { return .wait }
         silence += duration
         if !modelAvailable { return silence >= Self.timer ? .done(byModel: false) : .wait }
         if silence >= Self.limit { return .done(byModel: false) }
-        if !asked && silence >= Self.pause {
-            asked = true
+        if !doubted && !pending && agreed < Self.asks.count && silence >= Self.asks[agreed] {
+            pending = true
             return .ask
         }
         return .wait
@@ -152,7 +166,13 @@ public struct TurnEnd: Equatable {
     /// Smart Turn's probability that the turn is complete, for the audio up to the last `.ask`. An answer that arrives
     /// after the operator spoke again is stale and ignored.
     public mutating func answer(_ probability: Float) -> Decision {
-        guard asked, silence > 0 else { return .wait }
-        return probability > Self.threshold ? .done(byModel: true) : .wait
+        guard pending else { return .wait }
+        pending = false
+        guard probability > Self.threshold else {
+            doubted = true
+            return .wait
+        }
+        agreed += 1
+        return agreed == Self.asks.count ? .done(byModel: true) : .wait
     }
 }
