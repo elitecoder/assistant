@@ -5,11 +5,13 @@ import Foundation
 public struct SpokenStream: Equatable {
     private var buffer = ""
     private var sawText = false
-    private var inCode = false
+    /// The fence (```` ``` ```` or `~~~`) of the code block being written, which isn't read.
+    private var fence: String?
     public private(set) var sentences = 0
 
     /// A sentence shorter than this waits to be joined to the next one, so "Yes." isn't read on its own.
     static let shortest = 12
+    static let fences = ["```", "~~~"]
     static let abbreviations: Set<String> = ["e.g", "i.e", "etc", "vs", "mr", "mrs", "ms", "dr", "st", "no", "approx"]
 
     public init() {}
@@ -50,11 +52,17 @@ public struct SpokenStream: Equatable {
         var searchFrom = from
         while let end = Self.sentenceEnd(in: buffer, from: searchFrom) {
             let piece = buffer[searchFrom..<end].trimmingCharacters(in: .whitespacesAndNewlines)
-            // A fenced code block is never read: a fence line opens or closes it, and its lines are dropped.
-            if inCode || piece.hasPrefix("```") {
+            // A fenced code block is never read: a fence line opens it, the same fence closes it, and its lines are
+            // dropped.
+            let opens = Self.fences.first { piece.hasPrefix($0) }
+            if fence != nil || opens != nil {
                 let pending = buffer[from..<searchFrom].trimmingCharacters(in: .whitespacesAndNewlines)
                 if !pending.isEmpty { out.append(pending) }
-                if piece.hasPrefix("```") { inCode.toggle() }
+                if let open = fence {
+                    if piece.hasPrefix(open) { fence = nil }
+                } else {
+                    fence = opens
+                }
                 searchFrom = end
                 from = end
                 continue
@@ -68,8 +76,10 @@ public struct SpokenStream: Equatable {
         buffer = String(buffer[from...])
         if all {
             let rest = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !rest.isEmpty && !inCode && !rest.hasPrefix("```") { out.append(rest) }
+            if !rest.isEmpty && fence == nil && !Self.fences.contains(where: { rest.hasPrefix($0) }) { out.append(rest) }
             buffer = ""
+            // A block left open ends with the text it's in, so it can't silence what Claude writes after it.
+            fence = nil
         }
         sentences += out.count
         return out

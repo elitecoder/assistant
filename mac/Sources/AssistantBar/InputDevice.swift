@@ -136,5 +136,36 @@ final class DeviceList {
                 self?.changed()
             }
         }
+        listenForLid()
+    }
+
+    /// IOKit's `kIOPMMessageClamshellStateChange`: `iokit_family_msg(sub_iokit_powermanagement, 0x100)`.
+    static let clamshellMessage: UInt32 = 0xE003_4100
+    private var lidPort: IONotificationPortRef?
+    private var lidNotifier: io_object_t = 0
+    /// Power management tells this list when the lid opens or closes.
+    var listeningForLid: Bool { lidPort != nil }
+
+    /// Closing the lid makes the built-in microphone unusable without any Core Audio device change, so the lid gets
+    /// its own listener: power management's interest notifications on the root domain.
+    private func listenForLid() {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard root != 0, let port = IONotificationPortCreate(kIOMainPortDefault) else { return }
+        defer { IOObjectRelease(root) }
+        IONotificationPortSetDispatchQueue(port, DispatchQueue.main)
+        let result = IOServiceAddInterestNotification(port, root, kIOGeneralInterest, { context, _, message, _ in
+            guard let context else { return }
+            Unmanaged<DeviceList>.fromOpaque(context).takeUnretainedValue().powerMessage(message)
+        }, Unmanaged.passUnretained(self).toOpaque(), &lidNotifier)
+        if result == KERN_SUCCESS {
+            lidPort = port
+        } else {
+            IONotificationPortDestroy(port)
+        }
+    }
+
+    /// A power management message: the lid opening or closing means the devices to choose from changed.
+    func powerMessage(_ message: UInt32) {
+        if message == Self.clamshellMessage { changed() }
     }
 }

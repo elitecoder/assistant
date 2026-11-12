@@ -246,7 +246,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   picked (voice processing uses the Mac's default input), or when that
   microphone sends no sound. Only a microphone sending nothing at all counts;
   a quiet room doesn't.
-- Code blocks in a spoken answer aren't read aloud.
+- Code blocks in a spoken answer aren't read aloud, whether fenced with
+  backticks or tildes. A block left open ends with its part of the answer, so
+  what Claude writes after a command is still read.
+- Control-Option-R while an answer streams replays the previous answer, and
+  the streaming one isn't read after it.
+- The microphone menu notices the lid opening or closing, so it stops picking
+  the built-in microphone while the lid is closed.
 - Smart Turn and Kokoro downloads are refused unless their SHA-256 matches, a
   damaged Smart Turn file is downloaded again before it's loaded, and Kokoro
   now downloads from a pinned commit. Loading Smart Turn no longer holds a

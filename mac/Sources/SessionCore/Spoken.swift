@@ -8,10 +8,11 @@ public enum Spoken {
     Say a workspace by its name and number, for example "Version Bump Conflicts, workspace 25".
     """
 
-    /// Text a speech synthesizer can read: markdown marks, links, and code fences removed.
+    /// Text a speech synthesizer can read: markdown marks, links, and code blocks (fenced with ```` ``` ```` or
+    /// `~~~`, closed or not) removed.
     public static func plain(_ markdown: String) -> String {
         var s = markdown
-        s = s.replacingOccurrences(of: #"```[\s\S]*?```"#, with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"(```|~~~)[\s\S]*?(\1|\z)"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(?m)^\s*(#+|[-*]|\d+\.)\s+"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"[*_`]"#, with: "", options: .regularExpression)

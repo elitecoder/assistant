@@ -193,6 +193,27 @@ final class DeviceListTests: XCTestCase {
         _ = list.snapshot
         XCTAssertEqual(queries, 2)
     }
+
+    /// Opening or closing the lid reads the devices again; other power messages (sleep, wake) don't.
+    func testTheLidOpeningOrClosingReadsTheDevicesAgain() {
+        var queries = 0
+        let list = DeviceList {
+            queries += 1
+            return DeviceList.Snapshot(mics: [], defaultID: nil, lidClosed: false)
+        }
+        _ = list.snapshot
+        list.powerMessage(0xE003_0280)
+        _ = list.snapshot
+        XCTAssertEqual(queries, 1)
+        list.powerMessage(DeviceList.clamshellMessage)
+        _ = list.snapshot
+        XCTAssertEqual(queries, 2)
+    }
+
+    /// The app's device list registers for the lid's power messages.
+    func testTheSharedListListensForTheLid() {
+        XCTAssertTrue(DeviceList.shared.listeningForLid)
+    }
 }
 
 final class TurnModelsLoadingTests: XCTestCase {

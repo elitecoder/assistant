@@ -601,6 +601,20 @@ final class StoppingStreamedAnswersTests: XCTestCase {
         m.answerCompleted(outcome(spoken: 2), spoken: true)
         XCTAssertEqual(events, ["say The version bump session needs your token.", "stop speaking", "toggle listening"])
     }
+
+    /// Control-Option-R while an answer streams replays the previous complete answer, and the streaming one isn't
+    /// read after it.
+    func testReplayDuringAStreamedAnswerPlaysOnlyThePreviousAnswer() {
+        let m = model()
+        m.chat.append(ChatTurn(role: .assistant, text: "The playhead fix is in review."))
+        m.asking = true
+        m.answeringSpoken = true
+        m.spokenPart("The version bump session needs your token.")
+        m.replay()
+        m.spokenPart("The trim fix merged this morning, and the probe is green.")
+        m.answerCompleted(outcome(spoken: 2), spoken: true)
+        XCTAssertEqual(events, ["say The version bump session needs your token.", "say The playhead fix is in review."])
+    }
 }
 
 /// Talking over an answer ends the chat's `claude` run, so the next question doesn't wait for it, and Talk Mode keeps

@@ -444,9 +444,12 @@ final class Model: NSObject, ObservableObject {
         talk(reply)
     }
 
-    /// Plays the last answer again.
+    /// Plays the last complete answer again. During a streamed answer that's the previous one, and the rest of the
+    /// streaming answer isn't read after it.
     func replay() {
-        if let text = Replay.target(chat) { play(text) }
+        guard let text = Replay.target(chat) else { return }
+        if answeringSpoken { turns.mute() }
+        play(text)
     }
 
     func ask(_ question: String, spoken: Bool = false, shown: Bool = false) {

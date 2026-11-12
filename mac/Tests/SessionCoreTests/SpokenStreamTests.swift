@@ -167,3 +167,30 @@ final class SpokenStreamCodeTests: XCTestCase {
         XCTAssertEqual(s.finish(reply: ""), [])
     }
 }
+
+final class SpokenStreamFenceTests: XCTestCase {
+    /// A block left open ends with its text block: what Claude writes after a tool call is still read.
+    func testAnUnclosedBlockDoesNotSilenceTheNextTextBlock() {
+        var s = SpokenStream()
+        var out = s.take(line: PartialStream.delta("Here's the command to run first.\n```\ngit push origin main\n"))
+        out += s.take(line: PartialStream.blockStop)
+        out += s.take(line: PartialStream.delta("The push went through, and the probe is green.\n"))
+        out += s.finish(reply: "")
+        XCTAssertEqual(out, ["Here's the command to run first.", "The push went through, and the probe is green."])
+    }
+
+    /// Tildes fence a block too, and only the fence that opened it closes it.
+    func testATildeFenceIsNeverRead() {
+        var s = SpokenStream()
+        var out = s.take(line: PartialStream.delta("Run this in the trim session:\n~~~markdown\n```bash\n"))
+        out += s.take(line: PartialStream.delta("echo still code here.\n~~~\nThen tell me when it pushed.\n"))
+        out += s.finish(reply: "")
+        XCTAssertEqual(out, ["Run this in the trim session:", "Then tell me when it pushed."])
+    }
+
+    /// A whole reply read at once drops tilde blocks and a block left open at the end.
+    func testPlainTextDropsTildeAndUnclosedBlocks() {
+        XCTAssertEqual(Spoken.plain("Run this:\n~~~\ngit push\n~~~\nThen check."), "Run this: Then check.")
+        XCTAssertEqual(Spoken.plain("Run this:\n```\ngit push"), "Run this:")
+    }
+}
