@@ -147,6 +147,7 @@ CAUGHT = {
         'agent = "copilot"\nrun(shlex.split(f"{agent} --resume {sid}"))',
         'run([BINS["claude"], "-p", p])',
         'cmd = "%s --print" % "claude"',
+        'cmd = "{exe} --resume {sid}".format(exe="droid", sid=s)',
         't = d.get("type")\nif t == "assistant":\n    pass',
         'if m.get("role") == "assistant":\n    pass',
         'n = usage.get("cache_read_input_tokens")',
@@ -183,6 +184,7 @@ CAUGHT = {
         'if claude -p x; then :; fi',
         'while droid exec --model m; do :; done',
         'until claude --print x; do sleep 1; done',
+        'exec "${AGENT:-claude}" -p "$x"',
     ],
     "js": [
         "spawn('claude', ['-p', prompt])",
@@ -192,7 +194,8 @@ CAUGHT = {
         'const bin = "claude";\nspawn(bin, ["-p", p]);',
     ],
     "md": ['text\n```bash\nclaude --resume "$S"\n```\n',
-           'Run this:\n```\ndroid exec --model x\n```\n'],
+           'Run this:\n```\ndroid exec --model x\n```\n',
+           '```python\nsubprocess.run(["claude", "-p", "x"])\n```\n'],
     "plist": ['<array><string>/Users/x/.local/bin/claude</string><string>-p</string></array>'],
 }
 PASSED = {
@@ -1629,15 +1632,23 @@ def test_copilot_bar_counts_when_it_isnt_the_last_line():
     assert ag.shows_copilot(" ← open sidebar · Interactive · Allow All\n  GPT-6.1 Sol")
 
 
-def test_resume_hook_stays_quiet_when_the_seam_wont_load(monkeypatch, capsys):
-    hook = _load(REPO / "hooks" / "cmux-auto-resume.py", "seam_hook_broken")
-    monkeypatch.setattr(hook, "agent_session", None)
-    monkeypatch.setenv("CMUX_SURFACE_ID", "S1")
-    monkeypatch.setattr(hook.sys, "stdin", io.StringIO('{"session_id": "s"}'))
-    spawned = []
-    monkeypatch.setattr(hook.subprocess, "Popen", lambda *a, **k: spawned.append(a))
-    assert hook.main([]) is None
-    assert spawned == []
+def test_resume_hook_logs_and_exits_cleanly_when_the_seam_wont_load(tmp_path):
+    tree = tmp_path / "repo"
+    (tree / "hooks").mkdir(parents=True)
+    (tree / "bin").mkdir()
+    (tree / "hooks" / "cmux-auto-resume.py").write_text(
+        (REPO / "hooks" / "cmux-auto-resume.py").read_text())
+    (tree / "bin" / "agent_session.py").write_text("def (\n")
+    home = tmp_path / "home"
+    home.mkdir()
+    done = subprocess.run(
+        ["/usr/bin/python3", str(tree / "hooks" / "cmux-auto-resume.py")],
+        input=json.dumps({"session_id": "s-1", "cwd": "/w"}), capture_output=True, text=True,
+        env={"HOME": str(home), "PATH": "/usr/bin:/bin", "CMUX_SURFACE_ID": "S1"}, timeout=30)
+    assert (done.returncode, done.stdout) == (0, "")
+    [entry] = [json.loads(l) for l in (home / ".assistant/actions-ledger.jsonl").read_text().splitlines()]
+    assert entry["kind"] == "cmux-session-forward-fail"
+    assert "agent_session.py failed to load" in entry["evidence"] and "SyntaxError" in entry["evidence"]
 
 
 @pytest.mark.parametrize("runner", ["evals/fleet/run.py", "evals/observer/run.py"])
@@ -1713,3 +1724,9 @@ def test_copilot_block_style_names_read_as_text(tmp_path):
 def test_watcher_snippets_drop_copilots_typing_bar():
     watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_typing")
     assert watcher._is_tui_noise(" Interactive · Allow All · @ files/sessions · # issues")
+
+
+def test_status_names_the_agent_the_slack_session_really_runs(home, monkeypatch):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_status_comms")
+    _pick(home, "local")
+    assert cli.status(llm_runner.config_path(home=home))["features"]["comms"]["provider"] == "claude"

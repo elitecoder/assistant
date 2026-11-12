@@ -27,8 +27,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
 try:
     import agent_session  # noqa: E402
-except Exception:  # noqa: BLE001 — a broken checkout must not break SessionStart
+    SEAM_ERROR = None
+except Exception as exc:  # noqa: BLE001 — a broken checkout must not break SessionStart
     agent_session = None
+    SEAM_ERROR = f"{type(exc).__name__}: {exc}"
 
 # Seconds to wait before each forward attempt; about a minute in total.
 RETRY_DELAYS_SEC = (0, 2, 5, 15, 30)
@@ -125,7 +127,7 @@ def forward(cmux, provider, payload, run=subprocess.run, sleep=time.sleep):
     return reason
 
 
-def record_failure(provider, payload, reason, now=None):
+def record_failure(provider, payload, reason, now=None, evidence=None):
     now = time.time() if now is None else now
     sid = payload["session_id"]
     entry = {
@@ -135,12 +137,12 @@ def record_failure(provider, payload, reason, now=None):
         "kind": "cmux-session-forward-fail",
         "ws_ref": "(hook)",
         "outcome": "failed",
-        "evidence": (
+        "evidence": (evidence or (
             f"cmux never recorded {provider} session {sid} "
             f"(workspace {os.environ.get('CMUX_WORKSPACE_ID', '?')}, "
             f"surface {os.environ.get('CMUX_SURFACE_ID', '?')}) after "
             f"{len(RETRY_DELAYS_SEC)} tries: {reason}"
-        )[:300],
+        ))[:300],
     }
     ledger = Path.home() / ".assistant" / "actions-ledger.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -189,8 +191,8 @@ def main(argv=None):
     if argv[:1] == ["--worker"]:
         worker(json.loads(argv[1]))
         return
-    if not os.environ.get("CMUX_SURFACE_ID", "") or agent_session is None:
-        return  # Not inside cmux, or the checkout's agent seam won't load
+    if not os.environ.get("CMUX_SURFACE_ID", ""):
+        return  # Not inside cmux
 
     try:
         payload = json.load(sys.stdin)
@@ -198,6 +200,15 @@ def main(argv=None):
         payload = {}
 
     sid = payload.get("session_id") or payload.get("sessionId", "")
+    if agent_session is None:
+        if sid:
+            try:
+                record_failure("agent", {**payload, "session_id": sid}, SEAM_ERROR, evidence=(
+                    f"session {sid} not forwarded to cmux: bin/agent_session.py "
+                    f"failed to load ({SEAM_ERROR})"))
+            except OSError:
+                pass
+        return
     cwd = payload.get("cwd", os.getcwd())
     transcript = payload.get("transcript_path") or payload.get("transcriptPath", "")
     if not sid:

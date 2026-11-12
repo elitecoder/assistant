@@ -60,6 +60,9 @@ _EXEC_FUNCS = {"run", "Popen", "call", "check_call", "check_output", "spawn",
 
 def _agent_word(word: str) -> str | None:
     """The agent a shell word or path names (`$CLAUDE_BIN`, `~/x/copilot`)."""
+    default = re.fullmatch(r"\$\{\w+:?-(claude|copilot|droid)\}", word.strip("'\""))
+    if default:
+        return default.group(1)
     if re.search(r"@anthropic-ai/claude-code\b", word):
         return "claude"
     if re.search(r"@github/copilot\b", word):
@@ -359,6 +362,10 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                     filled = base
                     for arg in node.args:
                         filled = filled.replace("{}", _const_str(arg) or "<>", 1)
+                    for kw in node.keywords:
+                        if kw.arg:
+                            filled = filled.replace("{" + kw.arg + "}", _const_str(kw.value)
+                                                    or aliases.get(getattr(kw.value, "id", ""), "<>"))
                     found += [(line, f"formatted {why}") for why in _string_problems(filled)]
                 if attr in ("glob", "rglob") and node.args \
                         and _TRANSCRIPT_GLOB_RE.match(_const_str(node.args[0]) or ""):
@@ -536,14 +543,22 @@ def markdown_problems(text: str) -> list[tuple[int, str]]:
     lines = text.splitlines()
     i = 0
     while i < len(lines):
-        m = re.match(r"^\s*```\s*(bash|sh|zsh|shell|console|text)?\s*$", lines[i])
+        m = re.match(r"^\s*```\s*(bash|sh|zsh|shell|console|text|python|py)?\s*$", lines[i])
         if m:
             start = i + 1
             j = start
             while j < len(lines) and not lines[j].strip().startswith("```"):
                 j += 1
             block = "\n".join(lines[start:j])
-            found += [(start + n, why) for n, why in shell_problems(block)]
+            if m.group(1) in ("python", "py"):
+                try:
+                    found += [(start + n - 1, why) for n, why in python_problems(block)]
+                except SyntaxError:
+                    found += [(start + n - 1, f"python block: {why}")
+                              for n, line in enumerate(block.splitlines(), 1)
+                              for why in _string_problems(line)]
+            else:
+                found += [(start + n, why) for n, why in shell_problems(block)]
             i = j + 1
             continue
         i += 1
