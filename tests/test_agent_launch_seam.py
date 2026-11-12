@@ -10,6 +10,7 @@ Two kinds of test:
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import re
@@ -145,6 +146,7 @@ CAUGHT = {
         'base = ["claude"]\nrun([*base, "--resume", sid])',
         'agent = "copilot"\nrun(shlex.split(f"{agent} --resume {sid}"))',
         'run([BINS["claude"], "-p", p])',
+        'cmd = "%s --print" % "claude"',
         't = d.get("type")\nif t == "assistant":\n    pass',
         'if m.get("role") == "assistant":\n    pass',
         'n = usage.get("cache_read_input_tokens")',
@@ -178,6 +180,9 @@ CAUGHT = {
         'printf "claude -p hi" | sh',
         'BIN=$(command -v claude); "$BIN" -p hi',
         'zsh -l <<EOF\nclaude -p hi\nEOF',
+        'if claude -p x; then :; fi',
+        'while droid exec --model m; do :; done',
+        'until claude --print x; do sleep 1; done',
     ],
     "js": [
         "spawn('claude', ['-p', prompt])",
@@ -186,7 +191,8 @@ CAUGHT = {
         'const argv = ["claude", "--print"];',
         'const bin = "claude";\nspawn(bin, ["-p", p]);',
     ],
-    "md": ['text\n```bash\nclaude --resume "$S"\n```\n'],
+    "md": ['text\n```bash\nclaude --resume "$S"\n```\n',
+           'Run this:\n```\ndroid exec --model x\n```\n'],
     "plist": ['<array><string>/Users/x/.local/bin/claude</string><string>-p</string></array>'],
 }
 PASSED = {
@@ -217,6 +223,7 @@ PASSED = {
         'if rec.get("type") == "result":\n    pass',
         'raise RuntimeError("run claude --resume to recover")',
         'raise RuntimeError("claude --resume failed")',
+        'fmt = "the %s field"\nlabel = fmt % "role"',
         'def h():\n    return "Use claude --model opus"',
         'if recent[-1]["role"] == "user":\n    pass',
         'role = agent_session.record_role(d)\nif role == "user":\n    pass',
@@ -235,7 +242,8 @@ PASSED = {
         'HELP="run claude -p to test"',
     ],
     "js": ["// spawn('claude', ['-p'])", "const name = 'claude';"],
-    "md": ['Run `claude --resume` by hand if you like.\n'],
+    "md": ['Run `claude --resume` by hand if you like.\n',
+           '```python\nx = 1\n```\n', '```\n{"a": 1}\n```\n'],
     "plist": ['<string>/usr/bin/python3</string><!-- <string>claude</string> -->'],
 }
 SCANNERS = {"py": gate.python_problems, "sh": gate.shell_problems, "js": gate.js_problems,
@@ -1618,3 +1626,20 @@ def test_copilot_hook_timeouts_carry_over_in_seconds(home, monkeypatch):
 
 def test_copilot_bar_counts_when_it_isnt_the_last_line():
     assert ag.shows_copilot(" ← open sidebar · Interactive · Allow All\n  GPT-6.1 Sol")
+
+
+def test_resume_hook_stays_quiet_when_the_seam_wont_load(monkeypatch, capsys):
+    hook = _load(REPO / "hooks" / "cmux-auto-resume.py", "seam_hook_broken")
+    monkeypatch.setattr(hook, "agent_session", None)
+    monkeypatch.setenv("CMUX_SURFACE_ID", "S1")
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO('{"session_id": "s"}'))
+    spawned = []
+    monkeypatch.setattr(hook.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    assert hook.main([]) is None
+    assert spawned == []
+
+
+@pytest.mark.parametrize("runner", ["evals/fleet/run.py", "evals/observer/run.py"])
+def test_eval_fingerprints_cover_the_agent_seam(runner):
+    mod = _load(REPO / runner, "seam_eval_" + runner.split("/")[1])
+    assert any(str(p).endswith("agent_session.py") for p in mod.qualification_input_hashes())

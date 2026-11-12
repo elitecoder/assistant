@@ -80,6 +80,7 @@ def qualification_input_hashes() -> dict[str, str]:
         OBSERVER_PROMPT,
         Path(__file__),
         BIN / "llm_runner.py",
+        BIN / "agent_session.py",
         BIN / "pulse.py",
         SRC / "assistant/model_tiers.py",
         *sorted(path for path in FIXTURES_DIR.rglob("*") if path.is_file()),

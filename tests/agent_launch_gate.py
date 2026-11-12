@@ -303,6 +303,13 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                 found += [(line, why) for why in _string_problems(s)]
             if s in _SEAM_STRINGS:
                 found.append((line, f"{s} belongs to agent_session"))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) \
+                and _const_str(node.left) and id(node) not in prose:
+            args = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
+            filled = _const_str(node.left)
+            for arg in args:
+                filled = re.sub(r"%[sdr]", (_const_str(arg) or aliases.get(getattr(arg, "id", ""), "<>")).replace("\\", ""), filled, count=1)
+            found += [(line, f"formatted {why}") for why in _string_problems(filled)]
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             parts = []
             cur = node
@@ -381,7 +388,7 @@ def python_problems(text: str) -> list[tuple[int, str]]:
 # ── shell ─────────────────────────────────────────────────────────────────────
 
 _SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", "$(", "`", "{", "}", "\n",
-               "then", "do", "else", "elif", "!", "|&", ";;"}
+               "then", "do", "else", "elif", "!", "|&", ";;", "if", "while", "until"}
 _PREFIX_WORDS = {"command", "exec", "nohup", "time", "env", "sudo", "builtin", "xargs"}
 _PROSE_COMMANDS = {"echo", "printf", "grep", "rg", "egrep", "fgrep", "sed", "awk",
                    "test", "[", "[[", "note", "warn", "log", "die", "say", "info"}
@@ -529,8 +536,8 @@ def markdown_problems(text: str) -> list[tuple[int, str]]:
     lines = text.splitlines()
     i = 0
     while i < len(lines):
-        m = re.match(r"^\s*```\s*(bash|sh|zsh|shell|console)?\s*$", lines[i])
-        if m and m.group(1):
+        m = re.match(r"^\s*```\s*(bash|sh|zsh|shell|console|text)?\s*$", lines[i])
+        if m:
             start = i + 1
             j = start
             while j < len(lines) and not lines[j].strip().startswith("```"):

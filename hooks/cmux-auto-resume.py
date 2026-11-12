@@ -25,7 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
-import agent_session  # noqa: E402
+try:
+    import agent_session  # noqa: E402
+except Exception:  # noqa: BLE001 — a broken checkout must not break SessionStart
+    agent_session = None
 
 # Seconds to wait before each forward attempt; about a minute in total.
 RETRY_DELAYS_SEC = (0, 2, 5, 15, 30)
@@ -186,8 +189,8 @@ def main(argv=None):
     if argv[:1] == ["--worker"]:
         worker(json.loads(argv[1]))
         return
-    if not os.environ.get("CMUX_SURFACE_ID", ""):
-        return  # Not inside cmux
+    if not os.environ.get("CMUX_SURFACE_ID", "") or agent_session is None:
+        return  # Not inside cmux, or the checkout's agent seam won't load
 
     try:
         payload = json.load(sys.stdin)

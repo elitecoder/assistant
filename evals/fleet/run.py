@@ -35,6 +35,7 @@ def qualification_input_hashes() -> dict[str, str]:
     paths = [
         Path(__file__),
         BIN / "llm_runner.py",
+        BIN / "agent_session.py",
         SRC / "assistant/model_tiers.py",
         REPO / "prompts/triage-batch-prompt.md",
         REPO / "prompts/strategist-draft-prompt.md",
