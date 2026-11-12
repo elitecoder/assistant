@@ -690,17 +690,66 @@ final class Listener: ObservableObject {
     }
 }
 
+/// Where the Speaker's sound comes from and goes, so tests can stand in for audio. Callbacks may come on any thread.
+protocol SpeechOutput: AnyObject {
+    /// Kokoro is downloaded and can synthesize.
+    var naturalVoiceReady: Bool { get }
+    func synthesize(_ text: String, voiceID: String, speed: Float, isCurrent: @escaping () -> Bool,
+                    chunk: @escaping ([Float]) -> Void, done: @escaping (Bool) -> Void)
+    /// Plays `buffer` after anything already scheduled; `played` runs when it has finished.
+    func schedule(_ buffer: AVAudioPCMBuffer, played: @escaping () -> Void)
+    func stopPlayback()
+    /// Speaks through the system synthesizer, outside the engine (so echo cancellation can't remove it).
+    func speakApple(_ utterance: AVSpeechUtterance)
+    /// Renders an utterance into buffers instead of playing it; an empty buffer ends it.
+    func writeApple(_ utterance: AVSpeechUtterance, _ buffer: @escaping (AVAudioBuffer) -> Void)
+    func stopApple()
+    /// The engine the audio plays through, which voice processing also listens on; nil for a stand-in.
+    var engine: AVAudioEngine? { get }
+}
+
+/// The real output: Kokoro and the system synthesizer, playing through one AVAudioEngine.
+final class LiveSpeechOutput: SpeechOutput {
+    private let kokoro: KokoroEngine
+    private let synth = AVSpeechSynthesizer()
+    private let player = AVAudioPlayerNode()
+    let engine: AVAudioEngine? = AVAudioEngine()
+
+    init(kokoro: KokoroEngine, delegate: AVSpeechSynthesizerDelegate) {
+        self.kokoro = kokoro
+        synth.delegate = delegate
+        engine!.attach(player)
+        engine!.connect(player, to: engine!.mainMixerNode, format: Speaker.format)
+    }
+
+    var naturalVoiceReady: Bool { KokoroEngine.installed }
+
+    func synthesize(_ text: String, voiceID: String, speed: Float, isCurrent: @escaping () -> Bool,
+                    chunk: @escaping ([Float]) -> Void, done: @escaping (Bool) -> Void) {
+        kokoro.speak(text, voiceID: voiceID, speed: speed, isCurrent: isCurrent, chunk: chunk, done: done)
+    }
+
+    func schedule(_ buffer: AVAudioPCMBuffer, played: @escaping () -> Void) {
+        if engine?.isRunning == false { try? engine?.start() }
+        player.scheduleBuffer(buffer, completionHandler: played)
+        if !player.isPlaying { player.play() }
+    }
+
+    func stopPlayback() { player.stop() }
+    func speakApple(_ utterance: AVSpeechUtterance) { synth.speak(utterance) }
+    func writeApple(_ utterance: AVSpeechUtterance, _ buffer: @escaping (AVAudioBuffer) -> Void) { synth.write(utterance, toBufferCallback: buffer) }
+    func stopApple() { synth.stopSpeaking(at: .immediate) }
+}
+
 final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var speaking = false
     @Published var kokoroStatus: KokoroEngine.Status
     static let preferenceKey = "voice"
+    static let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate), channels: 1)!
 
-    private let synth = AVSpeechSynthesizer()
     private let kokoro = KokoroEngine()
-    private let audio = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
-    private let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate),
-                                       channels: 1)!
+    private(set) var output: SpeechOutput!
+    private var format: AVAudioFormat { Self.format }
     private var generation = 0
     /// Buffers scheduled on the player and not finished: Assistant's audio is playing while this is above zero.
     private var queued = 0 {
@@ -715,15 +764,15 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     /// False while the microphone is open: a voice or speed sample would play into it.
     var mayTalk: () -> Bool = { true }
     /// True while this engine's echo-cancelled microphone watches for the operator talking over the answer.
-    private(set) var watching = false
+    var watching = false
+    /// Whether Assistant's audio is playing right now, as the barge-in watch sees it.
+    var playingAudio: Bool { playingNow.value }
     private var appleConverter: AVAudioConverter?
 
-    override init() {
+    init(output: SpeechOutput? = nil) {
         kokoroStatus = kokoro.status
         super.init()
-        synth.delegate = self
-        audio.attach(player)
-        audio.connect(player, to: audio.mainMixerNode, format: format)
+        self.output = output ?? LiveSpeechOutput(kokoro: kokoro, delegate: self)
         kokoro.onStatus = { [weak self] in self?.kokoroStatus = $0 }
     }
 
@@ -794,7 +843,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
 
     private func speak(_ text: String) {
-        guard let voice = current, Kokoro.npzKey(voice.id) != nil, KokoroEngine.installed else {
+        guard let voice = current, Kokoro.npzKey(voice.id) != nil, output.naturalVoiceReady else {
             prepare()
             sayWithApple(text)
             return
@@ -802,7 +851,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let mine = generation
         pending += 1
         speaking = true
-        kokoro.speak(text, voiceID: voice.id, speed: kokoroSpeed, isCurrent: { [weak self] in self?.generation == mine },
+        output.synthesize(text, voiceID: voice.id, speed: kokoroSpeed, isCurrent: { [weak self] in self?.generation == mine },
                      chunk: { [weak self] samples in DispatchQueue.main.async { self?.play(samples, mine) } },
                      done: { [weak self] ok in
                          DispatchQueue.main.async {
@@ -823,16 +872,14 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     }
 
     private func play(_ buffer: AVAudioPCMBuffer, _ mine: Int) {
-        if !audio.isRunning { try? audio.start() }
         queued += 1
-        player.scheduleBuffer(buffer) { [weak self] in
+        output.schedule(buffer) { [weak self] in
             DispatchQueue.main.async {
                 guard let self, self.generation == mine else { return }
                 self.queued -= 1
                 self.finishIfDrained()
             }
         }
-        if !player.isPlaying { player.play() }
     }
 
     private func finishIfDrained() {
@@ -854,13 +901,13 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         speaking = true
         guard watching else {
             appleUtterance = utterance
-            synth.speak(utterance)
+            output.speakApple(utterance)
             return
         }
         // Played through this engine, so echo cancellation knows to remove it from the microphone.
         let mine = generation
         pending += 1
-        synth.write(utterance) { [weak self] buffer in
+        output.writeApple(utterance) { [weak self] buffer in
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
             let last = pcm.frameLength == 0
             let converted = last ? nil : self?.convertApple(pcm)
@@ -899,6 +946,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     /// the Mac's default input and output devices. False when it can't start.
     func watchForBargeIn(_ onBargeIn: @escaping () -> Void) -> Bool {
         guard !watching else { return true }
+        guard let audio = output.engine else { return false }
         audio.stop()
         let input = audio.inputNode
         var started = false
@@ -921,8 +969,8 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
                         DispatchQueue.main.async(execute: onBargeIn)
                     }
                 }
-                self.audio.prepare()
-                try self.audio.start()
+                audio.prepare()
+                try audio.start()
                 started = true
             } catch {
                 voiceLog.error("barge-in: voice processing failed: \(error.localizedDescription, privacy: .public)")
@@ -938,10 +986,11 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     func stopWatching(force: Bool = false) {
         guard watching || force else { return }
         watching = false
+        guard let audio = output.engine else { return }
         _ = AssistantCatchException {
-            self.audio.inputNode.removeTap(onBus: 0)
-            self.audio.stop()
-            try? self.audio.inputNode.setVoiceProcessingEnabled(false)
+            audio.inputNode.removeTap(onBus: 0)
+            audio.stop()
+            try? audio.inputNode.setVoiceProcessingEnabled(false)
         }
     }
 
@@ -950,8 +999,8 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         queued = 0
         pending = 0
         appleUtterance = nil
-        player.stop()
-        synth.stopSpeaking(at: .immediate)
+        output.stopPlayback()
+        output.stopApple()
         speaking = false
     }
 
