@@ -349,7 +349,8 @@ def read_screen(workspace: str, lines: int = SCREEN_LINES) -> str:
 # bypass-permissions hint — carry no signal and just bloat the phone snippet.
 _CHROME_RE = re.compile(r"^[\s│─╭╮╰╯┌┐└┘├┤┬┴┼▔▕>·•⏵◀▶┃╹╻▀▄━]+$")
 _STATUS_BAR_RE = re.compile(
-    r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply")
+    r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply"
+    r"|← open sidebar · |/ commands · \? help|ctrl\+e change environment")
 # Claude Code's live spinner (`✽ Boogieing… (12m 1s · ↓ 48.9k tokens)`) and its
 # turn-done line (`✻ Baked for 2m 10s · done 10:40 PM`) only say the agent is or
 # was busy.

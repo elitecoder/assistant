@@ -316,7 +316,8 @@ def input_box_text(screen: str) -> str | None:
     aren't fenced by rules, so they never match. Wrapped lines are joined."""
     lines = screen.splitlines()
     rules = [i for i, line in enumerate(lines) if _RULE_RE.match(line)]
-    if len(rules) < 2:
+    tops = [i for i, line in enumerate(lines) if line.lstrip().startswith("╻")]
+    if len(rules) < 2 or (tops and tops[-1] > rules[-1]):
         return _copilot_box_text(lines)
     body = lines[rules[-2] + 1:rules[-1]]
     if not body or not body[0].lstrip().startswith("❯"):
@@ -852,6 +853,9 @@ def _warm_launch(agent: str, resolved: tuple[str, str, bool] | None = None) -> s
     must not widen its own rules/permissions) and NOT all of ~/dev.
     Lesson-writing still works via a subprocess (assistant-curator.py) gated
     by an explicit human `y`.
+
+    copilot: the same --add-dir roots, but --allow-all lets it reach any
+    folder, so the roots don't fence it the way they fence Claude.
 
     droid: the single-source launch_command(DROID) — settings + --auto high +
     optional --append-system-prompt-file. Droid scopes via --cwd + its settings,

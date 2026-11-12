@@ -9,15 +9,13 @@ Two kinds of test:
 """
 from __future__ import annotations
 
-import ast
 import importlib.util
-import io
 import json
 import os
 import re
 import subprocess
 import sys
-import tokenize
+import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +24,8 @@ import agent_session as ag
 import comms_lib as cl
 import comms_session as cs
 import llm_runner
+
+import agent_launch_gate as gate
 
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
@@ -94,101 +94,101 @@ def copilot_bin(home, monkeypatch):
 
 # ── the source gate ───────────────────────────────────────────────────────────
 
-# Constructs that build an agent command line or pin an agent binary. Only
-# bin/agent_session.py may contain them.
-FORBIDDEN = [
-    (re.compile(r"--dangerously-skip-permissions"), "claude permission flag"),
-    (re.compile(r"""(?<!add_argument\()["']--print["']|\bclaude\s+(-p|--print)\b"""), "claude headless flag"),
-    (re.compile(r"""["']--json-schema["']|["']--strict-mcp-config["']"""), "claude headless flag"),
-    (re.compile(r"--allow-all\b|--available-tools|--yolo\b"), "copilot permission flag"),
-    (re.compile(r"""["']exec["'],\s*["']--model["']|--list-tools"""), "droid headless argv"),
-    (re.compile(r"""--auto\s+high|["']--auto["'],\s*["']high["']"""), "droid autonomy flag"),
-    (re.compile(r"\.local/bin/(claude|droid|copilot)\b"), "hardcoded agent binary"),
-    (re.compile(r"\b(CLAUDE|DROID|COPILOT)_BIN\s*=(?!=)"), "per-file agent binary"),
-    (re.compile(r"""--command["',\s]+["']?(zsh -lic ')?(claude|droid|copilot)\b"""),
-     "hand-written cmux launch"),
-    (re.compile(r"""LAUNCH_CMD=["'](zsh -lic ')?(claude|droid|copilot)\b"""), "hand-written cmux launch"),
-    (re.compile(r"""\[\s*["'](claude|copilot)["'],\s*["']--"""), "hand-built agent argv"),
-]
-
-
-def _gated_files() -> list[Path]:
-    out = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True,
-                         text=True, check=True).stdout.split()
-    files = []
-    for rel in out:
-        if rel == "bin/agent_session.py" or rel.startswith(("tests/", "docs/")):
-            continue
-        if "/reports/" in rel or "/fixtures/" in rel:
-            continue
-        if rel.endswith((".py", ".sh", ".js", ".mjs", ".ts")) or rel.endswith("SKILL.md") \
-                or rel.startswith(("hooks/", "launchagents/")):
-            files.append(REPO / rel)
-    return files
-
-
-def _code_only(path: Path, text: str) -> str:
-    """`text` with comments and docstrings blanked, so prose that names a flag
-    doesn't count; line numbers are kept."""
-    lines = text.splitlines()
-    if path.suffix == ".py":
-        blank: set[int] = set()
-        for node in ast.walk(ast.parse(text)):
-            body = getattr(node, "body", None)
-            if isinstance(body, list) and body and isinstance(body[0], ast.Expr) \
-                    and isinstance(body[0].value, ast.Constant) \
-                    and isinstance(body[0].value.value, str):
-                blank.update(range(body[0].lineno, body[0].end_lineno + 1))
-        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
-            if tok.type == tokenize.COMMENT:
-                row, col = tok.start
-                lines[row - 1] = lines[row - 1][:col]
-        return "\n".join("" if i + 1 in blank else line for i, line in enumerate(lines))
-    if path.suffix == ".sh":
-        return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in lines)
-    return text
-
-
-def _violations(text: str) -> list[str]:
-    found = []
-    for n, line in enumerate(text.splitlines(), 1):
-        for pattern, why in FORBIDDEN:
-            if pattern.search(line):
-                found.append(f"{n}: {why}: {line.strip()[:120]}")
-    return found
-
-
 def test_no_file_outside_the_seam_builds_an_agent_command():
-    problems = []
-    for path in _gated_files():
-        try:
-            text = path.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
-        problems += [f"{path.relative_to(REPO)}:{v}"
-                     for v in _violations(_code_only(path, text))]
+    problems = gate.scan(REPO)
     assert problems == [], "route these through bin/agent_session.py:\n" + "\n".join(problems)
 
 
-@pytest.mark.parametrize("snippet", [
-    'cmd = ["claude", "--model", model, "--print"]',
-    'CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))',
-    'LAUNCH_CMD="zsh -lic \'claude --dangerously-skip-permissions\'"',
-    'run([cmux, "new-workspace", "--command", "copilot --allow-all"])',
-    'cmd = [droid, "exec", "--model", m, "--auto", "high"]',
-])
-def test_the_gate_catches_a_reintroduced_launch(snippet):
-    assert _violations(snippet), snippet
+CAUGHT = {
+    "py": [
+        'cmd = ["claude", "--model", model, "--print"]',
+        'cmd = [claude_bin, "-p", prompt]',
+        'subprocess.run(["copilot", "-p", "hi"])',
+        'subprocess.run([COPILOT, "--resume", sid])',
+        'argv = [exe, "--allow-all"]',
+        'os.execvp("claude", ["claude", "--resume", sid])',
+        'cmd = f"{bin} --dangerously-skip-permissions"',
+        'cmd = f"cd {cwd} && claude --resume {sid}"',
+        'launch = "droid exec --model glm"',
+        'CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")',
+        'path = HOME / ".local/bin/claude"',
+        'p = shutil.which("copilot")',
+        'subprocess.Popen("copilot --yolo", shell=True)',
+        'cmd = ("copilot", "--model", m)',
+        'cmd += ["--available-tools=x"]',
+        'x = {"--command": "claude --resume abc"}',
+        'os.system(f"{exe} --json-schema x")',
+    ],
+    "sh": [
+        'claude -p "hi"',
+        '"$CLAUDE_BIN" --print x',
+        'exec copilot --allow-all',
+        'X=1 droid exec --model m',
+        'cmux new-workspace --command "claude --resume $SID"',
+        'LAUNCH_CMD="zsh -lic \'claude --dangerously-skip-permissions\'"',
+        'out=$(copilot -p "$PROMPT")',
+        '${COPILOT_BIN} --resume "$id"',
+        'foo && ~/.local/bin/droid --auto high',
+        'run_it \\\n  --x 1 && claude \\\n  --print',
+    ],
+    "js": [
+        "spawn('claude', ['-p', prompt])",
+        'execFile("copilot", args)',
+        "const cmd = `${bin} --allow-all`;",
+        'const argv = ["claude", "--print"];',
+    ],
+    "md": ['text\n```bash\nclaude --resume "$S"\n```\n'],
+    "plist": ['<array><string>/Users/x/.local/bin/claude</string><string>-p</string></array>'],
+}
+PASSED = {
+    "py": [
+        'provider = "claude"',
+        'AGENTS = ("claude", "copilot", "droid")',
+        'value_flags = {"--resume", "-r"}',
+        'ap.add_argument("--print", action="store_true")',
+        'subprocess.run(["git", "log", "-p"])',
+        'print("copilot --version")',
+        'agent_session.headless_argv("claude", binary_path=b, model=m, run_dir=d)',
+        'log.info("dispatch %s using claude", tid)',
+        'def f():\n    """Runs claude --print under the hood."""\n    return 1',
+        'x = 1  # claude --dangerously-skip-permissions',
+    ],
+    "sh": [
+        'command -v copilot >/dev/null',
+        'copilot --version',
+        '"$CMUX_CLI" hooks copilot install --yes',
+        'echo "claude is the default # not a comment"',
+        'python3 "$SEAM" agent --agent "$ENGINE"',
+        '# claude --print old way',
+    ],
+    "js": ["// spawn('claude', ['-p'])", "const name = 'claude';"],
+    "md": ['Run `claude --resume` by hand if you like.\n'],
+    "plist": ['<string>/usr/bin/python3</string><!-- <string>claude</string> -->'],
+}
+SCANNERS = {"py": gate.python_problems, "sh": gate.shell_problems, "js": gate.js_problems,
+            "md": gate.markdown_problems, "plist": gate.plist_problems}
+
+
+@pytest.mark.parametrize("kind,snippet", [(k, c) for k, cs in CAUGHT.items() for c in cs])
+def test_the_gate_catches_a_reintroduced_launch(kind, snippet):
+    assert SCANNERS[kind](snippet), snippet
+
+
+@pytest.mark.parametrize("kind,snippet", [(k, c) for k, cs in PASSED.items() for c in cs])
+def test_the_gate_ignores_code_that_only_names_an_agent(kind, snippet):
+    assert SCANNERS[kind](snippet) == [], snippet
 
 
 def test_the_gate_scans_every_known_launch_site():
-    gated = {str(p.relative_to(REPO)) for p in _gated_files()}
+    gated = {str(p.relative_to(REPO)) for p in gate.gated_files(REPO)}
     for rel in ("bin/pulse.py", "bin/comms_session.py", "bin/llm_runner.py",
                 "bin/lesson-extractor.py", "bin/narrate-brief.py", "bin/strategist.py",
                 "bin/slack-focus.py", "bin/cmux-restore-sessions.py",
                 "hooks/cmux-auto-resume.py", "evals/fleet/run.py", "evals/observer/run.py",
-                "skills/spawn-claude-workspace/SKILL.md", "install-bootstrap.sh"):
-        assert rel in gated
+                "skills/spawn-claude-workspace/SKILL.md", "install-bootstrap.sh",
+                "install.sh", ".github/workflows/quality.yml"):
+        assert rel in gated, rel
+    assert any(rel.endswith(".plist") for rel in gated)
 
 
 # ── the user's pick ───────────────────────────────────────────────────────────
@@ -395,9 +395,64 @@ def test_pulse_dispatch_spawns_copilot_and_confirms_from_its_transcript(home, co
     assert ("surface.send_text", "1") in keys, "copilot trust prompt answered"
 
 
+def _dispatch(home, monkeypatch, name, screens, transcript):
+    cwd = home / "dev"
+    cwd.mkdir(exist_ok=True)
+    monkeypatch.setenv("DISPATCH_CWD", str(cwd))
+    pulse = _load(BIN / "pulse.py", name)
+    pulse.self_update_pulse = lambda pulse_idx: None
+    commands = []
+
+    def run(cmd, *a, **k):
+        commands.append(cmd)
+        if "new-workspace" in cmd:
+            return 0, "OK workspace:9\n", ""
+        if "list-pane-surfaces" in cmd:
+            return 0, "surface:9\n", ""
+        return 0, "", ""
+
+    def rpc(method, params, timeout=15):
+        if method == "surface.send_text" and params["text"].startswith("Read "):
+            transcript(cwd, params["text"])
+        return {}
+
+    monkeypatch.setattr(pulse, "run", run)
+    monkeypatch.setattr(pulse, "_cmux_rpc", rpc)
+    monkeypatch.setattr(pulse, "_surface_read_text", lambda ref, lines=200: screens)
+    monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: {"id": tid, "title": "x"})
+    monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: True)
+    monkeypatch.setattr(pulse.time, "sleep", lambda s: None)
+    ok = pulse.dispatch_todo("td-3")
+    spawn = next(c for c in commands if "new-workspace" in c)
+    return ok, spawn[spawn.index("--command") + 1]
+
+
+def _claude_transcript(home):
+    def write(cwd, text):
+        d = home / ".claude" / "projects" / ag.claude_project_slug(cwd)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "c-1.jsonl").write_text(json.dumps(
+            {"type": "user", "message": {"role": "user", "content": text}}) + "\n")
+    return write
+
+
 def test_pulse_dispatch_uses_claude_without_the_pick(home, monkeypatch):
     _pick(home, "claude")
-    assert ag.launch_command(ag.dispatch_agent()) == "claude"
+    ok, launch = _dispatch(home, monkeypatch, "seam_pulse_claude",
+                           "Claude Code v9", _claude_transcript(home))
+    assert (ok, launch) == (True, "claude")
+
+
+def test_pulse_dispatch_falls_back_to_claude_when_copilot_does_not_start(home, monkeypatch):
+    _pick(home, "copilot")
+    broken = home / "tools" / "copilot"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("#!/bin/sh\nexit 1\n")
+    broken.chmod(0o755)
+    monkeypatch.setenv("COPILOT_BIN", str(broken))
+    ok, launch = _dispatch(home, monkeypatch, "seam_pulse_broken_copilot",
+                           "Claude Code v9", _claude_transcript(home))
+    assert (ok, launch) == (True, "claude")
 
 
 def test_comms_warm_session_spawns_copilot_when_picked(home, copilot_bin, monkeypatch):
@@ -472,12 +527,19 @@ def test_comms_clears_a_full_copilot_session_by_respawning(home, monkeypatch):
 
 def test_seam_cli_prints_the_picked_launch_for_the_spawn_skill(home, copilot_bin):
     _pick(home, "copilot")
-    env = {**os.environ, "HOME": str(home)}
+    env = {**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin"}
     run = lambda *args: subprocess.run([sys.executable, str(BIN / "agent_session.py"), *args],
                                        capture_output=True, text=True, env=env)
     assert run("agent").stdout.strip() == "copilot"
+    assert run("agent", "--agent", "claude").stdout.strip() == "claude"
+    missing = run("agent", "--agent", "droid")
+    assert (missing.returncode, missing.stdout) == (1, "")
     assert run("launch-command").stdout.strip() == f"{copilot_bin} --allow-all --model gpt-test"
     assert run("launch-command", "--agent", "claude").stdout.strip() == "claude"
+    assert run("launch-command", "--agent", "claude", "--unattended").stdout.strip() == \
+        "zsh -lic 'claude --dangerously-skip-permissions'"
+    assert run("launch-command", "--agent", "copilot", "--unattended").stdout.strip() == \
+        f"{copilot_bin} --allow-all --model gpt-test"
     ready = subprocess.run([sys.executable, str(BIN / "agent_session.py"), "is-ready"],
                            input="Allow All · / commands · ? help", capture_output=True,
                            text=True, env=env)
@@ -487,6 +549,59 @@ def test_seam_cli_prints_the_picked_launch_for_the_spawn_skill(home, copilot_bin
         {"type": "user.message", "data": {"content": "Read /p/prompt-1.md in full"}}])
     assert run("submitted", "--cwd", cwd, "--needle", "/p/prompt-1.md").returncode == 0
     assert run("submitted", "--cwd", cwd, "--needle", "/p/prompt-2.md").returncode == 1
+    later = str(time.time() + 60)
+    assert run("submitted", "--cwd", cwd, "--needle", "/p/prompt-1.md",
+               "--since", later).returncode == 1
+    assert run("copilot-chosen").returncode == 0
+    _pick(home, "claude")
+    assert run("copilot-chosen").returncode == 1
+
+
+def _skill_block(n: int) -> str:
+    text = (REPO / "skills/spawn-claude-workspace/SKILL.md").read_text()
+    blocks = re.findall(r"```bash\n(.*?)```", text, re.S)
+    return blocks[n]
+
+
+@pytest.fixture
+def skill_home(home):
+    link = home / ".claude" / "skills" / "spawn-claude-workspace"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(REPO / "skills" / "spawn-claude-workspace")
+    tools = home / "tools"
+    _stub(tools / "cmux")
+    _stub(tools / "droid")
+    (home / ".assistant" / "droid-glm-settings.json").write_text("{}")
+    return home
+
+
+@pytest.mark.parametrize("shell", ["zsh", "bash"])
+@pytest.mark.parametrize("engine,expect", [("claude", "claude"), ("", "droid"),
+                                           ("copilot", None)])
+def test_spawn_skill_resolves_the_engine_in_every_shell(skill_home, shell, engine, expect):
+    env = {"HOME": str(skill_home), "PATH": f"{skill_home / 'tools'}:/usr/bin:/bin",
+           "ENGINE": engine}
+    script = _skill_block(0) + 'printf "ENGINE=%s\\n" "$ENGINE"\n'
+    done = subprocess.run([shell, "-e", "-c", script], capture_output=True, text=True, env=env)
+    if expect is None:
+        assert done.returncode != 0 and "ENGINE=" not in done.stdout, done.stdout
+    else:
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == f"ENGINE={expect}"
+
+
+@pytest.mark.parametrize("engine,launch", [
+    ("claude", "zsh -lic 'claude --dangerously-skip-permissions'"),
+    ("droid", None),
+])
+def test_spawn_skill_launches_the_engine_like_before(skill_home, engine, launch):
+    env = {"HOME": str(skill_home), "PATH": f"{skill_home / 'tools'}:/usr/bin:/bin",
+           "ENGINE": engine}
+    script = _skill_block(0) + _skill_block(1).split("OUT=")[0] + 'printf "%s" "$LAUNCH_CMD"'
+    done = subprocess.run(["zsh", "-e", "-c", script], capture_output=True, text=True, env=env)
+    assert done.returncode == 0, done.stderr
+    expected = launch or ag.launch_command(ag.DROID, home=skill_home)
+    assert done.stdout.strip().splitlines()[-1] == expected
 
 
 def test_spawn_skill_takes_every_command_from_the_seam():
@@ -506,16 +621,19 @@ def test_restore_sessions_resumes_a_copilot_panel_with_copilot(home):
                                                   "--resume", "old"]}}}}
     cwd, command = restore.build_resume_cmd(panel)
     assert cwd == "/repo"
-    assert command == "cd /repo && /bin/copilot --resume cp-9 --model gpt-x --allow-all"
+    assert command == "cd /repo && /bin/copilot --resume cp-9 --model gpt-x"
+    panel["terminal"]["agent"]["launchCommand"]["arguments"].insert(1, "--allow-all")
+    assert restore.build_resume_cmd(panel)[1] == \
+        "cd /repo && /bin/copilot --resume cp-9 --allow-all --model gpt-x"
     assert restore.infer_ledger_provider(
         {"transcript_path": f"{home}/.copilot/session-state/cp-9/events.jsonl"}) == "copilot"
 
 
-def test_resume_hook_binds_a_copilot_resume(home):
+def test_resume_hook_binds_claude_and_droid_resumes(home):
     hook = _load(REPO / "hooks" / "cmux-auto-resume.py", "seam_hook")
-    assert hook.fallback_resume("copilot", None, "cp-1", "/w") == \
-        "cd /w && command copilot --resume cp-1 --allow-all"
     assert hook.fallback_resume("claude", None, "c-1", "/w") == "cd /w && claude --resume c-1"
+    assert hook.fallback_resume("factory", None, "d-1", "/w").startswith(
+        "cd /w && droid --resume d-1 --settings ")
 
 
 # ── doctor ────────────────────────────────────────────────────────────────────
@@ -529,9 +647,44 @@ def test_doctor_checks_copilot_only_when_picked(home, monkeypatch):
     _pick(home, "copilot")
     assert doctor.check_copilot_binary().status == doctor.FAIL
     assert doctor.check_claude_bin().name == "copilot binary (warm session)"
+    broken = home / "t" / "copilot"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("#!/bin/sh\nexit 1\n")
+    broken.chmod(0o755)
+    monkeypatch.setenv("COPILOT_BIN", str(broken))
+    assert doctor.check_copilot_binary().status == doctor.FAIL
     monkeypatch.setenv("COPILOT_BIN", str(_stub(home / "t" / "copilot")))
     assert doctor.check_copilot_binary().status == doctor.PASS
-    assert "copilot binary" in {c.name for c in doctor.run_checks("all")}
+    names = {c.name for c in doctor.run_checks("all")}
+    assert {"copilot binary", "copilot cmux hooks"} <= names
+
+
+def test_doctor_checks_copilot_for_a_feature_pick(home, monkeypatch):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_feature")
+    monkeypatch.setattr(doctor, "HOME", home)
+    _pick(home, "claude")
+    config = home / ".assistant/comms/config.json"
+    doc = json.loads(config.read_text())
+    doc["llm"]["features"] = {"observer": {"provider": "copilot"}}
+    config.write_text(json.dumps(doc))
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: None)
+    assert doctor.check_copilot_binary().status == doctor.FAIL
+
+
+def test_doctor_flags_missing_copilot_cmux_hooks(home, monkeypatch):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_hooks")
+    monkeypatch.setattr(doctor, "HOME", home)
+    monkeypatch.setattr(ag, "HOME", home)
+    _pick(home, "claude")
+    assert doctor.check_copilot_hooks().status == doctor.SKIP
+    _pick(home, "copilot")
+    assert doctor.check_copilot_hooks().status == doctor.FAIL
+    (home / ".copilot").mkdir()
+    (home / ".copilot" / "config.json").write_text('{"model": "gpt-x"}')
+    assert doctor.check_copilot_hooks().status == doctor.FAIL
+    (home / ".copilot" / "config.json").write_text(
+        '{"hooks": {"Stop": [{"hooks": [{"command": "cmux hooks enqueue copilot stop"}]}]}}')
+    assert doctor.check_copilot_hooks().status == doctor.PASS
 
 
 def test_pulse_dispatch_answers_a_trust_prompt_that_renders_late(home, copilot_bin, monkeypatch):
@@ -574,3 +727,188 @@ def test_pulse_dispatch_answers_a_trust_prompt_that_renders_late(home, copilot_b
     monkeypatch.setattr(pulse.time, "sleep", lambda s: None)
     assert pulse.dispatch_todo("td-2") is True
     assert state["trusted"]
+
+
+# ── Copilot under launchd, and Copilot's output ───────────────────────────────
+
+def _npm_copilot(home: Path) -> tuple[Path, Path]:
+    """An npm-style Copilot install: a node loader script on bin/, and the
+    standalone build inside its package."""
+    pkg = home / ".nvm/versions/node/v24.0.0/lib/node_modules/@github/copilot"
+    loader = pkg / "npm-loader.js"
+    loader.parent.mkdir(parents=True)
+    loader.write_text("#!/usr/bin/env node\nimport x from 'y';\n")
+    loader.chmod(0o755)
+    native = _stub(pkg / "node_modules/@github/copilot-darwin-arm64/copilot")
+    link = home / ".nvm/versions/node/v24.0.0/bin/copilot"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(loader)
+    return link, native
+
+
+def test_copilot_resolves_to_its_standalone_build_without_node(home, monkeypatch):
+    link, native = _npm_copilot(home)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert ag.binary(ag.COPILOT) == str(native)
+    monkeypatch.setenv("PATH", f"{link.parent}:/usr/bin:/bin")
+    assert ag.binary(ag.COPILOT) == str(native)
+    assert ag.agent_available(ag.COPILOT)
+
+
+def test_headless_copilot_runs_the_standalone_build_in_its_run_dir(home, monkeypatch, tmp_path):
+    _, native = _npm_copilot(home)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    seen = {}
+
+    def run(cmd, **kw):
+        seen["cmd"] = cmd
+        out = copilot_stdout("", exit_code=1) + json.dumps(
+            {"type": "session.error", "data": {"message": "quota exceeded"}}) + "\n"
+        return 1, out, "boom"
+
+    result = llm_runner.invoke(provider="copilot", prompt="p", model="m", run_dir=tmp_path,
+                               timeout=30, run=run, disable_tools=True)
+    cmd = seen["cmd"]
+    assert cmd[0] == str(native)
+    assert cmd[cmd.index("-C") + 1] == str(tmp_path)
+    assert "boom" in result.stderr and "quota exceeded" in result.stderr
+
+
+def test_copilot_tools_off_turns_off_every_tool_source(tmp_path):
+    cmd = ag.headless_argv(ag.COPILOT, binary_path="/c", model="", run_dir=tmp_path,
+                           disable_tools=True)
+    for flag in (NO_TOOLS, "--disable-builtin-mcps", "--no-custom-instructions",
+                 "--no-ask-user"):
+        assert flag in cmd, flag
+    assert "--allow-all" not in cmd
+
+
+@pytest.mark.parametrize("text,exit_code,usable", [
+    ("answer", 0, True), ("", 0, False), ("answer", 1, False)])
+def test_copilot_result_needs_a_reply_and_a_clean_exit(text, exit_code, usable):
+    assert (ag.parse_headless(ag.COPILOT, copilot_stdout(text, exit_code)) is not None) is usable
+
+
+def test_copilot_reply_is_the_last_message_and_tokens_the_last_checkpoint():
+    events = [
+        {"type": "assistant.message", "data": {"content": "first"}},
+        {"type": "session.usage_checkpoint", "data": {"providerModelMetrics": [
+            {"metrics": {"usage": {"inputTokens": 10, "outputTokens": 1}}}]}},
+        {"type": "assistant.message", "data": {"content": "final"}},
+        {"type": "session.usage_checkpoint", "data": {"providerModelMetrics": [
+            {"metrics": {"usage": {"inputTokens": 30, "outputTokens": 4}}}]}},
+        {"type": "result", "sessionId": "s", "exitCode": 0},
+    ]
+    parsed = ag.parse_headless(ag.COPILOT, "\n".join(json.dumps(e) for e in events))
+    assert (parsed["result_text"], parsed["tokens_in"], parsed["tokens_out"]) == ("final", 30, 4)
+
+
+def test_copilot_sessions_match_by_real_and_quoted_cwd(home, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    a = _copilot_session(home, "a", str(alias), [])
+    d = home / ".copilot/session-state/b"
+    d.mkdir(parents=True)
+    (d / "workspace.yaml").write_text(f'cwd: "{real}"\n')
+    (d / "events.jsonl").write_text("")
+    assert sorted(ag.copilot_transcripts(real, home=home)) == sorted([a, d / "events.jsonl"])
+
+
+def test_feature_copilot_model_beats_the_global_one(home, monkeypatch):
+    monkeypatch.setenv("COPILOT_MODEL", "global")
+    monkeypatch.setenv("TRIAGE_COPILOT_MODEL", "triage-only")
+    assert ag.copilot_model("triage") == "triage-only"
+    assert ag.copilot_model("observer") == "global"
+
+
+def test_copilot_ready_marker_survives_a_narrow_pane_but_not_the_trust_dialog():
+    ready = ag.ready_re(ag.COPILOT)
+    assert ready.search(" ← open sidebar · Interactive · Allow Al")
+    assert ready.search("Interactive · Allow All · / commands · ? help · tab next tab")
+    assert not ready.search("Do you trust the files in this folder?\n 1. Yes\n 2. No\n ? for help")
+    assert not ready.search("Droid ready  ? for help")
+
+
+def test_comms_reads_the_live_copilot_box_not_an_old_one_or_a_rule():
+    screen = "\n".join([
+        "╻▄▄▄", "┃ an old prompt", "╹▀▀▀",
+        "────────────", "❯ quoted claude box", "────────────",
+        " output", "╻▄▄▄", "┃ [boot 9] live prompt", "╹▀▀▀",
+        " ← open sidebar · Interactive",
+    ])
+    assert cs.input_box_text(screen) == "[boot 9] live prompt"
+
+
+def test_comms_waits_for_copilots_prompt_box_before_typing():
+    assert cs._INPUT_READY_RE[ag.COPILOT] is ag.ready_re(ag.COPILOT)
+
+
+def test_comms_copilot_warm_session_reaches_the_folders_claude_does(home, monkeypatch):
+    _pick(home, "copilot")
+    command = cs._warm_launch(ag.COPILOT)
+    for d in (cs.REPO_ROOT, cs.HOME / ".assistant", cs.HOME / ".architect", "/tmp"):
+        assert f"--add-dir {d}" in command, d
+
+
+def test_screen_reader_flags_a_copilot_error_and_names_copilot_panes():
+    bwc = _load(BIN / "build-ws-context.py", "seam_bwc")
+    assert bwc._ERROR_LINE_RE.match(" ● API Error: 500 upstream")
+    assert not bwc._ERROR_LINE_RE.match(" ● MCP Servers reloaded: 1 server connected")
+    assert bwc._agent_for_screen(" ← open sidebar · Interactive · Allow") == "copilot"
+
+
+def test_watcher_drops_copilots_status_bar_from_snippets():
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher")
+    assert watcher._is_tui_noise(
+        " ← open sidebar · Interactive · Allow All · / commands · ? help · tab next tab")
+    assert watcher._is_tui_noise(" /repo [⎇ main]      Run on: This computer ctrl+e change environment")
+    assert not watcher._is_tui_noise(" ● Copilot finished the refactor")
+
+
+def test_world_scanner_sees_a_foreground_copilot(monkeypatch):
+    scanner = _load(BIN / "world-scanner.py", "seam_scanner_fg")
+    line = "41 41 41 Wed Nov 12 08:00:00 2026 /x/@github/copilot-darwin-arm64/copilot\n"
+    monkeypatch.setattr(scanner.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, line, ""))
+    assert scanner.foreground_provider_process("ttys001", "copilot")[0] == 41
+    assert scanner.foreground_provider_process("ttys001", "claude") is None
+
+
+def test_seam_cli_submitted_reads_the_named_agents_transcripts(home, copilot_bin):
+    _pick(home, "copilot")
+    cwd = str(home / "dev")
+    _copilot_session(home, "s", cwd, [
+        {"type": "user.message", "data": {"content": "Read /p/x.md"}}])
+    env = {**os.environ, "HOME": str(home)}
+    run = lambda *args: subprocess.run([sys.executable, str(BIN / "agent_session.py"), *args],
+                                       capture_output=True, text=True, env=env)
+    assert run("submitted", "--agent", "copilot", "--cwd", cwd, "--needle", "/p/x.md").returncode == 0
+    assert run("submitted", "--agent", "claude", "--cwd", cwd, "--needle", "/p/x.md").returncode == 1
+
+
+def test_assistant_llm_set_copilot_installs_cmux_hooks(home, monkeypatch):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_hooks")
+    calls = []
+    monkeypatch.setattr(ag.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    assert cli.main(["set", "claude"]) == 0
+    assert calls == []
+    assert cli.main(["set", "copilot"]) == 0
+    assert calls == [[ag.CMUX_CLI, "hooks", "copilot", "install", "--yes"]]
+
+
+def test_doctor_checks_copilot_when_only_dispatch_picks_it(home, monkeypatch):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_dispatch")
+    monkeypatch.setattr(doctor, "HOME", home)
+    _pick(home, "claude", dispatch={"agent": "copilot"})
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: None)
+    assert doctor.check_copilot_binary().status == doctor.FAIL
+
+
+def test_droid_resume_keeps_one_settings_flag():
+    argv = ag.resume_argv(ag.DROID, "d-1", ["--settings=/old.json", "--auto=high", "-v"],
+                          home=Path("/h"))
+    assert argv.count("--settings") == 1 and not any(a.startswith("--settings=") for a in argv)
+    assert "-v" in argv

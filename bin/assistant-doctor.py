@@ -311,7 +311,7 @@ def check_droid_settings() -> Check:
     except ValueError:
         return Check("droid settings", FAIL, core=False,
                      detail=f"{settings} is not valid JSON",
-                     remedy=f"fix the JSON in {settings} so `droid --settings` can parse it")
+                     remedy=f"fix the JSON in {settings} so Droid can read it")
     if not isinstance(parsed, dict):
         return Check("droid settings", FAIL, core=False,
                      detail=f"{settings} parsed but is not a JSON object",
@@ -320,22 +320,39 @@ def check_droid_settings() -> Check:
 
 
 def check_copilot_binary() -> Check:
-    if COPILOT not in (agent_session.warm_agent(), agent_session.dispatch_agent()):
+    if not agent_session.copilot_chosen():
         return Check("copilot binary", SKIP, core=False,
                      detail="provider is not copilot (llm.provider / dispatch.agent / comms)")
     found = _agent_binary(COPILOT)
-    if found:
+    if found and agent_session.runs(found):
         return Check("copilot binary", PASS, core=False, detail=found)
     return Check(
         "copilot binary", FAIL, core=False,
-        detail="copilot not found on PATH, ~/.local/bin, /opt/homebrew/bin, "
-               "/usr/local/bin, or ~/.nvm",
+        detail=(f"{found} --version failed" if found else
+                "copilot not found on PATH, ~/.local/bin, /opt/homebrew/bin, "
+                "/usr/local/bin, or ~/.nvm"),
         remedy="install GitHub Copilot CLI (npm install -g @github/copilot), "
                "run `copilot login`, or set COPILOT_BIN",
     )
 
 
-AGENT_CHECKS = [check_droid_binary, check_droid_settings, check_copilot_binary]
+def check_copilot_hooks() -> Check:
+    if not agent_session.copilot_chosen():
+        return Check("copilot cmux hooks", SKIP, core=False,
+                     detail="Copilot isn't picked anywhere")
+    if agent_session.copilot_hooks_installed(HOME):
+        return Check("copilot cmux hooks", PASS, core=False,
+                     detail=str(HOME / ".copilot" / "config.json"))
+    return Check(
+        "copilot cmux hooks", FAIL, core=False,
+        detail="~/.copilot/config.json has no cmux hooks; Copilot sessions "
+               "won't show on the dashboard",
+        remedy="cmux hooks copilot install --yes",
+    )
+
+
+AGENT_CHECKS = [check_droid_binary, check_droid_settings, check_copilot_binary,
+                check_copilot_hooks]
 
 
 # --------------------------------------------------------------------------- runner

@@ -16,20 +16,30 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   job start Copilot instead of Claude. The dashboard and the session check read
   Copilot sessions too. Set the model with `llm.copilot.model` or
   `COPILOT_MODEL`.
-- The installer adds cmux's Copilot hooks when `copilot` is installed, and the
-  doctor checks the Copilot binary when you pick it.
+- `assistant-llm.py set copilot` and the installer add cmux's Copilot hooks,
+  so Copilot sessions show on the dashboard. They're added only when you pick
+  Copilot, so Copilot sessions you start by hand stay yours.
+- The doctor checks that Copilot starts (`copilot --version`) and that its
+  cmux hooks are in place whenever you pick Copilot for anything.
 
 ### Changed
 - `bin/agent_session.py` is now the only place that starts a coding agent.
-  `tests/test_agent_launch_seam.py` fails when any other file builds a
-  `claude`, `copilot`, or `droid` command line.
+  `tests/test_agent_launch_seam.py` fails when any Python, shell, JavaScript,
+  launchd, workflow, or skill file builds a `claude`, `copilot`, or `droid`
+  command line. It reads code structure, so comments and prose don't count.
+- Background jobs run Copilot's standalone build instead of its npm loader,
+  which needs Node and fails under launchd. Copilot jobs run in their own
+  folder, and Copilot's errors reach the failure log.
+- Resuming a Copilot session keeps the flags it started with; it no longer
+  adds `--allow-all` to sessions you started without it.
 - Task sessions now answer the first-launch folder-trust question whenever it
   appears during boot, not only in one check 2 seconds after launch. Copilot
   shows it about 4 seconds in, so the old check missed it and the session sat
   waiting.
 - `/spawn-claude-workspace` takes its launch command, readiness check, trust
-  prompt, and submission check from `bin/agent_session.py`, and defaults to the
-  agent you picked.
+  prompt, and submission check from `bin/agent_session.py`. It still defaults
+  to Droid, takes `engine=copilot`, stops with a message when the engine isn't
+  installed, and checks only conversations written since the spawn.
 - The session check (`ASSISTANT_WATCHER=1`) now runs in default mode too.
   The other opt-in jobs still need Pro mode.
 - The session check now reads each conversation as plain text: the first

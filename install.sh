@@ -864,7 +864,7 @@ if [[ $APPLY -eq 1 ]]; then
         # launchd reload below.
         "$CMUX_CLI" hooks factory install --yes 2>&1 | sed 's/^/  /' \
             || warn "cmux Factory hooks install failed (continuing — droid resume may be unbound)"
-        if command -v copilot >/dev/null 2>&1; then
+        if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then
             "$CMUX_CLI" hooks copilot install --yes 2>&1 | sed 's/^/  /' \
                 || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"
         fi
@@ -876,7 +876,7 @@ if [[ $APPLY -eq 1 ]]; then
         2>&1 | sed 's/^/  /' \
         || warn "patch-settings failed (continuing — cmux session hooks may be incomplete)"
 else
-    note "would install cmux Factory + Copilot hooks and patch Claude + Factory session hooks"
+    note "would install cmux Factory hooks (+ Copilot hooks when Copilot is picked) and patch Claude + Factory session hooks"
 fi
 log ""
 

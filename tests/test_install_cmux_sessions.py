@@ -109,7 +109,8 @@ def test_dry_run_reports_without_patching(tmp_path, install):
 
     result = install()
 
-    assert "would install cmux Factory + Copilot hooks and patch Claude + Factory session hooks" in result.stdout
+    assert ("would install cmux Factory hooks (+ Copilot hooks when Copilot is picked) "
+            "and patch Claude + Factory session hooks") in result.stdout
     assert hooks(settings) == {"SessionEnd": [LEDGER_END]}
 
 
@@ -132,3 +133,15 @@ def test_help_documents_the_cmux_session_hooks(tmp_path):
             "       bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,\n"
             "       and Claude + Factory SessionStart patched to run cmux-auto-resume.py\n"
             "       (the retired ledger hook's registrations removed)\n" in result.stdout)
+
+
+@pytest.mark.parametrize("provider,installed", [("copilot", True), ("claude", False)])
+def test_apply_installs_copilot_hooks_only_when_copilot_is_picked(tmp_path, install,
+                                                                  provider, installed):
+    config = tmp_path / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"llm": {"provider": provider}}))
+    install("--apply")
+    calls = (tmp_path / "cmux.log").read_text().splitlines()
+    assert ("hooks copilot install --yes" in calls) is installed
+    assert "hooks factory install --yes" in calls

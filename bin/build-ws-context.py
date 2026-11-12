@@ -97,7 +97,7 @@ SCREEN_LINES = 120
 # Matched per-line, case-insensitive, against screen_text.
 _ERROR_LINE_RE = re.compile(
     r"""^\s*               # leading indent cmux may render
-        [⏺·∙•*]\s*         # the assistant-turn bullet glyph
+        [⏺●·∙•*]\s*        # the assistant-turn bullet glyph (● is Copilot's)
         (?:                # …immediately followed by an error envelope:
             api\ error\b
           | request\ timed\ out\b
@@ -160,7 +160,6 @@ _DROID_PANE_MARKERS = (
 # Copilot's bottom status bar is the steady-state tell; the boot banner covers
 # a pane whose status bar the folder-trust dialog still hides. The banner can
 # name a Claude model, so it outranks the Claude markers.
-_COPILOT_STATUS_BAR = "/ commands · ? help"
 _COPILOT_BANNER = "Copilot v"
 _SURFACE_LINE_RE = re.compile(r"(surface:\d+)\s+([0-9A-Fa-f-]{36})")
 
@@ -207,7 +206,7 @@ def _agent_for_screen(text: str) -> str | None:
         return None
     if status_bar_session_id(text):
         return "claude"
-    if _COPILOT_STATUS_BAR in text:
+    if agent_session.ready_re(agent_session.COPILOT).search(text):
         return "copilot"
     if any(m in text for m in _DROID_PANE_MARKERS):
         return "droid"

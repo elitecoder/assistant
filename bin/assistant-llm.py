@@ -213,6 +213,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "set":
             set_provider(
                 path, args.provider, args.feature)
+            if args.provider == llm_runner.agent_session.COPILOT:
+                failed = llm_runner.agent_session.install_copilot_hooks()
+                if failed:
+                    print(f"warning: cmux Copilot hooks not installed "
+                          f"({failed}); Copilot sessions won't show on the "
+                          f"dashboard", file=sys.stderr)
         else:
             inherit_provider(path, args.feature)
         return main(["status"])

@@ -8,7 +8,8 @@ Copilot CLI (``copilot``), and Factory Droid (``droid``). Which one runs is the
 user's choice, read by ``dispatch_agent`` / ``warm_agent`` and
 ``llm_runner.load_route_config`` from ``~/.assistant/comms/config.json``
 (``llm.provider`` is the one knob). ``tests/test_agent_launch_seam.py`` fails
-when any other file builds an agent command line.
+when any other Python, shell, JavaScript, launchd, workflow, or skill file
+builds an agent command line.
 
 The rest of this docstring covers transcripts.
 
@@ -41,6 +42,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
@@ -208,9 +210,32 @@ def _bin_candidates(agent: str, home: Path) -> list[Path]:
     return cands
 
 
+def _is_node_script(path: str) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            first = fh.readline(200)
+    except OSError:
+        return False
+    return first.startswith(b"#!") and b"node" in first
+
+
+def _copilot_native(path: str) -> str:
+    """The standalone Copilot binary next to the npm `copilot` loader script,
+    which needs `node` on PATH (launchd jobs don't have it). `path` itself
+    when it isn't the loader or no standalone build sits beside it."""
+    if not _is_node_script(path):
+        return path
+    pkg = Path(os.path.realpath(path)).parent
+    for native in sorted(pkg.glob("node_modules/@github/copilot-*/copilot")):
+        if _executable(str(native)):
+            return str(native)
+    return path
+
+
 def binary(agent: str, env: dict | None = None) -> str:
     """Absolute path of `agent`'s CLI. Order: the agent's *_BIN env var, PATH,
-    the common install dirs (launchd's PATH is minimal), else the bare name."""
+    the common install dirs (launchd's PATH is minimal), else the bare name.
+    For Copilot, the npm loader script resolves to its standalone build."""
     src = os.environ if env is None else env
     override = (src.get(_BIN_ENV.get(agent, "")) or "").strip()
     if override:
@@ -218,13 +243,22 @@ def binary(agent: str, env: dict | None = None) -> str:
     home = Path(src.get("HOME") or str(Path.home()))
     if agent == CLAUDE:
         return str(home / ".local" / "bin" / CLAUDE)
-    on_path = shutil.which(agent)
-    if on_path:
-        return on_path
-    for cand in _bin_candidates(agent, home):
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return agent
+    found = shutil.which(agent)
+    if not found:
+        found = next((str(c) for c in _bin_candidates(agent, home)
+                      if _executable(str(c))), None)
+    if not found:
+        return agent
+    return _copilot_native(found) if agent == COPILOT else found
+
+
+def runs(path: str, timeout: float = 20.0) -> bool:
+    """True when `path --version` exits 0."""
+    try:
+        return subprocess.run([path, "--version"], capture_output=True,
+                              timeout=timeout).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _executable(path: str) -> bool:
@@ -322,16 +356,18 @@ def copilot_model(feature: str | None = None, env: dict | None = None) -> str:
 
 def agent_available(agent: str) -> bool:
     """True when `agent` can be launched. Claude launches via the ~/.zprofile
-    `claude` alias, so it is assumed present. Copilot needs an executable
-    binary. Droid needs an executable binary plus the --settings JSON that
-    session_command(DROID) bakes in. A False makes callers fall back to claude."""
+    `claude` alias, so it is assumed present. Copilot needs a binary that
+    answers `--version`. Droid needs an executable binary plus the --settings
+    JSON that session_command(DROID) bakes in. A False makes callers fall back
+    to claude."""
     if agent == CLAUDE:
         return True
     home = Path(os.environ.get("HOME", str(Path.home())))
+    if agent == COPILOT:
+        found = binary(COPILOT)
+        return _executable(found) and runs(found)
     if shutil.which(agent) is None and not _executable(binary(agent)):
         return False
-    if agent == COPILOT:
-        return True
     settings = home / ".assistant" / "droid-glm-settings.json"
     try:
         parsed = json.loads(settings.read_text())
@@ -343,6 +379,42 @@ def agent_available(agent: str) -> bool:
 def available_or_claude(agent: str) -> str:
     """`agent` when it can launch, else claude."""
     return agent if agent_available(agent) else CLAUDE
+
+
+def copilot_chosen() -> bool:
+    """True when the user picked Copilot for dispatch, comms, or any feature."""
+    if COPILOT in (dispatch_agent(), warm_agent()):
+        return True
+    raw = _read_comms_config()
+    features = _cfg(raw, "llm", "features")
+    names = list(features) if isinstance(features, dict) else []
+    return any(_cfg_agent(raw, "llm", "features", f, "provider") == COPILOT
+               for f in names)
+
+
+CMUX_CLI = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+
+
+def copilot_hooks_installed(home: str | Path | None = None) -> bool:
+    """True when cmux's Copilot hooks are in ~/.copilot/config.json."""
+    base = HOME if home is None else Path(home)
+    try:
+        text = (base / ".copilot" / "config.json").read_text()
+    except OSError:
+        return False
+    return "hooks enqueue copilot" in text
+
+
+def install_copilot_hooks(cmux: str = CMUX_CLI) -> str | None:
+    """Run `cmux hooks copilot install --yes`. None on success, else why not."""
+    try:
+        done = subprocess.run([cmux, "hooks", "copilot", "install", "--yes"],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if done.returncode != 0:
+        return (done.stderr or done.stdout).strip()[:300] or f"exit {done.returncode}"
+    return None
 
 
 # ── interactive sessions ──────────────────────────────────────────────────────
@@ -405,8 +477,13 @@ def session_command(agent: str, *, home: str | Path | None = None,
     return f"{env_prefix}{shlex.join(argv)}"
 
 
-def launch_command(agent: str, home: str | Path | None = None) -> str:
-    """The cmux ``--command`` for a dispatched `agent` session."""
+def launch_command(agent: str, home: str | Path | None = None,
+                   unattended: bool = False) -> str:
+    """The cmux ``--command`` for a dispatched `agent` session. `unattended`
+    claude runs the alias in a login shell with permission prompts bypassed,
+    so a background spawn never stalls on the first prompt."""
+    if agent == CLAUDE and unattended:
+        return "zsh -lic 'claude --dangerously-skip-permissions'"
     return session_command(agent, home=home)
 
 
@@ -429,20 +506,21 @@ def resume_argv(agent: str, session_id: str, preserved: list[str] | tuple = (),
     base = HOME if home is None else Path(home)
     preserved = list(preserved)
     if agent == DROID:
-        drop = {"--settings": 1, "--auto": 1, "--append-system-prompt-file": 1}
+        drop = ("--settings", "--auto", "--append-system-prompt-file")
         kept, i = [], 0
         while i < len(preserved):
             a = preserved[i]
             if a in drop:
-                i += 1 + drop[a]
+                i += 2
+                continue
+            if a.startswith(tuple(f"{flag}=" for flag in drop)):
+                i += 1
                 continue
             kept.append(a)
             i += 1
         return [executable or DROID, "--resume", session_id, *kept,
                 *_droid_flags(base)]
     if agent == COPILOT:
-        if "--allow-all" not in preserved and "--yolo" not in preserved:
-            preserved.append("--allow-all")
         exe = [executable] if executable else _interactive_exe(COPILOT)
         return [*exe, "--resume", session_id, *preserved]
     return [executable or CLAUDE, "--resume", session_id, *preserved]
@@ -459,12 +537,13 @@ def resume_command(agent: str, session_id: str, cwd: str | Path,
 
 # Readiness markers seen on the live boot screen via cmux `surface.read_text`.
 #   Claude:  the boot banner, or the bypass-permissions status bar.
-#   Copilot: the bottom status bar ("· / commands · ? help"), which is hidden
-#            while the folder-trust dialog is up.
+#   Copilot: the bottom status bar ("← open sidebar · Interactive · Allow All ·
+#            / commands · ? help"), hidden while the folder-trust dialog is up.
+#            A narrow pane cuts its right end, so its left end matches too.
 #   Droid:   the help hint / autonomy status bar / model badge from its banner.
 _READY_RE = {
     CLAUDE: re.compile(r"Claude Code v|⏵⏵ bypass permissions on"),
-    COPILOT: re.compile(r"/ commands · \? help"),
+    COPILOT: re.compile(r"/ commands · \? help|← open sidebar · "),
     DROID: re.compile(
         r"\? for help|allow all commands|Skills \(\d+\)|"
         r"(?:Opus 4\.\d|GLM-?5\.2)"),
@@ -538,7 +617,7 @@ def headless_argv(provider: str, *, binary_path: str, model: str,
         return cmd
     if provider == COPILOT:
         cmd = [binary_path, "--output-format", "json", "--no-ask-user",
-               "--no-auto-update", "--no-color"]
+               "--no-auto-update", "--no-color", "-C", str(run_dir)]
         if model:
             cmd += ["--model", model]
         if disable_tools:
@@ -643,6 +722,20 @@ def _copilot_usage(stdout: str) -> dict | None:
     }
 
 
+def headless_errors(provider: str, stdout: str) -> str:
+    """Copilot's session.error messages from a headless call's stdout, one per
+    line ('' for other agents or a clean run)."""
+    if provider != COPILOT:
+        return ""
+    out = []
+    for e in _copilot_events(stdout):
+        if e.get("type") == "session.error":
+            data = e.get("data")
+            msg = data.get("message") if isinstance(data, dict) else None
+            out.append(str(msg or json.dumps(data)))
+    return "\n".join(out)
+
+
 def parse_usage(provider: str, stdout: str) -> dict | None:
     """Token/cost/session/result fields from a headless call's stdout, or None
     when the output is not the agent's JSON envelope."""
@@ -682,11 +775,15 @@ def merges_bedrock(provider: str) -> bool:
 # ── shell entry point (skills, shell scripts) ─────────────────────────────────
 
 def prompt_submitted(agent: str, cwd: str | Path, needle: str,
-                     home: str | Path | None = None) -> bool:
+                     home: str | Path | None = None,
+                     since: float | None = None) -> bool:
     """True when a user turn in any of `agent`'s transcripts for `cwd`
-    contains `needle`."""
+    contains `needle`. `since` (epoch seconds) skips transcripts last written
+    before it."""
     for path in session_transcripts(agent, cwd, home=home):
         try:
+            if since is not None and path.stat().st_mtime < since:
+                continue
             lines = path.read_text(errors="replace").splitlines()
         except OSError:
             continue
@@ -715,28 +812,44 @@ def main(argv: list[str] | None = None) -> int:
         description="Start or check a coding agent the way Assistant does.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, help_text in (
-            ("agent", "print the agent to launch (the user's pick, or --agent)"),
+            ("agent", "print --agent, or the user's pick; exit 1 when that "
+                      "agent isn't installed"),
             ("launch-command", "print the cmux --command for a session"),
             ("is-ready", "exit 0 when the screen text on stdin shows a ready REPL"),
             ("trust-marker", "print the folder-trust prompt text, if any"),
-            ("submitted", "exit 0 when a user turn contains --needle")):
+            ("submitted", "exit 0 when a user turn contains --needle"),
+            ("copilot-chosen", "exit 0 when the user picked Copilot anywhere")):
         cmd = sub.add_parser(name, help=help_text)
         cmd.add_argument("--agent", choices=AGENTS)
         if name == "submitted":
             cmd.add_argument("--cwd", required=True)
             cmd.add_argument("--needle", required=True)
+            cmd.add_argument("--since", type=float,
+                             help="skip transcripts last written before this "
+                                  "epoch time")
+        if name == "launch-command":
+            cmd.add_argument("--unattended", action="store_true",
+                             help="claude: bypass permission prompts")
     args = ap.parse_args(argv)
-    agent = available_or_claude(getattr(args, "agent", None) or dispatch_agent())
+    if args.cmd == "copilot-chosen":
+        return 0 if copilot_chosen() else 1
     if args.cmd == "agent":
+        agent = args.agent or dispatch_agent()
+        if not agent_available(agent):
+            print(f"{agent} isn't installed or doesn't start", file=sys.stderr)
+            return 1
         print(agent)
-    elif args.cmd == "launch-command":
-        print(launch_command(agent))
+        return 0
+    agent = args.agent or available_or_claude(dispatch_agent())
+    if args.cmd == "launch-command":
+        print(launch_command(agent, unattended=args.unattended))
     elif args.cmd == "is-ready":
         return 0 if ready_re(agent).search(sys.stdin.read()) else 1
     elif args.cmd == "trust-marker":
         print(trust_marker(agent) or "")
     else:
-        return 0 if prompt_submitted(agent, args.cwd, args.needle) else 1
+        return 0 if prompt_submitted(agent, args.cwd, args.needle,
+                                     since=args.since) else 1
     return 0
 
 

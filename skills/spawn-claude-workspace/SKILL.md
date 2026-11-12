@@ -1,6 +1,6 @@
 ---
 name: spawn-claude-workspace
-description: Spawn an unfocused cmux workspace running an autonomous coding agent, delivering a prompt by file reference for background work. `engine` picks the agent (claude, copilot, or droid; default is the agent the user picked for Assistant).
+description: Spawn an unfocused cmux workspace running an autonomous coding agent, delivering a prompt by file reference for background work. `engine` picks the agent: `droid` (default), `claude`, or `copilot`. Use `engine=claude` for Claude-plugin work like archffp.
 ---
 
 # Spawn autonomous coding workspace
@@ -29,7 +29,7 @@ bracket number. Leave naming and color to the daemon.
 
 ## Inputs
 
-- **Engine**: `claude`, `copilot`, or `droid`. Default: the agent the user picked (`agent_session.py agent`). Use `claude` for Claude Code plugin work such as `/architect-ffp:archffp`.
+- **Engine**: `droid` (default), `claude`, or `copilot`. Use `claude` for Claude Code plugin work such as `/architect-ffp:archffp`. Never fall back to another engine when the chosen one fails.
 - **Prompt**: required, preserved verbatim in the staged file.
 - **Working directory**: explicit absolute path, default `~/dev`.
 - **Title**: concise, at most 40 characters.
@@ -37,12 +37,14 @@ bracket number. Leave naming and color to the daemon.
 
 ## Procedure
 
-1. Locate the seam, verify cmux, and resolve the engine. The seam falls back to `claude` when the chosen engine isn't installed; report that if it happens.
+1. Locate the seam, verify cmux, and check the engine. If the engine isn't installed, stop and report it; don't launch another engine.
 
 ```bash
 SEAM="$(python3 -c 'import os; print(os.path.realpath(os.path.expanduser("~/.claude/skills/spawn-claude-workspace")))')/../../bin/agent_session.py"
 cmux ping >/dev/null
-ENGINE=$(python3 "$SEAM" agent ${ENGINE:+--agent "$ENGINE"})
+ENGINE="${ENGINE:-droid}"
+python3 "$SEAM" agent --agent "$ENGINE"
+SPAWNED_AT=$(date +%s)
 CWD="${CWD:-$HOME/dev}"
 CWD=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CWD")
 mkdir -p "$HOME/.assistant/spawn-prompts"
@@ -57,7 +59,7 @@ mkdir -p "$HOME/.assistant/spawn-prompts"
 3. Create the unfocused workspace with the engine already launching:
 
 ```bash
-LAUNCH_CMD=$(python3 "$SEAM" launch-command --agent "$ENGINE")
+LAUNCH_CMD=$(python3 "$SEAM" launch-command --agent "$ENGINE" --unattended)
 OUT=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$LAUNCH_CMD")
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:[0-9]+' | head -n1)
@@ -96,7 +98,7 @@ If send mode is `paste`, omit the Enter call and report that the prompt is stage
 
 ```bash
 for _ in $(seq 1 30); do
-  python3 "$SEAM" submitted --agent "$ENGINE" --cwd "$CWD" --needle "$PROMPT_FILE" && break
+  python3 "$SEAM" submitted --agent "$ENGINE" --cwd "$CWD" --needle "$PROMPT_FILE" --since "$SPAWNED_AT" && break
   sleep 1
 done
 ```
