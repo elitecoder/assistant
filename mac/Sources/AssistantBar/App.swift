@@ -340,9 +340,9 @@ final class Model: NSObject, ObservableObject {
     /// sentences, it silences the rest of that answer and ends its run.
     func listen() {
         if speakingNow() || answeringSpoken { turns.mute() }
+        stopTalking()
         // Interrupting by key works like interrupting by voice: the run ends, so the new question doesn't wait for it.
         if asking && answeringSpoken && !listener.listening { endRun(TalkLoop.interruptedReason, kinds: [.chat]) }
-        stopTalking()
         toggleListening()
     }
 
@@ -521,9 +521,13 @@ final class Model: NSObject, ObservableObject {
     /// Ends the running answer's processes of `kinds` off the main thread; the stored reply says `reason`. Talking
     /// over an answer ends only the chat's run; Stop ends the summarizer too.
     private func endRun(_ reason: String, kinds: Set<ChildProcesses.Kind>) {
+        cancelPending(reason)
         let end = endChildren
         DispatchQueue.global(qos: .userInitiated).async { end(reason, kinds) }
     }
+
+    /// Keeps an ask that hasn't started its `claude` yet (compacting, or about to launch) from starting it.
+    lazy var cancelPending: (String) -> Void = { [weak self] in self?.engine?.cancelPending($0) }
 
     /// Ends the processes the app started, recording why; tests replace it.
     lazy var endChildren: (String, Set<ChildProcesses.Kind>) -> Void = { ChildProcesses.shared.endAll(reason: $0, kinds: $1) }

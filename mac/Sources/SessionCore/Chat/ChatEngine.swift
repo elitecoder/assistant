@@ -40,6 +40,9 @@ public final class ChatEngine {
     private var parentID: String?
     private var pendingID: String?
     private var anchor: UsageAnchor?
+    private let cancelLock = NSLock()
+    /// Why the ask in progress was ended before its `claude` started (Stop, or interrupting a spoken answer).
+    private var cancelled: String?
 
     /// How long automatic compression pauses after a compaction couldn't be saved.
     static let saveFailurePause: TimeInterval = 300
@@ -133,6 +136,7 @@ public final class ChatEngine {
     /// and the reply are the same either way.
     public func ask(_ question: String, fleet: ScanResult, focus: (title: String, exchange: String)? = nil, spoken: Bool = false,
                     speak: ((String) -> Void)? = nil, step: @escaping (ChatStep) -> Void) -> TurnOutcome {
+        defer { cancelLock.withLock { cancelled = nil } }
         do {
             let sid = try ensureSession(question)
             let active = try store.resumeMessages(sessionID: sid)
@@ -162,6 +166,10 @@ public final class ChatEngine {
         }
     }
 
+    /// Ends the ask in progress before its `claude` starts, if it hasn't yet (it may still be compacting the chat):
+    /// the turn is stored as ended for `reason` and no run starts. Safe from any thread.
+    public func cancelPending(_ reason: String) { cancelLock.withLock { cancelled = reason } }
+
     /// This turn's rows to store before the run: the context row when there is any, then the question. `marks` is
     /// the fleet the context row shows, when it shows one.
     private func promptRows(_ question: String, entries: [FleetEntry], focus: (title: String, exchange: String)?, state: ChatState,
@@ -177,6 +185,10 @@ public final class ChatEngine {
     /// compaction and runs once more, as Hermes does.
     private func runTurn(_ sid: String, spoken: Bool, speak: ((String) -> Void)?, step: @escaping (ChatStep) -> Void,
                          retried: Bool) throws -> TurnOutcome {
+        if let reason = cancelLock.withLock({ cancelled }) {
+            try store.append(sessionID: sid, [TurnRecord.noReplyNote(reason, timestamp: now())])
+            return TurnOutcome(reply: reason, failed: true, cost: nil, meter: meter)
+        }
         let active = try store.resumeMessages(sessionID: sid)
         var invocation = self.invocation(sid, active: active, tail: spoken ? [TurnContext.marker + "\n\n" + Spoken.style] : [])
         invocation.partialMessages = speak != nil

@@ -649,6 +649,7 @@ final class BargeInEndsTheRunTests: XCTestCase {
         }
         model.askNow = asked
         model.askNext = asked
+        model.cancelPending = { [unowned self] in self.events.append("cancel \($0)") }
         model.endChildren = { [unowned self] reason, kinds in
             let what = kinds.contains(.background) ? " and the summarizer" : ""
             DispatchQueue.main.async { self.events.append("end \(reason)\(what)") }
@@ -684,7 +685,7 @@ final class BargeInEndsTheRunTests: XCTestCase {
         m.answerCompleted(interrupted(), spoken: true)
         XCTAssertEqual(events, [
             "listen", "watch", "ask What needs me?", "say The version bump session needs your token.",
-            "unwatch", "stop speaking", "listen", "end \(TalkLoop.interruptedReason)",
+            "unwatch", "stop speaking", "cancel \(TalkLoop.interruptedReason)", "listen", "end \(TalkLoop.interruptedReason)",
             "watch", "ask Tell me about the playhead session instead.",
         ])
         XCTAssertTrue(m.talkMode)
@@ -722,12 +723,12 @@ final class BargeInEndsTheRunTests: XCTestCase {
             waitFor("end \(TalkLoop.interruptedReason)")
             m.heard("Tell me about the playhead session instead.")
             m.answerCompleted(interrupted(), spoken: true)
-            return events.filter { $0.hasPrefix("end") || $0.hasPrefix("ask") || $0 == "stop speaking" }
+            return events.filter { $0.hasPrefix("end") || $0.hasPrefix("cancel") || $0.hasPrefix("ask") || $0 == "stop speaking" }
         }
         let byVoice = interrupt { _ in bargeIn?() }
         let byKey = interrupt { $0.listen() }
         XCTAssertEqual(byKey, byVoice)
-        XCTAssertEqual(byKey, ["ask What needs me?", "stop speaking", "end \(TalkLoop.interruptedReason)",
+        XCTAssertEqual(byKey, ["ask What needs me?", "stop speaking", "cancel \(TalkLoop.interruptedReason)", "end \(TalkLoop.interruptedReason)",
                                "ask Tell me about the playhead session instead."])
     }
 

@@ -120,6 +120,29 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertTrue(Asker.instructions(tool: "/A/AssistantBar").contains("\"Delivery unknown\": run --wait"))
     }
 
+    /// An ask interrupted before its `claude` starts (the chat was compacting, or the run was about to launch)
+    /// never starts it: the turn is stored as interrupted, and the next ask runs as usual.
+    func testAnAskEndedBeforeClaudeStartsNeverRunsIt() throws {
+        var runs = 0
+        let store = try ConversationStore(url: folder.appendingPathComponent("conversations.db"))
+        let engine = ChatEngine(store: store, memoryFolder: folder.appendingPathComponent("memory"), tool: "/A/AssistantBar",
+                                model: "haiku", effort: nil, windowFor: { _ in 1_000_000 },
+                                runner: { _, _ in
+                                    runs += 1
+                                    return ClaudeRun(output: Data(#"{"type":"result","is_error":false,"result":"Two do."}"#.utf8))
+                                }, summarizer: { _ in "## Goal\nx" })
+        engine.cancelPending(TalkLoop.interruptedReason)
+        let outcome = engine.ask("What needs me?", fleet: ScanResult()) { _ in }
+        XCTAssertEqual(runs, 0, "claude ran for an ask that was interrupted")
+        XCTAssertTrue(outcome.failed)
+        XCTAssertEqual(outcome.reply, TalkLoop.interruptedReason)
+        let rows = try store.messages(sessionID: try XCTUnwrap(store.sessions().first?.session.id))
+        XCTAssertTrue(rows.last?.content.contains(TalkLoop.interruptedReason) == true)
+        let next = engine.ask("And now?", fleet: ScanResult()) { _ in }
+        XCTAssertEqual(runs, 1)
+        XCTAssertEqual(next.reply, "Two do.")
+    }
+
     /// Stop and Quit end the processes the app started and everything below them, like `--send` under `claude`.
     func testEndingAllAlsoEndsGrandchildren() throws {
         let children = ChildProcesses()
