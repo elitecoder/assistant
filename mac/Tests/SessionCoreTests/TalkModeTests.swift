@@ -142,3 +142,13 @@ final class TalkLoopMicLostTests: XCTestCase {
         XCTAssertEqual(loop.micLost(), [])
     }
 }
+
+final class TalkModeNoteTests: XCTestCase {
+    func testTheNoteNamesTheMicrophoneThatWatchesForInterruptions() {
+        XCTAssertEqual(TalkModeNote.text(defaultInput: "AirPods Pro", picked: "Logitech BRIO", silent: false),
+                       "Talking over an answer listens on AirPods Pro, your Mac's default microphone, not Logitech BRIO.")
+        XCTAssertEqual(TalkModeNote.text(defaultInput: "Microsoft Teams Audio", picked: "Microsoft Teams Audio", silent: true),
+                       "Talking over an answer won't stop it: Microsoft Teams Audio, your Mac's default microphone, sends no sound.")
+        XCTAssertNil(TalkModeNote.text(defaultInput: "Logitech BRIO", picked: "Logitech BRIO", silent: false))
+    }
+}

@@ -168,6 +168,9 @@ struct ChatView: View {
                         .buttonStyle(.borderless).font(.caption)
                         .keyboardShortcut(.cancelAction)
                 }
+                if let note = model.talkNote {
+                    Text(note).font(.caption2).foregroundStyle(.orange)
+                }
             }
             if !model.chat.isEmpty || model.asking || listener.listening || listener.finishing {
                 ScrollViewReader { proxy in

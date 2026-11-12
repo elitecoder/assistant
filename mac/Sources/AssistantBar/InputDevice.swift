@@ -85,7 +85,56 @@ enum InputDevice {
     }
 
     static func chosen(excluding: Set<UInt32> = []) -> Microphone? {
-        Microphones.choose(all(), preferred: preferred, defaultID: defaultID(), lidClosed: lidClosed(),
-                           excluding: excluding)
+        let devices = DeviceList.shared.snapshot
+        return Microphones.choose(devices.mics, preferred: preferred, defaultID: devices.defaultID,
+                                  lidClosed: devices.lidClosed, excluding: excluding)
+    }
+}
+
+/// The input devices, the default one, and the lid, read from the system only when Core Audio says the devices
+/// changed (or a press asks for a fresh look), not on every redraw of the panel.
+final class DeviceList {
+    struct Snapshot {
+        let mics: [Microphone]
+        let defaultID: UInt32?
+        let lidClosed: Bool
+    }
+
+    static let shared: DeviceList = {
+        let list = DeviceList { Snapshot(mics: InputDevice.all(), defaultID: InputDevice.defaultID(), lidClosed: InputDevice.lidClosed()) }
+        list.listen()
+        return list
+    }()
+
+    private let query: () -> Snapshot
+    private let lock = NSLock()
+    private var cached: Snapshot?
+    /// Runs on the main thread after the devices change.
+    var onChange: (() -> Void)?
+
+    init(query: @escaping () -> Snapshot) { self.query = query }
+
+    var snapshot: Snapshot {
+        lock.withLock {
+            if let cached { return cached }
+            let fresh = query()
+            cached = fresh
+            return fresh
+        }
+    }
+
+    /// Forgets the cached devices, so the next look reads them again.
+    func changed() {
+        lock.withLock { cached = nil }
+        DispatchQueue.main.async { self.onChange?() }
+    }
+
+    private func listen() {
+        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultInputDevice] {
+            var a = InputDevice.address(selector)
+            AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &a, DispatchQueue.main) { [weak self] _, _ in
+                self?.changed()
+            }
+        }
     }
 }

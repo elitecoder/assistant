@@ -153,3 +153,19 @@ public struct TalkLoop: Equatable {
         return [.stopWatching, .exit(note: nil)]
     }
 }
+
+/// What the panel says about the microphone Talk Mode watches for interruptions: voice processing always listens
+/// on the Mac's default input, which may not be the microphone picked for questions, or may send nothing.
+public enum TalkModeNote {
+    public static func text(defaultInput: String?, picked: String?, silent: Bool) -> String? {
+        let name = defaultInput ?? "the default microphone"
+        if silent { return "Talking over an answer won't stop it: \(name), your Mac's default microphone, sends no sound." }
+        if let picked, picked != defaultInput {
+            return "Talking over an answer listens on \(name), your Mac's default microphone, not \(picked)."
+        }
+        return nil
+    }
+
+    /// Silence for this long from the echo-cancelled microphone means it sends nothing at all.
+    public static let silentAfter: TimeInterval = 2
+}

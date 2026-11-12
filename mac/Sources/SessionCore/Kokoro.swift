@@ -15,10 +15,10 @@ public struct KokoroFile: Equatable {
 public enum Kokoro {
     public static let files = [
         KokoroFile(name: "voices.npz",
-                   url: URL(string: "https://github.com/mlalma/KokoroTestApp/raw/main/Resources/voices.npz")!,
+                   url: URL(string: "https://github.com/mlalma/KokoroTestApp/raw/9dcd3b06468a3c1ecee6d09a33ca687c8e708566/Resources/voices.npz")!,
                    sha256: "56dbfa2f2970af2e395397020393d368c5f441d09b3de4e9b77f6222e790f10f"),
         KokoroFile(name: "kokoro-v1_0.safetensors",
-                   url: URL(string: "https://github.com/mlalma/KokoroTestApp/raw/main/Resources/kokoro-v1_0.safetensors")!,
+                   url: URL(string: "https://github.com/mlalma/KokoroTestApp/raw/9dcd3b06468a3c1ecee6d09a33ca687c8e708566/Resources/kokoro-v1_0.safetensors")!,
                    sha256: "4e9ecdf03b8b6cf906070390237feda473dc13327cb8d56a43deaa374c02acd8"),
     ]
 

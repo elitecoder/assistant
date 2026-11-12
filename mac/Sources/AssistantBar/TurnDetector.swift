@@ -2,8 +2,10 @@ import AVFoundation
 import OnnxRuntimeBindings
 import SessionCore
 
-/// Downloads Smart Turn and Silero VAD once into ~/Library/Application Support/Assistant/SmartTurn, checking each
-/// file's SHA-256, and loads them for ONNX Runtime.
+/// Downloads Smart Turn and Silero VAD once into ~/Library/Application Support/Assistant/SmartTurn, checks each
+/// file's SHA-256 when it arrives and again before the first load (re-downloading a damaged one), and loads them for
+/// ONNX Runtime on a background queue. The lock guards only small state, never a load, a hash, or a file move, so the
+/// main thread never waits on it for long.
 final class TurnModels: NSObject, URLSessionDownloadDelegate {
     static let shared = TurnModels()
     static let folder = URL(fileURLWithPath: NSHomeDirectory())
@@ -11,83 +13,122 @@ final class TurnModels: NSObject, URLSessionDownloadDelegate {
 
     private let lock = NSLock()
     private var downloading = false
+    private var loading = false
+    private var verified = false
     private var pending: [KokoroFile] = []
     private var current: KokoroFile?
     private var models: OnnxTurn?
+    private let loader = DispatchQueue(label: "assistant.turn.load", qos: .utility)
+    private let isInstalled: () -> Bool
+    private let damaged: () -> [KokoroFile]
+    private let open: () -> OnnxTurn?
+    /// Downloads damaged files again; tests record the call instead.
+    private let redownload: (([KokoroFile]) -> Void)?
     private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
 
     static func path(_ file: KokoroFile) -> URL { folder.appendingPathComponent(file.name) }
 
     static var installed: Bool { SmartTurn.files.allSatisfy { FileManager.default.fileExists(atPath: path($0).path) } }
 
-    /// Starts the one-time download when the models are missing.
-    func download() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !downloading, !Self.installed else { return }
-        try? FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
-        pending = SmartTurn.files.filter { !FileManager.default.fileExists(atPath: Self.path($0).path) }
-        downloading = true
-        voiceLog.notice("turn: downloading Smart Turn and Silero VAD")
-        nextLocked()
+    /// The real files by default; tests stand in a slow or failing load.
+    init(installed: @escaping () -> Bool = { TurnModels.installed },
+         damaged: @escaping () -> [KokoroFile] = { ModelFiles.needed(SmartTurn.files, in: TurnModels.folder) },
+         open: @escaping () -> OnnxTurn? = { OnnxTurn(model: TurnModels.path(SmartTurn.model), vad: TurnModels.path(SmartTurn.vad)) },
+         redownload: (([KokoroFile]) -> Void)? = nil) {
+        isInstalled = installed
+        self.damaged = damaged
+        self.open = open
+        self.redownload = redownload
     }
 
-    private func nextLocked() {
-        guard !pending.isEmpty else {
-            downloading = false
-            voiceLog.notice("turn: models downloaded")
-            return
+    /// Starts the one-time download of whatever is missing.
+    func download() {
+        let missing = SmartTurn.files.filter { !FileManager.default.fileExists(atPath: Self.path($0).path) }
+        guard !missing.isEmpty else { return }
+        start(missing)
+    }
+
+    private func start(_ files: [KokoroFile]) {
+        let begin: Bool = lock.withLock {
+            guard !downloading else { return false }
+            downloading = true
+            pending = files
+            return true
         }
-        current = pending.removeFirst()
-        session.downloadTask(with: current!.url).resume()
+        guard begin else { return }
+        try? FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+        voiceLog.notice("turn: downloading \(files.map(\.name).joined(separator: ", "), privacy: .public)")
+        next()
+    }
+
+    private func next() {
+        let file: KokoroFile? = lock.withLock {
+            current = pending.isEmpty ? nil : pending.removeFirst()
+            if current == nil { downloading = false }
+            return current
+        }
+        guard let file else { return voiceLog.notice("turn: models downloaded") }
+        session.downloadTask(with: file.url).resume()
     }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let file = current else { return }
+        guard let file = lock.withLock({ current }) else { return }
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200, (try? Kokoro.sha256(of: location)) == file.sha256,
-              (try? FileManager.default.moveItem(at: location, to: Self.path(file))) != nil else {
+        guard ModelFiles.accept(location, as: file, status: status, in: Self.folder) else {
             voiceLog.error("turn: \(file.name, privacy: .public) didn't download intact; the fixed pause timer stays on")
-            pending = []
-            downloading = false
+            lock.withLock {
+                pending = []
+                downloading = false
+            }
             return
         }
-        nextLocked()
+        next()
     }
 
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error else { return }
-        lock.lock()
-        defer { lock.unlock() }
         voiceLog.error("turn: download failed: \(error.localizedDescription, privacy: .public)")
-        pending = []
-        downloading = false
-    }
-
-    private let loader = DispatchQueue(label: "assistant.turn.load", qos: .utility)
-
-    /// The models if they're already loaded, without waiting; starts loading them in the background otherwise, so a
-    /// press never waits for them.
-    func ready() -> OnnxTurn? {
-        lock.lock()
-        let models = models
-        lock.unlock()
-        if models == nil, Self.installed { loader.async { _ = self.loaded() } }
-        return models
-    }
-
-    /// The loaded models, loading them now if needed; nil until they're downloaded (or if they fail to load).
-    func loaded() -> OnnxTurn? {
-        lock.lock()
-        defer { lock.unlock() }
-        if models == nil, Self.installed {
-            let started = Date()
-            models = OnnxTurn(model: Self.path(SmartTurn.model), vad: Self.path(SmartTurn.vad))
-            if models != nil { voiceLog.notice("turn: Smart Turn loaded in \(milliseconds(since: started), privacy: .public)") }
+        lock.withLock {
+            pending = []
+            downloading = false
         }
+    }
+
+    /// The models if they're already loaded, without waiting; starts loading them in the background otherwise.
+    func ready() -> OnnxTurn? {
+        let (models, load): (OnnxTurn?, Bool) = lock.withLock {
+            let load = self.models == nil && !loading && isInstalled()
+            if load { loading = true }
+            return (self.models, load)
+        }
+        if load { loader.async { self.load() } }
         return models
+    }
+
+    /// The loaded models, loading them now if needed (off the main thread only); nil until they're downloaded, or if
+    /// they fail to load.
+    func loaded() -> OnnxTurn? {
+        if let models = lock.withLock({ models }) { return models }
+        loader.sync { self.load() }
+        return lock.withLock { models }
+    }
+
+    /// Runs on `loader`: checks the files once, then loads them.
+    private func load() {
+        defer { lock.withLock { loading = false } }
+        guard lock.withLock({ models == nil }) else { return }
+        if !lock.withLock({ verified }) {
+            let bad = damaged()
+            guard bad.isEmpty else {
+                voiceLog.error("turn: \(bad.map(\.name).joined(separator: ", "), privacy: .public) failed its checksum; downloading again")
+                return redownload.map { $0(bad) } ?? start(bad)
+            }
+            lock.withLock { verified = true }
+        }
+        let started = Date()
+        guard let loaded = open() else { return }
+        voiceLog.notice("turn: Smart Turn loaded in \(milliseconds(since: started), privacy: .public)")
+        lock.withLock { models = loaded }
     }
 }
 

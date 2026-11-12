@@ -221,6 +221,9 @@ final class Model: NSObject, ObservableObject {
     private var turns = VoiceTurns()
     /// Talk Mode: listen, answer, speak, and listen again, until Stop or Esc.
     @Published var talkMode = false
+    /// A note about the microphone Talk Mode watches for interruptions, when it isn't the one picked or is silent.
+    @Published var talkNote: String?
+    private var silentWatch: AnyCancellable?
     private var loop = TalkLoop()
     private var speakingWatch: AnyCancellable?
     /// Opens the echo-cancelled microphone that notices the operator talking over an answer; tests replace these.
@@ -278,6 +281,9 @@ final class Model: NSObject, ObservableObject {
         }
         listener.onEnded = { [weak self] in self?.listeningEnded() }
         speaker.mayTalk = { [weak self] in self?.listener.listening != true }
+        silentWatch = speaker.$watchSilent.removeDuplicates().sink { [weak self] silent in
+            DispatchQueue.main.async { self?.refreshTalkNote(silent: silent) }
+        }
         speakingWatch = speaker.$speaking.removeDuplicates().dropFirst().sink { [weak self] speaking in
             DispatchQueue.main.async { self?.speechChanged(speaking) }
         }
@@ -356,6 +362,11 @@ final class Model: NSObject, ObservableObject {
             }
         }
         talkMode = loop.on
+        refreshTalkNote(silent: speaker.watchSilent)
+    }
+
+    func refreshTalkNote(silent: Bool) {
+        talkNote = loop.on ? TalkModeNote.text(defaultInput: listener.defaultInput, picked: listener.current, silent: silent) : nil
     }
 
     /// The answer started or stopped playing. Talk Mode listens again once it stops and the answer is complete.

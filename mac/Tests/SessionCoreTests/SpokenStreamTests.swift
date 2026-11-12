@@ -141,3 +141,19 @@ final class StreamedReplyTurnsTests: XCTestCase {
         XCTAssertEqual(turns.part("Next.", listening: false), .start("Next."))
     }
 }
+
+final class SpokenStreamCodeTests: XCTestCase {
+    func testAFencedCodeBlockIsNeverRead() {
+        var s = SpokenStream()
+        var out = s.take(line: PartialStream.delta("Run this in the trim session:\n```bash\ngit push origin main\n"))
+        out += s.take(line: PartialStream.delta("echo done. Really done.\n```\nThen tell me when it pushed.\n"))
+        out += s.finish(reply: "")
+        XCTAssertEqual(out, ["Run this in the trim session:", "Then tell me when it pushed."])
+    }
+
+    func testAnUnclosedBlockAtTheEndIsDropped() {
+        var s = SpokenStream()
+        _ = s.take(line: PartialStream.delta("Here's the command, it's long enough.\n```\nrm -rf build"))
+        XCTAssertEqual(s.finish(reply: ""), [])
+    }
+}

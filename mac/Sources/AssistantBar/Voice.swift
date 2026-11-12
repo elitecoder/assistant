@@ -287,11 +287,18 @@ final class Listener: ObservableObject {
         self.deps = deps
         model = deps.recognizers.state
         deps.recognizers.onState = { [weak self] in self?.model = $0 }
+        DeviceList.shared.onChange = { [weak self] in self?.objectWillChange.send() }
+    }
+
+    /// The Mac's default input, which voice processing in Talk Mode listens on.
+    var defaultInput: String? {
+        let devices = DeviceList.shared.snapshot
+        return devices.mics.first { $0.id == devices.defaultID }?.name
     }
 
     func toggle() { listening ? stop() : start() }
 
-    var choices: [String] { InputDevice.all().filter { !$0.virtual }.map(\.name) }
+    var choices: [String] { DeviceList.shared.snapshot.mics.filter { !$0.virtual }.map(\.name) }
 
     var current: String? { listening ? microphone : deps.choose([])?.name }
 
@@ -353,6 +360,7 @@ final class Listener: ObservableObject {
     func start() {
         pressedAt = Date()
         voiceLog.notice("timing: pressed")
+        DeviceList.shared.changed()
         question = UUID()
         tried = []
         formatRetried = []
@@ -743,6 +751,8 @@ final class LiveSpeechOutput: SpeechOutput {
 
 final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var speaking = false
+    /// The echo-cancelled microphone has sent only silence while watching for interruptions.
+    @Published var watchSilent = false
     @Published var kokoroStatus: KokoroEngine.Status
     static let preferenceKey = "voice"
     static let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate), channels: 1)!
@@ -958,9 +968,14 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
                 var watch = BargeInWatch()
                 let playing = self.playingNow
                 var buffers = 0
-                input.installTap(onBus: 0, bufferSize: 4800, format: mono) { buffer, _ in
+                var silentFor: TimeInterval = 0
+                input.installTap(onBus: 0, bufferSize: 4800, format: mono) { [weak self] buffer, _ in
                     guard let data = buffer.floatChannelData?[0] else { return }
                     let level = Meter.level(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
+                    let wasSilent = silentFor >= TalkModeNote.silentAfter
+                    silentFor = level == 0 ? silentFor + Double(buffer.frameLength) / buffer.format.sampleRate : 0
+                    let isSilent = silentFor >= TalkModeNote.silentAfter
+                    if isSilent != wasSilent { DispatchQueue.main.async { self?.watchSilent = isSilent } }
                     buffers += 1
                     if buffers % 50 == 1 { voiceLog.notice("barge-in: echo-cancelled level \(level)") }
                     if watch.take(level: level, duration: Double(buffer.frameLength) / buffer.format.sampleRate,

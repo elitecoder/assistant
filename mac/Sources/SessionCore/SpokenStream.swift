@@ -5,6 +5,7 @@ import Foundation
 public struct SpokenStream: Equatable {
     private var buffer = ""
     private var sawText = false
+    private var inCode = false
     public private(set) var sentences = 0
 
     /// A sentence shorter than this waits to be joined to the next one, so "Yes." isn't read on its own.
@@ -48,6 +49,16 @@ public struct SpokenStream: Equatable {
         var from = buffer.startIndex
         var searchFrom = from
         while let end = Self.sentenceEnd(in: buffer, from: searchFrom) {
+            let piece = buffer[searchFrom..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+            // A fenced code block is never read: a fence line opens or closes it, and its lines are dropped.
+            if inCode || piece.hasPrefix("```") {
+                let pending = buffer[from..<searchFrom].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !pending.isEmpty { out.append(pending) }
+                if piece.hasPrefix("```") { inCode.toggle() }
+                searchFrom = end
+                from = end
+                continue
+            }
             let sentence = buffer[from..<end].trimmingCharacters(in: .whitespacesAndNewlines)
             searchFrom = end
             guard sentence.count >= Self.shortest else { continue }
@@ -57,7 +68,7 @@ public struct SpokenStream: Equatable {
         buffer = String(buffer[from...])
         if all {
             let rest = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !rest.isEmpty { out.append(rest) }
+            if !rest.isEmpty && !inCode && !rest.hasPrefix("```") { out.append(rest) }
             buffer = ""
         }
         sentences += out.count

@@ -144,3 +144,47 @@ final class ListenerTurnTests: XCTestCase {
         XCTAssertTrue(recognizers.sessions[0].finished)
     }
 }
+
+final class DeviceListTests: XCTestCase {
+    /// Redraws read the cached devices; only a device change (or a press) queries Core Audio again.
+    func testDevicesAreQueriedOnlyAfterTheyChange() {
+        var queries = 0
+        let list = DeviceList {
+            queries += 1
+            return DeviceList.Snapshot(mics: [], defaultID: nil, lidClosed: false)
+        }
+        for _ in 0..<100 { _ = list.snapshot }
+        XCTAssertEqual(queries, 1)
+        list.changed()
+        _ = list.snapshot
+        XCTAssertEqual(queries, 2)
+    }
+}
+
+final class TurnModelsLoadingTests: XCTestCase {
+    /// Loading takes about half a second; asking for the models meanwhile mustn't wait for it.
+    func testAskingWhileTheModelsLoadDoesNotWait() {
+        let models = TurnModels(installed: { true }, damaged: { [] }, open: {
+            Thread.sleep(forTimeInterval: 0.5)
+            return nil
+        })
+        XCTAssertNil(models.ready(), "the first ask starts loading in the background")
+        Thread.sleep(forTimeInterval: 0.05)
+        let started = Date()
+        XCTAssertNil(models.ready())
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05, "waited for the load")
+    }
+
+    /// A file that fails its checksum before the first load isn't loaded; it's downloaded again.
+    func testADamagedModelIsNotLoaded() {
+        var opened = false
+        var fetched: [String] = []
+        let models = TurnModels(installed: { true }, damaged: { [SmartTurn.vad] }, open: {
+            opened = true
+            return nil
+        }, redownload: { fetched += $0.map(\.name) })
+        XCTAssertNil(models.loaded())
+        XCTAssertFalse(opened)
+        XCTAssertEqual(fetched, ["silero_vad.onnx"])
+    }
+}

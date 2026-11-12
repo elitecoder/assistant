@@ -191,6 +191,25 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- **Stop speaking**, **Stop**, Esc, and talking over an answer now stop a
+  streamed answer completely: the sentences Claude hasn't written yet aren't
+  read either. Talking over an answer asks your new question first, as soon as
+  the interrupted answer is saved; the whole answer stays in the chat.
+- Talk Mode listens for interruptions only while Assistant's voice is playing,
+  and starts over for each sentence, so talking while Claude is still writing
+  no longer uses up the interruption. Stopping Talk Mode mid-question drops
+  the half question, a disconnected microphone ends Talk Mode with a note, and
+  interrupting while you're already asking keeps your question.
+- The panel says when Talk Mode watches a different microphone than the one
+  picked (voice processing uses the Mac's default input), or when that
+  microphone sends no sound.
+- Code blocks in a spoken answer aren't read aloud.
+- Smart Turn and Kokoro downloads are refused unless their SHA-256 matches, a
+  damaged Smart Turn file is downloaded again before it's loaded, and Kokoro
+  now downloads from a pinned commit. Loading Smart Turn no longer holds a
+  lock the main thread waits on.
+- The microphone menu reads the device list only when Core Audio reports a
+  change, not on every redraw while listening.
 - Apple's voices now play at the speed you pick. Their rate isn't linear:
   1.5× used to play at about 2.5×, and 2× at about 4×. Assistant now uses a
   map measured from rendered speech, within 15% of each speed.
