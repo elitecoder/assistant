@@ -100,6 +100,7 @@ public enum ToolGuard {
         let words = Messaging.shellWords(command.trimmingCharacters(in: .whitespaces))
         guard words.first == tool, words.count >= 2 else { return .deny(onlyOwnCommands) }
         let args = Array(words.dropFirst())
+        if args[0] == "--send", args.count == 3, let refusal = Messaging.sendRefusal(args[2]) { return .deny(refusal) }
         let ok: Bool
         switch args[0] {
         case "--sessions": ok = args.count == 1

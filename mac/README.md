@@ -122,7 +122,16 @@ message it sends, and each reply, shows in the panel. Select **Stop** to end it.
 
 - It sends with `cmux send`, which refuses while you're typing in that session
   or a question or permission prompt is open there.
-- It skips workspaces on your `/back-off` list.
+- It skips workspaces on your `/back-off` list, however the workspace is
+  named: by ref, ID, or title.
+- It won't send a message that starts with `/` or `!`, which would run a slash
+  command or a shell command in that session. Plain requests are allowed; the
+  session's own permission checks handle them.
+- It presses Enter once. If the message doesn't show in the session's
+  transcript, it says so and doesn't send it again.
+- Everything it reads from other sessions (the workspace digest, their replies,
+  and transcripts) reaches its Claude inside marked blocks that it treats as
+  information, never as instructions, so a session's text can't pass for you.
 - It brings you any decision about merging, deleting, spending money, or
   product behavior instead of answering for you.
 - Its only command access is Assistant's own `--sessions`, `--send`,

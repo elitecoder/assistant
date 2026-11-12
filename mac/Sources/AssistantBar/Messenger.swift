@@ -16,25 +16,23 @@ enum Messenger {
         return Shell.run(cmux, args)
     }
 
-    static func backedOff(_ workspace: String) -> Bool {
+    /// Checked against the workspace a name resolves to, so a title can't reach a workspace backed off by ref.
+    static func backedOff(_ names: [String]) -> Bool {
         guard let data = FileManager.default.contents(atPath: backOff.path),
               let d = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let list = d["workspaces"] as? [Any] else { return false }
-        return list.contains { item in
-            if let s = item as? String { return s == workspace }
-            if let o = item as? [String: Any] { return o.values.contains { ($0 as? String) == workspace } }
-            return false
-        }
+        return Messaging.backedOff(list, names: names)
     }
 
     static let projects = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/projects")
 
-    /// The session's transcript, or where Claude will write it once the session gets its first message.
-    static func transcript(_ session: Messaging.Session) -> URL? {
+    /// The session's transcript, or where Claude will write it once the session gets its first message. After /clear
+    /// the session writes a new file the process arguments don't name; `live` finds it.
+    static func transcript(_ session: Messaging.Session, others: Set<String> = []) -> URL? {
         let folders = (try? FileManager.default.contentsOfDirectory(atPath: projects.path)) ?? []
         if let found = folders.filter({ !$0.hasPrefix("-private-") })
             .map({ projects.appendingPathComponent($0).appendingPathComponent(session.id + ".jsonl") })
-            .first(where: { FileManager.default.fileExists(atPath: $0.path) }) { return found }
+            .first(where: { FileManager.default.fileExists(atPath: $0.path) }) { return live(found, session, others) }
         let (_, out) = Shell.run("/usr/sbin/lsof", ["-a", "-p", String(session.pid), "-d", "cwd", "-Fn"])
         guard let cwd = String(decoding: out, as: UTF8.self).split(separator: "\n")
             .first(where: { $0.hasPrefix("n") })?.dropFirst() else { return nil }
@@ -42,13 +40,39 @@ enum Messenger {
             .appendingPathComponent(session.id + ".jsonl")
     }
 
+    static func live(_ named: URL, _ session: Messaging.Session, _ others: Set<String>) -> URL {
+        let folder = named.deletingLastPathComponent()
+        let keys: Set<URLResourceKey> = [.creationDateKey, .contentModificationDateKey]
+        let files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys))) ?? [])
+            .filter { $0.pathExtension == "jsonl" }
+            .compactMap { url -> Messaging.TranscriptFile? in
+                guard let v = try? url.resourceValues(forKeys: keys), let c = v.creationDate, let m = v.contentModificationDate
+                else { return nil }
+                return Messaging.TranscriptFile(url: url, created: c, modified: m)
+            }
+        let modified = files.first { $0.url == named }?.modified
+        guard let start = processStart(session.pid) else { return named }
+        return Messaging.liveTranscript(named: named, namedModified: modified, in: files, processStart: start,
+                                        otherSessions: others.subtracting([session.id]))
+    }
+
+    static func processStart(_ pid: Int32) -> Date? {
+        let (_, out) = Shell.run("/bin/ps", ["-o", "lstart=", "-p", String(pid)], timeout: 5)
+        let text = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        return f.date(from: text.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " "))
+    }
+
     /// Every workspace pane running Claude, with its transcript.
     static func targets() -> [Target] {
         let (_, tree) = cmux(["tree", "--json"])
         let (_, ps) = Shell.run("/bin/ps", ["-A", "-o", "pid=,tty=,command="])
         let sessions = Messaging.claudeSessions(String(decoding: ps, as: UTF8.self))
+        let ids = Set(sessions.values.map(\.id))
         return Messaging.terminals(tree).compactMap { t in
-            sessions[t.tty].flatMap(transcript).map { Target(terminal: t, transcript: $0) }
+            sessions[t.tty].flatMap { transcript($0, others: ids) }.map { Target(terminal: t, transcript: $0) }
         }
     }
 
@@ -63,22 +87,25 @@ enum Messenger {
 
     /// Pastes `message` into the session, presses Enter, confirms it arrived, then waits for the reply.
     static func send(_ workspace: String, _ message: String, timeout: TimeInterval) -> String {
-        guard !backedOff(workspace) else { return "NOT SENT\n\(workspace) is on the operator's back-off list." }
-        guard let target = target(workspace) else {
+        if let refusal = Messaging.sendRefusal(message) { return "NOT SENT\n" + refusal }
+        let target = target(workspace)
+        let names = [workspace] + [target?.terminal.workspace, target?.terminal.workspaceID, target?.terminal.title].compactMap { $0 }
+        guard !backedOff(names) else { return "NOT SENT\n\(workspace) is on the operator's back-off list." }
+        guard let target else {
             return "NOT SENT\nNo Claude session found in \(workspace). Run --sessions to list them."
         }
         let pane = ["--workspace", target.terminal.workspace, "--surface", target.terminal.surface]
         let since = Date()
-        let (rc, out) = cmux(["send"] + pane + ["--paste", message])
+        let (rc, out) = cmux(Messaging.pasteArguments(workspace: target.terminal.workspace, surface: target.terminal.surface,
+                                                      message: message))
         guard rc == 0 else {
             return "NOT SENT\nThe session is busy: someone is typing there, or a question or permission prompt is open.\n"
                 + String(decoding: out, as: UTF8.self)
         }
         _ = cmux(["send"] + pane + ["\\r"])
-        if !waitFor(target.transcript, timeout: 15, until: { Messaging.turn($0, sent: message, since: since).delivered }) {
-            _ = cmux(["send"] + pane + ["\\r"])
-            guard waitFor(target.transcript, timeout: 15, until: { Messaging.turn($0, sent: message, since: since).delivered })
-            else { return "NOT DELIVERED\nThe text is in \(workspace)'s prompt but didn't submit." }
+        // Enter is pressed once. If the transcript doesn't show the message, pressing it again could submit it twice.
+        guard waitFor(target.transcript, timeout: 30, until: { Messaging.turn($0, sent: message, since: since).delivered }) else {
+            return Messaging.unconfirmed(workspace)
         }
         return wait(target, sent: message, since: since, timeout: timeout)
     }

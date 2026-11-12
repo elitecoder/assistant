@@ -65,9 +65,10 @@ final class TurnAssemblyTests: XCTestCase {
         let turn2 = stored1 + [row(7, .user, "And the CI fix?")]
         let first = TurnPrompt.blocks(turn1)
         let second = TurnPrompt.blocks(turn2)
-        XCTAssertEqual(first, [TurnContext.marker + "\n\nFLEET", "[Operator]\nWhat needs me?"])
+        XCTAssertEqual(first, [TurnContext.marker + "\n\n" + Untrusted.wrap("FLEET"), "[Operator]\nWhat needs me?"])
         XCTAssertEqual(Array(second.prefix(first.count)), first)
-        XCTAssertEqual(second.last, "[You ran Bash, call c1]\nls\n\n[Result of c1]\nout\n\n[You]\nTwo do.\n\n[Operator]\nAnd the CI fix?")
+        XCTAssertEqual(second.last, "[You ran Bash, call c1]\nls\n\n[Result of c1]\n" + Untrusted.wrap("out")
+                       + "\n\n[You]\nTwo do.\n\n[Operator]\nAnd the CI fix?")
         let input1 = String(decoding: TurnPrompt.input(first), as: UTF8.self)
         let input2 = String(decoding: TurnPrompt.input(second), as: UTF8.self)
         let lastText = try! JSONSerialization.data(withJSONObject: ["text": first.last!], options: [.sortedKeys, .withoutEscapingSlashes])

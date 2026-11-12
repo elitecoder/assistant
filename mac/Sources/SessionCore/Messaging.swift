@@ -5,6 +5,8 @@ public struct Terminal: Equatable {
     public let title: String
     public let surface: String
     public let tty: String
+    /// The workspace's id, which a back-off entry can name instead of its ref.
+    public var workspaceID: String? = nil
 }
 
 public struct TurnState: Equatable {
@@ -33,13 +35,13 @@ public enum Messaging {
     public static func terminals(_ tree: Data) -> [Terminal] {
         guard let root = try? JSONSerialization.jsonObject(with: tree) else { return [] }
         var out: [Terminal] = []
-        func walk(_ o: Any, _ ws: (String, String)?) {
+        func walk(_ o: Any, _ ws: (String, String, String?)?) {
             if let d = o as? [String: Any] {
                 var ws = ws
-                if let ref = d["ref"] as? String, ref.hasPrefix("workspace:") { ws = (ref, d["title"] as? String ?? ref) }
+                if let ref = d["ref"] as? String, ref.hasPrefix("workspace:") { ws = (ref, d["title"] as? String ?? ref, d["id"] as? String) }
                 if d["type"] as? String == "terminal", let ref = d["ref"] as? String, let tty = d["tty"] as? String,
                    let ws, !out.contains(where: { $0.surface == ref }) {
-                    out.append(Terminal(workspace: ws.0, title: ws.1, surface: ref, tty: tty))
+                    out.append(Terminal(workspace: ws.0, title: ws.1, surface: ref, tty: tty, workspaceID: ws.2))
                 }
                 d.values.forEach { walk($0, ws) }
             } else if let a = o as? [Any] {
@@ -71,6 +73,66 @@ public enum Messaging {
         return out
     }
 
+    /// Why a message can't be sent into another session, or nil when it can. A message starting with "/" runs as a
+    /// slash command there (/clear, /cleanup, /merge-when-ready…) and one starting with "!" runs in its shell, both
+    /// with that session's permissions. Plain requests are fine: the session's own permission checks cover them.
+    public static func sendRefusal(_ message: String) -> String? {
+        switch message.first(where: { !$0.isWhitespace }) {
+        case "/": return "Messages can't start with \"/\": that would run a slash command in the session. Describe what you want in plain words, or ask the operator to run the command."
+        case "!": return "Messages can't start with \"!\": that would run a shell command in the session. Ask in plain words, or ask the operator."
+        case nil: return "The message is empty."
+        default: return nil
+        }
+    }
+
+    /// What `--send` says when Enter was pressed but the transcript doesn't show the message: it may have gone in.
+    public static func unconfirmed(_ workspace: String) -> String {
+        "NOT CONFIRMED\nThe message was pasted into \(workspace) and Enter was pressed, but it doesn't show in the session's "
+            + "transcript yet. Don't send it again. Run --wait \(workspace) to see whether the session is working on it."
+    }
+
+    /// `cmux send` arguments that paste `message` into a pane; `--` keeps a message starting with "-" from being read
+    /// as a flag.
+    public static func pasteArguments(workspace: String, surface: String, message: String) -> [String] {
+        ["send", "--workspace", workspace, "--surface", surface, "--paste", "--", message]
+    }
+
+    /// Whether the operator's back-off list names this workspace: by the name it was asked for, its resolved ref, its
+    /// id, or its title.
+    public static func backedOff(_ list: [Any], names: [String]) -> Bool {
+        let names = Set(names.filter { !$0.isEmpty })
+        return list.contains { item in
+            if let s = item as? String { return names.contains(s) }
+            if let o = item as? [String: Any] { return o.values.contains { ($0 as? String).map(names.contains) ?? false } }
+            return false
+        }
+    }
+
+    public struct TranscriptFile: Equatable {
+        public let url: URL
+        public let created: Date
+        public let modified: Date
+
+        public init(url: URL, created: Date, modified: Date) {
+            self.url = url
+            self.created = created
+            self.modified = modified
+        }
+    }
+
+    /// The transcript a session writes now. After /clear (or /resume inside the session) Claude writes to a new file,
+    /// but the process arguments still name the old one. The new one is in the same project folder, was created after
+    /// the session's process started, was written after the named file, and isn't another running session's.
+    public static func liveTranscript(named: URL, namedModified: Date?, in files: [TranscriptFile], processStart: Date,
+                                      otherSessions: Set<String>) -> URL {
+        let since = namedModified ?? .distantPast
+        let newer = files.filter { file in
+            file.url != named && file.created >= processStart && file.modified > since
+                && !otherSessions.contains(file.url.deletingPathExtension().lastPathComponent)
+        }
+        return newer.max { $0.modified < $1.modified }?.url ?? named
+    }
+
     /// The ~/.claude/projects folder name Claude uses for a working directory.
     public static func projectFolder(_ cwd: String) -> String {
         String(cwd.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" })
@@ -84,7 +146,7 @@ public enum Messaging {
             guard let r = Transcript.record(line) else { continue }
             if !state.delivered {
                 guard let t = r["timestamp"] as? String, let at = Timestamps.parse(t), at >= since.addingTimeInterval(-5),
-                      let text = Transcript.humanText(r), Transcript.letters(text) == want else { continue }
+                      let text = Transcript.humanText(r, skipping: false), Transcript.letters(text) == want else { continue }
                 state.delivered = true
                 continue
             }

@@ -83,11 +83,14 @@ public enum FleetDelta {
 public enum TurnPrompt {
     public static func render(_ message: ConversationMessage) -> String {
         if message.isSummaryMessage { return labelingKeptRow(message) }
-        if TurnContext.isContext(message) { return message.content }
+        if TurnContext.isContext(message) {
+            let body = message.content.dropFirst(TurnContext.marker.count).trimmingCharacters(in: .whitespacesAndNewlines)
+            return TurnContext.marker + "\n\n" + Untrusted.wrap(body)
+        }
         switch message.role {
         case .user: return "[Operator]\n" + message.content
         case .system: return message.content
-        case .tool: return "[Result of \(message.toolCallID ?? "a command")]\n" + message.content
+        case .tool: return "[Result of \(message.toolCallID ?? "a command")]\n" + Untrusted.wrap(message.content)
         case .assistant:
             guard let id = message.toolCallID else { return "[You]\n" + message.content }
             return "[You ran \(message.toolName ?? "a tool"), call \(id)]\n" + message.content
