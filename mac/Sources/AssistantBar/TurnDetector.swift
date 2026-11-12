@@ -228,13 +228,13 @@ final class TurnCore {
             speechFlags.append(speaking)
             switch end.take(speech: speaking, duration: Double(Self.windowSize) / Double(SmartTurn.sampleRate)) {
             case .wait: continue
-            case .done(let byModel): return .done(byModel: byModel)
+            case .done(let held): return .done(held: held)
             case .ask:
                 let started = Date()
                 let probability = (try? models?.complete(SmartTurn.lastWindow(Array(audio.prefix(processed))))) ?? 0
                 turnSeconds.append(Date().timeIntervalSince(started))
                 asks.append((seconds, probability))
-                if case .done(let byModel) = end.answer(probability) { return .done(byModel: byModel) }
+                _ = end.answer(probability)
             }
         }
         if audio.count > 2 * SmartTurn.window {
@@ -255,9 +255,13 @@ final class TurnDetector {
     private let done: (Bool) -> Void
     private var converter: AVAudioConverter?
     private var finished = false
+    private let holdingFlag = Flag()
     private let target = AVAudioFormat(standardFormatWithSampleRate: Double(SmartTurn.sampleRate), channels: 1)!
 
-    init(models: OnnxTurn, done: @escaping (_ byModel: Bool) -> Void) {
+    /// Smart Turn is holding the turn open past the timer; readable from any thread.
+    var holding: Bool { holdingFlag.value }
+
+    init(models: OnnxTurn, done: @escaping (_ held: Bool) -> Void) {
         core = TurnCore(models: models)
         self.done = done
     }
@@ -270,10 +274,12 @@ final class TurnDetector {
             guard let converter = self.converter, let out = TurnDetector.convert(copy, converter, self.target),
                   let data = out.floatChannelData?[0] else { return }
             let samples = Array(UnsafeBufferPointer(start: data, count: Int(out.frameLength)))
-            if case .done(let byModel)? = self.core.feed(samples) {
+            let decision = self.core.feed(samples)
+            self.holdingFlag.set(self.core.end.holding)
+            if case .done(let held)? = decision {
                 self.finished = true
-                voiceLog.notice("turn: over after \(String(format: "%.2f", self.core.end.silence), privacy: .public) s of silence, decided by \(byModel ? "Smart Turn" : "the time limit", privacy: .public)")
-                DispatchQueue.main.async { self.done(byModel) }
+                voiceLog.notice("turn: over after \(String(format: "%.2f", self.core.end.silence), privacy: .public) s of silence\(held ? ", held longer by Smart Turn" : "", privacy: .public)")
+                DispatchQueue.main.async { self.done(held) }
             }
         }
     }
@@ -296,17 +302,18 @@ final class TurnDetector {
     }
 }
 
-/// Reads a sound file as 16 kHz mono and runs turn detection over it at the file's own pace, with Smart Turn and
-/// with the 2.5-second timer, for `--turn-eval`.
+/// Reads a sound file as 16 kHz mono and runs turn detection over it at the file's own pace, for `--turn-eval`: the
+/// 2.5-second timer, the shipped rule (the timer, held to 4 seconds when Smart Turn says the operator hasn't finished),
+/// and ending early, which isn't shipped (Smart Turn at least 0.9 at 0.2, 0.5, and 0.9 seconds of silence, and the
+/// recognizer's text a finished sentence).
 enum TurnEval {
     struct Result {
-        let model: TimeInterval?
-        let modelDecided: Bool
         let timer: TimeInterval?
-        let timer3: TimeInterval?
+        let shipped: TimeInterval?
+        let held: Bool
+        let early: TimeInterval?
+        let earlyText: String?
         let lastSpeech: TimeInterval
-        let turnSeconds: [TimeInterval]
-        let asks: [(at: TimeInterval, probability: Float)]
     }
 
     static func samples(_ url: URL) -> [Float]? {
@@ -323,25 +330,26 @@ enum TurnEval {
         return out
     }
 
-    static func run(_ samples: [Float], models: OnnxTurn) -> Result {
+    static func run(_ samples: [Float], models: OnnxTurn, transcribe: ([Float]) -> String) -> Result {
         let core = TurnCore(models: models)
-        var modelAt: TimeInterval?
-        var decided = false
+        var shipped: TimeInterval?
+        var held = false
         var index = 0
         while index < samples.count {
             let next = Array(samples[index..<min(samples.count, index + 1600)])
             index += next.count
-            if case .done(let byModel)? = core.feed(next), modelAt == nil {
-                modelAt = core.seconds
-                decided = byModel
+            if case .done(let h)? = core.feed(next), shipped == nil {
+                shipped = core.seconds
+                held = h
             }
         }
-        // The timers hear the same voice detector, so they differ from Smart Turn only in how they decide.
+        // The other rules hear the same voice detector, so they differ only in how they decide.
         let window = Double(TurnCore.windowSize) / Double(SmartTurn.sampleRate)
+        let flags = core.speechFlags
         func timer(_ seconds: TimeInterval) -> TimeInterval? {
             var silence: TimeInterval = 0
             var heard = false
-            for (i, speech) in core.speechFlags.enumerated() {
+            for (i, speech) in flags.enumerated() {
                 if speech {
                     heard = true
                     silence = 0
@@ -352,7 +360,38 @@ enum TurnEval {
             }
             return nil
         }
-        return Result(model: modelAt, modelDecided: decided, timer: timer(TurnEnd.timer), timer3: timer(3), lastSpeech: core.lastSpeech,
-                      turnSeconds: core.turnSeconds, asks: core.asks)
+        func probability(at i: Int) -> Float {
+            (try? models.complete(SmartTurn.lastWindow(Array(samples.prefix((i + 1) * TurnCore.windowSize))))) ?? 0
+        }
+        var early: TimeInterval?
+        var earlyText: String?
+        var silence: TimeInterval = 0
+        var heard = false
+        var sure = 0
+        var asks = [0.2, 0.5, 0.9]
+        for (i, speech) in flags.enumerated() where early == nil {
+            if speech {
+                heard = true
+                silence = 0
+                sure = 0
+                asks = [0.2, 0.5, 0.9]
+                continue
+            }
+            guard heard else { continue }
+            silence += window
+            if let next = asks.first, silence >= next - 1e-9 {
+                asks.removeFirst()
+                if probability(at: i) >= 0.9 { sure += 1 } else { asks = [] }
+                if sure == 3 {
+                    let text = transcribe(Array(samples.prefix((i + 1) * TurnCore.windowSize)))
+                    if SentenceEnd.complete(text) {
+                        early = Double(i + 1) * window
+                        earlyText = text
+                    }
+                }
+            }
+        }
+        return Result(timer: timer(TurnEnd.timer), shipped: shipped, held: held, early: early.map { min($0, shipped ?? $0) } ?? shipped,
+                      earlyText: earlyText, lastSpeech: core.lastSpeech)
     }
 }

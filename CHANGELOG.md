@@ -10,22 +10,24 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
-- Assistant decides you've finished a question from the sound of your voice
-  instead of waiting a fixed 2.5 seconds. Silero VAD (MIT) notices when you
-  stop talking, and Pipecat's Smart Turn v3.2 (BSD 2-Clause) judges whether
-  you finished or paused mid-sentence; both run on your Mac with ONNX Runtime.
-  Assistant asks Smart Turn at 0.2, 0.5, and 0.9 seconds into a pause and ends
-  the question only if it's sure (above 0.9) every time. On 32 rendered
-  questions, half with a pause of 0.8 to 2.6 seconds mid-sentence, each clean
-  and with brown and pink room noise at 25 and 15 dB, it was right on 30 to 32
-  of 32 in every condition, against 29 to 30 for the 2.5-second timer, and a
-  finished question ended 0.93 seconds after the voice stopped (median),
-  down from 2.53. A 3-second timer was right on 32 of 32 everywhere, but
-  always waits 3 seconds. When Smart Turn isn't sure, Assistant waits up to 3
-  seconds of silence. The models (35 MB) download once into
+- A pause mid-sentence no longer cuts your question off. Assistant still ends
+  a question 2.5 seconds after you stop talking, but 0.2 seconds into each
+  pause it asks Pipecat's Smart Turn v3.2 (BSD 2-Clause) whether you've
+  finished, and when it says you haven't (below 0.5), Assistant waits up to 4
+  seconds of silence. Silero VAD (MIT) notices when you stop talking; both run
+  on your Mac with ONNX Runtime. Smart Turn never ends a question early. On 40
+  questions it wasn't tuned on (clean, and with brown, pink, fan, and babble
+  noise at 10 to 25 dB), ending early cut off 1 to 3 paused questions in every
+  condition but babble, even with the recognizer's punctuation and last word
+  as a second check. What shipped cut off none of them and none of 32 more,
+  where the 2.5-second timer cut off 2 or 3 in six of nine conditions; it held 0 to 4
+  of 20 finished questions longer than the timer. When noise sounds like
+  speech to the voice detector, the timer after your last recognized word
+  still ends the question. The models (35 MB) download once into
   `~/Library/Application Support/Assistant/SmartTurn` and are checked by
-  SHA-256; until then, and if they can't load, the 2.5-second timer stays.
-  `AssistantBar --turn-eval <file.wav>...` prints both decisions for each file.
+  SHA-256; until then, and if they can't load, only the timer decides.
+  `AssistantBar --turn-eval <file.wav>...` prints the timer's decision, the
+  shipped one, and early ending's for each file.
 - Talk Mode: select the waveform button, hold Control-Option-V, or start the
   app with `--talk`, and Assistant listens, answers, speaks, and listens again
   until you select **Stop** or press Esc. While it speaks, the microphone stays

@@ -95,8 +95,8 @@ enum Main {
         return Transcription.succeeded(heard)
     }
 
-    /// For each file, when Smart Turn and the 2.5-second timer each decide the turn is over, and when speech last
-    /// ended, as tab-separated seconds. Downloads the models first if needed.
+    /// For each file, when each rule ends the turn and when speech last ended, as tab-separated seconds: the
+    /// 2.5-second timer, the shipped rule, and ending early (not shipped), with the text that ended it early.
     static func turnEval(_ files: [URL]) -> Bool {
         TurnModels.shared.download()
         let started = Date()
@@ -107,19 +107,38 @@ enum Main {
             print("Smart Turn isn't available.")
             return false
         }
-        print("file\tsmart_turn\tby_model\ttimer\tlast_speech\tmodel_ms\tasked\ttimer3")
+        print("file\ttimer\tshipped\theld\tearly\tlast_speech\tearly_text")
         for url in files {
             guard let samples = TurnEval.samples(url) else {
                 print("\(url.lastPathComponent)\tunreadable")
                 continue
             }
-            let r = TurnEval.run(samples, models: models)
+            let r = TurnEval.run(samples, models: models, transcribe: transcribePrefix)
             let f = { (t: TimeInterval?) in t.map { String(format: "%.2f", $0) } ?? "-" }
-            let ms = r.turnSeconds.isEmpty ? "-" : String(format: "%.0f", r.turnSeconds.reduce(0, +) / Double(r.turnSeconds.count) * 1000)
-            let asked = r.asks.map { String(format: "%.2f:%.3f", $0.at, $0.probability) }.joined(separator: " ")
-            print("\(url.lastPathComponent)\t\(f(r.model))\t\(r.modelDecided)\t\(f(r.timer))\t\(f(r.lastSpeech))\t\(ms)\t\(asked)\t\(f(r.timer3))")
+            print("\(url.lastPathComponent)\t\(f(r.timer))\t\(f(r.shipped))\t\(r.held)\t\(f(r.early))\t\(f(r.lastSpeech))\t\(r.earlyText ?? "")")
         }
         return true
+    }
+
+    /// What the recognizer makes of 16 kHz audio so far, the way a live question's text would read at that moment.
+    static func transcribePrefix(_ samples: [Float]) -> String {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("prefix-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: Double(SmartTurn.sampleRate), channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return "" }
+        buffer.frameLength = buffer.frameCapacity
+        samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        do {
+            // The file is finished when it goes out of scope, before the recognizer reads it.
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            try file.write(from: buffer)
+        } catch {
+            return ""
+        }
+        var heard: String?
+        guard Listener.transcribe(url, legacy: false, vocabulary: Vocabulary.terms, done: { heard = $0 }) == nil else { return "" }
+        while heard == nil { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
+        return heard ?? ""
     }
 
     static var tool: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }

@@ -69,23 +69,18 @@ on the file. Add `--legacy` to use the older recognizer. Make a test file with
 The timing of each press is in the log:
 `log show --last 10m --info --predicate 'subsystem == "com.assistant.sessions" AND category == "voice"'`.
 
-Assistant knows you've finished a question from how it sounds, not just from
-silence. [Silero VAD](https://github.com/snakers4/silero-vad) (MIT license)
-notices when you stop talking, and Pipecat's
-[Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn) (BSD 2-Clause
-license) judges whether you finished or paused mid-sentence. Assistant asks it
-three times during a pause, at 0.2, 0.5, and 0.9 seconds, and ends the
-question only if it's sure every time, so a finished question ends about a
-second after you stop. When it thinks you paused mid-sentence, Assistant keeps
-listening, for up to 3 seconds of silence. On 160 rendered questions (clean,
-and with room noise at 25 and 15 dB), this was right as often as a 2.5-second
-timer or more in every condition, and a plain 3-second timer was right more
-often still, but waits 3 seconds every time. Both
-models run on your Mac with [ONNX Runtime](https://onnxruntime.ai). They
-download once, the first time you talk, into
-`~/Library/Application Support/Assistant/SmartTurn` (35 MB), and Assistant
-checks each file's SHA-256. Until then, it stops 2.5 seconds after your last
-word. To compare the two on recorded speech, run
+Assistant ends a question 2.5 seconds after you stop talking, and waits longer
+when you pause mid-sentence. [Silero VAD](https://github.com/snakers4/silero-vad)
+(MIT license) notices when you stop talking, and 0.2 seconds into the pause,
+Pipecat's [Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn)
+(BSD 2-Clause license) judges whether you've finished. When it says you
+haven't, Assistant keeps listening for up to 4 seconds of silence. It never
+ends a question sooner than 2.5 seconds: on questions it wasn't tuned on, it
+called fragments like "Switch the voice to" finished. Both models run on your
+Mac with [ONNX Runtime](https://onnxruntime.ai). They download once, the first
+time you talk, into `~/Library/Application Support/Assistant/SmartTurn`
+(35 MB), and Assistant checks each file's SHA-256. Until then, only the
+2.5-second timer decides. To compare the rules on recorded speech, run
 `AssistantBar --turn-eval question.wav`.
 
 ### Talk Mode

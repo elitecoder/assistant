@@ -8,6 +8,8 @@ import XCTest
 final class SpeechRenderer: NSObject, AVSpeechSynthesizerDelegate {
     private var frames = 0
     private var words: [(location: Int, frame: Int)] = []
+    /// Where the inserted pause starts, in samples.
+    private(set) var pauseStart: Int?
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, willSpeakRangeOfSpeechString range: NSRange, utterance: AVSpeechUtterance) {
         words.append((range.location, frames))
@@ -34,6 +36,7 @@ final class SpeechRenderer: NSObject, AVSpeechSynthesizerDelegate {
         while !done { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         if let pauseBefore, let cut = words.first(where: { $0.location >= pauseBefore })?.frame {
             samples.insert(contentsOf: [Float](repeating: 0, count: Int(pause * 16_000)), at: cut)
+            pauseStart = cut
         }
         return samples + [Float](repeating: 0, count: Int(trailing * 16_000))
     }
@@ -45,28 +48,26 @@ final class TurnDetectionTests: XCTestCase {
         return try XCTUnwrap(TurnModels.shared.loaded())
     }
 
-    /// A finished question ends about 0.9 s after the voice stops (three calls, at 0.2, 0.5, and 0.9 s), where the
-    /// timer takes 2.5 s.
-    func testAFinishedQuestionEndsSoonAfterTheVoiceStops() throws {
+    /// A finished question ends on the 2.5 s timer: Smart Turn never ends one sooner.
+    func testAFinishedQuestionEndsOnTheTimer() throws {
         let models = try models()
         let audio = SpeechRenderer().render("What does the version bump session need from me right now?")
-        let r = TurnEval.run(audio, models: models)
-        XCTAssertTrue(r.modelDecided)
-        let model = try XCTUnwrap(r.model), timer = try XCTUnwrap(r.timer)
-        XCTAssertLessThan(model - r.lastSpeech, 1.2)
-        XCTAssertGreaterThanOrEqual(r.asks.count, 3, "it takes three agreeing calls")
-        XCTAssertGreaterThan(timer - r.lastSpeech, 2.4)
+        let r = TurnEval.run(audio, models: models, transcribe: { _ in "" })
+        let shipped = try XCTUnwrap(r.shipped), timer = try XCTUnwrap(r.timer)
+        XCTAssertEqual(shipped, timer, accuracy: 0.05)
+        XCTAssertFalse(r.held)
     }
 
-    /// A long pause mid-sentence ("Switch the voice to … Kokoro") doesn't end the turn, where the timer cuts it off.
-    func testAPauseMidSentenceDoesNotEndTheTurn() throws {
+    /// A 2.7 s pause mid-sentence ("Switch the voice to … Kokoro"): the timer alone cuts the question off; Smart Turn
+    /// says it isn't finished and holds the turn open.
+    func testAPauseMidSentenceIsHeldOpen() throws {
         let models = try models()
         let text = "Switch the voice to Kokoro and read the answer a little faster."
         let audio = SpeechRenderer().render(text, pauseBefore: "Switch the voice to ".count, pause: 2.7)
-        let r = TurnEval.run(audio, models: models)
-        let model = try XCTUnwrap(r.model), timer = try XCTUnwrap(r.timer)
-        XCTAssertGreaterThanOrEqual(model, r.lastSpeech, "Smart Turn ended the question in the pause")
+        let r = TurnEval.run(audio, models: models, transcribe: { _ in "" })
+        let shipped = try XCTUnwrap(r.shipped), timer = try XCTUnwrap(r.timer)
         XCTAssertLessThan(timer, r.lastSpeech, "the 2.5 s timer cuts this question off")
+        XCTAssertGreaterThanOrEqual(shipped, r.lastSpeech, "Smart Turn didn't hold the pause open")
     }
 
     /// Time keeps counting past the 16 seconds of audio the detector keeps, and the audio it keeps stays bounded.
@@ -120,7 +121,7 @@ final class ListenerTurnTests: XCTestCase {
     func testSmartTurnEndsTheQuestion() throws {
         try XCTSkipUnless(TurnModels.installed, "Smart Turn isn't downloaded on this Mac")
         let models = try XCTUnwrap(TurnModels.shared.loaded())
-        let audio = SpeechRenderer().render("Tell the trim fix session to merge main into its branch.", trailing: 1.5)
+        let audio = SpeechRenderer().render("Tell the trim fix session to merge main into its branch.", trailing: 3)
         let listener = listening(models)
         recognizers.sessions[0].onText("Tell the trim fix session to merge main")
         feed(audio)
@@ -134,7 +135,7 @@ final class ListenerTurnTests: XCTestCase {
     func testATurnWithNoWordsWaitsForThem() throws {
         try XCTSkipUnless(TurnModels.installed, "Smart Turn isn't downloaded on this Mac")
         let models = try XCTUnwrap(TurnModels.shared.loaded())
-        let audio = SpeechRenderer().render("What needs me right now?", trailing: 1.5)
+        let audio = SpeechRenderer().render("What needs me right now?", trailing: 3)
         let listener = listening(models)
         feed(audio)
         wait(2) { !listener.listening }
@@ -142,6 +143,39 @@ final class ListenerTurnTests: XCTestCase {
         recognizers.sessions[0].onText("What needs me right now?")
         XCTAssertFalse(listener.listening)
         XCTAssertTrue(recognizers.sessions[0].finished)
+    }
+
+    /// Noise the voice detector hears as speech keeps Smart Turn from deciding (here, no audio reaches it at all);
+    /// the timer after words still ends the question on time, as it does without Smart Turn.
+    func testWithSmartTurnUndecidedTheTimerAfterWordsEndsTheQuestion() throws {
+        try XCTSkipUnless(TurnModels.installed, "Smart Turn isn't downloaded on this Mac")
+        let models = try XCTUnwrap(TurnModels.shared.loaded())
+        let listener = listening(models)
+        listener.pauseAfterWords = 0.5
+        recognizers.sessions[0].onText("Tell the trim fix session to merge main")
+        wait(3) { !listener.listening }
+        XCTAssertFalse(listener.listening, "the timer after words waited for Smart Turn")
+    }
+
+    /// Mid-sentence ("Switch the voice to …"), Smart Turn holds the question open, so the 2.5 s timer after the last
+    /// words doesn't cut it off; the question still ends past the longest hold.
+    func testAHeldQuestionOutlastsTheTimerAfterWords() throws {
+        try XCTSkipUnless(TurnModels.installed, "Smart Turn isn't downloaded on this Mac")
+        let models = try XCTUnwrap(TurnModels.shared.loaded())
+        let renderer = SpeechRenderer()
+        let text = "Switch the voice to Kokoro and read the answer a little faster."
+        let audio = renderer.render(text, pauseBefore: "Switch the voice to ".count, pause: 3.5)
+        let pause = try XCTUnwrap(renderer.pauseStart)
+        let listener = listening(models)
+        listener.pauseAfterWords = TurnEnd.timer
+        recognizers.sessions[0].onText("Switch the voice to")
+        let started = Date()
+        feed(Array(audio.prefix(pause + Int(3.5 * 16_000))))
+        wait(3.5) { !listener.listening }
+        XCTAssertTrue(listener.listening, "the timer after words cut off a held question")
+        wait(4) { !listener.listening }
+        XCTAssertFalse(listener.listening, "a held question never ended")
+        XCTAssertLessThan(Date().timeIntervalSince(started), TurnEnd.longest + 1.5)
     }
 }
 

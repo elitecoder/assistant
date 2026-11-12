@@ -60,32 +60,32 @@ final class TurnEndTests: XCTestCase {
         for _ in 0..<Int((seconds / 0.032).rounded()) {
             let d = t.take(speech: false, duration: 0.032)
             if d != .wait { out.append(d) }
-            if d == .ask, !answers.isEmpty {
-                let a = t.answer(answers.removeFirst())
-                if a != .wait { out.append(a) }
-            }
+            if case .done = d { break }
+            if d == .ask, !answers.isEmpty { _ = t.answer(answers.removeFirst()) }
         }
         return out
     }
 
-    func testThreeConfidentCallsEndTheTurn() {
+    /// The timer decides: Smart Turn is asked once, 0.2 s into the pause, and a confident "finished" doesn't end it
+    /// sooner.
+    func testTheTimerEndsAFinishedQuestionAtTwoAndAHalfSeconds() {
         var t = TurnEnd(modelAvailable: true)
         XCTAssertEqual(silence(&t, 1), [], "silence before any speech doesn't count")
         speech(&t, 1)
-        XCTAssertEqual(silence(&t, 0.16), [], "a gap between words isn't a pause yet")
-        XCTAssertEqual(silence(&t, 0.07, answers: [0.95]), [.ask])
-        XCTAssertEqual(silence(&t, 0.3, answers: [0.95]), [.ask], "asked again at 0.5 s")
-        XCTAssertEqual(silence(&t, 0.42, answers: [0.97]), [.ask, .done(byModel: true)], "and at 0.9 s")
+        XCTAssertEqual(silence(&t, 0.16), [])
+        XCTAssertEqual(silence(&t, 0.07, answers: [0.99]), [.ask])
+        XCTAssertEqual(silence(&t, 2.2), [], "never earlier, however sure the model is")
+        XCTAssertEqual(silence(&t, 0.1), [.done(held: false)])
+        XCTAssertEqual(t.silence, 2.5, accuracy: 0.05)
     }
 
-    /// A call at 0.5 that's sure but not sure enough (0.8) means mid-sentence: keep listening to the limit.
-    func testOneUnsureCallKeepsListeningUntilTheLimit() {
+    /// "Not finished" holds the turn open up to 4 seconds of silence.
+    func testUnfinishedHoldsUpToFourSeconds() {
         var t = TurnEnd(modelAvailable: true)
         speech(&t, 1)
-        XCTAssertEqual(silence(&t, 0.25, answers: [0.99]), [.ask])
-        XCTAssertEqual(silence(&t, 0.3, answers: [0.8]), [.ask])
-        XCTAssertEqual(silence(&t, 2.3), [], "no more asks once it doubted")
-        XCTAssertEqual(silence(&t, 0.2).first, .done(byModel: false), "the hard limit")
+        XCTAssertEqual(silence(&t, 0.25, answers: [0.2]), [.ask])
+        XCTAssertEqual(silence(&t, 3.6), [], "past the 2.5 s timer")
+        XCTAssertEqual(silence(&t, 0.2), [.done(held: true)])
     }
 
     func testSpeakingAgainStartsOverAndDropsAStaleAnswer() {
@@ -93,28 +93,54 @@ final class TurnEndTests: XCTestCase {
         speech(&t, 1)
         XCTAssertEqual(silence(&t, 0.25), [.ask])
         speech(&t, 0.5)
-        XCTAssertEqual(t.answer(0.99), .wait, "the operator spoke again before the answer came")
-        XCTAssertEqual(silence(&t, 0.25, answers: [0.99]), [.ask])
-        XCTAssertEqual(silence(&t, 0.3, answers: [0.99]), [.ask])
-        XCTAssertEqual(silence(&t, 0.42, answers: [0.99]), [.ask, .done(byModel: true)])
+        XCTAssertEqual(t.answer(0.1), .wait)
+        XCTAssertEqual(silence(&t, 0.25), [.ask], "asked again in the new pause")
+        _ = t.answer(0.9)
+        XCTAssertEqual(silence(&t, 2.4), [.done(held: false)], "the stale 0.1 didn't hold this pause")
     }
 
     func testAnAnswerWithNothingAskedIsIgnored() {
         var t = TurnEnd(modelAvailable: true)
         speech(&t, 1)
-        XCTAssertEqual(t.answer(0.99), .wait)
+        _ = t.answer(0.1)
+        XCTAssertEqual(silence(&t, 2.6).last, .done(held: false))
     }
 
-    func testWithoutTheModelTheOldTimerDecides() {
+    func testWithoutTheModelOnlyTheTimerDecides() {
         var t = TurnEnd(modelAvailable: false)
         speech(&t, 1)
         XCTAssertEqual(silence(&t, 2.4), [])
-        XCTAssertEqual(silence(&t, 0.2).first, .done(byModel: false))
+        XCTAssertEqual(silence(&t, 0.2).first, .done(held: false))
     }
 
-    func testTheListenersTimerIsOnlyABackstopWithSmartTurn() {
-        XCTAssertEqual(TurnEnd.backstop(timer: 2.5, smartTurn: true), 4)
-        XCTAssertEqual(TurnEnd.backstop(timer: 2.5, smartTurn: false), 2.5)
-        XCTAssertEqual(TurnEnd.backstop(timer: 30, smartTurn: true), 30)
+    /// The Listener's timer after words waits longer only while Smart Turn holds the turn, until past the longest hold.
+    func testTheTimerAfterWordsWaitsLongerOnlyWhileHolding() {
+        XCTAssertEqual(TurnEnd.extraAfterWords(timer: 2.5, holding: true), 2.5)
+        XCTAssertEqual(TurnEnd.extraAfterWords(timer: 2.5, holding: false), 0)
+        XCTAssertEqual(TurnEnd.extraAfterWords(timer: 30, holding: true), 0)
+    }
+
+    /// Holding starts with a "not finished" answer and ends when the operator speaks again.
+    func testHoldingLastsUntilSpeech() {
+        var t = TurnEnd(modelAvailable: true)
+        speech(&t, 1)
+        XCTAssertFalse(t.holding)
+        _ = silence(&t, 0.25, answers: [0.2])
+        XCTAssertTrue(t.holding)
+        speech(&t, 0.1)
+        XCTAssertFalse(t.holding)
+        _ = silence(&t, 0.25, answers: [0.9])
+        XCTAssertFalse(t.holding)
+    }
+}
+
+final class SentenceEndTests: XCTestCase {
+    func testAFinishedSentenceEndsInAMarkAndNotADanglingWord() {
+        XCTAssertTrue(SentenceEnd.complete("What does the version bump session need from me?"))
+        XCTAssertTrue(SentenceEnd.complete("Tell the trim session to push."))
+        XCTAssertFalse(SentenceEnd.complete("Switch the voice to."), "a period after a preposition")
+        XCTAssertFalse(SentenceEnd.complete("Remind the release session that the..."))
+        XCTAssertFalse(SentenceEnd.complete("Tell the cleanup session to delete"), "no mark")
+        XCTAssertFalse(SentenceEnd.complete("Ask about their."))
     }
 }

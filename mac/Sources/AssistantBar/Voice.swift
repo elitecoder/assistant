@@ -428,14 +428,14 @@ final class Listener: ObservableObject {
         }
         self.speech = speech
         let turn = deps.turnModels().map { models in
-            TurnDetector(models: models) { [weak self] byModel in
+            TurnDetector(models: models) { [weak self] held in
                 guard let self, self.session == token, self.listening else { return }
                 guard !self.heard.isEmpty else {
                     voiceLog.notice("turn: over, but no words yet; stopping when they arrive")
                     self.turnOver = true
                     return
                 }
-                voiceLog.notice("turn: \(byModel ? "Smart Turn" : "the silence limit", privacy: .public) ended the question after \(self.elapsed(), privacy: .public)")
+                voiceLog.notice("turn: the question ended after \(self.elapsed(), privacy: .public)\(held ? ", held longer by Smart Turn" : "", privacy: .public)")
                 self.stop()
             }
         }
@@ -589,10 +589,18 @@ final class Listener: ObservableObject {
 
     private func waitForPause() {
         pause?.invalidate()
-        // With Smart Turn deciding, the timer after words is only a backstop beyond its own silence limit.
-        let afterWords = TurnEnd.backstop(timer: pauseAfterWords, smartTurn: turn != nil)
-        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? pauseBeforeWords : afterWords,
+        pause = Timer.scheduledTimer(withTimeInterval: heard.isEmpty ? pauseBeforeWords : pauseAfterWords,
                                      repeats: false) { [weak self] _ in
+            self?.pauseRanOut()
+        }
+    }
+
+    /// The timer after the last words ran out: the question ends, unless Smart Turn is holding it open.
+    private func pauseRanOut() {
+        let extra = heard.isEmpty ? 0 : TurnEnd.extraAfterWords(timer: pauseAfterWords, holding: turn?.holding ?? false)
+        guard extra > 0 else { return stop() }
+        voiceLog.notice("turn: Smart Turn is holding the question open; waiting \(extra, privacy: .public) s more")
+        pause = Timer.scheduledTimer(withTimeInterval: extra, repeats: false) { [weak self] _ in
             self?.stop()
         }
     }

@@ -106,57 +106,61 @@ public enum SmartTurn {
     }()
 }
 
-/// When a spoken question is over. With Smart Turn: once the voice detector hears a pause after speech, ask the model
-/// at 0.2, 0.5, and 0.9 seconds of silence, and end the turn only when it says the turn is complete (above 0.9) every
-/// time. Once it says the operator is mid-sentence, keep listening, up to `limit` of silence. Without the model, the
-/// old fixed timer. On 160 rendered questions (clean, and with brown and pink room noise at 25 and 15 dB), this
-/// matched or beat the 2.5-second timer in every condition; a single call above 0.5 didn't, once there was noise.
+/// When a spoken question is over. The 2.5-second silence timer decides, as it did before Smart Turn. Smart Turn may
+/// only lengthen the wait: 0.2 seconds into a pause it's asked once, and when it says the operator hasn't finished
+/// (below 0.5), the turn waits up to 4 seconds of silence instead. Asked later in a pause, it calls almost anything
+/// finished, so the first moment of the pause is when it can tell. It never ends a turn early: on 40 questions it
+/// wasn't tuned on, ending early (three calls of at least 0.9 and a finished sentence from the recognizer) cut off 1 to 3
+/// paused questions in every condition but babble.
 public struct TurnEnd: Equatable {
     public enum Decision: Equatable {
         case wait
         /// Ask Smart Turn about the audio so far.
         case ask
-        /// The turn is over; `byModel` is false when a timer ended it.
-        case done(byModel: Bool)
+        /// The turn is over; `held` is true when Smart Turn made it wait longer than the timer.
+        case done(held: Bool)
     }
 
-    public static let asks: [TimeInterval] = [0.2, 0.5, 0.9]
-    public static let threshold: Float = 0.9
-    public static let limit: TimeInterval = 3
     public static let timer: TimeInterval = 2.5
+    public static let judgeAt: TimeInterval = 0.2
+    public static let longest: TimeInterval = 4
+    /// Below this, Smart Turn says the operator hasn't finished.
+    public static let unfinished: Float = 0.5
 
-    /// The Listener's own timer after words: with Smart Turn deciding it's only a backstop past the silence limit.
-    public static func backstop(timer: TimeInterval, smartTurn: Bool) -> TimeInterval {
-        smartTurn ? max(timer, limit + 1) : timer
+    /// How much longer the Listener's timer after words waits when it runs out: nothing, unless Smart Turn is holding
+    /// the turn open, and then until past the longest hold. Noise the voice detector hears as speech keeps Smart Turn
+    /// from deciding, and the timer after words still ends the question on time.
+    public static func extraAfterWords(timer: TimeInterval, holding: Bool) -> TimeInterval {
+        holding ? max(0, longest + 1 - timer) : 0
     }
 
     public let modelAvailable: Bool
     public private(set) var heardSpeech = false
     public private(set) var silence: TimeInterval = 0
-    /// Calls in this pause that said the turn is complete.
-    private var agreed = 0
     /// An ask is out and its answer hasn't come.
     private var pending = false
-    /// A call in this pause said the operator is mid-sentence.
-    private var doubted = false
+    private var judged = false
+    private var held = false
 
     public init(modelAvailable: Bool) { self.modelAvailable = modelAvailable }
+
+    /// Smart Turn said the operator hasn't finished, and they haven't spoken since.
+    public var holding: Bool { held }
 
     /// One voice-detector window: speech or not, and how long it was.
     public mutating func take(speech: Bool, duration: TimeInterval) -> Decision {
         if speech {
             heardSpeech = true
             silence = 0
-            agreed = 0
             pending = false
-            doubted = false
+            judged = false
+            held = false
             return .wait
         }
         guard heardSpeech else { return .wait }
         silence += duration
-        if !modelAvailable { return silence >= Self.timer ? .done(byModel: false) : .wait }
-        if silence >= Self.limit { return .done(byModel: false) }
-        if !doubted && !pending && agreed < Self.asks.count && silence >= Self.asks[agreed] {
+        if silence >= (held ? Self.longest : Self.timer) { return .done(held: held) }
+        if modelAvailable && !judged && !pending && silence >= Self.judgeAt {
             pending = true
             return .ask
         }
@@ -168,11 +172,26 @@ public struct TurnEnd: Equatable {
     public mutating func answer(_ probability: Float) -> Decision {
         guard pending else { return .wait }
         pending = false
-        guard probability > Self.threshold else {
-            doubted = true
-            return .wait
-        }
-        agreed += 1
-        return agreed == Self.asks.count ? .done(byModel: true) : .wait
+        judged = true
+        held = probability < Self.unfinished
+        return .wait
+    }
+}
+
+/// Whether recognized text reads as a finished sentence: it ends in ".", "?", or "!", and its last word isn't an
+/// article, a preposition, a conjunction, or a possessive that needs more after it. Used only to evaluate ending a
+/// turn early, which isn't shipped.
+public enum SentenceEnd {
+    static let dangling: Set<String> = [
+        "a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "from", "by", "about", "into", "onto", "over",
+        "under", "and", "or", "but", "so", "if", "that", "because", "than", "as", "nor", "whether", "while", "when",
+        "my", "your", "his", "her", "its", "our", "their", "this", "these", "those", "some", "any", "every", "each",
+    ]
+
+    public static func complete(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = t.last, ".?!".contains(last) else { return false }
+        let word = t.split(whereSeparator: { $0.isWhitespace }).last.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) } ?? ""
+        return !word.isEmpty && !dangling.contains(word)
     }
 }
