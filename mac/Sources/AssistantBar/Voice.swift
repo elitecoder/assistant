@@ -630,6 +630,15 @@ final class Listener: ObservableObject {
         speech.finish(.live, done)
     }
 
+    /// Ends listening without asking anything: what was heard so far is dropped.
+    func cancel() {
+        guard listening else { return }
+        voiceLog.notice("cancelled, dropping \(self.heard.count) characters")
+        teardown()?.cancel()
+        heard = ""
+        onEnded?()
+    }
+
     func stop() {
         guard listening else { return }
         voiceLog.notice("stopped, heard \(self.heard.count) characters so far, loudest level \(self.loudest), \(self.buffers) buffers, \(self.droppedBuffers) before listening")
@@ -693,7 +702,12 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate),
                                        channels: 1)!
     private var generation = 0
-    private var queued = 0
+    /// Buffers scheduled on the player and not finished: Assistant's audio is playing while this is above zero.
+    private var queued = 0 {
+        didSet { playingNow.set(queued > 0) }
+    }
+    /// The same, for the microphone tap's thread.
+    private let playingNow = Flag()
     /// Kokoro syntheses still running for the current reply.
     private var pending = 0
     /// The Apple utterance playing now; callbacks for an earlier one, cut off by a replay or a sample, are ignored.
@@ -893,14 +907,16 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
                 try input.setVoiceProcessingEnabled(true)
                 guard let mono = AVAudioFormat(standardFormatWithSampleRate: input.outputFormat(forBus: 0).sampleRate,
                                                channels: 1) else { return }
-                var gate = BargeInGate()
+                var watch = BargeInWatch()
+                let playing = self.playingNow
                 var buffers = 0
                 input.installTap(onBus: 0, bufferSize: 4800, format: mono) { buffer, _ in
                     guard let data = buffer.floatChannelData?[0] else { return }
                     let level = Meter.level(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
                     buffers += 1
                     if buffers % 50 == 1 { voiceLog.notice("barge-in: echo-cancelled level \(level)") }
-                    if gate.take(level: level, duration: Double(buffer.frameLength) / buffer.format.sampleRate) {
+                    if watch.take(level: level, duration: Double(buffer.frameLength) / buffer.format.sampleRate,
+                                  playing: playing.value) {
                         voiceLog.notice("barge-in: the operator is talking over the answer")
                         DispatchQueue.main.async(execute: onBargeIn)
                     }
@@ -931,6 +947,8 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 
     func stop() {
         generation += 1
+        queued = 0
+        pending = 0
         appleUtterance = nil
         player.stop()
         synth.stopSpeaking(at: .immediate)
@@ -948,4 +966,12 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) {
         DispatchQueue.main.async { if u === self.appleUtterance && self.queued == 0 { self.speaking = false } }
     }
+}
+
+/// A Bool shared across threads.
+final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+    var value: Bool { lock.withLock { _value } }
+    func set(_ new: Bool) { lock.withLock { _value = new } }
 }

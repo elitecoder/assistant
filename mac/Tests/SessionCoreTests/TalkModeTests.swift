@@ -95,3 +95,50 @@ final class TalkLoopTests: XCTestCase {
         XCTAssertFalse(TalkLoop.isLongPress(held: 0.3))
     }
 }
+
+final class BargeInWatchTests: XCTestCase {
+    let voice: [Float] = Array(repeating: 0.6, count: 8)
+    let quiet: [Float] = Array(repeating: 0.1, count: 5)
+
+    func run(_ watch: inout BargeInWatch, _ levels: [Float], playing: Bool) -> Bool {
+        levels.map { watch.take(level: $0, duration: 0.1, playing: playing) }.contains(true)
+    }
+
+    /// Voice while Claude is still writing (nothing playing) doesn't use the trigger up.
+    func testVoiceBeforePlaybackDoesNotUseUpTheTrigger() {
+        var watch = BargeInWatch()
+        XCTAssertFalse(run(&watch, quiet + voice, playing: false))
+        XCTAssertTrue(run(&watch, quiet + voice, playing: true))
+    }
+
+    /// Each sentence gap re-arms it, so a second interruption in the same answer works too.
+    func testItReArmsAfterEveryGapInPlayback() {
+        var watch = BargeInWatch()
+        XCTAssertTrue(run(&watch, quiet + voice, playing: true))
+        XCTAssertFalse(run(&watch, voice, playing: true), "fires once per stretch of playback")
+        XCTAssertFalse(run(&watch, [0.1], playing: false))
+        XCTAssertTrue(run(&watch, quiet + voice, playing: true))
+    }
+
+    /// The settle time counts from playback start, not from when the microphone opened.
+    func testTheSettleTimeStartsWithPlayback() {
+        var watch = BargeInWatch()
+        _ = run(&watch, Array(repeating: 0.1, count: 30), playing: false)
+        var fired: Int?
+        for (i, level) in ([0.1] + Array(repeating: Float(0.6), count: 9)).enumerated()
+        where watch.take(level: level, duration: 0.1, playing: true) {
+            fired = i
+        }
+        XCTAssertEqual(fired, 7, "voice counts only from 0.3 s after playback starts")
+    }
+}
+
+final class TalkLoopMicLostTests: XCTestCase {
+    func testALostMicrophoneEndsTalkModeWithANote() {
+        var loop = TalkLoop()
+        _ = loop.toggle()
+        XCTAssertEqual(loop.micLost(), [.stopWatching, .exit(note: TalkLoop.micLostNote)])
+        XCTAssertFalse(loop.on)
+        XCTAssertEqual(loop.micLost(), [])
+    }
+}

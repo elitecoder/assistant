@@ -48,6 +48,23 @@ public struct BargeInGate: Equatable {
     }
 }
 
+/// The barge-in gate, armed only while Assistant's audio is actually playing. Between answers, between sentences, and
+/// while Claude is still writing, it starts over, so noise then can't use it up, and its settle time starts when
+/// playback does, when echo cancellation is adapting and echo leaks most.
+public struct BargeInWatch: Equatable {
+    private var gate = BargeInGate()
+
+    public init() {}
+
+    public mutating func take(level: Float, duration: TimeInterval, playing: Bool) -> Bool {
+        guard playing else {
+            gate = BargeInGate()
+            return false
+        }
+        return gate.take(level: level, duration: duration)
+    }
+}
+
 /// Talk Mode's loop: listen, answer, speak, listen again. While an answer is spoken the microphone stays open
 /// (echo-cancelled) only to notice the operator talking over it; nothing is transcribed until the answer stops.
 public struct TalkLoop: Equatable {
@@ -73,6 +90,7 @@ public struct TalkLoop: Equatable {
     public private(set) var phase = Phase.off
 
     public static let nothingHeardNote = "Talk Mode is off: I didn't hear a question."
+    public static let micLostNote = "Talk Mode is off: the microphone disconnected."
     public static let longPress: TimeInterval = 0.6
 
     /// Holding Control-Option-V this long turns on Talk Mode.
@@ -119,6 +137,13 @@ public struct TalkLoop: Equatable {
         guard phase == .speaking else { return [] }
         phase = .listening
         return [.stopWatching, .interrupt]
+    }
+
+    /// The microphone went away mid-question: nothing is listening, so Talk Mode ends.
+    public mutating func micLost() -> [Action] {
+        guard on else { return [] }
+        phase = .off
+        return [.stopWatching, .exit(note: Self.micLostNote)]
     }
 
     /// The Stop button or Esc.

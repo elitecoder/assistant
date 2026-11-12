@@ -99,8 +99,11 @@ as soon as Claude has finished writing the answer you interrupted, which stays
 in the chat. Coughs and short sounds like "mm-hmm" don't interrupt.
 **Stop speaking**, **Stop**, and Esc also drop the rest of an answer that's
 still being written.
-Select **Stop**, or press Esc, to end Talk Mode. A turn where you don't ask
-anything also ends it. Start the app in Talk Mode with `AssistantBar --show --talk`.
+Select **Stop**, or press Esc, to end Talk Mode; a question you're in the middle
+of is dropped, not asked. A turn where you don't ask anything also ends it, and
+so does a microphone that disconnects. Assistant listens for you talking over
+an answer only while its voice is actually playing, so talking while Claude is
+still writing doesn't count. Start the app in Talk Mode with `AssistantBar --show --talk`.
 
 While it speaks in Talk Mode, Assistant keeps the microphone open with Apple's
 voice processing, which removes Assistant's own voice from what the microphone

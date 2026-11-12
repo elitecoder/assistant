@@ -228,6 +228,8 @@ final class Model: NSObject, ObservableObject {
     lazy var unwatch: () -> Void = { [weak self] in self?.speaker.stopWatching() }
     lazy var stopTalking: () -> Void = { [weak self] in self?.speaker.stop() }
     lazy var startListening: () -> Void = { [weak self] in self?.listener.start() }
+    /// Ends listening without asking what was heard; tests replace it.
+    lazy var cancelListening: () -> Void = { [weak self] in self?.listener.cancel() }
     private var running: Process?
     private var sentAbout: String?
     private var engine: ChatEngine?
@@ -272,6 +274,7 @@ final class Model: NSObject, ObservableObject {
             guard let self else { return }
             if !text.isEmpty { self.draft = text }
             self.chat.append(ChatTurn(role: .error, text: note))
+            self.step { $0.micLost() }
         }
         listener.onEnded = { [weak self] in self?.listeningEnded() }
         speaker.mayTalk = { [weak self] in self?.listener.listening != true }
@@ -329,7 +332,7 @@ final class Model: NSObject, ObservableObject {
     func stopTalkMode() {
         guard loop.on else { return }
         step { $0.stop() }
-        if listener.listening { listener.stop() }
+        if listener.listening { cancelListening() }
         stopSpeaking()
     }
 
@@ -341,7 +344,7 @@ final class Model: NSObject, ObservableObject {
                 if !listener.listening { startListening() }
             case .interrupt:
                 stopSpeaking()
-                startListening()
+                if !listener.listening { startListening() }
             case .watch:
                 if !watch({ [weak self] in self?.step { $0.bargedIn() } }) {
                     chat.append(ChatTurn(role: .step, text: "Talking over the answer won't stop it: voice processing isn't available."))

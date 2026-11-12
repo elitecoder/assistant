@@ -611,6 +611,43 @@ final class TalkModeFlowTests: XCTestCase {
         XCTAssertEqual(Array(events.suffix(2)), ["unwatch", "listen"])
     }
 
+    /// Stopping Talk Mode mid-question drops the half question instead of asking it.
+    func testStoppingMidQuestionDropsIt() {
+        let m = model()
+        var heard: [String] = []
+        m.cancelListening = { [unowned self] in self.events.append("cancel") }
+        m.listener.onHeard = { heard.append($0) }
+        m.toggleTalkMode()
+        m.listener.listening = true
+        m.stopTalkMode()
+        XCTAssertTrue(events.contains("cancel"))
+        XCTAssertEqual(heard, [])
+        XCTAssertFalse(m.talkMode)
+    }
+
+    /// Talking over the answer while already asking the next question doesn't restart the listener.
+    func testBargeInWhileListeningKeepsTheQuestion() {
+        let m = model()
+        m.toggleTalkMode()
+        m.asking = true
+        m.heard("What needs me?")
+        m.speechChanged(true)
+        m.listener.listening = true
+        events = []
+        bargeIn?()
+        XCTAssertFalse(events.contains("listen"), "\(events)")
+        XCTAssertTrue(events.contains("stop speaking"))
+    }
+
+    func testADisconnectedMicrophoneEndsTalkModeWithANote() {
+        let m = model()
+        m.toggleTalkMode()
+        m.listener.onInterrupted?("tell the trim", Listener.disconnectedNote)
+        XCTAssertFalse(m.talkMode)
+        XCTAssertEqual(m.chat.last?.text, TalkLoop.micLostNote)
+        XCTAssertEqual(m.draft, "tell the trim")
+    }
+
     func testStopOrSilenceEndsTalkMode() {
         let m = model()
         m.toggleTalkMode()
