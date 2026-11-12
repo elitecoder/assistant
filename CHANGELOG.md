@@ -9,7 +9,23 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- GitHub Copilot CLI is a third coding agent beside Claude Code and Factory
+  Droid. Run `bin/assistant-llm.py set copilot`, and task sessions, the Slack
+  reply session, resumes, `/spawn-claude-workspace`, and every background model
+  job start Copilot instead of Claude. The dashboard and the session check read
+  Copilot sessions too. Set the model with `llm.copilot.model` or
+  `COPILOT_MODEL`.
+- The installer adds cmux's Copilot hooks when `copilot` is installed, and the
+  doctor checks the Copilot binary when you pick it.
+
 ### Changed
+- `bin/agent_session.py` is now the only place that starts a coding agent.
+  `tests/test_agent_launch_seam.py` fails when any other file builds a
+  `claude`, `copilot`, or `droid` command line.
+- `/spawn-claude-workspace` takes its launch command, readiness check, trust
+  prompt, and submission check from `bin/agent_session.py`, and defaults to the
+  agent you picked.
 - The session check (`ASSISTANT_WATCHER=1`) now runs in default mode too.
   The other opt-in jobs still need Pro mode.
 - The session check now reads each conversation as plain text: the first

@@ -18,7 +18,7 @@ Run `./bin/assistant-doctor.py` at any point for a preflight health check.
 |---|---|---|
 | macOS (Apple-Silicon or Intel) | LaunchAgents | — |
 | `git`, `python3` ≥ 3.11 | daemons + installer | `python3 --version` |
-| [`claude` CLI](https://claude.ai/code) | pulse dispatch + warm comms session | `command -v claude` |
+| A coding agent: [`claude` CLI](https://claude.ai/code) (default), [GitHub Copilot CLI](https://github.com/features/copilot/cli), or Factory `droid` | task sessions, Slack replies, background model jobs | `command -v claude copilot droid` |
 | `cmux.app` | Assistant drives Claude in cmux workspaces | install cmux.app, or set `CMUX_BIN` |
 | repo access | clone the private repo | your GitHub SSH key |
 | `uv` (optional) | faster venvs | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |

@@ -41,7 +41,7 @@ DEFAULT_TRANSCRIPT_DIR = TRANSCRIPT_DIR
 DROID_TRANSCRIPT_DIR = (
     HOME / ".factory" / "sessions" / "-Users-mukuls-dev-assistant")
 # Copilot has no per-project dir; its sessions carry their cwd instead.
-ASSISTANT_CWD = "/Users/mukuls/dev/assistant"
+ASSISTANT_CWD = str(Path(__file__).resolve().parents[2])
 
 
 def _seed(title: str, body: str, category: str, tags: list[str],
