@@ -326,6 +326,8 @@ def input_box_text(screen: str, agent: str | None = None) -> str | None:
         return _copilot_box_text(lines)
     rules = [i for i, line in enumerate(lines) if _RULE_RE.match(line)]
     tops = [] if agent else [i for i, line in enumerate(lines) if line.lstrip().startswith("╻")]
+    if len(rules) < 2 and agent == agent_session.CLAUDE:
+        return None
     if len(rules) < 2 or (tops and tops[-1] > rules[-1]):
         copilot = _copilot_box_text(lines)
         if copilot is not None or len(rules) < 2:

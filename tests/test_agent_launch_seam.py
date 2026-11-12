@@ -149,6 +149,10 @@ CAUGHT = {
         'if m.get("role") == "assistant":\n    pass',
         'n = usage.get("cache_read_input_tokens")',
         'files = (Path.home() / ".claude").glob("projects/*/*.jsonl")',
+        'exe = "droid" if kind == "factory" else "claude"\nrun([exe, "--resume", sid, *rest])',
+        'exe = "droid" if d else "claude"\nq = shlex.quote(exe)\ncmd = f"{q} --resume {sid}"',
+        'role = msg.get("role")\nif role == "user":\n    pass',
+        'if d["message"]["role"] == "user":\n    pass',
         'if rec.get("type") == "assistant":\n    pass',
         'if d["type"] in ("user", "assistant"):\n    pass',
     ],
@@ -214,6 +218,8 @@ PASSED = {
         'raise RuntimeError("run claude --resume to recover")',
         'raise RuntimeError("claude --resume failed")',
         'def h():\n    return "Use claude --model opus"',
+        'if recent[-1]["role"] == "user":\n    pass',
+        'role = agent_session.record_role(d)\nif role == "user":\n    pass',
     ],
     "sh": [
         'command -v copilot >/dev/null',
@@ -1512,3 +1518,25 @@ def test_spending_and_context_reads_come_from_the_seam(tmp_path):
                                                     "cache_read_input_tokens": 100}}},
     ]))
     assert comms_lib.read_context_tokens(transcript) == 121
+
+
+def test_merge_flow_keeps_claudes_notices_as_user_text_like_before(tmp_path):
+    tail = _load(BIN / "transcript-tail.py", "seam_tail_notice")
+    path = tmp_path / "c.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "user", "timestamp": "t1", "message": {"role": "user", "content": "/cleanup"}},
+        {"type": "attachment", "message": {"role": "user", "content": "Tool loaded."}},
+    ]))
+    user, _ = tail.read_tail(path, 100_000)
+    assert user["text"] == "Tool loaded."
+    assert ag.message_role({"type": "user.message", "data": {"content": "x"}}) == "user"
+
+
+def test_comms_finds_no_claude_box_without_its_rules():
+    assert cs.input_box_text("╻▄\n┃ copilot glyphs\n╹▀", ag.CLAUDE) is None
+    assert cs.input_box_text("╻▄\n┃ copilot glyphs\n╹▀") == "copilot glyphs"
+
+
+def test_dispatch_waits_as_long_as_before_for_a_ready_pane():
+    pulse = _load(BIN / "pulse.py", "seam_pulse_polls")
+    assert pulse.READY_POLLS == 32

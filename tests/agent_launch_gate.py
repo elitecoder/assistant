@@ -185,15 +185,25 @@ def _joined_text(node: ast.AST) -> str | None:
     return "".join("{}" if t is None else t for t in texts)
 
 
-def _assigned_agent(value: ast.AST) -> str | None:
-    """The agent a value names: "claude", `x or "claude"`, or a lookup whose
-    default is "claude" (`os.environ.get("CLAUDE_BIN", "claude")`)."""
+def _assigned_agent(value: ast.AST, aliases: dict[str, str] | None = None) -> str | None:
+    """The agent a value names: "claude", `x or "claude"`, `"droid" if c else
+    "claude"`, a lookup whose default is "claude"
+    (`os.environ.get("CLAUDE_BIN", "claude")`), a known alias, or a call on
+    one (`shlex.quote(exe)`)."""
+    aliases = aliases or {}
     if _const_str(value) in AGENTS:
         return _const_str(value)
+    if isinstance(value, ast.Name):
+        return aliases.get(value.id)
     if isinstance(value, ast.BoolOp):
-        return next((_const_str(v) for v in value.values if _const_str(v) in AGENTS), None)
-    if isinstance(value, ast.Call) and len(value.args) >= 2 and _const_str(value.args[-1]) in AGENTS:
-        return _const_str(value.args[-1])
+        return next((a for v in value.values if (a := _assigned_agent(v, aliases))), None)
+    if isinstance(value, ast.IfExp):
+        return _assigned_agent(value.body, aliases) or _assigned_agent(value.orelse, aliases)
+    if isinstance(value, ast.Call):
+        if len(value.args) >= 2 and _const_str(value.args[-1]) in AGENTS:
+            return _const_str(value.args[-1])
+        if len(value.args) == 1 and isinstance(value.args[0], ast.Name):
+            return aliases.get(value.args[0].id)
     return None
 
 
@@ -202,6 +212,20 @@ def _is_field(node: ast.AST, field: str) -> bool:
             and node.func.attr == "get" and node.args and _const_str(node.args[0]) == field:
         return True
     return isinstance(node, ast.Subscript) and _const_str(node.slice) == field
+
+
+def _raw_role(node: ast.AST) -> bool:
+    """A role read straight off a record: `m.get("role")`, or
+    `rec["message"]["role"]` / `rec.get("message", {}).get("role")`, possibly
+    inside a conditional expression."""
+    if isinstance(node, ast.IfExp):
+        return _raw_role(node.body) or _raw_role(node.orelse)
+    if isinstance(node, ast.Call) and _is_field(node, "role"):
+        return True
+    if isinstance(node, ast.Subscript) and _const_str(node.slice) == "role":
+        base = node.value
+        return _is_field(base, "message")
+    return False
 
 
 def _is_type_field(node: ast.AST) -> bool:
@@ -228,18 +252,20 @@ def python_problems(text: str) -> list[tuple[int, str]]:
     aliases = {}
     seeded = set()
     type_names = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
+    assigns = sorted((n for n in ast.walk(tree) if isinstance(n, ast.Assign)),
+                     key=lambda n: (n.lineno, n.col_offset))
+    for _ in range(2):
+        for node in assigns:
+            agent = _assigned_agent(node.value, aliases)
+            if agent:
+                aliases.update({t.id: agent for t in node.targets if isinstance(t, ast.Name)})
+    for node in assigns:
         names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-        agent = _assigned_agent(node.value)
-        if agent:
-            aliases.update({n: agent for n in names})
         if isinstance(node.value, ast.List) and len(node.value.elts) == 1 \
                 and _const_str(node.value.elts[0]) in AGENTS:
             seeded.update(names)
             aliases.update({n: _const_str(node.value.elts[0]) for n in names})
-        if _is_type_field(node.value):
+        if _is_type_field(node.value) or _raw_role(node.value):
             type_names.update(names)
     for node in ast.walk(tree):
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
@@ -299,8 +325,7 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                 if why:
                     found.append((line, f"joined {why}"))
         elif isinstance(node, ast.Compare) and (
-                _is_type_field(node.left)
-                or (isinstance(node.left, ast.Call) and _is_field(node.left, "role"))
+                _is_type_field(node.left) or _raw_role(node.left)
                 or (isinstance(node.left, ast.Name) and node.left.id in type_names)):
             values = set()
             for comp in node.comparators:

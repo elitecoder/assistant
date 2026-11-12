@@ -68,8 +68,7 @@ def read_tail(path, n_bytes):
             d = json.loads(line)
         except Exception:
             continue
-        role = agent_session.record_role(d) or (
-            d.get("message", {}).get("role") if isinstance(d.get("message"), dict) else None)
+        role = agent_session.message_role(d)
         text = agent_session.record_text(d)
         if role == "user":
             # Only count user messages that have actual TEXT content. Tool

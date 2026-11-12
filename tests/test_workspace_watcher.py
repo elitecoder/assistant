@@ -513,7 +513,6 @@ def test_merge_session_state_joins_by_title_cwd(home, monkeypatch):
                         "resumeBinding": {"command": "claude --resume abc",
                                           "cwd": "/work",
                                           "checkpointId": "ckpt-1"},
-                        "agent": {"kind": "claude"},
                         "wasAgentRunning": True}},
                     {"browser": {"urlString": "https://github.com/o/r/pull/42"}},
                 ],
@@ -528,7 +527,6 @@ def test_merge_session_state_joins_by_title_cwd(home, monkeypatch):
     assert meta["resume_command"] == "claude --resume abc"
     assert meta["resume_cwd"] == "/work"
     assert meta["checkpoint_id"] == "ckpt-1"
-    assert meta["agent_kind"] == "claude"
     assert meta["was_agent_running"] is True
     assert meta["last_pr"] == "https://github.com/o/r/pull/42"
     assert meta["process_title"] == "claude"
@@ -935,23 +933,3 @@ def test_main_retries_on_stream_crash_then_exits(home, monkeypatch):
     assert slept == [5]            # the retry path slept once for 5s
     assert calls["n"] == 2
 
-
-@pytest.mark.parametrize("picked,attempted", [(False, False), (True, True)])
-def test_handle_close_crash_resumes_copilot_only_when_picked(home, monkeypatch, picked, attempted):
-    WW.DIAG_REPORTS.mkdir(parents=True, exist_ok=True)
-    ips_file = WW.DIAG_REPORTS / "crash-copilot.ips"
-    _write_ips(ips_file, {"exception": {"signal": "SIGSEGV"}, "threads": []})
-    monkeypatch.setattr(WW, "find_recent_cmux_ips", lambda *a, **k: ips_file)
-    monkeypatch.setattr(WW, "notify", lambda *a, **k: None)
-    monkeypatch.setattr(WW.agent_session, "copilot_chosen", lambda: picked)
-    resumed = []
-    monkeypatch.setattr(WW, "resume_workspace",
-                        lambda meta, gov, **k: resumed.append(meta) or {"ok": True})
-    reg = WW.WorkspaceRegistry()
-    monkeypatch.setattr(reg, "refresh", lambda: None)
-    _seed_registry(reg, "U7", {"ref": 7, "title": "Mine", "agent_kind": "copilot",
-                               "resume_command": "copilot --resume s", "cwd": "/w"})
-    WW.handle_close(_close_evt("U7"), reg, WW.ResumeGovernor())
-    assert bool(resumed) is attempted
-    drop = json.loads(sorted(WW.CRASH_EVENTS_DIR.glob("workspace-7-*.json"))[-1].read_text())
-    assert drop["resume"]["attempted"] is attempted

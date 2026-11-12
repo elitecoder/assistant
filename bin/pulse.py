@@ -130,7 +130,7 @@ CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources
 # cwd for dispatched work. ~/dev keeps the spawn inside Mukul's permission roots;
 # FFP work re-homes itself into a fresh firefly-platform worktree via archffp.
 # One-second polls a dispatched session gets to show its ready marker.
-READY_POLLS = 30
+READY_POLLS = 32
 DISPATCH_CWD = Path(os.environ.get("DISPATCH_CWD", str(HOME / "dev")))
 
 # The Observer reads many transcripts → BALANCED tier, long-context. OBSERVER_MODEL

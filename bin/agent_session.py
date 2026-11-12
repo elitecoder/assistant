@@ -208,6 +208,15 @@ def record_role(obj: object) -> str | None:
     return None
 
 
+def message_role(obj: object) -> str | None:
+    """record_role, or the raw message.role of any record carrying one
+    (Claude's notices such as "Tool loaded." ride on a non-turn record)."""
+    msg = obj.get("message") if isinstance(obj, dict) else None
+    if isinstance(msg, dict) and msg.get("role"):
+        return msg.get("role")
+    return record_role(obj)
+
+
 def record_content(obj: object):
     """The turn content (string or list of {type,text} blocks) of a transcript
     record of any agent's schema, or None."""

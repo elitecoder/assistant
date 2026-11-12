@@ -378,10 +378,7 @@ def _iter_user_texts(path: Path) -> Iterable[str]:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            msg = obj.get("message")
-            role = (msg.get("role") if isinstance(msg, dict)
-                    else agent_session.record_role(obj))
-            if role != "user":
+            if agent_session.message_role(obj) != "user":
                 continue
             content = agent_session.record_content(obj)
             if isinstance(content, str):
