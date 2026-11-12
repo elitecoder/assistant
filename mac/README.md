@@ -180,9 +180,11 @@ model, so the chat's Claude runs in a tight sandbox:
     `--transcript`, and a search of the transcripts from `--find`.
 - Everything those commands print from other sessions (replies, workspace
   titles, transcripts, earlier chats) is marked as untrusted session text, as
-  are the workspace digest and compaction summaries. Every kind of line break
-  is normalized and look-alike labels and block tags are escaped, so the text
-  can't close its block or pass for one of your turns.
+  are the workspace digest and compaction summaries. Each block holds the text
+  as one JSON string on one line: line breaks, brackets, angle brackets, their
+  full-width and other look-alike forms, and invisible characters are all
+  escaped, so nothing inside can start a line, close the block, or pass for one
+  of your turns.
 - What the guard allows still needs Claude Code's own permission check, in
   `dontAsk` mode.
 - Assistant runs each command only as its first argument, with an exact

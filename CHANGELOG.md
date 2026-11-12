@@ -193,6 +193,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Untrusted session text reaches the chat's Claude as one JSON string per
+  block instead of quoted lines. Line breaks, `<`, `>`, `[`, `]`, anything
+  whose compatibility form is one of those, and control and invisible
+  characters are escaped, so no Unicode trick can start a line, form a tag, or
+  forge a label inside a block. The old line-quoting code is gone.
 - `--send` checks how a message starts with an allow list instead of a list of
   bad prefixes. After leading spaces, the first character must be a letter or
   digit, or one of `"`, `'`, `(`, or `@`, and none of the first three may be a

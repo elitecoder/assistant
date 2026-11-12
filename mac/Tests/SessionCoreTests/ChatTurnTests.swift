@@ -394,7 +394,7 @@ final class ChatEngineTests: XCTestCase {
         XCTAssertLessThan(after, before, "the prompt after compaction should be smaller")
 
         let sent = FakeClaude.blocks(claude.invocations[turn]).joined(separator: "\n")
-        XCTAssertTrue(sent.contains(CompressionText.summaryPrefix))
+        XCTAssertTrue(sent.contains(String(Untrusted.literal(CompressionText.summaryPrefix).dropFirst().dropLast())), "the summary is sent, escaped")
         XCTAssertTrue(sent.contains("LATE-ROW written mid-summary"))
         XCTAssertFalse(sent.contains("Transcript excerpt 2:"), "turn 2's tool output is archived, not resent")
         XCTAssertEqual(sent.components(separatedBy: "# Workspaces (checked ").count, 2, "the first digest stays in the head, once")
