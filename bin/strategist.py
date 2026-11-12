@@ -66,7 +66,6 @@ def strategist_runs_dir() -> Path:
 DEFAULT_MODEL = (os.environ.get("STRATEGIST_MODEL")
                  or os.environ.get("OBSERVER_MODEL")
                  or model_tiers.model_for("balanced"))
-DEFAULT_CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 # The drafter reads inline goal/decision JSON only (no transcripts), so it gets
 # the same short leash the triage batch does — never the Observer's.
 STRATEGIST_TIMEOUT_SEC = int(os.environ.get("STRATEGIST_TIMEOUT_SEC", "240"))
@@ -220,7 +219,7 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str, in
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=STRATEGIST_TIMEOUT_SEC, run=run,
-        claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
+        droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-strategist")
     if result.result_text:

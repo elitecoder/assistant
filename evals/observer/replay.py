@@ -97,7 +97,7 @@ def ask(model: str, prompt: str, run_dir: Path) -> tuple[str | None, dict]:
 
     result = llm_runner.invoke(
         provider="claude", prompt=prompt, model=model, run_dir=run_dir,
-        timeout=300, run=run_cmd, claude_bin=fixture_eval.CLAUDE_BIN,
+        timeout=300, run=run_cmd,
         disable_tools=True, json_schema=fixture_eval.OBSERVER_RESPONSE_SCHEMA,
         extra_dirs=[run_dir], tag="assistant-observer-replay")
     verdict = fixture_eval.extract_verdict(result.result_text) if result.usable else None

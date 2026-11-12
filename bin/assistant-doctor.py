@@ -40,12 +40,12 @@ import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
 
 DROID = agent_session.DROID
+COPILOT = agent_session.COPILOT
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 REPO = Path(__file__).resolve().parent.parent
 
 # Same default as comms_session.py — the warm session invokes this exact binary.
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 
@@ -220,21 +220,31 @@ def check_slack_scopes() -> Check:
     )
 
 
+def _agent_binary(agent: str) -> str | None:
+    path = agent_session.binary(agent, env={**os.environ, "HOME": str(HOME)})
+    return path if Path(path).is_file() and os.access(path, os.X_OK) else None
+
+
 def check_claude_bin() -> Check:
-    # The warm comms session spawns this exact binary. OPTIONAL — only comms
-    # needs it; the mechanical pulse uses its own claude invocation.
-    if Path(CLAUDE_BIN).is_file() and os.access(CLAUDE_BIN, os.X_OK):
-        return Check("claude binary (warm session)", PASS, core=False, detail=CLAUDE_BIN)
-    on_path = shutil.which("claude")
+    # The warm comms session spawns the chosen agent's binary. OPTIONAL — only
+    # comms needs it.
+    agent = agent_session.warm_agent()
+    name = f"{agent} binary (warm session)"
+    found = _agent_binary(agent)
+    if found:
+        return Check(name, PASS, core=False, detail=found)
+    expected = agent_session.binary(agent, env={**os.environ, "HOME": str(HOME)})
+    on_path = shutil.which(agent)
+    env_var = agent_session._BIN_ENV[agent]
     if on_path:
         return Check(
-            "claude binary (warm session)", WARN, core=False,
-            detail=f"{CLAUDE_BIN} missing; claude on PATH at {on_path}",
-            remedy=f"symlink it: ln -s {on_path} {CLAUDE_BIN}  (or set CLAUDE_BIN={on_path})",
+            name, WARN, core=False,
+            detail=f"{expected} missing; {agent} on PATH at {on_path}",
+            remedy=f"set {env_var}={on_path}",
         )
-    return Check("claude binary (warm session)", FAIL, core=False,
-                 detail=f"{CLAUDE_BIN} missing and no claude on PATH",
-                 remedy="install the Claude Code CLI, then symlink to ~/.local/bin/claude")
+    return Check(name, FAIL, core=False,
+                 detail=f"{expected} missing and no {agent} on PATH",
+                 remedy=f"install the {agent} CLI, or set {env_var} to its path")
 
 
 def check_bedrock_env() -> Check:
@@ -269,17 +279,7 @@ def _droid_selected() -> bool:
 
 
 def _droid_binary() -> str | None:
-    # Mirror agent_session.agent_available: PATH plus the common install
-    # locations launchd's pinned PATH misses (~/.local/bin is Factory's default).
-    on_path = shutil.which(DROID)
-    if on_path:
-        return on_path
-    for cand in (HOME / ".local" / "bin" / DROID,
-                 Path("/opt/homebrew/bin") / DROID,
-                 Path("/usr/local/bin") / DROID):
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
+    return _agent_binary(DROID)
 
 
 def check_droid_binary() -> Check:
@@ -319,7 +319,23 @@ def check_droid_settings() -> Check:
     return Check("droid settings", PASS, core=False, detail=str(settings))
 
 
-AGENT_CHECKS = [check_droid_binary, check_droid_settings]
+def check_copilot_binary() -> Check:
+    if COPILOT not in (agent_session.warm_agent(), agent_session.dispatch_agent()):
+        return Check("copilot binary", SKIP, core=False,
+                     detail="provider is not copilot (llm.provider / dispatch.agent / comms)")
+    found = _agent_binary(COPILOT)
+    if found:
+        return Check("copilot binary", PASS, core=False, detail=found)
+    return Check(
+        "copilot binary", FAIL, core=False,
+        detail="copilot not found on PATH, ~/.local/bin, /opt/homebrew/bin, "
+               "/usr/local/bin, or ~/.nvm",
+        remedy="install GitHub Copilot CLI (npm install -g @github/copilot), "
+               "run `copilot login`, or set COPILOT_BIN",
+    )
+
+
+AGENT_CHECKS = [check_droid_binary, check_droid_settings, check_copilot_binary]
 
 
 # --------------------------------------------------------------------------- runner

@@ -184,7 +184,6 @@ OBSERVER_RUN_RETENTION_DAYS = _env_num(
     "OBSERVER_RUN_RETENTION_DAYS", "7", float)
 OBSERVER_RUN_MAX_PULSES = _env_num(
     "OBSERVER_RUN_MAX_PULSES", "2048", int)
-DEFAULT_CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 
 # Keep each untrusted workspace transcript in its own model context.
 WS_BATCH_SIZE = 1
@@ -703,7 +702,7 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     model = route.model_for(TRIAGE_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
-        timeout=TRIAGE_TIMEOUT_SEC, run=run, claude_bin=DEFAULT_CLAUDE_BIN,
+        timeout=TRIAGE_TIMEOUT_SEC, run=run,
         droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-triage")
@@ -1372,7 +1371,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=selected_model,
         run_dir=run_dir, timeout=OBSERVER_TIMEOUT_SEC, run=run,
-        claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
+        droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, json_schema=OBSERVER_RESPONSE_SCHEMA,
         extra_dirs=[run_dir],
@@ -2151,10 +2150,11 @@ def dispatch_todo(todo_id: str) -> bool:
     # readiness (the never-ready return precedes the idempotency stamp, so it
     # would re-dispatch a dead workspace every pulse until the fleet caps
     # saturate). Claude — the always-present agent — keeps the fleet moving.
-    if agent == agent_session.DROID and not agent_session.agent_available(agent):
-        log.warning("dispatch %s: droid selected but not launch-ready (missing/"
-                    "non-executable binary or missing/corrupt droid-glm-settings"
-                    ".json) — falling back to claude", todo_id)
+    if agent_session.available_or_claude(agent) != agent:
+        log.warning("dispatch %s: %s selected but not launch-ready (missing/"
+                    "non-executable binary, or for droid a missing/corrupt "
+                    "droid-glm-settings.json) — falling back to claude",
+                    todo_id, agent)
         agent = agent_session.CLAUDE
     launch_cmd = agent_session.launch_command(agent, home=HOME)
     cwd = str(DISPATCH_CWD)
@@ -2188,14 +2188,14 @@ def dispatch_todo(todo_id: str) -> bool:
     #    A non-recursive glob missed those and the confirmation in step 7 always
     #    came back negative — which used to re-spawn the TODO every pulse
     #    (td-128: 7 duplicate workspaces). Match both layouts by relative path.
-    project_dir = agent_session.confirm_dir(agent, cwd, home=HOME)
-    project_dir.mkdir(parents=True, exist_ok=True)
+    if agent in agent_session.SLUG_AGENTS:
+        agent_session.confirm_dir(agent, cwd, home=HOME).mkdir(
+            parents=True, exist_ok=True)
     before: dict[str, tuple[int, int]] = {}
-    for path in project_dir.rglob("*.jsonl"):
+    for path in agent_session.session_transcripts(agent, cwd, home=HOME):
         try:
             stat = path.stat()
-            before[str(path.relative_to(project_dir))] = (
-                stat.st_ino, stat.st_size)
+            before[str(path)] = (stat.st_ino, stat.st_size)
         except OSError:
             continue
 
@@ -2271,11 +2271,10 @@ def dispatch_todo(todo_id: str) -> bool:
     submitted = False
     for _ in range(30):
         candidates: list[tuple[Path, int]] = []
-        for path in project_dir.rglob("*.jsonl"):
+        for path in agent_session.session_transcripts(agent, cwd, home=HOME):
             try:
                 stat = path.stat()
-                name = str(path.relative_to(project_dir))
-                prior = before.get(name)
+                prior = before.get(str(path))
                 if prior is None or prior[0] != stat.st_ino:
                     candidates.append((path, 0))
                 elif stat.st_size > prior[1]:
@@ -2293,9 +2292,8 @@ def dispatch_todo(todo_id: str) -> bool:
                         d = json.loads(line)
                     except Exception:
                         continue
-                    msg = d.get("message") if isinstance(d.get("message"), dict) else None
-                    if agent_session.record_role(d) == "user" and msg:
-                        c = msg.get("content", "")
+                    c = agent_session.record_content(d)
+                    if agent_session.record_role(d) == "user" and c is not None:
                         if isinstance(c, list):
                             c = " ".join(
                                 str(x.get("text", "") if isinstance(x, dict) else x)

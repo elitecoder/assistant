@@ -41,11 +41,10 @@ for path in (BIN, SRC):
 import llm_runner
 from assistant import model_tiers, transcript_slice
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
-DROID_BIN = os.environ.get("DROID_BIN", str(Path.home() / ".local/bin/droid"))
 CLAUDE_MODEL = os.environ.get(
     "EVAL_CLAUDE_MODEL", model_tiers.model_for("balanced", long_context=True))
 DROID_MODEL = os.environ.get("EVAL_DROID_MODEL", "glm-5.2")
+COPILOT_MODEL = os.environ.get("EVAL_COPILOT_MODEL", "")
 LOCAL_URL = os.environ.get("EVAL_LOCAL_URL", llm_runner.DEFAULT_LOCAL_URL)
 LOCAL_MODEL = os.environ.get("EVAL_LOCAL_MODEL", llm_runner.DEFAULT_LOCAL_MODEL)
 TIMEOUT_SEC = int(os.environ.get("EVAL_TIMEOUT_SEC", "180"))
@@ -212,7 +211,8 @@ def run_one(fixture_dir: Path, provider: str) -> tuple[bool, str, dict]:
     (run_dir / "ctx.json").write_text(json.dumps(ctx, indent=2))
     prompt = build_eval_prompt(fixture_dir, ctx)
 
-    model = {"droid": DROID_MODEL, "local": LOCAL_MODEL}.get(provider, CLAUDE_MODEL)
+    model = {"droid": DROID_MODEL, "local": LOCAL_MODEL,
+             "copilot": COPILOT_MODEL}.get(provider, CLAUDE_MODEL)
 
     def run_cmd(cmd, *, input_text=None, timeout=None, env=None,
                 merge_bedrock=False):
@@ -229,7 +229,6 @@ def run_one(fixture_dir: Path, provider: str) -> tuple[bool, str, dict]:
         result = llm_runner.invoke(
             provider=provider, prompt=prompt, model=model,
             run_dir=run_dir, timeout=TIMEOUT_SEC, run=run_cmd,
-            claude_bin=CLAUDE_BIN, droid_bin=DROID_BIN,
             reasoning_effort="high", disable_tools=True,
             json_schema=OBSERVER_RESPONSE_SCHEMA,
             extra_dirs=[run_dir],
@@ -333,7 +332,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("fixture", nargs="?", default=None, help="Run one fixture by name (default: all)")
     ap.add_argument("--list", action="store_true", help="List fixtures and exit")
-    ap.add_argument("--provider", choices=("claude", "droid", "local"),
+    ap.add_argument("--provider", choices=("claude", "copilot", "droid", "local"),
                     default=os.environ.get("EVAL_PROVIDER", "droid"))
     ap.add_argument("--shadow", action="store_true",
                     help="Score Claude and Droid on identical fixtures")

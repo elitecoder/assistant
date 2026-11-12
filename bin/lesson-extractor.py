@@ -51,7 +51,6 @@ LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
 PROPOSALS_PATH = ASSISTANT_DIR / "proposals.jsonl"
 AUDIT_LOG = ASSISTANT_DIR / "assistant-audit.log"
 CURATOR = BIN / "assistant-curator.py"
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 # Keel M8 model-tiering: the extractor only PHRASES a {trigger, rule, target}
 # over a recurrence already DETECTED in Python (MIN_OCCURRENCES), and every
 # result is a HUMAN-CONFIRMED proposal — a hard gate that makes this a CHEAP-tier
@@ -783,7 +782,7 @@ def _claude_oneshot(prompt: str) -> str:
     model = route.model_for(EXTRACTOR_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
-        timeout=120, run=_run, claude_bin=CLAUDE_BIN,
+        timeout=120, run=_run,
         droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-lessons")

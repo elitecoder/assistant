@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
+import agent_session
+
 
 @dataclass(frozen=True)
 class RouteConfig:
@@ -23,6 +25,7 @@ class RouteConfig:
     droid_bin: str = "~/.local/bin/droid"
     droid_model: str = "glm-5.2"
     droid_reasoning_effort: str = "high"
+    copilot_model: str = ""
     local_url: str = "http://127.0.0.1:8091/v1"
     local_model: str = "local"
     local_reasoning_effort: str = "high"
@@ -34,10 +37,11 @@ class RouteConfig:
 
     def model_for(self, claude_model: str) -> str:
         """The model id for this route's provider."""
-        return {"droid": self.droid_model, "local": self.local_model}.get(
-            self.provider, claude_model)
+        return {"droid": self.droid_model, "local": self.local_model,
+                "copilot": self.copilot_model}.get(self.provider, claude_model)
 
 
+PROVIDERS = (*agent_session.AGENTS, "local")
 DEFAULT_LOCAL_URL = RouteConfig.local_url
 DEFAULT_LOCAL_MODEL = RouteConfig.local_model
 LOCAL_MAX_TOKENS = 16384
@@ -76,7 +80,7 @@ def _provider(value) -> str:
     # Unrecognized / empty coerces to claude (fail-closed to the always-present
     # agent), NOT droid — an opt-in binary that may be absent.
     value = str(value or "").strip().lower()
-    if value in {"claude", "droid", "local"}:
+    if value in PROVIDERS:
         return value
     if value:
         logging.getLogger("llm_runner").warning(
@@ -164,8 +168,16 @@ def load_route_config(path: Path, section: str = "triage",
         "model", global_local.get("model", DEFAULT_LOCAL_MODEL)))
     local_reasoning = env.get(f"{prefix}_LOCAL_REASONING_EFFORT", feature_local.get(
         "reasoning_effort", global_local.get("reasoning_effort", "high")))
+    global_copilot = llm.get("copilot") \
+        if isinstance(llm.get("copilot"), dict) else {}
+    feature_copilot = feature.get("copilot") \
+        if isinstance(feature.get("copilot"), dict) else {}
+    copilot_model = env.get(f"{prefix}_COPILOT_MODEL", env.get(
+        "COPILOT_MODEL", feature_copilot.get(
+            "model", global_copilot.get("model", ""))))
     return RouteConfig(
         provider=_provider(provider),
+        copilot_model=str(copilot_model or ""),
         droid_bin=str(droid_bin),
         droid_model=str(droid_model or "glm-5.2"),
         droid_reasoning_effort=_reasoning_effort(reasoning),
@@ -186,51 +198,12 @@ def resolve_executable(value: str) -> str:
     return shutil.which(value) or value
 
 
-def parse_usage_envelope(stdout: str) -> dict | None:
-    try:
-        doc = json.loads((stdout or "").strip())
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(doc, dict) or not isinstance(doc.get("usage"), dict):
-        return None
-    usage = doc["usage"]
-
-    def _integer(key: str) -> int:
-        value = usage.get(key)
-        return int(value) if isinstance(value, (int, float)) else 0
-
-    cost = doc.get("total_cost_usd")
-    return {
-        "tokens_in": (
-            _integer("input_tokens")
-            + _integer("cache_creation_input_tokens")
-            + _integer("cache_read_input_tokens")
-        ),
-        "tokens_out": _integer("output_tokens"),
-        "cost_usd": float(cost) if isinstance(cost, (int, float)) else None,
-        "session_id": doc.get("session_id"),
-        "result_text": doc.get("result") if isinstance(doc.get("result"), str)
-        else "",
-    }
+def parse_usage_envelope(stdout: str, provider: str = "claude") -> dict | None:
+    return agent_session.parse_usage(provider, stdout)
 
 
 def parse_result_envelope(provider: str, stdout: str) -> dict | None:
-    parsed = parse_usage_envelope(stdout)
-    if parsed is None:
-        return None
-    doc = json.loads((stdout or "").strip())
-    if doc.get("type") == "result" and (
-        doc.get("is_error") is True
-        or doc.get("subtype") not in (None, "success")
-    ):
-        return None
-    if provider == "droid" and (
-        doc.get("type") != "result"
-        or doc.get("subtype") != "success"
-        or doc.get("is_error") is not False
-    ):
-        return None
-    return parsed
+    return agent_session.parse_headless(provider, stdout)
 
 
 def invoke_local(*, prompt: str, model: str, url: str, timeout: int,
@@ -278,8 +251,9 @@ def invoke_local(*, prompt: str, model: str, url: str, timeout: int,
 
 
 def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
-           timeout: int, run: Callable, claude_bin: str,
-           droid_bin: str = "~/.local/bin/droid",
+           timeout: int, run: Callable, claude_bin: str | None = None,
+           droid_bin: str | None = None,
+           copilot_bin: str | None = None,
            reasoning_effort: str = "high",
            disable_tools: bool = False,
            json_schema: dict | None = None,
@@ -296,7 +270,8 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
         # Explicit binary pre-flight so a missing/non-executable droid produces
         # ONE unambiguous failure row (rc=127) that the cost ledger + the brief's
         # provider-health card can surface — instead of a murky enumeration rc.
-        droid_exe = resolve_executable(droid_bin)
+        droid_exe = resolve_executable(
+            droid_bin or agent_session.binary(agent_session.DROID))
         if not (os.path.isfile(droid_exe) and os.access(droid_exe, os.X_OK)):
             return LLMResult(
                 provider="droid", model=model, rc=127, stdout="",
@@ -308,13 +283,7 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
             )
         disabled_tools: list[str] = []
         if disable_tools:
-            tools_cmd = [
-                resolve_executable(droid_bin),
-                "exec",
-                "--model", model,
-                "--list-tools",
-                "--output-format", "json",
-            ]
+            tools_cmd = agent_session.droid_list_tools_argv(droid_exe, model)
             tools_rc, tools_out, tools_err = run(
                 tools_cmd,
                 timeout=min(timeout, 30),
@@ -366,57 +335,38 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
                     usage_source="none", session_id=None, result_text="",
                     usable=False,
                 )
-        cmd = [
-            resolve_executable(droid_bin),
-            "exec",
-            "--model", model,
-            "--reasoning-effort", _reasoning_effort(reasoning_effort),
-            "--output-format", "json",
-            "--cwd", str(run_dir),
-            "--tag", tag,
-        ]
-        if disabled_tools:
-            cmd += ["--disabled-tools", ",".join(disabled_tools)]
-        elif not disable_tools:
-            cmd += ["--auto", "high"]
-        merge_bedrock = False
+        cmd = agent_session.headless_argv(
+            provider, binary_path=droid_exe, model=model, run_dir=run_dir,
+            disable_tools=disable_tools,
+            reasoning_effort=_reasoning_effort(reasoning_effort), tag=tag,
+            disabled_tools=disabled_tools)
     else:
-        cmd = [
-            resolve_executable(claude_bin),
-            "--model", model,
-            "--print",
-            "--output-format", "json",
-        ]
-        if json_schema is not None:
-            cmd += [
-                "--json-schema",
-                json.dumps(json_schema, separators=(",", ":")),
-            ]
-        if disable_tools:
-            cmd += [
-                "--tools", "",
-                "--disable-slash-commands",
-                "--mcp-config", '{"mcpServers":{}}',
-                "--strict-mcp-config",
-            ]
-        else:
-            cmd += [
-                "--dangerously-skip-permissions",
-                "--add-dir", str(run_dir),
-            ]
-            for directory in extra_dirs or []:
-                cmd += ["--add-dir", str(directory)]
-        merge_bedrock = True
+        explicit = claude_bin if provider == "claude" else copilot_bin
+        exe = resolve_executable(explicit or agent_session.binary(provider))
+        if provider == "copilot" and not (
+                os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            return LLMResult(
+                provider=provider, model=model, rc=127, stdout="",
+                stderr=f"copilot binary not found or not executable: {exe}",
+                wall_ms=int((time.time() - started) * 1000),
+                tokens_in=0, tokens_out=0, cost_usd=None,
+                usage_source="none", session_id=None, result_text="",
+                usable=False,
+            )
+        cmd = agent_session.headless_argv(
+            provider, binary_path=exe, model=model, run_dir=run_dir,
+            disable_tools=disable_tools, json_schema=json_schema,
+            extra_dirs=extra_dirs, tag=tag)
 
     rc, stdout, stderr = run(
         cmd,
-        input_text=prompt,
+        input_text=agent_session.headless_prompt(provider, prompt, json_schema),
         timeout=timeout,
-        merge_bedrock=merge_bedrock,
+        merge_bedrock=agent_session.merges_bedrock(provider),
     )
     wall_ms = int((time.time() - started) * 1000)
-    parsed = parse_result_envelope(provider, stdout)
-    usage = parse_usage_envelope(stdout)
+    parsed = agent_session.parse_headless(provider, stdout)
+    usage = agent_session.parse_usage(provider, stdout)
     if usage is None:
         tokens_in = max(0, len(prompt) // 4)
         tokens_out = max(0, len(stdout or "") // 4)

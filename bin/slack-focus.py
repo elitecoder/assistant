@@ -39,7 +39,6 @@ from assistant.slack_focus import collect, judge, settings, store, triage  # noq
 RENDER_SCRIPT = BIN / "render-assistant-page.py"
 JUDGE_TIMEOUT_SEC = int(os.environ.get("SLACK_FOCUS_JUDGE_TIMEOUT_SEC", "420"))
 REFRESH_TIMEOUT_SEC = 1200
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 
 
 def _home() -> Path:
@@ -89,7 +88,7 @@ def call_model(prompt: str) -> str:
     run_dir.mkdir(parents=True, exist_ok=True)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir, timeout=JUDGE_TIMEOUT_SEC, run=run,
-        claude_bin=CLAUDE_BIN, droid_bin=route.droid_bin, reasoning_effort=route.reasoning_effort,
+        droid_bin=route.droid_bin, reasoning_effort=route.reasoning_effort,
         disable_tools=True, tag="assistant-slack-focus", local_url=route.local_url)
     try:
         usage = metering.observer_usage(result.stdout, len(prompt), model)

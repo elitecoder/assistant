@@ -22,12 +22,12 @@ Usage:
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import cmux_sessions  # noqa: E402
 
 REGISTRY = Path.home() / ".claude/cmux-registry.json"
@@ -65,7 +65,7 @@ def load_recorded():
         surface_id: {
             "session_id": record.session_id,
             "cwd": record.launch_cwd or record.cwd,
-            "provider": "factory" if record.provider == "droid" else "claude",
+            "provider": agent_session.CMUX_KIND[record.provider],
             "launch_argv": list(record.launch_argv),
             "transcript_path": record.transcript_path,
             "pid": record.pid,
@@ -102,12 +102,9 @@ def pgrep_session(session_id: str) -> bool:
 
 
 def normalize_provider(value):
-    value = str(value or "").strip().lower()
-    if value in {"factory", "droid"}:
-        return "factory"
-    if value == "claude":
-        return "claude"
-    return ""
+    """cmux kind (claude, copilot, factory) for an agent/provider name, or ""."""
+    agent = agent_session.agent_from_kind(value)
+    return agent_session.CMUX_KIND[agent] if agent else ""
 
 
 def infer_ledger_provider(entry):
@@ -120,9 +117,12 @@ def infer_ledger_provider(entry):
     transcript = str(entry.get("transcript_path", "")).replace("\\", "/")
     if "/.factory/sessions" in transcript:
         return "factory"
+    if "/.copilot/session-state" in transcript:
+        return "copilot"
     argv = entry.get("launch_argv") or []
-    if argv and os.path.basename(str(argv[0])).lower() == "droid":
-        return "factory"
+    agent = agent_session.agent_from_executable(argv[0]) if argv else None
+    if agent in (agent_session.DROID, agent_session.COPILOT):
+        return agent_session.CMUX_KIND[agent]
     return ""
 
 
@@ -183,39 +183,6 @@ def _strip_session_args(args):
     return filtered
 
 
-def _replace_option(args, option, value):
-    result = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == option:
-            skip_next = True
-            continue
-        if arg.startswith(option + "="):
-            continue
-        result.append(arg)
-    result.extend([option, value])
-    return result
-
-
-def _strip_option(args, option):
-    result = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == option:
-            skip_next = True
-            continue
-        if arg.startswith(option + "="):
-            continue
-        result.append(arg)
-    return result
-
-
 def _launch_argv(agent, ledger_entry):
     ledger_argv = (ledger_entry or {}).get("launch_argv") or []
     if ledger_argv:
@@ -267,7 +234,7 @@ def build_resume_cmd(panel, ledger_entry=None):
         command
         and session_id
         and session_id in command
-        and (provider == "claude" or droid_configured)
+        and (provider in ("claude", "copilot") or droid_configured)
     ):
         return cwd, command
 
@@ -275,23 +242,10 @@ def build_resume_cmd(panel, ledger_entry=None):
         return None, None
 
     args = _launch_argv(agent, ledger_entry)
-    default_executable = "droid" if provider == "factory" else "claude"
-    executable = args[0] if args else default_executable
-    preserved = _strip_session_args(args[1:])
-
-    if provider == "factory":
-        settings = str(Path.home() / ".assistant" / "droid-glm-settings.json")
-        lessons = str(Path.home() / ".claude" / "CLAUDE.md")
-        preserved = _replace_option(preserved, "--settings", settings)
-        preserved = _replace_option(preserved, "--auto", "high")
-        preserved = _strip_option(
-            preserved, "--append-system-prompt-file")
-        if Path(lessons).is_file():
-            preserved.extend(["--append-system-prompt-file", lessons])
-
-    argv = [executable, "--resume", session_id, *preserved]
-    cmd = f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
-
+    fleet_agent = agent_session.agent_from_kind(provider)
+    executable = args[0] if args else None
+    cmd = agent_session.resume_command(
+        fleet_agent, session_id, cwd, _strip_session_args(args[1:]), executable)
     return cwd, cmd
 
 

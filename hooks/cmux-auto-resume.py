@@ -18,12 +18,14 @@ session: every failure is caught.
 """
 import json
 import os
-import shlex
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
+import agent_session  # noqa: E402
 
 # Seconds to wait before each forward attempt; about a minute in total.
 RETRY_DELAYS_SEC = (0, 2, 5, 15, 30)
@@ -69,25 +71,8 @@ def infer_provider(payload):
 
 
 def fallback_resume(provider, executable, sid, cwd):
-    quoted_cwd = shlex.quote(cwd)
-    quoted_sid = shlex.quote(sid)
-    quoted_executable = shlex.quote(executable)
-    if provider == "factory":
-        home = os.path.expanduser("~")
-        settings = shlex.quote(
-            os.path.join(home, ".assistant", "droid-glm-settings.json")
-        )
-        command = (
-            f"cd {quoted_cwd} && {quoted_executable} "
-            f"--settings {settings} --auto high"
-        )
-        lessons_path = os.path.join(home, ".claude", "CLAUDE.md")
-        if os.path.isfile(lessons_path):
-            command += (
-                " --append-system-prompt-file "
-                + shlex.quote(lessons_path))
-        return command + f" --resume {quoted_sid}"
-    return f"cd {quoted_cwd} && {quoted_executable} --resume {quoted_sid}"
+    return agent_session.resume_command(
+        agent_session.agent_from_kind(provider), sid, cwd, executable=executable)
 
 
 def cmux_bin():
@@ -169,8 +154,7 @@ def set_fallback_binding(cmux, provider, sid, cwd, run=subprocess.run):
     # `cmux restore --surface` can respawn this panel.
     if os.environ.get("CMUX_AGENT_LAUNCH_ARGV_B64"):
         return
-    default_executable = "droid" if provider == "factory" else "claude"
-    executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE", default_executable)
+    executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE") or None
     resume_cmd = fallback_resume(provider, executable, sid, cwd)
     name = "Factory Droid" if provider == "factory" else "Claude Code"
     try:

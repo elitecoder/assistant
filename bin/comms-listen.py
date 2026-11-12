@@ -362,7 +362,8 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
         if bound and comms_session.transcript_has_submission(bound, marker):
             hit = bound
         else:
-            hit = comms_session.find_submission(project_dir, marker, since)
+            hit = comms_session.find_submission(
+                project_dir, marker, since, agent=agent, cwd=sess["cwd"])
         if hit:
             found.append(hit)
         return hit is not None

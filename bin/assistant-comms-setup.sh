@@ -105,7 +105,7 @@ PY
 
 # Persist the ONE-KNOB llm.provider into the COMMS config — the file
 # llm_runner/agent_session actually read (G4/G5). env ASSISTANT_LLM_PROVIDER
-# (validated to claude|droid, anything else coerced to claude) wins; else keep
+# (validated to claude|copilot|droid, anything else coerced to claude) wins; else keep
 # an existing value; else default claude. Merge only — never touch sibling
 # llm.* keys (droid bin/model) or any other key.
 echo "     Writing llm.provider into ${COMMS_CONFIG_PATH}…"
@@ -122,7 +122,7 @@ if not isinstance(raw, dict):
     raw = {}
 env_provider = os.environ.get("ASSISTANT_LLM_PROVIDER")
 if env_provider is not None:
-    provider = env_provider if env_provider in ("claude", "droid") else "claude"
+    provider = env_provider if env_provider in ("claude", "copilot", "droid") else "claude"
 else:
     llm = raw.get("llm", {})
     provider = llm.get("provider", "claude") if isinstance(llm, dict) else "claude"

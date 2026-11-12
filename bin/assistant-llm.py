@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure the Assistant's headless LLM provider: claude, droid, or local."""
+"""Configure the Assistant's LLM provider: claude, copilot, droid, or local."""
 from __future__ import annotations
 
 import argparse
@@ -137,6 +137,8 @@ def status(path: Path) -> dict:
                 f"{prefix}_DROID_REASONING_EFFORT",
                 f"{prefix}_LOCAL_MODEL",
                 f"{prefix}_LOCAL_REASONING_EFFORT",
+                f"{prefix}_COPILOT_MODEL",
+                "COPILOT_MODEL",
                 "ASSISTANT_LOCAL_LLM_URL",
                 "DROID_BIN",
             ) if (value := os.environ.get(key)) is not None
@@ -146,6 +148,7 @@ def status(path: Path) -> dict:
             "configured_provider": configured.provider,
             "droid_model": route.droid_model,
             "droid_reasoning_effort": route.droid_reasoning_effort,
+            "copilot_model": route.copilot_model,
             "local_url": route.local_url,
             "local_model": route.local_model,
             "local_reasoning_effort": route.local_reasoning_effort,
@@ -162,13 +165,13 @@ def status(path: Path) -> dict:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Choose Claude, Factory Droid, or a local model for Assistant LLM work.")
+        description="Choose Claude, Copilot, Factory Droid, or a local model for Assistant LLM work.")
     commands = result.add_subparsers(dest="command", required=True)
     show = commands.add_parser("status")
     show.add_argument("--json", action="store_true")
 
     set_cmd = commands.add_parser("set")
-    set_cmd.add_argument("provider", choices=("claude", "droid", "local"))
+    set_cmd.add_argument("provider", choices=llm_runner.PROVIDERS)
     set_cmd.add_argument("--feature", choices=FEATURES)
 
     inherit = commands.add_parser("inherit")
@@ -193,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
                     if detail == "droid":
                         detail += f" ({feature['droid_model']}, " \
                             f"{feature['droid_reasoning_effort']} reasoning)"
+                    if detail == "copilot":
+                        detail += f" ({feature['copilot_model'] or 'Copilot default model'})"
                     if detail == "local":
                         detail += f" ({feature['local_model']} at " \
                             f"{feature['local_url']}, " \
