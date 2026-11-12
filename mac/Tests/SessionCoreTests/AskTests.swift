@@ -60,8 +60,9 @@ final class AskCommandTests: XCTestCase {
         XCTAssertEqual(Asker.arguments(turn, tool: "/A/Assistant Bar"), [
             "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--setting-sources", "", "--settings", guardJSON,
-            "--tools", "Read,Grep,Glob,Bash",
+            "--tools", "Bash",
             "--allowedTools", "Bash(/A/Assistant Bar --sessions)", "Bash(/A/Assistant Bar --send:*)", "Bash(/A/Assistant Bar --wait:*)",
+            "Bash(/A/Assistant Bar --transcript:*)", "Bash(/A/Assistant Bar --find:*)",
             "Bash(/A/Assistant Bar --search:*)", "Bash(/A/Assistant Bar --memory:*)",
             "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
             "--append-system-prompt", "Be brief. Use \"quotes\".", "--model", "haiku", "--effort", "high",

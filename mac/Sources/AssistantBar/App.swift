@@ -29,7 +29,9 @@ enum Main {
         case let .render(text, file): exit(render(text, to: URL(fileURLWithPath: file)) ? 0 : 1)
         case let .transcribe(file, legacy): exit(transcribe(URL(fileURLWithPath: file), legacy: legacy) ? 0 : 1)
         case let .turnEval(files): exit(turnEval(files.map { URL(fileURLWithPath: $0) }) ? 0 : 1)
-        case .search(let json): return print(ChatTools.search(json))
+        case .search(let json): return print(ChatTools.searchForChat(json))
+        case .transcript(let ref): return print(Messenger.conversation(ref))
+        case .find(let json): return print(Messenger.find(json))
         case .memory(let json): return print(ChatTools.memory(json))
         case let .ask(question, session, spoken, sayTo):
             exit(ask(question, session: session, spoken: spoken, sayTo: sayTo.map { URL(fileURLWithPath: $0) }) ? 0 : 1)

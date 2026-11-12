@@ -191,6 +191,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Untrusted session text can no longer escape its block: every line break
+  (CRLF, CR, U+2028, U+2029, next line, vertical tab, form feed) is normalized,
+  labels after invisible or no-break characters are quoted, and block tags
+  anywhere in a line are escaped. Within the turn, `--send`, `--wait`,
+  `--sessions`, and `--search` print session text already marked, compaction
+  summaries are marked too, and Read, Grep, and Glob are replaced by
+  `--transcript <workspace>` and `--find '<json>'`, which print it marked.
+- Every `--send` shows in the chat with its workspace and exact text, then its
+  result: the reply, or that it wasn't sent, wasn't confirmed, or has no reply
+  yet. Plain-language sends stay unconfirmed by design.
 - `--send` refuses messages that start with `/` (a slash command), `!` (a
   shell command), or `#` (a memory note), even behind invisible or control
   characters, and says why, passes the message after `--`, checks the

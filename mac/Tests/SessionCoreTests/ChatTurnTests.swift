@@ -88,7 +88,8 @@ final class TurnAssemblyTests: XCTestCase {
         let rows = [row(1, .system, ""), row(2, .user, "First ask"), row(3, .assistant, "First reply"),
                     row(4, .user, summary, summary: true), row(5, .assistant, "Later reply"), row(6, .user, "Now?")]
         let blocks = TurnPrompt.blocks(rows)
-        XCTAssertEqual(blocks, ["[Operator]\nFirst ask", "[You]\nFirst reply\n\n" + summary, "[You]\nLater reply\n\n[Operator]\nNow?"])
+        XCTAssertEqual(blocks, ["[Operator]\nFirst ask", "[You]\nFirst reply\n\n" + Untrusted.wrap(summary),
+                                "[You]\nLater reply\n\n[Operator]\nNow?"])
     }
 
     func testFleetDeltaSendsTheFullDigestThenOnlyRealChanges() {
@@ -187,12 +188,13 @@ final class TurnAssemblyTests: XCTestCase {
     func testASummaryFoldedIntoAKeptRowKeepsThatRowsSpeakerLabel() {
         let summary = CompressionText.summaryPrefix + " Earlier: CI.\n\n" + CompressionText.summaryEndMarker
         let ended = row(5, .user, summary + "\n\nQuestion 9", summary: true)
-        XCTAssertEqual(TurnPrompt.render(ended), summary + "\n\n[Operator]\nQuestion 9")
+        XCTAssertEqual(TurnPrompt.render(ended), Untrusted.wrap(summary) + "\n\n[Operator]\nQuestion 9")
         let merged = row(6, .assistant, CompressionText.mergedPriorContextHeader + "\nReply 8\n\n" + CompressionText.mergedSummaryDelimiter
                          + "\n\n" + summary, summary: true)
-        XCTAssertEqual(TurnPrompt.render(merged), CompressionText.mergedPriorContextHeader + "\n[You]\nReply 8\n\n"
-                       + CompressionText.mergedSummaryDelimiter + "\n\n" + summary)
-        XCTAssertEqual(TurnPrompt.render(row(7, .user, summary, summary: true)), summary)
+        let rest = (CompressionText.mergedPriorContextHeader + "\n\n\n" + CompressionText.mergedSummaryDelimiter + "\n\n" + summary)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(TurnPrompt.render(merged), Untrusted.wrap(rest) + "\n\n[You]\nReply 8")
+        XCTAssertEqual(TurnPrompt.render(row(7, .user, summary, summary: true)), Untrusted.wrap(summary))
     }
 
     func testAContextRowIsNeverTakenForTheOperatorsRequest() {

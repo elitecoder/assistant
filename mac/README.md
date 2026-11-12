@@ -118,16 +118,21 @@ isn't part of your next question, so pause for **Listening…**, or repeat it.
 Assistant can message a session for you, wait for its reply, and keep going
 back and forth until the job is done. Say or type something like "Tell the
 version bump session to use my token, then tell me when it has pushed." Each
-message it sends, and each reply, shows in the panel. Select **Stop** to end it.
+message it sends shows in the panel with its workspace and exact text, followed
+by what happened: the reply, or why it wasn't sent, confirmed, or answered yet.
+Select **Stop** to end it.
 
 - It sends with `cmux send`, which refuses while you're typing in that session
   or a question or permission prompt is open there.
 - It skips workspaces on your `/back-off` list, however the workspace is
   named: by ref, ID, or title.
+- It sends plain-language messages without asking you first. That's a choice:
+  a session that gets a message acts on it with its own permissions, so a
+  request like "I'm done here, clean up" can lead it to run a skill that
+  deletes things. Back off a workspace to keep Assistant out of it.
 - It won't send a message that starts with `/`, `!`, or `#`, which would run a
   slash command or a shell command, or save a memory note, in that session. Hidden
-  characters in front don't change that. Plain requests are allowed; the
-  session's own permission checks handle them.
+  characters in front don't change that.
 - It presses Enter once. If the message doesn't show in the session's
   transcript, it says so and doesn't send it again.
 - Everything it reads from other sessions (the workspace digest, their replies,
@@ -136,7 +141,8 @@ message it sends, and each reply, shows in the panel. Select **Stop** to end it.
 - It brings you any decision about merging, deleting, spending money, or
   product behavior instead of answering for you.
 - Its only command access is Assistant's own `--sessions`, `--send`,
-  `--wait`, `--search`, and `--memory`. Everything else is denied. See
+  `--wait`, `--transcript`, `--find`, `--search`, and `--memory`. Everything
+  else is denied, including Read, Grep, and Glob. See
   [What the chat's Claude can do](#what-the-chats-claude-can-do).
 
 From the terminal: `AssistantBar --send workspace:25 "go"` sends a message and
@@ -169,10 +175,16 @@ model, so the chat's Claude runs in a tight sandbox:
 - Every tool call first goes through `AssistantBar --pretooluse-guard`, a hook
   that allows only these:
   - Bash: exactly `AssistantBar --sessions`, `--send <workspace> "<message>"`,
-    `--wait <workspace>`, `--search '<json>'`, or `--memory '<json>'`, with no
-    pipes, redirection, command substitution, extra arguments, or line breaks.
-  - Read, Grep, and Glob: only under `~/.claude/projects`, where the
-    transcripts live.
+    `--wait <workspace>`, `--transcript <workspace>`, `--find '<json>'`,
+    `--search '<json>'`, or `--memory '<json>'`, with no pipes, redirection,
+    command substitution, extra arguments, or line breaks.
+  - Read, Grep, and Glob are off. A session's conversation comes from
+    `--transcript`, and a search of the transcripts from `--find`.
+- Everything those commands print from other sessions (replies, workspace
+  titles, transcripts, earlier chats) is marked as untrusted session text, as
+  are the workspace digest and compaction summaries. Every kind of line break
+  is normalized and look-alike labels and block tags are escaped, so the text
+  can't close its block or pass for one of your turns.
 - What the guard allows still needs Claude Code's own permission check, in
   `dontAsk` mode.
 - Assistant runs each command only as its first argument, with an exact

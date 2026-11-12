@@ -110,9 +110,31 @@ enum Messenger {
         targets().first { $0.terminal.workspace == workspace || $0.terminal.title == workspace }
     }
 
+    /// Workspace titles come from the sessions, so the list is printed as untrusted session text.
     static func list() -> String {
-        targets().map { "\($0.terminal.workspace)  \($0.terminal.title)  (pane \($0.terminal.surface))" }
-            .joined(separator: "\n")
+        Untrusted.wrap(targets().map { "\($0.terminal.workspace)  \($0.terminal.title)  (pane \($0.terminal.surface))" }
+            .joined(separator: "\n"))
+    }
+
+    /// `--transcript`: a session's recent conversation, as untrusted session text.
+    static func conversation(_ workspace: String) -> String {
+        guard let target = target(workspace) else { return "No Claude session found in \(workspace). Run --sessions to list them." }
+        let data = (try? Data(contentsOf: target.transcript)) ?? Data()
+        let note = target.note.map { "\nNOTE: " + $0 } ?? ""
+        return "Recent conversation in \(target.terminal.workspace):\n" + Untrusted.wrap(Digest.exchange(data)) + note
+    }
+
+    /// `--find`: matching lines from the sessions' transcripts, as untrusted session text.
+    static func find(_ json: String) -> String {
+        guard let query = TranscriptSearch.query(json) else { return #"--find needs {"text": "<text>"}, with an optional "workspace"."# }
+        let scope = targets().filter { t in query.workspace.map { t.terminal.workspace == $0 || t.terminal.title == $0 } ?? true }
+        var found: [String] = []
+        for t in scope {
+            let data = (try? Data(contentsOf: t.transcript)) ?? Data()
+            found += TranscriptSearch.matches(data, text: query.text, limit: query.limit).map { "\(t.terminal.workspace) \($0)" }
+        }
+        guard !found.isEmpty else { return "No transcript line has \"\(query.text)\"." }
+        return Untrusted.wrap(found.suffix(query.limit).joined(separator: "\n\n"))
     }
 
     /// Pastes `message` into the session, presses Enter, confirms it arrived, then waits for the reply.
@@ -153,8 +175,8 @@ enum Messenger {
         let state = Messaging.turn(data, sent: sent, since: since)
         let reply = state.replies.last ?? "(no reply text yet)"
         let note = target.note.map { "\nNOTE: " + $0 } ?? ""
-        return done ? "REPLY\n\(reply)\(note)"
-            : "STILL WORKING\nNo final reply after \(Int(timeout)) seconds. Latest:\n\(reply)\n"
+        return done ? "REPLY\n" + Untrusted.wrap(reply) + note
+            : "STILL WORKING\nNo final reply after \(Int(timeout)) seconds. Latest:\n" + Untrusted.wrap(reply) + "\n"
                 + "It may be waiting on a permission prompt. Run --wait \(target.terminal.workspace) to keep waiting."
     }
 

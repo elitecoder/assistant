@@ -376,6 +376,12 @@ public enum ChatTools {
         }
     }
 
+    /// `--search` as the chat's Claude sees it: earlier chats hold other sessions' text, so the results are marked
+    /// untrusted.
+    public static func searchForChat(_ arguments: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        Untrusted.wrap(search(arguments, environment: environment))
+    }
+
     public static func memory(_ arguments: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         let folder = environment["ASSISTANT_MEMORY_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) } ?? MemoryStore.defaultFolder
         let store = MemoryStore(folder: folder)

@@ -13,7 +13,7 @@ final class ToolGuardTests: XCTestCase {
     }
 
     func bash(_ command: String) -> ToolGuard.Decision {
-        ToolGuard.decide(toolName: "Bash", input: ["command": command], cwd: root, tool: tool, root: root)
+        ToolGuard.decide(toolName: "Bash", input: ["command": command], tool: tool)
     }
 
     func testAssistantsOwnCommandsPassInTheirExactShapes() {
@@ -44,13 +44,16 @@ final class ToolGuardTests: XCTestCase {
         }
     }
 
-    func testReadingIsLimitedToTheTranscriptsFolder() throws {
+    /// Read, Grep, and Glob would hand Claude raw transcript text within the turn, so they're off; the app's own
+    /// --transcript and --find print it marked as untrusted.
+    func testReadGrepAndGlobAreOffEvenInsideTheTranscriptsFolder() throws {
         let inside = root + "/-Users-x-dev/abc.jsonl"
-        XCTAssertEqual(ToolGuard.decide(toolName: "Read", input: ["file_path": inside], cwd: root, tool: tool, root: root), .allow)
-        XCTAssertEqual(ToolGuard.decide(toolName: "Grep", input: ["pattern": "x"], cwd: root, tool: tool, root: root), .allow)
-        XCTAssertEqual(ToolGuard.decide(toolName: "Grep", input: ["pattern": "x", "path": "-Users-x-dev", "glob": "*.jsonl"],
-                                        cwd: root, tool: tool, root: root), .allow)
-        XCTAssertEqual(ToolGuard.decide(toolName: "Glob", input: ["pattern": "**/*.jsonl"], cwd: root, tool: tool, root: root), .allow)
+        XCTAssertEqual(ToolGuard.decide(toolName: "Read", input: ["file_path": inside], tool: tool), .deny(ToolGuard.useAppCommands))
+        XCTAssertEqual(ToolGuard.decide(toolName: "Grep", input: ["pattern": "x"], tool: tool), .deny(ToolGuard.useAppCommands))
+        XCTAssertEqual(ToolGuard.decide(toolName: "Glob", input: ["pattern": "**/*.jsonl"], tool: tool), .deny(ToolGuard.useAppCommands))
+        XCTAssertEqual(bash("\(tool) --transcript workspace:25"), .allow)
+        XCTAssertEqual(bash("\(tool) --find '{\"text\": \"deploy token\"}'"), .allow)
+        XCTAssertNotEqual(bash("\(tool) --find 'deploy token'"), .allow)
         let link = root + "/-Users-x-dev/escape"
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: NSHomeDirectory() + "/dev")
         let outside: [(String, [String: Any])] = [
@@ -60,16 +63,16 @@ final class ToolGuardTests: XCTestCase {
             ("Glob", ["pattern": "/Users/**"]), ("Glob", ["pattern": "../**"]), ("Glob", ["pattern": "*", "path": NSHomeDirectory()]),
         ]
         for (name, input) in outside {
-            XCTAssertNotEqual(ToolGuard.decide(toolName: name, input: input, cwd: root, tool: tool, root: root), .allow, "\(name) \(input)")
+            XCTAssertNotEqual(ToolGuard.decide(toolName: name, input: input, tool: tool), .allow, "\(name) \(input)")
         }
         for name in ["Edit", "Write", "WebFetch", "Task", "NotebookEdit", "mcp__x__y"] {
-            XCTAssertNotEqual(ToolGuard.decide(toolName: name, input: [:], cwd: root, tool: tool, root: root), .allow, name)
+            XCTAssertNotEqual(ToolGuard.decide(toolName: name, input: [:], tool: tool), .allow, name)
         }
     }
 
     func testTheHookSpeaksClaudeCodesFormat() throws {
         let input = Data(#"{"tool_name":"Bash","tool_input":{"command":"ls /tmp"},"cwd":"/x"}"#.utf8)
-        let output = ToolGuard.hookOutput(ToolGuard.decide(hookInput: input, tool: tool, root: root))
+        let output = ToolGuard.hookOutput(ToolGuard.decide(hookInput: input, tool: tool))
         let decoded = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
         let specific = decoded?["hookSpecificOutput"] as? [String: Any]
         XCTAssertEqual(specific?["hookEventName"] as? String, "PreToolUse")

@@ -17,7 +17,7 @@ final class SendSafetyTests: XCTestCase {
     }
 
     func bash(_ command: String) -> ToolGuard.Decision {
-        ToolGuard.decide(toolName: "Bash", input: ["command": command], cwd: root, tool: tool, root: root)
+        ToolGuard.decide(toolName: "Bash", input: ["command": command], tool: tool)
     }
 
     /// A message starting with "/" or "!" would run a slash command or a shell command in the other session.
@@ -85,7 +85,7 @@ final class SendSafetyTests: XCTestCase {
     func testADotDotPartIsRefusedEvenWhenTheTextLooksInside() {
         let path = root + "/-Users-x-dev/link/../secret"
         XCTAssertEqual(try? String(contentsOfFile: path, encoding: .utf8), "secret", "the kernel really reaches outside")
-        XCTAssertNotEqual(ToolGuard.decide(toolName: "Read", input: ["file_path": path], cwd: root, tool: tool, root: root), .allow)
+        XCTAssertNotEqual(ToolGuard.decide(toolName: "Read", input: ["file_path": path], tool: tool), .allow)
     }
 
     func testABacktickInsideDoubleQuotesIsRefused() {

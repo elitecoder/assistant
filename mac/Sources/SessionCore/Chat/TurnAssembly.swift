@@ -97,20 +97,22 @@ public enum TurnPrompt {
         }
     }
 
-    /// A summary the compressor folded into a kept row: the summary text as is, and the kept row with its speaker label.
+    /// A compaction summary: its text in an untrusted block (it's written from history that holds other sessions'
+    /// text), then the kept row it carries, if any, with its own speaker label.
     static func labelingKeptRow(_ message: ConversationMessage) -> String {
         let content = message.content
-        guard let kept = message.unwrappedHandoff else { return content }
+        guard let kept = message.unwrappedHandoff else { return Untrusted.wrap(content) }
         let searchRange: Range<String.Index>
         if let delimiter = content.range(of: CompressionText.mergedSummaryDelimiter) {
             searchRange = content.startIndex..<delimiter.lowerBound
         } else if let marker = content.range(of: CompressionText.summaryEndMarker) {
             searchRange = marker.upperBound..<content.endIndex
         } else {
-            return content
+            return Untrusted.wrap(content)
         }
-        guard let range = content.range(of: kept.content, range: searchRange) else { return content }
-        return content.replacingCharacters(in: range, with: render(kept))
+        guard let range = content.range(of: kept.content, range: searchRange) else { return Untrusted.wrap(content) }
+        let summary = content.replacingCharacters(in: range, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return Untrusted.wrap(summary) + "\n\n" + render(kept)
     }
 
     /// The system row after a compaction: memory as it is now, then the note that earlier turns were compacted.
@@ -332,7 +334,7 @@ public enum ChatHistory {
             case .assistant:
                 if let step = Messaging.step(command: row.content, sendCommand: tool) { out.append(ChatTurn(role: .step, text: step.text)) }
             case .tool:
-                if row.content.hasPrefix("REPLY") { out.append(ChatTurn(role: .step, text: ChatStep.replied(Messaging.replyBody(row.content)).text)) }
+                if let step = Messaging.sendResult(row.content) { out.append(ChatTurn(role: .step, text: step.text)) }
             case .system: continue
             }
         }

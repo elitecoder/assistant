@@ -51,31 +51,20 @@ public enum ToolGuard {
     }
 
     /// Decides from the hook's stdin JSON (`tool_name`, `tool_input`, `cwd`).
-    public static func decide(hookInput: Data, tool: String, root: String = ClaudeSandbox.projectsRoot) -> Decision {
+    public static func decide(hookInput: Data, tool: String) -> Decision {
         guard let event = (try? JSONSerialization.jsonObject(with: hookInput)) as? [String: Any],
               let name = event["tool_name"] as? String else { return .deny("unreadable tool call") }
-        let input = event["tool_input"] as? [String: Any] ?? [:]
-        let cwd = event["cwd"] as? String ?? root
-        return decide(toolName: name, input: input, cwd: cwd, tool: tool, root: root)
+        return decide(toolName: name, input: event["tool_input"] as? [String: Any] ?? [:], tool: tool)
     }
 
-    public static func decide(toolName: String, input: [String: Any], cwd: String, tool: String, root: String) -> Decision {
+    public static func decide(toolName: String, input: [String: Any], tool: String) -> Decision {
         switch toolName {
         case "Bash":
             return bash(input["command"] as? String ?? "", tool: tool)
-        case "Read":
-            guard let path = input["file_path"] as? String, inside(path, cwd: cwd, root: root) else { return .deny(outside(root)) }
-            return .allow
-        case "Grep":
-            guard inside(input["path"] as? String ?? cwd, cwd: cwd, root: root), safePattern(input["glob"] as? String) else {
-                return .deny(outside(root))
-            }
-            return .allow
-        case "Glob":
-            guard inside(input["path"] as? String ?? cwd, cwd: cwd, root: root), safePattern(input["pattern"] as? String) else {
-                return .deny(outside(root))
-            }
-            return .allow
+        case "Read", "Grep", "Glob":
+            // Their output reaches Claude raw within the turn; the app's own commands print transcripts marked as
+            // untrusted session text.
+            return .deny(useAppCommands)
         default:
             return .deny("\(toolName) is not available in Assistant's chat.")
         }
@@ -90,9 +79,10 @@ public enum ToolGuard {
         return String(decoding: data, as: UTF8.self)
     }
 
-    static func outside(_ root: String) -> String { "Read, Grep, and Glob work only under \(root)." }
+    static let useAppCommands = "Read, Grep, and Glob are off in Assistant's chat. Read a session's conversation with "
+        + "--transcript <workspace-ref>, and search transcripts with --find '<json>'."
 
-    static let onlyOwnCommands = "Bash runs only Assistant's own --sessions, --send, --wait, --search, and --memory, "
+    static let onlyOwnCommands = "Bash runs only Assistant's own --sessions, --send, --wait, --transcript, --find, --search, and --memory, "
         + "exactly as the instructions show them, with no other commands, pipes, or redirection."
 
     static func bash(_ command: String, tool: String) -> Decision {
@@ -105,7 +95,8 @@ public enum ToolGuard {
         switch args[0] {
         case "--sessions": ok = args.count == 1
         case "--send": ok = args.count == 3 && isRef(args[1]) && !args[2].isEmpty
-        case "--wait": ok = args.count == 2 && isRef(args[1])
+        case "--wait", "--transcript": ok = args.count == 2 && isRef(args[1])
+        case "--find": ok = args.count == 2 && isJSONObject(args[1])
         case "--search", "--memory": ok = args.count == 2 && isJSONObject(args[1])
         default: ok = false
         }
@@ -144,41 +135,6 @@ public enum ToolGuard {
         (try? JSONSerialization.jsonObject(with: Data(word.utf8))) is [String: Any]
     }
 
-    static func safePattern(_ pattern: String?) -> Bool {
-        guard let pattern else { return true }
-        return !pattern.hasPrefix("/") && !pattern.hasPrefix("~") && !pattern.contains("..")
-    }
-
-    /// `path`, made absolute against `cwd` with symlinks resolved, is `root` or inside it. A path with a `..` part is
-    /// refused: after a symlink, the kernel resolves `..` differently from the text.
-    static func inside(_ path: String, cwd: String, root: String) -> Bool {
-        guard !path.isEmpty, !path.hasPrefix("~"), !path.split(separator: "/").contains("..") else { return false }
-        let absolute = path.hasPrefix("/") ? path : cwd + "/" + path
-        let resolved = real(absolute)
-        let base = real(root)
-        return resolved == base || resolved.hasPrefix(base + "/")
-    }
-
-    /// `path` with `.` and `..` removed and every symlink resolved, including links in front of parts that don't
-    /// exist yet: the longest existing prefix goes through realpath and the rest is appended.
-    static func real(_ path: String) -> String {
-        var parts: [String] = []
-        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
-            if part == "." { continue }
-            if part == ".." { _ = parts.popLast() } else { parts.append(String(part)) }
-        }
-        var rest: [String] = []
-        while true {
-            let prefix = "/" + parts.joined(separator: "/")
-            if let resolved = realpath(prefix, nil) {
-                defer { free(resolved) }
-                let head = String(cString: resolved)
-                return rest.isEmpty ? head : (head == "/" ? "" : head) + "/" + rest.reversed().joined(separator: "/")
-            }
-            guard let last = parts.popLast() else { return "/" + rest.reversed().joined(separator: "/") }
-            rest.append(last)
-        }
-    }
 }
 
 /// Assistant's command line. A command is recognized only as the first argument, with its exact argument count, so a
@@ -190,6 +146,8 @@ public enum AppCommand: Equatable {
     case send(ref: String, message: String, timeout: TimeInterval?)
     case wait(ref: String, timeout: TimeInterval?)
     case search(String)
+    case transcript(String)
+    case find(String)
     case memory(String)
     case render(text: String, file: String)
     case transcribe(file: String, legacy: Bool)
@@ -204,6 +162,7 @@ public enum AppCommand: Equatable {
            AssistantBar --send <workspace> "<message>" [--timeout <seconds>] | --wait <workspace> [--timeout <seconds>]
            AssistantBar --ask "<question>" [--session <name>] [--spoken] [--say-to <file.wav>]
            AssistantBar --compress [--session <name>] [--focus "<topic>"]
+           AssistantBar --transcript <workspace> | --find '<json>'
            AssistantBar --search '<json>' | --memory '<json>' | --render "<text>" <file.wav>
            AssistantBar --transcribe <file.wav> [--legacy] | --turn-eval <file.wav>...
     """
@@ -220,6 +179,8 @@ public enum AppCommand: Equatable {
         case "--sessions": return tail.isEmpty ? .sessions : nil
         case "--pretooluse-guard": return tail.isEmpty ? .toolGuard : nil
         case "--search": return tail.count == 1 ? .search(tail[0]) : nil
+        case "--transcript": return tail.count == 1 ? .transcript(tail[0]) : nil
+        case "--find": return tail.count == 1 ? .find(tail[0]) : nil
         case "--memory": return tail.count == 1 ? .memory(tail[0]) : nil
         case "--render": return tail.count == 2 ? .render(text: tail[0], file: tail[1]) : nil
         case "--turn-eval": return tail.isEmpty || tail.contains(where: { $0.hasPrefix("--") }) ? nil : .turnEval(files: tail)

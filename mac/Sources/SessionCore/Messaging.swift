@@ -85,8 +85,8 @@ public enum Messaging {
 
     /// Why a message can't be sent into another session, or nil when it can. A message starting with "/" runs as a
     /// slash command there (/clear, /cleanup, /merge-when-ready…), one starting with "!" runs in its shell, and one
-    /// starting with "#" can save a standing memory, all with that session's permissions. Plain requests are fine:
-    /// the session's own permission checks cover them.
+    /// starting with "#" can save a standing memory, all with that session's permissions. Policy: the operator accepts
+    /// plain-language messages sent without asking them first; only these three prefixes are refused.
     public static func sendRefusal(_ message: String) -> String? {
         switch firstVisible(message) {
         case "#": return "Messages can't start with \"#\": that can save a standing instruction to the session's memory. Ask in plain words, or ask the operator."
@@ -255,7 +255,7 @@ public enum Messaging {
                 let content = b["content"]
                 let text = (content as? String)
                     ?? (content as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined(separator: "\n") ?? ""
-                if text.hasPrefix("REPLY") { return .replied(replyBody(text)) }
+                if let step = sendResult(text) { return step }
             }
         }
         return nil
@@ -271,13 +271,37 @@ public enum Messaging {
         if let i = args.firstIndex(of: "--wait"), i + 1 < args.count {
             return .note("Waiting on \(args[i + 1])…")
         }
+        if let i = args.firstIndex(of: "--transcript"), i + 1 < args.count {
+            return .note("Reading \(args[i + 1])'s conversation…")
+        }
+        if args.contains("--find") { return .note("Searching the sessions' transcripts…") }
         if args.contains("--search") { return .note("Searching earlier chats…") }
         if args.contains("--memory") { return .note("Updating memory…") }
         return nil
     }
 
+    /// What a `--send` or `--wait` result shows in the panel: the reply, or why there isn't one. Every send's result
+    /// shows, so the operator sees what was delivered and what wasn't.
+    public static func sendResult(_ text: String) -> ChatStep? {
+        let first = text.prefix { $0 != "\n" }
+        let rest = replyBody(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        switch first {
+        case "REPLY": return .replied(rest)
+        case "NOT SENT": return .note("Not sent: " + rest)
+        case "NOT CONFIRMED": return .note("Not confirmed: " + rest)
+        case "STILL WORKING": return .note("Delivered, no reply yet: " + String(rest.prefix(300)))
+        default: return nil
+        }
+    }
+
     /// A `--send` result without its first line, which is the REPLY marker.
-    public static func replyBody(_ text: String) -> String { String(text.drop { $0 != "\n" }.dropFirst()) }
+    public static func replyBody(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
+        guard let close = lines.firstIndex(where: { $0.hasPrefix("</\(Untrusted.tag) id=\"") }) else { return lines.joined(separator: "\n") }
+        let block = Untrusted.unwrap(lines[...close].joined(separator: "\n"))
+        let rest = lines[(close + 1)...].joined(separator: "\n")
+        return rest.isEmpty ? block : block + "\n" + rest
+    }
 
     /// Splits a shell command into words, honoring single and double quotes.
     public static func shellWords(_ command: String) -> [String] {
@@ -303,5 +327,38 @@ public enum Messaging {
         }
         if inWord { words.append(current) }
         return words
+    }
+}
+
+/// `--find`: a literal search over sessions' transcripts, for the chat's Claude instead of Grep.
+public enum TranscriptSearch {
+    public struct Query: Equatable {
+        public let text: String
+        public let workspace: String?
+        public let limit: Int
+    }
+
+    /// `{"text": "...", "workspace": "workspace:3", "limit": 20}`; nil without text.
+    public static func query(_ json: String) -> Query? {
+        guard let d = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+              let text = (d["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        let limit = min(50, max(1, d["limit"] as? Int ?? 20))
+        return Query(text: text, workspace: d["workspace"] as? String, limit: limit)
+    }
+
+    /// The operator messages and Claude replies in one transcript that contain `text`, ignoring case, newest last,
+    /// each clipped around the match.
+    public static func matches(_ data: Data, text: String, limit: Int) -> [String] {
+        var found: [String] = []
+        for line in Transcript.lines(data) {
+            guard let r = Transcript.record(line) else { continue }
+            let pair: (String, String)? = Transcript.humanText(r).map { ("OPERATOR", $0) } ?? Transcript.assistantText(r).map { ("CLAUDE", $0) }
+            guard let (who, body) = pair, let range = body.range(of: text, options: .caseInsensitive) else { continue }
+            let start = body.index(range.lowerBound, offsetBy: -150, limitedBy: body.startIndex) ?? body.startIndex
+            let end = body.index(range.upperBound, offsetBy: 150, limitedBy: body.endIndex) ?? body.endIndex
+            let when = (r["timestamp"] as? String).map { " " + $0 } ?? ""
+            found.append("\(who)\(when): " + (start > body.startIndex ? "…" : "") + body[start..<end] + (end < body.endIndex ? "…" : ""))
+        }
+        return Array(found.suffix(limit))
     }
 }
