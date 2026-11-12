@@ -14,6 +14,8 @@ enum Main {
     static let delegate = AppDelegate()
 
     static func main() {
+        // A child that exits before reading its input mustn't take the app down; ChildInput also guards each pipe.
+        signal(SIGPIPE, SIG_IGN)
         guard let command = AppCommand.parse(CommandLine.arguments) else {
             FileHandle.standardError.write(Data((AppCommand.usage + "\n").utf8))
             exit(2)
@@ -233,7 +235,6 @@ final class Model: NSObject, ObservableObject {
     lazy var startListening: () -> Void = { [weak self] in self?.listener.start() }
     /// Ends listening without asking what was heard; tests replace it.
     lazy var cancelListening: () -> Void = { [weak self] in self?.listener.cancel() }
-    private var running: Process?
     private var sentAbout: String?
     private var engine: ChatEngine?
     private let chatQueue = DispatchQueue(label: "assistant.chat")
@@ -289,8 +290,7 @@ final class Model: NSObject, ObservableObject {
         }
         let url = ProcessInfo.processInfo.environment["ASSISTANT_DB"].map { URL(fileURLWithPath: $0) } ?? ConversationStore.defaultURL
         do {
-            engine = Main.engine(store: try ConversationStore(url: url),
-                                 running: { [weak self] p in DispatchQueue.main.async { self?.running = p } })
+            engine = Main.engine(store: try ConversationStore(url: url))
         } catch {
             chat.append(ChatTurn(role: .error, text: "Chat history is unavailable: \(error)"))
         }
@@ -451,7 +451,6 @@ final class Model: NSObject, ObservableObject {
     /// then ask the next question waiting.
     func answerCompleted(_ outcome: TurnOutcome, spoken: Bool) {
         asking = false
-        running = nil
         chat.append(ChatTurn(role: outcome.failed ? .error : .assistant, text: outcome.reply, cost: outcome.cost))
         meter = outcome.meter
         if spoken && outcome.spokenSentences == 0 { answered(outcome.reply) }
@@ -465,8 +464,9 @@ final class Model: NSObject, ObservableObject {
     /// Whether the answer is still playing; tests replace it.
     lazy var speakingNow: () -> Bool = { [weak self] in self?.speaker.speaking ?? false }
 
+    /// Stop: ends the chat's `claude`, the summarizer, and everything they started, such as `--send` and `--wait`.
     func stopAsking() {
-        running?.terminate()
+        ChildProcesses.shared.endAll()
     }
 
     /// Ignored while an answer is running, so its reply can't land in the next chat.
@@ -530,6 +530,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var hotKey: EventHotKeyRef?
     var talkKey: EventHotKeyRef?
     var replayKey: EventHotKeyRef?
+
+    func applicationWillTerminate(_ note: Notification) {
+        ChildProcesses.shared.endAll()
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

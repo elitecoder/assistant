@@ -103,7 +103,9 @@ public final class TranscriptLocator {
 }
 
 public enum Shell {
-    public static func run(_ tool: String, _ args: [String]) -> (Int32, Data) {
+    /// Runs `tool`, ending it after `timeout` seconds so a hung `cmux`, `ps`, or `lsof` can't block a scan or a send
+    /// forever; a timed-out run reports status -1.
+    public static func run(_ tool: String, _ args: [String], timeout: TimeInterval = 30) -> (Int32, Data) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: tool)
         p.arguments = args
@@ -115,9 +117,12 @@ public enum Shell {
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { return (-1, Data()) }
+        let killer = DispatchWorkItem { p.terminate() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        return (p.terminationStatus, data)
+        killer.cancel()
+        return (p.terminationReason == .uncaughtSignal ? -1 : p.terminationStatus, data)
     }
 
     public static func find(_ candidates: [String]) -> String? {

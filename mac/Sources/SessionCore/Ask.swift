@@ -120,14 +120,17 @@ public struct ClaudeInvocation: Equatable {
 
 public struct ClaudeRun: Equatable {
     public var output: Data
-    /// The run was terminated (Stop) before it finished.
+    /// The run was terminated (Stop or Quit) before it finished.
     public var stopped: Bool
     public var launchError: String?
+    /// `claude` died of this signal without being stopped: a crash, not a Stop.
+    public var crashSignal: Int32?
 
-    public init(output: Data, stopped: Bool = false, launchError: String? = nil) {
+    public init(output: Data, stopped: Bool = false, launchError: String? = nil, crashSignal: Int32? = nil) {
         self.output = output
         self.stopped = stopped
         self.launchError = launchError
+        self.crashSignal = crashSignal
     }
 }
 
@@ -223,9 +226,10 @@ public enum Asker {
 
     /// Runs one turn through the `claude` binary itself (never the operator's alias or a shell), sandboxed by
     /// `arguments`. Its only Bash access is `tool`'s own commands.
-    public static func run(_ invocation: ClaudeInvocation, tool: String, onLine: @escaping (String) -> Void,
+    public static func run(_ invocation: ClaudeInvocation, tool: String, binary: String? = ClaudeSandbox.binary,
+                           children: ChildProcesses = .shared, onLine: @escaping (String) -> Void,
                            running: ((Process) -> Void)? = nil) -> ClaudeRun {
-        guard let claude = ClaudeSandbox.binary else {
+        guard let claude = binary else {
             return ClaudeRun(output: Data(), launchError: ClaudeSandbox.missingBinary)
         }
         let p = Process()
@@ -243,11 +247,9 @@ public enum Asker {
         do { try p.run() } catch {
             return ClaudeRun(output: Data(), launchError: "Couldn't start claude: \(error.localizedDescription)")
         }
+        children.add(p)
         running?(p)
-        DispatchQueue.global().async {
-            input.fileHandleForWriting.write(invocation.input)
-            try? input.fileHandleForWriting.close()
-        }
+        DispatchQueue.global().async { ChildInput.feed(input.fileHandleForWriting, invocation.input) }
         var all = Data()
         var pending = Data()
         while true {
@@ -262,6 +264,8 @@ public enum Asker {
             }
         }
         p.waitUntilExit()
-        return ClaudeRun(output: all, stopped: p.terminationReason == .uncaughtSignal)
+        let stopped = children.remove(p)
+        let signaled = p.terminationReason == .uncaughtSignal
+        return ClaudeRun(output: all, stopped: signaled && stopped, crashSignal: signaled && !stopped ? p.terminationStatus : nil)
     }
 }

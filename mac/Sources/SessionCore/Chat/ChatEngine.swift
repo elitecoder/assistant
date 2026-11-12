@@ -187,7 +187,10 @@ public final class ChatEngine {
             try store.append(sessionID: sid, [TurnRecord.noReplyNote(error, timestamp: now())])
             return TurnOutcome(reply: error, failed: true, cost: nil, meter: meter)
         }
-        let record = StreamTurn.record(run.output, stopped: run.stopped, model: model, now: now())
+        var record = StreamTurn.record(run.output, stopped: run.stopped, model: model, now: now())
+        if let signal = run.crashSignal, record.failed {
+            record.reply = "Claude Code quit unexpectedly (signal \(signal)), so there's no answer. Ask again."
+        }
         if let reported = record.contextWindow, ContextWindow.remember(reported, for: model),
            windowFor(model) != compressor.config.contextLength {
             compressor.updateModel(Self.config(model: model, window: windowFor(model)))
@@ -411,13 +414,12 @@ public enum ClaudeSummarizer {
         p.standardOutput = output
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { throw SummaryError.noProvider }
+        ChildProcesses.shared.add(p)
+        defer { ChildProcesses.shared.remove(p) }
         var timedOut = false
         let killer = DispatchWorkItem { timedOut = true; p.terminate() }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
-        DispatchQueue.global().async {
-            input.fileHandleForWriting.write(Data(prompt.utf8))
-            try? input.fileHandleForWriting.close()
-        }
+        DispatchQueue.global().async { ChildInput.feed(input.fileHandleForWriting, Data(prompt.utf8)) }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
         killer.cancel()

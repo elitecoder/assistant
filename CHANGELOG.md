@@ -191,6 +191,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- Stopping an answer, or `claude` exiting before it read the chat, no longer
+  kills the app with SIGPIPE; the turn's record, including any message
+  already sent to another session, is kept.
+- **Stop** and quitting now end every process Assistant started and what those
+  started in turn: the chat's `claude`, the summarizer, and `--send` and
+  `--wait`. A `claude` crash is recorded as a crash, not as a Stop, and the
+  `cmux`, `ps`, `gh`, and `lsof` calls time out instead of hanging a scan.
 - **Stop speaking**, **Stop**, Esc, and talking over an answer now stop a
   streamed answer completely: the sentences Claude hasn't written yet aren't
   read either. Talking over an answer asks your new question first, as soon as
