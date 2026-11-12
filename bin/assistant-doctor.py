@@ -293,7 +293,7 @@ def check_droid_binary() -> Check:
         "droid binary", FAIL, core=False,
         detail="droid not found on PATH or ~/.local/bin, /opt/homebrew/bin, /usr/local/bin",
         remedy="install Factory droid (curl -fsSL https://app.factory.ai/cli | sh) "
-               "so it lands on ~/.local/bin/droid, then re-run",
+               "so it lands in Factory's default install dir, then re-run",
     )
 
 

@@ -109,7 +109,7 @@ def test_dry_run_reports_without_patching(tmp_path, install):
 
     result = install()
 
-    assert "would install cmux Factory hooks and patch Claude + Factory session hooks" in result.stdout
+    assert "would install cmux Factory + Copilot hooks and patch Claude + Factory session hooks" in result.stdout
     assert hooks(settings) == {"SessionEnd": [LEDGER_END]}
 
 

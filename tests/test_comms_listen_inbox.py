@@ -272,7 +272,7 @@ def env_reply(monkeypatch):
     monkeypatch.setattr(listen.comms_session, "transcript_has_submission",
                         lambda path, marker: path == rec.get("bound_hit"))
     monkeypatch.setattr(listen.comms_session, "find_submission",
-                        lambda d, marker, since: rec["found"])
+                        lambda d, marker, since, **_: rec["found"])
 
     def fake_should_clear(transcript, agent="claude"):
         rec["should_clear"] = (transcript, agent)

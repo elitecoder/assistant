@@ -89,7 +89,8 @@ def set_provider(path: Path, provider: str, feature: str | None) -> None:
         droid = llm.setdefault("droid", {})
         if not isinstance(droid, dict):
             raise ValueError("config key 'llm.droid' must be an object")
-        droid.setdefault("bin", str(Path.home() / ".local/bin/droid"))
+        droid.setdefault("bin", llm_runner.agent_session.binary(
+            llm_runner.agent_session.DROID))
         droid.setdefault("model", "glm-5.2")
         droid.setdefault("reasoning_effort", "high")
 

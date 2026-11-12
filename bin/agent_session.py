@@ -328,7 +328,7 @@ def agent_available(agent: str) -> bool:
     if agent == CLAUDE:
         return True
     home = Path(os.environ.get("HOME", str(Path.home())))
-    if not _executable(binary(agent)):
+    if shutil.which(agent) is None and not _executable(binary(agent)):
         return False
     if agent == COPILOT:
         return True
@@ -356,6 +356,16 @@ def _droid_flags(home: Path) -> list[str]:
     return flags
 
 
+def _interactive_exe(agent: str) -> list[str]:
+    """How a pane's login shell starts `agent`: its *_BIN override, else the
+    name resolved through PATH (`command` skips the alias), so cmux's PATH shim
+    and session hooks wrap it."""
+    override = (os.environ.get(_BIN_ENV[agent]) or "").strip()
+    if override:
+        return [str(Path(override).expanduser())]
+    return ["command", agent]
+
+
 def session_argv(agent: str, *, home: str | Path | None = None,
                  model: str | None = None,
                  add_dirs: tuple | list = ()) -> list[str]:
@@ -369,7 +379,7 @@ def session_argv(agent: str, *, home: str | Path | None = None,
     if agent == DROID:
         return [DROID, *_droid_flags(base)]
     if agent == COPILOT:
-        argv = [binary(COPILOT), "--allow-all"]
+        argv = [*_interactive_exe(COPILOT), "--allow-all"]
         chosen = copilot_model() if model is None else model
         if chosen:
             argv += ["--model", chosen]
@@ -378,7 +388,7 @@ def session_argv(agent: str, *, home: str | Path | None = None,
         return argv
     if model is None and not add_dirs:
         return [CLAUDE]
-    argv = [binary(CLAUDE)]
+    argv = _interactive_exe(CLAUDE)
     if model:
         argv += ["--model", model]
     argv.append("--dangerously-skip-permissions")
@@ -398,6 +408,17 @@ def session_command(agent: str, *, home: str | Path | None = None,
 def launch_command(agent: str, home: str | Path | None = None) -> str:
     """The cmux ``--command`` for a dispatched `agent` session."""
     return session_command(agent, home=home)
+
+
+def binding_is_current(agent: str, command: str | None) -> bool:
+    """True when a stored resume command still carries `agent`'s launch flags
+    (Droid bindings from before the GLM migration lack them)."""
+    if agent != DROID:
+        return True
+    command = command or ""
+    return ("droid-glm-settings.json" in command
+            and "--append-system-prompt-file" in command
+            and "--auto high" in command)
 
 
 def resume_argv(agent: str, session_id: str, preserved: list[str] | tuple = (),
@@ -422,7 +443,8 @@ def resume_argv(agent: str, session_id: str, preserved: list[str] | tuple = (),
     if agent == COPILOT:
         if "--allow-all" not in preserved and "--yolo" not in preserved:
             preserved.append("--allow-all")
-        return [executable or binary(COPILOT), "--resume", session_id, *preserved]
+        exe = [executable] if executable else _interactive_exe(COPILOT)
+        return [*exe, "--resume", session_id, *preserved]
     return [executable or CLAUDE, "--resume", session_id, *preserved]
 
 
@@ -659,23 +681,62 @@ def merges_bedrock(provider: str) -> bool:
 
 # ── shell entry point (skills, shell scripts) ─────────────────────────────────
 
+def prompt_submitted(agent: str, cwd: str | Path, needle: str,
+                     home: str | Path | None = None) -> bool:
+    """True when a user turn in any of `agent`'s transcripts for `cwd`
+    contains `needle`."""
+    for path in session_transcripts(agent, cwd, home=home):
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if needle not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record_role(rec) != "user":
+                continue
+            content = record_content(rec)
+            if isinstance(content, list):
+                content = " ".join(b.get("text", "") for b in content
+                                   if isinstance(b, dict))
+            if isinstance(content, str) and needle in content:
+                return True
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
     ap = argparse.ArgumentParser(
-        description="Print the agent the user picked, or its launch command.")
+        description="Start or check a coding agent the way Assistant does.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("agent", help="the dispatch agent the user picked")
-    lc = sub.add_parser("launch-command",
-                        help="cmux --command for an interactive session")
-    lc.add_argument("--agent", choices=AGENTS)
+    for name, help_text in (
+            ("agent", "print the agent to launch (the user's pick, or --agent)"),
+            ("launch-command", "print the cmux --command for a session"),
+            ("is-ready", "exit 0 when the screen text on stdin shows a ready REPL"),
+            ("trust-marker", "print the folder-trust prompt text, if any"),
+            ("submitted", "exit 0 when a user turn contains --needle")):
+        cmd = sub.add_parser(name, help=help_text)
+        cmd.add_argument("--agent", choices=AGENTS)
+        if name == "submitted":
+            cmd.add_argument("--cwd", required=True)
+            cmd.add_argument("--needle", required=True)
     args = ap.parse_args(argv)
     agent = available_or_claude(getattr(args, "agent", None) or dispatch_agent())
     if args.cmd == "agent":
         print(agent)
-    else:
+    elif args.cmd == "launch-command":
         print(launch_command(agent))
-    sys.stdout.flush()
+    elif args.cmd == "is-ready":
+        return 0 if ready_re(agent).search(sys.stdin.read()) else 1
+    elif args.cmd == "trust-marker":
+        print(trust_marker(agent) or "")
+    else:
+        return 0 if prompt_submitted(agent, args.cwd, args.needle) else 1
     return 0
 
 

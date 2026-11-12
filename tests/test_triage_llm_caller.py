@@ -229,7 +229,7 @@ class TriageCallerTests(unittest.TestCase):
         with mock.patch.object(self.mod, "run", side_effect=fake):
             self.mod.call_triage_batch([make_event(1)], 1)
         self.assertEqual(len(commands), 1)
-        self.assertEqual(commands[0][0], self.mod.DEFAULT_CLAUDE_BIN)
+        self.assertEqual(commands[0][0], sys.modules["agent_session"].binary("claude"))
         self.assertNotIn("--dangerously-skip-permissions", commands[0])
         self.assertIn("--tools", commands[0])
         self.assertEqual(commands[0][commands[0].index("--tools") + 1], "")
@@ -411,7 +411,7 @@ class TriageCallerTests(unittest.TestCase):
         with mock.patch.object(self.mod, "run", side_effect=fake):
             self.mod.call_triage_batch([make_event(1)], 5)
         self.assertEqual(len(commands), 1)
-        self.assertEqual(commands[0][0], self.mod.DEFAULT_CLAUDE_BIN)
+        self.assertEqual(commands[0][0], sys.modules["agent_session"].binary("claude"))
 
     def test_runtime_uses_shared_config_path_override(self):
         path = self._tmp / "custom/llm.json"

@@ -1,18 +1,15 @@
 ---
 name: spawn-claude-workspace
-description: Spawn an unfocused cmux workspace running an autonomous coding agent, delivering a prompt by file reference for background work. `engine` picks the agent (default `droid`); use `engine=claude` for Claude-plugin work like archffp.
+description: Spawn an unfocused cmux workspace running an autonomous coding agent, delivering a prompt by file reference for background work. `engine` picks the agent (claude, copilot, or droid; default is the agent the user picked for Assistant).
 ---
 
 # Spawn autonomous coding workspace
 
 Spawn an autonomous coding agent in a new cmux workspace without taking focus. Use the `cmux-workspace` skill's targeting rules: always target explicit workspace/surface refs, use RPC parameter `surface_id`, and never call focus-changing commands.
 
-Two engines are supported, selected by the `engine` input:
+Every engine-specific detail (launch command, readiness marker, trust prompt, transcript location) comes from Assistant's one agent seam, `bin/agent_session.py`. Never hand-write a `claude`, `copilot`, or `droid` command line here.
 
-- **`droid`** (default) — Factory Droid on GLM-5.2. The historical behavior; unchanged.
-- **`claude`** — Claude Code via the login-shell `claude` alias. Use when the task requires a Claude-only capability, most importantly a Claude Code plugin skill such as `/architect-ffp:archffp` (Droid cannot run Claude plugins).
-
-## Invariants (both engines)
+## Invariants (every engine)
 
 - Always pass `--focus false` to `cmux new-workspace`.
 - Never stream a long prompt through cmux. Stage it under `~/.assistant/spawn-prompts/` and send a short `Read <path>...` instruction.
@@ -30,25 +27,9 @@ which `--workspace <index>` accepts. It isn't the `workspace:N` ref, and it
 changes when workspaces move or close. Target workspaces by ref, never by the
 bracket number. Leave naming and color to the daemon.
 
-## Engine-specific launch
-
-### `droid` (default)
-
-- Launch Droid with `~/.assistant/droid-glm-settings.json`, `--auto high`, and `~/.claude/CLAUDE.md`. This matches the current Claude permission posture while fixing the model at GLM-5.2.
-- Droid transcripts: `~/.factory/sessions/<real-cwd-slug>/<session-id>.jsonl`; user turns use `{"type":"message","message":{"role":"user",...}}`.
-- Never fall back to Claude if Droid fails.
-
-### `claude`
-
-- Launch via the login-shell `claude` alias PLUS an explicit `--dangerously-skip-permissions`. The alias may drift and drop the flag; adding it explicitly is idempotent and prevents an unattended session stalling on the first permission gate. The alias still supplies `--model`, `--add-dir`, etc.
-- The command must run in a login shell so the alias expands: `zsh -lic 'claude --dangerously-skip-permissions'`.
-- Do NOT hardcode `--model`/`--add-dir` — the alias owns them. Override `--model` only when the task genuinely needs a different tier.
-- Claude transcripts: `~/.claude/projects/<project-slug>/<session-id>.jsonl`. `<project-slug>` is the cwd with every `/` replaced by `-` (leading `-` included). Sessions share one project dir; confirmation is a NEW jsonl appearing after spawn.
-- Never fall back to Droid if Claude fails.
-
 ## Inputs
 
-- **Engine**: `droid` (default) or `claude`.
+- **Engine**: `claude`, `copilot`, or `droid`. Default: the agent the user picked (`agent_session.py agent`). Use `claude` for Claude Code plugin work such as `/architect-ffp:archffp`.
 - **Prompt**: required, preserved verbatim in the staged file.
 - **Working directory**: explicit absolute path, default `~/dev`.
 - **Title**: concise, at most 40 characters.
@@ -56,73 +37,52 @@ bracket number. Leave naming and color to the daemon.
 
 ## Procedure
 
-1. Verify cmux and the engine's prerequisites:
+1. Locate the seam, verify cmux, and resolve the engine. The seam falls back to `claude` when the chosen engine isn't installed; report that if it happens.
 
 ```bash
+SEAM="$(python3 -c 'import os; print(os.path.realpath(os.path.expanduser("~/.claude/skills/spawn-claude-workspace")))')/../../bin/agent_session.py"
 cmux ping >/dev/null
-# engine=droid:
-test -f "$HOME/.assistant/droid-glm-settings.json"
-# engine=claude:
-zsh -lic 'alias claude' | grep -q 'claude --model'
-```
-
-2. Resolve the cwd physically and derive the engine's transcript directory:
-
-```bash
+ENGINE=$(python3 "$SEAM" agent ${ENGINE:+--agent "$ENGINE"})
 CWD="${CWD:-$HOME/dev}"
 CWD=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CWD")
-# engine=droid:
-SLUG=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]).replace("/", "-"))' "$CWD")
-SESSION_DIR="$HOME/.factory/sessions/$SLUG"
-# engine=claude (project slug: leading dash + slashes to dashes):
-CSLUG=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]).replace("/", "-"))' "$CWD")
-SESSION_DIR="$HOME/.claude/projects/$CSLUG"
-mkdir -p "$SESSION_DIR" "$HOME/.assistant/spawn-prompts"
+mkdir -p "$HOME/.assistant/spawn-prompts"
 ```
 
-3. Stage the complete prompt in a unique Markdown file. Use the native file-writing tool so the content is literal and no shell interpolation occurs:
+2. Stage the complete prompt in a unique Markdown file. Use the native file-writing tool so the content is literal and no shell interpolation occurs:
 
 ```text
 ~/.assistant/spawn-prompts/prompt-<timestamp>.md
 ```
 
-4. Snapshot existing transcripts, then create the unfocused workspace with the engine already launching:
+3. Create the unfocused workspace with the engine already launching:
 
 ```bash
-BEFORE=$(mktemp)
-find "$SESSION_DIR" -maxdepth 2 -type f -name '*.jsonl' -print 2>/dev/null | sort > "$BEFORE"
-# engine=droid:
-LAUNCH_CMD="droid --settings '$HOME/.assistant/droid-glm-settings.json' --auto high"
-if test -f "$HOME/.claude/CLAUDE.md"; then
-  LAUNCH_CMD="$LAUNCH_CMD --append-system-prompt-file '$HOME/.claude/CLAUDE.md'"
-fi
-# engine=claude (login shell so the alias expands; explicit dsp for unattended runs):
-LAUNCH_CMD="zsh -lic 'claude --dangerously-skip-permissions'"
+LAUNCH_CMD=$(python3 "$SEAM" launch-command --agent "$ENGINE")
 OUT=$(cmux new-workspace --cwd "$CWD" --name "$TITLE" --focus false --command "$LAUNCH_CMD")
 WS_REF=$(printf '%s' "$OUT" | grep -oE 'workspace:[0-9]+' | head -n1)
 SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:[0-9]+' | head -n1)
 test -n "$WS_REF" && test -n "$SURFACE_REF"
 ```
 
-5. Poll the whole screen until the engine is ready. Read 200 lines and accept an engine-appropriate marker:
-
-- **droid**: `GLM-5.2`, `allow all commands`, `Skills (<n>)`, or `? for help`. Do not accept a Claude banner.
-- **claude**: the Claude Code prompt box / `? for shortcuts`, `bypass permissions` (the dsp banner), or the model id `claude-opus`. Do not accept a Droid banner.
+4. Poll the screen until the engine is ready, answering the first-launch folder-trust prompt once with `1` + Enter:
 
 ```bash
-READY=0
-for _ in $(seq 1 30); do
+TRUST=$(python3 "$SEAM" trust-marker --agent "$ENGINE")
+READY=0; TRUSTED=0
+for _ in $(seq 1 60); do
   SCREEN=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":200}))' "$SURFACE_REF")" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("text", ""))')
-  # engine=droid:
-  if printf '%s' "$SCREEN" | grep -Eq 'GLM-?5\.2|allow all commands|Skills \([0-9]+\)|\? for help'; then READY=1; break; fi
-  # engine=claude:
-  if printf '%s' "$SCREEN" | grep -Eiq 'bypass permissions|\? for shortcuts|claude-opus|Welcome to Claude'; then READY=1; break; fi
+  if printf '%s' "$SCREEN" | python3 "$SEAM" is-ready --agent "$ENGINE"; then READY=1; break; fi
+  if [ "$TRUSTED" = 0 ] && [ -n "$TRUST" ] && printf '%s' "$SCREEN" | grep -qF "$TRUST"; then
+    cmux rpc surface.send_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"text":"1"}))' "$SURFACE_REF")" >/dev/null
+    cmux rpc surface.send_key "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"key":"enter"}))' "$SURFACE_REF")" >/dev/null
+    TRUSTED=1
+  fi
   sleep 1
 done
 test "$READY" = 1
 ```
 
-6. Deliver only the short file-reference instruction:
+5. Deliver only the short file-reference instruction:
 
 ```bash
 INSTRUCTION="Read $PROMPT_FILE in full and execute every instruction in it."
@@ -132,10 +92,17 @@ cmux rpc surface.send_key "$(python3 -c 'import json,sys; print(json.dumps({"sur
 
 If send mode is `paste`, omit the Enter call and report that the prompt is staged but not submitted.
 
-7. In `auto` mode, confirm submission for up to 30 seconds. A new or changed transcript under `SESSION_DIR` (compare against `BEFORE`) must contain a user-message whose text includes the staged prompt path. A cmux success response alone is not confirmation. If confirmation fails, leave the workspace and prompt file intact, report the ref, and do not launch the other engine or spawn a duplicate.
+6. In `auto` mode, confirm submission for up to 30 seconds. The engine's transcript must record a user turn that contains the staged prompt path. A cmux success response alone is not confirmation. If confirmation fails, leave the workspace and prompt file intact, report the ref, and don't launch another engine or spawn a duplicate.
 
-8. Report the engine, workspace ref, surface ref, staged prompt path, and whether transcript confirmation succeeded. Never select the new workspace automatically.
+```bash
+for _ in $(seq 1 30); do
+  python3 "$SEAM" submitted --agent "$ENGINE" --cwd "$CWD" --needle "$PROMPT_FILE" && break
+  sleep 1
+done
+```
 
-## Post-spawn verification (claude, unattended)
+7. Report the engine, workspace ref, surface ref, staged prompt path, and whether transcript confirmation succeeded. Never select the new workspace automatically.
 
-For `engine=claude` background dispatches, do not trust `ps` alone — a startup-blocked TUI sits alive doing nothing. Verify a new `~/.claude/projects/<CSLUG>/*.jsonl` appears within ~2 min AND keeps growing. Then verify downstream artifacts (archffp worktree/branch/PR) on the first check-in.
+## Post-spawn verification (unattended)
+
+Don't trust `ps` alone — a startup-blocked TUI sits alive doing nothing. Verify the `submitted` check passes within about 2 minutes, then verify downstream artifacts (worktree, branch, PR) on the first check-in.

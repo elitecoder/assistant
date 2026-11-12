@@ -22,7 +22,7 @@ class RouteConfig:
     # config must NOT silently route the fleet's judgment layer at a binary that
     # may not be installed, which fails open to empty verdicts every pulse.
     provider: str = "claude"
-    droid_bin: str = "~/.local/bin/droid"
+    droid_bin: str = ""
     droid_model: str = "glm-5.2"
     droid_reasoning_effort: str = "high"
     copilot_model: str = ""
@@ -130,7 +130,7 @@ def load_route_config(path: Path, section: str = "triage",
                 global_droid.get(
                     "bin",
                     legacy.get(
-                        "droid_bin", str(Path.home() / ".local/bin/droid")),
+                        "droid_bin", ""),
                 ),
             ),
         ),

@@ -119,17 +119,26 @@ def test_warm_launch_pinned_model_skips_the_backend_prefix(monkeypatch):
 def test_warm_launch_finds_claude_on_path_so_cmux_wraps_it(monkeypatch):
     # The pane's login shell must resolve `claude` through PATH (cmux's shim) — a
     # hardcoded ~/.local/bin/claude skips cmux's wrapper and its session hooks.
-    monkeypatch.setattr(cs, "CLAUDE_BIN", None)
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
     cmd = cs._warm_launch(ag.CLAUDE)
     assert " command claude --model " in f" {cmd}"
     assert ".local/bin/claude" not in cmd
 
 
 def test_warm_launch_honors_an_explicit_claude_bin(monkeypatch):
-    monkeypatch.setattr(cs, "CLAUDE_BIN", "/opt/agents/claude code")
+    monkeypatch.setenv("CLAUDE_BIN", "/opt/agents/claude code")
     cmd = cs._warm_launch(ag.CLAUDE)
     assert "'/opt/agents/claude code' --model " in cmd
     assert "command claude" not in cmd
+
+
+def test_warm_launch_starts_copilot_with_its_own_scope(monkeypatch):
+    monkeypatch.delenv("COPILOT_BIN", raising=False)
+    monkeypatch.setenv("COPILOT_MODEL", "gpt-6.1-sol")
+    cmd = cs._warm_launch(ag.COPILOT)
+    assert cmd.startswith("command copilot --allow-all --model gpt-6.1-sol ")
+    assert f"--add-dir {cs.REPO_ROOT}" in cmd and "--add-dir /tmp" in cmd
+    assert "claude" not in cmd and "CLAUDE_CODE_USE_BEDROCK" not in cmd
 
 
 def test_resolve_warm_model_and_backend_respects_env(monkeypatch):

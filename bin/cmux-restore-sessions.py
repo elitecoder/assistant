@@ -225,16 +225,12 @@ def build_resume_cmd(panel, ledger_entry=None):
     # before the GLM migration are rebuilt so the required runtime settings are
     # always present.
     command = rb.get("command")
-    droid_configured = (
-        "droid-glm-settings.json" in (command or "")
-        and "--append-system-prompt-file" in (command or "")
-        and "--auto high" in (command or "")
-    )
     if (
         command
         and session_id
         and session_id in command
-        and (provider in ("claude", "copilot") or droid_configured)
+        and agent_session.binding_is_current(
+            agent_session.agent_from_kind(provider), command)
     ):
         return cwd, command
 
