@@ -446,6 +446,36 @@ class SkipWiringTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         obs_mock.assert_called_once()
 
+    def test_a_replaced_session_beside_a_kept_one_is_checked_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        kept = {"surface_id": "S-1", "provider": "claude", "session_id": "sess-1"}
+        self._plant_checked("needs_user", 2, observed_sessions=[
+            kept, {"surface_id": "S-2", "provider": "claude", "session_id": "old-session"}])
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            ctx(observation_identity={
+                    "ws_ref": "workspace:1", "workspace_id": "WS-1",
+                    "observed_sessions": [kept, {"surface_id": "S-2", "provider": "claude",
+                                                 "session_id": "new-session"}]},
+                screen_text="brand new output"),
+            observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_a_workspace_with_no_verified_session_is_checked_inside_the_interval(self):
+        self.mod.OBSERVER_EVERY_MIN = 60
+        self._plant_checked("needs_user", 2, observed_sessions=[])
+        rc, obs_mock, _, _, _ = self._run_pulse(
+            ctx(observation_identity={"ws_ref": "workspace:1", "workspace_id": "WS-1",
+                                      "observed_sessions": []},
+                screen_text="brand new output"),
+            observer_result=self._verdict())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_called_once()
+
+    def test_a_boolean_check_time_is_not_a_recent_check(self):
+        self.assertFalse(self.mod.checked_within({"observed_at": True}, 60, now=1.0))
+        self.assertTrue(self.mod.checked_within({"observed_at": 1}, 60, now=1.0))
+
     def test_prior_summary_without_hash_never_skips(self):
         # Pre-M2 summaries (and synthesized fallback verdicts, which are
         # saved hash-less on purpose) must be re-observed, not carried.

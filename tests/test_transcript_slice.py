@@ -170,3 +170,26 @@ def test_the_away_recap_shows_as_a_system_turn(tmp_path):
     lines = ts.read_conversation(_write(tmp_path / "s.jsonl", records)).splitlines()
     assert lines == ["USER t: Make the table",
                      "SYSTEM t: Recap: Next, I can update the chart page if you want."]
+
+
+def test_a_path_is_a_request_and_a_bare_command_is_not(tmp_path):
+    noise = [_user(f"step {i}") for i in range(5)]
+    records = [_user("<command-name>/architect-ffp:archffp</command-name>"),
+               _user("/Users/me/notes.txt"), *noise]
+    out = ts.read_conversation(_write(tmp_path / "s.jsonl", records), max_turns=2)
+    assert out.splitlines()[0] == "FIRST REQUEST USER t: /Users/me/notes.txt"
+
+
+def test_an_away_recap_made_of_blocks_shows_its_text(tmp_path):
+    records = [{"type": "system", "subtype": "away_summary", "timestamp": "t",
+                "content": [{"type": "text", "text": "Waiting on your review."},
+                            {"type": "text", "text": "<system-reminder>R</system-reminder>"}]}]
+    out = ts.read_conversation(_write(tmp_path / "s.jsonl", records))
+    assert out == "SYSTEM t: Recap: Waiting on your review."
+
+
+def test_a_message_from_another_origin_is_system_even_without_a_system_prefix(tmp_path):
+    records = [{**_user("Please rerun the tests"), "origin": {"kind": "peer"}},
+               {**_user("Ship it"), "origin": {"kind": "human"}}]
+    lines = ts.read_conversation(_write(tmp_path / "s.jsonl", records)).splitlines()
+    assert lines == ["SYSTEM t: Please rerun the tests", "USER t: Ship it"]

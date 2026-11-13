@@ -21,6 +21,7 @@ TOOL_CHARS = 160
 REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 COMMAND = re.compile(r"<command-name>\s*([^<]*?)\s*</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+BARE_COMMAND = re.compile(r"/[A-Za-z0-9_:-]+")
 SYSTEM_PREFIXES = ("<task-notification>", "<local-command-", "<bash-stdout>",
                    "<bash-stderr>", "Caveat:", "This session is being continued",
                    "Another Claude session sent a message",
@@ -62,13 +63,19 @@ def _block_text(block) -> str:
     return ""
 
 
+def _content_text(content) -> str:
+    blocks = [content] if isinstance(content, str) else content or []
+    text = " ".join(t for t in (_block_text(b) for b in blocks) if t)
+    return REMINDER.sub("", text).strip()
+
+
 def _turn(record: dict) -> tuple[str, str, str] | None:
     """(role, timestamp, text) for a conversation record, else None."""
     if record.get("isMeta"):
         return None
     kind = record.get("type")
     if kind == "system" and record.get("subtype") == "away_summary":
-        recap = REMINDER.sub("", str(record.get("content") or "")).strip()
+        recap = _content_text(record.get("content"))
         return ("system", str(record.get("timestamp") or ""), "Recap: " + recap) if recap else None
     message = record.get("message")
     if not isinstance(message, dict):
@@ -79,10 +86,7 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
         role = message["role"]
     else:
         return None
-    content = message.get("content")
-    blocks = [content] if isinstance(content, str) else content or []
-    text = " ".join(t for t in (_block_text(b) for b in blocks) if t)
-    text = REMINDER.sub("", text).strip()
+    text = _content_text(message.get("content"))
     if not text:
         return None
     if role == "user":
@@ -125,7 +129,7 @@ def _is_request(turn: tuple[str, str, str]) -> bool:
     role, _, text = turn
     if role != "user" or text.startswith("[tool"):
         return False
-    return not (text.startswith("/") and " " not in text)
+    return not BARE_COMMAND.fullmatch(text)
 
 
 def _format(turn: tuple[str, str, str], limit: int) -> str:

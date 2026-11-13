@@ -1135,7 +1135,7 @@ _SUMMARY_META_KEYS = {"ws_ref", "title", "cwd", "pr_refs", "last_updated_ts",
 def checked_within(prior: dict, seconds: float, now: float | None = None) -> bool:
     """True when the prior verdict came from a check less than seconds ago."""
     observed = prior.get("observed_at")
-    if not isinstance(observed, (int, float)):
+    if isinstance(observed, bool) or not isinstance(observed, (int, float)):
         return False
     return 0 <= (time.time() if now is None else now) - observed < seconds
 
@@ -1149,13 +1149,13 @@ def _observed_sessions(identity: dict) -> tuple[str, set]:
 
 def interval_carry_ok(prior: dict, ctx: dict) -> bool:
     """True when OBSERVER_EVERY_MIN lets a changed workspace keep its prior
-    verdict: a complete check of the same workspace and sessions,
-    made less than OBSERVER_EVERY_MIN minutes ago."""
+    verdict: a complete check of the same workspace and at least one
+    verified session, all unchanged, made less than OBSERVER_EVERY_MIN minutes ago."""
     if OBSERVER_EVERY_MIN <= 0 or prior.get("observation_complete") is not True:
         return False
-    identity = ctx.get("observation_identity") or {}
-    if not identity.get("workspace_id") or \
-            _observed_sessions(identity) != _observed_sessions(prior):
+    workspace_id, sessions = _observed_sessions(ctx.get("observation_identity") or {})
+    if not (workspace_id and sessions) or \
+            (workspace_id, sessions) != _observed_sessions(prior):
         return False
     return checked_within(prior, OBSERVER_EVERY_MIN * 60)
 
