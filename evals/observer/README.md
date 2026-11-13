@@ -31,7 +31,7 @@ phrase).
 | 02 | test-only-pr-ci-green | Rule A1: test/E2E-only files + green CI → ready_for_merge. |
 | 03 | refactor-pr-ci-green | Rule A2: `[REFACTOR]` title + green CI → ready_for_merge. |
 | 04 | feature-pr-ci-green-needs-review | Rule A3: feature PR + green CI → needs_user (no auto-merge). |
-| 05 | done-recap-no-pr | Rule B1: definitive recap + clean cwd → ready_for_cleanup. |
+| 05 | done-recap-no-pr | Rule B1: definitive recap → ready_for_cleanup. |
 | 06 | question-to-user | Rule B2: agent asked a question → needs_user. |
 | 07 | stranded-mid-task | Rule B3: idle >30min mid-narrative → stranded with nudge. |
 | 08 | active-working | Rule B4 default: working / recent → active. |
@@ -76,8 +76,8 @@ disputes.
 1. Copy a real session jsonl from `~/.claude/projects/<slug>/<id>.jsonl`,
    or hand-write one.
 2. `ctx.json` — the JSON `build-ws-context.py` would emit for this state
-   (mostly `last_turn_age_sec`, `agent_status`, `cwd_dirty`,
-   `cwd_unpushed`, `transcript_path` placeholder).
+   (mostly `last_turn_age_sec`, `agent_status`, and the
+   `transcript_path` placeholder).
 3. `expected.json` — `{"verdict": "kind"}`.
 4. Optional `fake-gh-bin/gh` — Python shim that returns mock `gh pr view`
    output. Make it `chmod +x`.

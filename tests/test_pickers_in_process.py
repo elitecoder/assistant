@@ -420,16 +420,32 @@ class PurgeStaleAwaitingTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_card_should_drop_pr_merged(self):
-        card = {"key": "pr-100", "detail": ""}
-        with mock.patch.object(self.mod, "gh_pr_state", return_value="MERGED"):
+        url = "https://github.com/o/r/pull/100"
+        card = {"key": "pr-100", "detail": f"see {url}"}
+        with mock.patch.object(self.mod, "gh_pr_state", return_value="MERGED") as state:
             result = self.mod.card_should_drop(card, {"workspace:1"}, {})
         self.assertIn("MERGED", result)
+        state.assert_called_once_with(url)
 
     def test_card_should_drop_pr_closed(self):
-        card = {"detail": "PR #99 needs review", "key": "x"}
+        card = {"detail": "PR needs review: https://github.com/o/r/pull/99", "key": "x"}
         with mock.patch.object(self.mod, "gh_pr_state", return_value="CLOSED"):
             result = self.mod.card_should_drop(card, {"workspace:1"}, {})
         self.assertIn("CLOSED", result)
+
+    def test_card_with_only_a_pr_number_skips_the_lookup(self):
+        card = {"key": "pr-100", "detail": "PR #100 needs review"}
+        with mock.patch.object(self.mod, "gh_pr_state") as state:
+            result = self.mod.card_should_drop(card, {"workspace:1"}, {})
+        self.assertIsNone(result)
+        state.assert_not_called()
+
+    def test_gh_pr_state_looks_up_the_link(self):
+        url = "https://github.com/o/r/pull/7"
+        with mock.patch.object(self.mod.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout="OPEN\n")) as run:
+            self.assertEqual(self.mod.gh_pr_state(url), "OPEN")
+        self.assertEqual(run.call_args.args[0][:4], ["gh", "pr", "view", url])
 
     def test_card_should_drop_td_done(self):
         card = {"key": "td-stuck:td-007", "detail": ""}

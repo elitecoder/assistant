@@ -15,7 +15,6 @@ must rely on the transcript alone and conclude:
 
 - No PR exists for this workspace.
 - Last assistant text is a state recap of mid-progress, not "done".
-- `cwd_dirty=false` and `cwd_unpushed=false` are coincidental (no cwd at all).
 
 **Expected verdict: active** — work is mid-flight. Do nothing.
 

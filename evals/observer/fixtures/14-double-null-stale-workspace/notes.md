@@ -5,7 +5,6 @@
 A workspace has been alive for 3 hours (`last_turn_age_sec: 10800`) with:
 - `transcript_path: null` — no readable transcript found
 - `screen_text: ""` — cmux failed to read the screen (workspace missing from cmux, or surface not found)
-- `cwd_dirty: true`, `cwd_unpushed: true` — uncommitted/unpushed work exists on disk
 
 ## Why this is `needs_user`, not `active`
 
