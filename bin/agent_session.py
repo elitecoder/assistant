@@ -413,6 +413,16 @@ def warm_agent(env: dict | None = None) -> str:
             or CLAUDE)
 
 
+def warm_session_agent() -> str:
+    """The agent the Slack session runs: warm_agent(), except a picked Copilot
+    that can't start runs as claude. Droid isn't checked here, as before
+    Copilot: its pane resolves `droid` through the login shell."""
+    agent = warm_agent()
+    if agent == COPILOT and not agent_available(COPILOT):
+        return CLAUDE
+    return agent
+
+
 def copilot_model(feature: str | None = None, env: dict | None = None) -> str:
     """The Copilot model the user configured ('' = Copilot's own default).
     Order: <FEATURE>_COPILOT_MODEL, COPILOT_MODEL, llm.features.<f>.copilot.model,

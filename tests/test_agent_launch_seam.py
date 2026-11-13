@@ -768,7 +768,7 @@ def test_doctor_checks_copilot_only_when_picked(home, monkeypatch):
     assert doctor.check_copilot_binary().status == doctor.SKIP
     _pick(home, "copilot")
     assert doctor.check_copilot_binary().status == doctor.FAIL
-    assert doctor.check_claude_bin().name == "copilot binary (warm session)"
+    assert doctor.check_claude_bin().name == "claude binary (warm session)", "missing Copilot runs as claude"
     broken = home / "t" / "copilot"
     broken.parent.mkdir(parents=True)
     broken.write_text("#!/bin/sh\nexit 1\n")
@@ -1036,6 +1036,8 @@ def _fake_cmux_install(calls):
     """Stands in for `cmux hooks copilot install`: it rewrites
     $COPILOT_HOME/config.json, refusing one that isn't plain JSON."""
     def run(cmd, **kw):
+        if cmd[1:] == ["--version"]:
+            return subprocess.CompletedProcess(cmd, 0, "1.0.109", "")
         calls.append(cmd)
         config = Path(kw["env"]["COPILOT_HOME"]) / "config.json"
         try:
@@ -1881,3 +1883,27 @@ def test_comms_setup_installs_copilot_hooks_when_copilot_is_picked():
     after_pick = script[script.index('print(f"     llm.provider={provider}")'):]
     assert 'agent_session.py" copilot-chosen; then' in after_pick
     assert 'agent_session.py" install-copilot-hooks' in after_pick
+
+
+@pytest.mark.parametrize("settings", [True, False])
+def test_a_droid_slack_session_stays_droid_whatever_the_install_checks_say(home, monkeypatch, settings):
+    listen = _load(BIN / "comms-listen.py", f"seam_listen_droid_{settings}")
+    _pick(home, "droid")
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: None)
+    if settings:
+        (home / ".assistant" / "droid-glm-settings.json").write_text("{}")
+    rec = _live_warm_session(monkeypatch, listen, "droid")
+    out = listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
+    assert rec["closed"] == [] and out["agent"] == "droid"
+    assert ag.warm_session_agent() == ag.DROID
+
+
+def test_doctor_and_status_describe_the_slack_session_that_actually_runs(home, monkeypatch, tmp_path):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_fallback")
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_status_fallback")
+    _pick(home, "copilot")
+    monkeypatch.setenv("COPILOT_BIN", str(tmp_path / "missing" / "copilot"))
+    assert ag.warm_session_agent() == ag.CLAUDE
+    assert doctor.check_bedrock_env().status != doctor.SKIP
+    assert doctor.check_claude_bin().name == "claude binary (warm session)"
+    assert cli.status(llm_runner.config_path(home=home))["features"]["comms"]["provider"] == "claude"

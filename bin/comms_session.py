@@ -136,9 +136,8 @@ def warm_session_model_is_current(paths: comms_lib.Paths, sess: dict) -> bool:
 
 
 def picked_warm_agent() -> str:
-    """The agent the Slack session should run: the user's pick when it can
-    start, else claude."""
-    return agent_session.available_or_claude(agent_session.warm_agent())
+    """The agent the Slack session should run (agent_session.warm_session_agent)."""
+    return agent_session.warm_session_agent()
 
 
 def warm_session_agent_is_current(sess: dict) -> bool:

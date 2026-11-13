@@ -228,7 +228,7 @@ def _agent_binary(agent: str) -> str | None:
 def check_claude_bin() -> Check:
     # The warm comms session spawns the chosen agent's binary. OPTIONAL — only
     # comms needs it.
-    agent = agent_session.warm_agent()
+    agent = agent_session.warm_session_agent()
     name = f"{agent} binary (warm session)"
     found = _agent_binary(agent)
     if found:
@@ -249,7 +249,7 @@ def check_claude_bin() -> Check:
 
 def check_bedrock_env() -> Check:
     # The warm session's headless claude needs auth. OPTIONAL.
-    agent = agent_session.warm_agent()
+    agent = agent_session.warm_session_agent()
     if agent != agent_session.CLAUDE:
         return Check("warm-session auth", SKIP, core=False,
                      detail=f"the Slack session runs {agent}, which signs in on its own")

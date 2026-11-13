@@ -158,7 +158,7 @@ def status(path: Path) -> dict:
             ) if (value := os.environ.get(key)) is not None
         }
         features[feature] = {
-            "provider": (llm_runner.agent_session.warm_agent() if feature == "comms"
+            "provider": (llm_runner.agent_session.warm_session_agent() if feature == "comms"
                          else route.provider),
             "configured_provider": configured.provider,
             "droid_model": route.droid_model,
