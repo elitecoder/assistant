@@ -496,6 +496,7 @@ def test_pulse_dispatch_spawns_copilot_and_confirms_from_its_transcript(home, co
         keys.append((method, params.get("text") or params.get("key")))
         if method == "surface.send_text" and params["text"].startswith("Read "):
             _copilot_session(home, "cp-dispatch", str(cwd), [
+                {"type": "session.start", "data": {"content": params["text"]}},
                 {"type": "user.message", "data": {"content": params["text"]}}])
         return {}
 
@@ -2567,3 +2568,78 @@ def test_shell_reads_each_agents_trust_prompt_and_answer(agent, marker, answer, 
     assert capsys.readouterr().out == marker + "\n"
     ag.main(["trust-answer", "--agent", agent])
     assert capsys.readouterr().out == answer + "\n"
+
+
+def test_copilot_native_skips_a_build_that_cannot_run(tmp_path):
+    pkg = tmp_path / "copilot-pkg"
+    loader = pkg / "index.js"
+    loader.parent.mkdir()
+    loader.write_text("#!/usr/bin/env node\n")
+    loader.chmod(0o755)
+    broken = pkg / "node_modules/@github/copilot-a/copilot"
+    good = pkg / "node_modules/@github/copilot-b/copilot"
+    for exe in (broken, good):
+        exe.parent.mkdir(parents=True)
+        exe.write_text("#!/bin/sh\n")
+    good.chmod(0o755)
+    assert ag._copilot_native(str(loader)) == str(good)
+
+
+def test_claude_with_only_extra_folders_keeps_its_default_model(home, tmp_path):
+    argv = ag.session_argv(ag.CLAUDE, add_dirs=[str(tmp_path)])
+    assert "--model" not in argv
+    assert argv[-3:] == ["--dangerously-skip-permissions", "--add-dir", str(tmp_path)]
+
+
+def test_droid_headless_with_tools_off_gets_no_tool_flags(tmp_path):
+    cmd = ag.headless_argv(ag.DROID, binary_path="droid", model="m", run_dir=tmp_path,
+                           reasoning_effort="low", disable_tools=True)
+    assert "--auto" not in cmd and "--disabled-tools" not in cmd
+
+
+def test_copilot_headless_without_an_effort_leaves_the_model_default(tmp_path):
+    cmd = ag.headless_argv(ag.COPILOT, binary_path="copilot", model="gpt-x", run_dir=tmp_path,
+                           reasoning_effort="", disable_tools=True)
+    assert "--reasoning-effort" not in cmd and cmd[cmd.index("--model") + 1] == "gpt-x"
+
+
+def test_copilot_output_ignores_json_that_is_not_an_event():
+    stdout = "[1, 2]\n" + copilot_stdout("pong")
+    assert ag.parse_headless(ag.COPILOT, stdout)["result_text"] == "pong"
+
+
+def test_prompt_submitted_needs_the_text_in_the_turn_not_elsewhere_in_the_record(home):
+    cwd = home / "dev"
+    cwd.mkdir()
+    d = home / ".claude" / "projects" / ag.claude_project_slug(cwd)
+    d.mkdir(parents=True)
+    (d / "s.jsonl").write_text(json.dumps({"type": "user", "cwd": "/p/x.md", "message": {
+        "role": "user", "content": "something else"}}) + "\n")
+    assert not ag.prompt_submitted(ag.CLAUDE, cwd, "/p/x.md")
+
+
+def test_screen_signals_skip_json_that_is_not_a_record(tmp_path):
+    bwc = _load(BIN / "build-ws-context.py", "seam_bwc_nonrecord")
+    path = _stopped_copilot_tool(tmp_path / "events.jsonl")
+    path.write_text("[1]\n" + path.read_text())
+    assert bwc.transcript_signals(str(path))[1] == "idle"
+
+
+def test_page_activity_skips_a_blank_reply_and_keeps_a_short_one(tmp_path):
+    page = _load(BIN / "render-assistant-page.py", "seam_page_short")
+    tail = "\n".join(json.dumps(r) for r in [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Short."}]}},
+        {"type": "assistant.message", "data": {"content": "   "}},
+    ])
+    assert page._last_assistant_text(tail, 200) == "Short."
+
+
+def test_scanner_gives_an_unknown_agents_session_no_context(home):
+    scanner = _load(BIN / "world-scanner.py", "seam_scanner_unknown")
+    scanner.SESSION_CTX.parent.mkdir(parents=True, exist_ok=True)
+    scanner.SESSION_CTX.write_text(json.dumps({"by_session": {"s": {
+        "provider": "codex", "last_user": {"text": "hi"}}}}))
+    live = {"s": {"session_id": "s", "provider": "codex"}}
+    scanner.merge_session_context(live)
+    assert "last_user" not in live["s"]
