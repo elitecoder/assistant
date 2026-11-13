@@ -35,7 +35,6 @@ of scope — a future `/archself` mode owns changes to archffp itself.
 
 CLI:
   meta_gate.py detect   --paths a/b.md ...            # exit 0 if FFP rule/skill, 10 if not
-  meta_gate.py detect   --repo ~/dev/firefly-platform [--base origin/main]
   meta_gate.py coverage --keywords k1 k2 --fixtures-dir <dir> [--json]
 """
 from __future__ import annotations

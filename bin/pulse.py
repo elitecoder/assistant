@@ -1251,17 +1251,76 @@ def prune_observer_runs(current_pulse_idx: int, now: float | None = None) -> int
     return removed
 
 
+GIT_CONFIG_SECTION = re.compile(r'\[\s*([\w.-]+)(?:\s+"(.*)")?\s*\]$')
+REMOTE_URL = re.compile(
+    r"^(?:[a-z+]+://)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+def _read_git_config(path: Path) -> dict[tuple[str, str, str], str]:
+    """(section, subsection, key) → value from a git config file."""
+    section, subsection, values = "", "", {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        header = GIT_CONFIG_SECTION.match(line)
+        if header:
+            section, subsection = header[1].lower(), header[2] or ""
+        elif "=" in line and not line.startswith(("#", ";")):
+            key, value = line.split("=", 1)
+            values[(section, subsection, key.strip().lower())] = value.strip()
+    return values
+
+
+def _checkout_pr_target(cwd: str) -> tuple[str, str, str] | None:
+    """(host, owner/repo, branch) for the checkout holding cwd, read from its
+    .git files without running git."""
+    start = Path(cwd).resolve()
+    top = next((d for d in (start, *start.parents) if (d / ".git").exists()), None)
+    if top is None:
+        return None
+    try:
+        git_dir = top / ".git"
+        if git_dir.is_file():
+            git_dir = (top / git_dir.read_text().strip()
+                       .removeprefix("gitdir:").strip()).resolve()
+        head = (git_dir / "HEAD").read_text().strip()
+        common = git_dir
+        if (git_dir / "commondir").is_file():
+            common = (git_dir / (git_dir / "commondir").read_text().strip()).resolve()
+        config = _read_git_config(common / "config")
+    except OSError:
+        return None
+    if not head.startswith("ref: refs/heads/"):
+        return None
+    branch = head.removeprefix("ref: refs/heads/")
+    remotes = sorted({sub for sec, sub, key in config
+                      if sec == "remote" and key == "url"})
+    remote = config.get(("branch", branch, "remote"))
+    if remote not in remotes:
+        remote = "origin" if "origin" in remotes else (
+            remotes[0] if len(remotes) == 1 else None)
+    match = REMOTE_URL.match(config.get(("remote", remote, "url"), ""))
+    if not match:
+        return None
+    host = match[1] if "." in match[1] else "github.com"
+    return host, f"{match[2]}/{match[3]}", branch
+
+
 def _observer_pr_snapshot(cwd: str | None) -> dict | None:
     if not cwd or not Path(cwd).is_dir():
         return None
+    target = _checkout_pr_target(cwd)
+    if target is None:
+        return None
+    host, repo, branch = target
     fields = (
         "state,baseRefName,statusCheckRollup,reviewDecision,mergeable,"
         "mergeStateStatus,files,title,body,number,url"
     )
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", "--json", fields],
-            cwd=cwd, capture_output=True, text=True, timeout=15,
+            ["gh", "pr", "view", branch, "--repo", f"{host}/{repo}",
+             "--json", fields],
+            capture_output=True, text=True, timeout=15,
         )
         if proc.returncode != 0:
             return None
@@ -1275,11 +1334,11 @@ def _observer_pr_snapshot(cwd: str | None) -> dict | None:
         ):
             freeze = subprocess.run(
                 [
-                    "gh", "api",
+                    "gh", "api", "--hostname", host,
                     "repos/Adobe-Firefly/firefly-platform/rulesets",
                     "--jq", ".[]|select(.id==17577517)|.enforcement",
                 ],
-                cwd=cwd, capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, timeout=15,
             )
             value["freeze_active"] = (
                 freeze.returncode == 0 and freeze.stdout.strip() == "active")

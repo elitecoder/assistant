@@ -54,6 +54,10 @@ fi
 # Uncommitted changes count
 UNCOMMITTED=$(git -C "$CWD_REAL" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
+# Commits its upstream lacks, or, with no upstream, commits on no remote
+UNPUSHED=$(git -C "$CWD_REAL" rev-list --count '@{u}..HEAD' 2>/dev/null \
+  || git -C "$CWD_REAL" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)
+
 # Dev server pids in this cwd subtree
 DEV_PIDS=$(pgrep -laf -- "$CWD_REAL" | grep -E "(vite|storybook|tsc -w|next dev|webpack|esbuild|jest --watch)" | awk '{print $1}' | tr '\n' ' ')
 
@@ -112,6 +116,7 @@ ledger = {
     "branch": "$BRANCH" or None,
     "is_worktree": bool($IS_WORKTREE),
     "uncommitted_lines": $UNCOMMITTED,
+    "unpushed_commits": $UNPUSHED,
     "dev_pids": "$DEV_PIDS".split(),
     "related_todo": "$RELATED_TID" or None,
     "flags": {
@@ -194,9 +199,20 @@ if [ "$IS_WORKTREE" = "1" ] && [ "$KEEP_WORKTREE" = "0" ]; then
 fi
 ```
 
-### Step 6 — delete branch (unless --keep-branch)
+### Step 6 — delete branch (unless --keep-branch or it has unpushed commits)
+
+Keep the branch when `$UNPUSHED` is above 0, and say so in the report.
 
 ```bash
+if [ "$KEEP_BRANCH" = "0" ] && [ "$UNPUSHED" != "0" ] && [ -n "$BRANCH" ]; then
+  KEEP_BRANCH=1
+  python3 -c "
+import json
+d = json.load(open('$LEDGER'))
+d['steps'].append({'kind':'keep-branch-unpushed','branch':'$BRANCH','unpushed':$UNPUSHED,'ok':True})
+json.dump(d, open('$LEDGER','w'), indent=2)
+"
+fi
 if [ "$KEEP_BRANCH" = "0" ] && [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
   git -C "$ORIGIN_REPO" branch -D "$BRANCH" 2>/dev/null && OK=1 || OK=0
   python3 -c "
@@ -314,7 +330,7 @@ The mechanical orchestrator (`bin/pulse.py`) picks up the cleaned-up workspace o
 
 ```bash
 # Single-line summary
-echo "✓ cleanup $LEDGER_ID — ws=$WS_REF branch=${BRANCH:-none} worktree=$([ "$IS_WORKTREE" = "1" ] && echo "removed" || echo "n/a") todo=${RELATED_TID:-none} stash=${STASH_REF:-none}"
+echo "✓ cleanup $LEDGER_ID — ws=$WS_REF branch=${BRANCH:-none} unpushed=$UNPUSHED worktree=$([ "$IS_WORKTREE" = "1" ] && echo "removed" || echo "n/a") todo=${RELATED_TID:-none} stash=${STASH_REF:-none}"
 echo "  undo: /cleanup --undo $LEDGER_ID"
 ```
 

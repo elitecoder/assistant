@@ -10,20 +10,31 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Removed
-- Stop running git from Assistant. A preview server ran `git status
-  --porcelain` in about a dozen checkouts every minute, and killed runs left
-  stale `index.lock` files that blocked commits in other sessions.
+- Stop running git from Assistant. The attention tab's preview server ran
+  plain `git status --porcelain` in about a dozen checkouts every minute, and
+  killed runs left stale `index.lock` files that blocked commits in other
+  sessions. The attention tab's fix is on its own branch.
   - `build-ws-context.py` no longer runs `git status` or `git log @{u}..` in
     each workspace's folder. The `cwd_dirty` and `cwd_unpushed` fields are
     gone from the workspace state, the session check's fingerprint, and its
     prompt. The "no transcript, empty screen, stale" rule no longer needs a
     dirty folder, and `ready_for_cleanup` no longer checks for a clean one.
+  - The session check's PR lookup reads the branch and repo from the
+    checkout's `.git` files and asks `gh` by repo and branch, so `gh` no
+    longer runs git in each workspace.
+  - The stale-card purge looks up a PR only from a full PR link.
   - `meta_gate.py detect` takes changed files with `--paths` only; `--repo`
     and `--base` are gone.
-  - `tests/test_no_git.py` fails when any file under `bin/`, `src/`, `hooks/`,
-    `slack-reactor/`, `mac/Sources/`, or `githooks/` runs git. The self-update
-    and its commit guard are listed as pending until their replacement lands.
-    The lessons tool keeps its one `git add` when you write a project lesson.
+  - `tests/test_no_git.py` fails when any Python, shell, JavaScript, Swift, or
+    LaunchAgent file under `bin/`, `src/`, `hooks/`, `slack-reactor/`,
+    `mac/Sources/`, `githooks/`, `launchagents/`, or `scripts/` runs git. It
+    allows an exact count of git lines in the self-update and its commit
+    guard (until their replacement lands), the doctor's git check, and the
+    lessons tool's one `git add`.
+
+### Changed
+- `/cleanup` keeps the branch when it has commits its upstream lacks, or, with
+  no upstream, commits on no remote.
 
 ### Fixed
 - Keep the live install updating after a squash merge. The self-update refused
