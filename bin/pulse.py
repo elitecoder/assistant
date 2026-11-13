@@ -1287,7 +1287,7 @@ def _checkout_pr_target(cwd: str) -> tuple[str, str, str] | None:
         if (git_dir / "commondir").is_file():
             common = (git_dir / (git_dir / "commondir").read_text().strip()).resolve()
         config = _read_git_config(common / "config")
-    except OSError:
+    except (OSError, ValueError):
         return None
     if not head.startswith("ref: refs/heads/"):
         return None

@@ -81,6 +81,9 @@ def test_no_target_outside_a_checkout_or_when_unreadable(pulse, tmp_path):
     assert pulse._checkout_pr_target(str(tmp_path)) is None
     (tmp_path / "broken" / ".git").mkdir(parents=True)
     assert pulse._checkout_pr_target(str(tmp_path / "broken")) is None
+    binary = make_checkout(tmp_path / "binary", "")
+    (binary / ".git/config").write_bytes(b"[remote \"origin\"]\n\turl = \xff\xfe\n")
+    assert pulse._checkout_pr_target(str(binary)) is None
 
 
 def test_snapshot_asks_gh_by_repo_and_branch(pulse, tmp_path):
