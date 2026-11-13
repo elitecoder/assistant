@@ -278,6 +278,9 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
                 # there could race an active reply.
                 if replace_ws and replace_ws == sess["ws_ref"]:
                     why = "didn't accept the typed message"
+                elif respawn_on_stale and not comms_session.warm_session_agent_is_current(sess):
+                    why = (f"agent changed ({sess.get('agent') or 'claude'} → "
+                           f"{comms_session.picked_warm_agent()})")
                 elif respawn_on_stale and not comms_session.warm_session_model_is_current(paths, sess):
                     why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
                 else:

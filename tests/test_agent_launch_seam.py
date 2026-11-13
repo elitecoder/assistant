@@ -148,6 +148,7 @@ CAUGHT = {
         'run([BINS["claude"], "-p", p])',
         'cmd = "%s --print" % "claude"',
         'cmd = "{exe} --resume {sid}".format(exe="droid", sid=s)',
+        'run([CMUX, "new-workspace", "--command", "zsh -lic \'claude\'"])',
         't = d.get("type")\nif t == "assistant":\n    pass',
         'if m.get("role") == "assistant":\n    pass',
         'n = usage.get("cache_read_input_tokens")',
@@ -1807,3 +1808,76 @@ def test_status_shows_the_slack_sessions_agent_without_job_settings(home, capsys
     assert cli.main(["status"]) == 0
     line = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("comms:"))
     assert line == "comms: droid (interactive session; its own launch settings)"
+
+
+def _live_warm_session(monkeypatch, listen, agent):
+    rec = {"closed": [], "spawned": []}
+    sess = {"ws_ref": "workspace:18", "surface_ref": "surface:18", "cwd": "/c",
+            "agent": agent, "model": None}
+    monkeypatch.setattr(listen.comms_session, "read_session", lambda p: sess)
+    monkeypatch.setattr(listen.comms_session, "workspace_state",
+                        lambda p, ref: listen.comms_session.ALIVE)
+    monkeypatch.setattr(listen.comms_session, "warm_session_model_is_current", lambda p, s: True)
+    monkeypatch.setattr(listen.comms_session, "close_own_workspace",
+                        lambda p, ref, log=None: rec["closed"].append(ref))
+    monkeypatch.setattr(listen.comms_session, "clear_session_registry", lambda p: None)
+    monkeypatch.setattr(listen.comms_session, "spawn_session", lambda p, prompt, log=None: (
+        rec["spawned"].append(listen.comms_session.picked_warm_agent())
+        or {"ws_ref": "workspace:19", "agent": rec["spawned"][-1]}))
+    return rec
+
+
+@pytest.mark.parametrize("pick,installed,switched", [
+    ("copilot", True, True), ("copilot", False, False), ("claude", True, False)])
+def test_a_live_slack_session_moves_to_the_newly_picked_agent(home, monkeypatch, tmp_path,
+                                                              pick, installed, switched):
+    listen = _load(BIN / "comms-listen.py", f"seam_listen_switch_{pick}_{installed}")
+    _pick(home, pick)
+    if installed:
+        monkeypatch.setenv("COPILOT_BIN", str(_stub(tmp_path / "bin" / "copilot")))
+    else:
+        monkeypatch.setenv("COPILOT_BIN", str(tmp_path / "missing" / "copilot"))
+    rec = _live_warm_session(monkeypatch, listen, "claude")
+    out = listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
+    assert (rec["closed"] == ["workspace:18"]) is switched
+    assert out["agent"] == ("copilot" if switched else "claude")
+
+
+def test_comms_copilot_model_from_the_config_file(home, monkeypatch):
+    monkeypatch.setattr(cs, "HOME", home)
+    config = home / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"llm": {"provider": "copilot", "copilot": {"model": "global"},
+                                          "features": {"comms": {"copilot": {"model": "comms-cfg"}}}}}))
+    assert "--model comms-cfg" in cs._warm_launch(ag.COPILOT)
+
+
+def test_rules_link_is_repointed_when_it_points_elsewhere(home, tmp_path):
+    (home / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    link = home / ".assistant/copilot-instructions/.github/instructions/lessons.instructions.md"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(tmp_path / "old-rules.md")
+    ag.copilot_instructions_dir()
+    assert link.resolve() == (home / ".claude" / "CLAUDE.md").resolve()
+
+
+def test_saved_command_copilot_resume_gets_the_rules_too(home):
+    (home / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    rules = home / ".assistant" / "copilot-instructions"
+    assert ag.with_copilot_rules("cd /w && command copilot --resume s") == \
+        f"cd /w && COPILOT_CUSTOM_INSTRUCTIONS_DIRS={rules} command copilot --resume s"
+
+
+def test_doctor_skips_claude_sign_in_when_slack_runs_copilot(home, monkeypatch):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_auth")
+    _pick(home, "copilot")
+    assert doctor.check_bedrock_env().status == doctor.SKIP
+    _pick(home, "claude")
+    assert doctor.check_bedrock_env().status != doctor.SKIP
+
+
+def test_comms_setup_installs_copilot_hooks_when_copilot_is_picked():
+    script = (REPO / "bin/assistant-comms-setup.sh").read_text()
+    after_pick = script[script.index('print(f"     llm.provider={provider}")'):]
+    assert 'agent_session.py" copilot-chosen; then' in after_pick
+    assert 'agent_session.py" install-copilot-hooks' in after_pick

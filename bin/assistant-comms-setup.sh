@@ -134,6 +134,10 @@ with open(path, "w") as f:
 os.chmod(path, 0o600)
 print(f"     llm.provider={provider}")
 PY
+if "$PYTHON" "$REPO_DIR/bin/agent_session.py" copilot-chosen; then
+    "$PYTHON" "$REPO_DIR/bin/agent_session.py" install-copilot-hooks \
+        || echo "     ✗ cmux Copilot hooks not installed; Copilot sessions won't show on the dashboard" >&2
+fi
 
 # --- 4. test send -------------------------------------------------------------
 echo

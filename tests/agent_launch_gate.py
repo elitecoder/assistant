@@ -92,6 +92,8 @@ def _string_problems(text: str) -> list[str]:
         out.append(f"agent command '{m.group(0)}'")
     if _PINNED_RE.search(text):
         out.append("pinned agent binary path")
+    if re.search(r"\bzsh -l?i?c\s+['\"](claude|copilot|droid)\b", text):
+        out.append("login-shell agent launch")
     if _TRANSCRIPT_ROOT_RE.search(text):
         out.append("agent transcript root")
     return out

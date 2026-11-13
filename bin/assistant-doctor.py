@@ -249,6 +249,10 @@ def check_claude_bin() -> Check:
 
 def check_bedrock_env() -> Check:
     # The warm session's headless claude needs auth. OPTIONAL.
+    agent = agent_session.warm_agent()
+    if agent != agent_session.CLAUDE:
+        return Check("warm-session auth", SKIP, core=False,
+                     detail=f"the Slack session runs {agent}, which signs in on its own")
     env = comms_lib.load_bedrock_env()
     combined = {**env, **os.environ}
     if combined.get("CLAUDE_CODE_USE_BEDROCK", "").strip() not in ("", "0", "false"):

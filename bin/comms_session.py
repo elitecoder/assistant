@@ -135,6 +135,18 @@ def warm_session_model_is_current(paths: comms_lib.Paths, sess: dict) -> bool:
     return sess.get("model") == want
 
 
+def picked_warm_agent() -> str:
+    """The agent the Slack session should run: the user's pick when it can
+    start, else claude."""
+    return agent_session.available_or_claude(agent_session.warm_agent())
+
+
+def warm_session_agent_is_current(sess: dict) -> bool:
+    """True when a live warm session runs the agent the user picks now; False
+    after `assistant-llm.py set <agent>` switched it."""
+    return (sess.get("agent") or agent_session.CLAUDE) == picked_warm_agent()
+
+
 def _positive_int_env(name: str, default: int) -> int:
     """Env override parsed as a positive int, falling back to ``default`` on a
     missing/malformed/non-positive value. A bad tunable must never crash the
@@ -955,7 +967,7 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     → claude) unless the caller pins `agent`. The launch, readiness gate, and
     trust-prompt auto-answer are all resolved per-agent through agent_session so
     Claude's behavior is byte-identical to before while Droid gets its own."""
-    agent = agent or agent_session.warm_agent()
+    agent = agent or picked_warm_agent()
     cmux = str(paths.cmux_bin)
     rc, _, err = comms_lib.run_cmd([cmux, "ping"], timeout=10)
     if rc != 0:
