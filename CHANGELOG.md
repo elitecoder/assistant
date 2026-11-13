@@ -96,8 +96,14 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   when its model changes. A picked Copilot that can't start runs as Claude;
   `set copilot` warns when that's the case.
 - Background Copilot jobs retry once without `--reasoning-effort` when the
-  model refuses it (Copilot's `auto` model does), and the Observer's excerpt
-  of a Copilot session now shows tool results and errors. `assistant-comms-setup.sh` installs cmux's
+  model refuses it on stderr (Copilot's `auto` model does), and the
+  Observer's excerpt of a Copilot session shows tool results and errors,
+  compaction summaries, notices, and aborts.
+- Copilot subagent turns and automatic messages (memory, skills, discovered
+  instructions) no longer read as the user's own turns in the Observer
+  excerpt, the lesson extractor, or any other transcript reader.
+- `evals/observer/replay.py --provider copilot` runs the candidate models on
+  Copilot. `assistant-comms-setup.sh` installs cmux's
   Copilot hooks when Copilot is picked, and the doctor skips the Claude
   sign-in check when the Slack session runs another agent.
 - Copilot sessions Assistant starts, restores, or brings back after a crash

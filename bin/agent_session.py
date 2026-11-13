@@ -214,7 +214,13 @@ def record_role(obj: object) -> str | None:
             r = m.get("role")
             return r if r in ("user", "assistant") else None
     if t in ("user.message", "assistant.message"):  # Copilot events.jsonl
-        return t.split(".", 1)[0]
+        data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+        if data.get("parentToolCallId"):
+            return None  # a subagent's own turn, written into the main log
+        role = t.split(".", 1)[0]
+        if role == "user" and data.get("source") not in (None, "user"):
+            return None  # a subagent prompt (agent-<id>), memory, skill, or instruction text
+        return role
     return None
 
 
@@ -868,9 +874,10 @@ def headless_argv(provider: str, *, binary_path: str, model: str,
 
 def refused_reasoning_effort(provider: str, rc: int, stdout: str, stderr: str) -> bool:
     """True when Copilot failed because its model takes no --reasoning-effort
-    (`auto`, or a model without that setting)."""
+    (`auto`, or a model without that setting). Only stderr counts: stdout
+    echoes the prompt, which may mention reasoning effort."""
     return (provider == COPILOT and rc != 0
-            and "reasoning effort" in f"{stdout}\n{stderr}".lower())
+            and "does not support reasoning effort" in (stderr or "").lower())
 
 
 def without_reasoning_effort(cmd: list[str]) -> list[str]:

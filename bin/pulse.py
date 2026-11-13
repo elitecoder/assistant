@@ -2240,6 +2240,9 @@ def dispatch_todo(todo_id: str) -> bool:
         agent_session.confirm_dir(agent, cwd, home=HOME).mkdir(
             parents=True, exist_ok=True)
     before: dict[str, tuple[int, int]] = {}
+    # Copilot keeps every session in one folder; the confirmation polls below
+    # read only sessions written since now (minus slack) instead of all of them.
+    scan_since = time.time() - 60
     for path in agent_session.session_transcripts(agent, cwd, home=HOME):
         try:
             stat = path.stat()
@@ -2315,7 +2318,7 @@ def dispatch_todo(todo_id: str) -> bool:
     submitted = False
     for _ in range(30):
         candidates: list[tuple[Path, int]] = []
-        for path in agent_session.session_transcripts(agent, cwd, home=HOME):
+        for path in agent_session.session_transcripts(agent, cwd, home=HOME, since=scan_since):
             try:
                 stat = path.stat()
                 prior = before.get(str(path))

@@ -1985,3 +1985,105 @@ def test_llm_runner_defines_each_function_once():
     tree = ast.parse((BIN / "llm_runner.py").read_text())
     names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
     assert len(names) == len(set(names)), sorted(n for n in names if names.count(n) > 1)
+
+
+def _effort_refusing_run(calls):
+    def run(cmd, **kw):
+        calls.append((cmd, kw.get("input_text")))
+        if "--reasoning-effort" in cmd:
+            return 1, "", 'Error: Model "auto" does not support reasoning effort configuration'
+        return 0, copilot_stdout('{"ok": true}'), ""
+    return run
+
+
+def test_the_retry_drops_only_the_effort_pair_and_keeps_the_prompt(home, copilot_bin, tmp_path):
+    calls = []
+    llm_runner.invoke(provider="copilot", prompt="judge", model="auto", run_dir=tmp_path, timeout=30,
+                      run=_effort_refusing_run(calls), disable_tools=True,
+                      json_schema={"type": "object"})
+    (first, first_in), (second, second_in) = calls
+    i = first.index("--reasoning-effort")
+    assert second == first[:i] + first[i + 2:]
+    assert second_in == first_in and '{"type":"object"}' in second_in
+
+
+@pytest.mark.parametrize("provider,rc,stderr,stdout", [
+    ("copilot", 0, "does not support reasoning effort", ""),
+    ("claude", 1, "does not support reasoning effort", ""),
+    ("droid", 1, "does not support reasoning effort", ""),
+    ("copilot", 1, "rate limited", '{"type":"user.message","data":{"content":"reasoning effort"}}'),
+])
+def test_the_effort_retry_needs_a_copilot_refusal_on_stderr(provider, rc, stderr, stdout):
+    assert not ag.refused_reasoning_effort(provider, rc, stdout, stderr)
+    assert ag.refused_reasoning_effort("copilot", 1, "", 'Model "x" does not support reasoning effort')
+
+
+def test_copilot_subagent_and_automatic_records_are_not_user_turns(tmp_path):
+    from assistant import transcript_slice
+    records = [
+        {"type": "user.message", "timestamp": "t", "data": {"content": "Fix the build"}},
+        {"type": "user.message", "timestamp": "t", "data": {"content": "Diagnose x", "source": "agent-1"}},
+        {"type": "assistant.message", "timestamp": "t",
+         "data": {"content": "subagent says", "parentToolCallId": "c1"}},
+        {"type": "tool.execution_complete", "timestamp": "t",
+         "data": {"success": True, "result": {"content": "sub"}, "parentToolCallId": "c1"}},
+        {"type": "user.message", "timestamp": "t", "data": {"content": "remember X", "source": "memory"}},
+        {"type": "user.message", "timestamp": "t",
+         "data": {"content": "<system_reminder>hidden</system_reminder>ok", "source": "instruction-discovery"}},
+        {"type": "tool.execution_complete", "timestamp": "t",
+         "data": {"success": False, "result": None, "error": {"message": "Skill not found: x"}}},
+        {"type": "session.compaction_complete", "timestamp": "t", "data": {"summaryContent": "did A"}},
+        {"type": "system.notification", "timestamp": "t", "data": {"content": "Discovered instruction"}},
+        {"type": "abort", "timestamp": "t", "data": {"reason": "user_initiated"}},
+        {"type": "assistant.message", "timestamp": "t", "data": {"content": "Done."}},
+    ]
+    turns = [transcript_slice._turn(r) for r in records]
+    assert [t for t in turns if t] == [
+        ("user", "t", "Fix the build"),
+        ("system", "t", "remember X"),
+        ("system", "t", "ok"),
+        ("user", "t", "[tool error: Skill not found: x]"),
+        ("system", "t", "Compacted: did A"),
+        ("system", "t", "Discovered instruction"),
+        ("system", "t", "[aborted: user_initiated]"),
+        ("assistant", "t", "Done."),
+    ]
+    assert [ag.record_role(r) for r in records[:6]] == ["user", None, None, None, None, None]
+
+
+def test_lessons_skip_copilot_subagent_prompts(tmp_path):
+    lessons = _load(BIN / "lesson-extractor.py", "seam_lessons_subagent")
+    path = tmp_path / "events.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in [
+        {"type": "user.message", "data": {"content": "Fix the build"}},
+        {"type": "user.message", "data": {"content": "No, don't edit any file. Never push.",
+                                          "source": "agent-1"}},
+        {"type": "assistant.message", "data": {"content": "sub reply", "parentToolCallId": "c1"}},
+        {"type": "assistant.message", "data": {"content": "Fixed."}}]))
+    scanner = lessons.TranscriptScanner(projects_dir=tmp_path / "c", droid_dir=tmp_path / "d",
+                                        copilot_dir=tmp_path / "p", existing=[])
+    assert scanner._conversation(path) == [("user", "Fix the build"), ("assistant", "Fixed.")]
+
+
+def test_copilot_model_settings_order(home, monkeypatch):
+    config = home / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"llm": {"provider": "copilot", "copilot": {"model": "global"},
+                                          "features": {"triage": {"copilot": {"model": "triage-cfg"}}}}}))
+    route = lambda f: llm_runner.load_route_config(llm_runner.config_path(home=home), f)
+    assert route("triage").copilot_model == "triage-cfg"
+    assert route("observer").copilot_model == "global"
+    monkeypatch.setenv("COPILOT_MODEL", "env-all")
+    assert route("observer").copilot_model == "env-all"
+    monkeypatch.setenv("TRIAGE_COPILOT_MODEL", "env-triage")
+    assert route("triage").copilot_model == "env-triage"
+
+
+def test_replay_eval_runs_candidates_on_the_picked_agent(monkeypatch, tmp_path):
+    replay = _load(REPO / "evals" / "observer" / "replay.py", "seam_replay_provider")
+    seen = {}
+    monkeypatch.setattr(replay.llm_runner, "invoke", lambda **kw: seen.update(kw) or llm_runner.LLMResult(
+        provider=kw["provider"], model=kw["model"], rc=0, stdout="", stderr="", wall_ms=1, tokens_in=1,
+        tokens_out=1, cost_usd=None, usage_source="cli", session_id=None, result_text="", usable=False))
+    replay.ask("m", "p", tmp_path / "r", provider="copilot")
+    assert seen["provider"] == "copilot"
