@@ -144,9 +144,13 @@ def picked_warm_agent() -> str:
 
 
 def warm_session_agent_is_current(sess: dict) -> bool:
-    """True when a live warm session runs the agent the user picks now; False
-    after `assistant-llm.py set <agent>` switched it."""
-    return (sess.get("agent") or agent_session.CLAUDE) == picked_warm_agent()
+    """True when a live warm session runs the agent the user picks now, or the
+    newly picked agent can't start (a live session beats one that won't come
+    up); False after `assistant-llm.py set <agent>` switched to one that can."""
+    picked = picked_warm_agent()
+    if (sess.get("agent") or agent_session.CLAUDE) == picked:
+        return True
+    return not agent_session.agent_available(picked)
 
 
 def _positive_int_env(name: str, default: int) -> int:

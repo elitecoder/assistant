@@ -138,6 +138,8 @@ def _elt_word(node: ast.AST) -> str:
         for arg in node.args:
             if _const_str(arg) in AGENTS:
                 return _const_str(arg)
+            if isinstance(arg, ast.Name) and _agent_word(arg.id):
+                return arg.id
         return _elt_word(node.func)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _elt_word(node.right)
@@ -207,8 +209,8 @@ def _assigned_agent(value: ast.AST, aliases: dict[str, str] | None = None) -> st
     if isinstance(value, ast.Call):
         if len(value.args) >= 2 and _const_str(value.args[-1]) in AGENTS:
             return _const_str(value.args[-1])
-        if len(value.args) == 1 and isinstance(value.args[0], ast.Name):
-            return aliases.get(value.args[0].id)
+        if len(value.args) >= 1 and isinstance(value.args[-1], ast.Name):
+            return aliases.get(value.args[-1].id)
     return None
 
 

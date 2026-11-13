@@ -250,50 +250,6 @@ def invoke_local(*, prompt: str, model: str, url: str, timeout: int,
     )
 
 
-def invoke_local(*, prompt: str, model: str, url: str, timeout: int,
-                 reasoning_effort: str = "high",
-                 json_schema: dict | None = None) -> LLMResult:
-    """One chat completion from an OpenAI-compatible local server
-    (llama-server, Ollama, LM Studio). It has no tools."""
-    started = time.time()
-    body = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "max_tokens": LOCAL_MAX_TOKENS,
-        "chat_template_kwargs": {
-            "enable_thinking": _reasoning_effort(reasoning_effort) != "off"},
-    }
-    if json_schema is not None:
-        body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": "result", "schema": json_schema}}
-    request = urllib.request.Request(
-        url.rstrip("/") + "/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode()
-        doc = json.loads(raw)
-        text = doc["choices"][0]["message"].get("content") or ""
-        usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
-        rc, stderr = 0, ""
-    except (OSError, ValueError, KeyError, IndexError, TypeError,
-            AttributeError) as exc:
-        raw, text, usage, rc = "", "", {}, 1
-        stderr = f"local model at {url} failed: {exc}"
-    text = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
-    return LLMResult(
-        provider="local", model=model, rc=rc, stdout=raw, stderr=stderr,
-        wall_ms=int((time.time() - started) * 1000),
-        tokens_in=int(usage.get("prompt_tokens") or 0),
-        tokens_out=int(usage.get("completion_tokens") or 0),
-        cost_usd=0.0, usage_source="local", session_id=None,
-        result_text=text, usable=rc == 0 and bool(text),
-    )
-
-
 def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
            timeout: int, run: Callable, claude_bin: str | None = None,
            droid_bin: str | None = None,

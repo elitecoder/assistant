@@ -149,6 +149,12 @@ CAUGHT = {
         'cmd = "%s --print" % "claude"',
         'cmd = "{exe} --resume {sid}".format(exe="droid", sid=s)',
         'run([CMUX, "new-workspace", "--command", "zsh -lic \'claude\'"])',
+        'cmd = [resolve_executable(claude_bin), "--model", model, "--print", "--output-format", "json"]',
+        'cmd = [resolve_executable(droid_bin), "exec", "--model", m]',
+        'default_executable = "droid" if p == "factory" else "claude"\n'
+        'executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE", default_executable)\n'
+        'quoted_executable = shlex.quote(executable)\n'
+        'cmd = f"cd {quoted_cwd} && {quoted_executable} --resume {quoted_sid}"',
         't = d.get("type")\nif t == "assistant":\n    pass',
         'if m.get("role") == "assistant":\n    pass',
         'n = usage.get("cache_read_input_tokens")',
@@ -1958,3 +1964,24 @@ def test_a_copilot_slack_session_respawns_when_its_model_changes(home, monkeypat
     monkeypatch.setenv("COMMS_COPILOT_MODEL", configured)
     sess = {"agent": "copilot", "model": recorded}
     assert cs.warm_session_model_is_current(cl.Paths.from_env({"HOME": str(home)}), sess) is current
+
+
+def test_a_live_slack_session_stays_when_the_new_pick_cant_start(home, monkeypatch, tmp_path):
+    listen = _load(BIN / "comms-listen.py", "seam_listen_droid_missing")
+    _pick(home, "droid")
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: None)
+    rec = _live_warm_session(monkeypatch, listen, "claude")
+    out = listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
+    assert rec["closed"] == [] and out["agent"] == "claude"
+    _stub(home / ".local" / "bin" / "droid")
+    (home / ".assistant" / "droid-glm-settings.json").write_text("{}")
+    rec = _live_warm_session(monkeypatch, listen, "claude")
+    out = listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
+    assert rec["closed"] == ["workspace:18"] and out["agent"] == "droid"
+
+
+def test_llm_runner_defines_each_function_once():
+    import ast
+    tree = ast.parse((BIN / "llm_runner.py").read_text())
+    names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    assert len(names) == len(set(names)), sorted(n for n in names if names.count(n) > 1)
