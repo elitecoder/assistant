@@ -11,8 +11,8 @@ attention. Triggers a card to be DROPPED if any of:
 
   1. Workspace closed: card key contains `workspace:N` and that workspace is
      not in `cmux tree` anymore.
-  2. PR resolved: card key contains `pr-NNN` (or detail mentions PR #NNN)
-     and `gh pr view NNN --json state` returns MERGED or CLOSED.
+  2. PR resolved: the card holds a full PR link and
+     `gh pr view <link> --json state` returns MERGED or CLOSED.
   3. TODO done: card key contains `td-NNN` and that TODO has status=done
      in ~/.claude/assistant-todo.json.
   4. autoDispatch all set: `autodispatch-unset:*` cards where every
@@ -52,7 +52,7 @@ DECISIONS_LOG_PATH = Path.home() / ".assistant/decisions/decisions.jsonl"
 CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
 
 WS_RE = re.compile(r"workspace:(\d+)")
-PR_RE = re.compile(r"\bpr-(\d+)\b|PR #(\d+)|pr/(\d+)|pull/(\d+)")
+PR_URL_RE = re.compile(r"https://[^\s/]+/[^\s/]+/[^\s/]+/pull/\d+")
 TD_RE = re.compile(r"\btd-(\d{3,4})\b")
 DEC_KEY_RE = re.compile(r"^dec-[a-f0-9]{8,64}$")
 
@@ -116,11 +116,11 @@ def load_todos() -> dict[str, dict]:
     return {it.get("id"): it for it in items if it.get("id")}
 
 
-def gh_pr_state(pr: str) -> str | None:
+def gh_pr_state(pr_url: str) -> str | None:
     """Returns 'OPEN' / 'MERGED' / 'CLOSED' / None on failure."""
     try:
         r = subprocess.run(
-            ["gh", "pr", "view", pr, "--json", "state", "-q", ".state"],
+            ["gh", "pr", "view", pr_url, "--json", "state", "-q", ".state"],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode == 0:
@@ -206,12 +206,11 @@ def card_should_drop(card: dict, open_ws: set[str], todos: dict[str, dict],
             return f"workspace(s) closed: {', '.join(sorted(gone))}"
 
     # 2. PR merged or closed
-    pr_match = PR_RE.search(haystack)
+    pr_match = PR_URL_RE.search(haystack)
     if pr_match:
-        pr = next(g for g in pr_match.groups() if g)
-        state = gh_pr_state(pr)
+        state = gh_pr_state(pr_match[0])
         if state in ("MERGED", "CLOSED"):
-            return f"PR #{pr} is {state}"
+            return f"{pr_match[0]} is {state}"
 
     # 3. TODO done
     td_matches = TD_RE.findall(haystack)

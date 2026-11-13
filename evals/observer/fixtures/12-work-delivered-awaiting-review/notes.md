@@ -14,8 +14,7 @@ was correcting in the live conversation is pinned here.
   HTML review dashboard → "hand me your verdicts and I'll execute"
   handoff arc).
 - **ctx.json:** the real `build-ws-context.py` values Observer saw at
-  run 0444 — `last_turn_age_sec: 3383`, `agent_status: idle`,
-  `cwd_dirty: true`, `cwd_unpushed: true`.
+  run 0444 — `last_turn_age_sec: 3383`, `agent_status: idle`.
 
 The agent built a split-pane HTML dashboard embedding 12 draft Squirrel
 enforcement rules, each with a before/after code pair and reviewer

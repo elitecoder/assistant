@@ -897,7 +897,7 @@ class HelperSubprocessWrapperTests(unittest.TestCase):
     def test_build_ctx_parses_json(self):
         payload = {"ws_ref": "workspace:1", "transcript_path": None,
                    "agent_status": "idle", "last_turn_age_sec": 30,
-                   "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                   "is_protected": False,
                    "title": "t", "cwd": "/"}
         with mock.patch.object(self.mod, "run",
                                return_value=(0, json.dumps(payload), "")):
@@ -1260,7 +1260,7 @@ class MainPipelineTests(unittest.TestCase):
             with mock.patch.object(self.mod, "build_ctx", return_value={
                     "ws_ref": "workspace:1", "transcript_path": None,
                     "agent_status": "idle", "last_turn_age_sec": 0,
-                    "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                    "is_protected": False,
                     "title": "t", "cwd": "/"}):
                 with mock.patch.object(self.mod, "call_observer_batch") as obs_mock:
                     with mock.patch.object(self.mod, "pick_open_todos",
@@ -1287,7 +1287,7 @@ class MainPipelineTests(unittest.TestCase):
                 with mock.patch.object(self.mod, "build_ctx", return_value={
                         "ws_ref": "workspace:1", "transcript_path": None,
                         "agent_status": "idle", "last_turn_age_sec": 0,
-                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "is_protected": False,
                         "title": "t", "cwd": "/"}):
                     with mock.patch.object(
                             self.mod, "call_observer_batch",
@@ -1409,7 +1409,7 @@ class MainPipelineTests(unittest.TestCase):
                 mock.patch.object(self.mod, "build_ctx", return_value={
                     "ws_ref": "workspace:1", "transcript_path": None,
                     "agent_status": "idle", "last_turn_age_sec": 0,
-                    "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                    "is_protected": False,
                     "title": "t", "cwd": "/"}), \
                 mock.patch.object(self.mod, "call_observer_batch") as observe, \
                 mock.patch.object(self.mod, "run_observer_audit", return_value={}) as audit, \
@@ -1434,7 +1434,7 @@ class MainPipelineTests(unittest.TestCase):
                 with mock.patch.object(self.mod, "build_ctx", return_value={
                         "ws_ref": "workspace:1", "transcript_path": None,
                         "agent_status": "idle", "last_turn_age_sec": 0,
-                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "is_protected": False,
                         "title": "t", "cwd": "/"}):
                     # Observer returns empty dict — no verdict for ws:1.
                     with mock.patch.object(self.mod, "call_observer_batch",
@@ -1466,7 +1466,7 @@ class MainPipelineTests(unittest.TestCase):
                 with mock.patch.object(self.mod, "build_ctx", return_value={
                         "ws_ref": "workspace:1", "transcript_path": None,
                         "agent_status": "working", "last_turn_age_sec": 0,
-                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "is_protected": False,
                         "title": "t", "cwd": "/"}):
                     with mock.patch.object(self.mod, "call_observer_batch",
                                            return_value=({"workspace:1": {
@@ -1541,7 +1541,7 @@ class MainPipelineTests(unittest.TestCase):
 
     CTX_WS1 = {"ws_ref": "workspace:1", "transcript_path": None,
                "agent_status": "idle", "last_turn_age_sec": 0,
-               "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+               "is_protected": False,
                "title": "t", "cwd": "/"}
 
     def _metrics_records(self):

@@ -26,8 +26,6 @@ Output JSON to stdout:
     },
     "last_turn_age_sec": <int|null>,
     "agent_status": "working" | "idle",
-    "cwd_dirty": <bool>,
-    "cwd_unpushed": <bool>,
     "is_protected": <bool>,
     "screen_text": "<live AGENT-pane viewport+scrollback>",
     "screen_shows_error": <bool>
@@ -651,28 +649,6 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
     return age, ("working" if pending_tool_ids else "idle")
 
 
-def cwd_state(cwd: str | None) -> tuple[bool, bool]:
-    if not cwd or not os.path.isdir(cwd):
-        return False, False
-    try:
-        r = subprocess.run(
-            ["git", "--no-optional-locks", "-C", cwd, "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5,
-        )
-        dirty = bool(r.stdout.strip()) if r.returncode == 0 else False
-    except Exception:
-        dirty = False
-    try:
-        r = subprocess.run(
-            ["git", "--no-optional-locks", "-C", cwd, "log", "@{u}..", "--oneline"],
-            capture_output=True, text=True, timeout=5,
-        )
-        unpushed = bool(r.stdout.strip()) if r.returncode == 0 else False
-    except Exception:
-        unpushed = False
-    return dirty, unpushed
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ws-ref", required=True)
@@ -692,7 +668,6 @@ def main() -> int:
         resolved, observed_at)
     transcript = resolved["transcript_path"]
     age, agent_status = transcript_signals(transcript)
-    dirty, unpushed = cwd_state(args.cwd)
 
     # When transcript is null (no verified session found), age is None and the
     # Observer can't tell if the workspace is fresh or stale. Fall back to the
@@ -725,8 +700,6 @@ def main() -> int:
         "observation_identity": identity,
         "last_turn_age_sec": age,
         "agent_status": agent_status,
-        "cwd_dirty": dirty,
-        "cwd_unpushed": unpushed,
         "is_protected": args.ws_ref in PROTECTED_REFS,
         "screen_text": resolved["screen_text"],
         "screen_shows_error": resolved["screen_shows_error"],

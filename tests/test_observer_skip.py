@@ -60,7 +60,7 @@ BASE_CTX = {
     "ws_ref": "workspace:1", "title": "t", "cwd": "/",
     "transcript_path": None, "transcript_source": None, "session_id8": None,
     "agent_surface": None, "last_turn_age_sec": 100, "agent_status": "idle",
-    "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+    "is_protected": False,
     "screen_text": "the same screen", "screen_shows_error": False,
 }
 
@@ -116,8 +116,6 @@ class ObsInputHashTests(unittest.TestCase):
         base = self.mod.obs_input_hash(ctx())
         for over in ({"screen_text": "something new"},
                      {"agent_status": "working"},
-                     {"cwd_dirty": True},
-                     {"cwd_unpushed": True},
                      {"screen_shows_error": True},
                      {"title": "renamed"},
                      {"cwd": "/elsewhere"}):
