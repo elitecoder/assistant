@@ -27,6 +27,7 @@ HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parents[1]  # repo root (src/ for the connector base)
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO / "bin"))  # loaded by path (tests/drive_dashboard_overview.py)
 
 import agent_session  # noqa: E402
 from assistant import brief as brief_store
@@ -1036,12 +1037,13 @@ def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | No
     SAYING, not which tool it's invoking. None if no transcript or no
     text turn found.
 
-    Reads the tail (~256KB, then ~4MB when that holds no reply) — agents can
-    emit many tool_uses between text turns, and Copilot can log hundreds of KB
-    of model events after its last reply."""
+    Reads only the tail (~32KB) — agents can emit many tool_uses between
+    text turns. Copilot can log hundreds of KB of model events after its last
+    reply, so its tail is ~256KB, then ~4MB when that holds no reply."""
     if not transcript_path or not os.path.exists(transcript_path):
         return None
-    for window in (262144, 4194304):
+    copilot = agent_session.agent_from_transcript(transcript_path) == agent_session.COPILOT
+    for window in ((262144, 4194304) if copilot else (32768,)):
         try:
             size = os.path.getsize(transcript_path)
             with open(transcript_path, "rb") as f:

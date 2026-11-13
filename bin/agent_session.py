@@ -336,12 +336,18 @@ def bin_env_var(agent: str) -> str:
     return _BIN_ENV[agent]
 
 
+def usage_block(record: object) -> dict | None:
+    """A Claude or Droid transcript turn's usage block, or None."""
+    msg = record.get("message") if isinstance(record, dict) else None
+    usage = msg.get("usage") if isinstance(msg, dict) else None
+    return usage if isinstance(usage, dict) else None
+
+
 def context_tokens(record: object) -> int | None:
     """Live context size from a Claude or Droid transcript turn's usage block
     (input plus cache tokens), or None when the turn has none."""
-    msg = record.get("message") if isinstance(record, dict) else None
-    usage = msg.get("usage") if isinstance(msg, dict) else None
-    if not isinstance(usage, dict):
+    usage = usage_block(record)
+    if usage is None:
         return None
     return (int(usage.get("input_tokens") or 0)
             + int(usage.get("cache_creation_input_tokens") or 0)

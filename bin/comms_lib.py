@@ -698,7 +698,7 @@ def read_context_tokens(transcript_path: str | Path) -> int | None:
     p = Path(transcript_path)
     if not p.exists():
         return None
-    last: int | None = None
+    last = None
     with open(p) as f:
         for line in f:
             line = line.strip()
@@ -708,10 +708,9 @@ def read_context_tokens(transcript_path: str | Path) -> int | None:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            tokens = agent_session.context_tokens(rec)
-            if tokens is not None:
-                last = tokens
-    return last
+            if agent_session.usage_block(rec) is not None:
+                last = rec
+    return agent_session.context_tokens(last)
 
 
 def context_fraction(tokens: int | None, window: int = CONTEXT_WINDOW_TOKENS) -> float:

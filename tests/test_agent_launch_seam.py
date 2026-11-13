@@ -1405,7 +1405,8 @@ def _copilot_reply_log(tmp_path, padding_bytes=0):
         {"type": "assistant.message", "timestamp": "t2", "data": {"content": "Queued PR 12."}},
         {"type": "model.messages_snapshot", "data": {"blob": "x" * padding_bytes}},
     ]
-    path = tmp_path / "events.jsonl"
+    path = tmp_path / ".copilot" / "session-state" / "cp-reply" / "events.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(e) + "\n" for e in events))
     return path
 
@@ -2831,3 +2832,33 @@ def test_copilot_home_reads_the_given_environment(home, monkeypatch):
     monkeypatch.setenv("COPILOT_HOME", "/elsewhere")
     assert ag.copilot_home() == Path("/elsewhere")
     assert ag.copilot_home(env={}) == home / ".copilot"
+
+
+def test_slack_context_reads_only_the_last_usage_block(tmp_path):
+    transcript = tmp_path / "c.jsonl"
+    transcript.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "assistant", "message": {"usage": {"input_tokens": "n/a"}}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 12}}}]) + "\n")
+    assert cl.read_context_tokens(transcript) == 12
+
+
+def test_page_keeps_claudes_short_tail_and_widens_only_copilots(home, tmp_path):
+    page = _load(BIN / "render-assistant-page.py", "seam_page_claude_tail")
+    reply = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Older reply."}]}}
+    tool = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "t", "name": "Bash", "input": {"cmd": "x" * 1000}}]}}
+    claude = tmp_path / "c.jsonl"
+    claude.write_text("".join(json.dumps(r) + "\n" for r in [reply, *[tool] * 40]))
+    assert claude.stat().st_size > 32768
+    assert page.last_activity(str(claude)) is None, "Claude reads 32 KB, as on main"
+    assert page.last_activity(str(_copilot_reply_log(home, padding_bytes=400_000))) == "Queued PR 12."
+
+
+def test_dashboard_renderer_loads_by_path_with_only_src_importable(tmp_path):
+    code = ("import importlib.util, sys; sys.path[:] = [p for p in sys.path if not p.endswith('/bin')]; "
+            f"spec = importlib.util.spec_from_file_location('page', {str(BIN / 'render-assistant-page.py')!r}); "
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('ok')")
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "HOME": str(tmp_path), "PYTHONPATH": str(REPO / "src")})
+    assert done.stdout.strip() == "ok", done.stderr[-500:]
