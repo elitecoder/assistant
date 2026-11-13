@@ -1264,7 +1264,7 @@ def _read_git_config(path: Path) -> dict[tuple[str, str, str], str]:
         header = GIT_CONFIG_SECTION.match(line)
         if header:
             section, subsection = header[1].lower(), header[2] or ""
-        elif "=" in line and not line.startswith(("#", ";")):
+        elif "=" in line:
             key, value = line.split("=", 1)
             values[(section, subsection, key.strip().lower())] = value.strip()
     return values

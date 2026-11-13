@@ -120,3 +120,9 @@ def test_snapshot_runs_no_git_on_a_real_checkout(pulse, tmp_path):
         assert pulse._observer_pr_snapshot(str(repo)) is None
     argv = run.call_args.args[0]
     assert argv[:6] == ["gh", "pr", "view", "feat/z", "--repo", "github.com/acme/real"]
+
+
+def test_comments_and_blank_lines_are_ignored(pulse, tmp_path):
+    make_checkout(tmp_path, '[remote "origin"]\n\turl = git@github.com:right/repo.git\n'
+                            '\n\t# url = git@github.com:wrong/repo.git\n\t; url = x:wrong/again\n')
+    assert pulse._checkout_pr_target(str(tmp_path)) == ("github.com", "right/repo", "feat/x")
