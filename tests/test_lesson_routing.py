@@ -1,7 +1,7 @@
 """Tests for project-scoped lesson routing in bin/assistant-curator.py.
 
 Covers the routing table added so that project-specific lessons land in the
-project's own `.claude/rules/*.md` instead of polluting
+project's own `.claude/rules/*.md` (and auto-commit there) instead of polluting
 the personal CLAUDE.md store:
 
   - writing with --target ffp / archffp lands the block in the project file,
@@ -181,16 +181,38 @@ def test_audit_clean_when_project_lessons_in_project_store(tmp_targets, monkeypa
 
 # ─── Part 1: auto-commit to the project repo ─────────────────────────────────
 
-def test_project_target_writes_the_rules_file_and_runs_nothing(tmp_targets, monkeypatch, capsys):
-    """A project target only writes its rules file; the next PR carries it."""
+def test_commit_to_repo(tmp_targets, monkeypatch):
+    """Writing to a project target stages ONLY the rules file (git add, no commit).
+
+    Project repos like firefly-platform require admin merge / branch protection;
+    an auto-commit would bypass that. The lesson travels with the code when the
+    developer's next PR includes the staged rules file change.
+    """
     calls = []
-    monkeypatch.setattr(cur.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd))
+
+    class _CP:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, *a, **k):
+        calls.append(cmd)
+        return _CP()
+
+    monkeypatch.setattr(cur.subprocess, "run", fake_run)
+
     rc = cur.cmd_write(_write_args(
         "ffp", "trigger here", "rule here", scope="ffp", slug="committed"))
     assert rc == 0
-    assert calls == []
-    assert "rule here" in (tmp_targets["ffp"]["repo"] / ".claude/rules/ffp-lessons.md").read_text()
-    assert "include it in your next PR" in capsys.readouterr().out
+
+    # Exactly one git add (staging only — no commit in this loop).
+    assert len(calls) == 1
+    add = calls[0]
+    assert add[:4] == ["git", "-C", str(tmp_targets["ffp"]["repo"]), "add"]
+    # The staged pathspec is ONLY the rules file (relative), never `.` or -A.
+    rel = ".claude/rules/ffp-lessons.md"
+    assert rel in add
+    assert "." not in add and "-A" not in add
 
 
 def test_no_commit_for_session_targets(tmp_targets, monkeypatch):

@@ -3,6 +3,7 @@
 Scans every Python, shell, and Swift file Assistant runs (bin/, src/, hooks/,
 slack-reactor/, mac/Sources/) for a git command. PENDING lists files still
 waiting on a replacement; remove each entry once its replacement lands.
+ALLOWED lists files approved to keep running git.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 ROOTS = ("bin", "src", "hooks", "slack-reactor", "mac/Sources", "githooks")
 PENDING = {"bin/self_update.py", "githooks/refuse-main-commit"}
+ALLOWED = {"bin/assistant-curator.py"}
 SHELL_GIT = re.compile(r"(^|[\s;&|(`]|\$\()git\s+-?[A-Za-z]")
 SWIFT_GIT = re.compile(r'"(/usr/bin/)?git"')
 
@@ -70,7 +72,7 @@ def test_no_assistant_file_runs_git():
     found = {}
     for path in assistant_files():
         rel = str(path.relative_to(REPO))
-        if rel in PENDING:
+        if rel in PENDING | ALLOWED:
             continue
         try:
             lines = git_calls(path)

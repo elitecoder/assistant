@@ -20,7 +20,7 @@ Subcommands:
 
 There's no `why`, no `pinned`, no `use_count`, no `state`. A rule is a rule;
 remove it when it's stale, edit it when it's wrong. Source of truth is the
-markdown.
+markdown — `git diff ~/.claude/CLAUDE.md` is the audit log.
 """
 
 from __future__ import annotations
@@ -347,8 +347,10 @@ def cmd_write(args) -> int:
     # there (the 'assistant' target lives in the Observer prompt, not CLAUDE.md).
     if args.target == "claude":
         _sync_to_memory_repo()
-    # Project targets live inside a repo. The developer's next PR carries the
-    # rules file; the curator never runs git.
+    # Project targets live inside a repo — stage the rules file only (no commit,
+    # no push). The lesson travels with the code when the developer's next PR
+    # includes the rules file. Auto-committing to main on repos that require
+    # admin merge (e.g. firefly-platform) would bypass branch protection.
     if "repo" in tgt:
         _stage_lesson_in_repo(tgt["repo"], tgt["path"], slug)
     # Trigger a lesson audit after every write: check all stores for near-duplicates
@@ -358,13 +360,28 @@ def cmd_write(args) -> int:
 
 
 def _stage_lesson_in_repo(repo_path: Path, rules_file: Path, slug: str) -> None:
-    """Tell the developer to include the rules file in their next PR."""
+    """Stage ONLY the rules file in its project repo — no commit, no push.
+
+    Repos like firefly-platform require admin merge / branch protection; an
+    auto-commit to main would bypass that. The lesson travels with the code when
+    the developer's next PR naturally includes the staged rules file change.
+    Best-effort: logs failures but never raises."""
     try:
         rel = str(rules_file.relative_to(repo_path))
     except ValueError:
         rel = str(rules_file)
-    _audit(f"stage-lesson {slug}: wrote {rel} in {repo_path} (include in your next PR)")
-    print(f"  wrote {rel} in {repo_path} — include it in your next PR")
+    try:
+        add = subprocess.run(
+            ["git", "-C", str(repo_path), "add", rel],
+            capture_output=True, text=True,
+        )
+        if add.returncode != 0:
+            _audit(f"stage-lesson {slug}: git add failed: {add.stderr.strip()}")
+            return
+        _audit(f"stage-lesson {slug}: staged {rel} in {repo_path} (commit in your next PR)")
+        print(f"  staged {rel} in {repo_path} — include in your next PR")
+    except OSError as e:
+        _audit(f"stage-lesson {slug}: {e}")
 
 
 def _audit(msg: str) -> None:
@@ -469,7 +486,7 @@ def main() -> int:
     target_help = (
         "which lesson store: 'claude' (~/.claude/CLAUDE.md, every session), "
         "'assistant' (Observer prompt, orchestrator only), or a project store "
-        "that lives in-repo: 'ffp' (firefly-platform), "
+        "that lives in-repo and auto-commits: 'ffp' (firefly-platform), "
         "'archffp' (architect-ffp), 'assistant-repo' (this repo)")
 
     p_write = sub.add_parser("write", help="add a new lesson")

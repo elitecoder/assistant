@@ -18,13 +18,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     gone from the workspace state, the session check's fingerprint, and its
     prompt. The "no transcript, empty screen, stale" rule no longer needs a
     dirty folder, and `ready_for_cleanup` no longer checks for a clean one.
-  - `assistant-curator.py` no longer runs `git add` on a project's rules file.
-    It writes the file and tells you to include it in your next PR.
   - `meta_gate.py detect` takes changed files with `--paths` only; `--repo`
     and `--base` are gone.
   - `tests/test_no_git.py` fails when any file under `bin/`, `src/`, `hooks/`,
     `slack-reactor/`, `mac/Sources/`, or `githooks/` runs git. The self-update
     and its commit guard are listed as pending until their replacement lands.
+    The lessons tool keeps its one `git add` when you write a project lesson.
 
 ### Fixed
 - Keep the live install updating after a squash merge. The self-update refused

@@ -694,16 +694,28 @@ class AssistantCuratorTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("single", out)
 
-    def test_stage_lesson_only_points_to_the_next_pr(self):
-        repo = self._tmp / "repo"
-        with mock.patch.object(self.mod.subprocess, "run",
-                               side_effect=AssertionError("ran a command")), \
-                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
-            self.mod._stage_lesson_in_repo(repo, repo / ".claude/rules/x.md", "slug")
-            self.mod._stage_lesson_in_repo(repo, self._tmp / "elsewhere.md", "slug")
-        self.assertIn(".claude/rules/x.md in", out.getvalue())
-        self.assertIn("include it in your next PR", out.getvalue())
-        self.assertIn(str(self._tmp / "elsewhere.md"), out.getvalue())
+    def test_stage_lesson_git_add_failure(self):
+        # _stage_lesson_in_repo logs and does not raise when git add fails.
+        import subprocess as sp
+        class _CP:
+            returncode = 1
+            stderr = "not a git repo"
+        with mock.patch.object(self.mod.subprocess, "run", return_value=_CP()):
+            # Should not raise.
+            self.mod._stage_lesson_in_repo(
+                self._tmp / "nonexistent-repo",
+                self._tmp / "nonexistent-repo" / ".claude/rules/x.md",
+                "test-slug",
+            )
+
+    def test_stage_lesson_os_error(self):
+        # _stage_lesson_in_repo handles OSError from subprocess.run gracefully.
+        with mock.patch.object(self.mod.subprocess, "run", side_effect=OSError("no git")):
+            self.mod._stage_lesson_in_repo(
+                self._tmp / "repo",
+                self._tmp / "repo" / ".claude/rules/x.md",
+                "slug",
+            )
 
     def test_iter_lessons_malformed_block_no_newline(self):
         # A block where the header comment lacks the closing -->\n is skipped.
