@@ -205,6 +205,19 @@ def test_config_env_reaches_the_pulse_and_the_service_env_wins(tmp_path):
     assert r.stdout.split() == ["from-service", "60"]
 
 
+def test_config_env_is_set_before_the_pulse_starts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OBSERVER_MODEL", "from-service")
+    monkeypatch.delenv("OBSERVER_EVERY_MIN", raising=False)
+    config = tmp_path / ".assistant/config.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"env": {"OBSERVER_MODEL": "x", "OBSERVER_EVERY_MIN": 60}}))
+    seen = []
+    _load().main([], execv=lambda *a: seen.append(
+        (os.environ["OBSERVER_MODEL"], os.environ["OBSERVER_EVERY_MIN"])))
+    assert seen == [("from-service", "60")]
+
+
 @pytest.mark.parametrize("body", ["not json", '{"env": ["x"]}', "[]"])
 def test_unreadable_config_env_is_ignored(tmp_path, body):
     (tmp_path / "config.json").write_text(body)
