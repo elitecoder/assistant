@@ -135,11 +135,14 @@ def _elt_word(node: ast.AST) -> str:
     if isinstance(node, ast.Attribute):
         return node.attr
     if isinstance(node, ast.Call):
+        if _elt_word(node.func) in _BINARY_LOOKUPS:
+            return "claude"
         for arg in node.args:
             if _const_str(arg) in AGENTS:
                 return _const_str(arg)
-            if isinstance(arg, ast.Name) and _agent_word(arg.id):
-                return arg.id
+            name = arg.id if isinstance(arg, ast.Name) else getattr(arg, "attr", "")
+            if name and _agent_word(name):
+                return name
         return _elt_word(node.func)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _elt_word(node.right)
@@ -192,6 +195,10 @@ def _joined_text(node: ast.AST) -> str | None:
     return "".join("{}" if t is None else t for t in texts)
 
 
+# Calls that return an agent's binary path; a list starting with one is an agent argv.
+_BINARY_LOOKUPS = {"binary", "resolve_executable"}
+
+
 def _assigned_agent(value: ast.AST, aliases: dict[str, str] | None = None) -> str | None:
     """The agent a value names: "claude", `x or "claude"`, `"droid" if c else
     "claude"`, a lookup whose default is "claude"
@@ -207,6 +214,8 @@ def _assigned_agent(value: ast.AST, aliases: dict[str, str] | None = None) -> st
     if isinstance(value, ast.IfExp):
         return _assigned_agent(value.body, aliases) or _assigned_agent(value.orelse, aliases)
     if isinstance(value, ast.Call):
+        if _elt_word(value.func) in _BINARY_LOOKUPS:
+            return "claude"
         if len(value.args) >= 2 and _const_str(value.args[-1]) in AGENTS:
             return _const_str(value.args[-1])
         if len(value.args) >= 1 and isinstance(value.args[-1], ast.Name):

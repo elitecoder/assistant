@@ -151,6 +151,12 @@ CAUGHT = {
         'run([CMUX, "new-workspace", "--command", "zsh -lic \'claude\'"])',
         'cmd = [resolve_executable(claude_bin), "--model", model, "--print", "--output-format", "json"]',
         'cmd = [resolve_executable(droid_bin), "exec", "--model", m]',
+        'exe = resolve_executable(explicit or agent_session.binary(provider))\n'
+        'cmd = [exe, "--model", model, "--print", "--output-format", "json"]',
+        'cmd = [agent_session.binary(agent_session.DROID), "exec", "--model", m]',
+        'cmd = [agent_session.binary(DROID), "exec", "--model", m]',
+        'cmd = [agent_session.binary(provider), "-p", prompt]',
+        'cmd = [pick(agent_session.DROID), "exec", "--model", m]',
         'default_executable = "droid" if p == "factory" else "claude"\n'
         'executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE", default_executable)\n'
         'quoted_executable = shlex.quote(executable)\n'
@@ -2150,3 +2156,11 @@ def test_a_copilot_tool_stopped_with_esc_is_no_longer_pending(tmp_path, stop):
 def test_dashboard_finds_a_reply_behind_a_long_burst_of_copilot_records(tmp_path):
     page = _load(BIN / "render-assistant-page.py", "seam_render_burst")
     assert page.last_activity(str(_copilot_reply_log(tmp_path, padding_bytes=400_000))) == "Queued PR 12."
+
+
+def test_slack_reply_reader_keeps_a_whitespace_reply_like_before(tmp_path):
+    path = tmp_path / "c.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "assistant", "message": {"role": "assistant", "content": "first"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": " "}}]))
+    assert cs.last_assistant_text(path) == " "

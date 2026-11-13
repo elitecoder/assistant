@@ -286,7 +286,7 @@ def last_assistant_text(transcript_path: str | Path) -> str | None:
                 continue
             content = agent_session.record_content(rec)
             if isinstance(content, str):
-                if content.strip():
+                if content:  # Copilot's tool-request turns carry "" (Claude's never do)
                     last_text = content
             elif isinstance(content, list):
                 parts = [
