@@ -2881,6 +2881,7 @@ def _fake_gh(tmp_path, signed_in: bool) -> Path:
     gh.write_text("#!/bin/sh\n"
                   '[ -n "$GH_TOKEN" ] && exit 3\n'
                   'echo "$HOME $*" >> "$(dirname "$0")/calls"\n'
+                  'echo gho_fake_token\n'
                   f"exit {0 if signed_in else 1}\n")
     gh.chmod(0o755)
     return gh
@@ -2894,8 +2895,21 @@ def test_a_github_cli_sign_in_counts_for_copilot(home, tmp_path, monkeypatch, si
     monkeypatch.setenv("GH_TOKEN", "x")
     monkeypatch.setattr(real, "_GH_PATHS", ())
     assert real.gh_signed_in() is signed_in, "GH_TOKEN is left out of gh's environment"
-    assert (gh.parent / "calls").read_text().split() == [str(home), "auth", "status",
+    assert (gh.parent / "calls").read_text().split() == [str(home), "auth", "token",
                                                         "--hostname", "github.com"]
+
+
+@pytest.mark.parametrize("env,host", [
+    ({"GH_HOST": "octo.ghe.com"}, "octo.ghe.com"),
+    ({"GH_HOST": "octo.ghe.com", "COPILOT_GH_HOST": "cp.ghe.com"}, "cp.ghe.com")])
+def test_the_github_cli_is_asked_about_copilots_host(home, tmp_path, monkeypatch, env, host):
+    real = _load(BIN / "agent_session.py", "seam_gh_host")
+    gh = _fake_gh(tmp_path, True)
+    monkeypatch.setenv("PATH", f"{gh.parent}:/usr/bin:/bin")
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert real.gh_signed_in()
+    assert (gh.parent / "calls").read_text().split()[-1] == host
 
 
 def test_no_github_cli_is_no_sign_in(home, monkeypatch):

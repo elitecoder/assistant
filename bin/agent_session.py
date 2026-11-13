@@ -525,17 +525,20 @@ _GH_PATHS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
 
 
 def gh_signed_in(home: str | Path | None = None) -> bool:
-    """True when the GitHub CLI is signed in to github.com, which Copilot
-    falls back to (`gh auth token`). Token env vars are left out, so only
-    gh's own saved sign-in counts."""
+    """True when the GitHub CLI holds a saved sign-in for Copilot's host
+    (COPILOT_GH_HOST, GH_HOST, else github.com). Asks the way Copilot does,
+    `gh auth token`, which reads it locally; the token itself is discarded.
+    Token env vars are left out, so only gh's own saved sign-in counts."""
     gh = shutil.which("gh") or next((p for p in _GH_PATHS if _executable(p)), None)
     if not gh:
         return False
     env = {k: v for k, v in os.environ.items() if k not in COPILOT_TOKEN_VARS}
     env["HOME"] = str(_home(home))
+    host = (env.get("COPILOT_GH_HOST") or env.get("GH_HOST") or "github.com").strip()
     try:
-        return subprocess.run([gh, "auth", "status", "--hostname", "github.com"],
-                              capture_output=True, timeout=10, env=env).returncode == 0
+        return subprocess.run([gh, "auth", "token", "--hostname", host],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=10, env=env).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
