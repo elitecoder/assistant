@@ -117,7 +117,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   instructions) no longer read as the user's own turns in the Observer
   excerpt, the lesson extractor, or any other transcript reader.
 - `evals/observer/replay.py --provider copilot` runs the candidate models on
-  Copilot. `assistant-comms-setup.sh` installs cmux's
+  Copilot.
+- A Copilot tool you stop with Esc, or that was running when the session
+  ended, no longer keeps the session marked as working; the dashboard finds
+  Copilot's last reply behind long runs of its internal records. `assistant-comms-setup.sh` installs cmux's
   Copilot hooks when Copilot is picked, and the doctor skips the Claude
   sign-in check when the Slack session runs another agent.
 - Copilot sessions Assistant starts, restores, or brings back after a crash

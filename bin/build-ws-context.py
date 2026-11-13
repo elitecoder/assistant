@@ -621,6 +621,9 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
         if not isinstance(d, dict):
             continue
         kind = d.get("type")
+        if kind in ("abort", "session.shutdown"):
+            pending_tool_ids.clear()
+            continue
         if kind in ("tool.execution_start", "tool.execution_complete"):
             data = d.get("data")
             tid = data.get("toolCallId") if isinstance(data, dict) else None

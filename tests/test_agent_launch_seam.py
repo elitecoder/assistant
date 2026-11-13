@@ -2119,3 +2119,34 @@ def test_dispatch_confirmation_reads_only_recent_copilot_sessions(home, copilot_
 
     _dispatch(home, monkeypatch, "seam_pulse_scan", " ← open sidebar · / commands · ? help", transcript)
     assert calls[0] is None and calls[1] is not None and calls[1] > time.time() - 120
+
+
+def _stopped_copilot_tool(path):
+    records = [
+        {"type": "session.start", "data": {"sessionId": "s"}},
+        {"type": "user.message", "data": {"content": "run the tests"}},
+        {"type": "tool.execution_start", "data": {"toolCallId": "c1", "toolName": "bash"}},
+        {"type": "abort", "data": {"reason": "user_abort"}},
+        {"type": "user.message", "data": {"content": "never mind"}},
+        {"type": "assistant.message", "data": {"content": "hi"}},
+    ]
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return path
+
+
+@pytest.mark.parametrize("stop", ["abort", "session.shutdown"])
+def test_a_copilot_tool_stopped_with_esc_is_no_longer_pending(tmp_path, stop):
+    bwc = _load(BIN / "build-ws-context.py", f"seam_bwc_abort_{stop}")
+    path = _stopped_copilot_tool(tmp_path / "events.jsonl")
+    if stop != "abort":
+        path.write_text(path.read_text().replace('"abort"', f'"{stop}"'))
+    assert bwc.transcript_signals(str(path))[1] == "idle"
+    scw = _load(BIN / "session-context-watcher.py", f"seam_scw_abort_{stop}")
+    state = scw.TranscriptState(path, "/w")
+    state.read_new()
+    assert state.pending_tool_use() is False
+
+
+def test_dashboard_finds_a_reply_behind_a_long_burst_of_copilot_records(tmp_path):
+    page = _load(BIN / "render-assistant-page.py", "seam_render_burst")
+    assert page.last_activity(str(_copilot_reply_log(tmp_path, padding_bytes=400_000))) == "Queued PR 12."

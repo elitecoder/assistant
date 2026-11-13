@@ -70,6 +70,9 @@ DISCOVERY_INTERVAL_SEC = 30  # how often we look for brand-new transcript files
 FLUSH_DEBOUNCE_SEC = 0.5     # batch writes during a burst of fs events
 MAX_WATCHED_FDS = 256        # cap on simultaneously-watched files
 COPILOT_TOOL_EVENTS = ("tool.execution_start", "tool.execution_complete")
+# Copilot writes no tool.execution_complete for a tool the user stopped with
+# Esc, or that was running when the session ended; these end every pending tool.
+COPILOT_STOP_EVENTS = ("abort", "session.shutdown")
 CLAUDE_PREAMBLE_TYPES = {
     "mode", "permission-mode", "atis-latch", "last-prompt", "ai-title",
     "pr-link", "file-history-snapshot",
@@ -424,6 +427,9 @@ class TranscriptState:
                      or (record.get("type") == "attachment" and record.get("uuid")))
                     and "parentUuid" in record and record["parentUuid"] is None)):
             self.tool_history_complete = True
+        if kind in COPILOT_STOP_EVENTS:
+            self.pending_tools.clear()
+            return
         if kind in COPILOT_TOOL_EVENTS:
             data = record.get("data")
             tool_id = data.get("toolCallId") if isinstance(data, dict) else None

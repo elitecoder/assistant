@@ -1038,19 +1038,26 @@ def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | No
     SAYING, not which tool it's invoking. None if no transcript or no
     text turn found.
 
-    Reads only the tail (~256KB) — agents can emit many tool_uses
-    between text turns, and Copilot logs ~40KB of model events after its
-    last reply, so we need a bigger window than the 12KB used for tool_use
-    scanning."""
+    Reads the tail (~256KB, then ~4MB when that holds no reply) — agents can
+    emit many tool_uses between text turns, and Copilot can log hundreds of KB
+    of model events after its last reply."""
     if not transcript_path or not os.path.exists(transcript_path):
         return None
-    try:
-        size = os.path.getsize(transcript_path)
-        with open(transcript_path, "rb") as f:
-            f.seek(max(0, size - 262144))
-            tail = f.read().decode("utf-8", errors="replace")
-    except Exception:
-        return None
+    for window in (262144, 4194304):
+        try:
+            size = os.path.getsize(transcript_path)
+            with open(transcript_path, "rb") as f:
+                f.seek(max(0, size - window))
+                tail = f.read().decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        text = _last_assistant_text(tail, max_chars)
+        if text or size <= window:
+            return text
+    return None
+
+
+def _last_assistant_text(tail: str, max_chars: int) -> str | None:
     for line in reversed(tail.splitlines()):
         line = line.strip()
         if not line:
