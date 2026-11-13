@@ -124,15 +124,40 @@ class ObsInputHashTests(unittest.TestCase):
             self.assertNotEqual(self.mod.obs_input_hash(ctx(**over)), base,
                                 msg=str(over))
 
+    def _turn(self, role, text):
+        return json.dumps({"type": role, "timestamp": "2026-11-12T10:00:00Z",
+                           "message": {"role": role, "content": text}}) + "\n"
+
     def test_transcript_append_changes_the_hash(self):
         t = self.home / "transcript.jsonl"
-        t.write_text('{"type": "user"}\n')
+        t.write_text(self._turn("user", "fix the build"))
         c = ctx(transcript_path=str(t))
         before = self.mod.obs_input_hash(c)
         self.assertEqual(before, self.mod.obs_input_hash(c))  # stable first
         with open(t, "a") as f:
-            f.write('{"type": "assistant"}\n')
+            f.write(self._turn("assistant", "done"))
         self.assertNotEqual(self.mod.obs_input_hash(c), before)
+
+    def test_bookkeeping_records_do_not_change_the_hash(self):
+        t = self.home / "transcript.jsonl"
+        t.write_text(self._turn("user", "fix the build"))
+        c = ctx(transcript_path=str(t))
+        before = self.mod.obs_input_hash(c)
+        with open(t, "a") as f:
+            for kind in ("attachment", "cost-state", "last-prompt", "permission-mode"):
+                f.write(json.dumps({"type": kind, "timestamp": "2026-11-12T11:00:00Z"}) + "\n")
+        self.assertEqual(self.mod.obs_input_hash(c), before)
+
+    def test_unreadable_transcript_hashes_as_a_constant(self):
+        self.assertEqual(self.mod._conversation_digest(str(self.home)),
+                         "unreadable-transcript")
+        self.assertEqual(self.mod._conversation_digest(None), "no-transcript")
+
+    def test_sidebar_number_in_the_title_does_not_change_the_hash(self):
+        self.assertEqual(self.mod.obs_input_hash(ctx(title="Fix build [30]")),
+                         self.mod.obs_input_hash(ctx(title="Fix build [31]")))
+        self.assertNotEqual(self.mod.obs_input_hash(ctx(title="Fix build [30]")),
+                            self.mod.obs_input_hash(ctx(title="Fix tests [30]")))
 
     def test_transcript_appearing_or_vanishing_changes_the_hash(self):
         t = self.home / "transcript.jsonl"
@@ -628,7 +653,8 @@ class FixtureReplayTests(unittest.TestCase):
                 grown = dict(c, transcript_path=str(tmp_t))
                 base = self.mod.obs_input_hash(grown)
                 with open(tmp_t, "a") as f:
-                    f.write('{"type": "assistant", "message": {}}\n')
+                    f.write('{"type": "assistant", "message": '
+                            '{"role": "assistant", "content": "new reply"}}\n')
                 self.assertNotEqual(self.mod.obs_input_hash(grown), base,
                                     msg=f"{d.name}: transcript growth missed")
 

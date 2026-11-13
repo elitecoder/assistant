@@ -935,7 +935,7 @@ def run_strategist_context_step(pulse_idx: int) -> None:
 # A workspace whose observable state hasn't changed since its last verdict
 # gets that verdict carried forward and is left OUT of the Observer batch —
 # an unchanged fleet costs zero Observer calls. The hash covers exactly the
-# signals build-ws-context gathers: the transcript tail, the live screen, and
+# signals build-ws-context gathers: the conversation text, the live screen, and
 # the git/cwd state. The raw last_turn_age_sec is EXCLUDED (it grows every
 # pulse without any state change and would defeat the skip) — but its BAND
 # relative to the Observer prompt's 1800s idle threshold IS included: the
@@ -945,11 +945,6 @@ def run_strategist_context_step(pulse_idx: int) -> None:
 # transcript/screen moved. Without the band, a hung-but-idle ws hashes
 # identical forever, its `active` verdict carries forever, and the recovery
 # nudge never fires.
-
-# How much transcript tail feeds the hash. Matches the transcript_signals
-# window in build-ws-context: any appended turn lands in the tail, so any
-# transcript growth changes the digest.
-OBS_HASH_TAIL_BYTES = 65536
 
 # The Observer prompt's ONLY time threshold: idle ≤ 1800s reads active,
 # idle > 1800s unlocks stranded/ready_for_cleanup/needs_user. Mirror exactly.
@@ -1025,20 +1020,17 @@ def apply_working_override(verdict: dict, ctx: dict) -> dict:
     }
 
 
-def _transcript_tail_digest(path: str | None) -> str:
-    """Digest of the transcript's size + last OBS_HASH_TAIL_BYTES. Size is
-    included so pathological same-size rewrites still differ. Unreadable or
-    missing → a constant marker (state 'no transcript' is itself hashable)."""
+def _conversation_digest(path: str | None) -> str:
+    """Digest of the plain-text conversation the Observer reads, so records
+    that aren't conversation (attachments, cost notes, mode changes) don't
+    count as change. Missing or unreadable → a constant marker."""
     if not path:
         return "no-transcript"
     try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            f.seek(max(0, size - OBS_HASH_TAIL_BYTES))
-            return f"{size}:{hashlib.sha256(f.read()).hexdigest()}"
+        text = transcript_slice.read_conversation(Path(path))
     except OSError:
         return "unreadable-transcript"
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
 # Volatile screen patterns that change between pulses without any semantic
@@ -1090,6 +1082,9 @@ def _screen_text_fingerprint(text: str) -> str:
     return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()
 
 
+TITLE_NUMBER_SUFFIX = re.compile(r"\s*\[\d+\]\s*$")
+
+
 def obs_input_hash(ctx: dict) -> str:
     """Stable digest of one workspace's Observer-visible state. Equal hashes
     ⇒ the Observer would see byte-identical inputs ⇒ its prior verdict is
@@ -1102,11 +1097,11 @@ def obs_input_hash(ctx: dict) -> str:
     clock-second flip changed the raw screen_text hash."""
     payload = json.dumps([
         ctx.get("ws_ref"),
-        ctx.get("title"),
+        TITLE_NUMBER_SUFFIX.sub("", ctx.get("title") or ""),
         ctx.get("cwd"),
         ctx.get("transcript_path"),
         ctx.get("session_id8"),
-        _transcript_tail_digest(ctx.get("transcript_path")),
+        _conversation_digest(ctx.get("transcript_path")),
         _screen_text_fingerprint(ctx.get("screen_text") or ""),
         bool(ctx.get("screen_shows_error")),
         ctx.get("agent_status"),
@@ -2527,7 +2522,7 @@ def main() -> int:
             })
     else:
         # Phase 1.5 (Keel M2): Observer no-change skip. Hash each workspace's
-        # Observer-visible state (transcript tail + screen + git signals +
+        # Observer-visible state (conversation text + screen + git signals +
         # idle-age band — everything build-ws-context gathered, minus the
         # always-growing raw age counter). A hash equal to the one stored
         # with the last verdict means the Observer would re-read

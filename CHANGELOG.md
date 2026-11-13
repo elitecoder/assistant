@@ -10,6 +10,18 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Fixed
+- Stop rechecking sessions that haven't changed. Replaying the session checks
+  from 2026-11-12, about 57% (223 of 388) were for sessions with no new
+  conversation. The fingerprint that decides when to recheck now:
+  - Ignores the sidebar number at the end of a workspace title, which shifts
+    when other workspaces open or close.
+  - Hashes the plain-text conversation the check reads instead of the file's
+    raw bytes, so attachments, cost notes, and mode changes don't count.
+- Count a session's idle time from its last conversation turn, not the
+  transcript file's modified time. Claude Code writes bookkeeping records after
+  a turn, which kept moving sessions back under the 30-minute idle mark.
+
+### Fixed
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether

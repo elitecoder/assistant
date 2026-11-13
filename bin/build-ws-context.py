@@ -65,6 +65,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -576,6 +577,10 @@ def screen_shows_error(screen_text: str) -> bool:
 def transcript_signals(path: str | None) -> tuple[int | None, str]:
     """Returns (last_turn_age_sec, agent_status) by scanning the JSONL.
 
+    last_turn_age_sec counts from the newest user or assistant record in the
+    tail, since Claude Code also writes bookkeeping records after a turn. With
+    no such record in the tail, it counts from the file's mtime.
+
     agent_status='working' means a tool_use is in flight (last entry is
     assistant emitting tool_use, no matching tool_result yet). Otherwise 'idle'.
     """
@@ -598,6 +603,7 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
         return age, "idle"
 
     pending_tool_ids: set[str] = set()
+    last_turn = None
     for line in tail_text.splitlines():
         if not line.strip():
             continue
@@ -605,6 +611,10 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
             d = json.loads(line)
         except Exception:
             continue
+        if not isinstance(d, dict):
+            continue
+        if d.get("type") in ("user", "assistant", "message") and not d.get("isMeta"):
+            last_turn = _record_time(d.get("timestamp")) or last_turn
         msg = d.get("message")
         if not isinstance(msg, dict):
             continue
@@ -622,7 +632,18 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
             elif t == "tool_result":
                 tid = c.get("tool_use_id")
                 pending_tool_ids.discard(tid)
+    if last_turn is not None:
+        age = max(0, int(time.time() - last_turn))
     return age, ("working" if pending_tool_ids else "idle")
+
+
+def _record_time(stamp) -> float | None:
+    if not isinstance(stamp, str):
+        return None
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def cwd_state(cwd: str | None) -> tuple[bool, bool]:

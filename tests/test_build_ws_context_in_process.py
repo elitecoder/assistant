@@ -370,6 +370,24 @@ class TranscriptSignalsTests(unittest.TestCase):
         _, status = self.mod.transcript_signals(str(path))
         self.assertEqual(status, "idle")
 
+    def test_age_counts_from_the_last_conversation_turn(self):
+        path = self._tmp / "t.jsonl"
+        turn = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4000))
+        later = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 10))
+        path.write_text("\n".join([
+            json.dumps({"type": "assistant", "timestamp": turn,
+                        "message": {"content": [{"type": "text", "text": "done"}]}}),
+            json.dumps({"type": "user", "isMeta": True, "timestamp": later,
+                        "message": {"content": "caveat"}}),
+            json.dumps({"type": "attachment", "timestamp": later}),
+            json.dumps({"type": "cost-state", "timestamp": later}),
+            json.dumps({"type": "user", "timestamp": "not a time",
+                        "message": {"content": "x"}}),
+        ]))
+        age, _ = self.mod.transcript_signals(str(path))
+        self.assertGreaterEqual(age, 3990)
+        self.assertLess(age, 4100)
+
     def test_age_reflects_mtime(self):
         path = self._tmp / "t.jsonl"
         path.write_text("{}")
