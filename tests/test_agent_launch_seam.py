@@ -2815,3 +2815,19 @@ def test_shell_names_a_signed_out_agent(home, monkeypatch, capsys):
     monkeypatch.setattr(ag, "agent_available", lambda agent: False)
     assert ag.main(["agent", "--agent", "copilot"]) == 1
     assert "copilot isn't installed, doesn't start, or isn't signed in" in capsys.readouterr().err
+
+
+def test_doctor_trusts_a_saved_account_whatever_the_shell_adds(home, copilot_bin, monkeypatch):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_both")
+    monkeypatch.setattr(doctor, "HOME", home)
+    _pick(home, "copilot")
+    monkeypatch.setenv("GH_TOKEN", "x")
+    assert doctor.check_copilot_binary().status == doctor.PASS
+    monkeypatch.setenv("COPILOT_HOME", str(home / ".copilot"))
+    assert doctor.check_copilot_binary().status == doctor.PASS
+
+
+def test_copilot_home_reads_the_given_environment(home, monkeypatch):
+    monkeypatch.setenv("COPILOT_HOME", "/elsewhere")
+    assert ag.copilot_home() == Path("/elsewhere")
+    assert ag.copilot_home(env={}) == home / ".copilot"

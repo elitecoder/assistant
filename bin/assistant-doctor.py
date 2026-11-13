@@ -334,13 +334,14 @@ def check_copilot_binary() -> Check:
             return Check("copilot binary", FAIL, core=False,
                          detail=f"{found} runs, but no Copilot account is signed in",
                          remedy="run `copilot login`")
-        shell_only = (f"{source} is set" if source != "account"
-                      else "COPILOT_HOME is set" if os.environ.get("COPILOT_HOME") else None)
-        if shell_only:
+        if agent_session.copilot_sign_in_source(env={}) is None:
+            shell_only = (f"{source} is set" if source != "account"
+                          else "COPILOT_HOME is set")
             return Check("copilot binary", WARN, core=False,
                          detail=(f"{found} runs, signed in because {shell_only} in this "
-                                 "shell; Assistant's background jobs don't get it and "
-                                 "run Claude"),
+                                 "shell; Assistant's background jobs don't get it, so "
+                                 "the Slack session and dispatch run Claude and other "
+                                 "Copilot jobs fail"),
                          remedy="run `copilot login` (it signs in ~/.copilot)")
         return Check("copilot binary", PASS, core=False, detail=found)
     return Check(

@@ -383,11 +383,25 @@ class ExecuteVerdictTests(unittest.TestCase):
         self.assertFalse(self.mod.assistant_merged_workspace("workspace:99"))
 
     def test_runs_copilot_reads_the_observed_session(self):
-        session = lambda provider: {"observation_identity": {"observed_sessions": [
-            {"surface_id": "S", "provider": provider, "session_id": "s"}]}}
+        session = lambda provider: {"agent_provider": "copilot", "observation_identity": {
+            "observed_sessions": [{"surface_id": "S", "provider": provider, "session_id": "s"}]}}
         self.assertTrue(self.mod.runs_copilot(session("copilot")))
-        self.assertFalse(self.mod.runs_copilot(session("claude")))
+        self.assertFalse(self.mod.runs_copilot(session("claude")), "the session outranks the screen")
         self.assertFalse(self.mod.runs_copilot(None))
+
+    def test_runs_copilot_falls_back_to_the_screen_without_a_session(self):
+        self.assertTrue(self.mod.runs_copilot({"agent_provider": "copilot",
+                                               "observation_identity": {"observed_sessions": []}}))
+        self.assertFalse(self.mod.runs_copilot({"agent_provider": "claude"}))
+
+    def test_a_carried_ready_copilot_verdict_re_emits_its_card(self):
+        ws = {**self._ws(), "pr_refs": ["1234"]}
+        verdict = {"verdict": "ready_for_merge", "summary": "s", "next": "n"}
+        fresh, carried = [], []
+        self.mod.execute_verdict(ws, verdict, fresh, copilot=True)
+        action = self.mod.execute_verdict(ws, verdict, carried, carry=True, copilot=True)
+        self.assertEqual(action["kind"], "emit-card")
+        self.assertEqual(carried, fresh)
 
     def test_ready_for_merge_does_not_record_on_failure(self):
         # If the mechanical dispatch fails, do NOT poison the merge ledger.
@@ -1317,6 +1331,34 @@ class MainPipelineTests(unittest.TestCase):
                 self.assertEqual(self._run_main([]), 0)
             dispatched[provider] = calls
         self.assertEqual(dispatched, {"copilot": [], "claude": [("workspace:1", "77")]})
+
+    def test_a_carried_copilot_verdict_still_knows_the_workspace_runs_copilot(self):
+        seen = []
+        real = self.mod.execute_verdict
+
+        def spy(ws, verdict, awaiting, carry=False, copilot=False):
+            seen.append((carry, copilot))
+            return real(ws, verdict, awaiting, carry=carry, copilot=copilot)
+
+        prior = {"verdict": "ready_for_merge", "summary": "s", "next": "n",
+                 "obs_input_hash": "same", "carry_count": 0}
+        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/",
+                                   "pr_refs": ["77"]}],
+                "reuse_cached": [], "backed_off": [], "total_ws": 1}), \
+                mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                mock.patch.object(self.mod, "build_ctx", return_value={
+                    "ws_ref": "workspace:1", "transcript_path": None, "agent_provider": "copilot",
+                    "agent_status": "idle", "last_turn_age_sec": 0, "title": "t", "cwd": "/"}), \
+                mock.patch.object(self.mod, "obs_input_hash", return_value="same"), \
+                mock.patch.object(self.mod, "load_prior_summary", return_value=prior), \
+                mock.patch.object(self.mod, "call_observer_batch", return_value=({}, {})), \
+                mock.patch.object(self.mod, "save_summary"), \
+                mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                mock.patch.object(self.mod, "run", return_value=(0, "", "")), \
+                mock.patch.object(self.mod, "execute_verdict", spy):
+            self.assertEqual(self._run_main([]), 0)
+        self.assertEqual(seen, [(True, True)])
 
     def test_drains_inbox_and_records_count(self):
         # Drop two inbox files; main should delete both.

@@ -85,10 +85,6 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 from assistant import mode, model_tiers, transcript_slice  # noqa: E402
 
-if str(BIN) not in sys.path:
-    sys.path.insert(0, str(BIN))
-import agent_session  # noqa: E402
-
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
 ASSISTANT_DIR = Path(os.environ.get("ASSISTANT_DIR", str(HOME / ".assistant")))
@@ -1778,10 +1774,16 @@ def pre_cleanup_check(ws_ref: str) -> dict:
 # ─── verdict execution ──────────────────────────────────────────────────────
 
 def runs_copilot(ctx: dict | None) -> bool:
-    """True when the workspace's observed session is a Copilot session."""
-    identity = (ctx or {}).get("observation_identity") or {}
-    return any(agent_session.agent_from_kind(s.get("provider")) == agent_session.COPILOT
-               for s in identity.get("observed_sessions") or [] if isinstance(s, dict))
+    """True when the workspace's agent is Copilot: its observed session, or
+    the agent its screen shows when cmux has no session for the pane."""
+    if str(BIN) not in sys.path:
+        sys.path.insert(0, str(BIN))
+    import agent_session  # noqa: PLC0415
+    ctx = ctx or {}
+    identity = ctx.get("observation_identity") or {}
+    providers = [s.get("provider") for s in identity.get("observed_sessions") or []
+                 if isinstance(s, dict)] or [ctx.get("agent_provider")]
+    return any(agent_session.agent_from_kind(p) == agent_session.COPILOT for p in providers)
 
 
 def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
@@ -1881,19 +1883,9 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
     # CI router → send + verify). INCIDENTS.md mandates this; a direct
     # /merge-when-ready send would skip all of it.
     if kind == "ready_for_merge":
-        if carry:
-            # Carried verdicts never act — the dispatch ran when the verdict
-            # was earned; a carry re-running it would re-submit the merge.
-            return {**base, "kind": "skipped",
-                    "evidence": "carried verdict; merge dispatch not re-run"}
-        if observer_actions_held():
-            return {**base, "kind": "skipped",
-                    "evidence": "Observer actions held; merge dispatch not run"}
         pr_refs = ws.get("pr_refs") or []
-        if not pr_refs:
-            return {**base, "kind": "skipped", "outcome": "failed",
-                    "evidence": "ready_for_merge but no pr_refs on ws"}
-        if copilot:
+        if copilot and pr_refs:
+            # A card, not an action, so it re-emits on carried pulses too.
             awaiting.append({
                 "key": f"{ws_ref}:merge-needs-claude:{pr_refs[0]}",
                 "tier": "T2",
@@ -1905,6 +1897,17 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
             })
             return {**base, "kind": "emit-card",
                     "evidence": f"Copilot workspace; merge of PR #{pr_refs[0]} left to the user"}
+        if carry:
+            # Carried verdicts never act — the dispatch ran when the verdict
+            # was earned; a carry re-running it would re-submit the merge.
+            return {**base, "kind": "skipped",
+                    "evidence": "carried verdict; merge dispatch not re-run"}
+        if observer_actions_held():
+            return {**base, "kind": "skipped",
+                    "evidence": "Observer actions held; merge dispatch not run"}
+        if not pr_refs:
+            return {**base, "kind": "skipped", "outcome": "failed",
+                    "evidence": "ready_for_merge but no pr_refs on ws"}
         result = run_merge_pr_dispatch(
             ws_ref, pr_refs[0],
             refactor_attested=bool(verdict.get("refactor_attested")),
@@ -2202,6 +2205,9 @@ def dispatch_todo(todo_id: str) -> bool:
                 p.unlink()
     except Exception:
         pass
+    if str(BIN) not in sys.path:
+        sys.path.insert(0, str(BIN))
+    import agent_session  # noqa: PLC0415
     agent = agent_session.dispatch_agent()
     if agent == agent_session.COPILOT and _needs_claude(item):
         log.info("dispatch %s: FFP work runs /architect-ffp:archffp, a Claude "
@@ -2675,7 +2681,7 @@ def main() -> int:
                 }, observation_complete=v.get("observation_complete"))
                 new_verdicts[ws_ref] = v.get("verdict") or "active"
                 card_action = execute_verdict(ws, v, awaiting_input,
-                                              carry=True)
+                                              carry=True, copilot=runs_copilot(ctx))
                 evidence = (f"state unchanged since last verdict "
                             f"({v.get('verdict')}); Observer call skipped "
                             f"(carry {v.get('carry_count')}/"

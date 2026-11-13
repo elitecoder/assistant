@@ -77,11 +77,11 @@ def _home(home: str | Path | None) -> Path:
     return Path(os.environ.get("HOME") or str(Path.home()))
 
 
-def copilot_home(home: str | Path | None = None) -> Path:
+def copilot_home(home: str | Path | None = None, env: dict | None = None) -> Path:
     """Copilot's config and state dir: $COPILOT_HOME, else <home>/.copilot."""
-    env = (os.environ.get("COPILOT_HOME") or "").strip()
-    if env:
-        return Path(env).expanduser()
+    override = ((os.environ if env is None else env).get("COPILOT_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser()
     return _home(home) / ".copilot"
 
 
@@ -524,7 +524,7 @@ def copilot_sign_in_source(home: str | Path | None = None, env: dict | None = No
     if var:
         return var
     try:
-        text = (copilot_home(home) / "config.json").read_text()
+        text = (copilot_home(home, env=src) / "config.json").read_text()
         config = json.loads(re.sub(r"(?m)^\s*//.*$", "", text))
     except (OSError, ValueError):
         return None
