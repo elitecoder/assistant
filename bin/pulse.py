@@ -1776,9 +1776,7 @@ def pre_cleanup_check(ws_ref: str) -> dict:
 def runs_copilot(ctx: dict | None) -> bool:
     """True when the workspace's agent is Copilot: its observed session, or
     the agent its screen shows when cmux has no session for the pane."""
-    if str(BIN) not in sys.path:
-        sys.path.insert(0, str(BIN))
-    import agent_session  # noqa: PLC0415
+    import agent_session  # noqa: PLC0415 — bin/ is sys.path[0] when pulse.py runs
     ctx = ctx or {}
     identity = ctx.get("observation_identity") or {}
     providers = [s.get("provider") for s in identity.get("observed_sessions") or []

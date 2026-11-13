@@ -387,6 +387,8 @@ class ExecuteVerdictTests(unittest.TestCase):
             "observed_sessions": [{"surface_id": "S", "provider": provider, "session_id": "s"}]}}
         self.assertTrue(self.mod.runs_copilot(session("copilot")))
         self.assertFalse(self.mod.runs_copilot(session("claude")), "the session outranks the screen")
+        self.assertFalse(self.mod.runs_copilot(session("droid")))
+        self.assertFalse(self.mod.runs_copilot(session("factory")))
         self.assertFalse(self.mod.runs_copilot(None))
 
     def test_runs_copilot_falls_back_to_the_screen_without_a_session(self):
@@ -1306,7 +1308,7 @@ class MainPipelineTests(unittest.TestCase):
 
     def test_a_ready_copilot_workspace_gets_a_card_not_a_merge_dispatch(self):
         dispatched = {}
-        for provider in ("copilot", "claude"):
+        for provider in ("copilot", "claude", "droid"):
             calls = []
             with mock.patch.object(self.mod, "pick_ws_batch", return_value={
                     "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/",
@@ -1330,7 +1332,8 @@ class MainPipelineTests(unittest.TestCase):
                                       lambda *a, **k: calls.append(a) or {"outcome": "submitted"}):
                 self.assertEqual(self._run_main([]), 0)
             dispatched[provider] = calls
-        self.assertEqual(dispatched, {"copilot": [], "claude": [("workspace:1", "77")]})
+        self.assertEqual(dispatched, {"copilot": [], "claude": [("workspace:1", "77")],
+                                      "droid": [("workspace:1", "77")]})
 
     def test_a_carried_copilot_verdict_still_knows_the_workspace_runs_copilot(self):
         seen = []
