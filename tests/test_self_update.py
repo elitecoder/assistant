@@ -21,6 +21,7 @@ from tempfile import TemporaryDirectory
 
 REPO = Path(__file__).resolve().parent.parent
 SELF_UPDATE_PATH = REPO / "bin/self_update.py"
+REPO_GUARD = REPO / "githooks/refuse-main-commit"
 
 
 def load_module():
@@ -335,6 +336,74 @@ class MaybeUpdateTests(unittest.TestCase):
             self.assertEqual(r["skipped_reason"], "ahead")
             self.assertEqual(r["ahead"], 1)
             self.assertFalse(r["changed"])
+
+    def _squash_onto_remote(self, tmp, clone, remote, files):
+        for rel, content in files.items():
+            (clone / rel).write_text(content)
+            git(clone, "add", "-A")
+            git(clone, "commit", "-m", f"local {rel}")
+        return advance_remote(tmp, remote, files, "squash merge")
+
+    def test_commits_already_squash_merged_move_main_to_the_remote(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            squash = self._squash_onto_remote(
+                tmp, clone, remote, {"bin/a.py": "# a\n", "bin/b.py": "# b\n"})
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertIsNone(r["skipped_reason"])
+            self.assertTrue(r["ahead_upstream"])
+            self.assertTrue(r["changed"])
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), squash)
+
+    def test_a_commit_not_on_the_remote_still_blocks(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            self._squash_onto_remote(tmp, clone, remote, {"bin/a.py": "# a\n"})
+            (clone / "bin/c.py").write_text("# unpushed\n")
+            git(clone, "add", "-A")
+            git(clone, "commit", "-m", "local unpushed commit")
+            head = git(clone, "rev-parse", "HEAD")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertEqual(r["skipped_reason"], "ahead")
+            self.assertFalse(r["ahead_upstream"])
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), head)
+
+    def _with_guard(self, clone):
+        guard = clone / su.MAIN_GUARD
+        guard.parent.mkdir()
+        guard.write_text(REPO_GUARD.read_text())
+        guard.chmod(0o755)
+
+    def test_the_guard_refuses_commits_on_main_but_not_on_a_branch(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _ = make_repos(tmp)
+            self._with_guard(clone)
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertEqual(r["main_guard"], ["pre-commit", "pre-merge-commit"])
+            (clone / "bin/x.py").write_text("# x\n")
+            git(clone, "add", "bin/x.py")
+            blocked = subprocess.run(["git", "-C", str(clone), "commit", "-m", "x"],
+                                     capture_output=True, text=True)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("merged PR", blocked.stderr)
+            git(clone, "switch", "-c", "feature")
+            git(clone, "commit", "-m", "x")
+            again = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertNotIn("main_guard", again)
+
+    def test_the_guard_leaves_an_existing_hook_alone(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, _ = make_repos(tmp)
+            self._with_guard(clone)
+            mine = clone / ".git/hooks/pre-commit"
+            mine.write_text("#!/bin/sh\nexit 0\n")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json")
+            self.assertEqual(r["main_guard"], ["pre-merge-commit"])
+            self.assertEqual(mine.read_text(), "#!/bin/sh\nexit 0\n")
 
     def test_no_remote_skips_cleanly(self):
         with TemporaryDirectory() as t:

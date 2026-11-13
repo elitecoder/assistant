@@ -12,9 +12,10 @@ location-independent — a user who installed it anywhere, not just
   1. Throttle on a marker file. Return None (no work) if the last attempt
      was < interval_sec ago.
   2. Read repo status: dirty tree? local commits ahead of remote? how many
-     behind? It never discards or rewrites the operator's work (no reset /
-     clean / force). Local commits ahead of the remote always block the pull
-     (surfaced, not touched). A dirty working tree is surfaced too — UNLESS it
+     behind? It never discards or rewrites the operator's work (no clean /
+     force). Local commits ahead of the remote block the pull (surfaced, not
+     touched), unless the remote already holds every change they make, as
+     after a squash merge; then main moves to the remote commit. A dirty working tree is surfaced too — UNLESS it
      has stayed continuously dirty past dirty_stash_after_sec (default 1 day,
      clocked from the first pulse that observed it dirty) AND an update is
      waiting, in which case the tree is auto-stashed (`git stash push -u`,
@@ -26,7 +27,8 @@ location-independent — a user who installed it anywhere, not just
      reminder once a day.
   3. If behind: `git merge --ff-only <fetched sha>` — exactly the commit the
      gate checked. Fast-forward only, so a diverged history fails loudly
-     rather than merging blindly.
+     rather than merging blindly. Local commits the remote already holds are
+     left behind with `git reset --keep <fetched sha>`.
      bin/ and prompts/ are symlinked / read live, so a pull alone makes
      code + Observer-prompt changes take effect on the very next pulse.
   4. If the pull touched COPIED artifacts (skills/, launchagents/, the
@@ -265,6 +267,28 @@ def resolve_remote_branch(repo: Path) -> tuple[str, str] | None:
     return remote, branch
 
 
+MAIN_GUARD = "githooks/refuse-main-commit"
+MAIN_GUARD_HOOKS = ("pre-commit", "pre-merge-commit")
+
+
+def ensure_main_guard(repo: Path) -> list[str]:
+    """Link the hooks that refuse commits on main; never replace another hook."""
+    guard = repo / MAIN_GUARD
+    if not guard.exists():
+        return []
+    _, hooks, _ = _git(repo, "rev-parse", "--git-path", "hooks")
+    hooks_dir = repo / hooks.strip()
+    linked = []
+    for name in MAIN_GUARD_HOOKS:
+        hook = hooks_dir / name
+        if hook.exists() or hook.is_symlink():
+            continue
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook.symlink_to(guard)
+        linked.append(name)
+    return linked
+
+
 def repo_status(repo: Path, remote: str, branch: str) -> dict:
     """Fetch and report tree cleanliness + ahead/behind vs remote/branch."""
     rc, _, err = _git(repo, "fetch", remote, branch)
@@ -284,13 +308,22 @@ def repo_status(repo: Path, remote: str, branch: str) -> dict:
         except (ValueError, AttributeError):
             return 0
 
+    ahead = _int(ahead_out)
     return {
         "head": head,
         "remote_sha": remote_sha,
         "dirty": bool(porcelain.strip()),
         "behind": _int(behind_out),
-        "ahead": _int(ahead_out),
+        "ahead": ahead,
+        "ahead_upstream": bool(ahead) and already_upstream(repo, ref),
     }
+
+
+def already_upstream(repo: Path, ref: str) -> bool:
+    """True when merging HEAD into ref changes nothing: ref holds every change."""
+    rc, merged, _ = _git(repo, "merge-tree", "--write-tree", ref, "HEAD")
+    _, tree, _ = _git(repo, "rev-parse", f"{ref}^{{tree}}")
+    return rc == 0 and bool(tree) and merged.splitlines()[:1] == [tree]
 
 
 def classify_changed_paths(files: list[str]) -> dict:
@@ -422,6 +455,11 @@ def maybe_update(
     result: dict = {"attempted": True, "changed": False, "installed": False,
                     "skipped_reason": None}
 
+    guarded = ensure_main_guard(repo)
+    if guarded:
+        result["main_guard"] = guarded
+        _log(f"linked {', '.join(guarded)} to refuse commits on main")
+
     cleared = clear_stale_index_lock(repo, now=now)
     if cleared:
         result["cleared_stale_lock"] = cleared
@@ -442,7 +480,7 @@ def maybe_update(
         _log(status["error"])
         return result
 
-    result.update({k: status[k] for k in ("dirty", "ahead", "behind")})
+    result.update({k: status[k] for k in ("dirty", "ahead", "ahead_upstream", "behind")})
     result["from_sha"] = (status.get("head") or "")[:12]
 
     # Track how long the tree has been continuously dirty. The clock lives in
@@ -465,7 +503,7 @@ def maybe_update(
     # Unpushed local commits block a fast-forward regardless of tree state;
     # stashing the working tree wouldn't unblock the pull, so surface 'ahead'
     # and stop before touching anything.
-    if status["ahead"]:
+    if status["ahead"] and not status["ahead_upstream"]:
         result["skipped_reason"] = "ahead"
         _log(f"local is {status['ahead']} commit(s) ahead of {remote}/{branch} "
              "— refusing to pull (unpushed work)")
@@ -533,12 +571,18 @@ def maybe_update(
              "pull; recover with `git stash pop`")
 
     # Fast-forward only — a diverged history fails rather than merging blindly.
-    rc, _, err = _git(repo, "merge", "--ff-only", new_sha)
+    # Local commits the remote already holds are left behind instead.
+    move = (["reset", "--keep"] if status["ahead_upstream"]
+            else ["merge", "--ff-only"])
+    rc, _, err = _git(repo, *move, new_sha)
     if rc != 0:
         result["skipped_reason"] = "pull-failed"
         result["error"] = err
-        _log(f"git merge --ff-only {new_sha[:12]} failed: {err}")
+        _log(f"git {' '.join(move)} {new_sha[:12]} failed: {err}")
         return result
+    if status["ahead_upstream"]:
+        _log(f"left {status['ahead']} local commit(s) already on {remote}/{branch}; "
+             f"old head {old_head[:12]} stays in the reflog")
 
     _, new_head, _ = _git(repo, "rev-parse", "HEAD")
     result["changed"] = new_head != old_head
