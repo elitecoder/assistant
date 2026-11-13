@@ -390,6 +390,22 @@ def _cfg_agent(raw: dict | None, *keys: str) -> str | None:
     return v if v in AGENTS else None
 
 
+_ALIAS_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+
+
+def valid_alias(name: str) -> bool:
+    """True when `name` is one shell word Assistant can start a session with."""
+    return bool(_ALIAS_RE.fullmatch(name))
+
+
+def claude_alias() -> str:
+    """The shell alias Claude sessions start with: ``llm.claude.alias`` in
+    comms/config.json, else ``claude``."""
+    v = _cfg(_read_comms_config(), "llm", "claude", "alias")
+    v = v.strip() if isinstance(v, str) else ""
+    return v if valid_alias(v) else CLAUDE
+
+
 def dispatch_agent(env: dict | None = None) -> str:
     """Which agent the fleet SPAWNS for a dispatch. Precedence:
       1. the ASSISTANT_DISPATCH_AGENT env override;
@@ -652,6 +668,22 @@ def _droid_flags(home: Path) -> list[str]:
     return flags
 
 
+def _claude_exe() -> list[str]:
+    """How a pane starts claude with explicit flags: a custom alias, else
+    _interactive_exe(CLAUDE)."""
+    alias = claude_alias()
+    return [alias] if alias != CLAUDE else _interactive_exe(CLAUDE)
+
+
+def _shell_line(argv: list[str]) -> str:
+    """`argv` as a pane command. A custom claude alias runs in an interactive
+    login zsh, the shell that defines it."""
+    line = shlex.join(argv)
+    if argv and argv[0] != CLAUDE and argv[0] == claude_alias():
+        return f"zsh -lic {shlex.quote(line)}"
+    return line
+
+
 def _interactive_exe(agent: str) -> list[str]:
     """How a pane's login shell starts `agent`: its *_BIN override, else the
     name resolved through PATH (`command` skips the alias), so cmux's PATH shim
@@ -667,8 +699,8 @@ def session_argv(agent: str, *, home: str | Path | None = None,
                  add_dirs: tuple | list = ()) -> list[str]:
     """argv for an interactive `agent` REPL with permissions bypassed.
 
-    claude with no model/add_dirs is the bare ``claude`` alias (~/.zprofile owns
-    its flags); with either, the explicit binary plus flags. copilot is
+    claude with no model/add_dirs is the bare claude_alias() (~/.zprofile owns
+    its flags); with either, _claude_exe() plus flags. copilot is
     ``copilot --allow-all`` plus the configured model, and only the add_dirs
     that exist (Copilot refuses to start on a missing one). droid carries its
     settings file, --auto high, and the lessons file."""
@@ -685,8 +717,8 @@ def session_argv(agent: str, *, home: str | Path | None = None,
                 argv += ["--add-dir", str(d)]
         return argv
     if model is None and not add_dirs:
-        return [CLAUDE]
-    argv = _interactive_exe(CLAUDE)
+        return [claude_alias()]
+    argv = _claude_exe()
     if model:
         argv += ["--model", model]
     argv.append("--dangerously-skip-permissions")
@@ -745,22 +777,27 @@ def session_command(agent: str, *, home: str | Path | None = None,
     argv = session_argv(agent, home=home, model=model, add_dirs=add_dirs)
     if agent == COPILOT:
         env_prefix += _copilot_env(home)
-    return f"{env_prefix}{shlex.join(argv)}"
+    return f"{env_prefix}{_shell_line(argv)}"
 
 
 def launch_command(agent: str, home: str | Path | None = None,
                    unattended: bool = False) -> str:
     """The cmux ``--command`` for a dispatched `agent` session. `unattended`
-    claude runs the alias in a login shell with permission prompts bypassed,
-    so a background spawn never stalls on the first prompt."""
+    claude runs claude_alias() in a login shell with permission prompts
+    bypassed, so a background spawn never stalls on the first prompt."""
     if agent == CLAUDE and unattended:
-        return "zsh -lic 'claude --dangerously-skip-permissions'"
+        return f"zsh -lic {shlex.quote(claude_alias() + ' --dangerously-skip-permissions')}"
     return session_command(agent, home=home)
 
 
 def binding_is_current(agent: str, command: str | None) -> bool:
     """True when a stored resume command still carries `agent`'s launch flags
-    (Droid bindings from before the GLM migration lack them)."""
+    (Droid bindings from before the GLM migration lack them; a Claude binding
+    must start claude_alias() when that's custom)."""
+    if agent == CLAUDE:
+        alias = claude_alias()
+        return alias == CLAUDE or bool(re.search(
+            rf"(?<![\w.+-]){re.escape(alias)}(?![\w.+-])", command or ""))
     if agent != DROID:
         return True
     command = command or ""
@@ -794,7 +831,9 @@ def resume_argv(agent: str, session_id: str, preserved: list[str] | tuple = (),
     if agent == COPILOT:
         exe = [executable] if executable else _interactive_exe(COPILOT)
         return [*exe, "--resume", session_id, *preserved]
-    return [executable or CLAUDE, "--resume", session_id, *preserved]
+    alias = claude_alias()
+    exe = alias if alias != CLAUDE else executable or CLAUDE
+    return [exe, "--resume", session_id, *preserved]
 
 
 def resume_command(agent: str, session_id: str, cwd: str | Path,
@@ -804,7 +843,7 @@ def resume_command(agent: str, session_id: str, cwd: str | Path,
     """Shell command that cds into `cwd` and resumes the session."""
     argv = resume_argv(agent, session_id, preserved, executable, home)
     env = _copilot_env(home) if agent == COPILOT else ""
-    return f"cd {shlex.quote(str(cwd))} && {env}{shlex.join(argv)}"
+    return f"cd {shlex.quote(str(cwd))} && {env}{_shell_line(argv)}"
 
 
 # Readiness markers seen on the live boot screen via cmux `surface.read_text`.

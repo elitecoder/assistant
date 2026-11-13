@@ -283,6 +283,9 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
                            f"{comms_session.picked_warm_agent()})")
                 elif respawn_on_stale and not comms_session.warm_session_model_is_current(paths, sess):
                     why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
+                elif respawn_on_stale and not comms_session.warm_session_alias_is_current(sess):
+                    why = (f"claude alias changed ({sess.get('alias') or 'claude'} → "
+                           f"{comms_session.agent_session.claude_alias()})")
                 else:
                     return sess, SESSION_ALIVE
             else:

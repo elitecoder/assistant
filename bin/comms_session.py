@@ -138,6 +138,15 @@ def warm_session_model_is_current(paths: comms_lib.Paths, sess: dict) -> bool:
     return sess.get("model") == want
 
 
+def warm_session_alias_is_current(sess: dict) -> bool:
+    """True unless a live claude warm session started with a different alias
+    than agent_session.claude_alias() names now. A session with no recorded
+    alias started with ``claude``."""
+    if (sess.get("agent") or agent_session.CLAUDE) != agent_session.CLAUDE:
+        return True
+    return (sess.get("alias") or agent_session.CLAUDE) == agent_session.claude_alias()
+
+
 def picked_warm_agent() -> str:
     """The agent the Slack session should run (agent_session.warm_session_agent)."""
     return agent_session.warm_session_agent()
@@ -219,7 +228,7 @@ def read_session(paths: comms_lib.Paths) -> dict[str, Any] | None:
 def write_session(paths: comms_lib.Paths, ws_ref: str, surface_ref: str,
                   cwd: str, transcript_path: str | None,
                   agent: str | None = None, clock=None,
-                  model: str | None = None) -> None:
+                  model: str | None = None, alias: str | None = None) -> None:
     """Persist the warm-session registry. `agent` records which provider owns
     the session so post-restart reads pick the right transcript root + schema.
     `model` records the exact model id the session was spawned with, so
@@ -227,14 +236,18 @@ def write_session(paths: comms_lib.Paths, ws_ref: str, surface_ref: str,
     toggle changes the resolved id out from under a still-alive session.
     agent=None / model=None mean "preserve the persisted value" — used by the
     transcript-refresh call path, which must NOT silently reset a droid session
-    to claude or drop the recorded model; each reuses the prior record's value."""
+    to claude or drop the recorded model; each reuses the prior record's value.
+    `alias` records the claude alias the session started with; None preserves
+    it the same way."""
     paths.comms_dir.mkdir(parents=True, exist_ok=True)
-    if agent is None or model is None:
+    if agent is None or model is None or alias is None:
         prior = read_session(paths) or {}
         if agent is None:
             agent = prior.get("agent") or agent_session.CLAUDE
         if model is None:
             model = prior.get("model")
+        if alias is None:
+            alias = prior.get("alias")
     rec = {
         "ws_ref": ws_ref,
         "surface_ref": surface_ref,
@@ -242,6 +255,7 @@ def write_session(paths: comms_lib.Paths, ws_ref: str, surface_ref: str,
         "transcript_path": transcript_path,
         "agent": agent,
         "model": model,
+        "alias": alias,
         "spawned_ts": (clock() if clock else int(time.time())),
     }
     p = session_registry_path(paths)
@@ -1086,7 +1100,9 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     # desync the record from the running session.
     spawn_model = (resolved[0] if resolved else
                    agent_session.copilot_model("comms") if agent == agent_session.COPILOT else None)
-    write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent, model=spawn_model)
+    spawn_alias = agent_session.claude_alias() if agent == agent_session.CLAUDE else ""
+    write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent, model=spawn_model,
+                  alias=spawn_alias)
     log(f"warm session ready: {ws_ref} / {surface_ref} (transcript={transcript})")
     reconcile_warm_workspaces(paths, keep=ws_ref, log=log)
     return read_session(paths)
