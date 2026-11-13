@@ -2216,3 +2216,57 @@ def test_watcher_keeps_claude_lines_that_mention_copilots_words():
                  "⏺ Session: 6.35 AIC used is the cost line"):
         assert not watcher._is_tui_noise(line), line
     assert watcher._is_tui_noise(" ~/w [⎇ main]  Session: 6.35 AIC used")
+
+
+def test_prompt_submitted_needs_a_user_turn_written_since_the_spawn(home):
+    cwd = home / "dev"
+    cwd.mkdir()
+    d = home / ".claude" / "projects" / ag.claude_project_slug(cwd)
+    d.mkdir(parents=True)
+    old = d / "old.jsonl"
+    old.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "Read /p/x.md"}}) + "\n")
+    os.utime(old, (1, 1))
+    assert ag.prompt_submitted(ag.CLAUDE, cwd, "/p/x.md")
+    assert not ag.prompt_submitted(ag.CLAUDE, cwd, "/p/x.md", since=1000)
+    quoted = d / "new.jsonl"
+    quoted.write_text(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "text", "text": "I read /p/y.md"}]}}) + "\n")
+    assert not ag.prompt_submitted(ag.CLAUDE, cwd, "/p/y.md")
+
+
+def test_copilot_context_reads_a_usage_record_far_from_the_end(tmp_path):
+    transcript = tmp_path / "events.jsonl"
+    filler = json.dumps({"type": "model.messages_snapshot", "data": {"blob": "x" * 50_000}}) + "\n"
+    transcript.write_text(_usage_record(136000) + filler * 8)
+    assert ag.copilot_context_fraction(transcript) == pytest.approx(0.5)
+
+
+def test_copilot_sessions_are_found_by_a_symlinked_cwd(home, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    events = _copilot_session(home, "s", str(real), [])
+    assert ag.copilot_transcripts(alias, home=home) == [events]
+
+
+def test_slack_reply_reader_skips_copilots_empty_tool_turns(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in [
+        {"type": "assistant.message", "data": {"content": "the reply"}},
+        {"type": "assistant.message", "data": {"content": "", "toolRequests": [{}]}}]))
+    assert cs.last_assistant_text(path) == "the reply"
+
+
+def test_copilot_has_its_own_thinking_effort_setting(home, monkeypatch):
+    config = home / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    doc = {"llm": {"provider": "copilot", "droid": {"reasoning_effort": "max"}}}
+    config.write_text(json.dumps(doc))
+    route = lambda: llm_runner.load_route_config(llm_runner.config_path(home=home), "observer")
+    assert route().reasoning_effort == "max", "falls back to the shared setting"
+    doc["llm"]["copilot"] = {"reasoning_effort": "off"}
+    config.write_text(json.dumps(doc))
+    assert route().reasoning_effort == "off"
+    monkeypatch.setenv("OBSERVER_COPILOT_REASONING_EFFORT", "high")
+    assert route().reasoning_effort == "high"

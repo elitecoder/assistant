@@ -26,14 +26,18 @@ class RouteConfig:
     droid_model: str = "glm-5.2"
     droid_reasoning_effort: str = "high"
     copilot_model: str = ""
+    copilot_reasoning_effort: str = ""
     local_url: str = "http://127.0.0.1:8091/v1"
     local_model: str = "local"
     local_reasoning_effort: str = "high"
 
     @property
     def reasoning_effort(self) -> str:
-        return (self.local_reasoning_effort if self.provider == "local"
-                else self.droid_reasoning_effort)
+        if self.provider == "local":
+            return self.local_reasoning_effort
+        if self.provider == "copilot" and self.copilot_reasoning_effort:
+            return self.copilot_reasoning_effort
+        return self.droid_reasoning_effort
 
     def model_for(self, claude_model: str) -> str:
         """The model id for this route's provider."""
@@ -175,9 +179,12 @@ def load_route_config(path: Path, section: str = "triage",
     copilot_model = env.get(f"{prefix}_COPILOT_MODEL", env.get(
         "COPILOT_MODEL", feature_copilot.get(
             "model", global_copilot.get("model", ""))))
+    copilot_reasoning = env.get(f"{prefix}_COPILOT_REASONING_EFFORT", feature_copilot.get(
+        "reasoning_effort", global_copilot.get("reasoning_effort", "")))
     return RouteConfig(
         provider=_provider(provider),
         copilot_model=str(copilot_model or ""),
+        copilot_reasoning_effort=str(copilot_reasoning or ""),
         droid_bin=str(droid_bin),
         droid_model=str(droid_model or "glm-5.2"),
         droid_reasoning_effort=_reasoning_effort(reasoning),

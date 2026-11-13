@@ -118,6 +118,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   excerpt, the lesson extractor, or any other transcript reader.
 - `evals/observer/replay.py --provider copilot` runs the candidate models on
   Copilot.
+- `llm.copilot.reasoning_effort` sets Copilot's thinking effort on background
+  jobs; without it Copilot keeps using the shared Droid setting.
 - A Copilot tool you stop with Esc, or that was running when the session
   ended, no longer keeps the session marked as working; the dashboard finds
   Copilot's last reply behind long runs of its internal records. `assistant-comms-setup.sh` installs cmux's
