@@ -38,6 +38,7 @@ NO_TOOLS = f"--available-tools={ag.COPILOT_NO_TOOLS}"
 def _load(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, str(path))
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod  # dataclasses look their module up here while loading
     spec.loader.exec_module(mod)
     return mod
 
@@ -160,6 +161,9 @@ CAUGHT = {
         'cmd = f"cd {cwd} && {exe} --resume {sid}"',
         'cmd = " ".join([exe, "--resume", sid])',
         'exe = binding["executable"]\nos.execvp(exe, [exe, "--resume", sid])',
+        'subprocess.run(["claude", *args])',
+        'subprocess.run(["copilot", *flags], input=p)',
+        'subprocess.run(["claude"])',
         'default_executable = "droid" if p == "factory" else "claude"\n'
         'executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE", default_executable)\n'
         'quoted_executable = shlex.quote(executable)\n'
@@ -2312,3 +2316,12 @@ def test_spawn_skill_answers_trust_before_it_trusts_a_ready_marker(skill_home, t
     done = subprocess.run(["zsh", "-c", script], capture_output=True, text=True, env=env, timeout=60)
     assert done.stdout.strip().splitlines()[-1] == "READY=1", done.stderr
     assert '"text": "1"' in screens.read_text(), "the trust prompt was answered first"
+
+
+def test_watcher_titles_an_unnamed_copilot_session_by_folder_and_branch(home):
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_title_cwd")
+    d = home / ".copilot" / "session-state" / "s2"
+    d.mkdir(parents=True)
+    (d / "workspace.yaml").write_text("cwd: /w/assistant\nbranch: feat/x\n")
+    (d / "events.jsonl").write_text("")
+    assert watcher.session_title([], d / "events.jsonl") == "assistant (feat/x)"

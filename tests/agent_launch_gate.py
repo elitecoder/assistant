@@ -177,6 +177,8 @@ def _argv_problem(elts: list[ast.AST], aliases: dict[str, str]) -> str | None:
     if words and os.path.basename(words[0]) in SHELLS:
         if any(_agent_word(_first_word(w)) for w in words[1:]):
             return "shell runs an agent"
+    if words and _agent_word(words[0]) and any(isinstance(e, ast.Starred) for e in elts[1:]):
+        return f"agent argv starting {words[0]!r} with spread arguments"
     if words and _agent_word(words[0]) and len(words) > 1:
         rest = [w for w in words[1:] if w]
         if any(w in SHARED_FLAGS or (w.startswith("-") and len(w) > 1) for w in rest) \
@@ -402,6 +404,8 @@ def python_problems(text: str) -> list[tuple[int, str]]:
                 if isinstance(first, ast.Name) and first.id in aliases:
                     word = aliases[first.id]
                 if isinstance(first, (ast.List, ast.Tuple)):
+                    if len(first.elts) == 1 and _agent_word(_elt_word(first.elts[0])):
+                        found.append((line, f"{fname}([{_elt_word(first.elts[0])!r}]) runs an agent"))
                     continue
                 if _agent_word(word) and (fname == "which" or fname.startswith(("exec", "spawn"))
                                           or _const_str(first) is not None):

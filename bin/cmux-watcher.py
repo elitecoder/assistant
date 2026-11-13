@@ -587,9 +587,15 @@ def session_title(records: list[dict], path: Path | None = None) -> str | None:
     Claude's own session title, Copilot's session name, else the working
     folder and git branch."""
     if path is not None and agent_session.agent_from_transcript(path) == agent_session.COPILOT:
-        name = agent_session.copilot_session_field(Path(path).parent, "name")
+        folder = Path(path).parent
+        name = agent_session.copilot_session_field(folder, "name")
         if name:
             return name
+        cwd = agent_session.copilot_session_cwd(folder)
+        branch = agent_session.copilot_session_field(folder, "branch")
+        if cwd:
+            label = Path(cwd).name or cwd
+            return f"{label} ({branch})" if branch and branch != "HEAD" else label
     for rec in reversed(records):
         title = rec.get("aiTitle") if rec.get("type") == "ai-title" else None
         if isinstance(title, str) and title.strip():
