@@ -9,6 +9,20 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Fixed
+- Keep the live install updating after a squash merge. The self-update refused
+  to update while local main had commits GitHub's main lacked, even when a
+  squash merge had already brought every change in. It now checks whether
+  merging local main into GitHub's would change anything; if not, it moves
+  main to GitHub's commit with `git reset --keep`. Real unsent work still
+  blocks the update.
+
+### Added
+- Refuse commits on the live install's main. The self-update links
+  `githooks/refuse-main-commit` as the `pre-commit` and `pre-merge-commit`
+  hooks, and never replaces a hook that's already there. Commit on a branch
+  and merge through a PR.
+
 ### Changed
 - The session check (`ASSISTANT_WATCHER=1`) now runs in default mode too. In
   default mode its results only add cards: it never merges, sends `/cleanup`,

@@ -1,0 +1,4 @@
+#!/bin/sh
+[ "$(git symbolic-ref --quiet --short HEAD)" = main ] || exit 0
+echo "main only changes through a merged PR. Commit on a branch: git switch -c <name>" >&2
+exit 1

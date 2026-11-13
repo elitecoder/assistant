@@ -88,7 +88,7 @@ def test_maybe_update_stash_failed(tmp_path):
     with mock.patch.object(su, "resolve_remote_branch", return_value=("origin", "main")):
         with mock.patch.object(su, "repo_status", return_value={
                 "head": "oldsha", "remote_sha": "newsha",
-                "dirty": True, "behind": 1, "ahead": 0}):
+                "dirty": True, "behind": 1, "ahead": 0, "ahead_upstream": False}):
             with mock.patch.object(su, "_stash_dirty",
                                    return_value=(False, "fatal: stash conflict")), \
                     mock.patch.object(su, "syntax_gate", return_value=("ok", "ok")):
@@ -121,7 +121,7 @@ def test_maybe_update_pull_failed(tmp_path):
     with mock.patch.object(su, "resolve_remote_branch", return_value=("origin", "main")):
         with mock.patch.object(su, "repo_status", return_value={
                 "head": "oldsha", "remote_sha": "newsha",
-                "dirty": False, "behind": 2, "ahead": 0}):
+                "dirty": False, "behind": 2, "ahead": 0, "ahead_upstream": False}):
             with mock.patch.object(su, "_git", side_effect=fake_git):
                 r = su.maybe_update(tmp_path, interval_sec=0, marker_path=marker,
                                     now=1000.0)
@@ -147,7 +147,7 @@ def test_maybe_update_pull_noop_to_sha_set(tmp_path):
     with mock.patch.object(su, "resolve_remote_branch", return_value=("origin", "main")):
         with mock.patch.object(su, "repo_status", return_value={
                 "head": "oldsha", "remote_sha": "newsha",
-                "dirty": False, "behind": 1, "ahead": 0}):
+                "dirty": False, "behind": 1, "ahead": 0, "ahead_upstream": False}):
             with mock.patch.object(su, "_git", side_effect=fake_git):
                 r = su.maybe_update(tmp_path, interval_sec=0, marker_path=marker,
                                     now=1000.0)
