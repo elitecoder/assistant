@@ -50,15 +50,90 @@ public struct ScanResult {
     public func items(_ a: Attention) -> [Item] { items.filter { $0.attention == a } }
 }
 
+/// Finds the Claude transcript behind each cmux workspace. A workspace with no transcript yet is searched in full
+/// once; after that, an FSEvents stream on `projects` names the transcripts that changed, and a later lookup reads
+/// only those.
 public final class TranscriptLocator {
     let projects: URL
     let home: String
+    let read: (String) -> Data?
     private var paths: [String: String] = [:]
     private var summaries: [String: (Date, SessionSummary)] = [:]
+    private struct Miss {
+        let submitted: String
+        let folders: Set<String>
+        /// Changed transcript file names, by project folder.
+        var changed: [String: Set<String>] = [:]
+    }
+    /// Workspaces whose transcript wasn't found, by workspace ID. The stream's queue adds to them under `lock`.
+    private var misses: [String: Miss] = [:]
+    private let lock = NSLock()
+    private let events = DispatchQueue(label: "assistant.transcripts")
+    private var stream: FSEventStreamRef?
 
-    public init(projects: URL, home: String = NSHomeDirectory()) {
+    public init(projects: URL, home: String = NSHomeDirectory(),
+                read: @escaping (String) -> Data? = { FileManager.default.contents(atPath: $0) }) {
         self.projects = projects
         self.home = home
+        self.read = read
+        watch()
+    }
+
+    deinit {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        events.sync {}
+    }
+
+    private func watch() {
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                           retain: nil, release: nil, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
+            guard let info, let changed = unsafeBitCast(paths, to: NSArray.self) as? [String] else { return }
+            let dropped = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs)
+            let rescan = (0..<count).contains { flags[$0] & dropped != 0 }
+            Unmanaged<TranscriptLocator>.fromOpaque(info).takeUnretainedValue().noticed(changed, rescan: rescan)
+        }
+        guard let s = FSEventStreamCreate(nil, callback, &context, [projects.path] as CFArray,
+                                          FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 1,
+                                          FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents
+                                                                   | kFSEventStreamCreateFlagUseCFTypes))
+        else { return }
+        FSEventStreamSetDispatchQueue(s, events)
+        guard FSEventStreamStart(s) else {
+            FSEventStreamInvalidate(s)
+            FSEventStreamRelease(s)
+            return
+        }
+        stream = s
+    }
+
+    /// Records changed transcripts against each workspace that searches their folder. When FSEvents drops events, every
+    /// workspace gets a full search again.
+    func noticed(_ changed: [String], rescan: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if rescan {
+            misses = [:]
+            return
+        }
+        for path in changed where path.hasSuffix(".jsonl") {
+            let parts = path.split(separator: "/")
+            guard parts.count >= 2 else { continue }
+            let folder = String(parts[parts.count - 2])
+            for (id, miss) in misses where miss.folders.contains(folder) {
+                misses[id]?.changed[folder, default: []].insert(String(parts[parts.count - 1]))
+            }
+        }
+    }
+
+    /// Drops what's remembered about workspaces that are gone.
+    public func forget(keeping ids: Set<String>) {
+        lock.lock()
+        misses = misses.filter { ids.contains($0.key) }
+        lock.unlock()
     }
 
     static func folderName(_ path: String) -> String {
@@ -71,20 +146,32 @@ public final class TranscriptLocator {
         if let hit = paths[key] { return hit }
         let folders = [ws.directory.map(Self.folderName), Self.folderName(home)].compactMap { $0 }
             .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-        let fm = FileManager.default
+        var changed: [String: Set<String>]?
+        lock.lock()
+        if stream != nil, let miss = misses[ws.id], miss.submitted == submitted {
+            changed = miss.changed
+            misses[ws.id]?.changed = [:]
+        } else if stream != nil {
+            misses[ws.id] = Miss(submitted: submitted, folders: Set(folders))
+        }
+        lock.unlock()
         for folder in folders {
             let dir = projects.appendingPathComponent(folder)
-            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
-            let files = names.filter { $0.hasSuffix(".jsonl") }.compactMap { name -> (String, Date)? in
-                let path = dir.appendingPathComponent(name).path
-                guard let m = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date,
+            let urls = changed.map { ($0[folder] ?? []).map { dir.appendingPathComponent($0) } }
+                ?? ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]))
+                    ?? []).filter { $0.pathExtension == "jsonl" }
+            let files = urls.compactMap { url -> (String, Date)? in
+                guard let m = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                       m >= sent.addingTimeInterval(-5) else { return nil }
-                return (path, m)
+                return (url.path, m)
             }.sorted { $0.1 > $1.1 }
             for (path, _) in files {
-                guard let data = fm.contents(atPath: path),
+                guard let data = read(path),
                       Transcript.holdsMessage(ws.submittedMessage, submittedAt: submitted, in: data) else { continue }
                 paths[key] = path
+                lock.lock()
+                misses[ws.id] = nil
+                lock.unlock()
                 return path
             }
         }
@@ -180,7 +267,9 @@ public final class SessionScanner {
             return result
         }
         var found: [(Workspace, String, SessionSummary)] = []
-        for ws in Workspace.parseList(data) {
+        let workspaces = Workspace.parseList(data)
+        locator.forget(keeping: Set(workspaces.map(\.id)))
+        for ws in workspaces {
             guard let path = locator.transcript(for: ws), let s = locator.summary(at: path), s.goal != nil,
                   s.lastActivity != nil else {
                 result.untracked.append(ws)
