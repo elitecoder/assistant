@@ -391,6 +391,14 @@ def _observer(mod, home):
                             pulse_idx=1, batch_idx=0)
 
 
+def _observer_audit(mod, home):
+    prompt = home / "obs.md"
+    prompt.write_text("# observer\n")
+    mod.OBSERVER_BATCH_PROMPT = prompt
+    mod.call_observer_batch([{"ws_ref": "workspace:1", "title": "t", "cwd": str(home)}],
+                            pulse_idx=1, batch_idx=0, model=mod.OBSERVER_AUDIT_MODEL, label="audit")
+
+
 def _narrator(mod, home):
     mod._spawn("prompt", home / "narr-run", "out.json")
 
@@ -410,6 +418,7 @@ def _lessons(mod, home):
 HEADLESS_SITES = [
     ("pulse triage", "pulse.py", "run", _triage, "triage"),
     ("pulse observer", "pulse.py", "run", _observer, "observer"),
+    ("pulse observer audit", "pulse.py", "run", _observer_audit, "observer_audit"),
     ("brief narrator", "narrate-brief.py", "run", _narrator, "narrator"),
     ("strategist", "strategist.py", "run", _strategist, "strategist"),
     ("slack judge", "slack-focus.py", "run", _slack_judge, "slack_judge"),
@@ -2164,3 +2173,34 @@ def test_slack_reply_reader_keeps_a_whitespace_reply_like_before(tmp_path):
         {"type": "assistant", "message": {"role": "assistant", "content": "first"}},
         {"type": "assistant", "message": {"role": "assistant", "content": " "}}]))
     assert cs.last_assistant_text(path) == " "
+
+
+def test_a_copilot_tool_event_without_an_id_makes_pending_unknown(tmp_path):
+    scw = _load(BIN / "session-context-watcher.py", "seam_scw_noid")
+    path = tmp_path / "events.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in [
+        {"type": "session.start", "data": {"sessionId": "s"}},
+        {"type": "user.message", "data": {"content": "go"}},
+        {"type": "tool.execution_start", "data": {"toolName": "bash"}}]))
+    state = scw.TranscriptState(path, "/w")
+    state.read_new()
+    assert state.pending_tool_use() is None
+
+
+def test_transcript_tail_reads_far_enough_back_in_a_copilot_log(home, monkeypatch, tmp_path, capsys):
+    tail = _load(BIN / "transcript-tail.py", "seam_tail_size")
+    path = home / ".copilot/session-state/s1/events.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in [
+        {"type": "user.message", "timestamp": "t1", "data": {"content": "/merge-when-ready 12"}},
+        {"type": "assistant.message", "timestamp": "t2", "data": {"content": "Queued."}},
+        {"type": "system.message", "data": {"content": "x" * 31000}}]))
+    sizes = []
+    monkeypatch.setattr(tail, "read_tail", lambda p, n: sizes.append(n) or (None, None))
+    monkeypatch.setattr(tail, "find_via_world", lambda ws: str(path))
+    monkeypatch.setattr(tail.sys, "argv", ["transcript-tail.py", "--ws", "workspace:1"])
+    try:
+        tail.main()
+    except SystemExit:
+        pass
+    assert sizes == [400000]
