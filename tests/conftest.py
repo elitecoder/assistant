@@ -67,7 +67,7 @@ def _no_real_copilot_home(monkeypatch):
     monkeypatch.delenv("COPILOT_HOME", raising=False)
     for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(agent_session, "gh_signed_in", lambda home=None: False)
+    monkeypatch.setattr(agent_session, "gh_signed_in", lambda home=None, env=None: False)
 
 
 @pytest.fixture(autouse=True)

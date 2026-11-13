@@ -2934,7 +2934,40 @@ def test_copilot_signed_in_through_gh_alone_runs_copilot(home, monkeypatch):
     monkeypatch.setenv("COPILOT_BIN", str(_stub(home / "t" / "copilot")))
     _pick(home, "copilot")
     assert ag.copilot_sign_in_source() is None and not ag.agent_available(ag.COPILOT)
-    monkeypatch.setattr(ag, "gh_signed_in", lambda home=None: True)
+    monkeypatch.setattr(ag, "gh_signed_in", lambda home=None, env=None: True)
     assert ag.copilot_sign_in_source() == "gh"
     assert ag.copilot_sign_in_source(env={}) == "gh"
     assert ag.agent_available(ag.COPILOT) and ag.warm_session_agent() == ag.COPILOT
+
+
+
+def test_the_github_cli_token_never_reaches_any_output(home, tmp_path, monkeypatch, capfd):
+    real = _load(BIN / "agent_session.py", "seam_gh_quiet")
+    gh = _fake_gh(tmp_path, True)
+    monkeypatch.setenv("PATH", f"{gh.parent}:/usr/bin:/bin")
+    assert real.gh_signed_in()
+    out, err = capfd.readouterr()
+    assert "gho_fake_token" not in out + err
+
+
+@pytest.mark.parametrize("env,host", [
+    ({"COPILOT_GH_HOST": "https://Cop.GHE.com/"}, "cop.ghe.com"),
+    ({"COPILOT_GH_HOST": "  ", "GH_HOST": " octo.ghe.com "}, "octo.ghe.com"),
+    ({}, "github.com")])
+def test_copilots_host_is_cleaned_like_copilot_does(env, host):
+    assert ag._gh_host(env) == host
+
+
+def test_gh_sign_in_uses_only_the_environment_it_is_given(home, tmp_path, monkeypatch):
+    real = _load(BIN / "agent_session.py", "seam_gh_env")
+    gh = tmp_path / "ghbin" / "gh"
+    gh.parent.mkdir(parents=True)
+    gh.write_text('#!/bin/sh\n[ "$4" = octo.ghe.com ] && [ -z "$GH_ENTERPRISE_TOKEN" ]\n')
+    gh.chmod(0o755)
+    monkeypatch.setattr(real.shutil, "which", lambda *a, **k: str(gh))
+    monkeypatch.setenv("GH_HOST", "octo.ghe.com")
+    assert real.gh_signed_in()
+    assert not real.gh_signed_in(env={}), "background jobs have no GH_HOST"
+    assert real.copilot_sign_in_source(env={}) is None
+    monkeypatch.setenv("GH_ENTERPRISE_TOKEN", "x")
+    assert real.gh_signed_in(), "a token env var is left out of gh's environment"

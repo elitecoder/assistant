@@ -524,21 +524,36 @@ COPILOT_TOKEN_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
 _GH_PATHS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
 
 
-def gh_signed_in(home: str | Path | None = None) -> bool:
-    """True when the GitHub CLI holds a saved sign-in for Copilot's host
-    (COPILOT_GH_HOST, GH_HOST, else github.com). Asks the way Copilot does,
-    `gh auth token`, which reads it locally; the token itself is discarded.
-    Token env vars are left out, so only gh's own saved sign-in counts."""
+def _gh_host(env: dict) -> str:
+    """Copilot's GitHub host, cleaned the way Copilot cleans it: the first
+    non-blank of COPILOT_GH_HOST and GH_HOST, without scheme or slashes,
+    lowercased; else github.com."""
+    for var in ("COPILOT_GH_HOST", "GH_HOST"):
+        host = re.sub(r"^[a-z]+://", "", (env.get(var) or "").strip().lower()).strip("/")
+        if host:
+            return host
+    return "github.com"
+
+
+_GH_TOKEN_VARS = (*COPILOT_TOKEN_VARS, "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+
+
+def gh_signed_in(home: str | Path | None = None, env: dict | None = None) -> bool:
+    """True when the GitHub CLI holds a saved sign-in for Copilot's host.
+    Asks the way Copilot does, `gh auth token`, which reads it locally; the
+    token itself is discarded. `env` (default: this process's) supplies the
+    host and gh's settings; token env vars are left out, so only gh's own
+    saved sign-in counts."""
     gh = shutil.which("gh") or next((p for p in _GH_PATHS if _executable(p)), None)
     if not gh:
         return False
-    env = {k: v for k, v in os.environ.items() if k not in COPILOT_TOKEN_VARS}
-    env["HOME"] = str(_home(home))
-    host = (env.get("COPILOT_GH_HOST") or env.get("GH_HOST") or "github.com").strip()
+    src = os.environ if env is None else env
+    gh_env = {k: v for k, v in src.items() if k not in _GH_TOKEN_VARS}
+    gh_env["HOME"] = str(_home(home))
     try:
-        return subprocess.run([gh, "auth", "token", "--hostname", host],
+        return subprocess.run([gh, "auth", "token", "--hostname", _gh_host(src)],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=10, env=env).returncode == 0
+                              timeout=10, env=gh_env).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -558,7 +573,7 @@ def copilot_sign_in_source(home: str | Path | None = None, env: dict | None = No
         config = None
     if isinstance(config, dict) and config.get("loggedInUsers"):
         return "account"
-    return "gh" if gh_signed_in(home) else None
+    return "gh" if gh_signed_in(home, env=src) else None
 
 
 def copilot_signed_in(home: str | Path | None = None, env: dict | None = None) -> bool:
