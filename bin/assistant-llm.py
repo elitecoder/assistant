@@ -239,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"note: {name} stays on {pinned} (llm.features.{name}); "
                           f"run `assistant-llm.py inherit --feature {name}` to follow "
                           f"{args.provider}", file=sys.stderr)
+            if (args.provider == llm_runner.agent_session.COPILOT
+                    and not llm_runner.agent_session.agent_available(args.provider)):
+                print("warning: Copilot isn't installed or doesn't start; jobs picked for "
+                      "it will fail and the Slack session stays on Claude", file=sys.stderr)
             if args.provider == llm_runner.agent_session.COPILOT:
                 failed = llm_runner.agent_session.install_copilot_hooks()
                 if failed:

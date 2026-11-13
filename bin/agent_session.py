@@ -866,6 +866,21 @@ def headless_argv(provider: str, *, binary_path: str, model: str,
     return cmd
 
 
+def refused_reasoning_effort(provider: str, rc: int, stdout: str, stderr: str) -> bool:
+    """True when Copilot failed because its model takes no --reasoning-effort
+    (`auto`, or a model without that setting)."""
+    return (provider == COPILOT and rc != 0
+            and "reasoning effort" in f"{stdout}\n{stderr}".lower())
+
+
+def without_reasoning_effort(cmd: list[str]) -> list[str]:
+    """`cmd` minus its `--reasoning-effort <level>` pair."""
+    if "--reasoning-effort" not in cmd:
+        return cmd
+    i = cmd.index("--reasoning-effort")
+    return cmd[:i] + cmd[i + 2:]
+
+
 def headless_prompt(provider: str, prompt: str,
                     json_schema: dict | None = None) -> str:
     """The stdin text for a headless call. Copilot has no --json-schema flag,

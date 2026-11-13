@@ -409,6 +409,13 @@ def invoke(*, provider: str, prompt: str, model: str, run_dir: Path,
         timeout=timeout,
         merge_bedrock=agent_session.merges_bedrock(provider),
     )
+    if agent_session.refused_reasoning_effort(provider, rc, stdout, stderr):
+        rc, stdout, stderr = run(
+            agent_session.without_reasoning_effort(cmd),
+            input_text=agent_session.headless_prompt(provider, prompt, json_schema),
+            timeout=timeout,
+            merge_bedrock=agent_session.merges_bedrock(provider),
+        )
     wall_ms = int((time.time() - started) * 1000)
     parsed = agent_session.parse_headless(provider, stdout)
     usage = agent_session.parse_usage(provider, stdout)

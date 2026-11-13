@@ -126,9 +126,12 @@ def warm_session_model_is_current(paths: comms_lib.Paths, sess: dict) -> bool:
     2026-09-16). Comparing the recorded id to the freshly resolved one lets the
     caller respawn on the correct id.
 
-    Only the claude warm session carries such an id; a droid session has none,
-    so it is always current. A pre-upgrade session with no recorded model reads
+    A copilot session records the comms Copilot model it started with and is
+    current while that matches. A droid session has no id, so it is always
+    current. A pre-upgrade session with no recorded model reads
     as NOT current, so it respawns once onto the tracked id."""
+    if (sess.get("agent") or agent_session.CLAUDE) == agent_session.COPILOT:
+        return (sess.get("model") or "") == agent_session.copilot_model("comms")
     if (sess.get("agent") or agent_session.CLAUDE) != agent_session.CLAUDE:
         return True
     want, _backend, _pinned = _resolve_warm_model_and_backend()
@@ -1062,7 +1065,8 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     # Record the EXACT id this session launched with — the same `resolved` tuple
     # _warm_launch used above, captured once so a mid-boot backend toggle can't
     # desync the record from the running session.
-    spawn_model = resolved[0] if resolved else None
+    spawn_model = (resolved[0] if resolved else
+                   agent_session.copilot_model("comms") if agent == agent_session.COPILOT else None)
     write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent, model=spawn_model)
     log(f"warm session ready: {ws_ref} / {surface_ref} (transcript={transcript})")
     reconcile_warm_workspaces(paths, keep=ws_ref, log=log)

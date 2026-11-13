@@ -92,8 +92,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Interactive Copilot sessions start with `--no-ask-user`, so questions come
   as text Assistant can read, not a form.
 - A running Slack session moves to the newly picked agent on the next
-  message after `assistant-llm.py set <agent>`, and falls back to Claude when
-  the picked agent can't start. `assistant-comms-setup.sh` installs cmux's
+  message after `assistant-llm.py set <agent>`, and a Copilot one restarts
+  when its model changes. A picked Copilot that can't start runs as Claude;
+  `set copilot` warns when that's the case.
+- Background Copilot jobs retry once without `--reasoning-effort` when the
+  model refuses it (Copilot's `auto` model does), and the Observer's excerpt
+  of a Copilot session now shows tool results and errors. `assistant-comms-setup.sh` installs cmux's
   Copilot hooks when Copilot is picked, and the doctor skips the Claude
   sign-in check when the Slack session runs another agent.
 - Copilot sessions Assistant starts, restores, or brings back after a crash

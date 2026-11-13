@@ -587,6 +587,7 @@ def test_comms_warm_session_spawns_copilot_when_picked(home, copilot_bin, monkey
     spawn = next(c for c in commands if "new-workspace" in c)
     assert spawn[spawn.index("--command") + 1].startswith("command copilot --allow-all --no-ask-user --model gpt-test")
     assert sess["agent"] == ag.COPILOT
+    assert sess["model"] == "gpt-test", "the model is saved so a later change respawns"
     assert waits[0] == (ag.ready_re(ag.COPILOT), ag.trust_marker(ag.COPILOT))
 
 
@@ -1907,3 +1908,53 @@ def test_doctor_and_status_describe_the_slack_session_that_actually_runs(home, m
     assert doctor.check_bedrock_env().status != doctor.SKIP
     assert doctor.check_claude_bin().name == "claude binary (warm session)"
     assert cli.status(llm_runner.config_path(home=home))["features"]["comms"]["provider"] == "claude"
+
+
+def test_headless_copilot_retries_without_effort_when_its_model_refuses_it(home, copilot_bin, tmp_path):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if "--reasoning-effort" in cmd:
+            return 1, "", 'Error: Model "auto" does not support reasoning effort configuration'
+        return 0, copilot_stdout("ok"), ""
+
+    result = llm_runner.invoke(provider="copilot", prompt="p", model="auto", run_dir=tmp_path,
+                               timeout=30, run=run, disable_tools=True)
+    assert len(calls) == 2 and "--reasoning-effort" not in calls[1]
+    assert result.usable and result.result_text == "ok"
+
+
+def test_headless_copilot_does_not_retry_other_failures(home, copilot_bin, tmp_path):
+    calls = []
+    llm_runner.invoke(provider="copilot", prompt="p", model="m", run_dir=tmp_path, timeout=30,
+                      run=lambda cmd, **kw: calls.append(cmd) or (1, "", "quota exceeded"),
+                      disable_tools=True)
+    assert len(calls) == 1
+
+
+def test_set_copilot_warns_when_copilot_is_missing(home, capsys, monkeypatch, tmp_path):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_missing")
+    monkeypatch.setattr(ag.subprocess, "run", _fake_cmux_install([]))
+    monkeypatch.setenv("COPILOT_BIN", str(tmp_path / "missing" / "copilot"))
+    assert cli.main(["set", "copilot"]) == 0
+    assert "Copilot isn't installed" in capsys.readouterr().err
+
+
+def test_copilot_excerpts_carry_tool_results_and_errors(tmp_path):
+    from assistant import transcript_slice
+    done = {"type": "tool.execution_complete", "timestamp": "t",
+            "data": {"success": True, "result": {"content": "3 passed"}}}
+    failed = {"type": "tool.execution_complete", "timestamp": "t",
+              "data": {"success": False, "result": {"content": "boom"}}}
+    assert transcript_slice._turn(done) == ("user", "t", "[tool result: 3 passed]")
+    assert transcript_slice._turn(failed) == ("user", "t", "[tool error: boom]")
+
+
+@pytest.mark.parametrize("recorded,configured,current", [
+    ("gpt-a", "gpt-a", True), ("gpt-a", "gpt-b", False), (None, "", True), (None, "gpt-b", False)])
+def test_a_copilot_slack_session_respawns_when_its_model_changes(home, monkeypatch,
+                                                                 recorded, configured, current):
+    monkeypatch.setenv("COMMS_COPILOT_MODEL", configured)
+    sess = {"agent": "copilot", "model": recorded}
+    assert cs.warm_session_model_is_current(cl.Paths.from_env({"HOME": str(home)}), sess) is current

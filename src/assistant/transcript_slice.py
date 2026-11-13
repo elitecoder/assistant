@@ -72,6 +72,14 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
         return ("system", str(record.get("timestamp") or ""), "Recap: " + recap) if recap else None
     if kind in ("user.message", "assistant.message"):
         return _copilot_turn(record, kind.split(".", 1)[0])
+    if kind == "tool.execution_complete":
+        data = record.get("data")
+        if not isinstance(data, dict):
+            return None
+        result = data.get("result")
+        content = result.get("content") if isinstance(result, dict) else result
+        return _render(record, "user", [{"type": "tool_result", "content": content,
+                                         "is_error": data.get("success") is False}])
     if kind == "session.error":
         data = record.get("data")
         message = data.get("message") if isinstance(data, dict) else None
