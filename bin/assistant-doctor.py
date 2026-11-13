@@ -329,6 +329,10 @@ def check_copilot_binary() -> Check:
                      detail="provider is not copilot (llm.provider / dispatch.agent / comms)")
     found = _agent_binary(COPILOT)
     if found and agent_session.runs(found):
+        if not agent_session.copilot_signed_in():
+            return Check("copilot binary", FAIL, core=False,
+                         detail=f"{found} runs, but no Copilot account is signed in",
+                         remedy="run `copilot login`, or set COPILOT_GITHUB_TOKEN")
         return Check("copilot binary", PASS, core=False, detail=found)
     return Check(
         "copilot binary", FAIL, core=False,

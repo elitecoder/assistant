@@ -307,6 +307,8 @@ CHECKS = (
         'if "$PYTHON" "$REPO_DIR/bin/agent_session.py" copilot-chosen; then\n'
         '    "$PYTHON" "$REPO_DIR/bin/agent_session.py" install-copilot-hooks \\\n'
         '        || echo "     ✗ cmux Copilot hooks not installed; Copilot sessions won\'t show on the dashboard" >&2\n'
+        '    "$PYTHON" "$REPO_DIR/bin/agent_session.py" link-copilot-skills \\\n'
+        '        || echo "     ✗ Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson" >&2\n'
         'fi\n',
         "",
         "tests/test_comms_setup.py::CommsSetupTests::test_env_provider_copilot_persists_and_installs_its_hooks",
@@ -327,6 +329,57 @@ CHECKS = (
         '                || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"\n',
         "                || true\n",
         "tests/test_install_cmux_sessions.py::test_a_failed_copilot_hooks_install_warns_and_the_install_continues",
+    ),
+    (
+        "the installer links copilot's skills when copilot is picked",
+        "install.sh",
+        '        python3 "$REPO_ROOT/bin/agent_session.py" link-copilot-skills \\\n',
+        "        true \\\n",
+        "tests/test_install_cmux_sessions.py::test_apply_with_copilot_picked_links_copilots_skills_to_assistants",
+    ),
+    (
+        "the skills link waits for a copilot pick",
+        "install.sh",
+        '# Copilot reads personal skills from ~/.copilot/skills.\n'
+        'if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then\n',
+        '# Copilot reads personal skills from ~/.copilot/skills.\n'
+        'if true; then\n',
+        "tests/test_install_cmux_sessions.py::test_apply_without_copilot_leaves_copilots_skills_alone",
+    ),
+    (
+        "a skills link that fails is reported",
+        "install.sh",
+        '            || warn "Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson"\n',
+        "            || true\n",
+        "tests/test_install_cmux_sessions.py::test_an_existing_copilot_skills_folder_warns_and_the_install_continues",
+    ),
+    (
+        "a dry run says it would link copilot's skills",
+        "install.sh",
+        '        note "would link ~/.copilot/skills → ~/.claude/skills (Copilot is picked)"\n',
+        "        :\n",
+        "tests/test_install_cmux_sessions.py::test_dry_run_with_copilot_picked_says_it_would_link_the_skills",
+    ),
+    (
+        "comms setup links copilot's skills",
+        "bin/assistant-comms-setup.sh",
+        '    "$PYTHON" "$REPO_DIR/bin/agent_session.py" link-copilot-skills \\\n',
+        "    true \\\n",
+        "tests/test_comms_setup.py::CommsSetupTests::test_env_provider_copilot_persists_and_installs_its_hooks",
+    ),
+    (
+        "comms setup reports a failed skills link",
+        "bin/assistant-comms-setup.sh",
+        '        || echo "     ✗ Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson" >&2\n',
+        "        || true\n",
+        "tests/test_comms_setup.py::CommsSetupTests::test_copilot_setup_says_what_failed_and_finishes",
+    ),
+    (
+        "comms setup reports failed copilot hooks",
+        "bin/assistant-comms-setup.sh",
+        '        || echo "     ✗ cmux Copilot hooks not installed; Copilot sessions won\'t show on the dashboard" >&2\n',
+        "        || true\n",
+        "tests/test_comms_setup.py::CommsSetupTests::test_copilot_setup_says_what_failed_and_finishes",
     ),
     (
         "a dry run says what it would patch",

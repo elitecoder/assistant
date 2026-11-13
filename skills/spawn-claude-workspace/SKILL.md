@@ -1,6 +1,6 @@
 ---
 name: spawn-claude-workspace
-description: Spawn an unfocused cmux workspace running an autonomous coding agent, delivering a prompt by file reference for background work. `engine` picks the agent: `droid` (default), `claude`, or `copilot`. Use `engine=claude` for Claude-plugin work like archffp.
+description: "Spawn an unfocused cmux workspace running an autonomous coding agent, delivering a prompt by file reference for background work. `engine` picks the agent: `droid` (default), `claude`, or `copilot`. Use `engine=claude` for Claude-plugin work like archffp."
 ---
 
 # Spawn autonomous coding workspace

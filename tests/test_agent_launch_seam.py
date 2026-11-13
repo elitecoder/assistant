@@ -91,7 +91,15 @@ def home(tmp_path, monkeypatch):
 def copilot_bin(home, monkeypatch):
     stub = _stub(home / "tools" / "copilot")
     monkeypatch.setenv("COPILOT_BIN", str(stub))
+    _sign_in_copilot(home)
     return stub
+
+
+def _sign_in_copilot(home: Path) -> None:
+    config = home / ".copilot" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('// managed by Copilot\n{"loggedInUsers": [{"host": "https://github.com", '
+                      '"login": "tester", "kind": "oauth"}]}\n')
 
 
 # ── the source gate ───────────────────────────────────────────────────────────
@@ -317,6 +325,8 @@ def test_copilot_falls_back_to_claude_when_not_installed(home, monkeypatch):
     monkeypatch.setattr(ag.shutil, "which", lambda _b: None)
     assert ag.available_or_claude(ag.COPILOT) == ag.CLAUDE
     monkeypatch.setenv("COPILOT_BIN", str(_stub(home / "x" / "copilot")))
+    assert ag.available_or_claude(ag.COPILOT) == ag.CLAUDE, "installed but signed out"
+    _sign_in_copilot(home)
     assert ag.available_or_claude(ag.COPILOT) == ag.COPILOT
 
 
@@ -806,6 +816,10 @@ def test_doctor_checks_copilot_only_when_picked(home, monkeypatch):
     monkeypatch.setenv("COPILOT_BIN", str(broken))
     assert doctor.check_copilot_binary().status == doctor.FAIL
     monkeypatch.setenv("COPILOT_BIN", str(_stub(home / "t" / "copilot")))
+    signed_out = doctor.check_copilot_binary()
+    assert signed_out.status == doctor.FAIL and "no Copilot account is signed in" in signed_out.detail
+    assert "copilot login" in signed_out.remedy
+    _sign_in_copilot(home)
     assert doctor.check_copilot_binary().status == doctor.PASS
     names = {c.name for c in doctor.run_checks("all")}
     assert {"copilot binary", "copilot cmux hooks"} <= names
@@ -905,6 +919,7 @@ def test_copilot_resolves_to_its_standalone_build_without_node(home, monkeypatch
     assert ag.binary(ag.COPILOT) == str(native)
     monkeypatch.setenv("PATH", f"{link.parent}:/usr/bin:/bin")
     assert ag.binary(ag.COPILOT) == str(native)
+    _sign_in_copilot(home)
     assert ag.agent_available(ag.COPILOT)
 
 
@@ -1245,7 +1260,7 @@ def test_newest_nvm_copilot_wins(home, monkeypatch):
     assert ag.binary(ag.COPILOT) == str(home / ".nvm/versions/node/v24.1.0/bin/copilot")
 
 
-def test_comms_answers_copilots_trust_prompt_with_a_lasting_yes(home, monkeypatch):
+def test_comms_answers_copilots_trust_prompt_with_a_lasting_yes(home, copilot_bin, monkeypatch):
     _pick(home, "copilot")
     paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
 
@@ -1912,6 +1927,7 @@ def test_a_live_slack_session_moves_to_the_newly_picked_agent(home, monkeypatch,
     _pick(home, pick)
     if installed:
         monkeypatch.setenv("COPILOT_BIN", str(_stub(tmp_path / "bin" / "copilot")))
+        _sign_in_copilot(home)
     else:
         monkeypatch.setenv("COPILOT_BIN", str(tmp_path / "missing" / "copilot"))
     rec = _live_warm_session(monkeypatch, listen, "claude")
@@ -1946,7 +1962,7 @@ def test_saved_command_copilot_resume_gets_the_rules_too(home):
         f"cd /w && COPILOT_CUSTOM_INSTRUCTIONS_DIRS={rules} command copilot --resume s"
 
 
-def test_doctor_skips_claude_sign_in_when_slack_runs_copilot(home, monkeypatch):
+def test_doctor_skips_claude_sign_in_when_slack_runs_copilot(home, copilot_bin, monkeypatch):
     doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_auth")
     _pick(home, "copilot")
     assert doctor.check_bedrock_env().status == doctor.SKIP
@@ -2643,3 +2659,106 @@ def test_scanner_gives_an_unknown_agents_session_no_context(home):
     live = {"s": {"session_id": "s", "provider": "codex"}}
     scanner.merge_session_context(live)
     assert "last_user" not in live["s"]
+
+
+# ── round 16: Copilot skills, sign-in, long replies ──────────────────────────
+
+def test_copilot_gets_assistants_skills_through_a_link(home):
+    skills = home / ".claude" / "skills"
+    skills.mkdir()
+    assert ag.link_copilot_skills() is None
+    link = home / ".copilot" / "skills"
+    assert link.is_symlink() and os.readlink(link) == str(skills)
+    assert ag.link_copilot_skills() is None, "a second run leaves the link alone"
+
+
+def test_an_existing_copilot_skills_folder_is_left_alone(home):
+    own = home / ".copilot" / "skills" / "mine"
+    own.mkdir(parents=True)
+    failed = ag.link_copilot_skills()
+    assert failed.startswith(f"{home / '.copilot' / 'skills'} already exists")
+    assert own.is_dir() and not (home / ".copilot" / "skills").is_symlink()
+
+
+def test_link_copilot_skills_command_reports_its_result(home, monkeypatch, capsys):
+    (home / ".copilot" / "skills").mkdir(parents=True)
+    assert ag.main(["link-copilot-skills"]) == 1
+    assert "Copilot skills not linked:" in capsys.readouterr().err
+    monkeypatch.setattr(ag, "link_copilot_skills", lambda: None)
+    assert ag.main(["link-copilot-skills"]) == 0
+
+
+@pytest.mark.parametrize("config,env,signed_in", [
+    (None, {}, False),
+    ('// managed\n{"loggedInUsers": [{"login": "a"}]}', {}, True),
+    ('{"loggedInUsers": []}', {}, False),
+    ("{broken", {}, False),
+    ("[1]", {}, False),
+    (None, {"GH_TOKEN": "x"}, True),
+    (None, {"COPILOT_GITHUB_TOKEN": " "}, False),
+    (None, {"COPILOT_PROVIDER_BASE_URL": "http://localhost:1"}, True),
+])
+def test_copilot_sign_in_is_read_from_its_config_or_a_token(home, config, env, signed_in):
+    if config is not None:
+        (home / ".copilot").mkdir()
+        (home / ".copilot" / "config.json").write_text(config)
+    assert ag.copilot_signed_in(env=env) is signed_in
+
+
+def test_a_signed_out_copilot_runs_as_claude(home, copilot_bin, monkeypatch):
+    for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    _pick(home, "copilot")
+    assert ag.agent_available(ag.COPILOT) and ag.warm_session_agent() == ag.COPILOT
+    (home / ".copilot" / "config.json").write_text('{"loggedInUsers": []}')
+    assert not ag.agent_available(ag.COPILOT)
+    assert ag.warm_session_agent() == ag.CLAUDE
+
+
+def test_set_copilot_links_its_skills_and_names_a_blocking_folder(home, copilot_bin, monkeypatch, capsys):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_skills")
+    monkeypatch.setattr(ag.subprocess, "run", _fake_cmux_install([]))
+    (home / ".claude" / "skills").mkdir()
+    assert cli.main(["set", "copilot"]) == 0
+    assert (home / ".copilot" / "skills").is_symlink()
+    (home / ".copilot" / "skills").unlink()
+    (home / ".copilot" / "skills").mkdir()
+    assert cli.main(["set", "copilot"]) == 0
+    assert "until then Copilot sessions have no /cleanup, /todo, or /lesson" in capsys.readouterr().err
+
+
+def test_set_saves_the_installed_droid_not_a_one_off_override(home, monkeypatch):
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_droid_bin")
+    monkeypatch.setattr(ag.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setenv("DROID_BIN", "/tmp/scratch-droid")
+    assert cli.main(["set", "claude"]) == 0
+    saved = json.loads((home / ".assistant/comms/config.json").read_text())
+    assert saved["llm"]["droid"]["bin"] == str(home / ".local" / "bin" / "droid")
+
+
+def test_watcher_finds_a_copilot_reply_buried_under_model_events(home):
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_wide")
+    cwd = home / "dev"
+    cwd.mkdir()
+    filler = {"type": "model.messages_snapshot", "data": {"blob": "x" * 50_000}}
+    path = _copilot_session(home, "cp-wide", str(cwd), [
+        {"type": "user.message", "data": {"content": "go"}},
+        {"type": "assistant.message", "data": {"content": "Ready. Merge it?"}},
+        *[filler] * 8])
+    assert path.stat().st_size > watcher.TRANSCRIPT_TAIL_BYTES
+    assert watcher.last_assistant_text(watcher.tail_records(path)) is None
+    assert watcher.read_session(str(cwd), "cp-wide")["last_text"] == "Ready. Merge it?"
+
+
+def test_claude_reply_about_a_failed_step_is_not_an_error_screen():
+    bwc = _load(BIN / "build-ws-context.py", "seam_bwc_claude_failed")
+    assert not bwc._ERROR_LINE_RE.match("⏺ Execution failed: the migration test, so I reverted it.")
+    assert bwc._ERROR_LINE_RE.match("✗ Execution failed: Model is not available.")
+    assert bwc._ERROR_LINE_RE.match("⏺ API Error: 500")
+
+
+def test_watcher_keeps_a_claude_line_shaped_like_a_branch_label():
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_branch_label")
+    assert not watcher._is_tui_noise("  assistant [⎇ feat/x]")
+    assert watcher._is_tui_noise(" ~/dev/assistant [⎇ feat/x]")
+    assert watcher._is_tui_noise(" /private/tmp/w [⎇ main]")

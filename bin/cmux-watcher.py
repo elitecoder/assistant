@@ -86,6 +86,9 @@ COPILOT_SESSIONS = agent_session.transcript_root(agent_session.COPILOT, home=HOM
 # Only the transcript tail is read — a long session's JSONL runs to many MB and
 # the newest turn is all the ping needs.
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
+# Copilot can log hundreds of KB of model events after its last reply; when
+# the tail holds no reply, this wider tail is read instead.
+TRANSCRIPT_WIDE_BYTES = 4 * 1024 * 1024
 LAST_MESSAGE_CHARS = 300
 
 # Event names we care about. Everything else (PreToolUse, UserPromptSubmit,
@@ -354,7 +357,7 @@ _STATUS_BAR_RE = re.compile(
     r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply"
     r"|^\s*← open sidebar · |· / commands · \? help(?: ·|\s*$)|ctrl\+e change environment\s*$"
     r"|\[⎇ [^\]]*\]\s+Session: [\d.]+ AIC used|^\s*[○◉◎●] \w+.*ctrl\+c interrupt"
-    r"|^\s*\S+ \[⎇ [^\]]*\]\s*$|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · ")
+    r"|^\s*[~/]\S* \[⎇ [^\]]*\]\s*$|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · ")
 # Claude Code's live spinner (`✽ Boogieing… (12m 1s · ↓ 48.9k tokens)`) and its
 # turn-done line (`✻ Baked for 2m 10s · done 10:40 PM`) only say the agent is or
 # was busy.
@@ -635,6 +638,8 @@ def read_session(cwd: str | None, session_id: str | None) -> dict | None:
         if path is None:
             return None
         records = tail_records(path)
+        if last_assistant_text(records) is None and path.stat().st_size > TRANSCRIPT_TAIL_BYTES:
+            records = tail_records(path, TRANSCRIPT_WIDE_BYTES)
         return {"question": pending_question(records),
                 "last_text": last_assistant_text(records),
                 "pending_tool": pending_tool(records),

@@ -180,3 +180,32 @@ def test_a_failed_copilot_hooks_install_warns_and_the_install_continues(tmp_path
             "show on the dashboard)") in result.stderr
     assert not (tmp_path / ".copilot/hooks/cmux.json").exists()
     assert "[5/5] Reloading launchd agents that changed" in result.stdout
+
+
+def test_apply_with_copilot_picked_links_copilots_skills_to_assistants(tmp_path, install):
+    _pick_copilot(tmp_path)
+    install("--apply")
+    link = tmp_path / ".copilot/skills"
+    assert link.is_symlink() and os.readlink(link) == str(tmp_path.resolve() / ".claude/skills")
+    assert (link / "cleanup" / "SKILL.md").is_file()
+
+
+def test_apply_without_copilot_leaves_copilots_skills_alone(tmp_path, install):
+    install("--apply")
+    assert not (tmp_path / ".copilot/skills").exists()
+
+
+def test_an_existing_copilot_skills_folder_warns_and_the_install_continues(tmp_path, install):
+    _pick_copilot(tmp_path)
+    (tmp_path / ".copilot/skills/mine").mkdir(parents=True)
+    result = install("--apply")
+    assert "Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson" in result.stderr
+    assert (tmp_path / ".copilot/skills/mine").is_dir()
+    assert "[5/5] Reloading launchd agents that changed" in result.stdout
+
+
+def test_dry_run_with_copilot_picked_says_it_would_link_the_skills(tmp_path, install):
+    _pick_copilot(tmp_path)
+    result = install()
+    assert "would link ~/.copilot/skills → ~/.claude/skills (Copilot is picked)" in result.stdout
+    assert not (tmp_path / ".copilot/skills").exists()

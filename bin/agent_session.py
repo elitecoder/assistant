@@ -454,7 +454,7 @@ def copilot_model(feature: str | None = None, env: dict | None = None) -> str:
 def agent_available(agent: str) -> bool:
     """True when `agent` can be launched. Claude launches via the ~/.zprofile
     `claude` alias, so it is assumed present. Copilot needs a binary that
-    answers `--version`. Droid needs an executable binary plus the --settings
+    answers `--version` and a signed-in account. Droid needs an executable binary plus the --settings
     JSON that session_command(DROID) bakes in. A False makes callers fall back
     to claude."""
     if agent == CLAUDE:
@@ -462,7 +462,7 @@ def agent_available(agent: str) -> bool:
     home = Path(os.environ.get("HOME", str(Path.home())))
     if agent == COPILOT:
         found = binary(COPILOT)
-        return _executable(found) and runs(found)
+        return _executable(found) and runs(found) and copilot_signed_in()
     if shutil.which(agent) is None and not _executable(binary(agent)):
         return False
     settings = home / ".assistant" / "droid-glm-settings.json"
@@ -490,6 +490,38 @@ def copilot_chosen() -> bool:
 
 
 CMUX_CLI = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+
+
+def link_copilot_skills(home: str | Path | None = None) -> str | None:
+    """Link Copilot's personal skills folder to ~/.claude/skills, where the
+    installer links Assistant's skills (/cleanup, /todo, ...), as it does for
+    Factory. None when linked (now or before), else why not. An existing
+    folder is left alone."""
+    skills = _home(home) / ".claude" / "skills"
+    target = copilot_home(home) / "skills"
+    if os.path.realpath(target) == os.path.realpath(skills):
+        return None
+    if target.is_symlink() or target.exists():
+        return f"{target} already exists; link Assistant's skills from {skills} into it"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(skills)
+    return None
+
+
+def copilot_signed_in(home: str | Path | None = None, env: dict | None = None) -> bool:
+    """True when Copilot has an account to run as: a token in the environment
+    (COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN), a custom provider, or a
+    signed-in account in its config.json."""
+    src = os.environ if env is None else env
+    if any((src.get(var) or "").strip() for var in (
+            "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL")):
+        return True
+    try:
+        text = (copilot_home(home) / "config.json").read_text()
+        config = json.loads(re.sub(r"(?m)^\s*//.*$", "", text))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and bool(config.get("loggedInUsers"))
 
 
 def copilot_hooks_file(home: str | Path | None = None) -> Path:
@@ -1091,7 +1123,9 @@ def main(argv: list[str] | None = None) -> int:
             ("submitted", "exit 0 when a user turn contains --needle"),
             ("copilot-chosen", "exit 0 when the user picked Copilot anywhere"),
             ("install-copilot-hooks", "write cmux's Copilot hooks to Copilot's "
-                                      "hooks folder")):
+                                      "hooks folder"),
+            ("link-copilot-skills", "link Copilot's skills folder to "
+                                    "~/.claude/skills")):
         cmd = sub.add_parser(name, help=help_text)
         cmd.add_argument("--agent", choices=AGENTS)
         if name == "submitted":
@@ -1106,6 +1140,12 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "copilot-chosen":
         return 0 if copilot_chosen() else 1
+    if args.cmd == "link-copilot-skills":
+        failed = link_copilot_skills()
+        if failed:
+            print(f"Copilot skills not linked: {failed}", file=sys.stderr)
+            return 1
+        return 0
     if args.cmd == "install-copilot-hooks":
         failed = install_copilot_hooks()
         if failed:

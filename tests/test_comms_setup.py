@@ -76,6 +76,7 @@ with open(os.environ["SEAM_LOG"], "a") as f:
 if sys.argv[1] == "copilot-chosen":
     path = os.path.join(os.environ["HOME"], ".assistant", "comms", "config.json")
     sys.exit(0 if json.load(open(path))["llm"]["provider"] == "copilot" else 1)
+sys.exit(1 if sys.argv[1] in os.environ.get("SEAM_FAIL", "").split() else 0)
 """
 
 
@@ -83,7 +84,7 @@ if sys.argv[1] == "copilot-chosen":
 class CommsSetupTests(unittest.TestCase):
     def _run(self, *, token="xoxb-test-fake", ping_target="C0TEST123",
              auth_json=OK_AUTH, send_exit=0, doctor_exit=0,
-             seed_config=None, seed_comms_config=None, llm_provider=None):
+             seed_config=None, seed_comms_config=None, llm_provider=None, seam_fail=""):
         """Run the REAL setup script in a fake repo (stubbed bin/) + isolated
         $HOME. Returns (proc, home_path, send_log_lines, doctor_log_lines)."""
         self._td = TemporaryDirectory()
@@ -123,6 +124,7 @@ class CommsSetupTests(unittest.TestCase):
             "SEND_EXIT": str(send_exit),
             "DOCTOR_EXIT": str(doctor_exit),
             "SEAM_LOG": str(root / "seam.log"),
+            "SEAM_FAIL": seam_fail,
         }
         if token is not None:
             env["SLACK_BOT_TOKEN"] = token
@@ -306,7 +308,16 @@ class CommsSetupTests(unittest.TestCase):
         _, home, _, _ = self._run(llm_provider="copilot")
         self.assertEqual(self._comms_config(home)["llm"]["provider"], "copilot")
         seam = (home.parent / "seam.log").read_text().split()
-        self.assertEqual(seam, ["copilot-chosen", "install-copilot-hooks"])
+        self.assertEqual(seam, ["copilot-chosen", "install-copilot-hooks", "link-copilot-skills"])
+
+    def test_copilot_setup_says_what_failed_and_finishes(self):
+        proc, home, send_lines, _ = self._run(
+            llm_provider="copilot", seam_fail="install-copilot-hooks link-copilot-skills")
+        self.assertEqual(proc.returncode, 0, msg=proc.stdout)
+        self.assertIn("✗ cmux Copilot hooks not installed", proc.stdout)
+        self.assertIn("✗ Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson",
+                      proc.stdout)
+        self.assertTrue(send_lines, "the test message is still sent")
 
     def test_claude_setup_installs_no_copilot_hooks(self):
         _, home, _, _ = self._run(llm_provider="claude")

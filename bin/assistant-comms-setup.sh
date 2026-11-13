@@ -137,6 +137,8 @@ PY
 if "$PYTHON" "$REPO_DIR/bin/agent_session.py" copilot-chosen; then
     "$PYTHON" "$REPO_DIR/bin/agent_session.py" install-copilot-hooks \
         || echo "     ✗ cmux Copilot hooks not installed; Copilot sessions won't show on the dashboard" >&2
+    "$PYTHON" "$REPO_DIR/bin/agent_session.py" link-copilot-skills \
+        || echo "     ✗ Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson" >&2
 fi
 
 # --- 4. test send -------------------------------------------------------------

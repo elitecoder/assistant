@@ -584,6 +584,15 @@ log ""
 # through its native paths.
 ensure_symlink "$HOME_DIR/.factory/skills" "$HOME_DIR/.claude/skills"
 ensure_symlink "$HOME_DIR/.factory/AGENTS.md" "$HOME_DIR/.claude/CLAUDE.md" || true
+# Copilot reads personal skills from ~/.copilot/skills.
+if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then
+    if [[ $APPLY -eq 1 ]]; then
+        python3 "$REPO_ROOT/bin/agent_session.py" link-copilot-skills \
+            || warn "Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson"
+    else
+        note "would link ~/.copilot/skills → ~/.claude/skills (Copilot is picked)"
+    fi
+fi
 log ""
 
 # --- 3. Generate LaunchAgent plists from templates + reload only those that changed ----------

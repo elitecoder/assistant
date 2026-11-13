@@ -103,7 +103,9 @@ def set_provider(path: Path, provider: str, feature: str | None) -> None:
         if not isinstance(droid, dict):
             raise ValueError("config key 'llm.droid' must be an object")
         droid.setdefault("bin", llm_runner.agent_session.binary(
-            llm_runner.agent_session.DROID))
+            llm_runner.agent_session.DROID,
+            env={k: v for k, v in os.environ.items()
+                 if k != llm_runner.agent_session.bin_env_var(llm_runner.agent_session.DROID)}))
         droid.setdefault("model", "glm-5.2")
         droid.setdefault("reasoning_effort", "high")
 
@@ -241,14 +243,19 @@ def main(argv: list[str] | None = None) -> int:
                           f"{args.provider}", file=sys.stderr)
             if (args.provider == llm_runner.agent_session.COPILOT
                     and not llm_runner.agent_session.agent_available(args.provider)):
-                print("warning: Copilot isn't installed or doesn't start; jobs picked for "
-                      "it will fail and the Slack session stays on Claude", file=sys.stderr)
+                print("warning: Copilot isn't installed, doesn't start, or isn't signed in "
+                      "(run `copilot login`); jobs picked for it will fail and the "
+                      "Slack session stays on Claude", file=sys.stderr)
             if args.provider == llm_runner.agent_session.COPILOT:
                 failed = llm_runner.agent_session.install_copilot_hooks()
                 if failed:
                     print(f"warning: cmux Copilot hooks not installed "
                           f"({failed}); Copilot sessions won't show on the "
                           f"dashboard", file=sys.stderr)
+                unlinked = llm_runner.agent_session.link_copilot_skills()
+                if unlinked:
+                    print(f"warning: {unlinked}; until then Copilot sessions "
+                          f"have no /cleanup, /todo, or /lesson", file=sys.stderr)
         else:
             inherit_provider(path, args.feature)
         return main(["status"])
