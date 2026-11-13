@@ -82,6 +82,15 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
   workspaces, and nudging stuck ones. The check itself runs in either mode
   with `ASSISTANT_WATCHER=1`; in default mode it only adds cards.
 
+To keep a setting like `ASSISTANT_WATCHER=1` across restarts, add it to the
+`env` object in `~/.assistant/config.json`:
+
+```json
+{"mode": "default", "env": {"ASSISTANT_WATCHER": "1", "OBSERVER_EVERY_MIN": "60"}}
+```
+
+The pulse applies these at startup. A value set on the LaunchAgent itself wins.
+
 ## Quick start
 
 To install, run the bootstrap script:
