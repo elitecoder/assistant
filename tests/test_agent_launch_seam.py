@@ -2695,6 +2695,8 @@ def test_link_copilot_skills_command_reports_its_result(home, monkeypatch, capsy
     ("{broken", {}, False),
     ("[1]", {}, False),
     (None, {"GH_TOKEN": "x"}, True),
+    (None, {"GITHUB_TOKEN": "x"}, True),
+    (None, {"COPILOT_GITHUB_TOKEN": "x"}, True),
     (None, {"COPILOT_GITHUB_TOKEN": " "}, False),
     (None, {"COPILOT_PROVIDER_BASE_URL": "http://localhost:1"}, True),
 ])
@@ -2744,8 +2746,8 @@ def test_watcher_finds_a_copilot_reply_buried_under_model_events(home):
     path = _copilot_session(home, "cp-wide", str(cwd), [
         {"type": "user.message", "data": {"content": "go"}},
         {"type": "assistant.message", "data": {"content": "Ready. Merge it?"}},
-        *[filler] * 8])
-    assert path.stat().st_size > watcher.TRANSCRIPT_TAIL_BYTES
+        *[filler] * 60])
+    assert path.stat().st_size > 2_000_000, "past the 256 KB tail and any 2 MB one"
     assert watcher.last_assistant_text(watcher.tail_records(path)) is None
     assert watcher.read_session(str(cwd), "cp-wide")["last_text"] == "Ready. Merge it?"
 
@@ -2762,3 +2764,54 @@ def test_watcher_keeps_a_claude_line_shaped_like_a_branch_label():
     assert not watcher._is_tui_noise("  assistant [⎇ feat/x]")
     assert watcher._is_tui_noise(" ~/dev/assistant [⎇ feat/x]")
     assert watcher._is_tui_noise(" /private/tmp/w [⎇ main]")
+
+
+def test_watcher_reads_only_the_usual_tail_of_a_claude_transcript(home):
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_claude_tail")
+    cwd = home / "dev"
+    d = home / ".claude" / "projects" / ag.claude_project_slug(cwd)
+    d.mkdir(parents=True)
+    filler = {"type": "progress", "data": {"blob": "x" * 50_000}}
+    (d / "c-1.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Merge it?"}]}}, *[filler] * 8]))
+    assert watcher.read_session(str(cwd), "c-1")["last_text"] is None
+
+
+def test_a_skills_link_that_cannot_be_made_says_why(home, monkeypatch):
+    def refuse(self, target, **kw):
+        raise PermissionError("read-only")
+    monkeypatch.setattr(Path, "symlink_to", refuse)
+    assert ag.link_copilot_skills() == f"can't link {home / '.copilot' / 'skills'}: read-only"
+
+
+@pytest.mark.parametrize("env,source", [
+    ({"COPILOT_GITHUB_TOKEN": "a", "GH_TOKEN": "b"}, "COPILOT_GITHUB_TOKEN"),
+    ({"GITHUB_TOKEN": "c"}, "GITHUB_TOKEN"), ({}, "account")])
+def test_copilot_sign_in_source_names_what_copilot_would_use(home, env, source):
+    _sign_in_copilot(home)
+    assert ag.copilot_sign_in_source(env=env) == source
+
+
+def test_doctor_warns_when_copilots_sign_in_is_only_in_this_shell(home, copilot_bin, monkeypatch, tmp_path):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_shell_only")
+    monkeypatch.setattr(doctor, "HOME", home)
+    _pick(home, "copilot")
+    assert doctor.check_copilot_binary().status == doctor.PASS
+    (home / ".copilot" / "config.json").write_text('{"loggedInUsers": []}')
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "x")
+    token = doctor.check_copilot_binary()
+    assert token.status == doctor.WARN and "COPILOT_GITHUB_TOKEN is set in this shell" in token.detail
+    assert token.remedy == "run `copilot login` (it signs in ~/.copilot)"
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN")
+    alt = tmp_path / "alt"
+    _sign_in_copilot(alt)
+    monkeypatch.setenv("COPILOT_HOME", str(alt / ".copilot"))
+    moved = doctor.check_copilot_binary()
+    assert moved.status == doctor.WARN and "COPILOT_HOME is set in this shell" in moved.detail
+
+
+def test_shell_names_a_signed_out_agent(home, monkeypatch, capsys):
+    monkeypatch.setattr(ag, "agent_available", lambda agent: False)
+    assert ag.main(["agent", "--agent", "copilot"]) == 1
+    assert "copilot isn't installed, doesn't start, or isn't signed in" in capsys.readouterr().err

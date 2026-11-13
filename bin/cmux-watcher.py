@@ -638,7 +638,9 @@ def read_session(cwd: str | None, session_id: str | None) -> dict | None:
         if path is None:
             return None
         records = tail_records(path)
-        if last_assistant_text(records) is None and path.stat().st_size > TRANSCRIPT_TAIL_BYTES:
+        if (agent_session.agent_from_transcript(path) == agent_session.COPILOT
+                and last_assistant_text(records) is None
+                and path.stat().st_size > TRANSCRIPT_TAIL_BYTES):
             records = tail_records(path, TRANSCRIPT_WIDE_BYTES)
         return {"question": pending_question(records),
                 "last_text": last_assistant_text(records),

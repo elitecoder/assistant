@@ -368,6 +368,27 @@ class ExecuteVerdictTests(unittest.TestCase):
         self.assertEqual(action["kind"], "merge-dispatched")
         self.assertTrue(self.mod.assistant_merged_workspace("workspace:99"))
 
+    def test_ready_for_merge_on_copilot_leaves_a_card_and_sends_nothing(self):
+        awaiting, calls = [], []
+        ws = {**self._ws(), "pr_refs": ["1234"]}
+        with mock.patch.object(self.mod, "run_merge_pr_dispatch",
+                               lambda *a, **k: calls.append(a) or {"outcome": "submitted"}):
+            action = self.mod.execute_verdict(
+                ws, {"verdict": "ready_for_merge", "summary": "s", "next": "n"}, awaiting,
+                copilot=True)
+        self.assertEqual(calls, [])
+        self.assertEqual(action["kind"], "emit-card")
+        self.assertEqual(awaiting[0]["key"], "workspace:99:merge-needs-claude:1234")
+        self.assertIn("runs Copilot, which has no /merge-when-ready", awaiting[0]["detail"])
+        self.assertFalse(self.mod.assistant_merged_workspace("workspace:99"))
+
+    def test_runs_copilot_reads_the_observed_session(self):
+        session = lambda provider: {"observation_identity": {"observed_sessions": [
+            {"surface_id": "S", "provider": provider, "session_id": "s"}]}}
+        self.assertTrue(self.mod.runs_copilot(session("copilot")))
+        self.assertFalse(self.mod.runs_copilot(session("claude")))
+        self.assertFalse(self.mod.runs_copilot(None))
+
     def test_ready_for_merge_does_not_record_on_failure(self):
         # If the mechanical dispatch fails, do NOT poison the merge ledger.
         ws = {**self._ws(), "pr_refs": ["1234"]}
@@ -1268,6 +1289,34 @@ class MainPipelineTests(unittest.TestCase):
         # Heartbeat written.
         hb = json.loads((self._tmp / ".assistant/heartbeat.json").read_text())
         self.assertEqual(hb["model"], "python-mechanical")
+
+    def test_a_ready_copilot_workspace_gets_a_card_not_a_merge_dispatch(self):
+        dispatched = {}
+        for provider in ("copilot", "claude"):
+            calls = []
+            with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                    "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/",
+                                       "pr_refs": ["77"]}],
+                    "reuse_cached": [], "backed_off": [], "total_ws": 1}), \
+                    mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                    mock.patch.object(self.mod, "build_ctx", return_value={
+                        "ws_ref": "workspace:1", "transcript_path": None,
+                        "agent_status": "idle", "last_turn_age_sec": 0,
+                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "title": "t", "cwd": "/", "observation_identity": {
+                            "workspace_id": "W1", "observed_sessions": [
+                                {"surface_id": "S1", "provider": provider, "session_id": "s"}]}}), \
+                    mock.patch.object(self.mod, "call_observer_batch", return_value=({
+                        "workspace:1": {"ws_ref": "workspace:1", "verdict": "ready_for_merge",
+                                        "summary": "s", "next": "n"}}, {})), \
+                    mock.patch.object(self.mod, "save_summary"), \
+                    mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                    mock.patch.object(self.mod, "run", return_value=(0, "", "")), \
+                    mock.patch.object(self.mod, "run_merge_pr_dispatch",
+                                      lambda *a, **k: calls.append(a) or {"outcome": "submitted"}):
+                self.assertEqual(self._run_main([]), 0)
+            dispatched[provider] = calls
+        self.assertEqual(dispatched, {"copilot": [], "claude": [("workspace:1", "77")]})
 
     def test_drains_inbox_and_records_count(self):
         # Drop two inbox files; main should delete both.

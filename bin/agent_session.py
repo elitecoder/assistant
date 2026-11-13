@@ -503,25 +503,37 @@ def link_copilot_skills(home: str | Path | None = None) -> str | None:
         return None
     if target.is_symlink() or target.exists():
         return f"{target} already exists; link Assistant's skills from {skills} into it"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.symlink_to(skills)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(skills)
+    except OSError as exc:
+        return f"can't link {target}: {exc}"
     return None
 
 
-def copilot_signed_in(home: str | Path | None = None, env: dict | None = None) -> bool:
-    """True when Copilot has an account to run as: a token in the environment
-    (COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN), a custom provider, or a
-    signed-in account in its config.json."""
+COPILOT_TOKEN_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+                      "COPILOT_PROVIDER_BASE_URL")
+
+
+def copilot_sign_in_source(home: str | Path | None = None, env: dict | None = None) -> str | None:
+    """How Copilot would sign in: the first env var it reads a token or a
+    custom provider from, "account" for a signed-in account in its
+    config.json, or None."""
     src = os.environ if env is None else env
-    if any((src.get(var) or "").strip() for var in (
-            "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL")):
-        return True
+    var = next((v for v in COPILOT_TOKEN_VARS if (src.get(v) or "").strip()), None)
+    if var:
+        return var
     try:
         text = (copilot_home(home) / "config.json").read_text()
         config = json.loads(re.sub(r"(?m)^\s*//.*$", "", text))
     except (OSError, ValueError):
-        return False
-    return isinstance(config, dict) and bool(config.get("loggedInUsers"))
+        return None
+    return "account" if isinstance(config, dict) and config.get("loggedInUsers") else None
+
+
+def copilot_signed_in(home: str | Path | None = None, env: dict | None = None) -> bool:
+    """True when Copilot has an account or token to run as."""
+    return copilot_sign_in_source(home, env) is not None
 
 
 def copilot_hooks_file(home: str | Path | None = None) -> Path:
@@ -1156,7 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "agent":
         agent = args.agent or dispatch_agent()
         if not agent_available(agent):
-            print(f"{agent} isn't installed or doesn't start", file=sys.stderr)
+            print(f"{agent} isn't installed, doesn't start, or isn't signed in", file=sys.stderr)
             return 1
         print(agent)
         return 0

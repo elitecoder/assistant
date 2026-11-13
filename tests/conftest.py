@@ -63,6 +63,8 @@ def _watcher_on(request, monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_real_copilot_home(monkeypatch):
     monkeypatch.delenv("COPILOT_HOME", raising=False)
+    for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture(autouse=True)

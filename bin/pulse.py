@@ -85,6 +85,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 from assistant import mode, model_tiers, transcript_slice  # noqa: E402
 
+if str(BIN) not in sys.path:
+    sys.path.insert(0, str(BIN))
+import agent_session  # noqa: E402
+
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
 ASSISTANT_DIR = Path(os.environ.get("ASSISTANT_DIR", str(HOME / ".assistant")))
@@ -1773,8 +1777,15 @@ def pre_cleanup_check(ws_ref: str) -> dict:
 
 # ─── verdict execution ──────────────────────────────────────────────────────
 
+def runs_copilot(ctx: dict | None) -> bool:
+    """True when the workspace's observed session is a Copilot session."""
+    identity = (ctx or {}).get("observation_identity") or {}
+    return any(agent_session.agent_from_kind(s.get("provider")) == agent_session.COPILOT
+               for s in identity.get("observed_sessions") or [] if isinstance(s, dict))
+
+
 def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
-                    carry: bool = False) -> dict:
+                    carry: bool = False, copilot: bool = False) -> dict:
     """Execute the action implied by the verdict. Returns an action_taken
     dict for the state file.
 
@@ -1882,6 +1893,18 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
         if not pr_refs:
             return {**base, "kind": "skipped", "outcome": "failed",
                     "evidence": "ready_for_merge but no pr_refs on ws"}
+        if copilot:
+            awaiting.append({
+                "key": f"{ws_ref}:merge-needs-claude:{pr_refs[0]}",
+                "tier": "T2",
+                "title": f"PR #{pr_refs[0]} looks ready — merge it yourself",
+                "detail": (f"{ws_ref} runs Copilot, which has no /merge-when-ready or "
+                           "/monitor-ffp-ci (Claude plugin skills), so the Assistant "
+                           "didn't send them."),
+                "ws_ref": ws_ref,
+            })
+            return {**base, "kind": "emit-card",
+                    "evidence": f"Copilot workspace; merge of PR #{pr_refs[0]} left to the user"}
         result = run_merge_pr_dispatch(
             ws_ref, pr_refs[0],
             refactor_attested=bool(verdict.get("refactor_attested")),
@@ -2179,9 +2202,6 @@ def dispatch_todo(todo_id: str) -> bool:
                 p.unlink()
     except Exception:
         pass
-    if str(BIN) not in sys.path:
-        sys.path.insert(0, str(BIN))
-    import agent_session  # noqa: PLC0415
     agent = agent_session.dispatch_agent()
     if agent == agent_session.COPILOT and _needs_claude(item):
         log.info("dispatch %s: FFP work runs /architect-ffp:archffp, a Claude "
@@ -2718,7 +2738,8 @@ def main() -> int:
             # Effective verdict for metering — mirrors what was just saved
             # (a verdict-less line defaults to active, same as the synth path).
             new_verdicts[ws_ref] = v_for_save.get("verdict") or "active"
-            action = execute_verdict(ws, v_for_save, awaiting_input)
+            action = execute_verdict(ws, v_for_save, awaiting_input,
+                                     copilot=runs_copilot(ctx))
             actions_taken.append(action)
             append_ledger({
                 "ts": utc_iso(),
