@@ -189,6 +189,10 @@ _RESPAWN_TO_CLEAR = (agent_session.DROID, agent_session.COPILOT)
 # waiting SUBMIT_WAIT_SEC after each for the transcript to record the prompt.
 SUBMIT_ATTEMPTS = _positive_int_env("COMMS_SUBMIT_ATTEMPTS", 3)
 SUBMIT_WAIT_SEC = _positive_int_env("COMMS_SUBMIT_WAIT_SEC", 15)
+# Copilot records a prompt typed during a turn only when that turn ends, so
+# while its screen shows the turn still running and the box took the text,
+# confirmation waits up to this long.
+BUSY_WAIT_SEC = _positive_int_env("COMMS_BUSY_WAIT_SEC", 900)
 
 # How many times to look at a workspace cmux didn't answer about, and how long to
 # wait between looks, before calling its state unknown.
@@ -486,7 +490,8 @@ def find_submission(project_dir: Path, marker: str, since: float,
 def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: str,
                            attempts: int = SUBMIT_ATTEMPTS,
                            wait_sec: float = SUBMIT_WAIT_SEC,
-                           sleep=time.sleep, clock=time.monotonic) -> bool:
+                           sleep=time.sleep, clock=time.monotonic,
+                           busy=lambda: False, busy_wait_sec: float = BUSY_WAIT_SEC) -> bool:
     """Type a prompt once, press Enter, and wait until `confirmed()` sees it in
     the transcript. Returns whether it did.
 
@@ -496,7 +501,9 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
     box that doesn't hold the marker, so a retry can't double-send a prompt or
     submit someone else's half-typed input. A prompt an earlier try already
     got recorded isn't typed again, and one an earlier try left sitting in the
-    box only gets its Enter. All I/O is injected."""
+    box only gets its Enter. While `busy()` and the box no longer holds the
+    marker, confirmation waits up to `busy_wait_sec` more. All I/O is
+    injected."""
     if confirmed():
         return True
     # Only this prompt's own marker counts here: an old collapsed paste in the
@@ -513,6 +520,11 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
             sleep(1)
         if attempt + 1 < attempts and box_holds(read_box(), marker):
             press_enter()
+    deadline = clock() + busy_wait_sec
+    while clock() < deadline and busy() and not box_holds(read_box(), marker):
+        if confirmed():
+            return True
+        sleep(2)
     return confirmed()
 
 
@@ -661,6 +673,9 @@ def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
         read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent),
         confirmed=confirmed,
         marker=marker,
+        busy=(lambda: agent_session.shows_copilot_working(
+            _surface_read_text(paths, surface_ref, lines=60)))
+        if agent == agent_session.COPILOT else (lambda: False),
     )
 
 

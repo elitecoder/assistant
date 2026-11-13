@@ -526,3 +526,48 @@ def test_close_own_workspace_never_forces_past_other_errors(monkeypatch):
     calls, logs = _close_with(monkeypatch, [(1, "", "Error: not_found")])
     assert calls == [["close-workspace", "--workspace", "workspace:1000010024"]]
     assert logs == ["close workspace:1000010024 rc=1: Error: not_found"]
+
+
+# ─── a busy Copilot records a typed prompt only when its turn ends ──────────
+
+
+def _busy_submit(term, busy, confirm_at, busy_wait_sec=600):
+    return cs.submit_until_confirmed(
+        term.send_text, term.press_enter, term.read_box,
+        lambda: term.now >= confirm_at, "msg_ts=1",
+        attempts=3, wait_sec=5, sleep=term.sleep, clock=term.clock,
+        busy=busy, busy_wait_sec=busy_wait_sec)
+
+
+def test_a_busy_session_that_took_the_text_is_waited_on_until_its_turn_ends():
+    term = FakeTerminal(confirm_after_enters=None, typed_box="")
+    assert _busy_submit(term, busy=lambda: True, confirm_at=200)
+    assert (term.typed, term.enters) == (1, 1), "no retyping, no extra Enter"
+
+
+def test_the_busy_wait_has_a_limit():
+    term = FakeTerminal(confirm_after_enters=None, typed_box="")
+    assert not _busy_submit(term, busy=lambda: True, confirm_at=10_000, busy_wait_sec=60)
+    assert term.now < 200
+
+
+def test_no_busy_wait_when_the_text_is_still_in_the_box_or_the_session_is_idle():
+    held = FakeTerminal(confirm_after_enters=None)
+    assert not _busy_submit(held, busy=lambda: True, confirm_at=100)
+    idle = FakeTerminal(confirm_after_enters=None, typed_box="")
+    assert not _busy_submit(idle, busy=lambda: False, confirm_at=100)
+    assert held.now < 100 and idle.now < 100
+
+
+def test_copilot_submit_waits_while_its_screen_shows_a_turn_running(monkeypatch):
+    screen = {"text": "╻\n┃\n╹\n ● Working (12s) · ctrl+c interrupt"}
+    seen = {}
+    monkeypatch.setattr(cs, "_surface_read_text", lambda paths, ref, lines=200: screen["text"])
+    monkeypatch.setattr(cs, "submit_until_confirmed", lambda *a, **k: seen.update(k) or True)
+    cs.submit(object(), "surface:1", "hi msg_ts=1", "msg_ts=1", lambda: False, agent="copilot")
+    assert seen["busy"]()
+    screen["text"] = "╻\n┃\n╹\n ← open sidebar · Interactive · Allow All · / commands · ? help"
+    assert not seen["busy"]()
+    cs.submit(object(), "surface:1", "hi msg_ts=1", "msg_ts=1", lambda: False, agent="claude")
+    screen["text"] = "╻\n┃\n╹\n ● Working (12s) · ctrl+c interrupt"
+    assert not seen["busy"](), "Claude never waits on a busy screen"

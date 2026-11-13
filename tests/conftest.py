@@ -11,6 +11,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "bin"))
 sys.path.insert(0, str(_ROOT / "src"))
 
+import agent_session  # noqa: E402
+
 # Point CMUX_BIN — which the comms daemon, the pulse, and the watchers use for
 # every cmux call — at a binary that doesn't exist, so a test that misses a
 # stub fails fast instead of driving the real cmux. On 2026-09-28 an unstubbed
@@ -65,6 +67,7 @@ def _no_real_copilot_home(monkeypatch):
     monkeypatch.delenv("COPILOT_HOME", raising=False)
     for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(agent_session, "gh_signed_in", lambda home=None: False)
 
 
 @pytest.fixture(autouse=True)

@@ -2862,3 +2862,65 @@ def test_dashboard_renderer_loads_by_path_with_only_src_importable(tmp_path):
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
                           env={**os.environ, "HOME": str(tmp_path), "PYTHONPATH": str(REPO / "src")})
     assert done.stdout.strip() == "ok", done.stderr[-500:]
+
+
+@pytest.mark.parametrize("screen,working", [
+    (" ● Working (12s) · ctrl+c interrupt", True),
+    ("◉ Thinking about it · ctrl+c interrupt\n\n ~/w [⎇ main]", True),
+    (" ⠋ Retrying model request (2/5)", True),
+    (" ← open sidebar · Interactive · Allow All · / commands · ? help", False),
+    ("● Working · ctrl+c interrupt\n" + "\n".join(f"line {i}" for i in range(8)), False),
+    ("", False)])
+def test_copilot_working_screen(screen, working):
+    assert ag.shows_copilot_working(screen) is working
+
+
+def _fake_gh(tmp_path, signed_in: bool) -> Path:
+    gh = tmp_path / "ghbin" / "gh"
+    gh.parent.mkdir(parents=True)
+    gh.write_text("#!/bin/sh\n"
+                  '[ -n "$GH_TOKEN" ] && exit 3\n'
+                  'echo "$HOME $*" >> "$(dirname "$0")/calls"\n'
+                  f"exit {0 if signed_in else 1}\n")
+    gh.chmod(0o755)
+    return gh
+
+
+@pytest.mark.parametrize("signed_in", [True, False])
+def test_a_github_cli_sign_in_counts_for_copilot(home, tmp_path, monkeypatch, signed_in):
+    real = _load(BIN / "agent_session.py", "seam_gh_real")
+    gh = _fake_gh(tmp_path, signed_in)
+    monkeypatch.setenv("PATH", f"{gh.parent}:/usr/bin:/bin")
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setattr(real, "_GH_PATHS", ())
+    assert real.gh_signed_in() is signed_in, "GH_TOKEN is left out of gh's environment"
+    assert (gh.parent / "calls").read_text().split() == [str(home), "auth", "status",
+                                                        "--hostname", "github.com"]
+
+
+def test_no_github_cli_is_no_sign_in(home, monkeypatch):
+    real = _load(BIN / "agent_session.py", "seam_gh_missing")
+    monkeypatch.setattr(real.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(real, "_GH_PATHS", ("/nonexistent/gh",))
+    assert real.gh_signed_in() is False
+
+
+def test_a_github_cli_that_hangs_is_no_sign_in(home, monkeypatch, tmp_path):
+    real = _load(BIN / "agent_session.py", "seam_gh_hang")
+    gh = _fake_gh(tmp_path, True)
+    monkeypatch.setattr(real.shutil, "which", lambda *a, **k: str(gh))
+
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired(a[0], 10)
+    monkeypatch.setattr(real.subprocess, "run", hang)
+    assert real.gh_signed_in() is False
+
+
+def test_copilot_signed_in_through_gh_alone_runs_copilot(home, monkeypatch):
+    monkeypatch.setenv("COPILOT_BIN", str(_stub(home / "t" / "copilot")))
+    _pick(home, "copilot")
+    assert ag.copilot_sign_in_source() is None and not ag.agent_available(ag.COPILOT)
+    monkeypatch.setattr(ag, "gh_signed_in", lambda home=None: True)
+    assert ag.copilot_sign_in_source() == "gh"
+    assert ag.copilot_sign_in_source(env={}) == "gh"
+    assert ag.agent_available(ag.COPILOT) and ag.warm_session_agent() == ag.COPILOT

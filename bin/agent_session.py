@@ -521,10 +521,29 @@ COPILOT_TOKEN_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
                       "COPILOT_PROVIDER_BASE_URL")
 
 
+_GH_PATHS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
+
+
+def gh_signed_in(home: str | Path | None = None) -> bool:
+    """True when the GitHub CLI is signed in to github.com, which Copilot
+    falls back to (`gh auth token`). Token env vars are left out, so only
+    gh's own saved sign-in counts."""
+    gh = shutil.which("gh") or next((p for p in _GH_PATHS if _executable(p)), None)
+    if not gh:
+        return False
+    env = {k: v for k, v in os.environ.items() if k not in COPILOT_TOKEN_VARS}
+    env["HOME"] = str(_home(home))
+    try:
+        return subprocess.run([gh, "auth", "status", "--hostname", "github.com"],
+                              capture_output=True, timeout=10, env=env).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def copilot_sign_in_source(home: str | Path | None = None, env: dict | None = None) -> str | None:
     """How Copilot would sign in: the first env var it reads a token or a
     custom provider from, "account" for a signed-in account in its
-    config.json, or None."""
+    config.json, "gh" for a signed-in GitHub CLI, or None."""
     src = os.environ if env is None else env
     var = next((v for v in COPILOT_TOKEN_VARS if (src.get(v) or "").strip()), None)
     if var:
@@ -533,8 +552,10 @@ def copilot_sign_in_source(home: str | Path | None = None, env: dict | None = No
         text = (copilot_home(home, env=src) / "config.json").read_text()
         config = json.loads(re.sub(r"(?m)^\s*//.*$", "", text))
     except (OSError, ValueError):
-        return None
-    return "account" if isinstance(config, dict) and config.get("loggedInUsers") else None
+        config = None
+    if isinstance(config, dict) and config.get("loggedInUsers"):
+        return "account"
+    return "gh" if gh_signed_in(home) else None
 
 
 def copilot_signed_in(home: str | Path | None = None, env: dict | None = None) -> bool:
@@ -799,6 +820,16 @@ def shows_copilot(screen: str) -> bool:
     return (any(_COPILOT_BAR_RE.search(line) for line in bottom)
             or (bool(_COPILOT_BANNER_RE.search(screen))
                 and _TRUST_MARKER[COPILOT] in screen))
+
+
+_COPILOT_WORKING_RE = re.compile(r"^\s*[○◉◎●] \w.*ctrl\+c interrupt|Retrying model request")
+
+
+def shows_copilot_working(screen: str) -> bool:
+    """True when a Copilot pane shows a turn in progress: its working line
+    (`● Working … ctrl+c interrupt`) or a model retry, near the bottom."""
+    bottom = [line for line in (screen or "").splitlines() if line.strip()][-6:]
+    return any(_COPILOT_WORKING_RE.search(line) for line in bottom)
 
 
 def ready_re(agent: str) -> "re.Pattern[str]":
