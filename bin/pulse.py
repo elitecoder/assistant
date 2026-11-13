@@ -130,7 +130,7 @@ CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources
 # cwd for dispatched work. ~/dev keeps the spawn inside Mukul's permission roots;
 # FFP work re-homes itself into a fresh firefly-platform worktree via archffp.
 # One-second polls a dispatched session gets to show its ready marker.
-READY_POLLS = 32
+READY_POLLS = 30
 DISPATCH_CWD = Path(os.environ.get("DISPATCH_CWD", str(HOME / "dev")))
 
 # The Observer reads many transcripts → BALANCED tier, long-context. OBSERVER_MODEL
@@ -2259,6 +2259,7 @@ def dispatch_todo(todo_id: str) -> bool:
     trust = agent_session.trust_marker(agent)
     trust_answered = False
     ready = False
+    time.sleep(2)  # keys typed before the REPL draws its prompt can be lost
     for _ in range(READY_POLLS):
         screen = _surface_read_text(surface_ref)
         if trust and not trust_answered and trust in screen:

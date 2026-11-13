@@ -66,7 +66,7 @@ SURFACE_REF=$(cmux list-pane-surfaces --workspace "$WS_REF" | grep -oE 'surface:
 test -n "$WS_REF" && test -n "$SURFACE_REF"
 ```
 
-4. Poll the screen until the engine is ready, answering the first-launch folder-trust prompt once with the seam's lasting-yes key + Enter:
+4. Poll the screen until the engine is ready, answering the first-launch folder-trust prompt once with the seam's lasting-yes key + Enter. An unanswered trust prompt outranks a ready marker on the same screen:
 
 ```bash
 TRUST=$(python3 "$SEAM" trust-marker --agent "$ENGINE")
@@ -74,11 +74,11 @@ TRUST_ANSWER=$(python3 "$SEAM" trust-answer --agent "$ENGINE")
 READY=0; TRUSTED=0
 for _ in $(seq 1 60); do
   SCREEN=$(cmux rpc surface.read_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"lines":200}))' "$SURFACE_REF")" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("text", ""))')
-  if printf '%s' "$SCREEN" | python3 "$SEAM" is-ready --agent "$ENGINE"; then READY=1; break; fi
   if [ "$TRUSTED" = 0 ] && [ -n "$TRUST" ] && printf '%s' "$SCREEN" | grep -qF "$TRUST"; then
     cmux rpc surface.send_text "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"text":sys.argv[2]}))' "$SURFACE_REF" "$TRUST_ANSWER")" >/dev/null
     cmux rpc surface.send_key "$(python3 -c 'import json,sys; print(json.dumps({"surface_id":sys.argv[1],"key":"enter"}))' "$SURFACE_REF")" >/dev/null
     TRUSTED=1
+  elif printf '%s' "$SCREEN" | python3 "$SEAM" is-ready --agent "$ENGINE"; then READY=1; break
   fi
   sleep 1
 done

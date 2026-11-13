@@ -1583,9 +1583,27 @@ def test_comms_finds_no_claude_box_without_its_rules():
     assert cs.input_box_text("╻▄\n┃ copilot glyphs\n╹▀") == "copilot glyphs"
 
 
-def test_dispatch_waits_as_long_as_before_for_a_ready_pane():
+def test_dispatch_waits_as_long_as_before_for_a_ready_pane(home, monkeypatch):
+    _pick(home, "claude")
+    sleeps = []
+    real_sleep = []
+
+    cwd = home / "dev"
+    cwd.mkdir()
+    monkeypatch.setenv("DISPATCH_CWD", str(cwd))
     pulse = _load(BIN / "pulse.py", "seam_pulse_polls")
-    assert pulse.READY_POLLS == 32
+    pulse.self_update_pulse = lambda pulse_idx: None
+    assert pulse.READY_POLLS == 30
+    monkeypatch.setattr(pulse, "run", lambda cmd, *a, **k: (
+        (0, "OK workspace:9\n", "") if "new-workspace" in cmd else
+        (0, "surface:9\n", "") if "list-pane-surfaces" in cmd else (0, "", "")))
+    monkeypatch.setattr(pulse, "_cmux_rpc", lambda method, params, timeout=15: {})
+    monkeypatch.setattr(pulse, "_surface_read_text", lambda ref, lines=200: "Claude Code v9")
+    monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: {"id": tid, "title": "x"})
+    monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: True)
+    monkeypatch.setattr(pulse.time, "sleep", lambda s: sleeps.append(s))
+    pulse.dispatch_todo("td-8")
+    assert sleeps[0] == 2, "a 2 s pause before the first screen poll, as on main"
 
 
 @pytest.mark.parametrize("line", [
@@ -2270,3 +2288,27 @@ def test_copilot_has_its_own_thinking_effort_setting(home, monkeypatch):
     assert route().reasoning_effort == "off"
     monkeypatch.setenv("OBSERVER_COPILOT_REASONING_EFFORT", "high")
     assert route().reasoning_effort == "high"
+
+
+def test_spawn_skill_answers_trust_before_it_trusts_a_ready_marker(skill_home, tmp_path):
+    screens = tmp_path / "screens"
+    screens.write_text("")
+    cmux = skill_home / "tools" / "cmux"
+    cmux.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        f"state, sent = {str(tmp_path / 'answered')!r}, {str(screens)!r}\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['rpc', 'surface.read_text']:\n"
+        "    text = 'Claude Code v9' + ('' if os.path.exists(state) else '\\n1. Yes, I trust this folder')\n"
+        "    print(json.dumps({'text': text}))\n"
+        "elif args[:2] == ['rpc', 'surface.send_text']:\n"
+        "    open(sent, 'a').write(args[2] + '\\n')\n"
+        "    open(state, 'w').close()\n")
+    cmux.chmod(0o755)
+    env = {"HOME": str(skill_home), "PATH": f"{skill_home / 'tools'}:/usr/bin:/bin",
+           "ENGINE": "claude", "SURFACE_REF": "surface:1"}
+    script = _skill_block(0) + "\n" + _skill_block(2) + '\necho "READY=$READY"\n'
+    done = subprocess.run(["zsh", "-c", script], capture_output=True, text=True, env=env, timeout=60)
+    assert done.stdout.strip().splitlines()[-1] == "READY=1", done.stderr
+    assert '"text": "1"' in screens.read_text(), "the trust prompt was answered first"
