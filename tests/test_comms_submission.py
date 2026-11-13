@@ -568,6 +568,7 @@ def test_copilot_submit_waits_while_its_screen_shows_a_turn_running(monkeypatch)
     assert seen["busy"]()
     screen["text"] = "╻\n┃\n╹\n ← open sidebar · Interactive · Allow All · / commands · ? help"
     assert not seen["busy"]()
-    cs.submit(object(), "surface:1", "hi msg_ts=1", "msg_ts=1", lambda: False, agent="claude")
     screen["text"] = "╻\n┃\n╹\n ● Working (12s) · ctrl+c interrupt"
-    assert not seen["busy"](), "Claude never waits on a busy screen"
+    for agent in ("claude", "droid"):
+        cs.submit(object(), "surface:1", "hi msg_ts=1", "msg_ts=1", lambda: False, agent=agent)
+        assert not seen["busy"](), f"{agent} never waits on a busy screen"

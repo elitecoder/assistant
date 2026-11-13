@@ -1318,7 +1318,7 @@ class MainPipelineTests(unittest.TestCase):
                     mock.patch.object(self.mod, "build_ctx", return_value={
                         "ws_ref": "workspace:1", "transcript_path": None,
                         "agent_status": "idle", "last_turn_age_sec": 0,
-                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "is_protected": False,
                         "title": "t", "cwd": "/", "observation_identity": {
                             "workspace_id": "W1", "observed_sessions": [
                                 {"surface_id": "S1", "provider": provider, "session_id": "s"}]}}), \
