@@ -36,8 +36,11 @@ CLAUDE_MD = HOME / ".claude" / "CLAUDE.md"
 PROPOSALS = HOME / ".assistant" / "proposals.jsonl"
 LEDGER = HOME / ".assistant" / "actions-ledger.jsonl"
 OBSERVER_REPORT = HOME / ".assistant" / "observer-latest-report.json"
-# Copilot has no per-project dir; its sessions carry their cwd instead.
-ASSISTANT_CWD = str(Path(__file__).resolve().parents[2])
+# Assistant's own sessions run in the live checkout: this repo, or the repo a
+# `.worktrees/<name>` checkout of it belongs to. Copilot has no per-project
+# dir; its sessions carry their cwd instead.
+_REPO = Path(__file__).resolve().parents[2]
+ASSISTANT_CWD = str(_REPO.parent.parent if _REPO.parent.name == ".worktrees" else _REPO)
 TRANSCRIPT_DIR = agent_session.confirm_dir(agent_session.CLAUDE, ASSISTANT_CWD, home=HOME)
 DEFAULT_TRANSCRIPT_DIR = TRANSCRIPT_DIR
 DROID_TRANSCRIPT_DIR = agent_session.confirm_dir(agent_session.DROID, ASSISTANT_CWD, home=HOME)

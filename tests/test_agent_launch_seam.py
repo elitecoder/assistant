@@ -157,6 +157,9 @@ CAUGHT = {
         'cmd = [agent_session.binary(DROID), "exec", "--model", m]',
         'cmd = [agent_session.binary(provider), "-p", prompt]',
         'cmd = [pick(agent_session.DROID), "exec", "--model", m]',
+        'cmd = f"cd {cwd} && {exe} --resume {sid}"',
+        'cmd = " ".join([exe, "--resume", sid])',
+        'exe = binding["executable"]\nos.execvp(exe, [exe, "--resume", sid])',
         'default_executable = "droid" if p == "factory" else "claude"\n'
         'executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE", default_executable)\n'
         'quoted_executable = shlex.quote(executable)\n'
@@ -1272,8 +1275,9 @@ def test_copilot_hooks_report_a_cmux_that_writes_an_empty_hook_list(home, monkey
 
 def test_memory_seeds_read_the_repos_own_transcript_folders():
     seeds = _load(BIN / "tools" / "memory_seeds.py", "seam_seeds")
-    assert seeds.TRANSCRIPT_DIR == Path.home() / ".claude/projects" / ag.claude_project_slug(REPO)
-    assert seeds.DROID_TRANSCRIPT_DIR == Path.home() / ".factory/sessions" / ag.project_slug(REPO)
+    live = REPO.parent.parent if REPO.parent.name == ".worktrees" else REPO
+    assert seeds.TRANSCRIPT_DIR == Path.home() / ".claude/projects" / ag.claude_project_slug(live)
+    assert seeds.DROID_TRANSCRIPT_DIR == Path.home() / ".factory/sessions" / ag.project_slug(live)
 
 
 def _cmux_record(agent, sid, updated):
@@ -2204,3 +2208,11 @@ def test_transcript_tail_reads_far_enough_back_in_a_copilot_log(home, monkeypatc
     except SystemExit:
         pass
     assert sizes == [400000]
+
+
+def test_watcher_keeps_claude_lines_that_mention_copilots_words():
+    watcher = _load(BIN / "cmux-watcher.py", "seam_watcher_anchor")
+    for line in ("⏺ Press ctrl+c interrupt to stop it", "⏺ Type / commands · ? help for the list",
+                 "⏺ Session: 6.35 AIC used is the cost line"):
+        assert not watcher._is_tui_noise(line), line
+    assert watcher._is_tui_noise(" ~/w [⎇ main]  Session: 6.35 AIC used")

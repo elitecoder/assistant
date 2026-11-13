@@ -92,6 +92,8 @@ def _string_problems(text: str) -> list[str]:
         out.append(f"agent command '{m.group(0)}'")
     if _PINNED_RE.search(text):
         out.append("pinned agent binary path")
+    if re.search(r"(^|&&|;|\|)\s*\{\}\s+--resume\b", text):
+        out.append("resume command with a placeholder program")
     if re.search(r"\bzsh -l?i?c\s+['\"](claude|copilot|droid)\b", text):
         out.append("login-shell agent launch")
     if _TRANSCRIPT_ROOT_RE.search(text):
@@ -167,6 +169,8 @@ def _argv_problem(elts: list[ast.AST], aliases: dict[str, str]) -> str | None:
     flags = [w for w in words if w in AGENT_FLAGS]
     if flags:
         return f"agent argv with {flags[0]}"
+    if len(words) > 1 and words[1] == "--resume":
+        return "agent resume argv"
     for i, w in enumerate(words[:-1]):
         if w == "--command" and _agent_word(_first_word(words[i + 1])):
             return f"cmux launch of {words[i + 1]!r}"

@@ -352,9 +352,9 @@ def read_screen(workspace: str, lines: int = SCREEN_LINES) -> str:
 _CHROME_RE = re.compile(r"^[\s│─╭╮╰╯┌┐└┘├┤┬┴┼▔▕>·•⏵◀▶┃╹╻▀▄━]+$")
 _STATUS_BAR_RE = re.compile(
     r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply"
-    r"|← open sidebar · |/ commands · \? help|ctrl\+e change environment"
-    r"|Session: [\d.]+ AIC used|ctrl\+c interrupt|^\s*\S+ \[⎇ [^\]]*\]\s*$"
-    r"|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · ")
+    r"|^\s*← open sidebar · |· / commands · \? help(?: ·|\s*$)|ctrl\+e change environment\s*$"
+    r"|\[⎇ [^\]]*\]\s+Session: [\d.]+ AIC used|^\s*[○◉◎●] \w+.*ctrl\+c interrupt"
+    r"|^\s*\S+ \[⎇ [^\]]*\]\s*$|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · ")
 # Claude Code's live spinner (`✽ Boogieing… (12m 1s · ↓ 48.9k tokens)`) and its
 # turn-done line (`✻ Baked for 2m 10s · done 10:40 PM`) only say the agent is or
 # was busy.
