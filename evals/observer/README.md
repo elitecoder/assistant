@@ -76,8 +76,8 @@ disputes.
 1. Copy a real session jsonl from `~/.claude/projects/<slug>/<id>.jsonl`,
    or hand-write one.
 2. `ctx.json` — the JSON `build-ws-context.py` would emit for this state
-   (mostly `last_turn_age_sec`, `agent_status`, `cwd_dirty`,
-   `cwd_unpushed`, `transcript_path` placeholder).
+   (mostly `last_turn_age_sec`, `agent_status`, and the
+   `transcript_path` placeholder).
 3. `expected.json` — `{"verdict": "kind"}`.
 4. Optional `fake-gh-bin/gh` — Python shim that returns mock `gh pr view`
    output. Make it `chmod +x`.

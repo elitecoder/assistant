@@ -5,7 +5,5 @@
   "transcript_path": "REPLACED-AT-RUNTIME",
   "last_turn_age_sec": 600,
   "agent_status": "idle",
-  "cwd_dirty": false,
-  "cwd_unpushed": false,
   "is_protected": false
 }

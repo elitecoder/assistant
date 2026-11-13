@@ -55,7 +55,7 @@ class TestBuildWsContextCLI(unittest.TestCase):
         for key in ("ws_ref", "title", "cwd", "transcript_path", "transcript_source",
                     "session_id8", "agent_surface", "last_turn_age_sec", "agent_status",
                     "agent_provider",
-                    "cwd_dirty", "cwd_unpushed", "is_protected", "screen_text",
+                    "is_protected", "screen_text",
                     "screen_shows_error"):
             self.assertIn(key, ctx, f"missing field: {key}")
         self.assertEqual(ctx["ws_ref"], "workspace:50")
@@ -94,15 +94,11 @@ class TestBuildWsContextCLI(unittest.TestCase):
                      "assistant_policies_excerpt"}
         self.assertEqual(forbidden & set(ctx.keys()), set())
 
-    def test_cwd_state_reflects_real_repo(self):
+    def test_no_branch_or_commit_state_in_the_payload(self):
         with TemporaryDirectory() as t:
             home = fixture_home(Path(t))
-            repo = Path(t) / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
-            (repo / "f.txt").write_text("hello")  # dirty, untracked
-            ctx = run_ctx_builder(home, "workspace:50", "any", str(repo))
-        self.assertTrue(ctx["cwd_dirty"])
+            ctx = run_ctx_builder(home, "workspace:50", "any", "/tmp/x")
+        self.assertFalse({"cwd_dirty", "cwd_unpushed"} & set(ctx))
 
     def test_protected_workspace_flag(self):
         with TemporaryDirectory() as t:

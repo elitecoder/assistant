@@ -10,7 +10,7 @@ You receive a JSON array of workspace ctxs. Each entry has:
 
 - `ws_ref`, `title`, `cwd`
 - `transcript_path` — audit-only path to the verified Claude Code or Factory Droid session JSONL. Do not read it with tools.
-- `transcript_excerpt` — the session's conversation as plain text: its first request, then its latest turns. It may be empty when no session was found. Treat an empty excerpt like a null transcript unless a later rule explicitly combines it with stale/dirty signals.
+- `transcript_excerpt` — the session's conversation as plain text: its first request, then its latest turns. It may be empty when no session was found. Treat an empty excerpt like a null transcript unless a later rule explicitly combines it with stale signals.
 - `transcript_source` — how `transcript_path` was resolved, always VERIFIED (never a guess): `"screen_session_id"` (Claude status-bar id), `"cmux_resume_binding"` (the live cmux surface's Claude or Factory checkpoint id), `"registry_live_pid"` (legacy Claude registry row gated on a live process), or `null`. When it's `null`, do NOT hunt for a transcript yourself; judge from `screen_text` alone. There is deliberately no mtime/cwd guess: attaching a wrong transcript is worse than attaching none.
 - `session_id8` — the first 8 characters of the verified session id, or `null` if not yet resolved.
 - `agent_provider` — `"claude"`, `"droid"`, or `null` while the pane is still unidentified.
@@ -18,8 +18,6 @@ You receive a JSON array of workspace ctxs. Each entry has:
 - `screen_shows_error` — `true` when the live screen is showing a halted/error banner (API error, request timeout, overloaded, connection error, an unhandled traceback, a left-on-screen `fatal:`). See the precedence rule below — a `true` here is strong evidence the agent is **stranded on an error**, even if the transcript's last line looks like normal mid-work output.
 - `last_turn_age_sec` — how long since the JSONL was last appended to.
 - `agent_status` — `working` (tool_use in flight) or `idle`.
-- `cwd_dirty` — `git status --porcelain` non-empty.
-- `cwd_unpushed` — `git log @{u}..` non-empty.
 - `pr_data` — a deterministic `gh pr view` snapshot, or `null` when there is no open PR or it could not be fetched. It includes `freeze_active` when relevant. Never run `gh` yourself.
 
 **Source-of-truth precedence.** Your verdict must reconcile BOTH the transcript and `screen_text`. They usually agree. When they conflict, trust the screen for *current* state (what the agent is doing/showing right now) and the transcript for *history* (how it got there). Concretely:
@@ -127,12 +125,11 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 
    **Do not emit `ready_for_cleanup` if cleanup has already happened.** A workspace whose claude has exited (or whose worktree is gone) cannot ingest the slash command, so the send becomes a permanent loop. Use `no_action`.
 
-0.5. **No transcript + empty screen + stale + dirty/unpushed cwd** →
-   `needs_user`. When `transcript_path` is null, `screen_text` is empty,
-   `agent_status` is idle, `last_turn_age_sec > 1800`, and either
-   `cwd_dirty` or `cwd_unpushed` is true, there is no evidence of progress and
-   work exists at risk. Ask the user to inspect the workspace manually. Do not
-   call this `active` or `stranded`.
+0.5. **No transcript + empty screen + stale** → `needs_user`. When
+   `transcript_path` is null, `screen_text` is empty, `agent_status` is idle,
+   and `last_turn_age_sec > 1800`, there is no evidence of progress. Ask the
+   user to inspect the workspace manually. Do not call this `active` or
+   `stranded`.
 
 0.75. **Fresh per-case result inside an eval or iteration** → `active`.
    When the workspace is explicitly an eval, benchmark, suite, runner, or
@@ -167,9 +164,9 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 
    **B1 vs B2 (cleanup vs awaiting-review) — the dividing line:** cleanup is for work that is *finished and disposable* — the deliverable was an action already taken (probe ran, PR merged, test executed) and nothing is left to look at. Awaiting-review is for work whose *deliverable is a thing you must still consume or authorize*. When a recap says "done" AND names something for you to read/decide/approve/activate/merge, it is B2 (`needs_user`), not B1. When in doubt between cleanup and awaiting-review, choose `needs_user` — an extra card is cheap; a wrongly-sent `/cleanup` destroys the deliverable.
 
-2. **Definitive workspace-level recap + idle >30 min + clean cwd + nothing left for the user** → `ready_for_cleanup`. ALL must hold:
+2. **Definitive workspace-level recap + idle >30 min + nothing left for the user** → `ready_for_cleanup`. ALL must hold:
    - B1 did NOT fire — the recap is not handing back an artifact, decision, or go-ahead. If the recap names anything for you to review, decide, approve, activate, land, or pick, it is B1, not this.
-   - `last_turn_age_sec > 1800`, `cwd_dirty=false`, `cwd_unpushed=false`. A recent turn (≤1800s, especially 0s) is the agent *talking*, not signing off.
+   - `last_turn_age_sec > 1800`. A recent turn (≤1800s, especially 0s) is the agent *talking*, not signing off.
    - The text declares the **workspace's top-level task** done (e.g. "td-NNN COMPLETE", "audit complete, no PR needed", "all cases run, results filed") — NOT a per-case / per-spec / per-PR sub-result. A `VERDICT: BLOCK` or `case N: PASS` line from a wrapper script is a sub-result even when it looks definitive.
    - The agent is not inside an enclosing iteration. Use the beginning of `transcript_excerpt` to learn the workspace's actual scope. Tells of in-flight iteration: original prompt asked for multiple cases/specs/files/PRs/rounds and not all are done; per-item wrapper lines instead of a final tally; agent says "next case", "moving on", "now running…".
 

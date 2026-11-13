@@ -935,8 +935,8 @@ def run_strategist_context_step(pulse_idx: int) -> None:
 # A workspace whose observable state hasn't changed since its last verdict
 # gets that verdict carried forward and is left OUT of the Observer batch —
 # an unchanged fleet costs zero Observer calls. The hash covers exactly the
-# signals build-ws-context gathers: the transcript tail, the live screen, and
-# the git/cwd state. The raw last_turn_age_sec is EXCLUDED (it grows every
+# signals build-ws-context gathers: the transcript tail and the live screen.
+# The raw last_turn_age_sec is EXCLUDED (it grows every
 # pulse without any state change and would defeat the skip) — but its BAND
 # relative to the Observer prompt's 1800s idle threshold IS included: the
 # prompt's stranded/ready_for_cleanup/needs_user rules all pivot on
@@ -1110,8 +1110,6 @@ def obs_input_hash(ctx: dict) -> str:
         _screen_text_fingerprint(ctx.get("screen_text") or ""),
         bool(ctx.get("screen_shows_error")),
         ctx.get("agent_status"),
-        bool(ctx.get("cwd_dirty")),
-        bool(ctx.get("cwd_unpushed")),
         idle_age_band(ctx.get("last_turn_age_sec")),
     ], sort_keys=False)
     return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()

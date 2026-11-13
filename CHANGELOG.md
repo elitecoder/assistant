@@ -9,6 +9,23 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Removed
+- Stop running git from Assistant. A preview server ran `git status
+  --porcelain` in about a dozen checkouts every minute, and killed runs left
+  stale `index.lock` files that blocked commits in other sessions.
+  - `build-ws-context.py` no longer runs `git status` or `git log @{u}..` in
+    each workspace's folder. The `cwd_dirty` and `cwd_unpushed` fields are
+    gone from the workspace state, the session check's fingerprint, and its
+    prompt. The "no transcript, empty screen, stale" rule no longer needs a
+    dirty folder, and `ready_for_cleanup` no longer checks for a clean one.
+  - `assistant-curator.py` no longer runs `git add` on a project's rules file.
+    It writes the file and tells you to include it in your next PR.
+  - `meta_gate.py detect` takes changed files with `--paths` only; `--repo`
+    and `--base` are gone.
+  - `tests/test_no_git.py` fails when any file under `bin/`, `src/`, `hooks/`,
+    `slack-reactor/`, `mac/Sources/`, or `githooks/` runs git. The self-update
+    and its commit guard are listed as pending until their replacement lands.
+
 ### Fixed
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a

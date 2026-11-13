@@ -225,23 +225,6 @@ def coverage_search(keywords: list[str] | str, *, fixtures_dir: Path = ARCHFFP_F
                         "(prove RED→GREEN→RED-on-revert) and commit it alongside.")}
 
 
-# ─── git helpers (CLI only — never imported by tests) ───────────────────────
-
-def _git_changed_paths(repo: Path, base: str) -> list[str]:
-    paths: set[str] = set()
-    for args in (["diff", "--name-only", f"{base}...HEAD"],
-                 ["diff", "--name-only"],
-                 ["diff", "--name-only", "--staged"]):
-        try:
-            proc = subprocess.run(["git", "-C", str(repo), *args],
-                                  capture_output=True, text=True, timeout=30)
-            if proc.returncode == 0:
-                paths.update(l.strip() for l in proc.stdout.splitlines() if l.strip())
-        except (OSError, subprocess.SubprocessError):
-            continue
-    return sorted(paths)
-
-
 # ─── CLI ────────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> int:
@@ -250,8 +233,6 @@ def main(argv: list[str] | None = None) -> int:
 
     d = sub.add_parser("detect", help="Exit 0 if paths are an FFP rule/skill change, 10 if not.")
     d.add_argument("--paths", nargs="*", default=[])
-    d.add_argument("--repo", default=None)
-    d.add_argument("--base", default="origin/main")
 
     cov = sub.add_parser("coverage", help="Gate 4 — search archffp fixtures for the change.")
     cov.add_argument("--keywords", nargs="+", required=True)
@@ -261,10 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd == "detect":
-        paths = list(args.paths)
-        if args.repo:
-            paths.extend(_git_changed_paths(Path(args.repo), args.base))
-        hit = meta_paths(paths)
+        hit = meta_paths(list(args.paths))
         if hit:
             print("META_GATE: FFP rule/skill change detected:")
             for p in hit:
