@@ -145,6 +145,7 @@ def test_apply_installs_copilot_hooks_only_when_copilot_is_picked(tmp_path, inst
     calls = (tmp_path / "cmux.log").read_text().splitlines()
     assert ("hooks copilot install --yes" in calls) is installed
     assert "hooks factory install --yes" in calls
+    assert not (tmp_path / "fixed-cmux.log").exists(), "install.sh must call cmux via CMUX_BIN"
 
 
 COPILOT_CMUX = (

@@ -605,6 +605,7 @@ def test_pulse_dispatch_falls_back_to_claude_when_copilot_does_not_start(home, m
 def test_comms_warm_session_spawns_copilot_when_picked(home, copilot_bin, monkeypatch):
     _pick(home, "copilot")
     monkeypatch.delenv("COPILOT_BIN")
+    monkeypatch.setenv("PATH", f"{copilot_bin.parent}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(cs, "HOME", home)
     paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
     commands, waits = [], []

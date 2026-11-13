@@ -57,6 +57,13 @@ CHECKS = (
         "tests/test_dashboard_overview.py::OverviewTests::test_unknown_second_terminal_blocks_observed_and_reviewed_close_out",
     ),
     (
+        "the installer finds cmux through CMUX_BIN",
+        "install.sh",
+        '    CMUX_CLI="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"\n',
+        '    CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"\n',
+        "tests/test_install_cmux_sessions.py::test_apply_installs_copilot_hooks_only_when_copilot_is_picked",
+    ),
+    (
         "ws-numberer is off by default",
         "install.sh",
         "WITH_WS_NUMBERER=0\n",

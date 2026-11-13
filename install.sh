@@ -866,7 +866,7 @@ ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hook
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
 ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
 if [[ $APPLY -eq 1 ]]; then
-    CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"
+    CMUX_CLI="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
     if [[ -x "$CMUX_CLI" ]]; then
         # Factory-optional: an old cmux without factory support, or a droid-less
         # box, must not abort the installer before the Claude settings patch and
