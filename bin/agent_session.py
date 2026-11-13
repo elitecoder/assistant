@@ -635,10 +635,11 @@ _COPILOT_EXE_RE = re.compile(r"(^|&&\s*)((?:command\s+)?'?(?:[^'\s]*/)?copilot'?
 
 
 def with_copilot_rules(command: str | None, home: str | Path | None = None) -> str | None:
-    """`command` with the rules folder set in front of its `copilot` launch.
-    cmux saves a Copilot resume command without COPILOT_CUSTOM_INSTRUCTIONS_DIRS;
-    anything else (Claude, Droid, an already-set command) comes back as is."""
-    if not command or not _COPILOT_EXE_RE.search(command):
+    """`command` with the rules folder set in front of its `copilot` launch,
+    when the user picked Copilot. cmux saves a Copilot resume command without
+    COPILOT_CUSTOM_INSTRUCTIONS_DIRS; anything else (Claude, Droid, an
+    already-set command, a hand-started Copilot session) comes back as is."""
+    if not command or not _COPILOT_EXE_RE.search(command) or not copilot_chosen():
         return command
     env = _copilot_env(home)
     if not env:

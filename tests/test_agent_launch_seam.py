@@ -1749,8 +1749,11 @@ def test_status_names_the_agent_the_slack_session_really_runs(home, monkeypatch)
 
 def test_saved_copilot_resumes_get_the_users_rules(home):
     saved = "cd -- '/p' 2>/dev/null || [ ! -d '/p' ] && '/n/copilot-darwin-arm64/copilot' '--resume' 'id'"
-    assert ag.with_copilot_rules(saved) == saved
     (home / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    _pick(home, "claude")
+    assert ag.with_copilot_rules(saved) == saved, "a hand-started Copilot session is left alone"
+    assert not (home / ".assistant" / "copilot-instructions").exists()
+    _pick(home, "copilot")
     rules = home / ".assistant" / "copilot-instructions"
     with_rules = ag.with_copilot_rules(saved)
     assert with_rules == saved.replace("&& '/n/", f"&& COPILOT_CUSTOM_INSTRUCTIONS_DIRS={rules} '/n/")
@@ -1871,6 +1874,7 @@ def test_rules_link_is_repointed_when_it_points_elsewhere(home, tmp_path):
 
 
 def test_saved_command_copilot_resume_gets_the_rules_too(home):
+    _pick(home, "copilot")
     (home / ".claude" / "CLAUDE.md").write_text("# rules\n")
     rules = home / ".assistant" / "copilot-instructions"
     assert ag.with_copilot_rules("cd /w && command copilot --resume s") == \
@@ -2011,7 +2015,8 @@ def test_the_retry_drops_only_the_effort_pair_and_keeps_the_prompt(home, copilot
     ("copilot", 0, "does not support reasoning effort", ""),
     ("claude", 1, "does not support reasoning effort", ""),
     ("droid", 1, "does not support reasoning effort", ""),
-    ("copilot", 1, "rate limited", '{"type":"user.message","data":{"content":"reasoning effort"}}'),
+    ("copilot", 1, "rate limited",
+     '{"type":"user.message","data":{"content":"Model x does not support reasoning effort"}}'),
 ])
 def test_the_effort_retry_needs_a_copilot_refusal_on_stderr(provider, rc, stderr, stdout):
     assert not ag.refused_reasoning_effort(provider, rc, stdout, stderr)
@@ -2087,3 +2092,30 @@ def test_replay_eval_runs_candidates_on_the_picked_agent(monkeypatch, tmp_path):
         tokens_out=1, cost_usd=None, usage_source="cli", session_id=None, result_text="", usable=False))
     replay.ask("m", "p", tmp_path / "r", provider="copilot")
     assert seen["provider"] == "copilot"
+
+
+def test_lessons_mine_copilot_sessions_only_when_copilot_is_picked(home, monkeypatch, tmp_path):
+    lessons = _load(BIN / "lesson-extractor.py", "seam_lessons_pick")
+    found = []
+    monkeypatch.setattr(lessons.TranscriptScanner, "_copilot_roots", lambda self, root: found.append(root) or [])
+    _pick(home, "claude")
+    lessons.TranscriptScanner(projects_dir=tmp_path / "c", droid_dir=tmp_path / "d", existing=[])
+    assert found == []
+    _pick(home, "copilot")
+    lessons.TranscriptScanner(projects_dir=tmp_path / "c", droid_dir=tmp_path / "d", existing=[])
+    assert len(found) == 1
+
+
+def test_dispatch_confirmation_reads_only_recent_copilot_sessions(home, copilot_bin, monkeypatch):
+    _pick(home, "copilot")
+    calls = []
+    real = ag.session_transcripts
+    monkeypatch.setattr(ag, "session_transcripts",
+                        lambda *a, **k: calls.append(k.get("since")) or real(*a, **k))
+
+    def transcript(cwd, text):
+        _copilot_session(home, "cp-scan", str(cwd), [
+            {"type": "user.message", "data": {"content": text}}])
+
+    _dispatch(home, monkeypatch, "seam_pulse_scan", " ← open sidebar · / commands · ? help", transcript)
+    assert calls[0] is None and calls[1] is not None and calls[1] > time.time() - 120

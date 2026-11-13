@@ -176,6 +176,11 @@ def _write_droid_settings(home, body='{"model": "glm-5.2"}'):
     return s
 
 
+@pytest.fixture(autouse=True)
+def _no_real_agent_installs(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "agent-home"))
+
+
 def test_droid_binary_pass_when_selected_and_present(monkeypatch, tmp_path):
     _select_droid(monkeypatch)
     droid = tmp_path / "droid"

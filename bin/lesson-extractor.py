@@ -362,8 +362,9 @@ class TranscriptScanner:
             droid_dir = droid_dir or agent_session.DROID_SESSIONS
             roots = [base / d for base in (projects_dir, droid_dir)
                      for d in self.PRIORITY_DIRS if (base / d).is_dir()]
-            roots += self._copilot_roots(copilot_dir or agent_session.transcript_root(
-                agent_session.COPILOT, home=HOME))
+            if copilot_dir is not None or agent_session.copilot_chosen():
+                roots += self._copilot_roots(copilot_dir or agent_session.transcript_root(
+                    agent_session.COPILOT, home=HOME))
         self.roots = roots
         self.now = now if now is not None else time.time()
         # Existing lesson triggers for fuzzy dedup. Fetched lazily by the caller

@@ -939,6 +939,8 @@ def test_crash_resume_gives_a_copilot_session_the_users_rules(home, monkeypatch,
     user = tmp_path / "user"
     (user / ".claude").mkdir(parents=True)
     (user / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    (user / ".assistant" / "comms").mkdir(parents=True)
+    (user / ".assistant" / "comms" / "config.json").write_text('{"llm": {"provider": "copilot"}}')
     monkeypatch.setenv("HOME", str(user))
     captured = {}
     monkeypatch.setattr(WW, "run", lambda cmd, timeout=10: captured.setdefault("argv", cmd)
