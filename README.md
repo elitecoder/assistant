@@ -3,7 +3,7 @@
 ![platform](https://img.shields.io/badge/platform-macOS-111111)
 ![python](https://img.shields.io/badge/python-3.11%2B-3572A5)
 
-**Assistant is a chief of staff for your fleet of Claude Code agents.**
+**Assistant is a chief of staff for your fleet of coding agents: Claude Code, GitHub Copilot CLI, or Factory Droid.**
 
 It watches every agent session you run in cmux, plus your Slack and inbox. It
 shows you only what needs you, and it handles the work around your agents:
@@ -17,7 +17,7 @@ starting sessions, answering you on Slack, and cleaning up after them.
 |---|---|
 | **See every session** | The **Sessions** tab sorts your cmux workspaces into Needs your answer, Assistant tasks, Ready to close, and Paused. |
 | **Answer agents in seconds** | A card quotes the agent's question and choices, then takes you to the right session. |
-| **Turn a task into a session** | Add a task with `/todo`, and Assistant opens a Claude session to work on it. |
+| **Turn a task into a session** | Add a task with `/todo`, and Assistant opens a session in your chosen agent to work on it. Pick the agent with `bin/assistant-llm.py set claude\|copilot\|droid`. |
 | **Start background work** | `/spawn-claude-workspace` starts an agent in a new cmux workspace without taking your focus. |
 | **Clean up when you're done** | `/cleanup` stops dev servers, saves uncommitted changes, and removes the branch and worktree. `/cleanup --undo` brings them back. |
 | **Talk to your Mac from Slack** | A Claude session answers your messages in a private Slack channel and pings you when a workspace needs you. |

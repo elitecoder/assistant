@@ -61,8 +61,6 @@ def narrator_runs_dir() -> Path:
 DEFAULT_MODEL = (os.environ.get("NARRATOR_MODEL")
                  or os.environ.get("OBSERVER_MODEL")
                  or model_tiers.model_for("balanced"))
-DEFAULT_CLAUDE_BIN = os.environ.get(
-    "CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 # The narrator reads inline brief facts only (no transcripts, no repo) — the
 # short triage/strategist leash, never the Observer's.
 NARRATOR_TIMEOUT_SEC = int(os.environ.get("NARRATOR_TIMEOUT_SEC", "180"))
@@ -196,7 +194,7 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str]:
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=NARRATOR_TIMEOUT_SEC, run=run,
-        claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
+        droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-narrator")
     if result.result_text:

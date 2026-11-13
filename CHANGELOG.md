@@ -78,6 +78,144 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   conversation slice and scores other models against them.
 
 ### Added
+- GitHub Copilot CLI is a third coding agent beside Claude Code and Factory
+  Droid. Run `bin/assistant-llm.py set copilot`, and task sessions, the Slack
+  reply session, resumes, `/spawn-claude-workspace`, and every background model
+  job start Copilot instead of Claude. The dashboard and the session check read
+  Copilot sessions too. Set the model with `llm.copilot.model` or
+  `COPILOT_MODEL`.
+- `assistant-llm.py set copilot` and the installer add cmux's Copilot hooks
+  as `~/.copilot/hooks/cmux.json`, so Copilot sessions show on the dashboard
+  and can be restored. `cmux hooks copilot install` can't do this itself: it
+  edits `config.json`, which Copilot 1.0.109 manages and marks with comments.
+  The hooks are added only when you pick Copilot, and restore relaunches
+  Copilot sessions only then, so Copilot sessions you start by hand stay yours.
+- The doctor checks that Copilot starts (`copilot --version`) and that its
+  cmux hooks are in place whenever you pick Copilot for anything.
+
+### Changed
+- `bin/agent_session.py` is now the only place that starts a coding agent.
+  `tests/test_agent_launch_seam.py` fails when any Python, shell, JavaScript,
+  launchd, workflow, or skill file builds a `claude`, `copilot`, or `droid`
+  command line. It reads code structure, so comments and prose don't count.
+- Background jobs run Copilot's standalone build instead of its npm loader,
+  which needs Node and fails under launchd. Copilot jobs run in their own
+  folder, and Copilot's errors reach the failure log.
+- Resuming a Copilot session keeps the flags it started with; it no longer
+  adds `--allow-all` to sessions you started without it.
+- Assistant answers Copilot's folder-trust question with "Yes, and remember
+  this folder", so a restored session doesn't stop at the question again.
+- The spending ledger reads Copilot's token counts. Copilot jobs used to be
+  booked as failed with a cost estimated from their much longer output.
+- Copilot gets only the extra folders that exist; it refuses to start when
+  one is missing.
+- Assistant reads Copilot sessions from `$COPILOT_HOME` when you set it.
+- The Slack reply session on Copilot clears when Copilot reports half its
+  context used, not when its log reaches 2 MB.
+- A Claude pane that shows Copilot's banner or status bar in its output is
+  no longer taken for a Copilot pane, and a busy Copilot pane is recognized.
+- FFP to-dos still go to Claude when you pick Copilot, because they run the
+  `/architect-ffp:archffp` Claude Code plugin. A Copilot session is told to
+  stop and say so if a to-do turns out to be FFP work. Droid dispatch is
+  unchanged.
+- The dashboard's latest-reply text and the merge flow's send check read
+  Copilot conversations.
+- Background Copilot jobs run at the configured thinking effort instead of
+  Copilot's saved default.
+- `assistant-llm.py set <agent>` names any job still pinned to another
+  provider, and `--feature comms` picks the agent for the Slack session alone.
+- A working Copilot pane is recognized on every spinner frame and while it
+  retries.
+- Copilot's `✗ Execution failed` banner and `session.error` events count as a
+  stopped session; the dashboard shows a Copilot tool call as working; inbox
+  snippets drop Copilot's footer; the watcher titles a Copilot session by its
+  own name.
+- Interactive Copilot sessions start with `--no-ask-user`, so questions come
+  as text Assistant can read, not a form.
+- A running Slack session moves to the newly picked agent on the next
+  message after `assistant-llm.py set <agent>`, and a Copilot one restarts
+  when its model changes. A picked Copilot that can't start runs as Claude;
+  `set copilot` warns when that's the case.
+- Background Copilot jobs retry once without `--reasoning-effort` when the
+  model refuses it on stderr (Copilot's `auto` model does), and the
+  Observer's excerpt of a Copilot session shows tool results and errors,
+  compaction summaries, notices, and aborts.
+- Copilot subagent turns and automatic messages (memory, skills, discovered
+  instructions) no longer read as the user's own turns in the Observer
+  excerpt, the lesson extractor, or any other transcript reader.
+- `evals/observer/replay.py --provider copilot` runs the candidate models on
+  Copilot.
+- `llm.copilot.reasoning_effort` sets Copilot's thinking effort on background
+  jobs; without it Copilot keeps using the shared Droid setting.
+- A Copilot tool you stop with Esc, or that was running when the session
+  ended, no longer keeps the session marked as working; the dashboard finds
+  Copilot's last reply behind long runs of its internal records. `assistant-comms-setup.sh` installs cmux's
+  Copilot hooks when Copilot is picked, and the doctor skips the Claude
+  sign-in check when the Slack session runs another agent.
+- Copilot sessions Assistant starts, restores, or brings back after a crash
+  get your rules from `~/.claude/CLAUDE.md` through
+  `~/.assistant/copilot-instructions`, linked as a Copilot instructions file;
+  your own Copilot setup isn't touched. A session cmux itself restores on app
+  restart replays cmux's saved command, which doesn't carry them.
+- The notification watcher reads cmux's `cmux-feed-v1:` session ids, so a
+  ping again carries the agent's last message for Claude and Copilot (the
+  format change in cmux had broken this since October).
+- Spending and Slack-session context reads go through `bin/agent_session.py`,
+  and the launch check also flags Claude-only transcript and usage parsing.
+- Task sessions now answer the first-launch folder-trust question whenever it
+  appears during boot, not only in one check 2 seconds after launch. Copilot
+  shows it about 4 seconds in, so the old check missed it and the session sat
+  waiting.
+- `/spawn-claude-workspace` takes its launch command, readiness check, trust
+  prompt, and submission check from `bin/agent_session.py`. It still defaults
+  to Droid, takes `engine=copilot`, stops with a message when the engine isn't
+  installed, and checks only conversations written since the spawn.
+- The session check (`ASSISTANT_WATCHER=1`) now runs in default mode too.
+  The other opt-in jobs still need Pro mode.
+- The session check now reads each conversation as plain text: the first
+  request plus the latest turns, with attachments, hook output, and thinking
+  removed. It used to send a fixed 128 KB slice of the raw log, which was
+  mostly clutter and sometimes held no conversation at all. Prompts are about
+  a third of their old size.
+- Session results on the Sessions tab now stay for up to 6 hours while the
+  session doesn't change, instead of expiring after 10 minutes.
+
+### Added
+- `OBSERVER_EVERY_MIN` sets how many minutes pass before a changed session is
+  checked again. The default, 0, checks on every run.
+- `evals/observer/replay.py` replays past Sonnet checks with the new
+  conversation slice and scores other models against them.
+
+### Removed
+- Remove the dollars-per-day boxes from the Brief tab and the background-work
+  stats. The model-heavy background jobs that drove that cost are off.
+
+### Changed
+- The Brief tab now rebuilds from your current notifications, completed
+  actions, and service status every time the dashboard updates, instead of
+  showing the copy saved at 7 AM. A **Refresh now** button rebuilds it on the
+  spot. If the live build fails, the tab falls back to the saved copy.
+- Turn off the daily Sonnet call that writes the morning brief's wording. Its
+  summary never showed on the dashboard, and its advice showed only when the
+  live queue couldn't be read. The Brief tab still builds without a model. Set
+  `ASSISTANT_BRIEF_NARRATOR=1` to turn it back on.
+- Turn off the watcher (the Observer) by default, along with its Opus
+  double-check. It sent 40–75K tokens per check, about 870 checks a day. The
+  dashboard's **Waiting on you** tab covers its view without a model. Set
+  `ASSISTANT_WATCHER=1` to turn it back on.
+- Turn off the lessons extractor and the strategist by default. Their output
+  went unread: 689 lesson proposals sat pending, and the strategist's notes
+  covered 9 items 119 times. Set `ASSISTANT_LESSON_EXTRACTOR=1` or
+  `ASSISTANT_STRATEGIST=1` to turn either back on. With the strategist off, the
+  goals planner uses its built-in step templates.
+
+### Fixed
+- Keep idle sessions on the Sessions tab. When a transcript's timestamp changed
+  without new text, the session context watcher never noticed, so the session
+  stayed under Sessions not checked yet. On one Mac, 19 of 26 sessions were
+  stuck there. The watcher now rereads a transcript when its timestamp changes.
+
+### Added
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds

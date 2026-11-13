@@ -20,7 +20,7 @@ from run_python_coverage import PYTHON_SOURCE_DIRS, canonical_report_hash
 # Shell files with no line-coverage tool; each changed code hunk needs a
 # mutation_smoke check that breaks only changed code lines in it. A check can
 # still be written to dodge this, so review new checks like any test.
-MUTATION_PROVEN = {"install.sh"}
+MUTATION_PROVEN = {"install.sh", "install-bootstrap.sh", "bin/assistant-comms-setup.sh"}
 
 
 def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:

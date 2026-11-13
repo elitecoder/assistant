@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure the Assistant's headless LLM provider: claude, droid, or local."""
+"""Configure the Assistant's LLM provider: claude, copilot, droid, or local."""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +24,7 @@ FEATURES = (
     "narrator",
     "lessons",
     "slack_judge",
+    "comms",
 )
 
 
@@ -63,7 +64,19 @@ def write_document(path: Path, update) -> dict:
         return document
 
 
+def feature_pins(path: Path, provider: str) -> list[tuple[str, str]]:
+    """(feature, provider) for each feature pinned to a provider other than
+    `provider` in the config."""
+    features = (load_document(path).get("llm") or {}).get("features") or {}
+    return [(name, str(cfg.get("provider"))) for name, cfg in features.items()
+            if isinstance(cfg, dict) and cfg.get("provider")
+            and cfg.get("provider") != provider]
+
+
 def set_provider(path: Path, provider: str, feature: str | None) -> None:
+    if feature == "comms" and provider not in llm_runner.agent_session.AGENTS:
+        raise ValueError("the comms session runs an agent: claude, copilot, or droid")
+
     def update(document: dict) -> None:
         llm = document.setdefault("llm", {})
         if not isinstance(llm, dict):
@@ -89,7 +102,10 @@ def set_provider(path: Path, provider: str, feature: str | None) -> None:
         droid = llm.setdefault("droid", {})
         if not isinstance(droid, dict):
             raise ValueError("config key 'llm.droid' must be an object")
-        droid.setdefault("bin", str(Path.home() / ".local/bin/droid"))
+        droid.setdefault("bin", llm_runner.agent_session.binary(
+            llm_runner.agent_session.DROID,
+            env={k: v for k, v in os.environ.items()
+                 if k != llm_runner.agent_session.bin_env_var(llm_runner.agent_session.DROID)}))
         droid.setdefault("model", "glm-5.2")
         droid.setdefault("reasoning_effort", "high")
 
@@ -137,15 +153,19 @@ def status(path: Path) -> dict:
                 f"{prefix}_DROID_REASONING_EFFORT",
                 f"{prefix}_LOCAL_MODEL",
                 f"{prefix}_LOCAL_REASONING_EFFORT",
+                f"{prefix}_COPILOT_MODEL",
+                "COPILOT_MODEL",
                 "ASSISTANT_LOCAL_LLM_URL",
-                "DROID_BIN",
+                llm_runner.agent_session.bin_env_var(llm_runner.agent_session.DROID),
             ) if (value := os.environ.get(key)) is not None
         }
         features[feature] = {
-            "provider": route.provider,
+            "provider": (llm_runner.agent_session.warm_session_agent() if feature == "comms"
+                         else route.provider),
             "configured_provider": configured.provider,
             "droid_model": route.droid_model,
             "droid_reasoning_effort": route.droid_reasoning_effort,
+            "copilot_model": route.copilot_model,
             "local_url": route.local_url,
             "local_model": route.local_model,
             "local_reasoning_effort": route.local_reasoning_effort,
@@ -162,13 +182,13 @@ def status(path: Path) -> dict:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Choose Claude, Factory Droid, or a local model for Assistant LLM work.")
+        description="Choose Claude, Copilot, Factory Droid, or a local model for Assistant LLM work.")
     commands = result.add_subparsers(dest="command", required=True)
     show = commands.add_parser("status")
     show.add_argument("--json", action="store_true")
 
     set_cmd = commands.add_parser("set")
-    set_cmd.add_argument("provider", choices=("claude", "droid", "local"))
+    set_cmd.add_argument("provider", choices=llm_runner.PROVIDERS)
     set_cmd.add_argument("--feature", choices=FEATURES)
 
     inherit = commands.add_parser("inherit")
@@ -190,9 +210,14 @@ def main(argv: list[str] | None = None) -> int:
                     f"{current['global_provider']}")
                 for name, feature in current["features"].items():
                     detail = feature["provider"]
+                    if name == "comms":
+                        print(f"{name}: {detail} (interactive session; its own launch settings)")
+                        continue
                     if detail == "droid":
                         detail += f" ({feature['droid_model']}, " \
                             f"{feature['droid_reasoning_effort']} reasoning)"
+                    if detail == "copilot":
+                        detail += f" ({feature['copilot_model'] or 'Copilot default model'})"
                     if detail == "local":
                         detail += f" ({feature['local_model']} at " \
                             f"{feature['local_url']}, " \
@@ -207,6 +232,30 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "set":
             set_provider(
                 path, args.provider, args.feature)
+            if not args.feature:
+                dispatch = (load_document(path).get("dispatch") or {}).get("agent")
+                if dispatch and dispatch != args.provider:
+                    print(f"note: task dispatch stays on {dispatch} (dispatch.agent); "
+                          f"remove it to follow {args.provider}", file=sys.stderr)
+                for name, pinned in feature_pins(path, args.provider):
+                    print(f"note: {name} stays on {pinned} (llm.features.{name}); "
+                          f"run `assistant-llm.py inherit --feature {name}` to follow "
+                          f"{args.provider}", file=sys.stderr)
+            if (args.provider == llm_runner.agent_session.COPILOT
+                    and not llm_runner.agent_session.agent_available(args.provider)):
+                print("warning: Copilot isn't installed, doesn't start, or isn't signed in "
+                      "(run `copilot login`); jobs picked for it will fail and the "
+                      "Slack session stays on Claude", file=sys.stderr)
+            if args.provider == llm_runner.agent_session.COPILOT:
+                failed = llm_runner.agent_session.install_copilot_hooks()
+                if failed:
+                    print(f"warning: cmux Copilot hooks not installed "
+                          f"({failed}); Copilot sessions won't show on the "
+                          f"dashboard", file=sys.stderr)
+                unlinked = llm_runner.agent_session.link_copilot_skills()
+                if unlinked:
+                    print(f"warning: {unlinked}; until then Copilot sessions "
+                          f"have no /cleanup, /todo, or /lesson", file=sys.stderr)
         else:
             inherit_provider(path, args.feature)
         return main(["status"])

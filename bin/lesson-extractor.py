@@ -51,7 +51,6 @@ LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
 PROPOSALS_PATH = ASSISTANT_DIR / "proposals.jsonl"
 AUDIT_LOG = ASSISTANT_DIR / "assistant-audit.log"
 CURATOR = BIN / "assistant-curator.py"
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 # Keel M8 model-tiering: the extractor only PHRASES a {trigger, rule, target}
 # over a recurrence already DETECTED in Python (MIN_OCCURRENCES), and every
 # result is a HUMAN-CONFIRMED proposal — a hard gate that makes this a CHEAP-tier
@@ -66,11 +65,12 @@ MIN_OCCURRENCES = 3
 WINDOW_SEC = 72 * 3600
 STEM_WORDS = 8
 
-# Where Claude Code writes one JSONL transcript per session.
-CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
 import agent_session  # noqa: E402
+
+# Where Claude Code writes one JSONL transcript per session.
+CLAUDE_PROJECTS = agent_session.transcript_root(agent_session.CLAUDE, home=HOME)
 
 # Strip these noise tokens out of evidence before computing the stem so the
 # grouping keys on the SHAPE of the evidence, not its per-workspace specifics.
@@ -317,6 +317,12 @@ def signal_stem(text: str, words: int = 10) -> str:
     return " ".join(_norm(text).split()[:words])
 
 
+def _session_name(path: Path) -> str:
+    """A transcript's per-session name: the file name, or `<id>/events.jsonl`
+    for Copilot, whose every session file is named events.jsonl."""
+    return f"{path.parent.name}/{path.name}" if path.name == "events.jsonl" else path.name
+
+
 class TranscriptScanner:
     """Scans Claude Code session transcripts for correction/confirmation signals.
 
@@ -349,12 +355,16 @@ class TranscriptScanner:
     def __init__(self, roots: list[Path] | None = None,
                  projects_dir: Path = CLAUDE_PROJECTS,
                  droid_dir: Path | None = None,
+                 copilot_dir: Path | None = None,
                  existing: list[str] | None = None,
                  now: float | None = None):
         if roots is None:
             droid_dir = droid_dir or agent_session.DROID_SESSIONS
             roots = [base / d for base in (projects_dir, droid_dir)
                      for d in self.PRIORITY_DIRS if (base / d).is_dir()]
+            if copilot_dir is not None or agent_session.copilot_chosen():
+                roots += self._copilot_roots(copilot_dir or agent_session.transcript_root(
+                    agent_session.COPILOT, home=HOME))
         self.roots = roots
         self.now = now if now is not None else time.time()
         # Existing lesson triggers for fuzzy dedup. Fetched lazily by the caller
@@ -362,6 +372,16 @@ class TranscriptScanner:
         self._existing_stems = {signal_stem(t) for t in (existing or []) if t}
 
     # ── file selection ──────────────────────────────────────────────────────
+
+    def _copilot_roots(self, copilot_dir: Path) -> list[Path]:
+        """Copilot session dirs whose cwd maps to a priority project slug."""
+        try:
+            dirs = sorted(copilot_dir.iterdir())
+        except OSError:
+            return []
+        return [d for d in dirs
+                if (cwd := agent_session.copilot_session_cwd(d))
+                and agent_session.claude_project_slug(cwd) in self.PRIORITY_DIRS]
 
     def _gather_files(self) -> list[Path]:
         """Recency-sorted, filtered transcript paths under the scan roots."""
@@ -453,10 +473,7 @@ class TranscriptScanner:
                 role = agent_session.record_role(obj)
                 if role is None:
                     continue
-                msg = obj.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content")
+                content = agent_session.record_content(obj)
                 text = (self._user_text(content) if role == "user"
                         else self._assistant_text(content))
                 if text:
@@ -506,7 +523,7 @@ class TranscriptScanner:
                 if text.rstrip().endswith("?") and len(text) <= 200:
                     qstem = signal_stem(text, words=8)
                     if qstem:
-                        q_files[qstem].add(path.name)
+                        q_files[qstem].add(_session_name(path))
                         q_repr.setdefault(qstem, text)
                 sig = self._classify(text)
                 if not sig:
@@ -521,7 +538,7 @@ class TranscriptScanner:
                     agg[key] = {
                         "type": "transcript",
                         "signal": sig,
-                        "source_file": path.name,
+                        "source_file": _session_name(path),
                         "assistant_context": self._prev_assistant(turns, i)[:200],
                         "user_signal": text[:150],
                         "stem": stem,
@@ -783,7 +800,7 @@ def _claude_oneshot(prompt: str) -> str:
     model = route.model_for(EXTRACTOR_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
-        timeout=120, run=_run, claude_bin=CLAUDE_BIN,
+        timeout=120, run=_run,
         droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-lessons")

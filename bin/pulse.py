@@ -129,6 +129,8 @@ CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources
 # --add-dir). That alias is the single source of truth; see step 2 in dispatch_todo.
 # cwd for dispatched work. ~/dev keeps the spawn inside Mukul's permission roots;
 # FFP work re-homes itself into a fresh firefly-platform worktree via archffp.
+# One-second polls a dispatched session gets to show its ready marker.
+READY_POLLS = 30
 DISPATCH_CWD = Path(os.environ.get("DISPATCH_CWD", str(HOME / "dev")))
 
 # The Observer reads many transcripts → BALANCED tier, long-context. OBSERVER_MODEL
@@ -184,7 +186,6 @@ OBSERVER_RUN_RETENTION_DAYS = _env_num(
     "OBSERVER_RUN_RETENTION_DAYS", "7", float)
 OBSERVER_RUN_MAX_PULSES = _env_num(
     "OBSERVER_RUN_MAX_PULSES", "2048", int)
-DEFAULT_CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 
 # Keep each untrusted workspace transcript in its own model context.
 WS_BATCH_SIZE = 1
@@ -705,7 +706,7 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     model = route.model_for(TRIAGE_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
-        timeout=TRIAGE_TIMEOUT_SEC, run=run, claude_bin=DEFAULT_CLAUDE_BIN,
+        timeout=TRIAGE_TIMEOUT_SEC, run=run,
         droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-triage")
@@ -1450,7 +1451,7 @@ def call_observer_batch(ctxs: list[dict], pulse_idx: int,
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=selected_model,
         run_dir=run_dir, timeout=OBSERVER_TIMEOUT_SEC, run=run,
-        claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
+        droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, json_schema=OBSERVER_RESPONSE_SCHEMA,
         extra_dirs=[run_dir],
@@ -1829,8 +1830,19 @@ def pre_cleanup_check(ws_ref: str) -> dict:
 
 # ─── verdict execution ──────────────────────────────────────────────────────
 
+def runs_copilot(ctx: dict | None) -> bool:
+    """True when the workspace's agent is Copilot: its observed session, or
+    the agent its screen shows when cmux has no session for the pane."""
+    import agent_session  # noqa: PLC0415 — bin/ is sys.path[0] when pulse.py runs
+    ctx = ctx or {}
+    identity = ctx.get("observation_identity") or {}
+    providers = [s.get("provider") for s in identity.get("observed_sessions") or []
+                 if isinstance(s, dict)] or [ctx.get("agent_provider")]
+    return any(agent_session.agent_from_kind(p) == agent_session.COPILOT for p in providers)
+
+
 def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
-                    carry: bool = False) -> dict:
+                    carry: bool = False, copilot: bool = False) -> dict:
     """Execute the action implied by the verdict. Returns an action_taken
     dict for the state file.
 
@@ -1926,6 +1938,20 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
     # CI router → send + verify). INCIDENTS.md mandates this; a direct
     # /merge-when-ready send would skip all of it.
     if kind == "ready_for_merge":
+        pr_refs = ws.get("pr_refs") or []
+        if copilot and pr_refs:
+            # A card, not an action, so it re-emits on carried pulses too.
+            awaiting.append({
+                "key": f"{ws_ref}:merge-needs-claude:{pr_refs[0]}",
+                "tier": "T2",
+                "title": f"PR #{pr_refs[0]} looks ready — merge it yourself",
+                "detail": (f"{ws_ref} runs Copilot, which has no /merge-when-ready or "
+                           "/monitor-ffp-ci (Claude plugin skills), so the Assistant "
+                           "didn't send them."),
+                "ws_ref": ws_ref,
+            })
+            return {**base, "kind": "emit-card",
+                    "evidence": f"Copilot workspace; merge of PR #{pr_refs[0]} left to the user"}
         if carry:
             # Carried verdicts never act — the dispatch ran when the verdict
             # was earned; a carry re-running it would re-submit the merge.
@@ -1934,7 +1960,6 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
         if observer_actions_held():
             return {**base, "kind": "skipped",
                     "evidence": "Observer actions held; merge dispatch not run"}
-        pr_refs = ws.get("pr_refs") or []
         if not pr_refs:
             return {**base, "kind": "skipped", "outcome": "failed",
                     "evidence": "ready_for_merge but no pr_refs on ws"}
@@ -2078,7 +2103,27 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
     return True
 
 
-def _build_dispatch_prompt(item: dict) -> str:
+_FFP_RE = re.compile(r"firefly-platform|architect-ffp|archffp|\bFFP\b")
+
+
+def _needs_claude(item: dict) -> bool:
+    """True when a TODO names FFP work (firefly-platform, archffp, or the FFP
+    project key/tag), which the dispatch rules route through
+    /architect-ffp:archffp — a Claude Code plugin."""
+    text = " ".join(str(item.get(k) or "") for k in ("title", "detail", "url"))
+    tags = {str(t).strip().lower() for t in item.get("tags") or []}
+    return bool(_FFP_RE.search(text)) or bool(tags & {"ffp", "firefly-platform"})
+
+
+_NOT_CLAUDE_NOTE = (
+    "# Your agent\n"
+    "You are running in {agent}, not Claude Code, so Claude Code plugin skills "
+    "such as `/architect-ffp:archffp` aren't available. If this turns out to be "
+    "FFP Squirrel work, don't do it yourself: stop and reply "
+    "`NEEDS CLAUDE: FFP work` so Mukul can re-dispatch it to Claude.\n")
+
+
+def _build_dispatch_prompt(item: dict, agent: str = "claude") -> str:
     """Self-contained prompt for a dispatched TODO.
 
     Two halves: the work description (this TODO's fields) followed by the
@@ -2146,7 +2191,8 @@ def _build_dispatch_prompt(item: dict) -> str:
             "Otherwise implement directly, validate end-to-end, open a PR. "
             f"Reference {tid} in your branch / PR."
         )
-    return f"{work}\n{rules}\n"
+    note = "\n" + _NOT_CLAUDE_NOTE.format(agent=agent) if agent == "copilot" else ""
+    return f"{work}\n{rules}\n{note}"
 
 
 def _cmux_rpc(method: str, params: dict, timeout: int = 15) -> dict | None:
@@ -2214,26 +2260,31 @@ def dispatch_todo(todo_id: str) -> bool:
                 p.unlink()
     except Exception:
         pass
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    prompt_file = SPAWN_PROMPT_DIR / f"prompt-dispatch-{todo_id}-{stamp}.md"
-    prompt_file.write_text(_build_dispatch_prompt(item))
-
-    # 2. Create the workspace with the configured coding agent baked into
-    #    --command. The agent_session seam owns model and permission parity.
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
     import agent_session  # noqa: PLC0415
     agent = agent_session.dispatch_agent()
+    if agent == agent_session.COPILOT and _needs_claude(item):
+        log.info("dispatch %s: FFP work runs /architect-ffp:archffp, a Claude "
+                 "Code plugin — dispatching to claude instead of %s", todo_id, agent)
+        agent = agent_session.CLAUDE
     # Pre-flight the opt-in droid binary: if droid is selected but not installed
     # here, degrade to claude rather than spawn a workspace that can never reach
     # readiness (the never-ready return precedes the idempotency stamp, so it
     # would re-dispatch a dead workspace every pulse until the fleet caps
     # saturate). Claude — the always-present agent — keeps the fleet moving.
-    if agent == agent_session.DROID and not agent_session.agent_available(agent):
-        log.warning("dispatch %s: droid selected but not launch-ready (missing/"
-                    "non-executable binary or missing/corrupt droid-glm-settings"
-                    ".json) — falling back to claude", todo_id)
+    if agent_session.available_or_claude(agent) != agent:
+        log.warning("dispatch %s: %s selected but not launch-ready (missing/"
+                    "non-executable binary, or for droid a missing/corrupt "
+                    "droid-glm-settings.json) — falling back to claude",
+                    todo_id, agent)
         agent = agent_session.CLAUDE
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    prompt_file = SPAWN_PROMPT_DIR / f"prompt-dispatch-{todo_id}-{stamp}.md"
+    prompt_file.write_text(_build_dispatch_prompt(item, agent))
+
+    # 2. Create the workspace with the configured coding agent baked into
+    #    --command. The agent_session seam owns model and permission parity.
     launch_cmd = agent_session.launch_command(agent, home=HOME)
     cwd = str(DISPATCH_CWD)
     title = f"{todo_id}: {item.get('title','')}"[:40]
@@ -2266,38 +2317,38 @@ def dispatch_todo(todo_id: str) -> bool:
     #    A non-recursive glob missed those and the confirmation in step 7 always
     #    came back negative — which used to re-spawn the TODO every pulse
     #    (td-128: 7 duplicate workspaces). Match both layouts by relative path.
-    project_dir = agent_session.confirm_dir(agent, cwd, home=HOME)
-    project_dir.mkdir(parents=True, exist_ok=True)
+    if agent in agent_session.SLUG_AGENTS:
+        agent_session.confirm_dir(agent, cwd, home=HOME).mkdir(
+            parents=True, exist_ok=True)
     before: dict[str, tuple[int, int]] = {}
-    for path in project_dir.rglob("*.jsonl"):
+    # Copilot keeps every session in one folder; the confirmation polls below
+    # read only sessions written since now (minus slack) instead of all of them.
+    scan_since = time.time() - 60
+    for path in agent_session.session_transcripts(agent, cwd, home=HOME):
         try:
             stat = path.stat()
-            before[str(path.relative_to(project_dir))] = (
-                stat.st_ino, stat.st_size)
+            before[str(path)] = (stat.st_ino, stat.st_size)
         except OSError:
             continue
 
-    # 4. Trust prompt (first launch in a never-used cwd). --dangerously-skip
-    #    does NOT bypass it; the transcript never appears until it's answered.
-    time.sleep(2)
+    # 4-5. Wait for readiness, answering the first-launch folder-trust prompt
+    #    (once) whenever it appears. Permission-bypass flags (claude's alias,
+    #    copilot --allow-all) don't cover it, and it can render seconds into
+    #    boot, so it's checked on every poll, not once up front. An unanswered
+    #    trust prompt outranks the ready marker on the same screen. Readiness
+    #    is the agent's ready marker from agent_session.ready_re.
     trust = agent_session.trust_marker(agent)
-    if trust and trust in _surface_read_text(surface_ref):
-        _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": "1"})
-        _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
-
-    # 5. Wait for readiness. Match EITHER pre-submission marker so the gate is
-    #    independent of `/tui` mode and terminal height:
-    #      - "Claude Code v…" — the boot banner. Top-pinned, so in fullscreen it
-    #        can sit above a short read window (see _surface_read_text note).
-    #      - "⏵⏵ bypass permissions on" — the bottom status bar. Present in both
-    #        default-inline and fullscreen /tui, and in both idle and working
-    #        states, so it's always inside a bottom-anchored read window even
-    #        when the banner has scrolled off the top.
-    #    Either marker means claude is up and accepting input.
+    trust_answered = False
     ready = False
-    for _ in range(30):
+    time.sleep(2)  # keys typed before the REPL draws its prompt can be lost
+    for _ in range(READY_POLLS):
         screen = _surface_read_text(surface_ref)
-        if agent_session.ready_re(agent).search(screen):
+        if trust and not trust_answered and trust in screen:
+            _cmux_rpc("surface.send_text", {"surface_id": surface_ref,
+                                            "text": agent_session.trust_answer(agent)})
+            _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+            trust_answered = True
+        elif agent_session.ready_re(agent).search(screen):
             ready = True
             break
         time.sleep(1)
@@ -2349,11 +2400,10 @@ def dispatch_todo(todo_id: str) -> bool:
     submitted = False
     for _ in range(30):
         candidates: list[tuple[Path, int]] = []
-        for path in project_dir.rglob("*.jsonl"):
+        for path in agent_session.session_transcripts(agent, cwd, home=HOME, since=scan_since):
             try:
                 stat = path.stat()
-                name = str(path.relative_to(project_dir))
-                prior = before.get(name)
+                prior = before.get(str(path))
                 if prior is None or prior[0] != stat.st_ino:
                     candidates.append((path, 0))
                 elif stat.st_size > prior[1]:
@@ -2371,9 +2421,8 @@ def dispatch_todo(todo_id: str) -> bool:
                         d = json.loads(line)
                     except Exception:
                         continue
-                    msg = d.get("message") if isinstance(d.get("message"), dict) else None
-                    if agent_session.record_role(d) == "user" and msg:
-                        c = msg.get("content", "")
+                    c = agent_session.record_content(d)
+                    if agent_session.record_role(d) == "user" and c is not None:
                         if isinstance(c, list):
                             c = " ".join(
                                 str(x.get("text", "") if isinstance(x, dict) else x)
@@ -2687,7 +2736,7 @@ def main() -> int:
                 }, observation_complete=v.get("observation_complete"))
                 new_verdicts[ws_ref] = v.get("verdict") or "active"
                 card_action = execute_verdict(ws, v, awaiting_input,
-                                              carry=True)
+                                              carry=True, copilot=runs_copilot(ctx))
                 evidence = (f"state unchanged since last verdict "
                             f"({v.get('verdict')}); Observer call skipped "
                             f"(carry {v.get('carry_count')}/"
@@ -2750,7 +2799,8 @@ def main() -> int:
             # Effective verdict for metering — mirrors what was just saved
             # (a verdict-less line defaults to active, same as the synth path).
             new_verdicts[ws_ref] = v_for_save.get("verdict") or "active"
-            action = execute_verdict(ws, v_for_save, awaiting_input)
+            action = execute_verdict(ws, v_for_save, awaiting_input,
+                                     copilot=runs_copilot(ctx))
             actions_taken.append(action)
             append_ledger({
                 "ts": utc_iso(),

@@ -109,7 +109,8 @@ def test_dry_run_reports_without_patching(tmp_path, install):
 
     result = install()
 
-    assert "would install cmux Factory hooks and patch Claude + Factory session hooks" in result.stdout
+    assert ("would install cmux Factory hooks (+ Copilot hooks when Copilot is picked) "
+            "and patch Claude + Factory session hooks") in result.stdout
     assert hooks(settings) == {"SessionEnd": [LEDGER_END]}
 
 
@@ -132,3 +133,80 @@ def test_help_documents_the_cmux_session_hooks(tmp_path):
             "       bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions,\n"
             "       and Claude + Factory SessionStart patched to run cmux-auto-resume.py\n"
             "       (the retired ledger hook's registrations removed)\n" in result.stdout)
+
+
+@pytest.mark.parametrize("provider,installed", [("copilot", True), ("claude", False)])
+def test_apply_installs_copilot_hooks_only_when_copilot_is_picked(tmp_path, install,
+                                                                  provider, installed):
+    config = tmp_path / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"llm": {"provider": provider}}))
+    install("--apply")
+    calls = (tmp_path / "cmux.log").read_text().splitlines()
+    assert ("hooks copilot install --yes" in calls) is installed
+    assert "hooks factory install --yes" in calls
+    assert not (tmp_path / "fixed-cmux.log").exists(), "install.sh must call cmux via CMUX_BIN"
+
+
+COPILOT_CMUX = (
+    '#!/bin/sh\n'
+    'printf "%s\\n" "$*" >> "$HOME/cmux.log"\n'
+    'if [ "$*" = "hooks copilot install --yes" ]; then\n'
+    '  printf \'{"hooks":{"Stop":[{"hooks":[{"command":"cmux hooks enqueue copilot stop","timeout":5000}]}]}}\' '
+    '> "$COPILOT_HOME/config.json"\n'
+    'fi\n'
+)
+
+
+def _pick_copilot(home):
+    config = home / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"llm": {"provider": "copilot"}}))
+
+
+def test_apply_with_copilot_picked_writes_its_cmux_hooks(tmp_path, install):
+    _pick_copilot(tmp_path)
+    (tmp_path / "stubbin/cmux").write_text(COPILOT_CMUX)
+    result = install("--apply")
+    assert "cmux Copilot hooks install failed" not in result.stderr
+    assert json.loads((tmp_path / ".copilot/hooks/cmux.json").read_text()) == {
+        "version": 1, "hooks": {"Stop": [{"type": "command", "timeoutSec": 5,
+                                          "bash": "cmux hooks enqueue copilot stop"}]}}
+
+
+def test_a_failed_copilot_hooks_install_warns_and_the_install_continues(tmp_path, install):
+    _pick_copilot(tmp_path)
+    result = install("--apply")
+    assert ("cmux Copilot hooks install failed (continuing — Copilot sessions may not "
+            "show on the dashboard)") in result.stderr
+    assert not (tmp_path / ".copilot/hooks/cmux.json").exists()
+    assert "[5/5] Reloading launchd agents that changed" in result.stdout
+
+
+def test_apply_with_copilot_picked_links_copilots_skills_to_assistants(tmp_path, install):
+    _pick_copilot(tmp_path)
+    install("--apply")
+    link = tmp_path / ".copilot/skills"
+    assert link.is_symlink() and os.readlink(link) == str(tmp_path.resolve() / ".claude/skills")
+    assert (link / "cleanup" / "SKILL.md").is_file()
+
+
+def test_apply_without_copilot_leaves_copilots_skills_alone(tmp_path, install):
+    install("--apply")
+    assert not (tmp_path / ".copilot/skills").exists()
+
+
+def test_an_existing_copilot_skills_folder_warns_and_the_install_continues(tmp_path, install):
+    _pick_copilot(tmp_path)
+    (tmp_path / ".copilot/skills/mine").mkdir(parents=True)
+    result = install("--apply")
+    assert "Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson" in result.stderr
+    assert (tmp_path / ".copilot/skills/mine").is_dir()
+    assert "[5/5] Reloading launchd agents that changed" in result.stdout
+
+
+def test_dry_run_with_copilot_picked_says_it_would_link_the_skills(tmp_path, install):
+    _pick_copilot(tmp_path)
+    result = install()
+    assert "would link ~/.copilot/skills → ~/.claude/skills (Copilot is picked)" in result.stdout
+    assert not (tmp_path / ".copilot/skills").exists()

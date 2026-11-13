@@ -420,8 +420,9 @@ def test_deliver_boot_binds_the_transcript_holding_this_boots_nonce(tmp_path, mo
     old = _jsonl(tmp_path / "old.jsonl", [_prompt(cs.boot_instruction(Path("/p.md"), "earlier"))])
     typed: list[str] = []
 
-    def fake_submit(paths, surface_ref, text, marker, confirmed):
+    def fake_submit(paths, surface_ref, text, marker, confirmed, agent=None):
         typed.append(text)
+        assert agent == "claude", "the prompt box is read as the session's agent"
         assert not confirmed(), "nothing has recorded this boot yet"
         _jsonl(tmp_path / "new.jsonl", [_prompt(text)])
         return confirmed()
@@ -434,7 +435,7 @@ def test_deliver_boot_binds_the_transcript_holding_this_boots_nonce(tmp_path, mo
 def test_deliver_boot_none_when_never_submitted(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "project_dir_for_cwd", lambda cwd, agent="claude": tmp_path)
     got = cs.deliver_boot(PATHS, "surface:1", "/cwd", Path("/p.md"), "claude",
-                          submit_fn=lambda *a: False)
+                          submit_fn=lambda *a, **k: False)
     assert got is None
 
 
@@ -525,3 +526,49 @@ def test_close_own_workspace_never_forces_past_other_errors(monkeypatch):
     calls, logs = _close_with(monkeypatch, [(1, "", "Error: not_found")])
     assert calls == [["close-workspace", "--workspace", "workspace:1000010024"]]
     assert logs == ["close workspace:1000010024 rc=1: Error: not_found"]
+
+
+# ─── a busy Copilot records a typed prompt only when its turn ends ──────────
+
+
+def _busy_submit(term, busy, confirm_at, busy_wait_sec=600):
+    return cs.submit_until_confirmed(
+        term.send_text, term.press_enter, term.read_box,
+        lambda: term.now >= confirm_at, "msg_ts=1",
+        attempts=3, wait_sec=5, sleep=term.sleep, clock=term.clock,
+        busy=busy, busy_wait_sec=busy_wait_sec)
+
+
+def test_a_busy_session_that_took_the_text_is_waited_on_until_its_turn_ends():
+    term = FakeTerminal(confirm_after_enters=None, typed_box="")
+    assert _busy_submit(term, busy=lambda: True, confirm_at=200)
+    assert (term.typed, term.enters) == (1, 1), "no retyping, no extra Enter"
+
+
+def test_the_busy_wait_has_a_limit():
+    term = FakeTerminal(confirm_after_enters=None, typed_box="")
+    assert not _busy_submit(term, busy=lambda: True, confirm_at=10_000, busy_wait_sec=60)
+    assert term.now < 200
+
+
+def test_no_busy_wait_when_the_text_is_still_in_the_box_or_the_session_is_idle():
+    held = FakeTerminal(confirm_after_enters=None)
+    assert not _busy_submit(held, busy=lambda: True, confirm_at=100)
+    idle = FakeTerminal(confirm_after_enters=None, typed_box="")
+    assert not _busy_submit(idle, busy=lambda: False, confirm_at=100)
+    assert held.now < 100 and idle.now < 100
+
+
+def test_copilot_submit_waits_while_its_screen_shows_a_turn_running(monkeypatch):
+    screen = {"text": "╻\n┃\n╹\n ● Working (12s) · ctrl+c interrupt"}
+    seen = {}
+    monkeypatch.setattr(cs, "_surface_read_text", lambda paths, ref, lines=200: screen["text"])
+    monkeypatch.setattr(cs, "submit_until_confirmed", lambda *a, **k: seen.update(k) or True)
+    cs.submit(object(), "surface:1", "hi msg_ts=1", "msg_ts=1", lambda: False, agent="copilot")
+    assert seen["busy"]()
+    screen["text"] = "╻\n┃\n╹\n ← open sidebar · Interactive · Allow All · / commands · ? help"
+    assert not seen["busy"]()
+    screen["text"] = "╻\n┃\n╹\n ● Working (12s) · ctrl+c interrupt"
+    for agent in ("claude", "droid"):
+        cs.submit(object(), "surface:1", "hi msg_ts=1", "msg_ts=1", lambda: False, agent=agent)
+        assert not seen["busy"](), f"{agent} never waits on a busy screen"

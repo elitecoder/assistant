@@ -52,6 +52,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import cmux_sessions  # noqa: E402
 
 # The canonical connector tri-state (not_configured|ok|error) + the known-
@@ -260,12 +261,13 @@ def surface_resume_binding(surface_ref, ws_ref):
     if not binding:
         return {"unverified": True} if has_kind else None
     kind = str(binding.get("kind") or "").lower()
-    if kind not in {"claude", "factory", "droid"}:
+    provider = agent_session.agent_from_kind(kind)
+    if provider is None:
         return {"unverified": True}
     sid = binding.get("checkpointId") or binding.get("checkpoint_id")
     return {
         "session_id": str(sid),
-        "provider": "droid" if kind in {"factory", "droid"} else "claude",
+        "provider": provider,
         # A restore_record, the fallback without a resume_binding, names it
         # working_directory.
         "cwd": binding.get("cwd") or binding.get("working_directory"),
@@ -273,21 +275,12 @@ def surface_resume_binding(surface_ref, ws_ref):
 
 
 def transcript_for_session(provider, session_id):
-    if provider not in {"claude", "droid"}:
-        return None
-    root = (HOME / ".factory/sessions" if provider == "droid"
-            else HOME / ".claude/projects")
-    if not root.is_dir() or not session_id:
-        return None
-    matches = list(root.glob(f"*/{session_id}.jsonl"))
-    if not matches:
-        return None
-    return str(max(matches, key=lambda p: p.stat().st_mtime))
+    return agent_session.transcript_for_session(provider, session_id, home=HOME)
 
 
 def foreground_provider_process(tty, provider):
     """Return the unique foreground provider process and its start time."""
-    if not tty or provider not in {"claude", "droid"}:
+    if not tty or provider not in agent_session.AGENTS:
         return None
     try:
         result = subprocess.run(
@@ -305,7 +298,7 @@ def foreground_provider_process(tty, provider):
         if len(fields) != 9:
             continue
         process_provider = Path(fields[8]).name
-        if process_provider not in {"claude", "droid", "copilot"}:
+        if process_provider not in agent_session.AGENTS:
             continue
         try:
             pid, pgid, foreground = map(int, fields[:3])
@@ -556,7 +549,7 @@ def merge_session_context(live_sessions):
         c = by_sess.get(sid)
         if c:
             provider = normalize_provider(sess.get("provider") or "claude")
-            if provider not in {"claude", "droid"}:
+            if provider not in agent_session.AGENTS:
                 continue
             if normalize_provider(c.get("provider") or "claude") != provider:
                 continue
@@ -599,8 +592,7 @@ def merge_session_context(live_sessions):
 
 
 def normalize_provider(provider):
-    provider = str(provider or "").lower()
-    return "droid" if provider in {"factory", "droid"} else provider
+    return agent_session.agent_from_kind(provider) or str(provider or "").lower()
 
 
 def merge_first_recorded(live_sessions, records, now):

@@ -40,6 +40,8 @@ never calls `launchctl load`.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -80,9 +82,13 @@ WS_MAP_TTL_SEC = 30
 SCREEN_LINES = 50
 # Claude Code session transcripts; the agent's last words ride on each inbox item.
 CLAUDE_PROJECTS = agent_session.transcript_root(agent_session.CLAUDE, home=HOME)
+COPILOT_SESSIONS = agent_session.transcript_root(agent_session.COPILOT, home=HOME)
 # Only the transcript tail is read — a long session's JSONL runs to many MB and
 # the newest turn is all the ping needs.
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
+# Copilot can log hundreds of KB of model events after its last reply; when
+# the tail holds no reply, this wider tail is read instead.
+TRANSCRIPT_WIDE_BYTES = 4 * 1024 * 1024
 LAST_MESSAGE_CHARS = 300
 
 # Event names we care about. Everything else (PreToolUse, UserPromptSubmit,
@@ -348,7 +354,10 @@ def read_screen(workspace: str, lines: int = SCREEN_LINES) -> str:
 # bypass-permissions hint — carry no signal and just bloat the phone snippet.
 _CHROME_RE = re.compile(r"^[\s│─╭╮╰╯┌┐└┘├┤┬┴┼▔▕>·•⏵◀▶┃╹╻▀▄━]+$")
 _STATUS_BAR_RE = re.compile(
-    r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply")
+    r"bypass permissions on|shift\+tab to cycle|Restart to update|run /restart to apply"
+    r"|^\s*← open sidebar · |· / commands · \? help(?: ·|\s*$)|ctrl\+e change environment\s*$"
+    r"|\[⎇ [^\]]*\]\s+Session: [\d.]+ AIC used|^\s*[○◉◎●] \w+.*ctrl\+c interrupt"
+    r"|^\s*[~/]\S* \[⎇ [^\]]*\]\s*$|^\s*(?:Interactive|Plan|Autopilot) · (?:Allow All|Ask) · ")
 # Claude Code's live spinner (`✽ Boogieing… (12m 1s · ↓ 48.9k tokens)`) and its
 # turn-done line (`✻ Baked for 2m 10s · done 10:40 PM`) only say the agent is or
 # was busy.
@@ -392,23 +401,51 @@ def last_lines(text: str, n: int = 3) -> str:
 # ─── agent's last message (Claude transcript tail) ───────────────────────────
 
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+_FEED_ID_PREFIX = "cmux-feed-v1:"
+
+
+def payload_session(session_id: str | None) -> tuple[str | None, str | None]:
+    """(agent kind or None, bare session id or None) for a hook payload's
+    session id: cmux's `cmux-feed-v1:<base64 kind>:<base64 id>`, or the older
+    `claude-<id>` / `copilot-<id>` / bare id."""
+    if not session_id:
+        return None, None
+    if session_id.startswith(_FEED_ID_PREFIX):
+        parts = session_id[len(_FEED_ID_PREFIX):].split(":")
+        try:
+            kind, bare = (base64.b64decode(p, validate=True).decode() for p in parts)
+        except (ValueError, binascii.Error, UnicodeDecodeError):
+            return None, None
+        return kind, bare
+    for kind in ("claude", "copilot"):
+        if session_id.startswith(f"{kind}-"):
+            return kind, session_id.removeprefix(f"{kind}-")
+    return None, session_id
 
 
 def transcript_path(cwd: str | None, session_id: str | None,
-                    projects_dir: Path = CLAUDE_PROJECTS) -> Path | None:
-    """Locate the Claude Code transcript for a hook payload's session.
+                    projects_dir: Path = CLAUDE_PROJECTS,
+                    copilot_dir: Path = COPILOT_SESSIONS) -> Path | None:
+    """Locate the Claude Code or Copilot transcript for a hook payload's session.
 
-    cmux prefixes the payload's session id with its source
-    (`claude-6746dc4f-…`); the file on disk is named by the bare id. The hook's
-    cwd is the session's current dir, which drifts from the launch dir after a
-    `cd`, so a miss looks for the session id under every project dir."""
-    if not session_id or not _SESSION_ID_RE.fullmatch(session_id):
+    cmux tags the payload's session id with its source (payload_session); the
+    file on disk is named by the bare id. The hook's cwd is the session's
+    current dir, which drifts from the launch dir after a `cd`, so a miss looks
+    for the session id under every project dir. Copilot keeps each session at
+    `<id>/events.jsonl`."""
+    kind, bare = payload_session(session_id)
+    if not bare or not _SESSION_ID_RE.fullmatch(bare):
         return None
-    name = f"{session_id.removeprefix('claude-')}.jsonl"
-    if cwd:
+    name = f"{bare}.jsonl"
+    if kind != "copilot" and cwd:
         direct = projects_dir / agent_session.claude_project_slug(cwd) / name
         if direct.is_file():
             return direct
+    events = copilot_dir / bare / "events.jsonl"
+    if kind != "claude" and events.is_file():
+        return events
+    if kind == "copilot":
+        return None
     return next((d / name for d in projects_dir.iterdir() if (d / name).is_file()), None)
 
 
@@ -432,8 +469,9 @@ def tail_records(path: Path, max_bytes: int = TRANSCRIPT_TAIL_BYTES) -> list[dic
 
 
 def _content_blocks(rec: dict) -> list[dict]:
-    msg = rec.get("message")
-    content = msg.get("content") if isinstance(msg, dict) else None
+    content = agent_session.record_content(rec)
+    if isinstance(content, str) and rec.get("type") == "assistant.message":
+        return [{"type": "text", "text": content}]  # Copilot replies are plain text
     if not isinstance(content, list):
         return []
     return [b for b in content if isinstance(b, dict)]
@@ -461,8 +499,7 @@ def _is_prompt(rec: dict) -> bool:
     """A user turn someone typed, as opposed to a tool result or hook output."""
     if agent_session.record_role(rec) != "user" or rec.get("isMeta"):
         return False
-    msg = rec.get("message")
-    content = msg.get("content") if isinstance(msg, dict) else None
+    content = agent_session.record_content(rec)
     if isinstance(content, str):
         return not content.startswith("<")
     blocks = _content_blocks(rec)
@@ -508,8 +545,11 @@ def pending_tool(records: list[dict]) -> str | None:
 
 def ended_on_api_error(records: list[dict]) -> bool:
     """True if the agent's newest message is an API error Claude wrote into the
-    transcript (an expired login, an overloaded API): the session has stopped."""
+    transcript (an expired login, an overloaded API), or a Copilot
+    session.error event: the session has stopped."""
     for rec in reversed(current_turn(records)):
+        if rec.get("type") == "session.error":
+            return True
         if agent_session.record_role(rec) == "assistant":
             return rec.get("isApiErrorMessage") is True
     return False
@@ -545,9 +585,21 @@ def asks_user(text: str | None) -> bool:
     return any(_ASKS_RE.search(_URL_RE.sub("", ln)) for ln in lines[-ASK_TAIL_LINES:])
 
 
-def session_title(records: list[dict]) -> str | None:
+def session_title(records: list[dict], path: Path | None = None) -> str | None:
     """A name for the session when its workspace title is cmux's default:
-    Claude's own session title, else the working folder and git branch."""
+    Claude's own session title, Copilot's session name, else the working
+    folder and git branch."""
+    if path is not None and agent_session.agent_from_transcript(path) == agent_session.COPILOT:
+        folder = Path(path).parent
+        name = agent_session.copilot_session_field(folder, "name")
+        if name:
+            return name
+        cwd = agent_session.copilot_session_cwd(folder)
+        branch = agent_session.copilot_session_field(folder, "branch")
+        if cwd:
+            label = Path(cwd).name or cwd
+            named = branch and branch != "HEAD" and not branch.startswith("detached@")
+            return f"{label} ({branch})" if named else label
     for rec in reversed(records):
         title = rec.get("aiTitle") if rec.get("type") == "ai-title" else None
         if isinstance(title, str) and title.strip():
@@ -586,11 +638,15 @@ def read_session(cwd: str | None, session_id: str | None) -> dict | None:
         if path is None:
             return None
         records = tail_records(path)
+        if (agent_session.agent_from_transcript(path) == agent_session.COPILOT
+                and last_assistant_text(records) is None
+                and path.stat().st_size > TRANSCRIPT_TAIL_BYTES):
+            records = tail_records(path, TRANSCRIPT_WIDE_BYTES)
         return {"question": pending_question(records),
                 "last_text": last_assistant_text(records),
                 "pending_tool": pending_tool(records),
                 "api_error": ended_on_api_error(records),
-                "title": session_title(records)}
+                "title": session_title(records, path)}
     except Exception:  # noqa: BLE001 — transcripts are external; the ping must still go
         return None
 

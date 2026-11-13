@@ -28,15 +28,22 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import agent_session  # noqa: E402
+
 HOME = Path.home()
 CLAUDE_MD = HOME / ".claude" / "CLAUDE.md"
 PROPOSALS = HOME / ".assistant" / "proposals.jsonl"
 LEDGER = HOME / ".assistant" / "actions-ledger.jsonl"
 OBSERVER_REPORT = HOME / ".assistant" / "observer-latest-report.json"
-TRANSCRIPT_DIR = HOME / ".claude" / "projects" / "-Users-mukuls-dev-assistant"
+# Assistant's own sessions run in the live checkout: this repo, or the repo a
+# `.worktrees/<name>` checkout of it belongs to. Copilot has no per-project
+# dir; its sessions carry their cwd instead.
+_REPO = Path(__file__).resolve().parents[2]
+ASSISTANT_CWD = str(_REPO.parent.parent if _REPO.parent.name == ".worktrees" else _REPO)
+TRANSCRIPT_DIR = agent_session.confirm_dir(agent_session.CLAUDE, ASSISTANT_CWD, home=HOME)
 DEFAULT_TRANSCRIPT_DIR = TRANSCRIPT_DIR
-DROID_TRANSCRIPT_DIR = (
-    HOME / ".factory" / "sessions" / "-Users-mukuls-dev-assistant")
+DROID_TRANSCRIPT_DIR = agent_session.confirm_dir(agent_session.DROID, ASSISTANT_CWD, home=HOME)
 
 
 def _seed(title: str, body: str, category: str, tags: list[str],
@@ -374,10 +381,9 @@ def _iter_user_texts(path: Path) -> Iterable[str]:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            msg = obj.get("message")
-            if not isinstance(msg, dict) or msg.get("role") != "user":
+            if agent_session.message_role(obj) != "user":
                 continue
-            content = msg.get("content")
+            content = agent_session.record_content(obj)
             if isinstance(content, str):
                 yield content
             elif isinstance(content, list):
@@ -390,12 +396,14 @@ def decision_seeds(limit: int = 15, scan_files: int = 50) -> list[dict[str, Any]
     """Scan the most recent transcript files for decision signals in Mukul's
     own turns. De-duped by the normalized decision text."""
     transcript_dirs = [TRANSCRIPT_DIR]
+    copilot_files: list[Path] = []
     if TRANSCRIPT_DIR == DEFAULT_TRANSCRIPT_DIR:
         transcript_dirs.append(DROID_TRANSCRIPT_DIR)
-    if not any(path.exists() for path in transcript_dirs):
+        copilot_files = agent_session.copilot_transcripts(ASSISTANT_CWD, home=HOME)
+    if not copilot_files and not any(path.exists() for path in transcript_dirs):
         return []
-    files = sorted((path for root in transcript_dirs if root.exists()
-                    for path in root.glob("*.jsonl")),
+    files = sorted([*(path for root in transcript_dirs if root.exists()
+                      for path in root.glob("*.jsonl")), *copilot_files],
                    key=lambda p: p.stat().st_mtime, reverse=True)[:scan_files]
     seen: set[str] = set()
     seeds: list[dict[str, Any]] = []

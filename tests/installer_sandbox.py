@@ -33,11 +33,12 @@ def installer_env(home: Path) -> dict[str, str]:
     )
     cmux.chmod(0o755)
     bash_env = home / "installer-test.bash"
-    # install.sh calls cmux by absolute path when installing Factory hooks.
+    # The fixed app path is recorded in fixed-cmux.log, then forwarded.
     bash_env.write_text(
         '/bin/launchctl() { "$ASSISTANT_TEST_LAUNCHCTL" "$@"; }\n'
         '/usr/bin/launchctl() { "$ASSISTANT_TEST_LAUNCHCTL" "$@"; }\n'
         '/Applications/cmux.app/Contents/Resources/bin/cmux() {\n'
+        '  printf "%s\\n" "$*" >> "$HOME/fixed-cmux.log"\n'
         '  "$CMUX_BIN" "$@"\n'
         '}\n'
         'mktemp() {\n'

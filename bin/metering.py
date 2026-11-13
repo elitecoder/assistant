@@ -48,6 +48,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+import agent_session
+
 # Rotate metrics.jsonl once it exceeds this (one ~350-byte record per 5-min
 # pulse ≈ 100KB/day, so 5MB is ~50 days of history). Old file is kept as
 # metrics.jsonl.1 and read_metrics() reads both, so the 7-day dashboard
@@ -112,49 +114,27 @@ def estimate_cost_usd(tokens_in: int, tokens_out: int, model: str) -> float:
     return tokens_in / 1e6 * p_in + tokens_out / 1e6 * p_out
 
 
+def _usage(parsed: dict | None) -> dict | None:
+    if parsed is None:
+        return None
+    return {k: parsed[k] for k in ("tokens_in", "tokens_out", "cost_usd")}
+
+
 def parse_cli_usage(stdout: str) -> dict | None:
-    """Parse usage from any Claude or Droid result envelope.
-
-    Returns {"tokens_in", "tokens_out", "cost_usd"} or None when stdout is
-    not a usage-bearing envelope (plain-text CLI, timeout, empty). tokens_in
-    includes cache-creation/read tokens — it measures how much context the
-    Observer consumed, which is the cadence signal we care about."""
-    try:
-        d = json.loads((stdout or "").strip())
-    except Exception:
-        return None
-    if not isinstance(d, dict) or not isinstance(d.get("usage"), dict):
-        return None
-    u = d["usage"]
-
-    def _i(key: str) -> int:
-        v = u.get(key)
-        return int(v) if isinstance(v, (int, float)) else 0
-
-    tokens_in = _i("input_tokens") + _i("cache_creation_input_tokens") + _i("cache_read_input_tokens")
-    tokens_out = _i("output_tokens")
-    cost = d.get("total_cost_usd")
-    return {
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "cost_usd": float(cost) if isinstance(cost, (int, float)) else None,
-    }
+    """Usage from a Claude or Droid result envelope, or Copilot's JSONL event
+    stream: {"tokens_in", "tokens_out", "cost_usd"}, or None when stdout
+    carries no usage (plain text, timeout, empty). tokens_in includes
+    cache-creation/read tokens — it measures how much context the Observer
+    consumed, which is the cadence signal we care about."""
+    return _usage(agent_session.parse_usage(agent_session.CLAUDE, stdout)
+                  or agent_session.parse_usage(agent_session.COPILOT, stdout))
 
 
 def parse_cli_result(stdout: str) -> dict | None:
-    """Parse usage only from a successful CLI result envelope."""
-    try:
-        d = json.loads((stdout or "").strip())
-    except Exception:
-        return None
-    if not isinstance(d, dict):
-        return None
-    if d.get("type") == "result" and (
-        d.get("is_error") is True
-        or d.get("subtype") not in (None, "success")
-    ):
-        return None
-    return parse_cli_usage(stdout)
+    """parse_cli_usage, but None unless the run reports success."""
+    if agent_session.parse_usage(agent_session.CLAUDE, stdout) is not None:
+        return _usage(agent_session.parse_headless(agent_session.CLAUDE, stdout))
+    return _usage(agent_session.parse_headless(agent_session.COPILOT, stdout))
 
 
 def observer_usage(stdout: str, prompt_chars: int, model: str) -> dict:

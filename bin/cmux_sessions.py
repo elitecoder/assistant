@@ -33,16 +33,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
+
 APP_CLI = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 # A busy machine has taken 4.8 s to answer; a scan that times out sees no records.
 TIMEOUT_SEC = 15
 CMUX = "cmux"
 REGISTRY = "registry"
 
-# cmux's agent names for the two agents the fleet drives, mapped to the
-# fleet's own provider names (agent_session.CLAUDE / agent_session.DROID).
-_PROVIDERS = {"claude": "claude", "factory": "droid", "droid": "droid"}
-_AGENT_PROCESSES = {"claude", "droid"}
+_AGENT_PROCESSES = set(agent_session.AGENTS)
 
 
 @dataclass(frozen=True)
@@ -63,8 +63,8 @@ class Session:
 
     @property
     def provider(self) -> Optional[str]:
-        """``"claude"`` or ``"droid"``; None for agents the fleet doesn't run."""
-        return _PROVIDERS.get(self.agent)
+        """The fleet's agent name; None for agents the fleet doesn't run."""
+        return agent_session.agent_from_kind(self.agent)
 
 
 def cli_path() -> str:
@@ -138,7 +138,8 @@ def registry_fallback(path: Path, records) -> list[Session]:
 
 
 def agent_process(pid) -> bool:
-    """True when `pid` is a running claude or droid process, not a reused pid."""
+    """True when `pid` is a running claude, copilot, or droid process, not a
+    reused pid."""
     if not pid:
         return False
     try:

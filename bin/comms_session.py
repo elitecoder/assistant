@@ -90,7 +90,6 @@ from assistant import model_tiers  # noqa: E402
 # operator's alias stopped defaulting to Bedrock).
 # Unset: the pane runs `command claude`, a PATH lookup that reaches cmux's claude
 # shim (its wrapper registers the session with cmux) and skips the shell alias.
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN")
 
 
 def _resolve_warm_model_and_backend() -> tuple[str, str, bool]:
@@ -127,13 +126,31 @@ def warm_session_model_is_current(paths: comms_lib.Paths, sess: dict) -> bool:
     2026-09-16). Comparing the recorded id to the freshly resolved one lets the
     caller respawn on the correct id.
 
-    Only the claude warm session carries such an id; a droid session has none,
-    so it is always current. A pre-upgrade session with no recorded model reads
+    A copilot session records the comms Copilot model it started with and is
+    current while that matches. A droid session has no id, so it is always
+    current. A pre-upgrade session with no recorded model reads
     as NOT current, so it respawns once onto the tracked id."""
+    if (sess.get("agent") or agent_session.CLAUDE) == agent_session.COPILOT:
+        return (sess.get("model") or "") == agent_session.copilot_model("comms")
     if (sess.get("agent") or agent_session.CLAUDE) != agent_session.CLAUDE:
         return True
     want, _backend, _pinned = _resolve_warm_model_and_backend()
     return sess.get("model") == want
+
+
+def picked_warm_agent() -> str:
+    """The agent the Slack session should run (agent_session.warm_session_agent)."""
+    return agent_session.warm_session_agent()
+
+
+def warm_session_agent_is_current(sess: dict) -> bool:
+    """True when a live warm session runs the agent the user picks now, or the
+    newly picked agent can't start (a live session beats one that won't come
+    up); False after `assistant-llm.py set <agent>` switched to one that can."""
+    picked = picked_warm_agent()
+    if (sess.get("agent") or agent_session.CLAUDE) == picked:
+        return True
+    return not agent_session.agent_available(picked)
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -160,7 +177,11 @@ READY_ATTEMPTS = _positive_int_env("COMMS_READY_ATTEMPTS", 90)
 # and keys typed that early can be lost. After the banner, wait up to this many
 # seconds for the bottom status bar — the sign the prompt box is drawn.
 INPUT_READY_SEC = _positive_int_env("COMMS_INPUT_READY_SEC", 15)
-_INPUT_READY_RE = {agent_session.CLAUDE: re.compile(r"⏵⏵ bypass permissions on")}
+_INPUT_READY_RE = {agent_session.CLAUDE: re.compile(r"⏵⏵ bypass permissions on"),
+                   agent_session.COPILOT: agent_session.ready_re(agent_session.COPILOT)}
+# Agents whose warm session is cleared by a lossless respawn (no in-place
+# /clear), and whose context is measured by transcript size (no usage block).
+_RESPAWN_TO_CLEAR = (agent_session.DROID, agent_session.COPILOT)
 
 # Every prompt the daemon types is confirmed against the transcript. Enter can be
 # lost or turn into a newline (2026-09-27: a boot prompt and a Slack message sat
@@ -168,6 +189,10 @@ _INPUT_READY_RE = {agent_session.CLAUDE: re.compile(r"⏵⏵ bypass permissions 
 # waiting SUBMIT_WAIT_SEC after each for the transcript to record the prompt.
 SUBMIT_ATTEMPTS = _positive_int_env("COMMS_SUBMIT_ATTEMPTS", 3)
 SUBMIT_WAIT_SEC = _positive_int_env("COMMS_SUBMIT_WAIT_SEC", 15)
+# Copilot records a prompt typed during a turn only when that turn ends, so
+# while its screen shows the turn still running and the box took the text,
+# confirmation waits up to this long.
+BUSY_WAIT_SEC = _positive_int_env("COMMS_BUSY_WAIT_SEC", 900)
 
 # How many times to look at a workspace cmux didn't answer about, and how long to
 # wait between looks, before calling its state unknown.
@@ -263,12 +288,10 @@ def last_assistant_text(transcript_path: str | Path) -> str | None:
                 continue
             if agent_session.record_role(rec) != "assistant":
                 continue
-            msg = rec.get("message")
-            if not isinstance(msg, dict):
-                continue
-            content = msg.get("content")
+            content = agent_session.record_content(rec)
             if isinstance(content, str):
-                last_text = content
+                if content:  # Copilot's tool-request turns carry "" (Claude's never do)
+                    last_text = content
             elif isinstance(content, list):
                 parts = [
                     c.get("text", "") for c in content
@@ -293,8 +316,15 @@ def should_clear(transcript_path: str | Path,
     None and the fraction path would be perpetually False. Proxy with on-disk
     transcript size instead: >= droid_clear_bytes (COMMS_DROID_CLEAR_BYTES,
     default ~2 MB ≈ 50% window). Deterministic and unit-testable; the "clear" it
-    triggers is a lossless respawn (durable memory lives in conversation.jsonl)."""
-    if agent == agent_session.DROID:
+    triggers is a lossless respawn (durable memory lives in conversation.jsonl).
+
+    copilot: the last session.usage_record's share of maxPromptTokens >=
+    threshold; the size proxy only when no usage is recorded yet."""
+    if agent == agent_session.COPILOT:
+        fraction = agent_session.copilot_context_fraction(transcript_path)
+        if fraction is not None:
+            return fraction >= threshold
+    if agent in _RESPAWN_TO_CLEAR:
         p = Path(transcript_path)
         return p.exists() and p.stat().st_size >= droid_clear_bytes
     tokens = comms_lib.read_context_tokens(transcript_path)
@@ -307,21 +337,45 @@ _RULE_RE = re.compile(r"^\s*─{8,}\s*$")
 _WS_RE = re.compile(r"\s+")
 
 
-def input_box_text(screen: str) -> str | None:
+def input_box_text(screen: str, agent: str | None = None) -> str | None:
     """The text in Claude's prompt box, or None when the screen shows no box.
 
     The box is the region between the last two horizontal rules, and its first
     line starts with ❯. Earlier prompts in the scrollback also start with ❯ but
     aren't fenced by rules, so they never match. Wrapped lines are joined."""
     lines = screen.splitlines()
+    if agent == agent_session.COPILOT:
+        return _copilot_box_text(lines)
     rules = [i for i, line in enumerate(lines) if _RULE_RE.match(line)]
-    if len(rules) < 2:
+    tops = [] if agent else [i for i, line in enumerate(lines) if line.lstrip().startswith("╻")]
+    if len(rules) < 2 and agent == agent_session.CLAUDE:
         return None
+    if len(rules) < 2 or (tops and tops[-1] > rules[-1]):
+        copilot = _copilot_box_text(lines)
+        if copilot is not None or len(rules) < 2:
+            return copilot
     body = lines[rules[-2] + 1:rules[-1]]
     if not body or not body[0].lstrip().startswith("❯"):
         return None
     first = body[0].lstrip()[1:]
     return " ".join(part.strip() for part in [first, *body[1:]]).strip()
+
+
+def _copilot_box_text(lines: list[str]) -> str | None:
+    """Copilot's prompt box: the ┃ lines between the last ╻ top edge and the
+    ╹ bottom edge after it."""
+    tops = [i for i, line in enumerate(lines) if line.lstrip().startswith("╻")]
+    if not tops:
+        return None
+    top = tops[-1]
+    bottom = next((i for i in range(top + 1, len(lines))
+                   if lines[i].lstrip().startswith("╹")), None)
+    if bottom is None:
+        return None
+    if not any(line.lstrip().startswith("┃") for line in lines[top + 1:bottom]):
+        return None
+    body = [line.strip().lstrip("┃").strip() for line in lines[top + 1:bottom]]
+    return " ".join(part for part in body if part).strip()
 
 
 def box_has_marker(box: str | None, marker: str) -> bool:
@@ -344,8 +398,7 @@ def _prompt_text(rec: dict) -> str | None:
         return content if isinstance(content, str) else None
     if agent_session.record_role(rec) != "user":
         return None
-    msg = rec.get("message")
-    content = msg.get("content") if isinstance(msg, dict) else None
+    content = agent_session.record_content(rec)
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -402,17 +455,24 @@ def _first_entrypoint(data: bytes) -> str | None:
                  if isinstance(rec.get("entrypoint"), str)), None)
 
 
-def find_submission(project_dir: Path, marker: str, since: float) -> str | None:
+def find_submission(project_dir: Path, marker: str, since: float,
+                    agent: str = agent_session.CLAUDE,
+                    cwd: str | None = None) -> str | None:
     """Path of the newest transcript in `project_dir` changed at or after
     `since` that records a prompt containing `marker`, or None.
 
     Searches instead of trusting a remembered path, so a session that was
     cleared, resumed, or bound to the wrong file is found again. Subagent
-    transcripts are skipped."""
-    if not project_dir.is_dir():
+    transcripts are skipped. Copilot has no per-cwd folder, so its candidates
+    are the Copilot sessions whose cwd is `cwd`."""
+    if agent == agent_session.COPILOT and cwd:
+        files = agent_session.copilot_transcripts(cwd, home=HOME, since=since)
+    elif project_dir.is_dir():
+        files = project_dir.rglob("*.jsonl")
+    else:
         return None
     candidates = []
-    for p in project_dir.rglob("*.jsonl"):
+    for p in files:
         if "subagents" in p.parts:
             continue
         try:
@@ -430,7 +490,8 @@ def find_submission(project_dir: Path, marker: str, since: float) -> str | None:
 def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: str,
                            attempts: int = SUBMIT_ATTEMPTS,
                            wait_sec: float = SUBMIT_WAIT_SEC,
-                           sleep=time.sleep, clock=time.monotonic) -> bool:
+                           sleep=time.sleep, clock=time.monotonic,
+                           busy=lambda: False, busy_wait_sec: float = BUSY_WAIT_SEC) -> bool:
     """Type a prompt once, press Enter, and wait until `confirmed()` sees it in
     the transcript. Returns whether it did.
 
@@ -440,7 +501,9 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
     box that doesn't hold the marker, so a retry can't double-send a prompt or
     submit someone else's half-typed input. A prompt an earlier try already
     got recorded isn't typed again, and one an earlier try left sitting in the
-    box only gets its Enter. All I/O is injected."""
+    box only gets its Enter. While `busy()` and the box no longer holds the
+    marker, confirmation waits up to `busy_wait_sec` more. All I/O is
+    injected."""
     if confirmed():
         return True
     # Only this prompt's own marker counts here: an old collapsed paste in the
@@ -457,6 +520,11 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
             sleep(1)
         if attempt + 1 < attempts and box_holds(read_box(), marker):
             press_enter()
+    deadline = clock() + busy_wait_sec
+    while clock() < deadline and busy() and not box_holds(read_box(), marker):
+        if confirmed():
+            return True
+        sleep(2)
     return confirmed()
 
 
@@ -593,7 +661,7 @@ def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:
 
 
 def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
-           confirmed) -> bool:
+           confirmed, agent: str | None = None) -> bool:
     """Type text into the warm session and press Enter until `confirmed()` sees
     it in the transcript (see submit_until_confirmed). The trailing newline is
     stripped: send_text streams keystrokes, so a trailing \\n would submit
@@ -602,9 +670,12 @@ def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
         send_text=lambda: _cmux_rpc(paths, "surface.send_text",
                                     {"surface_id": surface_ref, "text": text.rstrip("\n")}),
         press_enter=lambda: send_enter(paths, surface_ref),
-        read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60)),
+        read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent),
         confirmed=confirmed,
         marker=marker,
+        busy=(lambda: agent_session.shows_copilot_working(
+            _surface_read_text(paths, surface_ref, lines=60)))
+        if agent == agent_session.COPILOT else (lambda: False),
     )
 
 
@@ -622,12 +693,13 @@ def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt
     found: list[str] = []
 
     def confirmed() -> bool:
-        hit = find_submission(project_dir, marker, since)
+        hit = find_submission(project_dir, marker, since, agent=agent, cwd=cwd)
         if hit:
             found.append(hit)
         return hit is not None
 
-    if not submit_fn(paths, surface_ref, boot_instruction(boot_prompt, nonce), marker, confirmed):
+    if not submit_fn(paths, surface_ref, boot_instruction(boot_prompt, nonce), marker, confirmed,
+                     agent=agent):
         return None
     return found[-1]
 
@@ -653,7 +725,7 @@ def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
     so the lossless equivalent is to close this warm workspace and spawn a fresh
     one (a brand-new ws/surface/transcript). close_own_workspace is title-guarded
     to the warm-session title, so it never touches user work."""
-    if agent == agent_session.DROID:
+    if agent in _RESPAWN_TO_CLEAR:
         close_own_workspace(paths, sess["ws_ref"], log=log)
         clear_session_registry(paths)
         return spawn_session(paths, boot_prompt, log=log, agent=agent) or sess
@@ -831,20 +903,23 @@ def _warm_launch(agent: str, resolved: tuple[str, str, bool] | None = None) -> s
     Lesson-writing still works via a subprocess (assistant-curator.py) gated
     by an explicit human `y`.
 
+    copilot: the same --add-dir roots, but --allow-all lets it reach any
+    folder, so the roots don't fence it the way they fence Claude.
+
     droid: the single-source launch_command(DROID) — settings + --auto high +
     optional --append-system-prompt-file. Droid scopes via --cwd + its settings,
     so we invent NO --add-dir here; the caller passes --cwd."""
+    add_dirs = (REPO_ROOT, HOME / ".assistant", HOME / ".architect", "/tmp")
     if agent == agent_session.DROID:
-        return agent_session.launch_command(agent, home=HOME)
+        return agent_session.session_command(agent, home=HOME)
+    if agent == agent_session.COPILOT:
+        return agent_session.session_command(
+            agent, home=HOME, model=agent_session.copilot_model("comms"),
+            add_dirs=add_dirs)
     model, backend, pinned = resolved or _resolve_warm_model_and_backend()
     prefix = "" if pinned else f"CLAUDE_CODE_USE_BEDROCK={'1' if backend == 'bedrock' else '0'} "
-    return (
-        f"{prefix}"
-        f"{shlex.quote(CLAUDE_BIN) if CLAUDE_BIN else 'command claude'} --model {shlex.quote(model)} "
-        f"--dangerously-skip-permissions "
-        f"--add-dir {shlex.quote(str(REPO_ROOT))} --add-dir {shlex.quote(str(HOME / '.assistant'))} "
-        f"--add-dir {shlex.quote(str(HOME / '.architect'))} --add-dir /tmp"
-    )
+    return agent_session.session_command(
+        agent, home=HOME, model=model, add_dirs=add_dirs, env_prefix=prefix)
 
 
 def await_ready(read_screen, ready_re, trust_marker, answer_trust,
@@ -913,7 +988,7 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     → claude) unless the caller pins `agent`. The launch, readiness gate, and
     trust-prompt auto-answer are all resolved per-agent through agent_session so
     Claude's behavior is byte-identical to before while Droid gets its own."""
-    agent = agent or agent_session.warm_agent()
+    agent = agent or picked_warm_agent()
     cmux = str(paths.cmux_bin)
     rc, _, err = comms_lib.run_cmd([cmux, "ping"], timeout=10)
     if rc != 0:
@@ -967,7 +1042,8 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     # (banner or status bar), answering the first-launch trust prompt if/when it
     # shows. Both are delegated to await_ready so the ordering is unit-tested.
     def _answer_trust() -> None:
-        _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "1"})
+        _cmux_rpc(paths, "surface.send_text",
+                  {"surface_id": surface_ref, "text": agent_session.trust_answer(agent)})
         # send_text streams keystrokes; give "1" a beat to land before Enter so
         # the selection isn't submitted empty (mirrors submit()'s pattern).
         time.sleep(0.5)
@@ -1008,7 +1084,8 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     # Record the EXACT id this session launched with — the same `resolved` tuple
     # _warm_launch used above, captured once so a mid-boot backend toggle can't
     # desync the record from the running session.
-    spawn_model = resolved[0] if resolved else None
+    spawn_model = (resolved[0] if resolved else
+                   agent_session.copilot_model("comms") if agent == agent_session.COPILOT else None)
     write_session(paths, ws_ref, surface_ref, cwd, transcript, agent=agent, model=spawn_model)
     log(f"warm session ready: {ws_ref} / {surface_ref} (transcript={transcript})")
     reconcile_warm_workspaces(paths, keep=ws_ref, log=log)

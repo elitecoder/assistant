@@ -31,8 +31,8 @@ CHECKS = (
     (
         "unfinished tool calls remain pending",
         "bin/session-context-watcher.py",
-        "self.pending_tools.add(tool_id)",
-        "self.pending_tools.discard(tool_id)",
+        '            elif kind == "tool_use":\n                self.pending_tools.add(tool_id)',
+        '            elif kind == "tool_use":\n                self.pending_tools.discard(tool_id)',
         "tests/test_session_context_watcher.py::test_pending_tools_mixed_text_parallel_and_matching_results",
     ),
     (
@@ -55,6 +55,13 @@ CHECKS = (
         "tools_complete = bool(associated) and not unknown_terminals and all(",
         "tools_complete = bool(associated) and all(",
         "tests/test_dashboard_overview.py::OverviewTests::test_unknown_second_terminal_blocks_observed_and_reviewed_close_out",
+    ),
+    (
+        "the installer finds cmux through CMUX_BIN",
+        "install.sh",
+        '    CMUX_CLI="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"\n',
+        '    CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"\n',
+        "tests/test_install_cmux_sessions.py::test_apply_installs_copilot_hooks_only_when_copilot_is_picked",
     ),
     (
         "ws-numberer is off by default",
@@ -274,9 +281,117 @@ CHECKS = (
         "tests/test_install_cmux_sessions.py::test_failed_settings_patch_warns_and_the_install_continues",
     ),
     (
+        "a copilot-only machine continues past the prerequisite check",
+        "install-bootstrap.sh",
+        "    if command -v copilot >/dev/null 2>&1 || command -v droid >/dev/null 2>&1; then\n",
+        "    if command -v droid >/dev/null 2>&1; then\n",
+        "tests/test_install_bootstrap.py::test_a_copilot_only_machine_passes_the_prerequisite_check",
+    ),
+    (
+        "no agent at all names every supported agent",
+        "install-bootstrap.sh",
+        '        die "no coding agent found — install Claude Code (default), GitHub Copilot CLI, or Factory Droid first"\n',
+        '        die "no coding agent found"\n',
+        "tests/test_install_bootstrap.py::test_a_machine_with_no_agent_stops_and_names_all_three",
+    ),
+    (
+        "the bootstrap reports a found copilot",
+        "install-bootstrap.sh",
+        '    && ok "copilot found (GitHub Copilot available as opt-in)" \\\n',
+        "    && : \\\n",
+        "tests/test_install_bootstrap.py::test_a_copilot_only_machine_passes_the_prerequisite_check",
+    ),
+    (
+        "comms setup accepts copilot as the provider",
+        "bin/assistant-comms-setup.sh",
+        '    provider = env_provider if env_provider in ("claude", "copilot", "droid") else "claude"\n',
+        '    provider = env_provider if env_provider in ("claude", "droid") else "claude"\n',
+        "tests/test_comms_setup.py::CommsSetupTests::test_env_provider_copilot_persists_and_installs_its_hooks",
+    ),
+    (
+        "comms setup installs copilot hooks when copilot is picked",
+        "bin/assistant-comms-setup.sh",
+        'if "$PYTHON" "$REPO_DIR/bin/agent_session.py" copilot-chosen; then\n'
+        '    "$PYTHON" "$REPO_DIR/bin/agent_session.py" install-copilot-hooks \\\n'
+        '        || echo "     ✗ cmux Copilot hooks not installed; Copilot sessions won\'t show on the dashboard" >&2\n'
+        '    "$PYTHON" "$REPO_DIR/bin/agent_session.py" link-copilot-skills \\\n'
+        '        || echo "     ✗ Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson" >&2\n'
+        'fi\n',
+        "",
+        "tests/test_comms_setup.py::CommsSetupTests::test_env_provider_copilot_persists_and_installs_its_hooks",
+    ),
+    (
+        "the installer installs copilot hooks when copilot is picked",
+        "install.sh",
+        '        if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then\n'
+        '            CMUX_BIN="${CMUX_BIN:-$CMUX_CLI}" python3 "$REPO_ROOT/bin/agent_session.py" install-copilot-hooks 2>&1 | sed \'s/^/  /\' \\\n'
+        '                || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"\n'
+        '        fi\n',
+        "",
+        "tests/test_install_cmux_sessions.py::test_apply_with_copilot_picked_writes_its_cmux_hooks",
+    ),
+    (
+        "a failed copilot hooks install is reported",
+        "install.sh",
+        '                || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"\n',
+        "                || true\n",
+        "tests/test_install_cmux_sessions.py::test_a_failed_copilot_hooks_install_warns_and_the_install_continues",
+    ),
+    (
+        "the installer links copilot's skills when copilot is picked",
+        "install.sh",
+        '        python3 "$REPO_ROOT/bin/agent_session.py" link-copilot-skills \\\n',
+        "        true \\\n",
+        "tests/test_install_cmux_sessions.py::test_apply_with_copilot_picked_links_copilots_skills_to_assistants",
+    ),
+    (
+        "the skills link waits for a copilot pick",
+        "install.sh",
+        '# Copilot reads personal skills from ~/.copilot/skills.\n'
+        'if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then\n',
+        '# Copilot reads personal skills from ~/.copilot/skills.\n'
+        'if true; then\n',
+        "tests/test_install_cmux_sessions.py::test_apply_without_copilot_leaves_copilots_skills_alone",
+    ),
+    (
+        "a skills link that fails is reported",
+        "install.sh",
+        '            || warn "Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson"\n',
+        "            || true\n",
+        "tests/test_install_cmux_sessions.py::test_an_existing_copilot_skills_folder_warns_and_the_install_continues",
+    ),
+    (
+        "a dry run says it would link copilot's skills",
+        "install.sh",
+        '        note "would link ~/.copilot/skills → ~/.claude/skills (Copilot is picked)"\n',
+        "        :\n",
+        "tests/test_install_cmux_sessions.py::test_dry_run_with_copilot_picked_says_it_would_link_the_skills",
+    ),
+    (
+        "comms setup links copilot's skills",
+        "bin/assistant-comms-setup.sh",
+        '    "$PYTHON" "$REPO_DIR/bin/agent_session.py" link-copilot-skills \\\n',
+        "    true \\\n",
+        "tests/test_comms_setup.py::CommsSetupTests::test_env_provider_copilot_persists_and_installs_its_hooks",
+    ),
+    (
+        "comms setup reports a failed skills link",
+        "bin/assistant-comms-setup.sh",
+        '        || echo "     ✗ Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson" >&2\n',
+        "        || true\n",
+        "tests/test_comms_setup.py::CommsSetupTests::test_copilot_setup_says_what_failed_and_finishes",
+    ),
+    (
+        "comms setup reports failed copilot hooks",
+        "bin/assistant-comms-setup.sh",
+        '        || echo "     ✗ cmux Copilot hooks not installed; Copilot sessions won\'t show on the dashboard" >&2\n',
+        "        || true\n",
+        "tests/test_comms_setup.py::CommsSetupTests::test_copilot_setup_says_what_failed_and_finishes",
+    ),
+    (
         "a dry run says what it would patch",
         "install.sh",
-        '    note "would install cmux Factory hooks and patch Claude + Factory session hooks"\n',
+        '    note "would install cmux Factory hooks (+ Copilot hooks when Copilot is picked) and patch Claude + Factory session hooks"\n',
         "    :\n",
         "tests/test_install_cmux_sessions.py::test_dry_run_reports_without_patching",
     ),

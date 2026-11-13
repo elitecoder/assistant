@@ -677,7 +677,7 @@ def test_identity_preserves_supported_provider_routes(ws, monkeypatch, kind, pro
     assert session["first_recorded_at"] == "2026-09-01T09:00:00Z"
 
 
-@pytest.mark.parametrize("kind", ["copilot", None])
+@pytest.mark.parametrize("kind", ["codex", None])
 def test_unsupported_or_missing_binding_stays_unknown(ws, monkeypatch, kind):
     _seed_identity_world(ws, monkeypatch, (kind,))
     ws.build()
@@ -788,7 +788,7 @@ def test_current_session_record_verifies_missing_native_binding(ws, monkeypatch,
     ({"updated_at_unix": 1}, {}),
     ({"updated_at_unix": "not-a-timestamp"}, {}),
     ({"updated_at_unix": datetime.fromisoformat("2026-09-19T09:00:02+00:00").timestamp()}, {}),
-    ({"agent": "copilot"}, {}),
+    ({"agent": "codex"}, {}),
     ({}, {"started": datetime.fromisoformat("2026-09-19T08:59:30+00:00").timestamp()}),
     ({"pid": 101}, {"started": datetime.fromisoformat("2026-09-19T08:59:30+00:00").timestamp()}),
     ({}, {"tpgid": 202}),
@@ -914,7 +914,7 @@ def test_registry_row_with_a_live_pid_must_be_an_agent(ws, monkeypatch, command,
     assert world["_meta"]["session_record_fallback"]["hits"] == (1 if kept else 0)
 
 
-@pytest.mark.parametrize("kind", ["claude", "copilot"])
+@pytest.mark.parametrize("kind", ["claude", "copilot", "codex"])
 def test_native_binding_conflict_never_uses_hook_fallback(ws, monkeypatch, kind):
     calls = _seed_current_hook(ws, monkeypatch, native={
         "kind": kind, "checkpoint_id": "different-session", "cwd": "/work/shared",
@@ -923,7 +923,7 @@ def test_native_binding_conflict_never_uses_hook_fallback(ws, monkeypatch, kind)
     world = json.loads(ws.OUT_PATH.read_text())
     assert "session-1" not in world["workspaces"][0]["session_ids"]
     assert not any(s["identity_source"] == "session_start_registry" for s in world["live_sessions"])
-    assert sum("lstart" in args[-1] for args in calls) == (kind == "claude")
+    assert sum("lstart" in args[-1] for args in calls) == (kind in ("claude", "copilot"))
 
 
 def test_failed_native_lookup_does_not_fall_back_to_hook(ws, monkeypatch):
@@ -990,8 +990,8 @@ def test_unsupported_provider_and_missing_tty_do_not_invoke_process_lookup(ws, m
         raise AssertionError("No native command should run.")
 
     monkeypatch.setattr(ws.subprocess, "run", unexpected)
-    assert ws.transcript_for_session("copilot", "session") is None
-    assert ws.foreground_provider_process("ttys001", "copilot") is None
+    assert ws.transcript_for_session("codex", "session") is None
+    assert ws.foreground_provider_process("ttys001", "codex") is None
     assert ws.foreground_provider_process(None, "claude") is None
 
 
@@ -1016,7 +1016,7 @@ def test_tty_join_rejects_conflicting_or_missing_identity(ws, monkeypatch, overr
 
 def test_record_for_an_agent_the_fleet_does_not_run_is_not_a_live_session(ws, monkeypatch):
     _, _, cmux_records, _ = _seed_identity_world(ws, monkeypatch, (None,))
-    cmux_records[0].update(agent="copilot", pid=999, updated_at_unix=1)
+    cmux_records[0].update(agent="codex", pid=999, updated_at_unix=1)
     ws.build()
     world = json.loads(ws.OUT_PATH.read_text())
     assert world["live_sessions"] == []

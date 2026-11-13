@@ -56,6 +56,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
+
 # ---------- paths ----------
 HOME = Path(os.environ["HOME"])
 WATCHER_DIR = HOME / ".assistant" / "workspace-watcher"
@@ -495,7 +498,7 @@ def resume_workspace(meta: dict, governor: ResumeGovernor, attempt_no: int = 1,
     uuid = meta.get("uuid", "?")
     title = meta.get("title") or meta.get("process_title") or "?"
     cwd = meta.get("resume_cwd") or meta.get("cwd") or str(HOME)
-    cmd_str = meta.get("resume_command")
+    cmd_str = agent_session.with_copilot_rules(meta.get("resume_command"))
     if not cmd_str:
         return {"ok": False, "error": "no resume_command in cache"}
     if used_bash_lc:

@@ -260,7 +260,8 @@ def env_reply(monkeypatch):
     threaded into each provider-aware call and what was typed."""
     rec = {"typed": [], "found": "/warm-t.jsonl", "submitted": True}
 
-    def fake_submit(paths, surface_ref, text, marker, confirmed):
+    def fake_submit(paths, surface_ref, text, marker, confirmed, agent=None):
+        rec.setdefault("agents", []).append(agent)
         rec["typed"].append((surface_ref, text, marker))
         return rec["submitted"] and confirmed()
     monkeypatch.setattr(listen.comms_session, "submit", fake_submit)
@@ -272,7 +273,7 @@ def env_reply(monkeypatch):
     monkeypatch.setattr(listen.comms_session, "transcript_has_submission",
                         lambda path, marker: path == rec.get("bound_hit"))
     monkeypatch.setattr(listen.comms_session, "find_submission",
-                        lambda d, marker, since: rec["found"])
+                        lambda d, marker, since, **_: rec["found"])
 
     def fake_should_clear(transcript, agent="claude"):
         rec["should_clear"] = (transcript, agent)
@@ -309,6 +310,7 @@ def test_reply_threads_droid_agent_into_context_calls(env_reply, env_inbox):
     listen.reply_to_message(listen.comms_lib.Paths.from_env(), _droid_sess("/t.jsonl"), INBOUND)
     assert rec["project_dir_agent"] == "droid"
     assert rec["should_clear"] == ("/t.jsonl", "droid")
+    assert rec["agents"] == ["droid"], "the prompt box is read as the session's agent"
 
 
 def test_reply_types_the_header_and_waits_for_its_marker(env_reply, env_inbox):

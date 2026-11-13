@@ -27,7 +27,9 @@ HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parents[1]  # repo root (src/ for the connector base)
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO / "bin"))  # loaded by path (tests/drive_dashboard_overview.py)
 
+import agent_session  # noqa: E402
 from assistant import brief as brief_store
 from assistant import mode
 from assistant import session_guidance
@@ -1029,6 +1031,76 @@ def render_decisions_tab(world):
 """, awaiting_n if fresh else None
 
 
+def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | None:
+    """Return the most recent assistant TEXT turn from the transcript.
+    Skips tool_use blocks entirely — the user cares what the agent is
+    SAYING, not which tool it's invoking. None if no transcript or no
+    text turn found.
+
+    Reads only the tail (~32KB) — agents can emit many tool_uses between
+    text turns. Copilot can log hundreds of KB of model events after its last
+    reply, so its tail is ~256KB, then ~4MB when that holds no reply."""
+    if not transcript_path or not os.path.exists(transcript_path):
+        return None
+    copilot = agent_session.agent_from_transcript(transcript_path) == agent_session.COPILOT
+    for window in ((262144, 4194304) if copilot else (32768,)):
+        try:
+            size = os.path.getsize(transcript_path)
+            with open(transcript_path, "rb") as f:
+                f.seek(max(0, size - window))
+                tail = f.read().decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        text = _last_assistant_text(tail, max_chars)
+        if text or size <= window:
+            return text
+    return None
+
+
+def _last_assistant_text(tail: str, max_chars: int) -> str | None:
+    for line in reversed(tail.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if agent_session.record_role(d) != "assistant":
+            continue
+        content = agent_session.record_content(d) or []
+        if isinstance(content, str):
+            text = " ".join(content.split()).strip()
+            if text:
+                return (text[:max_chars - 1] + "…"
+                        if len(text) > max_chars else text)
+        if not isinstance(content, list):
+            continue
+        for c in reversed(content):
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") != "text":
+                continue
+            text = (c.get("text", "") or "").strip()
+            if not text:
+                continue
+            text = " ".join(text.split())  # collapse whitespace
+            if len(text) > max_chars:
+                text = text[:max_chars - 1] + "…"
+            return text
+    return None
+
+
+def session_agent_status(sess: dict | None) -> str | None:
+    """"working" when the last assistant turn was a tool_use or a tool call
+    is still in flight (Copilot's tool requests carry no text), "idle"
+    otherwise, None with no session."""
+    if not sess:
+        return None
+    text = (sess.get("last_assistant") or {}).get("text", "") or ""
+    return "working" if text.startswith("[tool_use:") or sess.get("pending_tool_use") is True else "idle"
+
+
 def render_workspaces_tab():
     """Read ~/.assistant/observer-summaries/<ws>.json (one file per workspace,
     written each pulse by the Assistant) and render a row per workspace with
@@ -1100,61 +1172,6 @@ def render_workspaces_tab():
                 return s
         return None
 
-    def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | None:
-        """Return the most recent assistant TEXT turn from the transcript.
-        Skips tool_use blocks entirely — the user cares what the agent is
-        SAYING, not which tool it's invoking. None if no transcript or no
-        text turn found.
-
-        Reads only the tail (~32KB) — agents can emit many tool_uses
-        between text turns, so we need a bigger window than the 12KB
-        used for tool_use scanning."""
-        if not transcript_path or not os.path.exists(transcript_path):
-            return None
-        try:
-            size = os.path.getsize(transcript_path)
-            with open(transcript_path, "rb") as f:
-                f.seek(max(0, size - 32768))
-                tail = f.read().decode("utf-8", errors="replace")
-        except Exception:
-            return None
-        for line in reversed(tail.splitlines()):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-            msg = d.get("message", {})
-            if not isinstance(msg, dict):
-                continue
-            if not (d.get("type") == "assistant"
-                    or (d.get("type") == "message"
-                        and msg.get("role") == "assistant")):
-                continue
-            content = msg.get("content", [])
-            if isinstance(content, str):
-                text = " ".join(content.split()).strip()
-                if text:
-                    return (text[:max_chars - 1] + "…"
-                            if len(text) > max_chars else text)
-            if not isinstance(content, list):
-                continue
-            for c in reversed(content):
-                if not isinstance(c, dict):
-                    continue
-                if c.get("type") != "text":
-                    continue
-                text = (c.get("text", "") or "").strip()
-                if not text:
-                    continue
-                text = " ".join(text.split())  # collapse whitespace
-                if len(text) > max_chars:
-                    text = text[:max_chars - 1] + "…"
-                return text
-        return None
-
     rows = []
     now = utc_now().timestamp()
     for jf in sorted(summaries_dir.glob("*.json")):
@@ -1189,11 +1206,7 @@ def render_workspaces_tab():
         # Live signals from the workspace's session (if found).
         sess = session_for_ws(cwd)
         last_turn_age = sess.get("last_turn_age_sec") if sess else None
-        # Working = last assistant turn was a tool_use (still in flight).
-        last_assistant_text = (sess or {}).get("last_assistant", {}).get("text", "") or ""
-        agent_status = "working" if last_assistant_text.startswith("[tool_use:") else "idle"
-        if not sess:
-            agent_status = None  # unknown
+        agent_status = session_agent_status(sess)
 
         pr_refs = data.get("pr_refs") or []
 

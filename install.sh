@@ -584,6 +584,15 @@ log ""
 # through its native paths.
 ensure_symlink "$HOME_DIR/.factory/skills" "$HOME_DIR/.claude/skills"
 ensure_symlink "$HOME_DIR/.factory/AGENTS.md" "$HOME_DIR/.claude/CLAUDE.md" || true
+# Copilot reads personal skills from ~/.copilot/skills.
+if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then
+    if [[ $APPLY -eq 1 ]]; then
+        python3 "$REPO_ROOT/bin/agent_session.py" link-copilot-skills \
+            || warn "Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson"
+    else
+        note "would link ~/.copilot/skills → ~/.claude/skills (Copilot is picked)"
+    fi
+fi
 log ""
 
 # --- 3. Generate LaunchAgent plists from templates + reload only those that changed ----------
@@ -857,13 +866,17 @@ ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hook
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
 ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
 if [[ $APPLY -eq 1 ]]; then
-    CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"
+    CMUX_CLI="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
     if [[ -x "$CMUX_CLI" ]]; then
         # Factory-optional: an old cmux without factory support, or a droid-less
         # box, must not abort the installer before the Claude settings patch and
         # launchd reload below.
         "$CMUX_CLI" hooks factory install --yes 2>&1 | sed 's/^/  /' \
             || warn "cmux Factory hooks install failed (continuing — droid resume may be unbound)"
+        if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then
+            CMUX_BIN="${CMUX_BIN:-$CMUX_CLI}" python3 "$REPO_ROOT/bin/agent_session.py" install-copilot-hooks 2>&1 | sed 's/^/  /' \
+                || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"
+        fi
     else
         warn "cmux CLI missing; Factory lifecycle hooks were not installed"
     fi
@@ -872,7 +885,7 @@ if [[ $APPLY -eq 1 ]]; then
         2>&1 | sed 's/^/  /' \
         || warn "patch-settings failed (continuing — cmux session hooks may be incomplete)"
 else
-    note "would install cmux Factory hooks and patch Claude + Factory session hooks"
+    note "would install cmux Factory hooks (+ Copilot hooks when Copilot is picked) and patch Claude + Factory session hooks"
 fi
 log ""
 

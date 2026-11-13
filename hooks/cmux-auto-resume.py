@@ -18,12 +18,19 @@ session: every failure is caught.
 """
 import json
 import os
-import shlex
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
+try:
+    import agent_session  # noqa: E402
+    SEAM_ERROR = None
+except Exception as exc:  # noqa: BLE001 — a broken checkout must not break SessionStart
+    agent_session = None
+    SEAM_ERROR = f"{type(exc).__name__}: {exc}"
 
 # Seconds to wait before each forward attempt; about a minute in total.
 RETRY_DELAYS_SEC = (0, 2, 5, 15, 30)
@@ -47,13 +54,10 @@ def infer_provider(payload):
         if provider:
             return provider
 
-    transcript = str(
-        payload.get("transcript_path") or payload.get("transcriptPath") or ""
-    ).replace("\\", "/")
-    if "/.factory/sessions" in transcript:
-        return "factory"
-    if "/.claude/" in transcript:
-        return "claude"
+    agent = agent_session.agent_from_transcript(
+        payload.get("transcript_path") or payload.get("transcriptPath"))
+    if agent in (agent_session.CLAUDE, agent_session.DROID):
+        return agent_session.CMUX_KIND[agent]
 
     provider = normalize_provider(os.environ.get("CMUX_AGENT_LAUNCH_KIND"))
     if provider:
@@ -69,25 +73,8 @@ def infer_provider(payload):
 
 
 def fallback_resume(provider, executable, sid, cwd):
-    quoted_cwd = shlex.quote(cwd)
-    quoted_sid = shlex.quote(sid)
-    quoted_executable = shlex.quote(executable)
-    if provider == "factory":
-        home = os.path.expanduser("~")
-        settings = shlex.quote(
-            os.path.join(home, ".assistant", "droid-glm-settings.json")
-        )
-        command = (
-            f"cd {quoted_cwd} && {quoted_executable} "
-            f"--settings {settings} --auto high"
-        )
-        lessons_path = os.path.join(home, ".claude", "CLAUDE.md")
-        if os.path.isfile(lessons_path):
-            command += (
-                " --append-system-prompt-file "
-                + shlex.quote(lessons_path))
-        return command + f" --resume {quoted_sid}"
-    return f"cd {quoted_cwd} && {quoted_executable} --resume {quoted_sid}"
+    return agent_session.resume_command(
+        agent_session.agent_from_kind(provider), sid, cwd, executable=executable)
 
 
 def cmux_bin():
@@ -140,7 +127,7 @@ def forward(cmux, provider, payload, run=subprocess.run, sleep=time.sleep):
     return reason
 
 
-def record_failure(provider, payload, reason, now=None):
+def record_failure(provider, payload, reason, now=None, evidence=None):
     now = time.time() if now is None else now
     sid = payload["session_id"]
     entry = {
@@ -150,12 +137,12 @@ def record_failure(provider, payload, reason, now=None):
         "kind": "cmux-session-forward-fail",
         "ws_ref": "(hook)",
         "outcome": "failed",
-        "evidence": (
+        "evidence": (evidence or (
             f"cmux never recorded {provider} session {sid} "
             f"(workspace {os.environ.get('CMUX_WORKSPACE_ID', '?')}, "
             f"surface {os.environ.get('CMUX_SURFACE_ID', '?')}) after "
             f"{len(RETRY_DELAYS_SEC)} tries: {reason}"
-        )[:300],
+        ))[:300],
     }
     ledger = Path.home() / ".assistant" / "actions-ledger.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -169,8 +156,7 @@ def set_fallback_binding(cmux, provider, sid, cwd, run=subprocess.run):
     # `cmux restore --surface` can respawn this panel.
     if os.environ.get("CMUX_AGENT_LAUNCH_ARGV_B64"):
         return
-    default_executable = "droid" if provider == "factory" else "claude"
-    executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE", default_executable)
+    executable = os.environ.get("CMUX_AGENT_LAUNCH_EXECUTABLE") or None
     resume_cmd = fallback_resume(provider, executable, sid, cwd)
     name = "Factory Droid" if provider == "factory" else "Claude Code"
     try:
@@ -214,6 +200,15 @@ def main(argv=None):
         payload = {}
 
     sid = payload.get("session_id") or payload.get("sessionId", "")
+    if agent_session is None:
+        if sid:
+            try:
+                record_failure("agent", {**payload, "session_id": sid}, SEAM_ERROR, evidence=(
+                    f"session {sid} not forwarded to cmux: bin/agent_session.py "
+                    f"failed to load ({SEAM_ERROR})"))
+            except OSError:
+                pass
+        return
     cwd = payload.get("cwd", os.getcwd())
     transcript = payload.get("transcript_path") or payload.get("transcriptPath", "")
     if not sid:

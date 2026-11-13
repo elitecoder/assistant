@@ -932,3 +932,23 @@ def test_main_retries_on_stream_crash_then_exits(home, monkeypatch):
     assert WW.main() == 0
     assert slept == [5]            # the retry path slept once for 5s
     assert calls["n"] == 2
+
+
+
+def test_crash_resume_gives_a_copilot_session_the_users_rules(home, monkeypatch, tmp_path):
+    user = tmp_path / "user"
+    (user / ".claude").mkdir(parents=True)
+    (user / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    (user / ".assistant" / "comms").mkdir(parents=True)
+    (user / ".assistant" / "comms" / "config.json").write_text('{"llm": {"provider": "copilot"}}')
+    monkeypatch.setenv("HOME", str(user))
+    captured = {}
+    monkeypatch.setattr(WW, "run", lambda cmd, timeout=10: captured.setdefault("argv", cmd)
+                        and (0, "created workspace:7 (U2)\n", ""))
+    saved = "cd /w && '/x/@github/copilot-darwin-arm64/copilot' '--resume' 's1' '--allow-all'"
+    WW.resume_workspace({"uuid": "U1", "title": "T", "resume_command": saved, "cwd": "/w",
+                         "cause": "crash"}, WW.ResumeGovernor())
+    argv = captured["argv"]
+    rules = user / ".assistant" / "copilot-instructions"
+    assert argv[argv.index("--command") + 1] == saved.replace(
+        "&& ", f"&& COPILOT_CUSTOM_INSTRUCTIONS_DIRS={rules} ", 1)

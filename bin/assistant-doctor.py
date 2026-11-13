@@ -40,12 +40,12 @@ import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
 
 DROID = agent_session.DROID
+COPILOT = agent_session.COPILOT
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 REPO = Path(__file__).resolve().parent.parent
 
 # Same default as comms_session.py — the warm session invokes this exact binary.
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 
@@ -220,25 +220,39 @@ def check_slack_scopes() -> Check:
     )
 
 
+def _agent_binary(agent: str) -> str | None:
+    path = agent_session.binary(agent, env={**os.environ, "HOME": str(HOME)})
+    return path if Path(path).is_file() and os.access(path, os.X_OK) else None
+
+
 def check_claude_bin() -> Check:
-    # The warm comms session spawns this exact binary. OPTIONAL — only comms
-    # needs it; the mechanical pulse uses its own claude invocation.
-    if Path(CLAUDE_BIN).is_file() and os.access(CLAUDE_BIN, os.X_OK):
-        return Check("claude binary (warm session)", PASS, core=False, detail=CLAUDE_BIN)
-    on_path = shutil.which("claude")
+    # The warm comms session spawns the chosen agent's binary. OPTIONAL — only
+    # comms needs it.
+    agent = agent_session.warm_session_agent()
+    name = f"{agent} binary (warm session)"
+    found = _agent_binary(agent)
+    if found:
+        return Check(name, PASS, core=False, detail=found)
+    expected = agent_session.binary(agent, env={**os.environ, "HOME": str(HOME)})
+    on_path = shutil.which(agent)
+    env_var = agent_session._BIN_ENV[agent]
     if on_path:
         return Check(
-            "claude binary (warm session)", WARN, core=False,
-            detail=f"{CLAUDE_BIN} missing; claude on PATH at {on_path}",
-            remedy=f"symlink it: ln -s {on_path} {CLAUDE_BIN}  (or set CLAUDE_BIN={on_path})",
+            name, WARN, core=False,
+            detail=f"{expected} missing; {agent} on PATH at {on_path}",
+            remedy=f"set {env_var}={on_path}",
         )
-    return Check("claude binary (warm session)", FAIL, core=False,
-                 detail=f"{CLAUDE_BIN} missing and no claude on PATH",
-                 remedy="install the Claude Code CLI, then symlink to ~/.local/bin/claude")
+    return Check(name, FAIL, core=False,
+                 detail=f"{expected} missing and no {agent} on PATH",
+                 remedy=f"install the {agent} CLI, or set {env_var} to its path")
 
 
 def check_bedrock_env() -> Check:
     # The warm session's headless claude needs auth. OPTIONAL.
+    agent = agent_session.warm_session_agent()
+    if agent != agent_session.CLAUDE:
+        return Check("warm-session auth", SKIP, core=False,
+                     detail=f"the Slack session runs {agent}, which signs in on its own")
     env = comms_lib.load_bedrock_env()
     combined = {**env, **os.environ}
     if combined.get("CLAUDE_CODE_USE_BEDROCK", "").strip() not in ("", "0", "false"):
@@ -269,17 +283,7 @@ def _droid_selected() -> bool:
 
 
 def _droid_binary() -> str | None:
-    # Mirror agent_session.agent_available: PATH plus the common install
-    # locations launchd's pinned PATH misses (~/.local/bin is Factory's default).
-    on_path = shutil.which(DROID)
-    if on_path:
-        return on_path
-    for cand in (HOME / ".local" / "bin" / DROID,
-                 Path("/opt/homebrew/bin") / DROID,
-                 Path("/usr/local/bin") / DROID):
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
+    return _agent_binary(DROID)
 
 
 def check_droid_binary() -> Check:
@@ -293,7 +297,7 @@ def check_droid_binary() -> Check:
         "droid binary", FAIL, core=False,
         detail="droid not found on PATH or ~/.local/bin, /opt/homebrew/bin, /usr/local/bin",
         remedy="install Factory droid (curl -fsSL https://app.factory.ai/cli | sh) "
-               "so it lands on ~/.local/bin/droid, then re-run",
+               "so it lands in Factory's default install dir, then re-run",
     )
 
 
@@ -311,7 +315,7 @@ def check_droid_settings() -> Check:
     except ValueError:
         return Check("droid settings", FAIL, core=False,
                      detail=f"{settings} is not valid JSON",
-                     remedy=f"fix the JSON in {settings} so `droid --settings` can parse it")
+                     remedy=f"fix the JSON in {settings} so Droid can read it")
     if not isinstance(parsed, dict):
         return Check("droid settings", FAIL, core=False,
                      detail=f"{settings} parsed but is not a JSON object",
@@ -319,7 +323,55 @@ def check_droid_settings() -> Check:
     return Check("droid settings", PASS, core=False, detail=str(settings))
 
 
-AGENT_CHECKS = [check_droid_binary, check_droid_settings]
+def check_copilot_binary() -> Check:
+    if not agent_session.copilot_chosen():
+        return Check("copilot binary", SKIP, core=False,
+                     detail="provider is not copilot (llm.provider / dispatch.agent / comms)")
+    found = _agent_binary(COPILOT)
+    if found and agent_session.runs(found):
+        source = agent_session.copilot_sign_in_source()
+        if source is None:
+            return Check("copilot binary", FAIL, core=False,
+                         detail=f"{found} runs, but no Copilot account is signed in",
+                         remedy="run `copilot login`")
+        if agent_session.copilot_sign_in_source(env={}) is None:
+            shell_only = ("COPILOT_HOME is set" if source == "account"
+                          else "COPILOT_GH_HOST or GH_HOST is set" if source == "gh"
+                          else f"{source} is set")
+            return Check("copilot binary", WARN, core=False,
+                         detail=(f"{found} runs, signed in because {shell_only} in this "
+                                 "shell; Assistant's background jobs don't get it, so "
+                                 "the Slack session and dispatch run Claude and other "
+                                 "Copilot jobs fail"),
+                         remedy="run `copilot login` (it signs in ~/.copilot)")
+        return Check("copilot binary", PASS, core=False, detail=found)
+    return Check(
+        "copilot binary", FAIL, core=False,
+        detail=(f"{found} --version failed" if found else
+                "copilot not found on PATH, ~/.local/bin, /opt/homebrew/bin, "
+                "/usr/local/bin, or ~/.nvm"),
+        remedy="install GitHub Copilot CLI (npm install -g @github/copilot), "
+               "run `copilot login`, or set COPILOT_BIN",
+    )
+
+
+def check_copilot_hooks() -> Check:
+    if not agent_session.copilot_chosen():
+        return Check("copilot cmux hooks", SKIP, core=False,
+                     detail="Copilot isn't picked anywhere")
+    if agent_session.copilot_hooks_installed(HOME):
+        return Check("copilot cmux hooks", PASS, core=False,
+                     detail=str(agent_session.copilot_hooks_file(HOME)))
+    return Check(
+        "copilot cmux hooks", FAIL, core=False,
+        detail=f"{agent_session.copilot_hooks_file(HOME)} is missing; Copilot "
+               "sessions won't show on the dashboard",
+        remedy="python3 bin/agent_session.py install-copilot-hooks",
+    )
+
+
+AGENT_CHECKS = [check_droid_binary, check_droid_settings, check_copilot_binary,
+                check_copilot_hooks]
 
 
 # --------------------------------------------------------------------------- runner

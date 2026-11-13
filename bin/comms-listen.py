@@ -278,6 +278,9 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
                 # there could race an active reply.
                 if replace_ws and replace_ws == sess["ws_ref"]:
                     why = "didn't accept the typed message"
+                elif respawn_on_stale and not comms_session.warm_session_agent_is_current(sess):
+                    why = (f"agent changed ({sess.get('agent') or 'claude'} → "
+                           f"{comms_session.picked_warm_agent()})")
                 elif respawn_on_stale and not comms_session.warm_session_model_is_current(paths, sess):
                     why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
                 else:
@@ -362,14 +365,15 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
         if bound and comms_session.transcript_has_submission(bound, marker):
             hit = bound
         else:
-            hit = comms_session.find_submission(project_dir, marker, since)
+            hit = comms_session.find_submission(
+                project_dir, marker, since, agent=agent, cwd=sess["cwd"])
         if hit:
             found.append(hit)
         return hit is not None
 
     t0 = time.time()
     delivered = comms_session.submit(paths, sess["surface_ref"], feed_text(recs, channel),
-                                     marker, confirmed)
+                                     marker, confirmed, agent=agent)
     log(f"reply channel={channel} msg={recs[-1].get('msg_ts')} n={len(recs)} "
         f"submitted={delivered} wall_ms={int((time.time() - t0) * 1000)}")
     if not delivered:
