@@ -193,6 +193,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   copy.
 
 ### Fixed
+- AssistantBar no longer spends about 7 CPU-seconds every 2 minutes looking
+  for transcripts it already failed to find. A workspace with no transcript
+  used to be searched again on every scan, which checked and read files across
+  `~/.claude/projects/-Users-<you>` (about 20,000 transcripts). Now Assistant
+  searches such a workspace once, then watches `~/.claude/projects` with
+  FSEvents and reads only the transcripts that change. If FSEvents drops
+  events, the next scan searches in full again.
 - A Stop or interruption that lands just after an answer ends can't cancel
   your next question: each ask has its own token, and a cancel reaches only
   that ask. `--wait` counts the time spent finding the workspace against its

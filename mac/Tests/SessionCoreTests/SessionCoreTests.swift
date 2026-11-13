@@ -101,4 +101,46 @@ final class LocatorTests: XCTestCase {
         XCTAssertEqual(URL(fileURLWithPath: path).lastPathComponent, "b.jsonl")
         XCTAssertEqual(locator.summary(at: path)?.lastSaid, "Should I merge?")
     }
+
+    func testAWorkspaceWithNoTranscriptReadsOnlyTranscriptsThatChangeAfterItsFirstSearch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("-work-repo")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let ts = "2026-11-01T10:00:00.500Z"
+        try transcript([user("fix the version bump", at: ts)]).write(to: folder.appendingPathComponent("a.jsonl"))
+        let list = Data("""
+        {"workspaces":[{"id":"W1","ref":"workspace:1","title":"T","current_directory":"/work/repo",
+        "latest_submitted_at":"\(ts)","latest_submitted_message":"what were we doing here?"}]}
+        """.utf8)
+        let ws = try XCTUnwrap(Workspace.parseList(list).first)
+        // FSEvents can still report a write from just before the stream starts.
+        Thread.sleep(forTimeInterval: 2)
+        let reads = Counter()
+        let locator = TranscriptLocator(projects: root, home: "/nowhere") { path in
+            reads.add(URL(fileURLWithPath: path).lastPathComponent)
+            return FileManager.default.contents(atPath: path)
+        }
+        XCTAssertNil(locator.transcript(for: ws))
+        XCTAssertEqual(reads.names, ["a.jsonl"])
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertNil(locator.transcript(for: ws))
+        XCTAssertEqual(reads.names, ["a.jsonl"], "a second lookup with nothing changed reads no transcript")
+
+        try transcript([user("what were we doing here?", at: ts)]).write(to: folder.appendingPathComponent("b.jsonl"))
+        var found: String?
+        let deadline = Date().addingTimeInterval(10)
+        while found == nil, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.25)
+            found = locator.transcript(for: ws)
+        }
+        XCTAssertEqual(found.map { URL(fileURLWithPath: $0).lastPathComponent }, "b.jsonl")
+        XCTAssertEqual(reads.names, ["a.jsonl", "b.jsonl"], "only the new transcript is read")
+    }
+}
+
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [String] = []
+    var names: [String] { lock.withLock { list } }
+    func add(_ name: String) { lock.withLock { list.append(name) } }
 }
