@@ -190,6 +190,27 @@ def test_real_exec_runs_pulse_and_passes_args(tmp_path):
     assert r.stderr == ""
 
 
+def test_config_env_reaches_the_pulse_and_the_service_env_wins(tmp_path):
+    wrapper = _layout(tmp_path, 'import os\nprint(os.environ["OBSERVER_MODEL"], '
+                                'os.environ["OBSERVER_EVERY_MIN"])\n')
+    config = tmp_path / "home/.assistant/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"mode": "default", "env": {
+        "OBSERVER_MODEL": "from-config", "OBSERVER_EVERY_MIN": 60}}))
+    env = dict(os.environ, HOME=str(tmp_path / "home"), OBSERVER_MODEL="from-service")
+    env.pop("OBSERVER_EVERY_MIN", None)
+    r = subprocess.run([sys.executable, str(wrapper)], capture_output=True,
+                       text=True, timeout=60, env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["from-service", "60"]
+
+
+@pytest.mark.parametrize("body", ["not json", '{"env": ["x"]}', "[]"])
+def test_unreadable_config_env_is_ignored(tmp_path, body):
+    (tmp_path / "config.json").write_text(body)
+    assert _load().config_env(tmp_path) == {}
+
+
 def test_real_run_with_broken_pulse_exits_zero(tmp_path):
     wrapper = _layout(tmp_path, "def broken(:\n")
     r = subprocess.run([sys.executable, str(wrapper)],

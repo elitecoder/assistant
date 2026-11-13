@@ -9,6 +9,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Keep pulse settings across restarts. The pulse now applies the `env` object
+  in `~/.assistant/config.json` at startup, so settings like
+  `ASSISTANT_WATCHER=1` no longer need `launchctl setenv`, which a restart
+  clears. A value set on the LaunchAgent itself still wins.
+
 ### Fixed
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
