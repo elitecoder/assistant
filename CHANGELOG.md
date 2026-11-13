@@ -216,6 +216,60 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   stuck there. The watcher now rereads a transcript when its timestamp changes.
 
 ### Added
+- Add Assistant for Mac, a menu bar app in `mac/` that lists the cmux sessions
+  that need you, the ones that are done, and the quiet ones. It reads
+  transcripts and `gh` directly, with no model and no background service.
+  Select a row, or **Take me to the next one**, to switch cmux to that
+  workspace. Open it with Control-Option-Space. It sends one notification per
+  batch of newly waiting sessions and can open at login. Build it with
+  `mac/build-app.sh`.
+- Ask Assistant for Mac about your sessions. Type a question in the panel, or
+  select a row's speech bubble to ask about that session. It answers through
+  your `claude` command with read-only tools, keeps follow-ups in one chat,
+  and shows each answer's cost. `AssistantBar --ask` asks from the terminal.
+- Talk to Assistant for Mac. Press Control-Option-V and ask out loud. It
+  stops listening when you pause, answers in a few spoken sentences, and
+  reads the answer aloud. Speech recognition runs on your Mac.
+- Show a live waveform and the microphone's name while Assistant for Mac
+  listens. When it hears nothing, it names the microphone to check. When
+  speech recognition fails, it names the setting to turn on.
+- Pick the microphone Assistant for Mac listens with from the panel, without
+  changing the system input. With no pick, it uses the system input, but
+  skips the built-in microphone when the lid is closed and skips virtual
+  devices.
+- When the microphone sends pure silence, Assistant for Mac switches to the
+  next one within a second and says so. The microphone menu also appears
+  while it listens, so you can switch mid-question. It remembers your pick.
+- Answer with the most natural voice installed: Premium, then Enhanced, then
+  the system default. Pick another from the voice menu, which plays a short
+  sample. Siri voices aren't offered, because macOS refuses them to apps.
+- Speak with Kokoro, a natural neural voice built into Assistant for Mac. It
+  runs on the Mac and costs nothing per answer. The 340 MB voice downloads once,
+  the first time you talk, and its checksum is verified. Until it's ready,
+  Assistant uses Apple's voice. Kokoro loads when it speaks and unloads after
+  five idle minutes. Pick Heart, Bella, Michael, Emma, or George from the voice
+  menu. Requires Apple Silicon and macOS 15. Building now needs Xcode's Metal
+  Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
+- `AssistantBar --render "<text>" <file.wav>` saves Kokoro speech to a file.
+- Let Assistant for Mac work with your sessions. It messages a workspace's
+  Claude session through `cmux send`, confirms delivery, waits for the turn to
+  finish, and reads the reply, so it can go back and forth until a request is
+  done. The panel shows every message and reply, and **Stop** ends the run. It
+  finds each session's pane exactly from the Claude process on that terminal,
+  skips `/back-off` workspaces, and its only command access is its own
+  `--sessions`, `--send`, and `--wait`.
+- Answer with Claude Haiku at high effort by default instead of Opus. On 12 of
+  the operator's real Slack questions, it scored 24 to 25 of 36 against 19 for
+  Haiku at default effort and 21 for Sonnet, for about 2 cents a question
+  against 15 for Sonnet. Status answers now list every session that waits on
+  you, with the exact decision. Switch models from the panel's model menu.
+- Add `evals/mac-chat/`, which asks the real questions on several setups for
+  grading. The questions stay in `~/.assistant/evals/mac-chat/`.
+- Fix garbled spots in Kokoro speech. Numbers, percentages, dollar amounts,
+  version numbers, and PR numbers are now written as words before speaking,
+  and long sentences are split at commas. Transcribing Kokoro output with
+  Apple's recognizer confirmed digits were misread ("workspace 25" came out as
+  "workspace 5") and "%", "$0.24", and "1.0.11" were dropped.
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and
   Tasks tabs, Slack replies, Slack emoji to task, auto-started tasks, and the
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds
