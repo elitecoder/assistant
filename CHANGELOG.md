@@ -45,6 +45,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   blocks the update.
 
 ### Added
+- Pick the shell alias Claude sessions start with:
+  `bin/assistant-llm.py claude-alias <name>` saves `llm.claude.alias` in
+  `~/.assistant/comms/config.json`, and `claude-alias claude` restores the
+  default. Task sessions, `/spawn-claude-workspace`, the Slack session, and
+  restored or resumed Claude sessions start the alias in an interactive login
+  zsh, which defines it. The command refuses a name that isn't one shell word
+  or that your login zsh doesn't know. A live Slack session restarts on its
+  next message after the alias changes. Background model jobs still run the
+  Claude program directly.
 - Refuse commits on the live install's main. The self-update links
   `githooks/refuse-main-commit` as the `pre-commit` and `pre-merge-commit`
   hooks, and never replaces a hook that's already there. Commit on a branch
