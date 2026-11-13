@@ -2003,6 +2003,31 @@ def test_doctor_and_status_describe_the_slack_session_that_actually_runs(home, m
     assert cli.status(llm_runner.config_path(home=home))["features"]["comms"]["provider"] == "claude"
 
 
+def test_doctor_warm_session_binary_passes_warns_on_path_only_and_fails_when_absent(
+        home, monkeypatch, tmp_path):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_claude_bin")
+    installed = _stub(tmp_path / "installed" / "claude")
+    on_path = _stub(tmp_path / "pathdir" / "claude")
+    missing = tmp_path / "missing" / "claude"
+
+    monkeypatch.setenv("CLAUDE_BIN", str(installed))
+    passed = doctor.check_claude_bin()
+    assert (passed.status, passed.detail) == (doctor.PASS, str(installed))
+
+    monkeypatch.setenv("CLAUDE_BIN", str(missing))
+    monkeypatch.setenv("PATH", f"{on_path.parent}{os.pathsep}/usr/bin{os.pathsep}/bin")
+    warned = doctor.check_claude_bin()
+    assert (warned.status, warned.detail, warned.remedy) == (
+        doctor.WARN, f"{missing} missing; claude on PATH at {on_path}",
+        f"set CLAUDE_BIN={on_path}")
+
+    monkeypatch.setenv("PATH", f"/usr/bin{os.pathsep}/bin")
+    failed = doctor.check_claude_bin()
+    assert (failed.status, failed.detail, failed.remedy) == (
+        doctor.FAIL, f"{missing} missing and no claude on PATH",
+        "install the claude CLI, or set CLAUDE_BIN to its path")
+
+
 def test_headless_copilot_retries_without_effort_when_its_model_refuses_it(home, copilot_bin, tmp_path):
     calls = []
 
