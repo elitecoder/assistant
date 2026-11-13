@@ -10,6 +10,18 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Fixed
+- Pick the right first request for the session check. A message that's only a
+  path, such as `/Users/me/notes.txt`, now counts as a request. Only a bare
+  `/word` command is skipped.
+- Show the text of an away recap stored as a list of blocks, instead of a
+  Python list.
+- Ignore a true or false check time, so a stored `true` never counts as a
+  recent check.
+- Check a changed workspace again inside the hourly window when no session in
+  it was verified. The earlier result is reused only when the same verified
+  sessions are still there.
+- Make the replay test build its expected excerpt by hand, so it catches a bug
+  in `raw_excerpt`.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether
