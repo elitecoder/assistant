@@ -1610,6 +1610,29 @@ def test_dispatch_waits_as_long_as_before_for_a_ready_pane(home, monkeypatch):
     assert sleeps[0] == 2, "a 2 s pause before the first screen poll, as on main"
 
 
+def test_dispatch_reads_a_never_ready_pane_30_times_then_parks(home, monkeypatch):
+    _pick(home, "claude")
+    cwd = home / "dev"
+    cwd.mkdir()
+    monkeypatch.setenv("DISPATCH_CWD", str(cwd))
+    pulse = _load(BIN / "pulse.py", "seam_pulse_never_ready")
+    pulse.self_update_pulse = lambda pulse_idx: None
+    reads, sleeps, parked = [], [], []
+    monkeypatch.setattr(pulse, "run", lambda cmd, *a, **k: (
+        (0, "OK workspace:9\n", "") if "new-workspace" in cmd else
+        (0, "surface:9\n", "") if "list-pane-surfaces" in cmd else (0, "", "")))
+    monkeypatch.setattr(pulse, "_cmux_rpc", lambda method, params, timeout=15: {})
+    monkeypatch.setattr(pulse, "_surface_read_text",
+                        lambda ref, lines=200: reads.append(ref) or "booting…")
+    monkeypatch.setattr(pulse, "_load_todo_item", lambda tid: {"id": tid, "title": "x"})
+    monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: parked.append(tid) or True)
+    monkeypatch.setattr(pulse.time, "sleep", sleeps.append)
+    assert pulse.dispatch_todo("td-8") is False
+    assert reads == ["surface:9"] * 30
+    assert sleeps.count(1) >= 30
+    assert parked == ["td-8"]
+
+
 @pytest.mark.parametrize("line", [
     '✗ Execution failed: Model "no-such-model-zz" is not available.',
     "✗ API error: 500",
@@ -2290,6 +2313,9 @@ def test_copilot_has_its_own_thinking_effort_setting(home, monkeypatch):
     doc["llm"]["copilot"] = {"reasoning_effort": "off"}
     config.write_text(json.dumps(doc))
     assert route().reasoning_effort == "off"
+    doc["llm"]["features"] = {"observer": {"copilot": {"reasoning_effort": "medium"}}}
+    config.write_text(json.dumps(doc))
+    assert route().reasoning_effort == "medium", "a job's own setting beats the shared one"
     monkeypatch.setenv("OBSERVER_COPILOT_REASONING_EFFORT", "high")
     assert route().reasoning_effort == "high"
 
@@ -2325,3 +2351,219 @@ def test_watcher_titles_an_unnamed_copilot_session_by_folder_and_branch(home):
     (d / "workspace.yaml").write_text("cwd: /w/assistant\nbranch: feat/x\n")
     (d / "events.jsonl").write_text("")
     assert watcher.session_title([], d / "events.jsonl") == "assistant (feat/x)"
+    for detached in ("HEAD", "detached@0b99934873"):
+        (d / "workspace.yaml").write_text(f"cwd: /w/assistant\nbranch: {detached}\n")
+        assert watcher.session_title([], d / "events.jsonl") == "assistant"
+
+
+# ── seam edge cases ───────────────────────────────────────────────────────────
+
+def test_copilot_transcripts_skip_a_session_folder_with_no_events_yet(home):
+    cwd = home / "dev"
+    cwd.mkdir()
+    written = _copilot_session(home, "s-1", str(cwd), [{"type": "user.message"}])
+    empty = home / ".copilot" / "session-state" / "s-2"
+    empty.mkdir()
+    (empty / "workspace.yaml").write_text(f"id: s-2\ncwd: {cwd}\n")
+    assert ag.copilot_transcripts(cwd, since=0) == [written]
+
+
+def test_a_claude_session_has_no_transcript_before_its_projects_folder_exists(home):
+    assert ag.transcript_for_session(ag.CLAUDE, "abc") is None
+
+
+def test_record_content_of_a_non_record_is_none():
+    assert ag.record_content(["not", "a", "record"]) is None
+
+
+def test_a_missing_copilot_path_is_kept_as_given(tmp_path):
+    missing = str(tmp_path / "nope" / "copilot")
+    assert not ag._is_node_script(missing)
+    assert ag._copilot_native(missing) == missing
+
+
+def test_an_npm_loader_without_a_standalone_build_is_used_as_is(tmp_path):
+    loader = tmp_path / "copilot"
+    loader.write_text("#!/usr/bin/env node\nrequire('./x')\n")
+    loader.chmod(0o755)
+    assert ag._copilot_native(str(loader)) == str(loader)
+
+
+def test_a_binary_that_cannot_start_does_not_run(tmp_path):
+    assert not ag.runs(str(tmp_path / "missing"))
+
+
+def test_copilot_model_is_blank_when_nothing_sets_it(home):
+    assert ag.copilot_model("comms") == ""
+
+
+def test_copilot_hooks_report_cmux_failing(home, monkeypatch):
+    monkeypatch.setattr(ag.subprocess, "run", lambda cmd, **k:
+                        subprocess.CompletedProcess(cmd, 3, "", " cmux: no such hook \n"))
+    assert ag.install_copilot_hooks() == "cmux: no such hook"
+    monkeypatch.setattr(ag.subprocess, "run", lambda cmd, **k:
+                        subprocess.CompletedProcess(cmd, 4, "", ""))
+    assert ag.install_copilot_hooks() == "exit 4"
+    assert not (home / ".copilot" / "hooks" / "cmux.json").exists()
+
+
+def test_copilot_hooks_report_cmux_writing_broken_json(home, monkeypatch):
+    def run(cmd, **kw):
+        (Path(kw["env"]["COPILOT_HOME"]) / "config.json").write_text("{broken")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(ag.subprocess, "run", run)
+    assert ag.install_copilot_hooks().startswith("cmux wrote unreadable hooks:")
+    assert not (home / ".copilot" / "hooks" / "cmux.json").exists()
+
+
+def test_copilot_resume_without_user_rules_is_left_alone(home):
+    _pick(home, "copilot")
+    assert not (home / ".claude" / "CLAUDE.md").exists()
+    assert ag.with_copilot_rules("copilot --resume s-1") == "copilot --resume s-1"
+
+
+@pytest.mark.parametrize("path,agent", [
+    ("/x/bin/copilot", ag.COPILOT), ("/x/bin/Claude", ag.CLAUDE),
+    ("droid", ag.DROID), ("/bin/zsh", None), (None, None)])
+def test_agent_from_executable(path, agent):
+    assert ag.agent_from_executable(path) == agent
+
+
+def test_claude_headless_reaches_every_extra_folder(tmp_path):
+    cmd = ag.headless_argv(ag.CLAUDE, binary_path="claude", model="m", run_dir=tmp_path,
+                           disable_tools=False, extra_dirs=["/data/a", "/data/b"])
+    assert cmd[-6:] == ["--add-dir", str(tmp_path), "--add-dir", "/data/a", "--add-dir", "/data/b"]
+
+
+def test_a_command_without_reasoning_effort_is_unchanged():
+    cmd = ["copilot", "-p", "x"]
+    assert ag.without_reasoning_effort(cmd) == cmd
+
+
+def test_copilot_output_ignores_blank_lines():
+    stdout = "\n\n" + copilot_stdout("pong").replace("\n", "\n\n")
+    assert ag.parse_headless(ag.COPILOT, stdout)["result_text"] == "pong"
+
+
+def test_copilot_context_is_unknown_for_a_missing_or_broken_transcript(tmp_path):
+    assert ag.copilot_context_fraction(tmp_path / "gone.jsonl") is None
+    transcript = tmp_path / "events.jsonl"
+    transcript.write_text(_usage_record(10, max_tokens=0) + '{"type":"session.usage_record"}\n')
+    assert ag.copilot_context_fraction(transcript) is None
+    transcript.write_text(_usage_record(68000) + _usage_record(10, max_tokens=0))
+    assert ag.copilot_context_fraction(transcript) == pytest.approx(0.25)
+
+
+def test_droid_output_that_is_not_a_result_is_not_an_answer():
+    usage = {"input_tokens": 3, "output_tokens": 1}
+    reply = {"type": "assistant", "result": "hi", "is_error": False, "usage": usage}
+    assert ag.parse_headless(ag.CLAUDE, json.dumps(reply)) is not None
+    assert ag.parse_headless(ag.DROID, json.dumps(reply)) is None
+    unflagged = {"type": "result", "subtype": "success", "result": "hi", "usage": usage}
+    assert ag.parse_headless(ag.CLAUDE, json.dumps(unflagged)) is not None
+    assert ag.parse_headless(ag.DROID, json.dumps(unflagged)) is None
+
+
+def test_prompt_submitted_reads_block_content_and_skips_bad_lines(home, monkeypatch):
+    cwd = home / "dev"
+    cwd.mkdir()
+    d = home / ".claude" / "projects" / ag.claude_project_slug(cwd)
+    d.mkdir(parents=True)
+    (d / "s.jsonl").write_text(
+        "{not json /p/x.md\n"
+        + json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": "Read /p/x.md"}, "stray"]}}) + "\n")
+    assert ag.prompt_submitted(ag.CLAUDE, cwd, "/p/x.md")
+    monkeypatch.setattr(ag, "session_transcripts",
+                        lambda *a, **k: [d / "vanished.jsonl", d / "s.jsonl"])
+    assert ag.prompt_submitted(ag.CLAUDE, cwd, "/p/x.md")
+
+
+def test_install_copilot_hooks_command_reports_failure_and_success(home, monkeypatch, capsys):
+    monkeypatch.setattr(ag, "install_copilot_hooks", lambda: "cmux missing")
+    assert ag.main(["install-copilot-hooks"]) == 1
+    assert "cmux Copilot hooks not installed: cmux missing" in capsys.readouterr().err
+    monkeypatch.setattr(ag, "install_copilot_hooks", lambda: None)
+    assert ag.main(["install-copilot-hooks"]) == 0
+    assert str(ag.copilot_hooks_file()) in capsys.readouterr().out
+
+
+def _hook_without_seam(monkeypatch):
+    monkeypatch.setitem(sys.modules, "agent_session", None)
+    hook = _load(REPO / "hooks" / "cmux-auto-resume.py", "seam_hook_broken")
+    assert hook.agent_session is None and "import of agent_session halted" in hook.SEAM_ERROR
+    monkeypatch.setenv("CMUX_SURFACE_ID", "S1")
+    return hook
+
+
+def test_resume_hook_without_the_seam_ledgers_the_session_and_starts_nothing(home, monkeypatch):
+    hook = _hook_without_seam(monkeypatch)
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"sessionId": "s-1"})))
+    monkeypatch.setattr(hook.subprocess, "Popen", lambda *a, **k: pytest.fail("worker started"))
+    hook.main([])
+    [entry] = [json.loads(l) for l in (home / ".assistant/actions-ledger.jsonl").read_text().splitlines()]
+    assert entry["key"] == "cmux-session-forward-fail:s-1"
+    assert entry["evidence"].startswith("session s-1 not forwarded to cmux: bin/agent_session.py failed")
+
+
+def test_resume_hook_without_the_seam_survives_an_unwritable_ledger(home, monkeypatch):
+    hook = _hook_without_seam(monkeypatch)
+    (home / ".assistant").rmdir()
+    (home / ".assistant").write_text("not a folder")
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"session_id": "s-1"})))
+    hook.main([])
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"cwd": "/w"})))
+    hook.main([])
+    assert (home / ".assistant").read_text() == "not a folder"
+
+
+@pytest.mark.parametrize("agent,kind", [(ag.CLAUDE, "claude"), (ag.DROID, "factory")])
+def test_resume_hook_names_the_agent_from_its_transcript(home, agent, kind):
+    hook = _load(REPO / "hooks" / "cmux-auto-resume.py", "seam_hook_kind")
+    path = (home / ".claude" / "projects" / "p" / "s.jsonl" if agent == ag.CLAUDE
+            else home / ".factory" / "sessions" / "p" / "s.jsonl")
+    assert ag.agent_from_transcript(path) == agent
+    assert hook.infer_provider({"transcript_path": str(path)}) == kind
+
+
+def test_restore_names_a_copilot_session_from_its_launch_command(home):
+    restore = _load(BIN / "cmux-restore-sessions.py", "seam_restore_argv")
+    _pick(home, "copilot")
+    assert restore.infer_ledger_provider(
+        {"launch_argv": ["/opt/bin/copilot", "--resume", "s-1"]}) == restore.normalize_provider(ag.COPILOT)
+    assert restore.infer_ledger_provider({"launch_argv": ["/bin/zsh"]}) == ""
+
+
+def test_copilot_box_with_edges_but_no_body_is_no_box():
+    assert cs._copilot_box_text(["╻", "  something else", "╹"]) is None
+    assert cs._copilot_box_text(["╻", "┃ half drawn"]) is None
+
+
+def test_page_shows_no_activity_for_an_unreadable_or_replyless_transcript(tmp_path):
+    page = _load(BIN / "render-assistant-page.py", "seam_page_activity")
+    assert page.last_activity(str(tmp_path)) is None
+    noisy = tmp_path / "events.jsonl"
+    line = json.dumps({"type": "tool.execution_start", "data": {"blob": "x" * 1000}}) + "\n"
+    noisy.write_text(line * 4500)
+    assert noisy.stat().st_size > 4194304
+    assert page.last_activity(str(noisy)) is None
+
+
+@pytest.mark.parametrize("layout", ["repo/.worktrees/w", "repo"])
+def test_memory_seeds_read_the_live_checkouts_sessions_from_a_worktree(tmp_path, layout):
+    copy = tmp_path / layout / "bin" / "tools" / "memory_seeds.py"
+    copy.parent.mkdir(parents=True)
+    copy.write_text((BIN / "tools" / "memory_seeds.py").read_text())
+    seeds = _load(copy, "seam_seeds_layout")
+    assert seeds.ASSISTANT_CWD == str((tmp_path / "repo").resolve())
+
+
+@pytest.mark.parametrize("agent,marker,answer", [
+    ("copilot", "Do you trust the files in this folder?", "2"),
+    ("claude", "1. Yes, I trust this folder", "1"),
+    ("droid", "", "1")])
+def test_shell_reads_each_agents_trust_prompt_and_answer(agent, marker, answer, capsys):
+    ag.main(["trust-marker", "--agent", agent])
+    assert capsys.readouterr().out == marker + "\n"
+    ag.main(["trust-answer", "--agent", agent])
+    assert capsys.readouterr().out == answer + "\n"

@@ -68,6 +68,17 @@ sys.exit(int(os.environ.get("DOCTOR_EXIT", "0")))
 """
 
 
+# agent_session.py stub: logs its subcommand; `copilot-chosen` answers from the
+# comms config the script just wrote.
+_SEAM_STUB = """import json, os, sys
+with open(os.environ["SEAM_LOG"], "a") as f:
+    f.write(sys.argv[1] + "\\n")
+if sys.argv[1] == "copilot-chosen":
+    path = os.path.join(os.environ["HOME"], ".assistant", "comms", "config.json")
+    sys.exit(0 if json.load(open(path))["llm"]["provider"] == "copilot" else 1)
+"""
+
+
 @unittest.skipUnless(shutil.which("zsh"), "zsh required to run the setup script")
 class CommsSetupTests(unittest.TestCase):
     def _run(self, *, token="xoxb-test-fake", ping_target="C0TEST123",
@@ -88,6 +99,7 @@ class CommsSetupTests(unittest.TestCase):
         shutil.copy2(SETUP, fake_repo / "bin" / "assistant-comms-setup.sh")
         (fake_repo / "bin" / "slack-send.py").write_text(_SEND_STUB)
         (fake_repo / "bin" / "assistant-doctor.py").write_text(_DOCTOR_STUB)
+        (fake_repo / "bin" / "agent_session.py").write_text(_SEAM_STUB)
 
         curl = stubbin / "curl"
         curl.write_text(_CURL_STUB)
@@ -110,6 +122,7 @@ class CommsSetupTests(unittest.TestCase):
             "DOCTOR_LOG": str(doctor_log),
             "SEND_EXIT": str(send_exit),
             "DOCTOR_EXIT": str(doctor_exit),
+            "SEAM_LOG": str(root / "seam.log"),
         }
         if token is not None:
             env["SLACK_BOT_TOKEN"] = token
@@ -288,6 +301,16 @@ class CommsSetupTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stdout)
         self.assertIn("preflight check FAILED", proc.stdout)
         self.assertTrue((home / ".assistant" / "config.json").exists())
+
+    def test_env_provider_copilot_persists_and_installs_its_hooks(self):
+        _, home, _, _ = self._run(llm_provider="copilot")
+        self.assertEqual(self._comms_config(home)["llm"]["provider"], "copilot")
+        seam = (home.parent / "seam.log").read_text().split()
+        self.assertEqual(seam, ["copilot-chosen", "install-copilot-hooks"])
+
+    def test_claude_setup_installs_no_copilot_hooks(self):
+        _, home, _, _ = self._run(llm_provider="claude")
+        self.assertEqual((home.parent / "seam.log").read_text().split(), ["copilot-chosen"])
 
     def tearDown(self):
         td = getattr(self, "_td", None)

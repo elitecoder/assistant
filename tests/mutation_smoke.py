@@ -31,8 +31,8 @@ CHECKS = (
     (
         "unfinished tool calls remain pending",
         "bin/session-context-watcher.py",
-        "self.pending_tools.add(tool_id)",
-        "self.pending_tools.discard(tool_id)",
+        '            elif kind == "tool_use":\n                self.pending_tools.add(tool_id)',
+        '            elif kind == "tool_use":\n                self.pending_tools.discard(tool_id)',
         "tests/test_session_context_watcher.py::test_pending_tools_mixed_text_parallel_and_matching_results",
     ),
     (
@@ -274,9 +274,64 @@ CHECKS = (
         "tests/test_install_cmux_sessions.py::test_failed_settings_patch_warns_and_the_install_continues",
     ),
     (
+        "a copilot-only machine continues past the prerequisite check",
+        "install-bootstrap.sh",
+        "    if command -v copilot >/dev/null 2>&1 || command -v droid >/dev/null 2>&1; then\n",
+        "    if command -v droid >/dev/null 2>&1; then\n",
+        "tests/test_install_bootstrap.py::test_a_copilot_only_machine_passes_the_prerequisite_check",
+    ),
+    (
+        "no agent at all names every supported agent",
+        "install-bootstrap.sh",
+        '        die "no coding agent found — install Claude Code (default), GitHub Copilot CLI, or Factory Droid first"\n',
+        '        die "no coding agent found"\n',
+        "tests/test_install_bootstrap.py::test_a_machine_with_no_agent_stops_and_names_all_three",
+    ),
+    (
+        "the bootstrap reports a found copilot",
+        "install-bootstrap.sh",
+        '    && ok "copilot found (GitHub Copilot available as opt-in)" \\\n',
+        "    && : \\\n",
+        "tests/test_install_bootstrap.py::test_a_copilot_only_machine_passes_the_prerequisite_check",
+    ),
+    (
+        "comms setup accepts copilot as the provider",
+        "bin/assistant-comms-setup.sh",
+        '    provider = env_provider if env_provider in ("claude", "copilot", "droid") else "claude"\n',
+        '    provider = env_provider if env_provider in ("claude", "droid") else "claude"\n',
+        "tests/test_comms_setup.py::CommsSetupTests::test_env_provider_copilot_persists_and_installs_its_hooks",
+    ),
+    (
+        "comms setup installs copilot hooks when copilot is picked",
+        "bin/assistant-comms-setup.sh",
+        'if "$PYTHON" "$REPO_DIR/bin/agent_session.py" copilot-chosen; then\n'
+        '    "$PYTHON" "$REPO_DIR/bin/agent_session.py" install-copilot-hooks \\\n'
+        '        || echo "     ✗ cmux Copilot hooks not installed; Copilot sessions won\'t show on the dashboard" >&2\n'
+        'fi\n',
+        "",
+        "tests/test_comms_setup.py::CommsSetupTests::test_env_provider_copilot_persists_and_installs_its_hooks",
+    ),
+    (
+        "the installer installs copilot hooks when copilot is picked",
+        "install.sh",
+        '        if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then\n'
+        '            CMUX_BIN="${CMUX_BIN:-$CMUX_CLI}" python3 "$REPO_ROOT/bin/agent_session.py" install-copilot-hooks 2>&1 | sed \'s/^/  /\' \\\n'
+        '                || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"\n'
+        '        fi\n',
+        "",
+        "tests/test_install_cmux_sessions.py::test_apply_with_copilot_picked_writes_its_cmux_hooks",
+    ),
+    (
+        "a failed copilot hooks install is reported",
+        "install.sh",
+        '                || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"\n',
+        "                || true\n",
+        "tests/test_install_cmux_sessions.py::test_a_failed_copilot_hooks_install_warns_and_the_install_continues",
+    ),
+    (
         "a dry run says what it would patch",
         "install.sh",
-        '    note "would install cmux Factory hooks and patch Claude + Factory session hooks"\n',
+        '    note "would install cmux Factory hooks (+ Copilot hooks when Copilot is picked) and patch Claude + Factory session hooks"\n',
         "    :\n",
         "tests/test_install_cmux_sessions.py::test_dry_run_reports_without_patching",
     ),

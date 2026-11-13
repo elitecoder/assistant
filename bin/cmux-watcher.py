@@ -595,7 +595,8 @@ def session_title(records: list[dict], path: Path | None = None) -> str | None:
         branch = agent_session.copilot_session_field(folder, "branch")
         if cwd:
             label = Path(cwd).name or cwd
-            return f"{label} ({branch})" if branch and branch != "HEAD" else label
+            named = branch and branch != "HEAD" and not branch.startswith("detached@")
+            return f"{label} ({branch})" if named else label
     for rec in reversed(records):
         title = rec.get("aiTitle") if rec.get("type") == "ai-title" else None
         if isinstance(title, str) and title.strip():

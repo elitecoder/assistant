@@ -145,3 +145,38 @@ def test_apply_installs_copilot_hooks_only_when_copilot_is_picked(tmp_path, inst
     calls = (tmp_path / "cmux.log").read_text().splitlines()
     assert ("hooks copilot install --yes" in calls) is installed
     assert "hooks factory install --yes" in calls
+
+
+COPILOT_CMUX = (
+    '#!/bin/sh\n'
+    'printf "%s\\n" "$*" >> "$HOME/cmux.log"\n'
+    'if [ "$*" = "hooks copilot install --yes" ]; then\n'
+    '  printf \'{"hooks":{"Stop":[{"hooks":[{"command":"cmux hooks enqueue copilot stop","timeout":5000}]}]}}\' '
+    '> "$COPILOT_HOME/config.json"\n'
+    'fi\n'
+)
+
+
+def _pick_copilot(home):
+    config = home / ".assistant/comms/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"llm": {"provider": "copilot"}}))
+
+
+def test_apply_with_copilot_picked_writes_its_cmux_hooks(tmp_path, install):
+    _pick_copilot(tmp_path)
+    (tmp_path / "stubbin/cmux").write_text(COPILOT_CMUX)
+    result = install("--apply")
+    assert "cmux Copilot hooks install failed" not in result.stderr
+    assert json.loads((tmp_path / ".copilot/hooks/cmux.json").read_text()) == {
+        "version": 1, "hooks": {"Stop": [{"type": "command", "timeoutSec": 5,
+                                          "bash": "cmux hooks enqueue copilot stop"}]}}
+
+
+def test_a_failed_copilot_hooks_install_warns_and_the_install_continues(tmp_path, install):
+    _pick_copilot(tmp_path)
+    result = install("--apply")
+    assert ("cmux Copilot hooks install failed (continuing — Copilot sessions may not "
+            "show on the dashboard)") in result.stderr
+    assert not (tmp_path / ".copilot/hooks/cmux.json").exists()
+    assert "[5/5] Reloading launchd agents that changed" in result.stdout

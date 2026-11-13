@@ -27,8 +27,6 @@ HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parents[1]  # repo root (src/ for the connector base)
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
-if str(REPO / "bin") not in sys.path:
-    sys.path.insert(0, str(REPO / "bin"))
 
 import agent_session  # noqa: E402
 from assistant import brief as brief_store
