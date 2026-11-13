@@ -63,16 +63,33 @@ def saved_case(run_dir: Path) -> dict | None:
             "ctx_span": (start, end), "sonnet": verdict["verdict"]}
 
 
+def raw_excerpt(data: bytes, max_bytes: int = 131072) -> str:
+    """The first-and-last JSONL window the Observer read before the plain-text slice."""
+    if len(data) > max_bytes:
+        head = data[:min(24576, max_bytes // 4)]
+        head = head[:head.rfind(b"\n") + 1]
+        tail = data[-(max_bytes - len(head)):]
+        data = head + tail[tail.find(b"\n") + 1:]
+    return data.decode("utf-8", errors="replace")
+
+
 def transcript_end(ctx: dict) -> int | None:
-    """Byte offset just past the last transcript line Sonnet saw."""
-    lines = [line for line in ctx.get("transcript_excerpt", "").splitlines() if line.strip()]
+    """Byte offset where the transcript ended when Sonnet read it: the cut
+    whose old-style excerpt equals the saved one, or None when none does."""
+    excerpt = ctx.get("transcript_excerpt", "")
+    lines = [line for line in excerpt.splitlines() if line.strip()]
     path = Path(ctx["transcript_path"])
     if not lines or not path.exists():
         return None
     needle = lines[-1].encode()
     data = path.read_bytes()
     at = data.find(needle)
-    return None if at < 0 else at + len(needle) + 1
+    while at >= 0:
+        end = at + len(needle) + 1
+        if raw_excerpt(data[:end]) == excerpt:
+            return end
+        at = data.find(needle, at + 1)
+    return None
 
 
 def slice_prompt(case: dict, end: int) -> str:

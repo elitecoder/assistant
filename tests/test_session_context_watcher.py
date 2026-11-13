@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
@@ -1828,6 +1829,23 @@ def test_a_transcript_touched_without_new_text_stays_verified(tmp_home, tmp_path
         w.kq.close()
 
 
+def test_an_event_with_no_watched_flag_leaves_the_transcript_alone(tmp_home, tmp_path):
+    f = tmp_path / "w.jsonl"
+    f.write_text(_user_line("one") + "\n")
+    w = scw.Watcher()
+    try:
+        w.add_watch(f, "/cwd")
+        w.dirty = False
+        fd = w.path_to_fd[str(f)]
+        with open(f, "a") as out:
+            out.write(_assistant_line("two") + "\n")
+        w.handle_event(SimpleNamespace(ident=fd, fflags=scw.select.KQ_NOTE_LINK))
+        assert w.fd_to_state[fd].last_assistant is None
+        assert w.dirty is False
+    finally:
+        w.kq.close()
+
+
 def test_handle_event_unknown_ident_noop(tmp_home):
     w = scw.Watcher()
     try:
@@ -1853,6 +1871,26 @@ def test_handle_event_delete_drops_watch(tmp_home, tmp_path):
         w.handle_event(ev)
         assert fd not in w.fd_to_state
         assert w.dirty is True
+    finally:
+        w.kq.close()
+
+
+def test_handle_event_ignores_link_count_change(tmp_home, tmp_path):
+    f = tmp_path / "w.jsonl"
+    f.write_text(_user_line("one") + "\n")
+    w = scw.Watcher()
+    try:
+        w.add_watch(f, "/cwd")
+        fd = w.path_to_fd[str(f)]
+        w.dirty = False
+        with f.open("a") as out:
+            out.write(_assistant_line("two") + "\n")
+        ev = select.kevent(fd, filter=select.KQ_FILTER_VNODE,
+                           fflags=select.KQ_NOTE_LINK)
+        w.handle_event(ev)
+        assert fd in w.fd_to_state
+        assert w.fd_to_state[fd].last_assistant is None
+        assert w.dirty is False
     finally:
         w.kq.close()
 

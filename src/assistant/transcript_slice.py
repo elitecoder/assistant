@@ -2,7 +2,9 @@
 
 The Observer reads this instead of raw JSONL: the first request plus the most
 recent turns, with attachments, hook output, request records, and thinking
-dropped, and tool calls shortened to one line each.
+dropped, and tool calls shortened to one line each. User records the person
+didn't type (background-task notices, other sessions' messages, command
+output, conversation summaries) come out as SYSTEM turns.
 """
 from __future__ import annotations
 
@@ -17,6 +19,12 @@ TURN_CHARS = 1500
 LAST_TURN_CHARS = 4000
 TOOL_CHARS = 160
 REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+COMMAND = re.compile(r"<command-name>\s*([^<]*?)\s*</command-name>")
+COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+SYSTEM_PREFIXES = ("<task-notification>", "<local-command-", "<bash-stdout>",
+                   "<bash-stderr>", "Caveat:", "This session is being continued",
+                   "Another Claude session sent a message",
+                   "[System: context from Assistant")
 
 
 def _clip(text: str, limit: int) -> str:
@@ -59,6 +67,9 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
     if record.get("isMeta"):
         return None
     kind = record.get("type")
+    if kind == "system" and record.get("subtype") == "away_summary":
+        recap = REMINDER.sub("", str(record.get("content") or "")).strip()
+        return ("system", str(record.get("timestamp") or ""), "Recap: " + recap) if recap else None
     if kind in ("user.message", "assistant.message"):
         return _copilot_turn(record, kind.split(".", 1)[0])
     if kind == "session.error":
@@ -98,7 +109,26 @@ def _render(record: dict, role: str, blocks) -> tuple[str, str, str] | None:
     text = REMINDER.sub("", text).strip()
     if not text:
         return None
+    if role == "user":
+        role, text = _user_turn(record, text)
     return role, str(record.get("timestamp") or ""), text
+
+
+def _user_turn(record: dict, text: str) -> tuple[str, str]:
+    """("system", text) for user records the person didn't type; a slash
+    command becomes ("user", "/name args")."""
+    origin = record.get("origin")
+    origin_kind = origin.get("kind") if isinstance(origin, dict) else origin
+    if (record.get("isCompactSummary") or origin_kind not in (None, "human")
+            or record.get("promptSource") == "system"
+            or text.startswith(SYSTEM_PREFIXES)):
+        return "system", text
+    if command := COMMAND.search(text):
+        args = COMMAND_ARGS.search(text)
+        return "user", " ".join(
+            part for part in (command.group(1), (args.group(1) if args else "").strip())
+            if part)
+    return "user", text
 
 
 def _turns(data: bytes) -> list[tuple[str, str, str]]:
@@ -106,15 +136,20 @@ def _turns(data: bytes) -> list[tuple[str, str, str]]:
     for line in data.splitlines():
         try:
             record = json.loads(line)
-        except ValueError:
+            turn = _turn(record) if isinstance(record, dict) else None
+        except (ValueError, TypeError, AttributeError):
             continue
-        if isinstance(record, dict) and (turn := _turn(record)):
+        if turn:
             out.append(turn)
     return out
 
 
 def _is_request(turn: tuple[str, str, str]) -> bool:
-    return turn[0] == "user" and not turn[2].startswith("[tool")
+    """A message the person typed, or a slash command they ran with arguments."""
+    role, _, text = turn
+    if role != "user" or text.startswith("[tool"):
+        return False
+    return not (text.startswith("/") and " " not in text)
 
 
 def _format(turn: tuple[str, str, str], limit: int) -> str:
@@ -140,7 +175,7 @@ def conversation_slice(data: bytes, *, head: bytes | None = None,
         used += len(line) + 1
     kept.reverse()
     parts = []
-    if first is not None and (not kept or _format(first, TURN_CHARS) != kept[0]):
+    if first is not None and first not in turns[len(turns) - len(kept):]:
         parts.append("FIRST REQUEST " + _format(first, FIRST_REQUEST_CHARS))
         parts.append("[… earlier turns omitted …]")
     return "\n".join(parts + kept)

@@ -9,6 +9,33 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Changed
+- The session check (`ASSISTANT_WATCHER=1`) now runs in default mode too. In
+  default mode its results only add cards: it never merges, sends `/cleanup`,
+  or nudges a session. The other opt-in jobs still need Pro mode.
+- The session check now reads each conversation as plain text: the first typed
+  request plus the latest turns, with attachments, hook output, and thinking
+  removed. Background-task notices, messages from other sessions, command
+  output, and conversation summaries are labeled SYSTEM, so they don't read
+  as requests from you. It used to send a fixed 128 KB slice of the raw log,
+  which was mostly clutter and sometimes held no conversation at all. Prompts
+  are about a third of their old size.
+- Session results on the Sessions tab now stay for up to 6 hours while the
+  session doesn't change, instead of expiring after 10 minutes.
+
+### Added
+- `OBSERVER_EVERY_MIN` sets how many minutes pass before a changed session is
+  checked again. The default, 0, checks on every run. A failed check, a new
+  session, or a reused workspace number is always checked on the next run.
+- `ASSISTANT_OBSERVER_HOLD_ACTIONS=1` keeps session-check results to cards in
+  Pro mode too.
+- Run any model job on a local OpenAI-compatible server (llama-server,
+  Ollama, or LM Studio) with `assistant-llm.py set local`. Set the server with
+  `llm.local.url` and `llm.local.model` in `~/.assistant/comms/config.json`,
+  or with `ASSISTANT_LOCAL_LLM_URL` and `<JOB>_LOCAL_MODEL`.
+- `evals/observer/replay.py` replays past Sonnet checks with the new
+  conversation slice and scores other models against them.
+
 ### Added
 - GitHub Copilot CLI is a third coding agent beside Claude Code and Factory
   Droid. Run `bin/assistant-llm.py set copilot`, and task sessions, the Slack
@@ -138,8 +165,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `/todo`, `/cleanup`, and `/spawn-claude-workspace` skills. Pro mode adds
   notifications and triage, goals and the planner, the Notifications,
   Decisions, Background work, and Connected apps tabs, and the `/goal`,
-  `/attend`, `/back-off`, and `/lesson` skills. The watcher, strategist,
-  lessons extractor, and brief narrator also need Pro mode, and connectors
+  `/attend`, `/back-off`, and `/lesson` skills. The strategist, lessons
+  extractor, and brief narrator also need Pro mode, and connectors
   pause before their next check while it's off. Alerts that arrive while Pro
   mode is off are skipped, not saved for later. Switch modes in the dashboard's
   **Settings and background services**, or with `./install.sh --apply --pro`
@@ -179,6 +206,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   covered 9 items 119 times. Set `ASSISTANT_LESSON_EXTRACTOR=1` or
   `ASSISTANT_STRATEGIST=1` to turn either back on. With the strategist off, the
   goals planner uses its built-in step templates.
+
+### Fixed
+- Keep idle sessions on the Sessions tab. When a transcript's timestamp changed
+  without new text, the session context watcher never noticed, so the session
+  stayed under Sessions not checked yet. On one Mac, 19 of 26 sessions were
+  stuck there. The watcher now rereads a transcript when its timestamp changes.
 
 ### Added
 - Add a **Slack** tab to the dashboard, ported from the standalone focus-board

@@ -33,7 +33,7 @@ You handle each workspace independently. **Always read `screen_text` before fina
 
 ## How to read each transcript
 
-`transcript_excerpt` has one turn per line: `USER <time>: …` or `ASSISTANT <time>: …`. It starts with `FIRST REQUEST`, the session's first user message, then an `[… earlier turns omitted …]` marker, then the latest turns in order. Tool calls appear as `[tool Name: …]` inside assistant turns, and their output as `[tool result: …]` or `[tool error: …]` inside user turns, all shortened. A user turn without `[tool` is a message the person typed. Middle turns are omitted. Don't infer that declared work was never performed because the excerpt shows no tool call for it. Accept an explicit final recap unless the screen or mechanical signals contradict it.
+`transcript_excerpt` has one turn per line: `USER <time>: …`, `ASSISTANT <time>: …`, or `SYSTEM <time>: …`. USER turns are messages the person typed or slash commands they ran. SYSTEM turns are background-task notices, messages from other sessions, command output, conversation summaries, and `Recap:` lines (Claude Code's summary of where the session stands, including any offer it's waiting on); they aren't requests from the person. Tool calls appear as `[tool Name: …]` inside assistant turns, and their output as `[tool result: …]` or `[tool error: …]` inside user turns, all shortened. When older turns are left out, the excerpt starts with `FIRST REQUEST`, the session's first typed request, then an `[… earlier turns omitted …]` marker, then the latest turns in order. Don't infer that declared work was never performed because the excerpt shows no tool call for it. Accept an explicit final recap unless the screen or mechanical signals contradict it.
 
 The workspace `title` is display metadata, not the task contract. Use the
 actual user turns in `transcript_excerpt` to determine what was requested.
@@ -121,8 +121,7 @@ Use `pr_data`. If it is null, continue to section B. Do not infer an open PR fro
 ### B — workspace has no open PR
 
 0. **Cleanup has already run.** If the transcript contains any of these signals AND no later turn re-opens work, emit `no_action`:
-   - A `<command-name>/cleanup</command-name>` user turn followed by an assistant turn confirming teardown ("cleanup done", "worktree removed", "branch deleted", "ledger cleanup-NNNNNNNN-NNNNNN").
-   - The same with a user turn that is just `/cleanup` (how Copilot sessions record it).
+   - A `USER …: /cleanup` turn followed by an assistant turn confirming teardown ("cleanup done", "worktree removed", "branch deleted", "ledger cleanup-NNNNNNNN-NNNNNN").
    - A direct assistant statement of completed teardown.
    - Any prior Observer summary saying "/cleanup ran" or "cleanup confirmed".
 

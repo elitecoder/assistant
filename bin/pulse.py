@@ -233,8 +233,10 @@ def job_enabled(job: str) -> bool:
 
 
 def observer_actions_held() -> bool:
-    """ASSISTANT_OBSERVER_HOLD_ACTIONS=1 keeps Observer verdicts to cards:
-    no merge dispatch, no /cleanup, no nudges."""
+    """True in default mode or with ASSISTANT_OBSERVER_HOLD_ACTIONS=1: Observer
+    verdicts stay cards, with no merge dispatch, no /cleanup, and no nudges."""
+    if not (PULSE_PRO if PULSE_PRO is not None else mode.is_pro()):
+        return True
     return os.environ.get("ASSISTANT_OBSERVER_HOLD_ACTIONS", "0").strip().lower() in (
         "1", "true", "yes", "on")
 
@@ -1133,11 +1135,30 @@ _SUMMARY_META_KEYS = {"ws_ref", "title", "cwd", "pr_refs", "last_updated_ts",
 
 def checked_within(prior: dict, seconds: float, now: float | None = None) -> bool:
     """True when the prior verdict came from a check less than seconds ago."""
-    try:
-        observed = float(prior.get("observed_at"))
-    except (TypeError, ValueError):
+    observed = prior.get("observed_at")
+    if not isinstance(observed, (int, float)):
         return False
     return 0 <= (time.time() if now is None else now) - observed < seconds
+
+
+def _observed_sessions(identity: dict) -> tuple[str, set]:
+    sessions = {
+        (str(s.get("surface_id") or "").casefold(), s.get("provider"), s.get("session_id"))
+        for s in identity.get("observed_sessions") or [] if isinstance(s, dict)}
+    return str(identity.get("workspace_id") or "").casefold(), sessions
+
+
+def interval_carry_ok(prior: dict, ctx: dict) -> bool:
+    """True when OBSERVER_EVERY_MIN lets a changed workspace keep its prior
+    verdict: a complete check of the same workspace and sessions,
+    made less than OBSERVER_EVERY_MIN minutes ago."""
+    if OBSERVER_EVERY_MIN <= 0 or prior.get("observation_complete") is not True:
+        return False
+    identity = ctx.get("observation_identity") or {}
+    if not identity.get("workspace_id") or \
+            _observed_sessions(identity) != _observed_sessions(prior):
+        return False
+    return checked_within(prior, OBSERVER_EVERY_MIN * 60)
 
 
 def carry_forward_verdict(prior: dict) -> dict:
@@ -2547,7 +2568,7 @@ def main() -> int:
             prior = load_prior_summary(ws_ref)
             if not (prior and prior.get("verdict")):
                 continue
-            checked_recently = checked_within(prior, OBSERVER_EVERY_MIN * 60)
+            checked_recently = interval_carry_ok(prior, ctx)
             if not (checked_recently
                     or prior.get("obs_input_hash") == obs_hashes[ws_ref]):
                 continue
