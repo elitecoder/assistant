@@ -335,8 +335,9 @@ def check_copilot_binary() -> Check:
                          detail=f"{found} runs, but no Copilot account is signed in",
                          remedy="run `copilot login`")
         if agent_session.copilot_sign_in_source(env={}) is None:
-            shell_only = (f"{source} is set" if source != "account"
-                          else "COPILOT_HOME is set")
+            shell_only = ("COPILOT_HOME is set" if source == "account"
+                          else "COPILOT_GH_HOST or GH_HOST is set" if source == "gh"
+                          else f"{source} is set")
             return Check("copilot binary", WARN, core=False,
                          detail=(f"{found} runs, signed in because {shell_only} in this "
                                  "shell; Assistant's background jobs don't get it, so "

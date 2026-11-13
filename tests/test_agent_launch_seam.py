@@ -2952,6 +2952,7 @@ def test_the_github_cli_token_never_reaches_any_output(home, tmp_path, monkeypat
 
 @pytest.mark.parametrize("env,host", [
     ({"COPILOT_GH_HOST": "https://Cop.GHE.com/"}, "cop.ghe.com"),
+    ({"COPILOT_GH_HOST": "https://octo.ghe.com/api/v3"}, "octo.ghe.com"),
     ({"COPILOT_GH_HOST": "  ", "GH_HOST": " octo.ghe.com "}, "octo.ghe.com"),
     ({}, "github.com")])
 def test_copilots_host_is_cleaned_like_copilot_does(env, host):
@@ -2971,3 +2972,34 @@ def test_gh_sign_in_uses_only_the_environment_it_is_given(home, tmp_path, monkey
     assert real.copilot_sign_in_source(env={}) is None
     monkeypatch.setenv("GH_ENTERPRISE_TOKEN", "x")
     assert real.gh_signed_in(), "a token env var is left out of gh's environment"
+
+
+
+def test_gh_runs_with_the_given_environment_minus_every_token(home, tmp_path, monkeypatch, capfd):
+    real = _load(BIN / "agent_session.py", "seam_gh_given_env")
+    gh = tmp_path / "ghbin" / "gh"
+    gh.parent.mkdir(parents=True)
+    gh.write_text('#!/bin/sh\nenv > "$(dirname "$0")/env"\necho "not logged in" >&2\nexit 1\n')
+    gh.chmod(0o755)
+    monkeypatch.setattr(real.shutil, "which", lambda *a, **k: str(gh))
+    monkeypatch.setenv("FROM_SHELL", "1")
+    given = {"GH_CONFIG_DIR": "/given", **{v: "t" for v in real._GH_TOKEN_VARS}}
+    assert not real.gh_signed_in(env=given)
+    seen = dict(line.split("=", 1) for line in (gh.parent / "env").read_text().splitlines()
+                if "=" in line)
+    assert seen.get("GH_CONFIG_DIR") == "/given" and "FROM_SHELL" not in seen
+    assert not set(real._GH_TOKEN_VARS) & set(seen)
+    assert "GITHUB_ENTERPRISE_TOKEN" in real._GH_TOKEN_VARS
+    out, err = capfd.readouterr()
+    assert "not logged in" not in out + err
+
+
+def test_doctor_names_the_host_setting_behind_a_shell_only_gh_sign_in(home, copilot_bin, monkeypatch):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_gh_host")
+    monkeypatch.setattr(doctor, "HOME", home)
+    _pick(home, "copilot")
+    (home / ".copilot" / "config.json").write_text('{"loggedInUsers": []}')
+    monkeypatch.setattr(ag, "gh_signed_in", lambda home=None, env=None: bool(env))
+    check = doctor.check_copilot_binary()
+    assert check.status == doctor.WARN
+    assert "because COPILOT_GH_HOST or GH_HOST is set in this shell" in check.detail

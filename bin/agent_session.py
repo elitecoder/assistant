@@ -526,10 +526,11 @@ _GH_PATHS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
 
 def _gh_host(env: dict) -> str:
     """Copilot's GitHub host, cleaned the way Copilot cleans it: the first
-    non-blank of COPILOT_GH_HOST and GH_HOST, without scheme or slashes,
-    lowercased; else github.com."""
+    non-blank of COPILOT_GH_HOST and GH_HOST, lowercased, without scheme or
+    path; else github.com."""
     for var in ("COPILOT_GH_HOST", "GH_HOST"):
-        host = re.sub(r"^[a-z]+://", "", (env.get(var) or "").strip().lower()).strip("/")
+        host = re.sub(r"^[a-z]+://", "", (env.get(var) or "").strip().lower())
+        host = host.strip("/").split("/", 1)[0]
         if host:
             return host
     return "github.com"
