@@ -3041,12 +3041,12 @@ def _pick_alias(home: Path, alias) -> None:
 
 def _launcher(path: Path, tag: str) -> Path:
     """A stand-in claude that logs which copy ran, its arguments, and the
-    backend settings it got."""
+    backend settings and alias marker it got."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "#!/bin/sh\n"
-        f'printf "%s|%s|%s|%s\\n" {tag} "$*" "${{CLAUDE_CODE_USE_BEDROCK-}}" '
-        '"${ANTHROPIC_BASE_URL-}" >> "$HOME/ran.log"\n')
+        f'printf "%s|%s|%s|%s|%s\\n" {tag} "$*" "${{CLAUDE_CODE_USE_BEDROCK-}}" '
+        '"${ANTHROPIC_BASE_URL-}" "${ASSISTANT_CLAUDE_ALIAS-}" >> "$HOME/ran.log"\n')
     path.chmod(0o755)
     return path
 
@@ -3112,7 +3112,7 @@ def test_every_claude_launch_runs_the_alias_in_the_panes_own_shell_through_cmuxs
             (flagged, "--model proxied --model opus[1m] --dangerously-skip-permissions "
                       "--add-dir /a b", "0")):
         ran, err = run(command)
-        assert ran == [f"cmux-wrapper|{args}|{bedrock}|http://localhost:4000"], command
+        assert ran == [f"cmux-wrapper|{args}|{bedrock}|http://localhost:4000|claudec"], command
         assert err == ""
 
 
@@ -3127,7 +3127,7 @@ def test_a_claude_launch_whose_alias_is_gone_starts_claude_and_says_why(home, tm
              "plain|--dangerously-skip-permissions|"),
             (flagged, "cmux-wrapper|--model m --dangerously-skip-permissions|0")):
         ran, err = run(command)
-        assert ran == [f"{ran_as}|"], command
+        assert ran == [f"{ran_as}||"], command
         assert err.endswith(note), err
 
 
@@ -3137,7 +3137,7 @@ def test_pulse_dispatch_starts_the_custom_claude_alias(home, monkeypatch, tmp_pa
                            "Claude Code v9", _claude_transcript(home))
     assert ok is True
     assert _pane(home, tmp_path)(launch)[0] == [
-        "cmux-wrapper|--model proxied||http://localhost:4000"]
+        "cmux-wrapper|--model proxied||http://localhost:4000|claudec"]
 
 
 def test_the_slack_session_starts_the_alias_and_records_it(home, monkeypatch, tmp_path):
@@ -3161,8 +3161,8 @@ def test_the_slack_session_starts_the_alias_and_records_it(home, monkeypatch, tm
     sess = cs.spawn_session(paths, Path("/boot.md"), agent=ag.CLAUDE)
     spawn = next(c for c in commands if "new-workspace" in c)
     (ran,), _ = _pane(home, tmp_path)(spawn[spawn.index("--command") + 1])
-    who, args, bedrock, base_url = ran.split("|")
-    assert (who, base_url) == ("cmux-wrapper", "http://localhost:4000")
+    who, args, bedrock, base_url, marker = ran.split("|")
+    assert (who, base_url, marker) == ("cmux-wrapper", "http://localhost:4000", "claudec")
     assert "--dangerously-skip-permissions" in args and f"--add-dir {cs.REPO_ROOT}" in args
     assert bedrock in ("0", "1")
     assert sess["alias"] == "claudec"
@@ -3217,7 +3217,7 @@ def test_a_binding_command_carries_the_environment_cmux_saved_but_no_secrets(hom
         "CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV=1 "
         "CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV_KEYS=ANTHROPIC_BASE_URL; claude --resume c-1")
     assert _pane(home, tmp_path)(command)[0] == [
-        "cmux-wrapper|--resume c-1||http://localhost:4000"]
+        "cmux-wrapper|--resume c-1||http://localhost:4000|"]
     for binding in ({"command": "c"}, {"command": "c", "environment": []},
                     {"command": "c", "environment": {"A_TOKEN": "t"}}, {"environment": {"A": "1"}}):
         assert ag.binding_command(binding) == binding.get("command")
@@ -3236,6 +3236,76 @@ def test_restore_brings_a_claude_session_back_with_its_saved_backend(home, alias
                   "launchCommand": {"arguments": ["/bin/claude", "--model", "opus"]}}}}
     assert restore.build_resume_cmd(panel) == (
         "/repo", f"export ANTHROPIC_BASE_URL=http://localhost:4000; {binding}")
+
+
+@pytest.mark.parametrize("marker,recorded", [
+    ("claudec", "claudec"), ("", None), ("a;b", None), ("claude", None)])
+def test_the_session_start_hook_remembers_a_session_started_through_an_alias(
+        home, monkeypatch, marker, recorded):
+    hook = _load(REPO / "hooks" / "cmux-auto-resume.py", f"seam_hook_marker_{len(marker)}")
+    monkeypatch.setenv("CMUX_SURFACE_ID", "S1")
+    monkeypatch.setenv("ASSISTANT_CLAUDE_ALIAS", marker)
+    monkeypatch.setattr(hook.subprocess, "Popen", lambda *a, **k: None)
+    for provider in ("claude", "factory"):
+        monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(
+            {"session_id": f"{provider}-1", "cwd": "/w", "provider": provider})))
+        hook.main([])
+    assert ag.session_alias("claude-1") == recorded
+    assert ag.session_alias("factory-1") is None
+
+
+def test_the_hook_starts_its_worker_when_the_alias_record_cant_be_written(home, monkeypatch):
+    hook = _load(REPO / "hooks" / "cmux-auto-resume.py", "seam_hook_marker_unwritable")
+    monkeypatch.setenv("CMUX_SURFACE_ID", "S1")
+    monkeypatch.setenv("ASSISTANT_CLAUDE_ALIAS", "claudec")
+    started = []
+    monkeypatch.setattr(hook.subprocess, "Popen", lambda *a, **k: started.append(a))
+    ag.alias_sessions_file().mkdir(parents=True)
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(
+        {"session_id": "c-1", "cwd": "/w", "provider": "claude"})))
+    hook.main([])
+    assert len(started) == 1
+
+
+def test_alias_sessions_keep_the_newest_and_ignore_a_broken_file(home, monkeypatch):
+    monkeypatch.setattr(ag, "_ALIAS_SESSIONS_KEPT", 3)
+    ag.alias_sessions_file().parent.mkdir(parents=True, exist_ok=True)
+    for broken in ("not json", "[1]"):
+        ag.alias_sessions_file().write_text(broken)
+        assert ag.session_alias("s0") is None
+    for i in range(4):
+        ag.record_alias_session(f"s{i}", "claudec")
+    ag.record_alias_session("s1", "claudex")
+    assert list(json.loads(ag.alias_sessions_file().read_text()).items()) == [
+        ("s2", "claudec"), ("s3", "claudec"), ("s1", "claudex")]
+    assert ag.alias_resume_command("s0", "/w", "fallback") is None
+
+
+@pytest.mark.parametrize("defined", [True, False])
+def test_restore_resumes_an_alias_session_through_the_alias_else_its_binding(
+        home, tmp_path, defined):
+    restore = _load(BIN / "cmux-restore-sessions.py", f"seam_restore_alias_session_{defined}")
+    run = _pane(home, tmp_path, define_alias=defined)
+    work = tmp_path / "work"
+    work.mkdir()
+    ag.record_alias_session("c-9", "claudec")
+    binding = f"cd {work} && claude --resume c-9"
+    panel = {"id": "p", "directory": str(work), "terminal": {
+        "surfaceId": "s",
+        "resumeBinding": {"checkpointId": "c-9", "cwd": str(work), "command": binding,
+                          "environment": {"ANTHROPIC_BASE_URL": "http://saved"}},
+        "agent": {"kind": "claude", "sessionId": "c-9", "workingDirectory": str(work)}}}
+    cwd, command = restore.build_resume_cmd(panel)
+    ran, err = run(command)
+    if defined:
+        assert ran == ["cmux-wrapper|--model proxied --resume c-9||http://localhost:4000|claudec"]
+    else:
+        assert ran == ["cmux-wrapper|--resume c-9||http://saved|"]
+        assert "claudec isn't defined" in err
+    del panel["terminal"]["resumeBinding"]
+    rebuilt = restore.build_resume_cmd(panel)[1]
+    assert rebuilt.startswith(f"cd {work} && if command -v claudec ")
+    assert rebuilt.endswith(f"cd {work} && claude --resume c-9; fi")
 
 
 def test_claude_alias_command_saves_shows_and_clears_the_alias(home, capsys, tmp_path):

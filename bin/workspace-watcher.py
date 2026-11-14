@@ -239,6 +239,9 @@ class WorkspaceRegistry:
                         resume_cmd = agent_session.binding_command(rb)
                         resume_cwd = rb.get("cwd")
                         checkpoint_id = rb.get("checkpointId")
+                        if resume_cmd and checkpoint_id:
+                            resume_cmd = agent_session.alias_resume_command(
+                                checkpoint_id, resume_cwd or cwd or HOME, resume_cmd) or resume_cmd
                         was_agent_running = bool(p.get("terminal", {}).get("wasAgentRunning"))
                     # First browser panel URL is usually the PR.
                     burl = p.get("browser", {}).get("urlString")

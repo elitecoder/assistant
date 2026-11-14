@@ -237,17 +237,17 @@ def build_resume_cmd(panel, ledger_entry=None):
         and agent_session.binding_is_current(
             agent_session.agent_from_kind(provider), command)
     ):
-        return cwd, agent_session.with_copilot_rules(command)
-
-    if not session_id:
+        cmd = agent_session.with_copilot_rules(command)
+    elif not session_id:
         return None, None
-
-    args = _launch_argv(agent, ledger_entry)
-    fleet_agent = agent_session.agent_from_kind(provider)
-    executable = args[0] if args else None
-    cmd = agent_session.resume_command(
-        fleet_agent, session_id, cwd, _strip_session_args(args[1:]), executable)
-    return cwd, cmd
+    else:
+        args = _launch_argv(agent, ledger_entry)
+        executable = args[0] if args else None
+        cmd = agent_session.resume_command(
+            agent_session.agent_from_kind(provider), session_id, cwd,
+            _strip_session_args(args[1:]), executable)
+    # A session started through a custom alias resumes through it again.
+    return cwd, agent_session.alias_resume_command(session_id, cwd, cmd) or cmd
 
 
 def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):

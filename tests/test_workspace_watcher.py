@@ -535,6 +535,7 @@ def test_merge_session_state_joins_by_title_cwd(home, monkeypatch):
 
 
 def test_crash_resume_replays_a_binding_with_the_environment_cmux_saved(home, monkeypatch):
+    monkeypatch.setenv("HOME", str(WW.HOME))
     calls = []
 
     def run(cmd, timeout=10):
@@ -561,6 +562,14 @@ def test_crash_resume_replays_a_binding_with_the_environment_cmux_saved(home, mo
     WW.resume_workspace(meta, WW.ResumeGovernor())
     spawn = next(c for c in calls if "new-workspace" in c)
     assert spawn[spawn.index("--command") + 1] == expected
+
+    WW.agent_session.record_alias_session("abc", "claudec")
+    reg.refresh()
+    assert reg.snapshot("LIVE")["resume_command"] == (
+        "cd /work && if command -v claudec >/dev/null 2>&1; then "
+        "ASSISTANT_CLAUDE_ALIAS=claudec claudec --resume abc; else echo "
+        "'Assistant: claudec isn'\"'\"'t defined in your shell; starting claude instead.' >&2; "
+        f"{expected}; fi")
 
 
 def test_merge_session_state_synthetic_by_title_when_no_live_match(home, monkeypatch):

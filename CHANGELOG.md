@@ -56,10 +56,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   Copilot or Droid, or that your login zsh doesn't know as an alias, function,
   or command. A live Slack session restarts on its next message after the alias
   changes. Background model jobs still run the Claude program directly.
-- Bring each restored or crash-resumed session back the way it started: restore
-  and crash recovery now set the environment cmux saved with the session, such
-  as a `claudec` session's `ANTHROPIC_BASE_URL`. Variables whose names look
-  secret stay out.
+- Bring each restored or crash-resumed session back the way it started. A
+  session the Assistant started through a custom alias resumes through that
+  alias again, so the alias sets its own backend and sign-in; the
+  SessionStart hook remembers those sessions in
+  `~/.assistant/claude-alias-sessions.json`. Any other session keeps cmux's
+  saved command, now with the environment cmux saved beside it, such as
+  `ANTHROPIC_BASE_URL`. Variables whose names look secret stay out.
 - Refuse commits on the live install's main. The self-update links
   `githooks/refuse-main-commit` as the `pre-commit` and `pre-merge-commit`
   hooks, and never replaces a hook that's already there. Commit on a branch
