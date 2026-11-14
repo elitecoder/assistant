@@ -6,7 +6,6 @@ import argparse
 import fcntl
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -113,21 +112,13 @@ def set_provider(path: Path, provider: str, feature: str | None) -> None:
     write_document(path, update)
 
 
-def alias_defined(name: str) -> bool:
-    """True when an interactive login zsh knows `name` as an alias, function,
-    or command."""
-    try:
-        return subprocess.run(["zsh", "-lic", f"whence -w {name}"], stdin=subprocess.DEVNULL,
-                              capture_output=True, timeout=30).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
 def set_claude_alias(path: Path, name: str) -> None:
     """Save `name` as llm.claude.alias; ``claude`` removes the setting."""
-    if not llm_runner.agent_session.valid_alias(name):
-        raise ValueError(f"{name!r} isn't one shell word (letters, digits, . _ + -)")
-    if name != llm_runner.agent_session.CLAUDE and not alias_defined(name):
+    seam = llm_runner.agent_session
+    if not seam.valid_alias(name):
+        raise ValueError(f"{name!r} isn't one shell word (letters, digits, . _ + -) "
+                         "other than copilot or droid")
+    if name != seam.CLAUDE and not seam.alias_launchable(name):
         raise ValueError(f"{name} isn't an alias, function, or command in your login zsh")
 
     def update(document: dict) -> None:

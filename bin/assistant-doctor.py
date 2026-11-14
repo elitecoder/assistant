@@ -370,8 +370,23 @@ def check_copilot_hooks() -> Check:
     )
 
 
+def check_claude_alias() -> Check:
+    alias = agent_session.claude_alias()
+    if alias == agent_session.CLAUDE:
+        return Check("claude alias", SKIP, core=False, detail="Claude sessions start with claude")
+    kind = agent_session.alias_kind(alias)
+    if kind in agent_session._LAUNCHABLE_KINDS:
+        return Check("claude alias", PASS, core=False, detail=f"{alias} is defined in your login zsh ({kind})")
+    return Check(
+        "claude alias", WARN, core=False,
+        detail=f"{alias} isn't an alias, function, or command in your login zsh; "
+               "Claude sessions start with claude instead",
+        remedy=f"define {alias} in ~/.zprofile, or run: python3 bin/assistant-llm.py claude-alias claude",
+    )
+
+
 AGENT_CHECKS = [check_droid_binary, check_droid_settings, check_copilot_binary,
-                check_copilot_hooks]
+                check_copilot_hooks, check_claude_alias]
 
 
 # --------------------------------------------------------------------------- runner

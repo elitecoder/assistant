@@ -236,7 +236,7 @@ class WorkspaceRegistry:
                 for p in panels:
                     rb = p.get("terminal", {}).get("resumeBinding")
                     if rb:
-                        resume_cmd = rb.get("command")
+                        resume_cmd = agent_session.binding_command(rb)
                         resume_cwd = rb.get("cwd")
                         checkpoint_id = rb.get("checkpointId")
                         was_agent_running = bool(p.get("terminal", {}).get("wasAgentRunning"))

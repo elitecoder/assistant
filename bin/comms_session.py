@@ -915,7 +915,8 @@ def _warm_launch(agent: str, resolved: tuple[str, str, bool] | None = None) -> s
     Deliberately NOT ~/.claude (global CLAUDE.md + settings.json — a session
     must not widen its own rules/permissions) and NOT all of ~/dev.
     Lesson-writing still works via a subprocess (assistant-curator.py) gated
-    by an explicit human `y`.
+    by an explicit human `y`. A custom claude_alias() starts with these flags
+    plus whatever folders and flags the alias itself adds.
 
     copilot: the same --add-dir roots, but --allow-all lets it reach any
     folder, so the roots don't fence it the way they fence Claude.
