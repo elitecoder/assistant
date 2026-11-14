@@ -50,19 +50,22 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `~/.assistant/comms/config.json`, and `claude-alias claude` restores the
   default. Task sessions, `/spawn-claude-workspace`, and the Slack session
   start the alias in the workspace's own shell, so cmux's Claude wrapper still
-  records the session and resumes it. When that shell doesn't define the alias,
-  the session says so and starts with `claude`, and `assistant-doctor.py`
-  warns. The command refuses a name that isn't one shell word, that names
-  Copilot or Droid, or that your login zsh doesn't know as an alias, function,
-  or command. A live Slack session restarts on its next message after the alias
-  changes. Background model jobs still run the Claude program directly.
-- Bring each restored or crash-resumed session back the way it started. A
-  session the Assistant started through a custom alias resumes through that
-  alias again, so the alias sets its own backend and sign-in; the
+  records the session. When that shell doesn't define the alias, the session
+  says so and starts with `claude`, and `assistant-doctor.py` warns. The
+  command refuses a name that isn't one shell word, that's a shell keyword
+  such as `if` or `exec`, that names Copilot or Droid, or that your login zsh
+  doesn't know as an alias, function, or command; a hand-edited config with
+  such a name falls back to `claude`. A live Slack session restarts on its
+  next message after the alias changes. Background model jobs still run the
+  Claude program directly.
+- Resume a session the Assistant started through a custom alias through that
+  alias again, so the alias sets its own backend and sign-in. This covers the
+  Assistant's restore (`cmux-restore-sessions.py`) and crash recovery; the
   SessionStart hook remembers those sessions in
-  `~/.assistant/claude-alias-sessions.json`. Any other session keeps cmux's
-  saved command, now with the environment cmux saved beside it, such as
-  `ANTHROPIC_BASE_URL`. Variables whose names look secret stay out.
+  `~/.assistant/claude-alias-sessions.json`. cmux's own restore, after a cmux
+  restart or when it wakes a hibernated session, replays cmux's saved command
+  instead, which skips the alias unless you declare the alias's script in
+  cmux's `agents.launchers` setting.
 - Refuse commits on the live install's main. The self-update links
   `githooks/refuse-main-commit` as the `pre-commit` and `pre-merge-commit`
   hooks, and never replaces a hook that's already there. Commit on a branch

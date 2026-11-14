@@ -117,7 +117,7 @@ def set_claude_alias(path: Path, name: str) -> None:
     seam = llm_runner.agent_session
     if not seam.valid_alias(name):
         raise ValueError(f"{name!r} isn't one shell word (letters, digits, . _ + -) "
-                         "other than copilot or droid")
+                         "other than a shell keyword, copilot, or droid")
     if name != seam.CLAUDE and not seam.alias_launchable(name):
         raise ValueError(f"{name} isn't an alias, function, or command in your login zsh")
 

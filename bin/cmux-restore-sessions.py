@@ -226,10 +226,10 @@ def build_resume_cmd(panel, ledger_entry=None):
             or panel.get("directory", os.getcwd())
         )
 
-    # A previous resume binding is the most exact command, with the environment
-    # cmux saved beside it. Droid bindings from before the GLM migration are
-    # rebuilt so the required runtime settings are always present.
-    command = agent_session.binding_command(rb)
+    # A previous resume binding is the most exact command. Droid bindings from
+    # before the GLM migration are rebuilt so the required runtime settings are
+    # always present.
+    command = rb.get("command")
     if (
         command
         and session_id

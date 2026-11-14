@@ -37,6 +37,7 @@ that; callers keep their existing text extraction. The per-cwd directory slug
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -391,12 +392,20 @@ def _cfg_agent(raw: dict | None, *keys: str) -> str | None:
 
 
 _ALIAS_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+# zsh reserved words and precommand modifiers: as the first word of a pane
+# command they change how the rest of the line runs.
+_SHELL_WORDS = frozenset((
+    "case coproc declare do done elif else end esac export fi float for foreach "
+    "function if integer local nocorrect readonly repeat select then time typeset "
+    "until while builtin command exec noglob"
+).split())
 
 
 def valid_alias(name: str) -> bool:
     """True when `name` is one shell word Assistant can start a Claude session
-    with, other than another agent's name."""
-    return bool(_ALIAS_RE.fullmatch(name)) and name not in (COPILOT, DROID)
+    with, other than a shell keyword or another agent's name."""
+    return (bool(_ALIAS_RE.fullmatch(name)) and name not in _SHELL_WORDS
+            and name not in (COPILOT, DROID))
 
 
 # What `whence -w` calls a name that can start a session.
@@ -734,14 +743,16 @@ def record_alias_session(session_id: str, alias: str,
                          home: str | Path | None = None) -> None:
     """Remember that Claude session `session_id` started through `alias`
     (the newest _ALIAS_SESSIONS_KEPT sessions)."""
-    rows = _alias_sessions(home)
-    rows.pop(session_id, None)
-    rows[session_id] = alias
     path = alias_sessions_file(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(dict(list(rows.items())[-_ALIAS_SESSIONS_KEPT:])))
-    os.replace(tmp, path)
+    with open(path.with_name(f"{path.name}.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rows = _alias_sessions(home)
+        rows.pop(session_id, None)
+        rows[session_id] = alias
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(dict(list(rows.items())[-_ALIAS_SESSIONS_KEPT:])))
+        os.replace(tmp, path)
 
 
 def session_alias(session_id: str, home: str | Path | None = None) -> str | None:
@@ -920,25 +931,6 @@ def resume_command(agent: str, session_id: str, cwd: str | Path,
     argv = resume_argv(agent, session_id, preserved, executable, home)
     env = _copilot_env(home) if agent == COPILOT else ""
     return f"cd {shlex.quote(str(cwd))} && {env}{shlex.join(argv)}"
-
-
-_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_SECRET_NAME_RE = re.compile(r"(^|_)(KEY|API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?)($|_)", re.I)
-
-
-def binding_command(binding: dict) -> str | None:
-    """A cmux resume binding's command with the environment cmux saved beside
-    it exported first, as cmux's own resume does (a `claudec` session's
-    ANTHROPIC_BASE_URL and CMUX_PRESERVE_* keep it on its proxy). Variables
-    whose names look secret stay out, so no credential is typed into a pane."""
-    command = binding.get("command")
-    env = binding.get("environment")
-    if not command or not isinstance(env, dict):
-        return command
-    pairs = [f"{k}={shlex.quote(str(v))}" for k, v in sorted(env.items())
-             if isinstance(k, str) and _ENV_NAME_RE.fullmatch(k)
-             and not _SECRET_NAME_RE.search(k)]
-    return f"export {' '.join(pairs)}; {command}" if pairs else command
 
 
 # Readiness markers seen on the live boot screen via cmux `surface.read_text`.

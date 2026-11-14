@@ -3082,7 +3082,9 @@ def _pane(home: Path, tmp_path: Path, define_alias: bool = True):
 @pytest.mark.parametrize("value,alias", [
     ("claudec", "claudec"), ("  claudec ", "claudec"), ("claude-work.2", "claude-work.2"),
     ("", "claude"), ("rm -rf ~", "claude"), ("a;b", "claude"), ("$(id)", "claude"),
-    ("-x", "claude"), (5, "claude"), ("droid", "claude"), ("copilot", "claude")])
+    ("-x", "claude"), (5, "claude"), ("droid", "claude"), ("copilot", "claude"),
+    ("fi", "claude"), ("if", "claude"), ("exec", "claude"), ("command", "claude"),
+    ("builtin", "claude"), ("noglob", "claude"), ("export", "claude")])
 def test_claude_alias_reads_the_config_and_refuses_anything_but_one_word(home, value, alias):
     _pick_alias(home, value)
     assert ag.claude_alias() == alias
@@ -3202,40 +3204,23 @@ def test_a_claude_resume_starts_the_session_the_way_it_first_started(home, alias
     assert ag.binding_is_current(ag.CLAUDE, "cd /w && claude --resume c-1") is True
 
 
-_SAVED_ENV = {"ANTHROPIC_BASE_URL": "http://localhost:4000",
-              "CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV": "1",
-              "CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV_KEYS": "ANTHROPIC_BASE_URL",
-              "ANTHROPIC_AUTH_TOKEN": "tok-sekrit", "LITELLM_MASTER_KEY": "key-sekrit",
-              "bad name": "x"}
-
-
-def test_a_binding_command_carries_the_environment_cmux_saved_but_no_secrets(home, tmp_path):
-    command = ag.binding_command({"command": "claude --resume c-1", "environment": _SAVED_ENV})
-    assert "sekrit" not in command
-    assert command == (
-        "export ANTHROPIC_BASE_URL=http://localhost:4000 "
-        "CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV=1 "
-        "CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV_KEYS=ANTHROPIC_BASE_URL; claude --resume c-1")
-    assert _pane(home, tmp_path)(command)[0] == [
-        "cmux-wrapper|--resume c-1||http://localhost:4000|"]
-    for binding in ({"command": "c"}, {"command": "c", "environment": []},
-                    {"command": "c", "environment": {"A_TOKEN": "t"}}, {"environment": {"A": "1"}}):
-        assert ag.binding_command(binding) == binding.get("command")
-
-
 @pytest.mark.parametrize("alias", ["claude", "claudec"])
-def test_restore_brings_a_claude_session_back_with_its_saved_backend(home, alias):
+def test_restore_replays_the_saved_binding_without_the_environment_cmux_kept(
+        home, tmp_path, alias):
     _pick_alias(home, alias)
     restore = _load(BIN / "cmux-restore-sessions.py", f"seam_restore_alias_{alias}")
-    binding = "cd /repo && claude --resume c-9 --model opus"
-    panel = {"id": "p", "directory": "/repo", "terminal": {
+    work = tmp_path / "work"
+    work.mkdir()
+    binding = f"cd {work} && claude --resume c-9 --model opus"
+    panel = {"id": "p", "directory": str(work), "terminal": {
         "surfaceId": "s",
-        "resumeBinding": {"checkpointId": "c-9", "cwd": "/repo", "command": binding,
-                          "environment": {"ANTHROPIC_BASE_URL": "http://localhost:4000"}},
-        "agent": {"kind": "claude", "sessionId": "c-9", "workingDirectory": "/repo",
+        "resumeBinding": {"checkpointId": "c-9", "cwd": str(work), "command": binding,
+                          "environment": {"ANTHROPIC_BASE_URL": "http://localhost:4000",
+                                          "ANTHROPIC_AUTH_TOKEN": "sekrit"}},
+        "agent": {"kind": "claude", "sessionId": "c-9", "workingDirectory": str(work),
                   "launchCommand": {"arguments": ["/bin/claude", "--model", "opus"]}}}}
-    assert restore.build_resume_cmd(panel) == (
-        "/repo", f"export ANTHROPIC_BASE_URL=http://localhost:4000; {binding}")
+    assert restore.build_resume_cmd(panel) == (str(work), binding)
+    assert _pane(home, tmp_path)(binding)[0] == ["cmux-wrapper|--resume c-9 --model opus|||"]
 
 
 @pytest.mark.parametrize("marker,recorded", [
@@ -3281,6 +3266,16 @@ def test_alias_sessions_keep_the_newest_and_ignore_a_broken_file(home, monkeypat
     assert ag.alias_resume_command("s0", "/w", "fallback") is None
 
 
+def test_session_starts_at_the_same_time_all_get_remembered(home):
+    script = ("import sys; sys.path.insert(0, sys.argv[1]); import agent_session as ag\n"
+              "for i in range(25): ag.record_alias_session(f'{sys.argv[2]}-{i}', 'claudec')")
+    procs = [subprocess.Popen([sys.executable, "-c", script, str(BIN), f"p{n}"],
+                              env={**os.environ, "HOME": str(home)}) for n in range(8)]
+    assert [p.wait(timeout=120) for p in procs] == [0] * 8
+    rows = json.loads(ag.alias_sessions_file(home).read_text())
+    assert sorted(rows) == sorted(f"p{n}-{i}" for n in range(8) for i in range(25))
+
+
 @pytest.mark.parametrize("defined", [True, False])
 def test_restore_resumes_an_alias_session_through_the_alias_else_its_binding(
         home, tmp_path, defined):
@@ -3300,7 +3295,7 @@ def test_restore_resumes_an_alias_session_through_the_alias_else_its_binding(
     if defined:
         assert ran == ["cmux-wrapper|--model proxied --resume c-9||http://localhost:4000|claudec"]
     else:
-        assert ran == ["cmux-wrapper|--resume c-9||http://saved|"]
+        assert ran == ["cmux-wrapper|--resume c-9|||"]
         assert "claudec isn't defined" in err
     del panel["terminal"]["resumeBinding"]
     rebuilt = restore.build_resume_cmd(panel)[1]
@@ -3329,10 +3324,10 @@ def test_claude_alias_command_saves_shows_and_clears_the_alias(home, capsys, tmp
 
 
 @pytest.mark.parametrize("name,why", [
-    ("rm -rf", "isn't one shell word"), ("droid", "other than copilot or droid"),
+    ("rm -rf", "isn't one shell word"), ("droid", "a shell keyword, copilot, or droid"),
     ("nope-no-such-alias", "isn't an alias, function, or command"),
-    ("exec", "isn't an alias, function, or command"),
-    ("if", "isn't an alias, function, or command")])
+    ("exec", "a shell keyword, copilot, or droid"),
+    ("if", "a shell keyword, copilot, or droid")])
 def test_claude_alias_command_refuses_a_bad_or_unknown_name(home, capsys, tmp_path, name, why):
     _pane(home, tmp_path)
     cli = _load(BIN / "assistant-llm.py", f"assistant_llm_alias_bad_{name.replace(' ', '_')}")
@@ -3357,9 +3352,10 @@ def test_alias_lookup_names_each_kind_and_reports_a_shell_that_fails(home, monke
     _pane(home, tmp_path)
     (home / ".zprofile").write_text(
         (home / ".zprofile").read_text() + "echo profile noise\nmyfn() { :; }\n")
-    kinds = {n: ag.alias_kind(n) for n in ("claudec", "myfn", "sh", "exec", "if", "nope-x", "a;b")}
-    assert kinds == {"claudec": "alias", "myfn": "function", "sh": "command",
-                     "exec": "builtin", "if": "reserved", "nope-x": None, "a;b": None}
+    names = ("claudec", "myfn", "sh", "echo", "exec", "if", "nope-x", "a;b")
+    kinds = {n: ag.alias_kind(n) for n in names}
+    assert kinds == {"claudec": "alias", "myfn": "function", "sh": "command", "echo": "builtin",
+                     "exec": None, "if": None, "nope-x": None, "a;b": None}
     assert [n for n in kinds if ag.alias_launchable(n)] == ["claudec", "myfn", "sh"]
 
     def broken(*a, **k):

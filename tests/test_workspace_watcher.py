@@ -534,7 +534,7 @@ def test_merge_session_state_joins_by_title_cwd(home, monkeypatch):
     assert "by-title:Repo Work" not in reg.by_uuid
 
 
-def test_crash_resume_replays_a_binding_with_the_environment_cmux_saved(home, monkeypatch):
+def test_crash_resume_replays_the_binding_without_the_environment_cmux_kept(home, monkeypatch):
     monkeypatch.setenv("HOME", str(WW.HOME))
     calls = []
 
@@ -556,7 +556,7 @@ def test_crash_resume_replays_a_binding_with_the_environment_cmux_saved(home, mo
     WW.CMUX_SESSION_STATE.write_text(json.dumps(session))
     reg = WW.WorkspaceRegistry()
     reg.refresh()
-    expected = "export ANTHROPIC_BASE_URL=http://localhost:4000; claude --resume abc"
+    expected = "claude --resume abc"
     meta = reg.snapshot("LIVE")
     assert meta["resume_command"] == expected
     WW.resume_workspace(meta, WW.ResumeGovernor())
