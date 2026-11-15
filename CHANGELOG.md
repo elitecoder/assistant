@@ -56,15 +56,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   such as `if` or `exec`, that names Copilot or Droid, or that your login zsh
   doesn't know as an alias, function, or command; a hand-edited config with
   such a name falls back to `claude`. A live Slack session restarts on its
-  next message after the alias changes. Background model jobs still run the
-  Claude program directly.
-- Resume a session the Assistant started through a custom alias through that
-  alias again, so the alias sets its own backend and sign-in. This covers the
-  Assistant's restore (`cmux-restore-sessions.py`) and crash recovery; the
-  SessionStart hook remembers those sessions in
-  `~/.assistant/claude-alias-sessions.json`. cmux's own restore, after a cmux
-  restart or when it wakes a hibernated session, replays cmux's saved command
-  instead, which skips the alias unless you declare the alias's script in
+  next message after the alias changes, and it takes on the alias's own
+  options, such as its model, folders, and permission mode. Background model
+  jobs still run the Claude program directly. A restore replays cmux's saved
+  command, which skips the alias unless you declare the alias's script in
   cmux's `agents.launchers` setting.
 - Refuse commits on the live install's main. The self-update links
   `githooks/refuse-main-commit` as the `pre-commit` and `pre-merge-commit`

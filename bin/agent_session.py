@@ -37,7 +37,6 @@ that; callers keep their existing text extraction. The per-cwd directory slug
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -710,67 +709,14 @@ def _claude_flags(model: str | None, add_dirs: tuple | list) -> list[str]:
     return flags
 
 
-# Set on a session started through a custom alias, so the SessionStart hook
-# can remember the alias for its resumes.
-ALIAS_ENV = "ASSISTANT_CLAUDE_ALIAS"
-_ALIAS_SESSIONS_KEPT = 500
-
-
-def _alias_or(alias_line: str, default_line: str, alias: str | None = None) -> str:
-    """A pane command that runs `alias_line` (with ALIAS_ENV set) when the
-    pane's shell defines `alias` (default claude_alias()), else says so and
-    runs `default_line`. The pane's own shell runs it, so cmux's claude wrapper
-    stays first on PATH."""
-    alias = alias or claude_alias()
+def _alias_or(alias_line: str, default_line: str) -> str:
+    """A pane command that runs `alias_line` when the pane's shell defines
+    claude_alias(), else says so and runs `default_line`. The pane's own shell
+    runs it, so cmux's claude wrapper stays first on PATH."""
+    alias = claude_alias()
     note = shlex.quote(f"Assistant: {alias} isn't defined in your shell; starting claude instead.")
-    return (f"if command -v {alias} >/dev/null 2>&1; then {ALIAS_ENV}={alias} {alias_line}; "
+    return (f"if command -v {alias} >/dev/null 2>&1; then {alias_line}; "
             f"else echo {note} >&2; {default_line}; fi")
-
-
-def alias_sessions_file(home: str | Path | None = None) -> Path:
-    return _home(home) / ".assistant" / "claude-alias-sessions.json"
-
-
-def _alias_sessions(home: str | Path | None) -> dict:
-    try:
-        rows = json.loads(alias_sessions_file(home).read_text())
-    except (OSError, ValueError):
-        return {}
-    return rows if isinstance(rows, dict) else {}
-
-
-def record_alias_session(session_id: str, alias: str,
-                         home: str | Path | None = None) -> None:
-    """Remember that Claude session `session_id` started through `alias`
-    (the newest _ALIAS_SESSIONS_KEPT sessions)."""
-    path = alias_sessions_file(home)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_name(f"{path.name}.lock"), "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        rows = _alias_sessions(home)
-        rows.pop(session_id, None)
-        rows[session_id] = alias
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(dict(list(rows.items())[-_ALIAS_SESSIONS_KEPT:])))
-        os.replace(tmp, path)
-
-
-def session_alias(session_id: str, home: str | Path | None = None) -> str | None:
-    """The custom alias Claude session `session_id` started through, if any."""
-    alias = _alias_sessions(home).get(session_id)
-    return alias if isinstance(alias, str) and valid_alias(alias) and alias != CLAUDE else None
-
-
-def alias_resume_command(session_id: str, cwd: str | Path, fallback: str,
-                         home: str | Path | None = None) -> str | None:
-    """How to resume a Claude session that started through a custom alias: the
-    alias again, which sets its own backend and sign-in, else `fallback` when
-    the shell no longer defines it. None for any other session."""
-    alias = session_alias(session_id, home)
-    if not alias:
-        return None
-    resume = f"{alias} --resume {shlex.quote(session_id)}"
-    return f"cd {shlex.quote(str(cwd))} && {_alias_or(resume, fallback, alias)}"
 
 
 def _interactive_exe(agent: str) -> list[str]:

@@ -217,12 +217,6 @@ def main(argv=None):
     provider = infer_provider(payload)
     if not provider:
         return
-    alias = os.environ.get(agent_session.ALIAS_ENV, "")
-    if provider == "claude" and agent_session.valid_alias(alias):
-        try:
-            agent_session.record_alias_session(sid, alias)
-        except OSError:
-            pass
     hook_payload = dict(payload)
     hook_payload.update({"session_id": sid, "cwd": cwd, "transcript_path": transcript})
     job = json.dumps({"provider": provider, "payload": hook_payload})

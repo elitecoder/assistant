@@ -563,14 +563,6 @@ def test_crash_resume_replays_the_binding_without_the_environment_cmux_kept(home
     spawn = next(c for c in calls if "new-workspace" in c)
     assert spawn[spawn.index("--command") + 1] == expected
 
-    WW.agent_session.record_alias_session("abc", "claudec")
-    reg.refresh()
-    assert reg.snapshot("LIVE")["resume_command"] == (
-        "cd /work && if command -v claudec >/dev/null 2>&1; then "
-        "ASSISTANT_CLAUDE_ALIAS=claudec claudec --resume abc; else echo "
-        "'Assistant: claudec isn'\"'\"'t defined in your shell; starting claude instead.' >&2; "
-        f"{expected}; fi")
-
 
 def test_merge_session_state_synthetic_by_title_when_no_live_match(home, monkeypatch):
     # RPC returns no workspaces, so session-state has nothing to join to.
