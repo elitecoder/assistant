@@ -3196,7 +3196,7 @@ def test_a_copilot_slack_session_ignores_the_claude_alias(home):
 
 
 @pytest.mark.parametrize("alias", ["claude", "claudec"])
-def test_a_claude_resume_starts_the_session_the_way_it_first_started(home, alias):
+def test_a_claude_resume_rebuilds_with_plain_claude_whatever_the_alias(home, alias):
     _pick_alias(home, alias)
     hook = _load(REPO / "hooks" / "cmux-auto-resume.py", f"seam_hook_alias_{alias}")
     assert hook.fallback_resume("claude", "/usr/local/bin/claude", "c-1", "/w") == \
@@ -3299,4 +3299,9 @@ def test_doctor_checks_the_claude_alias(home, tmp_path):
     assert "start with claude instead" in warned.detail
     assert warned.remedy == ("define claudec in ~/.zprofile, or run: "
                              "python3 bin/assistant-llm.py claude-alias claude")
+    _pick_alias(home, "echo")
+    builtin = doctor.check_claude_alias()
+    assert (builtin.status, builtin.detail, builtin.remedy) == (
+        doctor.WARN, "echo is a shell builtin in your login zsh, so Claude sessions won't start",
+        "run: python3 bin/assistant-llm.py claude-alias claude")
     assert doctor.check_claude_alias in doctor.AGENT_CHECKS

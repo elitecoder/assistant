@@ -377,6 +377,12 @@ def check_claude_alias() -> Check:
     kind = agent_session.alias_kind(alias)
     if kind in agent_session._LAUNCHABLE_KINDS:
         return Check("claude alias", PASS, core=False, detail=f"{alias} is defined in your login zsh ({kind})")
+    if kind:
+        return Check(
+            "claude alias", WARN, core=False,
+            detail=f"{alias} is a shell {kind} in your login zsh, so Claude sessions won't start",
+            remedy="run: python3 bin/assistant-llm.py claude-alias claude",
+        )
     return Check(
         "claude alias", WARN, core=False,
         detail=f"{alias} isn't an alias, function, or command in your login zsh; "

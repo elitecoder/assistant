@@ -54,10 +54,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   says so and starts with `claude`, and `assistant-doctor.py` warns. The
   command refuses a name that isn't one shell word, that's a shell keyword
   such as `if` or `exec`, that names Copilot or Droid, or that your login zsh
-  doesn't know as an alias, function, or command; a hand-edited config with
-  such a name falls back to `claude`. A live Slack session restarts on its
-  next message after the alias changes, and it takes on the alias's own
-  options, such as its model, folders, and permission mode. Background model
+  doesn't know as an alias, function, or command. A hand-edited config with a
+  name that isn't one word, a keyword, or another agent's name falls back to
+  `claude`; one that names a shell builtin such as `echo` starts no session,
+  and `assistant-doctor.py` warns. A live Slack session restarts on its next
+  message after the alias changes, and it takes on the alias's own folders
+  and permission mode; the Assistant's model choice still wins. Background model
   jobs still run the Claude program directly. A restore replays cmux's saved
   command, which skips the alias unless you declare the alias's script in
   cmux's `agents.launchers` setting.
