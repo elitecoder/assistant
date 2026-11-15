@@ -148,6 +148,15 @@ class TestNoCloseWorkspace(unittest.TestCase):
         hits = self._scan(files, set(), self.TYPED_COMMAND_USES)
         self.assertEqual(hits, [], "automation must not run or type /close-workspace")
 
+    def test_no_skill_or_prompt_runs_the_close_workspace_script(self):
+        prose = [p for root in ("skills", "prompts")
+                 for p in files_with_extension(REPO_ASSISTANT / root, ("md",))]
+        runs = [(p, n) for p in prose
+                for n, line in enumerate(p.read_text(errors="replace").splitlines(), 1)
+                if "close-workspace.py" in line]
+        self.assertEqual(runs, [], "no skill or prompt may run /close-workspace's script")
+        self.assertTrue(any(p.name == "SKILL.md" for p in prose), "the scan must reach skills/")
+
     def test_allowlist_is_exact_not_a_file_wide_pass(self):
         """The comms_session.py exception must be the EXACT guarded line, not a
         blanket pass for the file. A different close-workspace invocation in the

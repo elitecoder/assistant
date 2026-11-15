@@ -36,7 +36,7 @@ here = pathlib.Path(__file__).resolve().parent
 with open(here / "argv.jsonl", "a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
 args = sys.argv[1:]
-if args[:5] == ["--json", "--id-format", "both", "top", "--all"]:
+if args == ["--json", "--id-format", "both", "top", "--all", "--processes"]:
     name = "top"
     if (here / "break-after-top").exists():
         pathlib.Path(__file__).chmod(0o644)
@@ -100,7 +100,7 @@ def fake(tmp_path):
         if path_first:
             env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
         res = subprocess.run([*via, sys.executable, str(SCRIPT), *args], capture_output=True,
-                             text=True, env=env, timeout=30)
+                             text=True, env=env, timeout=120)
         log = tmp_path / "argv.jsonl"
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return res, calls
@@ -252,12 +252,29 @@ def test_reports_when_cmux_cannot_be_run_for_the_close(fake, tmp_path):
     assert closes(calls) == []
 
 
+def test_says_cmux_is_busy_when_listing_times_out(fake):
+    fake.serve("top", err="Error: Command timed out", rc=1)
+    res, calls = fake()
+    assert res.returncode == 1
+    assert "too busy" in res.stdout and "Try /close-workspace again" in res.stdout
+    assert closes(calls) == []
+
+
+def test_says_to_check_when_the_close_times_out(fake):
+    fake.serve("close", err="Error: Command timed out", rc=1)
+    res, calls = fake()
+    assert res.returncode == 1
+    assert "didn't answer" in res.stdout and "Check whether it's still open" in res.stdout
+    assert closes(calls) == [["close-workspace", "--workspace", A]]
+
+
 def test_reports_a_failed_close_without_trying_another_target(fake):
     fake.serve("close", err="Error: protected: Pinned workspaces can't be closed while pinned.", rc=1)
     res, calls = fake()
     assert res.returncode == 1
     assert closes(calls) == [["close-workspace", "--workspace", A]]
     assert "protected" in res.stdout
+    assert "pinned. Check whether it's still open." in res.stdout
 
 
 def test_warns_when_cmux_reports_closing_a_different_workspace(fake):
@@ -283,6 +300,34 @@ def test_main_in_process_finds_the_same_target(fake, tmp_path, monkeypatch, caps
     spec.loader.exec_module(module)
     assert module.main(["--dry-run"]) == 0
     assert f"Would close workspace:5 ({A})" in capsys.readouterr().out
+
+
+def test_a_cmux_that_never_answers_is_reported_as_busy(monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    spec = importlib.util.spec_from_file_location("close_workspace", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def hang(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(module.subprocess, "run", hang)
+    with pytest.raises(module.Refusal, match="too busy"):
+        module.cmux("ping")
+
+
+def test_a_process_list_that_never_finishes_is_reported(monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    spec = importlib.util.spec_from_file_location("close_workspace", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def hang(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(module.subprocess, "run", hang)
+    with pytest.raises(module.Refusal, match="listing processes took too long"):
+        module.ancestors(os.getpid())
 
 
 def test_the_command_runs_the_script_before_the_model_gets_a_turn():

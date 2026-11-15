@@ -53,7 +53,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   - It closes nothing and says why when the two disagree, when no terminal or
     more than one matches, when a process between it and the terminal runs in
     a third session (such as a background daemon), when the workspace is
-    pinned, or when `ps` or cmux fails. When cmux asks to confirm closing a
+    pinned, or when `ps` or cmux fails. When cmux is too busy to answer, it
+    says so and asks you to try again. When cmux asks to confirm closing a
     workspace with a running process, it retries the same workspace ID with
     `--force`. It never uses the
     selected workspace, `cmux current-workspace`, `cmux identify`, a sidebar
@@ -64,8 +65,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   - `tests/test_no_close_workspace.py` allows exactly one close call in
     `commands/`, the script's, and fails when code under `bin/`, `hooks/`,
     `src/`, `install/`, `skills/`, `launchagents/`, or `slack-reactor/` runs
-    the script or types `/close-workspace`. The coverage gate now measures
-    `commands/`.
+    the script or types `/close-workspace`, or when a skill or prompt runs the
+    script. The coverage gate now measures `commands/`.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether

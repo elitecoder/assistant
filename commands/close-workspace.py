@@ -26,6 +26,7 @@ import sys
 CMUX = os.environ.get("CMUX_BIN") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 CMUX_ENV = {**os.environ, "CMUX_QUIET": "1"}
 CMUX_STARTED = "explicit-root-pid"
+BUSY = "cmux is too busy to answer right now. Try /close-workspace again in a minute"
 
 
 class Refusal(Exception):
@@ -33,7 +34,11 @@ class Refusal(Exception):
 
 
 def ancestors(pid: int) -> list[int]:
-    out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, check=True).stdout
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True,
+                             check=True, timeout=20).stdout
+    except subprocess.TimeoutExpired:
+        raise Refusal("listing processes took too long. Try /close-workspace again in a minute") from None
     parent = {}
     for line in out.splitlines():
         child, ppid = line.split()
@@ -46,7 +51,13 @@ def ancestors(pid: int) -> list[int]:
 
 
 def cmux(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([CMUX, *args], capture_output=True, text=True, env=CMUX_ENV, timeout=20)
+    try:
+        res = subprocess.run([CMUX, *args], capture_output=True, text=True, env=CMUX_ENV, timeout=20)
+    except subprocess.TimeoutExpired:
+        raise Refusal(BUSY) from None
+    if res.returncode != 0 and "timed out" in res.stderr + res.stdout:
+        raise Refusal(BUSY)
+    return res
 
 
 def lineage_workspaces(chain: list[int]) -> list[tuple[dict, int]]:
@@ -121,11 +132,12 @@ def main(argv: list[str] | None = None) -> int:
         res = cmux(*close)
         if res.returncode != 0 and "confirmation_required" in res.stderr:
             res = cmux(*close, "--force")
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"cmux didn't answer when asked to close {label} ({exc}). Check whether it's still open.")
+    except (Refusal, OSError, subprocess.SubprocessError) as why:
+        print(f"cmux didn't answer when asked to close {label} ({why}). Check whether it's still open.")
         return 1
     if res.returncode != 0:
-        print(f"cmux didn't close {label}: {res.stderr.strip() or res.stdout.strip()}")
+        detail = (res.stderr.strip() or res.stdout.strip()).rstrip(".")
+        print(f"cmux didn't close {label}: {detail}. Check whether it's still open.")
         return 1
     if ws["ref"] not in res.stdout.split():
         print(f"Warning: asked cmux to close {label}, but it answered: {res.stdout.strip()}")
