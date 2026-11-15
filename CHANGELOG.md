@@ -37,6 +37,35 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   no upstream, commits on no remote.
 
 ### Fixed
+- `/close-workspace` closes only the workspace it runs in. It used to close
+  whatever workspace was on screen when `CMUX_WORKSPACE_ID` was missing, and
+  whatever workspace a stale `CMUX_WORKSPACE_ID` named. On 2026-11-15 a probe
+  session without the variable closed two other workspaces this way.
+  - The command now lives in the repo at `commands/close-workspace.md`, with
+    its script `commands/close-workspace.py`. `install.sh` links every file in
+    `commands/` into `~/.claude/commands/` and backs up a file already there.
+    The self-update reinstalls and syntax-checks `commands/` like `skills/`.
+  - The script finds the workspace from the process tree: the login process
+    the cmux app started for a terminal must be an ancestor. It ignores
+    processes cmux matches by inherited environment or by controlling
+    terminal. It uses `CMUX_WORKSPACE_ID` only as a cross-check, and closes by
+    workspace ID.
+  - It closes nothing and says why when the two disagree, when no terminal or
+    more than one matches, when a process between it and the terminal runs in
+    a third session (such as a background daemon), when the workspace is
+    pinned, or when `ps` or cmux fails. When cmux asks to confirm closing a
+    workspace with a running process, it retries the same workspace ID with
+    `--force`. It never uses the
+    selected workspace, `cmux current-workspace`, `cmux identify`, a sidebar
+    index, or a `[N]` name suffix. `--dry-run` names the target and closes
+    nothing.
+  - The command runs the script before the model gets a turn, and the model
+    can't run the command by itself (`disable-model-invocation`).
+  - `tests/test_no_close_workspace.py` allows exactly one close call in
+    `commands/`, the script's, and fails when code under `bin/`, `hooks/`,
+    `src/`, `install/`, `skills/`, `launchagents/`, or `slack-reactor/` runs
+    the script or types `/close-workspace`. The coverage gate now measures
+    `commands/`.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether

@@ -103,6 +103,8 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
+  - ~/.claude/commands/<file>                    → symlink → $REPO_ROOT/commands/<file>
+    (/close-workspace and its script; other commands are left alone)
   - legacy ~/.claude/spawn-prompts/prompt-{assistant,triage}-agent.md → REMOVED
     (old LLM-Assistant era; the mechanical pulse.py reads prompts/ directly)
   - lessons live in ~/.claude/CLAUDE.md (not in this repo). Curator: bin/assistant-curator.py
@@ -491,6 +493,14 @@ done
 ensure_symlink \
     "$HOME_DIR/.claude/assistant-operating-guide.md" \
     "$REPO_ROOT/docs/assistant-operating-guide.md"
+
+# Slash commands you type (Claude Code), with their helper scripts. Each file
+# in commands/ is linked into ~/.claude/commands/ by name; other files there
+# are left alone. Claude Code loads only the .md files as commands.
+for command_file in "$REPO_ROOT"/commands/*; do
+    [[ -f "$command_file" ]] || continue
+    ensure_symlink "$HOME_DIR/.claude/commands/$(basename "$command_file")" "$command_file"
+done
 
 log ""
 
