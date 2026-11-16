@@ -514,6 +514,20 @@ CHECKS = (
         '',
         'tests/test_pro_mode.py::test_installer_modes_and_skills',
     ),
+    (
+        "help documents the commands link",
+        "install.sh",
+        "  - ~/.claude/commands/<file>                    → symlink → $REPO_ROOT/commands/<file>\n",
+        "",
+        "tests/test_install_commands.py::test_help_documents_the_commands_link",
+    ),
+    (
+        "install links the typed commands",
+        "install.sh",
+        '    ensure_symlink "$HOME_DIR/.claude/commands/$(basename "$command_file")" "$command_file"\n',
+        "    :\n",
+        "tests/test_install_commands.py::test_apply_links_every_repo_command_and_keeps_the_old_file",
+    ),
 )
 
 

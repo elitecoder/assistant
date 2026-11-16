@@ -66,8 +66,10 @@ class TestNoCloseWorkspace(unittest.TestCase):
                 return any(a in line for a in allowed)
         return False
 
-    def _scan(self, paths: list[Path], allow_paths: set[Path]) -> list[tuple[Path, int, str, str]]:
+    def _scan(self, paths: list[Path], allow_paths: set[Path],
+              patterns=None) -> list[tuple[Path, int, str, str]]:
         """Returns [(path, line_no, line, pattern)] of forbidden hits."""
+        patterns = patterns or self.FORBIDDEN_INVOCATIONS
         hits = []
         for p in paths:
             if p in allow_paths:
@@ -100,7 +102,7 @@ class TestNoCloseWorkspace(unittest.TestCase):
                     # closing standalone triple-quote lines).
                     if stripped.startswith('"""') or stripped.startswith("'''"):
                         continue
-                    for pat in self.FORBIDDEN_INVOCATIONS:
+                    for pat in patterns:
                         if pat.search(line):
                             if self._is_allowed(p, line):
                                 continue  # the one title-guarded self-close
@@ -120,6 +122,40 @@ class TestNoCloseWorkspace(unittest.TestCase):
         if hits:
             msg = "\n".join(f"  {p.relative_to(REPO_ASSISTANT)}:{n}: [{pat}] {line}" for p, n, line, pat in hits)
             self.fail(f"forbidden close-workspace invocations found in production code:\n{msg}")
+
+    # commands/ holds slash commands the user types. /close-workspace's script
+    # is the one file there that closes a workspace, with this one call, and
+    # only for the workspace whose terminal runs it.
+    USER_COMMAND_SCRIPT = "commands/close-workspace.py"
+    USER_COMMAND_CLOSE = 'close = ["close-workspace", "--workspace", ws["id"]]'
+
+    def test_only_the_typed_close_workspace_command_closes_outside_bin(self):
+        files = files_with_extension(REPO_ASSISTANT / "commands", ("py", "sh", "md"))
+        hits = self._scan(files, set())
+        rogue = [(p, n, line) for p, n, line, _ in hits
+                 if not (p.as_posix().endswith(self.USER_COMMAND_SCRIPT)
+                         and line.strip() == self.USER_COMMAND_CLOSE)]
+        self.assertEqual(rogue, [], "only /close-workspace's script may close a workspace")
+        self.assertEqual(len(hits) - len(rogue), 1,
+                         "the script's one close call changed; review it before updating this pin")
+
+    TYPED_COMMAND_USES = [re.compile(r"close-workspace\.py"), re.compile(r"/close-workspace\b")]
+
+    def test_no_automation_runs_the_typed_close_workspace_command(self):
+        roots = ("bin", "hooks", "src", "install", "skills", "launchagents", "slack-reactor")
+        files = [p for root in roots
+                 for p in files_with_extension(REPO_ASSISTANT / root, ("py", "sh", "js", "cjs", "swift", "plist"))]
+        hits = self._scan(files, set(), self.TYPED_COMMAND_USES)
+        self.assertEqual(hits, [], "automation must not run or type /close-workspace")
+
+    def test_no_skill_or_prompt_runs_the_close_workspace_script(self):
+        prose = [p for root in ("skills", "prompts")
+                 for p in files_with_extension(REPO_ASSISTANT / root, ("md",))]
+        runs = [(p, n) for p in prose
+                for n, line in enumerate(p.read_text(errors="replace").splitlines(), 1)
+                if "close-workspace.py" in line]
+        self.assertEqual(runs, [], "no skill or prompt may run /close-workspace's script")
+        self.assertTrue(any(p.name == "SKILL.md" for p in prose), "the scan must reach skills/")
 
     def test_allowlist_is_exact_not_a_file_wide_pass(self):
         """The comms_session.py exception must be the EXACT guarded line, not a

@@ -56,7 +56,7 @@ from pathlib import Path
 # copied install-time files, and code that long-running services (the
 # dashboard server, the app connectors) load once at start. The rest of bin/,
 # prompts/, hooks/, and docs/ are read live, so a bare pull makes them current.
-INSTALL_REQUIRING_PREFIXES = ("skills/", "launchagents/", "install/",
+INSTALL_REQUIRING_PREFIXES = ("skills/", "commands/", "launchagents/", "install/",
                               "bin/connectors/", "src/assistant/")
 INSTALL_REQUIRING_FILES = ("install.sh", "bin/todo-server.py")
 
@@ -80,7 +80,7 @@ DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
 # runtime paths here. In July 2026, conflict markers left in the working copy of
 # bin/pulse.py made the pulse fail every tick for months. The gate keeps a
 # pulled commit from doing the same; bin/run-pulse.py covers the working copy.
-SYNTAX_GATE_PATHS = ("bin/", "src/", "hooks/", "install/", "prompts/", "skills/",
+SYNTAX_GATE_PATHS = ("bin/", "commands/", "src/", "hooks/", "install/", "prompts/", "skills/",
                      "launchagents/", "config/", "docs/", "slack-reactor/",
                      "install.sh", "install-bootstrap.sh")
 
