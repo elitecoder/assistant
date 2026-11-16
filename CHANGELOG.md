@@ -58,8 +58,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     workspace with a running process, it retries the same workspace ID with
     `--force`. It never uses the
     selected workspace, `cmux current-workspace`, `cmux identify`, a sidebar
-    index, or a `[N]` name suffix. `--dry-run` names the target and closes
-    nothing.
+    index, or a `[N]` name suffix. `/close-workspace --dry-run` names the
+    target and closes nothing, and any other argument is refused.
   - The command runs the script before the model gets a turn, and the model
     can't run the command by itself (`disable-model-invocation`).
   - `tests/test_no_close_workspace.py` allows exactly one close call in

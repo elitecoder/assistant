@@ -154,6 +154,14 @@ def test_allows_the_one_detached_session_the_command_runs_in(fake):
     assert closes(calls) == [["close-workspace", "--workspace", A]]
 
 
+def test_allows_terminal_session_processes_above_its_own_session(fake):
+    # Claude Code's layout: the script's shell runs in its own session, and
+    # Claude, between that shell and the login, stays in the terminal's session.
+    res, calls = fake(via=[*VIA_SHELL, *NEW_SESSION])
+    assert res.returncode == 0, res.stdout
+    assert closes(calls) == [["close-workspace", "--workspace", A]]
+
+
 def test_refuses_when_a_background_session_sits_between_it_and_the_terminal(fake):
     res, calls = fake(via=[*NEW_SESSION, *NEW_SESSION])
     assert res.returncode == 1
@@ -291,6 +299,14 @@ def test_dry_run_names_the_target_and_closes_nothing(fake):
     assert f"Would close workspace:5 ({A})" in res.stdout
 
 
+@pytest.mark.parametrize("args", [["--dryrun"], ["please"], ["--dry-run", "now"]])
+def test_refuses_an_unknown_argument_and_closes_nothing(fake, args):
+    res, calls = fake(*args)
+    assert res.returncode == 1
+    assert closes(calls) == []
+    assert res.stdout.startswith("Didn't close any workspace")
+
+
 def test_main_in_process_finds_the_same_target(fake, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
     monkeypatch.setenv("CMUX_BIN", str(tmp_path / "cmux"))
@@ -334,5 +350,5 @@ def test_the_command_runs_the_script_before_the_model_gets_a_turn():
     text = COMMAND.read_text()
     front, body = text.split("---\n")[1:3]
     assert "disable-model-invocation: true" in front
-    assert "!`python3 ~/.claude/commands/close-workspace.py`" in body
-    assert "allowed-tools: Bash(python3 ~/.claude/commands/close-workspace.py)" in front
+    assert "!`python3 ~/.claude/commands/close-workspace.py $ARGUMENTS`" in body
+    assert "allowed-tools: Bash(python3 ~/.claude/commands/close-workspace.py:*)" in front

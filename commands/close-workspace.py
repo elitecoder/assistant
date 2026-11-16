@@ -12,8 +12,9 @@ workspace or more than one, this script closes nothing and says why. It also
 refuses when a process between it and the terminal runs in a third session,
 such as a background daemon that only started from that terminal.
 
-Exit codes: 0 closed (or `--dry-run` found the target), 1 refused, 2 cmux
-reported closing a different workspace than the one asked for.
+Exit codes: 0 closed (or `--dry-run` found the target), 1 refused (including
+an unknown argument), 2 cmux reported closing a different workspace than the
+one asked for.
 """
 from __future__ import annotations
 
@@ -117,7 +118,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true",
                         help="print the workspace this would close, and close nothing")
-    args = parser.parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        print(f"Didn't close any workspace: {' '.join(unknown)} isn't an option. "
+              "Use /close-workspace, or /close-workspace --dry-run to see the target.")
+        return 1
     try:
         ws = resolve()
     except (Refusal, OSError, subprocess.SubprocessError) as why:
