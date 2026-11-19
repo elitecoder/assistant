@@ -1634,21 +1634,23 @@ def test_find_active_transcripts_cron_tagging(tmp_home, tmp_path):
 
 
 def test_find_active_transcripts_stat_oserror_skipped(tmp_home, tmp_path, monkeypatch):
-    """If stat() raises OSError between exists() and the mtime check, the entry
-    is skipped (lines 325-326)."""
+    """If the transcript's existence check raises OSError, the entry is skipped.
+
+    Patches Path.exists itself: since Python 3.14, Path.exists calls
+    os.path.exists and no longer goes through Path.stat."""
     tfile = tmp_path / "racey.jsonl"
     tfile.write_text(_user_line("hi") + "\n")
     _write_sessions(tmp_home, [
         fake_cmux.record("S1", pid=os.getpid(), cwd="/proj", transcript_path=str(tfile)),
     ])
-    real_stat = Path.stat
+    real_exists = Path.exists
 
-    def flaky_stat(self, *a, **k):
+    def flaky_exists(self, *a, **k):
         if str(self) == str(tfile):
             raise OSError("stat race")
-        return real_stat(self, *a, **k)
+        return real_exists(self, *a, **k)
 
-    monkeypatch.setattr(Path, "stat", flaky_stat)
+    monkeypatch.setattr(Path, "exists", flaky_exists)
     w = scw.Watcher()
     try:
         cutoff = (scw.utc_now() - timedelta(hours=scw.ACTIVITY_HOURS)).timestamp()
