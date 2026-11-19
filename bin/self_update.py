@@ -56,10 +56,12 @@ from pathlib import Path
 # A pull that changes any of these needs `install.sh --apply` to take effect:
 # copied install-time files, and bin/ code, which the always-on services (the
 # comms listener, the watchers, the dashboard server, the app connectors) load
-# once at start; install.sh restarts the running ones. prompts/, hooks/, and
+# once at start (and the Slack reactor's slack-reactor/src/ code); install.sh
+# restarts the running ones. prompts/, hooks/, and
 # docs/ are read live, so a bare pull makes them current.
 INSTALL_REQUIRING_PREFIXES = ("skills/", "launchagents/", "install/",
-                              "bin/", "src/assistant/")
+                              "bin/", "src/assistant/",
+                              "slack-reactor/src/")
 INSTALL_REQUIRING_FILES = ("install.sh",)
 
 # Reloading this label mid-pulse would SIGTERM the updater. install.sh honors

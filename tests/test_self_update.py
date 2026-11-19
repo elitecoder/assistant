@@ -104,7 +104,8 @@ class ClassifyTests(unittest.TestCase):
         self.assertFalse(c["touches_self_plist"])
 
     def test_bin_change_needs_install_so_always_on_services_restart(self):
-        for path in ("bin/pulse.py", "bin/comms-listen.py", "bin/agent_session.py"):
+        for path in ("bin/pulse.py", "bin/comms-listen.py", "bin/agent_session.py",
+                     "slack-reactor/src/index.js"):
             c = su.classify_changed_paths([path, "prompts/observer-batch-prompt.md"])
             self.assertTrue(c["needs_install"], path)
             self.assertFalse(c["touches_self_plist"])

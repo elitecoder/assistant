@@ -916,7 +916,7 @@ fi
 # leaves a note that the dashboard shows and the hourly update retries.
 CODE_STAMP="$HOME_DIR/.assistant/service-code.sha256"
 RESTART_NOTE="$HOME_DIR/.assistant/service-restart-failed"
-CODE_SHA="$(cd "$REPO_ROOT" && find bin src/assistant -type f \( -name '*.py' -o -name '*.sh' \) \
+CODE_SHA="$(cd "$REPO_ROOT" && find bin src/assistant slack-reactor/src -type f \( -name '*.py' -o -name '*.sh' -o -name '*.js' \) \
     | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
 if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
     failed_labels=()

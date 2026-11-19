@@ -681,6 +681,12 @@ def test_the_installer_restarts_the_always_on_services_after_a_bin_change(tmp_pa
     kicked = {line.rsplit("/", 1)[1] for line in log.read_text().splitlines() if line.startswith("kickstart")}
     assert kicked == always_on
 
+    log.write_text("")
+    with (repo / "slack-reactor/src/index.js").open("a") as f:
+        f.write("\n// changed\n")
+    run_installer(env, repo=repo)
+    assert f"kickstart -k gui/{os.getuid()}/com.assistant.slack-reactor" in log.read_text()
+
 
 def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
     home = tmp_path / "home"

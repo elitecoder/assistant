@@ -489,8 +489,8 @@ CHECKS = (
     (
         'a pulled bin change runs the installer',
         "bin/self_update.py",
-        '"bin/", "src/assistant/")',
-        '"src/assistant/")',
+        '"bin/", "src/assistant/",',
+        '"src/assistant/",',
         'tests/test_self_update.py::ClassifyTests::test_bin_change_needs_install_so_always_on_services_restart',
     ),
     (
@@ -503,9 +503,23 @@ CHECKS = (
     (
         'a bin change counts as new service code',
         "install.sh",
-        'find bin src/assistant -type f',
-        'find bin/todo-server.py bin/connectors src/assistant -type f',
+        'find bin src/assistant slack-reactor/src -type f',
+        'find bin/todo-server.py bin/connectors src/assistant slack-reactor/src -type f',
         'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
+    ),
+    (
+        'the slack reactor code counts as new service code',
+        "install.sh",
+        'find bin src/assistant slack-reactor/src -type f',
+        'find bin src/assistant -type f',
+        'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
+    ),
+    (
+        'a pulled slack reactor change runs the installer',
+        "bin/self_update.py",
+        '"slack-reactor/src/")',
+        '"src/assistant/")',
+        'tests/test_self_update.py::ClassifyTests::test_bin_change_needs_install_so_always_on_services_restart',
     ),
     (
         'only running services restart',
