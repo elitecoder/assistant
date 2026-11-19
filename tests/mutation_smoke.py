@@ -487,6 +487,27 @@ CHECKS = (
         'tests/test_pro_mode.py::test_installer_restarts_running_services_only_when_their_code_changes',
     ),
     (
+        'a pulled bin change runs the installer',
+        "bin/self_update.py",
+        '"bin/", "src/assistant/")',
+        '"src/assistant/")',
+        'tests/test_self_update.py::ClassifyTests::test_bin_change_needs_install_so_always_on_services_restart',
+    ),
+    (
+        'the comms listener restarts on new code',
+        "install.sh",
+        'com.assistant.{assistant-comms,workspace-watcher',
+        'com.assistant.{workspace-watcher',
+        'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
+    ),
+    (
+        'a bin change counts as new service code',
+        "install.sh",
+        'find bin src/assistant -type f',
+        'find bin/todo-server.py bin/connectors src/assistant -type f',
+        'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
+    ),
+    (
         'only running services restart',
         "install.sh",
         ' | grep -q "state = running"',

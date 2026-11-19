@@ -30,9 +30,10 @@ location-independent — a user who installed it anywhere, not just
      rather than merging blindly. Local commits the remote already holds are
      left behind with `git reset --keep <fetched sha>`.
      bin/ and prompts/ are symlinked / read live, so a pull alone makes
-     code + Observer-prompt changes take effect on the very next pulse.
-  4. If the pull touched COPIED artifacts (skills/, launchagents/, the
-     installer itself), run `install.sh --apply` to re-copy + reload them.
+     the next pulse run the new code and prompts.
+  4. If the pull touched bin/, COPIED artifacts (skills/, launchagents/, the
+     installer itself), run `install.sh --apply` to re-copy + reload them and
+     to restart the always-on services whose code changed.
      ASSISTANT_SELF_UPDATE=1 tells install.sh to skip reloading the pulse's
      OWN plist (reloading it mid-pulse would kill this very process).
 
@@ -53,12 +54,13 @@ import time
 from pathlib import Path
 
 # A pull that changes any of these needs `install.sh --apply` to take effect:
-# copied install-time files, and code that long-running services (the
-# dashboard server, the app connectors) load once at start. The rest of bin/,
-# prompts/, hooks/, and docs/ are read live, so a bare pull makes them current.
+# copied install-time files, and bin/ code, which the always-on services (the
+# comms listener, the watchers, the dashboard server, the app connectors) load
+# once at start; install.sh restarts the running ones. prompts/, hooks/, and
+# docs/ are read live, so a bare pull makes them current.
 INSTALL_REQUIRING_PREFIXES = ("skills/", "launchagents/", "install/",
-                              "bin/connectors/", "src/assistant/")
-INSTALL_REQUIRING_FILES = ("install.sh", "bin/todo-server.py")
+                              "bin/", "src/assistant/")
+INSTALL_REQUIRING_FILES = ("install.sh",)
 
 # Reloading this label mid-pulse would SIGTERM the updater. install.sh honors
 # ASSISTANT_SELF_UPDATE=1 by skipping it; the plist change applies on the next

@@ -98,10 +98,16 @@ def stub_installer(clone: Path) -> Path:
 # ─── pure logic ───────────────────────────────────────────────────────────
 
 class ClassifyTests(unittest.TestCase):
-    def test_bin_change_needs_no_install(self):
-        c = su.classify_changed_paths(["bin/pulse.py", "prompts/observer-batch-prompt.md"])
+    def test_prompt_change_needs_no_install(self):
+        c = su.classify_changed_paths(["prompts/observer-batch-prompt.md", "docs/configuration.md"])
         self.assertFalse(c["needs_install"])
         self.assertFalse(c["touches_self_plist"])
+
+    def test_bin_change_needs_install_so_always_on_services_restart(self):
+        for path in ("bin/pulse.py", "bin/comms-listen.py", "bin/agent_session.py"):
+            c = su.classify_changed_paths([path, "prompts/observer-batch-prompt.md"])
+            self.assertTrue(c["needs_install"], path)
+            self.assertFalse(c["touches_self_plist"])
 
     def test_skill_change_needs_install(self):
         c = su.classify_changed_paths(["skills/todo/SKILL.md"])
@@ -159,21 +165,36 @@ class MaybeUpdateTests(unittest.TestCase):
             r2 = su.maybe_update(clone, interval_sec=3600, marker_path=marker)
             self.assertIsNone(r2)
 
-    def test_pull_code_only_no_install(self):
+    def test_pull_prompt_only_no_install(self):
         with TemporaryDirectory() as t:
             tmp = Path(t)
             clone, remote = make_repos(tmp)
             log = stub_installer(clone)
             git(clone, "add", "-A"); git(clone, "commit", "-m", "local installer stub")
             git(clone, "push", "origin", "main")
-            advance_remote(tmp, remote, {"bin/pulse.py": "# pulse v2\n"}, "code change")
+            advance_remote(tmp, remote, {"prompts/observer.md": "# prompt v2\n"}, "prompt change")
             r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json",
                                 install_sh=clone / "install.sh")
             self.assertTrue(r["changed"])
-            self.assertIn("bin/pulse.py", r["files_changed"])
+            self.assertIn("prompts/observer.md", r["files_changed"])
             self.assertFalse(r["needs_install"])
             self.assertFalse(r.get("installed"))
-            self.assertFalse(log.exists(), "installer must NOT run for a bin-only change")
+            self.assertFalse(log.exists(), "installer must NOT run for a prompt-only change")
+
+    def test_pull_bin_change_runs_installer_to_restart_services(self):
+        with TemporaryDirectory() as t:
+            tmp = Path(t)
+            clone, remote = make_repos(tmp)
+            log = stub_installer(clone)
+            git(clone, "add", "-A"); git(clone, "commit", "-m", "local installer stub")
+            git(clone, "push", "origin", "main")
+            advance_remote(tmp, remote, {"bin/comms-listen.py": "# listener v2\n"}, "code change")
+            r = su.maybe_update(clone, interval_sec=0, marker_path=tmp / "m.json",
+                                install_sh=clone / "install.sh")
+            self.assertTrue(r["changed"])
+            self.assertTrue(r["needs_install"])
+            self.assertTrue(r["installed"])
+            self.assertTrue(log.exists(), "installer must run for a bin change")
 
     def test_pull_skill_change_runs_installer(self):
         with TemporaryDirectory() as t:
