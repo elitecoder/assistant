@@ -45,6 +45,24 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   blocks the update.
 
 ### Added
+- Pick the shell alias Claude sessions start with:
+  `bin/assistant-llm.py claude-alias <name>` saves `llm.claude.alias` in
+  `~/.assistant/comms/config.json`, and `claude-alias claude` restores the
+  default. Task sessions, `/spawn-claude-workspace`, and the Slack session
+  start the alias in the workspace's own shell, so cmux's Claude wrapper still
+  records the session. When that shell doesn't define the alias, the session
+  says so and starts with `claude`, and `assistant-doctor.py` warns. The
+  command refuses a name that isn't one shell word, that's a shell keyword
+  such as `if` or `exec`, that names Copilot or Droid, or that your login zsh
+  doesn't know as an alias, function, or command. A hand-edited config with a
+  name that isn't one word, a keyword, or another agent's name falls back to
+  `claude`; one that names a shell builtin such as `echo` starts no session,
+  and `assistant-doctor.py` warns. A live Slack session restarts on its next
+  message after the alias changes, and it takes on the alias's own folders
+  and permission mode; the Assistant's model choice still wins. Background model
+  jobs still run the Claude program directly. A restore replays cmux's saved
+  command, which skips the alias unless you declare the alias's script in
+  cmux's `agents.launchers` setting.
 - Refuse commits on the live install's main. The self-update links
   `githooks/refuse-main-commit` as the `pre-commit` and `pre-merge-commit`
   hooks, and never replaces a hook that's already there. Commit on a branch

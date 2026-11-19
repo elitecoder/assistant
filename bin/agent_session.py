@@ -390,6 +390,55 @@ def _cfg_agent(raw: dict | None, *keys: str) -> str | None:
     return v if v in AGENTS else None
 
 
+_ALIAS_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+# zsh reserved words and precommand modifiers: as the first word of a pane
+# command they change how the rest of the line runs.
+_SHELL_WORDS = frozenset((
+    "case coproc declare do done elif else end esac export fi float for foreach "
+    "function if integer local nocorrect readonly repeat select then time typeset "
+    "until while builtin command exec noglob"
+).split())
+
+
+def valid_alias(name: str) -> bool:
+    """True when `name` is one shell word Assistant can start a Claude session
+    with, other than a shell keyword or another agent's name."""
+    return (bool(_ALIAS_RE.fullmatch(name)) and name not in _SHELL_WORDS
+            and name not in (COPILOT, DROID))
+
+
+# What `whence -w` calls a name that can start a session.
+_LAUNCHABLE_KINDS = ("alias", "function", "command", "hashed")
+
+
+def alias_kind(name: str) -> str | None:
+    """What an interactive login zsh calls `name` (alias, function, command,
+    builtin, reserved), or None when it doesn't know it or zsh can't run."""
+    if not valid_alias(name):
+        return None
+    try:
+        out = subprocess.run(["zsh", "-lic", f"whence -w {name}"], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = out.stdout.strip().splitlines()
+    kind = lines[-1].rpartition(": ")[2] if out.returncode == 0 and lines else ""
+    return kind or None
+
+
+def alias_launchable(name: str) -> bool:
+    """True when a login zsh can start a session with `name`."""
+    return alias_kind(name) in _LAUNCHABLE_KINDS
+
+
+def claude_alias() -> str:
+    """The shell alias Claude sessions start with: ``llm.claude.alias`` in
+    comms/config.json, else ``claude``."""
+    v = _cfg(_read_comms_config(), "llm", "claude", "alias")
+    v = v.strip() if isinstance(v, str) else ""
+    return v if valid_alias(v) else CLAUDE
+
+
 def dispatch_agent(env: dict | None = None) -> str:
     """Which agent the fleet SPAWNS for a dispatch. Precedence:
       1. the ASSISTANT_DISPATCH_AGENT env override;
@@ -652,6 +701,24 @@ def _droid_flags(home: Path) -> list[str]:
     return flags
 
 
+def _claude_flags(model: str | None, add_dirs: tuple | list) -> list[str]:
+    flags = ["--model", model] if model else []
+    flags.append("--dangerously-skip-permissions")
+    for d in add_dirs:
+        flags += ["--add-dir", str(d)]
+    return flags
+
+
+def _alias_or(alias_line: str, default_line: str) -> str:
+    """A pane command that runs `alias_line` when the pane's shell defines
+    claude_alias(), else says so and runs `default_line`. The pane's own shell
+    runs it, so cmux's claude wrapper stays first on PATH."""
+    alias = claude_alias()
+    note = shlex.quote(f"Assistant: {alias} isn't defined in your shell; starting claude instead.")
+    return (f"if command -v {alias} >/dev/null 2>&1; then {alias_line}; "
+            f"else echo {note} >&2; {default_line}; fi")
+
+
 def _interactive_exe(agent: str) -> list[str]:
     """How a pane's login shell starts `agent`: its *_BIN override, else the
     name resolved through PATH (`command` skips the alias), so cmux's PATH shim
@@ -686,13 +753,7 @@ def session_argv(agent: str, *, home: str | Path | None = None,
         return argv
     if model is None and not add_dirs:
         return [CLAUDE]
-    argv = _interactive_exe(CLAUDE)
-    if model:
-        argv += ["--model", model]
-    argv.append("--dangerously-skip-permissions")
-    for d in add_dirs:
-        argv += ["--add-dir", str(d)]
-    return argv
+    return [*_interactive_exe(CLAUDE), *_claude_flags(model, add_dirs)]
 
 
 def copilot_instructions_dir(home: str | Path | None = None) -> Path | None:
@@ -741,20 +802,31 @@ def session_command(agent: str, *, home: str | Path | None = None,
                     model: str | None = None, add_dirs: tuple | list = (),
                     env_prefix: str = "") -> str:
     """The cmux ``--command`` string for an interactive `agent` session.
-    Copilot gets the user's rules through COPILOT_CUSTOM_INSTRUCTIONS_DIRS."""
+    Copilot gets the user's rules through COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
+    Claude starts claude_alias() with the same flags when that's custom."""
     argv = session_argv(agent, home=home, model=model, add_dirs=add_dirs)
     if agent == COPILOT:
         env_prefix += _copilot_env(home)
-    return f"{env_prefix}{shlex.join(argv)}"
+    line = f"{env_prefix}{shlex.join(argv)}"
+    alias = claude_alias()
+    if agent != CLAUDE or alias == CLAUDE:
+        return line
+    flags = [] if model is None and not add_dirs else _claude_flags(model, add_dirs)
+    return _alias_or(f"{env_prefix}{shlex.join([alias, *flags])}", line)
 
 
 def launch_command(agent: str, home: str | Path | None = None,
                    unattended: bool = False) -> str:
     """The cmux ``--command`` for a dispatched `agent` session. `unattended`
-    claude runs the alias in a login shell with permission prompts bypassed,
-    so a background spawn never stalls on the first prompt."""
+    claude runs with permission prompts bypassed, so a background spawn never
+    stalls on the first prompt: claude_alias() when that's custom, else the
+    ``claude`` alias in a login shell."""
     if agent == CLAUDE and unattended:
-        return "zsh -lic 'claude --dangerously-skip-permissions'"
+        default = "zsh -lic 'claude --dangerously-skip-permissions'"
+        alias = claude_alias()
+        if alias == CLAUDE:
+            return default
+        return _alias_or(f"{alias} --dangerously-skip-permissions", default)
     return session_command(agent, home=home)
 
 

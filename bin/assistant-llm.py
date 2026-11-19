@@ -112,6 +112,32 @@ def set_provider(path: Path, provider: str, feature: str | None) -> None:
     write_document(path, update)
 
 
+def set_claude_alias(path: Path, name: str) -> None:
+    """Save `name` as llm.claude.alias; ``claude`` removes the setting."""
+    seam = llm_runner.agent_session
+    if not seam.valid_alias(name):
+        raise ValueError(f"{name!r} isn't one shell word (letters, digits, . _ + -) "
+                         "other than a shell keyword, copilot, or droid")
+    if name != seam.CLAUDE and not seam.alias_launchable(name):
+        raise ValueError(f"{name} isn't an alias, function, or command in your login zsh")
+
+    def update(document: dict) -> None:
+        llm = document.setdefault("llm", {})
+        if not isinstance(llm, dict):
+            raise ValueError("config key 'llm' must be an object")
+        claude = llm.setdefault("claude", {})
+        if not isinstance(claude, dict):
+            raise ValueError("config key 'llm.claude' must be an object")
+        if name == llm_runner.agent_session.CLAUDE:
+            claude.pop("alias", None)
+            if not claude:
+                llm.pop("claude")
+        else:
+            claude["alias"] = name
+
+    write_document(path, update)
+
+
 def inherit_provider(path: Path, feature: str) -> None:
     def update(document: dict) -> None:
         llm = document.get("llm")
@@ -176,6 +202,7 @@ def status(path: Path) -> dict:
     return {
         "config_path": str(path),
         "global_provider": global_provider,
+        "claude_alias": llm_runner.agent_session.claude_alias(),
         "features": features,
     }
 
@@ -190,6 +217,10 @@ def parser() -> argparse.ArgumentParser:
     set_cmd = commands.add_parser("set")
     set_cmd.add_argument("provider", choices=llm_runner.PROVIDERS)
     set_cmd.add_argument("--feature", choices=FEATURES)
+
+    alias = commands.add_parser(
+        "claude-alias", help="pick the shell alias Claude sessions start with")
+    alias.add_argument("name", help="an alias from your login zsh; claude restores the default")
 
     inherit = commands.add_parser("inherit")
     inherit.add_argument("--feature", choices=FEATURES, required=True)
@@ -208,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"Configured global provider: "
                     f"{current['global_provider']}")
+                print(f"Claude sessions start with: {current['claude_alias']}")
                 for name, feature in current["features"].items():
                     detail = feature["provider"]
                     if name == "comms":
@@ -256,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
                 if unlinked:
                     print(f"warning: {unlinked}; until then Copilot sessions "
                           f"have no /cleanup, /todo, or /lesson", file=sys.stderr)
+        elif args.command == "claude-alias":
+            set_claude_alias(path, args.name)
         else:
             inherit_provider(path, args.feature)
         return main(["status"])

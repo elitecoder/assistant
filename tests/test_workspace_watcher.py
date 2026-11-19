@@ -534,6 +534,36 @@ def test_merge_session_state_joins_by_title_cwd(home, monkeypatch):
     assert "by-title:Repo Work" not in reg.by_uuid
 
 
+def test_crash_resume_replays_the_binding_without_the_environment_cmux_kept(home, monkeypatch):
+    monkeypatch.setenv("HOME", str(WW.HOME))
+    calls = []
+
+    def run(cmd, timeout=10):
+        calls.append(cmd)
+        if "new-workspace" in cmd:
+            return 0, "OK workspace:9", ""
+        return 0, json.dumps({"workspaces": [
+            {"id": "LIVE", "ref": 3, "title": "Copilot Work", "current_directory": "/work"}]}), ""
+
+    monkeypatch.setattr(WW, "run", run)
+    session = {"windows": [{"tabManager": {"workspaces": [{
+        "customTitle": "Copilot Work", "currentDirectory": "/work",
+        "panels": [{"terminal": {"resumeBinding": {
+            "command": "claude --resume abc", "cwd": "/work", "checkpointId": "abc",
+            "environment": {"ANTHROPIC_BASE_URL": "http://localhost:4000",
+                            "ANTHROPIC_AUTH_TOKEN": "sekrit"}}}}]}]}}]}
+    WW.CMUX_SESSION_STATE.parent.mkdir(parents=True)
+    WW.CMUX_SESSION_STATE.write_text(json.dumps(session))
+    reg = WW.WorkspaceRegistry()
+    reg.refresh()
+    expected = "claude --resume abc"
+    meta = reg.snapshot("LIVE")
+    assert meta["resume_command"] == expected
+    WW.resume_workspace(meta, WW.ResumeGovernor())
+    spawn = next(c for c in calls if "new-workspace" in c)
+    assert spawn[spawn.index("--command") + 1] == expected
+
+
 def test_merge_session_state_synthetic_by_title_when_no_live_match(home, monkeypatch):
     # RPC returns no workspaces, so session-state has nothing to join to.
     monkeypatch.setattr(WW, "run",
