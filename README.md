@@ -71,6 +71,9 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
 - Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack,
   which you set up separately. See [Connect your sources](docs/connectors.md).
   They pause while Pro mode is off.
+- The [Work queue](docs/work-queue.md), a local page that merges your Slack
+  Later saves, pull requests waiting on your review, Outlook, Gmail, and
+  today's calendar into one list you clear.
 - Ranked goals with the `/goal` skill, and a planner that suggests next steps.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.
@@ -129,6 +132,7 @@ walkthrough, see [ONBOARDING.md](ONBOARDING.md).
 |---|---|
 | Install, opt-in features, and troubleshooting | [ONBOARDING.md](ONBOARDING.md) |
 | Connect GitHub, Gmail, Google Calendar, Outlook, and Slack | [docs/connectors.md](docs/connectors.md) |
+| Clear one list from all your sources (Pro mode) | [docs/work-queue.md](docs/work-queue.md) |
 | Using the dashboard tabs and decision cards | [docs/dashboard.md](docs/dashboard.md) |
 | Noise budget, wake hour, planner, Strategist, and model settings | [docs/configuration.md](docs/configuration.md) |
 | Lanes, ranking, outbound gates, design decisions, and code map | [docs/design.md](docs/design.md) |

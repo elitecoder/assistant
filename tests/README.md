@@ -97,6 +97,11 @@ working copy or sends commands to live sessions.
 | `test_purge_stale_awaiting.py` | `bin/purge-stale-awaiting.py` drop predicates: closed workspaces, done TODOs, cmux-down safety. |
 | `test_build_ws_context.py` | `bin/build-ws-context.py` mechanical signals: `agent_status`, transcript-path resolution, no PR data leaks into output, protected-workspace flag. |
 | `test_no_close_workspace.py` | Regression-pin: no production code path shells out `cmux close-workspace`. |
+| `test_work_queue_*.py` | The Work queue: server routes and apply, each source against fake `gh`, `gog`, `npx`, and `uv`, `sources.json` driving the refresh, the setup CLI, the installer in its sandbox, and the Pro mode gate. |
+
+The Work queue's Slack and page checks drive a real Chromium. They skip unless
+Playwright is installed, so run the suite with `--with playwright` to include
+them, as the coverage workflow does.
 
 ## What's NOT covered here
 

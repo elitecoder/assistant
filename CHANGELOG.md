@@ -9,6 +9,39 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
+  Slack Later saves, pull requests that ask for your review, Outlook, Gmail,
+  and today's calendar into one list you clear. It moved in from a standalone
+  tool, with everything personal removed. See
+  [docs/work-queue.md](docs/work-queue.md).
+  - `work_queue/` holds the server, the refresh, the page, and one module per
+    source in `work_queue/inputs/`. Paths come from `$HOME` and `$WQ_DATA`, and
+    your sources come from `~/.assistant/work-queue/sources.json`, which holds
+    no secrets.
+  - Rules sort every row. The standalone tool's hand-written "start here" list,
+    change notes, drafted replies, and per-row advice are gone, and nothing
+    replaces them yet: there's no model step.
+  - Every open row has Done, Snooze, Drop, and Send to Assistant. Send to
+    Assistant keeps its instructions: finish without waiting for review, start
+    Slack replies with "Automated Message", never send email or merge, and
+    close the TODO with `work_queue/todo_result.py` or mark it `--blocked`.
+  - The Slack source reads Later saves through a Chromium profile that only
+    the Work queue uses (`work_queue/slack_browser.py`, run with
+    `uv --with playwright`) and the conversations through the focus board's
+    read-only client.
+- `bin/work-queue-setup.py` links, checks, and unlinks Slack, Gmail, Google
+  Calendar, Outlook (through Work IQ), and GitHub. Each command prints one line
+  per source: linked, not linked, needs sign-in, or tool missing, with the fix.
+- The `com.assistant.work-queue` LaunchAgent. `install.sh --apply --pro` loads
+  it and, from a terminal, offers to link each unlinked source; `--no-pro` and
+  default mode unload it. It listens on `127.0.0.1` only and stays stopped,
+  instead of restarting, when Pro mode is off, its settings can't be read, or
+  its port is taken. The installer restarts it when `work_queue/` changes.
+- A **Work queue** tab on the dashboard in Pro mode links to the page and says
+  when it last refreshed.
+- The change-coverage gate measures `work_queue/`.
+
 ### Removed
 - Stop running git from Assistant. The attention tab's preview server ran
   plain `git status --porcelain` in about a dozen checkouts every minute, and

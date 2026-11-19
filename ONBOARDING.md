@@ -166,6 +166,21 @@ launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist
 
 See [slack-reactor/README.md](slack-reactor/README.md).
 
+### PRO MODE — the Work queue
+
+`./install.sh --apply --pro` loads the Work queue server
+(`com.assistant.work-queue`) at `http://127.0.0.1:8851/`, and `--no-pro`
+unloads it. From a terminal, the installer asks whether to link each source you
+haven't linked yet. Link or check them yourself anytime:
+
+```bash
+./bin/work-queue-setup.py status
+./bin/work-queue-setup.py link gmail      # or slack, calendar, outlook, github
+./bin/work-queue-setup.py check
+```
+
+See [docs/work-queue.md](docs/work-queue.md).
+
 ### OPTIONAL — cross-machine memory
 
 The installer's memory step (interactive) offers: (1) owner sync from a private
@@ -183,4 +198,7 @@ unless you are the owner with that repo's SSH access.
 - **A daemon won't launch** → check the plist rendered correctly:
   `grep -o '__[A-Z]*__' ~/Library/LaunchAgents/com.assistant.*.plist` should
   return nothing (any surviving `__TOKEN__` means the installer didn't substitute).
+- **The Work queue page doesn't load** → read
+  `~/.assistant/logs/work-queue.launchd.err`. The server stays stopped when
+  Pro mode is off or when another process holds its port.
 - **Re-run the installer** anytime — it's idempotent and backs up anything it replaces.

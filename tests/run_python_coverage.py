@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Production Python this adapter measures; the change-coverage gate rejects
 # changed executable code anywhere else.
-PYTHON_SOURCE_DIRS = ("bin", "hooks", "install", "src")
+PYTHON_SOURCE_DIRS = ("bin", "hooks", "install", "src", "work_queue")
 
 
 def source_fingerprints(repo: Path) -> dict[str, str]:
