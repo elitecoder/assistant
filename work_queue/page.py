@@ -72,13 +72,14 @@ def ctx_html(rec: dict) -> str:
 
 
 def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None) -> str:
-    """One Open list row, with the model's verdict when there is one. Only `agent` rows offer Send to Assistant."""
+    """One Open list row, with the model's verdict when there is one. Send to Assistant shows unless the model said
+    the row is yours, someone else's, or nothing to do."""
     v = verdict or {}
-    pill = f'<span class="disp d-{e(v["disposition"])}">{e(DISP[v["disposition"]])}</span>' if v else ""
+    pill = f'<span class="disp d-{e(v["disposition"])}">Model suggests: {e(DISP[v["disposition"]])}</span>' if v else ""
     effort = f'<span class="sf-effort sf-{e(v["effort"].lower())}">{e(v["effort"])}</span>' if v else ""
     why = f'<span class="sf-why">{e(v["why"])}</span>' if v else ""
     send = ('<button class="btn sf-send" onclick="queueTodo(this)" title="Create an Assistant TODO that starts on its own">'
-            'Send to Assistant</button>') if v.get("disposition") == "agent" else ""
+            'Send to Assistant</button>') if v.get("disposition", "agent") == "agent" else ""
     draft = (f'<div class="draft"><textarea readonly rows="{min(6, 2 + len(v["draft"]) // 90)}" aria-label="Draft reply">'
              f'{e(v["draft"])}</textarea><button class="btn" onclick="copyDraft(this)">Copy draft</button></div>') if v.get("draft") else ""
     return (f'<div class="sf-row" data-key="{e(link)}" data-q-title="{e(title)}" data-q-detail="{e(meta)}">'
@@ -166,10 +167,13 @@ def render(snap: dict) -> tuple[str, dict]:
     lanes, sections, tabs = [], [], []
     tri = snap.get("triage")
     verdicts = (tri or {}).get("rows", {})
-    note = (f'<p class="triage-note">Triage unavailable: {e(tri["note"])}. Rows without a verdict are sorted by rules only.</p>'
+    note = (f'<p class="triage-note">Triage unavailable: {e(tri["note"])}. Rows without a model verdict still show, '
+            'grouped by the rules, and offer Send to Assistant.</p>'
             if tri and tri["note"] else "")
     if tri and tri["waiting"]:
         note += f'<p class="meta">{tri["waiting"]} rows wait for triage until the next refresh.</p>'
+    if tri and tri["skipped"]:
+        note += f'<p class="meta">The model didn\'t answer about {tri["skipped"]} rows. They\'re asked again tomorrow.</p>'
 
     slack_rows = snap.get("slack") or []
     open_slack = [open_row(r["title"], " · ".join(x for x in (r["who"], r["when"]) if x), r["link"], ctx_html(r["ctx"]),
@@ -193,13 +197,15 @@ def render(snap: dict) -> tuple[str, dict]:
     total = sum(body.count('class="sf-row"') for body in lanes)
     sections.append(f'<div id="open-list" class="tab-sec"><div class="cut"><div class="cut-top"><b>Open list</b>'
                     f'<span class="meta"><span id="open-total">{total}</span> open items. Mark each Done, Snooze it for 3 days, or Drop it. '
-                    'Send a row the model called Agent to Assistant to finish on its own.</span></div>'
+                    'Send to Assistant hands a row to an agent to finish on its own; it isn\'t offered where the model '
+                    'said the row is yours, someone else\'s, or nothing to do.</span></div>'
                     '<button class="chip" id="showhidden">Show snoozed and dropped</button></div>'
                     f'{note}{"".join(lanes) or "<p class=meta>No sources are linked yet.</p>"}</div>')
     tabs.append(("open-list", "Open list", total, "var(--c-cut)"))
     if tri and (tri["start"] or tri["changes"] or tri["note"]):
-        sections.insert(0, start_section(tri, note))
-        tabs.insert(0, ("start", "Start here", len(tri["start"]), "var(--c-start)"))
+        at = 0 if tri["start"] else len(sections)
+        sections.insert(at, start_section(tri, note))
+        tabs.insert(at, ("start", "Start here", len(tri["start"]), "var(--c-start)"))
 
     if snap.get("calendar"):
         cal_rows = "".join(f'<div class="pr-row"><a class="sf-title" href="{e(c["link"])}"{NEWTAB}>{e(c["when"])} · {e(c["title"])}</a>'
@@ -414,7 +420,8 @@ function paint(){const now=Date.now();let hidden=0;
   const hide=!!v&&!blocked&&(v.state==='dropped'||(v.state==='snoozed'&&v.until>now));
   r.classList.toggle('is-done',done);r.classList.toggle('is-hidden',hide);r.classList.toggle('is-blocked',blocked);if(hide)hidden++;
   r.querySelector('.sf-mark').textContent=marked?'Undo':'Done'});
- document.querySelectorAll('.start-list li').forEach(li=>{const v=MK[li.dataset.key];li.hidden=!!v&&(v.state!=='snoozed'||v.until>now)});
+ document.querySelectorAll('.start-list li').forEach(li=>{const v=MK[li.dataset.key],q=(ST.queued||{})[li.dataset.key];
+  li.hidden=!!v&&!(q&&q.status==='blocked')&&(v.state!=='snoozed'||v.until>now)});
  const open=document.querySelectorAll('.sf-lane .sf-row:not(.is-done):not(.is-hidden)').length;
  for(const [s,n] of [['#open-total',open],['#tabs .tab[data-t="open-list"] span',open],
   ['#tabs .tab[data-t="start"] span',document.querySelectorAll('.start-list li:not([hidden])').length]]){

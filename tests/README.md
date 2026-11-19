@@ -110,8 +110,10 @@ working copy or sends commands to live sessions.
 
 The `wq` fixture in `work_queue_fakes.py` replaces triage's model call with one
 that fails, and clears every variable that could route a call to a real model.
-A test that needs answers passes its own fake to `refresh.run(model=...)` or
-`triage.run`.
+A test that needs answers passes the fake `Model` from `work_queue_fakes.py` to
+`refresh.run(model=...)` or `triage.run`. A test of the real call puts
+`fake_claude` in the temporary `HOME`, which answers every kind of prompt and
+logs each call.
 
 The Work queue's Slack and page checks drive a real Chromium. They skip unless
 Playwright and its Chromium are installed, so run the suite with

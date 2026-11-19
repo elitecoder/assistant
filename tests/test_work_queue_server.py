@@ -19,7 +19,7 @@ import pytest
 
 from assistant import todostore
 from work_queue import config, refresh, server, todo_result
-from work_queue_fakes import calls, fake_tool, first_line, wq  # noqa: F401
+from work_queue_fakes import calls, fake_claude, fake_tool, first_line, gh_pr, wq  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[1]
 ROW = "https://x.slack.com/archives/C1/p1"
@@ -590,7 +590,28 @@ def test_the_refresh_button_rebuilds_the_page_in_the_background(http, wq, monkey
     assert state["finished"] and state["error"] == ""
     assert "No sources are linked yet." in http("/")[1]
     assert "Slack: off — not linked" in (wq.data / "refresh.log").read_text()
-    assert not (wq.home / ".assistant/cost-ledger.jsonl").exists(), "the background refresh made no model call"
+
+
+def test_the_background_refresh_triages_through_the_model_command_with_tools_off(http, wq, monkeypatch):
+    monkeypatch.setattr(server, "refresh_proc", None)
+    (wq.home / ".assistant").mkdir(exist_ok=True)
+    (wq.home / ".assistant/config.json").write_text('{"mode": "pro"}')
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(7)])])
+    wq.sources({"github": {}})
+    log = fake_claude(wq.home)
+    assert http("/api/refresh", {})[0] == 202
+    for _ in range(300):
+        state = json.loads(http("/api/state")[1])["refresh"]
+        if not state.get("running"):
+            break
+        time.sleep(0.1)
+    assert state["finished"] and state["error"] == ""
+    page = http("/")[1]
+    assert "Model suggests: Agent" in page and "A fake reason." in page
+    argv = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(argv) == 2 and all(a[a.index("--tools") + 1] == "" for a in argv)
+    rows = [json.loads(line) for line in (wq.home / ".assistant/cost-ledger.jsonl").read_text().splitlines()]
+    assert [r["caller"] for r in rows] == ["work_queue", "work_queue"]
 
 
 # ─── the Pro mode gate ───────────────────────────────────────────────────────

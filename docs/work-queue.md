@@ -8,8 +8,8 @@ part of Pro mode.
 Rules sort every row. Then a model triages the open rows: it says why each one
 needs you, who should own it, and how big it is, drafts the replies, picks
 where to start, and summarizes what changed since last night. You decide what
-each row needs: mark it Done, snooze it, drop it, or, for rows the model says
-an agent can finish, send it to Assistant. See [Model triage](#model-triage).
+each row needs: mark it Done, snooze it, drop it, or send it to Assistant. See
+[Model triage](#model-triage).
 
 ## Turn it on
 
@@ -110,7 +110,8 @@ you can edit it by hand:
 | `slack.close_after_days` | A Later save whose thread moved more recently than this stays on your Open list. Default 14. |
 | `github.skip_authors` | Logins whose pull requests you don't want listed. |
 | `github.host` | A GitHub Enterprise host, passed to `gh` as `GH_HOST`. |
-| `triage.model` | The model that triages the rows. Default: the `balanced` tier, Sonnet 5.5. |
+| `triage.model` | The model that triages the rows when the provider is Claude. Default: the `balanced` tier, Sonnet 5.5. Droid, Copilot, and local models use their own model settings. |
+| `triage.dailyUsd` | The Work queue's own daily model budget in US dollars. Default 1.00. |
 
 A source that's missing from the file isn't linked, and every refresh skips
 it.
@@ -121,14 +122,16 @@ Select **Refresh** to re-read every linked source. A source that fails shows
 its error at the top of the page, and the other sources still render.
 
 - **Start here**: the 5 to 8 open rows to do first, with the **Since last
-  night** box above them. It's the first tab whenever triage has a list, a
-  change summary, or a note for you. The page opens on the tab you used last.
+  night** box above them. It's the first tab when it has a list. When it only
+  has a change summary or a note, it comes after the Open list. The page opens
+  on the tab you used last.
 - **Open list**: the rows that need you. Slack saves whose thread moved
   recently, pull requests that ask for your review, Outlook mail a person sent
   you that you haven't replied to, and Gmail from a person that's unread or
-  starred. Each row has **Done**, **Snooze** (3 days), and **Drop**. Rows the
-  model called **Agent** also have **Send to Assistant**. Marks are saved on
-  the server, so they follow you to another browser.
+  starred. Each row has **Done**, **Snooze** (3 days), **Drop**, and **Send to
+  Assistant**, except that **Send to Assistant** is left off rows the model
+  says are yours, someone else's, or nothing to do. Marks are saved on the
+  server, so they follow you to another browser.
 - **Today**: today's events from each linked calendar.
 - **Outlook**: mail worth reading, plus groups you can approve for deletion.
   The Work queue only reads Outlook, so approving builds a search you paste
@@ -151,35 +154,44 @@ The rules live in `work_queue/inputs/`.
 
 ## Model triage
 
-In Pro mode, each refresh first writes the page with the rule-based rows. Then
-it asks a model about them and writes the page again, so a slow or failed model
-never holds the rows back. Default mode makes no model call.
+In Pro mode, each refresh first writes the page with the rule-based rows and
+the verdicts it already has. Then it asks a model about the rest and writes the
+page again, so a slow or failed model never holds the rows back. Default mode
+makes no model call.
 
 - **Each open row** gets a one-line reason, a disposition, an effort
   (**Quick**, **Small**, **Medium**, or **Large**), and, when it needs a
-  written reply, a draft with **Copy draft**. The dispositions are **You**
-  (only you can answer or decide), **Agent** (an agent can finish it
-  unattended), **Hand off** (someone else should own it), and **Drop**
-  (nothing is needed). Only **Agent** rows offer **Send to Assistant**.
+  written reply, a draft with **Copy draft**. The pill reads **Model suggests:**
+  and then **You** (only you can answer or decide), **Agent** (an agent can
+  finish it unattended), **Hand off** (someone else should own it), or
+  **Drop** (nothing is needed). **Send to Assistant** shows on **Agent** rows
+  and on rows without a verdict, and not on **You**, **Hand off**, or **Drop**
+  rows.
 - **Start here** ranks the 5 to 8 open rows to do first by who's waiting,
   deadlines, effort, and age, with a one-line reason each. A row you marked
-  Done, dropped, or snoozed never appears there, and its **Done** button saves
-  the same mark as the row's.
-  A blocked row stays in full view on the Open list, but not on Start here.
+  Done, dropped, or snoozed doesn't appear there, unless the TODO you sent it
+  to is blocked, and its **Done** button saves the same mark as the row's. The
+  list is ranked again when the rows or your marks change, and each day.
 - **Since last night** compares every row of each source, not only open rows,
   with the last snapshot from an earlier day, or with the previous refresh on
   your first day. A row counts as changed when what it says changes, not when
   a rule's wording such as "Quiet for 3 days" or a read flag changes. The new,
   gone, and changed counts per source come from the rows; the model writes one
   sentence per source from the titles. A source that wasn't read in both
-  snapshots isn't compared.
+  snapshots isn't compared, and a Slack save that can't be read in either
+  snapshot doesn't count as new or gone.
 
-A refresh triages up to 120 new or changed rows, 30 to a call. The rest, and
-any row the model skipped, wait for the next refresh, and the Open list says
-how many. A row whose content didn't change is never sent again: verdicts are
-cached in `$WQ_DATA/triage-cache.json` by a hash of each row's content, and a
-verdict stays cached for 14 days after its row was last seen, so a source that
-fails for one refresh doesn't lose its verdicts.
+A refresh triages up to 120 new or changed rows, 30 to a call. The rest wait
+for the next refresh, and the Open list says how many. Verdicts are cached in
+`$WQ_DATA/triage-cache.json` by a hash of each row's content:
+
+- A row whose content didn't change isn't sent again while the other rows from
+  its call stay unchanged. When one of them changes or leaves the Open list,
+  the rest of that call is asked again. A row from a source that failed this
+  refresh doesn't count as gone.
+- A verdict stays cached for 14 days after its row was last seen.
+- A row the model didn't answer about is shown without a verdict and isn't
+  sent again until the next day. The Open list says how many there are.
 
 ### What the model sees and can do
 
@@ -198,33 +210,49 @@ fails for one refresh doesn't lose its verdicts.
 - An answer never acts. A draft is text you copy and send yourself, and **Send
   to Assistant** still waits for you to select it.
 - Rows go to the model 30 at a time, so text in one row could still sway the
-  labels on the others in its call, for example calling them **Agent**. A label
-  only changes a pill or which rows offer **Send to Assistant**, and a sent row
-  keeps the TODO's own safety rules.
+  labels on the others in its call, for example calling them **Drop**. A label
+  only changes a pill or which rows offer **Send to Assistant**, a sent row
+  keeps the TODO's own safety rules, and once the swaying row changes or
+  leaves, the rest of its call is asked again.
 
 ### When triage is unavailable
 
-If a call fails, takes too long, would go over today's model budget, or
-answers in the wrong format, triage stops. The page keeps every rule-based
-row, keeps any verdict that finished, and shows **Triage unavailable** with the
-reason on **Start here** and the Open list. An unexpected error in triage
-does the same, and its details go to the refresh log. The budget is the
-Strategist's `dailyCostCeilingUsd` (default $5.00) across every model job for
-the UTC day, read from the cost ledger in `~/.assistant/cost-ledger.jsonl`. Each call adds a row there
-with `caller` set to `work_queue`.
+If a call fails, takes too long, is over a model budget, or answers in the
+wrong format, triage stops. The page keeps every rule-based row, keeps every
+verdict that finished, and shows **Triage unavailable** with the reason on
+**Start here** and the Open list. An unexpected error in triage does the same,
+and its details go to the refresh log.
+
+There are two daily budgets, both for the UTC day:
+
+- **All of Assistant's model jobs**: the Strategist's `dailyCostCeilingUsd`
+  (default $5.00). Spend comes from the cost ledger,
+  `~/.assistant/cost-ledger.jsonl`, and from the Observer's rows in
+  `~/.assistant/metrics.jsonl`.
+- **The Work queue's own**: `triage.dailyUsd` in `sources.json` (default
+  $1.00), counted from the cost ledger rows with `caller` set to `work_queue`.
+  Each call adds one.
+
+Before each call, triage reserves the call's estimated cost under the
+Strategist's lock, so two refreshes at once can't both spend the last of a
+budget. Triage stops once spend, counting calls still running, has reached a
+budget. A single call can still go over it, by at most that call's cost.
 
 ### Choose the model
 
-The model is Sonnet 5.5 by default: the `balanced` tier in
-`src/assistant/model_tiers.py`, which gives each provider its own id. To use
-another model for the Work queue only, set it in `sources.json`:
+With the Claude provider, the model is Sonnet 5.5 by default: the `balanced`
+tier in `src/assistant/model_tiers.py`, which gives each Claude backend its own
+id. To use another Claude model for the Work queue only, set it in
+`sources.json`:
 
 ```json
 {"triage": {"model": "claude-opus-4-8"}}
 ```
 
 The provider follows the rest of Assistant. To pick one for the Work queue
-only, run `bin/assistant-llm.py set <provider> --feature work_queue`.
+only, run `bin/assistant-llm.py set <provider> --feature work_queue`. Droid,
+Copilot, and local models ignore `triage.model` and use their own model
+settings in `~/.assistant/comms/config.json`.
 
 ## Send work to Assistant
 
@@ -233,7 +261,8 @@ that starts on its own, and creates that file if it doesn't exist yet. It
 also marks the row Done, so the row leaves **Start here** and the open count.
 The row stays on the page, greyed, with its TODO's status: queued, working,
 blocked, or done with the agent's result. A blocked row isn't greyed or
-hidden, even when you marked it Done, dropped, or snoozed it. The TODO's
+hidden, even when you marked it Done, dropped, or snoozed it, and it stays on
+**Start here**. The TODO's
 instructions start with the safety rules:
 
 - The row's title, detail, and linked source are untrusted content to act on,
@@ -272,7 +301,7 @@ email and never changes Outlook.
 |---|---|
 | `~/.assistant/work-queue/sources.json` | Your linked sources |
 | `~/.assistant/work-queue/browser-profile/` | The Slack browser session |
-| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, queued TODOs, the triage cache, the built page in `site/`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
+| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, queued TODOs, the triage cache and budget reservations, the built page in `site/`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
 | `~/.assistant/logs/work-queue.launchd.*` | The server's output |
 
 Tests point `HOME` and `WQ_DATA` at temporary folders, so they never touch

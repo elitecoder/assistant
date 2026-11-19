@@ -1,9 +1,12 @@
-"""Fake command-line tools for the Work queue tests: gh, gog, npx, and uv.
+"""Fake command-line tools for the Work queue tests: gh, gog, npx, uv, and claude, plus a fake triage model.
 
-Each fake logs its arguments to <bin>/<name>.log and answers with the first
+Each fake tool logs its arguments to <bin>/<name>.log and answers with the first
 response whose key appears in its joined arguments. A response is JSON to
 print, a string to print as is, {"exit": n, "stdout": "...", "stderr": "..."},
 or {"seq": [...]} to answer each call with the next response.
+
+`Model` stands in for triage.call_model in-process; `fake_claude` puts a fake
+`claude` CLI where the real call looks for it, in the temporary HOME.
 """
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ import functools
 import json
 import os
 import pwd
+import re
 import socket
 import subprocess
 import sys
@@ -20,6 +24,82 @@ from pathlib import Path
 import pytest
 
 from work_queue import triage
+
+FENCE = re.compile(r"\nBEGIN UNTRUSTED ROWS ([0-9a-f]{16})\n(.*)\nEND UNTRUSTED ROWS \1\n\Z", re.S)
+VERDICT = {"why": "Ana is waiting on your review.", "disposition": "you", "effort": "Small", "draft": ""}
+
+
+def gh_pr(n: int, title: str = "") -> dict:
+    """One pull request as `gh search prs --json` prints it."""
+    return {"number": n, "title": title or f"Change {n}", "url": f"https://github.com/o/r/pull/{n}",
+            "repository": {"nameWithOwner": "o/r"}, "author": {"login": "ana"}, "createdAt": "2026-11-02T10:00:00Z",
+            "isDraft": False}
+
+
+def payload(prompt: str) -> list[dict]:
+    return json.loads(FENCE.search(prompt).group(2))
+
+
+def kind(prompt: str) -> str:
+    return next(k for k, rubric in (("rows", triage.ROWS_RUBRIC), ("start", triage.START_RUBRIC),
+                                    ("changes", triage.CHANGES_RUBRIC)) if prompt.startswith(rubric))
+
+
+class Model:
+    """A fake model: answers each kind of prompt from a function of its rows, and keeps every prompt."""
+
+    def __init__(self, rows=None, start=None, changes=None):
+        self.prompts: list[str] = []
+        self.answer = {
+            "rows": rows or (lambda items: {"rows": [{"id": i["id"], **VERDICT} for i in items]}),
+            "start": start or (lambda items: {"start": [{"id": i["id"], "reason": f"Start with {i['title']}"} for i in items[:6]]}),
+            "changes": changes or (lambda items: {"summary": [{"source": i["source"], "text": f"{i['source']} moved."} for i in items]}),
+        }
+
+    def __call__(self, prompt: str, timeout: int) -> str:
+        self.prompts.append(prompt)
+        found = self.answer[kind(prompt)](payload(prompt))
+        return found if isinstance(found, str) else "Here you go:\n" + json.dumps(found)
+
+    def of(self, name: str) -> list[list[dict]]:
+        return [payload(p) for p in self.prompts if kind(p) == name]
+
+
+def raises(message: str):
+    """A Model answer that fails the way the real call does."""
+    def call(items):
+        raise triage.Unavailable(message)
+    return call
+
+
+CLAUDE = '''#!{python}
+import json, os, sys
+from pathlib import Path
+prompt = sys.stdin.read()
+home = Path(os.environ["HOME"])
+with open(home / "claude.log", "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+data = json.loads(prompt.split("\\n")[-3])
+if "\\nBEGIN UNTRUSTED ROWS " not in prompt:
+    answer = {{}}
+elif prompt.startswith("You triage"):
+    answer = {{"rows": [{{"id": r["id"], "why": "A fake verdict.", "disposition": "agent", "effort": "Quick"}} for r in data]}}
+elif prompt.startswith("You pick"):
+    answer = {{"start": [{{"id": r["id"], "reason": "A fake reason."}} for r in data]}}
+else:
+    answer = {{"summary": [{{"source": r["source"], "text": "A fake summary."}} for r in data]}}
+print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(answer),
+                  "usage": {{"input_tokens": 100, "output_tokens": 20}}, "total_cost_usd": 0.001}}))
+'''
+
+
+def fake_claude(home: Path) -> Path:
+    """A fake `claude` at ~/.local/bin/claude that logs each call to ~/claude.log and answers every prompt kind."""
+    exe = home / ".local/bin/claude"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text(CLAUDE.format(python=sys.executable))
+    exe.chmod(0o755)
+    return home / "claude.log"
 
 MODEL_ENV = ("ASSISTANT_LLM_CONFIG", "CLAUDE_BIN", "COPILOT_BIN", "DROID_BIN", "WORK_QUEUE_LLM_PROVIDER",
              "WORK_QUEUE_DROID_MODEL", "WORK_QUEUE_LOCAL_MODEL", "WORK_QUEUE_COPILOT_MODEL", "COPILOT_MODEL",

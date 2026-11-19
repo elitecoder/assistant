@@ -25,8 +25,9 @@ pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Error, sync_playwright  # noqa: E402
 
 from work_queue import config, page, refresh, server, todo_result  # noqa: E402
-from work_queue_fakes import chromium_missing, fake_tool, first_line, require_chromium, spare_port, wq  # noqa: E402, F401
-from test_work_queue_triage import VERDICT, Model, gh_pr, raises  # noqa: E402
+from work_queue_fakes import (VERDICT, Model, chromium_missing, fake_tool, first_line, gh_pr, raises,  # noqa: E402, F401
+                              require_chromium, spare_port, wq)
+
 
 REPO = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.real_mode
@@ -46,7 +47,7 @@ def snapshot() -> dict:
                      "addr": "notifications@github.com", "link": "https://outlook.office.com/m1"}]
     return {"built": "Nov 18, 9:00 AM", "github": PRS, "gmail": {"me@example.com": gmail_rows}, "outlook": outlook_rows,
             "status": [{"name": "GitHub", "state": "ok", "detail": "read 3 items"}],
-            "triage": {"rows": {PRS[2]["link"]: AGENT}, "start": [], "changes": None, "waiting": 0, "note": ""}}
+            "triage": {"rows": {PRS[2]["link"]: AGENT}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": ""}}
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -252,7 +253,7 @@ def rich_snapshot() -> dict:
     gmail += [gmail_row("g-shop", "shop"), gmail_row("u-a", "note", "a@promo.example", "https://promo.example/a"),
               gmail_row("u-b", "note", "b@promo.example", "https://promo.example/b")]
     return {"built": "Nov 18, 9:00 AM", "github": [pr(n) for n in range(1, 18)], "slack": slack, "outlook": outlook,
-            "triage": {"rows": {pr(n)["link"]: AGENT for n in range(1, 11)}, "start": [], "changes": None, "waiting": 0, "note": ""},
+            "triage": {"rows": {pr(n)["link"]: AGENT for n in range(1, 11)}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": ""},
             "gmail": {"me@example.com": gmail}, "calendar": [{"when": "9:00 AM", "title": "Standup", "account": "me@example.com",
                                                              "declined": False, "link": "https://calendar.google.com/e1"}],
             "status": [{"name": "GitHub", "state": "ok", "detail": "read 17 items"},
@@ -622,7 +623,7 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         row1, row2 = f'.sf-row[data-key="{pr(1)["key"]}"]', f'.sf-row[data-key="{pr(2)["key"]}"]'
         tab.wait_for_selector(f"{row1}.is-done")
         assert tab.locator(f"{row1} .sf-send").count() == 0 and tab.locator(f"{row2} .sf-send").count() == 1
-        assert text(tab, f"{row1} .disp") == "You" and text(tab, f"{row2} .disp") == "Agent"
+        assert text(tab, f"{row1} .disp") == "Model suggests: You" and text(tab, f"{row2} .disp") == "Model suggests: Agent"
         tab.locator(f"{row1} .draft button").click()
         wait_text(tab, f"{row1} .draft button", "Copied")
         assert tab.evaluate("navigator.clipboard.readText()") == "Looking at it today."
@@ -643,7 +644,9 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         cov = Coverage(fresh)
         fresh.goto(site + "#start")
         fresh.wait_for_selector(li(3), state="visible")
-        assert fresh.locator(li(1)).is_hidden() and fresh.locator(li(2)).is_hidden()
+        fresh.wait_for_selector(li(1), state="hidden")
+        fresh.wait_for_selector(li(2), state="hidden")
+        assert fresh.locator(li(1)).get_attribute("hidden") is not None and fresh.locator(li(2)).get_attribute("hidden") is not None
         for width in (390, 1280):
             fresh.set_viewport_size({"width": width, "height": 900})
             no_sideways_scroll(fresh)
@@ -658,19 +661,24 @@ def test_the_failure_note_shows_when_the_model_fails(site, wq):
         tab = browser.new_page(viewport={"width": 390, "height": 800})
         cov = Coverage(tab)
         tab.goto(site)
-        tab.wait_for_selector("#start .triage-note", state="visible")
-        assert text(tab, "#start .triage-note") == ("Triage unavailable: the model didn't answer within 240 seconds. "
-                                                    "Rows without a verdict are sorted by rules only.")
-        tab.locator('#tabs .tab[data-t="open-list"]').click()
         tab.wait_for_selector("#open-list .triage-note", state="visible")
-        assert tab.locator(".sf-row").count() == 3 and tab.locator(".sf-send").count() == 0
+        assert tab.locator("#start").is_hidden(), "an empty Start here list doesn't open first"
+        assert text(tab, "#open-list .triage-note") == ("Triage unavailable: the model didn't answer within 240 seconds. "
+                                                        "Rows without a model verdict still show, grouped by the rules, "
+                                                        "and offer Send to Assistant.")
+        tab.locator('#tabs .tab[data-t="start"]').click()
+        tab.wait_for_selector("#start .triage-note", state="visible")
+        assert tab.locator(".sf-row").count() == 3 and tab.locator(".sf-send").count() == 3
+        assert tab.locator(".sf-row .disp").count() == 0
         no_sideways_scroll(tab)
         cov.snap()
         browser.close()
 
 
 def test_a_sent_row_stays_greyed_with_its_status_and_a_blocked_one_stays_prominent(site, wq):
-    write_page({"built": "now", "github": [pr(n) for n in range(1, 7)], "status": []})
+    yours = {"rows": {pr(n)["key"]: VERDICT for n in range(1, 7)}, "start": [], "changes": None, "waiting": 0,
+             "skipped": 0, "note": ""}
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 7)], "status": [], "triage": yours})
     config.write_json(wq.data / "marks.json", {pr(n)["key"]: {"state": state, "until": 0} for n, state in
                                                 ((1, "done"), (2, "done"), (3, "dropped"), (4, "done"), (5, "done"))})
     config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": td, "at": "t"} for n, td in
@@ -694,6 +702,29 @@ def test_a_sent_row_stays_greyed_with_its_status_and_a_blocked_one_stays_promine
         assert q_status(tab, 5) == "Done. Opened PR 9" and tab.locator(row[5]).is_visible()
         assert text(tab, ".sf-lane h3 .count") == "3"
         assert text(tab, f"{row[2]} .sf-mark") == "Undo"
+        cov.snap()
+        browser.close()
+
+
+def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(site, wq):
+    start = [{"key": pr(n)["key"], "title": f"o/r#{n}: Change {n}", "source": "GitHub", "effort": "", "reason": "Go"}
+             for n in range(1, 6)]
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 6)], "status": [],
+                "triage": {"rows": {}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": ""}})
+    config.write_json(wq.data / "marks.json", {
+        pr(1)["key"]: {"state": "snoozed", "until": NOW_MS + DAY_MS}, pr(2)["key"]: {"state": "snoozed", "until": NOW_MS - 1000},
+        pr(3)["key"]: {"state": "done", "until": 0}, pr(4)["key"]: {"state": "done", "until": 0}})
+    config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": f"td-10{n}", "at": "t"} for n in (3, 4)})
+    wq.todo.write_text(json.dumps({"items": [{"id": "td-103", "status": "blocked"}, {"id": "td-104", "status": "open"}]}))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        tab.wait_for_selector(li(4), state="hidden")
+        tab.wait_for_selector(li(1), state="hidden")
+        assert [tab.locator(li(n)).is_visible() for n in (2, 3, 5)] == [True, True, True]
+        assert text(tab, '#tabs .tab[data-t="start"] span') == "3"
         cov.snap()
         browser.close()
 
