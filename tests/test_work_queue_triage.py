@@ -163,7 +163,7 @@ def test_answers_outside_the_schema_are_ignored(wq):
     assert "merge" not in json.dumps(tri) and tri["note"] == ""
 
 
-@pytest.mark.parametrize("answer", ["not json", "{broken", '{"rows": "nope"}', '{"rows": [{"id": 9}]}', "[]"])
+@pytest.mark.parametrize("answer", ["not json", "{broken", "{not json}", '{"rows": "nope"}', '{"rows": [{"id": 9}]}', "[]"])
 def test_an_answer_in_the_wrong_shape_leaves_the_rule_based_rows(wq, answer):
     tri, html = triaged(snap(pr(1)), Model(rows=lambda items: answer))
     assert tri["rows"] == {} and tri["start"] == []
@@ -424,6 +424,17 @@ def test_since_last_night_counts_in_code_and_lets_the_model_summarize(wq):
     assert config.read_json(wq.data / "work/rows-baseline.json", {})["day"] == "2000-01-01"
 
 
+def test_the_same_changes_are_summarized_once(wq):
+    model = Model()
+    triaged(snap(pr(1)), model)
+    current = wq.data / "work/rows.json"
+    config.write_json(current, {**config.read_json(current, {}), "day": "2000-01-01"})
+    triaged(snap(pr(1), pr(2)), model)
+    tri, html = triaged(snap(pr(1), pr(2)), model)
+    assert len(model.of("changes")) == 1
+    assert "<li><b>GitHub</b>: 1 new. GitHub moved.</li>" in html
+
+
 def test_nothing_changed_says_so_without_asking_the_model(wq):
     model = Model()
     triaged(snap(pr(1)), model)
@@ -546,13 +557,14 @@ def test_a_tampered_or_stale_cache_entry_is_triaged_again(wq):
     config.write_json(triage.cache_path(), {"version": version(), "rows": {
         hashes[0]: {"verdict": {**VERDICT, "disposition": "<script>alert(1)</script>"}, "seen": triage.today()},
         hashes[1]: {"verdict": VERDICT, "seen": "2000-01-01"},
-        hashes[2]: {"verdict": VERDICT, "seen": triage.today()}, "junk": "not an entry"},
+        hashes[2]: {"verdict": VERDICT, "seen": triage.today()}, "junk": "not an entry",
+        "text-verdict": {"verdict": "agent", "seen": triage.today()}},
         "start": "not a dict", "changes": ["nor this"]})
     model = Model()
     tri, html = triaged(snap(*rows), model)
     assert [i["title"] for b in model.of("rows") for i in b] == ["o/r#1: Change 1", "o/r#2: Change 2"]
     assert "<script>alert(1)" not in html and len(tri["rows"]) == 3
-    assert "junk" not in config.read_json(triage.cache_path(), {})["rows"]
+    assert {"junk", "text-verdict"}.isdisjoint(config.read_json(triage.cache_path(), {})["rows"])
 
 
 def test_a_source_that_fails_once_keeps_its_cached_verdicts(wq):
