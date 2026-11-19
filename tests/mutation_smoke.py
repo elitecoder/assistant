@@ -973,8 +973,8 @@ CHECKS = (
     (
         'default mode makes no model call',
         'work_queue/refresh.py',
-        '    if mode.is_pro():\n        snap["triage"]',
-        '    if True:\n        snap["triage"]',
+        '    if mode.is_pro():\n        try:\n',
+        '    if True:\n        try:\n',
         'tests/test_work_queue_triage.py::test_default_mode_makes_no_model_call',
     ),
     (
