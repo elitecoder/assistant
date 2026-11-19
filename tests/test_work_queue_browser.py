@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import socket
 import subprocess
 import sys
@@ -21,7 +20,7 @@ pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 from work_queue import config, page, refresh  # noqa: E402
-from work_queue_fakes import fake_tool, wq  # noqa: E402, F401
+from work_queue_fakes import fake_tool, real_browsers, wq  # noqa: E402, F401
 
 REPO = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.real_mode
@@ -48,9 +47,7 @@ def spare_port() -> int:
 
 @pytest.fixture
 def served(wq, monkeypatch):
-    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-                       or str(real_home / "Library/Caches/ms-playwright"))
+    real_browsers(monkeypatch)
     (wq.home / ".assistant").mkdir()
     (wq.home / ".assistant/config.json").write_text('{"mode": "pro"}')
     doc, cands = page.render(snapshot())

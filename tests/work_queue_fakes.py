@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import sys
 from pathlib import Path
 
@@ -59,6 +60,13 @@ def use_fakes(monkeypatch, bin_dir: Path) -> None:
     """Put only the fakes and the system basics on PATH, so a real tool can't run."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"]))
+
+
+def real_browsers(monkeypatch) -> None:
+    """Find Playwright's browsers in the real home, even when a test or the mutation check moves HOME."""
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+                       or str(real_home / "Library/Caches/ms-playwright"))
 
 
 class Env:

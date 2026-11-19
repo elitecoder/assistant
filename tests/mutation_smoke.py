@@ -617,7 +617,7 @@ CHECKS = (
         "work_queue/server.py",
         'ThreadingHTTPServer(("127.0.0.1", port), Handler)',
         'ThreadingHTTPServer(("0.0.0.0", port), Handler)',
-        'tests/test_work_queue_server.py::test_a_taken_port_or_unreadable_settings_exit_cleanly_instead_of_restarting',
+        'tests/test_work_queue_server.py::test_the_server_binds_localhost_only_and_raises_other_socket_errors',
     ),
     (
         'the Work queue refuses cross-origin posts',

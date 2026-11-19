@@ -350,6 +350,8 @@ def test_a_taken_port_or_unreadable_settings_exit_cleanly_instead_of_restarting(
     assert server.main() == 0
     assert "can't read its settings" in capsys.readouterr().err
 
+
+def test_the_server_binds_localhost_only_and_raises_other_socket_errors(wq, monkeypatch):
     bound = []
 
     def denied(address, handler):
@@ -357,7 +359,6 @@ def test_a_taken_port_or_unreadable_settings_exit_cleanly_instead_of_restarting(
         raise OSError(errno.EACCES, "denied")
 
     monkeypatch.setattr(server, "ThreadingHTTPServer", denied)
-    monkeypatch.delenv("REVIEW_PORT")
     wq.sources({"port": 9555})
     with pytest.raises(OSError):
         server.main()
