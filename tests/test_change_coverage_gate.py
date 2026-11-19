@@ -453,6 +453,52 @@ def test_shell_mutants_must_still_parse(tmp_path):
     mutation_smoke.reject_invalid_shell("python", tmp_path / "notes.py")
 
 
+def tiny_copy(answer_body: str):
+    def copy(repo):
+        (repo / "src").mkdir()
+        (repo / "src/answer.py").write_text(f"def answer():\n{answer_body}    return 1\n")
+        (repo / "tests").mkdir()
+        (repo / "tests/test_answer.py").write_text(
+            "from answer import answer\n\n\ndef test_answer():\n    assert answer() == 1\n")
+    return copy
+
+
+@pytest.fixture
+def tiny_sources(monkeypatch):
+    """mutation_smoke copies a one-function module and its test instead of the repo, and waits 5 seconds per test."""
+    monkeypatch.setattr(mutation_smoke, "copy_sources", tiny_copy(""))
+    monkeypatch.setattr(mutation_smoke, "TEST_TIMEOUT_SEC", 5)
+
+
+def mutate(broken: str) -> dict:
+    return mutation_smoke.run_check("answer", "src/answer.py", "    return 1\n", broken,
+                                    "tests/test_answer.py::test_answer")
+
+
+def test_a_mutant_that_fails_its_test_is_rejected(tiny_sources):
+    result = mutate("    return 2\n")
+    assert result["mutant"] == "rejected"
+    assert result["failure"] == ["FAILED tests/test_answer.py::test_answer - assert 2 == 1"]
+
+
+def test_a_mutant_that_hangs_its_test_is_rejected_as_timed_out(tiny_sources):
+    result = mutate("    __import__('time').sleep(60)\n    return 1\n")
+    assert result["mutant"] == "rejected (timed out)"
+    assert result["failure"] == ["TIMEOUT tests/test_answer.py::test_answer ran past 5 seconds"]
+
+
+def test_a_mutant_its_test_still_passes_survives_and_stops_the_run(tiny_sources):
+    with pytest.raises(RuntimeError, match=r"^answer: mutant was not rejected by tests/test_answer.py::test_answer"):
+        mutate("    return 0 + 1\n")
+
+
+def test_a_baseline_that_runs_too_long_stops_the_run_naming_the_check(tiny_sources, monkeypatch):
+    monkeypatch.setattr(mutation_smoke, "copy_sources", tiny_copy("    __import__('time').sleep(60)\n"))
+    with pytest.raises(RuntimeError, match=r"^answer: baseline tests/test_answer.py::test_answer didn't finish "
+                                           r"within 5 seconds$"):
+        mutate("    return 2\n")
+
+
 def work_queue_fixture(repo):
     (repo / "work_queue").mkdir()
     (repo / "work_queue/page.py").write_text('CSS = "x"\nJS = r"""\nfunction paint() { return 1; }\n"""\n')
