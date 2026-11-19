@@ -515,6 +515,20 @@ CHECKS = (
         'tests/test_pro_mode.py::test_installer_modes_and_skills',
     ),
     (
+        'a pull that changes the Work queue runs the installer',
+        "bin/self_update.py",
+        '"src/assistant/", "work_queue/")',
+        '"src/assistant/")',
+        'tests/test_self_update.py::ClassifyTests::test_long_running_service_code_needs_install',
+    ),
+    (
+        'a pulled Work queue file must parse',
+        "bin/self_update.py",
+        '"install.sh", "install-bootstrap.sh", "work_queue/")',
+        '"install.sh", "install-bootstrap.sh")',
+        'tests/test_self_update.py::SyntaxGateTests::test_broken_runtime_python_outside_bin_is_refused',
+    ),
+    (
         'a dry run plans a service whose plist is new',
         "install.sh",
         '        note "would load $label (bootstrap $plist once it\'s copied)"\n        return 0\n',
