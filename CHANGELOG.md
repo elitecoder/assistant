@@ -43,6 +43,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   merging local main into GitHub's would change anything; if not, it moves
   main to GitHub's commit with `git reset --keep`. Real unsent work still
   blocks the update.
+- Restart the always-on services after a pull that changes `bin/`. The comms
+  listener, workspace watcher, Slack reactor, session-context watcher, and
+  workspace numberer loaded their code once at start, so a merge left them on
+  the old code until a crash or a reinstall. The self-update now runs
+  `install.sh --apply` for any `bin/` or `slack-reactor/src/` change, and the installer restarts each
+  of those services that's running when its code changed. Services you've
+  stopped stay stopped.
 
 ### Added
 - Pick the shell alias Claude sessions start with:
