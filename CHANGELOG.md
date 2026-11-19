@@ -9,6 +9,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Changed
+- Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
+
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
   Slack Later saves, pull requests that ask for your review, Outlook, Gmail,
