@@ -22,6 +22,16 @@ import agent_session  # noqa: E402
 # that needs a fake cmux still overrides it with monkeypatch.setenv.
 os.environ["CMUX_BIN"] = str(_ROOT / "tests" / "no-real-cmux-in-tests")
 
+# Drop the pulse knobs an operator sets for the whole login session (for
+# example with `launchctl setenv`), so tests see the shipped defaults. With
+# ASSISTANT_OBSERVER_HOLD_ACTIONS=1 every Pro-mode verdict became a skip, and
+# OBSERVER_MODEL pointed the Observer at the triage model. Cleared before any
+# test module imports, so import-time constants read the defaults too; a test
+# that needs a knob still sets it with monkeypatch.setenv.
+for _knob in ("ASSISTANT_OBSERVER_HOLD_ACTIONS", "OBSERVER_MODEL", "OBSERVER_AUDIT",
+              "OBSERVER_EVERY_MIN"):
+    os.environ.pop(_knob, None)
+
 
 # Files in the real user's home that tests must never write: Copilot's hook
 # folder and the rules folder Assistant links for Copilot. On 2026-11-12 a test
