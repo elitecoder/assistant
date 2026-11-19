@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+# The Playwright release the quality workflow tests with (.github/workflows/quality.yml).
+PLAYWRIGHT = "playwright==1.63.0"
 PROFILE = '[ -f "$HOME/.zprofile" ] && . "$HOME/.zprofile" >/dev/null 2>&1; exec "$0" "$@"'
 
 
@@ -45,4 +47,4 @@ def with_profile(cmd: list[str]) -> list[str]:
 
 
 def playwright_cmd(script: str, *args: str) -> list[str]:
-    return ["uv", "run", "--no-project", "--quiet", "--with", "playwright", "python", str(REPO / "work_queue" / script), *args]
+    return ["uv", "run", "--no-project", "--quiet", "--with", PLAYWRIGHT, "python", str(REPO / "work_queue" / script), *args]

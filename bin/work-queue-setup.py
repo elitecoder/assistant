@@ -3,7 +3,7 @@
 
     work-queue-setup.py status                 one line per source, without signing in to anything
     work-queue-setup.py link <source> [--account EMAIL ...] [--host HOST]
-    work-queue-setup.py unlink <source>
+    work-queue-setup.py unlink <source>        unlinking slack also deletes its browser profile and cookies
     work-queue-setup.py check                  run a read-only probe for each linked source
     work-queue-setup.py unlinked               print the sources you haven't linked, one per line
     work-queue-setup.py refresh                re-read the linked sources and rebuild the page
@@ -31,7 +31,7 @@ from work_queue.inputs import outlook, slack  # noqa: E402
 LABELS = {"slack": "Slack", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook", "github": "GitHub"}
 TOOLS = {"slack": "uv", "gmail": "gog", "calendar": "gog", "outlook": "npx", "github": "gh"}
 INSTALL = {
-    "uv": "Install uv (https://docs.astral.sh/uv/), then run: uv run --no-project --with playwright python -m playwright install chromium",
+    "uv": f"Install uv (https://docs.astral.sh/uv/), then run: uv run --no-project --with {tools.PLAYWRIGHT} python -m playwright install chromium",
     "gog": "Install the gog CLI, then run: gog auth add you@example.com",
     "npx": "Install Node.js, which includes npx",
     "gh": "Install the GitHub CLI (https://cli.github.com/)",
@@ -187,6 +187,9 @@ def main(argv: list[str]) -> int:
         found = doc.pop(args.source, None)
         config.save(doc)
         print(f"{LABELS[args.source]}: {'unlinked' if found is not None else 'not linked'}")
+        if args.source == "slack" and config.browser_profile().exists():
+            shutil.rmtree(config.browser_profile())
+            print("Slack: removed the Work queue's browser profile and its Slack cookies")
         return 0
     if args.action == "unlinked":
         print("\n".join(n for n in config.SOURCES if n not in doc))

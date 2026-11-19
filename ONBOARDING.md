@@ -170,7 +170,8 @@ See [slack-reactor/README.md](slack-reactor/README.md).
 
 `./install.sh --apply --pro` loads the Work queue server
 (`com.assistant.work-queue`) at `http://127.0.0.1:8851/`, and `--no-pro`
-unloads it. From a terminal, the installer asks whether to link each source you
+unloads it. The dashboard's Pro mode switch loads and unloads it the same way,
+and the server exits on its own within seconds once Pro mode is off. From a terminal, the installer asks whether to link each source you
 haven't linked yet. Link or check them yourself anytime:
 
 ```bash
@@ -200,5 +201,6 @@ unless you are the owner with that repo's SSH access.
   return nothing (any surviving `__TOKEN__` means the installer didn't substitute).
 - **The Work queue page doesn't load** → read
   `~/.assistant/logs/work-queue.launchd.err`. The server stays stopped when
-  Pro mode is off or when another process holds its port.
+  Pro mode is off or when another process holds its port. After you free the
+  port, run `launchctl kickstart -k gui/$UID/com.assistant.work-queue`.
 - **Re-run the installer** anytime — it's idempotent and backs up anything it replaces.

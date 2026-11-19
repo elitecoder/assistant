@@ -7,7 +7,7 @@ the page calls. The token stays in memory: nothing here prints or stores it.
 
 Run it with Playwright, outside the repo's project environment:
 
-    uv run --no-project --with playwright python work_queue/slack_browser.py signin|list|apply ...
+    uv run --no-project --with playwright==1.63.0 python work_queue/slack_browser.py signin|list|apply ...
 
     signin  open a window and wait up to --wait seconds for you to sign in
     list    print {"ok": true, "items": [...]} with your open Later saves

@@ -73,7 +73,8 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
   They pause while Pro mode is off.
 - The [Work queue](docs/work-queue.md), a local page that merges your Slack
   Later saves, pull requests waiting on your review, Outlook, Gmail, and
-  today's calendar into one list you clear.
+  today's calendar into one list you clear. Turning Pro mode off stops its
+  server within seconds.
 - Ranked goals with the `/goal` skill, and a planner that suggests next steps.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.

@@ -21,7 +21,7 @@ from work_queue import config, page, tools
 from work_queue.inputs import gcal, github, gmail, outlook, slack
 
 LABELS = {"slack": "Slack", "github": "GitHub", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook"}
-FAILURES = (tools.SourceError, SlackError, OSError, ValueError, KeyError)
+FAILURES = (tools.SourceError, SlackError, OSError, ValueError)
 
 
 def site_path():
@@ -61,7 +61,7 @@ def read_sources(doc: dict, transport, now: float) -> dict:
             continue
         found = snap[name]
         count = sum(map(len, found.values())) if isinstance(found, dict) else len(found)
-        snap["status"].append({"name": LABELS[name], "state": "ok", "detail": f"read {count} items"})
+        snap["status"].append({"name": LABELS[name], "state": "ok", "detail": f"read {count} item{'' if count == 1 else 's'}"})
     return snap
 
 

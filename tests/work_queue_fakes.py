@@ -7,10 +7,14 @@ or {"seq": [...]} to answer each call with the next response.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import pwd
+import socket
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -69,13 +73,54 @@ def real_browsers(monkeypatch) -> None:
                        or str(real_home / "Library/Caches/ms-playwright"))
 
 
+@functools.cache
+def chromium_missing(browsers_path: str) -> str:
+    """Why Playwright can't start Chromium from browsers_path because it isn't installed; "" when it starts."""
+    from playwright.sync_api import Error, sync_playwright
+
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
+    try:
+        with sync_playwright() as pw:
+            pw.chromium.launch().close()
+    except Error as exc:
+        if "Executable doesn't exist" in str(exc):
+            return str(exc).strip().splitlines()[0]
+        raise
+    return ""
+
+
+def require_chromium(monkeypatch) -> None:
+    """Skip the test, instead of failing it, when Playwright's Chromium isn't installed."""
+    real_browsers(monkeypatch)
+    if missing := chromium_missing(os.environ["PLAYWRIGHT_BROWSERS_PATH"]):
+        pytest.skip(f"Playwright's Chromium isn't installed. Run python -m playwright install chromium ({missing})")
+
+
+def spare_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def first_line(proc: subprocess.Popen, seconds: float = 30) -> str:
+    """The process's first line of output; kills it and fails the test when none comes in time."""
+    got: list[str] = []
+    reader = threading.Thread(target=lambda: got.append(proc.stdout.readline()), daemon=True)
+    reader.start()
+    reader.join(seconds)
+    if not got:
+        proc.kill()
+        pytest.fail(f"{proc.args} printed nothing within {seconds} seconds")
+    return got[0]
+
+
 class Env:
     def __init__(self, root: Path):
         self.root = root
         self.home = root / "home"
         self.data = root / "data"
         self.bin = root / "fakebin"
-        self.todo = root / "todo.json"
+        self.todo = self.home / ".claude/assistant-todo.json"
 
     def sources(self, doc: dict) -> None:
         path = self.home / ".assistant/work-queue/sources.json"
@@ -91,13 +136,12 @@ class Env:
 
 @pytest.fixture
 def wq(tmp_path, monkeypatch) -> Env:
-    """A Work queue with its own HOME, data folder, TODO store, and fake tools."""
+    """A Work queue with its own HOME (and so its own TODO store), data folder, and fake tools."""
     env = Env(tmp_path)
-    env.home.mkdir()
+    env.todo.parent.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(env.home))
     monkeypatch.setenv("WQ_DATA", str(env.data))
-    monkeypatch.setenv("TODO_PATH", str(env.todo))
-    for name in ("QUEUED_PATH", "MARKS_PATH", "REVIEW_PORT", "SLACK_USER_TOKEN", "GH_HOST"):
+    for name in ("SLACK_USER_TOKEN", "GH_HOST"):
         monkeypatch.delenv(name, raising=False)
     env.todo.write_text(json.dumps({"items": [{"id": "td-041", "status": "open"}], "completed": [{"id": "td-050"}],
                                     "removed": []}))

@@ -70,6 +70,7 @@ install.sh — install/update the Assistant system from $REPO_ROOT
                     Saved as {"mode": "pro"} in ~/.assistant/config.json. The
                     dashboard's settings area has the same switch.
   --no-pro          Switch to default mode and unlink the Pro skills.
+                    Also unloads the Work queue server.
                     Without either flag, an install that already has goals,
                     notifications, or the Pro skills stays in Pro mode.
   --pull-skills     Pull edits from a live ~/.claude/skills/<name>/ directory
@@ -403,6 +404,12 @@ ensure_file_copy() {
             cp "$source" "$target"
         fi
     fi
+}
+
+# service_running <label> — 0 when launchd reports the service running. Reads
+# all of launchctl's output, so grep exiting early can't fail the pipeline.
+service_running() {
+    launchctl print "gui/$UID/$1" 2>/dev/null | grep "state = running" >/dev/null
 }
 
 # launchctl_reload <label> <plist_path>
@@ -785,6 +792,11 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
             && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
         no_load=1
     fi
+    # The hourly update never starts a Work queue that isn't running: it
+    # doesn't load it fresh, and it doesn't restart one you stopped by hand.
+    if [[ "$feat" == "work-queue" && "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]] && ! service_running "$label"; then
+        no_load=1
+    fi
 
     # A symlinked target (legacy install pointing into the repo) must be turned
     # into a real file regardless of content — cmp reads THROUGH the link, so
@@ -796,6 +808,15 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
                 && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
             note "OK   $target (matches repo; enabled but not running → will load)"
             CHANGED_LABELS+=("$label")
+        elif [[ "$feat" == "work-queue" ]] && ! service_running "$label"; then
+            # Loaded but exited, for example when its port was taken at login.
+            if [[ $APPLY -eq 0 ]]; then
+                note "would start $label (loaded but not running)"
+            elif launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1; then
+                note "started $label (loaded but not running)"
+            else
+                warn "couldn't start $label; run launchctl kickstart -k gui/\$UID/$label"
+            fi
         else
             note "OK   $target (matches repo, no reload needed)"
         fi

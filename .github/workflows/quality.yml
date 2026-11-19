@@ -28,11 +28,15 @@ jobs:
           uv pip install pytest==9.1.1 pytest-cov==7.1.0 coverage==7.16.1 playwright==1.63.0
           npm --prefix tests ci --no-audit --no-fund
           uv run --no-sync python -m playwright install chromium
-      - name: Run tests with Python coverage
+      - name: Run tests with Python and Work queue page coverage
         run: |
           mkdir -p "$RUNNER_TEMP/assistant-coverage"
-          uv run --no-sync python tests/run_python_coverage.py \
+          WQ_BROWSER_COVERAGE="$RUNNER_TEMP/assistant-coverage/work-queue/browser-v8.json" \
+            uv run --no-sync python tests/run_python_coverage.py \
             --output-dir "$RUNNER_TEMP/assistant-coverage" --pytest-args -q
+          node tests/browser_coverage.cjs \
+            "$RUNNER_TEMP/assistant-coverage/work-queue/browser-v8.json" \
+            "$RUNNER_TEMP/assistant-coverage/work-queue/istanbul.json"
       - name: Exercise the dashboard in a browser
         run: |
           uv run --no-sync python tests/drive_dashboard_overview.py \
@@ -55,6 +59,7 @@ jobs:
           uv run --no-sync python tests/check_change_coverage.py --base "$BASE" \
             --python-report "$RUNNER_TEMP/assistant-coverage/python.json" \
             --browser-report "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json" \
+            --work-queue-browser-report "$RUNNER_TEMP/assistant-coverage/work-queue/istanbul.json" \
             --output "$RUNNER_TEMP/assistant-coverage/changed-code.json"
       - name: Prove critical regression tests catch broken behavior
         run: |

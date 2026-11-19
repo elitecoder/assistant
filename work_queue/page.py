@@ -69,7 +69,7 @@ def ctx_html(rec: dict) -> str:
 
 
 def open_row(title: str, meta: str, link: str, extra: str = "") -> str:
-    return (f'<div class="sf-row" data-key="{e(link)}" data-q-title="{e(title)}" data-q-detail="{e(meta + ". Source: " + link)}">'
+    return (f'<div class="sf-row" data-key="{e(link)}" data-q-title="{e(title)}" data-q-detail="{e(meta)}">'
             f'<div class="sf-main"><a class="sf-link" href="{e(link)}"{NEWTAB}>'
             f'<span class="sf-title">{e(title)}</span><span class="sf-meta">{e(meta)}</span></a>'
             '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button>'
@@ -254,7 +254,7 @@ def render(snap: dict) -> tuple[str, dict]:
            'Rules sort every row; nothing is sent without you.</p>'
            '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span></div>'
            f'<ul class="sources">{status}</ul>{tabs_html}{"".join(sections)}{bar}'
-           f'</div><script>const MAILDATA={maildata};{JS}</script></body></html>')
+           f'</div><script>const MAILDATA={maildata};</script><script>{JS}</script></body></html>')
     return doc, cands
 
 
@@ -262,7 +262,7 @@ def placeholder(message: str) -> str:
     return (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>Work queue</title><style>{CSS}</style><body><div class="section"><div class="sf-head"><h2>Work queue</h2>'
             f'<p class="meta">{e(message)}</p><button class="btn" id="refresh" onclick="refreshNow()">Refresh</button>'
-            f'<span class="meta" id="refresh-msg"></span></div></div><script>const MAILDATA=[];{JS}</script></body></html>')
+            f'<span class="meta" id="refresh-msg"></span></div></div><script>const MAILDATA=[];</script><script>{JS}</script></body></html>')
 
 
 CSS = """

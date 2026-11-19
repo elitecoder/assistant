@@ -78,4 +78,8 @@ def save(doc: dict) -> None:
 
 
 def port(doc: dict) -> int:
-    return int(os.environ.get("REVIEW_PORT") or doc.get("port") or DEFAULT_PORT)
+    """The server's port from sources.json. ValueError unless it's a whole number from 1 to 65535."""
+    value = doc.get("port", DEFAULT_PORT)
+    if type(value) is not int or not 1 <= value <= 65535:
+        raise ValueError(f'"port" in {sources_path()} must be a whole number from 1 to 65535, not {value!r}')
+    return value

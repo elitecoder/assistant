@@ -41,7 +41,7 @@ The server-side identity guard has separate coverage in `test_todo_server.py`.
 | Regression tests | The test fails with the original bug or a targeted broken version. |
 | Test suite | Targeted tests pass, then the full applicable suite passes. |
 | New-code coverage | Every changed executable Python line and branch is covered. |
-| Browser coverage | Changed dashboard JavaScript has complete line and block coverage from a real browser. |
+| Browser coverage | Changed dashboard and Work queue page JavaScript has complete line and block coverage from a real browser. |
 | Independent reviews | Two reviewers inspect the full change and tests; resolve blocking findings before proceeding. |
 | Runtime behavior | Exercise the real path and inspect the result before recommending a merge. |
 
@@ -51,9 +51,11 @@ services; a temporary `HOME` alone doesn't isolate `launchctl`.
 ```bash
 REPORT="$HOME/dev/generated-docs/assistant-coverage"
 mkdir -p "$REPORT"
-uv run --with pytest --with pytest-cov --with coverage python tests/run_python_coverage.py \
-  --output-dir "$REPORT" --pytest-args -q
 npm --prefix tests ci --no-audit --no-fund
+WQ_BROWSER_COVERAGE="$REPORT/work-queue/browser-v8.json" \
+  uv run --with pytest --with pytest-cov --with coverage --with playwright==1.63.0 \
+  python tests/run_python_coverage.py --output-dir "$REPORT" --pytest-args -q
+node tests/browser_coverage.cjs "$REPORT/work-queue/browser-v8.json" "$REPORT/work-queue/istanbul.json"
 uv run --with playwright python tests/drive_dashboard_overview.py \
   --browser-executable "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --output-dir "$REPORT/browser" --coverage-dir "$REPORT/browser"
@@ -61,6 +63,7 @@ node tests/browser_coverage.cjs "$REPORT/browser/browser-v8.json" "$REPORT/brows
 uv run --with coverage python tests/check_change_coverage.py --base main \
   --python-report "$REPORT/python.json" \
   --browser-report "$REPORT/browser/istanbul.json" \
+  --work-queue-browser-report "$REPORT/work-queue/istanbul.json" \
   --output "$REPORT/changed-code.json"
 uv run --with pytest python tests/mutation_smoke.py --output "$REPORT/mutations.json"
 ```
@@ -74,7 +77,10 @@ of an HTML string doesn't count as JavaScript coverage. Layout and CSS still
 need browser measurements and visual inspection.
 
 The current coverage adapters cover Python under `bin/`, `hooks/`, `install/`,
-and `src/` and the dashboard's embedded JavaScript. Changes to other executable code fail until
+`src/`, and `work_queue/`, the dashboard's embedded JavaScript, and the Work
+queue page's script (`JS` in `work_queue/page.py`). With `$WQ_BROWSER_COVERAGE`
+set, `test_work_queue_browser.py` records that script's coverage in Chromium
+during the Python coverage run. Changes to other executable code fail until
 an adapter is added; they aren't silently treated as covered.
 
 The checked-in workflow runs these checks for pull requests and pushes to
@@ -100,8 +106,9 @@ working copy or sends commands to live sessions.
 | `test_work_queue_*.py` | The Work queue: server routes and apply, each source against fake `gh`, `gog`, `npx`, and `uv`, `sources.json` driving the refresh, the setup CLI, the installer in its sandbox, and the Pro mode gate. |
 
 The Work queue's Slack and page checks drive a real Chromium. They skip unless
-Playwright is installed, so run the suite with `--with playwright` to include
-them, as the coverage workflow does.
+Playwright and its Chromium are installed, so run the suite with
+`--with playwright==1.63.0` (the version the coverage workflow pins) and run
+`python -m playwright install chromium` once to include them.
 
 ## What's NOT covered here
 

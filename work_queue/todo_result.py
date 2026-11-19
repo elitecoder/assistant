@@ -3,6 +3,8 @@
 
     todo_result.py td-NNN "what you did, with links"
     todo_result.py td-NNN --blocked "what you need"
+
+It also holds the Work queue's one reader and writer of the TODO store.
 """
 from __future__ import annotations
 
@@ -19,16 +21,31 @@ RESULT_TAG = "RESULT:"
 
 
 def todo_path() -> Path:
-    return Path(os.environ.get("TODO_PATH") or todostore.todo_path())
+    return todostore.todo_path()
+
+
+def read_store() -> dict:
+    """The TODO store; an empty one when the file doesn't exist yet."""
+    try:
+        return json.loads(todo_path().read_text())
+    except FileNotFoundError:
+        return {"items": []}
+
+
+def write_store(doc: dict) -> None:
+    """Replace the TODO store atomically. Call it inside todostore.todo_lock(), which creates its folder."""
+    path = todo_path()
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(path)
 
 
 def main(td_id: str, text: str, blocked: bool = False) -> None:
     text = " ".join(text.split())
     if not text:
         raise SystemExit("result text is empty")
-    path = todo_path()
     with todostore.todo_lock():
-        doc = json.loads(path.read_text())
+        doc = read_store()
         item = next((i for i in doc.get("items", []) if i.get("id") == td_id), None)
         if item is None:
             raise SystemExit(f"{td_id} not found")
@@ -39,9 +56,7 @@ def main(td_id: str, text: str, blocked: bool = False) -> None:
             item["detail"] = f"{(item.get('detail') or '').rstrip()}\n\n{RESULT_TAG} {text}"
             item.update(status="done", closedReason="agent finished", resultAt=now, statusUpdatedAt=now)
         doc["_lastUpdated"] = now
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
-        tmp.replace(path)
+        write_store(doc)
     print(f"{td_id}: {'blocked' if blocked else 'result recorded, marked done'}")
 
 

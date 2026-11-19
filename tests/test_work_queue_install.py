@@ -146,3 +146,78 @@ def test_an_interactive_pro_install_offers_each_unlinked_source(home):
     assert "    GitHub: linked (github.com)" in text
     saved = json.loads((home / ".assistant/work-queue/sources.json").read_text())
     assert saved == {"github": {"skip_authors": []}}
+
+
+def work_queue_calls(log: Path) -> list[str]:
+    return [c for c in log.read_text().splitlines() if LABEL in c and not c.startswith("print")]
+
+
+def older_plist(home: Path) -> None:
+    agents = home / "Library/LaunchAgents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / f"{LABEL}.plist").write_text("<!-- an older copy -->\n")
+
+
+@pytest.mark.parametrize("copied", [False, True])
+def test_the_hourly_update_never_loads_a_work_queue_that_isnt_loaded(home, copied):
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    (home / ".assistant/config.json").write_text('{"mode": "pro"}')
+    if copied:
+        older_plist(home)
+    log = fake_launchctl(env, running=set())
+    proc = run_installer(env)
+    assert work_queue_calls(log) == [], proc.stdout[-3000:]
+    assert (home / f"Library/LaunchAgents/{LABEL}.plist").read_text().startswith("<?xml")
+    run_installer(env)
+    assert work_queue_calls(log) == []
+
+
+@pytest.mark.parametrize("copied", [False, True])
+def test_the_hourly_update_never_restarts_a_work_queue_you_stopped(home, copied):
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    (home / ".assistant/config.json").write_text('{"mode": "pro"}')
+    log = fake_launchctl(env, running=set(), stopped={LABEL})
+    if copied:
+        older_plist(home)
+    else:
+        run_installer({**env, "ASSISTANT_SELF_UPDATE": "0"})
+        log.write_text("")
+    run_installer(env)
+    assert work_queue_calls(log) == []
+
+
+def test_the_hourly_update_reloads_a_running_work_queue_whose_plist_changed(home):
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    (home / ".assistant/config.json").write_text('{"mode": "pro"}')
+    older_plist(home)
+    log = fake_launchctl(env, running={LABEL})
+    run_installer(env)
+    assert work_queue_calls(log)[:2] == [f"bootout gui/{os.getuid()}/{LABEL}",
+                                         f"bootstrap gui/{os.getuid()} {home}/Library/LaunchAgents/{LABEL}.plist"]
+
+
+def test_a_pro_install_starts_a_work_queue_that_macos_loaded_but_stopped(home):
+    env = installer_env(home)
+    run_installer(env, "--pro")
+    log = fake_launchctl(env, running=set(), stopped={LABEL})
+    log.write_text("")
+    proc = run_installer(env, "--pro")
+    assert work_queue_calls(log) == [f"kickstart -k gui/{os.getuid()}/{LABEL}"]
+    assert f"started {LABEL} (loaded but not running)" in proc.stdout
+    log.write_text("")
+    dry = subprocess.run(["bash", str(REPO / "install.sh"), "--pro"], capture_output=True, text=True, env=env,
+                         stdin=subprocess.DEVNULL, timeout=120)
+    assert f"would start {LABEL} (loaded but not running)" in dry.stdout and work_queue_calls(log) == []
+    fake_launchctl(env, running=set(), stopped={LABEL}, failing={LABEL})
+    proc = run_installer(env, "--pro")
+    assert f"couldn't start {LABEL}; run launchctl kickstart -k gui/$UID/{LABEL}" in proc.stdout + proc.stderr
+    fake_launchctl(env, running={LABEL})
+    log.write_text("")
+    proc = run_installer(env, "--pro")
+    assert work_queue_calls(log) == [] and f"OK   {home}/Library/LaunchAgents/{LABEL}.plist (matches repo, no reload needed)" in proc.stdout
+
+
+def test_help_says_default_mode_unloads_the_work_queue(tmp_path):
+    proc = subprocess.run(["bash", str(REPO / "install.sh"), "--help"], capture_output=True, text=True,
+                          env=installer_env(tmp_path / "home"), stdin=subprocess.DEVNULL, timeout=30)
+    assert "Switch to default mode and unlink the Pro skills.\n                    Also unloads the Work queue server." in proc.stdout

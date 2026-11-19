@@ -28,7 +28,7 @@ def test_only_linked_sources_run(wq):
     assert {n: s["state"] for n, s in status.items()} == {
         "Slack": "off", "GitHub": "ok", "Gmail": "ok", "Calendar": "off", "Outlook": "off"}
     assert status["Slack"]["detail"] == "not linked. Run bin/work-queue-setup.py link slack"
-    assert status["Gmail"]["detail"] == "read 8 items" and status["GitHub"]["detail"] == "read 1 items"
+    assert status["Gmail"]["detail"] == "read 8 items" and status["GitHub"]["detail"] == "read 1 item"
     assert calls(wq.bin, "npx") == [] and calls(wq.bin, "uv") == []
     assert len(calls(wq.bin, "gh")) == 1 and not any("calendar" in c for c in calls(wq.bin, "gog"))
     html = refresh.site_path().read_text()
@@ -101,7 +101,7 @@ def test_the_refresh_command_reports_each_source(wq, capsys):
     wq.sources({"github": {}})
     assert refresh.main() == 0
     out = capsys.readouterr().out
-    assert "GitHub: ok — read 1 items" in out and "Gmail: off — not linked" in out
+    assert "GitHub: ok — read 1 item" in out and "Gmail: off — not linked" in out
     wq.sources({"outlook": {"address": ME}})
     assert refresh.main() == 1
 
@@ -127,3 +127,36 @@ def test_page_pieces_render_from_rows():
     assert "No sources are linked yet." in page.render({"status": [], "built": "now"})[0]
     assert "Nothing yet" in page.placeholder("Nothing yet") and "<script>" in page.placeholder("x")
     assert config.read_json(config.data_dir() / "missing.json", {"a": 1}) == {"a": 1}
+
+
+def test_a_bug_in_a_source_reader_isnt_reported_as_that_source_failing(wq):
+    wq.sources({"gmail": {}})
+    with pytest.raises(KeyError, match="accounts"):
+        refresh.run(now=NOW)
+
+
+def test_one_item_reads_as_one_item(wq):
+    every_tool(wq)
+    wq.sources({"github": {}})
+    assert {s["name"]: s["detail"] for s in refresh.run(now=NOW)}["GitHub"] == "read 1 item"
+
+
+def unsub_mail(key: str, addr: str, group: str, url: str = "") -> dict:
+    return {"key": key, "account": "me@example.com", "msg_ids": [key], "group": group, "title": key, "subject": key,
+            "reason": "r", "addr": addr, "from": addr.split("@")[0], "unsub_url": url, "day": "Nov 2", "to": [], "cc": [],
+            "body": "b", "unread": False, "link": f"https://mail.google.com/mail/#inbox/{key}"}
+
+
+def test_unsubscribe_offers_only_senders_whose_mail_can_all_go(wq):
+    rows = [unsub_mail("x-kept", "x@shop.example", "act"), unsub_mail("x-old", "x@shop.example", "news", "https://shop.example/u"),
+            unsub_mail("y-1", "y@news.example", "news", "mailto:u@news.example"),
+            unsub_mail("y-2", "y@news.example", "note", "https://news.example/u"),
+            unsub_mail("me", "me@example.com", "self", "https://example.com/u"),
+            unsub_mail("z", "z@list.example", "shop")]
+    html, cands = page.render({"built": "now", "status": [], "gmail": {"me@example.com": rows}})
+    unsub = [c for c in cands.values() if c["kind"] == "unsub"]
+    assert unsub == [{"kind": "unsub", "url": "https://news.example/u", "link": "https://mail.google.com/mail/#inbox/y-1"}]
+    section = html[html.index('id="unsubscribe"'):]
+    assert "y@news.example" in section and "2 of their emails can go" in section
+    assert "x@shop.example" not in section and "me@example.com · me@example.com" not in section
+    assert "1 senders support one-click unsubscribe" in section

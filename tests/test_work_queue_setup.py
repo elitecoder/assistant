@@ -133,3 +133,28 @@ def test_the_refresh_command_and_the_script_entry_point(wq, capsys):
     proc = subprocess.run([sys.executable, str(REPO / "bin/work-queue-setup.py"), "unlinked"], capture_output=True,
                           text=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     assert proc.returncode == 0 and proc.stdout.split() == ["slack", "gmail", "calendar", "outlook"]
+
+
+def test_unlinking_slack_also_deletes_its_browser_profile_and_cookies(wq, capsys):
+    wq.sources({"slack": {"team_id": "T1", "workspace_url": "https://acme.slack.com"}, "github": {}})
+    cookies = wq.home / ".assistant/work-queue/browser-profile/Default/Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_text("d=xoxd-session")
+    assert run(capsys, "unlink", "github") == (0, ["GitHub: unlinked"])
+    assert cookies.exists()
+    assert run(capsys, "unlink", "slack") == (0, ["Slack: unlinked",
+                                                  "Slack: removed the Work queue's browser profile and its Slack cookies"])
+    assert not (wq.home / ".assistant/work-queue/browser-profile").exists()
+    assert wq.saved_sources() == {}
+    assert run(capsys, "unlink", "slack") == (0, ["Slack: not linked"])
+
+
+def test_the_install_hint_uses_the_pinned_playwright(wq, capsys):
+    from work_queue import tools
+
+    assert tools.PLAYWRIGHT == "playwright==1.63.0"
+    assert f"--with {tools.PLAYWRIGHT} python -m playwright install chromium" in setup.INSTALL["uv"]
+    workflow = (REPO / ".github/workflows/quality.yml").read_text()
+    assert tools.PLAYWRIGHT in workflow.split()
+    assert tools.playwright_cmd("slack_browser.py", "list")[:6] == ["uv", "run", "--no-project", "--quiet", "--with",
+                                                                      "playwright==1.63.0"]

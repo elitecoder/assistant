@@ -451,3 +451,69 @@ def test_shell_mutants_must_still_parse(tmp_path):
         mutation_smoke.reject_invalid_shell("invalid", invalid)
     (tmp_path / "notes.py").write_text("(((\n")
     mutation_smoke.reject_invalid_shell("python", tmp_path / "notes.py")
+
+
+def work_queue_fixture(repo):
+    (repo / "work_queue").mkdir()
+    (repo / "work_queue/page.py").write_text('CSS = "x"\nJS = r"""\nfunction paint() { return 1; }\n"""\n')
+    report = {"source": "\nfunction paint() { return 1; }\n", "coverage": {"page.js": {
+        "statementMap": {"0": {"start": {"line": 2}, "end": {"line": 2}}}, "s": {"0": 1},
+        "branchMap": {"0": {"loc": {"start": {"line": 2}}}}, "b": {"0": [1]}}}}
+    python = {"meta": {"branch_coverage": True}, "files": {"work_queue/page.py": {
+        "executed_lines": [1, 2], "missing_lines": [], "executed_branches": [], "missing_branches": [],
+        "excluded_lines": []}}}
+    proof = {**manifest(repo, python), "sources": {
+        "work_queue/page.py": hashlib.sha256((repo / "work_queue/page.py").read_bytes()).hexdigest()}}
+    return python, report, proof
+
+
+def test_the_work_queue_page_script_needs_its_own_browser_coverage(tmp_path):
+    python, report, proof = work_queue_fixture(tmp_path)
+    changes = {"work_queue/page.py": {1, 2, 3, 4}}
+    with pytest.raises(ValueError, match="Changed Work queue page JavaScript needs browser coverage"):
+        gate.check_coverage(tmp_path, changes, python, None, proof)
+    with pytest.raises(ValueError, match="Changed Work queue page JavaScript needs browser coverage"):
+        gate.check_coverage(tmp_path, changes, python, report, proof)
+    result = gate.check_coverage(tmp_path, changes, python, None, proof, report)
+    assert result["passed"] is True and result["work_queue_browser"]["lines"] == 1
+    assert gate.check_coverage(tmp_path, {"work_queue/page.py": {1}}, python, None, proof)["passed"] is True
+    report["coverage"]["page.js"]["b"]["0"] = [0]
+    result = gate.check_coverage(tmp_path, changes, python, None, proof, report)
+    assert result["passed"] is False and result["work_queue_browser"]["missing_blocks"] == [3]
+    report["coverage"]["page.js"]["s"]["0"] = 0
+    assert gate.check_coverage(tmp_path, changes, python, None, proof, report)["work_queue_browser"]["missing_lines"] == [3]
+    report["source"] = "an older page script"
+    with pytest.raises(ValueError, match="does not match the current Work queue page script"):
+        gate.check_coverage(tmp_path, changes, python, None, proof, report)
+
+
+def test_the_work_queue_page_script_must_be_one_raw_literal(tmp_path):
+    work_queue_fixture(tmp_path)
+    (tmp_path / "work_queue/page.py").write_text('JS = """\nfunction paint() {}\n"""\n')
+    with pytest.raises(ValueError, match="Work queue page JavaScript must use a raw literal"):
+        gate.browser_source(tmp_path, gate.WORK_QUEUE_PAGE)
+    (tmp_path / "work_queue/page.py").write_text('JS = r"""a"""\nJS = r"""b"""\n')
+    with pytest.raises(ValueError, match="Expected one literal Work queue page script"):
+        gate.browser_source(tmp_path, gate.WORK_QUEUE_PAGE)
+
+
+def test_the_cli_reads_the_work_queue_browser_report(tmp_path, monkeypatch, capsys):
+    python, report, proof = work_queue_fixture(tmp_path)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Coverage fixture",
+                    "-c", "user.email=coverage@example.invalid", "commit", "--allow-empty",
+                    "-qm", "Initial fixture"], check=True)
+    (tmp_path / "python.json").write_text(json.dumps(python))
+    (tmp_path / "python.sources.json").write_text(json.dumps(proof))
+    (tmp_path / "wq.json").write_text(json.dumps(report))
+    monkeypatch.setattr(gate, "__file__", str(tmp_path / "tests/check_change_coverage.py"))
+    monkeypatch.setattr("sys.argv", ["check", "--base", "HEAD", "--python-report", str(tmp_path / "python.json"),
+                                     "--work-queue-browser-report", str(tmp_path / "wq.json")])
+    with pytest.raises(SystemExit) as result:
+        gate.main()
+    assert result.value.code == 0
+    assert json.loads(capsys.readouterr().out)["work_queue_browser"]["lines"] == 1
+    monkeypatch.setattr("sys.argv", ["check", "--base", "HEAD", "--python-report", str(tmp_path / "python.json")])
+    with pytest.raises(SystemExit) as result:
+        gate.main()
+    assert result.value.code == 2 and "needs browser coverage" in capsys.readouterr().err

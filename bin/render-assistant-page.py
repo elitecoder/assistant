@@ -2422,7 +2422,7 @@ def render_work_queue_tab():
     """Pro mode: a link to the Work queue page and when it last refreshed."""
     try:
         port = work_queue_config.port(work_queue_config.load())
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         return f'<div class="empty">The Work queue can\'t read its settings: {e(str(exc))}</div>'
     state = work_queue_config.read_json(work_queue_config.data_dir() / "refresh-status.json", {})
     last = f"Last refreshed {state['finished']}." if state.get("finished") else "Not refreshed yet."

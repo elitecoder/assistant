@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("playwright.sync_api")
 from work_queue import slack_browser  # noqa: E402
-from work_queue_fakes import real_browsers  # noqa: E402
+from work_queue_fakes import require_chromium  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 TOKEN = "xoxc-test-session"
@@ -70,7 +70,7 @@ class FakeSlack(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def slack_site(monkeypatch):
-    real_browsers(monkeypatch)
+    require_chromium(monkeypatch)
     FakeSlack.saves = {("C1", "1.1"): True, ("C2", "2.2"): True, ("C3", "3.3"): True, ("STUCK", "4.4"): True,
                        ("C5", "5.5"): False}
     FakeSlack.updates = []
