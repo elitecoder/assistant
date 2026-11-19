@@ -51,6 +51,24 @@ def test_send_creates_an_auto_dispatch_todo_with_the_next_id_and_finish_instruct
     assert json.loads((wq.data / "queued.json").read_text())[ROW]["id"] == "td-051"
 
 
+def test_sending_a_row_marks_it_done_and_keeps_its_other_marks(wq):
+    server.set_marks({"key": "https://x.slack.com/archives/C1/p2", "state": "snoozed", "until": 5})
+    server.set_marks({"key": ROW, "state": "dropped"})
+    server.queue_todo({"key": ROW, "title": "A"})
+    marks = json.loads((wq.data / "marks.json").read_text())
+    assert marks[ROW]["state"] == "done" and marks[ROW]["until"] == 0
+    assert marks["https://x.slack.com/archives/C1/p2"]["state"] == "snoozed"
+    server.set_marks({"key": ROW, "state": "clear"})
+    assert server.queue_todo({"key": ROW, "title": "A"})[1]["existing"] is True
+    assert json.loads((wq.data / "marks.json").read_text())[ROW]["state"] == "done", "sending again marks it done again"
+    assert server.state()["marks"][ROW]["state"] == "done"
+
+
+def test_a_refused_send_saves_no_mark(wq):
+    assert server.queue_todo({"key": ROW, "title": ""})[0] == 400
+    assert not (wq.data / "marks.json").exists()
+
+
 def test_sending_the_same_row_twice_returns_the_first_todo(wq):
     server.queue_todo({"key": ROW, "title": "A"})
     assert server.queue_todo({"key": ROW, "title": "A"}) == (200, {"id": "td-051", "existing": True})

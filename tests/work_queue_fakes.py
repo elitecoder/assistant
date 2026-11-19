@@ -19,7 +19,13 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = '''#!{python}
+from work_queue import triage
+
+MODEL_ENV = ("ASSISTANT_LLM_CONFIG", "CLAUDE_BIN", "COPILOT_BIN", "DROID_BIN", "WORK_QUEUE_LLM_PROVIDER",
+             "WORK_QUEUE_DROID_MODEL", "WORK_QUEUE_LOCAL_MODEL", "WORK_QUEUE_COPILOT_MODEL", "COPILOT_MODEL",
+             "ASSISTANT_LOCAL_LLM_URL", "ASSISTANT_MODEL_BALANCED", "MODEL_PROVIDER", "CLAUDE_CODE_USE_BEDROCK",
+             "CLAUDE_CODE_USE_VERTEX")
+SCRIPT ='''#!{python}
 import json, os, sys
 from pathlib import Path
 here = Path(__file__).resolve().parent
@@ -134,15 +140,23 @@ class Env:
         return json.loads(self.todo.read_text())["items"]
 
 
+def no_model(prompt: str, timeout: int) -> str:
+    raise triage.Unavailable("the tests have no model")
+
+
 @pytest.fixture
 def wq(tmp_path, monkeypatch) -> Env:
-    """A Work queue with its own HOME (and so its own TODO store), data folder, and fake tools."""
+    """A Work queue with its own HOME (and so its own TODO store), data folder, and fake tools.
+
+    Triage's model call fails unless a test passes its own fake, and nothing in the
+    environment can route a call to a real model."""
     env = Env(tmp_path)
     env.todo.parent.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(env.home))
     monkeypatch.setenv("WQ_DATA", str(env.data))
-    for name in ("SLACK_USER_TOKEN", "GH_HOST"):
+    for name in ("SLACK_USER_TOKEN", "GH_HOST", *MODEL_ENV):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(triage, "call_model", no_model)
     env.todo.write_text(json.dumps({"items": [{"id": "td-041", "status": "open"}], "completed": [{"id": "td-050"}],
                                     "removed": []}))
     use_fakes(monkeypatch, env.bin)

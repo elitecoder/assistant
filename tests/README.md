@@ -94,8 +94,8 @@ Coverage isn't proof of correctness. Use the two reviews to challenge the
 diagnosis, side effects, missing cases, and whether tests catch the actual bug.
 Keep both verdicts and the measured results with the exact commit under review.
 
-The mutation check uses separate temporary copies. It breaks six protections
-one at a time and requires the corresponding test to fail; it never edits your
+The mutation check uses separate temporary copies. It breaks each protection
+in `CHECKS` one at a time and requires the corresponding test to fail; it never edits your
 working copy or sends commands to live sessions.
 
 ## What's covered
@@ -106,6 +106,12 @@ working copy or sends commands to live sessions.
 | `test_build_ws_context.py` | `bin/build-ws-context.py` mechanical signals: `agent_status`, transcript-path resolution, no PR data leaks into output, protected-workspace flag. |
 | `test_no_close_workspace.py` | Regression-pin: no production code path shells out `cmux close-workspace`. |
 | `test_work_queue_*.py` | The Work queue: server routes and apply, each source against fake `gh`, `gog`, `npx`, and `uv`, `sources.json` driving the refresh, the setup CLI, the installer in its sandbox, and the Pro mode gate. |
+| `test_work_queue_triage.py` | The Work queue's model triage with the model faked at its seam: the row schema, the injection fence and secret scrub, the cache, Start here and marks, Since last night counts, budget, deadline, and failure notes, the default mode gate, and the real call against a fake `claude` in the temporary `HOME`. |
+
+The `wq` fixture in `work_queue_fakes.py` replaces triage's model call with one
+that fails, and clears every variable that could route a call to a real model.
+A test that needs answers passes its own fake to `refresh.run(model=...)` or
+`triage.run`.
 
 The Work queue's Slack and page checks drive a real Chromium. They skip unless
 Playwright and its Chromium are installed, so run the suite with

@@ -1,9 +1,11 @@
 """Render the Work queue page from one refresh's rows.
 
-Everything on the page comes from your linked sources and the rules in
-work_queue/inputs/. Nothing is hand-written: there's no ranked "start here"
-list, no drafted replies, and no per-row advice. Every open row has Done,
-Snooze, Drop, and Send to Assistant, and you decide which ones to send.
+Everything on the page comes from your linked sources, the rules in
+work_queue/inputs/, and, in Pro mode, the model's triage (work_queue/triage.py):
+a why, a disposition, an effort, and a draft on each open row, the Start here
+list, and the Since last night box. Every open row has Done, Snooze, and Drop;
+only rows the model called `agent` offer Send to Assistant. Drafts are text to
+copy: nothing on the page sends them.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from datetime import datetime
 from work_queue.inputs import gmail, outlook
 
 e = html.escape
+DISP = {"you": "You", "agent": "Agent", "handoff": "Hand off", "drop": "Drop"}
 NEWTAB = ' target="_blank" rel="noopener noreferrer"'
 SLACK_GROUPS = [
     ("last", "You had the last word", "You replied, and nobody asked anything after."),
@@ -68,15 +71,23 @@ def ctx_html(rec: dict) -> str:
     return f'<div class="ap-ctx">{"".join(parts)}{more if len(after) > 1 else ""}</div>'
 
 
-def open_row(title: str, meta: str, link: str, extra: str = "") -> str:
+def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None) -> str:
+    """One Open list row, with the model's verdict when there is one. Only `agent` rows offer Send to Assistant."""
+    v = verdict or {}
+    pill = f'<span class="disp d-{v["disposition"]}">{DISP[v["disposition"]]}</span>' if v else ""
+    effort = f'<span class="sf-effort sf-{v["effort"].lower()}">{v["effort"]}</span>' if v else ""
+    why = f'<span class="sf-why">{e(v["why"])}</span>' if v else ""
+    send = ('<button class="btn sf-send" onclick="queueTodo(this)" title="Create an Assistant TODO that starts on its own">'
+            'Send to Assistant</button>') if v.get("disposition") == "agent" else ""
+    draft = (f'<div class="draft"><textarea readonly rows="{min(6, 2 + len(v["draft"]) // 90)}" aria-label="Draft reply">'
+             f'{e(v["draft"])}</textarea><button class="btn" onclick="copyDraft(this)">Copy draft</button></div>') if v.get("draft") else ""
     return (f'<div class="sf-row" data-key="{e(link)}" data-q-title="{e(title)}" data-q-detail="{e(meta)}">'
             f'<div class="sf-main"><a class="sf-link" href="{e(link)}"{NEWTAB}>'
-            f'<span class="sf-title">{e(title)}</span><span class="sf-meta">{e(meta)}</span></a>'
+            f'<span class="sf-title">{pill}{e(title)}</span><span class="sf-meta">{e(meta)}</span>{why}</a>{effort}'
             '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button>'
             '<button class="btn ghost" onclick="setState(this,\'snoozed\')" title="Hide for 3 days">Snooze</button>'
             '<button class="btn ghost" onclick="setState(this,\'dropped\')">Drop</button>'
-            '<button class="btn sf-send" onclick="queueTodo(this)" title="Create an Assistant TODO that starts on its own">Send to Assistant</button>'
-            f'</div><div class="q-status" hidden></div>{extra}</div>')
+            f'{send}</div><div class="q-status" hidden></div>{draft}{extra}</div>')
 
 
 def buttons(undo: str = "ap-undo", ok: str = "Approve") -> str:
@@ -125,35 +136,70 @@ def lane(title: str, help_text: str, rows: list[str]) -> str:
             f'<div class="sf-list">{"".join(rows)}</div></div>')
 
 
+def counted(d: dict) -> str:
+    return ", ".join(f"{d[k]} {k}" for k in ("new", "gone", "changed") if d[k])
+
+
+def start_section(tri: dict, note: str) -> str:
+    """The Start here tab: what changed since the baseline, then where to start. Marked items hide in the page."""
+    box = ""
+    if tri["changes"]:
+        lines = "".join(f'<li><b>{e(d["source"])}</b>: {counted(d)}.{" " + e(d["text"]) if d.get("text") else ""}</li>'
+                        for d in tri["changes"]["sources"]) or "<li>Nothing changed.</li>"
+        box = (f'<div class="changes"><b>Since last night</b> <span class="meta">Compared with the refresh on '
+               f'{e(tri["changes"]["built"])}. The counts come from your rows; the sentences come from the model.</span>'
+               f'<ul>{lines}</ul></div>')
+    items = "".join(f'<li data-key="{e(s["key"])}" data-src="{e(s["source"].lower())}"><div>'
+                    f'<a class="sf-title" href="{e(s["key"])}"{NEWTAB}>{e(s["title"])}</a>'
+                    f' <span class="pr-pill src">{e(s["source"])}</span>'
+                    + (f' <span class="sf-effort sf-{s["effort"].lower()}">{s["effort"]}</span>' if s["effort"] else "")
+                    + '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button></div>'
+                    f'<span class="ap-why">{e(s["reason"])}</span></li>' for s in tri["start"])
+    body = f'<ol class="start-list">{items}</ol>' if items else '<p class="meta">No Start here list this time.</p>'
+    return section("start", "Start here", "In this order, ranked by the model on who's waiting, deadlines, effort, and age. "
+                   "Done hides an item here and marks its row done.", note + box + body)
+
+
 def render(snap: dict) -> tuple[str, dict]:
     """The page and the approval candidates the server acts on."""
     cands: dict[str, dict] = {}
     lanes, sections, tabs = [], [], []
+    tri = snap.get("triage")
+    verdicts = (tri or {}).get("rows", {})
+    note = (f'<p class="triage-note">Triage unavailable: {e(tri["note"])}. Rows without a verdict are sorted by rules only.</p>'
+            if tri and tri["note"] else "")
+    if tri and tri["waiting"]:
+        note += f'<p class="meta">{tri["waiting"]} rows wait for triage until the next refresh.</p>'
 
     slack_rows = snap.get("slack") or []
-    open_slack = [open_row(r["title"], " · ".join(x for x in (r["who"], r["when"]) if x), r["link"], ctx_html(r["ctx"]))
-                  for r in slack_rows if r["group"] == "open"]
+    open_slack = [open_row(r["title"], " · ".join(x for x in (r["who"], r["when"]) if x), r["link"], ctx_html(r["ctx"]),
+                           verdicts.get(r["link"])) for r in slack_rows if r["group"] == "open"]
     if snap.get("slack") is not None:
         lanes.append(lane("Slack", "Later saves whose thread moved recently.", open_slack))
     if snap.get("github") is not None:
         lanes.append(lane("Pull requests", "Open pull requests that ask for your review.",
-                          [open_row(p["title"], p["meta"] + (" · draft" if p["draft"] else ""), p["link"]) for p in snap["github"]]))
+                          [open_row(p["title"], p["meta"] + (" · draft" if p["draft"] else ""), p["link"], "",
+                                    verdicts.get(p["link"])) for p in snap["github"]]))
     acts = [m for m in snap.get("outlook") or [] if m["group"] == "act"]
     if snap.get("outlook") is not None:
         lanes.append(lane("Outlook", "Mail sent to you by a person that you haven't replied to.",
-                          [open_row(m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m)) for m in acts]))
+                          [open_row(m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m), verdicts.get(m["link"]))
+                           for m in acts]))
     gmail_by = snap.get("gmail") or {}
     for account, rows in gmail_by.items():
         lanes.append(lane(f"Gmail: {e(account)}", "Mail from a person that you haven't opened, or that you starred.",
-                          [open_row(m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m))
+                          [open_row(m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m), verdicts.get(m["link"]))
                            for m in rows if m["group"] == "act"]))
     total = sum(body.count('class="sf-row"') for body in lanes)
     sections.append(f'<div id="open-list" class="tab-sec"><div class="cut"><div class="cut-top"><b>Open list</b>'
-                    f'<span class="meta">{total} open items. Mark each Done, Snooze it for 3 days, Drop it, '
-                    'or send it to Assistant to finish on its own.</span></div>'
+                    f'<span class="meta">{total} open items. Mark each Done, Snooze it for 3 days, or Drop it. '
+                    'Send a row the model called Agent to Assistant to finish on its own.</span></div>'
                     '<button class="chip" id="showhidden">Show snoozed and dropped</button></div>'
-                    f'{"".join(lanes) or "<p class=meta>No sources are linked yet.</p>"}</div>')
+                    f'{note}{"".join(lanes) or "<p class=meta>No sources are linked yet.</p>"}</div>')
     tabs.append(("open-list", "Open list", total, "var(--c-cut)"))
+    if tri and (tri["start"] or tri["changes"] or tri["note"]):
+        sections.insert(0, start_section(tri, note))
+        tabs.insert(0, ("start", "Start here", len(tri["start"]), "var(--c-start)"))
 
     if snap.get("calendar"):
         cal_rows = "".join(f'<div class="pr-row"><a class="sf-title" href="{e(c["link"])}"{NEWTAB}>{e(c["when"])} · {e(c["title"])}</a>'
@@ -251,7 +297,8 @@ def render(snap: dict) -> tuple[str, dict]:
     doc = (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
            f'<title>Work queue</title><style>{CSS}</style><body><div class="section">'
            f'<div class="sf-head"><h2>Work queue</h2><p class="meta">Built {e(snap["built"])} from your linked sources. '
-           'Rules sort every row; nothing is sent without you.</p>'
+           + ("Rules sort every row, and a model explains each open row and picks where to start. Nothing is sent "
+              "without you.</p>" if tri else "Rules sort every row; nothing is sent without you.</p>") +
            '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span></div>'
            f'<ul class="sources">{status}</ul>{tabs_html}{"".join(sections)}{bar}'
            f'</div><script>const MAILDATA={maildata};</script><script>{JS}</script></body></html>')
@@ -268,7 +315,7 @@ def placeholder(message: str) -> str:
 CSS = """
 :root{--bg:#0a0a0d;--panel:#13141a;--line:rgba(255,255,255,0.06);--line-strong:rgba(255,255,255,0.10);--hover:rgba(255,255,255,0.025);
 --text:#ededf0;--text-2:#c9cad1;--muted:#7c7e8a;--green:#5fd97a;--green-bg:rgba(95,217,122,0.12);--amber:#f0b330;--amber-bg:rgba(240,179,48,0.12);
---blue:#6bbef0;--red:#e96b6b;--red-bg:rgba(233,107,107,0.12);
+--blue:#6bbef0;--blue-bg:rgba(107,190,240,0.12);--purple:#b06bf0;--purple-bg:rgba(176,107,240,0.14);--red:#e96b6b;--red-bg:rgba(233,107,107,0.12);
 --c-unsub:#4fd1c5;--c-start:#f0b330;--c-outlook:#6bbef0;--c-gmail:#f0846b;--c-slack:#b06bf0;--c-cut:#e96be9;
 --sans:-apple-system,BlinkMacSystemFont,"Inter","SF Pro Text",system-ui,"Segoe UI",Roboto,sans-serif;
 --mono:"Geist Mono","JetBrains Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace}
@@ -334,7 +381,25 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .pr-pill.amber{color:var(--amber);background:var(--amber-bg)}
 .ap-unread{border-top:1px solid var(--line);padding:6px 0}.ap-unread summary{cursor:pointer;font:600 13px/1.4 var(--sans);color:var(--text-2);padding:4px 0}
 .ap-urow{padding:6px 14px;border-top:1px solid var(--line)}.ap-urow a{color:var(--blue);text-decoration:none}
-@media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}}
+.disp{font:600 10px/1 var(--mono);border-radius:4px;padding:2px 6px;margin-right:6px;white-space:nowrap}
+.d-you{color:var(--green);background:var(--green-bg)}.d-agent{color:var(--blue);background:var(--blue-bg)}
+.d-handoff{color:var(--purple);background:var(--purple-bg)}.d-drop{color:var(--red);background:var(--red-bg)}
+.sf-effort{flex:none;font:500 10px/1 var(--mono);border-radius:4px;padding:3px 6px;color:var(--blue);background:var(--blue-bg)}
+.sf-medium,.sf-large{color:var(--amber);background:var(--amber-bg)}
+.sf-why{color:var(--text-2);font-size:12px;overflow-wrap:anywhere}
+.sf-row.is-done{opacity:.6}.sf-row.is-blocked{box-shadow:inset 3px 0 0 var(--c-gmail)}
+.draft{display:flex;gap:8px;align-items:flex-start;margin-top:8px}
+.draft textarea{flex:1;min-width:0;background:var(--hover);color:var(--text-2);border:1px solid var(--line-strong);border-radius:6px;padding:6px 8px;font:12px/1.5 var(--sans);resize:vertical}
+.triage-note{margin:0 0 14px;padding:8px 12px;border-left:3px solid var(--amber);border-radius:4px;background:var(--amber-bg);color:var(--text);overflow-wrap:anywhere}
+#start{--acc:var(--c-start)}
+.changes{border:1px solid var(--line);border-left:3px solid var(--c-outlook);border-radius:8px;padding:10px 14px;margin:0 0 14px;overflow-wrap:anywhere}
+.changes ul{margin:6px 0 0;padding-left:18px}.changes li{margin:3px 0}
+.start-list{margin:6px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:10px}.start-list li{color:var(--muted)}
+.start-list li[hidden]{display:none}.start-list li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.start-list a{text-decoration:none;overflow-wrap:anywhere}.start-list .sf-mark{margin-left:auto}
+.pr-pill.src{color:var(--text-2);background:var(--hover);border:1px solid var(--line)}
+@media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
+.draft{flex-direction:column}.draft textarea{width:100%}}
 """
 
 JS = r"""
@@ -344,13 +409,15 @@ const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.json()}
 function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now();let hidden=0;
- document.querySelectorAll('.sf-lane .sf-row').forEach(r=>{const v=MK[r.dataset.key];
-  const done=!!v&&v.state==='done', hide=!!v&&(v.state==='dropped'||(v.state==='snoozed'&&v.until>now));
-  r.classList.toggle('is-done',done);r.classList.toggle('is-hidden',hide);if(hide)hidden++;
-  r.querySelector('.sf-mark').textContent=done?'Undo':'Done'});
+ document.querySelectorAll('.sf-lane .sf-row').forEach(r=>{const v=MK[r.dataset.key],q=(ST.queued||{})[r.dataset.key];
+  const blocked=!!q&&q.status==='blocked',marked=!!v&&v.state==='done',done=marked&&!blocked;
+  const hide=!!v&&!blocked&&(v.state==='dropped'||(v.state==='snoozed'&&v.until>now));
+  r.classList.toggle('is-done',done);r.classList.toggle('is-hidden',hide);r.classList.toggle('is-blocked',blocked);if(hide)hidden++;
+  r.querySelector('.sf-mark').textContent=marked?'Undo':'Done'});
+ document.querySelectorAll('.start-list li').forEach(li=>{const v=MK[li.dataset.key];li.hidden=!!v&&(v.state!=='snoozed'||v.until>now)});
  document.querySelectorAll('.sf-lane').forEach(l=>{l.querySelector('h3 .count').textContent=l.querySelectorAll('.sf-row:not(.is-done):not(.is-hidden)').length});
  const b=$('showhidden');if(b)b.textContent=(document.body.classList.contains('show-hidden')?'Hide':'Show')+' snoozed and dropped ('+hidden+')'}
-async function setState(b,state){const k=b.closest('.sf-row').dataset.key,cur=MK[k]&&MK[k].state;
+async function setState(b,state){const k=b.closest('[data-key]').dataset.key,cur=MK[k]&&MK[k].state;
  const body=cur===state?{key:k,state:'clear'}:{key:k,state,until:state==='snoozed'?Date.now()+3*DAY:0};
  try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify(body)})).marks}catch(e){toast('Not saved: '+e.message)}paint()}
 if($('showhidden'))$('showhidden').onclick=()=>{document.body.classList.toggle('show-hidden');paint()};
@@ -364,6 +431,7 @@ function mailSearch(){const appr=new Set(MAILDATA.filter(m=>(ST.decisions[m.k]||
 function renderMq(MS){const q=$('mq-q');if(!q)return;q.textContent=MS.q||'Approve emails below to build your search.';$('mq-copy').disabled=!MS.q;
  $('mq-note').textContent=MS.q?('Finds the '+MS.n+' emails you approved and nothing else in your inbox as last read. Newer mail from the same sender or with the same subject matches too, so check the results before you delete.'+(MS.manual.length?' '+MS.manual.length+' approved emails share a sender and subject with ones you kept, so delete those by hand.':'')):''}
 function copySearch(b){navigator.clipboard.writeText($('mq-q').textContent).then(()=>b.textContent='Copied')}
+function copyDraft(b){navigator.clipboard.writeText(b.previousElementSibling.value).then(()=>b.textContent='Copied')}
 function renderAp(){let approved=0;const MS=mailSearch();
  document.querySelectorAll('.ap-row').forEach(r=>{const k=r.dataset.key,d=(ST.decisions[k]||{}).decision,a=ST.applied[k]||{},kind=r.dataset.kind;
   const done=a.status==='done';r.classList.toggle('applied',done);r.classList.toggle('approved',d==='approve'&&!done);r.classList.toggle('kept',d==='keep');r.classList.toggle('failed',a.status==='error');
@@ -381,17 +449,19 @@ function renderAp(){let approved=0;const MS=mailSearch();
 function linkify(el,text){el.textContent='';text.split(/(https?:\/\/[^\s)]+)/).forEach(p=>{if(/^https?:\/\//.test(p)){const a=document.createElement('a');a.href=p;a.textContent=p;a.target='_blank';a.rel='noopener noreferrer';el.append(a)}else el.append(p)})}
 function renderQueued(){const Q=ST.queued||{},seen={};
  document.querySelectorAll('.sf-row[data-q-title]').forEach(r=>{const q=Q[r.dataset.key],b=r.querySelector('.sf-send'),s=r.querySelector('.q-status');
-  if(!q||q.status==='removed'){s.hidden=!q;if(q)s.textContent='The TODO '+q.id+' was removed. Select Send to Assistant to queue it again.';s.className='q-status';b.disabled=false;b.textContent='Send to Assistant';return}
-  seen[r.dataset.key]=q.status;b.disabled=true;b.textContent='Sent '+q.id;s.hidden=false;
+  if(!q||q.status==='removed'){s.hidden=!q;s.className='q-status';
+   if(q)s.textContent='The TODO '+q.id+' was removed.'+(b?' Select Send to Assistant to queue it again.':'');
+   if(b){b.disabled=false;b.textContent='Send to Assistant'}return}
+  seen[r.dataset.key]=q.status;if(b){b.disabled=true;b.textContent='Sent '+q.id}s.hidden=false;
   const done=q.status==='done';s.className='q-status '+(done?'done':q.status==='blocked'?'blocked':'');
   if(done)linkify(s,q.result?'Done. '+q.result:'Done, but the agent left no written result. Open '+q.id+' on the Assistant dashboard to see what happened.');
   else if(q.status==='blocked')s.textContent='Blocked'+(q.reason?': '+q.reason:'.');
   else if(q.status==='in-progress'||q.dispatched)s.textContent='Working on it ('+q.id+').';
   else s.textContent='Queued as '+q.id+'. Assistant picks it up within about 5 minutes.';
-  if(QPREV&&QPREV[r.dataset.key]&&QPREV[r.dataset.key]!=='done'&&done)toast('Finished: '+r.querySelector('.sf-title').textContent)});
+  if(QPREV&&QPREV[r.dataset.key]&&QPREV[r.dataset.key]!=='done'&&done)toast('Finished: '+r.dataset.qTitle)});
  QPREV=seen;clearTimeout(qTimer);if(Object.values(seen).some(v=>v!=='done'))qTimer=setTimeout(refresh,20000)}
 async function queueTodo(b){const r=b.closest('.sf-row');b.disabled=true;b.textContent='Sending...';
- try{const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:r.dataset.key,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:r.dataset.key})});ST.queued=Object.assign({},ST.queued,{[r.dataset.key]:{id:o.id,status:'open'}});renderQueued()}
+ try{const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:r.dataset.key,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:r.dataset.key})});ST.queued=Object.assign({},ST.queued,{[r.dataset.key]:{id:o.id,status:'open'}});MK[r.dataset.key]={state:'done',until:0};paint();renderQueued()}
  catch(e){b.disabled=false;b.textContent='Send to Assistant';const s=r.querySelector('.q-status');s.hidden=false;s.className='q-status blocked';s.textContent='Not sent: '+e.message}}
 function renderRefresh(){const r=ST.refresh||{},b=$('refresh');b.disabled=!!r.running;b.textContent=r.running?'Refreshing…':'Refresh';
  $('refresh-msg').textContent=r.running?'Reading your sources. This page reloads when it finishes.':r.error?'Last refresh failed: '+r.error:''}
@@ -403,9 +473,9 @@ function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll(
 async function applyNow(){try{await api('/api/apply',{method:'POST',body:'{}'});ST.status={running:true};renderAp();setTimeout(refresh,1500)}catch(e){$('ap-msg').textContent='Not started: '+e.message}}
 async function refreshNow(){try{await api('/api/refresh',{method:'POST',body:'{}'});ST.refresh={running:true};renderRefresh();polling=true;setTimeout(refresh,2500)}catch(e){$('refresh-msg').textContent='Not started: '+e.message}}
 const TAB_IDS=[...document.querySelectorAll('#tabs .tab')].map(a=>a.dataset.t).filter(t=>t!=='all');
-function showTab(id){const t=TAB_IDS.includes(id)||id==='all'?id:'open-list';TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
+function showTab(id){const t=TAB_IDS.includes(id)||id==='all'?id:TAB_IDS[0];TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
  document.querySelectorAll('#tabs .tab').forEach(a=>a.classList.toggle('on',a.dataset.t===t));try{localStorage.setItem('wq-tab',t)}catch(_){}}
 window.addEventListener('hashchange',()=>showTab(decodeURIComponent(location.hash.slice(1))));
-if(TAB_IDS.length){let saved=null;try{saved=localStorage.getItem('wq-tab')}catch(_){}showTab(decodeURIComponent(location.hash.slice(1))||saved||'open-list')}
+if(TAB_IDS.length){let saved=null;try{saved=localStorage.getItem('wq-tab')}catch(_){}showTab(decodeURIComponent(location.hash.slice(1))||saved||TAB_IDS[0])}
 refresh();
 """

@@ -23,9 +23,36 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     your sources come from `~/.assistant/work-queue/sources.json`, which holds
     no secrets.
   - Rules sort every row. The standalone tool's hand-written "start here" list,
-    change notes, drafted replies, and per-row advice are gone, and nothing
-    replaces them yet: there's no model step.
-  - Every open row has Done, Snooze, Drop, and Send to Assistant. Send to
+    change notes, drafted replies, and per-row advice are gone; model triage
+    replaces them (below).
+  - Model triage, in Pro mode only (`work_queue/triage.py`). After the refresh
+    writes the rule-based page, one batched call per 30 new or changed open
+    rows (up to 120 a refresh) returns a one-line why, a disposition (`you`,
+    `agent`, `handoff`, or `drop`), an effort, and, for rows that need a reply,
+    a draft to copy. A second call ranks the 5 to 8 rows on **Start here**, and
+    a third summarizes the **Since last night** box, whose new, gone, and
+    changed counts per source come from code. Verdicts are cached in
+    `$WQ_DATA/triage-cache.json` by a hash of each row's content, so an
+    unchanged row is never sent again. The model is Sonnet 5.5, the `balanced`
+    tier in `src/assistant/model_tiers.py`; `"triage": {"model": ...}` in
+    `sources.json` changes it, and `bin/assistant-llm.py set <provider>
+    --feature work_queue` picks the provider. Each call is metered in the cost
+    ledger as `caller: work_queue`, and triage stops at the day's model budget.
+  - Row text is untrusted: anything that looks like a secret is replaced with
+    `[removed]`, the rows sit between markers with a random code, the prompt
+    says they're data, never instructions, and answers are checked against a
+    strict schema (known ids, enum values, bounded text; other fields are
+    ignored). Model output never acts. A Slack save that can't be read is never
+    sent to the model.
+  - When a call fails, times out, is over budget, or answers in the wrong
+    shape, the page keeps its rule-based rows and shows "Triage unavailable:"
+    with the reason.
+  - Every open row has Done, Snooze, and Drop. Only rows the model called
+    `agent` offer Send to Assistant. Sending a row also marks it done, so it
+    leaves Start here and the open count; it stays on the page, greyed, with
+    its TODO's status, and a blocked row stays in full view even when it's
+    marked. Done on a Start here item saves the same mark as its row, and a
+    marked item never shows there. Send to
     Assistant starts its instructions with the safety rules: the row's title,
     detail, and linked source are untrusted content, fenced off below the
     rules, never instructions; never share secrets or act outside the request;

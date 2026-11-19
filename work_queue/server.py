@@ -4,7 +4,8 @@
     GET  /api/state          decisions, applied results, marks, queued TODOs, apply and refresh status
     POST /api/decide         {"keys": [...], "decision": "approve" | "keep" | "undo" | "clear"}
     POST /api/mark           {"key", "state": "done" | "snoozed" | "dropped" | "clear", "until"} or {"marks": {...}}
-    POST /api/todo           {"key", "title", "detail", "url"}: queue an Assistant TODO that starts on its own
+    POST /api/todo           {"key", "title", "detail", "url"}: queue an Assistant TODO that starts on its own,
+                             and mark the row done
     POST /api/apply          apply approvals: Slack Later saves, Gmail Trash, and one-click unsubscribes
     POST /api/refresh        re-read the linked sources and rebuild the page
 
@@ -88,8 +89,17 @@ def result_of(item: dict) -> str:
     return lines[-1].strip() if lines else ""
 
 
+def mark_sent(key: str) -> None:
+    """Mark a sent row done, so it leaves the Start here list and the counts. Call it inside `lock`.
+
+    The page keeps showing the row, greyed, with its TODO's status for as long as the TODO exists."""
+    marks = config.read_json(path("marks.json"), {})
+    marks[key] = {"state": "done", "until": 0, "at": now()}
+    config.write_json(path("marks.json"), marks)
+
+
 def queue_todo(body: dict):
-    """Create an auto-dispatching Assistant TODO from a row. Returns (status, {id, existing})."""
+    """Create an auto-dispatching Assistant TODO from a row and mark the row done. Returns (status, {id, existing})."""
     key, title = body.get("key"), " ".join(str(body.get("title") or "").split())[:300]
     url = str(body.get("url") or "")
     if not isinstance(key, str) or not key or not title or (url and not url.startswith("https://")):
@@ -101,6 +111,7 @@ def queue_todo(body: dict):
         items = doc.setdefault("items", [])
         prior = {i.get("id"): i for i in items}.get(queued.get(key, {}).get("id"))
         if prior and prior.get("status") != "removed":
+            mark_sent(key)
             return 200, {"id": prior["id"], "existing": True}
         next_n = 1 + max([int(m.group(1)) for b in (items, doc.get("completed", []), doc.get("removed", [])) for i in b
                           if (m := re.fullmatch(r"td-(\d+)", i.get("id") or ""))] or [0])
@@ -114,6 +125,7 @@ def queue_todo(body: dict):
         write_store(doc)
         queued[key] = {"id": td_id, "at": now()}
         config.write_json(queued_file, queued)
+        mark_sent(key)
     return 200, {"id": td_id, "existing": False}
 
 

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from assistant import mode
 from assistant.slack_focus.client import Client, SlackError, http_transport
 
-from work_queue import config, page, tools
+from work_queue import config, page, tools, triage
 from work_queue.inputs import gcal, github, gmail, outlook, slack
 
 LABELS = {"slack": "Slack", "github": "GitHub", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook"}
@@ -65,8 +65,15 @@ def read_sources(doc: dict, transport, now: float) -> dict:
     return snap
 
 
-def run(transport=http_transport, now: float | None = None) -> list[dict]:
-    """One refresh. Returns each source's status line."""
+def write_page(snap: dict) -> None:
+    doc, cands = page.render(snap)
+    site_path().parent.mkdir(parents=True, exist_ok=True)
+    site_path().write_text(doc)
+    config.write_json(candidates_path(), cands)
+
+
+def run(transport=http_transport, now: float | None = None, model=None) -> list[dict]:
+    """One refresh. Returns each source's status line. `model(prompt, timeout)` replaces triage.call_model."""
     config.write_json(status_path(), {"running": True, "started": now_iso(), "pid": os.getpid()})
     try:
         snap = read_sources(config.load(), transport, time.time() if now is None else now)
@@ -74,10 +81,10 @@ def run(transport=http_transport, now: float | None = None) -> list[dict]:
         config.write_json(status_path(), {"running": False, "finished": now_iso(), "error": str(exc)})
         raise
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
-    doc, cands = page.render(snap)
-    site_path().parent.mkdir(parents=True, exist_ok=True)
-    site_path().write_text(doc)
-    config.write_json(candidates_path(), cands)
+    write_page(snap)
+    if mode.is_pro():
+        snap["triage"] = triage.run(snap, model or triage.call_model, config.read_json(config.data_dir() / "marks.json", {}))
+        write_page(snap)
     errors = [s for s in snap["status"] if s["state"] == "error"]
     config.write_json(status_path(), {"running": False, "finished": now_iso(),
                                       "error": "; ".join(f"{s['name']}: {s['detail']}" for s in errors)})

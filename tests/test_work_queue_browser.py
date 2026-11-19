@@ -26,12 +26,14 @@ from playwright.sync_api import Error, sync_playwright  # noqa: E402
 
 from work_queue import config, page, refresh, server, todo_result  # noqa: E402
 from work_queue_fakes import chromium_missing, fake_tool, first_line, require_chromium, spare_port, wq  # noqa: E402, F401
+from test_work_queue_triage import VERDICT, Model, gh_pr, raises  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.real_mode
 PRS = [{"key": f"https://github.com/o/r/pull/{n}", "link": f"https://github.com/o/r/pull/{n}", "draft": n == 3,
         "title": f"o/r#{n}: Change {n}", "meta": "Review requested · ana · opened Nov 2"} for n in (1, 2, 3)]
 MAIL = {"from": "Ana", "day": "Nov 2", "to": ["Me"], "cc": [], "body": "Body text", "unread": False}
+AGENT = {**VERDICT, "disposition": "agent"}
 COVERAGE = os.environ.get("WQ_BROWSER_COVERAGE")
 SCRIPTS: list[dict] = []
 
@@ -43,7 +45,8 @@ def snapshot() -> dict:
     outlook_rows = [{**MAIL, "key": "mail:1", "group": "gh", "title": "PR merged", "subject": "PR merged", "reason": "GitHub.",
                      "addr": "notifications@github.com", "link": "https://outlook.office.com/m1"}]
     return {"built": "Nov 18, 9:00 AM", "github": PRS, "gmail": {"me@example.com": gmail_rows}, "outlook": outlook_rows,
-            "status": [{"name": "GitHub", "state": "ok", "detail": "read 3 items"}]}
+            "status": [{"name": "GitHub", "state": "ok", "detail": "read 3 items"}],
+            "triage": {"rows": {PRS[2]["link"]: AGENT}, "start": [], "changes": None, "waiting": 0, "note": ""}}
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -249,6 +252,7 @@ def rich_snapshot() -> dict:
     gmail += [gmail_row("g-shop", "shop"), gmail_row("u-a", "note", "a@promo.example", "https://promo.example/a"),
               gmail_row("u-b", "note", "b@promo.example", "https://promo.example/b")]
     return {"built": "Nov 18, 9:00 AM", "github": [pr(n) for n in range(1, 18)], "slack": slack, "outlook": outlook,
+            "triage": {"rows": {pr(n)["link"]: AGENT for n in range(1, 11)}, "start": [], "changes": None, "waiting": 0, "note": ""},
             "gmail": {"me@example.com": gmail}, "calendar": [{"when": "9:00 AM", "title": "Standup", "account": "me@example.com",
                                                              "declined": False, "link": "https://calendar.google.com/e1"}],
             "status": [{"name": "GitHub", "state": "ok", "detail": "read 17 items"},
@@ -567,6 +571,123 @@ def test_the_apply_bar_stays_disabled_until_something_can_be_applied(site, wq, m
         tab.locator("#ap-apply").click()
         wait_text(tab, "#ap-apply", "Working…")
         assert tab.locator("#ap-apply").is_disabled()
+        cov.snap()
+        browser.close()
+
+
+# ─── triage: Start here, drafts, Send to Assistant, and the failure note ─────
+
+def triaged_site(wq, model) -> None:
+    """Refresh three pull requests through a fake gh and the fake model, as the real refresh does."""
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(n) for n in (1, 2, 3)])])
+    wq.sources({"github": {}})
+    refresh.run(model=model)
+
+
+def rows_for(items):
+    by_title = {"o/r#1: Change 1": {**VERDICT, "draft": "Looking at it today."}, "o/r#2: Change 2": AGENT}
+    return {"rows": [{"id": i["id"], **by_title.get(i["title"], VERDICT)} for i in items]}
+
+
+def li(n: int) -> str:
+    return f'.start-list li[data-key="https://github.com/o/r/pull/{n}"]'
+
+
+def no_sideways_scroll(tab) -> None:
+    widths = tab.evaluate("[document.documentElement.scrollWidth, document.documentElement.clientWidth]")
+    assert widths[0] <= widths[1], widths
+
+
+def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
+    triaged_site(wq, Model(rows=rows_for))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        context = browser.new_context()
+        context.grant_permissions(["clipboard-read", "clipboard-write"])
+        tab = context.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        tab.wait_for_selector("#start", state="visible")
+        assert tab.locator("#open-list").is_hidden()
+        assert [tab.locator(li(n)).is_visible() for n in (1, 2, 3)] == [True, True, True]
+        assert text(tab, f"{li(1)} .ap-why") == "Start with o/r#1: Change 1"
+        tab.locator(f"{li(1)} .sf-mark").click()
+        tab.wait_for_selector(li(1), state="hidden")
+        assert wait_for(lambda: json.loads((wq.data / "marks.json").read_text())[pr(1)["key"]]["state"] == "done")
+
+        tab.locator('#tabs .tab[data-t="open-list"]').click()
+        row1, row2 = f'.sf-row[data-key="{pr(1)["key"]}"]', f'.sf-row[data-key="{pr(2)["key"]}"]'
+        tab.wait_for_selector(f"{row1}.is-done")
+        assert tab.locator(f"{row1} .sf-send").count() == 0 and tab.locator(f"{row2} .sf-send").count() == 1
+        assert text(tab, f"{row1} .disp") == "You" and text(tab, f"{row2} .disp") == "Agent"
+        tab.locator(f"{row1} .draft button").click()
+        wait_text(tab, f"{row1} .draft button", "Copied")
+        assert tab.evaluate("navigator.clipboard.readText()") == "Looking at it today."
+        tab.locator(f"{row2} .sf-send").click()
+        tab.wait_for_function(f"document.querySelector('{row2} .q-status').textContent.startsWith('Queued as td-051')")
+        assert "is-done" in tab.locator(row2).get_attribute("class"), "a sent row stays, greyed"
+        assert json.loads((wq.data / "marks.json").read_text())[pr(2)["key"]]["state"] == "done"
+        assert tab.locator(li(2)).is_hidden()
+        for width in (390, 1280):
+            tab.set_viewport_size({"width": width, "height": 900})
+            no_sideways_scroll(tab)
+        cov.snap()
+
+        fresh = browser.new_context().new_page()
+        cov = Coverage(fresh)
+        fresh.goto(site + "#start")
+        fresh.wait_for_selector(li(3), state="visible")
+        assert fresh.locator(li(1)).is_hidden() and fresh.locator(li(2)).is_hidden()
+        for width in (390, 1280):
+            fresh.set_viewport_size({"width": width, "height": 900})
+            no_sideways_scroll(fresh)
+        cov.snap()
+        browser.close()
+
+
+def test_the_failure_note_shows_when_the_model_fails(site, wq):
+    triaged_site(wq, Model(rows=raises("the model didn't answer within 240 seconds")))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 800})
+        cov = Coverage(tab)
+        tab.goto(site)
+        tab.wait_for_selector("#start .triage-note", state="visible")
+        assert text(tab, "#start .triage-note") == ("Triage unavailable: the model didn't answer within 240 seconds. "
+                                                    "Rows without a verdict are sorted by rules only.")
+        tab.locator('#tabs .tab[data-t="open-list"]').click()
+        tab.wait_for_selector("#open-list .triage-note", state="visible")
+        assert tab.locator(".sf-row").count() == 3 and tab.locator(".sf-send").count() == 0
+        no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+def test_a_sent_row_stays_greyed_with_its_status_and_a_blocked_one_stays_prominent(site, wq):
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 7)], "status": []})
+    config.write_json(wq.data / "marks.json", {pr(n)["key"]: {"state": state, "until": 0} for n, state in
+                                                ((1, "done"), (2, "done"), (3, "dropped"), (4, "done"), (5, "done"))})
+    config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": td, "at": "t"} for n, td in
+                                                 ((1, "td-101"), (2, "td-102"), (3, "td-103"), (4, "td-199"), (5, "td-105"))})
+    wq.todo.write_text(json.dumps({"items": [
+        {"id": "td-101", "status": "open"}, {"id": "td-102", "status": "blocked", "statusReason": "Need access"},
+        {"id": "td-103", "status": "blocked"}, {"id": "td-105", "status": "done", "detail": "x\n\nRESULT: Opened PR 9"}]}))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        row = {n: f'.sf-row[data-key="{pr(n)["key"]}"]' for n in range(1, 7)}
+        wait_text(tab, f"{row[1]} .q-status", "Queued as td-101. Assistant picks it up within about 5 minutes.")
+        assert tab.locator(row[1]).is_visible() and "is-done" in tab.locator(row[1]).get_attribute("class")
+        assert q_status(tab, 2) == "Blocked: Need access" and q_status(tab, 3) == "Blocked."
+        for n in (2, 3):
+            classes = tab.locator(row[n]).get_attribute("class")
+            assert tab.locator(row[n]).is_visible() and "is-blocked" in classes and "is-done" not in classes
+        assert q_status(tab, 4) == "The TODO td-199 was removed."
+        assert q_status(tab, 5) == "Done. Opened PR 9" and tab.locator(row[5]).is_visible()
+        assert text(tab, ".sf-lane h3 .count") == "3"
+        assert text(tab, f"{row[2]} .sf-mark") == "Undo"
         cov.snap()
         browser.close()
 
