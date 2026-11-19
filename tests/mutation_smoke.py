@@ -505,22 +505,22 @@ CHECKS = (
     (
         'a bin change counts as new service code',
         "install.sh",
-        'find bin src/assistant slack-reactor/src -type f',
-        'find bin/todo-server.py bin/connectors src/assistant slack-reactor/src -type f',
+        'find bin src/assistant slack-reactor/src work_queue -type f',
+        'find bin/todo-server.py bin/connectors src/assistant slack-reactor/src work_queue -type f',
         'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
     ),
     (
         'the slack reactor code counts as new service code',
         "install.sh",
-        'find bin src/assistant slack-reactor/src -type f',
-        'find bin src/assistant -type f',
+        'find bin src/assistant slack-reactor/src work_queue -type f',
+        'find bin src/assistant work_queue -type f',
         'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
     ),
     (
         'a pulled slack reactor change runs the installer',
         "bin/self_update.py",
-        '"slack-reactor/src/")',
-        '"src/assistant/")',
+        '"slack-reactor/src/", "work_queue/")',
+        '"work_queue/")',
         'tests/test_self_update.py::ClassifyTests::test_bin_change_needs_install_so_always_on_services_restart',
     ),
     (
@@ -554,8 +554,8 @@ CHECKS = (
     (
         'a pull that changes the Work queue runs the installer',
         "bin/self_update.py",
-        '"src/assistant/", "work_queue/")',
-        '"src/assistant/")',
+        '"slack-reactor/src/", "work_queue/")',
+        '"slack-reactor/src/")',
         'tests/test_self_update.py::ClassifyTests::test_long_running_service_code_needs_install',
     ),
     (
@@ -617,8 +617,8 @@ CHECKS = (
     (
         'Work queue code changes count toward a restart',
         "install.sh",
-        'src/assistant work_queue -type f',
-        'src/assistant -type f',
+        'slack-reactor/src work_queue -type f',
+        'slack-reactor/src -type f',
         'tests/test_work_queue_install.py::test_the_work_queue_restarts_when_its_code_changes',
     ),
     (
