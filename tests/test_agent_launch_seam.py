@@ -3029,3 +3029,279 @@ def test_doctor_names_the_host_setting_behind_a_shell_only_gh_sign_in(home, copi
     check = doctor.check_copilot_binary()
     assert check.status == doctor.WARN
     assert "because COPILOT_GH_HOST or GH_HOST is set in this shell" in check.detail
+
+
+# ── the claude alias ──────────────────────────────────────────────────────────
+
+def _pick_alias(home: Path, alias) -> None:
+    config = home / ".assistant" / "comms" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"llm": {"provider": "claude", "claude": {"alias": alias}}}))
+
+
+def _launcher(path: Path, tag: str) -> Path:
+    """A stand-in claude that logs which copy ran, its arguments, and the
+    backend settings it got."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s|%s|%s|%s\\n" {tag} "$*" "${{CLAUDE_CODE_USE_BEDROCK-}}" '
+        '"${ANTHROPIC_BASE_URL-}" >> "$HOME/ran.log"\n')
+    path.chmod(0o755)
+    return path
+
+
+def _pane(home: Path, tmp_path: Path, define_alias: bool = True):
+    """A cmux pane in miniature. ~/.zprofile puts the plain claude first on PATH
+    and (optionally) defines `claudec` as a script that execs `claude`, like
+    ~/.local/bin/claude-copilot; the pane then puts cmux's wrapper first, as
+    cmux's shell integration does. Returns run(command) -> (log lines, stderr)."""
+    plain = _launcher(tmp_path / "plain" / "claude", "plain").parent
+    shim = _launcher(tmp_path / "shim" / "claude", "cmux-wrapper").parent
+    wrapper = tmp_path / "claude-copilot"
+    wrapper.write_text("#!/bin/sh\nexport ANTHROPIC_BASE_URL=http://localhost:4000\n"
+                       'exec claude --model proxied "$@"\n')
+    wrapper.chmod(0o755)
+    profile = f"export PATH={plain}:$PATH\n"
+    if define_alias:
+        profile += f"alias claudec={wrapper}\n"
+    (home / ".zprofile").write_text(profile)
+
+    def run(command: str) -> tuple[list[str], str]:
+        log = home / "ran.log"
+        log.unlink(missing_ok=True)
+        out = subprocess.run(
+            ["zsh", "-f", "-c", 'source "$HOME/.zprofile"; PATH="$SHIM:$PATH"; eval "$PANE_COMMAND"'],
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin", "SHIM": str(shim),
+                 "PANE_COMMAND": command},
+            capture_output=True, text=True, timeout=60)
+        return (log.read_text().splitlines() if log.exists() else []), out.stderr
+    return run
+
+
+@pytest.mark.parametrize("value,alias", [
+    ("claudec", "claudec"), ("  claudec ", "claudec"), ("claude-work.2", "claude-work.2"),
+    ("", "claude"), ("rm -rf ~", "claude"), ("a;b", "claude"), ("$(id)", "claude"),
+    ("-x", "claude"), (5, "claude"), ("droid", "claude"), ("copilot", "claude"),
+    ("fi", "claude"), ("if", "claude"), ("exec", "claude"), ("command", "claude"),
+    ("builtin", "claude"), ("noglob", "claude"), ("export", "claude")])
+def test_claude_alias_reads_the_config_and_refuses_anything_but_one_word(home, value, alias):
+    _pick_alias(home, value)
+    assert ag.claude_alias() == alias
+
+
+def test_claude_alias_defaults_to_claude_with_no_config(home):
+    assert ag.claude_alias() == "claude"
+    assert ag.launch_command(ag.CLAUDE) == "claude"
+    assert ag.launch_command(ag.CLAUDE, unattended=True) == \
+        "zsh -lic 'claude --dangerously-skip-permissions'"
+    assert ag.session_command(ag.CLAUDE, model="m", env_prefix="X=1 ") == \
+        "X=1 command claude --model m --dangerously-skip-permissions"
+
+
+def test_every_claude_launch_runs_the_alias_in_the_panes_own_shell_through_cmuxs_wrapper(
+        home, tmp_path, capsys):
+    _pick_alias(home, "claudec")
+    run = _pane(home, tmp_path)
+    assert ag.main(["launch-command", "--agent", "claude", "--unattended"]) == 0
+    spawned = capsys.readouterr().out.rstrip("\n")
+    assert spawned == ag.launch_command(ag.CLAUDE, unattended=True)
+    flagged = ag.session_command(ag.CLAUDE, model="opus[1m]", add_dirs=("/a b",),
+                                 env_prefix="CLAUDE_CODE_USE_BEDROCK=0 ")
+    for command, args, bedrock in (
+            (ag.launch_command(ag.CLAUDE), "--model proxied", ""),
+            (spawned, "--model proxied --dangerously-skip-permissions", ""),
+            (flagged, "--model proxied --model opus[1m] --dangerously-skip-permissions "
+                      "--add-dir /a b", "0")):
+        ran, err = run(command)
+        assert ran == [f"cmux-wrapper|{args}|{bedrock}|http://localhost:4000"], command
+        assert err == ""
+
+
+def test_a_claude_launch_whose_alias_is_gone_starts_claude_and_says_why(home, tmp_path):
+    _pick_alias(home, "claudec")
+    run = _pane(home, tmp_path, define_alias=False)
+    note = "Assistant: claudec isn't defined in your shell; starting claude instead.\n"
+    flagged = ag.session_command(ag.CLAUDE, model="m", env_prefix="CLAUDE_CODE_USE_BEDROCK=0 ")
+    for command, ran_as in (
+            (ag.launch_command(ag.CLAUDE), "cmux-wrapper||"),
+            (ag.launch_command(ag.CLAUDE, unattended=True),
+             "plain|--dangerously-skip-permissions|"),
+            (flagged, "cmux-wrapper|--model m --dangerously-skip-permissions|0")):
+        ran, err = run(command)
+        assert ran == [f"{ran_as}|"], command
+        assert err.endswith(note), err
+
+
+def test_pulse_dispatch_starts_the_custom_claude_alias(home, monkeypatch, tmp_path):
+    _pick_alias(home, "claudec")
+    ok, launch = _dispatch(home, monkeypatch, "seam_pulse_alias",
+                           "Claude Code v9", _claude_transcript(home))
+    assert ok is True
+    assert _pane(home, tmp_path)(launch)[0] == [
+        "cmux-wrapper|--model proxied||http://localhost:4000"]
+
+
+def test_the_slack_session_starts_the_alias_and_records_it(home, monkeypatch, tmp_path):
+    _pick_alias(home, "claudec")
+    monkeypatch.setattr(cs, "HOME", home)
+    paths = cl.Paths.from_env({"HOME": str(home), "COMMS_HOME": str(home)})
+    commands = []
+
+    def run_cmd(cmd, timeout=30):
+        commands.append(cmd)
+        if "new-workspace" in cmd:
+            return 0, "workspace:311\n", ""
+        if "list-pane-surfaces" in cmd:
+            return 0, "surface:311\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(cl, "run_cmd", run_cmd)
+    monkeypatch.setattr(cs, "await_ready", lambda **kw: (True, False))
+    monkeypatch.setattr(cs, "deliver_boot", lambda *a, **k: "/claude.jsonl")
+    monkeypatch.setattr(cs, "reconcile_warm_workspaces", lambda p, keep, log=None: None)
+    sess = cs.spawn_session(paths, Path("/boot.md"), agent=ag.CLAUDE)
+    spawn = next(c for c in commands if "new-workspace" in c)
+    (ran,), _ = _pane(home, tmp_path)(spawn[spawn.index("--command") + 1])
+    who, args, bedrock, base_url = ran.split("|")
+    assert (who, base_url) == ("cmux-wrapper", "http://localhost:4000")
+    assert "--dangerously-skip-permissions" in args and f"--add-dir {cs.REPO_ROOT}" in args
+    assert bedrock in ("0", "1")
+    assert sess["alias"] == "claudec"
+    cs.write_session(paths, sess["ws_ref"], sess["surface_ref"], sess["cwd"], "/next.jsonl")
+    assert cs.read_session(paths)["alias"] == "claudec", "a transcript rebind keeps the alias"
+
+
+@pytest.mark.parametrize("recorded,configured,respawned", [
+    (None, None, False), (None, "claudec", True), ("claudec", "claudec", False),
+    ("claudec", None, True), ("", None, False)])
+def test_a_live_claude_slack_session_restarts_when_the_alias_changes(
+        home, monkeypatch, recorded, configured, respawned):
+    listen = _load(BIN / "comms-listen.py", f"seam_listen_alias_{recorded}_{configured}")
+    if configured:
+        _pick_alias(home, configured)
+    else:
+        _pick(home, "claude")
+    rec = _live_warm_session(monkeypatch, listen, "claude")
+    sess = listen.comms_session.read_session(None)
+    sess["alias"] = recorded
+    listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
+    assert rec["closed"] == (["workspace:18"] if respawned else [])
+
+
+def test_a_copilot_slack_session_ignores_the_claude_alias(home):
+    _pick_alias(home, "claudec")
+    assert cs.warm_session_alias_is_current({"agent": "copilot"}) is True
+    assert "claudec" not in ag.session_command(ag.COPILOT)
+
+
+@pytest.mark.parametrize("alias", ["claude", "claudec"])
+def test_a_claude_resume_rebuilds_with_plain_claude_whatever_the_alias(home, alias):
+    _pick_alias(home, alias)
+    hook = _load(REPO / "hooks" / "cmux-auto-resume.py", f"seam_hook_alias_{alias}")
+    assert hook.fallback_resume("claude", "/usr/local/bin/claude", "c-1", "/w") == \
+        "cd /w && /usr/local/bin/claude --resume c-1"
+    assert ag.binding_is_current(ag.CLAUDE, "cd /w && claude --resume c-1") is True
+
+
+@pytest.mark.parametrize("alias", ["claude", "claudec"])
+def test_restore_replays_the_saved_binding_without_the_environment_cmux_kept(
+        home, tmp_path, alias):
+    _pick_alias(home, alias)
+    restore = _load(BIN / "cmux-restore-sessions.py", f"seam_restore_alias_{alias}")
+    work = tmp_path / "work"
+    work.mkdir()
+    binding = f"cd {work} && claude --resume c-9 --model opus"
+    panel = {"id": "p", "directory": str(work), "terminal": {
+        "surfaceId": "s",
+        "resumeBinding": {"checkpointId": "c-9", "cwd": str(work), "command": binding,
+                          "environment": {"ANTHROPIC_BASE_URL": "http://localhost:4000",
+                                          "ANTHROPIC_AUTH_TOKEN": "sekrit"}},
+        "agent": {"kind": "claude", "sessionId": "c-9", "workingDirectory": str(work),
+                  "launchCommand": {"arguments": ["/bin/claude", "--model", "opus"]}}}}
+    assert restore.build_resume_cmd(panel) == (str(work), binding)
+    assert _pane(home, tmp_path)(binding)[0] == ["cmux-wrapper|--resume c-9 --model opus||"]
+
+
+def test_claude_alias_command_saves_shows_and_clears_the_alias(home, capsys, tmp_path):
+    _pane(home, tmp_path)
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_alias")
+    config = llm_runner.config_path(home=home)
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"llm": {"provider": "claude", "claude": {"keep": 1}}}))
+    assert cli.main(["claude-alias", "claudec"]) == 0
+    assert json.loads(config.read_text())["llm"]["claude"] == {"keep": 1, "alias": "claudec"}
+    assert "Claude sessions start with: claudec" in capsys.readouterr().out
+    assert cli.status(config)["claude_alias"] == "claudec"
+    assert ag.launch_command(ag.CLAUDE).startswith("if command -v claudec ")
+    assert cli.main(["claude-alias", "claude"]) == 0
+    assert json.loads(config.read_text())["llm"]["claude"] == {"keep": 1}
+    assert "Claude sessions start with: claude" in capsys.readouterr().out
+    assert ag.launch_command(ag.CLAUDE) == "claude"
+    config.write_text(json.dumps({"llm": {"claude": {"alias": "claudec"}}}))
+    assert cli.main(["claude-alias", "claude"]) == 0
+    assert "claude" not in json.loads(config.read_text())["llm"]
+
+
+@pytest.mark.parametrize("name,why", [
+    ("rm -rf", "isn't one shell word"), ("droid", "a shell keyword, copilot, or droid"),
+    ("nope-no-such-alias", "isn't an alias, function, or command"),
+    ("exec", "a shell keyword, copilot, or droid"),
+    ("if", "a shell keyword, copilot, or droid")])
+def test_claude_alias_command_refuses_a_bad_or_unknown_name(home, capsys, tmp_path, name, why):
+    _pane(home, tmp_path)
+    cli = _load(BIN / "assistant-llm.py", f"assistant_llm_alias_bad_{name.replace(' ', '_')}")
+    assert cli.main(["claude-alias", name]) == 2
+    assert why in capsys.readouterr().err
+    assert not llm_runner.config_path(home=home).exists()
+
+
+def test_claude_alias_command_refuses_a_config_whose_claude_key_is_not_an_object(
+        home, capsys, tmp_path):
+    _pane(home, tmp_path)
+    cli = _load(BIN / "assistant-llm.py", "assistant_llm_alias_shape")
+    config = llm_runner.config_path(home=home)
+    config.parent.mkdir(parents=True, exist_ok=True)
+    for doc, key in (({"llm": []}, "'llm'"), ({"llm": {"claude": "x"}}, "'llm.claude'")):
+        config.write_text(json.dumps(doc))
+        assert cli.main(["claude-alias", "claudec"]) == 2
+        assert f"config key {key} must be an object" in capsys.readouterr().err
+
+
+def test_alias_lookup_names_each_kind_and_reports_a_shell_that_fails(home, monkeypatch, tmp_path):
+    _pane(home, tmp_path)
+    (home / ".zprofile").write_text(
+        (home / ".zprofile").read_text() + "echo profile noise\nmyfn() { :; }\n")
+    names = ("claudec", "myfn", "sh", "echo", "exec", "if", "nope-x", "a;b")
+    kinds = {n: ag.alias_kind(n) for n in names}
+    assert kinds == {"claudec": "alias", "myfn": "function", "sh": "command", "echo": "builtin",
+                     "exec": None, "if": None, "nope-x": None, "a;b": None}
+    assert [n for n in kinds if ag.alias_launchable(n)] == ["claudec", "myfn", "sh"]
+
+    def broken(*a, **k):
+        raise OSError("no zsh")
+
+    monkeypatch.setattr(ag.subprocess, "run", broken)
+    assert ag.alias_kind("claudec") is None
+
+
+def test_doctor_checks_the_claude_alias(home, tmp_path):
+    doctor = _load(BIN / "assistant-doctor.py", "seam_doctor_alias")
+    skipped = doctor.check_claude_alias()
+    assert (skipped.status, skipped.detail) == (doctor.SKIP, "Claude sessions start with claude")
+    _pick_alias(home, "claudec")
+    _pane(home, tmp_path)
+    passed = doctor.check_claude_alias()
+    assert (passed.status, passed.detail) == (doctor.PASS, "claudec is defined in your login zsh (alias)")
+    _pane(home, tmp_path, define_alias=False)
+    warned = doctor.check_claude_alias()
+    assert warned.status == doctor.WARN
+    assert "start with claude instead" in warned.detail
+    assert warned.remedy == ("define claudec in ~/.zprofile, or run: "
+                             "python3 bin/assistant-llm.py claude-alias claude")
+    _pick_alias(home, "echo")
+    builtin = doctor.check_claude_alias()
+    assert (builtin.status, builtin.detail, builtin.remedy) == (
+        doctor.WARN, "echo is a shell builtin in your login zsh, so Claude sessions won't start",
+        "run: python3 bin/assistant-llm.py claude-alias claude")
+    assert doctor.check_claude_alias in doctor.AGENT_CHECKS
