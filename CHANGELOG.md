@@ -62,7 +62,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   breaking the dashboard.
 - The change-coverage gate measures `work_queue/`, and the Work queue page's
   script needs full line and block coverage from a real browser, like the
-  dashboard's (`--work-queue-browser-report`).
+  dashboard's (`--work-queue-browser-report`). Python coverage now traces
+  greenlets, so code that runs under Playwright's synchronous API is measured.
 
 ### Removed
 - Stop running git from Assistant. The attention tab's preview server ran

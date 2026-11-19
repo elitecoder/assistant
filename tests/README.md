@@ -80,7 +80,9 @@ The current coverage adapters cover Python under `bin/`, `hooks/`, `install/`,
 `src/`, and `work_queue/`, the dashboard's embedded JavaScript, and the Work
 queue page's script (`JS` in `work_queue/page.py`). With `$WQ_BROWSER_COVERAGE`
 set, `test_work_queue_browser.py` records that script's coverage in Chromium
-during the Python coverage run. Changes to other executable code fail until
+during the Python coverage run. `tests/coverage.ini` traces greenlets, because Playwright's
+synchronous API runs your code in them, so the coverage run needs Playwright
+(which brings `greenlet`) installed. Changes to other executable code fail until
 an adapter is added; they aren't silently treated as covered.
 
 The checked-in workflow runs these checks for pull requests and pushes to
