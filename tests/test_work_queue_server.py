@@ -437,13 +437,20 @@ def test_unsubscribe_never_reaches_your_own_machine_or_network(wq, unsub_site, m
         return lookup(host, *args, **kwargs)
 
     monkeypatch.setattr(server.socket, "getaddrinfo", offline_lookup)
+    connects = []
+
+    def refuse(address, *args, **kwargs):
+        connects.append(address)
+        raise ConnectionRefusedError(f"the test refused a connection to {address}")
+
+    monkeypatch.setattr(server.socket, "create_connection", refuse)
     cands = {"u1": {"kind": "unsub", "url": base + "/ok"}, "u2": {"kind": "unsub", "url": "https://127.0.0.1/ok"},
              "u3": {"kind": "unsub", "url": "https://10.1.2.3/x"}, "u4": {"kind": "unsub", "url": "https://localhost/x"},
              "u5": {"kind": "unsub", "url": "https://[::1]/x"}, "u6": {"kind": "unsub", "url": "https://192.168.0.9/x"},
              "u7": {"kind": "unsub", "url": "https://no-such-host.invalid/x"}, "u8": {"kind": "unsub", "url": "https:///x"},
              "u9": {"kind": "unsub", "url": "https://93.184.215.14:99999/x"}}
     out = server.apply_unsub([(k, c, False) for k, c in cands.items()])
-    assert hits == []
+    assert hits == [] and connects == []
     assert out["u1"]["error"] == out["u8"]["error"] == "The unsubscribe link isn't an https link"
     for key, host in (("u2", "127.0.0.1"), ("u3", "10.1.2.3"), ("u4", "localhost"), ("u5", "::1"), ("u6", "192.168.0.9")):
         assert out[key] == {"status": "error", "error": f"The unsubscribe link points at a private address ({host})",

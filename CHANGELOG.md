@@ -100,6 +100,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   script needs full line and block coverage from a real browser, like the
   dashboard's (`--work-queue-browser-report`). Python coverage now traces
   greenlets, so code that runs under Playwright's synchronous API is measured.
+- `tests/mutation_smoke.py` counts a mutant whose test runs past 90 seconds as
+  rejected and marks it `rejected (timed out)`. A baseline that runs that long
+  stops the run with the check's name and test. Each check records its time.
+  The private-address unsubscribe test refuses every outbound connection, so
+  its mutant fails at once instead of waiting on two private addresses.
 
 ### Removed
 - Stop running git from Assistant. The attention tab's preview server ran

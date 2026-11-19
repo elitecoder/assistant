@@ -8,11 +8,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
 REPO = Path(__file__).resolve().parents[1]
+TEST_TIMEOUT_SEC = 90
 CHECKS = (
     (
         "changed conversation invalidates guidance",
@@ -1107,39 +1109,52 @@ def run_test(repo: Path, home: Path, selector: str):
     }
     return subprocess.run(
         [sys.executable, "-m", "pytest", selector, "-q", "--tb=short"],
-        cwd=repo, env=env, capture_output=True, text=True, timeout=90)
+        cwd=repo, env=env, capture_output=True, text=True, timeout=TEST_TIMEOUT_SEC)
+
+
+def run_check(name: str, filename: str, original: str, broken: str, selector: str) -> dict:
+    """Run selector on a copy of the sources, then on a copy with the mutation; the mutant must fail.
+
+    A mutant whose test runs past TEST_TIMEOUT_SEC counts as rejected: the test didn't pass."""
+    started = time.monotonic()
+    with TemporaryDirectory(prefix="assistant-mutation-") as temporary:
+        root = Path(temporary)
+        repo, home = root / "repo", root / "home"
+        repo.mkdir()
+        home.mkdir()
+        copy_sources(repo)
+        try:
+            baseline = run_test(repo, home, selector)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{name}: baseline {selector} didn't finish within {TEST_TIMEOUT_SEC} seconds") from None
+        if baseline.returncode != 0:
+            raise RuntimeError(f"{name}: baseline failed\n{baseline.stdout}\n{baseline.stderr}")
+        target = repo / filename
+        source = target.read_text()
+        if source.count(original) != 1:
+            raise RuntimeError(f"{name}: expected one mutation target")
+        target.write_text(source.replace(original, broken, 1))
+        reject_invalid_shell(name, target)
+        try:
+            mutant = run_test(repo, home, selector)
+        except subprocess.TimeoutExpired:
+            outcome, failure = "rejected (timed out)", [f"TIMEOUT {selector} ran past {TEST_TIMEOUT_SEC} seconds"]
+        else:
+            if mutant.returncode != 1 or "FAILED" not in mutant.stdout:
+                raise RuntimeError(f"{name}: mutant was not rejected by {selector}\n{mutant.stdout}\n{mutant.stderr}")
+            outcome, failure = "rejected", [line for line in mutant.stdout.splitlines() if line.startswith("FAILED")]
+    return {"check": name, "test": selector, "baseline": "passed", "mutant": outcome, "failure": failure,
+            "seconds": round(time.monotonic() - started, 1)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    results = []
-    for name, filename, original, broken, selector in CHECKS:
-        with TemporaryDirectory(prefix="assistant-mutation-") as temporary:
-            root = Path(temporary)
-            repo, home = root / "repo", root / "home"
-            repo.mkdir()
-            home.mkdir()
-            copy_sources(repo)
-            baseline = run_test(repo, home, selector)
-            if baseline.returncode != 0:
-                raise RuntimeError(f"{name}: baseline failed\n{baseline.stdout}\n{baseline.stderr}")
-            target = repo / filename
-            source = target.read_text()
-            if source.count(original) != 1:
-                raise RuntimeError(f"{name}: expected one mutation target")
-            target.write_text(source.replace(original, broken, 1))
-            reject_invalid_shell(name, target)
-            mutant = run_test(repo, home, selector)
-            if mutant.returncode != 1 or "FAILED" not in mutant.stdout:
-                raise RuntimeError(f"{name}: mutant was not rejected\n{mutant.stdout}\n{mutant.stderr}")
-            results.append({
-                "check": name, "test": selector, "baseline": "passed", "mutant": "rejected",
-                "failure": [line for line in mutant.stdout.splitlines() if line.startswith("FAILED")],
-            })
+    results = [run_check(*check) for check in CHECKS]
     args.output.write_text(json.dumps({"passed": True, "checks": results}, indent=2))
-    print(f"{len(results)} targeted mutations rejected; production files were not edited.")
+    timed_out = sum(result["mutant"] == "rejected (timed out)" for result in results)
+    print(f"{len(results)} targeted mutations rejected ({timed_out} by timing out); production files were not edited.")
 
 
 if __name__ == "__main__":
