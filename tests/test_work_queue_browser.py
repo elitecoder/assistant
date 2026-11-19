@@ -611,8 +611,11 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         assert tab.locator("#open-list").is_hidden()
         assert [tab.locator(li(n)).is_visible() for n in (1, 2, 3)] == [True, True, True]
         assert text(tab, f"{li(1)} .ap-why") == "Start with o/r#1: Change 1"
+        badge = {t: f'#tabs .tab[data-t="{t}"] span' for t in ("start", "open-list")}
+        assert (text(tab, badge["start"]), text(tab, badge["open-list"]), text(tab, "#open-total")) == ("3", "3", "3")
         tab.locator(f"{li(1)} .sf-mark").click()
         tab.wait_for_selector(li(1), state="hidden")
+        assert (text(tab, badge["start"]), text(tab, badge["open-list"]), text(tab, "#open-total")) == ("2", "2", "2")
         assert wait_for(lambda: json.loads((wq.data / "marks.json").read_text())[pr(1)["key"]]["state"] == "done")
 
         tab.locator('#tabs .tab[data-t="open-list"]').click()
@@ -627,7 +630,10 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         tab.wait_for_function(f"document.querySelector('{row2} .q-status').textContent.startsWith('Queued as td-051')")
         assert "is-done" in tab.locator(row2).get_attribute("class"), "a sent row stays, greyed"
         assert json.loads((wq.data / "marks.json").read_text())[pr(2)["key"]]["state"] == "done"
-        assert tab.locator(li(2)).is_hidden()
+        assert (text(tab, badge["start"]), text(tab, badge["open-list"])) == ("1", "1")
+        tab.locator('#tabs .tab[data-t="start"]').click()
+        tab.wait_for_selector(li(3), state="visible")
+        assert tab.locator(li(2)).is_hidden() and tab.locator(li(2)).get_attribute("hidden") is not None
         for width in (390, 1280):
             tab.set_viewport_size({"width": width, "height": 900})
             no_sideways_scroll(tab)

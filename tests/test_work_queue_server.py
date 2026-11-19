@@ -66,7 +66,9 @@ def test_sending_a_row_marks_it_done_and_keeps_its_other_marks(wq):
 
 def test_a_refused_send_saves_no_mark(wq):
     assert server.queue_todo({"key": ROW, "title": ""})[0] == 400
-    assert not (wq.data / "marks.json").exists()
+    assert server.queue_todo({"key": "C1:1.1", "title": "A row without a link"}) == (
+        400, {"error": "key and title are required, and key and url must be https"})
+    assert not (wq.data / "marks.json").exists() and len(wq.items()) == 1
 
 
 def test_sending_the_same_row_twice_returns_the_first_todo(wq):
@@ -581,6 +583,7 @@ def test_the_refresh_button_rebuilds_the_page_in_the_background(http, wq, monkey
     assert state["finished"] and state["error"] == ""
     assert "No sources are linked yet." in http("/")[1]
     assert "Slack: off — not linked" in (wq.data / "refresh.log").read_text()
+    assert not (wq.home / ".assistant/cost-ledger.jsonl").exists(), "the background refresh made no model call"
 
 
 # ─── the Pro mode gate ───────────────────────────────────────────────────────

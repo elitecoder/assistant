@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 
 from assistant import mode
@@ -83,7 +84,11 @@ def run(transport=http_transport, now: float | None = None, model=None) -> list[
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
     write_page(snap)
     if mode.is_pro():
-        snap["triage"] = triage.run(snap, model or triage.call_model, config.read_json(config.data_dir() / "marks.json", {}))
+        try:
+            snap["triage"] = triage.run(snap, model or triage.call_model, config.read_json(config.data_dir() / "marks.json", {}))
+        except Exception as exc:  # noqa: BLE001 — a triage bug never holds back the page; the traceback goes to the log
+            traceback.print_exc()
+            snap["triage"] = triage.empty(f"triage stopped on an unexpected error ({type(exc).__name__})")
         write_page(snap)
     errors = [s for s in snap["status"] if s["state"] == "error"]
     config.write_json(status_path(), {"running": False, "finished": now_iso(),

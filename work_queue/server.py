@@ -102,8 +102,8 @@ def queue_todo(body: dict):
     """Create an auto-dispatching Assistant TODO from a row and mark the row done. Returns (status, {id, existing})."""
     key, title = body.get("key"), " ".join(str(body.get("title") or "").split())[:300]
     url = str(body.get("url") or "")
-    if not isinstance(key, str) or not key or not title or (url and not url.startswith("https://")):
-        return 400, {"error": "key and title are required, and url must be https"}
+    if not isinstance(key, str) or not key.startswith("https://") or not title or (url and not url.startswith("https://")):
+        return 400, {"error": "key and title are required, and key and url must be https"}
     queued_file = path("queued.json")
     with lock, todostore.todo_lock():
         queued = config.read_json(queued_file, {})

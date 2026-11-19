@@ -121,7 +121,8 @@ Select **Refresh** to re-read every linked source. A source that fails shows
 its error at the top of the page, and the other sources still render.
 
 - **Start here**: the 5 to 8 open rows to do first, with the **Since last
-  night** box above them. It's the first tab whenever triage ran.
+  night** box above them. It's the first tab whenever triage has a list, a
+  change summary, or a note for you. The page opens on the tab you used last.
 - **Open list**: the rows that need you. Slack saves whose thread moved
   recently, pull requests that ask for your review, Outlook mail a person sent
   you that you haven't replied to, and Gmail from a person that's unread or
@@ -164,15 +165,21 @@ never holds the rows back. Default mode makes no model call.
   deadlines, effort, and age, with a one-line reason each. A row you marked
   Done, dropped, or snoozed never appears there, and its **Done** button saves
   the same mark as the row's.
-- **Since last night** compares this refresh with the last snapshot from an
-  earlier day, or with the previous refresh on your first day. The new, gone,
-  and changed counts per source come from the rows; the model writes one
-  sentence per source.
+  A blocked row stays in full view on the Open list, but not on Start here.
+- **Since last night** compares every row of each source, not only open rows,
+  with the last snapshot from an earlier day, or with the previous refresh on
+  your first day. A row counts as changed when what it says changes, not when
+  a rule's wording such as "Quiet for 3 days" or a read flag changes. The new,
+  gone, and changed counts per source come from the rows; the model writes one
+  sentence per source from the titles. A source that wasn't read in both
+  snapshots isn't compared.
 
-A refresh triages up to 120 new or changed rows, 30 to a call. The rest wait
-for the next refresh, and the Open list says how many. A row whose content
-didn't change is never sent again: verdicts are cached in
-`$WQ_DATA/triage-cache.json` by a hash of each row's content.
+A refresh triages up to 120 new or changed rows, 30 to a call. The rest, and
+any row the model skipped, wait for the next refresh, and the Open list says
+how many. A row whose content didn't change is never sent again: verdicts are
+cached in `$WQ_DATA/triage-cache.json` by a hash of each row's content, and a
+verdict stays cached for 14 days after its row was last seen, so a source that
+fails for one refresh doesn't lose its verdicts.
 
 ### What the model sees and can do
 
@@ -180,7 +187,9 @@ didn't change is never sent again: verdicts are cached in
   sent and never judged; it's listed under **Saves that can't be read** with a
   link to open it in Slack.
 - Text that looks like a token, key, or password is replaced with
-  `[removed]` before it's sent.
+  `[removed]` before it's sent. It's a pattern match, so it can miss an
+  unusual format, and it also removes long runs of letters and digits, such as
+  a full commit hash.
 - Row text sits between markers with a random code the text can't guess, and
   the prompt tells the model the text is data, never instructions.
 - Each answer is checked against a strict format: only the four dispositions
@@ -188,15 +197,20 @@ didn't change is never sent again: verdicts are cached in
   else in the answer is ignored.
 - An answer never acts. A draft is text you copy and send yourself, and **Send
   to Assistant** still waits for you to select it.
+- Rows go to the model 30 at a time, so text in one row could still sway the
+  labels on the others in its call, for example calling them **Agent**. A label
+  only changes a pill or which rows offer **Send to Assistant**, and a sent row
+  keeps the TODO's own safety rules.
 
 ### When triage is unavailable
 
 If a call fails, takes too long, would go over today's model budget, or
 answers in the wrong format, triage stops. The page keeps every rule-based
 row, keeps any verdict that finished, and shows **Triage unavailable** with the
-reason on **Start here** and the Open list. The budget is the Strategist's
-`dailyCostCeilingUsd` (default $5.00) across every model job, read from the
-cost ledger in `~/.assistant/cost-ledger.jsonl`. Each call adds a row there
+reason on **Start here** and the Open list. An unexpected error in triage
+does the same, and its details go to the refresh log. The budget is the
+Strategist's `dailyCostCeilingUsd` (default $5.00) across every model job for
+the UTC day, read from the cost ledger in `~/.assistant/cost-ledger.jsonl`. Each call adds a row there
 with `caller` set to `work_queue`.
 
 ### Choose the model
@@ -258,7 +272,7 @@ email and never changes Outlook.
 |---|---|
 | `~/.assistant/work-queue/sources.json` | Your linked sources |
 | `~/.assistant/work-queue/browser-profile/` | The Slack browser session |
-| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, queued TODOs, the triage cache, the built page in `site/`, and the refresh snapshots in `work/`, including the open-row snapshots for **Since last night** |
+| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, queued TODOs, the triage cache, the built page in `site/`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
 | `~/.assistant/logs/work-queue.launchd.*` | The server's output |
 
 Tests point `HOME` and `WQ_DATA` at temporary folders, so they never touch

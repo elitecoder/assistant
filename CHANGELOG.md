@@ -45,8 +45,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     ignored). Model output never acts. A Slack save that can't be read is never
     sent to the model.
   - When a call fails, times out, is over budget, or answers in the wrong
-    shape, the page keeps its rule-based rows and shows "Triage unavailable:"
-    with the reason.
+    shape, or triage hits an unexpected error, the page keeps its rule-based
+    rows and shows "Triage unavailable:" with the reason. Cached verdicts are
+    checked against the schema again when they're read, and stay cached for 14
+    days after their row was last seen, so a source that fails once doesn't
+    lose them.
   - Every open row has Done, Snooze, and Drop. Only rows the model called
     `agent` offer Send to Assistant. Sending a row also marks it done, so it
     leaves Start here and the open count; it stays on the page, greyed, with

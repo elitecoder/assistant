@@ -74,8 +74,8 @@ def ctx_html(rec: dict) -> str:
 def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None) -> str:
     """One Open list row, with the model's verdict when there is one. Only `agent` rows offer Send to Assistant."""
     v = verdict or {}
-    pill = f'<span class="disp d-{v["disposition"]}">{DISP[v["disposition"]]}</span>' if v else ""
-    effort = f'<span class="sf-effort sf-{v["effort"].lower()}">{v["effort"]}</span>' if v else ""
+    pill = f'<span class="disp d-{e(v["disposition"])}">{e(DISP[v["disposition"]])}</span>' if v else ""
+    effort = f'<span class="sf-effort sf-{e(v["effort"].lower())}">{e(v["effort"])}</span>' if v else ""
     why = f'<span class="sf-why">{e(v["why"])}</span>' if v else ""
     send = ('<button class="btn sf-send" onclick="queueTodo(this)" title="Create an Assistant TODO that starts on its own">'
             'Send to Assistant</button>') if v.get("disposition") == "agent" else ""
@@ -152,7 +152,7 @@ def start_section(tri: dict, note: str) -> str:
     items = "".join(f'<li data-key="{e(s["key"])}" data-src="{e(s["source"].lower())}"><div>'
                     f'<a class="sf-title" href="{e(s["key"])}"{NEWTAB}>{e(s["title"])}</a>'
                     f' <span class="pr-pill src">{e(s["source"])}</span>'
-                    + (f' <span class="sf-effort sf-{s["effort"].lower()}">{s["effort"]}</span>' if s["effort"] else "")
+                    + (f' <span class="sf-effort sf-{e(s["effort"].lower())}">{e(s["effort"])}</span>' if s["effort"] else "")
                     + '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button></div>'
                     f'<span class="ap-why">{e(s["reason"])}</span></li>' for s in tri["start"])
     body = f'<ol class="start-list">{items}</ol>' if items else '<p class="meta">No Start here list this time.</p>'
@@ -192,7 +192,7 @@ def render(snap: dict) -> tuple[str, dict]:
                            for m in rows if m["group"] == "act"]))
     total = sum(body.count('class="sf-row"') for body in lanes)
     sections.append(f'<div id="open-list" class="tab-sec"><div class="cut"><div class="cut-top"><b>Open list</b>'
-                    f'<span class="meta">{total} open items. Mark each Done, Snooze it for 3 days, or Drop it. '
+                    f'<span class="meta"><span id="open-total">{total}</span> open items. Mark each Done, Snooze it for 3 days, or Drop it. '
                     'Send a row the model called Agent to Assistant to finish on its own.</span></div>'
                     '<button class="chip" id="showhidden">Show snoozed and dropped</button></div>'
                     f'{note}{"".join(lanes) or "<p class=meta>No sources are linked yet.</p>"}</div>')
@@ -415,6 +415,10 @@ function paint(){const now=Date.now();let hidden=0;
   r.classList.toggle('is-done',done);r.classList.toggle('is-hidden',hide);r.classList.toggle('is-blocked',blocked);if(hide)hidden++;
   r.querySelector('.sf-mark').textContent=marked?'Undo':'Done'});
  document.querySelectorAll('.start-list li').forEach(li=>{const v=MK[li.dataset.key];li.hidden=!!v&&(v.state!=='snoozed'||v.until>now)});
+ const open=document.querySelectorAll('.sf-lane .sf-row:not(.is-done):not(.is-hidden)').length;
+ for(const [s,n] of [['#open-total',open],['#tabs .tab[data-t="open-list"] span',open],
+  ['#tabs .tab[data-t="start"] span',document.querySelectorAll('.start-list li:not([hidden])').length]]){
+  const el=document.querySelector(s);if(el)el.textContent=n}
  document.querySelectorAll('.sf-lane').forEach(l=>{l.querySelector('h3 .count').textContent=l.querySelectorAll('.sf-row:not(.is-done):not(.is-hidden)').length});
  const b=$('showhidden');if(b)b.textContent=(document.body.classList.contains('show-hidden')?'Hide':'Show')+' snoozed and dropped ('+hidden+')'}
 async function setState(b,state){const k=b.closest('[data-key]').dataset.key,cur=MK[k]&&MK[k].state;

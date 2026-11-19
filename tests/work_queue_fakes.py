@@ -25,7 +25,7 @@ MODEL_ENV = ("ASSISTANT_LLM_CONFIG", "CLAUDE_BIN", "COPILOT_BIN", "DROID_BIN", "
              "WORK_QUEUE_DROID_MODEL", "WORK_QUEUE_LOCAL_MODEL", "WORK_QUEUE_COPILOT_MODEL", "COPILOT_MODEL",
              "ASSISTANT_LOCAL_LLM_URL", "ASSISTANT_MODEL_BALANCED", "MODEL_PROVIDER", "CLAUDE_CODE_USE_BEDROCK",
              "CLAUDE_CODE_USE_VERTEX")
-SCRIPT ='''#!{python}
+SCRIPT = '''#!{python}
 import json, os, sys
 from pathlib import Path
 here = Path(__file__).resolve().parent
