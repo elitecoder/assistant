@@ -246,14 +246,14 @@ def render(snap: dict) -> tuple[str, dict]:
                  + "".join(f'<a class="tab" href="#{t}" data-t="{t}" style="--acc:{c}">{e(n)}{f" <span>{k}</span>" if k != "" else ""}</a>'
                            for t, n, k, c in tabs) + '</nav>')
     maildata = json.dumps([{"k": m["key"], "a": m["addr"], "s": m["subject"]} for m in mail]).replace("</", "<\\/")
+    bar = ('<div class="ap-bar" id="ap-bar"><span id="ap-count"></span><button class="btn ap-apply" id="ap-apply" '
+           'onclick="applyNow()">Apply approvals</button><span class="meta" id="ap-msg"></span></div>') if cands else ""
     doc = (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
            f'<title>Work queue</title><style>{CSS}</style><body><div class="section">'
            f'<div class="sf-head"><h2>Work queue</h2><p class="meta">Built {e(snap["built"])} from your linked sources. '
            'Rules sort every row; nothing is sent without you.</p>'
            '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span></div>'
-           f'<ul class="sources">{status}</ul>{tabs_html}{"".join(sections)}'
-           '<div class="ap-bar" id="ap-bar"><span id="ap-count"></span><button class="btn ap-apply" id="ap-apply" onclick="applyNow()">'
-           'Apply approvals</button><span class="meta" id="ap-msg"></span></div>'
+           f'<ul class="sources">{status}</ul>{tabs_html}{"".join(sections)}{bar}'
            f'</div><script>const MAILDATA={maildata};{JS}</script></body></html>')
     return doc, cands
 

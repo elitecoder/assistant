@@ -34,6 +34,7 @@ def test_only_linked_sources_run(wq):
     html = refresh.site_path().read_text()
     assert 'data-key="https://github.com/o/r/pull/7"' in html and 'data-q-title="o/r#7: Fix it"' in html
     assert 'id="slack-saves"' not in html and 'id="email"' not in html and 'id="gmail-1"' in html
+    assert 'id="ap-bar"' in html
     cands = json.loads(refresh.candidates_path().read_text())
     assert {c["kind"] for c in cands.values()} == {"gmail", "unsub"}
     assert json.loads(refresh.status_path().read_text())["error"] == ""
@@ -41,7 +42,7 @@ def test_only_linked_sources_run(wq):
     wq.sources({"github": {"skip_authors": ["ana"]}})
     refresh.run(now=NOW)
     html = refresh.site_path().read_text()
-    assert "o/r#7" not in html and 'id="gmail-1"' not in html
+    assert "o/r#7" not in html and 'id="gmail-1"' not in html and 'id="ap-bar"' not in html
     assert json.loads(refresh.candidates_path().read_text()) == {}
 
 
