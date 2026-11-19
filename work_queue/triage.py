@@ -51,7 +51,7 @@ SOURCES = ("Slack", "GitHub", "Outlook", "Gmail")
 MAX_ROWS = 120
 BATCH = 30
 MAX_START = 8
-MAX_START_CANDIDATES = 60
+MAX_START_CANDIDATES = 150
 MAX_TITLES = 12
 CALL_TIMEOUT = 240
 DEADLINE = 600
@@ -265,8 +265,9 @@ class Triage:
 
     def start(self, items: list[dict], verdicts: dict, marks: dict, saved: dict, out: dict) -> dict:
         now_ms = time.time() * 1000
-        cands = [i for i in items if not hidden(marks.get(i["link"]), now_ms)
-                 and verdicts.get(i["link"], {}).get("disposition") != "drop"][:MAX_START_CANDIDATES]
+        cands = sorted((i for i in items if not hidden(marks.get(i["link"]), now_ms)
+                        and verdicts.get(i["link"], {}).get("disposition") != "drop"),
+                       key=lambda i: i["link"] not in verdicts)[:MAX_START_CANDIDATES]
         if not cands:
             return {}
         payload = [{"id": j, **{k: i[k] for k in ("source", "title", "who", "when")},

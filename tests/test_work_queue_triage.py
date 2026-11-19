@@ -151,12 +151,13 @@ def test_answers_outside_the_schema_are_ignored(wq):
                                                                       "disposition": "handoff", "effort": "Large"}]}
 
     def start(items):
-        return {"start": [{"id": 8, "reason": "Hand it to Bo."}, {"id": 8, "reason": "Again"}, {"id": 0, "reason": "r" * 201},
-                          {"id": 42, "reason": "Unknown"}, *({"id": n, "reason": f"Item {n}"} for n in range(1, 8))]}
+        return {"start": [{"id": 1, "reason": "Hand it to Bo."}, {"id": 1, "reason": "Again"}, {"id": 0, "reason": "r" * 201},
+                          {"id": 42, "reason": "Unknown"}, *({"id": n, "reason": f"Item {n}"} for n in range(2, 9)),
+                          {"id": 0, "reason": "Past the cap"}]}
     tri, html = triaged(snap(*(pr(n) for n in range(1, 10))), Model(rows=rows, start=start))
     assert tri["rows"] == {pr(1)["link"]: VERDICT,
                            pr(9)["link"]: {"why": "No draft key.", "disposition": "handoff", "effort": "Large", "draft": ""}}
-    assert [s["reason"] for s in tri["start"]] == ["Hand it to Bo.", *(f"Item {n}" for n in range(1, 8))]
+    assert [s["reason"] for s in tri["start"]] == ["Hand it to Bo.", *(f"Item {n}" for n in range(2, 9))]
     assert tri["start"][0] == {"key": pr(9)["link"], "title": "o/r#9: Change 9", "source": "GitHub", "effort": "Large",
                                "reason": "Hand it to Bo."}
     assert "merge" not in json.dumps(tri) and tri["note"] == ""
@@ -256,6 +257,16 @@ def test_items_marked_done_dropped_or_snoozed_never_reach_the_start_list(wq):
     start = html[html.index('id="start"'):html.index('id="open-list"')]
     assert all(f'data-key="{pr(n)["link"]}"' not in start for n in (1, 2, 3, 6))
     assert start.count('<li data-key=') == 3 and "setState(this,'done')" in start
+
+
+def test_start_here_looks_at_triaged_rows_first_up_to_its_cap(wq, monkeypatch):
+    model = Model()
+    triaged(snap(pr(3)), model)
+    monkeypatch.setattr(triage, "MAX_ROWS", 0)
+    monkeypatch.setattr(triage, "MAX_START_CANDIDATES", 2)
+    tri, _ = triaged(snap(pr(1), pr(2), pr(3)), model)
+    assert [i["title"] for i in model.of("start")[-1]] == ["o/r#3: Change 3", "o/r#1: Change 1"]
+    assert tri["waiting"] == 2
 
 
 def test_the_start_list_reranks_when_marks_change_and_is_reused_when_nothing_did(wq):

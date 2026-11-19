@@ -952,9 +952,16 @@ CHECKS = (
     (
         'marked rows never reach the Start here call',
         'work_queue/triage.py',
-        'cands = [i for i in items if not hidden(marks.get(i["link"]), now_ms)',
-        'cands = [i for i in items if True',
+        'cands = sorted((i for i in items if not hidden(marks.get(i["link"]), now_ms)',
+        'cands = sorted((i for i in items if True',
         'tests/test_work_queue_triage.py::test_items_marked_done_dropped_or_snoozed_never_reach_the_start_list',
+    ),
+    (
+        'Start here considers triaged rows first',
+        'work_queue/triage.py',
+        '                       key=lambda i: i["link"] not in verdicts)[:MAX_START_CANDIDATES]',
+        '                       key=lambda i: 0)[:MAX_START_CANDIDATES]',
+        'tests/test_work_queue_triage.py::test_start_here_looks_at_triaged_rows_first_up_to_its_cap',
     ),
     (
         'Since last night counts changed rows in code',
