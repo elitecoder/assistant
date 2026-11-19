@@ -8,11 +8,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
 REPO = Path(__file__).resolve().parents[1]
+TEST_TIMEOUT_SEC = 90
 CHECKS = (
     (
         "changed conversation invalidates guidance",
@@ -503,22 +505,22 @@ CHECKS = (
     (
         'a bin change counts as new service code',
         "install.sh",
-        'find bin src/assistant slack-reactor/src -type f',
-        'find bin/todo-server.py bin/connectors src/assistant slack-reactor/src -type f',
+        'find bin src/assistant slack-reactor/src work_queue -type f',
+        'find bin/todo-server.py bin/connectors src/assistant slack-reactor/src work_queue -type f',
         'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
     ),
     (
         'the slack reactor code counts as new service code',
         "install.sh",
-        'find bin src/assistant slack-reactor/src -type f',
-        'find bin src/assistant -type f',
+        'find bin src/assistant slack-reactor/src work_queue -type f',
+        'find bin src/assistant work_queue -type f',
         'tests/test_pro_mode.py::test_the_installer_restarts_the_always_on_services_after_a_bin_change',
     ),
     (
         'a pulled slack reactor change runs the installer',
         "bin/self_update.py",
-        '"slack-reactor/src/")',
-        '"src/assistant/")',
+        '"slack-reactor/src/", "work_queue/")',
+        '"work_queue/")',
         'tests/test_self_update.py::ClassifyTests::test_bin_change_needs_install_so_always_on_services_restart',
     ),
     (
@@ -548,6 +550,392 @@ CHECKS = (
         '    log "     run ./install.sh --apply --pro (or --no-pro). Pro mode adds"\n',
         '',
         'tests/test_pro_mode.py::test_installer_modes_and_skills',
+    ),
+    (
+        'a pull that changes the Work queue runs the installer',
+        "bin/self_update.py",
+        '"slack-reactor/src/", "work_queue/")',
+        '"slack-reactor/src/")',
+        'tests/test_self_update.py::ClassifyTests::test_long_running_service_code_needs_install',
+    ),
+    (
+        'a pulled Work queue file must parse',
+        "bin/self_update.py",
+        '"install.sh", "install-bootstrap.sh", "work_queue/")',
+        '"install.sh", "install-bootstrap.sh")',
+        'tests/test_self_update.py::SyntaxGateTests::test_broken_runtime_python_outside_bin_is_refused',
+    ),
+    (
+        'a dry run plans a service whose plist is new',
+        "install.sh",
+        '        note "would load $label (bootstrap $plist once it\'s copied)"\n        return 0\n',
+        '        false\n',
+        'tests/test_work_queue_install.py::test_a_dry_run_before_the_first_install_plans_the_new_service',
+    ),
+    (
+        'the help names the Work queue',
+        "install.sh",
+        '                    Also loads the Work queue page (docs/work-queue.md).\n',
+        '',
+        'tests/test_work_queue_install.py::test_help_names_the_work_queue',
+    ),
+    (
+        'the Work queue is a feature daemon, not core',
+        "install.sh",
+        '        com.assistant.work-queue.plist)         echo "work-queue" ;;\n',
+        '',
+        'tests/test_work_queue_install.py::test_default_mode_copies_the_work_queue_but_never_loads_it',
+    ),
+    (
+        'Pro mode loads the Work queue',
+        "install.sh",
+        '        work-queue)    [[ "$MODE" == "pro" ]] ;;\n',
+        '',
+        'tests/test_work_queue_install.py::test_pro_mode_loads_a_localhost_only_server_and_never_prompts_headless',
+    ),
+    (
+        'default mode says the Work queue is Pro only',
+        "install.sh",
+        '                work-queue)\n                    note "FEATURE $base — Pro mode only (copied, NOT loaded; turn on with --pro)" ;;\n',
+        '',
+        'tests/test_work_queue_install.py::test_default_mode_copies_the_work_queue_but_never_loads_it',
+    ),
+    (
+        'turning Pro mode on loads an already-copied Work queue',
+        "install.sh",
+        '( "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ) || "$feat" == "work-queue" ]]',
+        '( "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ) ]]',
+        'tests/test_work_queue_install.py::test_switching_modes_loads_and_unloads_the_work_queue',
+    ),
+    (
+        'default mode unloads the Work queue',
+        "install.sh",
+        '    launchctl bootout "gui/$UID/com.assistant.work-queue" 2>/dev/null || true\n',
+        '    true\n',
+        'tests/test_work_queue_install.py::test_default_mode_copies_the_work_queue_but_never_loads_it',
+    ),
+    (
+        'Work queue code changes count toward a restart',
+        "install.sh",
+        'slack-reactor/src work_queue -type f',
+        'slack-reactor/src -type f',
+        'tests/test_work_queue_install.py::test_the_work_queue_restarts_when_its_code_changes',
+    ),
+    (
+        'a running Work queue restarts after its code changes',
+        "install.sh",
+        'com.assistant.assistant-todo-server com.assistant.work-queue com.assistant.connector-',
+        'com.assistant.assistant-todo-server com.assistant.connector-',
+        'tests/test_work_queue_install.py::test_the_work_queue_restarts_when_its_code_changes',
+    ),
+    (
+        'a headless install never prompts to link sources',
+        "install.sh",
+        'elif [[ ! -t 0 || "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]]; then\n    note "non-interactive, so not linking',
+        'elif [[ "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]]; then\n    note "non-interactive, so not linking',
+        'tests/test_work_queue_install.py::test_pro_mode_loads_a_localhost_only_server_and_never_prompts_headless',
+    ),
+    (
+        'the summary says how to link Work queue sources',
+        "install.sh",
+        '    log "     ./bin/work-queue-setup.py link <source> (see docs/work-queue.md)."\n',
+        '',
+        'tests/test_work_queue_install.py::test_pro_mode_loads_a_localhost_only_server_and_never_prompts_headless',
+    ),
+    (
+        'the Work queue server stays down in default mode',
+        "work_queue/server.py",
+        '    if not mode.is_pro():\n        print("Pro mode is off, so the Work queue server',
+        '    if False:\n        print("Pro mode is off, so the Work queue server',
+        'tests/test_work_queue_server.py::test_default_mode_never_starts_the_server',
+    ),
+    (
+        'the Work queue server binds localhost only',
+        "work_queue/server.py",
+        'ThreadingHTTPServer(("127.0.0.1", port), Handler)',
+        'ThreadingHTTPServer(("0.0.0.0", port), Handler)',
+        'tests/test_work_queue_server.py::test_the_server_binds_localhost_only_and_raises_other_socket_errors',
+    ),
+    (
+        'the Work queue refuses cross-origin posts',
+        "work_queue/server.py",
+        'if self.headers.get("Origin") not in (',
+        'if False and self.headers.get("Origin") not in (',
+        'tests/test_work_queue_server.py::test_a_cross_origin_post_is_refused_and_creates_nothing',
+    ),
+    (
+        'agents start Slack replies with Automated Message',
+        "work_queue/server.py",
+        '"file the tickets, post the Slack replies (start each with \\"Automated Message\\"), comment',
+        '"file the tickets, post the Slack replies, comment',
+        'tests/test_work_queue_server.py::test_send_creates_an_auto_dispatch_todo_with_the_next_id_and_finish_instructions',
+    ),
+    (
+        'marks only accept https rows',
+        "work_queue/server.py",
+        'isinstance(k, str) and k.startswith("https://") and isinstance(v, dict)',
+        'isinstance(k, str) and isinstance(v, dict)',
+        'tests/test_work_queue_server.py::test_marks_are_saved_merged_and_cleared',
+    ),
+    (
+        'the refresh skips unlinked sources',
+        "work_queue/refresh.py",
+        '        if name not in doc:\n',
+        '        if False:\n',
+        'tests/test_work_queue_refresh.py::test_only_linked_sources_run',
+    ),
+    (
+        'a recently active Slack save stays open',
+        "work_queue/inputs/slack.py",
+        '    if idle < close_after_days:\n',
+        '    if False:\n',
+        'tests/test_work_queue_inputs.py::test_slack_rules_sort_every_later_save',
+    ),
+    (
+        'Slack apply verifies each save against the open list',
+        "work_queue/slack_browser.py",
+        'result["verified"] = not is_open if j["mark"] == "completed" else is_open',
+        'result["verified"] = True',
+        'tests/test_work_queue_slack_browser.py::test_apply_marks_saves_and_verifies_each_against_the_open_list',
+    ),
+    (
+        'the dashboard hides the Work queue tab in default mode',
+        "bin/render-assistant-page.py",
+        '    tabs.append(("workspaces", "Session details", workspaces_html))\n',
+        '    tabs.append(("workspaces", "Session details", workspaces_html))\n'
+        '    tabs.append(("work-queue", "Work queue", render_work_queue_tab()))\n',
+        'tests/test_work_queue_dashboard.py::test_default_mode_hides_the_work_queue_tab',
+    ),
+    (
+        'every Work queue request re-checks Pro mode',
+        'work_queue/server.py',
+        '        if not mode.is_pro():\n            self.send_json(403',
+        '        if False:\n            self.send_json(403',
+        'tests/test_work_queue_server.py::test_turning_pro_mode_off_refuses_requests_and_stops_the_server',
+    ),
+    (
+        'the Work queue server stops on its own when Pro mode turns off',
+        'work_queue/server.py',
+        '        if not mode.is_pro():\n            srv.shutdown()',
+        '        if False:\n            srv.shutdown()',
+        'tests/test_work_queue_server.py::test_the_server_stops_on_its_own_soon_after_pro_mode_turns_off',
+    ),
+    (
+        'the running Work queue server watches the mode',
+        'work_queue/server.py',
+        '    threading.Thread(target=watch_mode, args=(server,), daemon=True).start()\n',
+        '',
+        'tests/test_work_queue_server.py::test_switching_to_default_mode_while_the_server_runs_stops_it_cleanly',
+    ),
+    (
+        'the dashboard mode switch loads and unloads the Work queue',
+        'bin/todo-server.py',
+        '    sync_work_queue(value == "pro")\n',
+        '',
+        'tests/test_work_queue_dashboard.py::test_the_dashboard_switch_loads_and_unloads_the_work_queue',
+    ),
+    (
+        "the hourly update never loads a Work queue that isn't running",
+        'install.sh',
+        '    if [[ "$feat" == "work-queue" && "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]] && ! service_running "$label"; then\n        no_load=1\n    fi\n',
+        '',
+        'tests/test_work_queue_install.py::test_the_hourly_update_never_loads_a_work_queue_that_isnt_loaded[True]',
+    ),
+    (
+        'the installer reads whether a service is running',
+        'install.sh',
+        '    launchctl print "gui/$UID/$1" 2>/dev/null | grep "state = running" >/dev/null\n',
+        '    true\n',
+        'tests/test_work_queue_install.py::test_the_hourly_update_never_restarts_a_work_queue_you_stopped[True]',
+    ),
+    (
+        'the help says default mode unloads the Work queue',
+        'install.sh',
+        '                    Also unloads the Work queue server.\n',
+        '',
+        'tests/test_work_queue_install.py::test_help_says_default_mode_unloads_the_work_queue',
+    ),
+    (
+        "a Pro install starts a loaded Work queue that isn't running",
+        'install.sh',
+        '        elif [[ "$feat" == "work-queue" ]] && ! service_running "$label"; then',
+        '        elif false; then',
+        'tests/test_work_queue_install.py::test_a_pro_install_starts_a_work_queue_that_macos_loaded_but_stopped',
+    ),
+    (
+        'a snooze ends when its time passes',
+        'work_queue/page.py',
+        "v.state==='snoozed'&&v.until>now",
+        "v.state==='snoozed'",
+        'tests/test_work_queue_browser.py::test_a_snooze_hides_a_row_only_until_its_time_passes',
+    ),
+    (
+        'selecting Done again undoes it',
+        'work_queue/page.py',
+        "const body=cur===state?{key:k,state:'clear'}:",
+        "const body=false?{key:k,state:'clear'}:",
+        'tests/test_work_queue_browser.py::test_done_can_be_undone',
+    ),
+    (
+        'the Apply bar stays disabled with nothing to apply',
+        'work_queue/page.py',
+        'bar.disabled=!API||run||!(approved+undo);',
+        'bar.disabled=false;',
+        'tests/test_work_queue_browser.py::test_the_apply_bar_stays_disabled_until_something_can_be_applied',
+    ),
+    (
+        'the Slack helper runs the pinned Playwright',
+        'work_queue/tools.py',
+        'PLAYWRIGHT = "playwright==1.63.0"',
+        'PLAYWRIGHT = "playwright"',
+        'tests/test_work_queue_setup.py::test_the_install_hint_uses_the_pinned_playwright',
+    ),
+    (
+        'the Work queue refuses a request for another host',
+        'work_queue/server.py',
+        'if self.headers.get("Host") not in (',
+        'if False and self.headers.get("Host") not in (',
+        'tests/test_work_queue_server.py::test_a_request_for_another_host_is_refused',
+    ),
+    (
+        'Send to Assistant puts the safety rules before the row',
+        'work_queue/server.py',
+        '"detail": f"{SAFETY.replace(\'<td-id>\', td_id)}\\n\\n{row}"',
+        '"detail": f"{row}\\n\\n{SAFETY.replace(\'<td-id>\', td_id)}"',
+        'tests/test_work_queue_server.py::test_send_creates_an_auto_dispatch_todo_with_the_next_id_and_finish_instructions',
+    ),
+    (
+        "apply skips a row that's already done",
+        'work_queue/server.py',
+        'if d["decision"] == "approve" and not done:',
+        'if d["decision"] == "approve":',
+        'tests/test_work_queue_server.py::test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_reads_back',
+    ),
+    (
+        "undo skips a row that isn't done",
+        'work_queue/server.py',
+        'elif d["decision"] == "undo" and done:',
+        'elif d["decision"] == "undo":',
+        'tests/test_work_queue_server.py::test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_reads_back',
+    ),
+    (
+        'Gmail apply reports what it reads back',
+        'work_queue/server.py',
+        '"verified": all(t != undo for t in trashed)',
+        '"verified": True',
+        'tests/test_work_queue_server.py::test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_reads_back',
+    ),
+    (
+        'Slack undo reopens the save',
+        'work_queue/server.py',
+        '"mark": "uncompleted" if u else "completed"',
+        '"mark": "completed"',
+        'tests/test_work_queue_server.py::test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_reads_back',
+    ),
+    (
+        'unsubscribe leaves out senders with mail you keep',
+        'work_queue/page.py',
+        'm["addr"] not in keep and ',
+        '',
+        'tests/test_work_queue_refresh.py::test_unsubscribe_offers_only_senders_whose_mail_can_all_go',
+    ),
+    (
+        'a new TODO id counts removed TODOs',
+        'work_queue/server.py',
+        'for b in (items, doc.get("completed", []), doc.get("removed", []))',
+        'for b in (items, doc.get("completed", []))',
+        'tests/test_work_queue_server.py::test_a_removed_todo_id_is_never_reused',
+    ),
+    (
+        'a missing TODO store reads as empty',
+        'work_queue/todo_result.py',
+        '    except FileNotFoundError:\n        return {"items": []}',
+        '    except FileNotFoundError:\n        raise',
+        'tests/test_work_queue_server.py::test_a_fresh_home_without_a_todo_store_gets_one',
+    ),
+    (
+        'the server writes the TODO store through the shared writer',
+        'work_queue/server.py',
+        '        write_store(doc)\n',
+        '        config.write_json(todostore.todo_path(), doc)\n',
+        'tests/test_work_queue_server.py::test_the_server_and_the_result_command_write_the_store_one_way',
+    ),
+    (
+        'an apply that crashes still finishes',
+        'work_queue/server.py',
+        '    except Exception as exc:  # noqa: BLE001 — record any failure so the page doesn\'t stay on "Working"\n        error = f"Apply stopped: {exc}"[:300]\n    finally:\n',
+        '    finally:\n',
+        'tests/test_work_queue_server.py::test_an_apply_that_crashes_still_finishes_and_says_why',
+    ),
+    (
+        'two apply clicks start one apply',
+        'work_queue/server.py',
+        '    with lock:\n        if config.read_json(path("apply-status.json"), {}).get("running"):',
+        '    if True:\n        if config.read_json(path("apply-status.json"), {}).get("running"):',
+        'tests/test_work_queue_server.py::test_two_apply_clicks_at_the_same_moment_start_one_apply',
+    ),
+    (
+        'two refresh clicks start one refresh',
+        'work_queue/server.py',
+        '    with lock:\n        if refresh_proc is not None',
+        '    if True:\n        if refresh_proc is not None',
+        'tests/test_work_queue_server.py::test_two_refresh_clicks_at_the_same_moment_start_one_refresh',
+    ),
+    (
+        'the Work queue port must be 1 to 65535',
+        'work_queue/config.py',
+        '    if type(value) is not int or not 1 <= value <= 65535:',
+        '    if type(value) is not int:',
+        'tests/test_work_queue_server.py::test_the_port_must_be_a_whole_number_from_1_to_65535',
+    ),
+    (
+        'an unreadable Work queue setting never breaks the dashboard',
+        'bin/render-assistant-page.py',
+        '        port = work_queue_config.port(work_queue_config.load())\n    except (OSError, ValueError) as exc:',
+        '        port = work_queue_config.port(work_queue_config.load())\n    except ValueError as exc:',
+        'tests/test_work_queue_dashboard.py::test_an_unreadable_settings_file_never_breaks_the_dashboard',
+    ),
+    (
+        'unsubscribe never reaches a private address',
+        'work_queue/server.py',
+        '    if any(not ipaddress.ip_address(info[4][0].split("%")[0]).is_global for info in found):',
+        '    if False:',
+        'tests/test_work_queue_server.py::test_unsubscribe_never_reaches_your_own_machine_or_network',
+    ),
+    (
+        'unsubscribe never follows a redirect',
+        'work_queue/server.py',
+        '            with opener.open(req, timeout=30) as r:',
+        '            with urllib.request.urlopen(req, timeout=30) as r:',
+        'tests/test_work_queue_server.py::test_unsubscribe_never_follows_a_redirect',
+    ),
+    (
+        'a snooze time must be a number',
+        'work_queue/server.py',
+        '        except (TypeError, ValueError, OverflowError):\n            return 400, {"error": "until must be a number"}',
+        '        except ZeroDivisionError:\n            return 400, {"error": "until must be a number"}',
+        'tests/test_work_queue_server.py::test_a_snooze_until_that_isnt_a_number_is_refused',
+    ),
+    (
+        "a bug in a source reader isn't a source error",
+        'work_queue/refresh.py',
+        'FAILURES = (tools.SourceError, SlackError, OSError, ValueError)',
+        'FAILURES = (tools.SourceError, SlackError, OSError, ValueError, KeyError)',
+        'tests/test_work_queue_refresh.py::test_a_bug_in_a_source_reader_isnt_reported_as_that_source_failing',
+    ),
+    (
+        'unlinking Slack deletes its browser profile',
+        'bin/work-queue-setup.py',
+        '        if args.source == "slack" and config.browser_profile().exists():',
+        '        if False:',
+        'tests/test_work_queue_setup.py::test_unlinking_slack_also_deletes_its_browser_profile_and_cookies',
+    ),
+    (
+        'one item reads as one item',
+        'work_queue/refresh.py',
+        'f"read {count} item{\'\' if count == 1 else \'s\'}"',
+        'f"read {count} items"',
+        'tests/test_work_queue_refresh.py::test_one_item_reads_as_one_item',
     ),
 )
 
@@ -581,39 +969,52 @@ def run_test(repo: Path, home: Path, selector: str):
     }
     return subprocess.run(
         [sys.executable, "-m", "pytest", selector, "-q", "--tb=short"],
-        cwd=repo, env=env, capture_output=True, text=True, timeout=90)
+        cwd=repo, env=env, capture_output=True, text=True, timeout=TEST_TIMEOUT_SEC)
+
+
+def run_check(name: str, filename: str, original: str, broken: str, selector: str) -> dict:
+    """Run selector on a copy of the sources, then on a copy with the mutation; the mutant must fail.
+
+    A mutant whose test runs past TEST_TIMEOUT_SEC counts as rejected: the test didn't pass."""
+    started = time.monotonic()
+    with TemporaryDirectory(prefix="assistant-mutation-") as temporary:
+        root = Path(temporary)
+        repo, home = root / "repo", root / "home"
+        repo.mkdir()
+        home.mkdir()
+        copy_sources(repo)
+        try:
+            baseline = run_test(repo, home, selector)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{name}: baseline {selector} didn't finish within {TEST_TIMEOUT_SEC} seconds") from None
+        if baseline.returncode != 0:
+            raise RuntimeError(f"{name}: baseline failed\n{baseline.stdout}\n{baseline.stderr}")
+        target = repo / filename
+        source = target.read_text()
+        if source.count(original) != 1:
+            raise RuntimeError(f"{name}: expected one mutation target")
+        target.write_text(source.replace(original, broken, 1))
+        reject_invalid_shell(name, target)
+        try:
+            mutant = run_test(repo, home, selector)
+        except subprocess.TimeoutExpired:
+            outcome, failure = "rejected (timed out)", [f"TIMEOUT {selector} ran past {TEST_TIMEOUT_SEC} seconds"]
+        else:
+            if mutant.returncode != 1 or "FAILED" not in mutant.stdout:
+                raise RuntimeError(f"{name}: mutant was not rejected by {selector}\n{mutant.stdout}\n{mutant.stderr}")
+            outcome, failure = "rejected", [line for line in mutant.stdout.splitlines() if line.startswith("FAILED")]
+    return {"check": name, "test": selector, "baseline": "passed", "mutant": outcome, "failure": failure,
+            "seconds": round(time.monotonic() - started, 1)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    results = []
-    for name, filename, original, broken, selector in CHECKS:
-        with TemporaryDirectory(prefix="assistant-mutation-") as temporary:
-            root = Path(temporary)
-            repo, home = root / "repo", root / "home"
-            repo.mkdir()
-            home.mkdir()
-            copy_sources(repo)
-            baseline = run_test(repo, home, selector)
-            if baseline.returncode != 0:
-                raise RuntimeError(f"{name}: baseline failed\n{baseline.stdout}\n{baseline.stderr}")
-            target = repo / filename
-            source = target.read_text()
-            if source.count(original) != 1:
-                raise RuntimeError(f"{name}: expected one mutation target")
-            target.write_text(source.replace(original, broken, 1))
-            reject_invalid_shell(name, target)
-            mutant = run_test(repo, home, selector)
-            if mutant.returncode != 1 or "FAILED" not in mutant.stdout:
-                raise RuntimeError(f"{name}: mutant was not rejected\n{mutant.stdout}\n{mutant.stderr}")
-            results.append({
-                "check": name, "test": selector, "baseline": "passed", "mutant": "rejected",
-                "failure": [line for line in mutant.stdout.splitlines() if line.startswith("FAILED")],
-            })
+    results = [run_check(*check) for check in CHECKS]
     args.output.write_text(json.dumps({"passed": True, "checks": results}, indent=2))
-    print(f"{len(results)} targeted mutations rejected; production files were not edited.")
+    timed_out = sum(result["mutant"] == "rejected (timed out)" for result in results)
+    print(f"{len(results)} targeted mutations rejected ({timed_out} by timing out); production files were not edited.")
 
 
 if __name__ == "__main__":

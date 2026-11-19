@@ -118,7 +118,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertTrue(su.classify_changed_paths(["install.sh"])["needs_install"])
 
     def test_long_running_service_code_needs_install(self):
-        for path in ("bin/todo-server.py", "bin/connectors/gmail.py", "src/assistant/mode.py"):
+        for path in ("bin/todo-server.py", "bin/connectors/gmail.py", "src/assistant/mode.py", "work_queue/server.py"):
             self.assertTrue(su.classify_changed_paths([path])["needs_install"], path)
 
     def test_self_plist_change_flagged(self):
@@ -875,7 +875,7 @@ class SyntaxGateTests(unittest.TestCase):
 
     def test_broken_runtime_python_outside_bin_is_refused(self):
         for rel in ("src/assistant/model_tiers.py", "hooks/example-hook.py",
-                    "install/patch-settings.py"):
+                    "install/patch-settings.py", "work_queue/server.py"):
             with self.subTest(rel=rel), TemporaryDirectory() as t:
                 tmp = Path(t)
                 clone, old_head, _ = self._bad_remote(tmp, {rel: "def broken(:\n"})

@@ -232,8 +232,34 @@ def dispatch_now(td_id):
     return True, f"{td_id}: queued for next-pulse Bucket B dispatch"
 
 
+WORK_QUEUE_LABEL = "com.assistant.work-queue"
+
+
+def sync_work_queue(pro):
+    """Load the Work queue LaunchAgent on a switch to Pro mode, and unload it on a
+    switch to default mode. Acts only when install.sh copied its plist into this
+    HOME. A failed launchctl call leaves the mode switched: the server itself
+    stops within seconds once Pro mode is off."""
+    plist = Path(os.path.expanduser("~")) / "Library/LaunchAgents" / f"{WORK_QUEUE_LABEL}.plist"
+    if not plist.exists():
+        return
+    domain = f"gui/{os.getuid()}"
+    try:
+        if not pro:
+            cmd = ["launchctl", "bootout", f"{domain}/{WORK_QUEUE_LABEL}"]
+        elif subprocess.run(["launchctl", "print", f"{domain}/{WORK_QUEUE_LABEL}"],
+                            capture_output=True, timeout=10, check=False).returncode == 0:
+            cmd = ["launchctl", "kickstart", f"{domain}/{WORK_QUEUE_LABEL}"]
+        else:
+            cmd = ["launchctl", "bootstrap", domain, str(plist)]
+        subprocess.run(cmd, capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def set_mode(value):
-    """Switch default/Pro mode, sync the Pro skills, and rebuild the page."""
+    """Switch default/Pro mode, sync the Pro skills and the Work queue service,
+    and rebuild the page."""
     try:
         if str(SRC_DIR) not in sys.path:
             sys.path.insert(0, str(SRC_DIR))
@@ -243,6 +269,7 @@ def set_mode(value):
         mode.switch(value)
     except (OSError, ValueError) as exc:
         return False, f"Couldn't change the mode: {exc}"
+    sync_work_queue(value == "pro")
     if not rerender_dashboard():
         return True, f"Switched to {value}. The page updates within 5 minutes."
     return True, value

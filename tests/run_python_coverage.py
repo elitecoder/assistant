@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Production Python this adapter measures; the change-coverage gate rejects
 # changed executable code anywhere else.
-PYTHON_SOURCE_DIRS = ("bin", "hooks", "install", "src")
+PYTHON_SOURCE_DIRS = ("bin", "hooks", "install", "src", "work_queue")
 
 
 def source_fingerprints(repo: Path) -> dict[str, str]:
@@ -42,7 +42,7 @@ def capture_coverage(repo: Path, output_dir: Path, pytest_args=(), *,
     head = runner(head_command, check=True, capture_output=True, text=True).stdout.strip()
     before = source_fingerprints(repo)
     if not before:
-        raise ValueError("No Python sources found under bin/, hooks/, install/, or src/")
+        raise ValueError("No Python sources found under bin/, hooks/, install/, src/, or work_queue/")
     environment = os.environ.copy()
     environment["COVERAGE_FILE"] = str(output_dir / f"python.{run_id}.data")
     command = [

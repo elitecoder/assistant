@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The Work queue server, a Pro mode feature. install.sh loads it only in Pro
+  mode and unloads it in default mode. It listens on 127.0.0.1 only.
+
+  KeepAlive restarts it only after a failed exit. It exits cleanly, and stays
+  stopped, when Pro mode is off, when its settings can't be read, or when its
+  port is taken, so it never restarts in a loop. With no source linked it runs
+  and shows how to link one.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.assistant.work-queue</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-m</string>
+        <string>work_queue.server</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PATH__</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PYTHONPATH</key>
+        <string>__REPO__:__REPO__/src</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.assistant/logs/work-queue.launchd.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.assistant/logs/work-queue.launchd.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+</dict>
+</plist>

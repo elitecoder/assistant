@@ -1,5 +1,6 @@
-"""Require complete coverage of changed Python and embedded dashboard JavaScript,
-and a targeted mutation for every changed hunk of a mutation-proven shell file."""
+"""Require complete coverage of changed Python and embedded browser JavaScript (the
+dashboard's and the Work queue page's), and a targeted mutation for every changed
+hunk of a mutation-proven shell file."""
 
 from __future__ import annotations
 
@@ -21,6 +22,12 @@ from run_python_coverage import PYTHON_SOURCE_DIRS, canonical_report_hash
 # mutation_smoke check that breaks only changed code lines in it. A check can
 # still be written to dodge this, so review new checks like any test.
 MUTATION_PROVEN = {"install.sh", "install-bootstrap.sh", "bin/assistant-comms-setup.sh"}
+
+# Browser JavaScript kept as one raw string literal in a Python file:
+# (file, the variable it's assigned to, its name in errors). Changed lines in
+# the literal need coverage from a real browser, not Python string coverage.
+DASHBOARD = ("bin/render-assistant-page.py", "js", "dashboard")
+WORK_QUEUE_PAGE = ("work_queue/page.py", "JS", "Work queue page")
 
 
 def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
@@ -137,28 +144,69 @@ def check_mutation_proof(repo: Path, hunks: dict[str, list[set[int]]], checks) -
     return results
 
 
-def browser_source(repo: Path) -> ast.Constant:
-    source = (repo / "bin/render-assistant-page.py").read_text()
+def browser_source(repo: Path, script: tuple[str, str, str] = DASHBOARD) -> ast.Constant:
+    filename, variable, label = script
+    source = (repo / filename).read_text()
     tree = ast.parse(source)
     matches = [
         node.value for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "js" for target in node.targets)
+        and any(isinstance(target, ast.Name) and target.id == variable for target in node.targets)
         and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
     ]
     if len(matches) != 1:
-        raise ValueError("Expected one literal dashboard script; update the coverage mapping")
+        raise ValueError(f"Expected one literal {label} script; update the coverage mapping")
     node = matches[0]
     literal = ast.get_source_segment(source, node)
     if (literal is None or not literal.lower().startswith(('r"""', "r'''"))
             or literal[4:-3] != node.value):
-        raise ValueError("Dashboard JavaScript must use a raw literal with exact source-line mapping")
+        raise ValueError(f"{label[0].upper()}{label[1:]} JavaScript must use a raw literal "
+                         "with exact source-line mapping")
     return node
+
+
+def check_browser(repo: Path, changes: dict[str, set[int]], javascript_report: dict | None,
+                  script: tuple[str, str, str]) -> dict:
+    """Line and block coverage of the changed lines in one embedded browser script."""
+    filename, _, label = script
+    browser = {"lines": 0, "missing_lines": [], "blocks": 0, "missing_blocks": []}
+    file_changes = changes.get(filename, set())
+    if not file_changes:
+        return browser
+    node = browser_source(repo, script)
+    changed_script = {line for line in file_changes if node.lineno <= line <= node.end_lineno}
+    if not changed_script:
+        return browser
+    if javascript_report is None:
+        raise ValueError(f"Changed {label} JavaScript needs browser coverage, not Python string coverage")
+    if javascript_report.get("source") != node.value:
+        raise ValueError(f"Browser coverage does not match the current {label} script")
+    reports = javascript_report.get("coverage", {})
+    if not isinstance(reports, dict) or len(reports) != 1:
+        raise ValueError(f"Expected exactly one {label} JavaScript coverage record")
+    report = next(iter(reports.values()))
+    for key, statement in report["statementMap"].items():
+        line = node.lineno + statement["start"]["line"] - 1
+        if line in changed_script:
+            browser["lines"] += 1
+            if report["s"][key] <= 0:
+                browser["missing_lines"].append(line)
+    for key, branch in report["branchMap"].items():
+        line = node.lineno + branch["loc"]["start"]["line"] - 1
+        if line in changed_script:
+            for count in report["b"][key]:
+                browser["blocks"] += 1
+                if count <= 0:
+                    browser["missing_blocks"].append(line)
+    if browser["lines"] == 0:
+        raise ValueError("Browser report did not measure any changed JavaScript lines")
+    return browser
 
 
 def check_coverage(repo: Path, changes: dict[str, set[int]],
                    python_report: dict, javascript_report: dict | None,
-                   source_manifest: dict | None = None) -> dict:
+                   source_manifest: dict | None = None,
+                   work_queue_report: dict | None = None) -> dict:
     if not isinstance(source_manifest, dict) or source_manifest.get("schema") != "coverage-sources/1":
         raise ValueError("Python coverage needs its measurement-time source manifest")
     if source_manifest.get("pytest_exit_code") != 0:
@@ -209,39 +257,13 @@ def check_coverage(repo: Path, changes: dict[str, set[int]],
             "excluded_changed_lines": sorted(logical_changes & (
                 parser.excluded | set(report.get("excluded_lines", [])) | no_branch)),
         })
-    browser = {"lines": 0, "missing_lines": [], "blocks": 0, "missing_blocks": []}
-    renderer_changes = changes.get("bin/render-assistant-page.py", set())
-    if renderer_changes:
-        node = browser_source(repo)
-        changed_script = {line for line in renderer_changes if node.lineno <= line <= node.end_lineno}
-        if changed_script:
-            if javascript_report is None:
-                raise ValueError("Changed dashboard JavaScript needs browser coverage, not Python string coverage")
-            if javascript_report.get("source") != node.value:
-                raise ValueError("Browser coverage does not match the current dashboard script")
-            reports = javascript_report.get("coverage", {})
-            if not isinstance(reports, dict) or len(reports) != 1:
-                raise ValueError("Expected exactly one dashboard JavaScript coverage record")
-            report = next(iter(reports.values()))
-            for key, statement in report["statementMap"].items():
-                line = node.lineno + statement["start"]["line"] - 1
-                if line in changed_script:
-                    browser["lines"] += 1
-                    if report["s"][key] <= 0:
-                        browser["missing_lines"].append(line)
-            for key, branch in report["branchMap"].items():
-                line = node.lineno + branch["loc"]["start"]["line"] - 1
-                if line in changed_script:
-                    for count in report["b"][key]:
-                        browser["blocks"] += 1
-                        if count <= 0:
-                            browser["missing_blocks"].append(line)
-            if browser["lines"] == 0:
-                raise ValueError("Browser report did not measure any changed JavaScript lines")
+    browser = check_browser(repo, changes, javascript_report, DASHBOARD)
+    work_queue_browser = check_browser(repo, changes, work_queue_report, WORK_QUEUE_PAGE)
     passed = all(not (row["missing_lines"] or row["missing_branches"] or row["excluded_changed_lines"])
                  for row in results)
-    passed = passed and not (browser["missing_lines"] or browser["missing_blocks"])
-    return {"passed": passed, "required_percent": 100, "python": results, "browser": browser}
+    passed = passed and not any(b["missing_lines"] or b["missing_blocks"] for b in (browser, work_queue_browser))
+    return {"passed": passed, "required_percent": 100, "python": results, "browser": browser,
+            "work_queue_browser": work_queue_browser}
 
 
 def main():
@@ -249,6 +271,8 @@ def main():
     parser.add_argument("--base", default="main")
     parser.add_argument("--python-report", type=Path, required=True)
     parser.add_argument("--browser-report", type=Path)
+    parser.add_argument("--work-queue-browser-report", type=Path,
+                        help="browser coverage of the Work queue page's script in work_queue/page.py")
     parser.add_argument("--source-manifest", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -260,7 +284,8 @@ def main():
             repo, changed_lines(repo, args.base),
             json.loads(args.python_report.read_text()),
             json.loads(args.browser_report.read_text()) if args.browser_report else None,
-            json.loads(manifest_path.read_text()))
+            json.loads(manifest_path.read_text()),
+            json.loads(args.work_queue_browser_report.read_text()) if args.work_queue_browser_report else None)
         result["mutation_proven"] = check_mutation_proof(repo, changed_hunks(repo, args.base), CHECKS)
         result["passed"] = result["passed"] and not any(
             row["unproven_hunks"] for row in result["mutation_proven"])

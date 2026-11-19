@@ -61,7 +61,7 @@ from pathlib import Path
 # docs/ are read live, so a bare pull makes them current.
 INSTALL_REQUIRING_PREFIXES = ("skills/", "launchagents/", "install/",
                               "bin/", "src/assistant/",
-                              "slack-reactor/src/")
+                              "slack-reactor/src/", "work_queue/")
 INSTALL_REQUIRING_FILES = ("install.sh",)
 
 # Reloading this label mid-pulse would SIGTERM the updater. install.sh honors
@@ -86,7 +86,7 @@ DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
 # pulled commit from doing the same; bin/run-pulse.py covers the working copy.
 SYNTAX_GATE_PATHS = ("bin/", "src/", "hooks/", "install/", "prompts/", "skills/",
                      "launchagents/", "config/", "docs/", "slack-reactor/",
-                     "install.sh", "install-bootstrap.sh")
+                     "install.sh", "install-bootstrap.sh", "work_queue/")
 
 # A refused commit is re-checked, and its failure re-recorded, this often.
 REJECT_REMIND_SEC = 86400  # 1 day

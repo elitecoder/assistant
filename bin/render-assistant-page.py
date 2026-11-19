@@ -28,11 +28,13 @@ REPO = Path(__file__).resolve().parents[1]  # repo root (src/ for the connector 
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "bin"))  # loaded by path (tests/drive_dashboard_overview.py)
+sys.path.insert(1, str(REPO))
 
 import agent_session  # noqa: E402
 from assistant import brief as brief_store
 from assistant import mode
 from assistant import session_guidance
+from work_queue import config as work_queue_config
 
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
@@ -2416,6 +2418,21 @@ def _known_connectors_registry():
         return []
 
 
+def render_work_queue_tab():
+    """Pro mode: a link to the Work queue page and when it last refreshed."""
+    try:
+        port = work_queue_config.port(work_queue_config.load())
+    except (OSError, ValueError) as exc:
+        return f'<div class="empty">The Work queue can\'t read its settings: {e(str(exc))}</div>'
+    state = work_queue_config.read_json(work_queue_config.data_dir() / "refresh-status.json", {})
+    last = f"Last refreshed {state['finished']}." if state.get("finished") else "Not refreshed yet."
+    problem = f" Last refresh problems: {state['error']}" if state.get("error") else ""
+    return (f'<div class="empty">The Work queue merges your linked Slack, email, GitHub, and calendar sources into '
+            f'one list you clear. <a href="http://127.0.0.1:{port}/" target="_blank" rel="noopener noreferrer">'
+            f'Open the Work queue</a><p class="meta">{e(last + problem)} Link a source with '
+            '<code>bin/work-queue-setup.py link &lt;source&gt;</code>.</p></div>')
+
+
 def render_connections_panel(world):
     """The Connections panel (Keel M5): every KNOWN connector + its tri-state,
     so the user sees what they are connected to and what is merely available.
@@ -2667,6 +2684,7 @@ def render():
         tabs += [
             ("fleet", f'Background work <span class="tab-count">{fleet_n}</span>', fleet_html),
             ("connections", f'Connected apps <span class="tab-count">{connected_n}</span>', connections_html),
+            ("work-queue", "Work queue", render_work_queue_tab()),
         ]
     tabs += [("slack", f"Slack{slack_count}", slack_html),
              ("todos", f'Tasks <span class="tab-count">{p0_p1}</span>', todos_html)]

@@ -26,6 +26,10 @@ The starter rules send each connector's event kinds to these lanes:
 but never loads one, so the last step for any connector is a manual
 `launchctl load`.
 
+The [Work queue](work-queue.md) reads the same sources with your own sign-in
+for each tool, and it doesn't need these daemons. Its Slack source uses the
+same user token as the [Slack focus list](#slack-focus-list).
+
 ## GitHub notifications
 
 The connector uses the `gh` CLI's own token.
