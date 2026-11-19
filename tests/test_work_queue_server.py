@@ -614,16 +614,35 @@ def test_the_server_binds_localhost_only_and_raises_other_socket_errors(wq, monk
     assert bound == [("127.0.0.1", 9555)]
 
 
-def serve_in_pro_mode(wq) -> tuple[subprocess.Popen, int]:
+def serve_in_pro_mode(wq, *first_on_path: Path) -> tuple[subprocess.Popen, int]:
     (wq.home / ".assistant").mkdir(exist_ok=True)
     (wq.home / ".assistant/config.json").write_text('{"mode": "pro"}')
     port = closed_port()
     wq.sources({"port": port})
-    env = {**os.environ, "PYTHONPATH": f"{REPO}{os.pathsep}{REPO / 'src'}"}
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(map(str, [*first_on_path, REPO, REPO / "src"]))}
     proc = subprocess.Popen([sys.executable, "-m", "work_queue.server"], cwd=REPO, env=env,
                             stdout=subprocess.PIPE, text=True)
     assert first_line(proc).strip() == f"Serving the Work queue on http://127.0.0.1:{port}/"
     return proc, port
+
+
+@pytest.mark.real_mode
+def test_pro_mode_serves_without_a_reverse_dns_lookup(wq, tmp_path):
+    slow_dns = tmp_path / "slow-dns"
+    slow_dns.mkdir()
+    (slow_dns / "sitecustomize.py").write_text(
+        "import os, socket, sys\n"
+        "def lookup(name):\n"
+        "    sys.stderr.write(f'reverse DNS lookup of {name}\\n')\n"
+        "    os._exit(3)\n"
+        "socket.gethostbyaddr = lookup\n")
+    proc, port = serve_in_pro_mode(wq, slow_dns)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=30) as r:
+            assert json.loads(r.read())["queued"] == {}
+    finally:
+        proc.send_signal(signal.SIGTERM)
+    assert proc.wait(10) == 0
 
 
 @pytest.mark.real_mode

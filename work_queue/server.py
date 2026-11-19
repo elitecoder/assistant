@@ -20,12 +20,14 @@ mode is off, it answers 403 and exits cleanly, so launchd doesn't restart it.
 from __future__ import annotations
 
 import errno
+import http.server
 import ipaddress
 import json
 import os
 import re
 import signal
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -34,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from assistant import mode, todostore
@@ -59,6 +61,18 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, li
 MODE_CHECK_SEC = 5.0
 lock = threading.Lock()
 refresh_proc: subprocess.Popen | None = None
+
+
+class ThreadingHTTPServer(http.server.ThreadingHTTPServer):
+    """Binds without the standard library's reverse DNS lookup of the address.
+
+    http.server looks up a name for 127.0.0.1 before it listens. On some Macs,
+    such as GitHub's macOS runners, a process's first lookup can take over 30
+    seconds, and the server started that late."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def now() -> str:

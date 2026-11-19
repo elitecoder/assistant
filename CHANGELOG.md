@@ -57,6 +57,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   changes. The hourly update never loads it fresh or restarts one you stopped.
 - The Work queue server re-checks the mode on every request and every 5
   seconds. Once Pro mode is off, it answers `403` and exits cleanly.
+- The Work queue server starts listening without a reverse DNS lookup of
+  `127.0.0.1`. On GitHub's macOS runners, that lookup held the server's
+  start past 30 seconds.
 - A **Work queue** tab on the dashboard in Pro mode links to the page and says
   when it last refreshed. A bad Work queue setting shows on the tab instead of
   breaking the dashboard.
