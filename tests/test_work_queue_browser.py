@@ -92,7 +92,7 @@ class Coverage:
         """Pause the current page's script just before `statement`, which navigates, and keep the counts then."""
         if self.cdp is None:
             return
-        script = [sid for sid in self.parsed if self.source(sid) == page.JS][-1]
+        script = [sid for sid in list(self.parsed) if self.source(sid) == page.JS][-1]
         lines = page.JS.split("\n")
         line = next(n for n, text in enumerate(lines) if statement in text)
         self.cdp.send("Debugger.setBreakpoint", {"location": {
