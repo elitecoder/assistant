@@ -11,8 +11,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Changed
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
-- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add 87 mutation checks (217 in all, up from 130), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
-- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 287 checks, 157 more than main's 130.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (313 in all now, up from main's 130), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 313 checks, 183 more than main's 130.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
@@ -181,12 +181,19 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   most 6 more calls, and only while the Work queue's budget covers the next
   one, so two bad rows in a small queue still leave the rest with verdicts. An
   answer about 2 or more rows with usable verdicts for fewer than half of them
-  counts as the wrong shape. A bad call that comes before a stop is still
-  skipped for the day. A failed or timed-out call is booked at least at its
-  reserved estimate. A saved cache, snapshot, or reservation file in the
+  counts as the wrong shape, and so does an answer nested too deep to read,
+  whose `RecursionError` got past the failure handling and stopped triage. A
+  bad call that comes before a stop is still skipped for the day. Rows you
+  marked done or dropped aren't triaged, and rows asked again after their day
+  go in an order that changes each day, so splitting can isolate a few
+  poisoned rows over several days instead of skipping most of a small queue
+  each day. A failed call is booked at least at its reserved estimate, and a
+  call that ran out of time as if it wrote 150 output tokens a second for its
+  whole time limit. A reservation expects 220 output tokens a row, close to
+  the measured call's 210. A saved cache, snapshot, or reservation file in the
   wrong shape is treated as empty, and the refresh still writes the page;
   a reservation dated in the future doesn't count. A blocked row leads Start
-  here. Two refreshes at once keep each other's verdicts. The scrubber, now
+  here, even one the model called drop. Two refreshes at once keep each other's verdicts. The scrubber, now
   `work_queue/scrubber.py`, runs in linear time on any input (the tests time
   each pattern on 1 MB of repeated text with no cut, including repeated
   `eyJ`), and cuts text to 8,000 characters, and titles and senders to 1,000,
@@ -200,17 +207,24 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   is: Bob", "Tests pass: 4197", and Google Docs links alone. Slack titles show
   as written; only the model's copy is scrubbed, before it's cut, in the row
   calls and in the Since last night summary, and the names in a Slack thread
-  are scrubbed and cut to 100 characters too. A reservation counts the model command's own prompt and the
-  expected answer, scaled to match a real call's cost, and a daily budget that isn't a finite
-  number of zero or more means the default, now 3.00 USD.
-- Load the Work queue only on Python 3.11 or newer, the version
+  are scrubbed and cut to 100 characters too. A reservation counts the model
+  command's own prompt and the expected answer, scaled to match a real call's
+  cost, and a daily budget that isn't a finite number of zero or more means the
+  default, now 3.00 USD.
+- Run the Work queue only on Python 3.11 or newer, the version
   `pyproject.toml` requires. `install.sh` used the first `python3` it found,
   which could be macOS's 3.9 at `/usr/bin/python3`, where the Work queue
-  server can't import. It now picks the first `python3` of 3.11 or newer from
-  Homebrew, `/usr/local/bin`, then `/usr/bin`, or the one `ASSISTANT_PYTHON`
-  names. When there isn't one, the other services keep the `python3` found,
-  and the Work queue is copied but not loaded, with a warning that says how to
-  fix it.
+  server can't import, and launchd restarted it every minute from login, even
+  in default mode. `install.sh` now picks the first `python3` of 3.11 or newer
+  from Homebrew, `/usr/local/bin`, then `/usr/bin`, or from the interpreters
+  `ASSISTANT_PYTHON` lists, separated by colons. When there isn't one, the
+  other services keep the `python3` found, and the Work queue's LaunchAgent
+  isn't installed: one an earlier install left is stopped and removed, and
+  the installer says how to fix it. The dashboard's Pro mode switch doesn't
+  start the Work queue when its plist's `python3` is older than 3.11, doesn't
+  run, or can't be read, and says why. On an older Python, `work_queue.server`
+  exits cleanly with a message before it imports anything else. The quality
+  workflow installs Python 3.11, so the tests that run on it run in CI.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether

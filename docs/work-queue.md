@@ -36,13 +36,23 @@ stopped.
 - The dashboard's Pro mode switch does the same: switching to default mode
   unloads the server, and switching to Pro mode loads it again. It changes
   the LaunchAgent only when the installer copied it into
-  `~/Library/LaunchAgents/`.
+  `~/Library/LaunchAgents/`, and it doesn't start it when the plist's
+  `python3` is older than 3.11, doesn't run, or can't be read; the switch says
+  why instead.
 - However the mode changes, the server checks it on every request and every
   5 seconds. Once Pro mode is off, it answers `403` and exits cleanly, so
   launchd doesn't restart it.
 
 In default mode, the dashboard has no **Work queue** tab, and
 `python3 -m work_queue.server` exits without listening.
+
+The Work queue needs Python 3.11 or newer, the version `pyproject.toml`
+requires. `install.sh` runs the LaunchAgents with the first `python3` of 3.11
+or newer from Homebrew, `/usr/local/bin`, then `/usr/bin`, or with the
+interpreters `ASSISTANT_PYTHON` lists, separated by colons. When it finds none,
+it doesn't install the Work queue's LaunchAgent and removes one an earlier
+install left, so launchd never starts it at login. On an older Python the
+server itself exits cleanly, with a message, before it loads anything else.
 
 ### What the server accepts
 
@@ -192,7 +202,10 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
   refresh doesn't count as gone.
 - A verdict stays cached for 14 days after its row was last seen.
 - A row the model didn't answer about is shown without a verdict and isn't
-  sent again until the next day. The Open list says how many there are.
+  sent again until the next day. The Open list says how many there are. Rows
+  asked again go to the model in an order that changes each day, so splitting
+  finds different rows each time.
+- A row you marked **Done** or **Drop** isn't triaged.
 - When a call about rows fails (it times out, the model command fails, or the
   answer isn't in the expected shape, for example a refusal or an answer about
   2 or more rows with usable verdicts for fewer than half of them), its rows are
@@ -203,9 +216,13 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
 - When the **Start here** or summary call fails, the page says so, the other
   parts still show, and that part isn't asked again until the next day or
   until what it would be asked about changes.
-- A model that refuses everything makes at most one call per 30 new rows (4 at
-  most), one **Start here** call, one summary call, and 6 split calls a day,
-  for unchanged rows. The tests check that bound with 120 rows over two days.
+- A model that refuses everything makes, in each refresh, at most 4 row calls
+  (one per 30 rows it hasn't asked about yet), 6 split calls, and one **Start
+  here** call and one summary call when what they'd be asked about changed:
+  12 calls, about $1.60. A refresh with no new rows makes none. A day's total
+  grows with the rows still waiting: 300 refused rows take 30 calls over the
+  first 3 refreshes of a day. The Work queue's $3.00 daily budget caps any
+  day.
 - Two refreshes at once each keep the verdicts the other saved.
 
 ### What the model sees and can do
@@ -253,15 +270,21 @@ Every call fails the same way. When a call times out, the model command fails,
 or the answer isn't in the expected format, the page shows **Part of triage
 didn't finish** on **Start here** and the Open list, naming the part (**Row
 triage**, **Start here**, or **Since last night**) and the reason, and the
-other parts still run. A failed call is booked against the budgets at its
-reserved estimate.
+other parts still run. A failed call is booked against the budgets at least at
+its reserved estimate. A call that ran out of time is booked as if it wrote
+150 output tokens a second for its whole time limit, at least the reserved
+estimate: about $0.68 for the full 240 seconds. That's an assumed rate, not a
+measured one; it keeps a long call from being booked at less than it could
+have cost.
 
 Triage stops, with no more calls this refresh, when a budget is used up, the
 refresh has spent 10 minutes on calls, or the model command isn't installed.
 The page keeps every rule-based row, keeps every verdict that finished, and
 shows **Triage unavailable** with the reason. An unexpected error in triage
-does the same, and its details go to the refresh log. A saved cache, snapshot, or reservation file that isn't in the expected
-shape is treated as empty, and the refresh still writes the page.
+does the same, and its details go to the refresh log. A saved cache,
+snapshot, or reservation file that isn't in the expected shape is treated as
+empty, and the refresh still writes the page. An answer nested too deep to
+read is in the wrong shape, like any other.
 
 There are two daily budgets, both for the UTC day:
 
@@ -277,10 +300,11 @@ There are two daily budgets, both for the UTC day:
 Before each call, triage reserves the call's estimated cost under the
 Strategist's lock, so two refreshes at once can't both spend the last of a
 budget. The estimate counts the prompt, about 14,000 tokens of the model
-command's own prompt, and an expected answer of 4,800 tokens, priced by
-`bin/metering.py` and then scaled by the ratio of a real call's cost to that
-price for its tokens (about 1.74), so a call about 30 rows reserves about
-$0.14. Triage stops once
+command's own prompt, and an expected answer of 220 tokens a row, 6,600 for 30
+rows (the measured call wrote about 210 a row), priced by `bin/metering.py`
+and then scaled by the ratio of a real call's cost to that price for its
+tokens (about 1.74). A call about 30 short rows reserves about $0.17, and rows
+with more text reserve more. Triage stops once
 spend, counting calls still running, has reached a budget. A single call can
 still go over it, by at most that call's cost. A reservation that isn't well
 formed, is older than 10 minutes, or is dated in the future doesn't count.

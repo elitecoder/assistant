@@ -85,7 +85,8 @@ WHY_MAX, DRAFT_MAX, REASON_MAX, SUMMARY_MAX = 200, 1200, 200, 300
 KEEP_DAYS = 14
 SKIP_DAYS = 1
 DAILY_USD = 3.0
-EXPECTED_OUT = BATCH * 160
+EXPECTED_OUT = BATCH * 220
+TIMEOUT_OUT_PER_SECOND = 150
 MAX_SPLIT_CALLS = 6
 CALL_OVERHEAD = 14_000
 # A real Sonnet 5.5 call cost 0.0697 USD for 14,800 tokens in and 1,054 out, more than bin/metering.py's price estimate
@@ -206,7 +207,7 @@ def answer(text: str, field: str):
     m = re.search(r"\{.*\}", text or "", re.S)
     try:
         doc = json.loads(m.group(0)) if m else None
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     value = doc.get(field) if isinstance(doc, dict) else None
     return value if isinstance(value, list) else None
@@ -344,6 +345,19 @@ def members(value) -> bool:
                                            for m in value)
 
 
+def retrying(saved: dict) -> set[str]:
+    """The rows the model didn't answer about whose day of waiting is over: they're asked again."""
+    rows = saved.get("rows") if isinstance(saved.get("rows"), dict) else {}
+    retry = days_ago(SKIP_DAYS)
+    return {h for h, e in rows.items() if isinstance(e, dict) and e.get("verdict") is None
+            and isinstance(e.get("skipped"), str) and e["skipped"] <= retry}
+
+
+def settled(mark: dict | None) -> bool:
+    """Whether you marked a row done or dropped: it's left out of triage."""
+    return bool(mark) and mark.get("state") in ("done", "dropped")
+
+
 def load_cache(saved: dict) -> tuple[dict, dict]:
     """Saved verdicts that still pass the schema, were seen in the last KEEP_DAYS days, and belong to a saved call;
     rows the model skipped in the last SKIP_DAYS days; and the rows each call asked about."""
@@ -454,6 +468,13 @@ def cost_of(prompt: str) -> float:
     return COST_SCALE * metering.estimate_cost_usd(len(prompt) // 4 + CALL_OVERHEAD, EXPECTED_OUT, model_name())
 
 
+def timeout_cost(prompt: str, timeout: int) -> float:
+    """What a call that ran out of time is booked at: as cost_of, but with TIMEOUT_OUT_PER_SECOND output tokens for
+    every second of its time limit, since a call that runs that long may have written far more than EXPECTED_OUT."""
+    out = max(EXPECTED_OUT, TIMEOUT_OUT_PER_SECOND * timeout)
+    return COST_SCALE * metering.estimate_cost_usd(len(prompt) // 4 + CALL_OVERHEAD, out, model_name())
+
+
 def fits(prompt: str) -> bool:
     """Whether the Work queue's own budget still covers this call, counting calls still running."""
     now = time.time()
@@ -514,14 +535,16 @@ class Triage:
         if (line := f"{stage}: {self.why}") not in self.problems:
             self.problems.append(line)
 
-    def rows(self, items: list[dict], cache: dict, batches: dict, out: dict) -> None:
-        """Ask about new and changed rows, 30 to a call. A call that fails waits in self.failed for split(), which
-        runs after Start here and the summary."""
-        todo = [i for i in items if i["hash"] not in cache][:MAX_ROWS]
+    def rows(self, items: list[dict], cache: dict, batches: dict, retry: set = frozenset()) -> None:
+        """Ask about new and changed rows, 30 to a call, then rows asked again after a day (`retry`), in an order
+        that changes each day so splitting can isolate different rows. A call that fails waits in self.failed for
+        split(), which runs after Start here and the summary."""
+        todo = [i for i in items if i["hash"] not in cache]
+        todo = ([i for i in todo if i["hash"] not in retry]
+                + sorted((i for i in todo if i["hash"] in retry), key=lambda i: digest([i["hash"], today()])))[:MAX_ROWS]
         for batch in (todo[n:n + BATCH] for n in range(0, len(todo), BATCH)):
             if not self.ask_rows(batch, cache, batches):
                 self.failed.append(batch)
-        out["rows"] = verdicts_by_link(items, cache)
 
     def ask_rows(self, batch: list[dict], cache: dict, batches: dict, afford: bool = False) -> bool | None:
         """Ask about one call's rows and cache the answer. False when the call fails or its answer is in the wrong
@@ -542,7 +565,7 @@ class Triage:
             remember(batch, verdicts, cache, batches)
         return verdicts is not None
 
-    def split(self, items: list[dict], cache: dict, batches: dict, out: dict) -> None:
+    def split(self, cache: dict, batches: dict) -> None:
         """Find the rows that break each failed call by splitting it in halves, at most MAX_SPLIT_CALLS extra calls in
         all, and only while the Work queue's budget covers the next one. Rows left are skipped for a day."""
         self.budget = MAX_SPLIT_CALLS
@@ -559,12 +582,12 @@ class Triage:
                 self.budget -= 1
                 if self.ask_rows(half, cache, batches, afford=True) is False:
                     queue.append(half)
-        out["rows"] = verdicts_by_link(items, cache)
 
     def start(self, items: list[dict], verdicts: dict, marks: dict, blocked: set, saved: dict, out: dict) -> dict:
         now_ms = time.time() * 1000
-        cands = sorted((i for i in items if (i["link"] in blocked or not hidden(marks.get(i["link"]), now_ms))
-                        and verdicts.get(i["link"], {}).get("disposition") != "drop"),
+        cands = sorted((i for i in items if i["link"] in blocked or (not hidden(marks.get(i["link"]), now_ms)
+                                                                      and verdicts.get(i["link"], {}).get("disposition")
+                                                                      != "drop")),
                        key=lambda i: (i["link"] not in blocked, i["link"] not in verdicts))[:MAX_START_CANDIDATES]
         if not cands:
             return {}
@@ -652,21 +675,25 @@ def cached(snap: dict, note: str = "") -> dict:
 def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), clock=time.monotonic) -> dict:
     """Triage one refresh's rows. Returns what the page shows: verdicts by link, the Start here list, what changed,
     how many rows wait for the next refresh or were skipped, and a note when triage stopped. `blocked` holds the
-    links of rows whose Assistant TODO is blocked; they stay on Start here even when marked."""
+    links of rows whose Assistant TODO is blocked; they stay on Start here even when marked. Rows you marked done
+    or dropped aren't triaged."""
     saved = load_saved()
     cache, batches = load_cache(saved)
     known = set(cache)
     items = open_items(snap)
+    asked = [i for i in items if not settled(marks.get(i["link"]))]
     cache = intact(cache, batches, items, read_sources(snap))
     start, summary = load_start(saved.get("start")), load_summary(saved.get("changes"))
     out = empty()
     diff = since(snap, snap["built"])
     work = Triage(llm, clock)
     try:
-        work.rows(items, cache, batches, out)
+        work.rows(asked, cache, batches, retrying(saved))
+        out["rows"] = verdicts_by_link(items, cache)
         start = work.start(items, out["rows"], marks, blocked, start, out)
         summary = work.summary(diff, summary, out)
-        work.split(items, cache, batches, out)
+        work.split(cache, batches)
+        out["rows"] = verdicts_by_link(items, cache)
     except Stop as exc:
         out["note"] = str(exc)
         for batch in work.failed:
@@ -680,8 +707,8 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
                 cache[i["hash"]]["seen"] = today()
         save(cache, batches, start, summary, known)
     out["failed"] = work.problems
-    out["waiting"] = sum(i["hash"] not in cache for i in items)
-    out["skipped"] = sum(cache.get(i["hash"], {}).get("skipped") is not None for i in items)
+    out["waiting"] = sum(i["hash"] not in cache for i in asked)
+    out["skipped"] = sum(cache.get(i["hash"], {}).get("skipped") is not None for i in asked)
     return out
 
 
@@ -715,7 +742,8 @@ def run_cmd(cmd: list[str], *, input_text: str | None = None, timeout: int = 30)
 
 def call_model(prompt: str, timeout: int) -> str:
     """One model call with tools off, metered as caller="work_queue". Raises Unavailable when it fails, booked at
-    least at its reserved estimate, and Stop when the model command isn't installed.
+    least at its reserved estimate, or at timeout_cost when it ran out of time, and Stop when the model command
+    isn't installed.
 
     `timeout` bounds the whole call, even when llm_runner runs more than one command for it."""
     route = llm_runner.load_route_config(llm_runner.config_path(home=config.home()), FEATURE)
@@ -736,7 +764,8 @@ def call_model(prompt: str, timeout: int) -> str:
         raise Stop(f"{provider} isn't installed, so there's no model to ask")
     usage = metering.observer_usage(result.stdout, len(prompt), model)
     if not result.usable:
-        usage = {**usage, "cost_usd": max(usage["cost_usd"], cost_of(prompt)), "source": "reserved"}
+        floor = timeout_cost(prompt, timeout) if result.rc == 124 else cost_of(prompt)
+        usage = {**usage, "cost_usd": max(usage["cost_usd"], floor), "source": "reserved"}
     try:
         metering.append_cost_row(caller=FEATURE, model=model, usage=usage, wall_ms=result.wall_ms,
                                  status="ok" if result.usable else "failed", provider=provider)

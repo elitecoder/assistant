@@ -20,6 +20,14 @@ mode is off, it answers 403 and exits cleanly, so launchd doesn't restart it.
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    print(f"The Work queue needs Python 3.11 or newer, and this is {sys.version.split()[0]}, so it won't start. "
+          "Install Python 3.11+, for example brew install python, then run ./install.sh --apply --pro.",
+          file=sys.stderr)
+    sys.exit(0)
+
 import errno
 import http.server
 import ipaddress
@@ -30,7 +38,6 @@ import signal
 import socket
 import socketserver
 import subprocess
-import sys
 import threading
 import time
 import urllib.error

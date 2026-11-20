@@ -19,7 +19,7 @@ import pytest
 
 from assistant import todostore
 from work_queue import config, refresh, server, todo_result
-from work_queue_fakes import calls, fake_claude, fake_tool, first_line, gh_pr, wq  # noqa: F401
+from work_queue_fakes import calls, fake_claude, fake_tool, first_line, gh_pr, old_python, wq  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[1]
 ROW = "https://x.slack.com/archives/C1/p1"
@@ -750,3 +750,13 @@ def test_main_returns_cleanly_once_pro_mode_turns_off(wq, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Serving the Work queue on http://127.0.0.1:" in out
     assert out.rstrip().endswith("Pro mode is off, so the Work queue server stopped. Turn it on with ./install.sh --apply --pro.")
+
+
+def test_the_server_exits_cleanly_on_python_3_10_before_it_imports_anything(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    proc = subprocess.run([str(old_python(tmp_path)), "-m", "work_queue.server"], capture_output=True, text=True,
+                          timeout=60, cwd=repo, env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin",
+                                                     "PYTHONPATH": f"{repo}:{repo}/src"})
+    assert proc.returncode == 0, "launchd doesn't restart a clean exit"
+    assert proc.stderr == ("The Work queue needs Python 3.11 or newer, and this is 3.10.14, so it won't start. Install "
+                           "Python 3.11+, for example brew install python, then run ./install.sh --apply --pro.\n")

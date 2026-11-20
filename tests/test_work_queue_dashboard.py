@@ -4,12 +4,15 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import plistlib
+import sys
 from pathlib import Path
 
 import pytest
 
 from assistant import mode
 from test_pro_mode import home, render_page, set_mode  # noqa: F401
+from work_queue_fakes import old_python
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -60,6 +63,14 @@ def test_an_unreadable_settings_file_never_breaks_the_dashboard(home, monkeypatc
     assert "The Work queue can't read its settings:" in panel and "Is a directory" in panel
 
 
+def work_queue_plist(home: Path, python: str = sys.executable) -> Path:
+    plist = home / "Library/LaunchAgents/com.assistant.work-queue.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_bytes(plistlib.dumps({"Label": "com.assistant.work-queue",
+                                      "ProgramArguments": [python, "-m", "work_queue.server"]}))
+    return plist
+
+
 def load_todo_server(name: str):
     spec = importlib.util.spec_from_file_location(name, REPO / "bin/todo-server.py")
     module = importlib.util.module_from_spec(spec)
@@ -82,9 +93,7 @@ def test_the_dashboard_switch_loads_and_unloads_the_work_queue(home, monkeypatch
     server = load_todo_server(f"todo_server_wq_{loaded}")
     monkeypatch.setattr(server, "rerender_dashboard", lambda: True)
     log = fake_launchctl(home, monkeypatch, loaded)
-    plist = home / "Library/LaunchAgents/com.assistant.work-queue.plist"
-    plist.parent.mkdir(parents=True)
-    plist.write_text("<plist/>")
+    plist = work_queue_plist(home)
     domain = f"gui/{os.getuid()}"
     assert server.set_mode("pro") == (True, "pro") and mode.is_pro()
     start = f"kickstart {domain}/com.assistant.work-queue" if loaded else f"bootstrap {domain} {plist}"
@@ -108,8 +117,38 @@ def test_a_missing_launchctl_still_switches_the_mode(home, monkeypatch):
     monkeypatch.setattr(server, "rerender_dashboard", lambda: True)
     (home / "empty").mkdir()
     monkeypatch.setenv("PATH", str(home / "empty"))
-    plist = home / "Library/LaunchAgents/com.assistant.work-queue.plist"
-    plist.parent.mkdir(parents=True)
-    plist.write_text("<plist/>")
+    work_queue_plist(home)
     assert server.set_mode("pro") == (True, "pro") and mode.is_pro()
     assert server.set_mode("default") == (True, "default") and not mode.is_pro()
+
+
+@pytest.mark.parametrize("python", ["old", "unreadable", "missing"])
+def test_the_dashboard_switch_never_starts_the_work_queue_on_python_3_10(home, monkeypatch, python):
+    server = load_todo_server(f"todo_server_wq_old_{python}")
+    monkeypatch.setattr(server, "rerender_dashboard", lambda: True)
+    log = fake_launchctl(home, monkeypatch, False)
+    if python == "old":
+        old = old_python(home / "py")
+        work_queue_plist(home, str(old))
+        why = f"{old} is older"
+    elif python == "missing":
+        work_queue_plist(home, str(home / "no-such-python3"))
+        why = f"{home / 'no-such-python3'} doesn't run"
+    else:
+        work_queue_plist(home).write_text("<plist/>")
+        why = f"the python3 in {home / 'Library/LaunchAgents/com.assistant.work-queue.plist'} can't be read"
+    assert server.set_mode("pro") == (True, f"Switched to pro. The Work queue needs Python 3.11 or newer, and {why}, "
+                                            "so it wasn't started. Install Python 3.11+, then run "
+                                            "./install.sh --apply --pro.")
+    assert mode.is_pro() and not log.exists()
+    assert server.set_mode("default") == (True, "default")
+    assert log.read_text().splitlines() == [f"bootout gui/{os.getuid()}/com.assistant.work-queue"]
+
+
+def test_the_dashboard_switch_says_why_even_when_the_page_cant_rebuild(home, monkeypatch):
+    server = load_todo_server("todo_server_wq_old_norender")
+    monkeypatch.setattr(server, "rerender_dashboard", lambda: False)
+    fake_launchctl(home, monkeypatch, False)
+    work_queue_plist(home, str(old_python(home / "py")))
+    ok, message = server.set_mode("pro")
+    assert ok and message.startswith("Switched to pro. The page updates within 5 minutes. The Work queue needs Python 3.11")

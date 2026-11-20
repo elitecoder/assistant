@@ -137,6 +137,33 @@ sys.exit(9)
 '''
 
 
+OLD_PYTHON = '''#!{python}
+import os, runpy, sys
+args = sys.argv[1:]
+if args[:1] not in (["-c"], ["-m"]):
+    os.execv(sys.executable, [sys.executable, *args])
+sys.version_info = {version!r} + ("final", 0)
+sys.version = "{dotted} (an older Python, for tests)"
+if args[0] == "-c":
+    sys.argv = ["-c", *args[2:]]
+    exec(compile(args[1], "<string>", "exec"), {{"__name__": "__main__"}})
+else:
+    sys.argv = [args[1], *args[2:]]
+    sys.path.insert(0, os.getcwd())
+    runpy.run_module(args[1], run_name="__main__", alter_sys=True)
+'''
+
+
+def old_python(where: Path, version: tuple = (3, 10, 14)) -> Path:
+    """This interpreter, reporting an older version in sys.version_info and sys.version. It runs `-c` code and `-m`
+    modules itself, and anything else on the real interpreter."""
+    where.mkdir(parents=True, exist_ok=True)
+    exe = where / f"python{version[0]}.{version[1]}"
+    exe.write_text(OLD_PYTHON.format(python=sys.executable, version=version, dotted=".".join(map(str, version))))
+    exe.chmod(0o755)
+    return exe
+
+
 def fake_tool(bin_dir: Path, name: str, answers: list[tuple[str, object]]) -> Path:
     bin_dir.mkdir(parents=True, exist_ok=True)
     (bin_dir / f"{name}.json").write_text(json.dumps(answers))

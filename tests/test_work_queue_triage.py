@@ -441,10 +441,12 @@ def test_items_marked_done_dropped_or_snoozed_never_reach_the_start_list(wq):
     marks = {pr(1)["link"]: {"state": "done", "until": 0}, pr(2)["link"]: {"state": "dropped", "until": 0},
              pr(3)["link"]: {"state": "snoozed", "until": now_ms + 86400000},
              pr(4)["link"]: {"state": "snoozed", "until": now_ms - 1000}}
-    model = Model(rows=lambda items: {"rows": [{"id": i["id"], **VERDICT, "disposition": "drop" if i["id"] == 5 else "you"}
+    model = Model(rows=lambda items: {"rows": [{"id": i["id"], **VERDICT,
+                                                "disposition": "drop" if i["title"] == "o/r#6: Change 6" else "you"}
                                                for i in items]},
                   start=lambda items: {"start": [{"id": i["id"], "reason": "Go"} for i in items]})
     tri, html = triaged(snap(*(pr(n) for n in range(1, 8))), model, marks)
+    assert sent_titles(model) == [f"o/r#{n}: Change {n}" for n in range(3, 8)], "done and dropped rows aren't triaged"
     assert [i["title"] for i in model.of("start")[0]] == ["o/r#4: Change 4", "o/r#5: Change 5", "o/r#7: Change 7"]
     assert [s["key"] for s in tri["start"]] == [pr(n)["link"] for n in (4, 5, 7)]
     start = html[html.index('id="start"'):html.index('id="open-list"')]
@@ -937,13 +939,13 @@ def test_a_failed_real_call_says_why_and_still_books_its_cost(wq, body, timeout,
 def test_a_start_here_call_that_times_out_on_the_real_path_never_stops_the_rest(wq, monkeypatch):
     log = fake_claude(wq.home)
     (wq.home / "claude.slow").write_text("You pick")
-    monkeypatch.setattr(triage, "CALL_TIMEOUT", 1)
+    monkeypatch.setattr(triage, "CALL_TIMEOUT", 5)
     on_day(monkeypatch, "2026-11-19")
     for _ in range(3):
         tri, html = triaged(snap(pr(1), pr(2)), REAL_CALL)
         assert len(tri["rows"]) == 2 and tri["note"] == "" and tri["start"] == []
-        assert tri["failed"] == ["Start here: the model didn't answer within 1 seconds"]
-        assert "Start here: the model didn&#x27;t answer within 1 seconds" in html
+        assert tri["failed"] == ["Start here: the model didn't answer within 5 seconds"]
+        assert "Start here: the model didn&#x27;t answer within 5 seconds" in html
     assert len(log.read_text().splitlines()) == 2, "one row call and one Start here call, once"
     failed = [r for r in ledger(wq) if r["status"] == "failed"]
     assert len(failed) == 1 and failed[0]["est_usd"] > triage.metering.estimate_cost_usd(triage.CALL_OVERHEAD, 0,
@@ -1098,7 +1100,7 @@ def test_a_reservation_counts_the_answer_it_expects_as_well_as_the_prompt(wq):
     assert expected > estimate(len(prompt) // 4, 0, "claude-sonnet-5-5") * 2
     assert triage.COST_SCALE * estimate(14_800, 1_054, "claude-sonnet-5-5") == pytest.approx(0.0697), \
         "the measured real call: 14,800 tokens in, 1,054 out, $0.0697"
-    assert 0.12 < expected < 0.15, "a call about 30 rows, answering about all of them"
+    assert 0.15 < expected < 0.18, "a call about 30 rows, answering about all of them at 220 tokens a row"
 
 
 def test_two_refreshes_at_once_keep_each_others_verdicts(wq):
@@ -1301,9 +1303,9 @@ def test_the_split_bound_holds_for_any_set_of_poisoned_rows(wq, monkeypatch, bou
         monkeypatch.setattr(triage.Triage, "ask", ask)
         items = [{"hash": f"h{n}", "source": "GitHub", "title": str(n), "who": "", "when": "", "text": "",
                   "link": f"https://x/{n}"} for n in range(120)]
-        work, out = triage.Triage(None), {}
-        work.rows(items, {}, {}, out)
-        work.split(items, {}, {}, out)
+        work = triage.Triage(None)
+        work.rows(items, {}, {})
+        work.split({}, {})
         worst = max(worst, len(calls) - 4)
     assert worst == bound, "an odd bound is held too, so the budget is checked before each half"
 
@@ -1396,10 +1398,10 @@ def test_splitting_never_passes_its_bound_or_leaves_a_row_unasked(wq, monkeypatc
         monkeypatch.setattr(triage.Triage, "ask", ask)
         items = [{"hash": f"h{k}", "source": "GitHub", "title": str(k), "who": "", "when": "", "text": "",
                   "link": f"https://x/{k}"} for k in range(n)]
-        work, out, cache = triage.Triage(None), {}, {}
-        work.rows(items, cache, {}, out)
+        work, cache = triage.Triage(None), {}
+        work.rows(items, cache, {})
         first = len(calls)
-        work.split(items, cache, {}, out)
+        work.split(cache, {})
         assert len(calls) - first <= triage.MAX_SPLIT_CALLS, (n, sorted(poison))
         assert all(f"h{k}" in cache for k in range(min(n, triage.MAX_ROWS))), (n, sorted(poison))
 
@@ -1538,18 +1540,103 @@ def test_slack_context_names_are_scrubbed_and_cut(wq):
     assert text == f"Ana [removed]: Can you look?\n{'Bo' * 50}: Bump."
 
 
-def test_the_scrubber_imports_on_the_oldest_python_the_repo_supports():
-    import tomllib
-    repo = Path(__file__).resolve().parents[1]
-    floor = re.fullmatch(r">=(\d+\.\d+)", tomllib.loads((repo / "pyproject.toml").read_text())["project"]
-                         ["requires-python"]).group(1)
-    code = (f"import sys; sys.path.insert(0, {str(repo)!r}); import platform, work_queue.scrubber as s; "
-            "print(platform.python_version(), s.scrub('ghp_' + 'a' * 30))")
-    proc = subprocess.run(["uv", "run", "--no-project", "--python", floor, "python", "-I", "-c", code],
-                          capture_output=True, text=True, timeout=300)
+REPO = Path(__file__).resolve().parents[1]
+FLOOR = re.fullmatch(r">=(\d+\.\d+)", __import__("tomllib").loads((REPO / "pyproject.toml").read_text())["project"]
+                     ["requires-python"]).group(1)
+
+
+def oldest_python() -> str:
+    """The oldest Python the repo supports, as uv finds it without downloading it. The quality workflow installs it."""
+    found = subprocess.run(["uv", "python", "find", FLOOR], capture_output=True, text=True, timeout=60)
+    if found.returncode:
+        pytest.skip(f"uv can't find Python {FLOOR} here; the quality workflow installs it")
+    return found.stdout.strip()
+
+
+def on_oldest_python(code: str) -> list[str]:
+    proc = subprocess.run([oldest_python(), "-I", "-c", f"import sys; sys.path[:0] = [{str(REPO)!r}, "
+                           f"{str(REPO / 'src')!r}]; import platform; print(platform.python_version()); {code}"],
+                          capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr[-2000:]
-    version, out = proc.stdout.split()
-    assert version.startswith(floor + ".") and out == "[removed]"
+    version, *out = proc.stdout.split("\n")
+    assert version.startswith(FLOOR + ".")
+    return [line for line in out if line]
+
+
+def test_the_quality_workflow_installs_the_oldest_python_in_every_job():
+    workflow = (REPO / ".github/workflows/quality.yml").read_text()
+    assert workflow.count(f"uv python install {FLOOR}\n") == 2, "the tests and the mutation shards both need it"
+
+
+def test_the_scrubber_imports_on_the_oldest_python_the_repo_supports():
+    assert on_oldest_python("import work_queue.scrubber as s; print(s.scrub('ghp_' + 'a' * 30))") == ["[removed]"]
+
+
+DEEP = '{"rows": [{"id": 0, "why": "w", "disposition": "you", "effort": "Quick", "draft": ' + "[" * 100_000 \
+    + "]" * 100_000 + "}]}"
+
+
+def test_an_answer_nested_too_deep_is_the_wrong_shape_on_the_oldest_python():
+    code = f"from work_queue import triage; deep = {DEEP[:90]!r} + '[' * 100000 + ']' * 100000 + '}}]}}'; " \
+           "print(triage.answer(deep, 'rows'), triage.parse_rows(deep, 1))"
+    assert on_oldest_python(code) == ["None None"]
+
+
+def test_an_answer_nested_too_deep_never_stops_triage(wq):
+    model = Model(rows=lambda items: DEEP)
+    for _ in range(3):
+        tri, html = triaged(snap(pr(1), pr(2)), model)
+        assert tri["note"] == "" and len(tri["start"]) == 2
+        assert "Row triage: the model&#x27;s answer wasn&#x27;t in the expected format" in html or tri["skipped"] == 2
+    assert [len(b) for b in model.of("rows")] == [2, 1, 1], "asked once, split once, then skipped for the day"
+
+
+def test_a_call_that_runs_out_of_time_is_booked_for_all_it_could_have_written(wq, monkeypatch):
+    shell_claude(wq, "sleep 5")
+    monkeypatch.setattr(triage, "TIMEOUT_OUT_PER_SECOND", 20_000)
+    with pytest.raises(triage.Unavailable, match="the model didn't answer within 1 seconds"):
+        REAL_CALL("Triage these rows", 1)
+    assert ledger(wq)[-1]["est_usd"] == triage.timeout_cost("Triage these rows", 1) > triage.cost_of("Triage these rows")
+
+
+def test_a_timeout_is_booked_at_150_output_tokens_a_second(wq):
+    prompt = "a prompt " * 100
+    tokens_in = len(prompt) // 4 + triage.CALL_OVERHEAD
+    assert triage.timeout_cost(prompt, 240) == triage.COST_SCALE * triage.metering.estimate_cost_usd(
+        tokens_in, 150 * 240, "claude-sonnet-5-5")
+    assert triage.timeout_cost(prompt, 10) == triage.cost_of(prompt), "never below the reserved estimate"
+
+
+def test_rows_you_marked_done_or_dropped_are_never_triaged(wq):
+    marks = {pr(1)["link"]: {"state": "done", "until": 0}, pr(2)["link"]: {"state": "dropped", "until": 0},
+             pr(3)["link"]: {"state": "snoozed", "until": time.time() * 1000 + 86400000}}
+    model = Model(rows=lambda items: "no")
+    tri, _ = triaged(snap(*(pr(n) for n in range(1, 6))), model, marks)
+    assert {i["title"] for b in model.of("rows") for i in b} == {f"o/r#{n}: Change {n}" for n in (3, 4, 5)}
+    assert (tri["skipped"], tri["waiting"]) == (3, 0), "marked rows don't count as skipped or waiting"
+
+
+@pytest.mark.parametrize("n", [20, 30])
+def test_poisoned_rows_are_isolated_over_several_days(wq, monkeypatch, n):
+    poison = {3, n // 2, n - 1}
+    model = Model(rows=poisoned)
+    rows = [pr(k, f"o/r#{k}: POISON" if k in poison else "") for k in range(n)]
+    skipped = []
+    for day in range(18, 26):
+        on_day(monkeypatch, f"2026-11-{day}")
+        for _ in range(2):
+            tri, _ = triaged(snap(*rows), model)
+        skipped.append(tri["skipped"])
+    assert skipped == sorted(skipped, reverse=True) and skipped[0] > 3
+    assert skipped[-1] == 3, "in the end only the poisoned rows go without a verdict"
+
+
+def test_a_blocked_row_the_model_called_drop_still_leads_start_here(wq):
+    model = Model(rows=lambda items: {"rows": [{"id": i["id"], **VERDICT, "disposition": "drop"} for i in items]})
+    tri, _ = triaged(snap(pr(1), pr(2)), model, blocked={pr(2)["link"]})
+    assert tri["start"][0] == {"key": pr(2)["link"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "Small",
+                               "reason": triage.BLOCKED_REASON}
+    assert [s["key"] for s in tri["start"]] == [pr(2)["link"]], "a dropped row that isn't blocked stays off"
 
 
 @pytest.mark.parametrize("entry", [{"failed": 5, "day": "2026-11-19"}, {"failed": "x" * 301, "day": "2026-11-19"},
@@ -1560,3 +1647,34 @@ def test_a_saved_failure_that_isnt_well_formed_drops_the_saved_answer(entry):
     good = {"failed": "it failed", "day": "2026-11-19"}
     assert triage.load_start({"key": "k", "items": [], **good}) == {"key": "k", "items": [], **good}
     assert triage.load_summary({"key": "k", "text": {}, **good}) == {"key": "k", "text": {}, **good}
+
+
+def test_the_refuse_everything_bound_holds_per_refresh(wq, monkeypatch):
+    on_day(monkeypatch, "2026-11-18")
+    triaged(snap(pr(1000)), Model())
+    on_day(monkeypatch, "2026-11-19")
+    refuse = lambda items: "I can't help with this request."  # noqa: E731
+    model = Model(rows=refuse, start=refuse, changes=refuse)
+    rows = [pr(n) for n in range(1, 301)]
+    per = []
+    for _ in range(4):
+        before = len(model.prompts)
+        tri, _ = triaged(snap(*rows), model)
+        per.append([kind(p) for p in model.prompts[before:]])
+    assert per[0] == ["rows"] * 4 + ["start", "changes"] + ["rows"] * triage.MAX_SPLIT_CALLS
+    assert per[1] == ["rows"] * 4 + ["rows"] * triage.MAX_SPLIT_CALLS, "Start here and the summary had the same inputs"
+    assert per[2] == ["rows"] * 2 + ["rows"] * triage.MAX_SPLIT_CALLS and per[3] == []
+    assert sum(map(len, per)) == 30 and tri["skipped"] == 300
+
+
+
+def test_rows_asked_again_go_in_a_new_order_each_day_so_spread_out_poison_is_found(wq, monkeypatch):
+    poison = set(range(0, 40, 5))
+    model = Model(rows=poisoned)
+    rows = [pr(k, f"o/r#{k}: POISON" if k in poison else "") for k in range(40)]
+    skipped = []
+    for day in range(10, 16):
+        on_day(monkeypatch, f"2026-11-{day}")
+        skipped.append(triaged(snap(*rows), model)[0]["skipped"])
+    assert skipped[0] == 40 and skipped[-1] <= 20, "with one fixed order every split half holds poison every day"
+    assert skipped == sorted(skipped, reverse=True)

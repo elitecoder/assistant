@@ -103,9 +103,10 @@ install.sh — install/update the Assistant system from $REPO_ROOT
   is never torn out (it's adopted and remembered as enabled).
   -h, --help        This help.
   ASSISTANT_PYTHON=/path/to/python3 picks the interpreter the LaunchAgents run
-  with. Otherwise it's the first python3 of 3.11 or newer from Homebrew, then
-  /usr/local/bin, then /usr/bin. The Work queue needs 3.11 or newer; with an
-  older one it isn't loaded.
+  with; several paths separated by colons are tried in order. Otherwise it's
+  the first python3 of 3.11 or newer from Homebrew, then /usr/local/bin, then
+  /usr/bin. The Work queue needs 3.11 or newer; with an older one its
+  LaunchAgent isn't installed, and one an earlier install left is removed.
 
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
@@ -647,11 +648,11 @@ if command -v brew >/dev/null 2>&1; then
     BREW_BIN="$(brew --prefix 2>/dev/null)/bin"
 fi
 # The first python3 of 3.11 or newer (pyproject's requires-python), or else the
-# first one found. The Work queue needs 3.11 or newer and isn't loaded without it.
+# first one found. The Work queue needs 3.11 or newer and isn't installed without it.
 PLIST_PYTHON=""
 PLIST_PYTHON_NEW=0
 if [[ -n "${ASSISTANT_PYTHON:-}" ]]; then
-    PYTHON_CANDIDATES=("$ASSISTANT_PYTHON")
+    IFS=: read -r -a PYTHON_CANDIDATES <<< "$ASSISTANT_PYTHON"
 else
     PYTHON_CANDIDATES=("$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3)
 fi
@@ -748,7 +749,7 @@ feature_enabled() {
         memory)        [[ $WITH_MEMORY -eq 1 ]] ;;
         crash-resume)  [[ $WITH_CRASH_RESUME -eq 1 ]] ;;
         ws-numberer)   [[ $WITH_WS_NUMBERER -eq 1 ]] ;;
-        work-queue)    [[ "$MODE" == "pro" && $PLIST_PYTHON_NEW -eq 1 ]] ;;
+        work-queue)    [[ "$MODE" == "pro" ]] ;;
         *)             return 1 ;;
     esac
 }
@@ -765,6 +766,26 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         [[ "$base" == "$skip_base" ]] && skip=1 && break
     done
 
+    # The Work queue can't run on a python3 older than 3.11, and launchd would
+    # start it at every login: don't install it, and remove an earlier copy.
+    if [[ "$base" == "com.assistant.work-queue.plist" && $PLIST_PYTHON_NEW -eq 0 ]]; then
+        if [[ "$MODE" == "pro" ]]; then
+            warn "$base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (NOT installed; install Python 3.11+, for example brew install python, then run ./install.sh --apply --pro)"
+        else
+            note "$base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (NOT installed)"
+        fi
+        if [[ -e "$target" || -L "$target" ]]; then
+            if [[ $APPLY -eq 1 ]]; then
+                launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+                rm -f "$target"
+                note "removed $target"
+            else
+                note "would remove $target"
+            fi
+        fi
+        continue
+    fi
+
     # Tier: CORE loads; a FEATURE daemon loads only if opted in, else copy-no-load.
     copy_no_load=0
     feat="$(feature_of "$base")"
@@ -777,11 +798,7 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
                 memory|crash-resume|ws-numberer)
                     note "FEATURE $base — not enabled (copied, NOT loaded; enable with --with-$feat)" ;;
                 work-queue)
-                    if [[ "$MODE" == "pro" ]]; then
-                        warn "FEATURE $base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (copied, NOT loaded; install Python 3.11+, for example brew install python, then run ./install.sh --apply --pro)"
-                    else
-                        note "FEATURE $base — Pro mode only (copied, NOT loaded; turn on with --pro)"
-                    fi ;;
+                    note "FEATURE $base — Pro mode only (copied, NOT loaded; turn on with --pro)" ;;
                 *)  # comms / slack-reactor: token-gated, hand-loaded after setup
                     note "FEATURE $base — token-gated (copied, NOT loaded; hand-load after setup — see ONBOARDING.md)" ;;
             esac
@@ -852,8 +869,8 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     fi
 done
 
-# Default mode, or a python3 older than 3.11, stops the Work queue server.
-if [[ ( "$MODE" != "pro" || $PLIST_PYTHON_NEW -eq 0 ) && $APPLY -eq 1 ]]; then
+# Default mode stops the Work queue server that Pro mode started.
+if [[ "$MODE" != "pro" && $APPLY -eq 1 ]]; then
     launchctl bootout "gui/$UID/com.assistant.work-queue" 2>/dev/null || true
 fi
 
