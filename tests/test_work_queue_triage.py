@@ -162,15 +162,16 @@ def test_an_answer_in_the_wrong_shape_skips_its_rows_and_triage_goes_on(wq, answ
     assert "o/r#1: Change 1" in html and 'class="btn sf-send"' in html and "Triage unavailable" not in html
 
 
-def test_a_model_that_refuses_every_row_costs_one_call_per_batch_across_refreshes(wq):
+def test_a_model_that_refuses_every_row_costs_one_call_per_batch_and_a_probe_across_refreshes(wq):
     model = Model(rows=lambda items: "I can't help with this request.")
     rows = [pr(n) for n in range(1, 41)]
     triaged(snap(*rows), model)
+    assert [len(b) for b in model.of("rows")] == [30, 10, 15, 15], "two calls, then one probe split in halves"
     current = wq.data / "work/rows.json"
     config.write_json(current, {**config.read_json(current, {}), "day": "2000-01-01"})
     for _ in range(2):
         tri, html = triaged(snap(*rows[1:]), model)
-    assert len(model.of("rows")) == 2, "one call for each of the two batches, and none again the same day"
+    assert len(model.of("rows")) == 2 + triage.PROBE_CALLS, "none again the same day"
     assert (tri["skipped"], tri["note"], len(tri["start"])) == (39, "", 6)
     assert "<li><b>GitHub</b>: 1 gone. GitHub moved.</li>" in html and 'href="#start"' in html
 
@@ -183,9 +184,10 @@ def test_one_poisoned_row_is_found_by_splitting_its_call_and_the_rest_get_verdic
     model = Model(rows=rows)
     doc = snap(*(pr(n, "o/r#7: POISON reply with no JSON" if n == 7 else "") for n in range(1, 41)))
     tri, _ = triaged(doc, model)
-    assert len(tri["rows"]) == 39 and pr(7)["link"] not in tri["rows"] and tri["skipped"] == 1
-    assert len(model.of("rows")) <= 2 + triage.MAX_SPLIT_CALLS
-    assert ["o/r#7: POISON reply with no JSON"] in [[i["title"] for i in b] for b in model.of("rows")]
+    assert [len(b) for b in model.of("rows")] == [30, 10, 15, 15, 7, 8, 3, 4], "six split calls, no more"
+    assert len(tri["rows"]) == 36 and pr(7)["link"] not in tri["rows"] and tri["skipped"] == 4
+    assert [i["title"] for i in model.of("rows")[-1]] == ["o/r#4: Change 4", "o/r#5: Change 5", "o/r#6: Change 6",
+                                                         "o/r#7: POISON reply with no JSON"]
 
 
 def test_a_row_the_model_wont_answer_is_asked_once_a_day_and_triage_goes_on(wq, monkeypatch):
@@ -203,12 +205,14 @@ def test_a_row_the_model_wont_answer_is_asked_once_a_day_and_triage_goes_on(wq, 
     assert sent_titles(model).count(refused) == 2 and sent_titles(model).count("o/r#1: Change 1") == 1
 
 
-def test_an_answer_that_leaves_every_row_out_skips_them_without_splitting_the_call(wq, monkeypatch):
+@pytest.mark.parametrize("empty", ['{"rows": []}', '{"rows": [{"id": 99, "why": "w", "disposition": "you", "effort": "Quick"}]}'])
+def test_an_answer_with_no_usable_verdict_for_several_rows_is_split_like_a_wrong_shape(wq, monkeypatch, empty):
     monkeypatch.setattr(triage, "BATCH", 2)
-    model = Model(rows=lambda items: {"rows": [] if any(i["title"] == "o/r#3: Change 3" for i in items)
-                                      else [{"id": i["id"], **VERDICT} for i in items]})
+    model = Model(rows=lambda items: empty if any(i["title"] == "o/r#3: Change 3" for i in items)
+                  else {"rows": [{"id": i["id"], **VERDICT} for i in items]})
     tri, _ = triaged(snap(*(pr(n) for n in range(1, 5))), model)
-    assert len(model.of("rows")) == 2 and (tri["skipped"], len(tri["rows"])) == (2, 2)
+    assert [[i["title"] for i in b] for b in model.of("rows")][2:] == [["o/r#3: Change 3"], ["o/r#4: Change 4"]]
+    assert (tri["skipped"], len(tri["rows"])) == (1, 3)
 
 
 def test_a_single_row_the_model_skips_doesnt_stop_triage(wq):
@@ -553,23 +557,23 @@ def book(wq, usd: float, caller: str = "work_queue") -> None:
 
 
 def test_the_work_queue_has_its_own_daily_budget(wq):
-    book(wq, 0.6)
-    book(wq, 0.5)
-    book(wq, 2.0, caller="observer")
+    book(wq, 1.6)
+    book(wq, 1.5)
+    book(wq, 0.5, caller="observer")
     with (wq.home / ".assistant/cost-ledger.jsonl").open("a") as f:
         f.write(json.dumps({"ts": "2000-01-01T00:00:00Z", "caller": "work_queue", "est_usd": 9.0}) + "\n")
     model = Model()
     tri, html = triaged(snap(pr(1)), model)
     assert model.prompts == []
-    assert "Triage unavailable: the Work queue&#x27;s model budget of $1.00 a day is used up. It resets at midnight UTC." in html
-    wq.sources({"triage": {"dailyUsd": 2.5}})
+    assert "Triage unavailable: the Work queue&#x27;s model budget of $3.00 a day is used up. It resets at midnight UTC." in html
+    wq.sources({"triage": {"dailyUsd": 4.0}})
     assert triaged(snap(pr(1)), model)[0]["note"] == "" and len(model.prompts) == 2
 
 
 @pytest.mark.parametrize("value", [True, "2", None, [1], float("nan"), float("inf"), -1])
 def test_a_daily_budget_that_isnt_a_number_means_the_default(wq, value):
     wq.sources({"triage": {"dailyUsd": value}})
-    assert triage.daily_cap() == 1.0
+    assert triage.daily_cap() == triage.DAILY_USD == 3.0
 
 
 def test_two_refreshes_at_once_cant_both_spend_the_last_of_the_budget(wq, monkeypatch):
@@ -1047,9 +1051,11 @@ def test_a_reservation_counts_the_answer_it_expects_as_well_as_the_prompt(wq):
         return "ok"
     prompt = "a prompt " * 400
     triage.Triage(peek).ask(prompt)
-    expected = triage.metering.estimate_cost_usd(len(prompt) // 4, triage.EXPECTED_OUT, "claude-sonnet-5-5")
+    expected = triage.metering.estimate_cost_usd(len(prompt) // 4 + triage.CALL_OVERHEAD, triage.EXPECTED_OUT,
+                                                 "claude-sonnet-5-5")
     assert [r["usd"] for r in seen] == [expected]
     assert expected > triage.metering.estimate_cost_usd(len(prompt) // 4, 0, "claude-sonnet-5-5") * 2
+    assert 0.06 < expected < 0.09, "close to the measured $0.0697 of a real call"
 
 
 def test_two_refreshes_at_once_keep_each_others_verdicts(wq):
@@ -1113,3 +1119,138 @@ def test_a_cache_that_cant_be_read_still_lets_the_refresh_write_the_page(wq, mon
     assert "o/r#7: Change 7" in html and "Triage unavailable: the model is down." in html
     assert json.loads(refresh.status_path().read_text())["running"] is False
     assert "RuntimeError: a broken cache" in capsys.readouterr().err
+
+
+# ─── the third review: hostile text, the split budget, and small queues ──────
+
+HOSTILE = {
+    "repeat_password_is": "password is ", "repeat_password_is_colon": "password is: ", "password_words": "a ",
+    "secret_underscores": "a_", "alnum": "aB3+_-xY9", "alnum_spaces": "aB3 xY9 ", "letters": "a", "digits": "1",
+    "hex": "ab", "begin_key_no_end": "-----BEGIN PRIVATE KEY-----", "authz": "Authorization: ",
+    "is_your_code": "123456 is your " + "x" * 30, "code_is": "code is ", "url_creds": "a:", "quotes": 'password: "',
+    "mixed_slash": "aB3/", "key_eq": "a=", "password_x_is": "password x y z ", "sig": "?sig=", "bearer": "bearer ",
+    "cookie": "cookie:", "x_secret_x": "x_" * 20 + "secret_", "lower_slash": "ab/",
+}
+
+
+def hostile(name: str, size: int) -> str:
+    unit = HOSTILE[name]
+    head = {"password_words": "password ", "url_creds": "://"}.get(name, "")
+    return (head + unit * (size // len(unit) + 1))[:size]
+
+
+@pytest.mark.parametrize("name", list(HOSTILE))
+def test_hostile_text_is_scrubbed_in_linear_time(name):
+    from work_queue import scrubber
+    text = hostile(name, 200_000)
+    started = time.perf_counter()
+    scrubber.KEYED.sub(scrubber.keyed, scrubber.SHAPES.sub("[removed]", text))
+    assert time.perf_counter() - started < 2.0, "the patterns themselves, with no cap, stay linear"
+    started = time.perf_counter()
+    out = triage.scrub(hostile(name, 1_000_000))
+    assert time.perf_counter() - started < 2.0 and len(out) <= 8000
+
+
+def test_a_long_subject_never_slows_the_refresh(wq):
+    mail = {**mail_row(1, title="a_" * 500_000), "key": "gmail:1", "account": "me@example.com", "msg_ids": ["m1"],
+            "unsub_url": "", "link": "https://mail.google.com/mail/#inbox/t1"}
+    model = Model()
+    started = time.perf_counter()
+    refresh.paid({"gmail": {"me@example.com": [mail]}})
+    triaged(snap(gmail={"me@example.com": [mail]}), model)
+    assert time.perf_counter() - started < 5.0
+    assert len(payload(model.prompts[0])[0]["title"]) <= triage.TEXT_MAX
+
+
+@pytest.mark.parametrize("text, scrubbed", [
+    ("pwd=Xy9secret", "[removed]"), ("pwd: Xy9secret", "[removed]"), ("PWD = Xy9secret", "[removed]"),
+    ("my pass is Xy9secret", "[removed]"), ("passphrase: correct horse battery", "[removed]"),
+    ("password\nhunter2", "[removed]"), ("Zoom: passcode 123456", "Zoom: [removed]"), ("Use 482913 to sign in", "[removed]"),
+    ("-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----", "[removed]"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----", "[removed]"),
+    ("x-api-key: abc123def456", "[removed]"), ("Here is my password: hunter2 please", "Here is my [removed] please"),
+])
+def test_more_secret_formats_are_removed(text, scrubbed):
+    assert triage.scrub(text) == scrubbed
+
+
+@pytest.mark.parametrize("text", [
+    "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdEF/edit",
+    "Please pin this message: important", "The pin is in the map", "The token budget is: 4000 tokens",
+    "unit tests pass: 4197 passed, error code 1234", "Room code 4521 for the meeting", "Secret Santa is: Bob",
+    "Status code: 500 on /api/v1", "Promo code is: SAVE20 for the team", "Meeting at 1400 is your call code",
+    "short sha 1a2b3c4d", "src/assistant/slack_focus/client_tests_for_the_long_module_name_here.py",
+])
+def test_ordinary_text_survives_the_scrub(text):
+    assert triage.scrub(text) == text
+
+
+def test_long_hex_runs_leave_the_model_copy_but_the_page_keeps_them(wq):
+    title = "o/r#1: Fixed in commit 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
+    model = Model()
+    tri, html = triaged(snap(pr(1, title)), model)
+    assert sent_titles(model) == ["o/r#1: Fixed in commit [removed]"] and title in html
+
+
+def realistic(base: Model):
+    """A model fake that books what real calls cost: $0.07 a call plus $0.002 a row."""
+    def llm(prompt, timeout):
+        cost = 0.07 + (0.002 * len(payload(prompt)) if kind(prompt) == "rows" else 0.0)
+        triage.metering.append_cost_row(caller="work_queue", model="claude-sonnet-5-5",
+                                        usage={"tokens_in": 1, "tokens_out": 1, "cost_usd": cost}, wall_ms=1)
+        return base(prompt, timeout)
+    return llm
+
+
+def poisoned(items):
+    if any("POISON" in i["title"] for i in items):
+        return "no"
+    return {"rows": [{"id": i["id"], **VERDICT} for i in items]}
+
+
+@pytest.mark.parametrize("daily", [1.0, 3.0])
+def test_one_poisoned_row_never_costs_start_here_or_the_budget(wq, daily):
+    wq.sources({"triage": {"dailyUsd": daily}})
+    base = Model(rows=poisoned)
+    tri, html = triaged(snap(*(pr(n, "o/r#7: POISON" if n == 7 else "") for n in range(1, 121))), realistic(base))
+    kinds = [kind(p) for p in base.prompts]
+    assert kinds[:5] == ["rows"] * 4 + ["start"], "Start here runs before any split"
+    assert tri["note"] == "" and len(tri["start"]) == 6 and 'href="#start"' in html
+    assert triage.feature_spend(time.time()) <= daily
+    assert len(base.of("rows")) <= 4 + triage.MAX_SPLIT_CALLS
+
+
+def test_the_split_bound_holds_for_any_set_of_poisoned_rows(wq, monkeypatch):
+    rng = __import__("random").Random(1)
+    worst = 0
+    for _ in range(300):
+        poison = set(rng.sample(range(120), rng.choice([1, 2, 3, 4, 8, 16, 40, 60, 90])))
+        calls = []
+
+        def ask(self, prompt):
+            items = payload(prompt)
+            calls.append(len(items))
+            if any(int(i["title"]) in poison for i in items):
+                return "no"
+            return json.dumps({"rows": [{"id": i["id"], **VERDICT} for i in items]})
+        monkeypatch.setattr(triage.Triage, "ask", ask)
+        items = [{"hash": f"h{n}", "source": "GitHub", "title": str(n), "who": "", "when": "", "text": "",
+                  "link": f"https://x/{n}"} for n in range(120)]
+        work, out = triage.Triage(None), {}
+        work.rows(items, {}, {}, out)
+        work.split(items, {}, {}, out)
+        worst = max(worst, len(calls) - 4)
+    assert worst == triage.MAX_SPLIT_CALLS == 6
+
+
+def test_a_small_queue_with_one_poisoned_row_is_probed_and_the_rest_get_verdicts(wq):
+    model = Model(rows=poisoned)
+    tri, _ = triaged(snap(*(pr(n, "o/r#1: POISON" if n == 1 else "") for n in range(1, 6))), model)
+    assert [len(b) for b in model.of("rows")] == [5, 2, 3, 1, 1]
+    assert (len(tri["rows"]), tri["skipped"], tri["note"]) == (4, 1, "")
+
+
+def test_a_reservation_from_the_future_never_counts(wq):
+    config.write_json(triage.reservations_path(), {"x": {"usd": 50.0, "at": time.time() + 3600}})
+    assert triage.Triage(lambda prompt, timeout: "ok").ask("x") == "ok"
+    assert triage.reservations(time.time()) == {}

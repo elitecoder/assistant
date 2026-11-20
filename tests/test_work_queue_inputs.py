@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from assistant.slack_focus.client import Client
-from work_queue import tools
+from work_queue import tools, triage
 from work_queue.inputs import gcal, github, gmail, outlook, slack
 from work_queue_fakes import calls, fake_tool, wq  # noqa: F401
 
@@ -328,13 +328,15 @@ def test_tool_failures_say_what_failed(wq):
         tools.run(["slow"], timeout=1)
 
 
-def test_a_slack_title_has_secrets_removed_before_it_is_cut(wq):
+def test_a_slack_title_shows_as_written_and_the_model_gets_it_without_secrets(wq):
     fs = FakeSlack()
     fs.history["C1"].append(msg(ts(3), "U2", "x" * 80 + " ghp_" + "a" * 30))
     fake_tool(wq.bin, "uv", [("slack_browser.py list", {"ok": True, "items": [
         {"item_type": "message", "item_id": "C1", "ts": ts(3)}]})])
     row = slack.rows(ENTRY, Client("xoxp-test", fs), NOW)[0]
-    assert row["title"] == "#eng: " + "x" * 80 + " [removed]"
+    assert row["title"] == "#eng: " + "x" * 80 + " ghp_" + "a" * 14 + "…", "the page shows the title as written"
+    sent = triage.open_items({"slack": [row]})[0]["title"]
+    assert sent == "#eng: " + "x" * 80 + " [removed]", "the model's copy loses the token before it's cut"
 
 
 def test_a_long_tool_error_keeps_its_start_and_its_last_line():

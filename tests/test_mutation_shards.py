@@ -31,6 +31,14 @@ def test_a_shard_that_isnt_one_of_n_is_refused(spec):
         mutation_smoke.shard(spec)
 
 
+def test_a_shard_with_no_checks_is_refused_instead_of_passing():
+    n = len(mutation_smoke.CHECKS) + 1
+    with pytest.raises(argparse.ArgumentTypeError, match=f"shard {n}/{n} has no checks"):
+        mutation_smoke.shard(f"{n}/{n}")
+    with pytest.raises(SystemExit):
+        mutation_smoke.main(["--shard", f"{n}/{n}", "--output", "/dev/null"])
+
+
 def test_a_shard_run_checks_only_its_share_and_records_them(tmp_path, monkeypatch, capsys):
     ran = []
     monkeypatch.setattr(mutation_smoke, "run_check", lambda name, *rest: ran.append(name) or

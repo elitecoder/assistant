@@ -24,7 +24,6 @@ from datetime import datetime
 from assistant.slack_focus.client import Client
 
 from work_queue import config, tools
-from work_queue.scrubber import scrub
 
 PROMISE = re.compile(r"\b(I'?ll|I will|let me|I'?m going to)\b", re.I)
 TWO_DAYS = 172800
@@ -128,7 +127,7 @@ def rows(entry: dict, client: Client, now: float) -> list[dict]:
         if group != "unread":
             last = (rec["after"] or [rec["msg"]])[-1]
             topic = (rec["root"] or rec["msg"])["text"].split("\n")[0]
-            row.update(title=f"{rec['where']}: {short(scrub(topic), 100) or '(no text)'}", who=rec["msg"]["who"],
+            row.update(title=f"{rec['where']}: {short(topic, 100) or '(no text)'}", topic=topic, who=rec["msg"]["who"],
                        when=day(ts), evidence=f"{last['who']}, {day(last['ts'])}: “{short(last['text'], 150)}”")
         out.append(row)
     return out
