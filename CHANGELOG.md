@@ -9,10 +9,6 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
-### Added
-- Press `/` to search the dashboard tab you're on. Sessions keeps its own **Find your work** box; every other tab gets a **Search this tab** box that filters rows, hides sections with no match, and opens collapsed sections that hold one. Escape or switching tabs clears it, and the 15-second refresh keeps it. The idea comes from Daniel Ramirez's work dashboard (td-246).
-- On the **Tasks** tab, each task the Assistant starts shows **Queued → Started → PR open → Done**, plus **Blocked** with its reason. The steps show only what the TODO store records: **Started** means a session was launched, not that it's still working. Also from Daniel's dashboard (td-246).
-
 ### Fixed
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
@@ -22,6 +18,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 313 checks, 183 more than main's 130.
 
 ### Added
+- Press `/` to search the dashboard tab you're on. Sessions keeps its own **Find your work** box; every other tab with rows gets a **Search this tab** box that filters rows by their text (not their buttons), hides sections with no match, and opens collapsed sections that hold one without pausing the refresh. Escape or switching tabs clears it, and the 15-second refresh keeps it. The idea comes from a teammate's work dashboard (td-246).
+- On the **Tasks** tab, each task the Assistant starts shows **Queued → Started → PR open → Done**, plus **Blocked** with its reason. The steps show only what the TODO store records: **Started** means the Assistant launched a session, not that the session is still working. Also from that dashboard (td-246).
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
   Slack Later saves, pull requests that ask for your review, Outlook, Gmail,
   and today's calendar into one list you clear. It moved in from a standalone

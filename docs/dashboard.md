@@ -25,13 +25,14 @@ digest instead of nagging you.
   show open cards, per-workspace detail, background work, and your TODO list.
 - **Tasks**: each task the Assistant starts shows its progress as **Queued**,
   **Started**, **PR open**, and **Done**, plus **Blocked** with the reason.
-  The steps show only what's recorded: **Started** means a session was
-  launched, not that it's still working, and **Done** needs the session's
-  recorded result.
+  The Assistant shows only the steps it recorded: **Started** means it
+  launched a session, not that the session is still working, and **Done**
+  needs the session to record its result.
 
 Press `/` to search the tab you're on. On **Sessions** it focuses **Find your
-work**; on other tabs it filters the rows and opens any collapsed section that
-holds a match. Press Escape to clear the search. Switching tabs clears it too.
+work**; on other tabs it filters the rows by their text, not their buttons, and opens
+any collapsed section that holds a match. Tabs with nothing to search don't
+show the box. Press Escape to clear the search. Switching tabs clears it too.
 
 ## Decisions and goals
 

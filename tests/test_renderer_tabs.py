@@ -576,11 +576,11 @@ class TodosTabTests(_Base):
         self._write_todo({"items": [
             {"id": "td-q", "title": "queued", "priority": "P1", "status": "open", "autoDispatch": True},
             {"id": "td-s", "title": "started", "priority": "P1", "status": "in-progress", "autoDispatch": True,
-             "dispatchedAt": "2026-11-20T19:51:34Z", "dispatchedWs": "workspace:7"},
+             "dispatchedAt": "2026-11-20T12:00:00Z", "dispatchedWs": "workspace:7"},
             {"id": "td-p", "title": "pr", "priority": "P2", "status": "in-progress", "autoDispatch": False,
-             "dispatchedAt": "2026-11-18T08:00:00Z", "prUrl": "https://github.com/o/r/pull/9"},
+             "dispatchedAt": "2026-11-18T12:00:00Z", "prUrl": "https://github.com/o/r/pull/9"},
             {"id": "td-b", "title": "blocked", "priority": "P2", "status": "blocked", "autoDispatch": True,
-             "dispatchedAt": "2026-11-19T08:00:00Z", "statusReason": "Needs Jira access"},
+             "dispatchedAt": "2026-11-19T12:00:00Z", "statusReason": "Needs Jira access"},
             {"id": "td-m", "title": "manual", "priority": "P3", "status": "open", "autoDispatch": False},
         ]})
         html, _ = self.mod.render_todos_tab({"todo": {}})
@@ -594,14 +594,31 @@ class TodosTabTests(_Base):
         self.assertEqual(steps["td-b"][1], ("Started Nov 19", "current"))
         self.assertNotIn("td-m", steps)
         self.assertIn('href="https://github.com/o/r/pull/9"', html)
-        self.assertIn("Session launched 2026-11-20T19:51:34Z in workspace:7. "
-                      "This doesn&#x27;t show it&#x27;s still working.", html)
+        started = datetime(2026, 11, 20, 12, tzinfo=timezone.utc).astimezone().strftime("%b %-d at %-I:%M %p")
+        self.assertIn(f"The Assistant started it {started} in workspace:7. "
+                      "That doesn&#x27;t show the session is still working.", html)
+        self.assertEqual(html.count('aria-current="step"'), 4)
+        self.assertIn('<li class="task-step current" aria-current="step" title="The next automatic check', html)
         self.assertEqual(html.count("task-progress-note"), 1)
         self.assertLess(html.index("task-progress-note"), html.index("P0 / P1"))
+
+    def test_progress_line_needs_a_start_a_pr_or_an_open_queued_task(self):
+        render = self.mod.render_task_progress
+        self.assertEqual(render({"autoDispatch": True, "status": "in-progress"}), "")
+        self.assertEqual(render({"autoDispatch": True, "status": "blocked"}), "")
+        self.assertIn('aria-current="step" title="The next automatic check',
+                      render({"autoDispatch": True, "status": "open"}))
+        pr_only = render({"status": "in-progress", "prUrl": "https://github.com/o/r/pull/3"})
+        self.assertIn('<li class="task-step current" aria-current="step" title="https://github.com/o/r/pull/3">'
+                      '<a href="https://github.com/o/r/pull/3"', pr_only)
+        short_ref = render({"status": "in-progress", "prUrl": "architect-ffp#72"})
+        self.assertIn('title="architect-ffp#72">PR open</li>', short_ref)
+        self.assertNotIn("<a ", short_ref)
 
     def test_progress_line_keeps_unreadable_start_time(self):
         line = self.mod.render_task_progress({"dispatchedAt": "last-tuesday-ish", "status": "blocked"})
         self.assertIn(">Started last-tuesd<", line)
+        self.assertIn("The Assistant started it last-tuesday-ish in", line)
         self.assertIn("in an unknown workspace", line)
         self.assertIn("Blocked: No reason recorded.", line)
 

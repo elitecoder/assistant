@@ -732,6 +732,9 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 assert tab_search.input_value() == "" and focused() != "tab-search"
                 assert visible_tasks() == ["td-901", "td-902"]
                 assert page.locator('[data-panel="todos"] .section:has([data-task-id="td-902"])').is_visible()
+                tab_search.fill("remove")
+                assert visible_tasks() == []
+                assert page.locator('#tab-search-empty').is_visible()
                 tab_search.fill("newer idea")
                 blur()
                 assert page.evaluate("refreshDashboard(true, true)") is True
@@ -747,8 +750,21 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 tab_search.fill("freeze plan")
                 assert done_by_you.evaluate("details => details.open")
                 assert done_by_you.locator('.sf-row:has-text("freeze plan")').is_visible()
+                blur()
+                assert page.evaluate("refreshDashboard(false, true)") is True
+                done_by_you = page.locator('details[data-context-key="sf-done"]')
+                assert tab_search.input_value() == "freeze plan"
+                assert done_by_you.evaluate("details => details.open")
+                assert page.locator('#refresh-note').inner_text() == "Checks for updates every 15 seconds."
                 tab_search.fill("")
                 assert not done_by_you.evaluate("details => details.open")
+                page.locator('[data-tab="brief"]').click()
+                assert page.locator('#tab-search-bar').is_visible()
+                tab_search.fill("pull request 17")
+                assert page.locator('[data-panel="brief"] .review-topic:visible').count() == 1
+                assert page.locator('#tab-search-empty').is_hidden()
+                page.locator('[data-tab="work-queue"]').click()
+                assert page.locator('#tab-search-bar').is_hidden()
                 page.locator('[data-tab="overview"]').click()
                 assert page.locator('#tab-search-bar').is_hidden()
                 assert not errors, errors
