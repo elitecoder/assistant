@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import importlib.util
 import json
 import os
 import signal
@@ -760,3 +761,14 @@ def test_the_server_exits_cleanly_on_python_3_10_before_it_imports_anything(tmp_
     assert proc.returncode == 0, "launchd doesn't restart a clean exit"
     assert proc.stderr == ("The Work queue needs Python 3.11 or newer, and this is 3.10.14, so it won't start. Install "
                            "Python 3.11+, for example brew install python, then run ./install.sh --apply --pro.\n")
+
+
+def test_the_server_module_stops_on_python_3_10_before_its_other_imports(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "version_info", (3, 10, 14, "final", 0))
+    monkeypatch.setattr(sys, "version", "3.10.14 (an older Python, for tests)")
+    spec = importlib.util.spec_from_file_location("work_queue_server_on_3_10", Path(server.__file__))
+    module = importlib.util.module_from_spec(spec)
+    with pytest.raises(SystemExit) as stop:
+        spec.loader.exec_module(module)
+    assert stop.value.code == 0 and not hasattr(module, "errno"), "it stops before its other imports"
+    assert capsys.readouterr().err.startswith("The Work queue needs Python 3.11 or newer, and this is 3.10.14")
