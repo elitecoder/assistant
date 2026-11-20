@@ -23,6 +23,15 @@ digest instead of nagging you.
   connected**, or **Needs attention**, with a how-to-connect hint inline.
 - **Awaiting input**, **Session details**, **Background work**, and **Tasks**
   show open cards, per-workspace detail, background work, and your TODO list.
+- **Tasks**: each task the Assistant starts shows its progress as **Queued**,
+  **Started**, **PR open**, and **Done**, plus **Blocked** with the reason.
+  The steps show only what's recorded: **Started** means a session was
+  launched, not that it's still working, and **Done** needs the session's
+  recorded result.
+
+Press `/` to search the tab you're on. On **Sessions** it focuses **Find your
+work**; on other tabs it filters the rows and opens any collapsed section that
+holds a match. Press Escape to clear the search. Switching tabs clears it too.
 
 ## Decisions and goals
 

@@ -2219,6 +2219,20 @@ CHECKS = (
         'const hide=!!v&&(',
         'tests/test_work_queue_browser.py::test_a_sent_row_stays_greyed_with_its_status_and_a_blocked_one_stays_prominent',
     ),
+    (
+        "a task's progress line shows the step it has reached",
+        "bin/render-assistant-page.py",
+        "    reached = 2 if pr_url else 1 if started else 0\n",
+        "    reached = 1 if started else 0\n",
+        "tests/test_renderer_tabs.py::TodosTabTests::test_progress_line_tracks_recorded_steps",
+    ),
+    (
+        "a blocked task shows why on its progress line",
+        "bin/render-assistant-page.py",
+        '    if item.get("status") == "blocked":\n',
+        "    if False:\n",
+        "tests/test_renderer_tabs.py::TodosTabTests::test_progress_line_keeps_unreadable_start_time",
+    ),
 )
 
 

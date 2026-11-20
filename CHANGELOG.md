@@ -9,6 +9,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Press `/` to search the dashboard tab you're on. Sessions keeps its own **Find your work** box; every other tab gets a **Search this tab** box that filters rows, hides sections with no match, and opens collapsed sections that hold one. Escape or switching tabs clears it, and the 15-second refresh keeps it. The idea comes from Daniel Ramirez's work dashboard (td-246).
+- On the **Tasks** tab, each task the Assistant starts shows **Queued → Started → PR open → Done**, plus **Blocked** with its reason. The steps show only what the TODO store records: **Started** means a session was launched, not that it's still working. Also from Daniel's dashboard (td-246).
+
 ### Fixed
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 

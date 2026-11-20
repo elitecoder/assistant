@@ -27,6 +27,7 @@ import os
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -138,6 +139,32 @@ def full_world() -> dict:
         "dashboard_state_meta": {},
     }
 
+
+
+class ProgressSteps(HTMLParser):
+    """Collect each task row's progress steps as (text, state) pairs."""
+
+    def __init__(self, html):
+        super().__init__()
+        self.rows, self.task, self.step = {}, None, None
+        self.feed(html)
+
+    def handle_starttag(self, tag, attributes):
+        attrs = dict(attributes)
+        if attrs.get("data-task-id"):
+            self.task = attrs["data-task-id"]
+        if tag == "li" and "task-step" in attrs.get("class", ""):
+            state = next((c for c in ("current", "reached", "blocked") if c in attrs["class"].split()), "")
+            self.step = ["", state]
+
+    def handle_data(self, data):
+        if self.step is not None:
+            self.step[0] += data
+
+    def handle_endtag(self, tag):
+        if tag == "li" and self.step is not None:
+            self.rows.setdefault(self.task, []).append(tuple(self.step))
+            self.step = None
 
 class _Base(unittest.TestCase):
     def setUp(self):
@@ -544,6 +571,39 @@ class TodosTabTests(_Base):
         self.assertIn("td-4", html)
         # status pills.
         self.assertIn("status-blocked", html)
+
+    def test_progress_line_tracks_recorded_steps(self):
+        self._write_todo({"items": [
+            {"id": "td-q", "title": "queued", "priority": "P1", "status": "open", "autoDispatch": True},
+            {"id": "td-s", "title": "started", "priority": "P1", "status": "in-progress", "autoDispatch": True,
+             "dispatchedAt": "2026-11-20T19:51:34Z", "dispatchedWs": "workspace:7"},
+            {"id": "td-p", "title": "pr", "priority": "P2", "status": "in-progress", "autoDispatch": False,
+             "dispatchedAt": "2026-11-18T08:00:00Z", "prUrl": "https://github.com/o/r/pull/9"},
+            {"id": "td-b", "title": "blocked", "priority": "P2", "status": "blocked", "autoDispatch": True,
+             "dispatchedAt": "2026-11-19T08:00:00Z", "statusReason": "Needs Jira access"},
+            {"id": "td-m", "title": "manual", "priority": "P3", "status": "open", "autoDispatch": False},
+        ]})
+        html, _ = self.mod.render_todos_tab({"todo": {}})
+        steps = ProgressSteps(html).rows
+        self.assertEqual(steps["td-q"], [("Queued", "current"), ("Started", ""), ("PR open", ""), ("Done", "")])
+        self.assertEqual(steps["td-s"], [("Queued", "reached"), ("Started Nov 20", "current"),
+                                         ("PR open", ""), ("Done", "")])
+        self.assertEqual(steps["td-p"], [("Queued", "reached"), ("Started Nov 18", "reached"),
+                                         ("PR open", "current"), ("Done", "")])
+        self.assertEqual(steps["td-b"][-1], ("Blocked: Needs Jira access", "blocked"))
+        self.assertEqual(steps["td-b"][1], ("Started Nov 19", "current"))
+        self.assertNotIn("td-m", steps)
+        self.assertIn('href="https://github.com/o/r/pull/9"', html)
+        self.assertIn("Session launched 2026-11-20T19:51:34Z in workspace:7. "
+                      "This doesn&#x27;t show it&#x27;s still working.", html)
+        self.assertEqual(html.count("task-progress-note"), 1)
+        self.assertLess(html.index("task-progress-note"), html.index("P0 / P1"))
+
+    def test_progress_line_keeps_unreadable_start_time(self):
+        line = self.mod.render_task_progress({"dispatchedAt": "last-tuesday-ish", "status": "blocked"})
+        self.assertIn(">Started last-tuesd<", line)
+        self.assertIn("in an unknown workspace", line)
+        self.assertIn("Blocked: No reason recorded.", line)
 
     def test_recently_completed_section(self):
         world = full_world()
