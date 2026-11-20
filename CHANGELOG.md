@@ -11,6 +11,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Changed
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage adds 56 mutation checks and its own tests, which brings the job to an estimated 39 to 44 minutes on the CI runner.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
