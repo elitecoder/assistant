@@ -63,3 +63,7 @@ slack-reactor/package-lock.json
 # Runtime state dir when an install keeps it inside the repo instead of ~
 # (metrics.jsonl, observer-summaries/, heartbeat.json — never committed).
 /.assistant/
+
+# Mac app build output
+mac/.build/
+mac/build/

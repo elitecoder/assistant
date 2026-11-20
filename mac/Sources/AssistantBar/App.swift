@@ -1,0 +1,320 @@
+import AppKit
+import KokoroSwift
+import AVFoundation
+import Carbon.HIToolbox
+import ServiceManagement
+import SessionCore
+import SwiftUI
+import UserNotifications
+
+@main
+enum Main {
+    static let delegate = AppDelegate()
+
+    static func main() {
+        if CommandLine.arguments.contains("--print") {
+            printScan()
+            return
+        }
+        let args = CommandLine.arguments
+        let timeout = args.firstIndex(of: "--timeout").flatMap { $0 + 1 < args.count ? TimeInterval(args[$0 + 1]) : nil } ?? 900
+        if args.contains("--sessions") {
+            print(Messenger.list())
+            return
+        }
+        if let i = args.firstIndex(of: "--send"), i + 2 < args.count {
+            print(Messenger.send(args[i + 1], args[i + 2], timeout: timeout))
+            return
+        }
+        if let i = args.firstIndex(of: "--wait"), i + 1 < args.count {
+            print(Messenger.wait(args[i + 1], timeout: timeout))
+            return
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 2 < CommandLine.arguments.count {
+            exit(render(CommandLine.arguments[i + 1], to: URL(fileURLWithPath: CommandLine.arguments[i + 2])) ? 0 : 1)
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 1 < CommandLine.arguments.count {
+            let spoken = CommandLine.arguments.contains("--spoken")
+            let reply = Asker.ask(Asker.prompt(question: CommandLine.arguments[i + 1],
+                                               fleet: Digest.fleet(SessionScanner().scan()), focus: nil,
+                                               spoken: spoken), resume: nil, tool: Main.tool,
+                                  step: { print("  · " + Main.describe($0)) })
+            print(spoken ? Spoken.plain(reply.text) : reply.text)
+            if let cost = reply.cost { print(String(format: "($%.2f)", cost)) }
+            return
+        }
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.delegate = delegate
+        app.run()
+    }
+
+    /// Saves `text` spoken by the current Kokoro voice as a WAV file.
+    static func render(_ text: String, to url: URL) -> Bool {
+        let engine = KokoroEngine()
+        let voice = Kokoro.voices[0].id
+        var samples: [Float] = []
+        var ok = false
+        let done = DispatchSemaphore(value: 0)
+        let started = Date()
+        engine.speak(text, voiceID: voice, isCurrent: { true }, chunk: { samples += $0 }, done: { ok = $0; done.signal() })
+        done.wait()
+        guard ok, let format = AVAudioFormat(standardFormatWithSampleRate: Double(KokoroTTS.Constants.samplingRate),
+                                             channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+              let file = try? AVAudioFile(forWriting: url, settings: format.settings) else {
+            print("Kokoro didn't produce audio. Is the voice downloaded?")
+            return false
+        }
+        buffer.frameLength = buffer.frameCapacity
+        samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        try? file.write(from: buffer)
+        print(String(format: "Wrote %.1f seconds of speech in %.1f seconds to %@",
+                     Double(samples.count) / Double(KokoroTTS.Constants.samplingRate), Date().timeIntervalSince(started),
+                     url.path))
+        return true
+    }
+
+    static var tool: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }
+
+    static func describe(_ step: ChatStep) -> String {
+        switch step {
+        case let .sent(workspace, message): "Sent to \(workspace): \(message)"
+        case let .replied(text): "Reply: " + String(text.prefix(300))
+        case let .note(text): text
+        }
+    }
+
+    static func printScan() {
+        let result = SessionScanner().scan()
+        if let error = result.error { print(error) }
+        for item in result.items where item.attention != .working {
+            print("[\(item.attention)] \(item.workspace.title)  (\(item.idleText) idle, \(item.workspace.ref))")
+            print("  goal:   \(item.goal)".prefix(120))
+            print("  claude: \(item.question)".prefix(120))
+            if !item.pullRequests.isEmpty {
+                print("  PRs:    " + item.pullRequests.map { "#\($0.number) \($0.state)" }.joined(separator: ", "))
+            }
+        }
+        print("working: \(result.items(.working).count), not tracked: \(result.untracked.count)")
+    }
+}
+
+final class Model: NSObject, ObservableObject {
+    @Published var result = ScanResult()
+    @Published var scanning = false
+    @Published var lastScan: Date?
+    @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var chat: [ChatTurn] = []
+    @Published var asking = false
+    @Published var about: Item?
+    let listener = Listener()
+    let speaker = Speaker()
+    private var running: Process?
+    private var chatSession: String?
+    private var sentAbout: String?
+    var onScan: ((ScanResult) -> Void)?
+    var onFocus: (() -> Void)?
+
+    private let scanner = SessionScanner()
+    private let queue = DispatchQueue(label: "assistant.scan")
+
+    func refresh() {
+        guard !scanning else { return }
+        scanning = true
+        queue.async {
+            let r = self.scanner.scan()
+            DispatchQueue.main.async {
+                self.result = r
+                self.scanning = false
+                self.lastScan = Date()
+                self.onScan?(r)
+            }
+        }
+    }
+
+    func focus(_ ws: Workspace) {
+        onFocus?()
+        queue.async { SessionScanner.focus(ws) }
+        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/Applications/cmux.app"),
+                                           configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    override init() {
+        super.init()
+        listener.onHeard = { [weak self] text in self?.ask(text, spoken: true) }
+        listener.onProblem = { [weak self] text in self?.chat.append(ChatTurn(role: .error, text: text)) }
+    }
+
+    func listen() {
+        speaker.stop()
+        speaker.prepare()
+        listener.toggle()
+    }
+
+    func ask(_ question: String, spoken: Bool = false) {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !asking else { return }
+        chat.append(ChatTurn(role: .you, text: q))
+        asking = true
+        let fleet = chatSession == nil ? Digest.fleet(result) : nil
+        let target = about
+        let newFocus = target.map(\.id) != sentAbout ? target : nil
+        let resume = chatSession
+        DispatchQueue.global(qos: .userInitiated).async {
+            let focus = newFocus.flatMap { item in
+                FileManager.default.contents(atPath: item.transcript)
+                    .map { (title: item.workspace.title, exchange: Digest.exchange($0)) }
+            }
+            let reply = Asker.ask(Asker.prompt(question: q, fleet: fleet, focus: focus, spoken: spoken),
+                                  resume: resume, tool: Main.tool,
+                                  step: { step in
+                                      DispatchQueue.main.async {
+                                          self.chat.append(ChatTurn(role: .step, text: Main.describe(step)))
+                                      }
+                                  },
+                                  running: { p in DispatchQueue.main.async { self.running = p } })
+            DispatchQueue.main.async {
+                self.asking = false
+                self.running = nil
+                self.chat.append(ChatTurn(role: reply.failed ? .error : .assistant, text: reply.text, cost: reply.cost))
+                if spoken { self.speaker.say(reply.text) }
+                guard !reply.failed else { return }
+                self.chatSession = reply.sessionID
+                if newFocus != nil { self.sentAbout = newFocus?.id }
+            }
+        }
+    }
+
+    func stopAsking() {
+        running?.terminate()
+    }
+
+    func newChat() {
+        chat = []
+        chatSession = nil
+        sentAbout = nil
+        about = nil
+    }
+
+    func setOpensAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            NSLog("Assistant: login item change failed: \(error)")
+        }
+        opensAtLogin = SMAppService.mainApp.status == .enabled
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    let model = Model()
+    var statusItem: NSStatusItem!
+    let popover = NSPopover()
+    var notified = Set<String>()
+    var timer: Timer?
+    var hotKey: EventHotKeyRef?
+    var talkKey: EventHotKeyRef?
+
+    func applicationDidFinishLaunching(_ note: Notification) {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.action = #selector(toggle)
+        statusItem.button?.target = self
+        updateIcon()
+
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: PanelView(model: model))
+
+        model.onScan = { [weak self] r in
+            self?.updateIcon()
+            self?.notifyNew(r)
+        }
+        model.onFocus = { [weak self] in self?.popover.performClose(nil) }
+        model.refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.model.refresh() }
+
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
+        registerHotKey()
+        if CommandLine.arguments.contains("--show") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.show() }
+        }
+        if CommandLine.arguments.contains("--listen") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.talk() }
+        }
+    }
+
+    @objc func toggle() {
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            show()
+        }
+    }
+
+    func show() {
+        guard let button = statusItem.button else { return }
+        model.refresh()
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    func updateIcon() {
+        let count = model.result.items(.needsYou).count
+        let symbol = count > 0 ? "person.crop.circle.badge.exclamationmark" : "person.crop.circle.badge.checkmark"
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Assistant")
+        image?.isTemplate = true
+        statusItem.button?.image = image
+        statusItem.button?.imagePosition = .imageLeading
+        statusItem.button?.title = count > 0 ? " \(count)" : ""
+        statusItem.button?.toolTip = count > 0 ? "\(count) sessions need you (⌃⌥Space)" : "Nothing needs you (⌃⌥Space)"
+    }
+
+    func notifyNew(_ r: ScanResult) {
+        let needs = r.items(.needsYou)
+        let fresh = needs.filter { !notified.contains($0.id) }
+        notified = Set(needs.map(\.id))
+        guard !fresh.isEmpty, Bundle.main.bundleIdentifier != nil else { return }
+        let content = UNMutableNotificationContent()
+        content.title = fresh.count == 1 ? "A session needs you" : "\(fresh.count) sessions need you"
+        content.body = fresh.prefix(4).map { "\($0.workspace.title): \($0.question)" }.joined(separator: "\n")
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString,
+                                                                     content: content, trigger: nil))
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        DispatchQueue.main.async { self.show() }
+        done()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([.banner, .sound])
+    }
+
+    func talk() {
+        if !popover.isShown { show() }
+        model.listen()
+    }
+
+    func registerHotKey() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            var id = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &id)
+            DispatchQueue.main.async { id.id == 2 ? Main.delegate.talk() : Main.delegate.toggle() }
+            return noErr
+        }, 1, &spec, nil, nil)
+        let signature = OSType(0x4153_5354)
+        RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 1),
+                            GetApplicationEventTarget(), 0, &hotKey)
+        RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(controlKey | optionKey), EventHotKeyID(signature: signature, id: 2),
+                            GetApplicationEventTarget(), 0, &talkKey)
+    }
+}
