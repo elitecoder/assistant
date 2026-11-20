@@ -203,6 +203,14 @@ def test_a_row_the_model_wont_answer_is_asked_once_a_day_and_triage_goes_on(wq, 
     assert sent_titles(model).count(refused) == 2 and sent_titles(model).count("o/r#1: Change 1") == 1
 
 
+def test_an_answer_that_leaves_every_row_out_skips_them_without_splitting_the_call(wq, monkeypatch):
+    monkeypatch.setattr(triage, "BATCH", 2)
+    model = Model(rows=lambda items: {"rows": [] if any(i["title"] == "o/r#3: Change 3" for i in items)
+                                      else [{"id": i["id"], **VERDICT} for i in items]})
+    tri, _ = triaged(snap(*(pr(n) for n in range(1, 5))), model)
+    assert len(model.of("rows")) == 2 and (tri["skipped"], len(tri["rows"])) == (2, 2)
+
+
 def test_a_single_row_the_model_skips_doesnt_stop_triage(wq):
     tri, html = triaged(snap(pr(9)), Model(rows=lambda items: {"rows": [{"id": 9, **VERDICT}]}))
     assert (tri["note"], tri["skipped"], len(tri["start"])) == ("", 1, 1)

@@ -1195,7 +1195,7 @@ CHECKS = (
         'work_queue/triage.py',
         '            out[rid] = v\n    return out\n',
         '            out[rid] = v\n    return out or None\n',
-        'tests/test_work_queue_triage.py::test_a_single_row_the_model_skips_doesnt_stop_triage',
+        'tests/test_work_queue_triage.py::test_an_answer_that_leaves_every_row_out_skips_them_without_splitting_the_call',
     ),
     (
         'when a row leaves, the rest of its call is asked again',
