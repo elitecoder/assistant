@@ -9,6 +9,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Keep pulse settings across restarts. The pulse now applies the `env` object
+  in `~/.assistant/config.json` at startup, so settings like
+  `ASSISTANT_WATCHER=1` no longer need `launchctl setenv`, which a restart
+  clears. A value set on the LaunchAgent itself still wins.
+
 ### Fixed
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 

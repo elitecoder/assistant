@@ -11,6 +11,9 @@ run and exits 0 instead of starting a pulse that would crash on import:
     error, then once a day while it lasts.
   - stderr (the LaunchAgent's err log) gets one line per skipped run.
 
+Before starting the pulse, it adds each setting from the "env" object in
+~/.assistant/config.json that the service's own environment doesn't set.
+
 The LaunchAgent fires every StartInterval whatever the exit code, so the next
 tick retries. Modules the pulse loads later aren't checked here: it guards
 those imports itself, and self_update.py refuses incoming commits that don't
@@ -61,6 +64,15 @@ def _record_failure(assistant_dir: Path, error: str, now: float) -> None:
               file=sys.stderr)
 
 
+def config_env(assistant_dir: Path) -> dict[str, str]:
+    """The "env" object from ~/.assistant/config.json, as strings."""
+    try:
+        env = json.loads((assistant_dir / "config.json").read_text()).get("env")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}
+
+
 def main(argv: list[str], *, execv=os.execv) -> int:
     assistant_dir = Path.home() / ".assistant"
     for path in STARTUP_FILES:
@@ -75,6 +87,8 @@ def main(argv: list[str], *, execv=os.execv) -> int:
                   file=sys.stderr)
             return 0
     (assistant_dir / "pulse-preflight.json").unlink(missing_ok=True)
+    for key, value in config_env(assistant_dir).items():
+        os.environ.setdefault(key, value)
     execv(sys.executable, [sys.executable, str(PULSE), *argv])
     return 0
 
