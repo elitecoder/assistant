@@ -321,6 +321,8 @@ def test_a_password_phrase_is_removed_to_the_end_of_its_line(secret):
     ("password is: X1", "[removed]"),
     ("The password is - Hunter2", "The [removed]"),
     ("Password => Hunter2", "[removed]"),
+    ('The password is - "Hunter2 Hunter2" for now', "The [removed] for now"),
+    ('Password => "Hunter2 Hunter2" for now', "[removed] for now"),
     ('password: "Hunter2 Hunter2"', "[removed]"),
     ("password: 'Hunter2 Hunter2' and more", "[removed] and more"),
     ('the password for the vpn is "Hunter2 Hunter2" now', "the [removed] now"),
