@@ -126,6 +126,17 @@ def test_no_session_or_a_refused_call_reports_without_the_token(slack_site, tmp_
     assert output(capsys) == {"ok": True, "items": []}
 
 
+def test_an_unexpected_error_comes_back_as_one_json_line_not_a_traceback(tmp_path, capsys, monkeypatch):
+    def broken(parsed):
+        raise OSError("BrowserType.launch: Executable doesn't exist at /x/chrome\n╔══ Looks like Playwright was just installed ══╗")
+    monkeypatch.setattr(slack_browser, "run", broken)
+    slack_browser.main(["list", "--client-url", "https://x", "--api-url", "https://x/api/", "--profile", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1 and "Traceback" not in out
+    assert json.loads(out) == {"ok": False, "error": "OSError: BrowserType.launch: Executable doesn't exist at /x/chrome "
+                                                      "╔══ Looks like Playwright was just installed ══╗"}
+
+
 def test_the_script_runs_on_its_own(slack_site, tmp_path):
     proc = subprocess.run([sys.executable, str(REPO / "work_queue/slack_browser.py"), *args(slack_site, tmp_path, "signin")],
                           capture_output=True, text=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, timeout=120)

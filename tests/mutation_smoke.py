@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -967,21 +968,21 @@ CHECKS = (
     ),
     (
         'triage removes secrets before the model sees them',
-        'work_queue/triage.py',
+        'work_queue/scrubber.py',
         '    return SECRET.sub("[removed]", text or "")',
         '    return text or ""',
         'tests/test_work_queue_triage.py::test_row_text_is_fenced_as_data_and_scrubbed_of_secrets',
     ),
     (
         'the scrubber removes Authorization headers',
-        'work_queue/triage.py',
+        'work_queue/scrubber.py',
         r'|(?i:authorization)\s*:\s*\S+(?:[ \t]+[^\s,;]+)?',
         '',
         'tests/test_work_queue_triage.py::test_each_kind_of_secret_is_removed',
     ),
     (
         'the scrubber removes signatures in links',
-        'work_queue/triage.py',
+        'work_queue/scrubber.py',
         '(?<=[?&])(?i:sig|signature|x-amz-signature',
         '(?<=[?&])(?i:x-amz-signature',
         'tests/test_work_queue_triage.py::test_secrets_inside_links_and_headers_are_removed',
@@ -1038,8 +1039,8 @@ CHECKS = (
     (
         'Start here considers triaged rows first',
         'work_queue/triage.py',
-        '                       key=lambda i: i["link"] not in verdicts)[:MAX_START_CANDIDATES]',
-        '                       key=lambda i: 0)[:MAX_START_CANDIDATES]',
+        'key=lambda i: (i["link"] not in blocked, i["link"] not in verdicts))[:MAX_START_CANDIDATES]',
+        'key=lambda i: (i["link"] not in blocked, 0))[:MAX_START_CANDIDATES]',
         'tests/test_work_queue_triage.py::test_start_here_looks_at_triaged_rows_first_up_to_its_cap',
     ),
     (
@@ -1087,7 +1088,7 @@ CHECKS = (
     (
         'the first page write shows cached verdicts',
         'work_queue/refresh.py',
-        '        snap["triage"] = triage.cached(snap)\n',
+        '        snap["triage"] = paid(snap)\n',
         '        pass\n',
         'tests/test_work_queue_triage.py::test_the_first_page_write_already_shows_cached_verdicts',
     ),
@@ -1136,8 +1137,8 @@ CHECKS = (
     (
         'a triage bug keeps the cached verdicts on the page',
         'work_queue/refresh.py',
-        'snap["triage"] = triage.cached(snap, f"triage stopped',
-        'snap["triage"] = triage.empty(f"triage stopped',
+        '        return triage.cached(snap, note)\n',
+        '        return triage.empty(note)\n',
         'tests/test_work_queue_triage.py::test_an_unexpected_triage_error_keeps_the_verdicts_already_paid_for',
     ),
     (
@@ -1325,8 +1326,8 @@ CHECKS = (
     (
         "a tool's error keeps its start on one line",
         'work_queue/tools.py',
-        '    return " ".join(text.split())[:limit]',
-        '    return text.strip()[-limit:]',
+        '    return f"{flat[:limit - len(last) - 3].rstrip()} … {last}"',
+        '    return flat[:limit]',
         'tests/test_work_queue_setup.py::test_a_tools_long_error_keeps_its_first_sentence_on_one_line',
     ),
     (
@@ -1370,6 +1371,174 @@ CHECKS = (
         "if(BUILT&&!isNaN(new Date(BUILT.dataset.iso||'x')))",
         'if(false)',
         "tests/test_work_queue_browser.py::test_last_refreshed_shows_in_the_viewers_local_time",
+    ),
+    (
+        'a call answered in the wrong shape skips its rows and triage goes on',
+        'work_queue/triage.py',
+        '        for batch in failed:\n            self.split(batch, cache, batches)',
+        '        if failed:\n            raise Unavailable("the model\'s answer about the rows wasn\'t in the expected format")',
+        'tests/test_work_queue_triage.py::test_a_model_that_refuses_every_row_costs_one_call_per_batch_across_refreshes',
+    ),
+    (
+        'a bad call is split to find the row that breaks it',
+        'work_queue/triage.py',
+        '        self.splits = MAX_SPLIT_CALLS if len(failed) < len(calls) else 0',
+        '        self.splits = 0',
+        'tests/test_work_queue_triage.py::test_one_poisoned_row_is_found_by_splitting_its_call_and_the_rest_get_verdicts',
+    ),
+    (
+        'a model that refuses everything is not split',
+        'work_queue/triage.py',
+        '        self.splits = MAX_SPLIT_CALLS if len(failed) < len(calls) else 0',
+        '        self.splits = MAX_SPLIT_CALLS',
+        'tests/test_work_queue_triage.py::test_a_model_that_refuses_every_row_costs_one_call_per_batch_across_refreshes',
+    ),
+    (
+        'a skipped row waits out its day even when its call broke up',
+        'work_queue/triage.py',
+        '    return {h: e for h, e in cache.items() if e["batch"] in whole or e["verdict"] is None}',
+        '    return {h: e for h, e in cache.items() if e["batch"] in whole}',
+        'tests/test_work_queue_triage.py::test_a_model_that_refuses_every_row_costs_one_call_per_batch_across_refreshes',
+    ),
+    (
+        'the scrubber takes punctuation after is and arrows',
+        'work_queue/scrubber.py',
+        r'(?:=>|[:=]|\b(?i:is)\b(?:\s*(?:=>|[:=-]))?)',
+        r'(?:[:=]|\b(?i:is)\b)',
+        'tests/test_work_queue_triage.py::test_secrets_inside_links_and_headers_are_removed',
+    ),
+    (
+        'the scrubber removes a quoted password with spaces',
+        'work_queue/scrubber.py',
+        """(?:"[^"\\n]*"|'[^'\\n]*'|["']?[^\\s"',;]+["']?)""",
+        """(?:["']?[^\\s"',;]+["']?)""",
+        'tests/test_work_queue_triage.py::test_secrets_inside_links_and_headers_are_removed',
+    ),
+    (
+        'the scrubber removes "123456 is your code" messages',
+        'work_queue/scrubber.py',
+        r'    r"|\b(?:G-)?\d{4,8}\s+(?i:is\s+your)\b[^\n.]{0,40}?\b(?i:code|pin|password)\b"',
+        '',
+        'tests/test_work_queue_triage.py::test_secrets_inside_links_and_headers_are_removed',
+    ),
+    (
+        'the scrubber removes "code: 1234"',
+        'work_queue/scrubber.py',
+        r'    r"|\b(?i:code)\b\s*(?:(?i:is)\s*)?[:=]?\s*(?:G-)?\d{4,8}\b"',
+        '',
+        'tests/test_work_queue_triage.py::test_secrets_inside_links_and_headers_are_removed',
+    ),
+    (
+        'a saved verdict needs a call name',
+        'work_queue/triage.py',
+        '                and isinstance(e.get("batch"), str) and e["batch"] in batches):',
+        '                and e["batch"] in batches):',
+        'tests/test_work_queue_triage.py::test_a_tampered_saved_file_never_stops_the_refresh',
+    ),
+    (
+        'a saved snapshot is checked down to each row',
+        'work_queue/triage.py',
+        ' and all(\n            isinstance(side, dict) and all(snapshot_row(r) for r in side.values()) for side in doc["rows"].values())',
+        '',
+        'tests/test_work_queue_triage.py::test_a_tampered_saved_file_never_stops_the_refresh',
+    ),
+    (
+        'a saved reservation is checked before it counts',
+        'work_queue/triage.py',
+        'if isinstance(r, dict) and amount(r.get("usd")) and amount(r.get("at")) and now - r["at"] < DEADLINE}',
+        'if now - r["at"] < DEADLINE}',
+        'tests/test_work_queue_triage.py::test_a_tampered_saved_file_never_stops_the_refresh',
+    ),
+    (
+        'a cache that cannot be read still lets the refresh write the page',
+        'work_queue/refresh.py',
+        '    except Exception as exc:  # noqa: BLE001 — a broken cache never holds back the page',
+        '    except ZeroDivisionError as exc:  # noqa: BLE001 — a broken cache never holds back the page',
+        'tests/test_work_queue_triage.py::test_a_cache_that_cant_be_read_still_lets_the_refresh_write_the_page',
+    ),
+    (
+        'a blocked row leads Start here',
+        'work_queue/triage.py',
+        '        stuck = [{"link": i["link"], "reason": BLOCKED_REASON} for i in cands if i["link"] in blocked]',
+        '        stuck = []',
+        'tests/test_work_queue_triage.py::test_a_blocked_row_leads_start_here_ahead_of_the_models_picks',
+    ),
+    (
+        'the Slack helper answers an unexpected error as JSON',
+        'work_queue/slack_browser.py',
+        '    except Exception as exc:  # noqa: BLE001 — the caller reads one JSON answer, never a traceback',
+        '    except RuntimeError as exc:  # noqa: BLE001 — the caller reads one JSON answer, never a traceback',
+        'tests/test_work_queue_slack_browser.py::test_an_unexpected_error_comes_back_as_one_json_line_not_a_traceback',
+    ),
+    (
+        'the page escapes the model\'s why',
+        'work_queue/page.py',
+        'why = f\'<span class="sf-why">{e(v["why"])}</span>\' if v else ""',
+        'why = f\'<span class="sf-why">{v["why"]}</span>\' if v else ""',
+        'tests/test_work_queue_triage.py::test_model_text_is_escaped_on_the_page',
+    ),
+    (
+        'the page escapes the Start here reason',
+        'work_queue/page.py',
+        'f\'<span class="ap-why">{e(s["reason"])}</span></li>\'',
+        'f\'<span class="ap-why">{s["reason"]}</span></li>\'',
+        'tests/test_work_queue_triage.py::test_model_text_is_escaped_on_the_page',
+    ),
+    (
+        'the page escapes the change summary',
+        'work_queue/page.py',
+        '{" " + e(d["text"]) if d.get("text") else ""}',
+        '{" " + d["text"] if d.get("text") else ""}',
+        'tests/test_work_queue_triage.py::test_model_text_is_escaped_on_the_page',
+    ),
+    (
+        'the first page write applies the batch re-ask rule',
+        'work_queue/triage.py',
+        '"rows": verdicts_by_link(items, intact(cache, batches, items, read_sources(snap)))}',
+        '"rows": verdicts_by_link(items, cache)}',
+        'tests/test_work_queue_triage.py::test_the_first_page_write_never_shows_a_verdict_from_a_call_whose_row_left',
+    ),
+    (
+        'the shared budget counts calls still running',
+        'work_queue/triage.py',
+        '        if strategist.day_spend_usd(now) + pending >= ceiling:',
+        '        if strategist.day_spend_usd(now) >= ceiling:',
+        'tests/test_work_queue_triage.py::test_the_shared_budget_counts_calls_still_running',
+    ),
+    (
+        'a Slack title has secrets removed before it is cut',
+        'work_queue/inputs/slack.py',
+        'short(scrub(topic), 100)',
+        'short(topic, 100)',
+        'tests/test_work_queue_inputs.py::test_a_slack_title_has_secrets_removed_before_it_is_cut',
+    ),
+    (
+        'a reservation counts the expected answer',
+        'work_queue/triage.py',
+        'estimate_cost_usd(len(prompt) // 4, EXPECTED_OUT, model_name())',
+        'estimate_cost_usd(len(prompt) // 4, 0, model_name())',
+        'tests/test_work_queue_triage.py::test_a_reservation_counts_the_answer_it_expects_as_well_as_the_prompt',
+    ),
+    (
+        'a daily budget must be finite and not negative',
+        'work_queue/triage.py',
+        ' and math.isfinite(value) and value >= 0',
+        '',
+        'tests/test_work_queue_triage.py::test_a_daily_budget_that_isnt_a_number_means_the_default',
+    ),
+    (
+        'two refreshes at once keep each other\'s verdicts',
+        'work_queue/triage.py',
+        '        rows = {**{h: e for h, e in theirs.items() if h not in known}, **cache}',
+        '        rows = dict(cache)',
+        'tests/test_work_queue_triage.py::test_two_refreshes_at_once_keep_each_others_verdicts',
+    ),
+    (
+        'the mutation shards run every check once',
+        'tests/mutation_smoke.py',
+        "    return CHECKS\x5bint(found.group(1)) - 1::int(found.group(2))]",  # \x5b is "[", so this file holds the target once
+        '    return CHECKS[int(found.group(1)) - 1::]',
+        'tests/test_mutation_shards.py::test_the_shards_together_run_every_check_exactly_once',
     ),
     (
         'a blocked row is never hidden',
@@ -1448,11 +1617,21 @@ def run_check(name: str, filename: str, original: str, broken: str, selector: st
             "seconds": round(time.monotonic() - started, 1)}
 
 
-def main():
+def shard(spec: str) -> tuple:
+    """The checks for shard "i/n": every n-th check from the i-th, so shards 1/n through n/n run each check once."""
+    found = re.fullmatch(r"([1-9][0-9]*)/([1-9][0-9]*)", spec)
+    if not found or int(found.group(1)) > int(found.group(2)):
+        raise argparse.ArgumentTypeError(f"{spec!r} isn't a shard like 1/2")
+    return CHECKS[int(found.group(1)) - 1::int(found.group(2))]
+
+
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    results = [run_check(*check) for check in CHECKS]
+    parser.add_argument("--shard", type=shard, default=CHECKS, metavar="I/N",
+                        help="run only shard I of N; the N shards together run every check once")
+    args = parser.parse_args(argv)
+    results = [run_check(*check) for check in args.shard]
     args.output.write_text(json.dumps({"passed": True, "checks": results}, indent=2))
     timed_out = sum(result["mutant"] == "rejected (timed out)" for result in results)
     print(f"{len(results)} targeted mutations rejected ({timed_out} by timing out); production files were not edited.")

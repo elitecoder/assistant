@@ -326,3 +326,24 @@ def test_tool_failures_say_what_failed(wq):
     (wq.bin / "slow").write_text("#!/bin/sh\nsleep 5\n")
     with pytest.raises(tools.SourceError, match="didn't answer within 1 seconds"):
         tools.run(["slow"], timeout=1)
+
+
+def test_a_slack_title_has_secrets_removed_before_it_is_cut(wq):
+    fs = FakeSlack()
+    fs.history["C1"].append(msg(ts(3), "U2", "x" * 80 + " ghp_" + "a" * 30))
+    fake_tool(wq.bin, "uv", [("slack_browser.py list", {"ok": True, "items": [
+        {"item_type": "message", "item_id": "C1", "ts": ts(3)}]})])
+    row = slack.rows(ENTRY, Client("xoxp-test", fs), NOW)[0]
+    assert row["title"] == "#eng: " + "x" * 80 + " [removed]"
+
+
+def test_a_long_tool_error_keeps_its_start_and_its_last_line():
+    traceback = ("Traceback (most recent call last):\n" + "".join(f'  File "/x/mod{n}.py", line {n}, in f\n    call()\n'
+                                                                   for n in range(20))
+                 + "playwright._impl._errors.Error: BrowserType.launch: Executable doesn't exist at /x/chrome")
+    flat = tools.one_line(traceback)
+    assert "\n" not in flat and flat.startswith("Traceback (most recent call last): File")
+    assert flat.endswith("playwright._impl._errors.Error: BrowserType.launch: Executable doesn't exist at /x/chrome")
+    assert " … " in flat and len(flat) <= 300
+    short = "Error: the client ID JSON is missing.\n  try again"
+    assert tools.one_line(short) == "Error: the client ID JSON is missing. try again"

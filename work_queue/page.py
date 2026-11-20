@@ -3,9 +3,10 @@
 Everything on the page comes from your linked sources, the rules in
 work_queue/inputs/, and, in Pro mode, the model's triage (work_queue/triage.py):
 a why, a disposition, an effort, and a draft on each open row, the Start here
-list, and the Since last night box. Every open row has Done, Snooze, and Drop;
-only rows the model called `agent` offer Send to Assistant. Drafts are text to
-copy: nothing on the page sends them.
+list, and the Since last night box. Every open row has Done, Snooze, and Drop.
+Send to Assistant shows on rows the model called `agent` and on rows without a
+verdict, never on `you`, `handoff`, or `drop` rows. Every piece of model text is
+escaped. Drafts are text to copy: nothing on the page sends them.
 """
 from __future__ import annotations
 

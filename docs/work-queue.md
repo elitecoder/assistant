@@ -169,9 +169,10 @@ makes no model call.
   rows.
 - **Start here** ranks the 5 to 8 open rows to do first by who's waiting,
   deadlines, effort, and age, with a one-line reason each. A row you marked
-  Done, dropped, or snoozed doesn't appear there, unless the TODO you sent it
-  to is blocked, and its **Done** button saves the same mark as the row's. The
-  list is ranked again when the rows or your marks change, and each day.
+  Done, dropped, or snoozed doesn't appear there, and its **Done** button saves
+  the same mark as the row's. A row whose Assistant TODO is blocked always
+  leads the list, ahead of the model's picks, even when it's marked. The list
+  is ranked again when the rows or your marks change, and each day.
 - **Since last night** compares every row of each source, not only open rows,
   with the last snapshot from an earlier day, or with the previous refresh on
   your first day. A row counts as changed when what it says changes, not when
@@ -192,6 +193,12 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
 - A verdict stays cached for 14 days after its row was last seen.
 - A row the model didn't answer about is shown without a verdict and isn't
   sent again until the next day. The Open list says how many there are.
+- When a call's answer isn't in the expected shape, for example a refusal,
+  its rows are skipped for the day and the rest of triage goes on. If another
+  call in the same refresh answered well, the bad call is first split in halves,
+  up to 12 more calls, to find the rows that break it, so the others still get
+  verdicts. A model that refuses every call costs one call per 30 rows a day.
+- Two refreshes at once each keep the verdicts the other saved.
 
 ### What the model sees and can do
 
@@ -199,9 +206,13 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
   sent and never judged; it's listed under **Saves that can't be read** with a
   link to open it in Slack.
 - Text that looks like a token, key, or password is replaced with
-  `[removed]` before it's sent. It's a pattern match, so it can miss an
-  unusual format, and it also removes long runs of letters and digits, such as
-  a full commit hash.
+  `[removed]` before it's sent, and before long text is cut short: token and
+  key shapes, credentials and signatures in links, `Authorization` and
+  `Cookie` headers, "password ... is: X" phrases, and one-time codes such as
+  "123456 is your code". It's a pattern match, so it can miss an unusual
+  format, and it also removes long runs of letters and digits, such as a full
+  commit hash. The rules live in `work_queue/scrubber.py`.
+- Every piece of model text on the page is escaped, so it can't add markup.
 - Row text sits between markers with a random code the text can't guess, and
   the prompt tells the model the text is data, never instructions.
 - Each answer is checked against a strict format: only the four dispositions
@@ -217,11 +228,13 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
 
 ### When triage is unavailable
 
-If a call fails, takes too long, is over a model budget, or answers in the
-wrong format, triage stops. The page keeps every rule-based row, keeps every
-verdict that finished, and shows **Triage unavailable** with the reason on
-**Start here** and the Open list. An unexpected error in triage does the same,
-and its details go to the refresh log.
+If a call fails, takes too long, is over a model budget, or the Start here or
+summary answer is in the wrong format, triage stops. The page keeps every
+rule-based row, keeps every verdict that finished, and shows **Triage
+unavailable** with the reason on **Start here** and the Open list. An
+unexpected error in triage does the same, and its details go to the refresh
+log. A saved cache, snapshot, or reservation file that isn't in the expected
+shape is treated as empty, and the refresh still writes the page.
 
 There are two daily budgets, both for the UTC day:
 
@@ -231,12 +244,14 @@ There are two daily budgets, both for the UTC day:
   `~/.assistant/metrics.jsonl`.
 - **The Work queue's own**: `triage.dailyUsd` in `sources.json` (default
   $1.00), counted from the cost ledger rows with `caller` set to `work_queue`.
-  Each call adds one.
+  Each call adds one. A value that isn't a finite number of zero or more means
+  the default.
 
-Before each call, triage reserves the call's estimated cost under the
-Strategist's lock, so two refreshes at once can't both spend the last of a
-budget. Triage stops once spend, counting calls still running, has reached a
-budget. A single call can still go over it, by at most that call's cost.
+Before each call, triage reserves the call's estimated cost, the prompt plus
+an expected answer of about 4,800 tokens, under the Strategist's lock, so two
+refreshes at once can't both spend the last of a budget. Triage stops once
+spend, counting calls still running, has reached a budget. A single call can
+still go over it, by at most that call's cost.
 
 ### Choose the model
 

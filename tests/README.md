@@ -96,7 +96,9 @@ Keep both verdicts and the measured results with the exact commit under review.
 
 The mutation check uses separate temporary copies. It breaks each protection
 in `CHECKS` one at a time and requires the corresponding test to fail; it never edits your
-working copy or sends commands to live sessions.
+working copy or sends commands to live sessions. `--shard i/n` runs every n-th
+check from the i-th; the workflow runs shards 1/2 and 2/2 in parallel jobs, and
+`test_mutation_shards.py` proves the shards together run each check exactly once.
 
 ## What's covered
 

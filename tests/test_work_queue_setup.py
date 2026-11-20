@@ -74,7 +74,9 @@ def test_a_tools_long_error_keeps_its_first_sentence_on_one_line(wq, capsys):
     assert code == 1 and len(lines) == 1
     detail = lines[0][lines[0].index("(") + 1:lines[0].index("). ")]
     assert detail.startswith("gog gmail messages failed: Error: the client ID JSON is missing. detail line 0 detail line 1")
-    assert len(detail) == len("gog gmail messages failed: ") + 300 and "\n" not in detail and "  " not in detail
+    flat = " ".join(error.split())
+    assert detail == "gog gmail messages failed: " + flat[:300 - len("detail line 59") - 3].rstrip() + " … detail line 59"
+    assert len(detail) <= len("gog gmail messages failed: ") + 300 and "\n" not in detail and "  " not in detail
 
 
 def test_a_gh_error_with_a_line_break_prints_one_line(wq, capsys):

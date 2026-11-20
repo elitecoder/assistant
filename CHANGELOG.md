@@ -11,7 +11,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Changed
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
-- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage adds 56 mutation checks and its own tests, which brings the job to an estimated 39 to 44 minutes on the CI runner.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add 87 mutation checks (217 in all, up from 130), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
@@ -160,7 +161,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   fix says to run `gog auth credentials <client-secret.json>` before
   `gog auth add`, and a missing gog points to https://gogcli.sh. Linking Slack
   reports a missing `uv` before it asks for a token. The page shows the last
-  refresh in the viewer's local time.
+  refresh in the viewer's local time. A long tool error keeps its start and
+  its last line, which holds a traceback's error, and the Slack browser helper
+  answers any unexpected error as one JSON line instead of a traceback.
+- Make Work queue triage hold up against bad answers and bad files. A call
+  about rows answered in the wrong shape, such as a refusal, skips its rows for
+  the day instead of stopping triage, so it isn't paid for again each refresh;
+  when another call answered well, the bad call is split in halves, up to 12
+  more calls, to find the rows that break it. A saved cache, snapshot, or
+  reservation file in the wrong shape is treated as empty, and the refresh
+  still writes the page. A blocked row leads Start here. Two refreshes at once
+  keep each other's verdicts. The scrubber, now `work_queue/scrubber.py`,
+  catches "password ... is: X", arrows, quoted values with spaces, and
+  one-time codes, and Slack titles lose their secrets before they're cut. A
+  reservation counts the expected answer, and a daily budget that isn't a
+  finite number of zero or more means the default.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether

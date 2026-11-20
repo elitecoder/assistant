@@ -34,8 +34,12 @@ def run(cmd: list[str], *, timeout: int = 120, cwd: Path | None = None, env: dic
 
 
 def one_line(text: str, limit: int = 300) -> str:
-    """The first `limit` characters of a tool's message, on one line."""
-    return " ".join(text.split())[:limit]
+    """A tool's message on one line. A long one keeps its start and its last line, which holds a traceback's error."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    last = " ".join(next(line for line in reversed(text.splitlines()) if line.strip()).split())[-(limit // 2):]
+    return f"{flat[:limit - len(last) - 3].rstrip()} … {last}"
 
 
 def run_json(cmd: list[str], **kw):
