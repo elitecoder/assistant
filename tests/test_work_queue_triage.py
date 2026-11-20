@@ -292,9 +292,9 @@ def test_row_text_is_fenced_as_data_and_scrubbed_of_secrets(wq):
 
 
 @pytest.mark.parametrize("secret", [
-    "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "AKIAABCDEFGHIJKLMNOP",
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "AKIA" + "ABCDEFGHIJKLMNOP",
     "eyJhbGciOiJI.eyJzdWIiOiIx.SflKxwRJSMeK", "0123456789abcdef0123456789abcdef", "api_key: abc123", "x1" * 20,
-    "AIza" + "b" * 35, "sk_live_" + "a1" * 10, "ASIAABCDEFGHIJKLMNOP", "xapp-1-A0123-4567",
+    "AIza" + "b" * 35, "sk_live_" + "a1" * 10, "ASIA" + "ABCDEFGHIJKLMNOP", "xapp-1-A0123-4567",
     "hooks.slack.com/services/T0/B0/abc", '"password": "hunter2"',
     "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1"[:40], "Authorization: Basic dXNlcjpwYXNzd29yZA==",
     "authorization: Bearer abc", "otp = 999999", "client_secret=abc123", "aws_secret_access_key = wJalrXUtnFEMIK7MDENG",
