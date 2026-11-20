@@ -24,6 +24,7 @@ FEATURES = (
     "narrator",
     "lessons",
     "slack_judge",
+    "work_queue",
     "comms",
 )
 

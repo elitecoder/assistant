@@ -10,6 +10,7 @@ import pty
 import select
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -17,7 +18,7 @@ import pytest
 
 from installer_sandbox import assert_recorded_services, installer_env
 from test_pro_mode import fake_launchctl, run_installer
-from work_queue_fakes import fake_tool
+from work_queue_fakes import fake_tool, old_python
 
 REPO = Path(__file__).resolve().parents[1]
 LABEL = "com.assistant.work-queue"
@@ -55,6 +56,41 @@ def test_pro_mode_loads_a_localhost_only_server_and_never_prompts_headless(home)
     plist = (home / f"Library/LaunchAgents/{LABEL}.plist").read_text()
     assert f"<string>{REPO}:{REPO}/src</string>" in plist and "<string>work_queue.server</string>" in plist
     assert "__" not in plist.replace("__main__", "")
+
+
+def test_pro_mode_never_installs_the_work_queue_on_python_3_10_and_removes_an_earlier_copy(home):
+    old = old_python(home / "py")
+    target = home / f"Library/LaunchAgents/{LABEL}.plist"
+    target.parent.mkdir(parents=True)
+    target.write_text("<!-- an earlier copy -->\n")
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": str(old)}, "--pro")
+    assert service_calls(home, "bootstrap") == [] and service_calls(home, "load") == []
+    assert service_calls(home, "bootout") == [f"bootout gui/{os.getuid()}/{LABEL}"], "a running one is stopped"
+    assert not target.exists() and f"removed {target}" in proc.stdout
+    assert (f"{LABEL}.plist — needs Python 3.11 or newer, and {old} is older (NOT installed; install Python 3.11+, "
+            "for example brew install python, then run ./install.sh --apply --pro)") in proc.stderr
+    assert f"plist interpreter: {old}" in proc.stdout, "the other services keep the python3 they had"
+    assert (home / "Library/LaunchAgents/com.assistant.assistant-pulse.plist").exists()
+
+
+def test_default_mode_never_installs_the_work_queue_on_python_3_10(home):
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": str(old_python(home / "py"))})
+    assert not (home / f"Library/LaunchAgents/{LABEL}.plist").exists(), "launchd would start it at every login"
+    assert f"{LABEL}.plist — needs Python 3.11 or newer" in proc.stdout and "needs Python 3.11" not in proc.stderr
+
+
+def test_pro_mode_loads_the_work_queue_on_the_python_you_choose(home):
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": sys.executable}, "--pro")
+    assert service_calls(home, "bootstrap") == [f"bootstrap gui/{os.getuid()} {home}/Library/LaunchAgents/{LABEL}.plist"]
+    assert f"<string>{sys.executable}</string>" in (home / f"Library/LaunchAgents/{LABEL}.plist").read_text()
+    assert "needs Python 3.11" not in proc.stderr
+
+
+def test_the_installer_skips_a_python_older_than_3_11_for_a_newer_one(home):
+    old, missing = old_python(home / "py"), home / "py/no-such-python3"
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": f"{missing}:{old}:{sys.executable}"}, "--pro")
+    assert f"plist interpreter: {sys.executable}" in proc.stdout
+    assert service_calls(home, "bootstrap") == [f"bootstrap gui/{os.getuid()} {home}/Library/LaunchAgents/{LABEL}.plist"]
 
 
 def test_a_pro_dry_run_lists_the_sources_and_changes_nothing(home):
@@ -117,12 +153,13 @@ def test_help_names_the_work_queue(tmp_path):
     assert "Also loads the Work queue page (docs/work-queue.md)." in proc.stdout
 
 
-def test_an_interactive_pro_install_offers_each_unlinked_source(home):
+def interactive_install(home: Path, gh_answer) -> tuple[subprocess.Popen, str, dict]:
+    """Run an interactive Pro install on a terminal, answer yes only to linking GitHub, and return its output."""
     env = installer_env(home)
     (home / ".assistant/feature-opt-in").write_text("memory=no\ncrash-resume=no\nws-numberer=no\n")
     (home / ".assistant/memory-repo-config.json").write_text("{}")
     (home / ".assistant/machine-config-configured").write_text("set\n")
-    fake_tool(home / "stubbin", "gh", [("api user", "octo\n")])
+    fake_tool(home / "stubbin", "gh", [("api user", gh_answer)])
     answers = {src: b"y\n" if src == "github" else b"n\n" for src in ("slack", "gmail", "calendar", "outlook", "github")}
     primary, secondary = pty.openpty()
     proc = subprocess.Popen(["bash", str(REPO / "install.sh"), "--apply", "--pro"], stdin=secondary,
@@ -140,12 +177,28 @@ def test_an_interactive_pro_install_offers_each_unlinked_source(home):
             os.write(primary, answers.pop(src))
     proc.wait(30)
     os.close(primary)
-    text = out.decode()
+    return proc, out.decode(), answers
+
+
+def test_an_interactive_pro_install_offers_each_unlinked_source(home):
+    proc, text, answers = interactive_install(home, "octo\n")
     assert proc.returncode == 0, text[-3000:]
     assert answers == {}, text[-3000:]
     assert "    GitHub: linked (github.com)" in text
     saved = json.loads((home / ".assistant/work-queue/sources.json").read_text())
     assert saved == {"github": {"skip_authors": []}}
+
+
+def test_a_failed_link_during_install_prints_one_line(home):
+    proc, text, answers = interactive_install(home, {"exit": 1, "stderr": "HTTP 401: Bad credentials\n(https://api.github.com/user)\n"})
+    assert proc.returncode == 0 and answers == {}, text[-3000:]
+    prompt = "Link github to the Work queue? [y/N] "
+    start = text.index(prompt) + len(prompt)
+    github = [line for line in text[start:text.index("[6/6]", start)].splitlines() if line.strip()]
+    assert github[0].strip() == ("GitHub: needs sign-in (gh api user failed: HTTP 401: Bad credentials "
+                                 "(https://api.github.com/user)). Run gh auth login, then bin/work-queue-setup.py link github")
+    assert len(github) == 1 and "fix the line above" not in text, github
+    assert not (home / ".assistant/work-queue/sources.json").exists()
 
 
 def work_queue_calls(log: Path) -> list[str]:
@@ -221,3 +274,18 @@ def test_help_says_default_mode_unloads_the_work_queue(tmp_path):
     proc = subprocess.run(["bash", str(REPO / "install.sh"), "--help"], capture_output=True, text=True,
                           env=installer_env(tmp_path / "home"), stdin=subprocess.DEVNULL, timeout=30)
     assert "Switch to default mode and unlink the Pro skills.\n                    Also unloads the Work queue server." in proc.stdout
+
+
+def test_with_no_python3_found_the_work_queue_isnt_loaded(home):
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": str(home / "no-such-python3")}, "--pro")
+    assert "no python3 found for LaunchAgent plists" in proc.stderr and "plist interpreter: /usr/bin/python3" in proc.stdout
+    assert service_calls(home, "bootstrap") == [] and not (home / f"Library/LaunchAgents/{LABEL}.plist").exists()
+
+
+def test_help_says_how_to_pick_the_python(tmp_path):
+    proc = subprocess.run(["bash", str(REPO / "install.sh"), "--help"], capture_output=True, text=True,
+                          env=installer_env(tmp_path / "home"), stdin=subprocess.DEVNULL, timeout=30)
+    assert "ASSISTANT_PYTHON=/path/to/python3 picks the interpreter the LaunchAgents run" in proc.stdout
+    assert "with; several paths separated by colons are tried in order." in proc.stdout
+    assert ("The Work queue needs 3.11 or newer; with an older one its\n  LaunchAgent isn't installed, and one an "
+            "earlier install left is removed.") in proc.stdout

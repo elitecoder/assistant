@@ -29,8 +29,17 @@ def run(cmd: list[str], *, timeout: int = 120, cwd: Path | None = None, env: dic
     except subprocess.TimeoutExpired as exc:
         raise SourceError(f"{cmd[0]} didn't answer within {timeout} seconds") from exc
     if r.returncode:
-        raise SourceError(f"{' '.join(cmd[:3])} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        raise SourceError(f"{' '.join(cmd[:3])} failed: {one_line(r.stderr or r.stdout)}")
     return r.stdout
+
+
+def one_line(text: str, limit: int = 300) -> str:
+    """A tool's message on one line. A long one keeps its start and its last line, which holds a traceback's error."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    last = " ".join(next(line for line in reversed(text.splitlines()) if line.strip()).split())[-(limit // 2):]
+    return f"{flat[:limit - len(last) - 3].rstrip()} … {last}"
 
 
 def run_json(cmd: list[str], **kw):

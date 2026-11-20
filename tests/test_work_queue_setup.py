@@ -53,7 +53,9 @@ def test_link_gmail_and_calendar_find_signed_in_google_accounts(wq, capsys):
 
 def test_a_failed_link_prints_the_fix_and_saves_nothing(wq, capsys):
     code, lines = run(capsys, "link", "gmail")
-    assert code == 1 and lines == ["Gmail: tool missing. Install the gog CLI, then run: gog auth add you@example.com"]
+    assert code == 1 and lines == ["Gmail: tool missing. Install the gog CLI (https://gogcli.sh, or brew install "
+                                   "steipete/tap/gogcli), then run: gog auth credentials <client-secret.json>, then "
+                                   "gog auth add <you@example.com>"]
     fake_tool(wq.bin, "gog", [("auth list", {"accounts": [{"email": "b@example.com", "services": ["calendar"]}]})])
     code, lines = run(capsys, "link", "gmail")
     assert code == 1 and lines == ["Gmail: needs sign-in (No Google account in gog has gmail access). "
@@ -62,6 +64,48 @@ def test_a_failed_link_prints_the_fix_and_saves_nothing(wq, capsys):
     code, lines = run(capsys, "link", "github")
     assert code == 1 and lines[0].startswith("GitHub: needs sign-in (gh api user failed: not logged in). Run gh auth login")
     assert not (wq.home / ".assistant/work-queue/sources.json").exists()
+
+
+def test_a_tools_long_error_keeps_its_first_sentence_on_one_line(wq, capsys):
+    error = "Error: the client ID JSON is missing.\n" + "\n".join(f"  detail line {n}" for n in range(60))
+    assert len(error) > 600
+    fake_tool(wq.bin, "gog", [("auth list", GOG_ACCOUNTS), ("gmail messages", {"exit": 1, "stderr": error})])
+    code, lines = run(capsys, "link", "gmail")
+    assert code == 1 and len(lines) == 1
+    detail = lines[0][lines[0].index("(") + 1:lines[0].index("). ")]
+    assert detail.startswith("gog gmail messages failed: Error: the client ID JSON is missing. detail line 0 detail line 1")
+    flat = " ".join(error.split())
+    assert detail == "gog gmail messages failed: " + flat[:300 - len("detail line 59") - 3].rstrip() + " … detail line 59"
+    assert len(detail) <= len("gog gmail messages failed: ") + 300 and "\n" not in detail and "  " not in detail
+
+
+def test_a_gh_error_with_a_line_break_prints_one_line(wq, capsys):
+    fake_tool(wq.bin, "gh", [("api user", {"exit": 1, "stderr": "HTTP 401: Bad credentials\n(https://api.github.com/user)\n"})])
+    code, lines = run(capsys, "link", "github")
+    assert code == 1 and lines == ["GitHub: needs sign-in (gh api user failed: HTTP 401: Bad credentials "
+                                   "(https://api.github.com/user)). Run gh auth login, then bin/work-queue-setup.py link github"]
+
+
+def test_any_source_error_with_a_line_break_prints_one_line(wq, capsys):
+    fake_tool(wq.bin, "npx", [("mail,userPrincipalName", {"error": "Sign-in expired.\nRun workiq again."})])
+    code, lines = run(capsys, "link", "outlook")
+    assert code == 1 and lines == [f"Outlook: needs sign-in (Work IQ couldn't read /me: Sign-in expired. Run workiq again.). "
+                                   f"{setup.SIGN_IN['outlook']}"]
+
+
+def test_missing_google_client_credentials_say_to_add_them_first(wq, capsys):
+    fake_tool(wq.bin, "gog", [("auth list", {"exit": 1, "stderr": "OAuth client credentials missing\nrun gog auth credentials"})])
+    for source in ("gmail", "calendar"):
+        code, lines = run(capsys, "link", source)
+        assert code == 1 and lines == [
+            f"{setup.LABELS[source]}: needs sign-in (gog auth list failed: OAuth client credentials missing run gog auth "
+            f"credentials). Run gog auth credentials <client-secret.json> first, then gog auth add <you@example.com>, "
+            f"then bin/work-queue-setup.py link {source}"]
+
+
+def test_slack_reports_a_missing_uv_before_asking_for_a_token(wq, capsys):
+    code, lines = run(capsys, "link", "slack")
+    assert code == 1 and lines == [f"Slack: tool missing. {setup.INSTALL['uv']}"]
 
 
 def test_link_github_and_outlook_probe_read_only(wq, capsys):
@@ -77,6 +121,7 @@ def test_link_github_and_outlook_probe_read_only(wq, capsys):
 
 
 def test_link_slack_reads_the_workspace_from_your_token_and_signs_in_the_browser(wq, capsys, monkeypatch):
+    fake_tool(wq.bin, "uv", [])
     code, lines = run(capsys, "link", "slack")
     assert code == 1 and lines[0].startswith("Slack: needs sign-in (Slack didn't accept your user token "
                                              "(SLACK_USER_TOKEN isn't set)). Set SLACK_USER_TOKEN in ~/.zprofile")

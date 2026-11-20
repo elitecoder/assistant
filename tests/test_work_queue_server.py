@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import importlib.util
 import json
 import os
 import signal
@@ -19,7 +20,7 @@ import pytest
 
 from assistant import todostore
 from work_queue import config, refresh, server, todo_result
-from work_queue_fakes import calls, fake_tool, first_line, wq  # noqa: F401
+from work_queue_fakes import calls, fake_claude, fake_tool, first_line, gh_pr, old_python, wq  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[1]
 ROW = "https://x.slack.com/archives/C1/p1"
@@ -49,6 +50,26 @@ def test_send_creates_an_auto_dispatch_todo_with_the_next_id_and_finish_instruct
     assert f"{REPO / 'work_queue/todo_result.py'} td-051 --blocked" in detail
     assert "<td-id>" not in detail
     assert json.loads((wq.data / "queued.json").read_text())[ROW]["id"] == "td-051"
+
+
+def test_sending_a_row_marks_it_done_and_keeps_its_other_marks(wq):
+    server.set_marks({"key": "https://x.slack.com/archives/C1/p2", "state": "snoozed", "until": 5})
+    server.set_marks({"key": ROW, "state": "dropped"})
+    server.queue_todo({"key": ROW, "title": "A"})
+    marks = json.loads((wq.data / "marks.json").read_text())
+    assert marks[ROW]["state"] == "done" and marks[ROW]["until"] == 0
+    assert marks["https://x.slack.com/archives/C1/p2"]["state"] == "snoozed"
+    server.set_marks({"key": ROW, "state": "clear"})
+    assert server.queue_todo({"key": ROW, "title": "A"})[1]["existing"] is True
+    assert json.loads((wq.data / "marks.json").read_text())[ROW]["state"] == "done", "sending again marks it done again"
+    assert server.state()["marks"][ROW]["state"] == "done"
+
+
+def test_a_refused_send_saves_no_mark(wq):
+    assert server.queue_todo({"key": ROW, "title": ""})[0] == 400
+    assert server.queue_todo({"key": "C1:1.1", "title": "A row without a link"}) == (
+        400, {"error": "key and title are required, and key and url must be https"})
+    assert not (wq.data / "marks.json").exists() and len(wq.items()) == 1
 
 
 def test_sending_the_same_row_twice_returns_the_first_todo(wq):
@@ -572,6 +593,28 @@ def test_the_refresh_button_rebuilds_the_page_in_the_background(http, wq, monkey
     assert "Slack: off — not linked" in (wq.data / "refresh.log").read_text()
 
 
+def test_the_background_refresh_triages_through_the_model_command_with_tools_off(http, wq, monkeypatch):
+    monkeypatch.setattr(server, "refresh_proc", None)
+    (wq.home / ".assistant").mkdir(exist_ok=True)
+    (wq.home / ".assistant/config.json").write_text('{"mode": "pro"}')
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(7)])])
+    wq.sources({"github": {}})
+    log = fake_claude(wq.home)
+    assert http("/api/refresh", {})[0] == 202
+    for _ in range(300):
+        state = json.loads(http("/api/state")[1])["refresh"]
+        if not state.get("running"):
+            break
+        time.sleep(0.1)
+    assert state["finished"] and state["error"] == ""
+    page = http("/")[1]
+    assert "Model suggests: Agent" in page and "A fake reason." in page
+    argv = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(argv) == 2 and all(a[a.index("--tools") + 1] == "" for a in argv)
+    rows = [json.loads(line) for line in (wq.home / ".assistant/cost-ledger.jsonl").read_text().splitlines()]
+    assert [r["caller"] for r in rows] == ["work_queue", "work_queue"]
+
+
 # ─── the Pro mode gate ───────────────────────────────────────────────────────
 
 @pytest.mark.real_mode
@@ -708,3 +751,24 @@ def test_main_returns_cleanly_once_pro_mode_turns_off(wq, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Serving the Work queue on http://127.0.0.1:" in out
     assert out.rstrip().endswith("Pro mode is off, so the Work queue server stopped. Turn it on with ./install.sh --apply --pro.")
+
+
+def test_the_server_exits_cleanly_on_python_3_10_before_it_imports_anything(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    proc = subprocess.run([str(old_python(tmp_path)), "-m", "work_queue.server"], capture_output=True, text=True,
+                          timeout=60, cwd=repo, env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin",
+                                                     "PYTHONPATH": f"{repo}:{repo}/src"})
+    assert proc.returncode == 0, "launchd doesn't restart a clean exit"
+    assert proc.stderr == ("The Work queue needs Python 3.11 or newer, and this is 3.10.14, so it won't start. Install "
+                           "Python 3.11+, for example brew install python, then run ./install.sh --apply --pro.\n")
+
+
+def test_the_server_module_stops_on_python_3_10_before_its_other_imports(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "version_info", (3, 10, 14, "final", 0))
+    monkeypatch.setattr(sys, "version", "3.10.14 (an older Python, for tests)")
+    spec = importlib.util.spec_from_file_location("work_queue_server_on_3_10", Path(server.__file__))
+    module = importlib.util.module_from_spec(spec)
+    with pytest.raises(SystemExit) as stop:
+        spec.loader.exec_module(module)
+    assert stop.value.code == 0 and not hasattr(module, "errno"), "it stops before its other imports"
+    assert capsys.readouterr().err.startswith("The Work queue needs Python 3.11 or newer, and this is 3.10.14")

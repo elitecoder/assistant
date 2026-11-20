@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -139,6 +141,15 @@ def test_one_item_reads_as_one_item(wq):
     every_tool(wq)
     wq.sources({"github": {}})
     assert {s["name"]: s["detail"] for s in refresh.run(now=NOW)}["GitHub"] == "read 1 item"
+
+
+def test_the_page_carries_the_refresh_time_for_the_viewers_clock(wq):
+    every_tool(wq)
+    wq.sources({"github": {}})
+    refresh.run(now=NOW)
+    stamp = re.search(r'<span id="built" data-iso="([^"]+)">([^<]+)</span>', refresh.site_path().read_text())
+    assert datetime.fromisoformat(stamp.group(1)).tzinfo is not None and stamp.group(2)
+    assert abs(datetime.now(timezone.utc) - datetime.fromisoformat(stamp.group(1))) < timedelta(minutes=5)
 
 
 def unsub_mail(key: str, addr: str, group: str, url: str = "") -> dict:

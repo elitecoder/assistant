@@ -102,6 +102,11 @@ install.sh — install/update the Assistant system from $REPO_ROOT
   Flags/answers only affect what gets LOADED; an already-running feature daemon
   is never torn out (it's adopted and remembered as enabled).
   -h, --help        This help.
+  ASSISTANT_PYTHON=/path/to/python3 picks the interpreter the LaunchAgents run
+  with; several paths separated by colons are tried in order. Otherwise it's
+  the first python3 of 3.11 or newer from Homebrew, then /usr/local/bin, then
+  /usr/bin. The Work queue needs 3.11 or newer; with an older one its
+  LaunchAgent isn't installed, and one an earlier install left is removed.
 
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
@@ -642,9 +647,23 @@ BREW_BIN=""
 if command -v brew >/dev/null 2>&1; then
     BREW_BIN="$(brew --prefix 2>/dev/null)/bin"
 fi
+# The first python3 of 3.11 or newer (pyproject's requires-python), or else the
+# first one found. The Work queue needs 3.11 or newer and isn't installed without it.
 PLIST_PYTHON=""
-for cand in "$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    if [[ -n "$cand" && -x "$cand" ]]; then PLIST_PYTHON="$cand"; break; fi
+PLIST_PYTHON_NEW=0
+if [[ -n "${ASSISTANT_PYTHON:-}" ]]; then
+    IFS=: read -r -a PYTHON_CANDIDATES <<< "$ASSISTANT_PYTHON"
+else
+    PYTHON_CANDIDATES=("$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3)
+fi
+for cand in "${PYTHON_CANDIDATES[@]}"; do
+    [[ -x "$cand" ]] || continue
+    if "$cand" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+        PLIST_PYTHON="$cand"
+        PLIST_PYTHON_NEW=1
+        break
+    fi
+    [[ -n "$PLIST_PYTHON" ]] || PLIST_PYTHON="$cand"
 done
 if [[ -z "$PLIST_PYTHON" ]]; then
     warn "no python3 found for LaunchAgent plists — install Xcode CLT or Homebrew python3"
@@ -746,6 +765,26 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     for skip_base in "${PLIST_SKIP[@]}"; do
         [[ "$base" == "$skip_base" ]] && skip=1 && break
     done
+
+    # The Work queue can't run on a python3 older than 3.11, and launchd would
+    # start it at every login: don't install it, and remove an earlier copy.
+    if [[ "$base" == "com.assistant.work-queue.plist" && $PLIST_PYTHON_NEW -eq 0 ]]; then
+        if [[ "$MODE" == "pro" ]]; then
+            warn "$base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (NOT installed; install Python 3.11+, for example brew install python, then run ./install.sh --apply --pro)"
+        else
+            note "$base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (NOT installed)"
+        fi
+        if [[ -e "$target" || -L "$target" ]]; then
+            if [[ $APPLY -eq 1 ]]; then
+                launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+                rm -f "$target"
+                note "removed $target"
+            else
+                note "would remove $target"
+            fi
+        fi
+        continue
+    fi
 
     # Tier: CORE loads; a FEATURE daemon loads only if opted in, else copy-no-load.
     copy_no_load=0
@@ -997,8 +1036,7 @@ else
     python3 "$WQ_SETUP" status | sed 's/^/    /' || true
     for wq_source in $(python3 "$WQ_SETUP" unlinked); do
         if prompt_yn "Link $wq_source to the Work queue? [y/N] "; then
-            python3 "$WQ_SETUP" link "$wq_source" | sed 's/^/    /' \
-                || warn "$wq_source isn't linked; fix the line above, then run bin/work-queue-setup.py link $wq_source"
+            python3 "$WQ_SETUP" link "$wq_source" | sed 's/^/    /' || true
         fi
     done
 fi

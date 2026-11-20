@@ -116,7 +116,12 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--job", type=Path)
     parser.add_argument("--wait", type=int, default=60, help="seconds to wait for the Slack session")
     parser.add_argument("--headless", action="store_true")
-    print(json.dumps(run(parser.parse_args(argv))))
+    args = parser.parse_args(argv)
+    try:
+        out = run(args)
+    except Exception as exc:  # noqa: BLE001 — the caller reads one JSON answer, never a traceback
+        out = {"ok": False, "error": " ".join(f"{type(exc).__name__}: {exc}".split())[:300]}
+    print(json.dumps(out))
 
 
 if __name__ == "__main__":

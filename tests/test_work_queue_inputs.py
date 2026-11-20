@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from assistant.slack_focus.client import Client
-from work_queue import tools
+from work_queue import tools, triage
 from work_queue.inputs import gcal, github, gmail, outlook, slack
 from work_queue_fakes import calls, fake_tool, wq  # noqa: F401
 
@@ -326,3 +326,33 @@ def test_tool_failures_say_what_failed(wq):
     (wq.bin / "slow").write_text("#!/bin/sh\nsleep 5\n")
     with pytest.raises(tools.SourceError, match="didn't answer within 1 seconds"):
         tools.run(["slow"], timeout=1)
+
+
+def test_a_slack_title_shows_as_written_and_the_model_gets_it_without_secrets(wq):
+    fs = FakeSlack()
+    fs.history["C1"].append(msg(ts(3), "U2", "x" * 80 + " ghp_" + "a" * 30))
+    fake_tool(wq.bin, "uv", [("slack_browser.py list", {"ok": True, "items": [
+        {"item_type": "message", "item_id": "C1", "ts": ts(3)}]})])
+    row = slack.rows(ENTRY, Client("xoxp-test", fs), NOW)[0]
+    assert row["title"] == "#eng: " + "x" * 80 + " ghp_" + "a" * 14 + "…", "the page shows the title as written"
+    sent = triage.open_items({"slack": [row]})[0]["title"]
+    assert sent == "#eng: " + "x" * 80 + " [removed]", "the model's copy loses the token before it's cut"
+
+
+def test_a_long_tool_error_keeps_its_start_and_its_last_line():
+    traceback = ("Traceback (most recent call last):\n" + "".join(f'  File "/x/mod{n}.py", line {n}, in f\n    call()\n'
+                                                                   for n in range(20))
+                 + "playwright._impl._errors.Error: BrowserType.launch: Executable doesn't exist at /x/chrome")
+    flat = tools.one_line(traceback)
+    assert "\n" not in flat and flat.startswith("Traceback (most recent call last): File")
+    assert flat.endswith("playwright._impl._errors.Error: BrowserType.launch: Executable doesn't exist at /x/chrome")
+    assert " … " in flat and len(flat) <= 300
+    short = "Error: the client ID JSON is missing.\n  try again"
+    assert tools.one_line(short) == "Error: the client ID JSON is missing. try again"
+
+
+def test_a_long_last_line_keeps_only_its_last_150_characters():
+    last = "".join(str(n % 10) for n in range(400))
+    flat = tools.one_line("Error: the first sentence.\n" + "x " * 200 + "\n" + last)
+    assert flat.startswith("Error: the first sentence. x x") and flat.endswith(" … " + last[-150:])
+    assert len(flat) <= 300 and last[:-150] not in flat

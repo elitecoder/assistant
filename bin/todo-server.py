@@ -72,6 +72,7 @@ Stdlib only. Run by LaunchAgent com.assistant.assistant-todo-server.
 import datetime
 import json
 import os
+import plistlib
 import re
 import shutil
 import signal
@@ -235,14 +236,33 @@ def dispatch_now(td_id):
 WORK_QUEUE_LABEL = "com.assistant.work-queue"
 
 
+def work_queue_python(plist):
+    """Why the Work queue's plist can't start it: its python3 is older than 3.11, doesn't run, or can't be read;
+    "" when it can start it."""
+    try:
+        python = plistlib.loads(plist.read_bytes())["ProgramArguments"][0]
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return f"the python3 in {plist} can't be read"
+    try:
+        check = subprocess.run([python, "-c", "import sys; sys.exit(sys.version_info < (3, 11))"],
+                               capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return f"{python} doesn't run"
+    return "" if check.returncode == 0 else f"{python} is older"
+
+
 def sync_work_queue(pro):
     """Load the Work queue LaunchAgent on a switch to Pro mode, and unload it on a
     switch to default mode. Acts only when install.sh copied its plist into this
-    HOME. A failed launchctl call leaves the mode switched: the server itself
-    stops within seconds once Pro mode is off."""
+    HOME, and never starts it on a python3 older than 3.11: it says why instead.
+    A failed launchctl call leaves the mode switched: the server itself stops
+    within seconds once Pro mode is off."""
     plist = Path(os.path.expanduser("~")) / "Library/LaunchAgents" / f"{WORK_QUEUE_LABEL}.plist"
     if not plist.exists():
-        return
+        return ""
+    if pro and (why := work_queue_python(plist)):
+        return (f"The Work queue needs Python 3.11 or newer, and {why}, so it wasn't started. "
+                "Install Python 3.11+, then run ./install.sh --apply --pro.")
     domain = f"gui/{os.getuid()}"
     try:
         if not pro:
@@ -255,6 +275,7 @@ def sync_work_queue(pro):
         subprocess.run(cmd, capture_output=True, timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         pass
+    return ""
 
 
 def set_mode(value):
@@ -269,10 +290,10 @@ def set_mode(value):
         mode.switch(value)
     except (OSError, ValueError) as exc:
         return False, f"Couldn't change the mode: {exc}"
-    sync_work_queue(value == "pro")
+    held = sync_work_queue(value == "pro")
     if not rerender_dashboard():
-        return True, f"Switched to {value}. The page updates within 5 minutes."
-    return True, value
+        return True, f"Switched to {value}. The page updates within 5 minutes.{' ' + held if held else ''}"
+    return True, f"Switched to {value}. {held}" if held else value
 
 
 def rerender_dashboard():

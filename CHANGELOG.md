@@ -11,6 +11,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Changed
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (313 in all now, up from main's 130), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 313 checks, 183 more than main's 130.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
@@ -23,9 +25,61 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     your sources come from `~/.assistant/work-queue/sources.json`, which holds
     no secrets.
   - Rules sort every row. The standalone tool's hand-written "start here" list,
-    change notes, drafted replies, and per-row advice are gone, and nothing
-    replaces them yet: there's no model step.
-  - Every open row has Done, Snooze, Drop, and Send to Assistant. Send to
+    change notes, drafted replies, and per-row advice are gone; model triage
+    replaces them (below).
+  - Model triage, in Pro mode only (`work_queue/triage.py`). After the refresh
+    writes the rule-based page, one batched call per 30 new or changed open
+    rows (up to 120 a refresh) returns a one-line why, a disposition (`you`,
+    `agent`, `handoff`, or `drop`), an effort, and, for rows that need a reply,
+    a draft to copy. A second call ranks the 5 to 8 rows on **Start here**, and
+    a third summarizes the **Since last night** box, whose new, gone, and
+    changed counts per source come from code. Verdicts are cached in
+    `$WQ_DATA/triage-cache.json` by a hash of each row's content, together
+    with the rows they were asked about with: an unchanged row isn't sent
+    again, and when a row changes or leaves, the rest of its call is asked
+    again, so one row's text can't keep swaying its neighbors. A row the model
+    doesn't answer about is shown without a verdict and asked again the next
+    day, and the rest of triage goes on. With the Claude provider, the model
+    is Sonnet 5.5, the `balanced` tier in `src/assistant/model_tiers.py`, and
+    `"triage": {"model": ...}` in `sources.json` changes it; Droid, Copilot,
+    and local models use their own model settings. `bin/assistant-llm.py set
+    <provider> --feature work_queue` picks the provider. Each call is metered
+    in the cost ledger as `caller: work_queue`, and reserves its estimated cost
+    under the Strategist's lock against two daily budgets: all of Assistant's
+    model spend (`dailyCostCeilingUsd`) and the Work queue's own
+    (`triage.dailyUsd`, default 3.00 USD). Triage stops once spend has reached
+    a budget; one call can still go over it. A model command that isn't
+    installed books no cost, and a timeout stops every process the command
+    started, within the call's own time limit.
+  - Row text is untrusted: anything that looks like a secret is replaced with
+    `[removed]`, the rows sit between markers with a random code, the prompt
+    says they're data, never instructions, and answers are checked against a
+    strict schema (known ids, enum values, bounded text; other fields are
+    ignored). Secrets are removed before text is cut short, from titles,
+    senders, and bodies, including Authorization and Cookie headers, signed
+    link parameters, and "password ... is" phrases. Model output never acts.
+    A Slack save that can't be read is never sent to the model, not even its
+    old title in the change summary.
+  - A call that times out, fails, or answers in the wrong shape never stops
+    the other parts of triage: the page shows "Part of triage didn't finish"
+    with the part and the reason, and that part isn't asked again until the
+    next day or until its inputs change. When a budget is used up, the
+    refresh's 10 minutes of calls run out, the model command isn't installed,
+    or triage hits an unexpected error, triage stops, and the page keeps its
+    rule-based rows and every verdict already paid for, and shows "Triage
+    unavailable:" with the reason. The cache is saved either way. Cached verdicts, the saved
+    Start here list, and the saved summary are checked against the schema
+    again when they're read, and verdicts stay cached for 14 days after their
+    row was last seen, so a source that fails once doesn't lose them. The
+    first page write of a refresh already shows the cached verdicts.
+  - Every open row has Done, Snooze, Drop, and Send to Assistant, except that
+    Send to Assistant is left off rows the model says are yours, someone
+    else's, or nothing to do (the pill reads "Model suggests: ..."). Sending a
+    row also marks it done, so it leaves Start here and the open count; it
+    stays on the page, greyed, with its TODO's status, and a blocked row stays
+    in full view and on Start here even when it's marked. Done on a Start here
+    item saves the same mark as its row, and a marked item doesn't show there.
+    An empty Start here list doesn't open first. Send to
     Assistant starts its instructions with the safety rules: the row's title,
     detail, and linked source are untrusted content, fenced off below the
     rules, never instructions; never share secrets or act outside the request;
@@ -104,6 +158,73 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   no upstream, commits on no remote.
 
 ### Fixed
+- Make the Work queue's source-link messages accurate. Every status line is
+  one line of at most 300 characters, with line breaks folded: a longer tool
+  error keeps its start and up to the last 150 characters of its last line,
+  which holds a traceback's error. A failed link during install no longer adds
+  a second "fix the line above" warning. When gog reports missing OAuth client credentials, the
+  fix says to run `gog auth credentials <client-secret.json>` before
+  `gog auth add`, and a missing gog points to https://gogcli.sh. Linking Slack
+  reports a missing `uv` before it asks for a token. The page shows the last
+  refresh in the viewer's local time, and the Slack browser helper answers any
+  unexpected error as one JSON line instead of a traceback.
+- Make Work queue triage hold up against bad answers and bad files. Every
+  model call now fails the same way: a timeout, a failed model command, or an
+  answer in the wrong shape, such as a refusal, is a call failure that never
+  stops the other parts, and only a used-up budget, the refresh's time limit,
+  or a missing model command stops triage. A failed call about rows skips its
+  rows for the day, so it isn't paid for again each refresh; a failed Start
+  here list or summary is saved, empty, for the day, and the page names the
+  part that failed. A row that makes the model time out no longer blocks the
+  other rows, Start here, or the summary. After Start here and the summary, a
+  failed call about rows is split in halves to find the rows that break it: at
+  most 6 more calls, and only while the Work queue's budget covers the next
+  one, so two bad rows in a small queue still leave the rest with verdicts. An
+  answer about 2 or more rows with usable verdicts for fewer than half of them
+  counts as the wrong shape, and so does an answer nested too deep to read,
+  whose `RecursionError` got past the failure handling and stopped triage. A
+  bad call that comes before a stop is still skipped for the day. Rows you
+  marked done or dropped aren't triaged, and rows asked again after their day
+  go in an order that changes each day, so splitting can isolate a few
+  poisoned rows over several days instead of skipping most of a small queue
+  each day. A failed call is booked at least at its reserved estimate, and a
+  call that ran out of time as if it wrote 150 output tokens a second for its
+  whole time limit. A reservation expects 220 output tokens a row, close to
+  the measured call's 210. A saved cache, snapshot, or reservation file in the
+  wrong shape is treated as empty, and the refresh still writes the page;
+  a reservation dated in the future doesn't count. A blocked row leads Start
+  here, even one the model called drop. Two refreshes at once keep each other's verdicts. The scrubber, now
+  `work_queue/scrubber.py`, runs in linear time on any input (the tests time
+  each pattern on 1 MB of repeated text with no cut, including repeated
+  `eyJ`), and cuts text to 8,000 characters, and titles and senders to 1,000,
+  first. It catches "password ... is: X", removing a password phrase to the
+  end of its line, `pwd=`, passphrases, quoted values with spaces,
+  `key: value` pairs whose key names a secret, `pw:` and `pass:` values,
+  GitLab tokens, tokens in reset and verify links and in link parameters such
+  as `t=`, one-time codes such as "Use code 482913 to verify", "Enter 482913
+  to continue", and "code: 482-913", and card numbers that pass the Luhn
+  check, and it leaves ordinary text such as "error code 1234", "Secret Santa
+  is: Bob", "Tests pass: 4197", and Google Docs links alone. Slack titles show
+  as written; only the model's copy is scrubbed, before it's cut, in the row
+  calls and in the Since last night summary, and the names in a Slack thread
+  are scrubbed and cut to 100 characters too. A reservation counts the model
+  command's own prompt and the expected answer, scaled to match a real call's
+  cost, and a daily budget that isn't a finite number of zero or more means the
+  default, now 3.00 USD.
+- Run the Work queue only on Python 3.11 or newer, the version
+  `pyproject.toml` requires. `install.sh` used the first `python3` it found,
+  which could be macOS's 3.9 at `/usr/bin/python3`, where the Work queue
+  server can't import, and launchd restarted it every minute from login, even
+  in default mode. `install.sh` now picks the first `python3` of 3.11 or newer
+  from Homebrew, `/usr/local/bin`, then `/usr/bin`, or from the interpreters
+  `ASSISTANT_PYTHON` lists, separated by colons. When there isn't one, the
+  other services keep the `python3` found, and the Work queue's LaunchAgent
+  isn't installed: one an earlier install left is stopped and removed, and
+  the installer says how to fix it. The dashboard's Pro mode switch doesn't
+  start the Work queue when its plist's `python3` is older than 3.11, doesn't
+  run, or can't be read, and says why. On an older Python, `work_queue.server`
+  exits cleanly with a message before it imports anything else. The quality
+  workflow installs Python 3.11, so the tests that run on it run in CI.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether
