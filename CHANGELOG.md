@@ -153,6 +153,14 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   no upstream, commits on no remote.
 
 ### Fixed
+- Make the Work queue's source-link messages accurate. Every status line is
+  one line: a tool's error keeps its first 300 characters with line breaks
+  folded, and a failed link during install no longer adds a second "fix the
+  line above" warning. When gog reports missing OAuth client credentials, the
+  fix says to run `gog auth credentials <client-secret.json>` before
+  `gog auth add`, and a missing gog points to https://gogcli.sh. Linking Slack
+  reports a missing `uv` before it asks for a token. The page shows the last
+  refresh in the viewer's local time.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether

@@ -29,8 +29,13 @@ def run(cmd: list[str], *, timeout: int = 120, cwd: Path | None = None, env: dic
     except subprocess.TimeoutExpired as exc:
         raise SourceError(f"{cmd[0]} didn't answer within {timeout} seconds") from exc
     if r.returncode:
-        raise SourceError(f"{' '.join(cmd[:3])} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        raise SourceError(f"{' '.join(cmd[:3])} failed: {one_line(r.stderr or r.stdout)}")
     return r.stdout
+
+
+def one_line(text: str, limit: int = 300) -> str:
+    """The first `limit` characters of a tool's message, on one line."""
+    return " ".join(text.split())[:limit]
 
 
 def run_json(cmd: list[str], **kw):

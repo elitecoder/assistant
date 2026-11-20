@@ -61,8 +61,8 @@ stores a token: tokens stay in your environment or in each tool's own store.
 | Source | Tool | What it reads | Sign-in |
 |---|---|---|---|
 | `slack` | `uv` and Playwright 1.63.0's Chromium | Your open Later saves and their conversations | The [Slack focus list](connectors.md#slack-focus-list) user token, plus a Slack browser session |
-| `gmail` | `gog` | Every inbox conversation, plus unread mail outside the inbox, for each account | `gog auth add you@example.com` |
-| `calendar` | `gog` | Today's events on each account's primary calendar | `gog auth add you@example.com` |
+| `gmail` | `gog` | Every inbox conversation, plus unread mail outside the inbox, for each account | `gog auth credentials <client-secret.json>` once, then `gog auth add you@example.com` |
+| `calendar` | `gog` | Today's events on each account's primary calendar | `gog auth credentials <client-secret.json>` once, then `gog auth add you@example.com` |
 | `outlook` | `npx -y @microsoft/workiq` | Your Outlook inbox and sent items, read-only | Work IQ's Microsoft 365 sign-in |
 | `github` | `gh` | Open pull requests that ask for your review | `gh auth login` |
 

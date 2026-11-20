@@ -729,6 +729,21 @@ def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(
         browser.close()
 
 
+@pytest.mark.parametrize("iso, shown", [("2026-11-19T17:05:00+00:00", "Nov 20, 2:05 AM"),
+                                        ("not a time", "Nov 19, 9:05 AM"), ("", "Nov 19, 9:05 AM")])
+def test_last_refreshed_shows_in_the_viewers_local_time(site, wq, iso, shown):
+    write_page({"built": "Nov 19, 9:05 AM", "built_iso": iso, "github": [pr(1)], "status": []})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(timezone_id="Asia/Tokyo", locale="en-US").new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#built", shown)
+        assert text(tab, ".sf-head .meta").startswith(f"Last refreshed {shown} from your linked sources.")
+        cov.snap()
+        browser.close()
+
+
 def test_a_missing_chromium_skips_the_browser_tests_instead_of_failing_them(tmp_path, monkeypatch):
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "no-browsers"))
     assert "Executable doesn't exist" in chromium_missing(str(tmp_path / "no-browsers"))

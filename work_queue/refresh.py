@@ -89,6 +89,7 @@ def run(transport=http_transport, now: float | None = None, model=None) -> list[
         config.write_json(status_path(), {"running": False, "finished": now_iso(), "error": str(exc)})
         raise
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
+    snap["built_iso"] = now_iso()
     pro = mode.is_pro()
     if pro:
         snap["triage"] = triage.cached(snap)

@@ -302,7 +302,7 @@ def render(snap: dict) -> tuple[str, dict]:
            'onclick="applyNow()">Apply approvals</button><span class="meta" id="ap-msg"></span></div>') if cands else ""
     doc = (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
            f'<title>Work queue</title><style>{CSS}</style><body><div class="section">'
-           f'<div class="sf-head"><h2>Work queue</h2><p class="meta">Built {e(snap["built"])} from your linked sources. '
+           f'<div class="sf-head"><h2>Work queue</h2><p class="meta">Last refreshed <span id="built" data-iso="{e(snap.get("built_iso", ""))}">{e(snap["built"])}</span> from your linked sources. '
            + ("Rules sort every row, and a model explains each open row and picks where to start. Nothing is sent "
               "without you.</p>" if tri else "Rules sort every row; nothing is sent without you.</p>") +
            '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span></div>'
@@ -488,5 +488,7 @@ function showTab(id){const t=TAB_IDS.includes(id)||id==='all'?id:TAB_IDS[0];TAB_
  document.querySelectorAll('#tabs .tab').forEach(a=>a.classList.toggle('on',a.dataset.t===t));try{localStorage.setItem('wq-tab',t)}catch(_){}}
 window.addEventListener('hashchange',()=>showTab(decodeURIComponent(location.hash.slice(1))));
 if(TAB_IDS.length){let saved=null;try{saved=localStorage.getItem('wq-tab')}catch(_){}showTab(decodeURIComponent(location.hash.slice(1))||saved||TAB_IDS[0])}
+const BUILT=$('built');if(BUILT&&!isNaN(new Date(BUILT.dataset.iso||'x')))BUILT.textContent=new Date(BUILT.dataset.iso)
+ .toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 refresh();
 """

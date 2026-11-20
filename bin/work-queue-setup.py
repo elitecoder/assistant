@@ -32,7 +32,8 @@ LABELS = {"slack": "Slack", "gmail": "Gmail", "calendar": "Calendar", "outlook":
 TOOLS = {"slack": "uv", "gmail": "gog", "calendar": "gog", "outlook": "npx", "github": "gh"}
 INSTALL = {
     "uv": f"Install uv (https://docs.astral.sh/uv/), then run: uv run --no-project --with {tools.PLAYWRIGHT} python -m playwright install chromium",
-    "gog": "Install the gog CLI, then run: gog auth add you@example.com",
+    "gog": "Install the gog CLI (https://gogcli.sh, or brew install steipete/tap/gogcli), then run: "
+           "gog auth credentials <client-secret.json>, then gog auth add <you@example.com>",
     "npx": "Install Node.js, which includes npx",
     "gh": "Install the GitHub CLI (https://cli.github.com/)",
 }
@@ -44,6 +45,9 @@ SIGN_IN = {
     "outlook": "Run npx -y @microsoft/workiq once and finish its Microsoft 365 sign-in, then bin/work-queue-setup.py link outlook",
     "github": "Run gh auth login, then bin/work-queue-setup.py link github",
 }
+NO_CLIENT = "oauth client credentials missing"
+CREDENTIALS = ("Run gog auth credentials <client-secret.json> first, then gog auth add <you@example.com>, "
+               "then bin/work-queue-setup.py link {name}")
 TRANSPORT = http_transport
 
 
@@ -60,6 +64,8 @@ def google_accounts(service: str) -> list[str]:
 
 
 def detect_slack(args) -> dict:
+    if shutil.which("uv") is None:
+        raise tools.ToolMissing("uv isn't installed")
     token = os.environ.get("SLACK_USER_TOKEN", "")
     auth = TRANSPORT("auth.test", {}, token) if token else {"error": "SLACK_USER_TOKEN isn't set"}
     if not auth.get("ok"):
@@ -123,9 +129,12 @@ def describe(name: str, entry: dict) -> str:
 
 
 def problem(name: str, exc: tools.SourceError) -> str:
+    """One status line that says what's wrong and the exact fix."""
     if isinstance(exc, tools.ToolMissing):
         return f"{LABELS[name]}: tool missing. {INSTALL[TOOLS[name]]}"
-    return f"{LABELS[name]}: needs sign-in ({exc}). {SIGN_IN[name]}"
+    detail = " ".join(str(exc).split())
+    fix = CREDENTIALS.format(name=name) if NO_CLIENT in detail.lower() else SIGN_IN[name]
+    return f"{LABELS[name]}: needs sign-in ({detail}). {fix}"
 
 
 def status(doc: dict) -> int:

@@ -117,12 +117,13 @@ def test_help_names_the_work_queue(tmp_path):
     assert "Also loads the Work queue page (docs/work-queue.md)." in proc.stdout
 
 
-def test_an_interactive_pro_install_offers_each_unlinked_source(home):
+def interactive_install(home: Path, gh_answer) -> tuple[subprocess.Popen, str, dict]:
+    """Run an interactive Pro install on a terminal, answer yes only to linking GitHub, and return its output."""
     env = installer_env(home)
     (home / ".assistant/feature-opt-in").write_text("memory=no\ncrash-resume=no\nws-numberer=no\n")
     (home / ".assistant/memory-repo-config.json").write_text("{}")
     (home / ".assistant/machine-config-configured").write_text("set\n")
-    fake_tool(home / "stubbin", "gh", [("api user", "octo\n")])
+    fake_tool(home / "stubbin", "gh", [("api user", gh_answer)])
     answers = {src: b"y\n" if src == "github" else b"n\n" for src in ("slack", "gmail", "calendar", "outlook", "github")}
     primary, secondary = pty.openpty()
     proc = subprocess.Popen(["bash", str(REPO / "install.sh"), "--apply", "--pro"], stdin=secondary,
@@ -140,12 +141,28 @@ def test_an_interactive_pro_install_offers_each_unlinked_source(home):
             os.write(primary, answers.pop(src))
     proc.wait(30)
     os.close(primary)
-    text = out.decode()
+    return proc, out.decode(), answers
+
+
+def test_an_interactive_pro_install_offers_each_unlinked_source(home):
+    proc, text, answers = interactive_install(home, "octo\n")
     assert proc.returncode == 0, text[-3000:]
     assert answers == {}, text[-3000:]
     assert "    GitHub: linked (github.com)" in text
     saved = json.loads((home / ".assistant/work-queue/sources.json").read_text())
     assert saved == {"github": {"skip_authors": []}}
+
+
+def test_a_failed_link_during_install_prints_one_line(home):
+    proc, text, answers = interactive_install(home, {"exit": 1, "stderr": "HTTP 401: Bad credentials\n(https://api.github.com/user)\n"})
+    assert proc.returncode == 0 and answers == {}, text[-3000:]
+    prompt = "Link github to the Work queue? [y/N] "
+    start = text.index(prompt) + len(prompt)
+    github = [line for line in text[start:text.index("[6/6]", start)].splitlines() if line.strip()]
+    assert github[0].strip() == ("GitHub: needs sign-in (gh api user failed: HTTP 401: Bad credentials "
+                                 "(https://api.github.com/user)). Run gh auth login, then bin/work-queue-setup.py link github")
+    assert len(github) == 1 and "fix the line above" not in text, github
+    assert not (home / ".assistant/work-queue/sources.json").exists()
 
 
 def work_queue_calls(log: Path) -> list[str]:

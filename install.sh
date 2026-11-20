@@ -997,8 +997,7 @@ else
     python3 "$WQ_SETUP" status | sed 's/^/    /' || true
     for wq_source in $(python3 "$WQ_SETUP" unlinked); do
         if prompt_yn "Link $wq_source to the Work queue? [y/N] "; then
-            python3 "$WQ_SETUP" link "$wq_source" | sed 's/^/    /' \
-                || warn "$wq_source isn't linked; fix the line above, then run bin/work-queue-setup.py link $wq_source"
+            python3 "$WQ_SETUP" link "$wq_source" | sed 's/^/    /' || true
         fi
     done
 fi
