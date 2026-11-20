@@ -84,17 +84,21 @@ def test_each_open_row_gets_a_why_a_disposition_an_effort_and_a_draft(wq):
     assert '<span class="sf-effort sf-quick">Quick</span>' in first
     assert '<span class="sf-why">Ana asks for a review.</span>' in first
     assert "Looking now, I&#x27;ll reply today.</textarea>" in first and "Copy draft" in first
-    assert '<span class="disp d-agent">Model suggests: Agent</span>' in second and "textarea" not in second
+    assert '<span class="disp d-agent">Agent can finish</span>o/r#2: Change 2' in second and "textarea" not in second
+    assert "Model suggests: Agent" not in html
     assert "a model explains each open row" in html
 
 
-def test_send_to_assistant_shows_unless_the_model_said_you_handoff_or_drop(wq):
+def test_send_to_agent_shows_on_every_open_row_whatever_the_model_said(wq):
     calls_for = {0: "you", 1: "agent", 2: "handoff", 3: "drop"}
     tri, html = triaged(snap(*(pr(n) for n in range(1, 6))), Model(rows=lambda items: {"rows": [
         {"id": i["id"], **VERDICT, "disposition": calls_for[i["id"]]} for i in items if i["id"] in calls_for]}))
-    offers = {n: 'class="btn sf-send"' in row_html(html, pr(n)["link"]) for n in range(1, 6)}
-    assert offers == {1: False, 2: True, 3: False, 4: False, 5: True}, "a row without a verdict keeps Send to Assistant"
-    assert pr(5)["link"] not in tri["rows"]
+    send = ('<button class="btn sf-send" onclick="queueTodo(this)" title="An agent takes a first pass and leaves drafts '
+            'for you">Send to Agent</button>')
+    assert all(row_html(html, pr(n)["link"]).count(send) == 1 for n in range(1, 6))
+    hints = {n: "Agent can finish" in row_html(html, pr(n)["link"]) for n in range(1, 6)}
+    assert hints == {1: False, 2: True, 3: False, 4: False, 5: False}, "only the model's agent call is a hint"
+    assert pr(5)["link"] not in tri["rows"] and "Send to Assistant" not in html
 
 
 def test_an_unchanged_row_is_never_sent_again(wq, monkeypatch):
@@ -510,7 +514,7 @@ def test_no_open_items_means_no_start_call(wq):
 def test_an_empty_start_list_never_makes_start_here_the_first_tab(wq):
     tri, html = triaged(snap(pr(1)), Model(rows=raises("the model is down"), start=lambda items: "nothing useful"))
     tabs = re.findall(r'data-t="([a-z-]+)"', html[html.index('id="tabs"'):html.index("</nav>")])
-    assert tri["start"] == [] and tabs[:2] == ["open-list", "start"]
+    assert tri["start"] == [] and tabs[:3] == ["open-list", "agents", "start"]
 
 
 def test_the_start_call_asks_with_todays_date_and_each_verdict(wq):
@@ -672,7 +676,7 @@ def test_the_first_page_write_already_shows_cached_verdicts(wq):
     refresh.run(model=model)
     assert "o/r#8: Change 8" in seen[0], "a new row asks the model again"
     first = row_html(seen[0], pr(7)["link"])
-    assert "Model suggests: Hand off" in first and 'class="btn sf-send"' not in first
+    assert "Model suggests: Hand off" in first and VERDICT["why"] in first
 
 
 def test_an_unexpected_triage_error_keeps_the_verdicts_already_paid_for(wq, capsys):

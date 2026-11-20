@@ -18,6 +18,8 @@ which saves look finished:
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import re
 from datetime import datetime
 
@@ -37,13 +39,25 @@ def api_url(entry: dict) -> str:
     return entry["workspace_url"].rstrip("/") + "/api/"
 
 
+@contextlib.contextmanager
+def session_lock():
+    """Hold the Work queue's Slack browser profile: Chromium opens a profile in one process at a time, so the refresh,
+    Apply, and a sent row's Later update take turns."""
+    path = config.data_dir() / "slack-browser.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 def browser(action: str, entry: dict, *extra: str) -> list[str]:
     return tools.playwright_cmd("slack_browser.py", action, "--client-url", client_url(entry),
                                 "--api-url", api_url(entry), "--profile", str(config.browser_profile()), *extra)
 
 
 def later(entry: dict) -> list[dict]:
-    out = tools.run_json(browser("list", entry, "--headless"), timeout=300)
+    with session_lock():
+        out = tools.run_json(browser("list", entry, "--headless"), timeout=300)
     if not out.get("ok"):
         raise tools.SourceError(out.get("error") or "Slack Later list failed")
     return [i for i in out["items"] if i.get("item_type") == "message"]
