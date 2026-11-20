@@ -1083,7 +1083,7 @@ def valid_cache_with(entry: dict) -> None:
 @pytest.mark.parametrize("tamper", ["cache-batch-list", "snapshot-row", "baseline-row", "reservations-list",
                                     "reservations-entry"])
 def test_a_tampered_saved_file_never_stops_the_refresh(wq, tamper):
-    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(2)])])
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(2), gh_pr(3)])])
     wq.sources({"github": {}})
     valid_cache_with({"verdict": VERDICT, "seen": triage.today(), "batch": ["not", "a", "name"]})
     files = {"snapshot-row": ("work/rows.json", {"day": "2000-01-01", "built": "b", "rows": {"GitHub": {"k": {"title": 1}}}}),
@@ -1098,7 +1098,7 @@ def test_a_tampered_saved_file_never_stops_the_refresh(wq, tamper):
     html = refresh.site_path().read_text()
     assert json.loads(refresh.status_path().read_text())["running"] is False
     assert "Triage unavailable" not in html and "Model suggests: You" in row_html(html, pr(2)["link"])
-    assert model.of("rows") == [], "the valid cached verdict was kept"
+    assert sent_titles(model) == ["o/r#3: Change 3"], "the valid cached verdict was kept, and the new row was asked about"
 
 
 def test_a_cache_that_cant_be_read_still_lets_the_refresh_write_the_page(wq, monkeypatch, capsys):
