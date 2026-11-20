@@ -314,6 +314,7 @@ def test_each_kind_of_secret_is_removed(secret):
     ("Password => Hunter2", "[removed]"),
     ('password: "Hunter2 Hunter2"', "[removed]"),
     ("password: 'Hunter2 Hunter2' and more", "[removed] and more"),
+    ('the password for the vpn is "Hunter2 Hunter2" now', "the [removed] now"),
     ("123456 is your Instagram code", "[removed]"),
     ("Your Uber code: 1234", "Your Uber [removed]"),
     ("G-482913 is your Google verification code", "[removed]"),
@@ -1220,7 +1221,9 @@ def test_one_poisoned_row_never_costs_start_here_or_the_budget(wq, daily):
     assert len(base.of("rows")) <= 4 + triage.MAX_SPLIT_CALLS
 
 
-def test_the_split_bound_holds_for_any_set_of_poisoned_rows(wq, monkeypatch):
+@pytest.mark.parametrize("bound", [6, 5])
+def test_the_split_bound_holds_for_any_set_of_poisoned_rows(wq, monkeypatch, bound):
+    monkeypatch.setattr(triage, "MAX_SPLIT_CALLS", bound)
     rng = __import__("random").Random(1)
     worst = 0
     for _ in range(300):
@@ -1240,7 +1243,22 @@ def test_the_split_bound_holds_for_any_set_of_poisoned_rows(wq, monkeypatch):
         work.rows(items, {}, {}, out)
         work.split(items, {}, {}, out)
         worst = max(worst, len(calls) - 4)
-    assert worst == triage.MAX_SPLIT_CALLS == 6
+    assert worst == bound, "an odd bound is held too, so the budget is checked before each half"
+
+
+def test_a_stop_during_splitting_keeps_the_verdicts_it_has_and_skips_the_rest(wq, monkeypatch):
+    monkeypatch.setattr(triage, "BATCH", 4)
+
+    def rows(items):
+        if any(i["title"] == "o/r#7: Change 7" for i in items) and len(items) == 2:
+            raise triage.Unavailable("the model didn't answer within 240 seconds")
+        return "no" if len(items) == 4 else {"rows": [{"id": i["id"], **VERDICT} for i in items]}
+    tri, _ = triaged(snap(*(pr(n) for n in range(1, 9))), Model(rows=rows))
+    assert tri["note"] == "the model didn't answer within 240 seconds"
+    assert set(tri["rows"]) == {pr(n)["link"] for n in range(1, 7)} and tri["skipped"] == 2
+    again = Model()
+    triaged(snap(*(pr(n) for n in range(1, 9))), again)
+    assert again.of("rows") == [], "rows the stop left unasked are skipped for the day, not asked again"
 
 
 def test_a_small_queue_with_one_poisoned_row_is_probed_and_the_rest_get_verdicts(wq):

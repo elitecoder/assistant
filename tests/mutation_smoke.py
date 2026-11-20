@@ -1632,6 +1632,13 @@ CHECKS = (
         'tests/test_work_queue_triage.py::test_a_reservation_from_the_future_never_counts',
     ),
     (
+        'a stop during splitting skips the rows it left unasked',
+        'work_queue/triage.py',
+        '                remember(left, {}, cache, batches)',
+        '                pass',
+        'tests/test_work_queue_triage.py::test_a_stop_during_splitting_keeps_the_verdicts_it_has_and_skips_the_rest',
+    ),
+    (
         'a blocked row is never hidden',
         'work_queue/page.py',
         'const hide=!!v&&!blocked&&(',
