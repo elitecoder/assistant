@@ -24,15 +24,19 @@ then. Each call reserves its estimated cost first, under the Strategist's
 throttle lock, against two daily budgets: all of Assistant's model spend, and
 the Work queue's own ("triage": {"dailyUsd": ...}, default 3.00 USD).
 
-When a call about rows answers in the wrong shape, a refusal for example, its
-rows are skipped for a day and triage goes on. After Start here and the
-summary, a bad call is split in halves to find the rows that break it: at most
-MAX_SPLIT_CALLS extra calls, and only while the Work queue's budget covers the
-next one. An answer about 2 or more rows with usable verdicts for fewer than half
-of them is in the wrong shape too. When a call fails, times out, is over budget, or the Start here or summary answer is in
-the wrong shape, triage stops and the page keeps its rule-based rows with
-"Triage unavailable" and the reason. The cache is saved either way, merged under
-a lock with what another refresh saved meanwhile, so finished calls are kept.
+Every call fails the same way. A call failure (a timeout, a failed model
+command, or an answer in the wrong shape, such as a refusal) never stops the
+other calls: the page says which part failed, and that part isn't asked again
+the same day with the same inputs. A failed call about rows has its rows
+skipped for a day; after Start here and the summary, it's split in halves to
+find the rows that break it, at most MAX_SPLIT_CALLS extra calls, and only while
+the Work queue's budget covers the next one. An answer about 2 or more rows with
+usable verdicts for fewer than half of them is in the wrong shape too. A failed
+Start here list or summary is saved, empty, for the day. A stop (a budget used
+up, the refresh's time limit, or no model command to run) ends every later call
+this refresh, and the page keeps its rule-based rows with "Triage unavailable"
+and the reason. The cache is saved either way, merged under a lock with what
+another refresh saved meanwhile, so finished calls are kept.
 
 With the Claude provider, the model is the `balanced` tier in
 src/assistant/model_tiers.py (Sonnet 5.5), or "triage": {"model": "..."} in
@@ -121,12 +125,20 @@ CONTENT = {"Slack": ("title", "ctx"), "GitHub": ("title", "meta", "draft"), "Out
 
 
 class Unavailable(Exception):
-    """Triage can't go on. The message says why, in plain words, for the page."""
+    """A model call failed: it timed out or the model command failed. The message says why, in plain words."""
+
+
+class Stop(Unavailable):
+    """No more model calls this refresh: a budget is used up, the time limit is reached, or there's no model."""
+
+
+SHAPE = "the model's answer wasn't in the expected format"
+FAILED_MAX = 300
 
 
 def empty(note: str = "") -> dict:
-    """What the page shows when there's no triage to show, and why."""
-    return {"rows": {}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": note}
+    """What the page shows when there's no triage to show, and why. `failed` names each part of triage that failed."""
+    return {"rows": {}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": note, "failed": []}
 
 
 def digest(value) -> str:
@@ -153,7 +165,7 @@ def slack_title(r: dict) -> str:
 
 def slack_text(ctx: dict) -> str:
     msgs = [ctx["root"], ctx["msg"], *ctx["after"]] if ctx.get("root") else [ctx["msg"], *ctx["after"]]
-    return "\n".join(f'{m["who"]}: {scrub(m["text"])[:500]}' for m in msgs)
+    return "\n".join(f'{scrub(m["who"][:TEXT_MAX])[:100]}: {scrub(m["text"])[:500]}' for m in msgs)
 
 
 def open_items(snap: dict) -> list[dict]:
@@ -361,19 +373,35 @@ def intact(cache: dict, batches: dict, items: list[dict], read: set[str]) -> dic
     return {h: e for h, e in cache.items() if e["batch"] in whole or e["verdict"] is None}
 
 
+def failure(saved: dict) -> dict | None:
+    """A saved answer's failure, {"failed": why, "day": ...}; {} when it didn't fail; None when it's malformed."""
+    if "failed" not in saved:
+        return {}
+    ok = bounded(saved["failed"], FAILED_MAX) and isinstance(saved.get("day"), str)
+    return {"failed": saved["failed"], "day": saved["day"]} if ok else None
+
+
 def load_start(saved) -> dict:
     """A saved Start here list that passes the schema, or {}."""
     items = saved.get("items") if isinstance(saved, dict) and isinstance(saved.get("key"), str) else None
     ok = isinstance(items, list) and len(items) <= MAX_START and all(
         isinstance(s, dict) and isinstance(s.get("link"), str) and bounded(s.get("reason"), REASON_MAX) for s in items)
-    return {"key": saved["key"], "items": [{"link": s["link"], "reason": s["reason"]} for s in items]} if ok else {}
+    failed = failure(saved) if ok else None
+    return {"key": saved["key"], "items": [{"link": s["link"], "reason": s["reason"]} for s in items],
+            **failed} if failed is not None else {}
 
 
 def load_summary(saved) -> dict:
     """A saved change summary that passes the schema, or {}."""
     text = saved.get("text") if isinstance(saved, dict) and isinstance(saved.get("key"), str) else None
     ok = isinstance(text, dict) and all(src in SOURCES and bounded(line, SUMMARY_MAX) for src, line in text.items())
-    return {"key": saved["key"], "text": dict(text)} if ok else {}
+    failed = failure(saved) if ok else None
+    return {"key": saved["key"], "text": dict(text), **failed} if failed is not None else {}
+
+
+def reusable(saved: dict, key: str) -> bool:
+    """Whether a saved answer still stands: it was for these inputs, and, when it failed, it failed today."""
+    return saved.get("key") == key and ("failed" not in saved or saved["day"] == today())
 
 
 def hidden(mark: dict | None, now_ms: float) -> bool:
@@ -411,9 +439,9 @@ def reserve(prompt: str) -> str:
         pending = sum(r["usd"] for r in held.values())
         ceiling, cap = strategist.daily_cost_ceiling(), daily_cap()
         if strategist.day_spend_usd(now) + pending >= ceiling:
-            raise Unavailable(f"today's model budget of ${ceiling:.2f} is used up. It resets at midnight UTC")
+            raise Stop(f"today's model budget of ${ceiling:.2f} is used up. It resets at midnight UTC")
         if feature_spend(now) + pending >= cap:
-            raise Unavailable(f"the Work queue's model budget of ${cap:.2f} a day is used up. It resets at midnight UTC")
+            raise Stop(f"the Work queue's model budget of ${cap:.2f} a day is used up. It resets at midnight UTC")
         rid = secrets.token_hex(6)
         held[rid] = {"usd": cost_of(prompt), "at": now}
         config.write_json(reservations_path(), held)
@@ -449,26 +477,46 @@ def release(rid: str) -> None:
 
 
 class Triage:
-    """One refresh's triage. `llm(prompt, timeout)` returns the model's text or raises Unavailable."""
+    """One refresh's triage. `llm(prompt, timeout)` returns the model's text, or raises Unavailable when the call
+    fails and Stop when no later call can work either."""
 
     def __init__(self, llm, clock=time.monotonic):
         self.llm, self.clock = llm, clock
         self.deadline = clock() + DEADLINE
         self.failed: list[list[dict]] = []
+        self.problems: list[str] = []
+        self.why = ""
 
     def ask(self, prompt: str) -> str:
         left = int(self.deadline - self.clock())
         if left <= 0:
-            raise Unavailable(f"the model took longer than {DEADLINE // 60} minutes in all")
+            raise Stop(f"the model took longer than {DEADLINE // 60} minutes in all")
         rid = reserve(prompt)
         try:
             return self.llm(prompt, min(CALL_TIMEOUT, left))
         finally:
             release(rid)
 
+    def call(self, stage: str, prompt: str, parse):
+        """One call's parsed answer, or None when the call failed or its answer is in the wrong shape; either way the
+        failure is noted under `stage`, and self.why says why. A Stop goes on up."""
+        try:
+            text = self.ask(prompt)
+        except Stop:
+            raise
+        except Unavailable as exc:
+            return self.fail(stage, str(exc))
+        found = parse(text)
+        return found if found is not None else self.fail(stage, SHAPE)
+
+    def fail(self, stage: str, why: str) -> None:
+        self.why = why[:FAILED_MAX]
+        if (line := f"{stage}: {self.why}") not in self.problems:
+            self.problems.append(line)
+
     def rows(self, items: list[dict], cache: dict, batches: dict, out: dict) -> None:
-        """Ask about new and changed rows, 30 to a call. A call answered in the wrong shape, a refusal for example,
-        isn't fatal: it waits in self.failed for split(), which runs after Start here and the summary."""
+        """Ask about new and changed rows, 30 to a call. A call that fails waits in self.failed for split(), which
+        runs after Start here and the summary."""
         todo = [i for i in items if i["hash"] not in cache][:MAX_ROWS]
         for batch in (todo[n:n + BATCH] for n in range(0, len(todo), BATCH)):
             if not self.ask_rows(batch, cache, batches):
@@ -476,21 +524,23 @@ class Triage:
         out["rows"] = verdicts_by_link(items, cache)
 
     def ask_rows(self, batch: list[dict], cache: dict, batches: dict, afford: bool = False) -> bool | None:
-        """Ask about one call's rows and cache the answer. False when the answer is in the wrong shape, which includes
-        an answer about 2 or more rows with usable verdicts for fewer than half of them. With `afford`, a call the Work
-        queue's budget can't cover isn't made: its rows are skipped, the rest of the splitting stops, and the answer is
-        None."""
+        """Ask about one call's rows and cache the answer. False when the call fails or its answer is in the wrong
+        shape, which includes an answer about 2 or more rows with usable verdicts for fewer than half of them. With
+        `afford`, a call the Work queue's budget can't cover isn't made: its rows are skipped, the rest of the splitting
+        stops, and the answer is None."""
         payload = [{"id": j, **{k: i[k] for k in ("source", "title", "who", "when", "text")}} for j, i in enumerate(batch)]
         prompt = fenced(ROWS_RUBRIC, payload)
         if afford and not fits(prompt):
             self.budget = 0
             remember(batch, {}, cache, batches)
             return None
-        verdicts = parse_rows(self.ask(prompt), len(batch))
-        ok = verdicts is not None and (len(batch) == 1 or 2 * len(verdicts) >= len(batch))
-        if ok:
+        def shaped(text):
+            found = parse_rows(text, len(batch))
+            return found if found is not None and (len(batch) == 1 or 2 * len(found) >= len(batch)) else None
+        verdicts = self.call("Row triage", prompt, shaped)
+        if verdicts is not None:
             remember(batch, verdicts, cache, batches)
-        return ok
+        return verdicts is not None
 
     def split(self, items: list[dict], cache: dict, batches: dict, out: dict) -> None:
         """Find the rows that break each failed call by splitting it in halves, at most MAX_SPLIT_CALLS extra calls in
@@ -522,12 +572,15 @@ class Triage:
                     **{k: verdicts.get(i["link"], {}).get(k, "") for k in ("why", "disposition", "effort")}}
                    for j, i in enumerate(cands)]
         key = digest([today(), [i["link"] for i in cands], payload])
-        if saved.get("key") != key:
+        if reusable(saved, key):
+            if "failed" in saved:
+                self.fail("Start here", saved["failed"])
+        else:
             date_line = f"Today is {datetime.now():%A, %B %-d, %Y}."
-            picked = parse_start(self.ask(fenced(f"{START_RUBRIC}\n{date_line}", payload)), len(cands))
-            if picked is None:
-                raise Unavailable("the model's Start here list wasn't in the expected format")
-            saved = {"key": key, "items": [{"link": cands[j]["link"], "reason": r} for j, r in picked]}
+            picked = self.call("Start here", fenced(f"{START_RUBRIC}\n{date_line}", payload),
+                               lambda text: parse_start(text, len(cands)))
+            saved = ({"key": key, "items": [{"link": cands[j]["link"], "reason": r} for j, r in picked]}
+                     if picked is not None else {"key": key, "items": [], "failed": self.why, "day": today()})
         by_link = {i["link"]: i for i in cands}
         stuck = [{"link": i["link"], "reason": BLOCKED_REASON} for i in cands if i["link"] in blocked]
         picks = stuck + [s for s in saved["items"] if s["link"] in by_link and s["link"] not in blocked]
@@ -543,11 +596,14 @@ class Triage:
         if not payload:
             return {}
         key = digest(payload)
-        if saved.get("key") != key:
-            text = parse_summary(self.ask(fenced(CHANGES_RUBRIC, payload)), {d["source"] for d in payload})
-            if text is None:
-                raise Unavailable("the model's summary of what changed wasn't in the expected format")
-            saved = {"key": key, "text": text}
+        if reusable(saved, key):
+            if "failed" in saved:
+                self.fail("Since last night", saved["failed"])
+        else:
+            text = self.call("Since last night", fenced(CHANGES_RUBRIC, payload),
+                             lambda answer: parse_summary(answer, {d["source"] for d in payload}))
+            saved = ({"key": key, "text": text} if text is not None
+                     else {"key": key, "text": {}, "failed": self.why, "day": today()})
         for d in diff["sources"]:
             d["text"] = saved["text"].get(d["source"], "")
         return saved
@@ -611,7 +667,7 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
         start = work.start(items, out["rows"], marks, blocked, start, out)
         summary = work.summary(diff, summary, out)
         work.split(items, cache, batches, out)
-    except Unavailable as exc:
+    except Stop as exc:
         out["note"] = str(exc)
         for batch in work.failed:
             if left := [i for i in batch if i["hash"] not in cache]:
@@ -623,6 +679,7 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
             if i["hash"] in cache:
                 cache[i["hash"]]["seen"] = today()
         save(cache, batches, start, summary, known)
+    out["failed"] = work.problems
     out["waiting"] = sum(i["hash"] not in cache for i in items)
     out["skipped"] = sum(cache.get(i["hash"], {}).get("skipped") is not None for i in items)
     return out
@@ -657,7 +714,8 @@ def run_cmd(cmd: list[str], *, input_text: str | None = None, timeout: int = 30)
 
 
 def call_model(prompt: str, timeout: int) -> str:
-    """One model call with tools off, metered as caller="work_queue". Raises Unavailable when it fails.
+    """One model call with tools off, metered as caller="work_queue". Raises Unavailable when it fails, booked at
+    least at its reserved estimate, and Stop when the model command isn't installed.
 
     `timeout` bounds the whole call, even when llm_runner runs more than one command for it."""
     route = llm_runner.load_route_config(llm_runner.config_path(home=config.home()), FEATURE)
@@ -675,10 +733,13 @@ def call_model(prompt: str, timeout: int) -> str:
                                run=run, droid_bin=route.droid_bin, reasoning_effort=route.reasoning_effort,
                                disable_tools=True, tag="assistant-work-queue", local_url=route.local_url)
     if result.rc == 127:
-        raise Unavailable(f"{provider} isn't installed, so there's no model to ask")
+        raise Stop(f"{provider} isn't installed, so there's no model to ask")
+    usage = metering.observer_usage(result.stdout, len(prompt), model)
+    if not result.usable:
+        usage = {**usage, "cost_usd": max(usage["cost_usd"], cost_of(prompt)), "source": "reserved"}
     try:
-        metering.append_cost_row(caller=FEATURE, model=model, usage=metering.observer_usage(result.stdout, len(prompt), model),
-                                 wall_ms=result.wall_ms, status="ok" if result.usable else "failed", provider=provider)
+        metering.append_cost_row(caller=FEATURE, model=model, usage=usage, wall_ms=result.wall_ms,
+                                 status="ok" if result.usable else "failed", provider=provider)
     except OSError as exc:
         print(f"Couldn't record the model's cost: {exc}", file=sys.stderr)
     if result.rc == 124:

@@ -79,6 +79,10 @@ prompt = sys.stdin.read()
 home = Path(os.environ["HOME"])
 with open(home / "claude.log", "a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
+slow = home / "claude.slow"
+if slow.exists() and prompt.startswith(slow.read_text()):
+    import time
+    time.sleep(30)
 data = json.loads(prompt.split("\\n")[-3])
 if "\\nBEGIN UNTRUSTED ROWS " not in prompt:
     answer = {{}}
@@ -94,7 +98,8 @@ print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "r
 
 
 def fake_claude(home: Path) -> Path:
-    """A fake `claude` at ~/.local/bin/claude that logs each call to ~/claude.log and answers every prompt kind."""
+    """A fake `claude` at ~/.local/bin/claude that logs each call to ~/claude.log and answers every prompt kind. A prompt
+    that starts with the text in ~/claude.slow gets no answer for 30 seconds."""
     exe = home / ".local/bin/claude"
     exe.parent.mkdir(parents=True, exist_ok=True)
     exe.write_text(CLAUDE.format(python=sys.executable))

@@ -349,3 +349,10 @@ def test_a_long_tool_error_keeps_its_start_and_its_last_line():
     assert " … " in flat and len(flat) <= 300
     short = "Error: the client ID JSON is missing.\n  try again"
     assert tools.one_line(short) == "Error: the client ID JSON is missing. try again"
+
+
+def test_a_long_last_line_keeps_only_its_last_150_characters():
+    last = "".join(str(n % 10) for n in range(400))
+    flat = tools.one_line("Error: the first sentence.\n" + "x " * 200 + "\n" + last)
+    assert flat.startswith("Error: the first sentence. x x") and flat.endswith(" … " + last[-150:])
+    assert len(flat) <= 300 and last[:-150] not in flat

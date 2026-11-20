@@ -193,15 +193,19 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
 - A verdict stays cached for 14 days after its row was last seen.
 - A row the model didn't answer about is shown without a verdict and isn't
   sent again until the next day. The Open list says how many there are.
-- When a call's answer isn't in the expected shape, for example a refusal or
-  an answer about 2 or more rows with usable verdicts for fewer than half of
-  them, its rows are skipped for the day and the rest of triage goes on. After
-  **Start here** and the summary, a bad call is split in halves to find the
-  rows that break it:
-  - At most 6 more calls a refresh, and only while the Work queue's own budget
-    still covers the next one.
-  - A model that refuses everything therefore costs one call per 30 rows plus
-    6 calls, once a day.
+- When a call about rows fails (it times out, the model command fails, or the
+  answer isn't in the expected shape, for example a refusal or an answer about
+  2 or more rows with usable verdicts for fewer than half of them), its rows are
+  skipped for the day and the rest of triage goes on. After **Start here** and
+  the summary, the failed call is split in halves to find the rows that break
+  it: at most 6 more calls a refresh, and only while the Work queue's own
+  budget still covers the next one.
+- When the **Start here** or summary call fails, the page says so, the other
+  parts still show, and that part isn't asked again until the next day or
+  until what it would be asked about changes.
+- A model that refuses everything makes at most one call per 30 new rows (4 at
+  most), one **Start here** call, one summary call, and 6 split calls a day,
+  for unchanged rows. The tests check that bound with 120 rows over two days.
 - Two refreshes at once each keep the verdicts the other saved.
 
 ### What the model sees and can do
@@ -211,10 +215,15 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
   link to open it in Slack.
 - Text that looks like a token, key, or password is replaced with
   `[removed]` in the copy sent to the model, before long text is cut short:
-  token and key shapes, credentials and signatures in links, `Authorization`
-  and `Cookie` headers, `key: value` pairs whose key names a secret such as
-  `pwd` or `client_secret`, "password ... is: X" phrases, and one-time codes
-  such as "123456 is your code" or "Use 482913 to sign in". It's a pattern
+  token and key shapes, including GitLab's `glpat-`, credentials and
+  signatures in links, tokens in reset, verify, and invite links and in link
+  parameters such as `t=`, `code=`, and `reset_token=`, `Authorization` and
+  `Cookie` headers, `key: value` pairs whose key names a secret such as `pwd`,
+  `pw`, or `client_secret`, or is `pass` with a value that isn't a plain
+  number, "password ... is: X" phrases, one-time codes such as "123456 is your
+  code", "Use code 482913 to verify", "Enter 482913 to continue", or "code:
+  482-913", and card numbers of 13 to 19 digits that pass the Luhn check, with
+  spaces or dashes allowed. It's a pattern
   match, so it can miss an unusual format. It also removes long hexadecimal
   runs, such as a full commit hash, and long runs of letters and digits that
   aren't part of a link's path, from the model's copy only: the page always
@@ -238,14 +247,20 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
   keeps the TODO's own safety rules, and once the swaying row changes or
   leaves, the rest of its call is asked again.
 
-### When triage is unavailable
+### When triage fails or stops
 
-If a call fails, takes too long, is over a model budget, or the Start here or
-summary answer is in the wrong format, triage stops. The page keeps every
-rule-based row, keeps every verdict that finished, and shows **Triage
-unavailable** with the reason on **Start here** and the Open list. An
-unexpected error in triage does the same, and its details go to the refresh
-log. A saved cache, snapshot, or reservation file that isn't in the expected
+Every call fails the same way. When a call times out, the model command fails,
+or the answer isn't in the expected format, the page shows **Part of triage
+didn't finish** on **Start here** and the Open list, naming the part (**Row
+triage**, **Start here**, or **Since last night**) and the reason, and the
+other parts still run. A failed call is booked against the budgets at its
+reserved estimate.
+
+Triage stops, with no more calls this refresh, when a budget is used up, the
+refresh has spent 10 minutes on calls, or the model command isn't installed.
+The page keeps every rule-based row, keeps every verdict that finished, and
+shows **Triage unavailable** with the reason. An unexpected error in triage
+does the same, and its details go to the refresh log. A saved cache, snapshot, or reservation file that isn't in the expected
 shape is treated as empty, and the refresh still writes the page.
 
 There are two daily budgets, both for the UTC day:
@@ -274,18 +289,20 @@ formed, is older than 10 minutes, or is dated in the future doesn't count.
 
 These figures come from one real Sonnet 5.5 call about 5 rows: 14,800 input
 tokens, most of them the Claude command's own prompt, 1,054 output tokens, and
-$0.0697. Each further row adds about $0.0026 at the repo's price estimate in
-`bin/metering.py`. They're estimates, not a bill.
+$0.0697. Each further row adds about $0.0045: $0.0026 at the repo's price
+estimate in `bin/metering.py`, scaled by the same 1.74. A call about 30 rows is
+about $0.18, **Start here** about $0.10, and the summary about $0.07. They're
+estimates, not a bill.
 
 | Refresh | Calls | About |
 |---|---|---|
-| The first one, 120 new rows | 4 row calls and Start here | $0.63 |
+| The first one, 120 new rows | 4 row calls and Start here | $0.83 |
 | Nothing changed | none | $0.00 |
-| One row changed | its call of 30 rows, Start here, and the summary | $0.27 to $0.30 |
-| A queue of 300 new rows | 3 refreshes on the first day | $1.60 in all |
+| One row changed | its call of 30 rows, Start here, and the summary | $0.35 |
+| A queue of 300 new rows | 3 refreshes on the first day | $2.13 in all |
 
-At the $3.00 default, that's about 10 refreshes a day in which one row changes.
-Splitting a call to find a poisoned row adds at most 6 calls: about $0.10 for
+At the $3.00 default, that's about 8 refreshes a day in which one row changes.
+Splitting a call to find a poisoned row adds at most 6 calls: about $0.12 for
 a half of 15 rows, down to about $0.07 for the smallest.
 
 ### Choose the model

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -504,7 +506,7 @@ def test_no_open_items_means_no_start_call(wq):
 
 
 def test_an_empty_start_list_never_makes_start_here_the_first_tab(wq):
-    tri, html = triaged(snap(pr(1)), Model(rows=raises("the model is down")))
+    tri, html = triaged(snap(pr(1)), Model(rows=raises("the model is down"), start=lambda items: "nothing useful"))
     tabs = re.findall(r'data-t="([a-z-]+)"', html[html.index('id="tabs"'):html.index("</nav>")])
     assert tri["start"] == [] and tabs[:2] == ["open-list", "start"]
 
@@ -531,23 +533,25 @@ def test_a_row_whose_link_moved_gets_a_fresh_start_list(wq):
 # ─── failures ────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("step, expected", [
-    ("rows", "the model didn&#x27;t answer within 240 seconds"),
-    ("start", "the model&#x27;s Start here list wasn&#x27;t in the expected format"),
-    ("changes", "the model&#x27;s summary of what changed wasn&#x27;t in the expected format"),
+    ("rows", "Row triage: the model didn&#x27;t answer within 240 seconds"),
+    ("start", "Start here: the model&#x27;s answer wasn&#x27;t in the expected format"),
+    ("changes", "Since last night: the model&#x27;s answer wasn&#x27;t in the expected format"),
 ])
-def test_a_failed_step_shows_triage_unavailable_and_keeps_what_finished(wq, step, expected):
+def test_a_failed_step_says_which_part_failed_and_keeps_the_rest(wq, step, expected):
     triaged(snap(pr(1)), Model(changes=raises("x")))
     config.write_json(wq.data / "work/rows.json", {**config.read_json(wq.data / "work/rows.json", {}), "day": "2000-01-01"})
     answers = {"rows": raises("the model didn't answer within 240 seconds"), "start": lambda items: "nothing useful",
                "changes": lambda items: {"summary": [{"source": ["GitHub"], "text": "x"}, {"source": "Nowhere", "text": "x"}]}}
     triage.cache_path().unlink()
     tri, html = triaged(snap(pr(1), pr(2)), Model(**{step: answers[step]}))
-    assert f'<p class="triage-note">Triage unavailable: {expected}.' in html
-    assert html.count("Triage unavailable") == 2, "the note shows on Start here and on the Open list"
+    assert f"<p class=\"triage-note\">Part of triage didn't finish. {expected}. Each part" in html
+    assert html.count("Part of triage didn") == 2, "the note shows on Start here and on the Open list"
+    assert "Triage unavailable" not in html and tri["note"] == ""
     assert "o/r#2: Change 2" in html
     assert (tri["rows"] != {}) == (step != "rows")
+    assert (tri["start"] != []) == (step != "start")
     assert tri["changes"]["sources"][0]["new"] == 1, "the counts show even when the model can't summarize them"
-    assert "GitHub</b>: 1 new." in html
+    assert ("GitHub</b>: 1 new. GitHub moved." in html) == (step != "changes") and "GitHub</b>: 1 new." in html
 
 
 def test_over_todays_budget_makes_no_call(wq):
@@ -644,9 +648,11 @@ def test_a_model_failure_never_holds_back_the_rule_based_page(wq):
         seen.append(refresh.site_path().read_text())
         raise triage.Unavailable("the model call failed (claude exited with code 1)")
     status = refresh.run(model=model)
-    assert "o/r#7: Change 7" in seen[0] and "Triage unavailable" not in seen[0]
+    assert "o/r#7: Change 7" in seen[0] and "Part of triage" not in seen[0]
     html = refresh.site_path().read_text()
-    assert "Triage unavailable: the model call failed (claude exited with code 1)." in html and "o/r#7: Change 7" in html
+    assert ("Part of triage didn't finish. Row triage: the model call failed (claude exited with code 1). "
+            "Start here: the model call failed (claude exited with code 1). Each part") in html
+    assert "o/r#7: Change 7" in html
     assert status == [s for s in status if s["state"] != "error"]
     assert json.loads(refresh.status_path().read_text())["error"] == ""
 
@@ -711,7 +717,7 @@ def test_the_refresh_uses_the_real_model_call_unless_given_one(wq):
     fake_tool(wq.bin, "gh", [("search prs", [gh_pr(7)])])
     wq.sources({"github": {}})
     refresh.run()
-    assert "Triage unavailable: the tests have no model." in refresh.site_path().read_text()
+    assert "Row triage: the tests have no model." in refresh.site_path().read_text()
 
 
 # ─── the cache ───────────────────────────────────────────────────────────────
@@ -924,10 +930,32 @@ def test_a_failed_real_call_says_why_and_still_books_its_cost(wq, body, timeout,
     with pytest.raises(triage.Unavailable, match=message):
         REAL_CALL("Triage these rows", timeout)
     assert ledger(wq)[-1]["status"] == "failed" and ledger(wq)[-1]["est_usd"] > 0
+    assert ledger(wq)[-1]["est_usd"] == triage.cost_of("Triage these rows"), "booked at its reserved estimate"
+    assert triage.feature_spend(time.time()) == triage.cost_of("Triage these rows")
+
+
+def test_a_start_here_call_that_times_out_on_the_real_path_never_stops_the_rest(wq, monkeypatch):
+    log = fake_claude(wq.home)
+    (wq.home / "claude.slow").write_text("You pick")
+    monkeypatch.setattr(triage, "CALL_TIMEOUT", 1)
+    on_day(monkeypatch, "2026-11-19")
+    for _ in range(3):
+        tri, html = triaged(snap(pr(1), pr(2)), REAL_CALL)
+        assert len(tri["rows"]) == 2 and tri["note"] == "" and tri["start"] == []
+        assert tri["failed"] == ["Start here: the model didn't answer within 1 seconds"]
+        assert "Start here: the model didn&#x27;t answer within 1 seconds" in html
+    assert len(log.read_text().splitlines()) == 2, "one row call and one Start here call, once"
+    failed = [r for r in ledger(wq) if r["status"] == "failed"]
+    assert len(failed) == 1 and failed[0]["est_usd"] > triage.metering.estimate_cost_usd(triage.CALL_OVERHEAD, 0,
+                                                                                          "claude-sonnet-5-5")
+    on_day(monkeypatch, "2026-11-20")
+    (wq.home / "claude.slow").unlink()
+    tri, _ = triaged(snap(pr(1), pr(2)), REAL_CALL)
+    assert len(tri["start"]) == 2 and tri["failed"] == [] and len(log.read_text().splitlines()) == 3
 
 
 def test_a_model_command_that_isnt_installed_books_no_cost(wq):
-    with pytest.raises(triage.Unavailable, match="claude isn't installed, so there's no model to ask"):
+    with pytest.raises(triage.Stop, match="claude isn't installed, so there's no model to ask"):
         REAL_CALL("Triage these rows", 30)
     assert ledger(wq) == []
 
@@ -1131,7 +1159,7 @@ def test_a_cache_that_cant_be_read_still_lets_the_refresh_write_the_page(wq, mon
     monkeypatch.setattr(triage, "cached", broken)
     refresh.run(model=Model(rows=raises("the model is down")))
     html = refresh.site_path().read_text()
-    assert "o/r#7: Change 7" in html and "Triage unavailable: the model is down." in html
+    assert "o/r#7: Change 7" in html and "Row triage: the model is down." in html
     assert json.loads(refresh.status_path().read_text())["running"] is False
     assert "RuntimeError: a broken cache" in capsys.readouterr().err
 
@@ -1147,6 +1175,9 @@ HOSTILE = {
     "cookie": "cookie:", "x_secret_x": "x_" * 20 + "secret_", "lower_slash": "ab/", "jwt_start": "eyJ",
     "slack_token": "xoxb-", "github_pat": "github_pat_", "github_token": "ghp_", "openai_key": "sk-",
     "passphrase": "passphrase ", "pin_is": "pin is ", "use_to_sign_in": "use 1234 ", "keyed_quote": "'a':",
+    "use_code": "use code 1234 ", "enter_code": "enter 482-913 ", "code_split": "code: 482-", "gitlab": "glpat-",
+    "card_spaces": "4111 ", "card_dashes": "1-", "reset_path": "/reset/", "query_t": "?t=", "pw_key": "pw: abcdefgh ",
+    "pass_key": "pass: ",
 }
 
 
@@ -1190,6 +1221,16 @@ def test_a_long_subject_never_slows_the_refresh(wq):
     ("password: correct horse battery staple", "[removed]"),
     ("Here is my password: correct horse battery staple\nThanks, Bo", "Here is my [removed]\nThanks, Bo"),
     ("the password is: 'two words' then more", "the [removed] then more"),
+    ("Use code 482913 to verify", "[removed]"), ("Enter 482913 to continue", "[removed]"),
+    ("Your Slack confirmation code: 482-913", "Your Slack confirmation [removed]"),
+    ("token glpat-" + "a1B2" * 5 + " here", "token [removed] here"),
+    ("https://x.example.com/reset/abc123?x=1", "https://x.example.com/reset/[removed]?x=1"),
+    ("https://x.example.com/password-reset/Q9z#top", "https://x.example.com/password-reset/[removed]#top"),
+    ("https://x.example.com/login?t=abc123&y=2", "https://x.example.com/login?[removed]&y=2"),
+    ("https://x.example.com/cb?reset_token=a1&z=3", "https://x.example.com/cb?[removed]&z=3"),
+    ("pw: x", "[removed]"), ("pass: x", "[removed]"), ("User: bob Pass: Zq9kk", "User: bob [removed]"),
+    ("card 4111 1111 1111 1111 on file", "card [removed] on file"), ("4111-1111-1111-1111", "[removed]"),
+    ("Amex 378282246310005.", "Amex [removed]."),
 ])
 def test_more_secret_formats_are_removed(text, scrubbed):
     assert triage.scrub(text) == scrubbed
@@ -1201,6 +1242,7 @@ def test_more_secret_formats_are_removed(text, scrubbed):
     "unit tests pass: 4197 passed, error code 1234", "Room code 4521 for the meeting", "Secret Santa is: Bob",
     "Status code: 500 on /api/v1", "Promo code is: SAVE20 for the team", "Meeting at 1400 is your call code",
     "short sha 1a2b3c4d", "src/assistant/slack_focus/client_tests_for_the_long_module_name_here.py",
+    "order 4111 1111 1111 1112 shipped", "pass_rate: 95%", "Tests pass: 4197", "id 12345678901234567890 kept",
 ])
 def test_ordinary_text_survives_the_scrub(text):
     assert triage.scrub(text) == text
@@ -1271,10 +1313,10 @@ def test_a_stop_during_splitting_keeps_the_verdicts_it_has_and_skips_the_rest(wq
 
     def rows(items):
         if any(i["title"] == "o/r#7: Change 7" for i in items) and len(items) == 2:
-            raise triage.Unavailable("the model didn't answer within 240 seconds")
+            raise triage.Stop("the model took longer than 10 minutes in all")
         return "no" if len(items) == 4 else {"rows": [{"id": i["id"], **VERDICT} for i in items]}
     tri, _ = triaged(snap(*(pr(n) for n in range(1, 9))), Model(rows=rows))
-    assert tri["note"] == "the model didn't answer within 240 seconds"
+    assert tri["note"] == "the model took longer than 10 minutes in all"
     assert set(tri["rows"]) == {pr(n)["link"] for n in range(1, 7)} and tri["skipped"] == 2
     again = Model()
     triaged(snap(*(pr(n) for n in range(1, 9))), again)
@@ -1315,7 +1357,7 @@ def test_a_bad_call_before_a_stop_is_still_skipped_for_the_day(wq):
     def rows(items):
         if any("POISON" in i["title"] for i in items):
             return "no"
-        raise triage.Unavailable("the model didn't answer within 240 seconds")
+        raise triage.Stop("the Work queue's model budget of $3.00 a day is used up. It resets at midnight UTC")
     model = Model(rows=rows)
     docs = [pr(n, "o/r#1: POISON" if n == 1 else "") for n in range(1, 41)]
     for _ in range(3):
@@ -1323,7 +1365,7 @@ def test_a_bad_call_before_a_stop_is_still_skipped_for_the_day(wq):
     poisoned_calls = [b for b in model.of("rows") if any("POISON" in i["title"] for i in b)]
     assert [len(b) for b in poisoned_calls] == [30], "asked once over three refreshes"
     assert [len(b) for b in model.of("rows")] == [30, 10, 10, 10]
-    assert tri["note"] == "the model didn't answer within 240 seconds" and tri["skipped"] == 30
+    assert tri["note"].startswith("the Work queue's model budget") and tri["skipped"] == 30
 
 
 def test_a_token_across_the_slack_title_cut_never_reaches_the_since_last_night_prompt(wq):
@@ -1366,3 +1408,155 @@ def test_a_reservation_from_the_future_never_counts(wq):
     config.write_json(triage.reservations_path(), {"x": {"usd": 50.0, "at": time.time() + 3600}})
     assert triage.Triage(lambda prompt, timeout: "ok").ask("x") == "ok"
     assert triage.reservations(time.time()) == {}
+
+
+# ─── the fifth review: one failure contract for every stage ─────────────────
+
+FAILURES = {"timeout": raises("the model didn't answer within 240 seconds"),
+            "provider": raises("the model call failed (claude exited with code 1)"),
+            "prose": lambda items: "I can't help with that.", "empty": lambda items: "{}"}
+WHY = {"timeout": "the model didn't answer within 240 seconds",
+       "provider": "the model call failed (claude exited with code 1)", "prose": triage.SHAPE, "empty": triage.SHAPE}
+STAGE = {"rows": "Row triage", "start": "Start here", "changes": "Since last night"}
+
+
+def failing(stage: str, failure: str) -> Model:
+    """Every call of one kind fails, or, for rows, every call about row 5."""
+    if stage != "rows":
+        return Model(**{stage: FAILURES[failure]})
+
+    def rows(items):
+        if any(i["title"] == "o/r#5: Change 5" for i in items):
+            return FAILURES[failure](items)
+        return {"rows": [{"id": i["id"], **VERDICT} for i in items]}
+    return Model(rows=rows)
+
+
+@pytest.mark.parametrize("failure", list(FAILURES))
+@pytest.mark.parametrize("stage", list(STAGE))
+def test_a_failed_call_in_any_stage_never_stops_the_others_or_repeats_the_same_day(wq, monkeypatch, stage, failure):
+    on_day(monkeypatch, "2026-11-18")
+    triaged(snap(pr(1)), Model())
+    earlier = config.read_json(wq.data / "work/rows.json", {})
+    rows = [pr(n) for n in range(1, 71)]
+    model = failing(stage, failure)
+    on_day(monkeypatch, "2026-11-19")
+    asked = []
+    for _ in range(3):
+        before = len(model.prompts)
+        tri, html = triaged(snap(*rows), model)
+        asked.append([kind(p) for p in model.prompts[before:]])
+        line = f"{STAGE[stage]}: {WHY[failure]}"
+        assert tri["note"] == "" and "Triage unavailable" not in html
+        assert (line in tri["failed"]) == (stage != "rows" or len(asked) == 1), "a saved failure still shows today"
+        assert (len(tri["start"]) == 6) == (stage != "start")
+        assert [d["text"] for d in tri["changes"]["sources"]] == ([""] if stage == "changes" else ["GitHub moved."])
+        assert len(tri["rows"]) == (66 if stage == "rows" else 70)
+    assert len(asked[0]) <= 3 + 1 + 1 + triage.MAX_SPLIT_CALLS
+    assert stage not in asked[1] + asked[2], "the failed part isn't asked again the same day"
+    assert asked[2] == [], "nothing at all is asked a third time"
+    on_day(monkeypatch, "2026-11-20")
+    config.write_json(wq.data / "work/rows.json", {**earlier, "day": "2026-11-19"})
+    before = len(model.prompts)
+    tri, _ = triaged(snap(*rows), model)
+    again = [kind(p) for p in model.prompts[before:]]
+    assert stage in again and len(again) <= 1 + 1 + 1 + triage.MAX_SPLIT_CALLS, "it's asked again the next day"
+
+
+def test_a_row_that_makes_the_model_time_out_never_blocks_the_rest(wq, monkeypatch):
+    on_day(monkeypatch, "2026-11-19")
+    hang = "o/r#5: Change 5"
+
+    def llm(prompt, timeout):
+        if kind(prompt) == "rows" and any(i["title"] == hang for i in payload(prompt)):
+            raise triage.Unavailable(f"the model didn't answer within {timeout} seconds")
+        return base(prompt, timeout)
+    base = Model()
+    rows = [pr(n) for n in range(1, 71)]
+    tri, html = triaged(snap(*rows), llm)
+    assert [len(b) for b in base.of("rows")] == [30, 10, 15, 8, 3], "the calls without row 5 all answered"
+    assert len(base.of("start")) == 1 and len(tri["start"]) == 6 and tri["note"] == ""
+    assert len(tri["rows"]) == 66 and tri["skipped"] == 4
+    assert "Row triage: the model didn&#x27;t answer within 240 seconds" in html
+    for _ in range(2):
+        triaged(snap(*rows), llm)
+    assert [len(b) for b in base.of("rows")] == [30, 10, 15, 8, 3], "the batch with row 5 isn't asked again today"
+    assert len(base.of("start")) == 2, "Start here is asked again once, for the verdicts splitting found"
+
+
+def test_a_model_that_refuses_everything_makes_a_bounded_number_of_calls_a_day(wq, monkeypatch):
+    on_day(monkeypatch, "2026-11-18")
+    triaged(snap(pr(1)), Model())
+    earlier = config.read_json(wq.data / "work/rows.json", {})
+    refuse = lambda items: "I can't help with this request."  # noqa: E731
+    model = Model(rows=refuse, start=refuse, changes=refuse)
+    rows = [pr(n) for n in range(1, 121)]
+    for day, last in (("2026-11-19", "2026-11-18"), ("2026-11-20", "2026-11-19")):
+        on_day(monkeypatch, day)
+        config.write_json(wq.data / "work/rows.json", {**earlier, "day": last})
+        before = len(model.prompts)
+        for _ in range(3):
+            tri, _ = triaged(snap(*rows), model)
+        asked = [kind(p) for p in model.prompts[before:]]
+        assert asked == ["rows"] * 4 + ["start", "changes"] + ["rows"] * triage.MAX_SPLIT_CALLS, day
+        assert (tri["note"], tri["skipped"], len(tri["rows"])) == ("", 119, 1), "row 1 keeps its verdict from Nov 18"
+
+
+def test_a_call_that_costs_exactly_what_is_left_of_the_budget_is_still_made(wq, monkeypatch):
+    prompt = "a prompt " * 100
+    monkeypatch.setattr(triage, "daily_cap", lambda: triage.cost_of(prompt))
+    assert triage.fits(prompt)
+    monkeypatch.setattr(triage, "daily_cap", lambda: triage.cost_of(prompt) * 0.999)
+    assert not triage.fits(prompt)
+
+
+def test_a_work_queue_budget_spent_to_the_cent_stops_triage(wq):
+    wq.sources({"triage": {"dailyUsd": 0.5}})
+    book(wq, 0.25)
+    assert triage.Triage(lambda prompt, timeout: "ok").ask("x") == "ok"
+    book(wq, 0.25)
+    with pytest.raises(triage.Stop, match=r"the Work queue's model budget of \$0.50 a day is used up"):
+        triage.Triage(lambda prompt, timeout: "ok").ask("x")
+
+
+def test_a_snooze_ends_at_its_time():
+    assert triage.hidden({"state": "snoozed", "until": 1000}, 999)
+    assert not triage.hidden({"state": "snoozed", "until": 1000}, 1000)
+    assert triage.hidden({"state": "done"}, 1000)
+
+
+def test_the_first_summary_line_for_a_source_wins():
+    text = json.dumps({"summary": [{"source": "GitHub", "text": "First."}, {"source": "GitHub", "text": "Second."}]})
+    assert triage.parse_summary(text, {"GitHub"}) == {"GitHub": "First."}
+
+
+def test_slack_context_names_are_scrubbed_and_cut(wq):
+    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    ctx = {"root": None, "msg": {"who": f"Ana {token}", "ts": "1.1", "text": "Can you look?"},
+           "after": [{"who": "Bo" * 150, "ts": "1.2", "text": "Bump."}], "after_n": 1}
+    text = triage.open_items({"slack": [slack_row("C1:1.1", ctx=ctx)]})[0]["text"]
+    assert text == f"Ana [removed]: Can you look?\n{'Bo' * 50}: Bump."
+
+
+def test_the_scrubber_imports_on_the_oldest_python_the_repo_supports():
+    import tomllib
+    repo = Path(__file__).resolve().parents[1]
+    floor = re.fullmatch(r">=(\d+\.\d+)", tomllib.loads((repo / "pyproject.toml").read_text())["project"]
+                         ["requires-python"]).group(1)
+    code = (f"import sys; sys.path.insert(0, {str(repo)!r}); import platform, work_queue.scrubber as s; "
+            "print(platform.python_version(), s.scrub('ghp_' + 'a' * 30))")
+    proc = subprocess.run(["uv", "run", "--no-project", "--python", floor, "python", "-I", "-c", code],
+                          capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    version, out = proc.stdout.split()
+    assert version.startswith(floor + ".") and out == "[removed]"
+
+
+@pytest.mark.parametrize("entry", [{"failed": 5, "day": "2026-11-19"}, {"failed": "x" * 301, "day": "2026-11-19"},
+                                   {"failed": "it failed"}, {"failed": "it failed", "day": 7}])
+def test_a_saved_failure_that_isnt_well_formed_drops_the_saved_answer(entry):
+    assert triage.load_start({"key": "k", "items": [], **entry}) == {}
+    assert triage.load_summary({"key": "k", "text": {}, **entry}) == {}
+    good = {"failed": "it failed", "day": "2026-11-19"}
+    assert triage.load_start({"key": "k", "items": [], **good}) == {"key": "k", "items": [], **good}
+    assert triage.load_summary({"key": "k", "text": {}, **good}) == {"key": "k", "text": {}, **good}

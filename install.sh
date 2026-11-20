@@ -102,6 +102,10 @@ install.sh — install/update the Assistant system from $REPO_ROOT
   Flags/answers only affect what gets LOADED; an already-running feature daemon
   is never torn out (it's adopted and remembered as enabled).
   -h, --help        This help.
+  ASSISTANT_PYTHON=/path/to/python3 picks the interpreter the LaunchAgents run
+  with. Otherwise it's the first python3 of 3.11 or newer from Homebrew, then
+  /usr/local/bin, then /usr/bin. The Work queue needs 3.11 or newer; with an
+  older one it isn't loaded.
 
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
@@ -642,9 +646,23 @@ BREW_BIN=""
 if command -v brew >/dev/null 2>&1; then
     BREW_BIN="$(brew --prefix 2>/dev/null)/bin"
 fi
+# The first python3 of 3.11 or newer (pyproject's requires-python), or else the
+# first one found. The Work queue needs 3.11 or newer and isn't loaded without it.
 PLIST_PYTHON=""
-for cand in "$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    if [[ -n "$cand" && -x "$cand" ]]; then PLIST_PYTHON="$cand"; break; fi
+PLIST_PYTHON_NEW=0
+if [[ -n "${ASSISTANT_PYTHON:-}" ]]; then
+    PYTHON_CANDIDATES=("$ASSISTANT_PYTHON")
+else
+    PYTHON_CANDIDATES=("$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3)
+fi
+for cand in "${PYTHON_CANDIDATES[@]}"; do
+    [[ -x "$cand" ]] || continue
+    if "$cand" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+        PLIST_PYTHON="$cand"
+        PLIST_PYTHON_NEW=1
+        break
+    fi
+    [[ -n "$PLIST_PYTHON" ]] || PLIST_PYTHON="$cand"
 done
 if [[ -z "$PLIST_PYTHON" ]]; then
     warn "no python3 found for LaunchAgent plists — install Xcode CLT or Homebrew python3"
@@ -730,7 +748,7 @@ feature_enabled() {
         memory)        [[ $WITH_MEMORY -eq 1 ]] ;;
         crash-resume)  [[ $WITH_CRASH_RESUME -eq 1 ]] ;;
         ws-numberer)   [[ $WITH_WS_NUMBERER -eq 1 ]] ;;
-        work-queue)    [[ "$MODE" == "pro" ]] ;;
+        work-queue)    [[ "$MODE" == "pro" && $PLIST_PYTHON_NEW -eq 1 ]] ;;
         *)             return 1 ;;
     esac
 }
@@ -759,7 +777,11 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
                 memory|crash-resume|ws-numberer)
                     note "FEATURE $base — not enabled (copied, NOT loaded; enable with --with-$feat)" ;;
                 work-queue)
-                    note "FEATURE $base — Pro mode only (copied, NOT loaded; turn on with --pro)" ;;
+                    if [[ "$MODE" == "pro" ]]; then
+                        warn "FEATURE $base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (copied, NOT loaded; install Python 3.11+, for example brew install python, then run ./install.sh --apply --pro)"
+                    else
+                        note "FEATURE $base — Pro mode only (copied, NOT loaded; turn on with --pro)"
+                    fi ;;
                 *)  # comms / slack-reactor: token-gated, hand-loaded after setup
                     note "FEATURE $base — token-gated (copied, NOT loaded; hand-load after setup — see ONBOARDING.md)" ;;
             esac
@@ -830,8 +852,8 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     fi
 done
 
-# Default mode stops the Work queue server that Pro mode started.
-if [[ "$MODE" != "pro" && $APPLY -eq 1 ]]; then
+# Default mode, or a python3 older than 3.11, stops the Work queue server.
+if [[ ( "$MODE" != "pro" || $PLIST_PYTHON_NEW -eq 0 ) && $APPLY -eq 1 ]]; then
     launchctl bootout "gui/$UID/com.assistant.work-queue" 2>/dev/null || true
 fi
 

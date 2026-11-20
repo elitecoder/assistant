@@ -171,6 +171,9 @@ def render(snap: dict) -> tuple[str, dict]:
     note = (f'<p class="triage-note">Triage unavailable: {e(tri["note"])}. Rows without a model verdict still show, '
             'grouped by the rules, and offer Send to Assistant.</p>'
             if tri and tri["note"] else "")
+    if tri and tri["failed"]:
+        note += (f'<p class="triage-note">Part of triage didn\'t finish. {e(". ".join(tri["failed"]))}. Each part is '
+                 'asked again tomorrow, or sooner when its rows change.</p>')
     if tri and tri["waiting"]:
         note += f'<p class="meta">{tri["waiting"]} rows wait for triage until the next refresh.</p>'
     if tri and tri["skipped"]:
@@ -203,7 +206,7 @@ def render(snap: dict) -> tuple[str, dict]:
                     '<button class="chip" id="showhidden">Show snoozed and dropped</button></div>'
                     f'{note}{"".join(lanes) or "<p class=meta>No sources are linked yet.</p>"}</div>')
     tabs.append(("open-list", "Open list", total, "var(--c-cut)"))
-    if tri and (tri["start"] or tri["changes"] or tri["note"]):
+    if tri and (tri["start"] or tri["changes"] or tri["note"] or tri["failed"]):
         at = 0 if tri["start"] else len(sections)
         sections.insert(at, start_section(tri, note))
         tabs.insert(at, ("start", "Start here", len(tri["start"]), "var(--c-start)"))

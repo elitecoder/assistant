@@ -10,6 +10,7 @@ import pty
 import select
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -55,6 +56,43 @@ def test_pro_mode_loads_a_localhost_only_server_and_never_prompts_headless(home)
     plist = (home / f"Library/LaunchAgents/{LABEL}.plist").read_text()
     assert f"<string>{REPO}:{REPO}/src</string>" in plist and "<string>work_queue.server</string>" in plist
     assert "__" not in plist.replace("__main__", "")
+
+
+def python_reporting_3_9(home: Path) -> Path:
+    """A python3 that fails the installer's 3.11 check and otherwise runs as this one."""
+    exe = home / "old-python3"
+    exe.write_text(f'#!/bin/sh\ncase "$2" in *version_info*) exit 1 ;; esac\nexec "{sys.executable}" "$@"\n')
+    exe.chmod(0o755)
+    return exe
+
+
+def test_pro_mode_never_loads_the_work_queue_on_a_python_older_than_3_11(home):
+    old = python_reporting_3_9(home)
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": str(old)}, "--pro")
+    assert service_calls(home, "bootstrap") == [] and service_calls(home, "load") == []
+    assert service_calls(home, "bootout") == [f"bootout gui/{os.getuid()}/{LABEL}"], "a running one is stopped"
+    assert (f"FEATURE {LABEL}.plist — needs Python 3.11 or newer, and {old} is older (copied, NOT loaded; "
+            "install Python 3.11+, for example brew install python, then run ./install.sh --apply --pro)") in proc.stderr
+    assert f"plist interpreter: {old}" in proc.stdout, "the other services keep the python3 they had"
+
+
+def test_pro_mode_loads_the_work_queue_on_the_python_you_choose(home):
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": sys.executable}, "--pro")
+    assert service_calls(home, "bootstrap") == [f"bootstrap gui/{os.getuid()} {home}/Library/LaunchAgents/{LABEL}.plist"]
+    assert f"<string>{sys.executable}</string>" in (home / f"Library/LaunchAgents/{LABEL}.plist").read_text()
+    assert "needs Python 3.11" not in proc.stderr
+
+
+def test_the_installer_skips_a_python_older_than_3_11_for_a_newer_one(home):
+    bindir = home / "brew/bin"
+    bindir.mkdir(parents=True)
+    os.symlink(python_reporting_3_9(home), bindir / "python3")
+    env = installer_env(home)
+    fake_tool(home / "stubbin", "brew", [("--prefix", str(home / "brew"))])
+    proc = run_installer(env)
+    picked = proc.stdout.split("plist interpreter: ")[1].split("\n")[0]
+    assert picked != str(bindir / "python3")
+    assert subprocess.run([picked, "-c", "import sys; sys.exit(sys.version_info < (3, 11))"]).returncode == 0
 
 
 def test_a_pro_dry_run_lists_the_sources_and_changes_nothing(home):
@@ -238,3 +276,16 @@ def test_help_says_default_mode_unloads_the_work_queue(tmp_path):
     proc = subprocess.run(["bash", str(REPO / "install.sh"), "--help"], capture_output=True, text=True,
                           env=installer_env(tmp_path / "home"), stdin=subprocess.DEVNULL, timeout=30)
     assert "Switch to default mode and unlink the Pro skills.\n                    Also unloads the Work queue server." in proc.stdout
+
+
+def test_with_no_python3_found_the_work_queue_isnt_loaded(home):
+    proc = run_installer({**installer_env(home), "ASSISTANT_PYTHON": str(home / "no-such-python3")}, "--pro")
+    assert "no python3 found for LaunchAgent plists" in proc.stderr and "plist interpreter: /usr/bin/python3" in proc.stdout
+    assert service_calls(home, "bootstrap") == []
+
+
+def test_help_says_how_to_pick_the_python(tmp_path):
+    proc = subprocess.run(["bash", str(REPO / "install.sh"), "--help"], capture_output=True, text=True,
+                          env=installer_env(tmp_path / "home"), stdin=subprocess.DEVNULL, timeout=30)
+    assert "ASSISTANT_PYTHON=/path/to/python3 picks the interpreter the LaunchAgents run" in proc.stdout
+    assert "The Work queue needs 3.11 or newer; with an\n  older one it isn't loaded." in proc.stdout

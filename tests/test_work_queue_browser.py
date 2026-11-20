@@ -24,7 +24,7 @@ import pytest
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Error, sync_playwright  # noqa: E402
 
-from work_queue import config, page, refresh, server, todo_result  # noqa: E402
+from work_queue import config, page, refresh, server, todo_result, triage  # noqa: E402
 from work_queue_fakes import (VERDICT, Model, chromium_missing, fake_tool, first_line, gh_pr, raises,  # noqa: E402, F401
                               require_chromium, spare_port, wq)
 
@@ -47,7 +47,7 @@ def snapshot() -> dict:
                      "addr": "notifications@github.com", "link": "https://outlook.office.com/m1"}]
     return {"built": "Nov 18, 9:00 AM", "github": PRS, "gmail": {"me@example.com": gmail_rows}, "outlook": outlook_rows,
             "status": [{"name": "GitHub", "state": "ok", "detail": "read 3 items"}],
-            "triage": {"rows": {PRS[2]["link"]: AGENT}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": ""}}
+            "triage": {"rows": {PRS[2]["link"]: AGENT}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []}}
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -253,7 +253,7 @@ def rich_snapshot() -> dict:
     gmail += [gmail_row("g-shop", "shop"), gmail_row("u-a", "note", "a@promo.example", "https://promo.example/a"),
               gmail_row("u-b", "note", "b@promo.example", "https://promo.example/b")]
     return {"built": "Nov 18, 9:00 AM", "github": [pr(n) for n in range(1, 18)], "slack": slack, "outlook": outlook,
-            "triage": {"rows": {pr(n)["link"]: AGENT for n in range(1, 11)}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": ""},
+            "triage": {"rows": {pr(n)["link"]: AGENT for n in range(1, 11)}, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []},
             "gmail": {"me@example.com": gmail}, "calendar": [{"when": "9:00 AM", "title": "Standup", "account": "me@example.com",
                                                              "declined": False, "link": "https://calendar.google.com/e1"}],
             "status": [{"name": "GitHub", "state": "ok", "detail": "read 17 items"},
@@ -654,8 +654,26 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         browser.close()
 
 
-def test_the_failure_note_shows_when_the_model_fails(site, wq):
-    triaged_site(wq, Model(rows=raises("the model didn't answer within 240 seconds")))
+def stop(message: str):
+    def call(items):
+        raise triage.Stop(message)
+    return call
+
+
+TIMEOUT = "the model didn't answer within 240 seconds"
+STOP = "the model took longer than 10 minutes in all"
+
+
+@pytest.mark.parametrize("model, expected", [
+    (lambda: Model(rows=raises(TIMEOUT), start=raises(TIMEOUT)),
+     f"Part of triage didn't finish. Row triage: {TIMEOUT}. Start here: {TIMEOUT}. Each part is asked again tomorrow, "
+     "or sooner when its rows change."),
+    (lambda: Model(rows=stop(STOP)),
+     f"Triage unavailable: {STOP}. Rows without a model verdict still show, grouped by the rules, and offer Send to "
+     "Assistant."),
+])
+def test_the_failure_note_shows_when_the_model_fails(site, wq, model, expected):
+    triaged_site(wq, model())
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         tab = browser.new_page(viewport={"width": 390, "height": 800})
@@ -663,9 +681,7 @@ def test_the_failure_note_shows_when_the_model_fails(site, wq):
         tab.goto(site)
         tab.wait_for_selector("#open-list .triage-note", state="visible")
         assert tab.locator("#start").is_hidden(), "an empty Start here list doesn't open first"
-        assert text(tab, "#open-list .triage-note") == ("Triage unavailable: the model didn't answer within 240 seconds. "
-                                                        "Rows without a model verdict still show, grouped by the rules, "
-                                                        "and offer Send to Assistant.")
+        assert text(tab, "#open-list .triage-note") == expected
         tab.locator('#tabs .tab[data-t="start"]').click()
         tab.wait_for_selector("#start .triage-note", state="visible")
         assert tab.locator(".sf-row").count() == 3 and tab.locator(".sf-send").count() == 3
@@ -677,7 +693,7 @@ def test_the_failure_note_shows_when_the_model_fails(site, wq):
 
 def test_a_sent_row_stays_greyed_with_its_status_and_a_blocked_one_stays_prominent(site, wq):
     yours = {"rows": {pr(n)["key"]: VERDICT for n in range(1, 7)}, "start": [], "changes": None, "waiting": 0,
-             "skipped": 0, "note": ""}
+             "skipped": 0, "note": "", "failed": []}
     write_page({"built": "now", "github": [pr(n) for n in range(1, 7)], "status": [], "triage": yours})
     config.write_json(wq.data / "marks.json", {pr(n)["key"]: {"state": state, "until": 0} for n, state in
                                                 ((1, "done"), (2, "done"), (3, "dropped"), (4, "done"), (5, "done"))})
@@ -710,7 +726,7 @@ def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(
     start = [{"key": pr(n)["key"], "title": f"o/r#{n}: Change {n}", "source": "GitHub", "effort": "", "reason": "Go"}
              for n in range(1, 6)]
     write_page({"built": "now", "github": [pr(n) for n in range(1, 6)], "status": [],
-                "triage": {"rows": {}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": ""}})
+                "triage": {"rows": {}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []}})
     config.write_json(wq.data / "marks.json", {
         pr(1)["key"]: {"state": "snoozed", "until": NOW_MS + DAY_MS}, pr(2)["key"]: {"state": "snoozed", "until": NOW_MS - 1000},
         pr(3)["key"]: {"state": "done", "until": 0}, pr(4)["key"]: {"state": "done", "until": 0}})
