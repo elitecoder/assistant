@@ -9,6 +9,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Fixed
+- Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
+
 ### Changed
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
 - Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (313 in all now, up from main's 130), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
