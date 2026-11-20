@@ -12,7 +12,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ### Changed
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
 - Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add 87 mutation checks (217 in all, up from 130), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
-- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 231 checks, 101 more than main's 130.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 237 checks, 107 more than main's 130.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
@@ -168,21 +168,25 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   about rows answered in the wrong shape, such as a refusal, skips its rows for
   the day instead of stopping triage, so it isn't paid for again each refresh.
   After Start here and the summary, the bad call is split in halves to find the
-  rows that break it: at most 6 more calls, only while the Work queue's budget
-  covers the next one, and, when no call answered well, only after a two-call
-  probe answers well. An answer about several rows with no usable verdict
-  counts as the wrong shape. A saved cache, snapshot, or reservation file in
+  rows that break it: at most 6 more calls, and only while the Work queue's
+  budget covers the next one, so two bad rows in a small queue still leave
+  the rest with verdicts. An answer about 2 or more rows with usable verdicts
+  for fewer than half of them counts as the wrong shape. A bad call that comes
+  before a stop is still skipped for the day. A saved cache, snapshot, or reservation file in
   the wrong shape is treated as empty, and the refresh still writes the page;
   a reservation dated in the future doesn't count. A blocked row leads Start
   here. Two refreshes at once keep each other's verdicts. The scrubber, now
-  `work_queue/scrubber.py`, runs in linear time on any input and cuts text to
-  8,000 characters, and titles and senders to 1,000, first. It catches
-  "password ... is: X", `pwd=`, passphrases, quoted values with spaces,
+  `work_queue/scrubber.py`, runs in linear time on any input (the tests time
+  each pattern on 1 MB of repeated text with no cut, including repeated
+  `eyJ`), and cuts text to 8,000 characters, and titles and senders to 1,000,
+  first. It catches "password ... is: X", removing a password phrase to the
+  end of its line, `pwd=`, passphrases, quoted values with spaces,
   `key: value` pairs whose key names a secret, and one-time codes, and it
   leaves ordinary text such as "error code 1234", "Secret Santa is: Bob", and
   Google Docs links alone. Slack titles show as written; only the model's copy
-  is scrubbed, before it's cut. A reservation counts the model command's own
-  prompt and the expected answer, and a daily budget that isn't a finite
+  is scrubbed, before it's cut, in the row calls and in the Since last night
+  summary. A reservation counts the model command's own prompt and the
+  expected answer, scaled to match a real call's cost, and a daily budget that isn't a finite
   number of zero or more means the default, now 3.00 USD.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a

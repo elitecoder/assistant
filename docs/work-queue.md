@@ -194,15 +194,14 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
 - A row the model didn't answer about is shown without a verdict and isn't
   sent again until the next day. The Open list says how many there are.
 - When a call's answer isn't in the expected shape, for example a refusal or
-  an answer with no usable verdict for several rows, its rows are skipped for
-  the day and the rest of triage goes on. After **Start here** and the
-  summary, a bad call is split in halves to find the rows that break it:
+  an answer about 2 or more rows with usable verdicts for fewer than half of
+  them, its rows are skipped for the day and the rest of triage goes on. After
+  **Start here** and the summary, a bad call is split in halves to find the
+  rows that break it:
   - At most 6 more calls a refresh, and only while the Work queue's own budget
     still covers the next one.
-  - When no call in the refresh answered well, it first tries one split, 2
-    calls, and keeps splitting only if one half answers well.
   - A model that refuses everything therefore costs one call per 30 rows plus
-    2 calls, once a day.
+    6 calls, once a day.
 - Two refreshes at once each keep the verdicts the other saved.
 
 ### What the model sees and can do
@@ -221,7 +220,10 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
   aren't part of a link's path, from the model's copy only: the page always
   shows the original text. Each piece of text is cut to 8,000 characters, and
   each title or sender to 1,000, before the scrub, and every pattern runs in
-  time linear in its input. The rules live in `work_queue/scrubber.py`.
+  time linear in its input: the tests time each one on 1 MB of repeated text
+  with no cut. A password phrase is removed to the end of its line, so a
+  password with spaces doesn't leave words behind. The rules live in
+  `work_queue/scrubber.py`.
 - Every piece of model text on the page is escaped, so it can't add markup.
 - Row text sits between markers with a random code the text can't guess, and
   the prompt tells the model the text is data, never instructions.
@@ -260,7 +262,10 @@ There are two daily budgets, both for the UTC day:
 Before each call, triage reserves the call's estimated cost under the
 Strategist's lock, so two refreshes at once can't both spend the last of a
 budget. The estimate counts the prompt, about 14,000 tokens of the model
-command's own prompt, and an expected answer of 4,800 tokens. Triage stops once
+command's own prompt, and an expected answer of 4,800 tokens, priced by
+`bin/metering.py` and then scaled by the ratio of a real call's cost to that
+price for its tokens (about 1.74), so a call about 30 rows reserves about
+$0.14. Triage stops once
 spend, counting calls still running, has reached a budget. A single call can
 still go over it, by at most that call's cost. A reservation that isn't well
 formed, is older than 10 minutes, or is dated in the future doesn't count.
@@ -277,10 +282,11 @@ $0.0697. Each further row adds about $0.0026 at the repo's price estimate in
 | The first one, 120 new rows | 4 row calls and Start here | $0.63 |
 | Nothing changed | none | $0.00 |
 | One row changed | its call of 30 rows, Start here, and the summary | $0.27 to $0.30 |
-| A queue of 300 new rows | 3 refreshes on the first day | $1.70 in all |
+| A queue of 300 new rows | 3 refreshes on the first day | $1.60 in all |
 
 At the $3.00 default, that's about 10 refreshes a day in which one row changes.
-Splitting a call to find a poisoned row adds at most 6 calls, about $0.08 each.
+Splitting a call to find a poisoned row adds at most 6 calls: about $0.10 for
+a half of 15 rows, down to about $0.07 for the smallest.
 
 ### Choose the model
 

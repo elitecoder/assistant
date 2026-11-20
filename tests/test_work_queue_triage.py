@@ -135,16 +135,20 @@ def test_answers_outside_the_schema_are_ignored(wq):
                          {"id": 3, **VERDICT, "draft": "d" * 1201}, {"id": "4", **VERDICT}, {"id": True, **VERDICT},
                          {"id": 99, **VERDICT}, {"id": 5, **VERDICT, "effort": "Huge"}, {"id": 6, **VERDICT, "why": "  "},
                          {"id": 7, **VERDICT, "draft": 3}, "not a row", {"id": 8, "why": "No draft key.",
-                                                                      "disposition": "handoff", "effort": "Large"}]}
+                                                                      "disposition": "handoff", "effort": "Large"},
+                         *({"id": n, **VERDICT} for n in range(9, 18))]}
 
     def start(items):
         return {"start": [{"id": 1, "reason": "Hand it to Bo."}, {"id": 1, "reason": "Again"}, {"id": 0, "reason": "r" * 201},
                           {"id": 42, "reason": "Unknown"}, *({"id": n, "reason": f"Item {n}"} for n in range(2, 9)),
                           {"id": 0, "reason": "Past the cap"}]}
-    doc = snap(*(pr(n) for n in range(1, 10)))
-    tri = triage.run(doc, Model(rows=rows, start=start), {})
+    doc = snap(*(pr(n) for n in range(1, 19)))
+    model = Model(rows=rows, start=start)
+    tri = triage.run(doc, model, {})
     assert tri["rows"] == {pr(1)["link"]: VERDICT,
-                           pr(9)["link"]: {"why": "No draft key.", "disposition": "handoff", "effort": "Large", "draft": ""}}
+                           pr(9)["link"]: {"why": "No draft key.", "disposition": "handoff", "effort": "Large", "draft": ""},
+                           **{pr(n)["link"]: VERDICT for n in range(10, 19)}}
+    assert len(model.of("rows")) == 1, "11 usable verdicts for 18 rows is at least half, so no split"
     assert [s["reason"] for s in tri["start"]] == ["Hand it to Bo.", *(f"Item {n}" for n in range(2, 9))]
     assert tri["start"][0] == {"key": pr(9)["link"], "title": "o/r#9: Change 9", "source": "GitHub", "effort": "Large",
                                "reason": "Hand it to Bo."}
@@ -162,16 +166,16 @@ def test_an_answer_in_the_wrong_shape_skips_its_rows_and_triage_goes_on(wq, answ
     assert "o/r#1: Change 1" in html and 'class="btn sf-send"' in html and "Triage unavailable" not in html
 
 
-def test_a_model_that_refuses_every_row_costs_one_call_per_batch_and_a_probe_across_refreshes(wq):
+def test_a_model_that_refuses_every_row_costs_one_call_per_batch_and_the_split_bound_a_day(wq):
     model = Model(rows=lambda items: "I can't help with this request.")
     rows = [pr(n) for n in range(1, 41)]
     triaged(snap(*rows), model)
-    assert [len(b) for b in model.of("rows")] == [30, 10, 15, 15], "two calls, then one probe split in halves"
+    assert [len(b) for b in model.of("rows")] == [30, 10, 15, 15, 5, 5, 7, 8], "two calls, then six split calls"
     current = wq.data / "work/rows.json"
     config.write_json(current, {**config.read_json(current, {}), "day": "2000-01-01"})
     for _ in range(2):
         tri, html = triaged(snap(*rows[1:]), model)
-    assert len(model.of("rows")) == 2 + triage.PROBE_CALLS, "none again the same day"
+    assert len(model.of("rows")) == 2 + triage.MAX_SPLIT_CALLS, "none again the same day"
     assert (tri["skipped"], tri["note"], len(tri["start"])) == (39, "", 6)
     assert "<li><b>GitHub</b>: 1 gone. GitHub moved.</li>" in html and 'href="#start"' in html
 
@@ -289,14 +293,19 @@ def test_row_text_is_fenced_as_data_and_scrubbed_of_secrets(wq):
     "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "AKIAABCDEFGHIJKLMNOP",
     "eyJhbGciOiJI.eyJzdWIiOiIx.SflKxwRJSMeK", "0123456789abcdef0123456789abcdef", "api_key: abc123", "x1" * 20,
     "AIza" + "b" * 35, "sk_live_" + "a1" * 10, "ASIAABCDEFGHIJKLMNOP", "xapp-1-A0123-4567",
-    "hooks.slack.com/services/T0/B0/abc", '"password": "hunter2"', "password is hunter2",
+    "hooks.slack.com/services/T0/B0/abc", '"password": "hunter2"',
     "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1"[:40], "Authorization: Basic dXNlcjpwYXNzd29yZA==",
-    "authorization: Bearer abc", "password for the VPN is hunter2", "verification code for login is 482913",
-    "passcode: 1234", "otp = 999999", "client_secret=abc123", "aws_secret_access_key = wJalrXUtnFEMIK7MDENG",
+    "authorization: Bearer abc", "otp = 999999", "client_secret=abc123", "aws_secret_access_key = wJalrXUtnFEMIK7MDENG",
     "secret_token: abc", "abcDEF0123/abcDEF0123+abcDEF0123/abcDEF012345==",
 ])
 def test_each_kind_of_secret_is_removed(secret):
     assert triage.scrub(f"before {secret} after") == "before [removed] after"
+
+
+@pytest.mark.parametrize("secret", ["password is hunter2", "password for the VPN is hunter2",
+                                    "verification code for login is 482913", "passcode: 1234"])
+def test_a_password_phrase_is_removed_to_the_end_of_its_line(secret):
+    assert triage.scrub(f"before {secret} after\nnext line") == "before [removed]\nnext line"
 
 
 @pytest.mark.parametrize("text, scrubbed", [
@@ -1052,11 +1061,14 @@ def test_a_reservation_counts_the_answer_it_expects_as_well_as_the_prompt(wq):
         return "ok"
     prompt = "a prompt " * 400
     triage.Triage(peek).ask(prompt)
-    expected = triage.metering.estimate_cost_usd(len(prompt) // 4 + triage.CALL_OVERHEAD, triage.EXPECTED_OUT,
-                                                 "claude-sonnet-5-5")
+    estimate = triage.metering.estimate_cost_usd
+    expected = triage.COST_SCALE * estimate(len(prompt) // 4 + triage.CALL_OVERHEAD, triage.EXPECTED_OUT,
+                                            "claude-sonnet-5-5")
     assert [r["usd"] for r in seen] == [expected]
-    assert expected > triage.metering.estimate_cost_usd(len(prompt) // 4, 0, "claude-sonnet-5-5") * 2
-    assert 0.06 < expected < 0.09, "close to the measured $0.0697 of a real call"
+    assert expected > estimate(len(prompt) // 4, 0, "claude-sonnet-5-5") * 2
+    assert triage.COST_SCALE * estimate(14_800, 1_054, "claude-sonnet-5-5") == pytest.approx(0.0697), \
+        "the measured real call: 14,800 tokens in, 1,054 out, $0.0697"
+    assert 0.12 < expected < 0.15, "a call about 30 rows, answering about all of them"
 
 
 def test_two_refreshes_at_once_keep_each_others_verdicts(wq):
@@ -1130,7 +1142,9 @@ HOSTILE = {
     "hex": "ab", "begin_key_no_end": "-----BEGIN PRIVATE KEY-----", "authz": "Authorization: ",
     "is_your_code": "123456 is your " + "x" * 30, "code_is": "code is ", "url_creds": "a:", "quotes": 'password: "',
     "mixed_slash": "aB3/", "key_eq": "a=", "password_x_is": "password x y z ", "sig": "?sig=", "bearer": "bearer ",
-    "cookie": "cookie:", "x_secret_x": "x_" * 20 + "secret_", "lower_slash": "ab/",
+    "cookie": "cookie:", "x_secret_x": "x_" * 20 + "secret_", "lower_slash": "ab/", "jwt_start": "eyJ",
+    "slack_token": "xoxb-", "github_pat": "github_pat_", "github_token": "ghp_", "openai_key": "sk-",
+    "passphrase": "passphrase ", "pin_is": "pin is ", "use_to_sign_in": "use 1234 ", "keyed_quote": "'a':",
 }
 
 
@@ -1143,10 +1157,11 @@ def hostile(name: str, size: int) -> str:
 @pytest.mark.parametrize("name", list(HOSTILE))
 def test_hostile_text_is_scrubbed_in_linear_time(name):
     from work_queue import scrubber
-    text = hostile(name, 200_000)
-    started = time.perf_counter()
-    scrubber.KEYED.sub(scrubber.keyed, scrubber.SHAPES.sub("[removed]", text))
-    assert time.perf_counter() - started < 2.0, "the patterns themselves, with no cap, stay linear"
+    for size, limit in ((100_000, 0.5), (1_000_000, 2.0)):
+        text = hostile(name, size)
+        started = time.perf_counter()
+        scrubber.KEYED.sub(scrubber.keyed, scrubber.SHAPES.sub("[removed]", text))
+        assert time.perf_counter() - started < limit, f"the patterns themselves, with no cap, stay linear at {size}"
     started = time.perf_counter()
     out = triage.scrub(hostile(name, 1_000_000))
     assert time.perf_counter() - started < 2.0 and len(out) <= 8000
@@ -1169,7 +1184,10 @@ def test_a_long_subject_never_slows_the_refresh(wq):
     ("password\nhunter2", "[removed]"), ("Zoom: passcode 123456", "Zoom: [removed]"), ("Use 482913 to sign in", "[removed]"),
     ("-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----", "[removed]"),
     ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----", "[removed]"),
-    ("x-api-key: abc123def456", "[removed]"), ("Here is my password: hunter2 please", "Here is my [removed] please"),
+    ("x-api-key: abc123def456", "[removed]"), ("Here is my password: hunter2 please", "Here is my [removed]"),
+    ("password: correct horse battery staple", "[removed]"),
+    ("Here is my password: correct horse battery staple\nThanks, Bo", "Here is my [removed]\nThanks, Bo"),
+    ("the password is: 'two words' then more", "the [removed] then more"),
 ])
 def test_more_secret_formats_are_removed(text, scrubbed):
     assert triage.scrub(text) == scrubbed
@@ -1261,11 +1279,85 @@ def test_a_stop_during_splitting_keeps_the_verdicts_it_has_and_skips_the_rest(wq
     assert again.of("rows") == [], "rows the stop left unasked are skipped for the day, not asked again"
 
 
-def test_a_small_queue_with_one_poisoned_row_is_probed_and_the_rest_get_verdicts(wq):
+def test_a_small_queue_with_one_poisoned_row_is_split_and_the_rest_get_verdicts(wq):
     model = Model(rows=poisoned)
     tri, _ = triaged(snap(*(pr(n, "o/r#1: POISON" if n == 1 else "") for n in range(1, 6))), model)
     assert [len(b) for b in model.of("rows")] == [5, 2, 3, 1, 1]
     assert (len(tri["rows"]), tri["skipped"], tri["note"]) == (4, 1, "")
+
+
+# ─── the fourth review: two poisoned rows, partial answers, a stop, and Slack titles ──
+
+def test_two_poisoned_rows_in_opposite_halves_still_leave_most_rows_with_verdicts(wq, monkeypatch):
+    base = Model(rows=poisoned)
+    rows = [pr(n, f"o/r#{n}: POISON" if n in (1, 20) else "") for n in range(1, 21)]
+    tri, _ = triaged(snap(*rows), realistic(base))
+    assert [len(b) for b in base.of("rows")] == [20, 10, 10, 5, 5, 5, 5], "one call, then six split calls"
+    assert set(tri["rows"]) == {pr(n)["link"] for n in range(6, 16)} and tri["skipped"] == 10
+    assert tri["note"] == "" and triage.feature_spend(time.time()) < 1.0
+    for _ in range(2):
+        triaged(snap(*rows), realistic(base))
+    assert len(base.of("rows")) == 7, "the skipped rows wait a day"
+
+
+@pytest.mark.parametrize("answered, calls, verdicts", [(1, [30, 15, 15, 7, 8, 7, 8], 0), (14, [30, 15, 15], 28),
+                                                       (15, [30], 15)])
+def test_an_answer_about_fewer_than_half_of_its_rows_is_split_like_a_wrong_shape(wq, answered, calls, verdicts):
+    model = Model(rows=lambda items: {"rows": [{"id": i["id"], **VERDICT} for i in items[:answered]]})
+    tri, _ = triaged(snap(*(pr(n) for n in range(1, 31))), model)
+    assert [len(b) for b in model.of("rows")] == calls
+    assert (len(tri["rows"]), tri["skipped"]) == (verdicts, 30 - verdicts)
+
+
+def test_a_bad_call_before_a_stop_is_still_skipped_for_the_day(wq):
+    def rows(items):
+        if any("POISON" in i["title"] for i in items):
+            return "no"
+        raise triage.Unavailable("the model didn't answer within 240 seconds")
+    model = Model(rows=rows)
+    docs = [pr(n, "o/r#1: POISON" if n == 1 else "") for n in range(1, 41)]
+    for _ in range(3):
+        tri, _ = triaged(snap(*docs), model)
+    poisoned_calls = [b for b in model.of("rows") if any("POISON" in i["title"] for i in b)]
+    assert [len(b) for b in poisoned_calls] == [30], "asked once over three refreshes"
+    assert [len(b) for b in model.of("rows")] == [30, 10, 10, 10]
+    assert tri["note"] == "the model didn't answer within 240 seconds" and tri["skipped"] == 30
+
+
+def test_a_token_across_the_slack_title_cut_never_reaches_the_since_last_night_prompt(wq):
+    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    topic = "x" * 85 + " " + token
+    row = {**slack_row("C1:1.1", title=f"#general: {topic[:100]}"), "topic": topic}
+    title = triage.snapshot_rows({"slack": [row]})["Slack"]["C1:1.1"]["title"]
+    assert title == triage.slack_title(row) == f"#general: {'x' * 85} [removed]"
+    assert "ghp_" not in title
+
+
+def test_splitting_never_passes_its_bound_or_leaves_a_row_unasked(wq, monkeypatch):
+    rng = __import__("random").Random(7)
+    answers = {"prose": lambda items: "no", "empty": lambda items: '{"rows": []}',
+               "wrong_id": lambda items: json.dumps({"rows": [{"id": 999, **VERDICT}]}),
+               "partial": lambda items: json.dumps({"rows": [{"id": 0, **VERDICT}]})}
+    for _ in range(600):
+        n = rng.randint(1, 140)
+        poison = set(rng.sample(range(n), rng.randint(0, min(n, 12)) if rng.random() < .8 else rng.randint(0, n)))
+        bad, calls = answers[rng.choice(list(answers))], []
+
+        def ask(self, prompt):
+            items = payload(prompt)
+            calls.append(len(items))
+            if any(int(i["title"]) in poison for i in items):
+                return bad(items)
+            return json.dumps({"rows": [{"id": i["id"], **VERDICT} for i in items]})
+        monkeypatch.setattr(triage.Triage, "ask", ask)
+        items = [{"hash": f"h{k}", "source": "GitHub", "title": str(k), "who": "", "when": "", "text": "",
+                  "link": f"https://x/{k}"} for k in range(n)]
+        work, out, cache = triage.Triage(None), {}, {}
+        work.rows(items, cache, {}, out)
+        first = len(calls)
+        work.split(items, cache, {}, out)
+        assert len(calls) - first <= triage.MAX_SPLIT_CALLS, (n, sorted(poison))
+        assert all(f"h{k}" in cache for k in range(min(n, triage.MAX_ROWS))), (n, sorted(poison))
 
 
 def test_a_reservation_from_the_future_never_counts(wq):

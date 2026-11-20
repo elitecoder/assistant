@@ -22,14 +22,14 @@ asked again, so a row's text can't leave a lasting mark on its neighbors. A row
 the model doesn't answer is remembered for a day and isn't sent again until
 then. Each call reserves its estimated cost first, under the Strategist's
 throttle lock, against two daily budgets: all of Assistant's model spend, and
-the Work queue's own ("triage": {"dailyUsd": ...}, default 1.00 USD).
+the Work queue's own ("triage": {"dailyUsd": ...}, default 3.00 USD).
 
 When a call about rows answers in the wrong shape, a refusal for example, its
 rows are skipped for a day and triage goes on. After Start here and the
 summary, a bad call is split in halves to find the rows that break it: at most
-MAX_SPLIT_CALLS extra calls, only while the Work queue's budget covers the next
-one, and, when no call answered well, only after a two-call probe does. When a
-call fails, times out, is over budget, or the Start here or summary answer is in
+MAX_SPLIT_CALLS extra calls, and only while the Work queue's budget covers the
+next one. An answer about 2 or more rows with usable verdicts for fewer than half
+of them is in the wrong shape too. When a call fails, times out, is over budget, or the Start here or summary answer is in
 the wrong shape, triage stops and the page keeps its rule-based rows with
 "Triage unavailable" and the reason. The cache is saved either way, merged under
 a lock with what another refresh saved meanwhile, so finished calls are kept.
@@ -83,8 +83,10 @@ SKIP_DAYS = 1
 DAILY_USD = 3.0
 EXPECTED_OUT = BATCH * 160
 MAX_SPLIT_CALLS = 6
-PROBE_CALLS = 2
 CALL_OVERHEAD = 14_000
+# A real Sonnet 5.5 call cost 0.0697 USD for 14,800 tokens in and 1,054 out, more than bin/metering.py's price estimate
+# for those counts; cost_of scales every estimate by the same ratio.
+COST_SCALE = 0.0697 / metering.estimate_cost_usd(14_800, 1_054, "claude-sonnet-5-5")
 TEXT_MAX = 1000
 BLOCKED_REASON = "The Assistant TODO for this is blocked and needs you."
 CACHE_FORMAT = 2
@@ -263,7 +265,8 @@ def snapshot_rows(snap: dict) -> dict[str, dict]:
     save that can't be read keeps only its key, so its text never reaches the model."""
     rows = {"Slack": snap.get("slack"), "GitHub": snap.get("github"), "Outlook": snap.get("outlook"),
             "Gmail": [m for rows in (snap.get("gmail") or {}).values() for m in rows] if snap.get("gmail") is not None else None}
-    return {src: {r["key"]: ({"title": scrub(r["title"][:TEXT_MAX]), "hash": digest({k: r.get(k) for k in CONTENT[src]})}
+    return {src: {r["key"]: ({"title": scrub((slack_title(r) if src == "Slack" else r["title"])[:TEXT_MAX]),
+                              "hash": digest({k: r.get(k) for k in CONTENT[src]})}
                              if src != "Slack" or readable(r) else {"unreadable": True}) for r in found}
             for src, found in rows.items() if found is not None}
 
@@ -383,7 +386,7 @@ def amount(value) -> bool:
 
 
 def daily_cap() -> float:
-    """The Work queue's own daily model budget: "triage": {"dailyUsd": ...} in sources.json, default 1.00 USD."""
+    """The Work queue's own daily model budget: "triage": {"dailyUsd": ...} in sources.json, default 3.00 USD."""
     value = (config.load().get("triage") or {}).get("dailyUsd", DAILY_USD)
     return float(value) if amount(value) else DAILY_USD
 
@@ -418,9 +421,9 @@ def reserve(prompt: str) -> str:
 
 
 def cost_of(prompt: str) -> float:
-    """A call's estimated cost: the prompt plus the model command's own prompt (CALL_OVERHEAD tokens, measured on a
-    real call), and an expected answer of EXPECTED_OUT tokens."""
-    return metering.estimate_cost_usd(len(prompt) // 4 + CALL_OVERHEAD, EXPECTED_OUT, model_name())
+    """A call's estimated cost: the price estimate for the prompt plus the model command's own prompt (CALL_OVERHEAD
+    tokens) and an expected answer of EXPECTED_OUT tokens, times COST_SCALE."""
+    return COST_SCALE * metering.estimate_cost_usd(len(prompt) // 4 + CALL_OVERHEAD, EXPECTED_OUT, model_name())
 
 
 def fits(prompt: str) -> bool:
@@ -467,15 +470,16 @@ class Triage:
         """Ask about new and changed rows, 30 to a call. A call answered in the wrong shape, a refusal for example,
         isn't fatal: it waits in self.failed for split(), which runs after Start here and the summary."""
         todo = [i for i in items if i["hash"] not in cache][:MAX_ROWS]
-        calls = [todo[n:n + BATCH] for n in range(0, len(todo), BATCH)]
-        self.failed = [batch for batch in calls if not self.ask_rows(batch, cache, batches)]
-        self.proven = len(self.failed) < len(calls)
+        for batch in (todo[n:n + BATCH] for n in range(0, len(todo), BATCH)):
+            if not self.ask_rows(batch, cache, batches):
+                self.failed.append(batch)
         out["rows"] = verdicts_by_link(items, cache)
 
     def ask_rows(self, batch: list[dict], cache: dict, batches: dict, afford: bool = False) -> bool | None:
         """Ask about one call's rows and cache the answer. False when the answer is in the wrong shape, which includes
-        an answer about 2 or more rows with no usable verdict. With `afford`, a call the Work queue's budget can't
-        cover isn't made: its rows are skipped, the rest of the splitting stops, and the answer is None."""
+        an answer about 2 or more rows with usable verdicts for fewer than half of them. With `afford`, a call the Work
+        queue's budget can't cover isn't made: its rows are skipped, the rest of the splitting stops, and the answer is
+        None."""
         payload = [{"id": j, **{k: i[k] for k in ("source", "title", "who", "when", "text")}} for j, i in enumerate(batch)]
         prompt = fenced(ROWS_RUBRIC, payload)
         if afford and not fits(prompt):
@@ -483,16 +487,15 @@ class Triage:
             remember(batch, {}, cache, batches)
             return None
         verdicts = parse_rows(self.ask(prompt), len(batch))
-        ok = verdicts is not None and (bool(verdicts) or len(batch) == 1)
+        ok = verdicts is not None and (len(batch) == 1 or 2 * len(verdicts) >= len(batch))
         if ok:
             remember(batch, verdicts, cache, batches)
         return ok
 
     def split(self, items: list[dict], cache: dict, batches: dict, out: dict) -> None:
         """Find the rows that break each failed call by splitting it in halves, at most MAX_SPLIT_CALLS extra calls in
-        all, and only while the Work queue's budget covers the next one. When no call has answered well yet, the first
-        two halves are a probe: splitting goes on only if one of them answers well. Rows left are skipped for a day."""
-        self.budget = MAX_SPLIT_CALLS if self.proven else PROBE_CALLS
+        all, and only while the Work queue's budget covers the next one. Rows left are skipped for a day."""
+        self.budget = MAX_SPLIT_CALLS
         queue = list(self.failed)
         while queue:
             chunk = queue.pop(0)
@@ -504,12 +507,8 @@ class Triage:
                     remember(half, {}, cache, batches)
                     continue
                 self.budget -= 1
-                answered = self.ask_rows(half, cache, batches, afford=True)
-                if answered is False:
+                if self.ask_rows(half, cache, batches, afford=True) is False:
                     queue.append(half)
-                elif answered and not self.proven:
-                    self.proven = True
-                    self.budget += MAX_SPLIT_CALLS - PROBE_CALLS
         out["rows"] = verdicts_by_link(items, cache)
 
     def start(self, items: list[dict], verdicts: dict, marks: dict, blocked: set, saved: dict, out: dict) -> dict:

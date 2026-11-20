@@ -19,7 +19,7 @@ SCRUB_MAX = 8000
 SHAPES = re.compile(
     r"x(?:ox[a-z]|app)-[A-Za-z0-9-]{8,}+|gh[pousr]_[A-Za-z0-9]{20,}+|github_pat_[A-Za-z0-9_]{20,}+"
     r"|sk-[A-Za-z0-9_-]{16,}+|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}+|AIza[0-9A-Za-z_-]{35}|(?:AKIA|ASIA)[0-9A-Z]{16}"
-    r"|eyJ[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}+|hooks\.slack\.com/services/\S++"
+    r"|(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}+|hooks\.slack\.com/services/\S++"
     r"|-----BEGIN (?:[A-Z]{1,20} ){0,2}PRIVATE KEY-----.*?(?:-----END (?:[A-Z]{1,20} ){0,2}PRIVATE KEY-----|\Z)"
     r"|(?<=://)[^/\s:@]++:[^@\s/]++@"
     r"|(?i:authorization)[ \t]*+:[ \t]*+\S++(?:[ \t]++[^\s,;]++)?+|(?i:(?:set-)?cookie)[ \t]*+:[^\n]*+"
@@ -30,7 +30,7 @@ SHAPES = re.compile(
     r"""|(?<![A-Za-z0-9_])(?i:password|passwd|passcode|(?:my|your|the)[ \t]++pass"""
     r"""|(?:one-time|verification|security|login)[ \t]++code)"""
     r"""(?:[ \t]++[A-Za-z]{1,20}+){0,3}?[ \t]*+(?:=>|[:=]|\b(?i:is)\b(?:[ \t]*+(?:=>|[:=-]))?+)[ \t]*+"""
-    r"""(?:"[^"\n]{0,200}+"|'[^'\n]{0,200}+'|[^\s"',;]{1,200}+)"""
+    r"""(?:"[^"\n]{0,200}+"|'[^'\n]{0,200}+'|[^\s"',;][^\n]{0,199}+)"""
     r"|(?<![A-Za-z0-9_])(?i:password|passcode|passphrase)[ \t]*+:?+[ \t]*+\n[ \t]*+\S{1,200}+(?=[ \t]*+(?:\n|\Z))"
     r"|(?<![A-Za-z0-9])(?i:passcode|pin|otp)\b[ \t]*+(?:(?i:is)\b[ \t]*+)?+[:=]?+[ \t]*+(?:G-)?+\d{4,8}+\b"
     r"|(?<![A-Za-z0-9])(?i:code)\b[ \t]*+(?:(?i:is)\b[ \t]*+[:=]?+|[:=])[ \t]*+(?:G-)?+\d{4,8}+\b"
