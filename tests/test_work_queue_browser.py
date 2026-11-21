@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -177,12 +178,14 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
         third = fresh.locator('.sf-row[data-key="https://github.com/o/r/pull/3"]')
         third.get_by_role("button", name="Send to Agent").click()
         fresh.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/3"]', state="detached")
-        wait_text(fresh, ".toast", "Sent to an agent as td-051 for a first pass. Follow it on the Sessions tab of the Assistant dashboard.")
+        wait_text(fresh, ".toast", "Sent to an agent as td-051 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
         todo = wq.items()[-1]
         assert (todo["id"], todo["title"], todo["autoDispatch"], todo["url"]) == \
             ("td-051", "o/r#3: Change 3", True, PRS[2]["link"])
+        code = re.search(r"----- BEGIN UNTRUSTED ROW ([0-9a-f]{16}) -----", todo["detail"]).group(1)
         assert todo["detail"].endswith("Title: o/r#3: Change 3\nDetail: Review requested · ana · opened Nov 2 · draft\n"
-                                       "Source: https://github.com/o/r/pull/3\n----- END UNTRUSTED ROW -----")
+                                       f"Source: https://github.com/o/r/pull/3\n----- END UNTRUSTED ROW {code} -----")
+        assert todo["workQueueMode"] == "assist"
         assert "You were sent this for a first pass." in todo["detail"] and "Automated Message" not in todo["detail"]
         assert json.loads((wq.data / "marks.json").read_text())[PRS[2]["key"]]["state"] == "done"
         assert fresh.locator('.ag-row[data-key="https://github.com/o/r/pull/3"]').count() == 0
@@ -269,7 +272,7 @@ def seed(wq) -> dict:
     cands = write_page(rich_snapshot())
     unsub = {c["url"]: k for k, c in cands.items() if c["kind"] == "unsub"}
     decisions = {"g-approve": "approve", "g-keep": "keep", "g-undo-done": "undo", "g-undo": "undo", "s-undo": "undo",
-                 "b2": "keep", "g-shop": "keep"}
+                 "b2": "keep", "g-shop": "keep", "s-gone": "approve"}
     config.write_json(wq.data / "decisions.json", {k: {"decision": d, "at": "t"} for k, d in decisions.items()})
     applied = {"g-done-v": {"status": "done", "verified": True}, "g-done-nv": {"status": "done", "verified": False},
                "g-err": {"status": "error", "error": "quota"}, "g-undone": {"status": "undone"},
@@ -325,6 +328,8 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         assert status_of(tab, "s-done-nv") == "Marked done in Slack, not verified"
         assert status_of(tab, "s-undone") == "Reopened in Slack" and status_of(tab, "s-undo") == "Will reopen"
         assert status_of(tab, "s-gone") == "Slack no longer has this save"
+        gone = tab.locator('.ap-row[data-key="s-gone"]').get_attribute("class")
+        assert "applied" in gone and "approved" not in gone, "an approved save that's gone is settled"
         assert status_of(tab, unsub["https://promo.example/a"]) == "Unsubscribed"
         assert status_of(tab, unsub["https://promo.example/b"]) == "Sent, but the sender didn’t confirm"
         assert status_of(tab, "b2") == "Kept" and status_of(tab, "a1") == ""
@@ -414,7 +419,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         tab.wait_for_selector(".toast", state="detached")
         tab.locator(f'.sf-row[data-key="{pr(9)["key"]}"] .sf-send').click()
         tab.wait_for_selector(f'.sf-row[data-key="{pr(9)["key"]}"]', state="detached")
-        wait_text(tab, ".toast", "Sent to an agent as td-108 for a first pass. Follow it on the Sessions tab of the Assistant dashboard.")
+        wait_text(tab, ".toast", "Sent to an agent as td-108 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
         assert tab.locator(f'.ag-row[data-key="{pr(9)["key"]}"]').count() == 0
         tab.clock.run_for(12000)
         tab.wait_for_selector(".toast", state="detached")
@@ -689,8 +694,10 @@ def test_the_failure_note_shows_when_the_model_fails(site, wq, model, expected):
 
 
 def test_a_sent_row_leaves_the_page_and_a_blocked_one_stays_on_start_here(site, wq):
-    start = [{"key": pr(2)["key"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "", "reason": triage.BLOCKED_REASON},
-             {"key": pr(6)["key"], "title": "o/r#6: Change 6", "source": "GitHub", "effort": "", "reason": "Go"}]
+    start = [{"key": pr(2)["key"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "",
+              "reason": triage.BLOCKED_REASON, "blocked": True},
+             {"key": pr(6)["key"], "title": "o/r#6: Change 6", "source": "GitHub", "effort": "", "reason": "Go",
+              "blocked": False}]
     yours = {"rows": {pr(n)["key"]: VERDICT for n in range(1, 7)}, "start": start, "changes": None, "waiting": 0,
              "skipped": 0, "note": "", "failed": []}
     write_page({"built": "now", "github": [pr(n) for n in range(1, 7)], "status": [], "triage": yours})
@@ -722,7 +729,7 @@ def test_a_sent_row_leaves_the_page_and_a_blocked_one_stays_on_start_here(site, 
 
 def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(site, wq):
     start = [{"key": pr(n)["key"], "title": f"o/r#{n}: Change {n}", "source": "GitHub", "effort": "",
-              "reason": triage.BLOCKED_REASON if n == 3 else "Go"} for n in range(1, 6)]
+              "reason": triage.BLOCKED_REASON if n in (3, 4) else "Go", "blocked": n == 3} for n in range(1, 6)]
     write_page({"built": "now", "github": [pr(n) for n in range(1, 6)], "status": [],
                 "triage": {"rows": {}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []}})
     config.write_json(wq.data / "marks.json", {
@@ -737,6 +744,7 @@ def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(
         tab.goto(site)
         tab.wait_for_selector(li(4), state="hidden")
         tab.wait_for_selector(li(1), state="hidden")
+        assert tab.locator(li(4)).get_attribute("data-blocked") is None, "a model reason that reads blocked isn't a flag"
         assert [tab.locator(li(n)).is_visible() for n in (2, 3, 5)] == [True, True, True]
         assert text(tab, '#tabs .tab[data-t="start"] span') == "3"
         cov.snap()
@@ -785,9 +793,12 @@ def test_send_to_agents_lists_every_open_row_and_sends_the_picked_ones_one_at_a_
     write_page(agents_snapshot())
     config.write_json(wq.data / "marks.json", {pr(4)["key"]: {"state": "dropped", "until": 0}})
     spans, real = [], server.ROUTES["/api/todo"]
+    inflight, go_on = threading.Event(), threading.Event()
 
     def timed(body):
         start = time.monotonic()
+        inflight.set()
+        go_on.wait(10)
         time.sleep(0.2)
         out = real(body) if body["key"] != pr(2)["key"] else (500, {"error": "store is busy"})
         spans.append((start, time.monotonic(), body["key"], body["mode"]))
@@ -828,8 +839,12 @@ def test_send_to_agents_lists_every_open_row_and_sends_the_picked_ones_one_at_a_
         assert text(tab, "#ag-msg") == "" and tab.locator(ag(pr(1)["key"])).count() == 1
         answer["accept"] = True
         tab.locator("#ag-go").click()
-        wait_text(tab, "#ag-msg", "Sent 1 to agents for a first pass. Follow them on the Sessions tab of the Assistant "
-                                  "dashboard. Not sent: o/r#2: Change 2: store is busy.")
+        assert inflight.wait(10)
+        wait_text(tab, "#ag-msg", "Sending 1 of 2...")
+        assert tab.locator("#ag-go").is_disabled(), "no second batch while one is going"
+        go_on.set()
+        wait_text(tab, "#ag-msg", "Sent 1 to agents for a first pass. Their status and results show on the Tasks tab of the Assistant dashboard, and each session on the Sessions tab once it starts. "
+                                  "Not sent: o/r#2: Change 2: store is busy.")
         assert [(k, m) for _, _, k, m in spans] == [(pr(1)["key"], "assist"), (pr(2)["key"], "assist")]
         assert spans[0][1] <= spans[1][0], "one send at a time"
         assert tab.locator(ag(pr(1)["key"])).count() == 0 and tab.locator(f'.sf-row[data-key="{pr(1)["key"]}"]').count() == 0
@@ -843,7 +858,7 @@ def test_send_to_agents_lists_every_open_row_and_sends_the_picked_ones_one_at_a_
         for key in (pr(3)["key"], "https://outlook.office.com/o-act"):
             tab.locator(f"{ag(key)} .ag-pick").check()
         tab.locator("#ag-go").click()
-        wait_text(tab, "#ag-msg", "Sent 2 to agents, hands-off. Follow them on the Sessions tab of the Assistant dashboard.")
+        wait_text(tab, "#ag-msg", "Sent 2 to agents, hands-off. Their status and results show on the Tasks tab of the Assistant dashboard, and each session on the Sessions tab once it starts.")
         assert dialogs[-1] == ("Start 2 agents? Hands-off: each one finishes the work and posts, files, and opens PRs "
                                "without asking you.")
         sent = wq.items()[-2:]
@@ -857,6 +872,13 @@ def test_send_to_agents_lists_every_open_row_and_sends_the_picked_ones_one_at_a_
         tab.locator("#ag-go").click()
         assert wait_for(lambda: dialogs[-1].startswith("Start 1 agent? "))
         wait_text(tab, "#ag-msg", "Not sent: o/r#2: Change 2: store is busy.")
+        wait_text(tab, "#ag-go", "Send 1 to agents")
+        assert tab.locator("#ag-go").is_enabled()
+        tab.route("**/api/state", lambda route: route.abort())
+        tab.evaluate("refresh()")
+        tab.wait_for_function("document.getElementById('ag-go').disabled")
+        assert text(tab, "#ag-go") == "Send 1 to agents", "a page that can't reach the server sends nothing"
+        tab.unroute("**/api/state")
         for width in (390, 1280):
             tab.set_viewport_size({"width": width, "height": 900})
             no_sideways_scroll(tab)
@@ -881,8 +903,11 @@ def test_send_to_agents_says_when_nothing_is_open(site, wq):
         tab.goto(site + "#agents")
         tab.wait_for_selector("#agents", state="visible")
         assert text(tab, "#agents .ag-bar + p") == "Nothing open right now." and tab.locator("#ag-go").is_disabled()
+        dialogs = []
+        tab.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
         tab.evaluate("agSend()")
-        assert text(tab, "#ag-msg") == ""
+        tab.wait_for_timeout(300)
+        assert text(tab, "#ag-msg") == "" and dialogs == [], "nothing picked asks nothing"
         no_sideways_scroll(tab)
         cov.snap()
         browser.close()

@@ -16,31 +16,52 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Send any open Work queue row to an agent, alone or many at once. Send to
   Agent shows on every open row, not only the ones the model called `agent`;
   that call is now an "Agent can finish" hint. `POST /api/todo` takes a
-  `mode`: `assist`, the default and the mode of a row's own button, asks for a
-  first pass that researches, writes code on a branch, opens draft PRs, and
-  drafts the Slack replies, ticket text, and PR comments without posting,
-  filing, commenting, or marking a PR ready, then lists those drafts and says
-  what's done and what's left; `handsoff` keeps the old finish-it-yourself
-  instructions. Any other mode is refused. The new Send to agents tab lists
-  every open row across sources, "Agent can finish" ones first, with
-  checkboxes, Select all, a Hands-off checkbox that's off by default, and a
-  "Send N to agents" button whose confirm dialog names the mode; it sends one
-  at a time and lists any that failed. A sent row leaves the page at once and
-  stays off it while its TODO exists, so the page no longer shows a sent
-  row's Queued, Working, Blocked, or Done status: the Sessions tab of the
-  Assistant dashboard follows it. `/api/state` returns `sent` in place of
-  `queued`.
-- Mark a sent Slack save completed in your Later list, in the background with
-  no browser window, and check that it left the list. The send never waits
-  for it, the result is saved in `applied.json` like an Apply result, and a
-  file lock keeps it, Apply, and the refresh from using the Slack browser
-  profile at the same time. Apply now merges its results into `applied.json`
-  instead of writing back the copy it read first. A save Slack no longer has
-  (`saved_not_found`) is recorded as gone, and neither a send nor Apply asks
-  Slack about it again.
+  string `mode`, saved on the TODO as `workQueueMode`. `assist`, the default
+  and the mode of a row's own button, asks for a first pass that leaves
+  nothing other people can see except a branch of the agent's own and at most
+  one draft PR, with the Slack replies, ticket text, and PR comments as
+  drafts in its result and what's done and what's left. `handsoff` keeps the
+  old finish-it-yourself instructions. Any other value is refused. The new
+  Send to agents tab lists every open row across sources, "Agent can finish"
+  ones first, with checkboxes, Select all, a Hands-off checkbox that's off by
+  default, and a "Send N to agents" button whose confirm dialog names the
+  mode; it sends one at a time, stays off until the batch is done, and lists
+  any that failed. A sent row leaves the page at once and stays off it while
+  its TODO exists, so the page no longer shows a sent row's Queued, Working,
+  Blocked, or Done status: the TODO's status and result show on the Tasks
+  tab of the Assistant dashboard, and its session on the Sessions tab once
+  it starts. `/api/state` returns `sent` in place of `queued`. Start here
+  marks a blocked TODO's row with a flag, not by its reason text.
+- Keep a first pass from shipping. When the pulse starts a TODO whose
+  `workQueueMode` is `assist`, its prompt ends with first-pass limits that
+  override the routing rules: only the agent's own branch, local commits, a
+  push of that branch, and at most one draft PR (`gh pr create --draft`); no
+  Jira, no Slack posts or reactions, no PR comments, approvals, or change
+  requests, no ready-for-review, and no push to a branch it didn't create.
+  The limits say to run `/architect-ffp:archffp` with `--no-ship` and to stop
+  `/architect-ffp:archself` after its touch-set plan. Hands-off prompts are
+  unchanged. A Work queue TODO's title and link appear in the prompt only
+  inside its untrusted-row fence, and each TODO's fence markers carry a
+  random code, so a row's text can't close the fence or come before the
+  safety rules. A sent row's link is cut to one line of at most 1,000
+  characters.
+- Mark a sent Slack save completed in your Later list, in either mode, in the
+  background with no browser window, and check that it left the list. The
+  send never waits for it. One background worker marks every save sent so
+  far in one browser run, and the result is saved in `applied.json` like an
+  Apply result. A file lock keeps the worker, Apply, and the refresh from
+  using the Slack browser profile at the same time; Apply and the refresh
+  wait up to 90 seconds for it, then say to try again later. Apply now merges
+  its results into `applied.json` instead of writing back the copy it read
+  first. A save Slack no longer has (`saved_not_found`) is recorded as gone:
+  neither a send nor Apply asks Slack about it again, and Apply counts it as
+  settled, not approved. Any other Slack error stays an error, so Apply tries
+  it again. Only a permalink on a `*.slack.com` host counts as a Slack save,
+  and a saved `queued.json` or `applied.json` in the wrong shape never stops
+  a send or the state the page reads.
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
-- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (343 in all now, up from 130 before the Work queue), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
-- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 343 checks, up from 130 before the Work queue; sending rows to agents adds 30 of them.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (375 in all now, up from 130 before the Work queue), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 375 checks, up from 130 before the Work queue; sending rows to agents adds 62 of them.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your

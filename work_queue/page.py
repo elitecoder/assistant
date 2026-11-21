@@ -22,7 +22,6 @@ from work_queue.inputs import gmail, outlook
 e = html.escape
 DISP = {"you": "You", "agent": "Agent", "handoff": "Hand off", "drop": "Drop"}
 AGENT_HINT = '<span class="disp d-agent">Agent can finish</span>'
-BLOCKED_REASON = "The Assistant TODO for this is blocked and needs you."
 NEWTAB = ' target="_blank" rel="noopener noreferrer"'
 SLACK_GROUPS = [
     ("last", "You had the last word", "You replied, and nobody asked anything after."),
@@ -116,9 +115,11 @@ def agents_section(rows: list[tuple[str, str, str, str, bool]]) -> str:
                 '<span class="meta" id="ag-msg"></span></div>')
     body = f'<div class="sf-list" id="ag-list">{picks}</div>' if picks else '<p class="meta">Nothing open right now.</p>'
     return section("agents", "Send to agents", "Every open item, with the ones marked Agent can finish first. Each one "
-                   "you send becomes an Assistant TODO that starts its own session, so you follow it on the Sessions tab "
-                   "of the Assistant dashboard. An agent takes a first pass and leaves drafts for you; turn on Hands-off "
-                   "to let it finish and post on its own.", controls + body)
+                   "you send becomes an Assistant TODO. Its status and result show on the Tasks tab of the Assistant "
+                   "dashboard, and its session on the Sessions tab once it starts. Assistant starts up to 2 TODOs every "
+                   "5 minutes and keeps at most 5 sessions open, so a large batch takes a while. An agent takes a first "
+                   "pass and leaves drafts for you; turn on Hands-off to let it finish and post on its own.",
+                   controls + body)
 
 
 def buttons(undo: str = "ap-undo", ok: str = "Approve") -> str:
@@ -181,7 +182,7 @@ def start_section(tri: dict, note: str) -> str:
                f'{e(tri["changes"]["built"])}. The counts come from your rows; the sentences come from the model.</span>'
                f'<ul>{lines}</ul></div>')
     items = "".join(f'<li data-key="{e(s["key"])}" data-src="{e(s["source"].lower())}"'
-                    f'{" data-blocked" if s["reason"] == BLOCKED_REASON else ""}><div>'
+                    f'{" data-blocked" if s["blocked"] else ""}><div>'
                     f'<a class="sf-title" href="{e(s["key"])}"{NEWTAB}>{e(s["title"])}</a>'
                     f' <span class="pr-pill src">{e(s["source"])}</span>'
                     + (f' <span class="sf-effort sf-{e(s["effort"].lower())}">{e(s["effort"])}</span>' if s["effort"] else "")
@@ -454,7 +455,7 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 
 JS = r"""
 const DAY=864e5;
-let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{}}, API=true, polling=false;
+let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{}}, API=true, polling=false, sending=false;
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.json()}
 function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
@@ -492,20 +493,20 @@ function copySearch(b){navigator.clipboard.writeText($('mq-q').textContent).then
 function copyDraft(b){navigator.clipboard.writeText(b.previousElementSibling.value).then(()=>b.textContent='Copied')}
 function renderAp(){let approved=0;const MS=mailSearch();
  document.querySelectorAll('.ap-row').forEach(r=>{const k=r.dataset.key,d=(ST.decisions[k]||{}).decision,a=ST.applied[k]||{},kind=r.dataset.kind;
-  const done=a.status==='done';r.classList.toggle('applied',done);r.classList.toggle('approved',d==='approve'&&!done);r.classList.toggle('kept',d==='keep');r.classList.toggle('failed',a.status==='error');
+  const done=a.status==='done',settled=done||a.status==='gone';r.classList.toggle('applied',settled);r.classList.toggle('approved',d==='approve'&&!settled);r.classList.toggle('kept',d==='keep');r.classList.toggle('failed',a.status==='error');
   let s='';if(kind==='mail')s=d==='approve'?(MS.manual.includes(k)?'Approved. No search can single this one out, so delete it by hand':'Approved: in your Outlook search'):d==='keep'?'Kept':'';
   else if(done)s=(kind==='unsub'?(a.verified?'Unsubscribed':'Sent, but the sender didn’t confirm'):(kind==='gmail'?'In Gmail Trash':'Marked done in Slack')+(a.verified?', verified':', not verified'));
   else if(a.status==='gone')s='Slack no longer has this save';
   else if(a.status==='error')s='Failed: '+a.error;else if(a.status==='undone')s=kind==='gmail'?'Back in your inbox':'Reopened in Slack';
   else if(d==='keep')s='Kept';else if(d==='undo')s=kind==='gmail'?'Will restore':'Will reopen';
-  r.querySelector('.ap-status').textContent=s;if(d==='approve'&&!done&&kind!=='mail')approved++});
+  r.querySelector('.ap-status').textContent=s;if(d==='approve'&&!settled&&kind!=='mail')approved++});
  renderMq(MS);
  document.querySelectorAll('.ap-group').forEach(g=>{const left=g.querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept)').length;const b=g.querySelector('.ap-all');b.textContent=left?'Approve all '+left:'All decided';b.disabled=!left});
  const undo=Object.entries(ST.decisions).filter(([k,v])=>v.decision==='undo'&&(ST.applied[k]||{}).status==='done').length,run=!!ST.status.running,bar=$('ap-apply');
  if(!bar)return;$('ap-count').textContent=API?(approved+' approved'+(undo?', '+undo+' to reopen':'')):'Approvals need the Work queue server';
  bar.disabled=!API||run||!(approved+undo);bar.textContent=run?'Working…':'Apply approvals';
  const st=ST.status;$('ap-msg').textContent=run?'Working. Slack changes run in your Slack browser session; Gmail changes run in the background.':st.finished?('Last run: '+(st.verified||0)+' of '+((st.slack||0)+(st.gmail||0)+(st.unsub||0))+' verified'+(st.error?' · '+st.error:'')):''}
-const FOLLOW='Follow it on the Sessions tab of the Assistant dashboard.';
+const FOLLOW='Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.';
 async function sendRow(r,mode){const k=r.dataset.key;
  const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:k,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:k,mode})});
  MK[k]={state:'done',until:0};ST.sent=[...(ST.sent||[]),k];paint();return o}
@@ -513,14 +514,15 @@ async function queueTodo(b){const r=b.closest('.sf-row');b.disabled=true;b.textC
  try{const o=await sendRow(r,'assist');toast('Sent to an agent as '+o.id+' for a first pass. '+FOLLOW)}
  catch(e){b.disabled=false;b.textContent='Send to Agent';toast('Not sent: '+e.message)}}
 function agPicks(){return [...document.querySelectorAll('.ag-row:not([hidden]) .ag-pick:checked')].map(c=>c.closest('.ag-row'))}
-function agCount(){const b=$('ag-go');if(!b)return;const n=agPicks().length;b.textContent='Send '+n+' to agents';b.disabled=!API||!n}
+function agCount(){const b=$('ag-go');if(!b)return;const n=agPicks().length;b.textContent='Send '+n+' to agents';b.disabled=!API||!n||sending}
 function agAll(c){document.querySelectorAll('.ag-pick').forEach(p=>p.checked=c.checked);agCount()}
 async function agSend(){const rows=agPicks(),n=rows.length,hands=$('ag-hands').checked,msg=$('ag-msg');if(!n)return;
  if(!confirm('Start '+n+' agent'+(n>1?'s':'')+'? '+(hands?'Hands-off: each one finishes the work and posts, files, and opens PRs without asking you.':'Each one takes a first pass and leaves drafts for you to send.')))return;
- $('ag-go').disabled=true;const bad=[];let ok=0;
+ sending=true;agCount();const bad=[];let ok=0;
  for(const [i,r] of rows.entries()){msg.textContent='Sending '+(i+1)+' of '+n+'...';
   try{await sendRow(r,hands?'handsoff':'assist');ok++}catch(e){bad.push(r.dataset.qTitle+': '+e.message)}}
- msg.textContent=[ok?'Sent '+ok+' to agents'+(hands?', hands-off.':' for a first pass.')+' Follow them on the Sessions tab of the Assistant dashboard.':'',
+ sending=false;
+ msg.textContent=[ok?'Sent '+ok+' to agents'+(hands?', hands-off.':' for a first pass.')+' Their status and results show on the Tasks tab of the Assistant dashboard, and each session on the Sessions tab once it starts.':'',
   bad.length?'Not sent: '+bad.join('; ')+'.':''].filter(Boolean).join(' ');agCount()}
 function renderRefresh(){const r=ST.refresh||{},b=$('refresh');b.disabled=!!r.running;b.textContent=r.running?'Refreshing…':'Refresh';
  $('refresh-msg').textContent=r.running?'Reading your sources. This page reloads when it finishes.':r.error?'Last refresh failed: '+r.error:''}
