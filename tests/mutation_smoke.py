@@ -1004,8 +1004,8 @@ CHECKS = (
     (
         'every save sent so far goes in one browser run',
         'work_queue/server.py',
-        '                    batch = dict(pending_saves)\n                    pending_saves.clear()\n',
-        '                    batch = dict([pending_saves.popitem()]) if pending_saves else {}\n',
+        '            with slack.session_lock():\n                with saves_lock:\n                    batch = dict(pending_saves)\n                    pending_saves.clear()\n',
+        '            with slack.session_lock():\n                with saves_lock:\n                    batch = dict([pending_saves.popitem()]) if pending_saves else {}\n',
         'tests/test_work_queue_server.py::test_saves_sent_while_the_profile_is_busy_go_in_one_browser_run',
     ),
     (
@@ -1221,8 +1221,8 @@ CHECKS = (
     (
         "a batch that fails before it's taken still records its saves",
         'work_queue/server.py',
-        '                batch = batch or dict(pending_saves)\n',
-        '                batch = batch\n',
+        '            if not batch:\n',
+        '            if False:\n',
         'tests/test_work_queue_server.py::test_a_profile_that_cant_be_opened_records_an_error_and_never_spins',
     ),
     (
