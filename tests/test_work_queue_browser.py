@@ -208,6 +208,7 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
         phone = browser.new_context(viewport={"width": 375, "height": 800}).new_page()
         phone.goto(served + "#all")
         phone.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/2"]', state="attached")
+        phone.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/3"]', state="detached")
         assert phone.locator('.sf-row[data-key="https://github.com/o/r/pull/3"]').count() == 0, "a sent row stays off"
         widths = phone.evaluate("[document.documentElement.scrollWidth, document.documentElement.clientWidth]")
         assert widths[0] <= widths[1], widths
