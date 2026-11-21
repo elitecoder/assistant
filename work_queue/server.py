@@ -221,9 +221,10 @@ def complete_saves() -> None:
             record({k: {**v, "sent": True} for k, v in results.items()})
         except Exception as exc:  # noqa: BLE001 — one bad batch never stops the worker; the traceback goes to the log
             traceback.print_exc()
-            with saves_lock:
-                batch = batch or dict(pending_saves)
-                pending_saves.clear()
+            if not batch:
+                with saves_lock:
+                    batch = dict(pending_saves)
+                    pending_saves.clear()
             error = " ".join(f"Couldn't mark the save done: {type(exc).__name__}: {exc}".split())[:300]
             try:
                 record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})

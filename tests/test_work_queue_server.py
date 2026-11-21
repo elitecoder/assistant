@@ -971,6 +971,22 @@ def test_a_save_sent_during_a_run_goes_in_the_next_run(wq, monkeypatch):
     assert applied(wq)[SAVE]["status"] == applied(wq)[SECOND]["status"] == "done"
 
 
+def test_a_save_sent_during_a_failing_run_is_still_tried(wq, monkeypatch):
+    runs = []
+
+    def run_slack(jobs):
+        runs.append([k for k, _, _ in jobs])
+        if len(runs) == 1:
+            server.queue_save("C0123456789", "1700000001.000100")
+            raise RuntimeError("unexpected")
+        return {k: {"status": "done", "verified": True, "at": "now"} for k, _, _ in jobs}
+    monkeypatch.setattr(server, "run_slack", run_slack)
+    server.queue_save("C0123456789", "1700000000.000100")
+    assert wait_for(lambda: SECOND in applied(wq)) and wait_for(worker_done)
+    assert runs == [[SAVE], [SECOND]], "the save sent mid-run goes in the next run, not with the failed batch"
+    assert applied(wq)[SAVE]["status"] == "error" and applied(wq)[SECOND]["status"] == "done"
+
+
 def test_a_profile_that_cant_be_opened_records_an_error_and_never_spins(wq, monkeypatch):
     def broken(*args):
         raise OSError("no space left on device")
@@ -1198,7 +1214,7 @@ def test_a_first_pass_prompt_ends_with_limits_that_override_the_routing_rules(wq
     limits = prompt.index("# First-pass limits (HARD — these override every rule above)")
     assert routing < limits and prompt.endswith(pulse.WORK_QUEUE_FIRST_PASS)
     for rule in ("open at most one pull request from it, as a draft (`gh pr create --draft`). The draft's title and body "
-                 "must not @mention anyone.",
+                 "must not @mention anyone, and request no reviewers or assignees.",
                  "file, edit, or comment on a Jira ticket", "post, reply, or react in Slack",
                  "comment on, approve, or request changes on any pull request", "mark a pull request ready for review",
                  "push to a branch you didn't create",

@@ -2134,7 +2134,7 @@ WORK_QUEUE_FIRST_PASS = (
     "This TODO came from the Work queue as a first pass. Nothing you do may be visible to other people except a "
     "branch of your own and at most one draft pull request.\n"
     "- Allowed: read and research; create a branch of your own; commit to it; push only that branch; open at most one "
-    "pull request from it, as a draft (`gh pr create --draft`). The draft's title and body must not @mention anyone.\n"
+    "pull request from it, as a draft (`gh pr create --draft`). The draft's title and body must not @mention anyone, and request no reviewers or assignees.\n"
     "- Not allowed, whatever the rules above say: file, edit, or comment on a Jira ticket; post, reply, or react in "
     "Slack; comment on, approve, or request changes on any pull request; mark a pull request ready for review; push "
     "to a branch you didn't create; merge; send email.\n"

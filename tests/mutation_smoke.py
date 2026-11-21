@@ -1242,9 +1242,21 @@ CHECKS = (
     (
         'a first-pass draft PR mentions no one',
         'bin/pulse.py',
-        " The draft's title and body must not @mention anyone.",
+        " The draft's title and body must not @mention anyone, and request no reviewers or assignees.",
         '',
         'tests/test_work_queue_server.py::test_a_first_pass_prompt_ends_with_limits_that_override_the_routing_rules',
+    ),
+    (
+        'a save sent during a failing run stays queued for the next run',
+        'work_queue/server.py',
+        """            if not batch:
+                with saves_lock:
+                    batch = dict(pending_saves)
+                    pending_saves.clear()""",
+        """            with saves_lock:
+                batch = batch or dict(pending_saves)
+                pending_saves.clear()""",
+        'tests/test_work_queue_server.py::test_a_save_sent_during_a_failing_run_is_still_tried',
     ),
     (
         'the dashboard mode switch loads and unloads the Work queue',
