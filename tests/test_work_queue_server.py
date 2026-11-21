@@ -934,6 +934,78 @@ def test_a_slack_link_on_any_workspace_names_its_save(wq):
     assert server.slack_save("http://acme.slack.com/archives/D0123456789/p1700000000000100") is None
 
 
+SECOND = "C0123456789:1700000001.000100"
+
+
+def test_a_batch_that_fails_unexpectedly_records_an_error_and_the_worker_goes_on(wq, monkeypatch, capsys):
+    runs = []
+
+    def run_slack(jobs):
+        runs.append([k for k, _, _ in jobs])
+        if len(runs) == 1:
+            raise RuntimeError("unexpected browser output")
+        return {k: {"status": "done", "verified": True, "at": "now"} for k, _, _ in jobs}
+    monkeypatch.setattr(server, "run_slack", run_slack)
+    server.queue_save("C0123456789", "1700000000.000100")
+    assert wait_for(worker_done)
+    assert applied(wq)[SAVE] == {"status": "error", "at": applied(wq)[SAVE]["at"], "sent": True,
+                                 "error": "Couldn't mark the save done: RuntimeError: unexpected browser output"}
+    assert "RuntimeError: unexpected browser output" in capsys.readouterr().err, "the traceback goes to the log"
+    server.queue_save("C0123456789", "1700000001.000100")
+    assert wait_for(lambda: applied(wq).get(SECOND)) and wait_for(worker_done)
+    assert runs == [[SAVE], [SECOND]] and applied(wq)[SECOND]["status"] == "done"
+
+
+def test_a_save_sent_during_a_run_goes_in_the_next_run(wq, monkeypatch):
+    runs = []
+
+    def run_slack(jobs):
+        runs.append([k for k, _, _ in jobs])
+        if len(runs) == 1:
+            server.queue_save("C0123456789", "1700000001.000100")
+        return {k: {"status": "done", "verified": True, "at": "now"} for k, _, _ in jobs}
+    monkeypatch.setattr(server, "run_slack", run_slack)
+    server.queue_save("C0123456789", "1700000000.000100")
+    assert wait_for(lambda: SECOND in applied(wq)) and wait_for(worker_done)
+    assert runs == [[SAVE], [SECOND]], "the same worker picks it up"
+    assert applied(wq)[SAVE]["status"] == applied(wq)[SECOND]["status"] == "done"
+
+
+def test_a_save_sent_during_a_failing_run_is_still_tried(wq, monkeypatch):
+    runs = []
+
+    def run_slack(jobs):
+        runs.append([k for k, _, _ in jobs])
+        if len(runs) == 1:
+            server.queue_save("C0123456789", "1700000001.000100")
+            raise RuntimeError("unexpected")
+        return {k: {"status": "done", "verified": True, "at": "now"} for k, _, _ in jobs}
+    monkeypatch.setattr(server, "run_slack", run_slack)
+    server.queue_save("C0123456789", "1700000000.000100")
+    assert wait_for(lambda: SECOND in applied(wq)) and wait_for(worker_done)
+    assert runs == [[SAVE], [SECOND]], "the save sent mid-run goes in the next run, not with the failed batch"
+    assert applied(wq)[SAVE]["status"] == "error" and applied(wq)[SECOND]["status"] == "done"
+
+
+def test_a_profile_that_cant_be_opened_records_an_error_and_never_spins(wq, monkeypatch):
+    def broken(*args):
+        raise OSError("no space left on device")
+    monkeypatch.setattr(slack, "session_lock", broken)
+    server.queue_save("C0123456789", "1700000000.000100")
+    assert wait_for(worker_done)
+    assert applied(wq)[SAVE]["error"] == "Couldn't mark the save done: OSError: no space left on device"
+    assert server.pending_saves == {}
+
+
+def test_a_worker_that_cant_record_anything_still_stops(wq, monkeypatch):
+    def unwritable(results):
+        raise OSError("read-only file system")
+    monkeypatch.setattr(server, "record", unwritable)
+    monkeypatch.setattr(server, "run_slack", lambda jobs: {k: {"status": "done"} for k, _, _ in jobs})
+    server.queue_save("C0123456789", "1700000000.000100")
+    assert wait_for(worker_done) and server.pending_saves == {}
+
+
 def test_the_send_never_waits_for_the_slack_update(wq, monkeypatch):
     release, began = threading.Event(), threading.Event()
 
@@ -1141,7 +1213,8 @@ def test_a_first_pass_prompt_ends_with_limits_that_override_the_routing_rules(wq
     routing = prompt.index("dispatches via the `/architect-ffp:archffp` skill")
     limits = prompt.index("# First-pass limits (HARD — these override every rule above)")
     assert routing < limits and prompt.endswith(pulse.WORK_QUEUE_FIRST_PASS)
-    for rule in ("open at most one pull request from it, as a draft (`gh pr create --draft`)",
+    for rule in ("open at most one pull request from it, as a draft (`gh pr create --draft`). The draft's title and body "
+                 "must not @mention anyone, and request no reviewers or assignees.",
                  "file, edit, or comment on a Jira ticket", "post, reply, or react in Slack",
                  "comment on, approve, or request changes on any pull request", "mark a pull request ready for review",
                  "push to a branch you didn't create",

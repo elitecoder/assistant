@@ -10,6 +10,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Fixed
+- Keep the Work queue's sent-save worker running after a failure. An
+  unexpected error in a batch, such as a malformed result or a job file that
+  can't be written, stopped the background thread but left it marked as
+  running, so later sent Slack saves waited until the server restarted. Now
+  that batch records an error for each of its saves, the traceback goes to
+  the log, and the worker goes on; a save sent during a run goes in the next
+  run, and `queue_save` starts the worker outside its lock.
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
@@ -32,10 +39,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   tab of the Assistant dashboard, and its session on the Sessions tab once
   it starts. `/api/state` returns `sent` in place of `queued`. Start here
   marks a blocked TODO's row with a flag, not by its reason text.
-- Keep a first pass from shipping. When the pulse starts a TODO whose
-  `workQueueMode` is `assist`, its prompt ends with first-pass limits that
-  override the routing rules: only the agent's own branch, local commits, a
-  push of that branch, and at most one draft PR (`gh pr create --draft`); no
+- Tell a first-pass agent not to ship. When the pulse starts a TODO whose
+  `workQueueMode` is `assist`, its prompt ends with first-pass limits, written
+  to override the routing rules before them. They're instructions the
+  dispatcher adds to the prompt, not a block: nothing outside the agent
+  enforces them. They allow only the agent's own branch, local commits, a
+  push of that branch, and at most one draft PR (`gh pr create --draft`)
+  whose title and body @mention no one; no
   Jira, no Slack posts or reactions, no PR comments, approvals, or change
   requests, no ready-for-review, and no push to a branch it didn't create.
   The limits say to run `/architect-ffp:archffp` with `--no-ship` and to stop
@@ -60,8 +70,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and a saved `queued.json` or `applied.json` in the wrong shape never stops
   a send or the state the page reads.
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
-- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (375 in all now, up from 130 before the Work queue), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
-- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 375 checks, up from 130 before the Work queue; sending rows to agents adds 62 of them.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (383 in all now, up from 130 before the Work queue), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 383 checks, up from 130 before the Work queue; sending rows to agents adds 62 of them, and the sent-save worker fix adds 8.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your

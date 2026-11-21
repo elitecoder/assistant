@@ -1004,8 +1004,8 @@ CHECKS = (
     (
         'every save sent so far goes in one browser run',
         'work_queue/server.py',
-        '                batch = dict(pending_saves)\n                pending_saves.clear()\n',
-        '                batch = dict([pending_saves.popitem()]) if pending_saves else {}\n',
+        '            with slack.session_lock():\n                with saves_lock:\n                    batch = dict(pending_saves)\n                    pending_saves.clear()\n',
+        '            with slack.session_lock():\n                with saves_lock:\n                    batch = dict([pending_saves.popitem()]) if pending_saves else {}\n',
         'tests/test_work_queue_server.py::test_saves_sent_while_the_profile_is_busy_go_in_one_browser_run',
     ),
     (
@@ -1025,8 +1025,8 @@ CHECKS = (
     (
         'the worker holds the profile while the browser runs',
         'work_queue/server.py',
-        '        with slack.session_lock():\n            with saves_lock:\n',
-        '        with slack.session_lock():\n            pass\n        if True:\n            with saves_lock:\n',
+        '            with slack.session_lock():\n                with saves_lock:\n',
+        '            with slack.session_lock():\n                pass\n            if True:\n                with saves_lock:\n',
         'tests/test_work_queue_server.py::test_every_slack_browser_run_holds_the_profile_while_it_runs[worker]',
     ),
     (
@@ -1196,6 +1196,67 @@ CHECKS = (
         "const FOLLOW='Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.';",
         "const FOLLOW='Follow it on the Sessions tab of the Assistant dashboard.';",
         'tests/test_work_queue_browser.py::test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail',
+    ),
+    (
+        'an unexpected failure never stops the sent-save worker',
+        'work_queue/server.py',
+        '        except Exception as exc:  # noqa: BLE001 — one bad batch never stops the worker',
+        '        except tools.SourceError as exc:  # noqa: BLE001 — one bad batch never stops the worker',
+        'tests/test_work_queue_server.py::test_a_batch_that_fails_unexpectedly_records_an_error_and_the_worker_goes_on',
+    ),
+    (
+        'the worker takes another pass for saves sent during a run',
+        'work_queue/server.py',
+        '            record({k: {**v, "sent": True} for k, v in results.items()})\n',
+        '            record({k: {**v, "sent": True} for k, v in results.items()})\n            with saves_lock:\n                saves_worker = None\n            return\n',
+        'tests/test_work_queue_server.py::test_a_save_sent_during_a_run_goes_in_the_next_run',
+    ),
+    (
+        "saves sent during a run aren't dropped",
+        'work_queue/server.py',
+        '            record({k: {**v, "sent": True} for k, v in results.items()})\n',
+        '            record({k: {**v, "sent": True} for k, v in results.items()})\n            pending_saves.clear()\n',
+        'tests/test_work_queue_server.py::test_a_save_sent_during_a_run_goes_in_the_next_run',
+    ),
+    (
+        "a batch that fails before it's taken still records its saves",
+        'work_queue/server.py',
+        '            if not batch:\n',
+        '            if False:\n',
+        'tests/test_work_queue_server.py::test_a_profile_that_cant_be_opened_records_an_error_and_never_spins',
+    ),
+    (
+        "a worker that can't record still stops",
+        'work_queue/server.py',
+        '            try:\n                record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n            except Exception:  # noqa: BLE001 — applied.json can\'t be written; the log has the error\n                traceback.print_exc()\n',
+        '            record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n',
+        'tests/test_work_queue_server.py::test_a_worker_that_cant_record_anything_still_stops',
+    ),
+    (
+        'queue_save starts the worker in its own thread',
+        'work_queue/server.py',
+        '    worker.start()\n',
+        '    worker.run()\n',
+        'tests/test_work_queue_server.py::test_the_send_never_waits_for_the_slack_update',
+    ),
+    (
+        'a first-pass draft PR mentions no one',
+        'bin/pulse.py',
+        " The draft's title and body must not @mention anyone, and request no reviewers or assignees.",
+        '',
+        'tests/test_work_queue_server.py::test_a_first_pass_prompt_ends_with_limits_that_override_the_routing_rules',
+    ),
+    (
+        'a save sent during a failing run stays queued for the next run',
+        'work_queue/server.py',
+        """            if not batch:
+                with saves_lock:
+                    batch = dict(pending_saves)
+                    pending_saves.clear()""",
+        """            with saves_lock:
+                batch = batch or dict(pending_saves)
+                pending_saves.clear()""",
+        'tests/test_work_queue_server.py::test_a_save_sent_during_a_failing_run_is_still_tried',
     ),
     (
         'the dashboard mode switch loads and unloads the Work queue',
