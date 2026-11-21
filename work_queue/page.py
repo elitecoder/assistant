@@ -172,6 +172,10 @@ def counted(d: dict) -> str:
     return ", ".join(f"{d[k]} {k}" for k in ("new", "gone", "changed") if d[k])
 
 
+START_SEND = ('<button class="btn sf-send" onclick="startSend(this)" title="An agent takes a first pass and leaves drafts '
+              'for you">Send to Agent</button>')
+
+
 def start_section(tri: dict, note: str) -> str:
     """The Start here tab: what changed since the baseline, then where to start. Marked items hide in the page."""
     box = ""
@@ -186,11 +190,13 @@ def start_section(tri: dict, note: str) -> str:
                     f'<a class="sf-title" href="{e(s["key"])}"{NEWTAB}>{e(s["title"])}</a>'
                     f' <span class="pr-pill src">{e(s["source"])}</span>'
                     + (f' <span class="sf-effort sf-{e(s["effort"].lower())}">{e(s["effort"])}</span>' if s["effort"] else "")
-                    + '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button></div>'
+                    + '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button>'
+                    + ("" if s["blocked"] else START_SEND) + '</div>'
                     f'<span class="ap-why">{e(s["reason"])}</span></li>' for s in tri["start"])
     body = f'<ol class="start-list">{items}</ol>' if items else '<p class="meta">No Start here list this time.</p>'
     return section("start", "Start here", "In this order, ranked by the model on who's waiting, deadlines, effort, and age. "
-                   "Done hides an item here and marks its row done.", note + box + body)
+                   "Done hides an item here and marks its row done. Send to Agent hands it to an agent for a first pass, "
+                   "and the item and its row leave the page.", note + box + body)
 
 
 def render(snap: dict) -> tuple[str, dict]:
@@ -460,7 +466,7 @@ const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.json()}
 function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
- document.querySelectorAll('.sf-lane .sf-row,.ag-row').forEach(r=>{if(sent.has(r.dataset.key))r.remove()});
+ document.querySelectorAll('.sf-lane .sf-row,.ag-row,.start-list li:not([data-blocked])').forEach(r=>{if(sent.has(r.dataset.key))r.remove()});
  document.querySelectorAll('.sf-lane .sf-row').forEach(r=>{const v=MK[r.dataset.key],done=!!v&&v.state==='done';
   const hide=!!v&&(v.state==='dropped'||(v.state==='snoozed'&&v.until>now));
   r.classList.toggle('is-done',done);r.classList.toggle('is-hidden',hide);if(hide)hidden++;
@@ -510,9 +516,12 @@ const FOLLOW='Its status and result show on the Tasks tab of the Assistant dashb
 async function sendRow(r,mode){const k=r.dataset.key;
  const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:k,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:k,mode})});
  MK[k]={state:'done',until:0};ST.sent=[...(ST.sent||[]),k];paint();return o}
-async function queueTodo(b){const r=b.closest('.sf-row');b.disabled=true;b.textContent='Sending...';
+async function sendFrom(b,r){b.disabled=true;b.textContent='Sending...';
  try{const o=await sendRow(r,'assist');toast('Sent to an agent as '+o.id+' for a first pass. '+FOLLOW)}
  catch(e){b.disabled=false;b.textContent='Send to Agent';toast('Not sent: '+e.message)}}
+function queueTodo(b){return sendFrom(b,b.closest('.sf-row'))}
+function startSend(b){const k=b.closest('li').dataset.key;
+ return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k))}
 function agPicks(){return [...document.querySelectorAll('.ag-row:not([hidden]) .ag-pick:checked')].map(c=>c.closest('.ag-row'))}
 function agCount(){const b=$('ag-go');if(!b)return;const n=agPicks().length;b.textContent='Send '+n+' to agents';b.disabled=!API||!n||sending}
 function agAll(c){document.querySelectorAll('.ag-pick').forEach(p=>p.checked=c.checked);agCount()}

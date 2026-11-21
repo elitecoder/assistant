@@ -183,7 +183,10 @@ makes no model call.
   Done, dropped, or snoozed doesn't appear there, and its **Done** button saves
   the same mark as the row's. A row whose Assistant TODO is blocked always
   leads the list, ahead of the model's picks, even when it's marked. The list
-  is ranked again when the rows or your marks change, and each day.
+  is ranked again when the rows or your marks change, and each day. Each item
+  that isn't blocked also has **Send to Agent**, which sends its row for a
+  first pass exactly as the row's own button does, and the item and its row
+  leave the page.
 - **Since last night** compares every row of each source, not only open rows,
   with the last snapshot from an earlier day, or with the previous refresh on
   your first day. A row counts as changed when what it says changes, not when

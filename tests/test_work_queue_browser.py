@@ -637,7 +637,7 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         assert (text(tab, badge["start"]), text(tab, badge["open-list"])) == ("1", "1")
         tab.locator('#tabs .tab[data-t="start"]').click()
         tab.wait_for_selector(li(3), state="visible")
-        assert tab.locator(li(2)).is_hidden() and tab.locator(li(2)).get_attribute("hidden") is not None
+        assert tab.locator(li(2)).count() == 0, "a sent row's Start here item leaves the page with it"
         for width in (390, 1280):
             tab.set_viewport_size({"width": width, "height": 900})
             no_sideways_scroll(tab)
@@ -648,8 +648,8 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         fresh.goto(site + "#start")
         fresh.wait_for_selector(li(3), state="visible")
         fresh.wait_for_selector(li(1), state="hidden")
-        fresh.wait_for_selector(li(2), state="hidden")
-        assert fresh.locator(li(1)).get_attribute("hidden") is not None and fresh.locator(li(2)).get_attribute("hidden") is not None
+        fresh.wait_for_selector(li(2), state="detached")
+        assert fresh.locator(li(1)).get_attribute("hidden") is not None and fresh.locator(li(2)).count() == 0
         for width in (390, 1280):
             fresh.set_viewport_size({"width": width, "height": 900})
             no_sideways_scroll(fresh)
@@ -743,9 +743,9 @@ def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(
         tab = browser.new_page()
         cov = Coverage(tab)
         tab.goto(site)
-        tab.wait_for_selector(li(4), state="hidden")
+        tab.wait_for_selector(li(4), state="detached")
         tab.wait_for_selector(li(1), state="hidden")
-        assert tab.locator(li(4)).get_attribute("data-blocked") is None, "a model reason that reads blocked isn't a flag"
+        assert tab.locator(li(4)).count() == 0, "a sent item whose reason merely reads blocked leaves like any other"
         assert [tab.locator(li(n)).is_visible() for n in (2, 3, 5)] == [True, True, True]
         assert text(tab, '#tabs .tab[data-t="start"] span') == "3"
         cov.snap()
@@ -910,5 +910,57 @@ def test_send_to_agents_says_when_nothing_is_open(site, wq):
         tab.wait_for_timeout(300)
         assert text(tab, "#ag-msg") == "" and dialogs == [], "nothing picked asks nothing"
         no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+
+def test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row(site, wq):
+    start = [{"key": pr(n)["key"], "title": f"o/r#{n}: Change {n}", "source": "GitHub", "effort": "",
+              "reason": triage.BLOCKED_REASON if n == 4 else "Go", "blocked": n == 4} for n in range(1, 5)]
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 5)], "status": [],
+                "triage": {"rows": {}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []}})
+    config.write_json(wq.data / "marks.json", {pr(4)["key"]: {"state": "done", "until": 0}})
+    config.write_json(wq.data / "queued.json", {pr(4)["key"]: {"id": "td-104", "at": "t", "mode": "assist"}})
+    wq.todo.write_text(json.dumps({"items": [{"id": "td-104", "status": "blocked"}]}))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        for n, width in ((1, 390), (2, 1280)):
+            tab = browser.new_page(viewport={"width": width, "height": 900})
+            cov = Coverage(tab)
+            tab.goto(site + "#start")
+            tab.wait_for_selector(li(3), state="visible")
+            open_items = [k for k in range(1, 4) if k >= n]
+            for k in open_items:
+                assert text(tab, f"{li(k)} .sf-send") == "Send to Agent"
+            assert tab.locator(f"{li(4)} .sf-send").count() == 0, "a blocked item was already sent"
+            assert tab.locator(li(4)).is_visible(), "a blocked item stays even though its row was sent"
+            for k in range(1, n):
+                assert tab.locator(li(k)).count() == 0 and tab.locator(f'.sf-row[data-key="{pr(k)["key"]}"]').count() == 0
+            tab.locator(f"{li(n)} .sf-send").click()
+            tab.wait_for_selector(li(n), state="detached")
+            tab.wait_for_selector(f'.sf-row[data-key="{pr(n)["key"]}"]', state="detached")
+            wait_text(tab, ".toast", f"Sent to an agent as td-{104 + n} for a first pass. Its status and result show on "
+                                     "the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once "
+                                     "it starts.")
+            todo = wq.items()[-1]
+            assert (todo["id"], todo["title"], todo["url"], todo["workQueueMode"]) == (
+                f"td-{104 + n}", f"o/r#{n}: Change {n}", pr(n)["link"], "assist")
+            assert "\nDetail: Review requested\n" in todo["detail"], "the same detail as the row's own Send to Agent"
+            assert json.loads((wq.data / "marks.json").read_text())[pr(n)["key"]]["state"] == "done"
+            assert tab.locator(f'.ag-row[data-key="{pr(n)["key"]}"]').count() == 0
+            no_sideways_scroll(tab)
+            cov.snap()
+        assert [i["id"] for i in wq.items()] == ["td-104", "td-105", "td-106"], "one TODO a send"
+
+        tab = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(tab)
+        tab.goto(site + "#start")
+        tab.wait_for_selector(li(3), state="visible")
+        tab.route("**/api/todo", lambda route: route.fulfill(status=500, json={"error": "store is busy"}))
+        tab.locator(f"{li(3)} .sf-send").click()
+        wait_text(tab, ".toast", "Not sent: store is busy")
+        assert text(tab, f"{li(3)} .sf-send") == "Send to Agent" and tab.locator(f"{li(3)} .sf-send").is_enabled()
+        assert tab.locator(li(3)).is_visible() and len(wq.items()) == 3
         cov.snap()
         browser.close()
