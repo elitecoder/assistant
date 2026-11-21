@@ -42,6 +42,7 @@ import socketserver
 import subprocess
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -191,28 +192,43 @@ def queue_save(cid: str, ts: str) -> None:
     global saves_worker
     with saves_lock:
         pending_saves[f"{cid}:{ts}"] = {"cid": cid, "ts": ts}
-        if saves_worker is None:
-            saves_worker = threading.Thread(target=complete_saves, daemon=True)
-            saves_worker.start()
+        if saves_worker is not None:
+            return
+        worker = saves_worker = threading.Thread(target=complete_saves, daemon=True)
+    worker.start()
 
 
 def complete_saves() -> None:
     """The background worker. It waits its turn with the Slack browser profile, then marks every save sent so far
     completed in one browser run, and records the results where Apply records its own. It repeats until no save is
-    left. A save already marked, or one Slack no longer has, isn't tried again."""
+    left, so a save sent during a run goes in the next one. A save already marked, or one Slack no longer has, isn't
+    tried again. A batch that fails in any way records an error for each of its saves, and the worker goes on."""
     global saves_worker
     while True:
-        with slack.session_lock():
+        with saves_lock:
+            if not pending_saves:
+                saves_worker = None
+                return
+        batch: dict = {}
+        try:
+            with slack.session_lock():
+                with saves_lock:
+                    batch = dict(pending_saves)
+                    pending_saves.clear()
+                applied = read_map("applied.json")
+                jobs = [(k, c, False) for k, c in batch.items() if entry(applied, k).get("status") not in SETTLED]
+                results = run_slack(jobs) if jobs else {}
+            record({k: {**v, "sent": True} for k, v in results.items()})
+        except Exception as exc:  # noqa: BLE001 — one bad batch never stops the worker; the traceback goes to the log
+            traceback.print_exc()
             with saves_lock:
-                batch = dict(pending_saves)
+                batch = batch or dict(pending_saves)
                 pending_saves.clear()
-                if not batch:
-                    saves_worker = None
-                    return
-            applied = read_map("applied.json")
-            jobs = [(k, c, False) for k, c in batch.items() if entry(applied, k).get("status") not in SETTLED]
-            results = run_slack(jobs) if jobs else {}
-        record({k: {**v, "sent": True} for k, v in results.items()})
+            error = " ".join(f"Couldn't mark the save done: {type(exc).__name__}: {exc}".split())[:300]
+            try:
+                record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})
+            except Exception:  # noqa: BLE001 — applied.json can't be written; the log has the error
+                traceback.print_exc()
 
 
 def set_marks(body: dict):
