@@ -18,13 +18,19 @@ which saves look finished:
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import re
+import time
 from datetime import datetime
 
 from assistant.slack_focus.client import Client
 
 from work_queue import config, tools
 
+WAIT = 90
+BUSY = ("The Slack browser session is busy with another job: a refresh, Apply, or marking sent saves done. Try again "
+        "in a few minutes.")
 PROMISE = re.compile(r"\b(I'?ll|I will|let me|I'?m going to)\b", re.I)
 TWO_DAYS = 172800
 
@@ -37,13 +43,38 @@ def api_url(entry: dict) -> str:
     return entry["workspace_url"].rstrip("/") + "/api/"
 
 
+class Busy(tools.SourceError):
+    """Another job held the Slack browser profile for longer than the caller waits."""
+
+
+@contextlib.contextmanager
+def session_lock(wait: float | None = None):
+    """Hold the Work queue's Slack browser profile: Chromium opens a profile in one process at a time, so the refresh,
+    Apply, and the sent-save worker take turns. With `wait`, give up after that many seconds and raise Busy; without
+    it, wait as long as it takes, which only the background worker does."""
+    path = config.data_dir() / "slack-browser.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        end = None if wait is None else time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | (0 if end is None else fcntl.LOCK_NB))
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    raise Busy(BUSY) from None
+                time.sleep(0.2)
+        yield
+
+
 def browser(action: str, entry: dict, *extra: str) -> list[str]:
     return tools.playwright_cmd("slack_browser.py", action, "--client-url", client_url(entry),
                                 "--api-url", api_url(entry), "--profile", str(config.browser_profile()), *extra)
 
 
 def later(entry: dict) -> list[dict]:
-    out = tools.run_json(browser("list", entry, "--headless"), timeout=300)
+    with session_lock(WAIT):
+        out = tools.run_json(browser("list", entry, "--headless"), timeout=300)
     if not out.get("ok"):
         raise tools.SourceError(out.get("error") or "Slack Later list failed")
     return [i for i in out["items"] if i.get("item_type") == "message"]

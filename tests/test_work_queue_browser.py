@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -24,7 +25,7 @@ import pytest
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Error, sync_playwright  # noqa: E402
 
-from work_queue import config, page, refresh, server, todo_result, triage  # noqa: E402
+from work_queue import config, page, refresh, server, triage  # noqa: E402
 from work_queue_fakes import (VERDICT, Model, chromium_missing, fake_tool, first_line, gh_pr, raises,  # noqa: E402, F401
                               require_chromium, spare_port, wq)
 
@@ -154,7 +155,7 @@ def text(tab, selector: str) -> str:
     return tab.locator(selector).first.text_content()
 
 
-def test_marks_persist_send_to_assistant_queues_a_todo_and_apply_trashes_gmail(served, wq):
+def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail(served, wq):
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         first = browser.new_page()
@@ -175,15 +176,19 @@ def test_marks_persist_send_to_assistant_queues_a_todo_and_apply_trashes_gmail(s
         assert fresh.locator(".sf-lane h3 .count").first.inner_text() == "1"
 
         third = fresh.locator('.sf-row[data-key="https://github.com/o/r/pull/3"]')
-        third.get_by_role("button", name="Send to Assistant").click()
-        fresh.wait_for_function("document.querySelector('.sf-row[data-key=\"https://github.com/o/r/pull/3\"] .q-status')"
-                                ".textContent.startsWith('Queued as td-051')")
+        third.get_by_role("button", name="Send to Agent").click()
+        fresh.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/3"]', state="detached")
+        wait_text(fresh, ".toast", "Sent to an agent as td-051 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
         todo = wq.items()[-1]
         assert (todo["id"], todo["title"], todo["autoDispatch"], todo["url"]) == \
             ("td-051", "o/r#3: Change 3", True, PRS[2]["link"])
+        code = re.search(r"----- BEGIN UNTRUSTED ROW ([0-9a-f]{16}) -----", todo["detail"]).group(1)
         assert todo["detail"].endswith("Title: o/r#3: Change 3\nDetail: Review requested · ana · opened Nov 2 · draft\n"
-                                       "Source: https://github.com/o/r/pull/3\n----- END UNTRUSTED ROW -----")
-        assert third.locator(".sf-send").inner_text() == "Sent td-051"
+                                       f"Source: https://github.com/o/r/pull/3\n----- END UNTRUSTED ROW {code} -----")
+        assert todo["workQueueMode"] == "assist"
+        assert "You were sent this for a first pass." in todo["detail"] and "Automated Message" not in todo["detail"]
+        assert json.loads((wq.data / "marks.json").read_text())[PRS[2]["key"]]["state"] == "done"
+        assert fresh.locator('.ag-row[data-key="https://github.com/o/r/pull/3"]').count() == 0
 
         fresh.locator('#tabs .tab[data-t="email"]').click()
         fresh.wait_for_selector("#open-list", state="hidden")
@@ -201,7 +206,10 @@ def test_marks_persist_send_to_assistant_queues_a_todo_and_apply_trashes_gmail(s
                                 " === 'In Gmail Trash, verified'", timeout=15000)
 
         phone = browser.new_context(viewport={"width": 375, "height": 800}).new_page()
-        phone.goto(served)
+        phone.goto(served + "#all")
+        phone.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/2"]', state="attached")
+        phone.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/3"]', state="detached")
+        assert phone.locator('.sf-row[data-key="https://github.com/o/r/pull/3"]').count() == 0, "a sent row stays off"
         widths = phone.evaluate("[document.documentElement.scrollWidth, document.documentElement.clientWidth]")
         assert widths[0] <= widths[1], widths
         browser.close()
@@ -242,7 +250,7 @@ def gmail_row(key: str, group: str, addr: str = "digest@list.example", unsub: st
 
 def rich_snapshot() -> dict:
     slack = [slack_row("s-open", "open", 1), slack_row("s-done-v", "last", 2), slack_row("s-done-nv", "last", 3),
-             slack_row("s-undone", "moved", 4), slack_row("s-undo", "moved", 5),
+             slack_row("s-undone", "moved", 4), slack_row("s-undo", "moved", 5), slack_row("s-gone", "last", 7),
              {**slack_row("s-unread", "unread", 6), "ctx": {"error": "gone"}}]
     outlook = [mail("o-act", "act", "ana@example.com", "Can you review?"), mail("o-read", "read", "", ""),
                mail("a1", "gh", "longsender@example.com", "Hi"), mail("b1", "bulk", "same@example.com", "Same"),
@@ -265,12 +273,13 @@ def seed(wq) -> dict:
     cands = write_page(rich_snapshot())
     unsub = {c["url"]: k for k, c in cands.items() if c["kind"] == "unsub"}
     decisions = {"g-approve": "approve", "g-keep": "keep", "g-undo-done": "undo", "g-undo": "undo", "s-undo": "undo",
-                 "b2": "keep", "g-shop": "keep"}
+                 "b2": "keep", "g-shop": "keep", "s-gone": "approve"}
     config.write_json(wq.data / "decisions.json", {k: {"decision": d, "at": "t"} for k, d in decisions.items()})
     applied = {"g-done-v": {"status": "done", "verified": True}, "g-done-nv": {"status": "done", "verified": False},
                "g-err": {"status": "error", "error": "quota"}, "g-undone": {"status": "undone"},
                "g-undo-done": {"status": "done", "verified": True}, "s-done-v": {"status": "done", "verified": True},
                "s-done-nv": {"status": "done"}, "s-undone": {"status": "undone"},
+               "s-gone": {"status": "gone", "error": "Slack no longer has this save", "sent": True},
                unsub["https://promo.example/a"]: {"status": "done", "verified": True},
                unsub["https://promo.example/b"]: {"status": "done", "verified": False}}
     config.write_json(wq.data / "applied.json", applied)
@@ -292,10 +301,6 @@ def seed(wq) -> dict:
 
 def status_of(tab, key: str) -> str:
     return tab.locator(f'.ap-row[data-key="{key}"] .ap-status').text_content()
-
-
-def q_status(tab, n: int) -> str:
-    return tab.locator(f'.sf-row[data-key="{pr(n)["key"]}"] .q-status').text_content()
 
 
 def wait_text(tab, selector: str, expected: str) -> None:
@@ -323,6 +328,9 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         assert status_of(tab, "s-done-v") == "Marked done in Slack, verified"
         assert status_of(tab, "s-done-nv") == "Marked done in Slack, not verified"
         assert status_of(tab, "s-undone") == "Reopened in Slack" and status_of(tab, "s-undo") == "Will reopen"
+        assert status_of(tab, "s-gone") == "Slack no longer has this save"
+        gone = tab.locator('.ap-row[data-key="s-gone"]').get_attribute("class")
+        assert "applied" in gone and "approved" not in gone, "an approved save that's gone is settled"
         assert status_of(tab, unsub["https://promo.example/a"]) == "Unsubscribed"
         assert status_of(tab, unsub["https://promo.example/b"]) == "Sent, but the sender didn’t confirm"
         assert status_of(tab, "b2") == "Kept" and status_of(tab, "a1") == ""
@@ -338,16 +346,12 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         tab.wait_for_selector("#open-list", state="visible")
         tab.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
 
-        assert q_status(tab, 1) == "Done. Filed https://jira.example/T-1 for you"
-        assert tab.locator(f'.sf-row[data-key="{pr(1)["key"]}"] .q-status a').get_attribute("href") == "https://jira.example/T-1"
-        assert q_status(tab, 2).startswith("Done, but the agent left no written result. Open td-102")
-        assert q_status(tab, 3) == "Blocked: Need access" and q_status(tab, 4) == "Blocked."
-        assert q_status(tab, 5) == "Working on it (td-105)." and q_status(tab, 6) == "Working on it (td-106)."
-        assert q_status(tab, 7) == "Queued as td-107. Assistant picks it up within about 5 minutes."
-        assert q_status(tab, 8) == "The TODO td-199 was removed. Select Send to Assistant to queue it again."
-        assert tab.locator(f'.sf-row[data-key="{pr(8)["key"]}"] .sf-send').is_enabled()
-        assert tab.locator(f'.sf-row[data-key="{pr(9)["key"]}"] .q-status').is_hidden()
-        assert text(tab, f'.sf-row[data-key="{pr(7)["key"]}"] .sf-send') == "Sent td-107"
+        for n in range(1, 8):
+            assert tab.locator(f'.sf-row[data-key="{pr(n)["key"]}"]').count() == 0, f"sent row {n} leaves the page"
+            assert tab.locator(f'.ag-row[data-key="{pr(n)["key"]}"]').count() == 0
+        assert tab.locator(f'.sf-row[data-key="{pr(8)["key"]}"] .sf-send').is_enabled(), "its TODO is gone, so it's back"
+        assert text(tab, '#tabs .tab[data-t="open-list"] span') == "10"
+        assert "Queued as" not in tab.content() and "Working on it" not in tab.content()
 
         rows = {n: tab.locator(f'.sf-row[data-key="{pr(n)["key"]}"]') for n in range(11, 18)}
         assert "is-done" in rows[11].get_attribute("class") and text(tab, f'.sf-row[data-key="{pr(11)["key"]}"] .sf-mark') == "Undo"
@@ -392,7 +396,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         wait_text(tab, "#ap-msg", "Not started: already running")
         tab.unroute("**/api/apply")
 
-        # Open list: Done toggles, a failed save says so, and Send to Assistant reports errors.
+        # Open list: Done toggles, a failed save says so, and Send to Agent reports errors.
         tab.evaluate("location.hash = '#open-list'")
         tab.wait_for_selector("#open-list", state="visible")
         row15 = f'.sf-row[data-key="{pr(15)["key"]}"]'
@@ -415,19 +419,19 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         tab.clock.run_for(12000)
         tab.wait_for_selector(".toast", state="detached")
         tab.locator(f'.sf-row[data-key="{pr(9)["key"]}"] .sf-send').click()
-        tab.wait_for_function(f"document.querySelector('.sf-row[data-key=\"{pr(9)['key']}\"] .q-status').textContent"
-                              ".startsWith('Queued as td-108')")
+        tab.wait_for_selector(f'.sf-row[data-key="{pr(9)["key"]}"]', state="detached")
+        wait_text(tab, ".toast", "Sent to an agent as td-108 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
+        assert tab.locator(f'.ag-row[data-key="{pr(9)["key"]}"]').count() == 0
+        tab.clock.run_for(12000)
+        tab.wait_for_selector(".toast", state="detached")
         tab.route("**/api/todo", lambda route: route.fulfill(status=500, json={"error": "store is busy"}))
         tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send').click()
-        wait_text(tab, f'.sf-row[data-key="{pr(10)["key"]}"] .q-status', "Not sent: store is busy")
-        assert text(tab, f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send') == "Send to Assistant"
+        wait_text(tab, ".toast", "Not sent: store is busy")
+        assert text(tab, f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send') == "Send to Agent"
+        assert tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send').is_enabled()
         tab.unroute("**/api/todo")
-
-        # A queued TODO that finishes shows its result and a toast.
-        todo_result.main("td-107", "Opened PR 12")
-        tab.clock.run_for(20000)
-        wait_text(tab, ".toast", "Finished: o/r#7: Change 7")
-        assert q_status(tab, 7) == "Done. Opened PR 12"
+        tab.clock.run_for(12000)
+        tab.wait_for_selector(".toast", state="detached")
 
         # The page copes with a server that's gone or answers with missing fields.
         tab.route("**/api/state", lambda route: route.abort())
@@ -435,7 +439,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         wait_text(tab, "#ap-count", "Approvals need the Work queue server")
         assert tab.locator("#ap-apply").is_disabled()
         tab.unroute("**/api/state")
-        bare = {"decisions": {}, "applied": {}, "status": {"running": True}, "queued": None, "marks": None, "refresh": None}
+        bare = {"decisions": {}, "applied": {}, "status": {"running": True}, "sent": None, "marks": None, "refresh": None}
         tab.route("**/api/state", lambda route: route.fulfill(json=bare))
         tab.evaluate("refresh()")
         wait_text(tab, "#ap-apply", "Working…")
@@ -444,7 +448,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         wait_text(tab, "#ap-apply", "Apply approvals")
         assert text(tab, "#ap-count") == "0 approved"
         assert text(tab, "#showhidden") == "Show snoozed and dropped (0)"
-        assert tab.locator(f'.sf-row[data-key="{pr(1)["key"]}"] .q-status').is_hidden()
+        assert tab.locator(f'.sf-row[data-key="{pr(8)["key"]}"]').count() == 1, "no sent list removes nothing more"
         tab.unroute("**/api/state")
 
         # Refresh: the button polls, shows a failed refresh, and reloads the page when it finishes.
@@ -622,14 +626,13 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         tab.locator('#tabs .tab[data-t="open-list"]').click()
         row1, row2 = f'.sf-row[data-key="{pr(1)["key"]}"]', f'.sf-row[data-key="{pr(2)["key"]}"]'
         tab.wait_for_selector(f"{row1}.is-done")
-        assert tab.locator(f"{row1} .sf-send").count() == 0 and tab.locator(f"{row2} .sf-send").count() == 1
-        assert text(tab, f"{row1} .disp") == "Model suggests: You" and text(tab, f"{row2} .disp") == "Model suggests: Agent"
+        assert tab.locator(f"{row1} .sf-send").count() == 1 and tab.locator(f"{row2} .sf-send").count() == 1
+        assert text(tab, f"{row1} .disp") == "Model suggests: You" and text(tab, f"{row2} .disp") == "Agent can finish"
         tab.locator(f"{row1} .draft button").click()
         wait_text(tab, f"{row1} .draft button", "Copied")
         assert tab.evaluate("navigator.clipboard.readText()") == "Looking at it today."
         tab.locator(f"{row2} .sf-send").click()
-        tab.wait_for_function(f"document.querySelector('{row2} .q-status').textContent.startsWith('Queued as td-051')")
-        assert "is-done" in tab.locator(row2).get_attribute("class"), "a sent row stays, greyed"
+        tab.wait_for_selector(row2, state="detached")
         assert json.loads((wq.data / "marks.json").read_text())[pr(2)["key"]]["state"] == "done"
         assert (text(tab, badge["start"]), text(tab, badge["open-list"])) == ("1", "1")
         tab.locator('#tabs .tab[data-t="start"]').click()
@@ -670,7 +673,7 @@ STOP = "the model took longer than 10 minutes in all"
      "or sooner when its rows change."),
     (lambda: Model(rows=stop(STOP)),
      f"Triage unavailable: {STOP}. Rows without a model verdict still show, grouped by the rules, and offer Send to "
-     "Assistant."),
+     "Agent."),
 ])
 def test_the_failure_note_shows_when_the_model_fails(site, wq, model, expected):
     triaged_site(wq, model())
@@ -684,47 +687,50 @@ def test_the_failure_note_shows_when_the_model_fails(site, wq, model, expected):
         assert text(tab, "#open-list .triage-note") == expected
         tab.locator('#tabs .tab[data-t="start"]').click()
         tab.wait_for_selector("#start .triage-note", state="visible")
-        assert tab.locator(".sf-row").count() == 3 and tab.locator(".sf-send").count() == 3
+        assert tab.locator(".sf-row").count() == 3 and tab.locator(".sf-row .sf-send").count() == 3
         assert tab.locator(".sf-row .disp").count() == 0
         no_sideways_scroll(tab)
         cov.snap()
         browser.close()
 
 
-def test_a_sent_row_stays_greyed_with_its_status_and_a_blocked_one_stays_prominent(site, wq):
-    yours = {"rows": {pr(n)["key"]: VERDICT for n in range(1, 7)}, "start": [], "changes": None, "waiting": 0,
+def test_a_sent_row_leaves_the_page_and_a_blocked_one_stays_on_start_here(site, wq):
+    start = [{"key": pr(2)["key"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "",
+              "reason": triage.BLOCKED_REASON, "blocked": True},
+             {"key": pr(6)["key"], "title": "o/r#6: Change 6", "source": "GitHub", "effort": "", "reason": "Go",
+              "blocked": False}]
+    yours = {"rows": {pr(n)["key"]: VERDICT for n in range(1, 7)}, "start": start, "changes": None, "waiting": 0,
              "skipped": 0, "note": "", "failed": []}
     write_page({"built": "now", "github": [pr(n) for n in range(1, 7)], "status": [], "triage": yours})
-    config.write_json(wq.data / "marks.json", {pr(n)["key"]: {"state": state, "until": 0} for n, state in
-                                                ((1, "done"), (2, "done"), (3, "dropped"), (4, "done"), (5, "done"))})
+    config.write_json(wq.data / "marks.json", {pr(n)["key"]: {"state": "done", "until": 0} for n in (1, 2, 4, 5)})
     config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": td, "at": "t"} for n, td in
-                                                 ((1, "td-101"), (2, "td-102"), (3, "td-103"), (4, "td-199"), (5, "td-105"))})
+                                                 ((1, "td-101"), (2, "td-102"), (4, "td-199"), (5, "td-105"))})
     wq.todo.write_text(json.dumps({"items": [
-        {"id": "td-101", "status": "open"}, {"id": "td-102", "status": "blocked", "statusReason": "Need access"},
-        {"id": "td-103", "status": "blocked"}, {"id": "td-105", "status": "done", "detail": "x\n\nRESULT: Opened PR 9"}]}))
+        {"id": "td-101", "status": "open"}, {"id": "td-102", "status": "blocked", "statusReason": "Need access"}],
+        "completed": [{"id": "td-105", "status": "done", "detail": "x\n\nRESULT: Opened PR 9"}]}))
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
-        tab = browser.new_page()
-        cov = Coverage(tab)
-        tab.goto(site)
-        row = {n: f'.sf-row[data-key="{pr(n)["key"]}"]' for n in range(1, 7)}
-        wait_text(tab, f"{row[1]} .q-status", "Queued as td-101. Assistant picks it up within about 5 minutes.")
-        assert tab.locator(row[1]).is_visible() and "is-done" in tab.locator(row[1]).get_attribute("class")
-        assert q_status(tab, 2) == "Blocked: Need access" and q_status(tab, 3) == "Blocked."
-        for n in (2, 3):
-            classes = tab.locator(row[n]).get_attribute("class")
-            assert tab.locator(row[n]).is_visible() and "is-blocked" in classes and "is-done" not in classes
-        assert q_status(tab, 4) == "The TODO td-199 was removed."
-        assert q_status(tab, 5) == "Done. Opened PR 9" and tab.locator(row[5]).is_visible()
-        assert text(tab, ".sf-lane h3 .count") == "3"
-        assert text(tab, f"{row[2]} .sf-mark") == "Undo"
-        cov.snap()
+        for width in (390, 1280):
+            tab = browser.new_page(viewport={"width": width, "height": 900})
+            cov = Coverage(tab)
+            tab.goto(site + "#all")
+            row = {n: f'.sf-row[data-key="{pr(n)["key"]}"]' for n in range(1, 7)}
+            tab.wait_for_selector(row[4], state="visible")
+            for n in (1, 2, 5):
+                assert tab.locator(row[n]).count() == 0 and tab.locator(f'.ag-row[data-key="{pr(n)["key"]}"]').count() == 0
+            assert "is-done" in tab.locator(row[4]).get_attribute("class"), "its TODO is gone, so it shows as Done"
+            assert text(tab, f"{row[4]} .sf-mark") == "Undo" and text(tab, ".sf-lane h3 .count") == "2"
+            assert tab.locator(li(2)).is_visible(), "a blocked TODO keeps its row on Start here"
+            assert text(tab, li(2) + " .ap-why") == triage.BLOCKED_REASON
+            assert tab.locator(".q-status").count() == 0 and tab.locator(".is-blocked").count() == 0
+            no_sideways_scroll(tab)
+            cov.snap()
         browser.close()
 
 
 def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(site, wq):
-    start = [{"key": pr(n)["key"], "title": f"o/r#{n}: Change {n}", "source": "GitHub", "effort": "", "reason": "Go"}
-             for n in range(1, 6)]
+    start = [{"key": pr(n)["key"], "title": f"o/r#{n}: Change {n}", "source": "GitHub", "effort": "",
+              "reason": triage.BLOCKED_REASON if n in (3, 4) else "Go", "blocked": n == 3} for n in range(1, 6)]
     write_page({"built": "now", "github": [pr(n) for n in range(1, 6)], "status": [],
                 "triage": {"rows": {}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []}})
     config.write_json(wq.data / "marks.json", {
@@ -739,6 +745,7 @@ def test_start_here_hides_marked_items_except_a_passed_snooze_or_a_blocked_todo(
         tab.goto(site)
         tab.wait_for_selector(li(4), state="hidden")
         tab.wait_for_selector(li(1), state="hidden")
+        assert tab.locator(li(4)).get_attribute("data-blocked") is None, "a model reason that reads blocked isn't a flag"
         assert [tab.locator(li(n)).is_visible() for n in (2, 3, 5)] == [True, True, True]
         assert text(tab, '#tabs .tab[data-t="start"] span') == "3"
         cov.snap()
@@ -765,3 +772,143 @@ def test_a_missing_chromium_skips_the_browser_tests_instead_of_failing_them(tmp_
     assert "Executable doesn't exist" in chromium_missing(str(tmp_path / "no-browsers"))
     with pytest.raises(pytest.skip.Exception, match="Playwright's Chromium isn't installed"):
         require_chromium(monkeypatch)
+
+
+# ─── Send to agents ───────────────────────────────────────────────────────────
+
+def agents_snapshot() -> dict:
+    slack = [{**slack_row("s-open", "open", 1), "title": "#general: Can you look?"}]
+    outlook = [mail("o-act", "act", "ana@example.com", "Can you review?")]
+    gmail = [gmail_row("g-act", "act", "friend@example.com")]
+    verdicts = {pr(3)["link"]: AGENT, gmail[0]["link"]: AGENT, pr(1)["link"]: VERDICT}
+    return {"built": "now", "github": [pr(n) for n in range(1, 5)], "slack": slack, "outlook": outlook,
+            "gmail": {"me@example.com": gmail}, "status": [],
+            "triage": {"rows": verdicts, "start": [], "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []}}
+
+
+def ag(key: str) -> str:
+    return f'.ag-row[data-key="{key}"]'
+
+
+def test_send_to_agents_lists_every_open_row_and_sends_the_picked_ones_one_at_a_time(site, wq, monkeypatch):
+    write_page(agents_snapshot())
+    config.write_json(wq.data / "marks.json", {pr(4)["key"]: {"state": "dropped", "until": 0}})
+    spans, real = [], server.ROUTES["/api/todo"]
+    inflight, go_on = threading.Event(), threading.Event()
+
+    def timed(body):
+        start = time.monotonic()
+        inflight.set()
+        go_on.wait(10)
+        time.sleep(0.2)
+        out = real(body) if body["key"] != pr(2)["key"] else (500, {"error": "store is busy"})
+        spans.append((start, time.monotonic(), body["key"], body["mode"]))
+        return out
+    monkeypatch.setitem(server.ROUTES, "/api/todo", timed)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        tab.goto(site + "#agents")
+        tab.wait_for_selector("#agents", state="visible")
+        titles = [t.strip() for t in tab.locator(".ag-row:not([hidden]) .ag-text .sf-title").all_inner_texts()]
+        assert titles == ["Agent can finisho/r#3: Change 3", "Agent can finishMail g-act", "#general: Can you look?",
+                          "o/r#1: Change 1", "o/r#2: Change 2", "Can you review?"], "the dropped row stays out"
+        assert text(tab, '#tabs .tab[data-t="agents"] span') == "6"
+        assert text(tab, "#ag-go") == "Send 0 to agents" and tab.locator("#ag-go").is_disabled()
+        assert not tab.locator("#ag-hands").is_checked(), "Hands-off is off until you turn it on"
+        tab.locator("#ag-all").check()
+        wait_text(tab, "#ag-go", "Send 6 to agents")
+        tab.locator("#ag-all").uncheck()
+        wait_text(tab, "#ag-go", "Send 0 to agents")
+
+        dialogs = []
+        answer = {"accept": False}
+
+        def on_dialog(d):
+            dialogs.append(d.message)
+            d.accept() if answer["accept"] else d.dismiss()
+        tab.on("dialog", on_dialog)
+        for n in (1, 2):
+            tab.locator(f'{ag(pr(n)["key"])} .ag-pick').check()
+        wait_text(tab, "#ag-go", "Send 2 to agents")
+        tab.locator("#ag-go").click()
+        assert wait_for(lambda: dialogs) and dialogs[-1] == ("Start 2 agents? Each one takes a first pass and leaves "
+                                                             "drafts for you to send.")
+        tab.wait_for_timeout(1500)
+        assert spans == [] and wq.items()[-1]["id"] == "td-041", "a cancelled dialog sends nothing"
+        assert text(tab, "#ag-msg") == "" and tab.locator(ag(pr(1)["key"])).count() == 1
+        answer["accept"] = True
+        tab.locator("#ag-go").click()
+        assert inflight.wait(10)
+        wait_text(tab, "#ag-msg", "Sending 1 of 2...")
+        assert tab.locator("#ag-go").is_disabled(), "no second batch while one is going"
+        go_on.set()
+        wait_text(tab, "#ag-msg", "Sent 1 to agents for a first pass. Their status and results show on the Tasks tab of the Assistant dashboard, and each session on the Sessions tab once it starts. "
+                                  "Not sent: o/r#2: Change 2: store is busy.")
+        assert [(k, m) for _, _, k, m in spans] == [(pr(1)["key"], "assist"), (pr(2)["key"], "assist")]
+        assert spans[0][1] <= spans[1][0], "one send at a time"
+        assert tab.locator(ag(pr(1)["key"])).count() == 0 and tab.locator(f'.sf-row[data-key="{pr(1)["key"]}"]').count() == 0
+        assert tab.locator(f'{ag(pr(2)["key"])} .ag-pick').is_checked(), "a row that wasn't sent stays picked"
+        assert text(tab, "#ag-go") == "Send 1 to agents" and text(tab, '#tabs .tab[data-t="agents"] span') == "5"
+        todo = wq.items()[-1]
+        assert (todo["id"], todo["url"]) == ("td-051", pr(1)["link"]) and "for a first pass" in todo["detail"]
+
+        tab.locator(f'{ag(pr(2)["key"])} .ag-pick').uncheck()
+        tab.locator("#ag-hands").check()
+        for key in (pr(3)["key"], "https://outlook.office.com/o-act"):
+            tab.locator(f"{ag(key)} .ag-pick").check()
+        tab.locator("#ag-go").click()
+        wait_text(tab, "#ag-msg", "Sent 2 to agents, hands-off. Their status and results show on the Tasks tab of the Assistant dashboard, and each session on the Sessions tab once it starts.")
+        assert dialogs[-1] == ("Start 2 agents? Hands-off: each one finishes the work and posts, files, and opens PRs "
+                               "without asking you.")
+        sent = wq.items()[-2:]
+        assert [i["url"] for i in sent] == [pr(3)["link"], "https://outlook.office.com/o-act"]
+        assert all("hands-off" in i["detail"] and 'start each with "Automated Message"' in i["detail"] for i in sent)
+        assert {k: q["mode"] for k, q in json.loads((wq.data / "queued.json").read_text()).items()} == {
+            pr(1)["key"]: "assist", pr(3)["key"]: "handsoff", "https://outlook.office.com/o-act": "handsoff"}
+
+        tab.locator("#ag-hands").uncheck()
+        tab.locator(f'{ag(pr(2)["key"])} .ag-pick').check()
+        tab.locator("#ag-go").click()
+        assert wait_for(lambda: dialogs[-1].startswith("Start 1 agent? "))
+        wait_text(tab, "#ag-msg", "Not sent: o/r#2: Change 2: store is busy.")
+        wait_text(tab, "#ag-go", "Send 1 to agents")
+        assert tab.locator("#ag-go").is_enabled()
+        tab.route("**/api/state", lambda route: route.abort())
+        tab.evaluate("refresh()")
+        tab.wait_for_function("document.getElementById('ag-go').disabled")
+        assert text(tab, "#ag-go") == "Send 1 to agents", "a page that can't reach the server sends nothing"
+        tab.unroute("**/api/state")
+        for width in (390, 1280):
+            tab.set_viewport_size({"width": width, "height": 900})
+            no_sideways_scroll(tab)
+        cov.snap()
+
+        phone = browser.new_page(viewport={"width": 375, "height": 800})
+        cov = Coverage(phone)
+        phone.goto(site + "#agents")
+        phone.wait_for_selector("#agents", state="visible")
+        assert phone.locator(".ag-row:not([hidden])").count() == 3, "rows sent on another page stay off after a reload"
+        no_sideways_scroll(phone)
+        cov.snap()
+        browser.close()
+
+
+def test_send_to_agents_says_when_nothing_is_open(site, wq):
+    write_page({"built": "now", "github": [], "status": []})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 800})
+        cov = Coverage(tab)
+        tab.goto(site + "#agents")
+        tab.wait_for_selector("#agents", state="visible")
+        assert text(tab, "#agents .ag-bar + p") == "Nothing open right now." and tab.locator("#ag-go").is_disabled()
+        dialogs = []
+        tab.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+        tab.evaluate("agSend()")
+        tab.wait_for_timeout(300)
+        assert text(tab, "#ag-msg") == "" and dialogs == [], "nothing picked asks nothing"
+        no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()

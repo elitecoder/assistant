@@ -608,7 +608,8 @@ class Triage:
         stuck = [{"link": i["link"], "reason": BLOCKED_REASON} for i in cands if i["link"] in blocked]
         picks = stuck + [s for s in saved["items"] if s["link"] in by_link and s["link"] not in blocked]
         out["start"] = [{"key": s["link"], "title": by_link[s["link"]]["title"], "source": by_link[s["link"]]["source"],
-                         "effort": verdicts.get(s["link"], {}).get("effort", ""), "reason": s["reason"]} for s in picks]
+                         "effort": verdicts.get(s["link"], {}).get("effort", ""), "reason": s["reason"],
+                         "blocked": s["link"] in blocked} for s in picks]
         return saved
 
     def summary(self, diff: dict | None, saved: dict, out: dict) -> dict:

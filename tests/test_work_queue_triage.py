@@ -84,17 +84,21 @@ def test_each_open_row_gets_a_why_a_disposition_an_effort_and_a_draft(wq):
     assert '<span class="sf-effort sf-quick">Quick</span>' in first
     assert '<span class="sf-why">Ana asks for a review.</span>' in first
     assert "Looking now, I&#x27;ll reply today.</textarea>" in first and "Copy draft" in first
-    assert '<span class="disp d-agent">Model suggests: Agent</span>' in second and "textarea" not in second
+    assert '<span class="disp d-agent">Agent can finish</span>o/r#2: Change 2' in second and "textarea" not in second
+    assert "Model suggests: Agent" not in html
     assert "a model explains each open row" in html
 
 
-def test_send_to_assistant_shows_unless_the_model_said_you_handoff_or_drop(wq):
+def test_send_to_agent_shows_on_every_open_row_whatever_the_model_said(wq):
     calls_for = {0: "you", 1: "agent", 2: "handoff", 3: "drop"}
     tri, html = triaged(snap(*(pr(n) for n in range(1, 6))), Model(rows=lambda items: {"rows": [
         {"id": i["id"], **VERDICT, "disposition": calls_for[i["id"]]} for i in items if i["id"] in calls_for]}))
-    offers = {n: 'class="btn sf-send"' in row_html(html, pr(n)["link"]) for n in range(1, 6)}
-    assert offers == {1: False, 2: True, 3: False, 4: False, 5: True}, "a row without a verdict keeps Send to Assistant"
-    assert pr(5)["link"] not in tri["rows"]
+    send = ('<button class="btn sf-send" onclick="queueTodo(this)" title="An agent takes a first pass and leaves drafts '
+            'for you">Send to Agent</button>')
+    assert all(row_html(html, pr(n)["link"]).count(send) == 1 for n in range(1, 6))
+    hints = {n: "Agent can finish" in row_html(html, pr(n)["link"]) for n in range(1, 6)}
+    assert hints == {1: False, 2: True, 3: False, 4: False, 5: False}, "only the model's agent call is a hint"
+    assert pr(5)["link"] not in tri["rows"] and "Send to Assistant" not in html
 
 
 def test_an_unchanged_row_is_never_sent_again(wq, monkeypatch):
@@ -153,7 +157,7 @@ def test_answers_outside_the_schema_are_ignored(wq):
     assert len(model.of("rows")) == 1, "11 usable verdicts for 18 rows is at least half, so no split"
     assert [s["reason"] for s in tri["start"]] == ["Hand it to Bo.", *(f"Item {n}" for n in range(2, 9))]
     assert tri["start"][0] == {"key": pr(9)["link"], "title": "o/r#9: Change 9", "source": "GitHub", "effort": "Large",
-                               "reason": "Hand it to Bo."}
+                               "reason": "Hand it to Bo.", "blocked": False}
     assert "merge" not in json.dumps(tri) and tri["note"] == "" and tri["skipped"] == 7
     doc["triage"] = tri
     assert "o/r#2: Change 2" in page.render(doc)[0]
@@ -510,7 +514,7 @@ def test_no_open_items_means_no_start_call(wq):
 def test_an_empty_start_list_never_makes_start_here_the_first_tab(wq):
     tri, html = triaged(snap(pr(1)), Model(rows=raises("the model is down"), start=lambda items: "nothing useful"))
     tabs = re.findall(r'data-t="([a-z-]+)"', html[html.index('id="tabs"'):html.index("</nav>")])
-    assert tri["start"] == [] and tabs[:2] == ["open-list", "start"]
+    assert tri["start"] == [] and tabs[:3] == ["open-list", "agents", "start"]
 
 
 def test_the_start_call_asks_with_todays_date_and_each_verdict(wq):
@@ -672,7 +676,7 @@ def test_the_first_page_write_already_shows_cached_verdicts(wq):
     refresh.run(model=model)
     assert "o/r#8: Change 8" in seen[0], "a new row asks the model again"
     first = row_html(seen[0], pr(7)["link"])
-    assert "Model suggests: Hand off" in first and 'class="btn sf-send"' not in first
+    assert "Model suggests: Hand off" in first and VERDICT["why"] in first
 
 
 def test_an_unexpected_triage_error_keeps_the_verdicts_already_paid_for(wq, capsys):
@@ -1635,7 +1639,7 @@ def test_a_blocked_row_the_model_called_drop_still_leads_start_here(wq):
     model = Model(rows=lambda items: {"rows": [{"id": i["id"], **VERDICT, "disposition": "drop"} for i in items]})
     tri, _ = triaged(snap(pr(1), pr(2)), model, blocked={pr(2)["link"]})
     assert tri["start"][0] == {"key": pr(2)["link"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "Small",
-                               "reason": triage.BLOCKED_REASON}
+                               "reason": triage.BLOCKED_REASON, "blocked": True}
     assert [s["key"] for s in tri["start"]] == [pr(2)["link"]], "a dropped row that isn't blocked stays off"
 
 
@@ -1678,3 +1682,24 @@ def test_rows_asked_again_go_in_a_new_order_each_day_so_spread_out_poison_is_fou
         skipped.append(triaged(snap(*rows), model)[0]["skipped"])
     assert skipped[0] == 40 and skipped[-1] <= 20, "with one fixed order every split half holds poison every day"
     assert skipped == sorted(skipped, reverse=True)
+
+
+
+def test_the_send_to_agents_tab_count_in_the_page_is_its_number_of_rows(wq):
+    html = page.render(snap(*(pr(n) for n in range(1, 5)), outlook=[mail_row(1)]))[0]
+    assert html.count('class="ag-row"') == 5
+    assert '<a class="tab" href="#agents" data-t="agents" style="--acc:var(--c-unsub)">Send to agents <span>5</span></a>' in html
+
+
+def test_no_linked_source_means_no_send_to_agents_tab(wq):
+    html = page.render({"built": "now", "status": []})[0].split("<script>")[0]
+    assert 'id="agents"' not in html and 'data-t="agents"' not in html and "No sources are linked yet." in html
+
+
+def test_a_start_here_item_is_blocked_only_by_the_flag(wq):
+    item = {"key": pr(1)["link"], "title": "o/r#1: Change 1", "source": "GitHub", "effort": "", "blocked": False,
+            "reason": triage.BLOCKED_REASON}
+    tri = {**triage.empty(), "start": [item, {**item, "key": pr(2)["link"], "reason": "Go", "blocked": True}]}
+    html = page.render({**snap(pr(1), pr(2)), "triage": tri})[0]
+    assert f'<li data-key="{pr(1)["link"]}" data-src="github"><div>' in html
+    assert f'<li data-key="{pr(2)["link"]}" data-src="github" data-blocked><div>' in html
