@@ -20,6 +20,12 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- Send a Work queue Start here item to an agent from the list itself. Each
+  item that isn't blocked has Send to Agent next to Done, which sends its row
+  for a first pass through the row's own send path, so the TODO, the done
+  mark, the Slack save completion, and the removal of both the item and its
+  row work exactly as for the row. A blocked item, whose row was already
+  sent, has no Send button and stays on the list.
 - Send any open Work queue row to an agent, alone or many at once. Send to
   Agent shows on every open row, not only the ones the model called `agent`;
   that call is now an "Agent can finish" hint. `POST /api/todo` takes a
@@ -70,8 +76,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   and a saved `queued.json` or `applied.json` in the wrong shape never stops
   a send or the state the page reads.
 - Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
-- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (383 in all now, up from 130 before the Work queue), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
-- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 383 checks, up from 130 before the Work queue; sending rows to agents adds 62 of them, and the sent-save worker fix adds 8.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (390 in all now, up from 130 before the Work queue), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 390 checks, up from 130 before the Work queue; sending rows to agents adds 62 of them, the sent-save worker fix adds 8, and Start here's Send to Agent adds 7.
 
 ### Added
 - The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
