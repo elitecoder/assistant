@@ -434,6 +434,57 @@ def test_draft_lesson_honors_skip_and_coerces_scope():
     assert draft2["target"] == "assistant" and draft2["scope"] == "general"
 
 
+def test_draft_lesson_needs_a_rule_but_no_trigger():
+    corr = {"type": "transcript", "signal": "correction", "count": 1,
+            "assistant_context": "x", "user_signal": "y"}
+    draft = le.draft_lesson(corr, llm=lambda p: json.dumps(
+        {"rule": "When X, do Y.", "target": "claude", "scope": "global"}))
+    assert draft == {"trigger": "", "rule": "When X, do Y.",
+                     "target": "claude", "scope": "global"}
+    # A trigger the LLM still returns is kept.
+    kept = le.draft_lesson(corr, llm=lambda p: json.dumps(
+        {"trigger": "On X", "rule": "Do Y.", "target": "claude", "scope": "global"}))
+    assert (kept["trigger"], kept["rule"]) == ("On X", "Do Y.")
+    # No rule → no draft, with or without a trigger.
+    assert le.draft_lesson(corr, llm=lambda p: json.dumps(
+        {"trigger": "On X", "target": "claude", "scope": "global"})) is None
+
+
+def test_draft_prompts_ask_for_a_rule_and_no_trigger():
+    transcript = {"type": "transcript", "count": 2,
+                  "assistant_context": "force-pushed", "user_signal": "no don't"}
+    candidates = [
+        {"kind": "stranded", "count": 3, "samples": ["nudged idle agent"]},
+        {**transcript, "signal": "correction"},
+        {**transcript, "signal": "confirmation"},
+        {**transcript, "signal": "recurring_question"},
+    ]
+    for candidate in candidates:
+        prompt = le.build_draft_prompt(candidate)
+        assert '"trigger"' not in prompt, candidate
+        assert '{"rule": "<one paragraph' in prompt, candidate
+
+
+def test_extract_proposes_a_rule_with_no_trigger(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger.jsonl"
+    proposals = tmp_path / "proposals.jsonl"
+    monkeypatch.setattr(le, "AUDIT_LOG", tmp_path / "audit.log")
+    monkeypatch.setattr(le, "existing_triggers", lambda *a, **k: [])
+    _write_ledger(ledger, [
+        _entry("stranded", "nudged idle agent to resume its task",
+               epoch=1000 + i, ws=f"workspace:{i}")
+        for i in range(4)
+    ])
+    rule = "When an agent sits idle mid-task, nudge it to resume."
+    r = le.extract(ledger_only=True, ledger_path=ledger, proposals_path=proposals,
+                   now=2000, curator=tmp_path / "curator.py",
+                   llm=lambda prompt: json.dumps(
+                       {"rule": rule, "target": "assistant", "scope": "stranded"}))
+    assert r["n_proposed"] == 1
+    [line] = [json.loads(x) for x in proposals.read_text().splitlines() if x.strip()]
+    assert (line["trigger"], line["rule"], line["status"]) == ("", rule, "pending")
+
+
 def test_extract_ledger_only_skips_transcripts(tmp_path, monkeypatch):
     ledger = tmp_path / "ledger.jsonl"
     proposals = tmp_path / "proposals.jsonl"

@@ -16,7 +16,7 @@ Two signal sources feed one proposal pipeline:
 
 Both passes drop candidates already covered by an existing lesson or a pending
 proposal (idempotency — running twice produces no duplicates), ask Claude
-(one-shot `claude -p`) to write a {trigger, rule, target, scope}, and append it
+(one-shot `claude -p`) to write a {rule, target, scope}, and append it
 to proposals.jsonl (atomic single-line append) where the user can review and
 confirm it.
 
@@ -51,7 +51,7 @@ LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
 PROPOSALS_PATH = ASSISTANT_DIR / "proposals.jsonl"
 AUDIT_LOG = ASSISTANT_DIR / "assistant-audit.log"
 CURATOR = BIN / "assistant-curator.py"
-# Keel M8 model-tiering: the extractor only PHRASES a {trigger, rule, target}
+# Keel M8 model-tiering: the extractor only PHRASES a {rule, target}
 # over a recurrence already DETECTED in Python (MIN_OCCURRENCES), and every
 # result is a HUMAN-CONFIRMED proposal — a hard gate that makes this a CHEAP-tier
 # task (a weak draft is reviewed, never auto-applied). EXTRACTOR_MODEL still wins
@@ -596,8 +596,7 @@ to do with each workspace). The lesson is a rule: either codify a good behavior 
 this pattern reflects, or prevent a mistake it reveals.
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when the rule fires>", \
-"rule": "<one paragraph, imperative, what to do and why>", \
+{{"rule": "<one paragraph, imperative: when it applies, what to do, and why>", \
 "target": "assistant", \
 "scope": "<one of: verdict, merge, cleanup, stranded, general>"}}
 """
@@ -629,8 +628,7 @@ If the correction is about general coding or tool behavior, prefer "claude". \
 If it is about orchestration/workspace verdicts, use "assistant".
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when the rule fires>", \
-"rule": "<one paragraph, imperative, what to do and why>", \
+{{"rule": "<one paragraph, imperative: when it applies, what to do, and why>", \
 "target": "<claude|assistant>", \
 "scope": "<a valid scope for the chosen target>"}}
 
@@ -657,8 +655,7 @@ classification, dashboard, ffp, scout, memory, security.
 policy). Valid scopes: verdict, merge, cleanup, stranded, general.
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when the rule fires>", \
-"rule": "<one paragraph, imperative, what to do and why>", \
+{{"rule": "<one paragraph, imperative: when it applies, what to do, and why>", \
 "target": "<claude|assistant>", \
 "scope": "<a valid scope for the chosen target>"}}
 
@@ -677,8 +674,7 @@ the standing context, targeting "claude" (scope: global) unless it is clearly \
 orchestration policy (target "assistant").
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when this comes up>", \
-"rule": "<one paragraph stating the standing answer/context and what to do>", \
+{{"rule": "<one paragraph stating when this comes up, the standing answer/context, and what to do>", \
 "target": "<claude|assistant>", \
 "scope": "<a valid scope for the chosen target>"}}
 
@@ -762,7 +758,8 @@ def _bedrock_env() -> dict[str, str]:
 def draft_lesson(candidate: dict[str, Any],
                  llm: Callable[[str], str] | None = None) -> dict[str, Any] | None:
     """Ask the LLM to turn a candidate pattern into {trigger, rule, target,
-    scope}. Returns None if the call fails or the output isn't usable JSON.
+    scope}; `trigger` is "" unless the LLM returns one. Returns None if the
+    call fails or the output isn't usable JSON.
     `llm` is injectable for tests; the default shells out to `claude -p`."""
     prompt = build_draft_prompt(candidate)
     raw = (llm or _claude_oneshot)(prompt)
@@ -775,7 +772,7 @@ def draft_lesson(candidate: dict[str, Any],
         return None
     trigger = (obj.get("trigger") or "").strip()
     rule = (obj.get("rule") or "").strip()
-    if not trigger or not rule:
+    if not rule:
         return None
     target = (obj.get("target") or "assistant").strip() or "assistant"
     scope = (obj.get("scope") or "").strip()

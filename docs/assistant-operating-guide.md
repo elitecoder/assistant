@@ -246,8 +246,10 @@ The line is sharp: **mechanical and reversible → do it. Substantive and lossy 
 
 ```markdown
 <!-- lesson: <slug>, scope: <scope>, added: <YYYY-MM-DD> -->
-**<one-line trigger>** <rule body, one paragraph>
+<rule, one paragraph: when it applies, then what to do>
 ```
+
+An older block may open with a bolded trigger line above the rule. The curator reads both forms.
 
 A rule is a rule. There is no "why" field — git history of CLAUDE.md is the audit trail. There is no pin/use-count/state machine. Remove a block when it's stale; edit when it's wrong.
 
@@ -257,13 +259,12 @@ A rule is a rule. There is no "why" field — git history of CLAUDE.md is the au
 
 ```bash
 ~/.claude/bin/assistant-curator.py write \
-  --trigger "<one-line situation>" \
-  --rule "<what to do or not do>" \
+  --rule "<when it applies, then what to do or not do>" \
   --scope "global|dispatch|classification|dashboard|todo|ffp|scout|memory|security"
 ```
 
 **Curator subcommands:**
-- `write --trigger ... --rule ... [--scope S]` — append a new lesson block
+- `write --rule ... [--trigger ...] [--scope S]` — append a new lesson block; `--trigger` adds a bolded line above the rule
 - `list [--scope S]` — show lessons by scope
 - `rm <slug>` — remove a lesson by its slug
 - `trim` — open `~/.claude/CLAUDE.md` in `$EDITOR` for manual triage
