@@ -76,6 +76,16 @@ def test_close_own_workspace_keeps_its_title_guard_across_windows(tmp_path, monk
     assert not any(c[0] == "close-workspace" for c in fake_cmux.calls(tmp_path / "cmux"))
 
 
+def test_close_own_workspace_says_a_workspace_that_ended_is_already_gone(tmp_path, monkeypatch):
+    """A session that really ended isn't "not a warm workspace (ref reissued?)",
+    which is what the log claimed on 2026-11-21."""
+    paths = _paths(tmp_path, monkeypatch, _warm_in_other_window(_title(tmp_path)))
+    logs: list[str] = []
+    cs.close_own_workspace(paths, "workspace:1000020999", log=logs.append)
+    assert logs == ["skip close workspace:1000020999: already gone"]
+    assert not any(c[0] == "close-workspace" for c in fake_cmux.calls(tmp_path / "cmux"))
+
+
 def test_orphan_scan_finds_a_warm_workspace_in_another_window(tmp_path, monkeypatch):
     paths = _paths(tmp_path, monkeypatch, _warm_in_other_window(_title(tmp_path)))
     assert cs.list_warm_workspaces(paths) == [REF]

@@ -16,7 +16,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   window. A live warm session in another window looked gone, so the daemon
   spawned a second one and skipped closing the first. All three now list every
   window (`list-windows`, then `list-workspaces --window` per window), and a
-  window that fails to list makes the check unknown rather than gone.
+  window that fails to list makes the check unknown rather than gone. The
+  close step now logs `already gone` for a session that really ended, instead
+  of calling it "not a warm workspace (ref reissued?)".
 - Keep the Work queue's sent-save worker running after a failure. An
   unexpected error in a batch, such as a malformed result or a job file that
   can't be written, stopped the background thread but left it marked as

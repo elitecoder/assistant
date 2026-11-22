@@ -676,9 +676,12 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
     out = list_workspaces_all_windows(paths)
     if out is None:
         return
+    listed = [line for line in out.splitlines() if ref_listed(line, ws_ref)]
+    if not listed:
+        log(f"skip close {ws_ref}: already gone")
+        return
     # Title guard: only ever close our own warm session, never an arbitrary ref.
-    is_warm = any(ref_listed(line, ws_ref) and SESSION_TITLE in line for line in out.splitlines())
-    if not is_warm:
+    if not any(SESSION_TITLE in line for line in listed):
         log(f"skip close {ws_ref}: not a '{SESSION_TITLE}' workspace (ref reissued?)")
         return
     argv = [str(paths.cmux_bin), "close-workspace", "--workspace", ws_ref]
