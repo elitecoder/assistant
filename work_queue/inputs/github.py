@@ -1,4 +1,7 @@
-"""Open pull requests that ask for your review, read with the `gh` CLI's own sign-in."""
+"""Open pull requests that ask for your review, read with the `gh` CLI's own sign-in.
+
+With `repos` set, only pull requests in those repositories are listed.
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,7 +12,8 @@ FIELDS = "number,title,url,repository,author,createdAt,isDraft"
 
 
 def rows(entry: dict) -> list[dict]:
-    prs = tools.run_json(["gh", "search", "prs", "--review-requested=@me", "--state=open", "--limit", "100",
+    repos = [arg for repo in entry.get("repos") or [] for arg in ("--repo", repo)]
+    prs = tools.run_json(["gh", "search", "prs", "--review-requested=@me", "--state=open", *repos, "--limit", "100",
                           "--json", FIELDS], env={"GH_HOST": entry["host"]} if entry.get("host") else None)
     skip = set(entry.get("skip_authors") or [])
     out = []

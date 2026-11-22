@@ -81,8 +81,8 @@ stores a token: tokens stay in your environment or in each tool's own store.
 | `slack` | `uv` and Playwright 1.63.0's Chromium | Your open Later saves and their conversations | The [Slack focus list](connectors.md#slack-focus-list) user token, plus a Slack browser session |
 | `gmail` | `gog` | Every inbox conversation, plus unread mail outside the inbox, for each account | `gog auth credentials <client-secret.json>` once, then `gog auth add you@example.com` |
 | `calendar` | `gog` | Today's events on each account's primary calendar | `gog auth credentials <client-secret.json>` once, then `gog auth add you@example.com` |
-| `outlook` | `npx -y @microsoft/workiq` | Your Outlook inbox and sent items, read-only | Work IQ's Microsoft 365 sign-in |
-| `github` | `gh` | Open pull requests that ask for your review | `gh auth login` |
+| `outlook` | `npx -y @microsoft/workiq` | Your Outlook inbox and sent items, and today's Outlook calendar, read-only | Work IQ's Microsoft 365 sign-in |
+| `github` | `gh` | Open pull requests that ask for your review, in every repository or only in the ones you list | `gh auth login` |
 
 `bin/work-queue-setup.py` links and checks them:
 
@@ -91,6 +91,7 @@ bin/work-queue-setup.py status                 # one line per source, no sign-in
 bin/work-queue-setup.py link gmail             # every gog account with Gmail access
 bin/work-queue-setup.py link gmail --account you@example.com --account other@example.com
 bin/work-queue-setup.py link github --host github.example.com
+bin/work-queue-setup.py link github --repo octo-org/hello-world --repo octo-org/docs
 bin/work-queue-setup.py check                  # a read-only probe for each linked source
 bin/work-queue-setup.py unlink calendar          # unlink slack also deletes its browser profile and cookies
 bin/work-queue-setup.py refresh                # re-read the linked sources now
@@ -102,6 +103,11 @@ for the source it links: `linked`, `not linked`, `needs sign-in`, or
 tool, runs a read-only probe, and saves the source. For Slack, `link` reads
 your workspace from your user token, then opens a browser window. Sign in to
 Slack there once; later refreshes reuse that session without a window.
+
+For GitHub, `--repo` takes a repository in `OWNER/NAME` form, and you can
+repeat it. With it, the page lists only the pull requests in those
+repositories. Without it, the page lists every pull request that asks for
+your review.
 
 The connectors in [Connect your sources](connectors.md) are separate daemons.
 The Work queue doesn't use or start them.
@@ -118,7 +124,7 @@ you can edit it by hand:
   "gmail": {"accounts": ["you@example.com"]},
   "calendar": {"accounts": ["you@example.com"]},
   "outlook": {"address": "you@example.com"},
-  "github": {"skip_authors": ["dependabot[bot]"], "host": "github.example.com"}
+  "github": {"skip_authors": ["dependabot[bot]"], "host": "github.example.com", "repos": ["octo-org/hello-world"]}
 }
 ```
 
@@ -126,7 +132,9 @@ you can edit it by hand:
 |---|---|
 | `port` | The server's port: a whole number from 1 to 65535. Default 8851. |
 | `slack.close_after_days` | A Later save whose thread moved more recently than this stays on your Open list. Default 14. |
+| `outlook.calendar` | Set it to `false` to keep your Outlook calendar off the Today tab. Default `true`. |
 | `github.skip_authors` | Logins whose pull requests you don't want listed. |
+| `github.repos` | The `OWNER/NAME` repositories to list pull requests from. Leave it out to list every repository. |
 | `github.host` | A GitHub Enterprise host, passed to `gh` as `GH_HOST`. |
 | `triage.model` | The model that triages the rows when the provider is Claude. Default: the `balanced` tier, Sonnet 5.5. Droid, Copilot, and local models use their own model settings. |
 | `triage.dailyUsd` | The Work queue's own daily model budget in US dollars. Default 3.00. |
@@ -153,7 +161,12 @@ its error at the top of the page, and the other sources still render.
 - **Send to agents**: every open row, from every source, with the ones the
   model said an agent can finish first. Pick rows, or select **Select all**,
   then **Send N to agents**. See [Send work to an agent](#send-work-to-an-agent).
-- **Today**: today's events from each linked calendar.
+- **Today**: today's events from each linked Google calendar and, when
+  Outlook is linked, from your Outlook calendar. Today is your computer's
+  local day. Cancelled Outlook events are left out, and events you declined
+  say **you declined**. When the Outlook calendar can't be read, it shows as
+  its own **Outlook calendar** error, and your Google events and Outlook mail
+  still show.
 - **Email**: one tab with a part for Outlook, a part for each Gmail account,
   and a part for Unsubscribe. Each part opens and closes, and a part with email
   that needs you starts open. The tab's count is the email that needs you and

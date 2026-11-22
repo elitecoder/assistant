@@ -120,6 +120,21 @@ def test_link_github_and_outlook_probe_read_only(wq, capsys):
     assert calls(wq.bin, "npx")[0] == "-y @microsoft/workiq fetch -u /me?$select=mail,userPrincipalName"
 
 
+def test_link_github_saves_the_repos_you_name_and_refuses_a_malformed_one(wq, capsys):
+    fake_tool(wq.bin, "gh", [("api user", "octo\n")])
+    linked = "GitHub: linked (github.com: octo-org/hello-world, octo-org/docs.js)"
+    assert run(capsys, "link", "github", "--repo", "octo-org/hello-world", "--repo", "octo-org/docs.js") == (0, [linked])
+    assert wq.saved_sources() == {"github": {"skip_authors": [], "repos": ["octo-org/hello-world", "octo-org/docs.js"]}}
+    assert run(capsys, "status")[1][-1] == linked
+    for bad in ("hello-world", "octo-org/hello/world", "https://github.com/octo-org/hello-world", "octo-org/", "octo org/x"):
+        with pytest.raises(SystemExit) as ctx:
+            setup.main(["link", "github", "--repo", bad])
+        assert ctx.value.code == 2
+        assert f"{bad!r} isn't a repository in OWNER/NAME form, like octo-org/hello-world" in capsys.readouterr().err
+    assert wq.saved_sources()["github"]["repos"] == ["octo-org/hello-world", "octo-org/docs.js"]
+    assert calls(wq.bin, "gh") == ["api user --jq .login"]
+
+
 def test_link_slack_reads_the_workspace_from_your_token_and_signs_in_the_browser(wq, capsys, monkeypatch):
     fake_tool(wq.bin, "uv", [])
     code, lines = run(capsys, "link", "slack")

@@ -2,7 +2,7 @@
 """Link your own sources to the Work queue (a Pro mode feature).
 
     work-queue-setup.py status                 one line per source, without signing in to anything
-    work-queue-setup.py link <source> [--account EMAIL ...] [--host HOST]
+    work-queue-setup.py link <source> [--account EMAIL ...] [--host HOST] [--repo OWNER/NAME ...]
     work-queue-setup.py unlink <source>        unlinking slack also deletes its browser profile and cookies
     work-queue-setup.py check                  run a read-only probe for each linked source
     work-queue-setup.py unlinked               print the sources you haven't linked, one per line
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -103,7 +104,13 @@ def gh_user(host: str | None) -> None:
 
 def detect_github(args) -> dict:
     gh_user(args.host)
-    return {"skip_authors": [], **({"host": args.host} if args.host else {})}
+    return {"skip_authors": [], **({"host": args.host} if args.host else {}), **({"repos": args.repo} if args.repo else {})}
+
+
+def repo_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", value):
+        raise argparse.ArgumentTypeError(f"{value!r} isn't a repository in OWNER/NAME form, like octo-org/hello-world")
+    return value
 
 
 def probe(name: str, entry: dict) -> None:
@@ -125,7 +132,9 @@ DETECT = {"slack": detect_slack, "gmail": detect_gmail, "calendar": detect_calen
 def describe(name: str, entry: dict) -> str:
     if name in ("gmail", "calendar"):
         return ", ".join(entry["accounts"])
-    return {"slack": entry.get("workspace_url"), "outlook": entry.get("address"), "github": entry.get("host", "github.com")}[name]
+    if name == "github":
+        return entry.get("host", "github.com") + (f": {', '.join(entry['repos'])}" if entry.get("repos") else "")
+    return {"slack": entry.get("workspace_url"), "outlook": entry.get("address")}[name]
 
 
 def problem(name: str, exc: tools.SourceError) -> str:
@@ -182,6 +191,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("source", nargs="?", choices=config.SOURCES)
     parser.add_argument("--account", action="append", help="a Google account for gmail or calendar; repeat for more")
     parser.add_argument("--host", help="a GitHub Enterprise host for github")
+    parser.add_argument("--repo", action="append", type=repo_name,
+                        help="list only pull requests in this OWNER/NAME repository for github; repeat for more")
     args = parser.parse_args(argv)
     if args.action in ("link", "unlink") and not args.source:
         parser.error(f"{args.action} needs a source: {', '.join(config.SOURCES)}")
