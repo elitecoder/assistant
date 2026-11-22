@@ -666,6 +666,56 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         browser.close()
 
 
+def titled(items):
+    plan = {"o/r#1: Change 1": {"title": "Review Ana's parser change before Monday", "lane": "do_first"},
+            "o/r#2: Change 2": {"title": "Send Bo the release notes you promised", "lane": "promise"}}
+    return {"rows": [{"id": i["id"], **VERDICT, **plan.get(i["title"], {})} for i in items]}
+
+
+def test_rows_show_the_models_action_titles_grouped_by_lane_at_both_widths(site, wq):
+    triaged_site(wq, Model(rows=titled))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        errors: list[str] = []
+        tab.on("pageerror", lambda exc: errors.append(str(exc)))
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.wait_for_selector("#open-list .sf-lane", state="visible")
+        heads = "#open-list .sf-lane h3, #open-list .sf-group h3"
+        assert tab.locator(heads).all_inner_texts() == ["Do first 1", "Promise 1", "Not sorted yet", "Pull requests 1"]
+        row1, row3 = f'.sf-row[data-key="{pr(1)["key"]}"]', f'.sf-row[data-key="{pr(3)["key"]}"]'
+        assert text(tab, f'.sf-lane[data-lane="do_first"] {row1} .sf-title') == (
+            "Model suggests: YouReview Ana's parser change before Monday")
+        assert text(tab, f"{row1} .sf-orig") == "o/r#1: Change 1"
+        assert text(tab, f"{row1} .sf-meta") == "GitHub Review requested · ana · opened Nov 2"
+        assert text(tab, f"{row3} .sf-title") == "Model suggests: Youo/r#3: Change 3" and tab.locator(f"{row3} .sf-orig").count() == 0
+        tab.locator('#tabs .tab[data-t="start"]').click()
+        tab.wait_for_selector(f"{li(1)} .sf-orig", state="visible")
+        assert text(tab, f"{li(1)} .sf-title") == "Review Ana's parser change before Monday"
+        assert text(tab, f"{li(3)} .sf-title") == "o/r#3: Change 3"
+        for width in (1280, 390):
+            tab.set_viewport_size({"width": width, "height": 900})
+            for tab_id in ("start", "open-list"):
+                tab.locator(f'#tabs .tab[data-t="{tab_id}"]').click()
+                tab.wait_for_selector(f"#{tab_id}", state="visible")
+                no_sideways_scroll(tab)
+            assert tab.locator(f"{row1} .sf-orig").is_visible() and tab.locator(f"{row1} .pr-pill.src").is_visible()
+            rows = tab.evaluate("[...document.querySelectorAll('#open-list .sf-row')].map(r => r.scrollWidth <= r.clientWidth)")
+            assert rows == [True, True, True], width
+        tab.locator(f"{row1} .sf-mark").click()
+        wait_text(tab, '.sf-lane[data-lane="do_first"] h3 .count', "0")
+        assert (text(tab, "#open-total"), text(tab, '.sf-lane[data-lane="promise"] h3 .count')) == ("2", "1")
+        tab.locator(f'.sf-row[data-key="{pr(2)["key"]}"] .sf-send').click()
+        tab.locator(f'.sf-row[data-key="{pr(2)["key"]}"] .cp-go').click()
+        wait_text(tab, '.sf-lane[data-lane="promise"] h3 .count', "0")
+        todo = json.loads(wq.todo.read_text())["items"][-1]
+        assert todo["title"].endswith("o/r#2: Change 2"), "Send to Agent still names the row's own text"
+        assert errors == []
+        cov.snap()
+        browser.close()
+
+
 def stop(message: str):
     def call(items):
         raise triage.Stop(message)

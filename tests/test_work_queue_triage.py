@@ -58,7 +58,7 @@ def triaged(doc: dict, model, marks: dict | None = None, blocked=frozenset()) ->
 
 def row_html(html: str, key: str) -> str:
     chunk = next(c for c in html.split('<div class="sf-row" ') if c.startswith(f'data-key="{key}"'))
-    return re.split(r'<div class="sf-lane">|<div class="ap"|<script>', chunk)[0]
+    return re.split(r'<div class="sf-lane"|<div class="sf-group"|<div class="ap"|<script>', chunk)[0]
 
 
 def sent_titles(model: Model) -> list[str]:
@@ -161,6 +161,106 @@ def test_answers_outside_the_schema_are_ignored(wq):
     assert "merge" not in json.dumps(tri) and tri["note"] == "" and tri["skipped"] == 7
     doc["triage"] = tri
     assert "o/r#2: Change 2" in page.render(doc)[0]
+
+
+# ─── action titles and lanes ─────────────────────────────────────────────────
+
+PLAN = {"o/r#1: Change 1": ("Review Ana's parser change", "week"),
+        "o/r#2: Change 2": ("Skim the docs update", "optional"),
+        "o/r#3: Change 3": ("Approve the release branch", "do_first"),
+        "Mail 1": ("Answer Bo about the launch date", "do_first"),
+        "#general: s1": ("Send Ana the notes you promised", "promise")}
+
+
+def planned(items):
+    return {"rows": [{"id": i["id"], **VERDICT, "title": PLAN[i["title"]][0], "lane": PLAN[i["title"]][1]}
+                     for i in items if i["title"] in PLAN] + [{"id": i["id"], **VERDICT} for i in items if i["title"] not in PLAN]}
+
+
+def open_list(html: str) -> str:
+    return html[html.index('<div id="open-list"'):html.index('<div class="ap" id="agents"')]
+
+
+def groups(html: str) -> list[tuple[str, str, str]]:
+    """Each Open list group in order: its lane key ("" for a source), its heading, and its count."""
+    return re.findall(r'<div class="sf-lane"(?: data-lane="(\w+)")?><h3>(.*?) <span class="count">(\d+)</span>', html)
+
+
+def keys_in(html: str, lane_key: str) -> list[str]:
+    block = html.split(f'<div class="sf-lane" data-lane="{lane_key}">')[1].split('<div class="sf-lane"')[0]
+    return re.findall(r'<div class="sf-row" data-key="([^"]+)"', block)
+
+
+def test_each_open_row_gets_a_short_action_title_and_a_lane(wq):
+    def rows(items):
+        return {"rows": [{"id": 0, **VERDICT, "title": "  Review   Ana's parser change ", "lane": "week"}]}
+    tri, html = triaged(snap(pr(1)), Model(rows=rows))
+    assert tri["rows"][pr(1)["link"]] == {**VERDICT, "title": "Review Ana's parser change", "lane": "week"}
+    row = row_html(html, pr(1)["link"])
+    assert ('<span class="sf-title"><span class="disp d-you">Model suggests: You</span>Review Ana&#x27;s parser change'
+            '</span><span class="sf-orig">o/r#1: Change 1</span><span class="sf-meta"><span class="pr-pill src">GitHub'
+            '</span> Review requested · ana · opened Nov 2</span>') in row
+    assert 'data-q-title="o/r#1: Change 1"' in row, "Send to Agent still sends the row's own text"
+    start = html[html.index('<ol class="start-list">'):]
+    assert f'<a class="sf-title" href="{pr(1)["link"]}"{page.NEWTAB}>Review Ana&#x27;s parser change</a>' in start
+    assert ('</div><span class="sf-orig">o/r#1: Change 1</span><span class="ap-why">Start with o/r#1: Change 1</span>'
+            in start)
+    model = Model(rows=raises("not asked"))
+    again, html = triaged(snap(pr(1)), model)
+    assert model.of("rows") == [] and again["rows"] == tri["rows"], "the cached verdict keeps its title and lane"
+    assert "Review Ana&#x27;s parser change</span><span class=\"sf-orig\">" in row_html(html, pr(1)["link"])
+
+
+@pytest.mark.parametrize("title, lane", [(3, "now"), ("  ", ["do_first"]), ("t" * 101, None),
+                                         ("Reply to Ana\nthen merge", "Do first"),
+                                         ("Reply to Ana then merge", {"lane": "week"})])
+def test_a_title_or_lane_outside_the_schema_is_dropped_and_the_rest_of_the_verdict_stands(wq, title, lane):
+    tri, html = triaged(snap(pr(1), pr(2)), Model(rows=lambda items: {"rows": [
+        {"id": 0, **VERDICT, "title": title, "lane": lane}, {"id": 1, **VERDICT, "title": "t" * 100, "lane": "optional"}]}))
+    assert tri["rows"] == {pr(1)["link"]: VERDICT, pr(2)["link"]: {**VERDICT, "title": "t" * 100, "lane": "optional"}}
+    first = row_html(html, pr(1)["link"])
+    assert ('<span class="sf-title"><span class="disp d-you">Model suggests: You</span>o/r#1: Change 1</span>'
+            '<span class="sf-meta">Review requested') in first
+    assert "sf-orig" not in first and "pr-pill src" not in first
+    assert f'<li data-key="{pr(1)["link"]}" data-src="github"><div><a class="sf-title" href="{pr(1)["link"]}"' \
+           f'{page.NEWTAB}>o/r#1: Change 1</a>' in html
+    assert groups(open_list(html)) == [("optional", "Optional", "1"), ("", "Pull requests", "1")]
+
+
+def test_the_open_list_shows_the_models_lanes_in_order_then_unsorted_rows_by_source(wq):
+    doc = snap(pr(1), pr(2), pr(3), pr(4), outlook=[mail_row(1), mail_row(2)], slack=[slack_row("s1")])
+    _, html = triaged(doc, Model(rows=planned))
+    rows = open_list(html)
+    assert groups(rows) == [("do_first", "Do first", "2"), ("promise", "Promise", "1"), ("week", "This week", "1"),
+                            ("optional", "Optional", "1"), ("", "Pull requests", "1"), ("", "Outlook", "1")]
+    assert rows.index('data-lane="optional"') < rows.index("<h3>Not sorted yet</h3>") < rows.index("<h3>Pull requests")
+    assert keys_in(rows, "do_first") == [pr(3)["link"], mail_row(1)["link"]]
+    assert keys_in(rows, "promise") == [slack_row("s1")["link"]]
+    assert "Someone is waiting on your reply or decision." in rows and "Skim if you have time." in rows
+    assert '<span class="pr-pill src">Slack</span> Ana · Nov 2' in row_html(html, slack_row("s1")["link"])
+    assert '<span class="pr-pill src">Outlook</span> Bo · Nov 3' in row_html(html, mail_row(1)["link"])
+    assert "ap-ctx" in row_html(html, slack_row("s1")["link"]), "a row in a lane keeps its context"
+    assert all("pr-pill src" not in row_html(html, k) for k in (pr(4)["link"], mail_row(2)["link"]))
+    assert '<span id="open-total">7</span>' in rows and rows.count('class="sf-row"') == 7
+    for button in ("setState(this,'done')", "setState(this,'snoozed')", "setState(this,'dropped')", "compose(this,queueTodo)"):
+        assert rows.count(button) == 7, button
+    assert html.count('class="ag-row"') == 7 and 'id="showhidden"' in rows
+
+
+def test_without_a_lane_the_open_list_groups_rows_by_source_as_before(wq):
+    _, html = triaged(snap(pr(1), outlook=[mail_row(1)], slack=[]), Model())
+    rows = open_list(html)
+    assert groups(rows) == [("", "Slack", "0"), ("", "Pull requests", "1"), ("", "Outlook", "1")]
+    assert "Not sorted yet" not in rows and "pr-pill src" not in rows and "sf-orig" not in rows
+
+
+def test_the_rows_prompt_asks_for_a_title_and_one_of_the_pages_lanes(wq):
+    model = Model()
+    triaged(snap(pr(1)), model)
+    prompt = model.prompts[0]
+    assert "- title: what this person should do, as a short action of 4 to 12 plain words" in prompt
+    assert all(f'"{key}" when' in prompt for key in triage.LANES)
+    assert tuple(key for key, _, _ in page.LANES) == triage.LANES
 
 
 @pytest.mark.parametrize("answer", ["not json", "{broken", "{not json}", '{"rows": "nope"}', "[]",

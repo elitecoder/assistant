@@ -10,6 +10,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Give each Work queue row a short action title from the model, such as
+  "Review Ana's pull request #42 on the parser", and use it as the headline
+  on the Open list and Start here, with the row's own text under it. A row
+  without a usable title shows its own text as before, and **Send to Agent**
+  still sends the row's own text.
+- Group the Work queue's Open list by the model's lanes: **Do first**,
+  **Promise**, **This week**, and **Optional**, in that order, each row naming
+  its source. Rows the model didn't sort follow under **Not sorted yet**,
+  grouped by source. The triage cache is asked again once, since the prompt
+  changed.
 - Turn the Observer off with `{"observer": {"enabled": false}}` in
   `~/.assistant/config.json`. The pulse then sends no workspace to it and
   each workspace keeps its last verdict. Without the setting, it stays on.
