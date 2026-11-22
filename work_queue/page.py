@@ -6,9 +6,11 @@ a why, a disposition, an effort, and a draft on each open row, the Start here
 list, and the Since last night box. Every open row has Done, Snooze, Drop, and
 Send to Agent, which hands the row to an agent for a first pass; the Send to
 agents tab sends many at once, and can send them hands-off. A row the model
-called `agent` says "Agent can finish". A sent row leaves the page: the
-Assistant dashboard follows its TODO. Every piece of model text is escaped.
-Drafts are text to copy: nothing on the page sends them.
+called `agent` says "Agent can finish". A sent row leaves the page, and Ready
+for you shows its TODO once it's done or blocked. Send to Agent opens a note box
+first. The Email tab holds Outlook, each Gmail account, and Unsubscribe, with
+Send to Agent, Snooze, Archive, and Mark read on each email. Every piece of
+model text is escaped. Drafts are text to copy: nothing on the page sends them.
 """
 from __future__ import annotations
 
