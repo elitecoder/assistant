@@ -858,7 +858,7 @@ def untracked_warm_refs(warm_refs: list[str], spawned_refs: list[str],
     return [ws for ws in warm_refs if ws != keep and ws not in known]
 
 
-def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cover - live cmux I/O
+def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:
     """Workspace refs whose title is THIS instance's warm-session title.
 
     Filters on the instance-tagged warm_workspace_title, not the bare

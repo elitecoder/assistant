@@ -81,6 +81,12 @@ def test_orphan_scan_finds_a_warm_workspace_in_another_window(tmp_path, monkeypa
     assert cs.list_warm_workspaces(paths) == [REF]
 
 
+def test_orphan_scan_finds_nothing_when_a_window_fails_to_list(tmp_path, monkeypatch):
+    paths = _paths(tmp_path, monkeypatch, _warm_in_other_window(_title(tmp_path)),
+                   failing=["KEY"])
+    assert cs.list_warm_workspaces(paths) == []
+
+
 def _load_listen():
     spec = importlib.util.spec_from_file_location(
         "comms_listen_all_windows", str(BIN / "comms-listen.py"))
