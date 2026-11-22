@@ -10,6 +10,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Fixed
+- Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
+  workspaces. Its liveness check, close guard, and orphan scan listed
+  workspaces with a bare `cmux list-workspaces`, which shows only the focused
+  window. A live warm session in another window looked gone, so the daemon
+  spawned a second one and skipped closing the first. All three now list every
+  window (`list-windows`, then `list-workspaces --window` per window), and a
+  window that fails to list makes the check unknown rather than gone.
 - Keep the Work queue's sent-save worker running after a failure. An
   unexpected error in a batch, such as a malformed result or a job file that
   can't be written, stopped the background thread but left it marked as

@@ -614,17 +614,42 @@ def _surface_read_text(paths: comms_lib.Paths, surface_ref: str, lines: int = 20
     return d.get("text", "") or ""
 
 
+def list_workspaces_all_windows(paths: comms_lib.Paths, run=None) -> str | None:
+    """`list-workspaces` text for every cmux window, joined; None when cmux
+    can't list the windows or any one of them. A bare `list-workspaces` shows
+    only the caller's window, and the daemon has no caller, so cmux answers for
+    the focused window: on 2026-11-21 a live warm session in another window
+    looked gone, was respawned, and was never closed. `run` defaults to
+    comms_lib.run_cmd."""
+    run = run or comms_lib.run_cmd
+    rc, out, _ = run([str(paths.cmux_bin), "list-windows", "--json"], timeout=10)
+    if rc != 0:
+        return None
+    try:
+        window_ids = [w["id"] for w in json.loads(out)]
+    except (ValueError, KeyError, TypeError):
+        return None
+    listings = []
+    for window_id in window_ids:
+        rc, out, _ = run([str(paths.cmux_bin), "list-workspaces", "--window", window_id],
+                         timeout=10)
+        if rc != 0:
+            return None
+        listings.append(out)
+    return "\n".join(listings)
+
+
 def probe_workspace(paths: comms_lib.Paths, ws_ref: str, run=None) -> str:
     """One look at a workspace. When `tree` fails without saying the ref is
-    unknown, a successful `list-workspaces` still settles it either way; if
+    unknown, a successful list of every window's workspaces still settles it; if
     that fails too, the answer is UNKNOWN. `run` defaults to comms_lib.run_cmd."""
     run = run or comms_lib.run_cmd
     rc, _, err = run([str(paths.cmux_bin), "tree", "--workspace", ws_ref, "--json"], timeout=10)
     state = classify_tree_result(rc, err)
     if state != UNKNOWN:
         return state
-    rc, out, _ = run([str(paths.cmux_bin), "list-workspaces"], timeout=10)
-    if rc != 0:
+    out = list_workspaces_all_windows(paths, run)
+    if out is None:
         return UNKNOWN
     return ALIVE if ref_listed(out, ws_ref) else GONE
 
@@ -648,8 +673,8 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
 
     test_no_close_workspace.py allowlists exactly this one guarded invocation and
     still bans every other close-workspace call in production code."""
-    rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
-    if rc != 0:
+    out = list_workspaces_all_windows(paths)
+    if out is None:
         return
     # Title guard: only ever close our own warm session, never an arbitrary ref.
     is_warm = any(ref_listed(line, ws_ref) and SESSION_TITLE in line for line in out.splitlines())
@@ -837,11 +862,11 @@ def list_warm_workspaces(paths: comms_lib.Paths) -> list[str]:  # pragma: no cov
     """Workspace refs whose title is THIS instance's warm-session title.
 
     Filters on the instance-tagged warm_workspace_title, not the bare
-    SESSION_TITLE, so the machine-wide list-workspaces output is narrowed to
+    SESSION_TITLE, so the every-window workspace listing is narrowed to
     this instance's own warm workspaces. That keeps reconcile's orphan-sweep
     pass from ever returning a second comms instance's healthy session."""
-    rc, out, _ = comms_lib.run_cmd([str(paths.cmux_bin), "list-workspaces"], timeout=10)
-    if rc != 0:
+    out = list_workspaces_all_windows(paths)
+    if out is None:
         return []
     title = warm_workspace_title(paths)
     refs = []
