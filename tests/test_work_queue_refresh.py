@@ -62,8 +62,12 @@ def test_every_linked_source_renders_into_one_page(wq, fake_slack, monkeypatch):
     status = refresh.run(transport=fake_slack._transport, now=NOW)
     assert all(s["state"] == "ok" for s in status), status
     html = refresh.site_path().read_text()
-    for tab in ("open-list", "calendar", "email", "gmail-1", "unsubscribe", "slack-saves", "all"):
+    for tab in ("open-list", "calendar", "mailbox", "slack-saves", "all"):
         assert f'data-t="{tab}"' in html
+    mailbox = html[html.index('id="mailbox"'):html.index('id="slack-saves"')]
+    for part in ("email", "gmail-1", "unsubscribe"):
+        assert f'<details class="mb-sec" id="{part}"' in mailbox and f'data-t="{part}"' not in html, \
+            "Outlook, each Gmail account, and Unsubscribe are parts of the one Email tab"
     for lane in ("<h3>Slack ", "<h3>Pull requests ", "<h3>Outlook ", f"<h3>Gmail: {ACCT} "):
         assert lane in html
     assert "All day · Standup" in html and "Can you review?" in html and "Weekly digest" in html
@@ -71,6 +75,9 @@ def test_every_linked_source_renders_into_one_page(wq, fake_slack, monkeypatch):
     cands = json.loads(refresh.candidates_path().read_text())
     assert {c["kind"] for c in cands.values()} == {"slack", "gmail", "unsub", "mail"}
     assert [c["url"] for c in cands.values() if c["kind"] == "unsub"] == ["https://list.example/u?id=1"]
+    threads = json.loads(refresh.emails_path().read_text())
+    assert sorted(t["tid"] for t in threads.values()) == ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t9"]
+    assert {t["account"] for t in threads.values()} == {ACCT} and all(k.startswith("gmail:") for k in threads)
     slack_cands = [c for c in cands.values() if c["kind"] == "slack"]
     assert len(slack_cands) == 9 and all(c["link"].startswith("https://acme.slack.com/archives/") for c in slack_cands)
 

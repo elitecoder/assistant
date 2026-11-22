@@ -143,7 +143,7 @@ def rows(account: str) -> list[dict]:
         place = "all" if t["archived"] else "inbox"
         out.append({
             "key": "gmail:" + hashlib.sha1(f"{account}:{t['tid']}".encode()).hexdigest()[:12], "account": account,
-            "msg_ids": t["msg_ids"], "group": group, "title": t["subject"] or "(no subject)", "reason": reason,
+            "tid": t["tid"], "archived": t["archived"], "msg_ids": t["msg_ids"], "group": group, "title": t["subject"] or "(no subject)", "reason": reason,
             "subject": t["subject"] or "(no subject)", "from": re.sub(r"\s*<[^>]+>", "", t["from"]).strip('" ') or t["addr"],
             "addr": t["addr"], "day": day(t["date"]), "unread": "UNREAD" in t["labels"], "to": [t["to"]] if t["to"] else [],
             "cc": [], "body": t["body"] or t["snippet"], "unsub_url": t["unsub_url"],

@@ -196,6 +196,8 @@ def test_gmail_rules_sort_each_conversation_and_build_trash_and_unsubscribe_data
     assert by_tid["t4"]["unsub_url"] == "https://list.example/u?id=1" and by_tid["t6"]["unsub_url"] == ""
     assert by_tid["t5"]["body"] == "snip & more" and by_tid["t5"]["reason"].startswith("You never opened it")
     assert by_tid["t9"]["link"] == f"https://mail.google.com/mail/?authuser={ACCT}#all/t9"
+    assert all(r["tid"] == t for t, r in by_tid.items()), "each row names its thread, for Archive and Mark read"
+    assert [t for t, r in by_tid.items() if r["archived"]] == ["t9"], "only mail outside the inbox reads as archived"
     assert by_tid["t7"]["from"] == "deals@promo.example" and by_tid["t6"]["from"] == "Promo"
     assert all(f"-a {ACCT} -j" in c for c in calls(wq.bin, "gog"))
 

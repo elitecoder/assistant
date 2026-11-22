@@ -64,3 +64,20 @@ def test_the_workflow_runs_every_shard_and_requires_them_all():
     assert 'test "$COVERAGE" = success && test "$MUTATIONS" = success' in gate
     assert "COVERAGE: ${{ needs.changed-code-coverage.result }}" in gate and "MUTATIONS: ${{ needs.mutations.result }}" in gate
     assert "tests/mutation_smoke.py --output" not in WORKFLOW, "no job runs the checks unsharded as well"
+
+
+def test_a_check_never_runs_in_a_folder_whose_path_has_a_double_underscore(monkeypatch, tmp_path):
+    names = iter(["assistant-mutation-a__b", "assistant-mutation-__c", "assistant-mutation-ok"])
+    made, cleaned = [], []
+
+    class Folder:
+        def __init__(self, prefix):
+            self.name = str(tmp_path / next(names))
+            made.append(self.name)
+
+        def cleanup(self):
+            cleaned.append(self.name)
+
+    monkeypatch.setattr(mutation_smoke, "TemporaryDirectory", Folder)
+    assert mutation_smoke.scratch().name == str(tmp_path / "assistant-mutation-ok")
+    assert cleaned == made[:2], "each folder with __ in its name is removed before the next try"

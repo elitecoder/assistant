@@ -731,7 +731,7 @@ CHECKS = (
     (
         'Send to Agent shows on every open row',
         'work_queue/page.py',
-        '            \'<button class="btn sf-send" onclick="queueTodo(this)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button></div>{draft}{extra}</div>\')\n',
+        '            \'<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button></div>{draft}{extra}</div>\')\n',
         "            f'</div>{draft}{extra}</div>')\n",
         'tests/test_work_queue_triage.py::test_send_to_agent_shows_on_every_open_row_whatever_the_model_said',
     ),
@@ -794,14 +794,14 @@ CHECKS = (
     (
         'a completed TODO keeps its row off the page',
         'work_queue/server.py',
-        '[*doc.get("items", []), *doc.get("completed", [])]',
-        '[*doc.get("items", [])]',
+        'live = {i.get("id"): i for i in [*doc.get("items", []), *doc.get("completed", [])]',
+        'live = {i.get("id"): i for i in [*doc.get("items", [])]',
         'tests/test_work_queue_server.py::test_a_sent_row_stays_off_the_page_while_its_todo_exists',
     ),
     (
         'the page hears which rows were sent',
         'work_queue/server.py',
-        '"sent": sent_rows(),',
+        '"sent": sorted(queued),',
         '"sent": [],',
         'tests/test_work_queue_server.py::test_a_fresh_home_without_a_todo_store_gets_one',
     ),
@@ -885,8 +885,8 @@ CHECKS = (
     (
         "a row's own Send to Agent is a first pass",
         'work_queue/page.py',
-        "const o=await sendRow(r,'assist');",
-        "const o=await sendRow(r,'handsoff');",
+        "const o=await sendRow(r,'assist',note);",
+        "const o=await sendRow(r,'handsoff',note);",
         'tests/test_work_queue_browser.py::test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail',
     ),
     (
@@ -1289,15 +1289,15 @@ CHECKS = (
     (
         "a Start here send uses its row's data",
         'work_queue/page.py',
-        "return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k))",
-        "return sendFrom(b,b.closest('li'))",
+        "return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k),note)",
+        "return sendFrom(b,b.closest('li'),note)",
         'tests/test_work_queue_browser.py::test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row',
     ),
     (
         'a Start here send is a first pass',
         'work_queue/page.py',
-        "const o=await sendRow(r,'assist');",
-        "const o=await sendRow(r,'handsoff');",
+        "const o=await sendRow(r,'assist',note);",
+        "const o=await sendRow(r,'handsoff',note);",
         'tests/test_work_queue_browser.py::test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row',
     ),
     (
@@ -1394,8 +1394,8 @@ CHECKS = (
     (
         'Gmail apply reports what it reads back',
         'work_queue/server.py',
-        '"verified": all(t != undo for t in trashed)',
-        '"verified": True',
+        'verified = all(labels is not None and ("TRASH" in labels) != undo for labels in read)',
+        'verified = True',
         'tests/test_work_queue_server.py::test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_reads_back',
     ),
     (
@@ -2318,8 +2318,8 @@ CHECKS = (
     (
         'Start here shows when only a part failed',
         'work_queue/page.py',
-        'or tri["note"] or tri["failed"]):',
-        'or tri["note"]):',
+        'or tri["note"] or tri["failed"]))\n',
+        'or tri["note"]))\n',
         'tests/test_work_queue_triage.py::test_an_empty_start_list_never_makes_start_here_the_first_tab',
     ),
     (
@@ -2763,6 +2763,342 @@ CHECKS = (
         '          uv venv --python 3.13\n          uv pip install pytest==9.1.1 pytest-cov',
         'tests/test_work_queue_triage.py::test_the_quality_workflow_installs_the_oldest_python_in_every_job',
     ),
+    (
+        'a note goes above the untrusted row, outside its fence',
+        'work_queue/server.py',
+        '            row = f"{NOTE_LABEL}\\n{note}\\n\\n{row}"\n',
+        '            row = row.replace("Detail: ", f"Detail: {NOTE_LABEL} {note} ", 1)\n',
+        'tests/test_work_queue_actions.py::test_a_note_goes_above_the_untrusted_row_outside_its_fence_labeled_as_the_senders_own',
+    ),
+    (
+        "a note can't start a RESULT line",
+        'work_queue/server.py',
+        '    return "\\n".join(line for line in lines if line)[:NOTE_MAX]\n',
+        '    return note.strip()[:NOTE_MAX]\n',
+        'tests/test_work_queue_actions.py::test_a_note_goes_above_the_untrusted_row_outside_its_fence_labeled_as_the_senders_own',
+    ),
+    (
+        "a note that isn't text is refused",
+        'work_queue/server.py',
+        '    if not isinstance(note, str):\n        return 400, {"error": "note must be text"}\n',
+        '',
+        'tests/test_work_queue_actions.py::test_a_note_that_isnt_text_is_refused_and_writes_nothing',
+    ),
+    (
+        'Ready for you shows a result only once the TODO is done',
+        'work_queue/server.py',
+        '"result": result_of(item) if status == "done" else "",',
+        '"result": result_of(item),',
+        'tests/test_work_queue_actions.py::test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_and_workspace',
+    ),
+    (
+        'Open workspace refuses a reused workspace ref',
+        'work_queue/server.py',
+        '    if not isinstance(title, str) or not title.startswith(f"{td}:"):\n',
+        '    if not isinstance(title, str):\n',
+        'tests/test_work_queue_actions.py::test_open_workspace_refuses_a_ref_that_now_belongs_to_another_workspace',
+    ),
+    (
+        'Open workspace checks cmux named the same workspace',
+        'work_queue/server.py',
+        ' or caller.get("workspace_ref") != ws:\n',
+        ':\n',
+        'tests/test_work_queue_actions.py::test_every_cmux_failure_is_a_json_error',
+    ),
+    (
+        'Open workspace reports a failed focus step',
+        'work_queue/server.py',
+        '        if error := run_tool(step)[1]:\n',
+        '        if (error := run_tool(step)[1]) and False:\n',
+        'tests/test_work_queue_actions.py::test_every_cmux_failure_is_a_json_error',
+    ),
+    (
+        'a Gmail read-back that fails is never a success',
+        'work_queue/server.py',
+        '        return None\n    return [set(m.get("labelIds") or []) for m in messages]\n',
+        '        return []\n    return [set(m.get("labelIds") or []) for m in messages]\n',
+        'tests/test_work_queue_actions.py::test_a_read_back_that_fails_or_cant_be_parsed_is_never_reported_as_archived',
+    ),
+    (
+        'Archive acts on the whole conversation',
+        'work_queue/server.py',
+        'changed = gog("gmail", "thread", "modify", tid, flag, label, "-a", account)',
+        'changed = gog("gmail", "messages", "modify", tid, flag, label, "-a", account)',
+        'tests/test_work_queue_actions.py::test_archive_acts_on_the_whole_thread_then_confirms_every_message_left_the_inbox',
+    ),
+    (
+        'every message in the conversation is checked',
+        'work_queue/server.py',
+        '    if not all((label in each) == (flag == "--add") for each in labels):\n',
+        '    if not (label in labels[0]) == (flag == "--add"):\n',
+        'tests/test_work_queue_actions.py::test_a_message_that_still_has_the_label_or_arrived_since_the_refresh_fails_the_check',
+    ),
+    (
+        'an archived email is hidden by its own key',
+        'work_queue/server.py',
+        '        if action == "archive":\n            marks[mark] = {"state": "done", "until": 0, "at": now()}\n',
+        '',
+        'tests/test_work_queue_actions.py::test_archive_acts_on_the_whole_thread_then_confirms_every_message_left_the_inbox',
+    ),
+    (
+        'a Gmail action needs a linked account',
+        'work_queue/server.py',
+        ' or not isinstance(accounts, list) or account not in accounts:\n',
+        ':\n',
+        'tests/test_work_queue_actions.py::test_an_unknown_email_action_or_account_changes_nothing_and_runs_no_gog',
+    ),
+    (
+        "a Gmail thread id can't pose as a flag",
+        'work_queue/server.py',
+        'not THREAD_ID.fullmatch(tid)',
+        'not tid',
+        'tests/test_work_queue_actions.py::test_an_unknown_email_action_or_account_changes_nothing_and_runs_no_gog',
+    ),
+    (
+        'Apply leaves hidden email alone',
+        'work_queue/server.py',
+        ' or (cand["kind"] == "gmail" and away(cand)):\n',
+        ':\n',
+        'tests/test_work_queue_actions.py::test_apply_never_trashes_an_email_the_page_hides',
+    ),
+    (
+        'a snooze hides only until its time',
+        'work_queue/server.py',
+        '        mark.get("state") == "snoozed" and isinstance(until, (int, float)) and until > now_ms)\n',
+        '        mark.get("state") == "snoozed")\n',
+        'tests/test_work_queue_actions.py::test_apply_never_trashes_an_email_the_page_hides',
+    ),
+    (
+        'a failed message read-back never verifies Trash',
+        'work_queue/server.py',
+        '    return set(labels) if isinstance(labels, list) else None\n',
+        '    return set(labels) if isinstance(labels, list) else set()\n',
+        'tests/test_work_queue_actions.py::test_a_gmail_read_back_that_fails_never_verifies_a_trash_or_a_restore',
+    ),
+    (
+        'only generated-docs files are served',
+        'work_queue/server.py',
+        'target.read_bytes() if target.is_relative_to(docs_root().resolve()) and target.is_file() else None',
+        'target.read_bytes() if target.is_file() else None',
+        'tests/test_work_queue_actions.py::test_nothing_outside_generated_docs_is_served',
+    ),
+    (
+        'served files are sandboxed',
+        'work_queue/server.py',
+        '            return self.send(*doc_file(route), sandbox=True)\n',
+        '            return self.send(*doc_file(route))\n',
+        'tests/test_work_queue_actions.py::test_generated_docs_open_read_only_and_markdown_is_text',
+    ),
+    (
+        'Markdown is served as text',
+        'work_queue/server.py',
+        'kind = "text/plain" if target.suffix.lower() == ".md" else ',
+        'kind = ',
+        'tests/test_work_queue_actions.py::test_generated_docs_open_read_only_and_markdown_is_text',
+    ),
+    (
+        'a route that crashes answers with JSON',
+        'work_queue/server.py',
+        '            code, out = route(body if isinstance(body, dict) else {})\n        except Exception as exc:',
+        '            code, out = route(body if isinstance(body, dict) else {})\n        except ZeroDivisionError as exc:',
+        'tests/test_work_queue_actions.py::test_a_route_that_crashes_answers_with_json',
+    ),
+    (
+        "a state that can't be read answers with JSON",
+        'work_queue/server.py',
+        '                found = state()\n            except Exception as exc:',
+        '                found = state()\n            except ZeroDivisionError as exc:',
+        'tests/test_work_queue_actions.py::test_a_todo_store_that_cant_be_read_answers_state_with_a_json_error',
+    ),
+    (
+        "the refresh saves each Gmail row's thread",
+        'work_queue/refresh.py',
+        '    config.write_json(emails_path(), page.emails(snap))\n',
+        '',
+        'tests/test_work_queue_refresh.py::test_every_linked_source_renders_into_one_page',
+    ),
+    (
+        'a Gmail row names its thread',
+        'work_queue/inputs/gmail.py',
+        '"tid": t["tid"], "archived": t["archived"], ',
+        '',
+        'tests/test_work_queue_inputs.py::test_gmail_rules_sort_each_conversation_and_build_trash_and_unsubscribe_data',
+    ),
+    (
+        "an email's mark key is its own id",
+        'work_queue/page.py',
+        '    return EMAIL_MARK + m["key"]\n',
+        '    return EMAIL_MARK + m["link"]\n',
+        'tests/test_work_queue_actions.py::test_an_emails_mark_key_is_its_own_id_and_stays_the_same_when_gmail_moves_its_link',
+    ),
+    (
+        'Outlook rows have no Archive or Mark read',
+        'work_queue/page.py',
+        '               if gmail_row and not m.get("archived") else "")\n',
+        '               if not m.get("archived") else "")\n',
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        'a part with email that needs you starts open',
+        'work_queue/page.py',
+        '"{" open" * is_open}><summary><span class="mb-t">',
+        '"><summary><span class="mb-t">',
+        'tests/test_work_queue_browser.py::test_the_email_tab_holds_outlook_each_gmail_account_and_unsubscribe_and_old_links_land_on_it',
+    ),
+    (
+        "Ready for you lists only done or blocked TODOs you haven't dismissed",
+        'work_queue/page.py',
+        "const ready=Object.values(ST.queued).filter(q=>(q.status==='done'||q.status==='blocked')&&!MK[readyKey(q.id)]);",
+        'const ready=Object.values(ST.queued);',
+        'tests/test_work_queue_browser.py::test_ready_for_you_shows_finished_work_opens_its_workspace_and_updates_live',
+    ),
+    (
+        "a sent Start here item's button is off",
+        'work_queue/page.py',
+        "b.className='btn sf-sent';b.disabled=true;",
+        "b.className='btn sf-sent';b.disabled=false;",
+        'tests/test_work_queue_browser.py::test_ready_for_you_shows_finished_work_opens_its_workspace_and_updates_live',
+    ),
+    (
+        'Open workspace shows only for a TODO with a workspace',
+        'work_queue/page.py',
+        " if(q.workspace)top.append(button('Open workspace',",
+        " top.append(button('Open workspace',",
+        'tests/test_work_queue_browser.py::test_ready_for_you_shows_finished_work_opens_its_workspace_and_updates_live',
+    ),
+    (
+        'links in a result keep a trailing period out',
+        'work_queue/page.py',
+        'const m=/^(.*?)([.,;:!?]*)$/.exec(part)',
+        'const m=/^(.*)()$/.exec(part)',
+        'tests/test_work_queue_browser.py::test_ready_for_you_shows_finished_work_opens_its_workspace_and_updates_live',
+    ),
+    (
+        'a file link opens through the server',
+        'work_queue/page.py',
+        "a.href=m[1].startsWith('file:')?'/files'+new URL(m[1]).pathname:m[1];",
+        'a.href=m[1];',
+        'tests/test_work_queue_browser.py::test_ready_for_you_shows_finished_work_opens_its_workspace_and_updates_live',
+    ),
+    (
+        'the page polls while a sent TODO is pending',
+        'work_queue/page.py',
+        'qTimer=setTimeout(refresh,20000)}',
+        'qTimer=0}',
+        'tests/test_work_queue_browser.py::test_ready_for_you_shows_finished_work_opens_its_workspace_and_updates_live',
+    ),
+    (
+        'Approve all leaves hidden email out',
+        'work_queue/page.py',
+        "querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key)",
+        "querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept)')].map(r=>r.dataset.key)",
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        'the approved count leaves hidden email out',
+        'work_queue/page.py',
+        "&&kind!=='mail'&&!GONE.has(k))approved++",
+        "&&kind!=='mail')approved++",
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        "the Email tab counts only email you haven't hidden",
+        'work_queue/page.py',
+        "if(t)t.textContent=document.querySelectorAll('.em-need:not(.em-gone)').length;",
+        "if(t)t.textContent=document.querySelectorAll('.em-need').length;",
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        'Mark read is remembered',
+        'work_queue/page.py',
+        "r.classList.toggle('em-read',!!(ST.mail[r.dataset.gkey]||{}).read)",
+        "r.classList.toggle('em-read',false)",
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        'Undo on an archived email moves it back to the inbox',
+        'work_queue/page.py',
+        "if((ST.mail[r.dataset.gkey]||{}).archived)return gmailAct(b,'unarchive');",
+        '',
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        'a failed send keeps the note',
+        'work_queue/page.py',
+        'if(await send(b,ta.value.trim()))f.remove();else go.disabled=false',
+        'await send(b,ta.value.trim());f.remove()',
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        'Cmd+Enter sends a note',
+        'work_queue/page.py',
+        "if(ev.key==='Enter'&&(ev.metaKey||ev.ctrlKey))go.click();",
+        "if(ev.key==='Enter'&&ev.ctrlKey)go.click();",
+        'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
+    ),
+    (
+        'Esc cancels a note',
+        'work_queue/page.py',
+        "else if(ev.key==='Escape')no.click()",
+        "else if(ev.key==='Esc')no.click()",
+        'tests/test_work_queue_browser.py::test_the_note_box_spans_the_row_grows_then_scrolls_and_sends_or_cancels_from_the_keyboard',
+    ),
+    (
+        'the note box spans the row and has no drag handle',
+        'work_queue/page.py',
+        '.compose{flex:1 0 100%;width:100%;',
+        '.compose{flex:none;',
+        'tests/test_work_queue_browser.py::test_the_note_box_spans_the_row_grows_then_scrolls_and_sends_or_cancels_from_the_keyboard',
+    ),
+    (
+        "the note box can't be dragged larger",
+        'work_queue/page.py',
+        'max-height:240px;resize:none;',
+        'max-height:240px;resize:vertical;',
+        'tests/test_work_queue_browser.py::test_the_note_box_spans_the_row_grows_then_scrolls_and_sends_or_cancels_from_the_keyboard',
+    ),
+    (
+        'a row sent before says so',
+        'work_queue/page.py',
+        'function sentMsg(o,note){if(!o.existing)return',
+        'function sentMsg(o,note){if(true)return',
+        'tests/test_work_queue_browser.py::test_the_note_box_spans_the_row_grows_then_scrolls_and_sends_or_cancels_from_the_keyboard',
+    ),
+    (
+        'a refresh never reloads away a note',
+        'work_queue/page.py',
+        "if([...document.querySelectorAll('.compose textarea')].some(t=>t.value.trim()))\n",
+        'if(false)\n',
+        'tests/test_work_queue_browser.py::test_a_refresh_that_finishes_while_you_type_a_note_doesnt_reload_it_away',
+    ),
+    (
+        'an old tab link lands on the tab that holds it',
+        'work_queue/page.py',
+        'sec=el&&TAB_IDS.find(s=>$(s).contains(el));',
+        'sec=null;',
+        'tests/test_work_queue_browser.py::test_the_email_tab_holds_outlook_each_gmail_account_and_unsubscribe_and_old_links_land_on_it',
+    ),
+    (
+        'an old link opens its part',
+        'work_queue/page.py',
+        "if(d.tagName==='DETAILS')d.open=true;",
+        'if(false)d.open=true;',
+        'tests/test_work_queue_browser.py::test_the_email_tab_holds_outlook_each_gmail_account_and_unsubscribe_and_old_links_land_on_it',
+    ),
+    (
+        "an email sent by its own key marks its link done too",
+        'work_queue/server.py',
+        '        if key.startswith(EMAIL_MARK) and url:\n            mark_sent(url)\n',
+        '',
+        'tests/test_work_queue_actions.py::test_an_email_sent_by_its_own_key_also_marks_its_link_done_so_it_isnt_offered_again',
+    ),
+    (
+        "a mutation check's folder never has __ in its path",
+        'tests/mutation_smoke.py',
+        '    while "__" in (found := TemporaryDirectory(prefix="assistant-mutation-")).name:\n        found.cleanup()\n',
+        '    found = TemporaryDirectory(prefix="assistant-mutation-")\n',
+        'tests/test_mutation_shards.py::test_a_check_never_runs_in_a_folder_whose_path_has_a_double_underscore',
+    ),
 )
 
 
@@ -2798,12 +3134,20 @@ def run_test(repo: Path, home: Path, selector: str):
         cwd=repo, env=env, capture_output=True, text=True, timeout=TEST_TIMEOUT_SEC)
 
 
+def scratch() -> TemporaryDirectory:
+    """A temporary folder whose path has no "__": the installer tests read "__" in a plist as a placeholder left
+    unreplaced, so a random name with "__" in it failed their baseline."""
+    while "__" in (found := TemporaryDirectory(prefix="assistant-mutation-")).name:
+        found.cleanup()
+    return found
+
+
 def run_check(name: str, filename: str, original: str, broken: str, selector: str) -> dict:
     """Run selector on a copy of the sources, then on a copy with the mutation; the mutant must fail.
 
     A mutant whose test runs past TEST_TIMEOUT_SEC counts as rejected: the test didn't pass."""
     started = time.monotonic()
-    with TemporaryDirectory(prefix="assistant-mutation-") as temporary:
+    with scratch() as temporary:
         root = Path(temporary)
         repo, home = root / "repo", root / "home"
         repo.mkdir()

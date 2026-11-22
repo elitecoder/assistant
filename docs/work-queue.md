@@ -59,9 +59,17 @@ server itself exits cleanly, with a message, before it loads anything else.
 The server listens on `127.0.0.1` only. It refuses any request whose `Host`
 isn't `127.0.0.1` or `localhost` with its port, which stops a web page from
 reaching it through a look-alike domain name. It also refuses a `POST` from
-any other origin. It exits cleanly, and stays stopped, when Pro mode is off,
-when its settings file can't be read, or when another process holds its port.
-With no source linked, it runs and shows how to link one.
+any other origin. `GET /files/<absolute path>` serves a file inside
+`~/dev/generated-docs`, read-only, so links in an agent's result open. It
+refuses anything outside that folder, including through `..` or a symbolic
+link, serves Markdown as plain text, and sandboxes every file it serves, so a
+page in that folder can't act on the Work queue. When a request fails
+unexpectedly, for example on a saved file that isn't valid JSON, the server
+answers with a JSON error instead of dropping the request.
+
+It exits cleanly, and stays stopped, when Pro mode is off, when its settings
+file can't be read, or when another process holds its port. With no source
+linked, it runs and shows how to link one.
 
 ## Link your sources
 
@@ -131,10 +139,11 @@ it.
 Select **Refresh** to re-read every linked source. A source that fails shows
 its error at the top of the page, and the other sources still render.
 
-- **Start here**: the 5 to 8 open rows to do first, with the **Since last
-  night** box above them. It's the first tab when it has a list. When it only
-  has a change summary or a note, it comes after the Open list. The page opens
-  on the tab you used last.
+- **Start here**: the 5 to 8 open rows to do first, with the **Ready for
+  you** and **Since last night** boxes above them. It's the first tab when it
+  has a list. When it only has a change summary or a note, it comes after the
+  Open list. The page opens on the tab you used last. See
+  [Ready for you](#ready-for-you).
 - **Open list**: the rows that need you. Slack saves whose thread moved
   recently, pull requests that ask for your review, Outlook mail a person sent
   you that you haven't replied to, and Gmail from a person that's unread or
@@ -145,14 +154,71 @@ its error at the top of the page, and the other sources still render.
   model said an agent can finish first. Pick rows, or select **Select all**,
   then **Send N to agents**. See [Send work to an agent](#send-work-to-an-agent).
 - **Today**: today's events from each linked calendar.
-- **Outlook**: mail worth reading, plus groups you can approve for deletion.
-  The Work queue only reads Outlook, so approving builds a search you paste
-  into Outlook.
-- **Gmail**: one tab per account, with groups you can approve for Trash.
-- **Unsubscribe**: senders that support one-click unsubscribe and send you
-  nothing you keep.
+- **Email**: one tab with a part for Outlook, a part for each Gmail account,
+  and a part for Unsubscribe. Each part opens and closes, and a part with email
+  that needs you starts open. The tab's count is the email that needs you and
+  that you haven't hidden. A link or a saved tab from before, such as `#email`,
+  `#gmail-1`, or `#unsubscribe`, opens the Email tab with that part open. See
+  [The Email tab](#the-email-tab).
+  - **Outlook**: mail that needs you, mail worth reading, and groups you can
+    approve for deletion. The Work queue only reads Outlook, so approving
+    builds a search you paste into Outlook.
+  - **Gmail**: for each account, mail that needs you, mail worth a look, and
+    groups you can approve for Trash.
+  - **Unsubscribe**: senders that support one-click unsubscribe and send you
+    nothing you keep.
 - **Slack saves**: Later saves that look finished, with the last message as
   evidence.
+
+### Ready for you
+
+**Ready for you** lists each TODO you sent from the page that's done or
+blocked, newest first: its title, its TODO id, and the agent's result, or why
+it's blocked. Links in a result open in a new tab. A `file://` link to a file in
+`~/dev/generated-docs` opens through the server, since browsers don't open
+`file://` links from a web page; see
+[What the server accepts](#what-the-server-accepts). **Done** hides an item for
+good. **Open workspace** brings the agent's cmux workspace to the front and
+selects it. It refuses when the workspace is closed, or when the workspace's
+title no longer starts with the TODO's id: cmux reuses workspace refs.
+A workspace you renamed so its title doesn't start with the id can't be opened
+from here.
+
+A blocked Start here item, whose row was already sent, shows **Sent td-NNN**,
+turned off. While any TODO you sent is still open or still on **Ready for
+you**, the page reads its status again every 20 seconds, so a result shows up
+without a reload. It never redraws a note you're typing, and when a refresh
+finishes while you type one, it asks you to reload once you're done instead of
+reloading.
+
+### The Email tab
+
+Every Outlook and Gmail row on the Email tab, whether it needs you, is worth
+reading, or is ready to delete, has these actions:
+
+- **Send to Agent**, with the note box, as on the Open list.
+- **Snooze** hides the email for 3 days.
+- **Archive**, on Gmail mail in your inbox, archives the whole conversation,
+  including mail that arrived since the last refresh.
+- **Mark read**, on unread Gmail mail, marks the whole conversation read.
+
+The Work queue only reads Outlook, so Outlook has no **Archive** or **Mark
+read**. After **Archive** or **Mark read**, the server reads the labels of
+every message in the conversation back from Gmail. The page says the change
+worked only when Gmail confirms it; when `gog` fails, times out, or answers in
+a form it can't read, the page says the change isn't confirmed and changes
+nothing.
+
+A hidden email, one you snoozed, archived, sent to an agent, or marked done or
+dropped on the Open list, leaves the Email tab, the tab's count, the Outlook
+search, **Approve all**, the approved count, and **Apply approvals**. Select
+**Show hidden email** to list each one with why it's hidden, and select
+**Undo** to bring it back. **Undo** on an archived email moves the
+conversation back to your Gmail inbox. An email you sent to an agent stays
+hidden while its TODO exists. Hiding uses the email's own id, so it lasts
+across refreshes even when Gmail's link for it changes. An email that needs
+you is also on the Open list, and hiding or sending it in one place hides it
+in the other.
 
 ### How rows are sorted
 
@@ -353,7 +419,19 @@ settings in `~/.assistant/comms/config.json`.
 
 **Send to Agent** on a row, or **Send N to agents** on the **Send to agents**
 tab, creates a P2 TODO in `~/.claude/assistant-todo.json` that starts on its
-own, and creates that file if it doesn't exist yet. It also marks the row
+own, and creates that file if it doesn't exist yet.
+
+**Send to Agent** on an Open list row, a Start here item, or an email first
+opens a note box under the row. Type an instruction for the agent, such as
+"draft a reply" or "check the logs first", or leave it empty, then select
+**Send** or press Cmd+Enter (Ctrl+Enter). Esc or **Cancel** closes it without
+sending. The box grows with your text to about 240 pixels, then scrolls. The
+note goes in the TODO above the row's untrusted block, outside its markers,
+labeled as your own instruction, so text in the row can never pose as it. The
+safety rules still apply to it. If the send fails, the box keeps your note. If
+the row was already sent, the page says so; the existing TODO stays as it was,
+so your note isn't added to it. The **Send to agents** tab sends a batch and
+has no note box. It also marks the row
 Done, and the row leaves the page at once: the Open list, the **Send to
 agents** tab, and the counts. The row stays off the page for as long as its
 TODO exists; if the TODO is removed, the row comes back, marked Done.
@@ -439,9 +517,12 @@ Select **Apply approvals** to act on what you approved:
   with no browser window. **Undo** reopens them. A save Slack no longer has
   shows as gone and isn't tried again.
 
-Each change is read back to verify it. If applying stops on an error, the
-page says why instead of staying on **Working**. The Work queue never sends
-email and never changes Outlook.
+Each change is read back to verify it, and a read-back that fails never
+counts as verified. **Apply approvals** skips any Gmail conversation the page
+hides. If applying stops on an error, the page says why instead of staying on
+**Working**. The Work queue never sends email and never changes Outlook.
+**Archive** and **Mark read** on the Email tab change Gmail at once, without
+**Apply approvals**.
 
 ## Where your data lives
 
@@ -449,7 +530,7 @@ email and never changes Outlook.
 |---|---|
 | `~/.assistant/work-queue/sources.json` | Your linked sources |
 | `~/.assistant/work-queue/browser-profile/` | The Slack browser session |
-| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, the built page in `site/`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
+| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, the built page in `site/`, the Gmail conversation behind each Gmail row in `emails.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
 | `~/.assistant/logs/work-queue.launchd.*` | The server's output |
 
 Tests point `HOME` and `WQ_DATA` at temporary folders, so they never touch

@@ -93,7 +93,7 @@ def test_send_to_agent_shows_on_every_open_row_whatever_the_model_said(wq):
     calls_for = {0: "you", 1: "agent", 2: "handoff", 3: "drop"}
     tri, html = triaged(snap(*(pr(n) for n in range(1, 6))), Model(rows=lambda items: {"rows": [
         {"id": i["id"], **VERDICT, "disposition": calls_for[i["id"]]} for i in items if i["id"] in calls_for]}))
-    send = ('<button class="btn sf-send" onclick="queueTodo(this)" title="An agent takes a first pass and leaves drafts '
+    send = ('<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts '
             'for you">Send to Agent</button>')
     assert all(row_html(html, pr(n)["link"]).count(send) == 1 for n in range(1, 6))
     hints = {n: "Agent can finish" in row_html(html, pr(n)["link"]) for n in range(1, 6)}

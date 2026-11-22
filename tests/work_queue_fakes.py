@@ -266,7 +266,7 @@ def wq(tmp_path, monkeypatch) -> Env:
     env.todo.parent.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(env.home))
     monkeypatch.setenv("WQ_DATA", str(env.data))
-    for name in ("SLACK_USER_TOKEN", "GH_HOST", *MODEL_ENV):
+    for name in ("SLACK_USER_TOKEN", "GH_HOST", "CMUX_BIN", *MODEL_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(triage, "call_model", no_model)
     env.todo.write_text(json.dumps({"items": [{"id": "td-041", "status": "open"}], "completed": [{"id": "td-050"}],
