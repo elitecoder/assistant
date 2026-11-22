@@ -3085,6 +3085,13 @@ CHECKS = (
         'if(false)d.open=true;',
         'tests/test_work_queue_browser.py::test_the_email_tab_holds_outlook_each_gmail_account_and_unsubscribe_and_old_links_land_on_it',
     ),
+    (
+        "an email sent by its own key marks its link done too",
+        'work_queue/server.py',
+        '        if key.startswith(EMAIL_MARK) and url:\n            mark_sent(url)\n',
+        '',
+        'tests/test_work_queue_actions.py::test_an_email_sent_by_its_own_key_also_marks_its_link_done_so_it_isnt_offered_again',
+    ),
 )
 
 

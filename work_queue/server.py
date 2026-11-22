@@ -201,6 +201,8 @@ def queue_todo(body: dict):
         queued[key] = {"id": td_id, "at": now(), "mode": how}
         config.write_json(queued_file, queued)
         mark_sent(key)
+        if key.startswith(EMAIL_MARK) and url:
+            mark_sent(url)
     if save := slack_save(key):
         queue_save(*save)
     return 200, {"id": td_id, "existing": False}

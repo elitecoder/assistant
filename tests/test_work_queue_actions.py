@@ -18,9 +18,9 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+from test_work_queue_server import fence_code, load_pulse
 from work_queue import config, page, refresh, server, todo_result
 from work_queue_fakes import calls, fake_tool, wq  # noqa: F401
-from test_work_queue_server import fence_code, load_pulse
 
 ROW = "https://x.slack.com/archives/C1/p1"
 ACCT = "me@example.com"
@@ -90,6 +90,15 @@ def test_a_row_sent_again_with_a_note_keeps_its_todo_unchanged(wq):
     before = wq.todo.read_text()
     assert server.queue_todo({"key": ROW, "title": "A", "note": "Also check B"}) == (200, {"id": "td-051", "existing": True})
     assert wq.todo.read_text() == before, "the note isn't added to a TODO that may already be running"
+
+
+def test_an_email_sent_by_its_own_key_also_marks_its_link_done_so_it_isnt_offered_again(wq):
+    link = "https://mail.google.com/mail/#inbox/t1"
+    assert server.queue_todo({"key": MARK, "title": "Email: Lunch?", "url": link})[1]["existing"] is False
+    marks = json.loads((wq.data / "marks.json").read_text())
+    assert marks[MARK]["state"] == marks[link]["state"] == "done", "Start here and triage key the row by its link"
+    server.queue_todo({"key": ROW, "title": "A Slack save", "url": "https://x.slack.com/a"})
+    assert "https://x.slack.com/a" not in json.loads((wq.data / "marks.json").read_text()), "only an email's link"
 
 
 def test_the_pulse_prompt_shows_the_note_outside_and_above_the_fence(wq, monkeypatch):

@@ -634,7 +634,7 @@ function sentMsg(o,note){if(!o.existing)return 'Sent to an agent as '+o.id+' for
 function noteSent(k,o,title){ST.queued=Object.assign({},ST.queued,{[k]:{id:o.id,title,status:'open',result:'',reason:'',finished:'',workspace:''}})}
 async function sendMail(b,note){const r=b.closest('.em-row'),k=r.dataset.mk;b.disabled=true;
  try{const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:k,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:r.dataset.link,note})});
-  MK[k]={state:'done',until:0};ST.sent=[...new Set(ST.sent),k];noteSent(k,o,r.dataset.qTitle);paint();renderAp();toast(sentMsg(o,note));return true}
+  MK[k]={state:'done',until:0};ST.sent=[...new Set(ST.sent),k];noteSent(k,o,r.dataset.qTitle);paint();renderAp();toast(sentMsg(o,note));refresh();return true}
  catch(e){b.disabled=false;toast('Not sent: '+e.message);return false}}
 async function markMail(r,marks,msg){
  try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({marks})})).marks;paint();renderAp();toast(msg)}

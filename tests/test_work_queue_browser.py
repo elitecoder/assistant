@@ -1277,7 +1277,7 @@ def test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals
         tab.wait_for_selector(em("o-act"), state="hidden")
         assert json.loads((wq.data / "marks.json").read_text())[mk("o-act")]["until"] > now_ms + 2 * 86400000
         tab.locator("#tabs .tab[data-t='open-list']").click()
-        tab.locator(f'.sf-row[data-key="https://outlook.office.com/o-act2"] .sf-mark').click()
+        tab.locator('.sf-row[data-key="https://outlook.office.com/o-act2"] .sf-mark').click()
         tab.wait_for_selector('.sf-row[data-key="https://outlook.office.com/o-act2"].is-done', state="attached")
         tab.locator("#tabs .tab[data-t='mailbox']").click()
         tab.locator("#em-showhidden").click()
