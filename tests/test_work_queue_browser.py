@@ -641,7 +641,7 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         assert tab.evaluate("navigator.clipboard.readText()") == "Looking at it today."
         tab.locator(f"{row2} .sf-send").click()
         tab.locator(f"{row2} .cp-go").click()
-        tab.wait_for_selector(row2, state="detached")
+        tab.wait_for_selector(row2, state="detached", timeout=5000)
         assert json.loads((wq.data / "marks.json").read_text())[pr(2)["key"]]["state"] == "done"
         assert (text(tab, badge["start"]), text(tab, badge["open-list"])) == ("1", "1")
         tab.locator('#tabs .tab[data-t="start"]').click()
