@@ -17,6 +17,14 @@ work. Every setting below is a deliberate edit you make yourself.
 | Copilot thinking effort | the shared `llm.droid.reasoning_effort` | `llm.copilot.reasoning_effort` (`off`, `high`, or `max`), or `<FEATURE>_COPILOT_REASONING_EFFORT` | How hard Copilot thinks on background jobs. A model that refuses the setting runs without it. |
 | Agent binaries | found on `PATH` | `CLAUDE_BIN`, `COPILOT_BIN`, `DROID_BIN` | Full path to an agent's CLI when it isn't on `PATH`. For an npm Copilot install, background jobs run its standalone build, so they don't need Node. |
 
+## Observer
+
+The Observer is the model that checks each changed workspace on a pulse and
+sorts it: needs you, still working, ready to merge, ready to clean up, or
+stuck. To turn it off, set `{"observer": {"enabled": false}}` in
+`~/.assistant/config.json`. Then the pulse sends no workspace to it, and each
+workspace keeps its last verdict. Any other value, or no value, leaves it on.
+
 ## Strategist
 
 The Strategist is the model that drafts context for staged goal steps. Set it

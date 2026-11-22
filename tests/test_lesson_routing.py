@@ -81,6 +81,7 @@ def tmp_targets(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(cur, "TARGETS", targets)
     monkeypatch.setattr(cur, "_sync_to_memory_repo", lambda: None)
+    monkeypatch.setattr(cur, "_run_lesson_audit_async", lambda: None)
     return targets
 
 
@@ -149,6 +150,23 @@ def test_scope_with_digit_parses(tmp_targets, monkeypatch):
     assert lessons[0]["scope"] == "e2e"
 
 
+def test_project_target_takes_a_lesson_with_no_trigger(tmp_targets, monkeypatch):
+    """A rule written with no trigger lands in the project file as the marker plus
+    the rule, under the frontmatter a fresh file needs."""
+    monkeypatch.setattr(cur, "_stage_lesson_in_repo", lambda *a, **k: None)
+    rc = cur.cmd_write(_write_args(
+        "ffp", None, "Before an E2E run in a spawned workspace, pin the project.",
+        scope="e2e", slug="ffp-e2e-pin-plain", added="2026-01-02"))
+    assert rc == 0
+    text = tmp_targets["ffp"]["path"].read_text()
+    assert text.startswith("---\npaths:\n")
+    assert text.endswith(
+        "<!-- lesson: ffp-e2e-pin-plain, scope: e2e, added: 2026-01-02 -->\n"
+        "Before an E2E run in a spawned workspace, pin the project.\n\n")
+    assert [(L["slug"], L["trigger"]) for L in cur.iter_lessons(text)] == [
+        ("ffp-e2e-pin-plain", "")]
+
+
 # ─── Part 2: misrouted-lesson audit ──────────────────────────────────────────
 
 def test_wrong_target_audit(tmp_targets, monkeypatch):
@@ -168,6 +186,17 @@ def test_wrong_target_audit(tmp_targets, monkeypatch):
     assert m["slug"] == "ffp-jira-type"
     assert m["current_target"] == "claude"
     assert m["suggested_target"] == "ffp"
+
+
+def test_wrong_target_audit_sees_a_lesson_with_no_trigger(tmp_targets):
+    """A misrouted lesson is flagged whether or not it has a trigger line."""
+    tmp_targets["claude"]["scopes"].add("ffp")
+    cur.cmd_write(_write_args(
+        "claude", None, "File unimplemented work as a Story, not a Bug.",
+        scope="ffp", slug="ffp-jira-type-plain"))
+    assert [(m["slug"], m["suggested_target"], m["trigger"])
+            for m in cur.find_misrouted(tmp_targets)] == [
+        ("ffp-jira-type-plain", "ffp", "")]
 
 
 def test_audit_clean_when_project_lessons_in_project_store(tmp_targets, monkeypatch):

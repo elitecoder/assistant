@@ -384,9 +384,10 @@ def fmt_lesson_proposal(entry: dict[str, Any]) -> str:
     pid = str(entry.get("id") or entry.get("ts") or "?")
     seen = f" (seen {count}×)" if count else ""
     head = f"*Lesson proposal*{seen} — reply `y` to add, `n` to drop"
+    when = f"*when* {escape_mrkdwn(trigger)}\n" if trigger else ""
     body = (
         f"{head}\n"
-        f"*when* {escape_mrkdwn(trigger)}\n"
+        f"{when}"
         f"*rule* {escape_mrkdwn(rule)}\n"
         f"_target={escape_mrkdwn(str(target))} · id=`{escape_mrkdwn(pid)}`_"
     )

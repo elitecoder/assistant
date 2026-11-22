@@ -64,11 +64,11 @@ TOOLS_LIST = [
             "properties": {
                 "trigger": {
                     "type": "string",
-                    "description": "When should this rule apply? (e.g. 'About to add a memory')"
+                    "description": "Optional bolded line above the rule. Leave it out when the rule says when it applies."
                 },
                 "rule": {
                     "type": "string",
-                    "description": "The rule or memory content to record."
+                    "description": "The rule or memory content to record: when it applies and what to do."
                 },
                 "target": {
                     "type": "string",
@@ -81,7 +81,7 @@ TOOLS_LIST = [
                     "default": "general"
                 },
             },
-            "required": ["trigger", "rule", "target"],
+            "required": ["rule", "target"],
         },
     },
     {
@@ -134,8 +134,8 @@ def handle_propose_memory(args: dict) -> dict:
     target = args.get("target", "assistant").strip()
     scope = args.get("scope", "general").strip()
 
-    if not trigger or not rule:
-        return {"error": "trigger and rule are required"}
+    if not rule:
+        return {"error": "rule is required"}
 
     cmd = [
         sys.executable, str(PROPOSE),

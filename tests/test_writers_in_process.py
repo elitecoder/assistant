@@ -607,14 +607,28 @@ class AssistantCuratorTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("made-up-scope", err)
 
-    def test_write_rejects_blank_trigger(self):
+    def test_write_with_blank_trigger_stores_the_rule_alone(self):
         rc, _, err = self._capture_main([
             "write",
             "--trigger", "",
             "--rule", "y",
+            "--slug", "blank-trigger",
+            "--added", "2026-01-02",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(self._store().read_text().endswith(
+            "<!-- lesson: blank-trigger, scope: global, added: 2026-01-02 -->\ny\n\n"))
+        self.assertEqual(self._parsed(), [("blank-trigger", "", "y")])
+
+    def test_write_rejects_blank_rule(self):
+        rc, _, err = self._capture_main([
+            "write",
+            "--trigger", "x",
+            "--rule", "  ",
         ])
         self.assertEqual(rc, 2)
-        self.assertIn("required", err)
+        self.assertIn("--rule is required", err)
+        self.assertFalse(self._store().exists())
 
     def test_list_renders_lessons(self):
         # First, write a lesson.
@@ -729,14 +743,168 @@ class AssistantCuratorTests(unittest.TestCase):
         self.assertEqual(len(lessons), 0)
 
     def test_iter_lessons_non_bold_start(self):
-        # A block whose content after --> doesn't start with ** is skipped.
+        # A block whose content after --> doesn't start with ** is the rule alone.
         text = (
             "## Lessons\n\n"
             "<!-- lesson: s1, scope: global, added: 2026-01-01 -->\n"
             "Not bold content\n\n"
         )
         lessons = list(self.mod.iter_lessons(text))
-        self.assertEqual(len(lessons), 0)
+        self.assertEqual(
+            [(L["slug"], L["scope"], L["added"], L["trigger"], L["rule"]) for L in lessons],
+            [("s1", "global", "2026-01-01", "", "Not bold content")])
+
+    # ─── lessons with no bold line ──────────────────────────────────────────
+
+    def _store(self) -> Path:
+        return self.mod.TARGETS["claude"]["path"]
+
+    def _parsed(self) -> list[tuple[str, str, str]]:
+        return [(L["slug"], L["trigger"], L["rule"])
+                for L in self.mod.iter_lessons(self._store().read_text())]
+
+    def test_write_without_trigger_stores_the_rule_alone(self):
+        rc, _, err = self._capture_main([
+            "write", "--rule", "When X happens, do Y.",
+            "--slug", "plain", "--added", "2026-01-02",
+        ])
+        self.assertEqual(rc, 0, err)
+        text = self._store().read_text()
+        self.assertTrue(text.endswith(
+            "<!-- lesson: plain, scope: global, added: 2026-01-02 -->\n"
+            "When X happens, do Y.\n\n"), text)
+        self.assertNotIn("**", text)
+        self.assertEqual(self._parsed(), [("plain", "", "When X happens, do Y.")])
+
+    def test_write_with_trigger_keeps_the_bold_line(self):
+        rc, _, err = self._capture_main([
+            "write", "--trigger", "When X happens", "--rule", "Do Y.",
+            "--slug", "bold", "--added", "2026-01-02",
+        ])
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(self._store().read_text().endswith(
+            "<!-- lesson: bold, scope: global, added: 2026-01-02 -->\n"
+            "**When X happens**\n\nDo Y.\n\n"))
+        self.assertEqual(self._parsed(), [("bold", "When X happens", "Do Y.")])
+
+    def test_slug_comes_from_the_rule_when_there_is_no_trigger(self):
+        self._capture_main(["write", "--rule", "Never push to main without a review."])
+        self._capture_main(["write", "--rule", "Never paste a token into a command.",
+                            "--scope", "security"])
+        self.assertEqual([slug for slug, _, _ in self._parsed()],
+                         ["never-push-to-main-without", "security-never-paste-a-token"])
+
+    def test_iter_lessons_reads_every_block_shape(self):
+        text = (
+            "## Lessons\n\n"
+            "Rules learned from past incidents.\n\n"
+            "<!-- lesson: bold-and-body, scope: global, added: 2026-01-01 -->\n"
+            "**About to deploy**\n\n"
+            "Run the smoke test first.\n\n"
+            "<!-- lesson: plain, scope: global, added: 2026-01-02 -->\n"
+            "Before a deploy, run the smoke test.\n\n"
+            "<!-- lesson: plain-inline-bold, scope: security, added: 2026-01-03 -->\n"
+            "Never print a token. **Always** load it from the keychain.\n\n"
+            "<!-- lesson: plain-two-paragraphs, scope: global, added: 2026-01-04 -->\n"
+            "When a test fails twice, stop.\n\n"
+            "Report what you tried.\n\n"
+            "<!-- lesson: bold-only, scope: global, added: 2026-01-05 -->\n"
+            "**Never declare work done without running it.**\n\n"
+            "<!-- lesson: bold-same-line, scope: global, added: 2026-01-06 -->\n"
+            "**Ask before loading a service.** Writing the plist is fine.\n\n"
+            "<!-- lesson: plain-stars, scope: global, added: 2026-01-07 -->\n"
+            "Skip `*.ips` files, and write powers as `a ** b`.\n"
+        )
+        self.assertEqual(
+            [(L["slug"], L["trigger"], L["rule"]) for L in self.mod.iter_lessons(text)],
+            [
+                ("bold-and-body", "About to deploy", "Run the smoke test first."),
+                ("plain", "", "Before a deploy, run the smoke test."),
+                ("plain-inline-bold", "",
+                 "Never print a token. **Always** load it from the keychain."),
+                ("plain-two-paragraphs", "",
+                 "When a test fails twice, stop.\n\nReport what you tried."),
+                ("bold-only", "Never declare work done without running it.", ""),
+                ("bold-same-line", "Ask before loading a service.",
+                 "Writing the plist is fine."),
+                ("plain-stars", "", "Skip `*.ips` files, and write powers as `a ** b`."),
+            ])
+
+    def test_list_shows_the_first_line_of_a_rule_with_no_trigger(self):
+        first_line = "When a command fails twice, stop retrying it and " + "x" * 80
+        self._capture_main(["write", "--rule", first_line + "\n\nSecond paragraph.",
+                            "--slug", "plain"])
+        self._capture_main(["write", "--trigger", "About to deploy", "--rule", "Run it.",
+                            "--slug", "bold"])
+        rc, out, _ = self._capture_main(["list", "--target", "claude"])
+        self.assertEqual(rc, 0)
+        lines = out.splitlines()
+        plain_row = next(i for i, line in enumerate(lines) if "] plain " in line)
+        bold_row = next(i for i, line in enumerate(lines) if "] bold " in line)
+        self.assertEqual(lines[plain_row + 1], " " * 11 + first_line[:90])
+        self.assertEqual(lines[bold_row + 1], " " * 11 + "About to deploy")
+        self.assertNotIn("Second paragraph.", out)
+        self.assertIn("2 lesson(s)", out)
+
+    def test_rm_removes_a_lesson_with_no_trigger_and_keeps_its_neighbors(self):
+        self._capture_main(["write", "--trigger", "T", "--rule", "First.", "--slug", "first"])
+        self._capture_main(["write", "--rule", "Second, with no bold line.",
+                            "--slug", "second"])
+        self._capture_main(["write", "--rule", "Third.", "--slug", "third"])
+        rc, _, err = self._capture_main(["rm", "second"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self._parsed(), [("first", "T", "First."), ("third", "", "Third.")])
+        self.assertNotIn("Second, with no bold line.", self._store().read_text())
+
+    def test_write_rejects_a_slug_a_lesson_with_no_trigger_already_uses(self):
+        self._capture_main(["write", "--rule", "R", "--slug", "dup"])
+        rc, _, err = self._capture_main(["write", "--rule", "R2", "--slug", "dup"])
+        self.assertEqual(rc, 2)
+        self.assertIn("already exists", err)
+        self.assertEqual(self._parsed(), [("dup", "", "R")])
+
+    def test_audit_hint_names_a_trigger_only_when_the_lesson_has_one(self):
+        self.mod.TARGETS["claude"]["scopes"].add("ffp")
+        self._capture_main(["write", "--rule", "R", "--scope", "ffp", "--slug", "plain-ffp"])
+        self._capture_main(["write", "--trigger", "T", "--rule", "R",
+                            "--scope", "ffp", "--slug", "bold-ffp"])
+        self.mod.TARGETS["claude"]["scopes"].discard("ffp")
+        rc, out, _ = self._capture_main(["audit"])
+        self.assertEqual(rc, 0)
+        self.assertIn("--scope ffp --slug plain-ffp --rule ...", out)
+        self.assertIn("--scope ffp --slug bold-ffp --trigger ... --rule ...", out)
+
+    def test_write_keeps_a_blank_line_after_a_hand_edited_last_lesson(self):
+        # A hand edit can leave the section ending with one newline, or none.
+        for ending in ("\n", ""):
+            self._store().write_text(
+                "## Lessons\n\n"
+                "<!-- lesson: last, scope: global, added: 2026-01-01 -->\n"
+                "Last rule." + ending)
+            rc, _, err = self._capture_main([
+                "write", "--rule", "New rule.", "--slug", "new", "--added", "2026-01-02"])
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(
+                self._store().read_text(),
+                "## Lessons\n\n"
+                "<!-- lesson: last, scope: global, added: 2026-01-01 -->\n"
+                "Last rule.\n\n"
+                "<!-- lesson: new, scope: global, added: 2026-01-02 -->\n"
+                "New rule.\n\n")
+
+    def test_a_marker_with_no_text_is_listed_and_removable(self):
+        self._store().write_text(
+            "## Lessons\n\n"
+            "<!-- lesson: empty, scope: global, added: 2026-01-01 -->\n"
+            "<!-- lesson: kept, scope: global, added: 2026-01-02 -->\n"
+            "Keep me.\n")
+        self.assertEqual(self._parsed(), [("empty", "", ""), ("kept", "", "Keep me.")])
+        rc, out, _ = self._capture_main(["list", "--target", "claude"])
+        self.assertEqual(rc, 0)
+        self.assertIn("2 lesson(s)", out)
+        rc, _, err = self._capture_main(["rm", "empty"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self._parsed(), [("kept", "", "Keep me.")])
 
     def test_ensure_section_already_exists(self):
         # ensure_section is a no-op when the section heading is already present.

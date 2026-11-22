@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -196,6 +197,8 @@ def test_gmail_rules_sort_each_conversation_and_build_trash_and_unsubscribe_data
     assert by_tid["t4"]["unsub_url"] == "https://list.example/u?id=1" and by_tid["t6"]["unsub_url"] == ""
     assert by_tid["t5"]["body"] == "snip & more" and by_tid["t5"]["reason"].startswith("You never opened it")
     assert by_tid["t9"]["link"] == f"https://mail.google.com/mail/?authuser={ACCT}#all/t9"
+    assert all(r["tid"] == t for t, r in by_tid.items()), "each row names its thread, for Archive and Mark read"
+    assert [t for t, r in by_tid.items() if r["archived"]] == ["t9"], "only mail outside the inbox reads as archived"
     assert by_tid["t7"]["from"] == "deals@promo.example" and by_tid["t6"]["from"] == "Promo"
     assert all(f"-a {ACCT} -j" in c for c in calls(wq.bin, "gog"))
 
@@ -296,8 +299,16 @@ def test_github_lists_review_requests_and_skips_authors(wq):
     assert rows == [{"key": pr["url"], "link": pr["url"], "draft": True, "title": "o/r#7: Fix it",
                      "meta": "Review requested · ana · opened Nov 2"}]
     assert "--review-requested=@me --state=open" in calls(wq.bin, "gh")[0]
+    assert calls(wq.bin, "gh")[0] == f"search prs --review-requested=@me --state=open --limit 100 --json {github.FIELDS}"
     github.rows({"host": "ghe.example.com"})
     assert (wq.bin / "gh.env").read_text().splitlines() == ["", "ghe.example.com"]
+
+
+def test_github_with_repos_searches_only_those_repos(wq):
+    fake_tool(wq.bin, "gh", [("search prs", [])])
+    assert github.rows({"repos": ["octo-org/hello-world", "octo-org/docs.js"]}) == []
+    assert calls(wq.bin, "gh") == ["search prs --review-requested=@me --state=open --repo octo-org/hello-world "
+                                   f"--repo octo-org/docs.js --limit 100 --json {github.FIELDS}"]
 
 
 def test_calendar_lists_todays_events(wq):
@@ -311,6 +322,41 @@ def test_calendar_lists_todays_events(wq):
         ("Standup", True, "https://calendar.google.com/e1"), ("(no title)", False, "")]
     assert rows[1]["when"] == "All day" and rows[0]["when"].endswith(("AM", "PM"))
     assert calls(wq.bin, "gog") == [f"calendar events primary --today --max 50 -a {ACCT} -j"]
+
+
+@pytest.fixture
+def pacific(monkeypatch):
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def outlook_event(subject, start, **extra):
+    return {"subject": subject, "start": {"dateTime": f"{start}.0000000", "timeZone": "UTC"}, "isAllDay": False,
+            "isCancelled": False, "responseStatus": {"response": "accepted"}, **extra}
+
+
+def test_outlook_calendar_lists_your_local_days_events(wq, pacific):
+    fake_tool(wq.bin, "npx", [("calendarView", {"results": [{"statusCode": 200, "data": {"value": [
+        outlook_event("Design review", "2026-11-18T17:30:00", responseStatus={"response": "declined"},
+                      webLink="https://outlook.office.com/calendar/item/1"),
+        outlook_event("Holiday", "2026-11-18T00:00:00", isAllDay=True),
+        outlook_event("", "2026-11-18T23:00:00", responseStatus={"response": "notResponded"}),
+        outlook_event("Gone", "2026-11-18T20:00:00", isCancelled=True)]}}]})])
+    late_evening = datetime(2026, 11, 19, 6, 30, tzinfo=timezone.utc)
+    assert outlook.events({"address": ME}, late_evening) == [
+        {"account": ME, "title": "Design review", "when": "9:30 AM", "link": "https://outlook.office.com/calendar/item/1",
+         "declined": True},
+        {"account": ME, "title": "Holiday", "when": "All day", "link": "", "declined": False},
+        {"account": ME, "title": "(no title)", "when": "3:00 PM", "link": "", "declined": False}]
+    assert calls(wq.bin, "npx") == [
+        "-y @microsoft/workiq fetch -u /me/calendarView?startDateTime=2026-11-18T08:00:00Z&endDateTime=2026-11-19T08:00:00Z"
+        "&$select=subject,start,end,isAllDay,isCancelled,showAs,responseStatus,webLink&$orderby=start/dateTime&$top=200"]
+    fake_tool(wq.bin, "npx", [("calendarView", {"results": [{"statusCode": 403, "error": "Forbidden"}]})])
+    with pytest.raises(tools.SourceError, match="Work IQ couldn't read /me/calendarView: Forbidden"):
+        outlook.events({"address": ME})
 
 
 def test_tool_failures_say_what_failed(wq):

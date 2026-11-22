@@ -1173,6 +1173,17 @@ def purge_stale_awaiting() -> None:
         log.warning("purge-stale-awaiting rc=%d: %s", rc, err.strip())
 
 
+def observer_enabled() -> bool:
+    """False when ~/.assistant/config.json says {"observer": {"enabled": false}}. Then no workspace is sent to the
+    Observer and each keeps its last verdict. Anything else, including a missing or unreadable file, leaves it on."""
+    try:
+        cfg = json.loads((ASSISTANT_DIR / "config.json").read_text())
+    except (OSError, ValueError):
+        return True
+    obs = cfg.get("observer") if isinstance(cfg, dict) else None
+    return not (isinstance(obs, dict) and obs.get("enabled") is False)
+
+
 def pick_ws_batch() -> dict:
     """Returns dict with to_reclassify, reuse_cached, backed_off, total_ws."""
     rc, out, err = run([sys.executable, str(BIN / "pick-ws-batch.py")])
@@ -2592,7 +2603,7 @@ def main() -> int:
 
     # 3. Pick batch.
     batch = pick_ws_batch()
-    to_reclassify = batch.get("to_reclassify", [])
+    to_reclassify = batch.get("to_reclassify", []) if observer_enabled() else []
     backed_off = batch.get("backed_off", [])
 
     # 4. Per-workspace flow.

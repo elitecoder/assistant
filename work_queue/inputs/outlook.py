@@ -12,6 +12,9 @@ search you paste into Outlook yourself. Rules sort each email:
 - old      read mail you've kept for more than 30 days
 
 gh, cal, bulk, and old can be approved for the delete search.
+
+`events` reads today's Outlook calendar, in your local day, for the page's
+Today tab. It skips cancelled events and marks the ones you declined.
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ REASONS = {
     "bulk": "A broadcast or an automated notice. Nothing to reply to.",
 }
 SELECT = "subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,conversationId,inferenceClassification,webLink"
+EVENT_SELECT = "subject,start,end,isAllDay,isCancelled,showAs,responseStatus,webLink"
 
 
 def fetch(*paths: str) -> list[dict]:
@@ -152,3 +156,22 @@ def rows(entry: dict, now: datetime | None = None, sleep=time.sleep) -> list[dic
             "body": text.get(m["id"]) or m.get("bodyPreview") or "", "link": m.get("webLink") or "",
         })
     return out
+
+
+def local_day(now: datetime) -> tuple[str, str]:
+    """The start and end of your local day around `now`, in UTC, as calendarView takes them."""
+    day = now.astimezone().date()
+    return tuple(datetime.combine(d, datetime.min.time()).astimezone().astimezone(timezone.utc)
+                 .strftime("%Y-%m-%dT%H:%M:%SZ") for d in (day, day + timedelta(days=1)))
+
+
+def events(entry: dict, now: datetime | None = None) -> list[dict]:
+    """Today's Outlook events, in the same rows as gcal.rows. Graph gives start times in UTC."""
+    start, end = local_day(now or datetime.now(timezone.utc))
+    found = one(f"/me/calendarView?startDateTime={start}&endDateTime={end}&$select={EVENT_SELECT}"
+                "&$orderby=start/dateTime&$top=200")
+    return [{"account": entry["address"], "title": e.get("subject") or "(no title)",
+             "when": "All day" if e.get("isAllDay") else datetime.fromisoformat(e["start"]["dateTime"])
+             .replace(tzinfo=timezone.utc).astimezone().strftime("%-I:%M %p"),
+             "link": e.get("webLink") or "", "declined": (e.get("responseStatus") or {}).get("response") == "declined"}
+            for e in found["value"] if not e.get("isCancelled")]

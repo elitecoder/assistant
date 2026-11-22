@@ -93,6 +93,14 @@ def test_real_manifest_loads_and_has_core_tools():
             "propose_lesson", "system_health"} <= names
 
 
+def test_real_manifest_lets_propose_lesson_skip_the_trigger():
+    spec = next(t for t in td.load_manifest() if t["name"] == "propose_lesson")["args"]
+    assert td.parse_tool_args(spec, ["--rule", "When X, do Y."]) == {
+        "rule": "When X, do Y."}
+    with pytest.raises(ValueError, match="missing required argument"):
+        td.parse_tool_args(spec, ["--trigger", "On X"])
+
+
 # ─── end-to-end dispatch (real subprocess) ───────────────────────────────────
 
 def _stub_manifest(tmp_path: Path, monkeypatch) -> Path:

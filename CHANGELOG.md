@@ -9,6 +9,44 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Turn the Observer off with `{"observer": {"enabled": false}}` in
+  `~/.assistant/config.json`. The pulse then sends no workspace to it and
+  each workspace keeps its last verdict. Without the setting, it stays on.
+- Show finished agent work in a **Ready for you** box at the top of the Work
+  queue's Start here tab, or of the Open list when there's no Start here. Each
+  TODO you sent from the page that's done or blocked shows its title, id, and
+  result or blocked reason, with **Done** to hide it. `/api/state` now lists
+  each sent row's TODO under `queued`: id, title, status, result, reason,
+  finish time, and workspace. The page reads it again every 20 seconds while
+  a sent TODO is still open or still listed, without redrawing a note you're
+  typing. A blocked Start here item shows **Sent td-NNN**, turned off.
+- Add **Open workspace** to each Ready for you item: `POST /api/focus` brings
+  the TODO's cmux workspace to the front and selects it. It refuses a closed
+  workspace and a workspace ref that cmux reused for another workspace, whose
+  title doesn't start with the TODO's id.
+- Merge the Work queue's Outlook, Gmail, and Unsubscribe tabs into one
+  **Email** tab with a collapsible part for each. A part with email that
+  needs you starts open, and old links and saved tabs land on the right part.
+- Add email actions to every Outlook and Gmail row on the Email tab: **Send
+  to Agent** and **Snooze**, and on Gmail, **Archive** while it's in the
+  inbox and **Mark read** while it's unread. `POST /api/gmail` changes the
+  whole conversation, so mail that arrived since the last refresh changes
+  too, then reads every message's labels back and reports success only when
+  Gmail confirms it. **Show hidden email** lists hidden email with **Undo**,
+  and Undo on an archived email moves it back to the inbox. Hiding keys on
+  the email's own id, so it survives a refresh.
+- Add a note box to Send to Agent on Open list rows, Start here items, and
+  email rows. The note goes in the TODO above the untrusted row block,
+  outside its markers, labeled as the sender's own instruction. Cmd+Enter or
+  Ctrl+Enter sends and Esc cancels; a failed send keeps the note, and a row
+  that was already sent says the note wasn't added.
+- Serve files inside `~/dev/generated-docs` read-only at `GET /files/<path>`,
+  so `file://` links in an agent's result open from the page. Nothing outside
+  that folder is served, through `..` or a symbolic link either, Markdown is
+  served as text, and each file is sandboxed. Links in a result keep a
+  trailing period out, and only `http`, `https`, and `file` links are made.
+
 ### Fixed
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
@@ -19,6 +57,29 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   window that fails to list makes the check unknown rather than gone. The
   close step now logs `already gone` for a session that really ended, instead
   of calling it "not a warm workspace (ref reissued?)".
+- List pull requests from only the repositories you choose. Add `repos` to
+  the `github` entry in `sources.json`, or run `bin/work-queue-setup.py link
+  github --repo OWNER/NAME`, repeated for each repository. Without it, the
+  Work queue still lists every pull request that asks for your review.
+- Show today's Outlook calendar on the Work queue's Today tab when Outlook is
+  linked, in the same rows as Google Calendar. It reads your local day
+  through Work IQ, leaves out cancelled events, and marks the ones you
+  declined. A failed read shows as its own **Outlook calendar** error, and the
+  other sources still show. Set `"calendar": false` on the `outlook` entry to
+  turn it off.
+- Never count a Gmail read-back that failed as verified. Apply's Trash and
+  restore checks treated a failed or unreadable `gog gmail get` as a message
+  without labels, so a restore read back as verified.
+- Leave hidden email out of **Approve all**, the approved count, the Outlook
+  search, and **Apply approvals**: email you snoozed, archived, sent to an
+  agent, or marked done or dropped.
+- Answer a Work queue request that fails unexpectedly, for example on a TODO
+  store that isn't valid JSON, with a JSON error instead of dropping it.
+- Run each mutation check in a temporary folder whose path has no `__`. A
+  random folder name with `__` in it failed the installer tests' baseline,
+  which read it as a plist placeholder left unreplaced.
+- Run the mutation checks in three CI shards instead of two, so each shard
+  finishes within its 60-minute limit with this release's added checks.
 - Keep the Work queue's sent-save worker running after a failure. An
   unexpected error in a batch, such as a malformed result or a job file that
   can't be written, stopped the background thread but left it marked as
@@ -29,6 +90,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- A lesson no longer needs a bolded trigger line above its rule.
+  `assistant-curator.py write --rule R` stores the marker and the rule
+  alone, and `list`, `rm`, `audit`, and the duplicate-slug check now see a
+  block with no bold line, which they skipped before. `--trigger` still
+  writes the bolded line, and existing blocks read as before. `list` shows a
+  rule's first line when a lesson has no trigger. `propose_lesson`, the
+  `propose_memory` agent tool, and the lesson extractor's drafts need only a
+  rule, and the `/lesson` skill and the operating guide show the rule-only
+  form. `write` keeps a blank line before the new lesson when a hand edit
+  left the section without one, and a marker with no text under it is now
+  listed and removable.
 - Send a Work queue Start here item to an agent from the list itself. Each
   item that isn't blocked has Send to Agent next to Done, which sends its row
   for a first pass through the row's own send path, so the TODO, the done

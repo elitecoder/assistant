@@ -11,8 +11,8 @@ object per line:
 
 Two modes:
 
-  RECORD (default) — append a new pending proposal. Requires --trigger and
-  --rule. Returns {"status": "recorded", "proposal_id": "<id>"}.
+  RECORD (default) — append a new pending proposal. Requires --rule;
+  --trigger is optional. Returns {"status": "recorded", "proposal_id": "<id>"}.
 
   CONFIRM (--confirm <id>) — apply a pending proposal: run assistant-curator.py
   to write the lesson into its target store, then atomically flip the
@@ -51,20 +51,22 @@ def mirror_lesson_to_vault(entry: dict[str, Any]) -> str | None:
     never-overwrite suffixing."""
     if not OBSIDIAN_WRITE.exists():
         return None
-    trigger = entry.get("trigger", "") or "lesson"
+    rule = entry.get("rule", "")
+    trigger = entry.get("trigger", "")
+    title = trigger or rule.split("\n", 1)[0] or "lesson"
     scope = entry.get("scope") or "general"
     target = entry.get("target") or "assistant"
     confirmed = entry.get("confirmed_at") or entry.get("ts") or ""
     body = (
-        f"**Rule:** {entry.get('rule', '')}\n\n"
-        f"- **Trigger:** {trigger}\n"
-        f"- **Target store:** {target}\n"
+        f"**Rule:** {rule}\n\n"
+        + (f"- **Trigger:** {trigger}\n" if trigger else "")
+        + f"- **Target store:** {target}\n"
         f"- **Scope:** {scope}\n"
         f"- **Confirmed:** {confirmed}\n"
         f"- **Source:** {entry.get('source', 'manual')}\n"
     )
     cmd = [sys.executable, str(OBSIDIAN_WRITE),
-           "--title", trigger[:120],
+           "--title", title[:120],
            "--category", "lesson",
            "--body", body,
            "--tags", "lesson", scope, target,
@@ -151,9 +153,11 @@ def confirm_proposal(proposal_id: str,
                 "note": "already confirmed"}
 
     cmd = [sys.executable, str(curator), "write",
-           "--trigger", target_entry.get("trigger", ""),
            "--rule", target_entry.get("rule", ""),
            "--target", target_entry.get("target", "assistant")]
+    trigger = target_entry.get("trigger")
+    if trigger:
+        cmd += ["--trigger", trigger]
     scope = target_entry.get("scope")
     if scope:
         cmd += ["--scope", scope]
@@ -187,7 +191,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Record a lesson proposal (default) or confirm a pending "
                     "one with --confirm <id>. Returns JSON.")
-    ap.add_argument("--trigger", help="one-line trigger (required to record)")
+    ap.add_argument("--trigger", default="",
+                    help="optional bolded line above the rule; omit it when the "
+                         "rule says when it applies")
     ap.add_argument("--rule", help="one-paragraph rule (required to record)")
     ap.add_argument("--target", default="assistant", choices=VALID_TARGETS,
                     help="lesson store (default: assistant)")
@@ -204,9 +210,9 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result.get("status") != "error" else 1
 
-    if not args.trigger or not args.rule:
+    if not args.rule:
         print(json.dumps({"status": "error",
-                          "error": "--trigger and --rule are required to record a proposal"}))
+                          "error": "--rule is required to record a proposal"}))
         return 1
     result = record_proposal(args.trigger, args.rule, args.target,
                              args.scope, args.source)

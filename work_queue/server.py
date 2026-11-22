@@ -4,9 +4,13 @@
     GET  /api/state          decisions, applied results, marks, the rows sent to agents, apply and refresh status
     POST /api/decide         {"keys": [...], "decision": "approve" | "keep" | "undo" | "clear"}
     POST /api/mark           {"key", "state": "done" | "snoozed" | "dropped" | "clear", "until"} or {"marks": {...}}
-    POST /api/todo           {"key", "title", "detail", "url", "mode": "assist" | "handsoff"}: queue an Assistant
-                             TODO that starts on its own, mark the row done, and, for a Slack save, mark the
-                             save completed in the background
+    GET  /files/<path>       a file inside ~/dev/generated-docs, read-only, so an agent's file:// links open
+    POST /api/todo           {"key", "title", "detail", "url", "mode": "assist" | "handsoff", "note"}: queue an
+                             Assistant TODO that starts on its own, mark the row done, and, for a Slack save, mark
+                             the save completed in the background
+    POST /api/gmail          {"key", "action": "archive" | "read" | "unarchive"}: change a Gmail conversation, then
+                             read every message's labels back to confirm it
+    POST /api/focus          {"id": "td-NNN"}: bring the cmux workspace an agent works in to the front
     POST /api/apply          apply approvals: Slack Later saves, Gmail Trash, and one-click unsubscribes
     POST /api/refresh        re-read the linked sources and rebuild the page
 
@@ -33,6 +37,7 @@ import errno
 import http.server
 import ipaddress
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -79,6 +84,16 @@ MODES = {
     "review, or push to a branch you didn't create. If you can't finish all of it, say in your result what's done and "
     "what's left. " + RESULT,
 }
+NOTE_LABEL = ("The person who sent this added a note. It's their own instruction, typed on the Work queue page, not "
+              "part of the row, and the safety rules above still apply:")
+NOTE_MAX = 2000
+EMAIL_MARK = "https://work-queue.local/email/"
+TD_ID = re.compile(r"td-\d+")
+WORKSPACE = re.compile(r"workspace:\d+")
+WINDOW = re.compile(r"window:\d+")
+THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_-]{0,63}")
+GMAIL_ACTIONS = {"archive": ("--remove", "INBOX"), "read": ("--remove", "UNREAD"), "unarchive": ("--add", "INBOX")}
+CMUX_TIMEOUT = 15
 SAVE_PATH = re.compile(r"/archives/([CDG][A-Z0-9]{8,11})/p(\d{10})(\d{6})")
 URL_MAX = 1000
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
@@ -137,15 +152,26 @@ def mark_sent(key: str) -> None:
     config.write_json(path("marks.json"), marks)
 
 
+def note_text(note: str) -> str:
+    """The person's note with its line breaks kept but no blank lines, so it can never start a RESULT line."""
+    lines = (" ".join(line.split()) for line in note.splitlines())
+    return "\n".join(line for line in lines if line)[:NOTE_MAX]
+
+
 def queue_todo(body: dict):
     """Create an auto-dispatching Assistant TODO from a row and mark the row done. Returns (status, {id, existing}).
 
     `mode` "assist", the default, asks for a first pass that leaves drafts; "handsoff" asks the agent to finish and
-    post on its own. When the row is a Slack save, a new TODO also marks the save completed in the background."""
+    post on its own. `note` is the person's own instruction: it goes above the untrusted row, outside its fence. A row
+    that was already sent keeps its TODO as it was, so a note sent with it isn't added. When the row is a Slack save,
+    a new TODO also marks the save completed in the background."""
     key, title = body.get("key"), " ".join(str(body.get("title") or "").split())[:300]
     url, how = " ".join(str(body.get("url") or "").split())[:URL_MAX], body.get("mode", "assist")
+    note = body.get("note") or ""
     if not isinstance(how, str) or how not in MODES:
         return 400, {"error": "mode must be assist or handsoff"}
+    if not isinstance(note, str):
+        return 400, {"error": "note must be text"}
     if not isinstance(key, str) or not key.startswith("https://") or not title or (url and not url.startswith("https://")):
         return 400, {"error": "key and title are required, and key and url must be https"}
     queued_file = path("queued.json")
@@ -164,6 +190,8 @@ def queue_todo(body: dict):
         code = secrets.token_hex(8)
         row = "\n".join([f"----- BEGIN UNTRUSTED ROW {code} -----", f"Title: {title}", f"Detail: {detail}",
                          f"Source: {url}", f"----- END UNTRUSTED ROW {code} -----"])
+        if note := note_text(note):
+            row = f"{NOTE_LABEL}\n{note}\n\n{row}"
         items.append({"id": td_id, "priority": "P2", "title": title, "source": f"work-queue:{now()[:10]}",
                       "createdAt": now()[:10], "status": "open", "autoDispatch": True, **({"url": url} if url else {}),
                       "workQueueMode": how,
@@ -173,6 +201,8 @@ def queue_todo(body: dict):
         queued[key] = {"id": td_id, "at": now(), "mode": how}
         config.write_json(queued_file, queued)
         mark_sent(key)
+        if key.startswith(EMAIL_MARK) and url:
+            mark_sent(url)
     if save := slack_save(key):
         queue_save(*save)
     return 200, {"id": td_id, "existing": False}
@@ -257,14 +287,180 @@ def set_marks(body: dict):
     return 200, {"marks": marks}
 
 
-def sent_rows() -> list[str]:
-    """The rows sent to agents whose TODO still exists. The page leaves them out."""
+def text(value) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def result_of(item: dict) -> str:
+    """The result an agent recorded with todo_result.py; "" when there's none."""
+    detail = text(item.get("detail"))
+    at = detail.rfind(f"\n\n{RESULT_TAG} ")
+    return detail[at + len(RESULT_TAG) + 3:].strip() if at >= 0 else ""
+
+
+def queued_view() -> dict:
+    """Each row sent to an agent whose TODO still exists, with what the page shows about the TODO: its id, title,
+    status, result (once done), reason (once blocked), when it last changed, and the cmux workspace it runs in."""
     queued = {k: q for k, q in read_map("queued.json").items() if isinstance(q, dict)}
     if not queued:
-        return []
+        return {}
     doc = read_store()
-    live = {i.get("id") for i in [*doc.get("items", []), *doc.get("completed", [])] if i.get("status") != "removed"}
-    return sorted(key for key, q in queued.items() if q.get("id") in live)
+    live = {i.get("id"): i for i in [*doc.get("items", []), *doc.get("completed", [])] if i.get("status") != "removed"}
+    out = {}
+    for key, q in queued.items():
+        item = live.get(q.get("id"))
+        if item is None:
+            continue
+        status = text(item.get("status")) or "open"
+        out[key] = {"id": item["id"], "title": text(item.get("title")), "status": status,
+                    "result": result_of(item) if status == "done" else "",
+                    "reason": text(item.get("statusReason")) if status == "blocked" else "",
+                    "finished": text(item.get("resultAt")) or text(item.get("statusUpdatedAt")),
+                    "workspace": text(item.get("dispatchedWs"))}
+    return out
+
+
+def sent_rows() -> list[str]:
+    """The rows sent to agents whose TODO still exists. The page leaves them out."""
+    return sorted(queued_view())
+
+
+def run_tool(cmd: list[str]) -> tuple[str, str]:
+    """A tool's output and "" when it ran and exited 0; "" and the reason when it's missing, failed, or timed out."""
+    try:
+        return tools.run(cmd, timeout=CMUX_TIMEOUT), ""
+    except tools.SourceError as exc:
+        return "", str(exc)
+
+
+def json_object(out: str) -> dict:
+    """The JSON object a tool printed; {} when it printed anything else."""
+    try:
+        found = json.loads(out)
+    except ValueError:
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def focus_workspace(body: dict):
+    """Bring the cmux window that holds a TODO's workspace to the front and select the workspace.
+
+    It refuses when the workspace is closed, or when its title no longer starts with the TODO's id, since cmux
+    reuses workspace refs. Every cmux failure, timeout, or unexpected answer is an error, never a crash."""
+    td = body.get("id")
+    if not isinstance(td, str) or not TD_ID.fullmatch(td):
+        return 400, {"error": "id must be a TODO id, such as td-123"}
+    doc = read_store()
+    item = next((i for i in [*doc.get("items", []), *doc.get("completed", [])] if i.get("id") == td), {})
+    ws = item.get("dispatchedWs")
+    if not isinstance(ws, str) or not WORKSPACE.fullmatch(ws):
+        return 404, {"error": f"{td} has no workspace yet"}
+    cmux = os.environ.get("CMUX_BIN") or "cmux"
+    out, error = run_tool([cmux, "identify", "--workspace", ws])
+    if error:
+        return (404 if "not found" in error.lower() else 502), {"error": f"Couldn't reach {ws}: {error}"}
+    caller = json_object(out).get("caller")
+    win = caller.get("window_ref") if isinstance(caller, dict) else None
+    if not isinstance(win, str) or not WINDOW.fullmatch(win) or caller.get("workspace_ref") != ws:
+        return 502, {"error": f"cmux didn't say which window holds {ws}"}
+    out, error = run_tool([cmux, "workspace", "list", "--window", win, "--json"])
+    listed = json_object(out).get("workspaces")
+    if not isinstance(listed, list):
+        return 502, {"error": f"Couldn't list the workspaces in {win}: {error or 'cmux answered in another format'}"}
+    title = next((w.get("title") for w in listed if isinstance(w, dict) and w.get("ref") == ws), None)
+    if not isinstance(title, str) or not title.startswith(f"{td}:"):
+        return 409, {"error": f"{ws} no longer belongs to {td}: its title doesn't start with {td}:, so it wasn't opened"}
+    for step in ([cmux, "focus-window", "--window", win], [cmux, "select-workspace", "--workspace", ws, "--window", win],
+                 ["open", "-b", "com.cmuxterm.app"]):
+        if error := run_tool(step)[1]:
+            return 502, {"error": f"Couldn't bring {ws} to the front: {error}"}
+    return 200, {"workspace": ws, "window": win}
+
+
+def gmail_thread(key) -> tuple[str, str] | None:
+    """The account and thread id of a Gmail row from the last refresh, while its account is still linked."""
+    found = entry(read_map("emails.json"), key) if isinstance(key, str) else {}
+    account, tid = found.get("account"), found.get("tid")
+    try:
+        linked = config.load().get("gmail")
+    except ValueError:
+        return None
+    accounts = linked.get("accounts") if isinstance(linked, dict) else None
+    if not isinstance(tid, str) or not THREAD_ID.fullmatch(tid) or not isinstance(accounts, list) or account not in accounts:
+        return None
+    return account, tid
+
+
+def thread_labels(account: str, tid: str) -> list[set] | None:
+    """The labels of every message in a Gmail conversation; None when gog fails or answers in any other shape."""
+    found = gog("gmail", "thread", "get", tid, "-a", account)
+    thread = found.get("thread") if isinstance(found, dict) and not found.get("error") else None
+    messages = thread.get("messages") if isinstance(thread, dict) else None
+    if not isinstance(messages, list) or not messages or not all(
+            isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("labelIds") or [], list)
+            for m in messages):
+        return None
+    return [set(m.get("labelIds") or []) for m in messages]
+
+
+def gmail_error(found) -> str:
+    error = found.get("error") if isinstance(found, dict) else None
+    return text(error.get("message")) if isinstance(error, dict) else "gog answered in an unexpected format"
+
+
+def gmail_action(body: dict):
+    """Archive a Gmail conversation, mark it read, or move it back to the inbox. It acts on the whole thread, so mail
+    that arrived since the last refresh changes too, then re-reads every message's labels and reports success only
+    when Gmail confirms the change. Archiving also hides the row, and moving it back shows it again."""
+    action, key = body.get("action"), body.get("key")
+    if action not in GMAIL_ACTIONS:
+        return 400, {"error": "action must be archive, read, or unarchive"}
+    found = gmail_thread(key)
+    if found is None:
+        return 404, {"error": "That email isn't on the page from the last refresh, or its account isn't linked"}
+    account, tid = found
+    flag, label = GMAIL_ACTIONS[action]
+    changed = gog("gmail", "thread", "modify", tid, flag, label, "-a", account)
+    if not isinstance(changed, dict) or changed.get("error"):
+        return 502, {"error": f"Gmail didn't make the change: {gmail_error(changed)}"}
+    labels = thread_labels(account, tid)
+    if labels is None:
+        return 502, {"error": "Gmail may have made the change, but reading it back failed, so it isn't confirmed"}
+    if not all((label in each) == (flag == "--add") for each in labels):
+        return 502, {"error": "Gmail still shows the conversation unchanged"}
+    mark = EMAIL_MARK + key
+    with lock:
+        done, marks = read_map("mail-actions.json"), read_map("marks.json")
+        kept = done[key] = entry(done, key)
+        if action == "unarchive":
+            kept.pop("archived", None)
+            marks.pop(mark, None)
+        else:
+            kept["archived" if action == "archive" else "read"] = now()
+        if action == "archive":
+            marks[mark] = {"state": "done", "until": 0, "at": now()}
+        config.write_json(path("mail-actions.json"), done)
+        config.write_json(path("marks.json"), marks)
+    return 200, {"key": key, "action": action, "marks": marks, "mail": done}
+
+
+def docs_root() -> Path:
+    return config.home() / "dev/generated-docs"
+
+
+def doc_file(route: str) -> tuple[int, bytes, str]:
+    """A file under ~/dev/generated-docs, for GET /files/<its absolute path>. Anything outside it, including through a
+    symlink or "..", is refused. Markdown is served as plain text."""
+    name = urllib.parse.unquote(route[len("/files"):])
+    try:
+        target = Path(name).resolve(strict=True)
+        body = target.read_bytes() if target.is_relative_to(docs_root().resolve()) and target.is_file() else None
+    except (OSError, ValueError):
+        body = None
+    if body is None:
+        return 404, json.dumps({"error": "Only files inside ~/dev/generated-docs open here"}).encode(), "application/json"
+    kind = "text/plain" if target.suffix.lower() == ".md" else mimetypes.guess_type(target.name)[0] or "text/plain"
+    return 200, body, f"{kind}; charset=utf-8" if kind.startswith("text/") else kind
 
 
 def gog(*args: str) -> dict:
@@ -272,6 +468,13 @@ def gog(*args: str) -> dict:
         return tools.run_json(["gog", *args, "-j"], timeout=60)
     except tools.SourceError as exc:
         return {"error": {"message": str(exc)[:200]}}
+
+
+def message_labels(found) -> set | None:
+    """One message's labels as `gog gmail get` prints them; None when gog failed or answered in another shape."""
+    message = found.get("message") if isinstance(found, dict) and not found.get("error") else None
+    labels = message.get("labelIds") if isinstance(message, dict) else None
+    return set(labels) if isinstance(labels, list) else None
 
 
 def apply_gmail(jobs) -> dict:
@@ -285,8 +488,9 @@ def apply_gmail(jobs) -> dict:
         if errors:
             out[key] = {"status": "error", "error": errors[0], "at": now()}
             continue
-        trashed = ["TRASH" in gog("gmail", "get", mid, "-a", acct).get("message", {}).get("labelIds", []) for mid in ids]
-        out[key] = {"status": "undone" if undo else "done", "verified": all(t != undo for t in trashed), "at": now()}
+        read = [message_labels(gog("gmail", "get", mid, "-a", acct)) for mid in ids]
+        verified = all(labels is not None and ("TRASH" in labels) != undo for labels in read)
+        out[key] = {"status": "undone" if undo else "done", "verified": verified, "at": now()}
     return out
 
 
@@ -369,6 +573,22 @@ APPLIERS = {"unsub": apply_unsub, "gmail": apply_gmail, "slack": apply_slack}
 SETTLED = ("done", "gone")
 
 
+def hides(mark, now_ms: float) -> bool:
+    """Whether a mark hides its row: done, dropped, or snoozed until a time still to come."""
+    if not isinstance(mark, dict):
+        return False
+    until = mark.get("until")
+    return mark.get("state") in ("done", "dropped") or (
+        mark.get("state") == "snoozed" and isinstance(until, (int, float)) and until > now_ms)
+
+
+def hidden_rows():
+    """A test for an email candidate the page hides: sent to an agent, archived, done, dropped, or snoozed, by its
+    stable email key or by its link."""
+    marks, sent, now_ms = read_map("marks.json"), set(sent_rows()), time.time() * 1000
+    return lambda cand: any(k in sent or hides(marks.get(k), now_ms) for k in (cand.get("mk"), cand.get("link")) if k)
+
+
 def run_apply() -> None:
     """Apply every approval. The status always ends with running false, plus the error when apply stopped early."""
     applied_file, status_file = path("applied.json"), path("apply-status.json")
@@ -379,9 +599,10 @@ def run_apply() -> None:
         cands = config.read_json(refresh.candidates_path(), {})
         decisions = config.read_json(path("decisions.json"), {})
         applied = config.read_json(applied_file, {})
+        away = hidden_rows()
         for key, d in decisions.items():
             cand = cands.get(key)
-            if not cand or cand["kind"] not in jobs:
+            if not cand or cand["kind"] not in jobs or (cand["kind"] == "gmail" and away(cand)):
                 continue
             status = applied.get(key, {}).get("status")
             if d["decision"] == "approve" and status not in SETTLED:
@@ -458,23 +679,29 @@ def start_apply():
 
 
 def state() -> dict:
+    queued = queued_view()
     return {"decisions": config.read_json(path("decisions.json"), {}), "applied": config.read_json(path("applied.json"), {}),
-            "status": config.read_json(path("apply-status.json"), {}), "sent": sent_rows(),
-            "marks": config.read_json(path("marks.json"), {}), "refresh": refresh_state()}
+            "status": config.read_json(path("apply-status.json"), {}), "sent": sorted(queued), "queued": queued,
+            "marks": config.read_json(path("marks.json"), {}), "mail": read_map("mail-actions.json"),
+            "refresh": refresh_state()}
 
 
-ROUTES = {"/api/decide": decide, "/api/mark": set_marks, "/api/todo": queue_todo,
-          "/api/apply": lambda body: start_apply(), "/api/refresh": lambda body: start_refresh()}
+ROUTES = {"/api/decide": decide, "/api/mark": set_marks, "/api/todo": queue_todo, "/api/gmail": gmail_action,
+          "/api/focus": focus_workspace, "/api/apply": lambda body: start_apply(),
+          "/api/refresh": lambda body: start_refresh()}
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def send(self, code: int, body: bytes, kind: str) -> None:
+    def send(self, code: int, body: bytes, kind: str, sandbox: bool = False) -> None:
         self.send_response(code)
         self.send_header("Content-Type", kind)
         self.send_header("Cache-Control", "no-store")
+        if sandbox:
+            self.send_header("Content-Security-Policy", "sandbox allow-scripts allow-popups")
+            self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -496,12 +723,23 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def failed(self, exc: Exception) -> None:
+        """Answer an unexpected error with JSON, so the page can say what failed; the traceback goes to the log."""
+        traceback.print_exception(exc)
+        self.send_json(500, {"error": f"The Work queue server hit an error: {type(exc).__name__}"})
+
     def do_GET(self):
         if self.refused():
             return None
         route = self.path.split("?")[0]
+        if route.startswith("/files/"):
+            return self.send(*doc_file(route), sandbox=True)
         if route == "/api/state":
-            return self.send_json(200, state())
+            try:
+                found = state()
+            except Exception as exc:  # noqa: BLE001 — a broken saved file answers with an error, never a dropped request
+                return self.failed(exc)
+            return self.send_json(200, found)
         if route in ("/", "/index.html"):
             site = refresh.site_path()
             body = site.read_text() if site.exists() else page.placeholder(
@@ -522,7 +760,10 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         except ValueError:
             return self.send_json(400, {"error": "invalid JSON"})
-        code, out = route(body if isinstance(body, dict) else {})
+        try:
+            code, out = route(body if isinstance(body, dict) else {})
+        except Exception as exc:  # noqa: BLE001 — a broken saved file answers with an error, never a dropped request
+            return self.failed(exc)
         return self.send_json(code, out)
 
 

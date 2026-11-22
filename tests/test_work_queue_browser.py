@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -26,7 +27,7 @@ pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Error, sync_playwright  # noqa: E402
 
 from work_queue import config, page, refresh, server, triage  # noqa: E402
-from work_queue_fakes import (VERDICT, Model, chromium_missing, fake_tool, first_line, gh_pr, raises,  # noqa: E402, F401
+from work_queue_fakes import (VERDICT, Model, calls, chromium_missing, fake_tool, first_line, gh_pr, raises,  # noqa: E402, F401
                               require_chromium, spare_port, wq)
 
 
@@ -37,6 +38,8 @@ PRS = [{"key": f"https://github.com/o/r/pull/{n}", "link": f"https://github.com/
 MAIL = {"from": "Ana", "day": "Nov 2", "to": ["Me"], "cc": [], "body": "Body text", "unread": False}
 AGENT = {**VERDICT, "disposition": "agent"}
 COVERAGE = os.environ.get("WQ_BROWSER_COVERAGE")
+FOLLOW = ("Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab "
+          "once it starts.")
 SCRIPTS: list[dict] = []
 
 
@@ -106,6 +109,7 @@ def write_page(snap_doc: dict) -> dict:
     refresh.site_path().parent.mkdir(parents=True, exist_ok=True)
     refresh.site_path().write_text(doc)
     config.write_json(refresh.candidates_path(), cands)
+    config.write_json(refresh.emails_path(), page.emails(snap_doc))
     return cands
 
 
@@ -177,6 +181,7 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
 
         third = fresh.locator('.sf-row[data-key="https://github.com/o/r/pull/3"]')
         third.get_by_role("button", name="Send to Agent").click()
+        third.locator(".cp-go").click()
         fresh.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/3"]', state="detached")
         wait_text(fresh, ".toast", "Sent to an agent as td-051 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
         todo = wq.items()[-1]
@@ -190,14 +195,15 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
         assert json.loads((wq.data / "marks.json").read_text())[PRS[2]["key"]]["state"] == "done"
         assert fresh.locator('.ag-row[data-key="https://github.com/o/r/pull/3"]').count() == 0
 
-        fresh.locator('#tabs .tab[data-t="email"]').click()
+        fresh.locator('#tabs .tab[data-t="mailbox"]').click()
         fresh.wait_for_selector("#open-list", state="hidden")
         assert fresh.locator("#email").is_visible()
+        fresh.locator("#email > summary").click()
         fresh.locator('#email details').first.evaluate("d => d.open = true")
         fresh.locator('.ap-row[data-key="mail:1"]').get_by_role("button", name="Approve").click()
         fresh.wait_for_function("document.getElementById('mq-q').textContent === 'subject:\"PR merged\"'")
 
-        fresh.locator('#tabs .tab[data-t="gmail-1"]').click()
+        fresh.locator("#gmail-1 > summary").click()
         fresh.locator('#gmail-1 details').first.evaluate("d => d.open = true")
         fresh.locator('.ap-row[data-key="gmail:1"]').get_by_role("button", name="Approve").click()
         fresh.wait_for_function("document.getElementById('ap-count').textContent === '1 approved'")
@@ -419,6 +425,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         tab.clock.run_for(12000)
         tab.wait_for_selector(".toast", state="detached")
         tab.locator(f'.sf-row[data-key="{pr(9)["key"]}"] .sf-send').click()
+        tab.locator(f'.sf-row[data-key="{pr(9)["key"]}"] .cp-go').click()
         tab.wait_for_selector(f'.sf-row[data-key="{pr(9)["key"]}"]', state="detached")
         wait_text(tab, ".toast", "Sent to an agent as td-108 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
         assert tab.locator(f'.ag-row[data-key="{pr(9)["key"]}"]').count() == 0
@@ -426,6 +433,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         tab.wait_for_selector(".toast", state="detached")
         tab.route("**/api/todo", lambda route: route.fulfill(status=500, json={"error": "store is busy"}))
         tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send').click()
+        tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .cp-go').click()
         wait_text(tab, ".toast", "Not sent: store is busy")
         assert text(tab, f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send') == "Send to Agent"
         assert tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send').is_enabled()
@@ -632,7 +640,8 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         wait_text(tab, f"{row1} .draft button", "Copied")
         assert tab.evaluate("navigator.clipboard.readText()") == "Looking at it today."
         tab.locator(f"{row2} .sf-send").click()
-        tab.wait_for_selector(row2, state="detached")
+        tab.locator(f"{row2} .cp-go").click()
+        tab.wait_for_selector(row2, state="detached", timeout=5000)
         assert json.loads((wq.data / "marks.json").read_text())[pr(2)["key"]]["state"] == "done"
         assert (text(tab, badge["start"]), text(tab, badge["open-list"])) == ("1", "1")
         tab.locator('#tabs .tab[data-t="start"]').click()
@@ -938,6 +947,7 @@ def test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row(si
             for k in range(1, n):
                 assert tab.locator(li(k)).count() == 0 and tab.locator(f'.sf-row[data-key="{pr(k)["key"]}"]').count() == 0
             tab.locator(f"{li(n)} .sf-send").click()
+            tab.locator(f"{li(n)} .cp-go").click()
             tab.wait_for_selector(li(n), state="detached")
             tab.wait_for_selector(f'.sf-row[data-key="{pr(n)["key"]}"]', state="detached")
             wait_text(tab, ".toast", f"Sent to an agent as td-{104 + n} for a first pass. Its status and result show on "
@@ -959,8 +969,471 @@ def test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row(si
         tab.wait_for_selector(li(3), state="visible")
         tab.route("**/api/todo", lambda route: route.fulfill(status=500, json={"error": "store is busy"}))
         tab.locator(f"{li(3)} .sf-send").click()
+        tab.locator(f"{li(3)} .cp-go").click()
         wait_text(tab, ".toast", "Not sent: store is busy")
         assert text(tab, f"{li(3)} .sf-send") == "Send to Agent" and tab.locator(f"{li(3)} .sf-send").is_enabled()
         assert tab.locator(li(3)).is_visible() and len(wq.items()) == 3
+        cov.snap()
+        browser.close()
+
+
+# ─── Ready for you, Open workspace, and live status ─────────────────────────
+
+def ready_seed(wq) -> Path:
+    """Start here with a blocked, sent item and an open one, and TODOs in every state Ready for you shows."""
+    notes = wq.home / "dev/generated-docs/notes/e2e plan.md"
+    notes.parent.mkdir(parents=True)
+    notes.write_text("# The E2E plan\n")
+    start = [{"key": pr(2)["key"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "",
+              "reason": triage.BLOCKED_REASON, "blocked": True},
+             {"key": pr(3)["key"], "title": "o/r#3: Change 3", "source": "GitHub", "effort": "Quick", "reason": "Go",
+              "blocked": False}]
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 9)], "status": [],
+                "triage": {"rows": {}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": "", "failed": []}})
+    items = [
+        {"id": "td-101", "title": "Write the E2E notes", "status": "done", "resultAt": "2026-11-20T10:00:00+00:00",
+         "dispatchedWs": "workspace:7", "detail": f"x\n\nRESULT: Wrote {notes.as_uri()}. Reply drafted at "
+                                                   "https://github.com/o/r/pull/1#c, and javascript:alert(1) stays text"},
+        {"id": "td-102", "title": "Fix access", "status": "blocked", "statusReason": "Need Jira access",
+         "statusUpdatedAt": "2026-11-20T11:00:00+00:00"},
+        {"id": "td-104", "title": "Quiet block", "status": "blocked", "statusUpdatedAt": "2026-11-20T08:00:00+00:00"},
+        {"id": "td-105", "title": "No result", "status": "done", "resultAt": "2026-11-20T09:00:00+00:00"},
+        {"id": "td-106", "title": "Still going", "status": "in-progress", "dispatchedWs": "workspace:8"},
+        {"id": "td-107", "title": "Dismissed", "status": "done", "resultAt": "2026-11-20T12:00:00+00:00"}]
+    wq.todo.write_text(json.dumps({"items": items}))
+    config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": f"td-10{n}", "at": "t"} for n in (1, 2, 4, 5, 6, 7)})
+    config.write_json(wq.data / "marks.json", {"https://work-queue.local/ready/td-107": {"state": "done", "until": 0},
+                                                **{pr(n)["key"]: {"state": "done", "until": 0} for n in (1, 2, 4, 5, 6, 7)}})
+    return notes
+
+
+def ready_ids(tab) -> list[str]:
+    return tab.eval_on_selector_all("#ready .ready-list li", "els => els.map(e => e.dataset.id)")
+
+
+def test_ready_for_you_shows_finished_work_opens_its_workspace_and_updates_live(site, wq, monkeypatch):
+    notes = ready_seed(wq)
+    focus = [(200, {"workspace": "workspace:7", "window": "window:9"}),
+             (409, {"error": "workspace:7 no longer belongs to td-101"})]
+    asked = []
+    monkeypatch.setitem(server.ROUTES, "/api/focus", lambda body: asked.append(body) or focus.pop(0))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        errors = []
+        tab.on("pageerror", lambda exc: errors.append(str(exc)))
+        states = []
+        tab.on("request", lambda r: states.append(r.url) if r.url.endswith("/api/state") else None)
+        tab.clock.install()
+        tab.goto(site + "#start")
+        tab.wait_for_selector("#ready", state="visible")
+        assert ready_ids(tab) == ["td-102", "td-101", "td-105", "td-104"], "newest first; open and dismissed TODOs stay out"
+        item = {n: f'#ready li[data-id="td-{n}"]' for n in (101, 102, 104, 105, 106)}
+        assert text(tab, f"{item[102]} .sf-title") == "Fix access (td-102)"
+        assert text(tab, f"{item[102]} .ready-result") == "Blocked: Need Jira access"
+        assert text(tab, f"{item[104]} .ready-result") == "Blocked: the agent didn’t say why."
+        assert text(tab, f"{item[105]} .ready-result") == ("Done, but the agent left no written result. Open td-105 on "
+                                                           "the Tasks tab of the Assistant dashboard to see what happened.")
+        result = tab.locator(f"{item[101]} .ready-result")
+        assert result.inner_text() == (f"Wrote {notes.as_uri()}. Reply drafted at https://github.com/o/r/pull/1#c, and "
+                                       "javascript:alert(1) stays text")
+        links = result.locator("a")
+        assert [links.nth(n).get_attribute("href") for n in range(links.count())] == [
+            "/files" + urllib.parse.quote(str(notes)), "https://github.com/o/r/pull/1#c"]
+        assert [links.nth(n).get_attribute("target") for n in range(2)] == ["_blank", "_blank"]
+        assert tab.evaluate("fetch(document.querySelector('#ready a').href).then(r => r.text())") == "# The E2E plan\n"
+        assert [tab.locator(f"{item[n]}").get_by_role("button", name="Open workspace").count() for n in (101, 102)] == [1, 0]
+        assert text(tab, f"{li(2)} .sf-sent") == "Sent td-102" and tab.locator(f"{li(2)} .sf-sent").is_disabled()
+        assert tab.locator(f"{li(2)} .sf-send").count() == 0 and text(tab, f"{li(3)} .sf-send") == "Send to Agent"
+
+        tab.locator(item[101]).get_by_role("button", name="Open workspace").click()
+        wait_text(tab, ".toast", "Brought the workspace for td-101 to the front.")
+        tab.clock.run_for(12000)
+        tab.locator(item[101]).get_by_role("button", name="Open workspace").click()
+        wait_text(tab, ".toast:last-of-type", "Couldn’t open the workspace: workspace:7 no longer belongs to td-101")
+        assert asked == [{"id": "td-101"}, {"id": "td-101"}]
+        assert tab.locator(item[101]).get_by_role("button", name="Open workspace").is_enabled()
+
+        tab.route("**/api/mark", lambda route: route.fulfill(status=500, body="nope"))
+        tab.locator(f"{item[104]} .sf-mark").click()
+        tab.wait_for_function("[...document.querySelectorAll('.toast')].some(t => t.textContent === 'Not saved: 500')")
+        assert tab.locator(f"{item[104]} .sf-mark").is_enabled() and tab.locator(item[104]).count() == 1
+        tab.unroute("**/api/mark")
+        tab.locator(f"{item[104]} .sf-mark").click()
+        tab.wait_for_selector(item[104], state="detached")
+        assert json.loads((wq.data / "marks.json").read_text())["https://work-queue.local/ready/td-104"]["state"] == "done"
+
+        # While a TODO is still going, the page asks again every 20 seconds and keeps a note you're typing.
+        tab.locator(f"{li(3)} .sf-send").click()
+        tab.locator(f"{li(3)} .compose textarea").fill("Keep this note")
+        doc = json.loads(wq.todo.read_text())
+        doc["items"][4].update(status="done", resultAt="2026-11-20T13:00:00+00:00", detail="x\n\nRESULT: Finished it")
+        wq.todo.write_text(json.dumps(doc))
+        before = len(states)
+        tab.clock.run_for(20000)
+        tab.wait_for_selector(item[106], state="attached")
+        assert len(states) > before and ready_ids(tab)[0] == "td-106" and text(tab, f"{item[106]} .ready-result") == "Finished it"
+        assert tab.locator(f"{li(3)} .compose textarea").input_value() == "Keep this note"
+        for width in (390, 1280):
+            tab.set_viewport_size({"width": width, "height": 900})
+            no_sideways_scroll(tab)
+
+        # Once every sent TODO is done and dismissed, the page stops asking, and a new send starts it again.
+        for n in ("td-106", "td-102", "td-101", "td-105"):
+            tab.locator(f'#ready li[data-id="{n}"] .sf-mark').click()
+            tab.wait_for_selector(f'#ready li[data-id="{n}"]', state="detached")
+        assert tab.locator("#ready").is_hidden()
+        before = len(states)
+        tab.clock.run_for(45000)
+        tab.wait_for_timeout(300)
+        assert len(states) == before, "nothing left to watch"
+        tab.locator(f"{li(3)} .cp-go").click()
+        tab.wait_for_selector(li(3), state="detached")
+        tab.clock.run_for(20000)
+        assert wait_for(lambda: len(states) > before), "a send starts the polling again"
+        assert errors == []
+        cov.snap()
+
+        fresh = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(fresh)
+        fresh.goto(site + "#start")
+        fresh.wait_for_selector(li(2), state="visible")
+        assert fresh.locator("#ready").is_hidden(), "a dismissed item stays dismissed in a fresh browser"
+        no_sideways_scroll(fresh)
+        cov.snap()
+        browser.close()
+
+
+def test_ready_for_you_sits_on_the_open_list_when_there_is_no_start_here(site, wq):
+    write_page({"built": "now", "github": [pr(1), pr(2)], "status": []})
+    wq.todo.write_text(json.dumps({"items": [{"id": "td-101", "title": "A", "status": "done", "resultAt": "t",
+                                              "detail": "x\n\nRESULT: Opened a draft PR"}]}))
+    config.write_json(wq.data / "queued.json", {pr(1)["key"]: {"id": "td-101", "at": "t"}})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(tab)
+        tab.goto(site)
+        tab.wait_for_selector("#open-list #ready", state="visible")
+        assert tab.locator("#start").count() == 0 and text(tab, "#ready .ready-result") == "Opened a draft PR"
+        no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+# ─── the Email tab ───────────────────────────────────────────────────────────
+
+def email(key: str, group: str, account: str = "", **extra) -> dict:
+    """An Outlook row, or a Gmail row when account is set."""
+    base = {**MAIL, "key": key, "group": group, "title": f"Mail {key}", "subject": f"Mail {key}", "reason": "A reason.",
+            "addr": f"{key}@example.com", "link": f"https://outlook.office.com/{key}"}
+    if account:
+        base.update(key=row_key(key), account=account, msg_ids=[f"id-{key}"], tid=f"t-{key}", unsub_url="", archived=False,
+                    link=f"https://mail.google.com/mail/#inbox/t-{key}")
+    return {**base, **extra}
+
+
+def mailbox_snapshot() -> dict:
+    outlook = [email("o-act", "act"), email("o-act2", "act"), email("o-act3", "act"), email("o-read", "read"),
+               email("o-del1", "gh"), email("o-del2", "gh")]
+    me = [email("g-act", "act", ACCT_A, unread=True), email("g-look", "unsorted", ACCT_A, archived=True),
+          email("g-news", "news", ACCT_A, unread=True), email("g-news2", "news", ACCT_A), email("g-bad", "act", ACCT_A)]
+    other = [email("h-news", "news", ACCT_B, unsub_url="https://news.example/u", addr="news@news.example")]
+    return {"built": "now", "outlook": outlook, "gmail": {ACCT_A: me, ACCT_B: other}, "status": []}
+
+
+ACCT_A, ACCT_B = "me@example.com", "other@example.com"
+
+
+def row_key(key: str) -> str:
+    """A Gmail row's key starts with gmail:, as gmail.rows makes it; the tests name rows g-... and h-... for short."""
+    return f"gmail:{key}" if key.startswith(("g-", "h-")) else key
+
+
+def mk(key: str) -> str:
+    return page.EMAIL_MARK + row_key(key)
+
+
+def em(key: str) -> str:
+    return f'.em-row[data-mk="{mk(key)}"]'
+
+
+def test_the_email_tab_holds_outlook_each_gmail_account_and_unsubscribe_and_old_links_land_on_it(site, wq):
+    snap = mailbox_snapshot()
+    snap["outlook"] = [m for m in snap["outlook"] if m["group"] != "act"]
+    write_page(snap)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        tab.goto(site + "#email")
+        tab.wait_for_selector("#mailbox", state="visible")
+        tabs = tab.eval_on_selector_all("#tabs .tab", "els => els.map(e => e.dataset.t)")
+        assert tabs == ["open-list", "agents", "mailbox", "all"], "one Email tab replaces Outlook, Gmail, and Unsubscribe"
+        assert text(tab, '#tabs .tab[data-t="mailbox"]') == "Email 2", "it counts the email that needs you"
+        is_open = "id => document.getElementById(id).open"
+        assert tab.evaluate(is_open, "email"), "an old Outlook link opens the Outlook part"
+        assert tab.evaluate(is_open, "gmail-1"), "a part with email that needs you starts open"
+        assert not tab.evaluate(is_open, "gmail-2") and not tab.evaluate(is_open, "unsubscribe")
+        assert "on" in tab.locator('#tabs .tab[data-t="mailbox"]').get_attribute("class")
+        for old in ("gmail-2", "unsubscribe"):
+            tab.evaluate(f"location.hash = '#{old}'")
+            tab.wait_for_function(is_open, arg=old)
+            assert tab.locator("#mailbox").is_visible() and tab.locator(f"#{old}").is_visible()
+        tab.evaluate("document.getElementById('email').open = false; location.hash = '#mq-q'")
+        tab.wait_for_function(is_open, arg="email")
+        assert tab.locator("#mq-q").is_visible(), "a link to anything inside a part opens that part"
+        for elsewhere in ("#tabs", "#nope"):
+            tab.evaluate(f"location.hash = '{elsewhere}'")
+            tab.wait_for_selector("#open-list", state="visible")
+            assert tab.locator("#mailbox").is_hidden()
+        tab.evaluate("location.hash = '#mailbox'")
+        tab.wait_for_selector("#mailbox", state="visible")
+        tab.evaluate("location.hash = ''")
+        tab.wait_for_selector("#open-list", state="visible")
+        no_sideways_scroll(tab)
+        cov.snap()
+
+        saved = browser.new_context(viewport={"width": 390, "height": 900})
+        saved.add_init_script("try { localStorage.setItem('wq-tab', 'gmail-2') } catch (_) {}")
+        old = saved.new_page()
+        cov = Coverage(old)
+        old.goto(site)
+        old.wait_for_function(is_open, arg="gmail-2")
+        assert old.locator("#mailbox").is_visible(), "a tab saved before the change lands on the Email tab"
+        no_sideways_scroll(old)
+        cov.snap()
+        browser.close()
+
+
+def test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals(site, wq):
+    now_ms = int(time.time() * 1000)
+    snap = mailbox_snapshot()
+    wq.sources({"gmail": {"accounts": [ACCT_A, ACCT_B]}})
+    write_page(snap)
+    config.write_json(wq.data / "marks.json", {
+        mk("o-del1"): {"state": "snoozed", "until": now_ms + 86400000},
+        "https://outlook.office.com/o-act3": {"state": "dropped", "until": 0},
+        mk("o-act3"): {"state": "dropped", "until": 0},
+        mk("g-news2"): {"state": "snoozed", "until": now_ms - 1000}})
+    fake_tool(wq.bin, "gog", [
+        ("thread modify t-g-bad", {"exit": 1, "stderr": "quota exceeded"}),
+        ("thread modify", {}),
+        ("thread get t-g-act", {"seq": [{"thread": {"messages": [{"id": "1", "labelIds": ["UNREAD"]}]}},
+                                        {"thread": {"messages": [{"id": "1", "labelIds": ["INBOX", "UNREAD"]}]}}]}),
+        ("thread get t-g-news", {"thread": {"messages": [{"id": "1", "labelIds": ["INBOX"]}, {"id": "2"}]}})])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        errors = []
+        tab.on("pageerror", lambda exc: errors.append(str(exc)))
+        tab.goto(site + "#mailbox")
+        tab.wait_for_selector(em("g-act"), state="visible")
+        count = '#tabs .tab[data-t="mailbox"] span'
+        assert text(tab, count) == "4" and text(tab, "#em-showhidden") == "Show hidden email (2)"
+        assert tab.locator("#email .em-archive, #email .em-readbtn").count() == 0, "Outlook stays read-only"
+        assert tab.locator(f"#email {em('o-read')} .sf-send").count() == 1 and \
+            tab.locator(f"{em('o-del2')} .em-acts button", has_text="Snooze").count() == 1
+        assert [tab.locator(f"{em(k)} .em-archive").count() for k in ("g-act", "g-look", "g-news")] == [1, 0, 1]
+        assert [tab.locator(f"{em(k)} .em-readbtn").count() for k in ("g-act", "g-look", "g-news2")] == [1, 0, 0]
+        assert tab.locator(em("o-act3")).is_hidden() and tab.locator(em("o-del1")).is_hidden()
+        assert tab.locator(f'.sf-row[data-mk="{mk("o-act3")}"]').get_attribute("class").count("is-hidden") == 1
+
+        # Approvals leave hidden email out.
+        tab.locator('#email .ap-group[data-group="mail-gh"] > summary').click()
+        assert text(tab, '.ap-group[data-group="mail-gh"] .ap-all') == "Approve all 1"
+        tab.locator('.ap-group[data-group="mail-gh"] .ap-all').click()
+        wait_text(tab, f"{em('o-del2')} .ap-status", "Approved: in your Outlook search")
+        assert {k for k, d in json.loads((wq.data / "decisions.json").read_text()).items()} == {"o-del2"}
+        assert text(tab, "#mq-q") == 'subject:"Mail o-del2"'
+        tab.locator('#gmail-1 .ap-group[data-group="gmail-news"] > summary').click()
+        tab.locator(f"{em('g-news2')} .ap-ok").click()
+        wait_text(tab, "#ap-count", "1 approved")
+        tab.locator(f"{em('g-news2')} .em-acts button", has_text="Snooze").click()
+        wait_text(tab, "#ap-count", "0 approved")
+        assert tab.locator("#ap-apply").is_disabled()
+        tab.locator(f"{em('o-del2')} .em-acts button", has_text="Snooze").click()
+        wait_text(tab, "#mq-q", "Approve emails below to build your search.")
+
+        # Archive and Mark read change Gmail, and say so only once Gmail confirms.
+        tab.locator(f"{em('g-act')} .em-archive").click()
+        tab.wait_for_selector(em("g-act"), state="hidden")
+        tab.wait_for_function("[...document.querySelectorAll('.toast')].some(t => t.textContent.startsWith('Archived in Gmail.'))")
+        assert text(tab, count) == "3"
+        assert "is-hidden" in tab.locator(f'.sf-row[data-mk="{mk("g-act")}"]').get_attribute("class"), "its Open list row hides too"
+        assert json.loads((wq.data / "marks.json").read_text())[mk("g-act")]["state"] == "done"
+        tab.locator(f"{em('g-news')} .em-readbtn").click()
+        tab.wait_for_selector(f"{em('g-news')}.em-read", state="attached")
+        assert tab.locator(f"{em('g-news')} .em-readbtn").is_hidden() and tab.locator(f"{em('g-news')} .pr-pill.amber").is_hidden()
+        tab.locator(f"{em('g-bad')} .em-archive").click()
+        tab.wait_for_function("[...document.querySelectorAll('.toast')].some(t => t.textContent === \"Not done: Gmail didn't make "
+                              "the change: gog gmail thread failed: quota exceeded. Nothing changed on the page.\")")
+        assert tab.locator(em("g-bad")).is_visible() and tab.locator(f"{em('g-bad')} .em-archive").is_enabled()
+
+        # Snooze, then Show hidden email lists every hidden email with why, and Undo brings it back.
+        tab.locator(f"{em('o-act')} .em-acts button", has_text="Snooze").click()
+        tab.wait_for_selector(em("o-act"), state="hidden")
+        assert json.loads((wq.data / "marks.json").read_text())[mk("o-act")]["until"] > now_ms + 2 * 86400000
+        tab.locator("#tabs .tab[data-t='open-list']").click()
+        tab.locator('.sf-row[data-key="https://outlook.office.com/o-act2"] .sf-mark').click()
+        tab.wait_for_selector('.sf-row[data-key="https://outlook.office.com/o-act2"].is-done', state="attached")
+        tab.locator("#tabs .tab[data-t='mailbox']").click()
+        tab.locator("#em-showhidden").click()
+        wait_text(tab, "#em-showhidden", "Hide hidden email (7)")
+        status = {k: text(tab, f"{em(k)} .em-status") for k in ("g-act", "o-act", "o-act2", "o-act3", "o-del1", "g-news2")}
+        assert status["g-act"] == "Archived in Gmail" and status["o-act2"] == "Marked done" and status["o-act3"] == "Dropped"
+        assert status["o-act"].startswith("Snoozed until ") and status["o-del1"].startswith("Snoozed until ")
+        assert all(tab.locator(f"{em(k)} .em-undo").is_visible() for k in status)
+        assert text(tab, f"{em('g-look')} .em-status") == "" and tab.locator(f"{em('g-look')} .em-undo").is_hidden()
+        tab.locator(f"{em('o-act2')} .em-undo").click()
+        tab.wait_for_function("t => !document.querySelector(t).classList.contains('em-gone')", arg=em("o-act2"))
+        assert "https://outlook.office.com/o-act2" not in json.loads((wq.data / "marks.json").read_text())
+        assert "is-done" not in tab.locator('.sf-row[data-key="https://outlook.office.com/o-act2"]').get_attribute("class")
+        tab.locator(f"{em('g-act')} .em-undo").click()
+        tab.wait_for_function("[...document.querySelectorAll('.toast')].some(t => t.textContent === 'Moved back to your Gmail inbox.')")
+        tab.wait_for_function("t => !document.querySelector(t).classList.contains('em-gone')", arg=em("g-act"))
+        assert calls(wq.bin, "gog")[-2] == f"gmail thread modify t-g-act --add INBOX -a {ACCT_A} -j"
+        tab.route("**/api/mark", lambda route: route.fulfill(status=500, body="nope"))
+        tab.locator(f"{em('o-act')} .em-undo").click()
+        tab.wait_for_function("[...document.querySelectorAll('.toast')].some(t => t.textContent === 'Not saved: 500')")
+        tab.unroute("**/api/mark")
+        tab.locator(f"{em('o-act')} .em-undo").click()
+        tab.wait_for_function("t => !document.querySelector(t).classList.contains('em-gone')", arg=em("o-act"))
+        tab.locator("#em-showhidden").click()
+        wait_text(tab, "#em-showhidden", "Show hidden email (4)")
+
+        # Send to Agent from an email: the note goes in, the row hides as sent, and its Open list row leaves.
+        tab.locator(f"{em('o-act')} .sf-send").click()
+        box = tab.locator(f"{em('o-act')} .compose textarea")
+        box.fill("Draft a short yes")
+        box.press("Meta+Enter")
+        tab.wait_for_selector(em("o-act"), state="hidden")
+        todo = wq.items()[-1]
+        assert (todo["title"], todo["url"]) == ("Email: Mail o-act", "https://outlook.office.com/o-act")
+        assert "Note" not in todo["title"] and f"{server.NOTE_LABEL}\nDraft a short yes\n\n----- BEGIN UNTRUSTED ROW" in todo["detail"]
+        assert 'Detail: Email from Ana on Nov 2, subject "Mail o-act". Why it\'s on the list: A reason. It says: Body text' in todo["detail"]
+        assert json.loads((wq.data / "queued.json").read_text())[mk("o-act")]["id"] == todo["id"]
+        assert tab.locator('.sf-row[data-key="https://outlook.office.com/o-act"]').count() == 0
+        tab.locator("#em-showhidden").click()
+        wait_text(tab, f"{em('o-act')} .em-status", f"Sent to an agent as {todo['id']}")
+        assert tab.locator(f"{em('o-act')} .em-undo").is_hidden(), "a sent email can't be un-sent here"
+        tab.locator("#em-showhidden").click()
+        tab.route("**/api/todo", lambda route: route.fulfill(status=500, json={"error": "store is busy"}))
+        tab.locator(f"{em('g-look')} .sf-send").click()
+        tab.locator(f"{em('g-look')} .compose textarea").fill("Keep me")
+        tab.locator(f"{em('g-look')} .cp-go").click()
+        tab.wait_for_function("[...document.querySelectorAll('.toast')].some(t => t.textContent === 'Not sent: store is busy')")
+        assert tab.locator(f"{em('g-look')} .compose textarea").input_value() == "Keep me", "a failed send keeps the note"
+        assert tab.locator(f"{em('g-look')} .sf-send").is_enabled() and tab.locator(f"{em('g-look')} .cp-go").is_enabled()
+        tab.unroute("**/api/todo")
+        tab.route("**/api/mark", lambda route: route.fulfill(status=500, body="nope"))
+        tab.locator(f"{em('g-look')} .em-acts button", has_text="Snooze").click()
+        assert wait_for(lambda: tab.evaluate("[...document.querySelectorAll('.toast')].filter(t => t.textContent === 'Not saved: 500').length") == 2)
+        tab.unroute("**/api/mark")
+        for width in (390, 1280):
+            tab.set_viewport_size({"width": width, "height": 900})
+            no_sideways_scroll(tab)
+        assert errors == []
+        cov.snap()
+
+        again = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(again)
+        again.goto(site + "#gmail-1")
+        again.wait_for_selector(f"{em('g-news')}.em-read", state="attached")
+        assert again.locator(f"{em('g-news')} .em-readbtn").is_hidden(), "Mark read is remembered after a reload"
+        assert again.locator(em("g-act")).is_visible() and again.locator(em("o-act")).is_hidden()
+        no_sideways_scroll(again)
+        cov.snap()
+        browser.close()
+
+
+# ─── the note box on Send to Agent ───────────────────────────────────────────
+
+def test_the_note_box_spans_the_row_grows_then_scrolls_and_sends_or_cancels_from_the_keyboard(site, wq, monkeypatch):
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 6)], "status": []})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        tab.goto(site)
+        row = {n: f'.sf-row[data-key="{pr(n)["key"]}"]' for n in range(1, 6)}
+        tab.locator(f"{row[1]} .sf-send").click()
+        box = tab.locator(f"{row[1]} .compose textarea")
+        assert box.evaluate("t => document.activeElement === t")
+        shape = box.evaluate("""t => { const s = getComputedStyle(t), f = t.closest('.compose'), r = f.parentElement;
+            return {resize: s.resize, basis: getComputedStyle(f).flexBasis, grow: getComputedStyle(f).flexGrow,
+                    width: f.offsetWidth, room: r.clientWidth - parseFloat(getComputedStyle(r).paddingLeft)
+                    - parseFloat(getComputedStyle(r).paddingRight)} }""")
+        assert (shape["resize"], shape["basis"], shape["grow"]) == ("none", "100%", "1") and abs(shape["width"] - shape["room"]) <= 1
+        first = box.evaluate("t => t.offsetHeight")
+        box.fill("one\ntwo\nthree\nfour")
+        grown = box.evaluate("t => t.offsetHeight")
+        box.fill("\n".join(f"line {n}" for n in range(40)))
+        tall = box.evaluate("t => [t.offsetHeight, t.scrollHeight, t.clientHeight]")
+        assert first < grown < tall[0] <= 242 and tall[1] > tall[2], "it grows to about 240px, then scrolls"
+        tab.locator(f"{row[1]} .sf-send").click()
+        assert tab.locator(f"{row[1]} .compose").count() == 1 and box.evaluate("t => document.activeElement === t")
+        box.press("Escape")
+        tab.wait_for_selector(f"{row[1]} .compose", state="detached")
+        assert len(wq.items()) == 1 and tab.locator(row[1]).is_visible(), "Esc cancels and sends nothing"
+
+        tab.locator(f"{row[2]} .sf-send").click()
+        box = tab.locator(f"{row[2]} .compose textarea")
+        box.press("a")
+        box.press("Enter")
+        box.type("b")
+        assert box.input_value() == "a\nb" and len(wq.items()) == 1, "Enter alone adds a line"
+        box.press("Control+Enter")
+        tab.wait_for_selector(row[2], state="detached")
+        assert wq.items()[-1]["detail"].count(f"{server.NOTE_LABEL}\na\nb\n\n----- BEGIN UNTRUSTED ROW") == 1
+        wait_text(tab, ".toast", f"Sent to an agent as td-051 for a first pass. {FOLLOW}")
+
+        tab.locator(f"{row[3]} .sf-send").click()
+        tab.locator(f"{row[3]} .cp-no").click()
+        tab.wait_for_selector(f"{row[3]} .compose", state="detached")
+        tab.locator(f"{row[3]} .sf-send").click()
+        tab.locator(f"{row[3]} .cp-go").click()
+        tab.wait_for_selector(row[3], state="detached")
+        assert server.NOTE_LABEL not in wq.items()[-1]["detail"], "no note, no note block"
+
+        # A row already sent from another browser says so, and says the note wasn't added.
+        server.queue_todo({"key": pr(4)["key"], "title": "o/r#4: Change 4"})
+        server.queue_todo({"key": pr(5)["key"], "title": "o/r#5: Change 5"})
+        items = len(wq.items())
+        tab.locator(f"{row[4]} .sf-send").click()
+        tab.locator(f"{row[4]} .compose textarea").fill("Also check the tests")
+        tab.locator(f"{row[4]} .cp-go").click()
+        wait_text(tab, ".toast:last-of-type", "Already sent as td-053, so nothing new was sent. Your note wasn’t added to "
+                                              f"it. Add it in that agent’s workspace once it starts. {FOLLOW}")
+        tab.locator(f"{row[5]} .sf-send").click()
+        tab.locator(f"{row[5]} .cp-go").click()
+        wait_text(tab, ".toast:last-of-type", f"Already sent as td-054, so nothing new was sent. {FOLLOW}")
+        assert len(wq.items()) == items
+        cov.snap()
+        browser.close()
+
+
+def test_a_refresh_that_finishes_while_you_type_a_note_doesnt_reload_it_away(site, wq, monkeypatch):
+    write_page({"built": "now", "github": [pr(1)], "status": []})
+    monkeypatch.setattr(server, "start_refresh", lambda: (config.write_json(refresh.status_path(), {"running": True}),
+                                                         (202, {"started": True}))[1])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site)
+        row = f'.sf-row[data-key="{pr(1)["key"]}"]'
+        tab.locator(f"{row} .sf-send").click()
+        tab.locator(f"{row} .compose textarea").fill("Half a thought")
+        tab.locator("#refresh").click()
+        wait_text(tab, "#refresh", "Refreshing…")
+        config.write_json(refresh.status_path(), {"running": False, "finished": "t"})
+        tab.clock.run_for(2500)
+        wait_text(tab, ".toast", "The refresh finished. Send or cancel your note, then reload the page to see the new rows.")
+        assert tab.locator(f"{row} .compose textarea").input_value() == "Half a thought"
+        no_sideways_scroll(tab)
         cov.snap()
         browser.close()

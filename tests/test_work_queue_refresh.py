@@ -16,6 +16,15 @@ PR = {"number": 7, "title": "Fix it", "url": "https://github.com/o/r/pull/7", "r
       "author": {"login": "ana"}, "createdAt": "2026-11-02T10:00:00Z", "isDraft": False}
 
 
+OFFSITE = {"subject": "Offsite", "isAllDay": True, "isCancelled": False, "webLink": "https://outlook.office.com/calendar/1",
+           "start": {"dateTime": "2026-11-18T00:00:00.0000000", "timeZone": "UTC"}, "responseStatus": {"response": "accepted"}}
+
+
+def outlook_calendar(wq, answer):
+    """Add a calendarView answer to the fake npx that outlook_fakes wrote."""
+    fake_tool(wq.bin, "npx", [("calendarView", answer)] + json.loads((wq.bin / "npx.json").read_text()))
+
+
 def every_tool(wq):
     fake_tool(wq.bin, "gh", [("search prs", [PR])])
     fake_tool(wq.bin, "npx", [("", {"exit": 1, "stderr": "should not run"})])
@@ -52,6 +61,7 @@ def test_every_linked_source_renders_into_one_page(wq, fake_slack, monkeypatch):
     fake_tool(wq.bin, "gh", [("search prs", [PR])])
     gmail_fakes(wq)
     outlook_fakes(wq)
+    outlook_calendar(wq, {"value": [OFFSITE]})
     fake_tool(wq.bin, "gog", json.loads((wq.bin / "gog.json").read_text()) + [("calendar events", {"events": [
         {"summary": "Standup", "start": {"date": "2026-11-18"}, "htmlLink": "https://calendar.google.com/e1"}]})])
     read_outlook = outlook.rows
@@ -61,9 +71,18 @@ def test_every_linked_source_renders_into_one_page(wq, fake_slack, monkeypatch):
                 "outlook": {"address": ME}})
     status = refresh.run(transport=fake_slack._transport, now=NOW)
     assert all(s["state"] == "ok" for s in status), status
+    assert {"name": "Outlook calendar", "state": "ok", "detail": "read 1 item"} in status
     html = refresh.site_path().read_text()
-    for tab in ("open-list", "calendar", "email", "gmail-1", "unsubscribe", "slack-saves", "all"):
+    today = html[html.index('id="calendar"'):]
+    assert "2 events on your calendars today." in today
+    assert today.index("All day · Standup") < today.index(f'href="{OFFSITE["webLink"]}"')
+    assert f'All day · Offsite</a><span class="meta">{ME}</span>' in today
+    for tab in ("open-list", "calendar", "mailbox", "slack-saves", "all"):
         assert f'data-t="{tab}"' in html
+    mailbox = html[html.index('id="mailbox"'):html.index('id="slack-saves"')]
+    for part in ("email", "gmail-1", "unsubscribe"):
+        assert f'<details class="mb-sec" id="{part}"' in mailbox and f'data-t="{part}"' not in html, \
+            "Outlook, each Gmail account, and Unsubscribe are parts of the one Email tab"
     for lane in ("<h3>Slack ", "<h3>Pull requests ", "<h3>Outlook ", f"<h3>Gmail: {ACCT} "):
         assert lane in html
     assert "All day · Standup" in html and "Can you review?" in html and "Weekly digest" in html
@@ -71,6 +90,9 @@ def test_every_linked_source_renders_into_one_page(wq, fake_slack, monkeypatch):
     cands = json.loads(refresh.candidates_path().read_text())
     assert {c["kind"] for c in cands.values()} == {"slack", "gmail", "unsub", "mail"}
     assert [c["url"] for c in cands.values() if c["kind"] == "unsub"] == ["https://list.example/u?id=1"]
+    threads = json.loads(refresh.emails_path().read_text())
+    assert sorted(t["tid"] for t in threads.values()) == ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t9"]
+    assert {t["account"] for t in threads.values()} == {ACCT} and all(k.startswith("gmail:") for k in threads)
     slack_cands = [c for c in cands.values() if c["kind"] == "slack"]
     assert len(slack_cands) == 9 and all(c["link"].startswith("https://acme.slack.com/archives/") for c in slack_cands)
 
@@ -86,6 +108,38 @@ def test_a_failing_source_shows_its_error_and_the_rest_still_render(wq, monkeypa
     assert 'class="src-error"><b>Outlook</b>' in html and "o/r#7" in html
     error = json.loads(refresh.status_path().read_text())["error"]
     assert error.startswith("Slack: Set SLACK_USER_TOKEN") and "; Outlook: " in error
+
+
+def test_a_failed_outlook_calendar_shows_its_own_error_and_calendar_false_turns_it_off(wq, monkeypatch):
+    outlook_fakes(wq)
+    outlook_calendar(wq, {"results": [{"statusCode": 403, "error": "Forbidden"}]})
+    fake_tool(wq.bin, "gog", [("calendar events", {"events": [
+        {"summary": "Standup", "start": {"date": "2026-11-18"}, "htmlLink": "https://calendar.google.com/e1"}]})])
+    read_outlook = outlook.rows
+    monkeypatch.setattr(outlook, "rows", lambda entry: read_outlook(entry, TODAY, lambda s: None))
+    wq.sources({"calendar": {"accounts": [ACCT]}, "outlook": {"address": ME}})
+    status = {s["name"]: s for s in refresh.run(now=NOW)}
+    assert status["Outlook calendar"] == {"name": "Outlook calendar", "state": "error",
+                                          "detail": "Work IQ couldn't read /me/calendarView: Forbidden"}
+    assert status["Outlook"]["state"] == "ok" and status["Calendar"]["detail"] == "read 1 item"
+    html = refresh.site_path().read_text()
+    assert 'class="src-error"><b>Outlook calendar</b>' in html
+    assert "All day · Standup" in html and "Can you review?" in html
+    assert json.loads(refresh.status_path().read_text())["error"] == \
+        "Outlook calendar: Work IQ couldn't read /me/calendarView: Forbidden"
+
+    outlook_calendar(wq, {"value": [OFFSITE]})
+    wq.sources({"outlook": {"address": ME}})
+    status = {s["name"]: s for s in refresh.run(now=NOW)}
+    assert status["Calendar"]["state"] == "off" and status["Outlook calendar"]["detail"] == "read 1 item"
+    assert "All day · Offsite" in refresh.site_path().read_text()
+
+    wq.sources({"outlook": {"address": ME, "calendar": False}})
+    asked = len([c for c in calls(wq.bin, "npx") if "calendarView" in c])
+    names = [s["name"] for s in refresh.run(now=NOW)]
+    assert "Outlook calendar" not in names and "Outlook" in names
+    assert len([c for c in calls(wq.bin, "npx") if "calendarView" in c]) == asked
+    assert 'id="calendar"' not in refresh.site_path().read_text()
 
 
 def test_an_unreadable_settings_file_stops_the_refresh_and_says_why(wq, capsys):
