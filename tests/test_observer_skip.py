@@ -295,6 +295,26 @@ class SkipWiringTests(unittest.TestCase):
                  if c.args and "state-write.py" in str(c.args[0])]
         return json.loads(saved[-1].kwargs.get("input_text", "{}"))
 
+    def test_observer_turned_off_in_config_makes_no_observer_call(self):
+        (self._tmp / ".assistant/config.json").write_text(json.dumps({"observer": {"enabled": False}}))
+        rc, obs_mock, _save, send_mock, _run = self._run_pulse(ctx())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        send_mock.assert_not_called()
+        self.assertFalse(self._metrics()[-1]["observer_called"])
+
+    def test_observer_stays_on_unless_config_turns_it_off(self):
+        for cfg in (None, "not json", json.dumps({"observer": {"enabled": True}}), json.dumps({"observer": {}}),
+                    json.dumps({"observer": "off"})):
+            path = self._tmp / ".assistant/config.json"
+            if cfg is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(cfg)
+            self.assertTrue(self.mod.observer_enabled(), cfg)
+        _rc, obs_mock, *_ = self._run_pulse(ctx(), observer_result=({}, {}))
+        obs_mock.assert_called()
+
     def test_matching_hash_skips_observer_and_carries_verdict(self):
         c = ctx()
         self._plant_summary("workspace:1", "needs_user",

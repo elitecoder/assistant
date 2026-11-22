@@ -18,6 +18,20 @@ REPO = Path(__file__).resolve().parents[1]
 TEST_TIMEOUT_SEC = 90
 CHECKS = (
     (
+        'turning the Observer off in config.json sends no workspace to it',
+        'bin/pulse.py',
+        'to_reclassify = batch.get("to_reclassify", []) if observer_enabled() else []',
+        'to_reclassify = batch.get("to_reclassify", [])',
+        'tests/test_observer_skip.py::SkipWiringTests::test_observer_turned_off_in_config_makes_no_observer_call',
+    ),
+    (
+        'only "enabled": false turns the Observer off',
+        'bin/pulse.py',
+        'return not (isinstance(obs, dict) and obs.get("enabled") is False)',
+        'return not (isinstance(obs, dict) and not obs.get("enabled"))',
+        'tests/test_observer_skip.py::SkipWiringTests::test_observer_stays_on_unless_config_turns_it_off',
+    ),
+    (
         "changed conversation invalidates guidance",
         "src/assistant/session_guidance.py",
         '        and note["source_version"] == version\n',

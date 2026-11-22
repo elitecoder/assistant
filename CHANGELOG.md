@@ -10,6 +10,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Turn the Observer off with `{"observer": {"enabled": false}}` in
+  `~/.assistant/config.json`. The pulse then sends no workspace to it and
+  each workspace keeps its last verdict. Without the setting, it stays on.
 - Show finished agent work in a **Ready for you** box at the top of the Work
   queue's Start here tab, or of the Open list when there's no Start here. Each
   TODO you sent from the page that's done or blocked shows its title, id, and
