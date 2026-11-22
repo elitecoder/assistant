@@ -2,9 +2,11 @@
 
 Everything on the page comes from your linked sources, the rules in
 work_queue/inputs/, and, in Pro mode, the model's triage (work_queue/triage.py):
-a why, a disposition, an effort, and a draft on each open row, the Start here
-list, and the Since last night box. Every open row has Done, Snooze, Drop, and
-Send to Agent, which hands the row to an agent for a first pass; the Send to
+an action title, a why, a disposition, a lane, an effort, and a draft on each
+open row, the Start here list, and the Since last night box. The Open list
+groups rows by the model's lane, then the rows it hasn't sorted by source.
+Every open row has Done, Snooze, Drop, and Send to Agent, which hands the row
+to an agent for a first pass; the Send to
 agents tab sends many at once, and can send them hands-off. A row the model
 called `agent` says "Agent can finish". A sent row leaves the page, and Ready
 for you shows its TODO once it's done or blocked. Send to Agent opens a note box
@@ -29,6 +31,14 @@ EMAIL_MARK = "https://work-queue.local/email/"
 READY = ('<div class="ready" id="ready" hidden><div class="cut-top"><b>Ready for you</b><span class="meta">Agents you sent '
          'work to from this page finished these or are blocked. Read the result, do what it leaves for you, then select '
          'Done.</span></div><ol class="ready-list"></ol></div>')
+LANES = [
+    ("do_first", "Do first", "Someone is waiting on your reply or decision."),
+    ("promise", "Promise", "You said you would. Deliver it, hand it off, or say you're dropping it."),
+    ("week", "This week", "Needs you, but not first thing."),
+    ("optional", "Optional", "Skim if you have time."),
+]
+UNSORTED = ('<div class="sf-group"><h3>Not sorted yet</h3><p class="meta">The model hasn\'t put these in a lane yet, '
+            'so they\'re grouped by where they came from.</p></div>')
 SLACK_GROUPS = [
     ("last", "You had the last word", "You replied, and nobody asked anything after."),
     ("ownnote", "Your own messages", "Messages of yours you saved. Nobody replied."),
@@ -90,10 +100,16 @@ def pill(v: dict) -> str:
     return f'<span class="disp d-{e(v["disposition"])}">Model suggests: {e(DISP[v["disposition"]])}</span>'
 
 
-def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None, mk: str = "") -> str:
-    """One Open list row, with the model's verdict when there is one, and Send to Agent whatever the verdict. An email
-    row also carries its stable mark key, so hiding or sending it from the Email tab hides it here too."""
+def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None, mk: str = "",
+             source: str = "") -> str:
+    """One Open list row, with the model's verdict when there is one, and Send to Agent whatever the verdict. The
+    model's action title is the headline, with the row's own text under it. A row in one of the model's lanes names
+    its `source`. An email row also carries its stable mark key, so hiding or sending it from the Email tab hides it
+    here too."""
     v = verdict or {}
+    head = e(v.get("title") or title)
+    orig = f'<span class="sf-orig">{e(title)}</span>' if v.get("title") else ""
+    src = f'<span class="pr-pill src">{e(source)}</span> ' if v.get("lane") else ""
     effort = f'<span class="sf-effort sf-{e(v["effort"].lower())}">{e(v["effort"])}</span>' if v else ""
     why = f'<span class="sf-why">{e(v["why"])}</span>' if v else ""
     draft = (f'<div class="draft"><textarea readonly rows="{min(6, 2 + len(v["draft"]) // 90)}" aria-label="Draft reply">'
@@ -101,7 +117,7 @@ def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | 
     marked = f' data-mk="{e(mk)}"' if mk else ""
     return (f'<div class="sf-row" data-key="{e(link)}"{marked} data-q-title="{e(title)}" data-q-detail="{e(meta)}">'
             f'<div class="sf-main"><a class="sf-link" href="{e(link)}"{NEWTAB}>'
-            f'<span class="sf-title">{pill(v)}{e(title)}</span><span class="sf-meta">{e(meta)}</span>{why}</a>{effort}'
+            f'<span class="sf-title">{pill(v)}{head}</span>{orig}<span class="sf-meta">{src}{e(meta)}</span>{why}</a>{effort}'
             '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button>'
             '<button class="btn ghost" onclick="setState(this,\'snoozed\')" title="Hide for 3 days">Snooze</button>'
             '<button class="btn ghost" onclick="setState(this,\'dropped\')">Drop</button>'
@@ -221,8 +237,11 @@ def section(sid: str, title: str, meta: str, body: str) -> str:
     return f'<div class="ap" id="{sid}"><div class="cut-top"><b>{title}</b><span class="meta">{meta}</span></div>{body}</div>'
 
 
-def lane(title: str, help_text: str, rows: list[str]) -> str:
-    return (f'<div class="sf-lane"><h3>{title} <span class="count">{len(rows)}</span></h3><p class="meta">{help_text}</p>'
+def lane(title: str, help_text: str, rows: list[str], key: str = "") -> str:
+    """One group of Open list rows: one of the model's lanes (`key`), or one source, whose rows in a lane come as ""."""
+    named = f' data-lane="{key}"' if key else ""
+    rows = [r for r in rows if r]
+    return (f'<div class="sf-lane"{named}><h3>{title} <span class="count">{len(rows)}</span></h3><p class="meta">{help_text}</p>'
             f'<div class="sf-list">{"".join(rows)}</div></div>')
 
 
@@ -243,13 +262,15 @@ def start_section(tri: dict, note: str) -> str:
         box = (f'<div class="changes"><b>Since last night</b> <span class="meta">Compared with the refresh on '
                f'{e(tri["changes"]["built"])}. The counts come from your rows; the sentences come from the model.</span>'
                f'<ul>{lines}</ul></div>')
+    heads = {s["key"]: tri["rows"].get(s["key"], {}).get("title") for s in tri["start"]}
     items = "".join(f'<li data-key="{e(s["key"])}" data-src="{e(s["source"].lower())}"'
                     f'{" data-blocked" if s["blocked"] else ""}><div>'
-                    f'<a class="sf-title" href="{e(s["key"])}"{NEWTAB}>{e(s["title"])}</a>'
+                    f'<a class="sf-title" href="{e(s["key"])}"{NEWTAB}>{e(heads[s["key"]] or s["title"])}</a>'
                     f' <span class="pr-pill src">{e(s["source"])}</span>'
                     + (f' <span class="sf-effort sf-{e(s["effort"].lower())}">{e(s["effort"])}</span>' if s["effort"] else "")
                     + '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button>'
                     + ("" if s["blocked"] else START_SEND) + '</div>'
+                    + (f'<span class="sf-orig">{e(s["title"])}</span>' if heads[s["key"]] else "") +
                     f'<span class="ap-why">{e(s["reason"])}</span></li>' for s in tri["start"])
     body = f'<ol class="start-list">{items}</ol>' if items else '<p class="meta">No Start here list this time.</p>'
     return section("start", "Start here", "In this order, ranked by the model on who's waiting, deadlines, effort, and age. "
@@ -276,11 +297,17 @@ def render(snap: dict) -> tuple[str, dict]:
 
     slack_rows = snap.get("slack") or []
     agent_rows: list[tuple[str, str, str, str, bool]] = []
+    laned: dict[str, list[str]] = {key: [] for key, _, _ in LANES}
 
     def row(source: str, title: str, meta: str, link: str, extra: str = "", mk: str = "") -> str:
+        """The row's HTML for its source's group, or "" when it goes in the model's lane instead."""
         v = verdicts.get(link)
         agent_rows.append((title, meta, link, source, bool(v) and v["disposition"] == "agent"))
-        return open_row(title, meta, link, extra, v, mk)
+        html_row = open_row(title, meta, link, extra, v, mk, source)
+        if v and v.get("lane") in laned:
+            laned[v["lane"]].append(html_row)
+            return ""
+        return html_row
 
     open_slack = [row("Slack", r["title"], " · ".join(x for x in (r["who"], r["when"]) if x), r["link"], ctx_html(r["ctx"]))
                   for r in slack_rows if r["group"] == "open"]
@@ -300,6 +327,9 @@ def render(snap: dict) -> tuple[str, dict]:
         lanes.append(lane(f"Gmail: {e(account)}", "Mail from a person that you haven't opened, or that you starred.",
                           [row("Gmail", m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m), email_mark(m))
                            for m in rows if m["group"] == "act"]))
+    if any(laned.values()):
+        rest = [body for body in lanes if 'class="sf-row"' in body]
+        lanes = [lane(t, h, laned[key], key) for key, t, h in LANES if laned[key]] + ([UNSORTED, *rest] if rest else [])
     total = sum(body.count('class="sf-row"') for body in lanes)
     starts = bool(tri and (tri["start"] or tri["changes"] or tri["note"] or tri["failed"]))
     ready = "" if starts else READY
@@ -463,7 +493,12 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .sf-row{padding:10px 14px;border-top:1px solid var(--line)}.sf-row:first-child{border-top:0}.sf-row:hover{background:var(--hover)}
 .sf-main{display:flex;align-items:center;gap:8px}
 .sf-link{flex:1;min-width:0;color:inherit;text-decoration:none;display:flex;flex-direction:column;gap:2px}
-.sf-title{color:var(--text);overflow-wrap:anywhere}.sf-meta{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.sf-title{color:var(--text);overflow-wrap:anywhere}.sf-orig{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.start-list .sf-orig{display:block}.sf-meta .pr-pill.src{font-size:10px}
+.sf-group{margin:4px 0 12px;padding-top:12px;border-top:1px solid var(--line)}
+.sf-group h3{font:600 13px/1.4 var(--sans);margin:0 0 2px;color:var(--text-2)}.sf-group .meta{margin:0}
+.sf-lane[data-lane="do_first"] .sf-list{border-left:3px solid var(--green)}.sf-lane[data-lane="promise"] .sf-list{border-left:3px solid var(--c-cut)}
+.sf-lane[data-lane="week"] .sf-list{border-left:3px solid var(--blue)}.sf-lane[data-lane="optional"] .sf-list{border-left:3px solid var(--purple)}.sf-meta{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .sf-row.is-done .sf-title{text-decoration:line-through;opacity:.7}
 .sf-row.is-hidden{display:none}body.show-hidden .sf-row.is-hidden{display:block;opacity:.55}
 .ap{background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--acc,var(--line-strong));border-radius:10px;padding:12px 14px;margin-bottom:22px}

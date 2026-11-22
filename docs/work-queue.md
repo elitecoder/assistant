@@ -157,7 +157,13 @@ its error at the top of the page, and the other sources still render.
   you that you haven't replied to, and Gmail from a person that's unread or
   starred. Each row has **Done**, **Snooze** (3 days), **Drop**, and **Send to
   Agent**, whatever the model said about it. Marks are saved on the server, so
-  they follow you to another browser.
+  they follow you to another browser. In Pro mode, the rows the model sorted
+  come first, in its lanes, in this order: **Do first** (someone is waiting on
+  your reply or decision), **Promise** (you said you would), **This week**
+  (needs you, but not first thing), and **Optional** (skim if you have time).
+  Each of those rows names its source. The rest follow under **Not sorted
+  yet**, grouped by source. Without any sorted row, the Open list is grouped
+  by source only.
 - **Send to agents**: every open row, from every source, with the ones the
   model said an agent can finish first. Pick rows, or select **Select all**,
   then **Send N to agents**. See [Send work to an agent](#send-work-to-an-agent).
@@ -250,9 +256,15 @@ the verdicts it already has. Then it asks a model about the rest and writes the
 page again, so a slow or failed model never holds the rows back. Default mode
 makes no model call.
 
-- **Each open row** gets a one-line reason, a disposition, an effort
-  (**Quick**, **Small**, **Medium**, or **Large**), and, when it needs a
-  written reply, a draft with **Copy draft**. The pill reads **Agent can
+- **Each open row** gets a short action title, a one-line reason, a
+  disposition, a lane, an effort (**Quick**, **Small**, **Medium**, or
+  **Large**), and, when it needs a written reply, a draft with **Copy draft**.
+  The action title, for example "Review Ana's pull request #42 on the
+  parser", is the row's headline and its Start here item's, with the row's own
+  text under it. **Send to Agent** still sends the row's own text. A row
+  without a usable title shows its own text as before. The lane places the
+  row on the Open list: `do_first`, `promise`, `week`, or `optional`. A row
+  without a usable lane goes under **Not sorted yet**. The pill reads **Agent can
   finish** when the model says an agent can finish it unattended, and
   otherwise **Model suggests:** and then **You** (only you can answer or
   decide), **Hand off** (someone else should own it), or **Drop** (nothing is
@@ -336,9 +348,11 @@ for the next refresh, and the Open list says how many. Verdicts are cached in
 - Every piece of model text on the page is escaped, so it can't add markup.
 - Row text sits between markers with a random code the text can't guess, and
   the prompt tells the model the text is data, never instructions.
-- Each answer is checked against a strict format: only the four dispositions
-  and four efforts, only the row ids it was given, and bounded text. Anything
-  else in the answer is ignored.
+- Each answer is checked against a strict format: only the four dispositions,
+  four lanes, and four efforts, only the row ids it was given, and bounded
+  text. A title must be text of 100 characters or fewer on one line. A title
+  or lane that breaks these rules is left out, and the rest of the row's
+  verdict still shows. Anything else in the answer is ignored.
 - An answer never acts. A draft is text you copy and send yourself, and **Send
   to Agent** still waits for you to select it.
 - Rows go to the model 30 at a time, so text in one row could still sway the
