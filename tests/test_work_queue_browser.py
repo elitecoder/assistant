@@ -177,6 +177,7 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
 
         third = fresh.locator('.sf-row[data-key="https://github.com/o/r/pull/3"]')
         third.get_by_role("button", name="Send to Agent").click()
+        third.locator(".cp-go").click()
         fresh.wait_for_selector('.sf-row[data-key="https://github.com/o/r/pull/3"]', state="detached")
         wait_text(fresh, ".toast", "Sent to an agent as td-051 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
         todo = wq.items()[-1]
@@ -190,14 +191,15 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
         assert json.loads((wq.data / "marks.json").read_text())[PRS[2]["key"]]["state"] == "done"
         assert fresh.locator('.ag-row[data-key="https://github.com/o/r/pull/3"]').count() == 0
 
-        fresh.locator('#tabs .tab[data-t="email"]').click()
+        fresh.locator('#tabs .tab[data-t="mailbox"]').click()
         fresh.wait_for_selector("#open-list", state="hidden")
         assert fresh.locator("#email").is_visible()
+        fresh.locator("#email > summary").click()
         fresh.locator('#email details').first.evaluate("d => d.open = true")
         fresh.locator('.ap-row[data-key="mail:1"]').get_by_role("button", name="Approve").click()
         fresh.wait_for_function("document.getElementById('mq-q').textContent === 'subject:\"PR merged\"'")
 
-        fresh.locator('#tabs .tab[data-t="gmail-1"]').click()
+        fresh.locator("#gmail-1 > summary").click()
         fresh.locator('#gmail-1 details').first.evaluate("d => d.open = true")
         fresh.locator('.ap-row[data-key="gmail:1"]').get_by_role("button", name="Approve").click()
         fresh.wait_for_function("document.getElementById('ap-count').textContent === '1 approved'")
@@ -419,6 +421,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         tab.clock.run_for(12000)
         tab.wait_for_selector(".toast", state="detached")
         tab.locator(f'.sf-row[data-key="{pr(9)["key"]}"] .sf-send').click()
+        tab.locator(f'.sf-row[data-key="{pr(9)["key"]}"] .cp-go').click()
         tab.wait_for_selector(f'.sf-row[data-key="{pr(9)["key"]}"]', state="detached")
         wait_text(tab, ".toast", "Sent to an agent as td-108 for a first pass. Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.")
         assert tab.locator(f'.ag-row[data-key="{pr(9)["key"]}"]').count() == 0
@@ -426,6 +429,7 @@ def test_the_page_shows_every_saved_state(site, wq, monkeypatch):
         tab.wait_for_selector(".toast", state="detached")
         tab.route("**/api/todo", lambda route: route.fulfill(status=500, json={"error": "store is busy"}))
         tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send').click()
+        tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .cp-go').click()
         wait_text(tab, ".toast", "Not sent: store is busy")
         assert text(tab, f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send') == "Send to Agent"
         assert tab.locator(f'.sf-row[data-key="{pr(10)["key"]}"] .sf-send').is_enabled()
@@ -632,6 +636,7 @@ def test_start_here_done_hides_an_item_and_survives_a_fresh_browser(site, wq):
         wait_text(tab, f"{row1} .draft button", "Copied")
         assert tab.evaluate("navigator.clipboard.readText()") == "Looking at it today."
         tab.locator(f"{row2} .sf-send").click()
+        tab.locator(f"{row2} .cp-go").click()
         tab.wait_for_selector(row2, state="detached")
         assert json.loads((wq.data / "marks.json").read_text())[pr(2)["key"]]["state"] == "done"
         assert (text(tab, badge["start"]), text(tab, badge["open-list"])) == ("1", "1")
@@ -938,6 +943,7 @@ def test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row(si
             for k in range(1, n):
                 assert tab.locator(li(k)).count() == 0 and tab.locator(f'.sf-row[data-key="{pr(k)["key"]}"]').count() == 0
             tab.locator(f"{li(n)} .sf-send").click()
+            tab.locator(f"{li(n)} .cp-go").click()
             tab.wait_for_selector(li(n), state="detached")
             tab.wait_for_selector(f'.sf-row[data-key="{pr(n)["key"]}"]', state="detached")
             wait_text(tab, ".toast", f"Sent to an agent as td-{104 + n} for a first pass. Its status and result show on "
@@ -959,6 +965,7 @@ def test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row(si
         tab.wait_for_selector(li(3), state="visible")
         tab.route("**/api/todo", lambda route: route.fulfill(status=500, json={"error": "store is busy"}))
         tab.locator(f"{li(3)} .sf-send").click()
+        tab.locator(f"{li(3)} .cp-go").click()
         wait_text(tab, ".toast", "Not sent: store is busy")
         assert text(tab, f"{li(3)} .sf-send") == "Send to Agent" and tab.locator(f"{li(3)} .sf-send").is_enabled()
         assert tab.locator(li(3)).is_visible() and len(wq.items()) == 3

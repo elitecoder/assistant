@@ -731,7 +731,7 @@ CHECKS = (
     (
         'Send to Agent shows on every open row',
         'work_queue/page.py',
-        '            \'<button class="btn sf-send" onclick="queueTodo(this)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button></div>{draft}{extra}</div>\')\n',
+        '            \'<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button></div>{draft}{extra}</div>\')\n',
         "            f'</div>{draft}{extra}</div>')\n",
         'tests/test_work_queue_triage.py::test_send_to_agent_shows_on_every_open_row_whatever_the_model_said',
     ),
@@ -794,14 +794,14 @@ CHECKS = (
     (
         'a completed TODO keeps its row off the page',
         'work_queue/server.py',
-        '[*doc.get("items", []), *doc.get("completed", [])]',
-        '[*doc.get("items", [])]',
+        'live = {i.get("id"): i for i in [*doc.get("items", []), *doc.get("completed", [])]',
+        'live = {i.get("id"): i for i in [*doc.get("items", [])]',
         'tests/test_work_queue_server.py::test_a_sent_row_stays_off_the_page_while_its_todo_exists',
     ),
     (
         'the page hears which rows were sent',
         'work_queue/server.py',
-        '"sent": sent_rows(),',
+        '"sent": sorted(queued),',
         '"sent": [],',
         'tests/test_work_queue_server.py::test_a_fresh_home_without_a_todo_store_gets_one',
     ),
@@ -885,8 +885,8 @@ CHECKS = (
     (
         "a row's own Send to Agent is a first pass",
         'work_queue/page.py',
-        "const o=await sendRow(r,'assist');",
-        "const o=await sendRow(r,'handsoff');",
+        "const o=await sendRow(r,'assist',note);",
+        "const o=await sendRow(r,'handsoff',note);",
         'tests/test_work_queue_browser.py::test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail',
     ),
     (
@@ -1289,15 +1289,15 @@ CHECKS = (
     (
         "a Start here send uses its row's data",
         'work_queue/page.py',
-        "return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k))",
-        "return sendFrom(b,b.closest('li'))",
+        "return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k),note)",
+        "return sendFrom(b,b.closest('li'),note)",
         'tests/test_work_queue_browser.py::test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row',
     ),
     (
         'a Start here send is a first pass',
         'work_queue/page.py',
-        "const o=await sendRow(r,'assist');",
-        "const o=await sendRow(r,'handsoff');",
+        "const o=await sendRow(r,'assist',note);",
+        "const o=await sendRow(r,'handsoff',note);",
         'tests/test_work_queue_browser.py::test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row',
     ),
     (
@@ -1394,8 +1394,8 @@ CHECKS = (
     (
         'Gmail apply reports what it reads back',
         'work_queue/server.py',
-        '"verified": all(t != undo for t in trashed)',
-        '"verified": True',
+        'verified = all(labels is not None and ("TRASH" in labels) != undo for labels in read)',
+        'verified = True',
         'tests/test_work_queue_server.py::test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_reads_back',
     ),
     (
@@ -2318,8 +2318,8 @@ CHECKS = (
     (
         'Start here shows when only a part failed',
         'work_queue/page.py',
-        'or tri["note"] or tri["failed"]):',
-        'or tri["note"]):',
+        'or tri["note"] or tri["failed"]))\n',
+        'or tri["note"]))\n',
         'tests/test_work_queue_triage.py::test_an_empty_start_list_never_makes_start_here_the_first_tab',
     ),
     (

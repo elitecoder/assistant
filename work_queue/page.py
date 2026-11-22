@@ -23,6 +23,10 @@ e = html.escape
 DISP = {"you": "You", "agent": "Agent", "handoff": "Hand off", "drop": "Drop"}
 AGENT_HINT = '<span class="disp d-agent">Agent can finish</span>'
 NEWTAB = ' target="_blank" rel="noopener noreferrer"'
+EMAIL_MARK = "https://work-queue.local/email/"
+READY = ('<div class="ready" id="ready" hidden><div class="cut-top"><b>Ready for you</b><span class="meta">Agents you sent '
+         'work to from this page finished these or are blocked. Read the result, do what it leaves for you, then select '
+         'Done.</span></div><ol class="ready-list"></ol></div>')
 SLACK_GROUPS = [
     ("last", "You had the last word", "You replied, and nobody asked anything after."),
     ("ownnote", "Your own messages", "Messages of yours you saved. Nobody replied."),
@@ -84,20 +88,22 @@ def pill(v: dict) -> str:
     return f'<span class="disp d-{e(v["disposition"])}">Model suggests: {e(DISP[v["disposition"]])}</span>'
 
 
-def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None) -> str:
-    """One Open list row, with the model's verdict when there is one, and Send to Agent whatever the verdict."""
+def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None, mk: str = "") -> str:
+    """One Open list row, with the model's verdict when there is one, and Send to Agent whatever the verdict. An email
+    row also carries its stable mark key, so hiding or sending it from the Email tab hides it here too."""
     v = verdict or {}
     effort = f'<span class="sf-effort sf-{e(v["effort"].lower())}">{e(v["effort"])}</span>' if v else ""
     why = f'<span class="sf-why">{e(v["why"])}</span>' if v else ""
     draft = (f'<div class="draft"><textarea readonly rows="{min(6, 2 + len(v["draft"]) // 90)}" aria-label="Draft reply">'
              f'{e(v["draft"])}</textarea><button class="btn" onclick="copyDraft(this)">Copy draft</button></div>') if v.get("draft") else ""
-    return (f'<div class="sf-row" data-key="{e(link)}" data-q-title="{e(title)}" data-q-detail="{e(meta)}">'
+    marked = f' data-mk="{e(mk)}"' if mk else ""
+    return (f'<div class="sf-row" data-key="{e(link)}"{marked} data-q-title="{e(title)}" data-q-detail="{e(meta)}">'
             f'<div class="sf-main"><a class="sf-link" href="{e(link)}"{NEWTAB}>'
             f'<span class="sf-title">{pill(v)}{e(title)}</span><span class="sf-meta">{e(meta)}</span>{why}</a>{effort}'
             '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button>'
             '<button class="btn ghost" onclick="setState(this,\'snoozed\')" title="Hide for 3 days">Snooze</button>'
             '<button class="btn ghost" onclick="setState(this,\'dropped\')">Drop</button>'
-            '<button class="btn sf-send" onclick="queueTodo(this)" title="An agent takes a first pass and leaves drafts '
+            '<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts '
             f'for you">Send to Agent</button></div>{draft}{extra}</div>')
 
 
@@ -130,12 +136,49 @@ def buttons(undo: str = "ap-undo", ok: str = "Approve") -> str:
                if undo else "") + '</div>')
 
 
-def ap_row(key: str, title: str, link: str, ctx: str, why: str, kind: str, undo: str = "ap-undo", ev: str = "") -> str:
+def ap_row(key: str, title: str, link: str, ctx: str, why: str, kind: str, undo: str = "ap-undo", ev: str = "",
+           m: dict | None = None) -> str:
+    """One row you can approve. An email row (`m`) also has the email actions."""
     evidence = f'<span class="ap-ev">Evidence: {e(ev)}</span>' if ev else ""
-    return (f'<div class="ap-row" data-key="{e(key)}" data-kind="{kind}"><div class="ap-text">'
-            f'<a href="{e(link)}"{NEWTAB} class="sf-title">{e(title)}</a>{ctx}'
-            f'<span class="ap-why"><b>Why it can go:</b> {e(why)}</span>{evidence}<span class="ap-status"></span></div>'
-            f'{buttons(undo)}</div>')
+    return (f'<div class="ap-row{" em-row" if m else ""}" data-key="{e(key)}" data-kind="{kind}"{em_data(m) if m else ""}>'
+            f'<div class="ap-text"><a href="{e(link)}"{NEWTAB} class="sf-title">{e(title)}</a>{ctx}'
+            f'<span class="ap-why"><b>Why it can go:</b> {e(why)}</span>{evidence}<span class="ap-status"></span>'
+            f'{em_acts(m) if m else ""}</div>{buttons(undo)}</div>')
+
+
+def email_mark(m: dict) -> str:
+    """The mark key of an email: its own id, which stays the same across refreshes, unlike a Gmail link."""
+    return EMAIL_MARK + m["key"]
+
+
+def em_data(m: dict) -> str:
+    """What an email row's actions need: its mark key, link, the TODO title and detail, and for Gmail its key."""
+    detail = (f'Email from {m["from"]} on {m["day"]}, subject "{m["subject"]}". Why it\'s on the list: {m["reason"]} '
+              f'It says: {m["body"][:700]}')
+    gmail_key = f' data-gkey="{e(m["key"])}"' if m["key"].startswith("gmail:") else ""
+    return (f' data-mk="{e(email_mark(m))}" data-link="{e(m["link"])}" data-q-title="{e("Email: " + m["title"])}"'
+            f' data-q-detail="{e(detail)}"{gmail_key}')
+
+
+def em_acts(m: dict) -> str:
+    """Send to Agent and Snooze on every email; Archive (while it's in the inbox) and Mark read (while it's unread) on
+    Gmail only, since the Work queue only reads Outlook. Undo shows on a hidden email."""
+    gmail_row = m["key"].startswith("gmail:")
+    return ('<div class="em-acts"><span class="em-status"></span>'
+            '<button class="btn sf-send" onclick="compose(this,sendMail)" title="An agent takes a first pass and leaves '
+            'drafts for you">Send to Agent</button>'
+            '<button class="btn ghost" onclick="snoozeMail(this)" title="Hide for 3 days">Snooze</button>'
+            + ('<button class="btn ghost em-archive" onclick="gmailAct(this,\'archive\')">Archive</button>'
+               if gmail_row and not m.get("archived") else "")
+            + ('<button class="btn ghost em-readbtn" onclick="gmailAct(this,\'read\')">Mark read</button>'
+               if gmail_row and m["unread"] else "")
+            + '<button class="btn em-undo" onclick="undoMail(this)" hidden>Undo</button></div>')
+
+
+def emails(snap: dict) -> dict:
+    """The Gmail conversation behind each Gmail row's key, for the server's Archive and Mark read."""
+    return {m["key"]: {"account": account, "tid": m["tid"]} for account, rows in (snap.get("gmail") or {}).items()
+            for m in rows if m.get("tid")}
 
 
 def ap_group(group: str, title: str, help_text: str, rows: list[str], is_open: bool = False) -> str:
@@ -153,10 +196,23 @@ def mail_ctx(m: dict) -> str:
             f'<span class="cx-t">{e(m["body"][:3000])}</span></div>{more}</div>')
 
 
-def mail_info(m: dict) -> str:
+def mail_info(m: dict, need: bool = False) -> str:
+    """An email that needs you or is worth reading, with the email actions."""
     flag = '<span class="pr-pill amber">Unread</span>' if m["unread"] else ""
-    return (f'<div class="pr-row"><a class="sf-title" href="{e(m["link"])}"{NEWTAB}>{e(m["title"])}</a>'
-            f'<div class="pr-meta">{flag}</div>{mail_ctx(m)}<span class="ap-why"><b>Why:</b> {e(m["reason"])}</span></div>')
+    return (f'<div class="pr-row em-row{" em-need" if need else ""}"{em_data(m)}><a class="sf-title" href="{e(m["link"])}"'
+            f'{NEWTAB}>{e(m["title"])}</a><div class="pr-meta">{flag}</div>{mail_ctx(m)}<span class="ap-why"><b>Why:</b> '
+            f'{e(m["reason"])}</span>{em_acts(m)}</div>')
+
+
+def mail_list(title: str, rows: list[dict], need: bool = False) -> str:
+    return (f'<h4 class="mail-h">{title} <span class="count">{len(rows)}</span></h4>'
+            f'<div class="sf-list">{"".join(mail_info(m, need) for m in rows)}</div>')
+
+
+def mail_section(sid: str, title: str, note: str, body: str, is_open: bool) -> str:
+    """One collapsible part of the Email tab. It starts open when it has email that needs you."""
+    return (f'<details class="mb-sec" id="{sid}"{" open" * is_open}><summary><span class="mb-t">{title}</span> '
+            f'<span class="meta">{note}</span></summary>{body}</details>')
 
 
 def section(sid: str, title: str, meta: str, body: str) -> str:
@@ -172,8 +228,8 @@ def counted(d: dict) -> str:
     return ", ".join(f"{d[k]} {k}" for k in ("new", "gone", "changed") if d[k])
 
 
-START_SEND = ('<button class="btn sf-send" onclick="startSend(this)" title="An agent takes a first pass and leaves drafts '
-              'for you">Send to Agent</button>')
+START_SEND = ('<button class="btn sf-send" onclick="compose(this,startSend)" title="An agent takes a first pass and leaves '
+              'drafts for you">Send to Agent</button>')
 
 
 def start_section(tri: dict, note: str) -> str:
@@ -196,7 +252,7 @@ def start_section(tri: dict, note: str) -> str:
     body = f'<ol class="start-list">{items}</ol>' if items else '<p class="meta">No Start here list this time.</p>'
     return section("start", "Start here", "In this order, ranked by the model on who's waiting, deadlines, effort, and age. "
                    "Done hides an item here and marks its row done. Send to Agent hands it to an agent for a first pass, "
-                   "and the item and its row leave the page.", note + box + body)
+                   "and the item and its row leave the page.", READY + note + box + body)
 
 
 def render(snap: dict) -> tuple[str, dict]:
@@ -219,10 +275,10 @@ def render(snap: dict) -> tuple[str, dict]:
     slack_rows = snap.get("slack") or []
     agent_rows: list[tuple[str, str, str, str, bool]] = []
 
-    def row(source: str, title: str, meta: str, link: str, extra: str = "") -> str:
+    def row(source: str, title: str, meta: str, link: str, extra: str = "", mk: str = "") -> str:
         v = verdicts.get(link)
         agent_rows.append((title, meta, link, source, bool(v) and v["disposition"] == "agent"))
-        return open_row(title, meta, link, extra, v)
+        return open_row(title, meta, link, extra, v, mk)
 
     open_slack = [row("Slack", r["title"], " · ".join(x for x in (r["who"], r["when"]) if x), r["link"], ctx_html(r["ctx"]))
                   for r in slack_rows if r["group"] == "open"]
@@ -235,24 +291,27 @@ def render(snap: dict) -> tuple[str, dict]:
     acts = [m for m in snap.get("outlook") or [] if m["group"] == "act"]
     if snap.get("outlook") is not None:
         lanes.append(lane("Outlook", "Mail sent to you by a person that you haven't replied to.",
-                          [row("Outlook", m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m)) for m in acts]))
+                          [row("Outlook", m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m), email_mark(m))
+                           for m in acts]))
     gmail_by = snap.get("gmail") or {}
     for account, rows in gmail_by.items():
         lanes.append(lane(f"Gmail: {e(account)}", "Mail from a person that you haven't opened, or that you starred.",
-                          [row("Gmail", m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m))
+                          [row("Gmail", m["title"], f'{m["from"]} · {m["day"]}', m["link"], mail_ctx(m), email_mark(m))
                            for m in rows if m["group"] == "act"]))
     total = sum(body.count('class="sf-row"') for body in lanes)
+    starts = bool(tri and (tri["start"] or tri["changes"] or tri["note"] or tri["failed"]))
+    ready = "" if starts else READY
     sections.append(f'<div id="open-list" class="tab-sec"><div class="cut"><div class="cut-top"><b>Open list</b>'
                     f'<span class="meta"><span id="open-total">{total}</span> open items. Mark each Done, Snooze it for 3 days, or Drop it. '
                     'Send to Agent hands a row to an agent for a first pass, and it leaves drafts for you. To let agents '
                     'finish on their own, use the Send to agents tab with Hands-off.</span></div>'
                     '<button class="chip" id="showhidden">Show snoozed and dropped</button></div>'
-                    f'{note}{"".join(lanes) or "<p class=meta>No sources are linked yet.</p>"}</div>')
+                    f'{ready}{note}{"".join(lanes) or "<p class=meta>No sources are linked yet.</p>"}</div>')
     tabs.append(("open-list", "Open list", total, "var(--c-cut)"))
     if lanes:
         sections.append(agents_section(agent_rows))
         tabs.append(("agents", "Send to agents", len(agent_rows), "var(--c-unsub)"))
-    if tri and (tri["start"] or tri["changes"] or tri["note"] or tri["failed"]):
+    if starts:
         at = 0 if tri["start"] else len(sections)
         sections.insert(at, start_section(tri, note))
         tabs.insert(at, ("start", "Start here", len(tri["start"]), "var(--c-start)"))
@@ -266,24 +325,24 @@ def render(snap: dict) -> tuple[str, dict]:
         tabs.append(("calendar", "Today", len(snap["calendar"]), "var(--c-start)"))
 
     mail = snap.get("outlook") or []
+    parts, need = [], 0
     if snap.get("outlook") is not None:
         by = {g: [m for m in mail if m["group"] == g and m["body"]] for g in outlook.DELETABLE}
         for rows in by.values():
-            cands.update({m["key"]: {"kind": "mail", "link": m["link"]} for m in rows})
-        groups = "".join(ap_group(f"mail-{g}", t, h, [ap_row(m["key"], m["subject"], m["link"], mail_ctx(m), m["reason"], "mail", "ap-clear")
-                                                      for m in by[g]]) for g, t, h in OUTLOOK_GROUPS if by[g])
+            cands.update({m["key"]: {"kind": "mail", "link": m["link"], "mk": email_mark(m)} for m in rows})
+        groups = "".join(ap_group(f"mail-{g}", t, h, [ap_row(m["key"], m["subject"], m["link"], mail_ctx(m), m["reason"], "mail",
+                                                             "ap-clear", m=m) for m in by[g]]) for g, t, h in OUTLOOK_GROUPS if by[g])
         reads = [m for m in mail if m["group"] == "read"]
-        sections.append(section("email", "Outlook", f"{len(mail)} emails in your inbox. {len(acts)} need you, "
-                                f"{len(reads)} are worth reading, and {sum(map(len, by.values()))} can go.",
-                                f'<h4 class="mail-h">Worth reading <span class="count">{len(reads)}</span></h4>'
-                                f'<div class="sf-list">{"".join(mail_info(m) for m in reads)}</div>'
-                                '<h4 class="mail-h">Ready to delete</h4><p class="meta">The Work queue only reads Outlook. '
-                                'Approve what can go, and this search updates to find exactly those emails. Paste it into '
-                                'Outlook search with the scope set to Inbox, select all, and delete.</p>'
-                                '<div class="mq"><code id="mq-q">Approve emails below to build your search.</code>'
-                                '<button class="btn" id="mq-copy" disabled onclick="copySearch(this)">Copy search</button></div>'
-                                f'<p class="meta" id="mq-note"></p>{groups}'))
-        tabs.append(("email", "Outlook", len(acts), "var(--c-outlook)"))
+        need += len(acts)
+        parts.append(mail_section("email", "Outlook", f"{len(mail)} emails in your inbox. {len(acts)} need you, "
+                                  f"{len(reads)} are worth reading, and {sum(map(len, by.values()))} can go.",
+                                  mail_list("Needs you", acts, True) + mail_list("Worth reading", reads) +
+                                  '<h4 class="mail-h">Ready to delete</h4><p class="meta">The Work queue only reads Outlook. '
+                                  'Approve what can go, and this search updates to find exactly those emails. Paste it into '
+                                  'Outlook search with the scope set to Inbox, select all, and delete.</p>'
+                                  '<div class="mq"><code id="mq-q">Approve emails below to build your search.</code>'
+                                  '<button class="btn" id="mq-copy" disabled onclick="copySearch(this)">Copy search</button></div>'
+                                  f'<p class="meta" id="mq-note"></p>{groups}', bool(acts)))
 
     unsub: dict[tuple, list[dict]] = {}
     for n, (account, rows) in enumerate(gmail_by.items(), 1):
@@ -293,19 +352,20 @@ def render(snap: dict) -> tuple[str, dict]:
                 unsub.setdefault((account, m["addr"], m["from"]), []).append(m)
         by = {g: [m for m in rows if m["group"] == g] for g in gmail.DELETABLE}
         for g_rows in by.values():
-            cands.update({m["key"]: {"kind": "gmail", "account": account, "msg_ids": m["msg_ids"], "link": m["link"]} for m in g_rows})
-        groups = "".join(ap_group(f"gmail-{g}", t, h, [ap_row(m["key"], m["subject"], m["link"], mail_ctx(m), m["reason"], "gmail")
-                                                       for m in by[g]]) for g, t, h in GMAIL_GROUPS if by[g])
+            cands.update({m["key"]: {"kind": "gmail", "account": account, "msg_ids": m["msg_ids"], "link": m["link"],
+                                     "mk": email_mark(m)} for m in g_rows})
+        groups = "".join(ap_group(f"gmail-{g}", t, h, [ap_row(m["key"], m["subject"], m["link"], mail_ctx(m), m["reason"], "gmail",
+                                                              m=m) for m in by[g]]) for g, t, h in GMAIL_GROUPS if by[g])
         looks = [m for m in rows if m["group"] == "unsorted"]
+        yours = [m for m in rows if m["group"] == "act"]
         n_del = sum(map(len, by.values()))
-        sections.append(section(f"gmail-{n}", f"Gmail: {e(account)}", f"{len(rows)} conversations. {len(looks)} are worth a look, "
-                                f"and {n_del} can go.",
-                                f'<h4 class="mail-h">Worth a look <span class="count">{len(looks)}</span></h4>'
-                                f'<div class="sf-list">{"".join(mail_info(m) for m in looks)}</div>'
-                                '<h4 class="mail-h">Ready to delete</h4><p class="meta">Approve what can go, then select Apply approvals. '
-                                'Each conversation moves to Gmail\'s Trash, which keeps it for 30 days. Undo moves it back to your inbox.</p>'
-                                f'{groups}'))
-        tabs.append((f"gmail-{n}", f"Gmail: {account.split('@')[0]}", sum(m["group"] == "act" for m in rows), "var(--c-gmail)"))
+        need += len(yours)
+        parts.append(mail_section(f"gmail-{n}", f"Gmail: {e(account)}", f"{len(rows)} conversations. {len(yours)} need you, "
+                                  f"{len(looks)} are worth a look, and {n_del} can go.",
+                                  mail_list("Needs you", yours, True) + mail_list("Worth a look", looks) +
+                                  '<h4 class="mail-h">Ready to delete</h4><p class="meta">Approve what can go, then select Apply approvals. '
+                                  'Each conversation moves to Gmail\'s Trash, which keeps it for 30 days. Undo moves it back to your inbox.</p>'
+                                  f'{groups}', bool(yours)))
 
     subs = []
     for (account, addr, name), ms in unsub.items():
@@ -318,11 +378,17 @@ def render(snap: dict) -> tuple[str, dict]:
                         f'<span class="meta">{e(addr)} · {e(account)}</span><span class="ap-why">{len(ms)} of their emails '
                         f'can go. Latest: {e(ms[0]["subject"][:80])}</span><span class="ap-status"></span></div>{buttons("", "Unsubscribe")}</div>')
     if subs:
-        sections.append(section("unsubscribe", "Unsubscribe", f"{len(subs)} senders support one-click unsubscribe. Approve a "
-                                "sender, then select Apply approvals, and the Work queue sends that sender's unsubscribe request. "
-                                "You can't undo this here. Senders that also send mail you keep are left out.",
-                                ap_group("unsub", "Senders", "", subs, True)))
-        tabs.append(("unsubscribe", "Unsubscribe", len(subs), "var(--c-unsub)"))
+        parts.append(mail_section("unsubscribe", "Unsubscribe", f"{len(subs)} senders support one-click unsubscribe. Approve a "
+                                  "sender, then select Apply approvals, and the Work queue sends that sender's unsubscribe request. "
+                                  "You can't undo this here. Senders that also send mail you keep are left out.",
+                                  ap_group("unsub", "Senders", "", subs, True), False))
+    if parts:
+        sections.append(section("mailbox", "Email", "Each part opens and closes. A part with email that needs you starts open. "
+                                "Snooze hides an email for 3 days, Archive and Mark read change it in Gmail and check that "
+                                "Gmail did, and Send to Agent hands it to an agent for a first pass.",
+                                '<button class="chip" id="em-showhidden" onclick="toggleMailHidden()">Show hidden email'
+                                '</button>' + "".join(parts)))
+        tabs.append(("mailbox", "Email", need, "var(--c-outlook)"))
 
     if snap.get("slack") is not None:
         by = {g: [r for r in slack_rows if r["group"] == g] for g, _, _ in SLACK_GROUPS}
@@ -455,6 +521,24 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .start-list li[hidden]{display:none}.start-list li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .start-list a{text-decoration:none;overflow-wrap:anywhere}.start-list .sf-mark{margin-left:auto}
 .pr-pill.src{color:var(--text-2);background:var(--hover);border:1px solid var(--line)}
+#mailbox{--acc:var(--c-outlook)}#mailbox>.chip{margin:0 0 8px}
+.mb-sec{border-top:1px solid var(--line);padding:4px 0;scroll-margin-top:64px}
+.mb-sec>summary{cursor:pointer;padding:8px 0;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.mb-t{font:600 14px/1.4 var(--sans);color:var(--acc,var(--text))}
+.em-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.em-status{font:600 11px/1.4 var(--mono);color:var(--amber)}.em-status:empty{display:none}
+.em-gone{display:none!important}body.show-em-hidden .em-gone{display:flex!important;opacity:.6}
+.em-read .em-readbtn,.em-read .pr-pill.amber{display:none}
+.compose{flex:1 0 100%;width:100%;margin:8px 0 4px;display:flex;flex-direction:column;gap:6px}
+.ap-row:has(> .compose){flex-wrap:wrap}
+.compose textarea{width:100%;min-height:58px;max-height:240px;resize:none;overflow-y:auto;font:13px/1.5 var(--sans);padding:8px;
+border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);color:var(--text)}
+.compose-btns{display:flex;gap:6px}
+.ready{border:1px solid var(--line);border-left:3px solid var(--green);border-radius:8px;padding:10px 14px;margin:0 0 14px;overflow-wrap:anywhere}
+.ready-list{margin:6px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
+.ready-list li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ready-result{display:block;margin-top:4px;color:var(--text-2);font-size:12px;white-space:pre-line}
+.ready-result.blocked{color:var(--amber)}.ready-result a{color:var(--blue)}
 @media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
@@ -462,6 +546,8 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 JS = r"""
 const DAY=864e5;
 let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{}}, API=true, polling=false, sending=false;
+ST.queued={};ST.mail={};let GONE=new Set(),qTimer=0;
+const READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.json()}
 function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
@@ -471,6 +557,7 @@ function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
   const hide=!!v&&(v.state==='dropped'||(v.state==='snoozed'&&v.until>now));
   r.classList.toggle('is-done',done);r.classList.toggle('is-hidden',hide);if(hide)hidden++;
   r.querySelector('.sf-mark').textContent=done?'Undo':'Done'});
+ hidden+=paintMail(now,sent);
  const away=k=>{const v=MK[k];return !!v&&(v.state!=='snoozed'||v.until>now)};
  document.querySelectorAll('.start-list li').forEach(li=>{li.hidden=!('blocked' in li.dataset)&&away(li.dataset.key)});
  document.querySelectorAll('.ag-row').forEach(r=>{r.hidden=away(r.dataset.key);if(r.hidden)r.querySelector('.ag-pick').checked=false});
@@ -481,12 +568,90 @@ function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
   ['#tabs .tab[data-t="start"] span',document.querySelectorAll('.start-list li:not([hidden])').length]]){
   const el=document.querySelector(s);if(el)el.textContent=n}
  document.querySelectorAll('.sf-lane').forEach(l=>{l.querySelector('h3 .count').textContent=l.querySelectorAll('.sf-row:not(.is-done):not(.is-hidden)').length});
- const b=$('showhidden');if(b)b.textContent=(document.body.classList.contains('show-hidden')?'Hide':'Show')+' snoozed and dropped ('+hidden+')'}
+ const b=$('showhidden');if(b)b.textContent=(document.body.classList.contains('show-hidden')?'Hide':'Show')+' snoozed and dropped ('+hidden+')'
+ renderReady();schedulePoll()}
+function hides(v,now){return !!v&&(v.state!=='snoozed'||v.until>now)}
+function mailWhy(r,now){const ks=[r.dataset.mk,r.dataset.link],q=ks.map(k=>ST.queued[k]).find(Boolean);
+ if(q)return 'Sent to an agent as '+q.id;
+ if((ST.mail[r.dataset.gkey]||{}).archived)return 'Archived in Gmail';
+ const v=ks.map(k=>MK[k]).find(m=>hides(m,now));if(!v)return '';
+ return MARKED[v.state]+(v.state==='snoozed'?' until '+new Date(v.until).toLocaleDateString([],{month:'short',day:'numeric'}):'')}
+function paintMail(now,sent){let extra=0,gone=0;GONE=new Set();
+ document.querySelectorAll('.sf-lane .sf-row[data-mk]').forEach(r=>{const k=r.dataset.mk;if(sent.has(k)){r.remove();return}
+  if(hides(MK[k],now)&&!r.classList.contains('is-hidden')){r.classList.add('is-hidden');extra++}});
+ document.querySelectorAll('.em-row').forEach(r=>{const why=mailWhy(r,now);r.classList.toggle('em-gone',!!why);
+  if(why){GONE.add(r.dataset.key);gone++}
+  r.querySelector('.em-status').textContent=why;r.querySelector('.em-undo').hidden=!why||why.startsWith('Sent');
+  r.classList.toggle('em-read',!!(ST.mail[r.dataset.gkey]||{}).read)});
+ const t=document.querySelector('#tabs .tab[data-t="mailbox"] span'),b=$('em-showhidden');
+ if(t)t.textContent=document.querySelectorAll('.em-need:not(.em-gone)').length;
+ if(b)b.textContent=(document.body.classList.contains('show-em-hidden')?'Hide':'Show')+' hidden email ('+gone+')';
+ return extra}
+function toggleMailHidden(){document.body.classList.toggle('show-em-hidden');paint()}
+function readyKey(id){return READY_MARK+id}
+function renderReady(){const box=$('ready');if(!box)return;const ol=box.querySelector('ol');ol.textContent='';
+ const ready=Object.values(ST.queued).filter(q=>(q.status==='done'||q.status==='blocked')&&!MK[readyKey(q.id)]);
+ ready.sort((a,b)=>b.finished.localeCompare(a.finished)).forEach(q=>ol.append(readyItem(q)));box.hidden=!ready.length;
+ document.querySelectorAll('.start-list li').forEach(li=>{const q=ST.queued[li.dataset.key];
+  if(q&&!li.querySelector('.sf-send,.sf-sent')){const b=document.createElement('button');b.className='btn sf-sent';b.disabled=true;
+   b.textContent='Sent '+q.id;b.title='Already sent to an agent';li.firstElementChild.append(b)}})}
+function readyItem(q){const li=document.createElement('li'),top=document.createElement('div'),t=document.createElement('span'),s=document.createElement('span');
+ t.className='sf-title';t.textContent=q.title+' ('+q.id+')';top.append(t,button('Done','btn sf-mark',b=>doneReady(b,q.id)));
+ if(q.workspace)top.append(button('Open workspace','btn',b=>openWs(b,q.id)));
+ s.className='ready-result '+q.status;li.dataset.id=q.id;
+ if(q.status==='blocked')s.textContent='Blocked: '+(q.reason||'the agent didn’t say why.');
+ else linkify(s,q.result||'Done, but the agent left no written result. Open '+q.id+' on the Tasks tab of the Assistant dashboard to see what happened.');
+ li.append(top,s);return li}
+function button(label,cls,run){const b=document.createElement('button');b.className=cls;b.textContent=label;b.onclick=()=>run(b);return b}
+async function doneReady(b,id){b.disabled=true;
+ try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({key:readyKey(id),state:'done'})})).marks;paint()}
+ catch(e){b.disabled=false;toast('Not saved: '+e.message)}}
+async function openWs(b,id){b.disabled=true;
+ try{await api('/api/focus',{method:'POST',body:JSON.stringify({id})});toast('Brought the workspace for '+id+' to the front.')}
+ catch(e){toast('Couldn’t open the workspace: '+e.message)}
+ b.disabled=false}
+const LINK=/((?:https?|file):\/\/[^\s<>"')]+)/;
+function linkify(el,text){el.textContent='';text.split(LINK).forEach((part,i)=>{if(i%2===0){el.append(part);return}
+ const m=/^(.*?)([.,;:!?]*)$/.exec(part),a=document.createElement('a');
+ a.href=m[1].startsWith('file:')?'/files'+new URL(m[1]).pathname:m[1];a.textContent=m[1];a.target='_blank';a.rel='noopener noreferrer';
+ el.append(a,m[2])})}
+function schedulePoll(){clearTimeout(qTimer);
+ if(!polling&&Object.values(ST.queued).some(q=>!((q.status==='done'||q.status==='blocked')&&MK[readyKey(q.id)])))qTimer=setTimeout(refresh,20000)}
+function compose(b,send){const host=b.closest('.em-row,.sf-row,li'),open=host.querySelector(':scope > .compose');
+ if(open)return open.querySelector('textarea').focus();
+ const f=document.createElement('div'),ta=document.createElement('textarea'),row=document.createElement('div');
+ const go=button('Send','btn cp-go',async()=>{go.disabled=true;if(await send(b,ta.value.trim()))f.remove();else go.disabled=false});
+ const no=button('Cancel','btn ghost cp-no',()=>f.remove());
+ f.className='compose';row.className='compose-btns';ta.rows=2;ta.setAttribute('aria-label','Note for the agent');
+ ta.placeholder='Note for the agent (optional). For example: draft a reply, or check the logs first. Cmd+Enter sends, Esc cancels.';
+ ta.oninput=()=>{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight+2,240)+'px'};
+ ta.onkeydown=ev=>{if(ev.key==='Enter'&&(ev.metaKey||ev.ctrlKey))go.click();else if(ev.key==='Escape')no.click()};
+ row.append(go,no);f.append(ta,row);host.append(f);ta.focus()}
+function sentMsg(o,note){if(!o.existing)return 'Sent to an agent as '+o.id+' for a first pass. '+FOLLOW;
+ return 'Already sent as '+o.id+', so nothing new was sent.'+(note?' Your note wasn’t added to it. Add it in that agent’s workspace once it starts.':'')+' '+FOLLOW}
+function noteSent(k,o,title){ST.queued=Object.assign({},ST.queued,{[k]:{id:o.id,title,status:'open',result:'',reason:'',finished:'',workspace:''}})}
+async function sendMail(b,note){const r=b.closest('.em-row'),k=r.dataset.mk;b.disabled=true;
+ try{const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:k,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:r.dataset.link,note})});
+  MK[k]={state:'done',until:0};ST.sent=[...new Set(ST.sent),k];noteSent(k,o,r.dataset.qTitle);paint();renderAp();toast(sentMsg(o,note));return true}
+ catch(e){b.disabled=false;toast('Not sent: '+e.message);return false}}
+async function markMail(r,marks,msg){
+ try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({marks})})).marks;paint();renderAp();toast(msg)}
+ catch(e){toast('Not saved: '+e.message)}}
+function snoozeMail(b){const r=b.closest('.em-row');
+ return markMail(r,{[r.dataset.mk]:{state:'snoozed',until:Date.now()+3*DAY}},'Snoozed for 3 days. Show hidden email lists it, with Undo.')}
+function undoMail(b){const r=b.closest('.em-row');if((ST.mail[r.dataset.gkey]||{}).archived)return gmailAct(b,'unarchive');
+ const marks={};[r.dataset.mk,r.dataset.link].filter(k=>MK[k]).forEach(k=>marks[k]={state:'clear'});return markMail(r,marks,'It’s back on the list.')}
+const DID={archive:'Archived in Gmail. Gmail confirmed that no message in the conversation is in your inbox.',
+ read:'Marked read in Gmail. Gmail confirmed that every message in the conversation is read.',unarchive:'Moved back to your Gmail inbox.'};
+async function gmailAct(b,action){const r=b.closest('.em-row');b.disabled=true;
+ try{const o=await api('/api/gmail',{method:'POST',body:JSON.stringify({key:r.dataset.gkey,action})});MK=o.marks;ST.mail=o.mail;paint();renderAp();toast(DID[action])}
+ catch(e){toast('Not done: '+e.message+'. Nothing changed on the page.')}
+ b.disabled=false}
 async function setState(b,state){const k=b.closest('[data-key]').dataset.key,cur=MK[k]&&MK[k].state;
  const body=cur===state?{key:k,state:'clear'}:{key:k,state,until:state==='snoozed'?Date.now()+3*DAY:0};
  try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify(body)})).marks}catch(e){toast('Not saved: '+e.message)}paint()}
 if($('showhidden'))$('showhidden').onclick=()=>{document.body.classList.toggle('show-hidden');paint()};
-function mailSearch(){const appr=new Set(MAILDATA.filter(m=>(ST.decisions[m.k]||{}).decision==='approve').map(m=>m.k));
+function mailSearch(){const appr=new Set(MAILDATA.filter(m=>(ST.decisions[m.k]||{}).decision==='approve'&&!GONE.has(m.k)).map(m=>m.k));
  if(!appr.size)return{q:'',n:0,manual:[]};const terms=[];
  for(const a of new Set(MAILDATA.map(m=>m.a).filter(Boolean)))terms.push({t:'from:'+a,hit:MAILDATA.filter(m=>m.a===a).map(m=>m.k)});
  for(const s of new Set(MAILDATA.map(m=>m.s.replace(/"/g,'')).filter(Boolean))){const low=s.toLowerCase();terms.push({t:'subject:"'+s+'"',hit:MAILDATA.filter(m=>m.s.replace(/"/g,'').toLowerCase().includes(low)).map(m=>m.k)})}
@@ -505,23 +670,23 @@ function renderAp(){let approved=0;const MS=mailSearch();
   else if(a.status==='gone')s='Slack no longer has this save';
   else if(a.status==='error')s='Failed: '+a.error;else if(a.status==='undone')s=kind==='gmail'?'Back in your inbox':'Reopened in Slack';
   else if(d==='keep')s='Kept';else if(d==='undo')s=kind==='gmail'?'Will restore':'Will reopen';
-  r.querySelector('.ap-status').textContent=s;if(d==='approve'&&!settled&&kind!=='mail')approved++});
+  r.querySelector('.ap-status').textContent=s;if(d==='approve'&&!settled&&kind!=='mail'&&!GONE.has(k))approved++});
  renderMq(MS);
- document.querySelectorAll('.ap-group').forEach(g=>{const left=g.querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept)').length;const b=g.querySelector('.ap-all');b.textContent=left?'Approve all '+left:'All decided';b.disabled=!left});
+ document.querySelectorAll('.ap-group').forEach(g=>{const left=g.querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)').length;const b=g.querySelector('.ap-all');b.textContent=left?'Approve all '+left:'All decided';b.disabled=!left});
  const undo=Object.entries(ST.decisions).filter(([k,v])=>v.decision==='undo'&&(ST.applied[k]||{}).status==='done').length,run=!!ST.status.running,bar=$('ap-apply');
  if(!bar)return;$('ap-count').textContent=API?(approved+' approved'+(undo?', '+undo+' to reopen':'')):'Approvals need the Work queue server';
  bar.disabled=!API||run||!(approved+undo);bar.textContent=run?'Working…':'Apply approvals';
  const st=ST.status;$('ap-msg').textContent=run?'Working. Slack changes run in your Slack browser session; Gmail changes run in the background.':st.finished?('Last run: '+(st.verified||0)+' of '+((st.slack||0)+(st.gmail||0)+(st.unsub||0))+' verified'+(st.error?' · '+st.error:'')):''}
 const FOLLOW='Its status and result show on the Tasks tab of the Assistant dashboard, and its session on the Sessions tab once it starts.';
-async function sendRow(r,mode){const k=r.dataset.key;
- const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:k,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:k,mode})});
- MK[k]={state:'done',until:0};ST.sent=[...(ST.sent||[]),k];paint();return o}
-async function sendFrom(b,r){b.disabled=true;b.textContent='Sending...';
- try{const o=await sendRow(r,'assist');toast('Sent to an agent as '+o.id+' for a first pass. '+FOLLOW)}
- catch(e){b.disabled=false;b.textContent='Send to Agent';toast('Not sent: '+e.message)}}
-function queueTodo(b){return sendFrom(b,b.closest('.sf-row'))}
-function startSend(b){const k=b.closest('li').dataset.key;
- return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k))}
+async function sendRow(r,mode,note){const k=r.dataset.key;
+ const o=await api('/api/todo',{method:'POST',body:JSON.stringify({key:k,title:r.dataset.qTitle,detail:r.dataset.qDetail,url:k,mode,note})});
+ noteSent(k,o,r.dataset.qTitle);MK[k]={state:'done',until:0};ST.sent=[...(ST.sent||[]),k];paint();return o}
+async function sendFrom(b,r,note){b.disabled=true;b.textContent='Sending...';
+ try{const o=await sendRow(r,'assist',note);toast(sentMsg(o,note));return true}
+ catch(e){b.disabled=false;b.textContent='Send to Agent';toast('Not sent: '+e.message);return false}}
+function queueTodo(b,note){return sendFrom(b,b.closest('.sf-row'),note)}
+function startSend(b,note){const k=b.closest('li').dataset.key;
+ return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k),note)}
 function agPicks(){return [...document.querySelectorAll('.ag-row:not([hidden]) .ag-pick:checked')].map(c=>c.closest('.ag-row'))}
 function agCount(){const b=$('ag-go');if(!b)return;const n=agPicks().length;b.textContent='Send '+n+' to agents';b.disabled=!API||!n||sending}
 function agAll(c){document.querySelectorAll('.ag-pick').forEach(p=>p.checked=c.checked);agCount()}
@@ -537,13 +702,19 @@ function renderRefresh(){const r=ST.refresh||{},b=$('refresh');b.disabled=!!r.ru
  $('refresh-msg').textContent=r.running?'Reading your sources. This page reloads when it finishes.':r.error?'Last refresh failed: '+r.error:''}
 async function refresh(){try{ST=Object.assign(ST,await api('/api/state'));API=true;MK=ST.marks||{}}catch(_){API=false}
  const wasRunning=polling;paint();renderAp();renderRefresh();
- if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)location.reload()}}
+ if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)reloadIfIdle()}}
+function reloadIfIdle(){if([...document.querySelectorAll('.compose textarea')].some(t=>t.value.trim()))
+  return toast('The refresh finished. Send or cancel your note, then reload the page to see the new rows.');
+ location.reload()}
 async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
-function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept)')].map(r=>r.dataset.key);decide(keys,'approve')}
+function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key);decide(keys,'approve')}
 async function applyNow(){try{await api('/api/apply',{method:'POST',body:'{}'});ST.status={running:true};renderAp();setTimeout(refresh,1500)}catch(e){$('ap-msg').textContent='Not started: '+e.message}}
 async function refreshNow(){try{await api('/api/refresh',{method:'POST',body:'{}'});ST.refresh={running:true};renderRefresh();polling=true;setTimeout(refresh,2500)}catch(e){$('refresh-msg').textContent='Not started: '+e.message}}
 const TAB_IDS=[...document.querySelectorAll('#tabs .tab')].map(a=>a.dataset.t).filter(t=>t!=='all');
-function showTab(id){const t=TAB_IDS.includes(id)||id==='all'?id:TAB_IDS[0];TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
+function tabOf(id){if(TAB_IDS.includes(id)||id==='all')return id;const el=id?$(id):null,sec=el&&TAB_IDS.find(s=>$(s).contains(el));
+ if(!sec)return TAB_IDS[0];for(let d=el;d;d=d.parentElement)if(d.tagName==='DETAILS')d.open=true;
+ setTimeout(()=>el.scrollIntoView({block:'start'}));return sec}
+function showTab(id){const t=tabOf(id);TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
  document.querySelectorAll('#tabs .tab').forEach(a=>a.classList.toggle('on',a.dataset.t===t));try{localStorage.setItem('wq-tab',t)}catch(_){}}
 window.addEventListener('hashchange',()=>showTab(decodeURIComponent(location.hash.slice(1))));
 if(TAB_IDS.length){let saved=null;try{saved=localStorage.getItem('wq-tab')}catch(_){}showTab(decodeURIComponent(location.hash.slice(1))||saved||TAB_IDS[0])}

@@ -62,8 +62,12 @@ def test_every_linked_source_renders_into_one_page(wq, fake_slack, monkeypatch):
     status = refresh.run(transport=fake_slack._transport, now=NOW)
     assert all(s["state"] == "ok" for s in status), status
     html = refresh.site_path().read_text()
-    for tab in ("open-list", "calendar", "email", "gmail-1", "unsubscribe", "slack-saves", "all"):
+    for tab in ("open-list", "calendar", "mailbox", "slack-saves", "all"):
         assert f'data-t="{tab}"' in html
+    mailbox = html[html.index('id="mailbox"'):html.index('id="slack-saves"')]
+    for part in ("email", "gmail-1", "unsubscribe"):
+        assert f'<details class="mb-sec" id="{part}"' in mailbox and f'data-t="{part}"' not in html, \
+            "Outlook, each Gmail account, and Unsubscribe are parts of the one Email tab"
     for lane in ("<h3>Slack ", "<h3>Pull requests ", "<h3>Outlook ", f"<h3>Gmail: {ACCT} "):
         assert lane in html
     assert "All day · Standup" in html and "Can you review?" in html and "Weekly digest" in html

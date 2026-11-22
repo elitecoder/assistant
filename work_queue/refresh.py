@@ -37,6 +37,10 @@ def status_path():
     return config.data_dir() / "refresh-status.json"
 
 
+def emails_path():
+    return config.data_dir() / "emails.json"
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -71,6 +75,7 @@ def write_page(snap: dict) -> None:
     site_path().parent.mkdir(parents=True, exist_ok=True)
     site_path().write_text(doc)
     config.write_json(candidates_path(), cands)
+    config.write_json(emails_path(), page.emails(snap))
 
 
 def blocked_rows() -> set[str]:
