@@ -59,15 +59,26 @@ def read_sources(doc: dict, transport, now: float) -> dict:
             snap["status"].append({"name": LABELS[name], "state": "off",
                                    "detail": f"not linked. Run bin/work-queue-setup.py link {name}"})
             continue
-        try:
-            snap[name] = read(doc[name])
-        except FAILURES as exc:
-            snap["status"].append({"name": LABELS[name], "state": "error", "detail": str(exc) or type(exc).__name__})
-            continue
-        found = snap[name]
-        count = sum(map(len, found.values())) if isinstance(found, dict) else len(found)
-        snap["status"].append({"name": LABELS[name], "state": "ok", "detail": f"read {count} item{'' if count == 1 else 's'}"})
+        found = read_one(snap["status"], LABELS[name], read, doc[name])
+        if found is not None:
+            snap[name] = found
+    if "outlook" in doc and doc["outlook"].get("calendar", True):
+        found = read_one(snap["status"], "Outlook calendar", outlook.events, doc["outlook"])
+        if found:
+            snap["calendar"] = snap.get("calendar", []) + found
     return snap
+
+
+def read_one(status: list[dict], label: str, read, entry: dict):
+    """One source's rows, with its status line added to status; None when it fails."""
+    try:
+        found = read(entry)
+    except FAILURES as exc:
+        status.append({"name": label, "state": "error", "detail": str(exc) or type(exc).__name__})
+        return None
+    count = sum(map(len, found.values())) if isinstance(found, dict) else len(found)
+    status.append({"name": label, "state": "ok", "detail": f"read {count} item{'' if count == 1 else 's'}"})
+    return found
 
 
 def write_page(snap: dict) -> None:

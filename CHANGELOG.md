@@ -45,6 +45,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- List pull requests from only the repositories you choose. Add `repos` to
+  the `github` entry in `sources.json`, or run `bin/work-queue-setup.py link
+  github --repo OWNER/NAME`, repeated for each repository. Without it, the
+  Work queue still lists every pull request that asks for your review.
+- Show today's Outlook calendar on the Work queue's Today tab when Outlook is
+  linked, in the same rows as Google Calendar. It reads your local day
+  through Work IQ, leaves out cancelled events, and marks the ones you
+  declined. A failed read shows as its own **Outlook calendar** error, and the
+  other sources still show. Set `"calendar": false` on the `outlook` entry to
+  turn it off.
 - Never count a Gmail read-back that failed as verified. Apply's Trash and
   restore checks treated a failed or unreadable `gog gmail get` as a message
   without labels, so a restore read back as verified.
