@@ -53,6 +53,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   agent, or marked done or dropped.
 - Answer a Work queue request that fails unexpectedly, for example on a TODO
   store that isn't valid JSON, with a JSON error instead of dropping it.
+- Run each mutation check in a temporary folder whose path has no `__`. A
+  random folder name with `__` in it failed the installer tests' baseline,
+  which read it as a plist placeholder left unreplaced.
+- Run the mutation checks in three CI shards instead of two, so each shard
+  finishes within its 60-minute limit with this release's added checks.
 - Keep the Work queue's sent-save worker running after a failure. An
   unexpected error in a batch, such as a malformed result or a job file that
   can't be written, stopped the background thread but left it marked as

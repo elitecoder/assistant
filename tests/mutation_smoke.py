@@ -3092,6 +3092,13 @@ CHECKS = (
         '',
         'tests/test_work_queue_actions.py::test_an_email_sent_by_its_own_key_also_marks_its_link_done_so_it_isnt_offered_again',
     ),
+    (
+        "a mutation check's folder never has __ in its path",
+        'tests/mutation_smoke.py',
+        '    while "__" in (found := TemporaryDirectory(prefix="assistant-mutation-")).name:\n        found.cleanup()\n',
+        '    found = TemporaryDirectory(prefix="assistant-mutation-")\n',
+        'tests/test_mutation_shards.py::test_a_check_never_runs_in_a_folder_whose_path_has_a_double_underscore',
+    ),
 )
 
 
@@ -3127,12 +3134,20 @@ def run_test(repo: Path, home: Path, selector: str):
         cwd=repo, env=env, capture_output=True, text=True, timeout=TEST_TIMEOUT_SEC)
 
 
+def scratch() -> TemporaryDirectory:
+    """A temporary folder whose path has no "__": the installer tests read "__" in a plist as a placeholder left
+    unreplaced, so a random name with "__" in it failed their baseline."""
+    while "__" in (found := TemporaryDirectory(prefix="assistant-mutation-")).name:
+        found.cleanup()
+    return found
+
+
 def run_check(name: str, filename: str, original: str, broken: str, selector: str) -> dict:
     """Run selector on a copy of the sources, then on a copy with the mutation; the mutant must fail.
 
     A mutant whose test runs past TEST_TIMEOUT_SEC counts as rejected: the test didn't pass."""
     started = time.monotonic()
-    with TemporaryDirectory(prefix="assistant-mutation-") as temporary:
+    with scratch() as temporary:
         root = Path(temporary)
         repo, home = root / "repo", root / "home"
         repo.mkdir()
