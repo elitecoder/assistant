@@ -68,6 +68,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- A lesson no longer needs a bolded trigger line above its rule.
+  `assistant-curator.py write --rule R` stores the marker and the rule
+  alone, and `list`, `rm`, `audit`, and the duplicate-slug check now see a
+  block with no bold line, which they skipped before. `--trigger` still
+  writes the bolded line, and existing blocks read as before. `list` shows a
+  rule's first line when a lesson has no trigger. `propose_lesson`, the
+  `propose_memory` agent tool, and the lesson extractor's drafts need only a
+  rule, and the `/lesson` skill and the operating guide show the rule-only
+  form. `write` keeps a blank line before the new lesson when a hand edit
+  left the section without one, and a marker with no text under it is now
+  listed and removable.
 - Send a Work queue Start here item to an agent from the list itself. Each
   item that isn't blocked has Send to Agent next to Done, which sends its row
   for a first pass through the row's own send path, so the TODO, the done

@@ -3099,6 +3099,20 @@ CHECKS = (
         '    found = TemporaryDirectory(prefix="assistant-mutation-")\n',
         'tests/test_mutation_shards.py::test_a_check_never_runs_in_a_folder_whose_path_has_a_double_underscore',
     ),
+    (
+        "a lesson with no bold line is read",
+        'bin/assistant-curator.py',
+        '        else:\n            trigger = ""\n            rule = after_header.strip()\n',
+        '        else:\n            continue\n',
+        'tests/test_writers_in_process.py::AssistantCuratorTests::test_iter_lessons_reads_every_block_shape',
+    ),
+    (
+        "a lesson written with no trigger has no bold line",
+        'bin/assistant-curator.py',
+        '    heading = f"**{trigger}**\\n\\n" if trigger else ""\n',
+        '    heading = f"**{trigger}**\\n\\n"\n',
+        'tests/test_writers_in_process.py::AssistantCuratorTests::test_write_without_trigger_stores_the_rule_alone',
+    ),
 )
 
 

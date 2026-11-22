@@ -60,7 +60,7 @@ Available tools (loaded from `bin/tools-manifest.json`):
 - `workspace_peek --ws <ref>`: live terminal screen for a workspace
 - `recent_actions [--n N] [--ws <ref>]`: last N ledger actions
 - `thread_context --channel <id>`: recent conversation thread
-- `propose_lesson --trigger T --rule R [--target T] [--scope S]`: record a lesson proposal
+- `propose_lesson --rule R [--target T] [--scope S]`: record a lesson proposal; R says when the rule applies and what to do
 - `system_health`: heartbeat age, pulse index
 - `mem0_search --query <q> [--category C]`: semantic search over past decisions, lessons, working style, and project knowledge (category ∈ lesson|working_style|project|work_history|decision)
 - `obsidian_search --query <q> [--field F --value V]`: keyword/frontmatter search over the Obsidian knowledge-base notes
@@ -85,11 +85,11 @@ Three things change Assistant's state, and each needs Mukul's explicit `y` on a 
 
 | Intent | Tool (only after Mukul confirms) |
 |---|---|
-| Add a personal rule (every coding session) | `bin/assistant-curator.py write --trigger T --rule R --target claude` |
-| Add an orchestration rule (Observer verdicts) | `bin/assistant-curator.py write --trigger T --rule R --target assistant` |
-| Add an FFP rule (lives in firefly-platform) | `bin/assistant-curator.py write --trigger T --rule R --target ffp` |
-| Add an archffp rule (lives in architect-ffp) | `bin/assistant-curator.py write --trigger T --rule R --target archffp` |
-| Add an assistant-repo rule (lives in this repo) | `bin/assistant-curator.py write --trigger T --rule R --target assistant-repo` |
+| Add a personal rule (every coding session) | `bin/assistant-curator.py write --rule R --target claude` |
+| Add an orchestration rule (Observer verdicts) | `bin/assistant-curator.py write --rule R --target assistant` |
+| Add an FFP rule (lives in firefly-platform) | `bin/assistant-curator.py write --rule R --target ffp` |
+| Add an archffp rule (lives in architect-ffp) | `bin/assistant-curator.py write --rule R --target archffp` |
+| Add an assistant-repo rule (lives in this repo) | `bin/assistant-curator.py write --rule R --target assistant-repo` |
 | Confirm a lesson proposal | `bin/tool-dispatch.py propose_lesson --confirm <proposal_id>` |
 | Restart Assistant (the pulse orchestrator) | `launchctl kickstart -k gui/$UID/com.assistant.assistant-pulse` |
 

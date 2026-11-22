@@ -8,12 +8,14 @@ CLAUDE.md, so any agent can read these without extra wiring.
 Block format:
 
     <!-- lesson: <slug>, scope: <scope>, added: <YYYY-MM-DD> -->
-    **<one-line trigger>**
+    <rule — one paragraph that says when it applies and what to do>
 
-    <rule body — one paragraph>
+A block may instead open with a bolded trigger line, then a blank line and
+the rule. Both forms are read; `write` adds that line only when given
+`--trigger`.
 
 Subcommands:
-    write    --trigger T --rule R [--scope S] [--slug S]
+    write    --rule R [--trigger T] [--scope S] [--slug S]
     list     [--scope S]
     rm       <slug>
     trim     interactive triage (open in $EDITOR)
@@ -143,7 +145,7 @@ def today():
 
 
 def slugify(text: str, n: int = 5) -> str:
-    """Turn a trigger into a short kebab-case slug. ~5 words max."""
+    """Turn a trigger or a rule's opening into a short kebab-case slug. ~5 words max."""
     text = re.sub(r"[^a-zA-Z0-9 ]+", " ", text.lower()).strip()
     words = [w for w in text.split() if w][:n]
     return "-".join(words) or "lesson"
@@ -194,9 +196,10 @@ def ensure_section(text: str, blurb: str | None = None,
     return text + sep + f"{SECTION_HEADING}\n\n{blurb}\n"
 
 
-# Block format: HTML comment header, then a paragraph that starts with a
-# **bolded trigger sentence** immediately followed by the rule body. The
-# block ends at the next `<!-- lesson:` header or the end of the section.
+# Block format: HTML comment header, then the rule. A block may open with a
+# **bolded trigger sentence** immediately followed by the rule body; a block
+# with no bold opening is the rule alone. The block ends at the next
+# `<!-- lesson:` header or the end of the section.
 #
 # Triggers may contain literal `*` (e.g. globs like `*.ips`), so the trigger
 # ends at the FIRST `**` that is followed by either `\s` or punctuation —
@@ -225,14 +228,16 @@ def iter_lessons(text: str):
             after_header = block.split("-->\n", 1)[1]
         except IndexError:
             continue
-        # Split on `**`. Expect at least 3 parts: ['', trigger, rule_rest...].
+        # Split on `**`. A bold opening gives ['', trigger, rule_rest...].
         parts = after_header.split("**")
-        if len(parts) < 3 or parts[0].strip():
-            continue
-        trigger = parts[1].strip()
-        # Re-join everything after the closing `**` of the trigger; wrap any
-        # subsequent `**...**` pairs as inline bold by joining with `**`.
-        rule = "**".join(parts[2:]).strip()
+        if len(parts) >= 3 and not parts[0].strip():
+            trigger = parts[1].strip()
+            # Re-join everything after the closing `**` of the trigger; wrap any
+            # subsequent `**...**` pairs as inline bold by joining with `**`.
+            rule = "**".join(parts[2:]).strip()
+        else:
+            trigger = ""
+            rule = after_header.strip()
         yield {
             "slug": h.group("slug"),
             "scope": h.group("scope"),
@@ -294,18 +299,19 @@ def cmd_audit(args) -> int:
     for m in misrouted:
         print(f"  [{m['scope']}] {m['slug']}: in {m['current_target']!r}, "
               f"belongs in {m['suggested_target']!r}")
+        trigger_arg = "--trigger ... " if m["trigger"] else ""
         print(f"      → assistant-curator.py write --target {m['suggested_target']} "
-              f"--scope {m['scope']} --slug {m['slug']} --trigger ... --rule ...")
+              f"--scope {m['scope']} --slug {m['slug']} {trigger_arg}--rule ...")
         print(f"      → assistant-curator.py rm {m['slug']} --target {m['current_target']}")
     return 0
 
 
 def cmd_write(args) -> int:
     tgt = TARGETS[args.target]
-    trigger = args.trigger.strip()
+    trigger = (args.trigger or "").strip()
     rule = args.rule.strip()
-    if not trigger or not rule:
-        print("ERROR: --trigger and --rule are required and non-empty.", file=sys.stderr)
+    if not rule:
+        print("ERROR: --rule is required and non-empty.", file=sys.stderr)
         return 2
     default_scope = tgt["default_scope"]
     scope = args.scope or default_scope
@@ -316,7 +322,8 @@ def cmd_write(args) -> int:
             file=sys.stderr,
         )
         return 2
-    slug = args.slug or slugify(f"{scope}-{trigger}" if scope != default_scope else trigger)
+    named_by = trigger or rule
+    slug = args.slug or slugify(f"{scope}-{named_by}" if scope != default_scope else named_by)
     added = getattr(args, "added", None) or today()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", added):
         print(f"ERROR: --added must be YYYY-MM-DD, got {added!r}", file=sys.stderr)
@@ -332,15 +339,17 @@ def cmd_write(args) -> int:
             print(f"ERROR: lesson slug {slug!r} already exists.", file=sys.stderr)
             return 2
 
+    heading = f"**{trigger}**\n\n" if trigger else ""
     block = (
         f"<!-- lesson: {slug}, scope: {scope}, added: {added} -->\n"
-        f"**{trigger}**\n\n"
-        f"{rule}\n\n"
+        f"{heading}{rule}\n\n"
     )
     bounds = find_section_bounds(text)
     assert bounds is not None
     insert_at = bounds[1]
-    new_text = text[:insert_at] + block + text[insert_at:]
+    before = text[:insert_at]
+    gap = "" if before.endswith("\n\n") else ("\n" if before.endswith("\n") else "\n\n")
+    new_text = before + gap + block + text[insert_at:]
     write_store(tgt["path"], new_text)
     print(f"wrote lesson: {slug} → {tgt['path']}")
     # Sync to the cross-machine memory repo. Only CLAUDE.md lessons are mirrored
@@ -443,7 +452,8 @@ def cmd_list(args) -> int:
         print(f"[{name}] {TARGETS[name]['path']}")
         for L in lessons:
             print(f"  [{L['scope']:14}] {L['slug']:50} {L['added']}")
-            print(f"           {L['trigger'][:90]}")
+            first_line = (L["trigger"] or L["rule"]).split("\n", 1)[0]
+            print(f"           {first_line[:90]}")
         total += len(lessons)
     if total == 0:
         print("(no lessons)")
@@ -490,7 +500,9 @@ def main() -> int:
         "'archffp' (architect-ffp), 'assistant-repo' (this repo)")
 
     p_write = sub.add_parser("write", help="add a new lesson")
-    p_write.add_argument("--trigger", required=True)
+    p_write.add_argument("--trigger", default=None,
+                         help="optional bolded line above the rule; omit it when "
+                              "the rule says when it applies")
     p_write.add_argument("--rule", required=True)
     p_write.add_argument("--target", default=DEFAULT_TARGET, choices=sorted(TARGETS),
                          help=target_help)

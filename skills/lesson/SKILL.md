@@ -35,37 +35,33 @@ A lesson is a markdown block under `## Lessons` in the target store:
 
 ```markdown
 <!-- lesson: <slug>, scope: <scope>, added: <YYYY-MM-DD> -->
-**<one-line trigger sentence>**
-
-<rule body, one paragraph, specific and actionable>
+<rule, one paragraph: when it applies, then what to do>
 ```
 
-There is **no "why" field**. A rule is a rule — the body should be self-contained.
+There is **no "why" field** and **no heading**. A rule is a rule — it should be self-contained.
 
-- **Trigger** — one sentence describing the *condition* the rule applies to. Not the rule itself, the *situation*. Good: `Spawning a workspace via the spawn-claude-workspace skill`. Bad: `When the user said "use sonnet" once on May 22`.
-- **Rule** — one paragraph max. Specific. Actionable. Good: `Pass MODEL=sonnet for routine work, MODEL=opus for decision-making.` Bad: `Be careful about model selection.`
+- **Rule** — one paragraph max. Open with the *condition* it applies to, then say what to do. Specific. Actionable. Good: `When you spawn a workspace, pass MODEL=sonnet for routine work and MODEL=opus for decision-making.` Bad: `Be careful about model selection.` Bad: `When the user said "use sonnet" once on May 22, ...`.
+- **No trigger line.** Don't put a line above the rule that names the condition again. Older blocks open with a bolded trigger line; the curator reads both forms, and `--trigger` still writes that line.
 
 ## How to invoke
 
 ```bash
 # Every-session rule → CLAUDE.md (default target)
 ~/.claude/bin/assistant-curator.py write \
-  --trigger "<situation this rule fires in>" \
-  --rule    "<what to do or not do — be specific and actionable>" \
-  --scope   "global|classification|dashboard|ffp|scout|memory|security"
+  --rule  "<when it applies, then what to do or not do — be specific and actionable>" \
+  --scope "global|classification|dashboard|ffp|scout|memory|security"
 
 # Assistant orchestration rule → Observer prompt
 ~/.claude/bin/assistant-curator.py write --target assistant \
-  --trigger "<workspace situation the Observer judges>" \
-  --rule    "<what verdict to emit / not emit>" \
-  --scope   "verdict|merge|cleanup|stranded|general"
+  --rule  "<the workspace situation the Observer judges, then what verdict to emit / not emit>" \
+  --scope "verdict|merge|cleanup|stranded|general"
 ```
 
-The curator picks a slug from the trigger, prepends the scope if non-default, and appends the block under `## Lessons` in the chosen target. It refuses to overwrite an existing slug, and refuses a scope that isn't valid for the target.
+The curator picks a slug from the rule's first words, prepends the scope if non-default, and appends the block under `## Lessons` in the chosen target. It refuses to overwrite an existing slug, and refuses a scope that isn't valid for the target.
 
 ## Procedure
 
-1. **Identify the trigger and rule.** Re-read the user's last 1–2 messages. The user's words are usually the rule itself; your job is to extract the *condition* (trigger) and the *constraint* (rule) and phrase them in the third person so future sessions can apply them.
+1. **Identify the rule.** Re-read the user's last 1–2 messages. The user's words are usually the rule itself; your job is to extract the *condition* and the *constraint* and phrase them as one rule in the third person so future sessions can apply it.
 
 2. **Decide where the rule belongs.** Use the litmus test: would a random coding session in an unrelated repo need this rule?
    - **Yes → `--target claude`** (CLAUDE.md, every session).
@@ -94,7 +90,7 @@ The curator picks a slug from the trigger, prepends the scope if non-default, an
 
 4. **Run the curator.** Quote any user-provided text verbatim where possible. If the user said "always X", the rule should literally start with "Always X".
 
-5. **Confirm to the user.** Output the captured block (slug + trigger + rule + which target) so they can correct the wording before the conversation moves on.
+5. **Confirm to the user.** Output the captured block (slug + rule + which target) so they can correct the wording before the conversation moves on.
 
 6. **Resume the original task.** A `claude` lesson applies to every future session (and this one if you re-read CLAUDE.md); an `assistant` lesson takes effect on the Observer's next pulse.
 
@@ -123,8 +119,7 @@ User says: *"Jenkins does not run the full suite. This needs to be an enforced l
 ```bash
 ~/.claude/bin/assistant-curator.py write \
   --scope ffp \
-  --trigger "An in-flight FFP archffp pipeline is at G3 and someone is tempted to skip the local E2E suite because 'Jenkins will catch it'" \
-  --rule "Never tell a session to skip, abort, or bypass the local G3 E2E suite. Jenkins runs a SUBSET of the firefly-platform Squirrel E2E suite, not the full suite. Test-only PR / unit-writer-green / Jenkins-will-catch-it are not valid reasons. If the local suite is over-saturated, wait; never skip."
+  --rule "When an FFP archffp pipeline is at G3, never tell a session to skip, abort, or bypass the local G3 E2E suite. Jenkins runs a SUBSET of the firefly-platform Squirrel E2E suite, not the full suite. Test-only PR / unit-writer-green / Jenkins-will-catch-it are not valid reasons. If the local suite is over-saturated, wait; never skip."
 ```
 
 User says: *"Never send /cleanup to a session that's awaiting my review."* — this is the Observer's verdict policy, so it goes to the assistant store, not CLAUDE.md:
@@ -132,6 +127,5 @@ User says: *"Never send /cleanup to a session that's awaiting my review."* — t
 ```bash
 ~/.claude/bin/assistant-curator.py write --target assistant \
   --scope cleanup \
-  --trigger "A workspace is awaiting Mukul's review (needs_user emitted, or the agent's last turn asks him a question / requests review)" \
-  --rule "Never emit ready_for_cleanup for it. A session waiting on the operator must stay open until he acts; cleanup would discard work he hasn't seen. Prefer needs_user or active."
+  --rule "Never emit ready_for_cleanup for a workspace that is awaiting Mukul's review (needs_user emitted, or the agent's last turn asks him a question / requests review). A session waiting on the operator must stay open until he acts; cleanup would discard work he hasn't seen. Prefer needs_user or active."
 ```
