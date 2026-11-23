@@ -387,10 +387,13 @@ class FakeCmux:
 
     def __call__(self, argv, timeout=30):
         self.calls.append(argv[1])
+        if argv[1] == "list-windows":
+            return self.listing[0], ONE_WINDOW, self.listing[2]
         return self.tree if argv[1] == "tree" else self.listing
 
 
 PATHS = cl.Paths.from_env({"HOME": "/h", "COMMS_HOME": "/h"})
+ONE_WINDOW = '[{"id": "W1", "index": 0, "key": true}]'
 LISTING = (0, "  workspace:258  assistant-comms (warm) #ea290b [258]\n", "")
 REFUSED = (1, "", "Error: Failed to connect to socket (Connection refused, errno 61)")
 
@@ -480,6 +483,8 @@ def test_close_own_workspace_matches_whole_refs_only(monkeypatch):
     closed: list = []
 
     def fake_run(argv, timeout=30):
+        if argv[1] == "list-windows":
+            return 0, ONE_WINDOW, ""
         if argv[1] == "list-workspaces":
             return 0, "  workspace:258  assistant-comms (warm) #ea290b [258]\n  workspace:25  Build [25]\n", ""
         closed.append(argv[-1])
@@ -500,6 +505,8 @@ def _close_with(monkeypatch, close_results):
     results = iter(close_results)
 
     def fake_run(argv, timeout=30):
+        if argv[1] == "list-windows":
+            return 0, ONE_WINDOW, ""
         if argv[1] == "list-workspaces":
             return 0, "  workspace:1000010024  assistant-comms (warm) #ea290b [2]\n", ""
         calls.append(argv[1:])

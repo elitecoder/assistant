@@ -58,6 +58,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
+  workspaces. Its liveness check, close guard, and orphan scan listed
+  workspaces with a bare `cmux list-workspaces`, which shows only the focused
+  window. A live warm session in another window looked gone, so the daemon
+  spawned a second one and skipped closing the first. All three now list every
+  window (`list-windows`, then `list-workspaces --window` per window), and a
+  window that fails to list makes the check unknown rather than gone. The
+  close step now logs `already gone` for a session that really ended, instead
+  of calling it "not a warm workspace (ref reissued?)".
 - List pull requests from only the repositories you choose. Add `repos` to
   the `github` entry in `sources.json`, or run `bin/work-queue-setup.py link
   github --repo OWNER/NAME`, repeated for each repository. Without it, the

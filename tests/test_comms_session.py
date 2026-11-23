@@ -859,6 +859,16 @@ def test_instance_tag_and_title_differ_per_comms_home(tmp_path):
     assert cs.warm_workspace_title(paths_a) != cs.warm_workspace_title(paths_b)
 
 
+def _one_window(listing: str):
+    """A run_cmd stand-in for a cmux with one window that lists `listing`."""
+    def run(cmd, timeout=10):
+        if cmd[1:] == ["list-windows", "--json"]:
+            return 0, '[{"id": "W1", "index": 0, "key": true}]', ""
+        assert cmd[1:] == ["list-workspaces", "--window", "W1"], cmd
+        return 0, listing, ""
+    return run
+
+
 def test_list_warm_workspaces_filters_to_this_instance(tmp_path, monkeypatch):
     """The real (unmocked) scan must return only THIS instance's tagged warm
     workspaces from the machine-wide list-workspaces output — never a second
@@ -874,7 +884,7 @@ def test_list_warm_workspaces_filters_to_this_instance(tmp_path, monkeypatch):
         f"workspace:2  {title_b}\n"
         f"workspace:9  some user work\n"
     )
-    monkeypatch.setattr(cl, "run_cmd", lambda cmd, timeout=10: (0, listing, ""))
+    monkeypatch.setattr(cl, "run_cmd", _one_window(listing))
     assert cs.list_warm_workspaces(paths_a) == ["workspace:1"]
     assert cs.list_warm_workspaces(paths_b) == ["workspace:2"]
 
@@ -910,7 +920,7 @@ def test_reconcile_sweeps_own_orphan_but_never_another_instance(tmp_path, monkey
     closed: list[str] = []
     monkeypatch.setattr(cs, "close_own_workspace",
                         lambda paths, ws, log=lambda m: None: closed.append(ws))
-    monkeypatch.setattr(cl, "run_cmd", lambda cmd, timeout=10: (0, listing, ""))
+    monkeypatch.setattr(cl, "run_cmd", _one_window(listing))
 
     cs.reconcile_warm_workspaces(paths_a, keep="workspace:3")
 
