@@ -32,6 +32,13 @@ def read_store() -> dict:
         return {"items": []}
 
 
+def result_of(item: dict) -> str:
+    """The result an agent recorded with this script; "" when there's none."""
+    detail = item.get("detail") if isinstance(item.get("detail"), str) else ""
+    at = detail.rfind(f"\n\n{RESULT_TAG} ")
+    return detail[at + len(RESULT_TAG) + 3:].strip() if at >= 0 else ""
+
+
 def write_store(doc: dict) -> None:
     """Replace the TODO store atomically. Call it inside todostore.todo_lock(), which creates its folder."""
     path = todo_path()

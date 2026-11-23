@@ -1172,6 +1172,93 @@ def test_ready_for_you_sits_on_the_open_list_when_there_is_no_start_here(site, w
         browser.close()
 
 
+def cleared_seed(wq, ready_marks: dict) -> None:
+    """Ready for you on the Open list: a done item still waiting, a blocked one with a note, and marked ones."""
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 7)], "status": []})
+    items = [{"id": "td-201", "title": "Open PR", "status": "done", "resultAt": "2026-11-20T12:00:00+00:00",
+              "detail": "x\n\nRESULT: Opened https://github.com/o/r/pull/3"},
+             {"id": "td-202", "title": "Locked repo", "status": "blocked", "statusReason": "Need access to o/x",
+              "statusUpdatedAt": "2026-11-20T11:00:00+00:00"},
+             {"id": "td-203", "title": "Merged PR", "status": "done", "resultAt": "2026-11-20T10:00:00+00:00",
+              "detail": "x\n\nRESULT: Merged https://github.com/o/r/pull/2"},
+             {"id": "td-204", "title": "Long ago", "status": "done", "resultAt": "2026-11-01T10:00:00+00:00"},
+             {"id": "td-205", "title": "You marked it", "status": "done", "resultAt": "2026-11-20T09:00:00+00:00"}]
+    wq.todo.write_text(json.dumps({"items": items}))
+    config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": f"td-20{n}", "at": "t"} for n in range(1, 6)})
+    config.write_json(wq.data / "ready-checks.json", {
+        "td-201": {"pending": "Waiting on o/r#3 to merge.", "at": "t"},
+        "td-202": {"note": "The blocker looks gone: GitHub can read o/x now, so you can resume td-202.", "at": "t"},
+        "td-203": {"cleared": "pr-merged", "why": "o/r#2 was merged.", "at": "t"}})
+    config.write_json(wq.data / "marks.json", ready_marks)
+
+
+def auto_mark(days_ago: float, why: str) -> dict:
+    at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days_ago * 86400))
+    return {"state": "done", "until": 0, "at": at, "auto": "pr-merged", "why": why}
+
+
+def test_ready_for_you_hides_work_that_cleared_on_its_own_says_why_and_undoes_it(site, wq):
+    ready_key = "https://work-queue.local/ready/"
+    cleared_seed(wq, {ready_key + "td-203": auto_mark(1, "o/r#2 was merged."),
+                      ready_key + "td-204": auto_mark(8, "o/r#1 was merged."),
+                      ready_key + "td-205": {"state": "done", "until": 0, "at": "2026-11-20T09:00:00Z"}})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        errors = []
+        tab.on("pageerror", lambda exc: errors.append(str(exc)))
+        tab.goto(site)
+        tab.wait_for_selector("#open-list #ready", state="visible")
+        assert ready_ids(tab) == ["td-201", "td-202"], "cleared and marked items leave the list"
+        assert text(tab, '#ready li[data-id="td-201"] .ready-check') == "Waiting on o/r#3 to merge."
+        note = tab.locator('#ready li[data-id="td-202"] .ready-check')
+        assert note.text_content() == "The blocker looks gone: GitHub can read o/x now, so you can resume td-202."
+        assert "note" in note.get_attribute("class")
+        assert text(tab, '#ready li[data-id="td-202"] .ready-result') == "Blocked: Need access to o/x"
+        chip = tab.locator("#ready .ready-show")
+        assert chip.is_visible() and chip.text_content() == "Show cleared (1)", "only the last 7 days' cleared items"
+        assert tab.locator("#ready .ready-cleared").is_hidden()
+
+        chip.click()
+        tab.wait_for_selector('#ready .ready-cleared li[data-id="td-203"]')
+        assert chip.text_content() == "Hide cleared (1)"
+        assert text(tab, '.ready-cleared li[data-id="td-203"] .sf-title') == "Merged PR (td-203)"
+        assert text(tab, '.ready-cleared li[data-id="td-203"] .ready-check') == "Cleared on its own: o/r#2 was merged."
+        for width in (390, 1280):
+            tab.set_viewport_size({"width": width, "height": 900})
+            no_sideways_scroll(tab)
+            assert tab.evaluate("(b => b.scrollWidth <= b.clientWidth)(document.querySelector('#ready'))")
+
+        tab.route("**/api/mark", lambda route: route.fulfill(status=500, body="nope"))
+        tab.locator('.ready-cleared li[data-id="td-203"] .sf-mark').click()
+        tab.wait_for_function("[...document.querySelectorAll('.toast')].some(t => t.textContent === 'Not saved: 500')")
+        assert tab.locator('.ready-cleared li[data-id="td-203"] .sf-mark').is_enabled()
+        tab.unroute("**/api/mark")
+        tab.locator('.ready-cleared li[data-id="td-203"] .sf-mark').click()
+        wait_text(tab, ".toast:last-of-type", "It’s back on Ready for you, and it won’t clear on its own again.")
+        tab.wait_for_selector('#ready .ready-list li[data-id="td-203"]')
+        assert ready_ids(tab) == ["td-201", "td-202", "td-203"] and chip.is_hidden()
+        assert tab.locator("#ready .ready-cleared li").count() == 0
+        assert ready_key + "td-203" not in json.loads((wq.data / "marks.json").read_text())
+        assert errors == []
+        cov.snap()
+
+        # With nothing left but a cleared item, the box stays so you can still find and undo it.
+        done_mark = {"state": "done", "until": 0}
+        cleared_seed(wq, {ready_key + "td-201": done_mark, ready_key + "td-202": done_mark,
+                          ready_key + "td-203": auto_mark(0, "o/r#2 was merged."), ready_key + "td-204": done_mark,
+                          ready_key + "td-205": done_mark})
+        small = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(small)
+        small.goto(site)
+        small.wait_for_selector("#ready .ready-show", state="visible")
+        assert ready_ids(small) == [] and text(small, "#ready .ready-show") == "Show cleared (1)"
+        no_sideways_scroll(small)
+        cov.snap()
+        browser.close()
+
+
 # ─── the Email tab ───────────────────────────────────────────────────────────
 
 def email(key: str, group: str, account: str = "", **extra) -> dict:

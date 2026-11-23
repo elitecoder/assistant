@@ -10,6 +10,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Clear finished work from the Work queue's **Ready for you** box on each
+  refresh. A done item clears when every pull request its result names is
+  merged or closed, or when you commented on or reviewed one of them, or
+  posted in its Slack thread, after it finished. Clearing writes the **Done**
+  mark with the reason, **Show cleared** lists the last 7 days' cleared items
+  with **Undo**, and an item you bring back never clears again. An item that
+  waits on an open pull request says so. A blocked item never clears; when
+  its reason names a GitHub repository it couldn't reach and `gh` can read it
+  now, it says the blocker looks gone. A failed check leaves the item showing
+  and never stops the refresh. `/api/state` adds `checks`.
 - Give each Work queue row a short action title from the model, such as
   "Review Ana's pull request #42 on the parser", and use it as the headline
   on the Open list and Start here, with the row's own text under it. A row

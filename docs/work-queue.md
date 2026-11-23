@@ -203,6 +203,38 @@ title no longer starts with the TODO's id: cmux reuses workspace refs.
 A workspace you renamed so its title doesn't start with the id can't be opened
 from here.
 
+#### What clears on its own
+
+Each refresh checks every done item you haven't marked **Done**, and clears
+the ones whose follow-up already happened:
+
+- **The work landed.** The agent's result names one or more GitHub pull
+  requests, and every one of them is merged or closed. When the result names
+  none, the pull requests in the TODO's detail and link count instead, which
+  name the row it came from.
+- **You followed up.** After the TODO finished, you commented on or reviewed
+  one of those pull requests, or you posted in the Slack thread the row came
+  from. Your GitHub login comes from `gh api user`, and your Slack id from
+  your Slack token.
+
+Clearing writes the same mark **Done** writes, plus the reason. **Show
+cleared** lists the items that cleared on their own in the last 7 days, with
+why, and **Undo** brings one back. An item you bring back never clears on its
+own again. While an item waits on a pull request, it says so, for example
+**Waiting on o/r#7 to merge.**
+
+A blocked item never clears and never starts again on its own. When its
+reason says the agent couldn't reach a GitHub repository, and
+`gh api repos/OWNER/NAME` now works, the item says the blocker looks gone and
+that you can resume it.
+
+The checks use your own sign-in: the `gh` CLI, with `GH_HOST` set for pull
+requests on the GitHub host you linked, and `$SLACK_USER_TOKEN`. A pull
+request on any other host isn't checked. Each refresh reads each pull request
+once, and each `gh` call has 30 seconds. A check that fails, for example
+because the network is down, `gh` isn't signed in, or GitHub answers `403`,
+leaves the item showing and doesn't stop the refresh.
+
 A blocked Start here item, whose row was already sent, shows **Sent td-NNN**,
 turned off. While any TODO you sent is still open or still on **Ready for
 you**, the page reads its status again every 20 seconds, so a result shows up
@@ -557,7 +589,7 @@ hides. If applying stops on an error, the page says why instead of staying on
 |---|---|
 | `~/.assistant/work-queue/sources.json` | Your linked sources |
 | `~/.assistant/work-queue/browser-profile/` | The Slack browser session |
-| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, the built page in `site/`, the Gmail conversation behind each Gmail row in `emails.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
+| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, what the last refresh found about each Ready for you item in `ready-checks.json`, the built page in `site/`, the Gmail conversation behind each Gmail row in `emails.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
 | `~/.assistant/logs/work-queue.launchd.*` | The server's output |
 
 Tests point `HOME` and `WQ_DATA` at temporary folders, so they never touch
