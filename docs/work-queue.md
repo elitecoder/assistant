@@ -220,8 +220,9 @@ the ones whose follow-up already happened:
 Clearing writes the same mark **Done** writes, plus the reason. **Show
 cleared** lists the items that cleared on their own in the last 7 days, with
 why, and **Undo** brings one back. An item you bring back never clears on its
-own again. While an item waits on a pull request, it says so, for example
-**Waiting on o/r#7 to merge.**
+own again. While a pull request it names is still open, the item says what
+would clear it, for example **Clears when o/r#7 and #8 merge or close, or
+once you comment on or review them.**
 
 A blocked item never clears and never starts again on its own. When its
 reason says the agent couldn't reach a GitHub repository, and
@@ -233,7 +234,9 @@ requests on the GitHub host you linked, and `$SLACK_USER_TOKEN`. A pull
 request on any other host isn't checked. Each refresh reads each pull request
 once, and each `gh` call has 30 seconds. A check that fails, for example
 because the network is down, `gh` isn't signed in, or GitHub answers `403`,
-leaves the item showing and doesn't stop the refresh.
+leaves the item showing and doesn't stop the refresh. The refresh and the
+server change your marks under one lock, `marks.lock` in the data folder, so a
+**Done** you select during a refresh is never lost.
 
 A blocked Start here item, whose row was already sent, shows **Sent td-NNN**,
 turned off. While any TODO you sent is still open or still on **Ready for

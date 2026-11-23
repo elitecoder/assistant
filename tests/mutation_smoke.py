@@ -3491,6 +3491,55 @@ CHECKS = (
         'if(false){',
         'tests/test_work_queue_browser.py::test_ready_for_you_hides_work_that_cleared_on_its_own_says_why_and_undoes_it',
     ),
+    (
+        'the marks lock holds marks.json',
+        'work_queue/config.py',
+        '        fcntl.flock(f.fileno(), fcntl.LOCK_EX)\n        yield\n',
+        '        yield\n',
+        'tests/test_work_queue_ready.py::test_every_change_to_marks_waits_for_the_lock_and_keeps_the_other_processs_mark',
+    ),
+    (
+        'a Done, Snooze, or Drop mark waits for the marks lock',
+        'work_queue/server.py',
+        '    with lock, config.marks_lock():\n        marks = config.read_json(marks_file, {})',
+        '    with lock:\n        marks = config.read_json(marks_file, {})',
+        'tests/test_work_queue_ready.py::test_every_change_to_marks_waits_for_the_lock_and_keeps_the_other_processs_mark',
+    ),
+    (
+        "a sent row's mark waits for the marks lock",
+        'work_queue/server.py',
+        '    with config.marks_lock():\n        marks = config.read_json(path("marks.json"), {})',
+        '    if True:\n        marks = config.read_json(path("marks.json"), {})',
+        'tests/test_work_queue_ready.py::test_every_change_to_marks_waits_for_the_lock_and_keeps_the_other_processs_mark',
+    ),
+    (
+        "an archived email's mark waits for the marks lock",
+        'work_queue/server.py',
+        '    with lock, config.marks_lock():\n        done, marks = read_map("mail-actions.json"), read_map("marks.json")',
+        '    with lock:\n        done, marks = read_map("mail-actions.json"), read_map("marks.json")',
+        'tests/test_work_queue_ready.py::test_every_change_to_marks_waits_for_the_lock_and_keeps_the_other_processs_mark',
+    ),
+    (
+        "Ready for you's auto-clear waits for the marks lock",
+        'work_queue/ready.py',
+        '        with config.marks_lock():\n            marks = config.read_json(marks_path(), {})',
+        '        if True:\n            marks = config.read_json(marks_path(), {})',
+        'tests/test_work_queue_ready.py::test_every_change_to_marks_waits_for_the_lock_and_keeps_the_other_processs_mark',
+    ),
+    (
+        'Ready for you names the next pull request in the same repo by its number',
+        'work_queue/ready.py',
+        'names.append(f"#{number}" if here == repo else name)',
+        'names.append(name)',
+        'tests/test_work_queue_ready.py::test_open_pull_requests_say_what_would_clear_the_item_without_naming_who_it_waits_on',
+    ),
+    (
+        'Ready for you says what would clear the item for several pull requests',
+        'work_queue/ready.py',
+        "{'merges or closes' if one else 'merge or close'}",
+        'merges or closes',
+        'tests/test_work_queue_ready.py::test_open_pull_requests_say_what_would_clear_the_item_without_naming_who_it_waits_on',
+    ),
 )
 
 

@@ -169,12 +169,28 @@ def you_replied(item: dict, slack, after: datetime) -> tuple[str, str] | None:
     return None
 
 
+def pr_list(urls: list[str]) -> str:
+    """Pull requests in plain words: "o/r#1", "o/r#1 and #2", or "o/r#1, #2, and x/y#3". A pull request in the same
+    repository as the one before it shows only its number."""
+    names, repo = [], None
+    for url in urls:
+        name = short_pr(url)
+        here, number = name.split("#")
+        names.append(f"#{number}" if here == repo else name)
+        repo = here
+    return names[0] if len(names) == 1 else (" and ".join(names) if len(names) == 2 else
+                                             f"{', '.join(names[:-1])}, and {names[-1]}")
+
+
 def pending(urls: list[str], gh: GitHub) -> str:
-    """What the item still waits on, in plain words, when the pull requests say so; "" otherwise."""
-    waiting = [short_pr(u) for u in urls if (gh.pr(u) or {}).get("state") == "OPEN"]
+    """What would clear the item, in plain words, when its pull requests are still open; "" otherwise. It names what
+    would happen, not who it waits on: the open pull request may be the agent's, or someone else's it reviewed."""
+    waiting = [u for u in urls if (gh.pr(u) or {}).get("state") == "OPEN"]
     if not waiting:
         return ""
-    return f"Waiting on {', '.join(waiting)} to merge."
+    one = len(waiting) == 1
+    return (f"Clears when {pr_list(waiting)} {'merges or closes' if one else 'merge or close'}, or once you comment on "
+            f"or review {'it' if one else 'them'}.")
 
 
 def blocked_repos(reason: str, hosts: set[str]) -> list[tuple[str, str]]:
@@ -239,11 +255,12 @@ def check(doc: dict, transport, token: str) -> dict:
         elif wait := guarded(pending, urls, gh):
             out[td] = {"pending": wait, "at": now_iso()}
     if cleared:
-        marks = config.read_json(marks_path(), {})
-        for td, c in cleared.items():
-            marks.setdefault(READY_MARK + td, {"state": "done", "until": 0, "at": c["at"], "auto": c["cleared"],
-                                               "why": c["why"]})
-        config.write_json(marks_path(), marks)
+        with config.marks_lock():
+            marks = config.read_json(marks_path(), {})
+            for td, c in cleared.items():
+                marks.setdefault(READY_MARK + td, {"state": "done", "until": 0, "at": c["at"], "auto": c["cleared"],
+                                                   "why": c["why"]})
+            config.write_json(marks_path(), marks)
     config.write_json(checks_path(), out)
     return out
 

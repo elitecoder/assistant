@@ -1186,7 +1186,7 @@ def cleared_seed(wq, ready_marks: dict) -> None:
     wq.todo.write_text(json.dumps({"items": items}))
     config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": f"td-20{n}", "at": "t"} for n in range(1, 6)})
     config.write_json(wq.data / "ready-checks.json", {
-        "td-201": {"pending": "Waiting on o/r#3 to merge.", "at": "t"},
+        "td-201": {"pending": "Clears when o/r#3 merges or closes, or once you comment on or review it.", "at": "t"},
         "td-202": {"note": "The blocker looks gone: GitHub can read o/x now, so you can resume td-202.", "at": "t"},
         "td-203": {"cleared": "pr-merged", "why": "o/r#2 was merged.", "at": "t"}})
     config.write_json(wq.data / "marks.json", ready_marks)
@@ -1211,7 +1211,7 @@ def test_ready_for_you_hides_work_that_cleared_on_its_own_says_why_and_undoes_it
         tab.goto(site)
         tab.wait_for_selector("#open-list #ready", state="visible")
         assert ready_ids(tab) == ["td-201", "td-202"], "cleared and marked items leave the list"
-        assert text(tab, '#ready li[data-id="td-201"] .ready-check') == "Waiting on o/r#3 to merge."
+        assert text(tab, '#ready li[data-id="td-201"] .ready-check') == "Clears when o/r#3 merges or closes, or once you comment on or review it."
         note = tab.locator('#ready li[data-id="td-202"] .ready-check')
         assert note.text_content() == "The blocker looks gone: GitHub can read o/x now, so you can resume td-202."
         assert "note" in note.get_attribute("class")

@@ -5,9 +5,11 @@ gh and Slack are fakes here: gh is a fake CLI in the temporary PATH, and Slack i
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
+from test_work_queue_actions import KEY, MARK, gmail, thread
 from test_work_queue_inputs import FakeSlack, msg
 from work_queue import config, ready, refresh, server, tools
 from work_queue_fakes import calls, fake_tool, wq  # noqa: F401
@@ -83,7 +85,7 @@ def test_every_named_pull_request_must_be_merged_or_closed_and_each_is_read_once
     assert (found[ready_mark("td-303")]["auto"], found[ready_mark("td-303")]["why"]) == (
         "pr-closed", "o/r#5, o/r#6 were merged or closed.")
     checks = server.state()["checks"]
-    assert checks["td-301"]["pending"] == "Waiting on o/r#3 to merge."
+    assert checks["td-301"]["pending"] == "Clears when o/r#3 merges or closes, or once you comment on or review it."
     views = [c for c in calls(wq.bin, "gh") if c.startswith("pr view")]
     assert sorted(views) == sorted(set(views)) and len(views) == 4, "one gh call per pull request per refresh"
 
@@ -95,7 +97,8 @@ def test_the_results_pull_requests_count_before_the_rows_own_link(wq):
     refresh.run(now=0)
     assert marks(wq)[ready_mark("td-310")]["why"] == "o/r#7 was merged.", "the row's own open pull request doesn't count"
     assert ready_mark("td-311") not in marks(wq)
-    assert server.state()["checks"]["td-311"]["pending"] == "Waiting on o/r#8 to merge."
+    assert server.state()["checks"]["td-311"]["pending"] == \
+        "Clears when o/r#8 merges or closes, or once you comment on or review it."
     assert not any("pull/99" in c for c in calls(wq.bin, "gh"))
 
 
@@ -279,3 +282,63 @@ def test_unreadable_saved_files_check_nothing_and_break_nothing(wq):
     (wq.data / "ready-checks.json").write_text("[1]")
     refresh.run(now=0)
     assert calls(wq.bin, "gh") == [] and server.state()["checks"] == {}
+
+
+def test_open_pull_requests_say_what_would_clear_the_item_without_naming_who_it_waits_on(wq):
+    seed(wq, [done("td-257", "Drafted review comments on https://github.com/OneAdobe/architect-ffp/pull/420 and "
+                             "https://github.com/OneAdobe/architect-ffp/pull/556 for you to post."),
+              done("td-258", f"Opened {pr_url(61)}, {pr_url(62)}, and https://github.com/x/y/pull/63.")])
+    gh(wq, ("pr view https://github.com/OneAdobe/architect-ffp/pull/420", pr("OPEN")),
+       ("pr view https://github.com/OneAdobe/architect-ffp/pull/556", pr("OPEN")),
+       (f"pr view {pr_url(61)}", pr("OPEN")), (f"pr view {pr_url(62)}", pr("OPEN")),
+       ("pr view https://github.com/x/y/pull/63", pr("OPEN")))
+    refresh.run(now=0)
+    checks = server.state()["checks"]
+    assert checks["td-257"]["pending"] == ("Clears when OneAdobe/architect-ffp#420 and #556 merge or close, or once you "
+                                           "comment on or review them.")
+    assert checks["td-258"]["pending"] == ("Clears when o/r#61, #62, and x/y#63 merge or close, or once you comment on "
+                                           "or review them.")
+
+
+# ─── the server and the refresh never lose each other's marks ───────────────
+
+def held_marks_survive(wq, write, key: str) -> None:
+    """Hold the marks lock the way the other process does: read marks.json, give `write` time to run in another
+    thread, then write back what was read plus a mark of its own. Both marks must survive, so `write` must wait for
+    the lock and read the file again inside it."""
+    writer = threading.Thread(target=write)
+    with config.marks_lock():
+        before = config.read_json(wq.data / "marks.json", {})
+        writer.start()
+        writer.join(2)
+        config.write_json(wq.data / "marks.json", {**before, "https://held/mark": {"state": "done", "until": 0}})
+    writer.join(30)
+    assert not writer.is_alive()
+    found = marks(wq)
+    assert "https://held/mark" in found and key in found, sorted(found)
+
+
+def set_mark(wq):
+    return lambda: server.set_marks({"key": "https://row/a", "state": "done"}), "https://row/a"
+
+
+def send_row(wq):
+    return lambda: server.queue_todo({"key": "https://row/b", "title": "B"}), "https://row/b"
+
+
+def archive_email(wq):
+    gmail(wq, thread([], []))
+    return lambda: server.gmail_action({"key": KEY, "action": "archive"}), MARK
+
+
+def auto_clear(wq):
+    seed(wq, [done("td-990", f"Merged {pr_url(70)}")])
+    gh(wq, (f"pr view {pr_url(70)}", pr("MERGED")))
+    return lambda: ready.check({}, None, ""), ready_mark("td-990")
+
+
+@pytest.mark.parametrize("writer", [set_mark, send_row, archive_email, auto_clear])
+def test_every_change_to_marks_waits_for_the_lock_and_keeps_the_other_processs_mark(wq, writer):
+    config.write_json(wq.data / "marks.json", {})
+    write, key = writer(wq)
+    held_marks_survive(wq, write, key)
