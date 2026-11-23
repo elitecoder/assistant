@@ -34,7 +34,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   changed.
 - Turn the Observer off with `{"observer": {"enabled": false}}` in
   `~/.assistant/config.json`. The pulse then sends no workspace to it and
-  each workspace keeps its last verdict. Without the setting, it stays on.
+  each workspace keeps its last verdict.
 - Show finished agent work in a **Ready for you** box at the top of the Work
   queue's Start here tab, or of the Open list when there's no Start here. Each
   TODO you sent from the page that's done or blocked shows its title, id, and
@@ -112,6 +112,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- The Observer is now off by default. It runs only when
+  `~/.assistant/config.json` has `{"observer": {"enabled": true}}`, with the
+  JSON value `true`, and the pulse has `ASSISTANT_WATCHER=1`. A missing file,
+  unreadable JSON, a missing key, or any other value leaves it off. Existing
+  installs lose the Observer and its audit after this update unless you add
+  the setting. With it off, the pulse still dispatches autoDispatch TODOs,
+  clears stale cards, and updates itself, and each workspace keeps its last
+  verdict. `assistant-doctor.py`, the dashboard's **Settings and background
+  services**, and the installer's summary say whether it's on and how to turn
+  it on. See [Configuration](docs/configuration.md#observer).
 - A lesson no longer needs a bolded trigger line above its rule.
   `assistant-curator.py write --rule R` stores the marker and the rule
   alone, and `list`, `rm`, `audit`, and the duplicate-slug check now see a

@@ -295,6 +295,8 @@ class WorkspacesTabBackoffBannerTests(unittest.TestCase):
         self.assertNotIn("backoff-section", html)
 
     def test_no_observer_summaries_renders_placeholder(self):
+        (self._tmp / ".assistant/config.json").write_text(
+            json.dumps({"observer": {"enabled": True}}))
         # empty summaries dir
         for child in (self._tmp / ".assistant/observer-summaries").glob("*.json"):
             child.unlink()
@@ -303,6 +305,40 @@ class WorkspacesTabBackoffBannerTests(unittest.TestCase):
         shutil.rmtree(self._tmp / ".assistant/observer-summaries")
         html, n = self.mod.render_workspaces_tab()
         self.assertIn("No observer summaries", html)
+
+    def test_no_summaries_with_the_observer_off_says_it_is_off(self):
+        import shutil
+        shutil.rmtree(self._tmp / ".assistant/observer-summaries")
+        html, n = self.mod.render_workspaces_tab()
+        self.assertEqual(n, 0)
+        self.assertIn("The Observer is off, so none are written.", html)
+        self.assertNotIn("waiting for first pulse", html)
+
+
+class ObserverSettingTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_module(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_settings_say_the_observer_is_off_by_default_and_how_to_turn_it_on(self):
+        html = self.mod.render_observer_setting()
+        self.assertIn('data-observer="off"', html)
+        self.assertIn("The Observer is off.", html)
+        self.assertIn("off by default", html)
+        self.assertIn('{"observer": {"enabled": true}}', html)
+        self.assertIn("ASSISTANT_WATCHER=1", html)
+
+    def test_settings_say_the_observer_is_on_when_config_turns_it_on(self):
+        (self._tmp / ".assistant/config.json").write_text(
+            json.dumps({"observer": {"enabled": True}}))
+        html = self.mod.render_observer_setting()
+        self.assertIn('data-observer="on"', html)
+        self.assertIn("The Observer is on.", html)
+        self.assertNotIn("off by default", html)
 
 
 class BriefStrategistContextRenderTests(unittest.TestCase):

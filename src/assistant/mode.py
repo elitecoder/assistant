@@ -114,6 +114,17 @@ def is_pro() -> bool:
     return current() == "pro"
 
 
+def observer_enabled() -> bool:
+    """True only when config.json has {"observer": {"enabled": true}}. A
+    missing or unreadable file, a missing key, or any other value leaves the
+    Observer off."""
+    try:
+        observer = _read_config().get("observer")
+    except (OSError, ValueError):
+        return False
+    return isinstance(observer, dict) and observer.get("enabled") is True
+
+
 def save(value: str) -> None:
     """Write the mode into config.json, keeping every other key.
 

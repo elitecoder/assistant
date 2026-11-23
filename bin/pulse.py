@@ -1174,14 +1174,9 @@ def purge_stale_awaiting() -> None:
 
 
 def observer_enabled() -> bool:
-    """False when ~/.assistant/config.json says {"observer": {"enabled": false}}. Then no workspace is sent to the
-    Observer and each keeps its last verdict. Anything else, including a missing or unreadable file, leaves it on."""
-    try:
-        cfg = json.loads((ASSISTANT_DIR / "config.json").read_text())
-    except (OSError, ValueError):
-        return True
-    obs = cfg.get("observer") if isinstance(cfg, dict) else None
-    return not (isinstance(obs, dict) and obs.get("enabled") is False)
+    """The Observer is off unless ~/.assistant/config.json says {"observer": {"enabled": true}}. While it's off, no
+    workspace is sent to it, the frontier audit has nothing to check, and each workspace keeps its last verdict."""
+    return mode.observer_enabled()
 
 
 def pick_ws_batch() -> dict:

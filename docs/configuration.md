@@ -21,9 +21,22 @@ work. Every setting below is a deliberate edit you make yourself.
 
 The Observer is the model that checks each changed workspace on a pulse and
 sorts it: needs you, still working, ready to merge, ready to clean up, or
-stuck. To turn it off, set `{"observer": {"enabled": false}}` in
-`~/.assistant/config.json`. Then the pulse sends no workspace to it, and each
-workspace keeps its last verdict. Any other value, or no value, leaves it on.
+stuck. It's off by default. While it's off, the pulse sends no workspace to
+it, makes no Observer or Observer audit model calls, and each workspace keeps
+its last verdict. Everything else the pulse does keeps running: it still
+dispatches autoDispatch TODOs, clears stale cards, and updates itself.
+
+To turn the Observer on, do both of these:
+
+1. Set `{"observer": {"enabled": true}}` in `~/.assistant/config.json`. Only
+   the JSON value `true` turns it on. A missing file, unreadable JSON, a
+   missing key, or any other value, such as `"true"`, `"on"`, or `1`, leaves it
+   off.
+2. Run the pulse with `ASSISTANT_WATCHER=1` in its environment.
+
+To turn it off again, set `"enabled"` to `false` or remove the `"observer"`
+key. `./bin/assistant-doctor.py` and the dashboard's **Settings and background
+services** show whether it's on.
 
 ## Strategist
 

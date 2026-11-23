@@ -377,6 +377,27 @@ def render_mode_switch(pro: bool, error: str | None = None) -> str:
             '<span class="meta" id="mode-status" role="status"></span></div>')
 
 
+def render_observer_setting() -> str:
+    """Settings line that says whether the Observer is on and how to change it."""
+    if mode.observer_enabled():
+        return ('<p class="observer-setting" data-observer="on"><strong>The Observer is on.</strong> '
+                'It checks each changed workspace when the pulse runs with '
+                '<code>ASSISTANT_WATCHER=1</code>. To turn it off, set <code>"enabled"</code> to '
+                '<code>false</code> in <code>~/.assistant/config.json</code>.</p>')
+    return ('<p class="observer-setting" data-observer="off"><strong>The Observer is off.</strong> '
+            "It's off by default, so no model checks your workspaces and each keeps its last "
+            'verdict. To turn it on, set <code>{"observer": {"enabled": true}}</code> in '
+            '<code>~/.assistant/config.json</code> and run the pulse with '
+            '<code>ASSISTANT_WATCHER=1</code>.</p>')
+
+
+def no_workspace_summaries() -> str:
+    if mode.observer_enabled():
+        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>'
+    return ('<div class="muted">No workspace summaries. The Observer is off, so none are written. '
+            'Settings and background services says how to turn it on.</div>')
+
+
 def render_restart_alert() -> str:
     """A top-of-page alert while an update couldn't restart a service."""
     try:
@@ -1114,7 +1135,7 @@ def render_workspaces_tab():
     happen here."""
     summaries_dir = HOME / ".assistant/observer-summaries"
     if not summaries_dir.exists():
-        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
+        return no_workspace_summaries(), 0
 
     # Read the back-off list — those workspaces should NOT appear as rows
     # in the Workspaces tab (the Assistant ignores them, so the dashboard
@@ -1227,7 +1248,7 @@ def render_workspaces_tab():
     rows.sort(key=lambda r: -(r.get("ts") or 0))
 
     if not rows:
-        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
+        return no_workspace_summaries(), 0
 
     def fmt_age(s):
         if s is None:
@@ -2694,7 +2715,7 @@ def render():
     tab_panels = "\n\n".join(
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
-    mode_html = render_mode_switch(pro, mode.config_error())
+    mode_html = render_mode_switch(pro, mode.config_error()) + render_observer_setting()
     pulse_alert_html = render_pulse_alert() + render_restart_alert()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))

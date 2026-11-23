@@ -36,8 +36,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
+from assistant import mode  # noqa: E402
 
 DROID = agent_session.DROID
 COPILOT = agent_session.COPILOT
@@ -391,8 +393,17 @@ def check_claude_alias() -> Check:
     )
 
 
+def check_observer() -> Check:
+    if mode.observer_enabled():
+        return Check("observer", PASS, core=False,
+                     detail="on in ~/.assistant/config.json; it runs when the pulse has ASSISTANT_WATCHER=1")
+    return Check("observer", SKIP, core=False,
+                 detail='off (the default). To turn it on, set {"observer": {"enabled": true}} in '
+                        "~/.assistant/config.json and run the pulse with ASSISTANT_WATCHER=1")
+
+
 AGENT_CHECKS = [check_droid_binary, check_droid_settings, check_copilot_binary,
-                check_copilot_hooks, check_claude_alias]
+                check_copilot_hooks, check_claude_alias, check_observer]
 
 
 # --------------------------------------------------------------------------- runner
