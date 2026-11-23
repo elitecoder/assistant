@@ -49,6 +49,20 @@ def ready_mark(td: str) -> str:
     return ready.READY_MARK + td
 
 
+def mark_of(wq, td: str) -> dict:
+    """The mark Ready for you's check wrote for td; the test fails when there's none."""
+    found = marks(wq)
+    assert ready_mark(td) in found, f"{td} didn't clear: {sorted(found)}"
+    return found[ready_mark(td)]
+
+
+def checks() -> dict:
+    """What /api/state says the last refresh found about each item; the test fails when it says nothing."""
+    state = server.state()
+    assert "checks" in state, sorted(state)
+    return state["checks"]
+
+
 def gh(wq, *answers) -> None:
     fake_tool(wq.bin, "gh", [*answers, ("api user", {"login": "me"})])
 
@@ -60,9 +74,9 @@ def test_a_done_item_whose_pull_request_merged_clears_with_its_reason_and_never_
     gh(wq, (f"pr view {pr_url(2)}", pr("MERGED")))
     status = refresh.run(now=0)
     assert all(s["state"] == "off" for s in status)
-    mark = marks(wq)[ready_mark("td-258")]
-    assert (mark["state"], mark["until"], mark["auto"], mark["why"]) == ("done", 0, "pr-merged", "o/r#2 was merged.")
-    assert server.state()["checks"]["td-258"]["cleared"] == "pr-merged"
+    mark = mark_of(wq, "td-258")
+    assert (mark.get("state"), mark.get("until"), mark.get("auto"), mark.get("why")) == ("done", 0, "pr-merged", "o/r#2 was merged.")
+    assert checks().get("td-258", {}).get("cleared") == "pr-merged"
     assert calls(wq.bin, "gh") == [f"pr view {pr_url(2)} --json state,comments,reviews"]
 
     refresh.run(now=0)
@@ -81,11 +95,12 @@ def test_every_named_pull_request_must_be_merged_or_closed_and_each_is_read_once
     refresh.run(now=0)
     found = marks(wq)
     assert ready_mark("td-301") not in found, "one open pull request keeps the item"
-    assert found[ready_mark("td-302")]["auto"] == "pr-merged"
-    assert (found[ready_mark("td-303")]["auto"], found[ready_mark("td-303")]["why"]) == (
+    assert mark_of(wq, "td-302").get("auto") == "pr-merged"
+    assert (mark_of(wq, "td-303").get("auto"), mark_of(wq, "td-303").get("why")) == (
         "pr-closed", "o/r#5, o/r#6 were merged or closed.")
-    checks = server.state()["checks"]
-    assert checks["td-301"]["pending"] == "Clears when o/r#3 merges or closes, or once you comment on or review it."
+    seen = checks()
+    assert seen.get("td-301", {}).get("pending") == \
+        "Clears when o/r#3 merges or closes, or once you comment on or review it."
     views = [c for c in calls(wq.bin, "gh") if c.startswith("pr view")]
     assert sorted(views) == sorted(set(views)) and len(views) == 4, "one gh call per pull request per refresh"
 
@@ -95,9 +110,9 @@ def test_the_results_pull_requests_count_before_the_rows_own_link(wq):
     gh(wq, (f"pr view {pr_url(7)}", pr("MERGED")), (f"pr view {pr_url(8)}", pr("OPEN")),
        (f"pr view {pr_url(99)}", pr("OPEN")))
     refresh.run(now=0)
-    assert marks(wq)[ready_mark("td-310")]["why"] == "o/r#7 was merged.", "the row's own open pull request doesn't count"
+    assert mark_of(wq, "td-310").get("why") == "o/r#7 was merged.", "the row's own open pull request doesn't count"
     assert ready_mark("td-311") not in marks(wq)
-    assert server.state()["checks"]["td-311"]["pending"] == \
+    assert checks().get("td-311", {}).get("pending") == \
         "Clears when o/r#8 merges or closes, or once you comment on or review it."
     assert not any("pull/99" in c for c in calls(wq.bin, "gh"))
 
@@ -107,7 +122,7 @@ def test_a_result_without_a_pull_request_falls_back_to_the_rows_link(wq):
     seed(wq, [item])
     gh(wq, (f"pr view {pr_url(9)}", pr("MERGED")))
     refresh.run(now=0)
-    assert marks(wq)[ready_mark("td-320")]["why"] == "o/r#9 was merged."
+    assert mark_of(wq, "td-320").get("why") == "o/r#9 was merged."
 
 
 # ─── you followed up ─────────────────────────────────────────────────────────
@@ -123,7 +138,7 @@ def test_your_comment_or_review_after_it_finished_clears_it_and_earlier_or_other
     refresh.run(now=0)
     found = marks(wq)
     assert ready_mark("td-401") not in found and ready_mark("td-403") not in found
-    assert (found[ready_mark("td-402")]["auto"], found[ready_mark("td-402")]["why"]) == (
+    assert (mark_of(wq, "td-402").get("auto"), mark_of(wq, "td-402").get("why")) == (
         "you-commented", "You commented on or reviewed o/r#12 after it finished.")
     assert calls(wq.bin, "gh").count("api user") == 1, "your login is read once per host"
 
@@ -148,12 +163,12 @@ def test_your_reply_in_the_slack_thread_after_it_finished_clears_it(wq, monkeypa
     fs = slack_with([msg("1795172400.000000", "U1", "Sent it", thread_ts=THREAD)])
     asked = []
     refresh.run(transport=lambda m, p, t: asked.append((m, p)) or fs(m, p, t), now=0)
-    assert marks(wq)[ready_mark("td-501")] | {"at": ""} == {
+    assert mark_of(wq, "td-501") | {"at": ""} == {
         "state": "done", "until": 0, "at": "", "auto": "you-replied",
         "why": "You replied in its Slack thread after it finished."}
     assert ("conversations.replies", {"channel": "C12345678", "ts": THREAD, "oldest": "1795168800.000000",
                                       "limit": 200}) in asked
-    assert marks(wq)[ready_mark("td-503")]["auto"] == "you-replied"
+    assert mark_of(wq, "td-503").get("auto") == "you-replied"
     assert [m for m, _ in asked].count("auth.test") == 1, "one Slack sign-in check per refresh"
 
 
@@ -225,7 +240,7 @@ def test_gh_calls_have_a_time_limit_and_use_the_linked_host(wq, monkeypatch):
     run_json = tools.run_json
     monkeypatch.setattr(tools, "run_json", lambda cmd, **kw: limits.append(kw.get("timeout")) or run_json(cmd, **kw))
     refresh.run(now=0)
-    assert marks(wq)[ready_mark("td-701")]["why"] == "o/r#31 was merged.", "a host gh doesn't know is left out"
+    assert mark_of(wq, "td-701").get("why") == "o/r#31 was merged.", "a host gh doesn't know is left out"
     views = [n for n, c in enumerate(calls(wq.bin, "gh")) if c.startswith("pr view")]
     assert len(views) == 1 and (wq.bin / "gh.env").read_text().splitlines()[views[0]] == host
     assert ready.GH_TIMEOUT in limits and ready.GH_TIMEOUT <= 60
@@ -251,13 +266,14 @@ def test_a_blocked_item_never_clears_and_says_when_its_repo_access_works_now(wq)
                              ("api repos/o/still-locked", {"exit": 1, "stderr": "HTTP 404: Not Found"}),
                              ("api repos/o/r", {"full_name": "z"})])
     refresh.run(now=0)
-    checks = server.state()["checks"]
-    assert checks["td-801"]["note"] == ("The blocker looks gone: GitHub can read OneAdobe/architect-ffp-telemetry now, "
-                                        "so you can resume td-801.")
-    assert checks["td-802"]["note"] == "The blocker looks gone: GitHub can read o/private now, so you can resume td-802."
-    assert "td-803" not in checks, "a repo gh still can't read leaves the item as it is"
-    assert "td-804" not in checks, "a reason that isn't about access isn't checked"
-    assert checks["td-805"]["note"].startswith("The blocker looks gone: GitHub can read o/r now")
+    seen = checks()
+    assert seen.get("td-801", {}).get("note") == (
+        "The blocker looks gone: GitHub can read OneAdobe/architect-ffp-telemetry now, so you can resume td-801.")
+    assert seen.get("td-802", {}).get("note") == \
+        "The blocker looks gone: GitHub can read o/private now, so you can resume td-802."
+    assert "td-803" not in seen, "a repo gh still can't read leaves the item as it is"
+    assert "td-804" not in seen, "a reason that isn't about access isn't checked"
+    assert (seen.get("td-805", {}).get("note") or "").startswith("The blocker looks gone: GitHub can read o/r now")
     assert wq.todo.read_text() == before, "a blocked TODO is never restarted"
     assert not any(k.startswith(ready.READY_MARK) for k in marks(wq))
     assert calls(wq.bin, "gh").count("api repos/o/r") == 1, "only the reason about access asks gh"
@@ -273,7 +289,7 @@ def test_only_unmarked_done_or_blocked_items_sent_from_the_page_are_checked(wq):
     gh(wq, (f"pr view {pr_url(52)}", pr("MERGED")))
     refresh.run(now=0)
     assert calls(wq.bin, "gh") == [f"pr view {pr_url(52)} --json state,comments,reviews"]
-    assert marks(wq)[ready_mark("td-901")] == {"state": "done", "until": 0}, "your own Done mark stays as you left it"
+    assert mark_of(wq, "td-901") == {"state": "done", "until": 0}, "your own Done mark stays as you left it"
 
 
 def test_unreadable_saved_files_check_nothing_and_break_nothing(wq):
@@ -281,7 +297,7 @@ def test_unreadable_saved_files_check_nothing_and_break_nothing(wq):
     (wq.data / "queued.json").write_text("[1]")
     (wq.data / "ready-checks.json").write_text("[1]")
     refresh.run(now=0)
-    assert calls(wq.bin, "gh") == [] and server.state()["checks"] == {}
+    assert calls(wq.bin, "gh") == [] and checks() == {}
 
 
 def test_open_pull_requests_say_what_would_clear_the_item_without_naming_who_it_waits_on(wq):
@@ -293,11 +309,11 @@ def test_open_pull_requests_say_what_would_clear_the_item_without_naming_who_it_
        (f"pr view {pr_url(61)}", pr("OPEN")), (f"pr view {pr_url(62)}", pr("OPEN")),
        ("pr view https://github.com/x/y/pull/63", pr("OPEN")))
     refresh.run(now=0)
-    checks = server.state()["checks"]
-    assert checks["td-257"]["pending"] == ("Clears when OneAdobe/architect-ffp#420 and #556 merge or close, or once you "
-                                           "comment on or review them.")
-    assert checks["td-258"]["pending"] == ("Clears when o/r#61, #62, and x/y#63 merge or close, or once you comment on "
-                                           "or review them.")
+    seen = checks()
+    assert seen.get("td-257", {}).get("pending") == (
+        "Clears when OneAdobe/architect-ffp#420 and #556 merge or close, or once you comment on or review them.")
+    assert seen.get("td-258", {}).get("pending") == (
+        "Clears when o/r#61, #62, and x/y#63 merge or close, or once you comment on or review them.")
 
 
 # ─── the server and the refresh never lose each other's marks ───────────────

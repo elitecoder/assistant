@@ -1834,7 +1834,7 @@ CHECKS = (
     (
         'sending a row marks it done',
         'work_queue/server.py',
-        '    marks[key] = {"state": "done", "until": 0, "at": now()}\n',
+        '        marks[key] = {"state": "done", "until": 0, "at": now()}\n',
         '',
         'tests/test_work_queue_server.py::test_sending_a_row_marks_it_done_and_keeps_its_other_marks',
     ),
