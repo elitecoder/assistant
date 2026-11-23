@@ -4,7 +4,8 @@
 
 sources.json decides what runs: an unlinked source is skipped and shows as
 "not linked" on the page. A source that fails shows its error, and the other
-sources still render. The page goes to $WQ_DATA/site/index.html and the
+sources still render. Then it checks each Ready for you item and clears the
+finished ones (work_queue/ready.py). The page goes to $WQ_DATA/site/index.html and the
 approval candidates to $WQ_DATA/candidates.json.
 """
 from __future__ import annotations
@@ -18,7 +19,7 @@ from datetime import datetime, timezone
 from assistant import mode
 from assistant.slack_focus.client import Client, SlackError, http_transport
 
-from work_queue import config, page, todo_result, tools, triage
+from work_queue import config, page, ready, todo_result, tools, triage
 from work_queue.inputs import gcal, github, gmail, outlook, slack
 
 LABELS = {"slack": "Slack", "github": "GitHub", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook"}
@@ -109,10 +110,12 @@ def run(transport=http_transport, now: float | None = None, model=None) -> list[
     """One refresh. Returns each source's status line. `model(prompt, timeout)` replaces triage.call_model."""
     config.write_json(status_path(), {"running": True, "started": now_iso(), "pid": os.getpid()})
     try:
-        snap = read_sources(config.load(), transport, time.time() if now is None else now)
+        doc = config.load()
+        snap = read_sources(doc, transport, time.time() if now is None else now)
     except ValueError as exc:
         config.write_json(status_path(), {"running": False, "finished": now_iso(), "error": str(exc)})
         raise
+    ready.run(doc, transport, os.environ.get("SLACK_USER_TOKEN", ""))
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
     snap["built_iso"] = now_iso()
     pro = mode.is_pro()

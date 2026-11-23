@@ -16,6 +16,8 @@ A source that's missing from the file isn't linked, and every refresh skips it.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -56,6 +58,17 @@ def write_json(path: Path, data) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, indent=1))
     tmp.replace(path)
+
+
+@contextlib.contextmanager
+def marks_lock():
+    """Hold marks.json for one read-modify-write. The server and the refresh are separate processes, so every change
+    to marks.json reads it again inside this lock."""
+    path = data_dir() / "marks.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield
 
 
 def load() -> dict:

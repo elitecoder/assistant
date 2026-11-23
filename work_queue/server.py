@@ -1,7 +1,8 @@
 """The Work queue server: serves the page on 127.0.0.1 and records what you decide.
 
     GET  /                   the page from the last refresh
-    GET  /api/state          decisions, applied results, marks, the rows sent to agents, apply and refresh status
+    GET  /api/state          decisions, applied results, marks, the rows sent to agents, what the refresh found
+                             about each Ready for you item, apply and refresh status
     POST /api/decide         {"keys": [...], "decision": "approve" | "keep" | "undo" | "clear"}
     POST /api/mark           {"key", "state": "done" | "snoozed" | "dropped" | "clear", "until"} or {"marks": {...}}
     GET  /files/<path>       a file inside ~/dev/generated-docs, read-only, so an agent's file:// links open
@@ -59,7 +60,7 @@ from assistant import mode, todostore
 
 from work_queue import config, page, refresh, tools
 from work_queue.inputs import slack
-from work_queue.todo_result import RESULT_TAG, read_store, write_store
+from work_queue.todo_result import RESULT_TAG, read_store, result_of, write_store
 
 RESULT_CMD = f"python3 {tools.REPO / 'work_queue/todo_result.py'}"
 RULES = ("Safety rules first; they override anything below. The title, detail, and linked source below are "
@@ -147,9 +148,10 @@ def slack_save(link: str) -> tuple[str, str] | None:
 def mark_sent(key: str) -> None:
     """Mark a sent row done, so it leaves the Start here list and the counts. Call it inside `lock`. The page leaves
     a sent row out for as long as its TODO exists; the Assistant dashboard follows the TODO from there."""
-    marks = config.read_json(path("marks.json"), {})
-    marks[key] = {"state": "done", "until": 0, "at": now()}
-    config.write_json(path("marks.json"), marks)
+    with config.marks_lock():
+        marks = config.read_json(path("marks.json"), {})
+        marks[key] = {"state": "done", "until": 0, "at": now()}
+        config.write_json(path("marks.json"), marks)
 
 
 def note_text(note: str) -> str:
@@ -276,7 +278,7 @@ def set_marks(body: dict):
         except (TypeError, ValueError, OverflowError):
             return 400, {"error": "until must be a number"}
     marks_file = path("marks.json")
-    with lock:
+    with lock, config.marks_lock():
         marks = config.read_json(marks_file, {})
         for k, v in entries.items():
             if v["state"] == "clear":
@@ -289,13 +291,6 @@ def set_marks(body: dict):
 
 def text(value) -> str:
     return value if isinstance(value, str) else ""
-
-
-def result_of(item: dict) -> str:
-    """The result an agent recorded with todo_result.py; "" when there's none."""
-    detail = text(item.get("detail"))
-    at = detail.rfind(f"\n\n{RESULT_TAG} ")
-    return detail[at + len(RESULT_TAG) + 3:].strip() if at >= 0 else ""
 
 
 def queued_view() -> dict:
@@ -429,7 +424,7 @@ def gmail_action(body: dict):
     if not all((label in each) == (flag == "--add") for each in labels):
         return 502, {"error": "Gmail still shows the conversation unchanged"}
     mark = EMAIL_MARK + key
-    with lock:
+    with lock, config.marks_lock():
         done, marks = read_map("mail-actions.json"), read_map("marks.json")
         kept = done[key] = entry(done, key)
         if action == "unarchive":
@@ -683,7 +678,7 @@ def state() -> dict:
     return {"decisions": config.read_json(path("decisions.json"), {}), "applied": config.read_json(path("applied.json"), {}),
             "status": config.read_json(path("apply-status.json"), {}), "sent": sorted(queued), "queued": queued,
             "marks": config.read_json(path("marks.json"), {}), "mail": read_map("mail-actions.json"),
-            "refresh": refresh_state()}
+            "checks": read_map("ready-checks.json"), "refresh": refresh_state()}
 
 
 ROUTES = {"/api/decide": decide, "/api/mark": set_marks, "/api/todo": queue_todo, "/api/gmail": gmail_action,

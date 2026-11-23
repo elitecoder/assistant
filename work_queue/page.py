@@ -9,9 +9,11 @@ Every open row has Done, Snooze, Drop, and Send to Agent, which hands the row
 to an agent for a first pass; the Send to
 agents tab sends many at once, and can send them hands-off. A row the model
 called `agent` says "Agent can finish". A sent row leaves the page, and Ready
-for you shows its TODO once it's done or blocked. Send to Agent opens a note box
-first. The Email tab holds Outlook, each Gmail account, and Unsubscribe, with
-Send to Agent, Snooze, Archive, and Mark read on each email. Every piece of
+for you shows its TODO once it's done or blocked, until you mark it Done or a
+refresh finds its follow-up already happened (work_queue/ready.py). Send to
+Agent opens a note box first. The Email tab holds Outlook, each Gmail account,
+and Unsubscribe, with Send to Agent, Snooze, Archive, and Mark read on each
+email. Every piece of
 model text is escaped. Drafts are text to copy: nothing on the page sends them.
 """
 from __future__ import annotations
@@ -30,7 +32,9 @@ NEWTAB = ' target="_blank" rel="noopener noreferrer"'
 EMAIL_MARK = "https://work-queue.local/email/"
 READY = ('<div class="ready" id="ready" hidden><div class="cut-top"><b>Ready for you</b><span class="meta">Agents you sent '
          'work to from this page finished these or are blocked. Read the result, do what it leaves for you, then select '
-         'Done.</span></div><ol class="ready-list"></ol></div>')
+         'Done. Work whose pull requests merged, or that you already followed up on, clears on its own.</span>'
+         '<button class="chip ready-show" onclick="toggleCleared()" hidden>Show cleared</button></div>'
+         '<ol class="ready-list"></ol><ul class="ready-cleared"></ul></div>')
 LANES = [
     ("do_first", "Do first", "Someone is waiting on your reply or decision."),
     ("promise", "Promise", "You said you would. Deliver it, hand it off, or say you're dropping it."),
@@ -576,6 +580,9 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .ready-list li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .ready-result{display:block;margin-top:4px;color:var(--text-2);font-size:12px;white-space:pre-line}
 .ready-result.blocked{color:var(--amber)}.ready-result a{color:var(--blue)}
+.ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
+.ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
+.ready-cleared:empty{display:none}.ready-cleared li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 @media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
@@ -583,8 +590,8 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 JS = r"""
 const DAY=864e5;
 let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{}}, API=true, polling=false, sending=false;
-ST.queued={};ST.mail={};let GONE=new Set(),qTimer=0;
-const READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
+ST.queued={};ST.mail={};ST.checks={};let GONE=new Set(),qTimer=0;
+const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.json()}
 function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
@@ -626,9 +633,14 @@ function paintMail(now,sent){let extra=0,gone=0;GONE=new Set();
  return extra}
 function toggleMailHidden(){document.body.classList.toggle('show-em-hidden');paint()}
 function readyKey(id){return READY_MARK+id}
-function renderReady(){const box=$('ready');if(!box)return;const ol=box.querySelector('ol');ol.textContent='';
+function renderReady(){const box=$('ready');if(!box)return;const ol=box.querySelector('.ready-list'),cl=box.querySelector('.ready-cleared');
+ ol.textContent='';cl.textContent='';
  const ready=Object.values(ST.queued).filter(q=>(q.status==='done'||q.status==='blocked')&&!MK[readyKey(q.id)]);
- ready.sort((a,b)=>b.finished.localeCompare(a.finished)).forEach(q=>ol.append(readyItem(q)));box.hidden=!ready.length;
+ const auto=Object.values(ST.queued).filter(q=>{const m=MK[readyKey(q.id)];return !!m&&!!m.auto&&Date.now()-new Date(m.at)<CLEARED_FOR});
+ ready.sort((a,b)=>b.finished.localeCompare(a.finished)).forEach(q=>ol.append(readyItem(q)));
+ const open=box.classList.contains('show-cleared'),chip=box.querySelector('.ready-show');
+ chip.hidden=!auto.length;chip.textContent=(open?'Hide':'Show')+' cleared ('+auto.length+')';
+ if(open)auto.forEach(q=>cl.append(clearedItem(q)));box.hidden=!ready.length&&!auto.length;
  document.querySelectorAll('.start-list li').forEach(li=>{const q=ST.queued[li.dataset.key];
   if(q&&!li.querySelector('.sf-send,.sf-sent')){const b=document.createElement('button');b.className='btn sf-sent';b.disabled=true;
    b.textContent='Sent '+q.id;b.title='Already sent to an agent';li.firstElementChild.append(b)}})}
@@ -638,7 +650,17 @@ function readyItem(q){const li=document.createElement('li'),top=document.createE
  s.className='ready-result '+q.status;li.dataset.id=q.id;
  if(q.status==='blocked')s.textContent='Blocked: '+(q.reason||'the agent didn’t say why.');
  else linkify(s,q.result||'Done, but the agent left no written result. Open '+q.id+' on the Tasks tab of the Assistant dashboard to see what happened.');
- li.append(top,s);return li}
+ li.append(top,s);const c=(ST.checks||{})[q.id]||{},say=q.status==='blocked'?c.note:c.pending;
+ if(say){const n=document.createElement('span');n.className='ready-check'+(c.note?' note':'');n.textContent=say;li.append(n)}
+ return li}
+function clearedItem(q){const li=document.createElement('li'),top=document.createElement('div'),t=document.createElement('span'),s=document.createElement('span');
+ t.className='sf-title';t.textContent=q.title+' ('+q.id+')';top.append(t,button('Undo','btn sf-mark',b=>undoCleared(b,q.id)));
+ s.className='ready-check';s.textContent='Cleared on its own: '+MK[readyKey(q.id)].why;li.dataset.id=q.id;li.append(top,s);return li}
+function toggleCleared(){$('ready').classList.toggle('show-cleared');renderReady()}
+async function undoCleared(b,id){b.disabled=true;
+ try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({key:readyKey(id),state:'clear'})})).marks;paint();
+  toast('It’s back on Ready for you, and it won’t clear on its own again.')}
+ catch(e){b.disabled=false;toast('Not saved: '+e.message)}}
 function button(label,cls,run){const b=document.createElement('button');b.className=cls;b.textContent=label;b.onclick=()=>run(b);return b}
 async function doneReady(b,id){b.disabled=true;
  try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({key:readyKey(id),state:'done'})})).marks;paint()}
