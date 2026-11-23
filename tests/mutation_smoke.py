@@ -25,11 +25,80 @@ CHECKS = (
         'tests/test_observer_skip.py::SkipWiringTests::test_observer_turned_off_in_config_makes_no_observer_call',
     ),
     (
-        'only "enabled": false turns the Observer off',
+        'only the JSON value true turns the Observer on',
+        'src/assistant/mode.py',
+        '    return isinstance(observer, dict) and observer.get("enabled") is True\n',
+        '    return isinstance(observer, dict) and bool(observer.get("enabled"))\n',
+        'tests/test_observer_skip.py::SkipWiringTests::test_observer_is_off_unless_config_sets_enabled_true',
+    ),
+    (
+        'an unreadable config.json leaves the Observer off',
+        'src/assistant/mode.py',
+        '        observer = _read_config().get("observer")\n    except (OSError, ValueError):\n        return False\n',
+        '        observer = _read_config().get("observer")\n    except (OSError, ValueError):\n        return True\n',
+        'tests/test_observer_skip.py::SkipWiringTests::test_observer_is_off_unless_config_sets_enabled_true',
+    ),
+    (
+        'with no setting the pulse makes no Observer call',
+        'src/assistant/mode.py',
+        '    return isinstance(observer, dict) and observer.get("enabled") is True\n',
+        '    return not (isinstance(observer, dict) and observer.get("enabled") is False)\n',
+        'tests/test_observer_skip.py::SkipWiringTests::'
+        'test_observer_off_by_default_makes_no_observer_call_and_still_dispatches',
+    ),
+    (
+        'with no setting the pulse runs no Observer audit',
+        'src/assistant/mode.py',
+        '    return isinstance(observer, dict) and observer.get("enabled") is True\n',
+        '    return not (isinstance(observer, dict) and observer.get("enabled") is False)\n',
+        'tests/test_observer_skip.py::SkipWiringTests::test_observer_off_by_default_runs_no_audit',
+    ),
+    (
+        'the pulse dispatches autoDispatch TODOs with the Observer off',
         'bin/pulse.py',
-        'return not (isinstance(obs, dict) and obs.get("enabled") is False)',
-        'return not (isinstance(obs, dict) and not obs.get("enabled"))',
-        'tests/test_observer_skip.py::SkipWiringTests::test_observer_stays_on_unless_config_turns_it_off',
+        '    todos = pick_open_todos() if not dry_run else {"bucket_b": []}\n',
+        '    todos = pick_open_todos() if not dry_run and observer_enabled() else {"bucket_b": []}\n',
+        'tests/test_observer_skip.py::SkipWiringTests::'
+        'test_observer_off_by_default_makes_no_observer_call_and_still_dispatches',
+    ),
+    (
+        "the dashboard's Settings show the Observer setting",
+        'bin/render-assistant-page.py',
+        '    mode_html = render_mode_switch(pro, mode.config_error()) + render_observer_setting()\n',
+        '    mode_html = render_mode_switch(pro, mode.config_error())\n',
+        'tests/test_pro_mode.py::test_dashboard_settings_say_the_observer_is_off_by_default',
+    ),
+    (
+        "the dashboard's Settings say the Observer is off and how to turn it on",
+        'bin/render-assistant-page.py',
+        '    if mode.observer_enabled():\n        return (\'<p class="observer-setting" data-observer="on">',
+        '    if True:\n        return (\'<p class="observer-setting" data-observer="on">',
+        'tests/test_renderer_in_process.py::ObserverSettingTests::'
+        'test_settings_say_the_observer_is_off_by_default_and_how_to_turn_it_on',
+    ),
+    (
+        "the Workspaces tab says the Observer is off instead of waiting for a pulse",
+        'bin/render-assistant-page.py',
+        '    if mode.observer_enabled():\n        return \'<div class="muted">No observer summaries yet',
+        '    if True:\n        return \'<div class="muted">No observer summaries yet',
+        'tests/test_renderer_in_process.py::WorkspacesTabBackoffBannerTests::'
+        'test_no_summaries_with_the_observer_off_says_it_is_off',
+    ),
+    (
+        'the doctor says the Observer is off by default and how to turn it on',
+        'bin/assistant-doctor.py',
+        'def check_observer() -> Check:\n    if mode.observer_enabled():\n',
+        'def check_observer() -> Check:\n    if True:\n',
+        'tests/test_doctor.py::test_observer_check_says_off_by_default_and_how_to_turn_it_on',
+    ),
+    (
+        "the installer's summary says the Observer is off by default and how to turn it on",
+        'install.sh',
+        'log "The Observer is off by default, so no model checks your workspaces. To turn it on,"\n'
+        'log "set {\\"observer\\": {\\"enabled\\": true}} in ~/.assistant/config.json and run the pulse"\n'
+        'log "with ASSISTANT_WATCHER=1. See docs/configuration.md."\n',
+        '',
+        'tests/test_install_tiers.py::test_install_says_the_observer_is_off_by_default_and_how_to_turn_it_on',
     ),
     (
         "changed conversation invalidates guidance",

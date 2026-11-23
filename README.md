@@ -83,8 +83,11 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
   (`ASSISTANT_LESSON_EXTRACTOR=1`), and the brief narrator
   (`ASSISTANT_BRIEF_NARRATOR=1`).
 - The session check acting on its results: merging PRs, closing finished
-  workspaces, and nudging stuck ones. The check itself runs in either mode
-  with `ASSISTANT_WATCHER=1`; in default mode it only adds cards.
+  workspaces, and nudging stuck ones. The check itself, the Observer, is off by
+  default in both modes. To turn it on, set `{"observer": {"enabled": true}}`
+  in `~/.assistant/config.json` and run the pulse with `ASSISTANT_WATCHER=1`.
+  See [Configuration](docs/configuration.md#observer). In default mode it only
+  adds cards.
 
 ## Quick start
 

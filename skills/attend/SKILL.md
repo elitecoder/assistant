@@ -25,4 +25,4 @@ Print the script's stdout verbatim. Possible outputs:
 
 ## Effect
 
-Takes effect on the Assistant's next pulse (within ~2 minutes). After that, this workspace re-enters the rotation: Observer reads its transcript, emits a verdict, and the Assistant acts on it.
+Takes effect on the Assistant's next pulse (within ~2 minutes). After that, this workspace re-enters the rotation. When the Observer is on, it reads the transcript, emits a verdict, and the Assistant acts on it. The Observer is off by default; `docs/configuration.md` in the Assistant repo says how to turn it on.

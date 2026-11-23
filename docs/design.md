@@ -71,9 +71,11 @@ can't loosen `github.merge` or `ws.close` below `confirm`.
 
 ## Fleet actions
 
-With the Observer on (`ASSISTANT_WATCHER=1`), it gives each workspace one
-verdict: `ready_for_merge`, `ready_for_cleanup`, `stranded`, `needs_user`,
-`active`, or `no_action`.
+The Observer is off by default. With it on (`{"observer": {"enabled": true}}`
+in `~/.assistant/config.json` and `ASSISTANT_WATCHER=1`), it gives each
+workspace one verdict: `ready_for_merge`, `ready_for_cleanup`, `stranded`,
+`needs_user`, `active`, or `no_action`. See
+[Configuration](configuration.md#observer).
 
 A Python lookup table in `bin/pulse.py` turns each verdict into an action. A
 `stranded` verdict must carry `nudge_text`, but the pulse sends a fixed, safe

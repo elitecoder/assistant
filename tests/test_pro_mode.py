@@ -343,6 +343,12 @@ def test_default_dashboard_shows_only_default_tabs_and_the_switch(home):
     assert "Pro mode is off." in page and "setMode('pro')" in page
 
 
+def test_dashboard_settings_say_the_observer_is_off_by_default(home):
+    page = render_page(home)
+    settings = page[page.index("Settings and background services"):page.index('<div class="tabs">')]
+    assert "The Observer is off." in settings and "ASSISTANT_WATCHER=1" in settings
+
+
 def test_pro_dashboard_shows_every_tab_and_the_switch(home):
     set_mode(home, "pro")
     page = render_page(home)

@@ -1241,6 +1241,9 @@ class MainPipelineTests(unittest.TestCase):
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = fixture_home(Path(self._tmp_obj.name))
+        # These tests drive the Observer, which is off by default; opt in.
+        (self._tmp / ".assistant/config.json").write_text(
+            json.dumps({"observer": {"enabled": True}}))
         self.mod = load_pulse(self._tmp)
 
     def tearDown(self):
