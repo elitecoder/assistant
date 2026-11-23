@@ -1259,6 +1259,9 @@ log ""
 # copy-no-load / skip and must be hand-loaded. So the summary states what is
 # already running vs. what the user still activates by hand. Same runbook in
 # ONBOARDING.md (linked from the README).
+log "The Observer is off by default, so no model checks your workspaces. To turn it on,"
+log "set {\"observer\": {\"enabled\": true}} in ~/.assistant/config.json and run the pulse"
+log "with ASSISTANT_WATCHER=1. See docs/configuration.md."
 if [[ $APPLY -eq 0 ]]; then
     log "✅ Dry-run complete. Re-run with --apply to make changes."
     log "   Then follow the activation runbook it prints (also in ONBOARDING.md)."

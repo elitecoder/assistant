@@ -94,8 +94,8 @@ their own token setup (below) — never auto-loaded even with `--with-all`.
 ### CORE — the always-on set (loaded by `install.sh --apply`)
 
 `install.sh --apply` already **(re)loaded** the always-on set: the pulse
-orchestrator (every ~5 min it observes your cmux workspaces and acts on what's
-safe — merge, cleanup, nudge) plus its independent companion agents — the
+orchestrator (every ~5 min it dispatches autoDispatch TODOs and clears stale
+cards) plus its independent companion agents — the
 dashboard page renderer, the todo server, the session-context watcher, the
 workspace watcher, and the world scanner. These are separate LaunchAgents;
 loading one does **not** load the others (the installer loads each). Verify:
@@ -104,6 +104,12 @@ loading one does **not** load the others (the installer loads each). Verify:
 launchctl list | grep com.assistant
 stat -f '%Sm' ~/.claude/cache/world.json   # should refresh within ~30s
 ```
+
+The Observer is off by default. It's the model that checks each workspace so
+the pulse can merge, clean up, or nudge it. To turn it on, set
+`{"observer": {"enabled": true}}` in `~/.assistant/config.json` and run the
+pulse with `ASSISTANT_WATCHER=1`. See the
+[Observer settings](docs/configuration.md#observer).
 
 If any is missing (e.g. you skipped `--apply`), load it directly and idempotently:
 
