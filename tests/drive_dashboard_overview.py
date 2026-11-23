@@ -695,6 +695,80 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 page.locator('[data-tab="overview"]').click()
                 assert not errors, errors
 
+                def blur():
+                    page.evaluate("document.activeElement.blur()")
+
+                def focused():
+                    return page.evaluate("document.activeElement.id")
+
+                def visible_tasks():
+                    return page.evaluate("""() => [...document.querySelectorAll(
+                        '[data-panel="todos"] .todo-row[data-task-id]')]
+                        .filter(row => row.offsetParent !== null).map(row => row.dataset.taskId).sort()""")
+
+                tab_search = page.locator('#tab-search')
+                blur()
+                assert page.locator('#tab-search-bar').is_hidden()
+                page.keyboard.press("/")
+                assert focused() == "attention-search"
+                assert page.locator('#attention-search').input_value() == ""
+                blur()
+                page.locator('[data-tab="todos"]').click()
+                assert page.locator('#tab-search-bar').is_visible()
+                blur()
+                page.keyboard.press("Meta+/")
+                assert focused() != "tab-search"
+                page.keyboard.press("/")
+                assert focused() == "tab-search"
+                page.keyboard.type("a/b")
+                assert tab_search.input_value() == "a/b"
+                assert page.locator('#tab-search-empty').is_visible()
+                assert visible_tasks() == []
+                tab_search.fill("older retry")
+                assert visible_tasks() == ["td-901"]
+                assert page.locator('#tab-search-empty').is_hidden()
+                assert page.locator('[data-panel="todos"] .section:has([data-task-id="td-902"])').is_hidden()
+                page.keyboard.press("Escape")
+                assert tab_search.input_value() == "" and focused() != "tab-search"
+                assert visible_tasks() == ["td-901", "td-902"]
+                assert page.locator('[data-panel="todos"] .section:has([data-task-id="td-902"])').is_visible()
+                tab_search.fill("remove")
+                assert visible_tasks() == []
+                assert page.locator('#tab-search-empty').is_visible()
+                tab_search.fill("newer idea")
+                blur()
+                assert page.evaluate("refreshDashboard(true, true)") is True
+                assert page.locator('[data-panel="todos"]').is_visible()
+                assert tab_search.input_value() == "newer idea"
+                assert visible_tasks() == ["td-902"]
+                page.locator('[data-tab="slack"]').click()
+                assert tab_search.input_value() == ""
+                assert page.evaluate("""() => [...document.querySelectorAll('[data-panel="todos"] .todo-row')]
+                    .every(row => !row.hidden)""")
+                done_by_you = page.locator('details[data-context-key="sf-done"]')
+                done_by_you.evaluate("details => { details.open = false; }")
+                tab_search.fill("freeze plan")
+                assert done_by_you.evaluate("details => details.open")
+                assert done_by_you.locator('.sf-row:has-text("freeze plan")').is_visible()
+                blur()
+                assert page.evaluate("refreshDashboard(false, true)") is True
+                done_by_you = page.locator('details[data-context-key="sf-done"]')
+                assert tab_search.input_value() == "freeze plan"
+                assert done_by_you.evaluate("details => details.open")
+                assert page.locator('#refresh-note').inner_text() == "Checks for updates every 15 seconds."
+                tab_search.fill("")
+                assert not done_by_you.evaluate("details => details.open")
+                page.locator('[data-tab="brief"]').click()
+                assert page.locator('#tab-search-bar').is_visible()
+                tab_search.fill("pull request 17")
+                assert page.locator('[data-panel="brief"] .review-topic:visible').count() == 1
+                assert page.locator('#tab-search-empty').is_hidden()
+                page.locator('[data-tab="work-queue"]').click()
+                assert page.locator('#tab-search-bar').is_hidden()
+                page.locator('[data-tab="overview"]').click()
+                assert page.locator('#tab-search-bar').is_hidden()
+                assert not errors, errors
+
                 mode_reply = {}
                 page.route("**/mode?value=*", lambda route: route.fulfill(
                     status=mode_reply["status"], body=mode_reply["body"]))
@@ -804,7 +878,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                                   "explicit_focus_requests": len(mutations),
                                   "intercepted_brief_seen_requests": len(seen),
                                   "coverage_script_instances": len(scripts) if profiler is not None else 0,
-                                  "checks": "grouping, density, search restoration, expansion, clipboard denial and expiry, reading stability, legacy focus, missing task guards, refresh errors and concurrency, brief date changes, file protocol, observation expiry, stale request gating, Slack refresh, check-off, the Pro mode switch, and errors"}))
+                                  "checks": "grouping, density, tab search, search restoration, expansion, clipboard denial and expiry, reading stability, legacy focus, missing task guards, refresh errors and concurrency, brief date changes, file protocol, observation expiry, stale request gating, Slack refresh, check-off, the Pro mode switch, and errors"}))
         finally:
             server.shutdown()
             server.server_close()

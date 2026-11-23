@@ -3609,6 +3609,20 @@ CHECKS = (
         'merges or closes',
         'tests/test_work_queue_ready.py::test_open_pull_requests_say_what_would_clear_the_item_without_naming_who_it_waits_on',
     ),
+    (
+        "a task's progress line shows the step it has reached",
+        "bin/render-assistant-page.py",
+        "    reached = 2 if pr_url else 1 if started else 0\n",
+        "    reached = 1 if started else 0\n",
+        "tests/test_renderer_tabs.py::TodosTabTests::test_progress_line_tracks_recorded_steps",
+    ),
+    (
+        "a blocked task shows why on its progress line",
+        "bin/render-assistant-page.py",
+        '    if item.get("status") == "blocked":\n',
+        "    if False:\n",
+        "tests/test_renderer_tabs.py::TodosTabTests::test_progress_line_keeps_unreadable_start_time",
+    ),
 )
 
 

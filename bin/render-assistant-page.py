@@ -1457,6 +1457,41 @@ def render_workspaces_tab():
     return f'{backoff_html}<div class="ws-list">{"".join(html_rows)}</div>', len(rows)
 
 
+TASK_PROGRESS_NOTE = ("The Assistant shows only the steps it recorded. Started means it launched a session, "
+                      "not that the session is still working. Done needs the session to record its result.")
+
+
+def render_task_progress(item: dict) -> str:
+    """Queued → Started → PR open → Done for a task the Assistant starts or already started."""
+    started = item.get("dispatchedAt")
+    pr_url = item.get("prUrl")
+    queued = item.get("autoDispatch") is True and item.get("status") == "open"
+    if not (started or pr_url or queued):
+        return ""
+    reached = 2 if pr_url else 1 if started else 0
+    day = (_slack_local_time(started, "%b %-d") or started[:10]) if started else ""
+    started_title = (f"The Assistant started it {_slack_local_time(started, '%b %-d at %-I:%M %p') or started} "
+                     f"in {item.get('dispatchedWs') or 'an unknown workspace'}. "
+                     "That doesn't show the session is still working." if started else "")
+    steps = [
+        ("Queued", "The next automatic check starts it.", ""),
+        (f"Started {day}" if started else "Started", started_title, ""),
+        ("PR open", pr_url or "", pr_url if str(pr_url).startswith(("https://", "http://")) else ""),
+        ("Done", "The session marks it done when it records its result.", ""),
+    ]
+    items = []
+    for index, (label, title, href) in enumerate(steps):
+        state = " current" if index == reached else " reached" if index < reached else ""
+        current = ' aria-current="step"' if index == reached else ""
+        text = f'<a href="{e(href)}" target="_blank" rel="noopener noreferrer">{e(label)}</a>' if href else e(label)
+        items.append(f'<li class="task-step{state}"{current} title="{e(title)}">{text}</li>')
+    blocked = ""
+    if item.get("status") == "blocked":
+        reason = item.get("statusReason") or "No reason recorded."
+        blocked = f'<li class="task-step blocked">Blocked: {e(reason)}</li>'
+    return f'<ol class="task-progress" aria-label="Progress">{"".join(items)}{blocked}</ol>'
+
+
 def render_todos_tab(world):
     # Read TODO state DIRECTLY from assistant-todo.json, not through the
     # world.json snapshot. world-scanner refreshes world.json every 30s, so
@@ -1562,6 +1597,7 @@ def render_todos_tab(world):
     <span class="action-text">{status_pill}{ad} {e(it.get('title', ''))}{url_html}</span>
     <span class="outcome">{e(src)}</span>
   </div>
+  {render_task_progress(it)}
   {tools_html}
 </div>""")
         sections.append(f"""
@@ -1588,7 +1624,8 @@ def render_todos_tab(world):
   <h2>Recently completed <span class="count">10 newest</span></h2>
   <div class="feed">{''.join(rows)}</div>
 </div>""")
-    return _dispatch_cap_notice() + "".join(sections), p0_p1
+    note = f'<p class="meta task-progress-note">{e(TASK_PROGRESS_NOTE)}</p>' if sections else ""
+    return _dispatch_cap_notice() + note + "".join(sections), p0_p1
 
 
 def _dispatch_cap_notice() -> str:
@@ -3434,6 +3471,16 @@ h1 {
 }
 .row.todo-row .todo-context { display: flex; gap: 6px; margin-top: 8px; }
 .row.todo-row .todo-context[hidden] { display: none; }
+.task-progress { display: flex; flex-wrap: wrap; gap: 4px 14px; list-style: none; margin: 6px 0 0; padding: 0; font-size: 12px; color: var(--text-2); }
+.task-step::before { content: "○ " / ""; }
+.task-step.reached::before { content: "● " / ""; color: var(--green); }
+.task-step.current { color: var(--blue); font-weight: 600; }
+.task-step.current::before { content: "◉ " / ""; }
+.task-step.blocked { color: var(--red); }
+.task-step.blocked::before { content: "■ " / ""; }
+.tab-search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0; color: var(--text-2); font-size: 12px; }
+.tab-search input { width: 260px; max-width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: 8px; padding: 8px 12px; font: inherit; }
+.tab-search kbd { border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
 .row.todo-row .td-context-text {
   flex: 1;
   background: var(--bg);
@@ -3881,7 +3928,61 @@ button:focus-visible, summary:focus-visible, input:focus-visible, a:focus-visibl
 """
 
     js = r"""
+function holdOpen(details, searching, open) {
+  if (searching) {
+    if (!details.dataset.searchOpen) details.dataset.searchOpen = String(details.open);
+    details.open = open;
+  } else if (details.dataset.searchOpen) {
+    details.open = details.dataset.searchOpen === 'true';
+    delete details.dataset.searchOpen;
+  }
+}
+const TAB_SEARCH_ITEMS = '.ws-row, .backoff-card, .sf-row, .row, .card, .rrow, .fleet-card, .conn-row, .review-topic, .drow';
+function searchText(item) {
+  const copy = item.cloneNode(true);
+  copy.querySelectorAll('button, textarea, .task-progress, .tool-label').forEach(node => node.remove());
+  return copy.textContent.toLowerCase();
+}
+function filterTab(value) {
+  const query = value.trim().toLowerCase();
+  const panel = document.querySelector('.tab-panel.active');
+  let count = 0;
+  panel.querySelectorAll(TAB_SEARCH_ITEMS).forEach(item => {
+    item.hidden = Boolean(query) && !searchText(item).includes(query);
+    if (!item.hidden) count++;
+  });
+  const visible = scope => [...scope.querySelectorAll(TAB_SEARCH_ITEMS)].some(item => !item.hidden);
+  panel.querySelectorAll('.section').forEach(section => {
+    section.hidden = Boolean(query) && section.querySelector(TAB_SEARCH_ITEMS) !== null && !visible(section);
+  });
+  panel.querySelectorAll('details').forEach(details => {
+    if (details.querySelector(TAB_SEARCH_ITEMS)) holdOpen(details, Boolean(query), visible(details));
+  });
+  document.getElementById('tab-search-empty').hidden = !query || count > 0;
+}
+function tabSearchKey(event) {
+  if (event.key !== 'Escape') return;
+  event.target.value = '';
+  filterTab('');
+  event.target.blur();
+}
+document.addEventListener('keydown', event => {
+  if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  const overview = document.querySelector('.tab-panel.active')?.dataset.panel === 'overview';
+  const box = document.getElementById(overview ? 'attention-search' : 'tab-search');
+  event.preventDefault();
+  box.focus();
+  box.select();
+});
 function showTab(name) {
+  const search = document.getElementById('tab-search');
+  if (search.value) {
+    search.value = '';
+    filterTab('');
+  }
+  document.getElementById('tab-search-bar').hidden = name === 'overview'
+    || !document.querySelector(`.tab-panel[data-panel="${CSS.escape(name)}"]`)?.querySelector(TAB_SEARCH_ITEMS);
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
   if (window.location.hash !== '#' + name) {
@@ -3919,22 +4020,12 @@ function showTab(name) {
       const secondary = lane.closest('.secondary-sessions');
       if (secondary) {
         secondary.hidden = Boolean(query) ? matches === 0 : lane.querySelectorAll('.attention-card').length === 0;
-        if (query && matches) {
-          if (!secondary.dataset.searchOpen) secondary.dataset.searchOpen = String(secondary.open);
-          secondary.open = true;
-        } else if (!query && secondary.dataset.searchOpen) {
-          secondary.open = secondary.dataset.searchOpen === 'true';
-          delete secondary.dataset.searchOpen;
-        }
+        if (query && matches) holdOpen(secondary, true, true);
+        else if (!query) holdOpen(secondary, false);
       }
       const more = lane.querySelector('.attention-more');
-      if (more && query && matches) {
-        if (!more.dataset.searchOpen) more.dataset.searchOpen = String(more.open);
-        more.open = true;
-      } else if (more && !query && more.dataset.searchOpen) {
-        more.open = more.dataset.searchOpen === 'true';
-        delete more.dataset.searchOpen;
-      }
+      if (more && query && matches) holdOpen(more, true, true);
+      else if (more && !query) holdOpen(more, false);
     });
     document.getElementById('attention-search-empty').hidden = count > 0 || !query;
   }
@@ -4061,7 +4152,7 @@ function showTab(name) {
     document.getElementById('finish-current').hidden = !finishFresh;
     document.getElementById('finish-outdated').hidden = Boolean(finishFresh);
     expireAttention(root, now, fresh);
-    const reading = document.querySelector('.tab-panel.active details[open], .service-details[open]');
+    const reading = document.querySelector('.tab-panel.active details[open]:not([data-search-open]), .service-details[open]');
     document.getElementById('refresh-note').textContent = reading
       ? 'Updates pause while you read. Reloading keeps your place.'
       : 'Checks for updates every 15 seconds.';
@@ -4082,7 +4173,7 @@ function showTab(name) {
   async function refreshDashboard(force = false, replace = false) {
     updateFreshness();
     if (dashboardRefreshing || location.protocol === 'file:') return false;
-    if (!force && (document.querySelector('.tab-panel.active details[open], .service-details[open]')
+    if (!force && (document.querySelector('.tab-panel.active details[open]:not([data-search-open]), .service-details[open]')
         || document.activeElement?.matches('input,textarea,select'))) return false;
     dashboardRefreshing = true;
     try {
@@ -4101,6 +4192,7 @@ function showTab(name) {
       if (!incoming) throw new Error('Dashboard content is unavailable');
       if (replace || incoming.dataset.renderedAt !== current.dataset.renderedAt) {
         const query = document.getElementById('attention-search').value;
+        const tabQuery = document.getElementById('tab-search').value;
         if (incoming.querySelector('[data-brief-date]')?.dataset.briefDate
             !== current.querySelector('[data-brief-date]')?.dataset.briefDate) {
           briefSeenSent = false;
@@ -4110,6 +4202,8 @@ function showTab(name) {
         const wanted = (location.hash || '#overview').slice(1);
         showTab(document.querySelector(`.tab[data-tab="${CSS.escape(wanted)}"]`) ? wanted : 'overview');
         filterAttention(query);
+        document.getElementById('tab-search').value = tabQuery;
+        filterTab(tabQuery);
         document.querySelectorAll('details[data-context-key]').forEach(element => {
           if (expanded.includes(element.dataset.contextKey)) element.open = true;
         });
@@ -4504,6 +4598,12 @@ document.addEventListener('click', handleTodoToolsClick);
 
 <div class="tabs">
 {tab_buttons}
+</div>
+<div class="tab-search" id="tab-search-bar">
+  <label for="tab-search">Search this tab <kbd aria-hidden="true">/</kbd></label>
+  <input id="tab-search" type="search" placeholder="Words on this tab" aria-keyshortcuts="/"
+         oninput="filterTab(this.value)" onkeydown="tabSearchKey(event)">
+  <span class="meta" id="tab-search-empty" role="status" hidden>Nothing on this tab matches. Press Escape to clear the search.</span>
 </div>
 
 {tab_panels}
