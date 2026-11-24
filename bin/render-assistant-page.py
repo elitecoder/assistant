@@ -18,6 +18,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from html import escape as e
 from pathlib import Path
@@ -31,7 +32,9 @@ sys.path.insert(0, str(REPO / "bin"))  # loaded by path (tests/drive_dashboard_o
 sys.path.insert(1, str(REPO))
 
 import agent_session  # noqa: E402
+from assistant import apitoken
 from assistant import brief as brief_store
+from assistant import failwatch
 from assistant import mode
 from assistant import session_guidance
 from work_queue import config as work_queue_config
@@ -485,6 +488,131 @@ def render_restart_alert() -> str:
             f'<span class="pulse-text">An update couldn\'t restart {e(", ".join(labels))}, so it '
             'still runs old code. The hourly update retries; run ./install.sh --apply to '
             'retry now.</span></div>')
+
+
+FAILURE_NAMES = {
+    "self-update": "Self-update",
+    "dashboard-render": "Refreshing this page",
+    "model:lessons": "Lesson extraction",
+    "model:strategist": "The strategist",
+    "model:narrator": "The morning brief",
+    "model:observer-audit": "The Observer audit",
+    "model:triage": "Triage",
+    "model:work_queue": "The Work queue refresh",
+    "model:slack_focus": "The Slack tab refresh",
+}
+MERGE_CHECK = "ready-for-merge:"
+FAILURE_LINES_SHOWN = 2
+# Model jobs that can't know their model before the call, so a fix to the
+# model can't lift their pause by itself.
+PAUSE_NEEDS_RESET = ("model:observer-audit",)
+
+
+def _failure_time(ts: float, now: float) -> str:
+    """Local time: just the clock today, the weekday within the week, and the
+    date as well once it is more than 6 days away."""
+    when, today = datetime.fromtimestamp(ts), datetime.fromtimestamp(now)
+    days = abs((when.date() - today.date()).days)
+    if days == 0:
+        return when.strftime("%H:%M")
+    return when.strftime("%A %H:%M" if days <= 6 else "%A %-d %B %H:%M")
+
+
+def _clean_error(sample: str) -> str:
+    """The saved error, shortened for a person: JSON blocks removed, at most 100 characters."""
+    text = str(sample)
+    while True:
+        shorter = re.sub(r"\{[^{}]*\}", "", text)
+        if shorter == text:
+            break
+        text = shorter
+    text = " ".join(text.split()).rstrip(" .:")
+    if len(text) > 100:
+        text = text[:99].rstrip() + "…"
+    return text or "no details were given"
+
+
+def _merge_check_line(rows: list[dict], world: dict) -> str:
+    """One line for every session flagged ready to merge with no pull request.
+    Sessions are named only when every one of them has a title, so the line
+    never reads as if only the named ones were affected."""
+    titles = {}
+    for w in world.get("workspaces", []) or []:
+        if not isinstance(w, dict):
+            continue
+        ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
+        if ref and w.get("title"):
+            titles[ref] = " ".join(str(w["title"]).split())[:60]
+    refs = [r["component"][len(MERGE_CHECK):] for r in rows]
+    n = len(rows)
+    sessions = f"{n} session{'s' if n != 1 else ''}"
+    if n <= 3 and all(ref in titles for ref in refs):
+        sessions += f" ({', '.join(titles[ref] for ref in refs)})"
+    lack = "it has no" if n == 1 else "neither has a" if n == 2 else "none of them has a"
+    return (f"Assistant has flagged {sessions} as ready to merge, but {lack} pull request linked. "
+            f"Open {'the session' if n == 1 else 'each session'} and link its pull request, "
+            "or tell it the work isn't ready.")
+
+
+def _failure_line(row: dict, now: float) -> tuple[int, str]:
+    """(weight, html) for one repeating failure."""
+    component = str(row.get("component", ""))
+    name = FAILURE_NAMES.get(component) or f"A background job ({component.rsplit(':', 1)[-1]})"
+    streak = int(row["streak"])
+    since = _failure_time(float(row.get("streak_first_ts") or row["first_ts"]), now)
+    html = e(f"{name} has failed {streak} times in a row since {since}. "
+             f"The error was: {_clean_error(row.get('sample', ''))}.")
+    until = failwatch.pause_in_force(row, now)
+    if until and component == "self-update":
+        # sys.executable is the interpreter the services run under: it is the
+        # one rendering this page.
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(REPO / 'bin/self_update.py'))} --force"
+        html += (e(f" It tries again by itself at {_failure_time(until, now)}, or as soon as the branch "
+                   "or remote it updates from changes. To try now, run ")
+                 + f"<code>{e(command)}</code>" + e(" in a terminal."))
+    elif until:
+        html += e(f" It tries again at {_failure_time(until, now)}. "
+                  "You don't need to do anything unless it keeps failing.")
+        if component in PAUSE_NEEDS_RESET:
+            html += e(" If you've fixed the cause, delete ~/.assistant/failures.json "
+                      "and it tries again at its next run.")
+    return streak, html
+
+
+def render_failure_alerts(now: float | None = None, world: dict | None = None) -> str:
+    """One top-of-page box for failures that keep happening the same way: what
+    failed, how many times in a row, since when, the error, and what happens
+    next. Merge checks with no pull request share one line. Two lines show; the
+    rest are in a closed <details>. Never raises: a bad row is left out, and on
+    any other error the page simply has no box."""
+    try:
+        now = datetime.now().timestamp() if now is None else now
+        merge, items = [], []
+        for row in failwatch.repeated(now=now, limit=200):
+            try:
+                if str(row.get("component", "")).startswith(MERGE_CHECK):
+                    merge.append({**row, "streak": int(row["streak"])})
+                else:
+                    items.append(_failure_line(row, now))
+            except Exception:  # noqa: BLE001 — a corrupt row is skipped, the rest still show
+                continue
+        if merge:
+            items.append((sum(r["streak"] for r in merge),
+                          e(_merge_check_line(merge, world if isinstance(world, dict) else {}))))
+        if not items:
+            return ""
+        items.sort(key=lambda item: -item[0])
+        shown = "<br>".join(html for _, html in items[:FAILURE_LINES_SHOWN])
+        rest = items[FAILURE_LINES_SHOWN:]
+        if rest:
+            # The key lets the page reopen this after its 15-second refresh, like its other folds.
+            shown += ('<details data-context-key="repeated-failures"><summary>'
+                      + e(f"and {len(rest)} more that keep repeating") + "</summary>"
+                      + "<br>".join(html for _, html in rest) + "</details>")
+        return ('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
+                f'<span class="pulse-dot"></span><span class="pulse-text">{shown}</span></div>')
+    except Exception:  # noqa: BLE001 — the failure box must never take the page down
+        return ""
 
 
 def render_log_trim_notice() -> str:
@@ -2798,6 +2926,15 @@ def _render_slack_focus_tab_inner():
     return html, (view["do_first"] if focus else None)
 
 
+def page_token() -> str:
+    """The token to embed in the page. Any trouble with the token file leaves it empty: the page still renders
+    and works over http; only the local-file copy's buttons are refused until the file is fixed."""
+    try:
+        return apitoken.ensure()
+    except Exception:
+        return ""
+
+
 def render():
     if not WORLD_PATH.exists():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
@@ -2841,7 +2978,8 @@ def render():
     # These three jobs only run in Pro mode, so default mode doesn't list a
     # setting that would do nothing there.
     mode_html += render_job_settings() if pro else ""
-    pulse_alert_html = render_pulse_alert() + render_restart_alert() + render_log_trim_notice()
+    pulse_alert_html = (render_pulse_alert() + render_restart_alert() + render_log_trim_notice()
+                        + render_failure_alerts(world=world))
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()
@@ -4006,6 +4144,13 @@ button:focus-visible, summary:focus-visible, input:focus-visible, a:focus-visibl
 """
 
     js = r"""
+// Every request that changes something goes through here, so each one carries the
+// token the server asks for from a page opened as a local file. The token sits in
+// a meta tag outside the part of the page a refresh swaps.
+function assistantPost(url, init) {
+  const token = document.querySelector('meta[name="assistant-api-token"]').content;
+  return fetch(url, {...init, method: 'POST', headers: {...init.headers, 'X-Assistant-Token': token}});
+}
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
@@ -4263,8 +4408,8 @@ async function setMode(value) {
   button.disabled = true;
   status.textContent = 'Switching…';
   try {
-    const response = await fetch('/mode?value=' + encodeURIComponent(value),
-      {method: 'POST', headers: {'X-Assistant-Human': '1'}});
+    const response = await assistantPost('/mode?value=' + encodeURIComponent(value),
+      {headers: {'X-Assistant-Human': '1'}});
     const message = await response.text();
     if (!response.ok) throw new Error(message);
     for (let waited = 0; dashboardRefreshing && waited < 10000; waited += 100) {
@@ -4290,16 +4435,27 @@ async function setMode(value) {
 // sidecar so the unseen-degradation pass knows the brief was looked at.
 // Fired at most once per page load; failures (server down) are swallowed —
 // the signal is best-effort by design. The URL is ABSOLUTE to the todo-server
-// (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
+// (127.0.0.1:9876, see serverUrl) when the page is a local file, so it reaches the server even when the dashboard is opened
 // as a file:// page — a relative fetch resolves to file:///brief/seen and
 // never arrives, silently arming the destructive unseen-TTL (F19).
+// A page opened as a local file has no server of its own, so these two calls name it. Served over
+// http, the same address that served the page is used, so a forwarded port works too.
+function serverUrl(path) {
+  return (location.protocol === 'file:' ? 'http://127.0.0.1:9876' : '') + path;
+}
+function showRefused() {
+  document.getElementById('refresh-error').textContent =
+    "Couldn't refresh. Reload this page, or open http://127.0.0.1:9876.";
+}
 async function briefRefresh() {
   const button = document.getElementById('brief-refresh');
   if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
+  let refused = false;
   try {
-    await fetch('http://127.0.0.1:9876/brief/refresh', {method: 'POST', mode: 'cors'});
+    refused = !(await assistantPost(serverUrl('/brief/refresh'), {mode: 'cors'})).ok;
   } catch (e) { /* the next page update still rebuilds the brief */ }
   await refreshDashboard(true);
+  if (refused) showRefused();
   const fresh = document.getElementById('brief-refresh');
   if (fresh) { fresh.disabled = false; fresh.textContent = 'Refresh now'; }
 }
@@ -4310,9 +4466,8 @@ function pingBriefSeen() {
   if (!root) return;
   briefSeenSent = true;
   try {
-    fetch('http://127.0.0.1:9876/brief/seen?date='
-            + encodeURIComponent(root.dataset.briefDate),
-          {method: 'POST', mode: 'cors'}).catch(() => {});
+    assistantPost(serverUrl('/brief/seen?date=' + encodeURIComponent(root.dataset.briefDate)),
+          {mode: 'cors'}).then(response => { if (!response.ok) showRefused(); }).catch(() => {});
   } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
@@ -4327,8 +4482,8 @@ window.addEventListener('DOMContentLoaded', () => {
 // content when the pull ends. Done and Undo save a check-off the same way.
 let slackFocusPolling = false;
 function slackFocusPost(path, body) {
-  return fetch(path, body === undefined ? {method: 'POST'}
-    : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  return assistantPost(path, body === undefined ? {}
+    : {headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 }
 function slackFocusShow(state, message) {
   const button = document.getElementById('sf-refresh');
@@ -4418,7 +4573,7 @@ async function openWs(btn) {
   try {
     const identity = btn.dataset.workspaceId
       ? '?workspace_id=' + encodeURIComponent(btn.dataset.workspaceId) : '';
-    const r = await fetch('/focus/' + ws + identity, {method: 'POST'});
+    const r = await assistantPost('/focus/' + ws + identity, {});
     if (r.ok) {
       btn.classList.remove('busy');
       btn.classList.add('ok');
@@ -4453,7 +4608,7 @@ async function handleDecisionActClick(ev) {
   const originalText = btn.textContent;
   btn.classList.add('busy');
   try {
-    const r = await fetch(url, {method: 'POST'});
+    const r = await assistantPost(url, {});
     const t = await r.text();
     if (r.ok) {
       btn.classList.remove('busy'); btn.classList.add('ok');
@@ -4488,7 +4643,7 @@ async function handleTodoToolsClick(ev) {
     const originalText = btn.textContent;
     btn.classList.add('busy');
     try {
-      const r = await fetch(`/toggle/${id}?flag=autoDispatch&value=${value}`, {method: 'POST'});
+      const r = await assistantPost(`/toggle/${id}?flag=autoDispatch&value=${value}`, {});
       if (r.ok) {
         // Visually move .active to this button immediately so the user sees
         // the absolute-set semantics. The 15s auto-refresh will re-render
@@ -4515,7 +4670,7 @@ async function handleTodoToolsClick(ev) {
 Soft-delete: TODO is moved into the 'removed[]' array of assistant-todo.json (recoverable, but disappears from the dashboard).`)) return;
     btn.classList.add('busy'); btn.textContent = 'Removing…';
     try {
-      const r = await fetch(`/remove/${id}`, {method: 'POST'});
+      const r = await assistantPost(`/remove/${id}`, {});
       const t = await r.text();
       if (r.ok) {
         // Hide the row immediately; auto-refresh will confirm
@@ -4539,7 +4694,7 @@ This sets autoDispatch=true and clears dispatchedAt/dispatchedWs.
 If the TODO was deferred/blocked/done, it will be reopened.`)) return;
     btn.classList.add('busy'); btn.textContent = 'Queueing…';
     try {
-      const r = await fetch(`/dispatch-now/${id}`, {method: 'POST'});
+      const r = await assistantPost(`/dispatch-now/${id}`, {});
       const t = await r.text();
       if (r.ok) {
         btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ queued';
@@ -4575,8 +4730,7 @@ If the TODO was deferred/blocked/done, it will be reopened.`)) return;
     if (!body) { ta.focus(); return; }
     btn.classList.add('busy'); btn.textContent = 'Saving…';
     try {
-      const r = await fetch(`/append-detail/${id}`, {
-        method: 'POST',
+      const r = await assistantPost(`/append-detail/${id}`, {
         headers: {'Content-Type': 'text/plain; charset=utf-8'},
         body: body,
       });
@@ -4605,6 +4759,7 @@ document.addEventListener('click', handleTodoToolsClick);
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Assistant</title>
+<meta name="assistant-api-token" content="{e(page_token())}">
 <style>{css}</style>
 <script>{js}</script>
 </head><body>
@@ -4641,7 +4796,18 @@ Saved action history: <code>~/.architect/orchestrator-ledger/</code>.</p>
 </main>
 </body></html>
 """
-    DASHBOARD_HTML.write_text(body)
+    # The page now holds the token, so only its owner may read it. A temporary file with the
+    # right mode, then a rename, means it is never readable by others, even before the rename.
+    # mkstemp makes a file of its own name, readable by its owner only, so two renders at once (the page
+    # service every 30 seconds and every change a button makes) never share one.
+    descriptor, temporary = tempfile.mkstemp(prefix=DASHBOARD_HTML.name + ".", suffix=".tmp", dir=DASHBOARD_HTML.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(body)
+        os.replace(temporary, DASHBOARD_HTML)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
     # Legacy redirect for the old TODO bookmark
     TODO_HTML.write_text(
         '<!doctype html><meta http-equiv="refresh" content="0; url=assistant-dashboard.html#todos">'

@@ -93,7 +93,8 @@ def call_model(prompt: str) -> str:
     try:
         usage = metering.observer_usage(result.stdout, len(prompt), model)
         metering.append_cost_row(caller="slack_focus", model=model, usage=usage, wall_ms=result.wall_ms,
-                                 status="ok" if result.usable else "failed", provider=provider)
+                                 status="ok" if result.usable else "failed", provider=provider,
+                                 error=metering.failure_reason(result.rc, result.stderr))
     except Exception as e:  # noqa: BLE001 — metering never blocks the board
         print(f"metering failed (ignored): {e}", file=sys.stderr)
     if not result.usable:

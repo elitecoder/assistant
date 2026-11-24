@@ -410,6 +410,15 @@ def run(cmd: list[str], *, input_text: str | None = None,
         return 1, "", str(e)
 
 
+def _watch(method: str, *args, **kwargs):
+    """Call the failure counter. Loaded lazily and never allowed to stop the pulse."""
+    try:
+        from assistant import failwatch  # noqa: PLC0415 — not a startup file
+        return getattr(failwatch, method)(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't count a failure (ignored): %s", e)
+
+
 def append_ledger(entry: dict) -> None:
     LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LEDGER_PATH, "a") as f:
@@ -423,7 +432,7 @@ def run_merge_pr_dispatch(ws_ref: str, pr, refactor_attested: bool,
     The script owns the safety gate, Squirrel-E2E gate, freeze retarget, CI
     router, and send-verify. On any failure to run it, return an awaiting
     card so the workspace surfaces rather than silently stalling."""
-    cmd = ["python3", str(BIN / "merge-pr-dispatch.py"),
+    cmd = [sys.executable, str(BIN / "merge-pr-dispatch.py"),
            "--ws", ws_ref, "--pr", str(pr)]
     if refactor_attested:
         cmd.append("--refactor-attested")
@@ -685,15 +694,29 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     if not TRIAGE_BATCH_PROMPT.exists():
         log.error("triage batch prompt missing: %s", TRIAGE_BATCH_PROMPT)
         return {}
+    if str(BIN) not in sys.path:
+        sys.path.insert(0, str(BIN))
+    import metering  # noqa: PLC0415
+    import llm_runner  # noqa: PLC0415
+    route = llm_runner.load_route_config(
+        llm_runner.config_path(home=HOME), "triage")
+    requested_ids = {
+        event["id"] for event in events
+        if isinstance(event.get("id"), str) and event["id"]
+    }
+    provider = llm_runner.select_provider(route, sorted(requested_ids))
+    model = route.model_for(TRIAGE_MODEL)
+    # A changed model or provider lifts the pause at once.
+    paused = metering.paused_note("triage", provider, model)
+    if paused:
+        # Before the run folder exists, so a paused job leaves nothing behind.
+        log.info("triage batch skipped: %s", paused)
+        return {}
 
     run_dir = TRIAGE_RUNS_DIR / f"{pulse_idx:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
     lanes_path = run_dir / "lanes.jsonl"
     events_json = json.dumps(events, indent=2)
-    requested_ids = {
-        event["id"] for event in events
-        if isinstance(event.get("id"), str) and event["id"]
-    }
     prompt = (
         TRIAGE_BATCH_PROMPT.read_text()
         + "\n\n---\n\n## RUNTIME CONTEXT\n\n"
@@ -710,13 +733,6 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     (run_dir / "prompt.md").write_text(prompt)
     (run_dir / "events.json").write_text(events_json)
 
-    if str(BIN) not in sys.path:
-        sys.path.insert(0, str(BIN))
-    import llm_runner  # noqa: PLC0415
-    route = llm_runner.load_route_config(
-        llm_runner.config_path(home=HOME), "triage")
-    provider = llm_runner.select_provider(route, sorted(requested_ids))
-    model = route.model_for(TRIAGE_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=TRIAGE_TIMEOUT_SEC, run=run,
@@ -748,7 +764,8 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
         metering.append_cost_row(
             caller="triage", model=model, usage=usage,
             wall_ms=result.wall_ms, status="ok" if accepted else "failed",
-            provider=provider)
+            provider=provider,
+            error=metering.failure_reason(result.rc, result.stderr))
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("triage metering capture failed (ignored): %s", e)
 
@@ -1624,6 +1641,18 @@ def run_observer_audit(ctxs_to_observe: list[dict],
         log.warning("audit ceiling gate unavailable → skipping audit: %s", e)
         out["reason"] = "gate-unavailable"
         return out
+    try:
+        if str(BIN) not in sys.path:
+            sys.path.insert(0, str(BIN))
+        import metering  # noqa: PLC0415
+        paused = metering.paused_note("observer-audit")
+    except Exception as e:  # noqa: BLE001 — a missing counter never blocks the audit
+        log.warning("audit pause check unavailable (ignored): %s", e)
+        paused = None
+    if paused:
+        log.info("observer audit skipped: %s", paused)
+        out["reason"] = "model-paused"
+        return out
     # Reserve the window stamp BEFORE the spend so a crash mid-audit can't let it
     # re-fire every pulse this window. If the reservation CANNOT be made durable
     # (a stray ~/.assistant/audit file, a perms problem, disk-full), FAIL CLOSED:
@@ -1658,7 +1687,7 @@ def run_observer_audit(ctxs_to_observe: list[dict],
             usage=usage or {"tokens_in": 0, "tokens_out": 0,
                             "cost_usd": 0.0, "source": "none"},
             wall_ms=0, status="ok" if verdicts_frontier else "failed",
-            provider=audit_provider)
+            provider=audit_provider, error="the model returned no verdicts")
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("audit metering failed (ignored): %s", e)
     # Compare + ledger. A ws the frontier didn't judge (no line) is a FAILURE,
@@ -1885,6 +1914,9 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
     kind = verdict.get("verdict")
     ws_ref = ws["ref"]
     key = f"{ws_ref}-{kind}"
+    if kind != "ready_for_merge" or ws.get("pr_refs"):
+        # Fixed: it isn't ready to merge any more, or it has a pull request.
+        _watch("record_ok", f"ready-for-merge:{ws_ref}")
     base = {
         "key": key, "kind": kind, "ws_ref": ws_ref,
         "outcome": "verified", "verified_via": "observer",
@@ -1991,6 +2023,10 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
             return {**base, "kind": "skipped",
                     "evidence": "Observer actions held; merge dispatch not run"}
         if not pr_refs:
+            # The ledger row below is written every pulse; this counts it once
+            # per workspace so the dashboard shows it with a number.
+            _watch("record_failure", f"ready-for-merge:{ws_ref}", "ready_for_merge but no pr_refs on ws",
+                   pause=False)
             return {**base, "kind": "skipped", "outcome": "failed",
                     "evidence": "ready_for_merge but no pr_refs on ws"}
         result = run_merge_pr_dispatch(
@@ -2689,6 +2725,11 @@ def main() -> int:
     batch = pick_ws_batch()
     to_reclassify = batch.get("to_reclassify", []) if observer_enabled() else []
     backed_off = batch.get("backed_off", [])
+    if not dry_run and not batch.get("unavailable"):
+        # A merge check for a session that has closed has nothing left to fix.
+        open_refs = ({w["ref"] for w in batch.get("to_reclassify", [])} | set(batch.get("reuse_cached", []))
+                     | {w["ref"] for w in backed_off})
+        _watch("record_ok_except", "ready-for-merge:", open_refs)
 
     # 4. Per-workspace flow.
     #    Phase 1: build ctx for every ws (sequential — these are quick).

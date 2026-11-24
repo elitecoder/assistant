@@ -133,14 +133,16 @@ class StrategistDraftCallerTests(unittest.TestCase):
         cfgp.write_text(json.dumps({
             "strategist": {
                 "provider": "claude",
-                "dailyCostCeilingUsd": 0.01,
+                "dailyCostCeilingUsd": 0.0001,
             },
         }))
         now = _t.time()
         self.assertFalse(strat.over_ceiling(now))
+        # Three identical failures pause further calls (failwatch), so a few
+        # failed calls must already be enough to trip a low ceiling.
         with mock.patch.object(self.mod, "run",
                                return_value=(124, "", "timeout after 240s")):
-            for _ in range(20):
+            for _ in range(3):
                 self.mod.call_strategist_draft(GOAL, "research", "TT", "TD", 1)
         self.assertGreater(strat.day_spend_usd(now), 0.0)
         self.assertTrue(strat.over_ceiling(now))  # failures tripped the ceiling

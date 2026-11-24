@@ -29,8 +29,65 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   stay that way until you press On. To make sure your own reactions start work,
   set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
   reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
+- Check every request that changes something on the dashboard server the same
+  way, with no exceptions. Before, a web page open in your browser could make
+  your machine start a TODO's agent session (`/dispatch-now`), type a
+  proposal's text into a session (`/proposal/<id>/run-now`), switch to a
+  workspace, turn a task's automatic start on or off, remove a task, or add a
+  note to one, because those six routes skipped the cross-site check. A page
+  sandboxed inside any website could also reach the routes that did check,
+  because a missing or `null` origin was let through, and any website could
+  show the dashboard in a frame and act through it. Now:
+  - The dashboard answers only at `127.0.0.1` or `localhost`, on any port, so
+    a forwarded port works and a page that points another name at your
+    machine is refused.
+  - A change from the dashboard page you opened is let through, under either
+    `127.0.0.1` or `localhost` on the same port. One from any other page is
+    refused, including a page on `localhost` at another port.
+  - The dashboard page can't be shown in a frame, read, or embedded by another
+    site.
+  - Anything with no origin, such as the dashboard opened as a local file or a
+    command-line call, has to send the token in `~/.assistant/api-token` as
+    the `X-Assistant-Token` header, and is refused with a sentence saying so
+    otherwise. The `/goal` skill sends it for you; to do it by hand, put the
+    header on standard input (`curl -H @-`) so it stays off the command line.
+    The token is created the first time it's needed. Only you can read it
+    and the saved dashboard page that now holds it.
+  - If you forward the dashboard's port through another local server or
+    tunnel, every page that address serves is treated as the dashboard's own
+    page. The saved page holds your token and always talks to
+    `http://127.0.0.1:9876`, so don't share it.
+  - This stops web pages open in your browser. It does not stop other
+    programs running as you on this Mac, which can read the token file and
+    the saved page.
+  - A dashboard tab you left open before this update keeps working. Opened as
+    a local file, only **Refresh now** and the signal that you looked at the
+    Notifications tab reach the server, and they now say when they are
+    refused.
+  - Two page rebuilds at once no longer share one temporary file, so neither
+    can crash or garble the page, and a problem with the token file no longer
+    stops the page from being built.
 
 ### Added
+- Show a failure that keeps repeating as one red line at the top of the
+  dashboard, with how many times in a row it has happened, since when, a short
+  error, and what happens next, all in one box that shows two lines and keeps
+  the rest under "and N more that keep repeating". It covers self-update,
+  background model calls, and the page refresh after an edit. Sessions flagged
+  as ready to merge with no pull request linked share one line, which clears
+  when each has a pull request, is no longer ready, or closes. The self-update
+  line gives a command you can paste, with the Python the services use. A background job that fails the same
+  way three times in a row stops calling the model, and so stops spending,
+  for an hour, then two, up to 24 hours. Self-update pauses for 4 hours at
+  most. It, and the model jobs that know their model beforehand, try again at
+  once if the remote, branch, model, or provider changes. Anything you
+  ask for, such as a Work queue or Slack tab refresh, is never paused. A pause
+  ends by itself, and the line clears when the next attempt works. To clear a
+  pause sooner, run `self_update.py --force`, or delete
+  `~/.assistant/failures.json`, which forgets every count. If the page itself
+  can't be rebuilt, it can't show the line until a rebuild works. The file
+  holds short error samples, with tokens, keys, and passwords removed, that can
+  include a branch name or a model id. Counts stay out of the actions ledger.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or
@@ -110,6 +167,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   writes through a private temporary file of its own and removes it if the save
   fails. This needs macOS; on another system the reactor doesn't write. The
   `/todo` and `/cleanup` skills still write the list without the lock.
+- Some services could fail without a word because they ran under the system's
+  older Python. They now use the same Python as the rest of Assistant.
 - Trim oversized logs. Every five minutes the Assistant now checks its logs:
   the ones in `~/.assistant/logs`, the `.log` files in `~/.assistant`, the
   comms listener log, the workspace watcher log, and the to-do server's two

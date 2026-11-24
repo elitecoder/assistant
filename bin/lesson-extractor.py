@@ -786,17 +786,29 @@ def draft_lesson(candidate: dict[str, Any],
     return {"trigger": trigger, "rule": rule, "target": target, "scope": scope}
 
 
+_PAUSE_LOGGED = False
+
+
 def _claude_oneshot(prompt: str) -> str:
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
     import llm_runner  # noqa: PLC0415
-    run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "prompt.md").write_text(prompt)
+    import metering  # noqa: PLC0415
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=HOME), "lessons")
     provider = llm_runner.select_provider(route, [str(time.time_ns())])
     model = route.model_for(EXTRACTOR_MODEL)
+    # A changed model or provider lifts the pause at once.
+    paused = metering.paused_note("lessons", provider, model)
+    if paused:
+        global _PAUSE_LOGGED
+        if not _PAUSE_LOGGED:  # one line per run, not one per candidate
+            audit(f"model call skipped: {paused}")
+            _PAUSE_LOGGED = True
+        return ""
+    run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "prompt.md").write_text(prompt)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=120, run=_run,
@@ -825,7 +837,8 @@ def _claude_oneshot(prompt: str) -> str:
                    "cost_usd": cost, "source": source},
             wall_ms=result.wall_ms,
             status="ok" if result.usable else "failed",
-            provider=provider)
+            provider=provider,
+            error=metering.failure_reason(result.rc, result.stderr))
     except Exception:
         pass
     return result.result_text if result.usable else ""
