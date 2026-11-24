@@ -2065,6 +2065,103 @@ def test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or
         browser.close()
 
 
+OPEN_AT = {"top": "e => { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -90); }", "middle": "e => e.scrollIntoView({block: 'center'})",
+           "bottom": "e => e.scrollIntoView({block: 'end'})"}
+SPOTS = """(own) => {
+  const pop = document.querySelector('.fb-pop:not([hidden])'), panel = pop.getBoundingClientRect(), w = panel.width, t = panel.height;
+  const hit = (a, b, m = 0) => !(a.right + m <= b.left || a.left >= b.right + m || a.bottom + m <= b.top || a.top >= b.bottom + m);
+  const row = document.querySelector(own), thumb = row.querySelector('.fb-down').getBoundingClientRect(), rowHeight = row.getBoundingClientRect().height;
+  const gapOf = (x, y) => Math.hypot(Math.max(thumb.left - x - w, x - thumb.right, 0), Math.max(thumb.top - y - t, y - thumb.bottom, 0));
+  const things = [...document.querySelectorAll('.fb-down, .fb-open, .fb-note')].map(e => ({e, r: e.getBoundingClientRect()})).filter(o => o.r.width && o.r.bottom > 0 && o.r.top < innerHeight);
+  const name = o => o.e.className.split(' ').pop() + ' of ' + ((o.e.closest('.sf-row') || {dataset: {}}).dataset.key || '').split('/').pop();
+  const covered = things.filter(o => hit(panel, o.r)).map(name);
+  // is there anywhere within one row's height of the thumb that covers none of them? Then the panel must be on such a place.
+  let free = false;
+  const card = row.closest('.section').getBoundingClientRect(), lo = Math.max(8, card.left), hi = Math.min(innerWidth - 8, card.right);
+  for (let x = lo; x <= hi - w && !free; x += 6) for (let y = 8; y <= innerHeight - 8 - t && !free; y += 6)
+    if (gapOf(x, y) <= rowHeight && !things.some(o => hit({left: x, right: x + w, top: y, bottom: y + t}, o.r, 4))) free = true;
+  return {gap: gapOf(panel.left, panel.top), rowHeight, covered, free, ownLink: covered.filter(c => c.startsWith('fb-open of ' + own.split('/').pop().replace('"]', ''))).length,
+          inScreen: panel.left >= 8 && panel.right <= innerWidth - 8 && panel.top >= 8 && panel.bottom <= innerHeight - 8};
+}"""
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it(site, wq, width):
+    keys = many_rows(wq, 24)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 800})
+        tab.goto(site + "#open-list")
+        thumbs = tab.locator(ROW_THUMBS)
+        thumbs.first.wait_for()
+        for i in (0, 8, 17, 19, 20, 23):
+            for where, scroll in OPEN_AT.items():
+                around = [j for j in (i - 1, i + 1) if 0 <= j < 24]
+                for j in around:  # the rows beside it have notes of their own
+                    thumbs.nth(j).evaluate(OPEN_AT["middle"])
+                    thumbs.nth(j).click()
+                tab.locator(".sf-row").nth(i).evaluate(scroll)
+                thumbs.nth(i).click()
+                tab.locator(".sf-row").nth(i).locator(":scope > .sf-main .fb-note button", has_text="Add a reason").click()
+                tab.wait_for_selector(".fb-pop:not([hidden])")
+                tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
+                found = tab.evaluate(SPOTS, f'.sf-row[data-key="{keys[i]}"]')
+                assert found["gap"] <= found["rowHeight"] and found["inScreen"], (width, i, where, found)
+                assert not [c for c in found["covered"] if c.startswith("fb-down") or c.startswith("fb-open")] or all(
+                    c.endswith(f" of {keys[i].split('/')[-1]}") and c.startswith("fb-open") for c in found["covered"] if c.startswith(("fb-down", "fb-open"))), (width, i, where, found)
+                assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, where, found)
+                tab.keyboard.press("Escape")
+                for j in [i, *around]:
+                    thumbs.nth(j).evaluate(OPEN_AT["middle"])
+                    thumbs.nth(j).click()
+                tab.wait_for_selector(".fb-note", state="detached")
+        browser.close()
+
+
+def test_choosing_a_reason_with_the_keyboard_puts_focus_on_the_notes_change_link_and_skip_or_esc_put_it_on_the_thumb(site, wq):
+    keys = fb_seed(wq)
+    a = Sel(keys["row"])
+    focused = "document.activeElement.dataset.fb"
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        tab.goto(site + "#open-list")
+        tab.locator(a.thumb).focus()
+        tab.keyboard.press("Enter")
+        pressed(tab, a.thumb)
+        for _ in range(2):  # Tell Assistant, then Add a reason
+            tab.keyboard.press("Tab")
+        assert tab.evaluate(focused) == "add"
+        tab.keyboard.press("Enter")
+        for _ in range(2):  # Not important, Wrong order, Not mine
+            tab.keyboard.press("Tab")
+        assert tab.evaluate(focused) == "r:not_mine"
+        tab.keyboard.press("Enter")
+        tab.wait_for_selector(a.pop, state="hidden")
+        assert tab.evaluate(focused) == "change", "not the top of the page"
+        tab.keyboard.press("Enter")  # Change
+        for _ in range(4):  # on to Skip
+            tab.keyboard.press("Tab")
+        assert tab.evaluate(focused) == "skip"
+        tab.keyboard.press("Enter")
+        tab.wait_for_selector(a.pop, state="hidden")
+        assert tab.evaluate(focused) == "down"
+        tab.locator(f"{a.note} [data-fb='change']").focus()
+        tab.keyboard.press("Enter")
+        tab.keyboard.press("Escape")
+        tab.wait_for_selector(a.pop, state="hidden")
+        assert tab.evaluate(focused) == "down"
+        tab.locator(f"{a.note} [data-fb='change']").focus()  # the same reason again changes nothing, and focus still lands
+        tab.keyboard.press("Enter")
+        tab.keyboard.press("Tab")
+        tab.keyboard.press("Tab")
+        assert tab.evaluate(focused) == "r:not_mine"
+        tab.keyboard.press("Enter")
+        tab.wait_for_selector(a.pop, state="hidden")
+        assert tab.evaluate(focused) == "change"
+        browser.close()
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 def test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_the_row_of_buttons_on_a_phone(site, wq, width):
     many_rows(wq)
@@ -2077,9 +2174,11 @@ def test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_t
         box = thumb.bounding_box()
         assert box["width"] < 40 and box["height"] < 34, "it looks as small as before"
         centre = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        for dx, dy in ((-22, -22), (22, -22), (-22, 22), (22, 22), (0, 0)):
-            hit = tab.evaluate("([x, y]) => !!document.elementFromPoint(x, y).closest('.fb-down')", [centre[0] + dx, centre[1] + dy])
-            assert hit, (dx, dy, "inside a 44 by 44 target")
+        hit = tab.evaluate("""([cx, cy]) => { const xs = [], ys = [];
+            for (let x = Math.round(cx) - 30; x <= cx + 30; x++) for (let y = Math.round(cy) - 30; y <= cy + 30; y++) {
+              const e = document.elementFromPoint(x, y); if (e && e.closest('.fb-down')) { xs.push(x); ys.push(y); } }
+            return [Math.max(...xs) - Math.min(...xs) + 1, Math.max(...ys) - Math.min(...ys) + 1]; }""", list(centre))
+        assert hit[0] >= 44 and hit[1] >= 44, f"what a finger can hit (whatever sits beside it): {hit}"
         done = tab.locator(".sf-row").nth(4).locator(":scope > .sf-main .sf-mark").bounding_box()
         assert abs(done["y"] - box["y"]) < 12, "in the row of buttons, not on a line of its own"
         with_controls = tab.evaluate("document.documentElement.scrollHeight")

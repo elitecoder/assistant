@@ -73,9 +73,9 @@ say which one:
   for your install, in `~/.assistant/feedback/sender.key`, that only you can
   read, so nobody can match the hashes against a list of names. If you delete
   that key, a new one is made, and old and new sender pointers stop matching
-  each other. A key that is empty or
-  shorter than 32 bytes is treated as no key: no sender pointer is written until
-  it is deleted and made again.
+  each other. A `sender.key` that is empty or shorter than 32 bytes is treated
+  as no key, so sender pointers stop until the file is deleted. A new key is then
+  made, and pointers made with the old key no longer match new ones.
 - a reason you tapped, and the id of the line it belongs to, when it is a reason
   or a take-back.
 - the words you typed, only when you used **Tell Assistant**. Your own words are

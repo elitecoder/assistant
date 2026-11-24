@@ -608,7 +608,7 @@ CHECKS = (
     (
         "a new reason replaces the old one only when it is a different one",
         P,
-        "if(v.reason===reason){FBUI[s.dataset.fp].pop=false;return fbPaint()}",
+        "if(v.reason===reason){FBUI[s.dataset.fp].pop=false;fbPaint();return fbChange(s)}",
         "",
         TB + "test_a_thumbs_down_is_one_tap_that_only_says_wrong_and_a_reason_is_asked_for_from_the_note",
     ),
@@ -650,8 +650,8 @@ CHECKS = (
     (
         "the choices keep clear of every other thumb and Tell Assistant link",
         P,
-        "if(avoid.every(b=>",
-        "if([].every(b=>",
+        "if(must.every(b=>clear(b,x,y,4))){const c=cost(x,y)",
+        "if(true){const c=cost(x,y)",
         TB + "test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or_the_edge_of_the_screen[390]",
     ),
     (
@@ -664,8 +664,8 @@ CHECKS = (
     (
         "the thumb has a 44 pixel touch target",
         P,
-        '.fb-down::after{content:"";position:absolute;inset:-11px -12px}',
-        '.fb-down::after{content:"";position:absolute;inset:0}',
+        '.fb-down::after{content:"";position:absolute;inset:-11px -12px;z-index:2}',
+        '.fb-down::after{content:"";position:absolute;inset:0;z-index:2}',
         TB + "test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_the_row_of_buttons_on_a_phone[1280]",
     ),
     (
@@ -695,5 +695,54 @@ CHECKS = (
         "planned for the next update.</span>')",
         "planned for the next update.</span><span>Nothing has changed yet because of this.</span>')",
         TB + "test_tell_assistant_records_your_words_for_an_item_and_for_the_page",
+    ),
+    (
+        "the reasons open within one row's height of their thumb",
+        P,
+        "return g+(g>reach?1000:0)+",
+        "return g+",
+        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[390]",
+    ),
+    (
+        "the reasons keep off their own row's Tell Assistant link where they can",
+        P,
+        "(clear(link,x,y,4)?0:80)",
+        "0",
+        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[390]",
+    ),
+    (
+        "the reasons keep off other rows' notes where they can",
+        P,
+        "60*notes.filter(b=>!clear(b,x,y,0)).length",
+        "0",
+        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[390]",
+    ),
+    (
+        "after a reason is picked focus goes to the row's Change link",
+        P,
+        ".then(ok=>ok&&fbChange(s))}",
+        ".then(ok=>ok)}",
+        TB + "test_choosing_a_reason_with_the_keyboard_puts_focus_on_the_notes_change_link_and_skip_or_esc_put_it_on_the_thumb",
+    ),
+    (
+        "picking the reason the row already has still puts focus on its Change link",
+        P,
+        "FBUI[s.dataset.fp].pop=false;fbPaint();return fbChange(s)}",
+        "FBUI[s.dataset.fp].pop=false;return fbPaint()}",
+        TB + "test_choosing_a_reason_with_the_keyboard_puts_focus_on_the_notes_change_link_and_skip_or_esc_put_it_on_the_thumb",
+    ),
+    (
+        "Skip puts focus on the thumb",
+        P,
+        "()=>{u.pop=false;fbPaint();h.down.focus()}))}",
+        "()=>{u.pop=false;fbPaint()}))}",
+        TB + "test_choosing_a_reason_with_the_keyboard_puts_focus_on_the_notes_change_link_and_skip_or_esc_put_it_on_the_thumb",
+    ),
+    (
+        "the thumb's touch target is not cut off by the link beside it",
+        P,
+        "inset:-11px -12px;z-index:2}",
+        "inset:-11px -12px}",
+        TB + "test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_the_row_of_buttons_on_a_phone[390]",
     ),
 )
