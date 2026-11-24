@@ -4233,6 +4233,8 @@ CHECKS = (
         'or name.startswith(REACTOR_TESTS):',
         'or name.startswith("never"):',
         'tests/test_reactor_coverage_gate.py::test_changed_reactor_javascript_is_a_known_adapter_not_unsupported_code',
+    ),
+    (
         'an unreadable config.json leaves the background jobs off',
         'src/assistant/mode.py',
         '    except (OSError, ValueError):\n        jobs = None\n',
