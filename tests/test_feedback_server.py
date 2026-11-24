@@ -362,12 +362,12 @@ def page_snap(triage) -> dict:
 
 
 def test_the_page_has_no_feedback_controls_without_triage_which_is_default_mode():
-    doc = page.render(page_snap(False))[0].split("<script>")[0]
+    doc = page.render(page_snap(False))[0].split("</style>")[1].split("<script>")[0]
     assert 'class="fb"' not in doc and "data-fp" not in doc and "draft-fb" not in doc
 
 
 def test_the_page_names_each_item_by_its_pointer_and_never_by_its_link_in_a_pointer():
-    doc = page.render(page_snap(True))[0].split("<script>")[0]
+    doc = page.render(page_snap(True))[0].split("</style>")[1].split("<script>")[0]
     mk = server.EMAIL_MARK + "mail:1"
     spans = re.findall(r'<span class="fb" data-fk="([a-z_]+)" data-fp="([^"]*)" data-fkey="([^"]*)"></span>', doc)
     assert sorted((k, p, key) for k, p, key in spans) == sorted([
