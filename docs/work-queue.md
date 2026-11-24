@@ -592,9 +592,11 @@ Assistant writes each Gmail change and each unsubscribe to [its record of
 changes](effects.md) before it acts. When it can't record one, it doesn't run
 it and the page says so. A second press on a conversation that is still being
 changed is turned down, and an unsubscribe that went through is never sent
-again. If **Undo** is refused for a conversation in Trash, the row stays as
-it was, the last-run line says why, and the next **Apply approvals** tries
-again.
+again, and neither is one that was sent and never answered, unless you
+approve it again. When an **Undo** doesn't happen for a conversation in
+Trash, because the record refused it or Gmail did, the row stays in Trash and
+says why ("In Gmail Trash, verified · Undo not done: …"), the last-run line
+gives each reason once, and the next **Apply approvals** tries again.
 
 ## Where your data lives
 

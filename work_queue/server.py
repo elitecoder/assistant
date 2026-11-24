@@ -36,6 +36,7 @@ if sys.version_info < (3, 11):
 
 import contextlib
 import errno
+import http.client
 import http.server
 import ipaddress
 import json
@@ -406,6 +407,8 @@ IN_PROGRESS = "This is already in progress, or Assistant stopped partway through
 UNAPPROVED = ("Assistant couldn't confirm your approval for this, so it didn't run it. "
               "Approve it again, then select Apply approvals")
 ALREADY_DONE = "This was already done and can't be undone, so it wasn't run again"
+SENT_UNHEARD = ("Assistant sent this but didn't hear back, so it may have gone through. "
+                "Approve it again to send it once more")
 FAULT = "Assistant couldn't record this action, so it didn't run it. This is a fault in Assistant, not something you did"
 
 
@@ -418,7 +421,7 @@ def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoe
         return effects.begin(effect_class, target, {"kind": kind, "ref": ref, "at": at}, trace="",
                              component="work-queue", undoes=undoes), None
     except effects.Duplicate as exc:
-        return "", (409, ALREADY_DONE if exc.done else IN_PROGRESS)
+        return "", (409, ALREADY_DONE if exc.done else SENT_UNHEARD if exc.unknown else IN_PROGRESS)
     except effects.NotAuthorized:
         return "", (403, UNAPPROVED)
     except effects.Unrecorded:
@@ -436,12 +439,12 @@ def finish_effect(ef: str, outcome: str, verified=None, error: str = "") -> None
 
 @contextlib.contextmanager
 def effect_guard(ef: str):
-    """An error nobody expected between the intent and the result leaves the effect failed, not open for ten
-    minutes, and then goes on up as it would have."""
+    """An error nobody expected between the intent and the result leaves the effect unknown, not open for ten
+    minutes and not failed: the action may have gone out before the error. Then it goes on up as it would have."""
     try:
         yield
     except Exception:
-        finish_effect(ef, "failed", error="other")
+        finish_effect(ef, "unknown", error="other")
         raise
 
 
@@ -552,7 +555,9 @@ def apply_gmail(jobs) -> dict:
                           if undo else gog("gmail", "trash", mid, "-a", acct)).get("error")]
             if errors:
                 finish_effect(ef, "failed", error="tool failed")
-                out[key] = {"status": "error", "error": errors[0], "at": now()}
+                # A failed undo leaves the mail in Trash: keep the row done, with the reason, so the next Apply tries again.
+                out[key] = ({**entry(read_map("applied.json"), key), "error": errors[0]} if undo
+                            else {"status": "error", "error": errors[0], "at": now()})
                 continue
             read = [message_labels(gog("gmail", "get", mid, "-a", acct)) for mid in ids]
             verified = all(labels is not None and ("TRASH" in labels) != undo for labels in read)
@@ -609,10 +614,16 @@ def apply_unsub(jobs) -> dict:
                     code = r.status
             except urllib.error.HTTPError as ex:
                 code = ex.code
-            except (urllib.error.URLError, TimeoutError) as ex:
-                slow = isinstance(ex, TimeoutError) or isinstance(getattr(ex, "reason", None), TimeoutError)
-                effects.finish(ef, "failed", error="timeout" if slow else "network")
-                out[key] = {"status": "error", "error": str(ex)[:160], "at": now()}
+            except (OSError, http.client.HTTPException) as ex:
+                why = getattr(ex, "reason", ex)
+                if isinstance(why, (ConnectionRefusedError, socket.gaierror)):
+                    # The request never left, so this is a plain failure and a retry is safe.
+                    effects.finish(ef, "failed", error="network")
+                    out[key] = {"status": "error", "error": str(ex)[:160], "at": now()}
+                else:
+                    # It may have gone out and the answer never came: the sender may have unsubscribed us.
+                    effects.finish(ef, "unknown", error="timeout" if isinstance(why, TimeoutError) else "network")
+                    out[key] = {"status": "error", "error": SENT_UNHEARD, "at": now()}
                 continue
             ok = 200 <= code < 300
             effects.finish(ef, "done" if ok else "failed", verified=True if ok else None, error="" if ok else f"http {code}")
@@ -675,7 +686,7 @@ def run_apply() -> None:
     applied_file, status_file = path("applied.json"), path("apply-status.json")
     applied: dict = {}
     jobs: dict[str, list] = {kind: [] for kind in APPLIERS}
-    held: dict = {}  # undo jobs the record refused: the row stays as it was, and the reason shows on the page
+    held: dict = {}  # undo jobs that didn't happen: the row stays as it was, and the reason shows on the page
     error = ""
     try:
         cands = config.read_json(refresh.candidates_path(), {})
@@ -703,7 +714,7 @@ def run_apply() -> None:
         error = f"Apply stopped: {exc}"[:300]
     finally:
         every = [k for j in jobs.values() for k, _, _ in j if k not in held]
-        error = error or next(iter(held.values()), "")
+        error = "; ".join(dict.fromkeys(filter(None, [error, *held.values()])))
         config.write_json(status_file, {"running": False, "finished": now(), **{k: len(j) for k, j in jobs.items()},
                                         "ok": sum(applied.get(k, {}).get("status") in ("done", "undone") for k in every),
                                         "verified": sum(bool(applied.get(k, {}).get("verified")) for k in every),

@@ -221,12 +221,23 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
         browser.close()
 
 
+IN_TRASH = "In Gmail Trash, verified"
+NOT_RECORDED = ("Assistant couldn't record this action, so it didn't run it. "
+                "Check that your disk isn't full, then try again")
+
+
+def held_page(wq, keys) -> None:
+    """Gmail rows that are in Trash, each with an undo approved."""
+    write_page({"built": "now", "gmail": {"me@example.com": [gmail_row(k, "news") for k in keys]},
+                "status": [{"name": "Gmail", "state": "ok", "detail": f"read {len(keys)} items"}]})
+    decided = "2026-11-02T10:00:00+00:00"
+    config.write_json(wq.data / "decisions.json", {k: {"decision": "undo", "at": decided} for k in keys})
+    config.write_json(wq.data / "applied.json", {k: {"status": "done", "verified": True, "at": decided} for k in keys})
+
+
 def test_an_undo_the_record_refuses_leaves_the_row_in_trash_says_why_and_can_be_applied_again(site, wq):
     """The row doesn't flip to Failed, which would make Apply forget it is still in Trash."""
-    write_page(snapshot())
-    decided = "2026-11-02T10:00:00+00:00"
-    config.write_json(wq.data / "decisions.json", {"gmail:1": {"decision": "undo", "at": decided}})
-    config.write_json(wq.data / "applied.json", {"gmail:1": {"status": "done", "verified": True, "at": decided}})
+    held_page(wq, ["g1"])
     (wq.home / ".assistant").mkdir(exist_ok=True)
     (wq.home / ".assistant/effects").write_text("a file where the record's folder should be")
     with sync_playwright() as pw:
@@ -234,18 +245,111 @@ def test_an_undo_the_record_refuses_leaves_the_row_in_trash_says_why_and_can_be_
         tab = browser.new_page()
         cov = Coverage(tab)
         tab.goto(site)
-        row_status = '.ap-row[data-key="gmail:1"] .ap-status'
-        tab.wait_for_function("document.getElementById('ap-count').textContent.includes('1 to reopen')")
-        assert tab.locator(row_status).text_content() == "In Gmail Trash, verified"
+        wait_text(tab, "#ap-count", "0 approved, 1 to reopen")
+        assert status_of(tab, "g1") == IN_TRASH
         tab.locator("#ap-apply").click()
-        reason = ("Assistant couldn't record this action, so it didn't run it. "
-                  "Check that your disk isn't full, then try again")
-        tab.wait_for_function("document.getElementById('ap-msg').textContent.includes(%s)" % json.dumps(reason), timeout=15000)
-        assert tab.locator("#ap-msg").text_content() == f"Last run: 0 of 1 verified · {reason}"
-        assert tab.locator(row_status).text_content() == "In Gmail Trash, verified"
-        assert "failed" not in tab.locator('.ap-row[data-key="gmail:1"]').get_attribute("class")
-        assert "1 to reopen" in tab.locator("#ap-count").text_content()
-        assert tab.locator("#ap-apply").is_enabled(), "the next Apply tries the undo again"
+        wait_text(tab, "#ap-msg", f"Last run: 0 of 1 verified · {NOT_RECORDED}")
+        assert status_of(tab, "g1") == f"{IN_TRASH} · Undo not done: {NOT_RECORDED}"
+        assert "failed" not in tab.locator('.ap-row[data-key="g1"]').get_attribute("class")
+        assert text(tab, "#ap-count") == "0 approved, 1 to reopen" and tab.locator("#ap-apply").is_enabled()
+        cov.snap()
+        browser.close()
+
+
+def test_two_rows_held_for_different_reasons_each_say_theirs_and_the_bar_gives_each_once(site, wq):
+    held_page(wq, ["g1", "g2", "g3"])
+    fake_tool(wq.bin, "gog", [("messages modify id-g2", {"exit": 1, "stderr": "quota exceeded"}),
+                              ("messages modify id-g3", {"exit": 1, "stderr": "quota exceeded"}),
+                              ("messages modify", {"ok": True})])
+    server.effects.begin("gmail.untrash", {"account": "me@example.com", "msgs": ["id-g1"], "row": server.pointers.row_pointer("g1")},
+                         {"kind": "decision", "ref": server.pointers.row_pointer("g1"), "at": "2026-11-02T10:00:00+00:00"})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#ap-count", "0 approved, 3 to reopen")
+        tab.locator("#ap-apply").click()
+        wait_text(tab, '.ap-row[data-key="g1"] .ap-status', f"{IN_TRASH} · Undo not done: {server.IN_PROGRESS}")
+        assert status_of(tab, "g2") == status_of(tab, "g3")
+        assert status_of(tab, "g2").startswith(f"{IN_TRASH} · Undo not done: ") and "quota exceeded" in status_of(tab, "g2")
+        bar = text(tab, "#ap-msg")
+        assert bar.startswith(f"Last run: 0 of 3 verified · {server.IN_PROGRESS}; ") and bar.count("quota exceeded") == 1
+        assert text(tab, "#ap-count") == "0 approved, 3 to reopen" and tab.locator("#ap-apply").is_enabled()
+        cov.snap()
+        browser.close()
+
+
+def test_an_undo_gmail_refuses_stays_in_trash_and_the_next_apply_puts_it_back(site, wq):
+    held_page(wq, ["g1"])
+    fake_tool(wq.bin, "gog", [("messages modify", {"exit": 1, "stderr": "quota exceeded"})])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#ap-count", "0 approved, 1 to reopen")
+        tab.locator("#ap-apply").click()
+        tab.wait_for_function("document.querySelector('.ap-row[data-key=\"g1\"] .ap-status').textContent.includes('quota exceeded')")
+        assert status_of(tab, "g1").startswith(f"{IN_TRASH} · Undo not done: ")
+        assert text(tab, "#ap-count") == "0 approved, 1 to reopen" and tab.locator("#ap-apply").is_enabled()
+        fake_tool(wq.bin, "gog", [("messages modify", {"ok": True}), ("gmail get", {"message": {"labelIds": ["INBOX"]}})])
+        tab.locator("#ap-apply").click()
+        wait_text(tab, '.ap-row[data-key="g1"] .ap-status', "Back in your inbox")
+        wait_text(tab, "#ap-msg", "Last run: 1 of 1 verified")
+        cov.snap()
+        browser.close()
+
+
+def test_an_unsubscribe_sent_with_no_answer_is_held_says_so_and_goes_again_only_when_approved_again(site, wq, monkeypatch):
+    import http.client
+    cands = write_page({"built": "now", "gmail": {"me@example.com": [gmail_row("u1", "note", "a@promo.example", "https://promo.example/a")]},
+                        "status": [{"name": "Gmail", "state": "ok", "detail": "read 1 item"}]})
+    key = next(k for k, c in cands.items() if c["kind"] == "unsub")
+    monkeypatch.setattr(server, "unsafe_target", lambda url: "")
+    answers = []
+
+    class Opener:
+        def open(self, req, timeout):
+            if not answers:
+                answers.append("cut off")
+                raise http.client.RemoteDisconnected("Remote end closed connection without response")
+            answers.append("sent")
+
+            class Done:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+            return Done()
+    monkeypatch.setattr(server.urllib.request, "build_opener", lambda *a: Opener())
+    row = f'.ap-row[data-key="{key}"]'
+    held = ("Assistant sent this but didn't hear back, so it may have gone through. "
+            "Approve it again to send it once more")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#unsubscribe")
+        tab.evaluate("document.querySelector('#unsubscribe details').open = true")
+        tab.locator(f"{row} .ap-ok").click()
+        wait_text(tab, "#ap-count", "1 approved")
+        tab.locator("#ap-apply").click()
+        wait_text(tab, f"{row} .ap-status", f"Failed: {held}")
+        wait_text(tab, "#ap-msg", "Last run: 0 of 1 verified")
+        assert "Unsubscribed" not in status_of(tab, key) and answers == ["cut off"]
+        assert text(tab, "#ap-count") == "1 approved", "the row is still waiting for an approval"
+        tab.locator("#ap-apply").click()  # a second Apply with the old approval sends nothing
+        tab.wait_for_function("document.getElementById('ap-apply').textContent === 'Apply approvals' && !document.getElementById('ap-apply').disabled")
+        assert answers == ["cut off"] and status_of(tab, key) == f"Failed: {held}"
+        time.sleep(1.2)  # an approval has to be later than the answer that never came
+        tab.locator(f"{row} .ap-ok").click()
+        tab.locator("#ap-apply").click()
+        wait_text(tab, f"{row} .ap-status", "Unsubscribed")
+        assert answers == ["cut off", "sent"]
         cov.snap()
         browser.close()
 

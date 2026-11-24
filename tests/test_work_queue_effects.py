@@ -1,8 +1,10 @@
 """The Work queue records every Gmail action and unsubscribe in the effects ledger before it acts."""
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import socket
 import threading
 from datetime import datetime, timezone
 import urllib.error
@@ -290,20 +292,53 @@ def test_the_intent_is_recorded_before_the_request_is_sent(wq, monkeypatch, open
     assert seen == [[None]]
 
 
-@pytest.mark.parametrize("raised, error", [
-    (urllib.error.URLError("refused"), "network"),
-    (urllib.error.URLError(TimeoutError("slow")), "timeout"),
-    (TimeoutError("slow"), "timeout"),
-])
-def test_an_unsubscribe_that_gets_no_answer_is_recorded_failed(wq, monkeypatch, open_net, raised, error):
+def opener_raising(monkeypatch, raised):
     class Opener:
         def open(self, req, timeout):
             raise raised
     monkeypatch.setattr(server.urllib.request, "build_opener", lambda *a: Opener())
+
+
+@pytest.mark.parametrize("raised", [
+    urllib.error.URLError(ConnectionRefusedError("refused")),
+    urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")),
+    ConnectionRefusedError("refused"),
+])
+def test_an_unsubscribe_that_never_left_is_recorded_failed_and_may_be_sent_again(wq, monkeypatch, open_net, raised):
+    opener_raising(monkeypatch, raised)
     out = server.apply_unsub(unsub_job("https://news.example.com/u"))
-    assert out["u1"]["status"] == "error"
+    assert out["u1"]["status"] == "error" and out["u1"]["error"] != server.SENT_UNHEARD
     [e] = recorded(wq)
-    assert (e["outcome"], e["error"], e["verified"]) == ("failed", error, None)
+    assert (e["outcome"], e["error"], e["verified"]) == ("failed", "network", None)
+    sent = Sent()
+    monkeypatch.setattr(server.urllib.request, "build_opener", sent.build)
+    assert server.apply_unsub(unsub_job("https://news.example.com/u"))["u1"]["status"] == "done"
+
+
+@pytest.mark.parametrize("raised, error", [
+    (urllib.error.URLError(TimeoutError("slow")), "timeout"),
+    (TimeoutError("slow"), "timeout"),
+    (http.client.RemoteDisconnected("Remote end closed connection without response"), "network"),
+    (ConnectionResetError("reset"), "network"),
+    (urllib.error.URLError("odd"), "network"),
+    (http.client.BadStatusLine("junk"), "network"),
+])
+def test_an_unsubscribe_sent_with_no_answer_is_recorded_unknown_and_not_sent_again_without_a_new_approval(
+        wq, monkeypatch, open_net, fixed_clock, raised, error):
+    opener_raising(monkeypatch, raised)
+    out = server.apply_unsub(unsub_job("https://news.example.com/u"))
+    assert out["u1"] == {"status": "error", "error": server.SENT_UNHEARD, "at": out["u1"]["at"]}
+    [e] = recorded(wq)
+    assert (e["outcome"], e["error"], e["verified"]) == ("unknown", error, None)
+    assert [u["id"] for u in effects.uncertain()] == [e["id"]]
+    sent = Sent()
+    monkeypatch.setattr(server.urllib.request, "build_opener", sent.build)
+    for _ in range(3):  # three Apply runs, and nothing goes out
+        assert server.apply_unsub(unsub_job("https://news.example.com/u"))["u1"]["error"] == server.SENT_UNHEARD
+    assert sent.urls == []
+    fixed_clock.t += 600  # approving it again, later than the result, sends it once more
+    assert server.apply_unsub(unsub_job("https://news.example.com/u", at="2026-11-02T11:35:00+00:00"))["u1"]["status"] == "done"
+    assert len(sent.urls) == 1
 
 
 def test_a_sender_that_answers_an_error_is_recorded_failed_with_its_status(wq, unsub_site, open_net):
@@ -493,23 +528,19 @@ def test_a_gmail_address_with_an_apostrophe_is_archived(wq):
 
 # --- an error nobody expected leaves no open intent ---------------------------------------------------------
 
-def test_an_unsubscribe_cut_off_by_the_sender_is_recorded_failed_and_the_error_goes_on_up(wq, monkeypatch, open_net):
-    import http.client
-
-    class Cut:
-        def open(self, req, timeout):
-            raise http.client.RemoteDisconnected("Remote end closed connection without response")
-    monkeypatch.setattr(server.urllib.request, "build_opener", lambda *a: Cut())
-    with pytest.raises(http.client.RemoteDisconnected):
+def test_an_error_nobody_expected_after_the_request_went_out_is_recorded_unknown_and_goes_on_up(wq, monkeypatch, open_net):
+    opener_raising(monkeypatch, RuntimeError("something nobody planned for"))
+    with pytest.raises(RuntimeError):
         server.apply_unsub(unsub_job("https://news.example.com/u"))
     [e] = recorded(wq)
-    assert (e["outcome"], e["error"]) == ("failed", "other") and effects.unfinished(0) == []
+    assert (e["outcome"], e["error"]) == ("unknown", "other") and effects.unfinished(0) == []
     sent = Sent()
     monkeypatch.setattr(server.urllib.request, "build_opener", sent.build)
-    assert server.apply_unsub(unsub_job("https://news.example.com/u"))["u1"]["status"] == "done"  # not held off
+    assert server.apply_unsub(unsub_job("https://news.example.com/u"))["u1"]["error"] == server.SENT_UNHEARD
+    assert sent.urls == []
 
 
-def test_a_gmail_action_or_trash_that_dies_unexpectedly_is_recorded_failed_and_the_error_goes_on_up(wq, monkeypatch):
+def test_a_gmail_action_or_trash_that_dies_unexpectedly_is_recorded_unknown_and_the_error_goes_on_up(wq, monkeypatch):
     gmail(wq, thread([]))
 
     def boom(*args):
@@ -519,7 +550,19 @@ def test_a_gmail_action_or_trash_that_dies_unexpectedly_is_recorded_failed_and_t
         server.gmail_action({"key": KEY, "action": "archive"})
     with pytest.raises(RuntimeError):
         server.apply_gmail(gmail_job())
-    assert [(e["outcome"], e["error"]) for e in recorded(wq)] == [("failed", "other")] * 2 and effects.unfinished(0) == []
+    assert [(e["outcome"], e["error"]) for e in recorded(wq)] == [("unknown", "other")] * 2 and effects.unfinished(0) == []
+
+
+def test_a_read_back_that_dies_after_gmail_archived_is_unknown_not_failed(wq, monkeypatch):
+    gmail(wq, thread([]))
+
+    def boom(*args):
+        raise RuntimeError("read-back crashed")
+    monkeypatch.setattr(server, "thread_labels", boom)
+    with pytest.raises(RuntimeError):
+        server.gmail_action({"key": KEY, "action": "archive"})
+    assert recorded(wq)[0]["outcome"] == "unknown"
+    assert effects.latest_undoable("gmail.unarchive", {"account": ACCT, "thread": "t1"}) == ""  # nothing to link an undo to
 
 
 # --- an undo the record refuses leaves the row as it was ----------------------------------------------------
@@ -552,6 +595,49 @@ def test_a_trash_the_record_refuses_is_an_error_the_next_apply_tries_again(wq, m
     (wq.home / ".assistant/effects").unlink()
     server.run_apply()
     assert json.loads((wq.data / "applied.json").read_text())["g1"]["status"] == "done"
+
+
+def held_setup(wq, keys):
+    """Rows that are in Trash with an undo approved, each with its own message."""
+    config.write_json(refresh.candidates_path(), {k: {"kind": "gmail", "account": ACCT, "msg_ids": [f"m{n}"]}
+                                                  for n, k in enumerate(keys, 1)})
+    config.write_json(wq.data / "decisions.json", {k: {"decision": "undo", "at": AT} for k in keys})
+    config.write_json(wq.data / "applied.json", {k: {"status": "done", "verified": True, "at": "before"} for k in keys})
+
+
+def status_of(wq) -> dict:
+    return json.loads((wq.data / "apply-status.json").read_text())
+
+
+def test_each_row_an_undo_didnt_happen_for_keeps_its_own_reason_and_the_bar_gives_each_reason_once(wq):
+    held_setup(wq, ["g1", "g2", "g3"])
+    fake_tool(wq.bin, "gog", [("messages modify m2", {"exit": 1, "stderr": "quota exceeded"}),
+                              ("messages modify m3", {"exit": 1, "stderr": "quota exceeded"}),
+                              ("messages modify", {"ok": True}), ("gmail get", {"message": {"labelIds": ["INBOX"]}})])
+    effects.begin("gmail.untrash", {"account": ACCT, "msgs": ["m1"], "row": pointers.row_pointer("g1")},
+                  {"kind": "decision", "ref": pointers.row_pointer("g1"), "at": AT})  # g1 is already being put back
+    server.run_apply()
+    applied_now = json.loads((wq.data / "applied.json").read_text())
+    assert applied_now["g1"] == {"status": "done", "verified": True, "at": "before", "error": server.IN_PROGRESS}
+    assert applied_now["g2"]["status"] == applied_now["g3"]["status"] == "done"
+    assert "quota exceeded" in applied_now["g2"]["error"] and applied_now["g2"]["error"] == applied_now["g3"]["error"]
+    status = status_of(wq)
+    assert status["error"] == f"{server.IN_PROGRESS}; {applied_now['g2']['error']}", "each distinct reason once"
+    assert (status["gmail"], status["ok"], status["verified"]) == (3, 0, 0)
+
+
+def test_an_undo_gmail_itself_refuses_keeps_the_row_in_trash_and_the_next_apply_puts_it_back(wq):
+    held_setup(wq, ["g1"])
+    fake_tool(wq.bin, "gog", [("messages modify", {"exit": 1, "stderr": "quota exceeded"})])
+    server.run_apply()
+    row = json.loads((wq.data / "applied.json").read_text())["g1"]
+    assert row["status"] == "done" and row["verified"] is True and "quota exceeded" in row["error"]
+    assert status_of(wq)["error"] == row["error"]
+    fake_tool(wq.bin, "gog", [("messages modify", {"ok": True}), ("gmail get", {"message": {"labelIds": ["INBOX"]}})])
+    server.run_apply()
+    row = json.loads((wq.data / "applied.json").read_text())["g1"]
+    assert (row["status"], row["verified"], "error" in row) == ("undone", True, False)
+    assert "error" not in status_of(wq)
 
 
 # --- an unsubscribe that went through stays done ------------------------------------------------------------

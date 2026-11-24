@@ -893,6 +893,264 @@ def test_two_processes_beginning_one_target_at_the_same_moment_record_one_intent
     assert len((home / ".assistant/effects/effects.jsonl").read_text().splitlines()) == 1
 
 
+# --- an outcome nobody knows ----------------------------------------------------------------------------------
+
+UNSUB_TARGET = {"row": "row:0123456789abcdef", "host": "news.example.com"}
+
+
+def test_an_effect_sent_with_no_answer_is_unknown_and_holds_back_a_repeat_that_cant_be_undone(ledger, clock):
+    eid = effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    assert effects.finish(eid, "unknown", error="timeout")
+    assert effects.history()[0]["outcome"] == "unknown" and effects.history()[0]["error"] == "timeout"
+    assert effects.unfinished(0) == [] and [e["id"] for e in effects.uncertain()] == [eid]
+    with pytest.raises(effects.Duplicate) as caught:
+        effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    assert (caught.value.done, caught.value.unknown) == (False, True)
+    clock.t += 5
+    assert effects.begin(UNSUB, UNSUB_TARGET, {**DECISION, "at": datetime.fromtimestamp(clock.t, timezone.utc).isoformat()})
+
+
+def test_a_done_effect_is_reported_as_done_even_when_an_unknown_one_is_older(ledger, clock):
+    effects.finish(effects.begin(UNSUB, UNSUB_TARGET, DECISION), "unknown")
+    clock.t += 5
+    later = {**DECISION, "at": datetime.fromtimestamp(clock.t, timezone.utc).isoformat()}
+    effects.finish(effects.begin(UNSUB, UNSUB_TARGET, later), "done")
+    with pytest.raises(effects.Duplicate) as caught:
+        effects.begin(UNSUB, UNSUB_TARGET, later)
+    assert (caught.value.done, caught.value.unknown) == (True, False)
+
+
+def test_an_unknown_reversible_effect_may_be_repeated_but_is_never_something_an_undo_links_to(ledger):
+    first = archive()
+    effects.finish(first, "unknown", error="other")
+    assert effects.latest_undoable("gmail.unarchive", TARGET) == ""
+    with pytest.raises(effects.NotAuthorized):
+        effects.begin("gmail.unarchive", TARGET, TAP, undoes=first)
+    assert archive().startswith("ef-")  # reversible: a repeat is harmless
+    assert [e["id"] for e in effects.uncertain()] == [first]
+
+
+def test_uncertain_lists_only_effects_whose_outcome_is_unknown(ledger):
+    effects.finish(archive(target={"thread": "t1"}), "done")
+    effects.finish(archive(target={"thread": "t2"}), "failed", error="tool failed")
+    archive(target={"thread": "t3"})
+    assert effects.uncertain() == []
+    unsure = archive(target={"thread": "t4"})
+    effects.finish(unsure, "unknown", error="timeout")
+    assert [e["id"] for e in effects.uncertain()] == [unsure]
+
+
+def test_an_approval_dated_a_little_ahead_cant_outrank_a_result_that_is_newer(ledger, clock):
+    effects.finish(effects.begin(UNSUB, UNSUB_TARGET, DECISION), "done")
+    ahead = {**DECISION, "at": datetime.fromtimestamp(clock.t + 59, timezone.utc).isoformat()}
+    for _ in range(3):
+        with pytest.raises(effects.Duplicate):
+            effects.begin(UNSUB, UNSUB_TARGET, ahead)
+    clock.t += 30  # by then the approval is no longer ahead of the clock, and is newer than the result
+    assert effects.begin(UNSUB, UNSUB_TARGET, ahead).startswith("ef-")
+    assert len(effects.history("mail.unsubscribe")) == 2
+
+
+# --- an id that looks like a secret ---------------------------------------------------------------------------
+
+SECRET_ID = "-".join(["xoxb", "111111111", "222222222", "AbCdEfGhIjKlMnOpQrStUv0123456789"])
+
+
+@pytest.mark.parametrize("target", [{"thread": SECRET_ID}, {"msgs": [SECRET_ID]}, {"msgs": ["m1", SECRET_ID]}])
+def test_a_thread_or_message_id_that_scrubbing_would_change_is_refused(ledger, target):
+    with pytest.raises(ValueError) as caught:
+        effects.begin("gmail.archive" if "thread" in target else "gmail.trash", {**target, **(
+            {"account": "me@example.com", "row": "row:0123456789abcdef"} if "msgs" in target else {})},
+            TAP if "thread" in target else DECISION)
+    assert "xoxb" not in str(caught.value) and not ledger.exists()
+
+
+def test_two_token_shaped_thread_ids_never_become_one_target(ledger):
+    other = SECRET_ID.replace("AbCd", "ZzZz")
+    for tid in (SECRET_ID, other):
+        with pytest.raises(ValueError):
+            archive(target={"thread": tid})
+
+
+# --- only clean_target sets a conversation's count and digest -------------------------------------------------
+
+def test_a_caller_cant_set_a_conversations_count_or_digest(ledger):
+    for target in ({"msg_count": "5"}, {"msg_digest": "0123456789abcdef"},
+                   {"msgs": ["m1"], "msg_count": "5"}, {"msgs": [f"m{n}" for n in range(150)], "msg_digest": "0" * 16}):
+        with pytest.raises(ValueError):
+            effects.begin("gmail.trash", {**target, "account": "me@example.com"}, DECISION)
+    assert not ledger.exists()
+
+
+def test_a_target_read_back_from_the_ledger_may_hold_them_but_not_with_the_ids(ledger):
+    stored = {"msg_count": "150", "msg_digest": "0123456789abcdef"}
+    assert effects.clean_target(stored, stored=True) == stored
+    with pytest.raises(ValueError):
+        effects.clean_target({**stored, "msgs": ["m1"]}, stored=True)
+    with pytest.raises(ValueError):
+        effects.clean_target({"msg_count": "x"}, stored=True)
+
+
+# --- the address shape ----------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("account", ["Ana Lee <ana@example.com>", "ana@example.com, bob@example.com", "ana@example.com (work)",
+                                     "ana lee@example.com", "ana@exa mple.com", "ana@example.com\n", "ana@exämple.com",
+                                     "<ana>@example.com", "ana@@example.com", "@example.com", "ana@"])
+def test_a_whole_phrase_is_not_a_gmail_address(account):
+    with pytest.raises(ValueError):
+        effects.clean_target({"account": account})
+
+
+# --- a file rewritten under a long-lived reader ---------------------------------------------------------------
+
+def test_an_older_copy_of_the_ledger_put_back_and_then_added_to_is_read_again(ledger, clock):
+    first = archive(target={"thread": "t1"})
+    effects.finish(first, "done")
+    snapshot = ledger.read_bytes()
+    for n in range(2, 6):
+        effects.finish(archive(target={"thread": f"t{n}"}), "done")
+    assert len(effects.history()) == 5
+    ledger.write_bytes(snapshot)  # a backup copied back, on the same file
+    with open(ledger, "ab") as f:  # then added to, past the position the reader had reached
+        for n in range(8):
+            f.write(intent_line(f"ef-{n:016x}", clock.t, f"x{n}").encode() + b"\n")
+    assert [e["id"] for e in effects.history(limit=100)] == full_ids()
+    assert len(effects.history(limit=100)) == 9
+
+
+def full_ids():
+    return [e["id"] for e in full()]
+
+
+def test_a_same_size_rewrite_that_changes_a_result_is_noticed(ledger):
+    eid = archive()
+    effects.finish(eid, "done", verified=True)
+    assert effects.history()[0]["verified"] is True
+    ledger.write_bytes(ledger.read_bytes().replace(b'"verified":true', b'"verified":null'))
+    assert effects.history()[0]["verified"] is None and effects.history() == full()
+
+
+def test_a_row_that_isnt_what_the_reader_remembers_makes_it_read_again(ledger):
+    ids = []
+    for n in range(4):
+        ids.append(archive(target={"thread": f"t{n}"}))
+        effects.finish(ids[-1], "done")
+    assert len(effects.history()) == 4
+    raw = ledger.read_bytes()
+    ledger.write_bytes(raw.replace(ids[1].encode(), b"ef-9999999999999999"))  # in the middle: head and tail unchanged
+    assert effects.history(limit=100) == full() and "ef-9999999999999999" in {e["id"] for e in effects.history()}
+
+
+def test_a_result_that_differs_from_the_one_remembered_makes_it_read_again(ledger):
+    for n in range(4):
+        effects.finish(archive(target={"thread": f"t{n}"}), "done")
+    assert [e["outcome"] for e in effects.history(limit=100)] == ["done"] * 4
+    raw = ledger.read_bytes()
+    first_result = raw.index(b'"outcome":"done"')
+    ledger.write_bytes(raw[:first_result] + b'"outcome":"gone"' + raw[first_result + len(b'"outcome":"done"'):])
+    assert effects.history(limit=100) == full()
+    assert sorted(e["outcome"] or "-" for e in effects.history(limit=100)) == ["-", "done", "done", "done"]
+
+
+# --- a ledger that can't be read -----------------------------------------------------------------------------
+
+def test_an_action_is_not_recorded_when_the_ledger_cant_be_read_and_reads_say_nothing(ledger, monkeypatch):
+    effects.finish(effects.begin(UNSUB, UNSUB_TARGET, DECISION), "done")
+    real = os.pread
+
+    def boom(*a):
+        raise OSError(5, "I/O error")
+    monkeypatch.setattr(os, "pread", boom)
+    effects._forget()
+    with pytest.raises(effects.Unrecorded):
+        effects.begin(UNSUB, UNSUB_TARGET, DECISION)  # it must not guess that nothing was recorded
+    assert effects.history() == [] and effects.uncertain() == [] and effects.finish("ef-0123456789abcdef", "done") is False
+    monkeypatch.setattr(os, "pread", real)
+    assert len(effects.history()) == 1
+
+
+# --- what the checks guard ------------------------------------------------------------------------------------
+
+def test_only_one_thread_at_a_time_reads_rows_into_the_shared_state(ledger, monkeypatch):
+    import threading
+    import time
+    for n in range(30):
+        put(ledger, intent_line(f"ef-{n:016x}", T0 - 1000, f"t{n}"))
+    real = effects._State.ingest
+    inside, most, guard = [0], [0], threading.Lock()
+
+    def slow(self, raw, where):
+        with guard:
+            inside[0] += 1
+            most[0] = max(most[0], inside[0])
+        time.sleep(0.002)  # long enough for another thread to arrive while this one is reading
+        real(self, raw, where)
+        with guard:
+            inside[0] -= 1
+    monkeypatch.setattr(effects._State, "ingest", slow)
+    errors = []
+
+    def reader():
+        try:
+            effects.history(limit=5)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def writer(name):
+        try:
+            effects.finish(effects.begin("gmail.archive", {"thread": name}, TAP), "done")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+    threads = [threading.Thread(target=reader) for _ in range(3)] + [threading.Thread(target=writer, args=(n,)) for n in ("wa", "wb")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert errors == [] and most[0] == 1, "two threads were reading into the state at once"
+    seen = effects.history(limit=1000)
+    assert effects._STATE.offset == ledger.stat().st_size and seen == full()
+
+
+def test_a_ledger_with_another_first_row_is_another_ledger_even_when_the_rest_matches(ledger):
+    ids = []
+    for n in range(3):
+        ids.append(archive(target={"thread": f"t{n}"}))
+        effects.finish(ids[-1], "done")
+    effects.history()
+    other = "ef-9999999999999999"
+    ledger.write_bytes(ledger.read_bytes().replace(ids[0].encode(), other.encode()))  # same size, same end
+    effects._sync()
+    assert set(effects._STATE.effects) == {other, ids[1], ids[2]}
+
+
+def test_a_same_size_rewrite_that_moves_a_result_in_time_changes_what_a_repeat_is_allowed(ledger, clock):
+    effects.finish(effects.begin(UNSUB, UNSUB_TARGET, DECISION), "done")
+    between = {**DECISION, "at": datetime.fromtimestamp(clock.t - 2, timezone.utc).isoformat()}
+    with pytest.raises(effects.Duplicate):
+        effects.begin(UNSUB, UNSUB_TARGET, between)  # the result is newer than that approval
+    old, new = str(clock.t).encode(), str(clock.t - 600).encode()
+    assert len(old) == len(new)
+    ledger.write_bytes(ledger.read_bytes().replace(b'"t":' + old + b',"outcome"', b'"t":' + new + b',"outcome"'))
+    assert effects.begin(UNSUB, UNSUB_TARGET, between).startswith("ef-")  # as a fresh read would say
+
+
+def test_a_second_intent_row_for_an_id_already_seen_is_ignored(ledger):
+    first = intent_line("ef-0123456789abcdef", T0, "t1")
+    again = intent_line("ef-0123456789abcdef", T0, "t2").replace("gmail.archive", "gmail.mark_read")
+    put(ledger, first, again)
+    [e] = effects.history()
+    assert (e["class"], e["target"]["thread"]) == ("gmail.archive", "t1")
+
+
+def test_a_result_row_counts_only_for_an_intent_that_is_still_open(ledger):
+    first = intent_line("ef-0123456789abcdef", T0, "t1")
+    result = lambda outcome: json.dumps({"v": 1, "kind": "result", "id": "ef-0123456789abcdef", "at": "x", "t": T0,  # noqa: E731
+                                         "outcome": outcome, "verified": None, "error": ""})
+    put(ledger, first, result("done"), result("failed"), result("unknown"))
+    [e] = effects.history()
+    assert e["outcome"] == "done" and effects.uncertain() == []
+
+
 # --- the module loads on the system Python --------------------------------------------------------------------
 
 def test_the_module_parses_as_python_3_9_and_imports_only_the_standard_library_and_assistant():

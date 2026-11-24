@@ -13,15 +13,18 @@ unsubscribes are recorded. Slack saves and typing into agent sessions follow.
 
 - **Recorded first.** Assistant writes a line saying what it is about to do
   and waits until it's on disk. When it can't, it doesn't do the action. The
-  page says "Assistant couldn't record this action, so it didn't run it."
+  page says "Assistant couldn't record this action, so it didn't run it.
+  Check that your disk isn't full, then try again"
 - **Approved first, when it can't be undone.** Each kind of action says
   whether it can be undone and what approval it needs. An unsubscribe can't be
   undone, so it needs an approval you gave on the page. A button press, or a
-  rule, doesn't count. An unsubscribe that went through is never sent again.
-  Unsubscribing can't be undone, because the sender has already received the
-  request.
+  rule, doesn't count. An unsubscribe that went through is never sent again,
+  and neither is one that was sent and never answered, unless you approve it
+  again. Unsubscribing can't be undone, because the sender has already
+  received the request.
 - **No double runs.** A second press while the first is still working is
-  turned away ("This is already in progress"). A line with no result that is
+  turned away ("This is already in progress, or Assistant stopped partway
+  through it. Try again in ten minutes"). A line with no result that is
   more than ten minutes old stops counting, so a crash holds that action for
   ten minutes, not for good.
 - **Only ever added to.** Lines are appended. Nothing rewrites or deletes one,
@@ -49,9 +52,23 @@ One JSON object per line. An action writes two lines with the same id:
 
 `verified` is `true` when Gmail (or, for an unsubscribe, the sender) confirmed
 the change, `false` when Gmail showed something else, and `null` when it
-couldn't be checked. An intent with no
-result is an action whose outcome is unknown, for example because Assistant
-stopped partway.
+couldn't be checked.
+
+The result's `outcome` is one of three words:
+
+- `done`: it happened.
+- `failed`: it didn't happen. Gmail or the sender answered with an error, or
+  the request never left your Mac.
+- `unknown`: it may or may not have happened. Assistant sent it and never
+  heard back (a time-out, a dropped connection, or an error nobody
+  expected). An unsubscribe in this state isn't sent again unless you approve
+  it again, and the page says "Assistant sent this but didn't hear back, so it
+  may have gone through. Approve it again to send it once more". An undo never
+  points at an action whose outcome is unknown.
+
+An intent with no result at all is an action Assistant started and never
+finished, for example because it stopped partway. To find the ones whose
+outcome is unknown, run `grep '"outcome":"unknown"' ~/.assistant/effects/effects.jsonl`.
 
 ## What can be undone
 
@@ -67,15 +84,19 @@ stopped partway.
 | Reopen a Slack save (not recorded yet) | Mark done | An approval |
 | Type into an agent session (not recorded yet) | Can't be undone | A button press, a flag on the task, or a rule you turned on |
 
-An undo names the action it reverses, and is refused unless that action
-succeeded, is on the same conversation, and hasn't been undone already.
+When the record has the action an undo reverses, the undo names it and is
+refused unless that action succeeded, is on the same conversation and hasn't
+been undone already. An undo of something from before the record existed just
+runs.
 
 ## Reading it and keeping it
 
 To see the last actions, run `tail -n 20 ~/.assistant/effects/effects.jsonl`.
 The file `effects.lock` sits beside it; it's empty and only makes two Assistant
 processes take turns. Each action takes about 450 bytes, so a year of normal
-use is a few tens of megabytes.
+use is typically 5 to 30 megabytes. Assistant keeps what it has read in
+memory: about 1 MB for each thousand actions, and the first action after it
+starts is slower with a very large file.
 
 The file is never trimmed. Deleting it also deletes the record that stops a
 second unsubscribe, so leave it alone unless you mean to start over.
