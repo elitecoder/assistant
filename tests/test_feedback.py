@@ -94,6 +94,8 @@ def test_a_result_is_about_a_task_and_a_page_note_about_nothing(home):
     feedback.record("tell", "", "page", "work-queue", words="The order is off")
     with pytest.raises(ValueError):
         feedback.record("tell", ROW, "page", "work-queue", words="x")
+    with pytest.raises(ValueError):
+        feedback.record("kept_result", ROW, "result", "work-queue")
     assert [r["subject"] if "subject" in r else "" for r in lines(home)] == ["td-051", ""]
 
 
