@@ -3,6 +3,7 @@ replaced. Nothing reads the id yet, so nothing a user sees may change."""
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import importlib.util
 import json
 import os
@@ -18,7 +19,7 @@ import pytest
 from assistant import goals, pointers, todostore, triage as policy_triage
 from work_queue import config, refresh, server, todo_result, traces
 from work_queue_fakes import fake_tool, wq  # noqa: F401
-from test_work_queue_inputs import NOW
+from test_work_queue_inputs import ACCT, NOW, gmail_fakes
 
 REPO = Path(__file__).resolve().parent.parent
 ROW = "https://x.slack.com/archives/C1/p1"
@@ -39,7 +40,7 @@ def day(offset: int) -> str:
     return (date.fromisoformat(DAY) + timedelta(days=offset)).isoformat()
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def today(monkeypatch):
     """The refresh's clock, fixed, so no test depends on the date."""
     monkeypatch.setattr(traces, "today", lambda: DAY)
@@ -59,7 +60,7 @@ def write_todos(wq, items, **extra):
 
 # ─── Work queue rows: the registry ───────────────────────────────────────────
 
-def test_a_refresh_mints_an_id_for_each_new_row_and_keeps_it_across_refreshes_and_a_new_title(wq, today):
+def test_a_refresh_mints_an_id_for_each_new_row_and_keeps_it_across_refreshes_and_a_new_title(wq):
     fake_tool(wq.bin, "gh", [("search prs", [PR])])
     wq.sources({"github": {"skip_authors": []}})
     refresh.run(now=NOW)
@@ -71,35 +72,34 @@ def test_a_refresh_mints_an_id_for_each_new_row_and_keeps_it_across_refreshes_an
     assert "A new title" in refresh.site_path().read_text()
 
 
-def test_a_refresh_notes_the_day_a_row_was_seen_and_writes_nothing_when_that_hasnt_changed(wq, today, monkeypatch):
-    traces.stamp([ROW], day(-3))
+def test_a_refresh_notes_the_day_a_row_was_seen_and_writes_nothing_when_that_hasnt_changed(wq):
+    traces.stamp([[ROW]], day(-3))
     first = traces.path().read_text()
     os.utime(traces.path(), (1, 1))
-    traces.stamp([ROW], day(-3))
+    traces.stamp([[ROW]], day(-3))
     assert traces.path().read_text() == first and traces.path().stat().st_mtime == 1
-    traces.stamp([ROW], DAY)
+    traces.stamp([[ROW]], DAY)
     assert registry()[ROW] == {"trace": json.loads(first)[ROW]["trace"], "seen": DAY}
 
 
-def test_rows_are_the_links_of_every_source_and_a_row_without_a_link_is_skipped():
-    snap = {"slack": [{"link": "https://a.slack.com/1"}, {"link": None}], "github": [{"link": "https://g/1"}],
-            "outlook": [{"link": "https://o/1"}, {"link": "http://not-secure"}],
-            "gmail": {"me@x.com": [{"link": "https://m/1"}]}}
-    assert refresh.row_links(snap) == ["https://a.slack.com/1", "https://g/1", "https://o/1", "https://m/1"]
-    assert refresh.row_links({}) == []
-
-
 def test_an_id_once_stored_is_never_replaced(wq):
-    traces.stamp([ROW], day(-1))
+    traces.stamp([[ROW]], day(-1))
     kept = registry()[ROW]["trace"]
     for _ in range(3):
-        traces.stamp([ROW, ROW + "2"], DAY)
-        assert traces.trace_for(ROW) == kept
+        traces.stamp([[ROW], [ROW, ROW + "2"], [ROW + "2", ROW]], DAY)
+        assert traces.trace_for(ROW) == kept and traces.lookup(ROW) == kept
         assert registry()[ROW]["trace"] == kept
+    assert registry()[ROW + "2"]["trace"] == kept  # a key that had none takes the id its group already holds
+
+
+def test_a_key_that_has_an_id_keeps_it_when_the_other_keys_of_its_group_hold_another(wq):
+    config.write_json(traces.path(), {"https://a": {"trace": OWN, "seen": DAY}, "https://b": {"trace": LEGACY, "seen": DAY}})
+    traces.stamp([["https://a", "https://b", "https://c"]], DAY)
+    assert {k: v["trace"] for k, v in registry().items()} == {"https://a": OWN, "https://b": LEGACY, "https://c": OWN}
 
 
 def test_a_row_not_seen_for_60_days_is_dropped_unless_a_sent_row_refers_to_it(wq):
-    traces.config.write_json(traces.path(), {
+    config.write_json(traces.path(), {
         "https://old": {"trace": OWN, "seen": day(-61)}, "https://edge": {"trace": OWN, "seen": day(-60)},
         ROW: {"trace": LEGACY, "seen": day(-200)}})
     config.write_json(wq.data / "queued.json", {ROW: {"id": "td-1"}})
@@ -114,37 +114,65 @@ def test_the_file_holds_at_most_5000_rows_and_drops_the_oldest_first(wq, monkeyp
     config.write_json(wq.data / "queued.json", {"https://r/7": {"id": "td-1"}})
     traces.stamp([], DAY)
     assert sorted(registry()) == [f"https://r/{n}" for n in (0, 1, 2, 3, 7)]
-    assert traces.MAX_ENTRIES == 5 and traces.KEEP_DAYS == 60
 
 
 def test_the_limits_are_60_days_and_5000_rows():
     assert (traces.KEEP_DAYS, traces.MAX_ENTRIES) == (60, 5000)
 
 
+def test_rows_seen_in_this_refresh_are_kept_even_when_there_are_more_than_the_cap(wq, monkeypatch, capsys):
+    monkeypatch.setattr(traces, "MAX_ENTRIES", 3)
+    config.write_json(traces.path(), {"https://gone": {"trace": OWN, "seen": day(-1)}})
+    live = [[f"https://live/{n}"] for n in range(5)]
+    traces.stamp(live, DAY)
+    first = registry()
+    assert sorted(first) == sorted(g[0] for g in live) and "5 rows are live" in capsys.readouterr().err
+    traces.stamp(live, DAY)  # the same rows get the same ids at the next refresh
+    assert registry() == first
+
+
 def test_a_sent_row_keeps_the_id_its_queued_entry_holds_when_the_registry_is_lost(wq):
     config.write_json(wq.data / "queued.json", {ROW: {"id": "td-1", "trace": OWN}, "https://b": {"id": "td-2", "trace": "bad"}})
-    traces.stamp([ROW, "https://b", "https://c"], DAY)
+    traces.stamp([[ROW], ["https://b"], ["https://c"]], DAY)
     got = registry()
     assert got[ROW]["trace"] == OWN
     assert all(pointers.is_trace_id(got[k]["trace"]) for k in ("https://b", "https://c"))
     assert got["https://b"]["trace"] != "bad"
 
 
-def test_a_damaged_registry_is_read_as_empty_and_a_damaged_entry_is_replaced_but_a_good_one_kept(wq):
-    wq.data.mkdir(exist_ok=True)
-    traces.path().write_text("{not json")
-    assert traces.load() == {}
-    traces.path().write_text("[1, 2]")
-    assert traces.load() == {}
-    config.write_json(traces.path(), {"https://a": "text", "https://b": {"trace": "nope", "seen": DAY},
-                                      "https://c": {"trace": OWN, "seen": "yesterday"}, "https://d": {"trace": OWN}})
+def test_a_bare_id_is_adopted_and_an_odd_entry_or_a_future_day_is_mended(wq):
+    config.write_json(traces.path(), {"https://a": OWN, "https://b": "text", "https://c": {"trace": "nope", "seen": DAY},
+                                      "https://d": {"trace": LEGACY, "seen": "yesterday"},
+                                      "https://e": {"trace": OWN, "seen": day(+30)}})
     config.write_json(wq.data / "queued.json", ["not", "an", "object"])
-    traces.stamp([ROW, 7, None], DAY)
-    assert registry() == {"https://c": {"trace": OWN, "seen": DAY}, "https://d": {"trace": OWN, "seen": DAY},
-                          ROW: {"trace": registry()[ROW]["trace"], "seen": DAY}}
+    traces.stamp([[ROW], [7, None, ""]], DAY)
+    assert registry() == {"https://a": {"trace": OWN, "seen": DAY}, "https://d": {"trace": LEGACY, "seen": DAY},
+                          "https://e": {"trace": OWN, "seen": DAY}, ROW: {"trace": registry()[ROW]["trace"], "seen": DAY}}
+    assert traces.lookup("https://a") == OWN and traces.lookup("https://nowhere") == ""
 
 
-def test_a_broken_registry_never_stops_a_refresh(wq, today, monkeypatch, capsys):
+def test_a_damaged_registry_is_moved_aside_never_written_over_and_the_ids_queued_json_holds_survive(wq, capsys):
+    wq.data.mkdir(exist_ok=True)
+    config.write_json(wq.data / "queued.json", {ROW: {"id": "td-1", "trace": OWN}})
+    for damage in ("{not json", "[1, 2]"):
+        traces.path().write_text(damage)
+        aside = traces.path().with_name("traces.json.damaged")
+        assert traces.trace_for(ROW + "x") and traces.path().read_text() == damage  # a send leaves it for the refresh
+        traces.stamp([[ROW]], DAY)
+        assert aside.read_text() == damage and registry()[ROW]["trace"] == OWN
+        assert capsys.readouterr().err.count("traces.json was damaged") == 1
+    assert traces.lookup(ROW) == OWN
+
+
+def test_a_registry_that_cant_be_read_is_never_written_over(wq):
+    traces.path().mkdir(parents=True)
+    assert traces.lookup(ROW) == ""
+    with pytest.raises(OSError):
+        traces.stamp([[ROW]], DAY)
+    assert traces.path().is_dir()
+
+
+def test_a_broken_registry_never_stops_a_refresh(wq, monkeypatch, capsys):
     fake_tool(wq.bin, "gh", [("search prs", [PR])])
     wq.sources({"github": {"skip_authors": []}})
     wq.data.mkdir(exist_ok=True)
@@ -158,7 +186,7 @@ def test_a_broken_registry_never_stops_a_refresh(wq, today, monkeypatch, capsys)
     assert 'data-key="https://github.com/o/r/pull/7"' in refresh.site_path().read_text()
     assert json.loads(refresh.status_path().read_text())["running"] is False
     assert "Traceback" in capsys.readouterr().err
-    monkeypatch.setattr(traces, "stamp", lambda keys: 1 / 0)
+    monkeypatch.setattr(traces, "stamp", lambda groups: (_ for _ in ()).throw(OSError("disk")))
     refresh.run(now=NOW)
     assert json.loads(refresh.status_path().read_text())["running"] is False
 
@@ -167,8 +195,8 @@ def test_the_registry_is_read_and_written_inside_its_own_lock(wq, monkeypatch):
     events, real_lock, real_write = [], traces.lock, config.write_json
 
     @contextlib.contextmanager
-    def tracked():
-        with real_lock():
+    def tracked(timeout=None):
+        with real_lock(timeout):
             events.append("lock")
             yield
         events.append("unlock")
@@ -178,16 +206,176 @@ def test_the_registry_is_read_and_written_inside_its_own_lock(wq, monkeypatch):
         real_write(path, data)
     monkeypatch.setattr(traces, "lock", tracked)
     monkeypatch.setattr(config, "write_json", watching)
-    traces.stamp([ROW], DAY)
+    traces.stamp([[ROW]], DAY)
     traces.trace_for("https://other")
     assert events == ["lock", "write traces.json", "unlock"] * 2
     assert (wq.data / "traces.lock").exists() and not (wq.data / "marks.lock").exists()
 
 
+# ─── One piece of work, one id ───────────────────────────────────────────────
+
+GMAIL = {"key": "gmail:abc123", "link": "https://mail.google.com/mail/?authuser=me@x.com#inbox/t1", "group": "act",
+         "title": "Lunch?", "from": "Ana", "day": "Nov 17", "subject": "Lunch?", "body": "", "reason": "", "unread": False}
+MARK = "https://work-queue.local/email/gmail:abc123"
+
+
+def test_an_email_has_one_id_whether_it_is_sent_from_the_email_tab_or_the_open_list(wq):
+    refresh.stamp_traces({"gmail": {"me@x.com": [GMAIL]}}, {})
+    assert registry()[MARK]["trace"] == registry()[GMAIL["link"]]["trace"]
+    server.queue_todo({"key": MARK, "url": GMAIL["link"], "title": "Email: Lunch?"})
+    server.queue_todo({"key": GMAIL["link"], "title": "Email: Lunch?"})
+    assert [i["trace"] for i in wq.items()[-2:]] == [registry()[MARK]["trace"]] * 2
+
+
+def test_an_email_that_moves_to_another_folder_keeps_its_id(wq):
+    refresh.stamp_traces({"gmail": {"me@x.com": [GMAIL]}}, {})
+    first = registry()[MARK]["trace"]
+    moved = {**GMAIL, "link": GMAIL["link"].replace("#inbox/", "#label/Work/")}
+    refresh.stamp_traces({"gmail": {"me@x.com": [moved]}}, {})
+    assert registry()[moved["link"]]["trace"] == first == registry()[MARK]["trace"]
+    server.queue_todo({"key": moved["link"], "title": "Email: Lunch?"})
+    assert wq.items()[-1]["trace"] == first
+
+
+def test_a_send_from_the_email_tab_adopts_the_id_of_its_link_when_the_mark_key_is_new(wq):
+    traces.stamp([[GMAIL["link"]]], DAY)
+    server.queue_todo({"key": MARK, "url": GMAIL["link"], "title": "Email: Lunch?"})
+    assert wq.items()[-1]["trace"] == registry()[GMAIL["link"]]["trace"] == registry()[MARK]["trace"]
+
+
+def test_every_kind_of_row_the_page_acts_on_gets_an_id_after_a_refresh(wq, monkeypatch):
+    gmail_fakes(wq)
+    wq.sources({"gmail": {"accounts": [ACCT]}})
+    refresh.run(now=NOW)
+    cands = json.loads(refresh.candidates_path().read_text())
+    assert {c["kind"] for c in cands.values()} == {"gmail", "unsub"}
+    got = registry()
+    for key, cand in cands.items():
+        assert pointers.is_trace_id(got[key]["trace"])
+        if cand.get("mk"):
+            assert got[cand["mk"]] == {**got[key], "seen": DAY}  # the candidate and the email are one piece of work
+    html = refresh.site_path().read_text()
+    marks = set(re.findall(r'data-mk="([^"]+)"', html))
+    assert marks and marks <= set(got)
+    assert all(pointers.is_trace_id(got[k]["trace"]) for k in re.findall(r'class="sf-row" data-key="([^"]+)"', html))
+
+
+def test_the_keys_each_kind_of_row_is_known_by():
+    slack = {"key": "C1:1.1", "link": "https://a.slack.com/archives/C1/p1", "group": "open"}
+    closing = {"key": "C2:2.2", "link": "https://a.slack.com/archives/C2/p2", "group": "stale"}
+    unread = {"key": "C3:3.3", "link": "https://a.slack.com/archives/C3/p3", "group": "unread"}
+    outlook = [{"key": "mail:1", "link": "https://o/1", "group": "act"}, {"key": "mail:2", "link": "https://o/2", "group": "read"},
+               {"key": "mail:3", "link": "", "group": "bulk"}, {"key": "mail:4", "link": "https://o/4", "group": "act"}]
+    gmail_unsorted = {**GMAIL, "key": "gmail:u", "group": "unsorted"}
+    snap = {"slack": [slack, closing, unread], "github": [{"link": "https://g/1"}, {"link": ""}], "outlook": outlook,
+            "gmail": {"me@x.com": [GMAIL, gmail_unsorted]}, "calendar": [{"link": "https://c/1"}]}
+    cands = {"C2:2.2": {"kind": "slack", "link": closing["link"]}, "mail:3": {"kind": "mail", "link": "", "mk": E + "mail:3"},
+             "gmail:x": {"kind": "gmail", "link": "https://m/x", "mk": E + "gmail:x"}, "unsub:9": {"kind": "unsub", "link": "https://m/y"}}
+    assert refresh.row_groups(snap, cands) == [
+        ["C1:1.1", slack["link"]], ["https://g/1"], [E + "mail:1", "https://o/1"], [E + "mail:2"], [E + "mail:4", "https://o/4"],
+        [MARK, GMAIL["link"]], [E + "gmail:u"],
+        ["C2:2.2", closing["link"]], ["mail:3", E + "mail:3"], ["gmail:x", E + "gmail:x"], ["unsub:9"]]
+
+
+E = "https://work-queue.local/email/"
+
+
+# ─── Rows sent before the update ─────────────────────────────────────────────
+
+def old_send(wq, task=None):
+    """A row sent by the code before ids: a task and a queued entry, no id on either."""
+    write_todos(wq, [{"id": "td-1", "status": "open", **(task or {})}])
+    config.write_json(wq.data / "queued.json", {ROW: {"id": "td-1", "at": "2026-11-01T00:00:00+00:00", "mode": "assist"}})
+
+
+def agreed(wq) -> str:
+    ids = {wq.items()[0]["trace"], json.loads((wq.data / "queued.json").read_text())[ROW]["trace"], registry()[ROW]["trace"]}
+    assert len(ids) == 1 and pointers.is_trace_id(ids.copy().pop())
+    return ids.pop()
+
+
+def test_a_row_sent_before_the_update_takes_the_id_the_pulse_gave_its_task(wq):
+    old_send(wq)
+    todostore.stamp_missing_traces()
+    given = wq.items()[0]["trace"]
+    refresh.stamp_traces({}, {})
+    assert agreed(wq) == given
+
+
+def test_a_row_sent_before_the_update_gives_its_task_the_id_the_refresh_gave_it(wq):
+    old_send(wq)
+    traces.stamp([[ROW]], day(-1))
+    given = registry()[ROW]["trace"]
+    refresh.stamp_traces({}, {})
+    assert agreed(wq) == given
+    assert todostore.stamp_missing_traces() == 0  # the pulse finds nothing left to stamp
+
+
+def test_a_row_sent_before_the_update_with_no_id_anywhere_gets_one_id_for_all_three(wq):
+    old_send(wq)
+    before = json.loads(wq.todo.read_text())
+    refresh.stamp_traces({}, {})
+    agreed(wq)
+    after = json.loads(wq.todo.read_text())
+    assert {k: v for k, v in after["items"][0].items() if k != "trace"} == before["items"][0]
+    assert after["_lastUpdated"] == before["_lastUpdated"]
+
+
+def test_a_row_and_a_task_that_both_have_different_ids_keep_them_and_the_entry_records_the_rows(wq):
+    old_send(wq, {"trace": LEGACY})
+    config.write_json(traces.path(), {ROW: {"trace": OWN, "seen": DAY}})
+    refresh.stamp_traces({}, {})
+    assert wq.items()[0]["trace"] == LEGACY and registry()[ROW]["trace"] == OWN
+    assert json.loads((wq.data / "queued.json").read_text())[ROW]["trace"] == OWN
+
+
+def test_a_task_that_is_done_is_matched_too_and_a_task_that_is_gone_is_skipped(wq):
+    wq.todo.write_text(json.dumps({"items": [], "completed": [{"id": "td-1", "status": "done"}]}))
+    config.write_json(wq.data / "queued.json", {ROW: {"id": "td-1"}, ROW + "2": {"id": "td-9"}, ROW + "3": "text"})
+    traces.reconcile(DAY)
+    assert json.loads(wq.todo.read_text())["completed"][0]["trace"] == registry()[ROW]["trace"]
+    assert set(registry()) == {ROW}
+
+
+def test_sending_a_row_again_matches_it_with_its_task_and_changes_nothing_once_they_agree(wq):
+    old_send(wq, {"url": ROW})
+    assert server.queue_todo({"key": ROW, "title": "A"}) == (200, {"id": "td-1", "existing": True})
+    agreed(wq)
+    files = {p: p.read_bytes() for p in (wq.todo, wq.data / "queued.json", traces.path())}
+    server.queue_todo({"key": ROW, "title": "A"})
+    assert {p: p.read_bytes() for p in files} == files
+
+
+def test_matching_a_row_with_its_task_never_stops_a_refresh_or_a_send(wq, capsys):
+    old_send(wq)
+    wq.todo.write_text("{not json")
+    refresh.stamp_traces({}, {})
+    wq.todo.write_text(json.dumps({"items": [{"id": "td-1"}]}))
+    traces.path().mkdir(parents=True)
+    refresh.stamp_traces({}, {})
+    assert "Traceback" in capsys.readouterr().err
+    assert "trace" not in wq.items()[0]
+
+
+def test_a_task_file_that_changed_while_matching_is_left_as_the_other_writer_wrote_it(wq, monkeypatch):
+    old_send(wq)
+    real = todostore.replace_if_unchanged
+
+    def raced(before, text):
+        wq.todo.write_text(json.dumps({"items": [{"id": "td-1"}, {"id": "td-2", "title": "captured meanwhile"}]}))
+        return real(before, text)
+    monkeypatch.setattr(todostore, "replace_if_unchanged", raced)
+    refresh.stamp_traces({}, {})
+    assert [i["id"] for i in wq.items()] == ["td-1", "td-2"] and "trace" not in wq.items()[0]
+    monkeypatch.setattr(todostore, "replace_if_unchanged", real)
+    refresh.stamp_traces({}, {})  # the next refresh matches them
+    assert wq.items()[0]["trace"] == registry()[ROW]["trace"]
+
+
 # ─── Sending a row ───────────────────────────────────────────────────────────
 
 def test_a_send_stores_the_rows_id_on_the_task_and_the_queued_entry(wq, today):
-    traces.stamp([ROW], day(-1))
+    traces.stamp([[ROW]], day(-1))
     row_id = registry()[ROW]["trace"]
     assert server.queue_todo({"key": ROW, "title": "A"}) == (200, {"id": "td-051", "existing": False})
     assert wq.items()[-1]["trace"] == row_id
@@ -247,7 +435,7 @@ def test_a_registry_that_cant_be_used_never_stops_a_send(wq, capsys):
 
 
 def test_a_lock_that_cant_be_taken_never_stops_a_send(wq, monkeypatch):
-    monkeypatch.setattr(traces, "lock", lambda: (_ for _ in ()).throw(OSError("no lock")))
+    monkeypatch.setattr(traces, "lock", lambda timeout=None: (_ for _ in ()).throw(OSError("no lock")))
     assert server.queue_todo({"key": ROW, "title": "A"})[0] == 200
     assert pointers.is_trace_id(wq.items()[-1]["trace"])
 
@@ -320,26 +508,26 @@ def test_the_backstop_leaves_a_missing_or_odd_file_alone(wq, text):
     assert (wq.todo.read_text() if text is not None else not wq.todo.exists()) in (text, True)
 
 
-def test_the_backstop_waits_for_the_todo_lock(wq):
+def test_the_backstop_waits_for_the_todo_lock(wq, monkeypatch):
     write_todos(wq, [{"id": "td-1"}])
-    release, holding = threading.Event(), threading.Event()
+    asked, got = threading.Event(), threading.Event()
+    real = todostore.todo_lock
 
-    def hold():
-        with todostore.todo_lock():
-            holding.set()
-            release.wait(5)
-    holder = threading.Thread(target=hold)
-    holder.start()
-    holding.wait(5)
+    @contextlib.contextmanager
+    def watched():
+        asked.set()
+        with real():
+            got.set()
+            yield
+    monkeypatch.setattr(todostore, "todo_lock", watched)
     result = []
     worker = threading.Thread(target=lambda: result.append(todostore.stamp_missing_traces()))
-    worker.start()
-    worker.join(0.3)
-    assert worker.is_alive() and "trace" not in json.loads(wq.todo.read_text())["items"][0]
-    release.set()
-    holder.join(5)
+    with real():  # another writer holds the lock
+        worker.start()
+        assert asked.wait(5)  # the pass asked for the lock ...
+        assert not got.is_set() and "trace" not in json.loads(wq.todo.read_text())["items"][0]  # ... and has not got it
     worker.join(5)
-    assert result == [1] and "trace" in json.loads(wq.todo.read_text())["items"][0]
+    assert got.is_set() and result == [1] and "trace" in json.loads(wq.todo.read_text())["items"][0]
 
 
 def test_two_pulses_at_once_stamp_a_task_once(wq, monkeypatch):
@@ -370,7 +558,7 @@ def test_the_pulse_step_stamps_and_never_fails_the_pulse(wq, monkeypatch, caplog
         pulse.run_trace_step()
     assert pointers.is_trace_id(wq.items()[0]["trace"])
     assert [r.message for r in caplog.records if "trace ids" in r.message] == ["trace ids: stamped 1 TODO(s)"]
-    monkeypatch.setattr(todostore, "stamp_missing_traces", lambda: 1 / 0)
+    monkeypatch.setattr(todostore, "stamp_missing_traces", lambda: (_ for _ in ()).throw(OSError("disk full")))
     pulse.run_trace_step()
     assert "could not stamp" in caplog.text
 
@@ -490,3 +678,85 @@ def test_the_slack_reactors_tests_for_its_task_writer_pass():
     done = subprocess.run([node, "--test", "slack-reactor/test/todo-store.test.js"], cwd=REPO, text=True,
                           capture_output=True, timeout=120)
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+# ─── A busy or unusable registry, and the task file's own writes ─────────────
+
+def test_a_send_gives_up_on_a_busy_registry_after_a_short_wait_and_uses_the_id_it_holds(wq, monkeypatch):
+    traces.stamp([[ROW]], day(-1))
+    held = registry()[ROW]["trace"]
+    monkeypatch.setattr(traces, "LOCK_WAIT", 0.05)
+    with (wq.data / "traces.lock").open("a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        assert traces.trace_for(ROW) == held
+        fresh = traces.trace_for(ROW + "2")
+        assert pointers.is_trace_id(fresh) and fresh != held
+        assert traces.trace_for(ROW + "3", known=OWN) == OWN
+        with pytest.raises(TimeoutError):
+            with traces.lock(0.05):
+                pass
+    assert ROW + "2" not in registry()
+
+
+def test_a_send_whose_registry_cant_be_written_uses_the_id_the_row_already_has(wq, monkeypatch, capsys):
+    traces.stamp([[ROW]], day(-1))
+    held = registry()[ROW]["trace"]
+    monkeypatch.setattr(config, "write_json", lambda path, data: (_ for _ in ()).throw(OSError("read-only")))
+    assert traces.trace_for(ROW) == held  # found before any write is needed
+    fresh = traces.trace_for(ROW + "2")
+    assert pointers.is_trace_id(fresh) and "Traceback" in capsys.readouterr().err
+    assert traces.trace_for(ROW + "3", known=OWN) == OWN
+
+
+def test_lookup_only_reads(wq):
+    assert traces.lookup(ROW) == ""
+    assert not traces.path().exists() and not (wq.data / "traces.lock").exists()
+    traces.stamp([[ROW]], DAY)
+    assert traces.lookup(ROW) == registry()[ROW]["trace"] and traces.lookup(ROW + "x") == ""
+
+
+def test_a_task_has_an_id_to_use_even_before_the_pulse_stamps_it():
+    assert todostore.trace_of({"id": "td-1", "trace": OWN}) == OWN
+    standin = todostore.trace_of({"id": "td-1", "createdAt": "2026-11-01"})
+    assert standin == pointers.legacy_trace_id("task", "td-1\x002026-11-01") and standin.startswith("tl-")
+    assert standin == todostore.trace_of({"id": "td-1", "createdAt": "2026-11-01", "trace": "bad"})
+    assert standin != todostore.trace_of({"id": "td-2", "createdAt": "2026-11-01"})
+    assert pointers.is_trace_id(todostore.trace_of(None)) and pointers.is_trace_id(todostore.trace_of({"id": 7}))
+
+
+def test_the_task_file_is_replaced_through_a_temporary_file_of_its_own_that_is_never_left_behind(wq, monkeypatch):
+    write_todos(wq, [{"id": "td-1"}])
+    other_writers = wq.todo.with_name(wq.todo.name + ".tmp")
+    other_writers.write_text("another writer's half-written file")
+    replaced = []
+    real = os.replace
+    monkeypatch.setattr(todostore.os, "replace", lambda a, b: (replaced.append((Path(a).name, Path(b).name)), real(a, b))[1])
+    assert todostore.stamp_missing_traces() == 1
+    assert replaced == [(f"assistant-todo.json.{os.getpid()}.tmp", "assistant-todo.json")]
+    assert other_writers.read_text() == "another writer's half-written file"
+    assert sorted(p.name for p in wq.todo.parent.glob("*.tmp")) == ["assistant-todo.json.tmp"]
+
+
+def test_a_task_file_changed_between_the_read_and_the_write_is_left_as_the_other_writer_wrote_it(wq, monkeypatch):
+    write_todos(wq, [{"id": "td-1"}])
+    theirs = json.dumps({"items": [{"id": "td-1"}, {"id": "td-2", "title": "captured from Slack"}]})
+    real = todostore.json.dumps
+
+    def racing(*args, **kwargs):
+        text = real(*args, **kwargs)
+        wq.todo.write_text(theirs)  # the reactor writes after the pass has read and before it replaces
+        return text
+    monkeypatch.setattr(todostore, "json", __import__("types").SimpleNamespace(loads=json.loads, dumps=racing))
+    assert todostore.stamp_missing_traces() == 0
+    assert wq.todo.read_text() == theirs
+    assert list(wq.todo.parent.glob("*.tmp")) == []
+    monkeypatch.setattr(todostore, "json", json)
+    assert todostore.stamp_missing_traces() == 2  # the next pulse stamps both
+
+
+def test_a_task_file_that_vanishes_before_the_replace_is_not_recreated_and_leaves_nothing_behind(wq):
+    write_todos(wq, [{"id": "td-1"}])
+    before = wq.todo.read_text()
+    wq.todo.unlink()
+    assert todostore.replace_if_unchanged(before, "{}") is False
+    assert not wq.todo.exists() and list(wq.todo.parent.glob("*.tmp")) == []

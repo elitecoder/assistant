@@ -82,12 +82,14 @@ def read_one(status: list[dict], label: str, read, entry: dict):
     return found
 
 
-def write_page(snap: dict) -> None:
+def write_page(snap: dict) -> dict:
+    """Write the page and the candidates; returns the candidates."""
     doc, cands = page.render(snap)
     site_path().parent.mkdir(parents=True, exist_ok=True)
     site_path().write_text(doc)
     config.write_json(candidates_path(), cands)
     config.write_json(emails_path(), page.emails(snap))
+    return cands
 
 
 def blocked_rows() -> set[str]:
@@ -106,17 +108,32 @@ def paid(snap: dict, note: str = "") -> dict:
         return triage.empty(note or f"triage stopped on an unexpected error ({type(exc).__name__})")
 
 
-def row_links(snap: dict) -> list[str]:
-    """The link of every row the sources gave: the key a row is sent and marked by."""
-    rows = [*(snap.get("slack") or []), *(snap.get("github") or []), *(snap.get("outlook") or []),
-            *(m for found in (snap.get("gmail") or {}).values() for m in found)]
-    return [r["link"] for r in rows if isinstance(r.get("link"), str) and r["link"].startswith("https://")]
+def row_groups(snap: dict, cands: dict) -> list[list[str]]:
+    """The keys the page sends or marks each row by, one group per piece of work, so every key of it holds one id.
+
+    Open list rows go by their link (a Slack row also by its channel and time, which it is approved by once it
+    closes); an email goes by its mark key, and by its link while it is on the Open list, and by its own key while it
+    waits for approval; every approval candidate goes by its candidate key. Rows the page can neither send nor mark
+    (Slack saves that can't be read, calendar events) get none."""
+    def web(link):
+        return [link] if isinstance(link, str) and link.startswith("https://") else []
+    groups = [[r["key"], *web(r["link"])] for r in snap.get("slack") or [] if r["group"] == "open"]
+    groups += [web(p["link"]) for p in snap.get("github") or []]
+    mail = [*(snap.get("outlook") or []), *(m for found in (snap.get("gmail") or {}).values() for m in found)]
+    groups += [[page.email_mark(m), *(web(m["link"]) if m["group"] == "act" else [])]
+               for m in mail if m["group"] in ("act", "read", "unsorted")]
+    for key, cand in cands.items():
+        slack = web(cand["link"]) if cand["kind"] == "slack" else []
+        groups.append([key, *([cand["mk"]] if cand.get("mk") else []), *slack])
+    return [g for g in groups if g]
 
 
-def stamp_traces(snap: dict) -> None:
-    """Give each row an id. A registry that can't be used never holds back the page; the traceback goes to the log."""
+def stamp_traces(snap: dict, cands: dict) -> None:
+    """Match sent rows to their tasks, then give each row an id. A registry that can't be used never holds back the
+    page; the traceback goes to the log. Matching comes first, so a row sent before ids existed takes its task's id."""
     try:
-        traces.stamp(row_links(snap))
+        traces.reconcile()
+        traces.stamp(row_groups(snap, cands))
     except Exception:  # noqa: BLE001
         traceback.print_exc()
 
@@ -131,13 +148,12 @@ def run(transport=http_transport, now: float | None = None, model=None) -> list[
         config.write_json(status_path(), {"running": False, "finished": now_iso(), "error": str(exc)})
         raise
     ready.run(doc, transport, os.environ.get("SLACK_USER_TOKEN", ""))
-    stamp_traces(snap)
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
     snap["built_iso"] = now_iso()
     pro = mode.is_pro()
     if pro:
         snap["triage"] = paid(snap)
-    write_page(snap)
+    stamp_traces(snap, write_page(snap))
     if pro:
         marks = config.read_json(config.data_dir() / "marks.json", {})
         try:

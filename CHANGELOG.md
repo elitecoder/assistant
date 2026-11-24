@@ -11,12 +11,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Added
 - Every Work queue row and every TODO now carries a short id that later
-  features will use to show where a piece of work came from. A refresh gives
-  each row its id once and keeps it in `traces.json` in the Work queue's data
-  folder, forgetting rows not seen for 60 days; a row you send hands its id to
-  its TODO, and every other TODO gets one when it is created. The pulse gives
-  one to any TODO that arrived without. Nothing you see changes yet, and a
-  damaged id file never stops a refresh, a send or a pulse.
+  features will use to show where a piece of work came from. Nothing you see
+  changes yet.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or

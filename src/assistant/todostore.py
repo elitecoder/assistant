@@ -66,10 +66,45 @@ def todo_lock():
         os.close(fd)
 
 
+def trace_of(item) -> str:
+    """The trace id to use for a task: its own when it has a valid one, else a stand-in made from its id and creation
+    date, the same every time, so a caller always gets something stable for a task the pulse hasn't stamped yet.
+    Use this to read a task's id; use `traces.lookup` (Work queue) for a row's. Never store the stand-in."""
+    from assistant import pointers  # noqa: PLC0415
+
+    item = item if isinstance(item, dict) else {}
+    own = item.get("trace")
+    return own if pointers.is_trace_id(own) else pointers.legacy_trace_id("task", f"{item.get('id')}\0{item.get('createdAt')}")
+
+
+def replace_if_unchanged(before: str, text: str) -> bool:
+    """Replace the task file with `text`, only if it still reads exactly `before`. Call it inside `todo_lock()`.
+
+    Not every writer takes the lock (the Slack reactor doesn't), so the file is read again just before the replace; if
+    another writer changed it, nothing is written and False comes back, and the caller tries again on its next pass.
+    The temporary file has this process's id in its name, so it is never one another writer is also using, and it is
+    never left behind."""
+    target = todo_path()
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text)
+        try:
+            now = target.read_text()
+        except OSError:
+            return False
+        if now != before:
+            return False
+        os.replace(tmp, target)
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def stamp_missing_traces() -> int:
     """Give every task in `items` that has no valid trace id a new one; return how many. Tasks also arrive from
     agents writing the file by hand and from before ids existed. Under the same lock as every other writer, and the
-    file is written only when a task needed one, with nothing else changed, not even `_lastUpdated`."""
+    file is written only when a task needed one, with nothing else changed, not even `_lastUpdated`. If another writer
+    changed the file meanwhile, nothing is written and the next pulse tries again (see replace_if_unchanged)."""
     from assistant import pointers  # noqa: PLC0415
 
     with todo_lock():
@@ -83,8 +118,8 @@ def stamp_missing_traces() -> int:
             if isinstance(items, list) else []
         for item in missing:
             item["trace"] = pointers.new_trace_id()
-        if missing:
-            tmp = todo_path().with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if text.endswith("\n") else ""))
-            os.replace(tmp, todo_path())
-        return len(missing)
+        if not missing:
+            return 0
+        done = replace_if_unchanged(
+            text, json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if text.endswith("\n") else ""))
+        return len(missing) if done else 0

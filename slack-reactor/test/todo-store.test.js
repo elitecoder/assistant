@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -39,4 +39,14 @@ test('each captured thread gets its own id', () => {
   assert.match(a, TRACE)
   assert.match(b, TRACE)
   assert.notEqual(a, b)
+})
+
+test('the file is written through a temporary file of its own, which never collides with another writer\'s or lingers', () => {
+  writeFileSync(TODO_PATH, JSON.stringify({ items: [] }))
+  const theirs = `${TODO_PATH}.tmp` // the name the pulse used to share with this writer
+  writeFileSync(theirs, 'another writer\'s half-written file')
+  addTodo(TASK)
+  assert.equal(readFileSync(theirs, 'utf8'), 'another writer\'s half-written file')
+  assert.deepEqual(readdirSync(join(home, '.claude')).filter((f) => f.endsWith('.tmp')), ['assistant-todo.json.tmp'])
+  assert.equal(read().items.length, 1)
 })

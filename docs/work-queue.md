@@ -499,10 +499,16 @@ agents** tab, and the counts. The row stays off the page for as long as its
 TODO exists; if the TODO is removed, the row comes back, marked Done.
 
 Each row gets a short id the first time a refresh sees it, kept in
-`traces.json` in the data folder, and a row you send hands that id to its TODO
-as `trace`. Every other TODO gets one when it is created, and the pulse gives
-one to any that arrived without. Nothing shows the id yet, and nothing changes
-for you.
+`traces.json` in the data folder. A TODO you send takes its row's id, and any
+other TODO gets one when it is created or, if an agent wrote it by hand, on
+the next pulse. An email has one id whether you send it from the Email tab or
+the Open list, and keeps it if it moves to another Gmail folder. The first
+refresh after this update matches rows you had already sent with their TODOs.
+The first pulse after the update adds the id to each open TODO; for a file
+written by hand or by a skill, it may also change the file's spacing and how
+accented characters are written, never what it says. Nothing shows any id yet,
+and nothing changes for you. If the id file is ever damaged, the refresh keeps
+a copy next to it as `traces.json.damaged` and starts a new one.
 
 Follow the work on the Assistant dashboard. The TODO's status and result show
 on the **Tasks** tab, and its session shows on the **Sessions** tab once it
