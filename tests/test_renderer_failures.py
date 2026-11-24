@@ -112,7 +112,8 @@ def test_the_error_is_html_escaped(mod):
 
 
 def test_merge_checks_share_one_line_with_session_titles_and_no_ids(mod):
-    world = {"workspaces": [{"ws_ref": "workspace:7", "title": "Fix login"}, {"ref": "workspace:8", "title": "Docs <pass>"}]}
+    world = {"workspaces": [{"ws_ref": "workspace:7", "title": "Fix login"}, {"ref": "workspace:8", "title": "Docs <pass>"},
+                            {"ws_ref": "workspace:9"}, {"title": "no ref"}]}
     fail(15, "ready_for_merge but no pr_refs on ws", component="ready-for-merge:workspace:7", pause=False)
     fail(15, "ready_for_merge but no pr_refs on ws", component="ready-for-merge:workspace:8", pause=False)
     (alert,) = lines(mod.render_failure_alerts(now=NOW, world=world))

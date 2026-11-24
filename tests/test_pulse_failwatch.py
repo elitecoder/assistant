@@ -59,6 +59,22 @@ class AuditPauseTests(_AuditBase):
         self.assertTrue(out["ran"])
 
 
+class TriagePauseTests(unittest.TestCase):
+    def test_the_pause_check_finds_metering_when_bin_is_not_on_the_path(self):
+        with TemporaryDirectory() as tmp:
+            mod = load_pulse(fixture_home(Path(tmp)))
+            for _ in range(3):
+                failwatch.record_failure("model:triage", "claude model call failed: exit code 1")
+            saved = sys.path[:]
+            sys.path[:] = [p for p in sys.path if p != str(mod.BIN)]
+            try:
+                out = mod.call_triage_batch([{"id": "e1", "source": "github", "kind": "x", "title": "t"}], 1)
+            finally:
+                sys.path[:] = saved
+            self.assertEqual(out, {})
+            self.assertFalse((Path(tmp) / ".assistant/triage-runs").exists())
+
+
 class ReadyForMergeCountTests(unittest.TestCase):
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
