@@ -2053,6 +2053,20 @@ def count_active(ws_meta: list[dict], busy_refs=()) -> int:
     return len(active)
 
 
+def cap_reason(n_active: int, n_total: int, busy_refs) -> str:
+    """Plain words for why dispatch is waiting: which limit, and what counts
+    toward it. The busy limit comes first because it is the one a person can
+    do something about right now."""
+    if n_active >= ACTIVE_WS_CAP:
+        refs = sorted(busy_refs or (), key=lambda ref: (len(ref), ref))
+        named = f" Busy now: {', '.join(refs[:8])}." if refs else ""
+        return (f"{n_active} sessions are busy and the limit is {ACTIVE_WS_CAP}. "
+                f"Sessions you are using count: a session is busy when it had a turn "
+                f"in the last 10 minutes or is running a tool.{named}")
+    return (f"{n_total} workspaces are open and the limit is {TOTAL_WS_CAP}. "
+            f"Close the ones you no longer need.")
+
+
 def scan_busy_ws() -> set[str] | None:
     """ws_refs of the live workspaces whose agent is busy, read mechanically
     from cmux and the transcripts; None when the scan could not be made. Never
@@ -2902,11 +2916,11 @@ def main() -> int:
     blind_reason = None
     if bucket_b:
         if batch.get("unavailable"):
-            blind_reason = "the list of open workspaces could not be read"
+            blind_reason = "the list of your open workspaces could not be read"
         else:
             busy_refs = scan_busy_ws()
             if busy_refs is None:
-                blind_reason = "the busy sessions could not be counted"
+                blind_reason = "cmux did not answer when asked for your sessions"
     n_active = count_active(ws_meta, busy_refs or ())
     if blind_reason:
         held = ", ".join(t["id"] for t in bucket_b[:5])
@@ -2915,9 +2929,9 @@ def main() -> int:
             "key": "dispatch-held-no-fleet-view",
             "tier": "T3",
             "title": f"Dispatch paused — {len(bucket_b)} TODO(s) waiting",
-            "detail": (f"Couldn't tell how many sessions are busy: {blind_reason}. "
-                       f"Holding: {held}{more}. Nothing is lost; they start on the "
-                       f"next check that can see your sessions."),
+            "detail": (f"Couldn't count busy sessions: {blind_reason}. "
+                       f"Holding: {held}{more}. Nothing is lost. Assistant looks again "
+                       f"every few minutes and starts them once it can count."),
         })
         actions_taken.append({
             "key": "dispatch-held-no-fleet-view",
@@ -2933,9 +2947,8 @@ def main() -> int:
             "key": "dispatch-cap-hit",
             "tier": "T3",
             "title": f"Dispatch capped — {len(bucket_b)} TODO(s) waiting",
-            "detail": (f"active={n_active}/{ACTIVE_WS_CAP}, "
-                       f"total={n_total}/{TOTAL_WS_CAP}. Holding: {held}{more}. "
-                       f"Reclaim a workspace or raise the cap to dispatch."),
+            "detail": f"{cap_reason(n_active, n_total, busy_refs)} Holding: {held}{more}. "
+                      f"They start when there is room.",
         })
         actions_taken.append({
             "key": f"dispatch-cap-hit-{n_active}-active",

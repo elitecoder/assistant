@@ -505,9 +505,11 @@ class CountActiveTests(unittest.TestCase):
 
     def test_counts_working_status(self):
         meta = [
-            {"ctx": {"agent_status": "working", "last_turn_age_sec": 9999}},
+            {"ctx": {"agent_status": "working", "last_turn_age_sec": 3000}},
             {"ctx": {"agent_status": "idle", "last_turn_age_sec": 100}},  # young → active
             {"ctx": {"agent_status": "idle", "last_turn_age_sec": 9999}},  # old → not active
+            # A tool call open for more than two hours is a session waiting on someone.
+            {"ctx": {"agent_status": "working", "last_turn_age_sec": 9999}},
         ]
         self.assertEqual(self.mod.count_active(meta), 2)
 

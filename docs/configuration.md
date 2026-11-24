@@ -25,8 +25,9 @@ stuck. It's off by default. While it's off, the pulse sends no workspace to
 it, makes no Observer or Observer audit model calls, and each workspace keeps
 its last verdict. Everything else the pulse does keeps running: it still
 dispatches autoDispatch TODOs, clears stale cards, and updates itself. The
-limit of 5 busy sessions still applies: the pulse counts busy sessions from
-cmux and each session's transcript, not from the Observer.
+limit of 5 busy sessions still applies, and it is fixed at 5: the pulse counts
+busy sessions, including ones you are using, from cmux and each session's
+transcript, not from the Observer.
 
 To turn the Observer on, do both of these:
 

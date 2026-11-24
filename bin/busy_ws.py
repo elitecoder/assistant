@@ -15,9 +15,11 @@ contexts. This module builds it from what cmux and the transcripts already say:
      transcript has been quiet for longer than the 10-minute window.
 
 A workspace with no agent session (a plain terminal) is not busy; a session
-whose process has exited is not busy. A session whose transcript cannot be
-found or read IS busy: not knowing is the case the cap exists to be careful
-about, and a wrong "idle" starts one more real agent.
+whose process has exited, or whose pid now belongs to another program, is not
+busy. A session whose transcript exists but cannot be read IS busy: not knowing
+is the case the cap exists to be careful about, and a wrong "idle" starts one
+more real agent. A session with no transcript file yet is judged by when cmux
+last heard from it.
 
 `busy_refs()` raises Unavailable when cmux can't list the workspaces or the
 sessions, so the caller can tell "nothing is busy" from "couldn't look".
@@ -30,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 BIN = Path(__file__).resolve().parent
@@ -93,11 +96,18 @@ def _workspace_refs_by_id() -> dict[str, str]:
     return refs
 
 
-def _session_busy(record) -> bool:
+def _session_busy(record, now: float) -> bool:
     home = os.environ["HOME"]
     path = record.transcript_path or agent_session.transcript_for_session(
         record.provider, record.session_id, home=home)
-    if not (path and os.path.isfile(path) and os.access(path, os.R_OK)):
+    if not path or not os.path.exists(path):
+        # No transcript yet: a session that was opened and never prompted, or one
+        # just cleared. It would otherwise count for as long as its process lives,
+        # so judge it by when cmux last heard from it. With no time on record,
+        # stay careful and count it.
+        updated = record.updated_at
+        return not isinstance(updated, (int, float)) or config.ws_is_active(None, max(0, now - updated))
+    if not (os.path.isfile(path) and os.access(path, os.R_OK)):
         return True
     age, status = _transcript_signals(path)
     # A transcript that vanished between the check and the read has no age.
@@ -114,15 +124,16 @@ def busy_refs() -> set[str]:
     records += cmux_sessions.registry_fallback(
         Path(os.environ["HOME"]) / ".claude/cmux-registry.json", records)
     busy: set[str] = set()
+    now = time.time()
     for record in records:
         ref = refs_by_id.get((record.workspace_id or "").lower())
         if ref is None or ref in busy:
             continue
-        # The same "live agent session" filter world-scanner applies.
-        if not (record.active_for_surface and record.provider and _pid_alive(record.pid)):
+        # A live agent session: cmux's records outlive restarts and macOS reuses
+        # pids, so the process must also still be an agent, not just exist.
+        if not (record.active_for_surface and record.provider and _pid_alive(record.pid)
+                and cmux_sessions.agent_process(record.pid)):
             continue
-        if record.source == cmux_sessions.REGISTRY and not cmux_sessions.agent_process(record.pid):
-            continue
-        if _session_busy(record):
+        if _session_busy(record, now):
             busy.add(ref)
     return busy

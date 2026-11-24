@@ -88,8 +88,9 @@ TODOs flagged `autoDispatch` are spawned into fresh cmux workspaces with hard
 caps: at most 5 busy workspaces, 30 total, and 2 new spawns per pulse. The busy
 count doesn't depend on the Observer. Each pulse that has a TODO to start reads
 every open agent session from cmux and the tail of its transcript. A session is
-busy when it had a turn in the last 10 minutes or is waiting on a tool call
-that hasn't returned, however long that takes. A plain terminal and an agent
+busy when it had a turn in the last 10 minutes or has a tool call open; a tool
+call still open after 2 hours is a session waiting on a person, and stops
+counting. Sessions you are using yourself count. A plain terminal and an agent
 that has exited aren't busy, and a session whose transcript can't be read is.
 If the pulse can't read the open workspaces or the sessions, it starts nothing
 that pulse and shows a "Dispatch paused" card instead.

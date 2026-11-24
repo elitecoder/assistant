@@ -76,7 +76,7 @@ class Fleet:
         return ref
 
     def agent(self, n: int, records, *, age=0, pid=None, agent="claude", transcript=True,
-              active=True, path=None):
+              active=True, path=None, heard=None):
         """An agent session in workspace n whose transcript holds `records` and was
         last written `age` seconds ago."""
         self.workspace(n)
@@ -91,7 +91,8 @@ class Fleet:
             "session_id": f"s{n}", "agent": agent, "workspace_id": f"ws-{n}",
             "surface_id": f"sf-{n}", "pid": os.getpid() if pid is None else pid,
             "transcript_path": transcript_path if transcript else None,
-            "active_for_surface": active})
+            "active_for_surface": active,
+            **({} if heard is None else {"updated_at_unix": time.time() - heard})})
         self.publish()
         return ref_of(n)
 
@@ -102,6 +103,8 @@ def ref_of(n: int) -> str:
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
+    # The sessions here carry this test process's pid, which is not an agent.
+    monkeypatch.setattr(cmux_sessions, "agent_process", lambda pid: True)
     return Fleet(tmp_path, monkeypatch)
 
 
@@ -149,6 +152,23 @@ def test_a_transcript_the_scan_may_not_read_counts_as_busy(fleet):
         assert busy_ws.busy_refs() == {"workspace:1"}
     finally:
         path.chmod(0o600)
+
+
+def test_a_record_whose_pid_now_belongs_to_another_program_is_not_busy(fleet, monkeypatch):
+    """cmux keeps its records across restarts and macOS reuses pids."""
+    fleet.agent(1, [TURN], age=5)
+    monkeypatch.setattr(cmux_sessions, "agent_process", lambda pid: False)
+    assert busy_ws.busy_refs() == set()
+
+
+def test_a_session_with_no_transcript_yet_is_judged_by_when_cmux_last_heard_from_it(fleet):
+    """Opened and never prompted, or just cleared: it must not count for as long as it stays open."""
+    fleet.agent(1, [], transcript=False, heard=30)
+    fleet.agent(2, [], transcript=False, heard=2 * 3600)
+    fleet.agent(3, [], transcript=False)  # no time on record: stay careful
+    fleet.agent(4, [], heard=2 * 3600, path=str(fleet.home / ".claude/projects/p/gone.jsonl"))
+    os.remove(fleet.home / ".claude/projects/p/gone.jsonl")
+    assert busy_ws.busy_refs() == {"workspace:1", "workspace:3"}
 
 
 def test_a_transcript_found_by_session_id_is_read_when_the_record_has_no_path(fleet):
@@ -253,7 +273,10 @@ def test_five_recent_sessions_stop_dispatch_with_the_observer_off(fleet):
     dispatch.assert_not_called()
     card = cards(payload)["dispatch-cap-hit"]
     assert card["title"] == "Dispatch capped — 3 TODO(s) waiting"
-    assert "active=5/5" in card["detail"]
+    assert card["detail"] == (
+        "5 sessions are busy and the limit is 5. Sessions you are using count: a session is busy when it had "
+        "a turn in the last 10 minutes or is running a tool. Busy now: workspace:1, workspace:2, workspace:3, "
+        "workspace:4, workspace:5. Holding: td-0, td-1, td-2. They start when there is room.")
 
 
 def test_four_busy_sessions_leave_room_for_the_per_pulse_limit(fleet):
@@ -270,7 +293,52 @@ def test_sessions_in_long_tool_calls_fill_the_cap(fleet):
         fleet.agent(n, [TURN, TOOL_CALL], age=1800)
     dispatch, payload = Pulse(fleet).run()
     dispatch.assert_not_called()
-    assert "active=5/5" in cards(payload)["dispatch-cap-hit"]["detail"]
+    assert "5 sessions are busy and the limit is 5." in cards(payload)["dispatch-cap-hit"]["detail"]
+
+
+def test_a_tool_call_left_open_for_hours_is_a_session_waiting_on_you_not_a_busy_one(fleet):
+    """Two sessions like these, each open for more than a day, sat on the maintainer's machine."""
+    fleet.agent(1, [TURN, TOOL_CALL], age=2 * 3600 - 60)
+    fleet.agent(2, [TURN, TOOL_CALL], age=2 * 3600 + 60)
+    fleet.agent(3, [TURN, TOOL_CALL], age=30 * 3600)
+    assert busy_ws.busy_refs() == {"workspace:1"}
+
+
+def test_stale_open_tool_calls_do_not_hold_dispatch(fleet):
+    for n in range(1, 6):
+        fleet.agent(n, [TURN, TOOL_CALL], age=26 * 3600)
+    dispatch, payload = Pulse(fleet).run()
+    assert dispatch.call_count == 2 and "dispatch-cap-hit" not in cards(payload)
+
+
+@pytest.mark.parametrize("status, age, active", [
+    ("working", 60, True), ("working", 2 * 3600 - 1, True), ("working", 2 * 3600, False),
+    ("working", None, True),  # can't tell how long it has been open, so be careful
+    ("idle", 599, True), ("idle", 600, False), ("idle", None, False), (None, 99999, False),
+])
+def test_the_shared_rule_for_a_busy_session(status, age, active):
+    assert busy_ws.config.ws_is_active(status, age) is active
+
+
+def test_the_total_limit_is_named_when_it_is_the_one_holding(fleet):
+    fleet.agent(1, [TURN], age=3600)
+    dispatch, payload = Pulse(fleet).run(batch={
+        "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 30})
+    dispatch.assert_not_called()
+    assert cards(payload)["dispatch-cap-hit"]["detail"] == (
+        "30 workspaces are open and the limit is 30. Close the ones you no longer need. "
+        "Holding: td-0, td-1, td-2. They start when there is room.")
+
+
+def test_the_busy_reason_names_no_sessions_when_only_the_observer_saw_them(fleet):
+    assert load_pulse(fleet.home).cap_reason(5, 12, None) == (
+        "5 sessions are busy and the limit is 5. Sessions you are using count: a session is busy when it had "
+        "a turn in the last 10 minutes or is running a tool.")
+
+
+def test_busy_sessions_are_named_in_workspace_order(fleet):
+    assert "Busy now: workspace:2, workspace:9, workspace:10." in load_pulse(fleet.home).cap_reason(
+        5, 12, {"workspace:10", "workspace:9", "workspace:2"})
 
 
 def test_dispatch_is_held_when_the_workspace_list_could_not_be_read_then_resumes(fleet):
@@ -282,7 +350,9 @@ def test_dispatch_is_held_when_the_workspace_list_could_not_be_read_then_resumes
     dispatch.assert_not_called()
     card = cards(payload)["dispatch-held-no-fleet-view"]
     assert card["title"] == "Dispatch paused — 3 TODO(s) waiting"
-    assert "open workspaces could not be read" in card["detail"]
+    assert card["detail"] == (
+        "Couldn't count busy sessions: the list of your open workspaces could not be read. Holding: td-0, td-1, "
+        "td-2. Nothing is lost. Assistant looks again every few minutes and starts them once it can count.")
     assert "dispatch-cap-hit" not in cards(payload)
     dispatch, payload = pulse.run()
     assert [c.args[0] for c in dispatch.call_args_list] == ["td-0", "td-1"]
@@ -297,7 +367,7 @@ def test_dispatch_is_held_when_the_busy_sessions_could_not_be_counted(fleet):
     dispatch, payload = pulse.run()
     dispatch.assert_not_called()
     card = cards(payload)["dispatch-held-no-fleet-view"]
-    assert "busy sessions could not be counted" in card["detail"]
+    assert "cmux did not answer when asked for your sessions" in card["detail"]
     assert "td-4 (+2 more)" in card["detail"]
     fleet.sessions_rc = 0
     fleet.publish()
@@ -339,7 +409,7 @@ def test_nothing_is_scanned_when_no_task_is_waiting(fleet):
 def test_the_count_is_the_union_of_the_observers_view_and_the_scan(fleet):
     mod = load_pulse(fleet.home)
     meta = [
-        {"ref": "workspace:1", "ctx": {"agent_status": "working", "last_turn_age_sec": 9999}},
+        {"ref": "workspace:1", "ctx": {"agent_status": "working", "last_turn_age_sec": 1800}},
         {"ref": "workspace:2", "ctx": {"agent_status": "idle", "last_turn_age_sec": 9999}},
         {"ref": "workspace:3", "ctx": None},
         {"ctx": {"agent_status": "idle", "last_turn_age_sec": 5}},

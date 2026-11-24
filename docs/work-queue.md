@@ -501,8 +501,9 @@ TODO exists; if the TODO is removed, the row comes back, marked Done.
 Follow the work on the Assistant dashboard. The TODO's status and result show
 on the **Tasks** tab, and its session shows on the **Sessions** tab once it
 starts. Assistant starts up to 2 TODOs every 5 minutes and keeps at most 5
-sessions busy, so a large batch takes a while to start. If Assistant can't see
-which sessions are busy, it starts none and the **Tasks** tab says so. A row whose TODO is
+sessions busy, so a large batch takes a while to start. Sessions you are using
+count toward the 5, so a row you send can wait; the **Tasks** tab says when
+starts are on hold and why. A row whose TODO is
 blocked stays on **Start here**, even though it's marked Done; that blocked
 state shows after the next refresh.
 
