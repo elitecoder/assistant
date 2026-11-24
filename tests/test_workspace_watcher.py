@@ -1053,7 +1053,9 @@ def _drive_main(monkeypatch, stream_fn, until, clock=None):
         if clock.now >= until or calls["n"] > 1000:
             raise KeyboardInterrupt
         calls["n"] += 1
-        return stream_fn(clock, calls["n"])
+        began = clock.now
+        text = stream_fn(clock, calls["n"])
+        return text, clock.now - began
     monkeypatch.setattr(WW, "stream", wrapped)
     assert WW.main() == 0
     return clock, records, calls["n"]
@@ -1130,7 +1132,7 @@ def test_ctrl_c_during_the_wait_exits_cleanly(home, monkeypatch):
     monkeypatch.setattr(WW, "log", records)
     monkeypatch.setattr(WW, "WorkspaceRegistry", lambda: type("R", (), {"refresh": lambda self: None})())
     monkeypatch.setattr(WW, "ResumeGovernor", lambda: object())
-    monkeypatch.setattr(WW, "stream", lambda reg, gov, on_stable=None: "exit 1: nope")
+    monkeypatch.setattr(WW, "stream", lambda reg, gov, on_stable=None: ("exit 1: nope", 0))
 
     def interrupted(seconds):
         raise KeyboardInterrupt
@@ -1171,7 +1173,7 @@ def test_stream_cancels_the_stable_timer_when_the_stream_ends_early(home, monkey
 def test_stream_returns_the_childs_last_error_line_and_exit_code(home, monkeypatch):
     proc = _FakeProc([], err_lines=["Error: first\n", "\n", "Error: Connection to cmux was denied.\n"], rc=1)
     monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: proc)
-    out = WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())
+    out, _ = WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())
     assert out == "exit 1: Error: Connection to cmux was denied."
 
 
@@ -1182,7 +1184,7 @@ def test_stream_pipes_the_childs_stderr_instead_of_inheriting_it(home, monkeypat
         seen.update(kw)
         return _FakeProc([])
     monkeypatch.setattr(WW.subprocess, "Popen", popen)
-    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor()) == "exit 0: no error output"
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())[0] == "exit 0: no error output"
     assert seen["stderr"] == subprocess.PIPE
     assert seen["errors"] == "replace"
 
@@ -1190,7 +1192,7 @@ def test_stream_pipes_the_childs_stderr_instead_of_inheriting_it(home, monkeypat
 def test_stream_kills_a_child_that_closed_stdout_but_lives(home, monkeypatch):
     proc = _FakeProc([], rc=-9, hang=True)
     monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: proc)
-    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor()).startswith("exit -9")
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())[0].startswith("exit -9")
     assert proc.killed
 
 
@@ -1251,3 +1253,51 @@ def test_the_drain_stops_when_the_pipe_is_closed_under_it():
 
 def test_the_drain_accepts_text_pipes_too():
     assert WW._StderrTail(_ErrPipe(["Error: x\n", "\n"])).finish() == "Error: x"
+
+
+def test_a_pipe_held_open_by_a_grandchild_does_not_hang_finish():
+    import sys
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys; g = subprocess.Popen(['sleep', '20'], stdout=subprocess.DEVNULL); "
+         "print(g.pid, flush=True); sys.stderr.write('bye\\n')"],
+        stdout=subprocess.PIPE, text=True, stderr=subprocess.PIPE)
+    tail = WW._StderrTail(child.stderr)
+    grandchild = int(child.stdout.readline())
+    child.wait(timeout=20)
+    began = time.monotonic()
+    try:
+        assert tail.finish() == "bye"
+        assert time.monotonic() - began < 5       # about the 1-second join, not 20
+        assert tail._thread.is_alive()            # still draining; the daemon thread owns the pipe
+    finally:
+        os.kill(grandchild, 9)
+
+
+def test_a_stream_that_died_just_short_of_a_minute_is_not_counted_as_stable(home, monkeypatch):
+    # The up-to-5-second wait after the output ends must not count as uptime.
+    clock = _Clock()
+    records = _Records()
+    monkeypatch.setattr(WW, "time", clock)
+    monkeypatch.setattr(WW, "log", records)
+    monkeypatch.setattr(WW, "WorkspaceRegistry", lambda: type("R", (), {"refresh": lambda self: None})())
+    monkeypatch.setattr(WW, "ResumeGovernor", lambda: object())
+    runs = []
+
+    def fake(reg, gov, on_stable=None):
+        if len(runs) >= 3:
+            raise KeyboardInterrupt
+        runs.append(1)
+        clock.now += 66           # 56 seconds of output plus a 10-second wait and join
+        return "exit 1: x", 56
+    monkeypatch.setattr(WW, "stream", fake)
+    assert WW.main() == 0
+    assert clock.sleeps == [2, 4, 8]
+    assert not [l for l in records.lines if "recovered" in l]
+
+
+def test_stream_reports_how_long_the_output_lasted_not_the_wait_after(home, monkeypatch):
+    ticks = iter([100.0, 140.0, 999.0, 999.0, 999.0])
+    monkeypatch.setattr(WW, "time", type("T", (), {"monotonic": staticmethod(lambda: next(ticks))}))
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: _FakeProc([]))
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())[1] == 40.0

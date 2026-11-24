@@ -23,6 +23,9 @@ def tree(tmp_path):
     claude = tmp_path / ".claude"
     for d in (assistant / "logs", assistant / "comms", claude / "logs", claude / "cache"):
         d.mkdir(parents=True)
+    # An explicit `logs` entry means "trim at once" (no notice period); the
+    # notice-period tests remove it.
+    (assistant / "config.json").write_text('{"logs": {}}')
     return assistant, claude
 
 
@@ -131,7 +134,8 @@ def test_a_log_under_the_cap_is_left_alone(tree):
     assistant, claude = tree
     path = assistant / "assistant-pulse.log"
     path.write_bytes(b"x\n" * 100)
-    assert logcap.cap_logs(assistant, claude) == {"capped": [], "freed": 0, "keep": 5 * MB}
+    summary = logcap.cap_logs(assistant, claude)
+    assert (summary["capped"], summary["freed"], summary["keep"]) == ([], 0, 5 * MB)
     assert path.read_bytes() == b"x\n" * 100
 
 
@@ -246,64 +250,234 @@ def test_one_unreadable_file_does_not_stop_the_others(tree, monkeypatch):
 
 # --- limits come from config.json ---------------------------------------------
 
-def test_the_defaults_apply_without_a_config_file(tree):
+def _no_config(assistant):
+    (assistant / "config.json").unlink()
+
+
+def test_the_defaults_apply_without_a_config_file_or_without_a_logs_key(tree):
     assistant, _ = tree
-    assert logcap.limits(assistant) == (20 * MB, 5 * MB)
+    _no_config(assistant)
+    absent = logcap.settings(assistant)
+    assert (absent["cap"], absent["keep"], absent["explicit"], absent["problem"]) == (20 * MB, 5 * MB, False, None)
+    _config(assistant, {"mode": "pro"})
+    assert logcap.settings(assistant) == absent
 
 
 def test_limits_come_from_the_config_file(tree):
     assistant, _ = tree
     _config(assistant, {"logs": {"cap_mb": 10, "keep_mb": 2.5}})
-    assert logcap.limits(assistant) == (10 * MB, int(2.5 * MB))
+    got = logcap.settings(assistant)
+    assert (got["cap"], got["keep"], got["explicit"], got["problem"]) == (10 * MB, int(2.5 * MB), True, None)
+    _config(assistant, {"mode": "pro", "logs": {"cap_mb": 10}})      # keep falls back to its default
+    assert logcap.settings(assistant)["keep"] == 5 * MB
 
 
-def test_a_cap_of_zero_turns_the_capper_off(tree):
+def test_a_cap_of_zero_turns_the_capper_off_without_a_complaint(tree):
     assistant, claude = tree
     path = assistant / "a.log"
     _big(path)
     _config(assistant, {"logs": {"cap_mb": 0}})
-    assert logcap.limits(assistant)[0] == 0
-    assert logcap.cap_logs(assistant, claude)["capped"] == []
+    summary = logcap.cap_logs(assistant, claude)
+    assert summary["capped"] == [] and summary["problem"] is None and summary["notice"] is None
     assert path.stat().st_size == 25 * MB + 13
 
 
 def test_keep_is_never_larger_than_the_cap(tree):
     assistant, _ = tree
     _config(assistant, {"logs": {"cap_mb": 1, "keep_mb": 9}})
-    assert logcap.limits(assistant) == (1 * MB, 1 * MB)
+    got = logcap.settings(assistant)
+    assert (got["cap"], got["keep"]) == (1 * MB, 1 * MB)
 
 
-@pytest.mark.parametrize("config", [
-    "{ not json",                                   # malformed
-    "[1, 2]",                                       # not an object
-    {"logs": "big"},                                # section of the wrong type
-    {"logs": ["cap_mb", 5]},
-    {"logs": {"cap_mb": "10", "keep_mb": "2"}},     # numbers as strings
-    {"logs": {"cap_mb": True, "keep_mb": False}},   # booleans are not numbers
-    {"logs": {"cap_mb": None, "keep_mb": [1]}},
-    {"logs": {"cap_mb": -5, "keep_mb": -1}},        # negative
-    {"logs": {"cap_mb": "NaN"}},
-    {"logs": {}},
-    {},
+@pytest.mark.parametrize("config, reason", [
+    ("{ not json", "config.json isn't valid JSON"),
+    ("[1, 2]", "config.json isn't a JSON object"),
+    ({"logs": "big"}, "logs in config.json isn't an object"),
+    ({"logs": ["cap_mb", 5]}, "logs in config.json isn't an object"),
+    ({"logs": {"cap_mb": "0"}}, 'logs.cap_mb in config.json is "0" in quotes, not a number'),
+    ({"logs": {"cap_mb": 20, "keep_mb": "2"}}, 'logs.keep_mb in config.json is "2" in quotes, not a number'),
+    ({"logs": {"cap_mb": True}}, "logs.cap_mb in config.json is true, not a number"),
+    ({"logs": {"cap_mb": None}}, "logs.cap_mb in config.json is null, not a number"),
+    ({"logs": {"keep_mb": [1]}}, "logs.keep_mb in config.json is [1], not a number"),
+    ({"logs": {"cap_mb": -5}}, "logs.cap_mb in config.json is -5, not a number of 0 or more"),
+    ('{"logs": {"cap_mb": NaN}}', "logs.cap_mb in config.json is NaN, not a number of 0 or more"),
+    ('{"logs": {"keep_mb": Infinity}}', "logs.keep_mb in config.json is Infinity, not a number of 0 or more"),
 ])
-def test_anything_unusable_falls_back_to_the_defaults(tree, config):
-    assistant, _ = tree
+def test_a_setting_that_cannot_be_read_turns_trimming_off_and_says_why(tree, config, reason):
+    assistant, claude = tree
+    path = assistant / "a.log"
+    _big(path)
     _config(assistant, config)
-    assert logcap.limits(assistant) == (20 * MB, 5 * MB)
+    got = logcap.settings(assistant)
+    assert got["cap"] == 0 and got["problem"] == reason
+    summary = logcap.cap_logs(assistant, claude)
+    assert summary["capped"] == [] and summary["problem"] == reason and summary["announce"] is True
+    assert path.stat().st_size == 25 * MB + 13
 
 
-@pytest.mark.parametrize("raw", ['{"logs": {"cap_mb": NaN, "keep_mb": Infinity}}',
-                                 '{"logs": {"cap_mb": Infinity, "keep_mb": -Infinity}}'])
-def test_nan_and_infinity_fall_back_to_the_defaults(tree, raw):
-    assistant, _ = tree
-    _config(assistant, raw)
-    assert logcap.limits(assistant) == (20 * MB, 5 * MB)
-
-
-def test_a_config_directory_instead_of_a_file_falls_back(tree):
-    assistant, _ = tree
+def test_a_config_that_exists_but_cannot_be_read_turns_trimming_off(tree):
+    assistant, claude = tree
+    (assistant / "config.json").unlink()
     (assistant / "config.json").mkdir()
-    assert logcap.limits(assistant) == (20 * MB, 5 * MB)
+    _big(assistant / "a.log")
+    summary = logcap.cap_logs(assistant, claude)
+    assert summary["capped"] == []
+    assert summary["problem"].startswith("config.json can't be read")
+
+
+def test_an_unreadable_setting_is_announced_once_per_reason_per_day(tree):
+    assistant, claude = tree
+    _config(assistant, {"logs": {"cap_mb": "0"}})
+    first = logcap.cap_logs(assistant, claude, now=1_000_000)
+    again = logcap.cap_logs(assistant, claude, now=1_000_000 + 3600)
+    other = (_config(assistant, "{ nope"), logcap.cap_logs(assistant, claude, now=1_000_000 + 3700))[1]
+    next_day = logcap.cap_logs(assistant, claude, now=1_000_000 + 86400 + 1)
+    assert [first["announce"], again["announce"], other["announce"], next_day["announce"]] == [
+        True, False, True, False]            # the first reason isn't the current one any more
+    assert again["problem"] == first["problem"]
+    _config(assistant, {"logs": {"cap_mb": "0"}})
+    assert logcap.cap_logs(assistant, claude, now=1_000_000 + 86400 + 2)["announce"] is True
+
+
+def test_a_problem_whose_last_announcement_is_in_the_future_is_announced_again(tree):
+    assistant, claude = tree
+    _config(assistant, "{ nope")
+    logcap.cap_logs(assistant, claude, now=5_000_000)
+    assert logcap.cap_logs(assistant, claude, now=1_000)["announce"] is True
+
+
+# --- the notice before the first trim -------------------------------------------
+
+DAY = 24 * 3600
+
+
+def _unnoticed(tree):
+    assistant, claude = tree
+    _no_config(assistant)
+    return assistant, claude
+
+
+def test_with_no_logs_entry_the_first_run_trims_nothing_and_gives_a_notice(tree):
+    assistant, claude = _unnoticed(tree)
+    big = [assistant / "logs" / "a.log", claude / "logs" / "workspace-watcher.log"]
+    for p in big:
+        _big(p, 22 * MB)
+    small = assistant / "logs" / "small.log"
+    small.write_bytes(b"x\n")
+    summary = logcap.cap_logs(assistant, claude, now=1_000_000)
+    assert summary["capped"] == []
+    assert summary["notice"] == {"trim_at": 1_000_000 + DAY, "cap": 20 * MB, "keep": 5 * MB,
+                                 "names": ["a.log", "workspace-watcher.log"], "bytes": 44 * MB}
+    assert all(p.stat().st_size == 22 * MB for p in big)
+    state = assistant / "log-cap-state.json"
+    assert json.loads(state.read_text())["first_over"] == 1_000_000
+    assert oct(state.stat().st_mode & 0o777) == "0o600"
+    assert not list(assistant.glob("*.tmp"))
+
+
+def test_during_the_notice_period_it_only_reports(tree):
+    assistant, claude = _unnoticed(tree)
+    path = assistant / "logs" / "a.log"
+    _big(path)
+    logcap.cap_logs(assistant, claude, now=1_000_000)
+    later = logcap.cap_logs(assistant, claude, now=1_000_000 + DAY - 1)
+    assert later["capped"] == [] and later["notice"]["trim_at"] == 1_000_000 + DAY
+    assert path.stat().st_size == 25 * MB + 13
+
+
+def test_after_24_hours_it_trims_with_no_further_notice(tree):
+    assistant, claude = _unnoticed(tree)
+    path = assistant / "logs" / "a.log"
+    _big(path)
+    logcap.cap_logs(assistant, claude, now=1_000_000)
+    summary = logcap.cap_logs(assistant, claude, now=1_000_000 + DAY)
+    assert summary["capped"] == ["a.log"] and summary["notice"] is None
+    assert path.stat().st_size <= 5 * MB
+    _big(path)                                   # it grows again: trimmed at once, no new notice
+    again = logcap.cap_logs(assistant, claude, now=1_000_000 + DAY + 300)
+    assert again["capped"] == ["a.log"] and again["notice"] is None
+
+
+def test_an_explicit_logs_entry_skips_the_notice(tree):
+    assistant, claude = tree
+    _config(assistant, {"mode": "pro", "logs": {"cap_mb": 20}})
+    _big(assistant / "a.log")
+    summary = logcap.cap_logs(assistant, claude, now=1_000_000)
+    assert summary["capped"] == ["a.log"] and summary["notice"] is None
+    assert not (assistant / "log-cap-state.json").exists()
+
+
+def test_nothing_over_the_limit_means_no_notice_and_no_state_file(tree):
+    assistant, claude = _unnoticed(tree)
+    (assistant / "a.log").write_bytes(b"x\n")
+    summary = logcap.cap_logs(assistant, claude, now=1_000_000)
+    assert summary["notice"] is None and not (assistant / "log-cap-state.json").exists()
+
+
+def test_the_notice_clock_survives_a_new_process(tree, tmp_path):
+    assistant, claude = _unnoticed(tree)
+    _big(assistant / "a.log")
+    logcap.cap_logs(assistant, claude, now=1_000_000)
+    code = ("import sys; sys.path.insert(0, %r); from assistant import logcap; "
+            "r = logcap.cap_logs(%r, %r, now=%d); print(r['notice'] is None, r['capped'])"
+            % (str(Path(logcap.__file__).parent.parent), str(assistant), str(claude), 1_000_000 + DAY + 5))
+    out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=60)
+    assert out.stdout.strip() == "True ['a.log']"
+
+
+def test_a_clock_set_back_never_postpones_the_trim_past_24_hours(tree):
+    assistant, claude = _unnoticed(tree)
+    _big(assistant / "a.log")
+    logcap.cap_logs(assistant, claude, now=1_000_000)
+    # The clock jumps back a week: the recorded time is in the future, so it counts as now.
+    back = logcap.cap_logs(assistant, claude, now=1_000_000 - 7 * DAY)
+    assert back["notice"]["trim_at"] == 1_000_000 - 7 * DAY + DAY
+    assert json.loads((assistant / "log-cap-state.json").read_text())["first_over"] == 1_000_000 - 7 * DAY
+    done = logcap.cap_logs(assistant, claude, now=1_000_000 - 6 * DAY)
+    assert done["capped"] == ["a.log"]
+
+
+@pytest.mark.parametrize("junk", ['"yesterday"', "true", "null", "[1]"])
+def test_an_unusable_recorded_time_starts_the_notice_over(tree, junk):
+    assistant, claude = _unnoticed(tree)
+    _big(assistant / "a.log")
+    (assistant / "log-cap-state.json").write_text('{"first_over": %s}' % junk)
+    assert logcap.cap_logs(assistant, claude, now=2_000_000)["notice"]["trim_at"] == 2_000_000 + DAY
+
+
+def test_a_state_file_that_is_not_an_object_is_ignored(tree):
+    assistant, claude = _unnoticed(tree)
+    _big(assistant / "a.log")
+    (assistant / "log-cap-state.json").write_text("[1]")
+    assert logcap.cap_logs(assistant, claude, now=2_000_000)["notice"] is not None
+
+
+def test_a_state_file_that_cannot_be_written_never_trims(tree, monkeypatch):
+    assistant, claude = _unnoticed(tree)
+    path = assistant / "a.log"
+    _big(path)
+    real = os.replace
+
+    def refuse(src, dst):
+        raise OSError("read-only")
+    monkeypatch.setattr(logcap.os, "replace", refuse)
+    for now in (1_000_000, 1_000_000 + 5 * DAY):
+        summary = logcap.cap_logs(assistant, claude, now=now)
+        assert summary["capped"] == [] and summary["notice"] is not None
+    assert path.stat().st_size == 25 * MB + 13
+    assert not list(assistant.glob("*.tmp"))
+
+
+def test_a_tmp_file_that_cannot_be_removed_after_a_failed_write_is_tolerated(tree, monkeypatch):
+    assistant, claude = _unnoticed(tree)
+    _big(assistant / "a.log")
+    monkeypatch.setattr(logcap.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("x")))
+    monkeypatch.setattr(logcap.os, "unlink", lambda p: (_ for _ in ()).throw(OSError("busy")))
+    assert logcap.cap_logs(assistant, claude, now=1)["notice"] is not None
+
+
+def test_a_log_that_vanishes_before_it_is_measured_is_not_over(tmp_path):
+    assert logcap._size_over(tmp_path / "gone.log", 10) == 0
 
 
 def test_a_long_last_stretch_with_no_newline_leaves_an_empty_log(tree):

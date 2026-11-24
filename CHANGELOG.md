@@ -70,17 +70,22 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
-- Trim oversized logs. On the first check after you update, any log already
-  over 20 MB is cut to its last 5 MB and the older lines are deleted. This
-  frees the space the repeated lines took; one log had reached 1.6 GB and
-  another 870 MB. After that, each check trims a log again once it passes
-  20 MB. It covers the logs in `~/.assistant/logs`, the `.log` files in
-  `~/.assistant`, the comms listener log, the workspace watcher log, and the
-  to-do server's two output files. Services keep writing without a restart,
-  and a line written during a trim can be lost. To change the limits or turn
-  trimming off, set them before you update in `~/.assistant/config.json`, for
-  example `{"logs": {"cap_mb": 20, "keep_mb": 5}}`; `"cap_mb": 0` turns
-  trimming off. A missing or unusable value keeps the default.
+- Trim oversized logs. Every five minutes the Assistant now checks its logs:
+  the ones in `~/.assistant/logs`, the `.log` files in `~/.assistant`, the
+  comms listener log, the workspace watcher log, and the to-do server's two
+  output files. A log over 20 MB is cut to its last 5 MB; the older lines are
+  deleted and there is no backup copy. This frees the space the repeated lines
+  took; one log had reached 1.6 GB and another 870 MB. Services keep writing
+  without a restart, and a line written during a trim can be lost. Nothing is
+  deleted the day you update: when `~/.assistant/config.json` has no `logs`
+  entry, the first time a log is found over the limit the Assistant only shows
+  a card saying which logs it will trim and when, and waits 24 hours. To keep
+  your logs, or to change the limits, add a `logs` entry alongside your
+  existing keys; do not replace the file. For example,
+  `{"mode": "pro", "logs": {"cap_mb": 0}}` turns trimming off, and
+  `"cap_mb"` and `"keep_mb"` are in megabytes. Check the file with
+  `python3 -m json.tool ~/.assistant/config.json`. A `logs` setting that can't
+  be read, such as a number in quotes, turns trimming off and the log says why.
 - Stop the workspace watcher from restarting its cmux event stream in a tight
   loop. When cmux refused the connection, the watcher started a new stream
   the instant the last one ended and logged every try. It now waits 2 seconds

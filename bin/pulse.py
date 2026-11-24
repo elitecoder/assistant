@@ -2537,11 +2537,12 @@ def main() -> int:
     state = load_state()
     pulse_idx = int(state.get("_meta", {}).get("pulse_idx", 0)) + 1
     t0 = time.time()
+    log_trim_notice = None
     log.info("=== pulse %d start (dry_run=%s) ===", pulse_idx, dry_run)
     if not dry_run:
         # Trim oversized logs first: a pulse that fails part-way is exactly when
         # the logs grow, and it must still trim.
-        cap_logs_safely()
+        log_trim_notice = cap_logs_safely()
         try:
             prune_observer_runs(pulse_idx)
         except Exception as e:  # noqa: BLE001 — archive maintenance is optional
@@ -2613,6 +2614,8 @@ def main() -> int:
     # each time (and vanish the pulse after they leave `open` — card
     # existence derives from queue state).
     awaiting_input: list[dict] = list(triage_summary.get("cards") or [])
+    if log_trim_notice:
+        awaiting_input.append(log_trim_card(log_trim_notice))
     ws_meta: list[dict] = []
     ctxs_by_ref: dict[str, dict] = {}
     ws_by_ref: dict[str, dict] = {}
@@ -2995,19 +2998,46 @@ def main() -> int:
     return 0
 
 
-def cap_logs_safely() -> None:
+def log_trim_card(notice: dict) -> dict:
+    """The awaiting card shown while the 24-hour notice before the first log
+    trim runs. It is rebuilt every pulse, so it goes away on its own once
+    trimming has started or config.json has a `logs` entry."""
+    mb = 1024 * 1024
+    when = datetime.fromtimestamp(notice["trim_at"])
+    day = "today" if when.date() == datetime.now().date() else "tomorrow"
+    n = len(notice["names"])
+    return {
+        "key": "log-trim-notice",
+        "tier": "T3",
+        "title": f"Log trimming starts {day} at {when:%H:%M}",
+        "detail": (f"{n} log{' is' if n == 1 else 's are'} over {notice['cap'] / mb:g} MB "
+                   f"({notice['bytes'] / mb:,.0f} MB in all) and will be cut to their last "
+                   f"{notice['keep'] / mb:g} MB each; the older lines are deleted and there is "
+                   f"no backup. To keep them, add \"logs\": {{\"cap_mb\": 0}} to "
+                   f"~/.assistant/config.json, alongside your existing keys. To trim now, "
+                   f"add \"logs\": {{\"cap_mb\": 20}}."),
+    }
+
+
+def cap_logs_safely() -> dict | None:
     """Shrink any Assistant log over its limit. Logs one line only when it did
-    something; a failure here must never stop the pulse."""
+    something or a setting is unusable; a failure here must never stop the
+    pulse. Returns the notice to show while the first trim is still waiting."""
     try:
         summary = logcap.cap_logs(ASSISTANT_DIR, HOME / ".claude")
         if summary["capped"]:
             names = summary["capped"]
-            log.info("log cap: trimmed %d log%s, freed %s MB (each is now %g MB or less): %s",
+            log.info("log cap: trimmed %d log%s, deleted %s MB of older lines "
+                     "(each now keeps its last %g MB; no backup): %s",
                      len(names), "" if len(names) == 1 else "s",
                      f"{summary['freed'] / (1024 * 1024):,.0f}",
                      summary["keep"] / (1024 * 1024), ", ".join(names))
+        if summary["announce"]:
+            log.warning("log cap: %s; trimming is off until that is fixed", summary["problem"])
+        return summary["notice"]
     except Exception as e:  # noqa: BLE001 — log upkeep must never break the pulse
         log.warning("log cap failed (ignored): %s", e)
+        return None
 
 
 def write_heartbeat(pulse_idx: int, drained: int) -> None:

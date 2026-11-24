@@ -861,29 +861,103 @@ class CapLogsTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def test_the_log_line_reads_in_megabytes(self):
-        mb = 1024 * 1024
+    MB = 1024 * 1024
+
+    def _summary(self, **kw):
+        return {"capped": [], "freed": 0, "keep": 5 * self.MB, "problem": None,
+                "announce": False, "notice": None, **kw}
+
+    def test_the_log_line_says_what_happened_to_the_old_lines(self):
         names = ["a.log", "b.out", "c.err", "d.log", "e.log"]
         with mock.patch.object(self.mod.logcap, "cap_logs",
-                               return_value={"capped": names, "freed": 2560 * mb, "keep": 5 * mb}) as cap, \
+                               return_value=self._summary(capped=names, freed=2560 * self.MB)) as cap, \
                 self.assertLogs(self.mod.log, "INFO") as seen:
             self.mod.cap_logs_safely()
         cap.assert_called_once_with(self.mod.ASSISTANT_DIR, self.mod.HOME / ".claude")
         self.assertEqual(seen.output, [
-            "INFO:" + self.mod.log.name + ":log cap: trimmed 5 logs, freed 2,560 MB "
-            "(each is now 5 MB or less): a.log, b.out, c.err, d.log, e.log"])
+            "INFO:" + self.mod.log.name + ":log cap: trimmed 5 logs, deleted 2,560 MB of older lines "
+            "(each now keeps its last 5 MB; no backup): a.log, b.out, c.err, d.log, e.log"])
 
     def test_one_trimmed_log_is_not_pluralised_and_nothing_trimmed_logs_nothing(self):
-        mb = 1024 * 1024
         with mock.patch.object(self.mod.logcap, "cap_logs",
-                               return_value={"capped": ["a.log"], "freed": 20 * mb, "keep": 5 * mb}), \
+                               return_value=self._summary(capped=["a.log"], freed=20 * self.MB)), \
                 self.assertLogs(self.mod.log, "INFO") as seen:
             self.mod.cap_logs_safely()
-        self.assertIn("trimmed 1 log, freed 20 MB", seen.output[0])
-        with mock.patch.object(self.mod.logcap, "cap_logs",
-                               return_value={"capped": [], "freed": 0, "keep": 5 * mb}), \
+        self.assertIn("trimmed 1 log, deleted 20 MB of older lines", seen.output[0])
+        with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary()), \
                 self.assertNoLogs(self.mod.log, "INFO"):
+            self.assertIsNone(self.mod.cap_logs_safely())
+
+    def test_an_unusable_setting_is_logged_once_with_its_reason(self):
+        reason = 'logs.cap_mb in config.json is "0" in quotes, not a number'
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(problem=reason, announce=True)), \
+                self.assertLogs(self.mod.log, "WARNING") as seen:
             self.mod.cap_logs_safely()
+        self.assertEqual(seen.output, ["WARNING:" + self.mod.log.name + ":log cap: " + reason
+                                       + "; trimming is off until that is fixed"])
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(problem=reason, announce=False)), \
+                self.assertNoLogs(self.mod.log, "WARNING"):
+            self.mod.cap_logs_safely()
+
+    def test_the_notice_card_says_plainly_what_will_be_deleted_and_how_to_opt_out(self):
+        from datetime import datetime, timedelta
+        trim_at = (datetime.now() + timedelta(days=1)).replace(hour=14, minute=5, second=0).timestamp()
+        card = self.mod.log_trim_card({"trim_at": trim_at, "cap": 20 * self.MB, "keep": 5 * self.MB,
+                                       "names": ["a", "b", "c", "d", "e"], "bytes": 2560 * self.MB})
+        self.assertEqual(card, {
+            "key": "log-trim-notice", "tier": "T3",
+            "title": "Log trimming starts tomorrow at 14:05",
+            "detail": '5 logs are over 20 MB (2,560 MB in all) and will be cut to their last 5 MB '
+                      'each; the older lines are deleted and there is no backup. To keep them, add '
+                      '"logs": {"cap_mb": 0} to ~/.assistant/config.json, alongside your existing '
+                      'keys. To trim now, add "logs": {"cap_mb": 20}.'})
+
+    def test_the_notice_card_says_today_and_one_log_when_that_is_so(self):
+        from datetime import datetime
+        card = self.mod.log_trim_card({"trim_at": datetime.now().timestamp(), "cap": 20 * self.MB,
+                                       "keep": 5 * self.MB, "names": ["a"], "bytes": 30 * self.MB})
+        self.assertTrue(card["title"].startswith("Log trimming starts today at "))
+        self.assertTrue(card["detail"].startswith("1 log is over 20 MB (30 MB in all)"))
+
+    def test_the_notice_comes_back_from_cap_logs_safely(self):
+        notice = {"trim_at": 1.0}
+        with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary(notice=notice)):
+            self.assertIs(self.mod.cap_logs_safely(), notice)
+
+    def _pulse_state(self, config):
+        """Run a pulse with a 30 MB log and `config` for config.json; return the awaiting cards."""
+        big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))
+        (self._tmp / ".assistant" / "config.json").write_text(json.dumps(config))
+        sent = []
+
+        def run(cmd, input_text=None, **kw):
+            if input_text:
+                sent.append(json.loads(input_text))
+            return (0, "", "")
+        with self._patched(run={"side_effect": run}):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        return big, [c for c in sent[-1]["awaiting_input"] if c["key"] == "log-trim-notice"]
+
+    def test_the_pulse_shows_the_notice_card_while_it_waits_then_it_goes_away(self):
+        big, cards = self._pulse_state({"mode": "pro"})
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(big.stat().st_size, 30 * self.MB)             # nothing trimmed yet
+        # Once trimming has started the card is gone.
+        state = self._tmp / ".assistant" / "log-cap-state.json"
+        state.write_text(json.dumps({"first_over": time.time() - 90000}))
+        big, cards = self._pulse_state({"mode": "pro"})
+        self.assertEqual(cards, [])
+        self.assertLessEqual(big.stat().st_size, 5 * self.MB)
+
+    def test_an_explicit_logs_entry_means_no_card(self):
+        big, cards = self._pulse_state({"logs": {"cap_mb": 20}})
+        self.assertEqual(cards, [])
+        self.assertLessEqual(big.stat().st_size, 5 * self.MB)
 
     def test_a_failing_capper_never_stops_the_pulse(self):
         with mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
@@ -904,6 +978,7 @@ class CapLogsTests(unittest.TestCase):
         big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
         big.parent.mkdir(parents=True, exist_ok=True)
         big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))     # 30 MB
+        (self._tmp / ".assistant" / "config.json").write_text('{"logs": {}}')
         sizes = []
         with self._patched(self_update_pulse={"side_effect": lambda idx: sizes.append(big.stat().st_size)}):
             sys.argv = ["pulse.py"]
@@ -915,6 +990,7 @@ class CapLogsTests(unittest.TestCase):
         big = self._tmp / ".assistant" / "logs" / "a.log"
         big.parent.mkdir(parents=True, exist_ok=True)
         big.write_bytes(b"x" * (21 * 1024 * 1024))
+        (self._tmp / ".assistant" / "config.json").write_text('{"logs": {}}')
         with self._patched(drain_inbox={"side_effect": RuntimeError("late failure")}):
             sys.argv = ["pulse.py"]
             with self.assertRaises(RuntimeError):

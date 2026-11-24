@@ -22,6 +22,7 @@ import json
 import math
 import os
 import stat
+import time
 from pathlib import Path
 
 DEFAULT_CAP_MB = 20.0
@@ -30,29 +31,63 @@ _MB = 1024 * 1024
 _LOG_SUFFIXES = (".log", ".out", ".err")
 
 
-def _megabytes(value, default: float) -> float:
-    """A finite number >= 0, else the default. A bool is not a number here."""
+DAY_SEC = 24 * 60 * 60
+STATE_NAME = "log-cap-state.json"
+
+
+def _bad_number(name: str, value) -> str | None:
+    """Why a setting isn't usable, or None when it is a finite number >= 0.
+    A bool is not a number here."""
+    if isinstance(value, str):
+        return f"logs.{name} in config.json is {json.dumps(value)} in quotes, not a number"
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
+        return f"logs.{name} in config.json is {json.dumps(value)}, not a number"
     if not math.isfinite(value) or value < 0:
-        return default
-    return float(value)
+        return f"logs.{name} in config.json is {json.dumps(value)}, not a number of 0 or more"
+    return None
 
 
-def limits(assistant_dir: Path | str) -> tuple[int, int]:
-    """(cap, keep) in bytes from config.json. A cap of 0 means off.
+def settings(assistant_dir: Path | str) -> dict:
+    """The limits in bytes, from config.json.
 
-    Anything missing, malformed or out of range falls back to the default."""
+    {"cap": bytes, "keep": bytes, "explicit": bool, "problem": str | None}
+
+    The defaults apply only when the file is absent or has no `logs` key. A
+    setting that exists but can't be read means trimming is OFF (`problem`
+    says why): someone who typed "0" in quotes asked for no trimming and must
+    not get their logs deleted. `explicit` is True when `logs` is present."""
+    default = {"cap": int(DEFAULT_CAP_MB * _MB), "keep": int(DEFAULT_KEEP_MB * _MB),
+               "explicit": False, "problem": None}
+    off = {**default, "cap": 0, "keep": 0}
     try:
-        data = json.loads((Path(assistant_dir) / "config.json").read_text())
-        section = data.get("logs") if isinstance(data, dict) else None
-    except (OSError, ValueError):
-        section = None
+        text = (Path(assistant_dir) / "config.json").read_text()
+    except FileNotFoundError:
+        return default
+    except OSError as exc:
+        return {**off, "problem": f"config.json can't be read ({exc.strerror or type(exc).__name__})"}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {**off, "problem": "config.json isn't valid JSON"}
+    if not isinstance(data, dict):
+        return {**off, "problem": "config.json isn't a JSON object"}
+    if "logs" not in data:
+        return default
+    section = data["logs"]
     if not isinstance(section, dict):
-        section = {}
-    cap = int(_megabytes(section.get("cap_mb"), DEFAULT_CAP_MB) * _MB)
-    keep = int(_megabytes(section.get("keep_mb"), DEFAULT_KEEP_MB) * _MB)
-    return cap, min(keep, cap)
+        return {**off, "problem": "logs in config.json isn't an object"}
+    values = {}
+    for name, fallback in (("cap_mb", DEFAULT_CAP_MB), ("keep_mb", DEFAULT_KEEP_MB)):
+        if name in section:
+            problem = _bad_number(name, section[name])
+            if problem:
+                return {**off, "explicit": True, "problem": problem}
+            values[name] = float(section[name])
+        else:
+            values[name] = fallback
+    cap = int(values["cap_mb"] * _MB)
+    return {"cap": cap, "keep": min(int(values["keep_mb"] * _MB), cap),
+            "explicit": True, "problem": None}
 
 
 def _is_log_name(name: str) -> bool:
@@ -121,18 +156,97 @@ def _cap_one(path: Path, cap: int, keep: int) -> int:
         os.close(fd)
 
 
-def cap_logs(assistant_dir: Path | str, claude_dir: Path | str) -> dict:
+def _read_state(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_state(path: Path, state: dict) -> bool:
+    """Atomic, owner-only. False when it can't be written."""
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as out:
+            json.dump(state, out)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _size_over(path: Path, cap: int) -> int:
+    """The size of a regular file past the cap, else 0."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 0
+    return st.st_size if stat.S_ISREG(st.st_mode) and st.st_size > cap else 0
+
+
+def _problem_due(state: dict, problem: str, now: float) -> bool:
+    """Say a setting problem once per distinct reason per day."""
+    reasons = state.get("problems")
+    last = reasons.get(problem) if isinstance(reasons, dict) else None
+    return not isinstance(last, (int, float)) or last > now or now - last >= DAY_SEC
+
+
+def cap_logs(assistant_dir: Path | str, claude_dir: Path | str, now: float | None = None) -> dict:
     """Cap every Assistant log over the limit. Never raises.
 
-    Returns {"capped": [names], "freed": bytes, "keep": bytes}. Nothing is
-    capped when the cap is 0."""
-    summary: dict = {"capped": [], "freed": 0, "keep": 0}
+    Returns {"capped": [names], "freed": bytes, "keep": bytes,
+             "problem": str | None, "announce": bool, "notice": dict | None}.
+    Nothing is trimmed when the cap is 0 or a setting can't be read (`problem`;
+    `announce` is True when it is due to be logged). With no `logs` entry in
+    config.json, the first run that finds a log over the limit trims nothing
+    and returns a `notice`; trimming starts 24 hours after that."""
+    summary: dict = {"capped": [], "freed": 0, "keep": 0, "problem": None,
+                     "announce": False, "notice": None}
     try:
-        cap, keep = limits(assistant_dir)
+        now = time.time() if now is None else now
+        assistant_dir = Path(assistant_dir)
+        conf = settings(assistant_dir)
+        cap, keep = conf["cap"], conf["keep"]
         summary["keep"] = keep
+        state_path = assistant_dir / STATE_NAME
+        if conf["problem"]:
+            state = _read_state(state_path)
+            summary["problem"] = conf["problem"]
+            if _problem_due(state, conf["problem"], now):
+                summary["announce"] = True
+                reasons = state.get("problems") if isinstance(state.get("problems"), dict) else {}
+                state["problems"] = {**reasons, conf["problem"]: now}
+                _write_state(state_path, state)
+            return summary
         if cap <= 0:
             return summary
-        for path in _candidates(Path(assistant_dir), Path(claude_dir)):
+        paths = _candidates(assistant_dir, Path(claude_dir))
+        if not conf["explicit"]:
+            over = [(p, _size_over(p, cap)) for p in paths]
+            over = [(p, n) for p, n in over if n]
+            if not over:
+                return summary
+            state = _read_state(state_path)
+            first = state.get("first_over")
+            usable = isinstance(first, (int, float)) and not isinstance(first, bool) and first <= now
+            if not usable:
+                # No record yet, or one from the future (the clock was set back).
+                state["first_over"] = first = now
+                recorded = _write_state(state_path, state)
+            else:
+                recorded = True
+            if not recorded or now - first < DAY_SEC:
+                summary["notice"] = {"trim_at": first + DAY_SEC, "cap": cap, "keep": keep,
+                                     "names": [p.name for p, _ in over],
+                                     "bytes": sum(n for _, n in over)}
+                return summary
+        for path in paths:
             try:
                 freed = _cap_one(path, cap, keep)
             except Exception:  # noqa: BLE001 — one bad file must not stop the rest

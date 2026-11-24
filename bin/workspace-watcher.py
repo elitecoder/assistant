@@ -697,10 +697,14 @@ class _StderrTail:
 
     def finish(self) -> str:
         self._thread.join(timeout=1)
-        try:
-            self._pipe.close()
-        except (OSError, ValueError):
-            pass
+        if not self._thread.is_alive():
+            # Closing while the drain is blocked in a read would wait for that
+            # read, which lasts as long as any grandchild holds the pipe open.
+            # A still-running drain is left to its daemon thread.
+            try:
+                self._pipe.close()
+            except (OSError, ValueError):
+                pass
         return self.last
 
 
@@ -750,8 +754,9 @@ class RetryPolicy:
         return self.delay, None
 
 
-def stream(registry: WorkspaceRegistry, governor: ResumeGovernor, on_stable=None) -> str:
-    """Run one event stream until it ends. Returns a short summary of why.
+def stream(registry: WorkspaceRegistry, governor: ResumeGovernor, on_stable=None) -> tuple[str, float]:
+    """Run one event stream until it ends. Returns (a short summary of why,
+    seconds it ran until its output ended; the wait and join after don't count).
 
     `on_stable` is called once if the stream stays up past STABLE_STREAM_SEC."""
     WATCHER_DIR.mkdir(parents=True, exist_ok=True)
@@ -767,6 +772,7 @@ def stream(registry: WorkspaceRegistry, governor: ResumeGovernor, on_stable=None
                             text=True, errors="replace", bufsize=1)
     if proc.stdout is None:
         raise RuntimeError("cmux events: no stdout")
+    started = time.monotonic()
     tail = _StderrTail(proc.stderr)
     timer = None
     if on_stable is not None:
@@ -793,6 +799,7 @@ def stream(registry: WorkspaceRegistry, governor: ResumeGovernor, on_stable=None
                     log.exception("handle_close failed")
                 continue
     finally:
+        ran = time.monotonic() - started
         if timer is not None:
             timer.cancel()
         try:
@@ -800,7 +807,7 @@ def stream(registry: WorkspaceRegistry, governor: ResumeGovernor, on_stable=None
         except subprocess.TimeoutExpired:
             proc.kill()
             rc = proc.wait()
-    return f"exit {rc}: {tail.finish() or 'no error output'}"
+    return f"exit {rc}: {tail.finish() or 'no error output'}", ran
 
 
 def main() -> int:
@@ -822,12 +829,13 @@ def main() -> int:
             log.info("starting event stream")
         try:
             try:
-                text = stream(registry, governor, on_stable=stable)
+                text, ran = stream(registry, governor, on_stable=stable)
             except Exception as exc:
                 text = f"stream crashed: {type(exc).__name__}: {exc}"
+                ran = time.monotonic() - started
                 if policy.signature != _same_failure(text):
                     log.exception("stream crashed")
-            if time.monotonic() - started > STABLE_STREAM_SEC:
+            if ran > STABLE_STREAM_SEC:
                 stable()
                 delay, message = policy.ended_after_running(text)
             else:
