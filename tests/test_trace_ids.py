@@ -902,3 +902,15 @@ def test_a_temporary_file_a_killed_pulse_left_behind_is_removed_after_an_hour_an
     todostore.stamp_missing_traces()
     assert sorted(p.name for p in folder.glob("*.tmp")) == sorted(
         [names["fresh"], names["old shared"], names["reactor"]])
+
+
+def test_matching_gives_an_id_only_to_the_tasks_that_lack_one_and_cleaning_up_never_stops_a_write(wq, monkeypatch):
+    write_todos(wq, [{"id": "td-1", "trace": OWN}, {"id": "td-2"}])
+    config.write_json(wq.data / "queued.json", {ROW: {"id": "td-1"}, ROW + "2": {"id": "td-2"}})
+    traces.reconcile(DAY)
+    assert [i["trace"] for i in wq.items()][0] == OWN and registry()[ROW]["trace"] == OWN
+    assert wq.items()[1]["trace"] == registry()[ROW + "2"]["trace"] != OWN
+    monkeypatch.setattr(todostore, "re", types.SimpleNamespace(fullmatch=lambda *a: (_ for _ in ()).throw(OSError("gone"))))
+    (wq.todo.parent / "assistant-todo.json.1.tmp").write_text("x")
+    before = wq.todo.read_text()
+    assert todostore.replace_if_unchanged(before, before + " ") is True
