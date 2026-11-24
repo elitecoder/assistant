@@ -53,7 +53,7 @@ class Cmux:
             if self.first is None:
                 self.first = rows()
             self.calls.append((method, params.get("text", params.get("key"))))
-            cs._rpc_state.rc, cs._rpc_state.timed_out = self.rc, self.rc == -1
+            cl._last.result = (self.rc, "timeout after 15s" if self.rc == -1 else "")
             return None if self.rc or params.get("text") in self.refuse_text else {}
         return {}
 
@@ -153,7 +153,7 @@ def test_a_timeout_while_typing_is_unknown_not_failed(reply, env_delivery):
 def test_an_exit_status_of_zero_is_an_answer_whatever_the_body(paths, monkeypatch):
     sent = []
     monkeypatch.setattr(cs, "_cmux_rpc", lambda p, m, params, timeout=15: (
-        sent.append(m) or setattr(cs._rpc_state, "rc", 0) or None))  # it ran, and printed nothing
+        sent.append(m) or setattr(cl._last, "result", (0, "")) or None))  # it ran, and printed nothing
     with cs.typing_scope(paths, WS, "surface:3", "clear", kind="standing", ref="slack-comms") as keys:
         assert keys.text("x") is True and keys.carriage_return() is True
     assert sent == ["surface.send_text"] * 2 and rows()[1]["outcome"] == "done"
@@ -617,3 +617,50 @@ def test_a_message_sitting_in_the_prompt_box_is_told_from_one_that_isnt(monkeypa
     assert cs.message_in_box(paths, "surface:3", "msg_ts=6", ag.CLAUDE) is False
     monkeypatch.setattr(cs, "_surface_read_text", lambda p, ref, lines=200: box(""))
     assert cs.message_in_box(paths, "surface:3", "msg_ts=5") is False
+
+
+def test_run_cmd_remembers_how_the_last_command_ended_on_this_thread(monkeypatch):
+    import subprocess as sp
+    cl.clear_last_run()
+    assert cl.last_run() is None
+    monkeypatch.setattr(sp, "run", lambda *a, **k: sp.CompletedProcess(a, 0, "out", ""))
+    assert cl.run_cmd(["x"]) == (0, "out", "") and cl.last_run() == (0, "")
+    monkeypatch.setattr(sp, "run", lambda *a, **k: sp.CompletedProcess(a, 3, "", "bad"))
+    cl.run_cmd(["x"])
+    assert cl.last_run() == (3, "bad")
+
+    def slow(*a, **k):
+        raise sp.TimeoutExpired(cmd="x", timeout=5)
+    monkeypatch.setattr(sp, "run", slow)
+    assert cl.run_cmd(["x"], timeout=5) == (-1, "", "timeout after 5s") and cl.last_run() == (-1, "timeout after 5s")
+
+    def missing(*a, **k):
+        raise FileNotFoundError("no cmux")
+    monkeypatch.setattr(sp, "run", missing)
+    assert cl.run_cmd(["x"])[0] == -1 and cl.last_run() == (-1, "no cmux")
+    seen = []
+    t = threading.Thread(target=lambda: seen.append(cl.last_run()))
+    t.start()
+    t.join()
+    assert seen == [None]  # another thread never sees this thread's last command
+    cl.clear_last_run()
+    assert cl.last_run() is None
+
+
+def test_the_typing_transport_tells_a_timeout_a_refusal_and_a_silent_success_apart(paths, monkeypatch):
+    """Through the real run_cmd, with only the process faked."""
+    import subprocess as sp
+    outcomes = iter([sp.TimeoutExpired(cmd="cmux", timeout=15), sp.CompletedProcess([], 1, "", "no"),
+                     sp.CompletedProcess([], 0, "", ""), sp.CompletedProcess([], 0, "{\"ok\": true}", "")])
+
+    def fake(*a, **k):
+        out = next(outcomes)
+        if isinstance(out, Exception):
+            raise out
+        return out
+    monkeypatch.setattr(sp, "run", fake)
+    with cs.typing_scope(paths, WS, "surface:3", "clear", kind="standing", ref="slack-comms") as keys:
+        assert keys.text("a") is False and keys.raised           # a timeout: may have landed
+        keys.raised = False
+        assert keys.text("b") is False                           # refused
+        assert keys.text("c") is True and keys.text("d") is True  # exit status 0, whatever it printed

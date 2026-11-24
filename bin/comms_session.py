@@ -598,13 +598,9 @@ def resolve_workspace_state(probe, attempts: int = LIVENESS_ATTEMPTS,
 #
 # Same RPC pattern pulse.py uses. Kept thin; validated live, not mocked.
 
-_rpc_state = threading.local()  # how the last _cmux_rpc call on this thread ended, for the typing transport
-
-
 def _cmux_rpc(paths: comms_lib.Paths, method: str, params: dict, timeout: int = 15) -> dict | None:  # pragma: no cover - live cmux I/O
-    rc, out, err = comms_lib.run_cmd(
+    rc, out, _ = comms_lib.run_cmd(
         [str(paths.cmux_bin), "rpc", method, json.dumps(params)], timeout=timeout)
-    _rpc_state.rc, _rpc_state.timed_out = rc, err.startswith("timeout")
     if rc != 0:
         return None
     try:
@@ -734,13 +730,14 @@ def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: 
     def transport(method, params):
         """An exit status of 0 is an answer whatever the body; a timeout raises, because the keystroke may have
         landed and is then recorded as unknown, not failed."""
-        _rpc_state.rc, _rpc_state.timed_out = None, False
+        comms_lib.clear_last_run()
         answer = _cmux_rpc(paths, method, params)
         if answer is not None:
             return answer
-        if getattr(_rpc_state, "timed_out", False):
+        ran = comms_lib.last_run()  # how the command just run ended, if one was run
+        if ran and ran[1].startswith("timeout"):
             raise TimeoutError(method)
-        return {} if getattr(_rpc_state, "rc", None) == 0 else None
+        return {} if ran and ran[0] == 0 else None
 
     try:
         keys = session_effects.Keys(effect_id, transport, surface_ref, ws_ref, also=others)

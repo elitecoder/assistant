@@ -489,14 +489,14 @@ CHECKS = (
     (
         "a timeout while typing into the Slack session is not taken for a refusal",
         CS,
-        '        if getattr(_rpc_state, "timed_out", False):\n            raise TimeoutError(method)',
+        '        if ran and ran[1].startswith("timeout"):\n            raise TimeoutError(method)',
         '        if False:\n            raise TimeoutError(method)',
-        C + "test_a_timeout_while_typing_is_unknown_not_failed",
+        C + "test_the_typing_transport_tells_a_timeout_a_refusal_and_a_silent_success_apart",
     ),
     (
         "an exit status of zero is an answer in the Slack session",
         CS,
-        '        return {} if getattr(_rpc_state, "rc", None) == 0 else None',
+        "        return {} if ran and ran[0] == 0 else None",
         "        return None",
         C + "test_an_exit_status_of_zero_is_an_answer_whatever_the_body",
     ),
@@ -527,6 +527,20 @@ CHECKS = (
         "    return box_has_marker(input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent), marker)",
         "    return True",
         C + "test_a_message_sitting_in_the_prompt_box_is_told_from_one_that_isnt",
+    ),
+    (
+        "the command runner remembers how its last command ended",
+        "bin/comms_lib.py",
+        "    _last.result = result[0], result[2]\n",
+        "",
+        C + "test_run_cmd_remembers_how_the_last_command_ended_on_this_thread",
+    ),
+    (
+        "the command runner's memory belongs to one thread",
+        "bin/comms_lib.py",
+        "_last = threading.local()",
+        "_last = type('Shared', (), {})()",
+        C + "test_run_cmd_remembers_how_the_last_command_ended_on_this_thread",
     ),
     (
         "keys that can't be made close the Slack scope's intents as failed",
