@@ -70,16 +70,20 @@ jobs:
           path: ${{ runner.temp }}/assistant-coverage
           if-no-files-found: warn
 
-  # The mutation checks run in six shards at once. Shard i of n runs every n-th
+  # The mutation checks run in four shards at once. Shard i of n runs every n-th
   # check from the i-th, so the shards together run every check exactly once.
+  # Four shards plus the coverage job is five macOS jobs, the most this account
+  # runs at a time, so no job waits in a queue. Each shard runs three checks at
+  # once: a macOS runner has three cores, and every check has its own copy of the
+  # sources and its own home.
   mutations:
-    name: Mutation checks (shard ${{ matrix.shard }} of 6)
+    name: Mutation checks (shard ${{ matrix.shard }} of 4)
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,7 +99,7 @@ jobs:
       - name: Prove critical regression tests catch broken behavior
         run: |
           mkdir -p "$RUNNER_TEMP/assistant-mutations"
-          uv run --no-sync python tests/mutation_smoke.py --shard "${{ matrix.shard }}/6" \
+          uv run --no-sync python tests/mutation_smoke.py --shard "${{ matrix.shard }}/4" --workers 3 \
             --output "$RUNNER_TEMP/assistant-mutations/mutations-${{ matrix.shard }}.json"
       - name: Keep validation evidence
         if: always()
