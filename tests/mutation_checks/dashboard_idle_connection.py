@@ -52,4 +52,11 @@ CHECKS = (
         "",
         "tests/test_todo_server.py::test_a_large_page_sent_to_a_slow_reader_arrives_whole",
     ),
+    (
+        "a reader that stops reading is let go: sending has a limit too",
+        "bin/todo-server.py",
+        "        self.connection.settimeout(SEND_TIMEOUT_SEC)  # the request has been read; all that is left is sending\n",
+        "        self.connection.settimeout(None)\n",
+        "tests/test_todo_server.py::test_a_reader_that_stops_reading_cannot_hold_the_server",
+    ),
 )

@@ -527,6 +527,19 @@ def test_a_large_page_sent_to_a_slow_reader_arrives_whole(server, monkeypatch):
     assert len(body) == len(page)
 
 
+def test_a_reader_that_stops_reading_cannot_hold_the_server(server, monkeypatch):
+    """Sending has a limit too: a client that asks for a large page and never reads it is let go."""
+    monkeypatch.setattr(mod, "SEND_TIMEOUT_SEC", 0.5)
+    page = b"<!doctype html>" + b"x" * (32 * 1024 * 1024)
+    mod.DASHBOARD_HTML_PATH.write_bytes(page)
+    host, port = server.base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port))) as stalled:  # closed on the way out even if this fails
+        stalled.sendall(f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+        assert _request(server.base, "GET", "/healthz")[0] == 200  # gives up after 5 s if the server is still held
+        received = len(_closed_by_the_server(stalled))
+    assert 0 < received < len(page)
+
+
 def test_the_server_drops_a_silent_connection_after_a_couple_of_seconds():
     assert mod.Handler.timeout == mod.IDLE_TIMEOUT_SEC and 0 < mod.IDLE_TIMEOUT_SEC <= 5
     assert mod.SEND_TIMEOUT_SEC >= 10 * mod.IDLE_TIMEOUT_SEC
