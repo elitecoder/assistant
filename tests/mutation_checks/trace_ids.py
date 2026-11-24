@@ -115,8 +115,8 @@ CHECKS = (
     (
         "a busy registry makes a send give up rather than wait",
         TRACES,
-        "                except BlockingIOError:\n",
-        "                except ZeroDivisionError:\n",
+        "            except BlockingIOError:\n",
+        "            except ZeroDivisionError:\n",
         T + "test_a_send_gives_up_on_a_busy_registry_after_a_short_wait_and_uses_the_id_it_holds",
     ),
     (
