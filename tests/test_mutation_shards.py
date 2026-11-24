@@ -83,50 +83,54 @@ def test_a_check_never_runs_in_a_folder_whose_path_has_a_double_underscore(monke
     assert cleaned == made[:2], "each folder with __ in its name is removed before the next try"
 
 
-@pytest.fixture
-def fresh_baselines(monkeypatch):
-    monkeypatch.setattr(mutation_smoke, "BASELINES_PASSED", set())
-    monkeypatch.setattr(mutation_smoke, "BASELINE_LOCKS", {})
-
-
 class Ran:
     def __init__(self, returncode=0):
         self.returncode, self.stdout, self.stderr = returncode, "1 failed" if returncode else "1 passed", ""
 
 
-def test_a_selectors_baseline_runs_once_however_many_checks_name_it(fresh_baselines, monkeypatch, tmp_path):
-    runs = []
+def test_a_tests_baseline_runs_once_however_many_checks_name_it(monkeypatch, tmp_path):
+    runs, shared = [], mutation_smoke.Baselines()
     monkeypatch.setattr(mutation_smoke, "run_test", lambda repo, home, selector: runs.append(selector) or Ran())
     for name in ("first", "second", "third"):
-        mutation_smoke.prove_baseline(name, tmp_path, tmp_path, "tests/a.py::one")
-    mutation_smoke.prove_baseline("other", tmp_path, tmp_path, "tests/a.py::two")
+        mutation_smoke.prove_baseline(name, tmp_path, tmp_path, "tests/a.py::one", shared)
+    mutation_smoke.prove_baseline("other", tmp_path, tmp_path, "tests/a.py::two", shared)
     assert runs == ["tests/a.py::one", "tests/a.py::two"]
 
 
-def test_a_failed_baseline_stops_the_check_and_is_never_remembered(fresh_baselines, monkeypatch, tmp_path):
-    answers = iter([Ran(1), Ran(0)])
+def test_without_a_shared_record_every_check_runs_its_own_baseline(monkeypatch, tmp_path):
+    """run_check called on its own (a test, or someone proving one new check) remembers nothing between calls."""
+    runs = []
+    monkeypatch.setattr(mutation_smoke, "run_test", lambda repo, home, selector: runs.append(selector) or Ran())
+    for name in ("first", "second"):
+        mutation_smoke.prove_baseline(name, tmp_path, tmp_path, "tests/a.py::one")
+    assert runs == ["tests/a.py::one"] * 2
+
+
+def test_a_failed_baseline_stops_the_check_and_is_never_remembered(monkeypatch, tmp_path):
+    answers, shared = iter([Ran(1), Ran(0)]), mutation_smoke.Baselines()
     monkeypatch.setattr(mutation_smoke, "run_test", lambda *args: next(answers))
     with pytest.raises(RuntimeError, match="first: baseline failed"):
-        mutation_smoke.prove_baseline("first", tmp_path, tmp_path, "tests/a.py::one")
-    assert mutation_smoke.BASELINES_PASSED == set(), "a later check must run this baseline again"
-    mutation_smoke.prove_baseline("second", tmp_path, tmp_path, "tests/a.py::one")
-    assert mutation_smoke.BASELINES_PASSED == {"tests/a.py::one"}
+        mutation_smoke.prove_baseline("first", tmp_path, tmp_path, "tests/a.py::one", shared)
+    assert shared.passed == set(), "a later check must run this baseline again"
+    mutation_smoke.prove_baseline("second", tmp_path, tmp_path, "tests/a.py::one", shared)
+    assert shared.passed == {"tests/a.py::one"}
 
 
-def test_a_baseline_that_never_finishes_stops_the_check(fresh_baselines, monkeypatch, tmp_path):
+def test_a_baseline_that_never_finishes_stops_the_check_and_is_never_remembered(monkeypatch, tmp_path):
     def hang(*args):
         raise mutation_smoke.subprocess.TimeoutExpired("pytest", mutation_smoke.TEST_TIMEOUT_SEC)
 
+    shared = mutation_smoke.Baselines()
     monkeypatch.setattr(mutation_smoke, "run_test", hang)
     with pytest.raises(RuntimeError, match="slow: baseline tests/a.py::one didn't finish within"):
-        mutation_smoke.prove_baseline("slow", tmp_path, tmp_path, "tests/a.py::one")
-    assert mutation_smoke.BASELINES_PASSED == set()
+        mutation_smoke.prove_baseline("slow", tmp_path, tmp_path, "tests/a.py::one", shared)
+    assert shared.passed == set()
 
 
-def test_two_checks_naming_one_selector_at_once_run_its_baseline_once(fresh_baselines, monkeypatch, tmp_path):
+def test_two_checks_naming_one_test_at_once_run_its_baseline_once(monkeypatch, tmp_path):
     import threading
 
-    runs, entered, release = [], threading.Event(), threading.Event()
+    runs, entered, release, shared = [], threading.Event(), threading.Event(), mutation_smoke.Baselines()
 
     def slow(repo, home, selector):
         runs.append(selector)
@@ -135,8 +139,8 @@ def test_two_checks_naming_one_selector_at_once_run_its_baseline_once(fresh_base
         return Ran()
 
     monkeypatch.setattr(mutation_smoke, "run_test", slow)
-    workers = [threading.Thread(target=mutation_smoke.prove_baseline, args=(n, tmp_path, tmp_path, "tests/a.py::one"))
-               for n in ("first", "second")]
+    workers = [threading.Thread(target=mutation_smoke.prove_baseline,
+                                args=(n, tmp_path, tmp_path, "tests/a.py::one", shared)) for n in ("first", "second")]
     workers[0].start()
     assert entered.wait(5)
     workers[1].start()  # must wait for the first one's answer, not start a second baseline
@@ -146,10 +150,10 @@ def test_two_checks_naming_one_selector_at_once_run_its_baseline_once(fresh_base
     assert runs == ["tests/a.py::one"]
 
 
-def test_a_check_still_runs_the_mutant_when_its_baseline_was_already_proved(fresh_baselines, monkeypatch, tmp_path):
+def test_a_check_still_runs_the_mutant_when_its_baseline_was_already_proved(monkeypatch, tmp_path):
     """The mutant run is the check itself; only the repeated baseline is skipped."""
-    selector, runs = "tests/a.py::one", []
-    mutation_smoke.BASELINES_PASSED.add(selector)
+    selector, runs, shared = "tests/a.py::one", [], mutation_smoke.Baselines()
+    shared.passed.add(selector)
 
     def copy(destination):
         (destination / "module.py").write_text("x = 1\n")
@@ -162,9 +166,20 @@ def test_a_check_still_runs_the_mutant_when_its_baseline_was_already_proved(fres
 
     monkeypatch.setattr(mutation_smoke, "copy_sources", copy)
     monkeypatch.setattr(mutation_smoke, "run_test", run)
-    result = mutation_smoke.run_check("a check", "module.py", "x = 1\n", "x = 2\n", selector)
+    result = mutation_smoke.run_check("a check", "module.py", "x = 1\n", "x = 2\n", selector, shared)
     assert runs == ["x = 2\n"], "one run, on the mutated copy"
     assert result["mutant"] == "rejected" and result["failure"] == [f"FAILED {selector} - assert 2 == 1"]
+
+
+def test_one_run_shares_one_record_of_baselines_between_its_checks(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(mutation_smoke, "run_check", lambda name, *rest: seen.append(rest[-1]) or
+                        {"check": name, "mutant": "rejected"})
+    monkeypatch.setattr(mutation_smoke, "CHECKS", mutation_smoke.CHECKS[:3])
+    mutation_smoke.main(["--output", str(tmp_path / "a.json")])
+    assert isinstance(seen[0], mutation_smoke.Baselines) and all(shared is seen[0] for shared in seen)
+    mutation_smoke.main(["--output", str(tmp_path / "b.json")])
+    assert seen[3] is not seen[0], "a new run starts with nothing remembered"
 
 
 def test_several_workers_run_checks_at_once_and_keep_their_order(tmp_path, monkeypatch):
