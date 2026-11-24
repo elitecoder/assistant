@@ -32,6 +32,7 @@ sys.path.insert(1, str(REPO))
 
 import agent_session  # noqa: E402
 from assistant import brief as brief_store
+from assistant import failwatch
 from assistant import mode
 from assistant import session_guidance
 from work_queue import config as work_queue_config
@@ -409,6 +410,46 @@ def render_restart_alert() -> str:
             f'<span class="pulse-text">An update couldn\'t restart {e(", ".join(labels))}, so it '
             'still runs old code. The hourly update retries; run ./install.sh --apply to '
             'retry now.</span></div>')
+
+
+FAILURE_NAMES = {
+    "self-update": "Self-update",
+    "dashboard-render": "Refreshing this page",
+    "model:lessons": "Lesson extraction",
+    "model:strategist": "The strategist",
+    "model:narrator": "The morning brief",
+    "model:observer-audit": "The Observer audit",
+    "model:triage": "Triage",
+    "model:work_queue": "The Work queue refresh",
+    "model:slack_focus": "The Slack tab refresh",
+}
+
+
+def _failure_time(ts: float, now: float) -> str:
+    """Local time, with the weekday when it isn't today."""
+    when = datetime.fromtimestamp(ts)
+    return when.strftime("%H:%M" if when.date() == datetime.fromtimestamp(now).date() else "%A %H:%M")
+
+
+def render_failure_alerts(now: float | None = None) -> str:
+    """Top-of-page alerts for a failure that keeps happening the same way:
+    what failed, how many times, since when, the error, and whether Assistant
+    has paused retries. Up to five, most frequent first; empty when none."""
+    now = datetime.now().timestamp() if now is None else now
+    out = []
+    for row in failwatch.repeated(now=now):
+        component = str(row.get("component", ""))
+        name = FAILURE_NAMES.get(component)
+        if name is None and component.startswith("ready-for-merge:"):
+            name = f"The merge check for {component.split(':', 1)[1]}"
+        text = (f"{name or component} has failed {int(row['count'])} times since "
+                f"{_failure_time(float(row['first_ts']), now)} with the same error: {str(row.get('sample', '')).rstrip('.')}.")
+        until = float(row.get("backoff_until") or 0)
+        if until > now:
+            text += f" Assistant has paused retries until {_failure_time(until, now)}."
+        out.append('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
+                   f'<span class="pulse-dot"></span><span class="pulse-text">{e(text)}</span></div>')
+    return "".join(out)
 
 
 def render_metering_stats():
@@ -2716,7 +2757,7 @@ def render():
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
     mode_html = render_mode_switch(pro, mode.config_error()) + render_observer_setting()
-    pulse_alert_html = render_pulse_alert() + render_restart_alert()
+    pulse_alert_html = render_pulse_alert() + render_restart_alert() + render_failure_alerts()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()

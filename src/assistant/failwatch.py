@@ -127,8 +127,12 @@ def _pause_sec(streak: int) -> int:
     return min(BACKOFF_BASE_SEC * 2 ** (streak - BACKOFF_AFTER), BACKOFF_CAP_SEC)
 
 
-def record_failure(component: str, error_text: str, now: float | None = None) -> dict | None:
-    """Count one failure. Returns the updated row, or None if it couldn't be saved."""
+def record_failure(component: str, error_text: str, now: float | None = None,
+                   pause: bool = True) -> dict | None:
+    """Count one failure. Returns the updated row, or None if it couldn't be saved.
+    `pause=False` is for work nobody can hold back (a person's own request, or
+    something that is not a retry): it is counted and shown but never paused,
+    so the dashboard never says retries are paused when they are not."""
     try:
         now = time.time() if now is None else now
         path = _store_path()
@@ -143,8 +147,8 @@ def record_failure(component: str, error_text: str, now: float | None = None) ->
             row["streak"] = int(row.get("streak") or 0) + 1
             row["last_ts"] = now
             row["sample"] = _sample(error_text)
-            pause = _pause_sec(row["streak"])
-            row["backoff_until"] = now + pause if pause else 0
+            wait = _pause_sec(row["streak"]) if pause else 0
+            row["backoff_until"] = now + wait if wait else 0
             data[key] = row
             _write(path, data)
         return row

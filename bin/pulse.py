@@ -410,7 +410,7 @@ def run_merge_pr_dispatch(ws_ref: str, pr, refactor_attested: bool,
     The script owns the safety gate, Squirrel-E2E gate, freeze retarget, CI
     router, and send-verify. On any failure to run it, return an awaiting
     card so the workspace surfaces rather than silently stalling."""
-    cmd = ["python3", str(BIN / "merge-pr-dispatch.py"),
+    cmd = [sys.executable, str(BIN / "merge-pr-dispatch.py"),
            "--ws", ws_ref, "--pr", str(pr)]
     if refactor_attested:
         cmd.append("--refactor-attested")

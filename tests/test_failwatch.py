@@ -74,6 +74,13 @@ def test_back_off_doubles_and_caps_at_24_hours(store):
     assert got == [0, 0, HOUR, 2 * HOUR, 4 * HOUR, 8 * HOUR, 16 * HOUR, 24 * HOUR, 24 * HOUR]
 
 
+def test_work_that_cannot_be_held_back_is_counted_but_never_paused(store):
+    for i in range(5):
+        row = failwatch.record_failure("render", "boom", now=NOW + i, pause=False)
+    assert row["count"] == 5 and row["backoff_until"] == 0
+    assert failwatch.backed_off("render", now=NOW + 10) is None
+
+
 def test_a_different_error_resets_the_back_off(store):
     fail(3)
     assert failwatch.backed_off("self-update", now=NOW + 200)
