@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from assistant import mode, todostore
+from assistant import effects, mode, pointers, todostore
 
 from work_queue import config, page, refresh, tools
 from work_queue.inputs import slack
@@ -94,6 +94,7 @@ WORKSPACE = re.compile(r"workspace:\d+")
 WINDOW = re.compile(r"window:\d+")
 THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_-]{0,63}")
 GMAIL_ACTIONS = {"archive": ("--remove", "INBOX"), "read": ("--remove", "UNREAD"), "unarchive": ("--add", "INBOX")}
+GMAIL_EFFECTS = {"archive": "gmail.archive", "read": "gmail.mark_read", "unarchive": "gmail.unarchive"}
 CMUX_TIMEOUT = 15
 SAVE_PATH = re.compile(r"/archives/([CDG][A-Z0-9]{8,11})/p(\d{10})(\d{6})")
 URL_MAX = 1000
@@ -398,6 +399,27 @@ def thread_labels(account: str, tid: str) -> list[set] | None:
     return [set(m.get("labelIds") or []) for m in messages]
 
 
+UNRECORDED = "Assistant couldn't record this action, so it didn't run it."
+IN_PROGRESS = "This is already in progress, so it wasn't run again."
+ALREADY_DONE = "This was already done and can't be undone, so it wasn't run again."
+UNAPPROVED = "Assistant couldn't confirm your approval for this, so it didn't run it."
+
+
+def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoes: str = ""):
+    """Record the intent to change something outside Assistant. Returns (effect id, None) when the caller may act, or
+    ("", (status code, plain sentence)) when it must not: the action isn't recorded, is in progress, or isn't approved."""
+    try:
+        # The row's trace id goes here (trace="") once rows carry one.
+        return effects.begin(effect_class, target, {"kind": kind, "ref": ref, "at": at}, trace="",
+                             component="work-queue", undoes=undoes), None
+    except effects.Duplicate as exc:
+        return "", (409, ALREADY_DONE if exc.done else IN_PROGRESS)
+    except effects.NotAuthorized:
+        return "", (403, UNAPPROVED)
+    except (effects.Unrecorded, ValueError):
+        return "", (503, UNRECORDED)
+
+
 def gmail_error(found) -> str:
     error = found.get("error") if isinstance(found, dict) else None
     return text(error.get("message")) if isinstance(error, dict) else "gog answered in an unexpected format"
@@ -415,14 +437,22 @@ def gmail_action(body: dict):
         return 404, {"error": "That email isn't on the page from the last refresh, or its account isn't linked"}
     account, tid = found
     flag, label = GMAIL_ACTIONS[action]
+    cls, target = GMAIL_EFFECTS[action], {"account": account, "thread": tid}
+    ef, refusal = begin_effect(cls, target, "tap", "/api/gmail", now(), undoes=effects.latest_undoable(cls, target) if action == "unarchive" else "")
+    if refusal:
+        return refusal[0], {"error": refusal[1]}
     changed = gog("gmail", "thread", "modify", tid, flag, label, "-a", account)
     if not isinstance(changed, dict) or changed.get("error"):
+        effects.finish(ef, "failed", error="tool failed")
         return 502, {"error": f"Gmail didn't make the change: {gmail_error(changed)}"}
     labels = thread_labels(account, tid)
     if labels is None:
+        effects.finish(ef, "done")
         return 502, {"error": "Gmail may have made the change, but reading it back failed, so it isn't confirmed"}
     if not all((label in each) == (flag == "--add") for each in labels):
+        effects.finish(ef, "done", verified=False)
         return 502, {"error": "Gmail still shows the conversation unchanged"}
+    effects.finish(ef, "done", verified=True)
     mark = EMAIL_MARK + key
     with lock, config.marks_lock():
         done, marks = read_map("mail-actions.json"), read_map("marks.json")
@@ -477,14 +507,22 @@ def apply_gmail(jobs) -> dict:
     out = {}
     for key, cand, undo in jobs:
         acct, ids = cand["account"], cand["msg_ids"]
+        target, cls = {"account": acct, "msgs": ids, "row": pointers.row_pointer(key)}, "gmail.untrash" if undo else "gmail.trash"
+        ef, refusal = begin_effect(cls, target, "decision", pointers.row_pointer(key), cand.get("decided_at"),
+                                   undoes=effects.latest_undoable(cls, target) if undo else "")
+        if refusal:
+            out[key] = {"status": "error", "error": refusal[1], "at": now()}
+            continue
         errors = [r["error"].get("message", "gmail call failed") for mid in ids
                   if (r := gog("gmail", "messages", "modify", mid, "--remove", "TRASH", "--add", "INBOX", "-a", acct)
                       if undo else gog("gmail", "trash", mid, "-a", acct)).get("error")]
         if errors:
+            effects.finish(ef, "failed", error="tool failed")
             out[key] = {"status": "error", "error": errors[0], "at": now()}
             continue
         read = [message_labels(gog("gmail", "get", mid, "-a", acct)) for mid in ids]
         verified = all(labels is not None and ("TRASH" in labels) != undo for labels in read)
+        effects.finish(ef, "done", verified=verified)
         out[key] = {"status": "undone" if undo else "done", "verified": verified, "at": now()}
     return out
 
@@ -519,6 +557,12 @@ def apply_unsub(jobs) -> dict:
         if reason := unsafe_target(cand["url"]):
             out[key] = {"status": "error", "error": reason, "at": now()}
             continue
+        row = pointers.row_pointer(key)
+        ef, refusal = begin_effect("mail.unsubscribe", {"row": row, "host": urllib.parse.urlsplit(cand["url"]).hostname},
+                                   "decision", row, cand.get("decided_at"))
+        if refusal:
+            out[key] = {"status": "error", "error": refusal[1], "at": now()}
+            continue
         req = urllib.request.Request(cand["url"], data=b"List-Unsubscribe=One-Click", method="POST",
                                      headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA})
         try:
@@ -527,9 +571,12 @@ def apply_unsub(jobs) -> dict:
         except urllib.error.HTTPError as ex:
             code = ex.code
         except (urllib.error.URLError, TimeoutError) as ex:
+            slow = isinstance(ex, TimeoutError) or isinstance(getattr(ex, "reason", None), TimeoutError)
+            effects.finish(ef, "failed", error="timeout" if slow else "network")
             out[key] = {"status": "error", "error": str(ex)[:160], "at": now()}
             continue
         ok = 200 <= code < 300
+        effects.finish(ef, "done" if ok else "failed", verified=True if ok else None, error="" if ok else f"http {code}")
         out[key] = {"status": "done", "verified": ok, "at": now(), **({} if ok else {"error": f"The sender answered {code}"})}
     return out
 
@@ -601,9 +648,9 @@ def run_apply() -> None:
                 continue
             status = applied.get(key, {}).get("status")
             if d["decision"] == "approve" and status not in SETTLED:
-                jobs[cand["kind"]].append((key, cand, False))
+                jobs[cand["kind"]].append((key, {**cand, "decided_at": d.get("at")}, False))
             elif d["decision"] == "undo" and status == "done":
-                jobs[cand["kind"]].append((key, cand, True))
+                jobs[cand["kind"]].append((key, {**cand, "decided_at": d.get("at")}, True))
         config.write_json(status_file, {"running": True, "started": now(), **{k: len(j) for k, j in jobs.items()}})
         for kind, apply in APPLIERS.items():
             if jobs[kind]:
