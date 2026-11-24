@@ -1874,6 +1874,10 @@ def cmux_send(ws_ref: str, text: str, *, caller: str = "assistant-pulse") -> dic
         "--auth-kind", "standing",
         "--auth-ref", source,
     ], timeout=CMUX_SEND_TIMEOUT_SEC)
+    if rc == 5:
+        # cmux didn't answer in time: the text may have been typed. Not "not sent", and not to be tried again by hand.
+        log.warning("cmux-send %s: cmux didn't answer in time, so the text may have been typed", ws_ref)
+        return {"outcome": "may-have-been-typed", "transcript_size_delta": None}
     if rc != 0:
         log.warning("cmux-send %s rc=%d: %s", ws_ref, rc, err.strip()[-200:])
         return {"outcome": "failed", "transcript_size_delta": 0}
@@ -2126,6 +2130,10 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
     rec = cmux_send(ws_ref, text)
     delta = rec.get("transcript_size_delta")
     base["evidence"] = f"sent {text!r} delta={delta}"
+    if rec.get("outcome") == "may-have-been-typed":
+        base["evidence"] = f"sent {text!r}: cmux didn't answer in time, so it may have been typed"
+        base["outcome"] = "failed"
+        return base
     if rec.get("outcome") not in ("sent", "ok-unparsed"):
         base["outcome"] = "failed"
         return base
@@ -2286,7 +2294,7 @@ def _recorded_pulse(main_fn):
     return wrapper
 
 
-def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
+def _mark_todo_dispatched(todo_id: str, ws_ref: str, parked: str = "") -> bool:
     """Stamp dispatchedAt + dispatchedWs on the TODO so it leaves bucket_b.
 
     Read-modify-write of assistant-todo.json under the ONE shared todo-file lock
@@ -2317,6 +2325,13 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
         target["dispatchedWs"] = ws_ref
         target["status"] = "in-progress"
         target["statusReason"] = f"dispatched to {ws_ref}"
+        if parked:
+            # Assistant wouldn't type into the session it started: a blocked task is skipped by the picker (so no
+            # second session) and is the one status the dashboard's "Queue to start" turns back into an open one.
+            target["status"] = "blocked"
+            target["parkedBy"] = parked
+            target["statusReason"] = (f"Parked: Assistant started {ws_ref} but wouldn't type into it ({parked}). "
+                                      "Close that workspace, then press Queue to start.")
         target["statusUpdatedAt"] = utc_iso()
         tmp = TODO_PATH.with_suffix(".json.tmp")
         try:
@@ -2555,33 +2570,66 @@ def _begin_dispatch_typing(todo_id: str, item: dict, ws_ref: str, source: str):
         return None
 
 
-def _park_refused_dispatch(todo_id: str, ws_ref: str) -> bool:
-    """The workspace exists and nothing may be typed into it. Stamp the TODO like a workspace that never got ready,
-    so the next pulse doesn't make another one; the workspace is left for a person to close."""
+def _park_refused_dispatch(todo_id: str, ws_ref: str, why: str = "typing_refused") -> bool:
+    """The workspace exists and nothing was typed into it. Park the TODO (blocked, with the workspace named), so the
+    next pulse doesn't make another session; the workspace is left for a person to close, and the dashboard's "Queue
+    to start" on the task tries it again. `why` is the dispatch record's reason."""
     _dispatch_started.add(todo_id)
-    _dispatch_failed("typing_refused")
-    if not _mark_todo_dispatched(todo_id, ws_ref):
+    _dispatch_failed(why)
+    if not _mark_todo_dispatched(todo_id, ws_ref, parked=why):
         log.warning("dispatch %s: park stamp FAILED — TODO stays open and WILL be re-dispatched next pulse", todo_id)
     return False
 
 
-def _dispatch_blocked_card(bucket_b: list) -> dict:
-    """The one card for a dispatch that is blocked until something is fixed. It lists only the tasks still waiting."""
+def _cut(text: str, limit: int = 60) -> str:
+    """A title cut at a word boundary, with an ellipsis, so a card never ends in half a word."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    return (text[:limit].rsplit(" ", 1)[0] or text[:limit]).rstrip(" ,.;:-") + "…"
+
+
+def _parked_tasks() -> list[dict]:
+    """The tasks parked because Assistant wouldn't type into the session it started for them, from the task file (so
+    they stay listed until someone deals with them: "Queue to start" on the task makes it open again)."""
+    try:
+        items = json.loads(TODO_PATH.read_text()).get("items", [])
+    except Exception:  # noqa: BLE001 — no file, or one that isn't readable: nothing is parked as far as we can tell
+        return []
+    return [i for i in items if isinstance(i, dict) and i.get("parkedBy") and i.get("status") == "blocked"]
+
+
+def _listed(tasks: list, key=lambda t: f"{t.get('id')} {_cut(t.get('title'))}".strip()) -> str:
+    more = f" (+{len(tasks) - 5} more)" if len(tasks) > 5 else ""
+    return ", ".join(key(t) for t in tasks[:5]) + more
+
+
+def _dispatch_card(bucket_b: list, parked: list) -> dict:
+    """The one card for a dispatch that is blocked until something is fixed, or that left tasks parked. It names each
+    parked task and the workspace left open for it, and lists the tasks still waiting."""
     waiting = [t for t in bucket_b if t.get("id") not in _dispatch_started]
-    names = ", ".join(f"{t['id']} {str(t.get('title') or '')[:60]}".strip() for t in waiting[:5])
-    more = f" (+{len(waiting) - 5} more)" if len(waiting) > 5 else ""
+    shown = _listed(parked, lambda t: f"{t.get('id')} {_cut(t.get('title'))} ({t.get('dispatchedWs') or 'no workspace'})")
+    first = parked[0].get("id") if parked else "the task"
     if _dispatch_blocked.startswith("invalid"):
         title = f"Dispatch paused — can't describe the new session ({len(waiting)} TODO(s) waiting)"
-        why = ("Assistant didn't recognise the name cmux gave the new session (it expects workspace:N), so it "
-               "typed nothing into it and parked the task. Update Assistant, or tell its maintainer.")
-    else:
+        detail = (f"Assistant didn't recognise the name cmux gave the new session (it expects workspace:N), so it "
+                  f"typed nothing into it and parked {first}. Close that workspace, press Queue to start on {first}, "
+                  f"and update Assistant. The tasks below will park the same way until then. "
+                  f"Waiting: {_listed(waiting) or 'none'}.")
+    elif _dispatch_blocked:
         title = f"Dispatch paused — can't record what it types ({len(waiting)} TODO(s) waiting)"
-        why = ("Assistant can't write its record of what it types into your sessions, so it won't start tasks. "
-               "Check that your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
-               "(`ls -ld ~/.assistant/effects`).")
-    return {"key": "dispatch-held-no-record", "tier": "T3", "title": title,
-            "detail": f"{why} Waiting: {names or 'none'}{more}. Nothing is lost; the next round starts them once "
-                      f"the record can be written."}
+        detail = ("Assistant can't write its record of what it types into your sessions, so it won't start tasks. "
+                  "Check that your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
+                  "(`ls -ld ~/.assistant/effects`).")
+        if parked:
+            detail += (f" Parked: {shown}. Close each workspace, then press Queue to start on the task.")
+        detail += (f" Waiting: {_listed(waiting) or 'none'}. Nothing is lost; the next round starts them once the "
+                   f"record can be written.")
+    else:
+        title = f"Tasks parked — Assistant wouldn't type into their sessions ({len(parked)})"
+        detail = (f"Assistant started a session for each task below but wouldn't type into it, so it parked the task. "
+                  f"Close each workspace, then press Queue to start on the task. Parked: {shown}.")
+    return {"key": "dispatch-held-no-record", "tier": "T3", "title": title, "detail": detail}
 
 
 @_recorded_dispatch
@@ -2732,8 +2780,12 @@ def dispatch_todo(todo_id: str) -> bool:
             trust_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "trust")
             if trust_ef is None:
                 return _park_refused_dispatch(todo_id, ws_ref)
-            session_effects.type_line(trust_ef, _cmux_type_rpc, surface_ref, agent_session.trust_answer(agent),
-                                      session=ws_ref)
+            try:
+                session_effects.type_line(trust_ef, _cmux_type_rpc, surface_ref, agent_session.trust_answer(agent),
+                                          session=ws_ref)
+            except session_effects.Refused as refusal:  # its intent is closed; park like the instruction's
+                log.warning("dispatch %s: typing the trust answer into %s refused (%s)", todo_id, ws_ref, refusal)
+                return _park_refused_dispatch(todo_id, ws_ref)
             trust_answered = True
         elif agent_session.ready_re(agent).search(screen):
             ready = True
@@ -2770,6 +2822,11 @@ def dispatch_todo(todo_id: str) -> bool:
         log.warning("dispatch %s: typing into %s refused (%s)", todo_id, ws_ref, refusal)
         return _park_refused_dispatch(todo_id, ws_ref)
     typing.line(instruction.rstrip("\n"), pause=1)
+    if typing.outcome() == "failed":
+        # cmux refused the text: nothing is in the session, so this isn't a dispatch that went out.
+        typing.finish()
+        log.warning("dispatch %s: %s refused the instruction — nothing was typed", todo_id, ws_ref)
+        return _park_refused_dispatch(todo_id, ws_ref, "session_refused_text")
 
     # 6.5. STAMP NOW — a real workspace exists and the prompt has been sent.
     #    Stamping (dispatchedAt + dispatchedWs + status=in-progress) moves the
@@ -3262,6 +3319,9 @@ def main() -> int:
     # 5. TODO dispatch — spawn an unfocused cmux workspace per bucket_b TODO,
     #    capped at MAX_DISPATCH_PER_PULSE and gated on the active/total caps.
     #    Skipped entirely in dry-run (dispatch_todo creates real workspaces).
+    global _dispatch_blocked
+    _dispatch_blocked = ""
+    _dispatch_started.clear()
     todos = pick_open_todos() if not dry_run else {"bucket_b": []}
     bucket_b = todos.get("bucket_b", [])
     n_total = batch.get("total_ws", 0)
@@ -3315,9 +3375,6 @@ def main() -> int:
         priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
         bucket_b.sort(key=lambda t: priority_order.get(t.get("priority", "P4"), 9))
         n_dispatched = 0
-        global _dispatch_blocked
-        _dispatch_blocked = ""
-        _dispatch_started.clear()
         for todo in bucket_b[:MAX_DISPATCH_PER_PULSE]:
             if _dispatch_blocked:
                 break  # one refusal is the same for the rest: don't start workspaces nothing can be typed into
@@ -3331,14 +3388,16 @@ def main() -> int:
             if ok:
                 n_dispatched += 1
                 _dispatch_started.add(todo["id"])
-        if _dispatch_blocked:
-            card = _dispatch_blocked_card(bucket_b)
-            awaiting_input.append(card)
-            actions_taken.append({
-                "key": "dispatch-held-no-record",
-                "kind": "skipped", "outcome": "verified",
-                "evidence": _dispatch_blocked[:200],
-            })
+    # A refusal to type, or a task parked because of one, gets its card, built from this pulse's refusal and from the
+    # task file, so it stays until the parked tasks are dealt with.
+    parked = [] if dry_run else _parked_tasks()
+    if _dispatch_blocked or parked:
+        awaiting_input.append(_dispatch_card(bucket_b, parked))
+        actions_taken.append({
+            "key": "dispatch-held-no-record",
+            "kind": "skipped", "outcome": "verified",
+            "evidence": (_dispatch_blocked or f"{len(parked)} task(s) parked")[:200],
+        })
 
     # 6. Write state + trace.
     if dry_run:

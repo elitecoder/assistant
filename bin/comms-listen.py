@@ -115,6 +115,8 @@ PENDING_RETRY_MAX_SEC = 1800.0
 PENDING_MAX_AGE_SEC = float(os.environ.get("COMMS_PENDING_MAX_AGE_SEC", str(3 * 3600)))
 RESTART_NOTICE = ("My chat session isn't responding right now. I'll answer as soon "
                   "as it's back.")
+UNRECORDED_NOTICE = ("I can't save my record of what I type into the session, so I haven't passed your message on "
+                     "yet. I'll try again every few minutes. Check that the disk isn't full.")
 RESTART_NOTICE_AFTER_SEC = float(os.environ.get("COMMS_RESTART_NOTICE_AFTER_SEC", "60"))
 
 # At most this many action updates go out per ledger pass; the rest collapse
@@ -175,7 +177,7 @@ def _target(paths: comms_lib.Paths) -> str:
     """The default send target (config.slack.target, $SLACK_PING_TARGET override)."""
     try:
         return comms_lib.Config.load(paths.config).target
-    except SystemExit:
+    except (SystemExit, ValueError):  # no config, or one that isn't JSON
         return ""
 
 
@@ -321,13 +323,28 @@ IGNORED_REPLY_SEC = 86400  # at most one "I didn't act on this" reply a day, for
 
 
 def owner_id(paths: comms_lib.Paths, env: dict | None = None) -> str:
-    """The owner's Slack member id: SLACK_USER_ID, else the configured target when that is a member id (a direct
-    message). Empty when it can't be worked out, and when SLACK_USER_ID is set to something that isn't an id."""
+    """The owner's Slack member id, in the order the Slack reactor works it out: SLACK_USER_ID, else `slack.owner` in
+    ~/.assistant/config.json, else `slack.target` when that is a member id (a direct message); each only when it has
+    the shape of an id. Empty when it can't be worked out, and when SLACK_USER_ID is set to something that isn't an id."""
     found = ((env or {}).get("SLACK_USER_ID") or os.environ.get("SLACK_USER_ID") or "").strip()
     if found:
         return found if USER_ID.fullmatch(found) else ""
+    try:
+        configured = str(json.loads(paths.config.read_text()).get("slack", {}).get("owner") or "").strip()
+    except (OSError, ValueError, AttributeError):
+        configured = ""
+    if USER_ID.fullmatch(configured):
+        return configured
     target = _target(paths)
     return target if USER_ID.fullmatch(target) else ""
+
+
+def notice_channel(paths: comms_lib.Paths, conversation: str) -> str:
+    """Where a notice about a message in this conversation may go. slack-send.py only sends to the configured target;
+    with a member id as the target, a message comes in on that person's direct-message conversation (D...), so a
+    notice for it goes to the target, which is the same conversation."""
+    target = _target(paths)
+    return target if conversation.startswith("D") and USER_ID.fullmatch(target) else conversation
 
 
 def classify_author(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> tuple[str, str]:
@@ -356,7 +373,8 @@ def typed_for(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> boo
         log(f"{where} has no author, so Assistant did not type it into the session.")
     else:
         log(f"{where} was not typed into the session: the conversation is a channel and Assistant can't tell which "
-            f"Slack member is you. Set SLACK_USER_ID to your member ID in ~/.zprofile and restart assistant-comms.")
+            f"Slack member is you. Set SLACK_USER_ID to your member ID in ~/.zprofile and run "
+            f"`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`.")
     return False
 
 
@@ -364,6 +382,10 @@ UNKNOWN_OWNER_REPLY = (
     "I didn't act on your message. I can't tell which Slack account is yours, and this is a channel, so I don't "
     "type anything from it into a session. To fix it: add `export SLACK_USER_ID=U…` (your member ID: your Slack "
     "profile, the three dots, Copy member ID) to `~/.zprofile`, then run "
+    "`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`. Then send your message again.")
+OTHER_MEMBER_REPLY = (
+    "I only take instructions from <@{owner}>, so I haven't acted on this message. If that isn't you, SLACK_USER_ID "
+    "is set to the wrong member ID: put your own in ~/.zprofile and run "
     "`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`.")
 
 
@@ -393,10 +415,11 @@ def tell_ignored(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> 
     if who == "unknown-owner" and _once_a_day(paths, f"unknown-owner-{channel}"):
         text = UNKNOWN_OWNER_REPLY
     elif who == "other" and _once_a_day(paths, f"author-{channel}-{rec.get('author')}"):
-        text = f"I only take instructions from <@{owner}>, so I haven't acted on this message."
+        text = OTHER_MEMBER_REPLY.format(owner=owner)
     else:
         return
-    rc, _out, err = cli(_send_args(text, "reply", channel, None, reply_to=str(ts) if ts else None),
+    rc, _out, err = cli(_send_args(text, "reply", notice_channel(paths, channel), None,
+                                   reply_to=str(ts) if ts else None),
                         timeout=30, env=env)
     if rc != 0:
         log(f"Assistant's reply about the ignored message {ts} did not send (rc={rc}): {err.strip()[:160]}")
@@ -490,8 +513,10 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
             delivered = True
         elif comms_session.message_in_box(paths, surface, marker, agent):
             with comms_session.typing_scope(paths, ws, surface, "submit", kind="tap", ref=allowed(recs[-1])["ref"],
-                                            slack_ts=allowed(recs[-1])["slack_ts"]):
+                                            slack_ts=allowed(recs[-1])["slack_ts"]) as keys:
                 delivered = comms_session.submit(paths, surface, feed, marker, confirmed, agent=agent, retype=False)
+            if not delivered and not keys.sent:
+                raise refusal  # the box no longer shows it (someone is typing there): nothing was pressed
         else:
             raise
     log(f"reply channel={channel} msg={recs[-1].get('msg_ts')} n={len(recs)} "
@@ -584,7 +609,7 @@ def _restart_notice_path(paths: comms_lib.Paths, channel: str) -> Path:
     return paths.comms_dir / f"restart-notice-{safe}.json"
 
 
-def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None) -> None:
+def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None, text: str | None = None) -> None:
     """Tell the user, once per outage per channel, that their message is
     waiting. The marker is written before sending, so a failing send can't
     repeat every retry; it's cleared once nothing is left waiting."""
@@ -593,7 +618,8 @@ def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None)
         return
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({"ts": time.time()}))
-    rc, _out, err = cli(_send_args(RESTART_NOTICE, "reply", channel, None), timeout=30, env=env)
+    rc, _out, err = cli(_send_args(text or RESTART_NOTICE, "reply", notice_channel(paths, channel), None),
+                        timeout=30, env=env)
     log(f"restart notice sent to {channel}" if rc == 0
         else f"restart notice rc={rc} err={err.strip()[:160]}")
 
@@ -617,6 +643,7 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
         remove_pending(paths, [r.get("msg_ts") for r in foreign])
         for r in foreign:
             typed_for(paths, r, env)
+            tell_ignored(paths, r, env)  # the same notice a new ignored message gets, once a day
         fresh = [r for r in fresh if r not in foreign]
     if not fresh:
         _restart_notice_path(paths, channel).unlink(missing_ok=True)
@@ -659,7 +686,8 @@ def _tell_dropped(paths: comms_lib.Paths, rec: dict, env: dict | None, text: str
     """Tell the owner, in the message's own thread, that it left the queue without being confirmed. Once: a message
     leaves the queue once."""
     ts = rec.get("msg_ts")
-    rc, _out, err = cli(_send_args(text.format(at=_clock(ts)), "reply", str(rec.get("channel") or ""), None,
+    rc, _out, err = cli(_send_args(text.format(at=_clock(ts)), "reply",
+                                   notice_channel(paths, str(rec.get("channel") or "")), None,
                                    reply_to=str(ts) if ts else None), timeout=30, env=env)
     if rc != 0:
         log(f"Assistant's note that your message {ts} was dropped did not send (rc={rc}): {err.strip()[:160]}")
@@ -685,15 +713,15 @@ def _refused_delivery(paths: comms_lib.Paths, channel: str, fresh: list[dict], r
         remove_pending(paths, [r.get("msg_ts") for r in gone])
         for rec in gone:
             log(f"Slack message {rec.get('msg_ts')} in {channel}: your message was dropped, and won't be typed "
-                f"again. {refusal}")
+                f"again. {refusal.short}")
             _tell_dropped(paths, rec, env, DROPPED_UNCONFIRMED if refusal.code in ("done", "unknown")
                           else DROPPED_UNTYPED)
         fresh = [r for r in fresh if r not in gone]
         if not fresh:
             return True
-    log(f"Slack message {fresh[-1].get('msg_ts')} in {channel} is waiting and will be tried again. {refusal}")
+    log(f"Slack message {fresh[-1].get('msg_ts')} in {channel} is waiting and will be tried again. {refusal.short}")
     if message_age_sec(fresh[0], now) >= RESTART_NOTICE_AFTER_SEC:
-        _notify_restart_once(paths, channel, env)
+        _notify_restart_once(paths, channel, env, UNRECORDED_NOTICE if refusal.code == "unrecorded" else None)
     return False
 
 

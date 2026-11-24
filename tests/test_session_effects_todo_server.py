@@ -100,6 +100,8 @@ def test_when_the_script_refuses_the_proposal_is_not_marked_working_and_the_reas
 
 
 @pytest.mark.parametrize("record, said", [
+    ({"outcome": "rpc_send_text_timeout"}, "Assistant sent this but didn't hear back, so it may have been typed. Check the session before you send it again."),
+    ({"outcome": "rpc_send_key_timeout"}, "Assistant sent this but didn't hear back, so it may have been typed. Check the session before you send it again."),
     ({"outcome": "rpc_send_key_failed"}, "run-now typed the text into the session but couldn't press Enter, so it is waiting there unsent"),
     ({"outcome": "rpc_send_text_failed"}, "run-now couldn't type into the session"),
     ({"outcome": "no_terminal_surface"}, "run-now couldn't find a terminal in that session, so nothing was typed"),

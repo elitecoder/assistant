@@ -171,8 +171,10 @@ What the record does for you:
   starts nothing: the task stays open, and the Tasks tab shows "Dispatch
   paused — can't record what it types" with what to check (the disk, and the
   permissions of `~/.assistant/effects`). If the record fails after a session
-  was started, the task is parked like one whose session never got ready, so
-  the next pulse doesn't start another; the session is left for you to close.
+  was started, or cmux refuses the instruction, the task is parked (blocked,
+  with the workspace named on the card), so the next pulse doesn't start
+  another; the session is left for you to close, and **Queue to start** on the
+  task tries it again.
   A nudge or `/cleanup` is skipped that round, a Slack message stays queued,
   and `cmux-send.py` exits 4.
 - **A loop is stopped.** The same thing typed into the same session more than
@@ -189,17 +191,26 @@ What the record does for you:
   one, because cmux reuses session numbers:
   - a nudge, `/cleanup`, a start-up instruction, a `/clear` or a merge request
     waits 30 minutes, then may be tried again;
-  - your own tap (`cmux-send.py` run by hand, restore, "run now") is never held
-    back, only refused while another is still going;
-  - a task's instruction and a Slack message are never repeated without a newer
-    authorization: for a message, you sending it again.
+  - your own tap (`cmux-send.py` run by hand, a hand-run merge script,
+    restore, "run now") is never held back or limited by the loop rule, whatever
+    its source; it is only refused while another is still going. The page tells
+    you what happened (for a time-out: "Assistant sent this but didn't hear
+    back, so it may have been typed. Check the session before you send it
+    again."), and you decide;
+  - a Slack message is never repeated without a newer authorization: you
+    sending it again;
+  - a task's instruction is not held by an earlier `unknown`: each dispatch
+    starts a new session, so there is nothing earlier in it to repeat. (The
+    ledger's own rule would hold it, but its authorization is "now".)
   To type something again yourself:
   `bin/cmux-send.py --ws workspace:N --text '…' --enter`.
-- **A Slack message is never typed twice, and never dropped without a word.**
-  If it was typed but never seen in the session's transcript, and its text is
-  still sitting in the prompt box, only Enter is pressed again, as its own
-  recorded typing (`submit`). If it landed since, that is all. Otherwise it
-  leaves the queue, and Assistant replies in its thread: "I couldn't confirm
+- **A Slack message is never typed twice, and it is dropped only with a word
+  to you.** If it was typed but never seen in the session's transcript, and its
+  text is still sitting in the prompt box, only Enter is pressed again, as its own
+  recorded typing (`submit`), and only while a fresh look at the box shows that
+  message's own marker (a collapsed paste doesn't count), so text you are typing
+  yourself is never submitted. If it landed since, that is all. Otherwise
+  nothing is pressed and it leaves the queue, and Assistant replies in its thread: "I couldn't confirm
   your message (sent HH:MM) reached the session, and I won't type it twice.
   Check the session, or send it again." Messages that waited three hours get a
   note too. Each message in a batch typed together has its own record.
@@ -217,11 +228,20 @@ What the record does for you:
   `~/.assistant/sends.jsonl`**, which the pulse reads to tell whether its last
   send landed.
 
+### What the fence does and doesn't stop
+
+A test fails the build if an ordinary call that types into a session is added
+anywhere but the one module: the cmux method names, a `cmux send` command, an
+f-string that runs a variable's `send`, and calls whose method isn't a literal.
+It stops a call added by mistake. It doesn't stop a call someone hides on
+purpose (a verb built at run time, a raw socket to cmux), and it doesn't see
+anything that isn't Python.
+
 ### What the record can't prove
 
 The record says what Assistant did and what it said allowed it; it can't check
 either. `bin/cmux-send.py` trusts the `--source` and `--auth-kind` its caller
-gives it (anything that can run the script can claim a standing setting), the
+gives it (anything that can run the script can claim a standing setting). An `owner_flag` on a task made with the `/todo` skill is whatever the skill's caller said: its source defaults to `manual:` and it accepts any other, and agents run it, so an agent can produce one, the
 text typed is whatever the caller passed, and cmux, not Assistant, says which
 terminal belongs to which session number. An entry's `verified` is `true` only
 when the session's transcript showed the text arrive.

@@ -11,8 +11,8 @@ back, so:
     setting that is on. Text somebody else wrote is never what allows typing.
   * The ledger holds the session, the task, and where the text came from (a fixed name such as `nudge:stranded`),
     never the text, a prompt path, a title or a Slack message.
-  * The same thing typed into the same session more than three times in half an hour is refused (a loop), whatever
-    else allows it. A task or a Slack message counts as its own thing.
+  * The same thing typed into the same session more than three times in half an hour is refused (a loop), unless a
+    person's own tap allowed it. A task or a Slack message counts as its own thing.
   * A typing that went out and couldn't be confirmed, or never got a result, is `unknown` and is not repeated by
     Assistant on its own. How long that lasts depends on who allowed it, because cmux reuses session refs:
       - a task's instruction and a Slack message keep the ledger's own rule (not again without a newer
@@ -46,22 +46,24 @@ LOOP_SCAN = 500
 # A session the record can describe. cmux numbers its refs from 1000010000 and counts up.
 SESSION = re.compile(r"workspace:[0-9]{1,18}")
 # These have no time of their own to be allowed "as of", so an unknown one holds the same source in the same
-# session for half an hour only. A person's own tap (`cli`, `restore`, `run-now`) is deliberately not here: it is
-# never held back by an earlier unknown.
+# session for half an hour only, for anything that isn't a person's own tap (a tap is never held, whatever its
+# source: the pulse's merge request is held, a hand-run merge script is not).
 WINDOWED_SOURCES = ("nudge:stranded", "cleanup", "boot", "clear", "merge", "pulse")
 
 UNRECORDED = ("Assistant couldn't record what it types, so it typed nothing. "
-              "Check that your disk isn't full and that the folder ~/.assistant/effects can be written to")
+              "Check that your disk isn't full and that the folder ~/.assistant/effects can be written to.")
 LOOP = ("Assistant already typed this into {where} three times in the last half hour, so it is waiting. "
         "It tries again once the oldest of them is 30 minutes old.")
 IN_PROGRESS = "Assistant may still be typing this into {where} (or stopped partway), so it waited."
 DONE = "Assistant already typed this into {where}, so it didn't type it again."
-UNKNOWN = ("Assistant typed this into {where} earlier and couldn't tell if it arrived, so it won't type it again by "
-           "itself. Look at that session; to type it again yourself run "
+UNKNOWN_SHORT = ("Assistant typed this into {where} earlier and couldn't tell if it arrived, so it won't type it "
+                 "again by itself.")
+UNKNOWN = (UNKNOWN_SHORT + " Look at that session; to type it again yourself, from the Assistant folder, run "
            "`bin/cmux-send.py --ws {where} --text '…' --enter`.")
-UNAUTHORIZED = "Assistant couldn't confirm what allowed this, so it typed nothing."
+UNAUTHORIZED = "Assistant couldn't confirm what allowed this, so it typed nothing. Run it again from the place you meant."
 INVALID = "Assistant didn't recognise the session this was meant for (it expects workspace:N), so it typed nothing."
-LATER = "This message is dated later than this Mac's clock says it is now, so Assistant is waiting before typing it."
+LATER = ("This message is dated later than this Mac's clock says it is now, so Assistant is waiting before typing "
+         "it. If this Mac's clock is wrong, fix it.")
 
 _now = time.time  # a seam, so tests set the clock
 _USED: set = set()  # effect ids that already have their one Keys
@@ -72,9 +74,10 @@ class Refused(Exception):
     later; `str(exc)` is a plain sentence a person can read. `later`, `loop`, `in-progress` and `unrecorded` pass by
     themselves, so a caller keeps what it was going to type for the next try; the rest won't."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, short: str | None = None):
         super().__init__(message)
         self.code = code
+        self.short = short or message  # the sentence without a command to run, for a log line about a message
 
 
 def _iso(epoch: float) -> str:
@@ -159,10 +162,12 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         raise Refused("invalid", INVALID) from None
     if anchor is not None and anchor > now + effects.FUTURE_SEC:
         raise Refused("later", LATER)
-    if _loop_count(target, now) >= LOOP_MAX:
+    # A person's own tap is never held back by the loop limit or an earlier unknown, whatever its source: an
+    # automatic limit may only make Assistant more careful, and the person decides once the page tells the truth.
+    if kind != "tap" and _loop_count(target, now) >= LOOP_MAX:
         raise Refused("loop", LOOP.format(where=where))
-    if anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):
-        raise Refused("unknown", UNKNOWN.format(where=where))
+    if kind != "tap" and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):
+        raise Refused("unknown", UNKNOWN.format(where=where), UNKNOWN_SHORT.format(where=where))
     # Recorded to the second, and rounded up when it is "now": rounded down it could fall before the result of a
     # typing that finished a moment ago, and the ledger would take it for an approval older than that result.
     auth = {"kind": kind, "ref": ref, "at": _iso(math.ceil(now) if anchor is None else anchor)}
@@ -173,7 +178,7 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         if exc.done:
             raise Refused("done", DONE.format(where=where)) from None
         if exc.unknown:
-            raise Refused("unknown", UNKNOWN.format(where=where)) from None
+            raise Refused("unknown", UNKNOWN.format(where=where), UNKNOWN_SHORT.format(where=where)) from None
         raise Refused("in-progress", IN_PROGRESS.format(where=where)) from None
     except effects.NotAuthorized:
         raise Refused("unauthorized", UNAUTHORIZED) from None

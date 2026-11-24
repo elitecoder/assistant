@@ -261,6 +261,9 @@ def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
     except Exception:
         return False, f"cmux_send_bad_output: {send.stdout[:200]}{send.stderr[:200]}"
     outcome = send_record.get("outcome", "")
+    if send.returncode == 5:  # cmux-send.py: no answer in time, so the text may have been typed
+        return False, ("may_have_been_typed: cmux didn't answer in time, so the command may already be in the "
+                       "session. Check it before sending it again")
     if send.returncode != 0:
         why = (send_record.get("refused") or {}).get("reason") or send_record.get("rpc_send_text", {}).get("body", "")
         return False, f"cmux_send_exit_{send.returncode}_outcome={outcome}: {why[:200]}"
@@ -393,8 +396,10 @@ def main():
         out["awaiting_card"] = {
             "key": f"assistant:merge-pr-stuck:{args.pr}:send-unverified",
             "tier": "T2",
-            "title": f"PR #{args.pr}: {slash} did not submit into {args.ws}",
-            "detail": f"cmux send returned 0 but the JSONL transcript's last_user.text does not match. Observed: {observed[:200]}",
+            "title": (f"PR #{args.pr}: {slash} may already be in {args.ws}" if observed.startswith("may_have_been_typed")
+                      else f"PR #{args.pr}: {slash} did not submit into {args.ws}"),
+            "detail": (observed if observed.startswith("may_have_been_typed") else
+                       f"cmux send returned 0 but the JSONL transcript's last_user.text does not match. Observed: {observed[:200]}"),
         }
         print(json.dumps(out, indent=2))
         sys.exit(2)

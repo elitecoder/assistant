@@ -92,8 +92,15 @@ page, so they can do whatever the dashboard can.
   reads "can't record what it types", which means it couldn't write its record
   of what it types into your sessions. For the second, check that your disk
   isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to
-  (`ls -ld ~/.assistant/effects`). The card lists the tasks still waiting, and
-  goes away on the first round where the record works. See
+  (`ls -ld ~/.assistant/effects`). The card lists the tasks still waiting.
+  When Assistant had already started a session for a task and then wouldn't
+  type into it, it parks that task (it shows as blocked) and the card names it
+  and the workspace left open for it: close that workspace, then press **Queue
+  to start** on the task, which turns it back into an open task for the next
+  round. The card stays as long as a parked task does, even on rounds where
+  nothing is blocked. A name cmux gives a session that Assistant doesn't
+  recognise has its own card, which says the tasks waiting will park the same
+  way until you update Assistant. See
   [Typing into agent sessions](effects.md#typing-into-agent-sessions).
 
 ## Decisions and goals

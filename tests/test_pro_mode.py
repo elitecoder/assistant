@@ -488,7 +488,16 @@ def test_tasks_tab_shows_the_card_for_dispatch_that_cant_record_what_it_types(ho
     todos = page[page.index('data-panel="todos"'):]
     import html
     assert html.escape(title) in todos and "Waiting: td-0 First, td-1 Second." in todos
-    assert "df -h ~" in todos and "ls -ld ~/.assistant/effects" in todos
+    assert "<code>df -h ~</code>" in todos and "<code>~/.assistant/effects</code>" in todos
+    assert "`" not in todos[:todos.index("</p>", todos.index("dispatch-cap"))]  # no literal backticks left in the card
+
+
+def test_a_command_in_backticks_on_the_card_is_code_and_markup_inside_it_is_still_escaped(home):
+    detail = "Run `echo <b>x</b> & done` then `ls -ld ~`. A lone ` stays."
+    page = render_page(home, {"awaiting_input": [{"key": "dispatch-held-no-record", "title": "t", "detail": detail}]})
+    todos = page[page.index('data-panel="todos"'):]
+    assert "<code>echo &lt;b&gt;x&lt;/b&gt; &amp; done</code>" in todos and "<code>ls -ld ~</code>" in todos
+    assert "<b>x</b>" not in todos and "A lone ` stays." in todos
 
 
 def test_unpause_hint_points_to_a_command_that_exists_in_each_mode(home):

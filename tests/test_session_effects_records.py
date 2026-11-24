@@ -28,13 +28,14 @@ def the_dispatch_record() -> dict:
 # --- the registry --------------------------------------------------------------------------------------------------
 
 def test_a_dispatch_reason_of_typing_refused_is_accepted_and_free_text_still_is_not(wq):
-    assert "typing_refused" in telemetry.DISPATCH_REASON
+    assert "typing_refused" in telemetry.DISPATCH_REASON and "session_refused_text" in telemetry.DISPATCH_REASON
     now = 0.0
     records.dispatch({"id": "td-1", "trace": OWN}, {"id": "td-1", "trace": OWN}, False, now, "typing_refused")
     assert of_kind("dispatch")[-1]["fields"]["reason"] == "typing_refused"
     # a reason somebody wrote in words is not on the list, so it is not kept (strict mode would raise)
     assert records.one_of("the disk is full", "DISPATCH_REASON") is None
     assert records.one_of("typing_refused", "DISPATCH_REASON") == "typing_refused"
+    assert records.one_of("session_refused_text", "DISPATCH_REASON") == "session_refused_text"
 
 
 # --- the trace ----------------------------------------------------------------------------------------------------
@@ -94,7 +95,7 @@ def test_a_dispatch_whose_typing_is_refused_says_typing_refused_and_the_task_is_
     assert ok is False
     record = the_dispatch_record()
     assert record["fields"]["reason"] == "typing_refused" and record["fields"]["outcome"] == "failed"
-    assert wq.items()[0]["status"] == ("open" if how == "writable" else "in-progress")  # parked when a session exists
+    assert wq.items()[0]["status"] == ("open" if how == "writable" else "blocked")  # parked when a session exists
 
 
 def test_a_dispatch_that_typed_the_instruction_says_whether_it_was_seen_to_arrive(wq, monkeypatch):
@@ -109,8 +110,8 @@ def test_every_return_in_dispatch_todo_says_why_or_says_it_went_out():
     tree = ast.parse(PULSE.read_text())
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "dispatch_todo")
     park = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_park_refused_dispatch")
-    assert any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_dispatch_failed" and
-               c.args[0].value == "typing_refused" for c in ast.walk(park))
+    assert any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_dispatch_failed" for c in ast.walk(park))
+    assert park.args.defaults[0].value == "typing_refused"
 
     def calls(node, name):
         return isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and getattr(node.value.func, "id", "") == name

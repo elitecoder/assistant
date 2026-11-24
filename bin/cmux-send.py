@@ -41,7 +41,9 @@ Usage:
 Exit codes:
   0  — text and Enter both delivered successfully (no claim about ingest)
   1  — could not resolve a terminal surface for the workspace
-  2  — RPC error from cmux
+  2  — RPC error from cmux: it refused the text or the Enter
+  5  — cmux didn't answer in time (outcome rpc_send_text_timeout or rpc_send_key_timeout): the text MAY have been
+       typed, so a caller must not take this for "not sent"
   3  — usage error
   4  — refused: the intent couldn't be recorded, or this is a loop, or it was already typed (nothing was sent)
 
@@ -249,14 +251,14 @@ def main():
         ok = keys.text(args.text)
         record["rpc_send_text"] = dict(zip(("rc", "body"), answers.get("text", (None, None))))
         if not ok:
-            end("rpc_send_text_failed", 2)
+            end("rpc_send_text_timeout" if keys.raised else "rpc_send_text_failed", 5 if keys.raised else 2)
 
         # Step 2 (optional): send_key Enter
         if args.enter:
             ok = keys.key("enter")
             record["rpc_send_key"] = dict(zip(("rc", "body"), answers.get("key", (None, None))))
             if not ok:
-                end("rpc_send_key_failed", 2)
+                end("rpc_send_key_timeout" if keys.raised else "rpc_send_key_failed", 5 if keys.raised else 2)
 
         # Wait for claude to ingest + flush before stat'ing
         time.sleep(args.post_send_wait)

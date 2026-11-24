@@ -383,6 +383,9 @@ def _run_now_failure(sent) -> str:
     except (ValueError, TypeError):
         record = {}
     outcome = record.get("outcome") if isinstance(record, dict) else None
+    if outcome in ("rpc_send_text_timeout", "rpc_send_key_timeout"):
+        return ("Assistant sent this but didn't hear back, so it may have been typed. Check the session before you "
+                "send it again.")
     if outcome == "rpc_send_key_failed":
         return "run-now typed the text into the session but couldn't press Enter, so it is waiting there unsent"
     if outcome == "rpc_send_text_failed":

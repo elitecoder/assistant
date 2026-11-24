@@ -144,15 +144,15 @@ def test_the_fourth_identical_typing_in_half_an_hour_is_refused_and_the_words_na
 
 
 def test_a_typing_nobody_could_tell_about_and_one_still_open_count_toward_the_loop(home, clock):
-    def tap():
-        return se.begin(WS, "cli", kind="tap", ref="cli:cmux-send", component="cmux-send")
-    se.finish(tap(), "unknown")
+    def go():
+        return se.begin(WS, "trust", kind="standing", ref="slack-comms", component="comms")
+    se.finish(go(), "unknown")
     clock.t += 5
-    tap()  # never gets a result
+    go()  # never gets a result
     clock.t += 700  # past the ten minutes in which the ledger calls it in progress
-    se.finish(tap(), "unknown")
+    se.finish(go(), "unknown")
     clock.t += 5
-    assert refusal(tap).code == "loop"
+    assert refusal(go).code == "loop"
 
 
 def test_the_loop_counts_typings_twenty_minutes_back_and_ignores_older_ones(home, clock):
@@ -206,7 +206,7 @@ def test_an_unknown_typing_holds_the_same_source_in_the_same_session_for_half_an
     exc = refusal(go)
     assert exc.code == "unknown"
     assert str(exc) == (f"Assistant typed this into {WS} earlier and couldn't tell if it arrived, so it won't type it "
-                        f"again by itself. Look at that session; to type it again yourself run "
+                        f"again by itself. Look at that session; to type it again yourself, from the Assistant folder, run "
                         f"`bin/cmux-send.py --ws {WS} --text '…' --enter`.")
     go(WS2)  # another session is its own target
     clock.t += se.LOOP_SEC
@@ -256,7 +256,8 @@ def test_a_message_dated_after_this_macs_clock_waits_and_is_not_dropped(home):
 
 def test_the_remaining_sentences(home):
     assert str(se.Refused("done", se.DONE.format(where=WS))) == f"Assistant already typed this into {WS}, so it didn't type it again."
-    assert se.UNAUTHORIZED == "Assistant couldn't confirm what allowed this, so it typed nothing."
+    assert se.UNAUTHORIZED == ("Assistant couldn't confirm what allowed this, so it typed nothing. Run it again from "
+                               "the place you meant.")
 
 
 # --- Keys --------------------------------------------------------------------------------------------------------
@@ -350,9 +351,10 @@ def test_nothing_can_be_typed_without_an_intent_on_disk_that_is_still_open(home)
     assert rpc.calls == []
 
 
-def test_an_intent_is_found_by_its_id_however_much_was_written_after_it(home, clock):
+def test_an_intent_is_found_by_its_id_however_much_was_written_after_it(home, clock, monkeypatch):
+    monkeypatch.setattr(se, "LOOP_SCAN", 5)  # so a handful of later effects is "more than the newest few"
     ef = nudge()
-    for n in range(se.LOOP_SCAN + 20):
+    for n in range(12):
         se.finish(nudge(f"workspace:{1000020000 + n}"), "failed")
     rpc = Rpc()
     assert se.type_line(ef, rpc, "s", "hi", session=WS) == "done" and len(rpc.calls) == 2
@@ -439,3 +441,23 @@ def test_line_lets_a_refusal_because_the_intent_was_closed_go_up(home):
     se.finish(ef, "failed")
     with pytest.raises(se.Refused):
         keys.line("hi")
+
+
+def test_a_persons_tap_is_never_held_by_the_loop_limit_or_an_unknown_whatever_its_source(home, clock):
+    def tap(source):
+        return se.begin(WS, source, kind="tap", ref="cli:cmux-send", component="cmux-send")
+    for source in ("merge", "nudge:stranded", "cleanup", "cli"):
+        for _ in range(se.LOOP_MAX + 2):  # more than the loop limit, each after an unknown one
+            se.finish(tap(source), "unknown")
+            clock.t += 5
+        tap(source)
+        clock.t += 700
+
+
+def test_the_pulses_merge_request_is_held_after_an_unknown_and_a_persons_is_not(home, clock):
+    def merge(kind):
+        return se.begin(WS, "merge", kind=kind, ref="merge", component="merge-pr-dispatch.py")
+    se.finish(merge("standing"), "unknown")
+    clock.t += 60
+    assert refusal(merge, "standing").code == "unknown"
+    merge("tap")  # a person running the script by hand

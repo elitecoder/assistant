@@ -1844,6 +1844,12 @@ def render_todos_tab(world):
 DISPATCH_NOTICE_KEYS = ("dispatch-cap-hit", "dispatch-held-no-fleet-view", "dispatch-held-no-record")
 
 
+def _with_code(escaped: str) -> str:
+    """Text between backticks, in a sentence already escaped, shown as code: a command to copy. Escaping comes
+    first, so nothing inside the backticks can be markup."""
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+
+
 def _dispatch_cap_notice() -> str:
     """The pulse's "tasks held back" card, shown on the Tasks tab: held at the
     cap, or paused because it couldn't see which sessions are busy or couldn't
@@ -1854,7 +1860,7 @@ def _dispatch_cap_notice() -> str:
     if not card:
         return ""
     return (f'<div class="section dispatch-cap"><h2>{e(card.get("title") or "Tasks held back")}</h2>'
-            f'<p class="meta">{e(card.get("detail") or "")}</p></div>')
+            f'<p class="meta">{_with_code(e(card.get("detail") or ""))}</p></div>')
 
 
 def _cmux_workspaces() -> dict[str, dict]:

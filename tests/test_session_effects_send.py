@@ -94,8 +94,8 @@ def test_a_transcript_that_grew_is_verified(send, home):
 @pytest.mark.parametrize("answers, args, code, outcome", [
     ([(1, {"error": "no"})], ["--enter"], 2, "failed"),                      # nothing typed
     ([(0, {}), (1, {"error": "no"})], ["--enter"], 2, "unknown"),            # the text is there, Enter isn't
-    ([(124, {"error": "timeout"})], ["--enter"], 2, "unknown"),              # can't tell
-    ([(0, {}), (124, {"error": "timeout"})], ["--enter"], 2, "unknown"),
+    ([(124, {"error": "timeout"})], ["--enter"], 5, "unknown"),              # can't tell: its own exit status
+    ([(0, {}), (124, {"error": "timeout"})], ["--enter"], 5, "unknown"),
     ([(0, {})], [], 0, "done"),                                              # text only, as asked
 ])
 def test_the_result_says_what_happened(send, home, answers, args, code, outcome):
@@ -287,3 +287,55 @@ def test_keys_that_cant_be_made_after_the_intent_exit_4_and_close_it_as_failed(s
         code, record = run(send, rpc, "--enter")
     assert code == 4 and rpc.calls == [] and record["refused"]["reason"] == "no keys"
     assert ledger(home)[1]["outcome"] == "failed"
+
+
+@pytest.mark.parametrize("answers, outcome", [([(124, {})], "rpc_send_text_timeout"),
+                                              ([(0, {}), (124, {})], "rpc_send_key_timeout"),
+                                              ([(1, {})], "rpc_send_text_failed"),
+                                              ([(0, {}), (1, {})], "rpc_send_key_failed")])
+def test_a_timeout_is_its_own_result_apart_from_a_refusal(send, home, answers, outcome):
+    code, record = run(send, Rpc(home, answers), "--enter")
+    assert record["outcome"] == outcome and code == (5 if outcome.endswith("timeout") else 2)
+
+
+def test_the_pulse_takes_a_timeout_for_text_that_may_have_been_typed_not_for_text_not_sent(home):
+    pulse = load_pulse(home)
+    with mock.patch.object(pulse, "run", return_value=(5, json.dumps({"outcome": "rpc_send_text_timeout"}), "")):
+        assert pulse.cmux_send("workspace:1000010003", "/cleanup")["outcome"] == "may-have-been-typed"
+    with mock.patch.object(pulse, "cmux_send", return_value={"outcome": "may-have-been-typed"}), \
+            mock.patch.object(pulse, "previous_send_ingested", return_value=True), \
+            mock.patch.object(pulse, "observer_actions_held", return_value=False), \
+            mock.patch.object(pulse, "pre_cleanup_check", return_value={"gate": "ok"}), \
+            mock.patch.object(pulse, "assistant_merged_workspace", return_value=True):
+        action = pulse.execute_verdict({"ref": "workspace:1000010003", "title": "t", "cwd": "/"},
+                                       {"verdict": "ready_for_cleanup", "summary": "s", "next": "n"}, [])
+    assert action["outcome"] == "failed" and "may have been typed" in action["evidence"]
+
+
+def test_the_merge_script_takes_a_timeout_for_a_command_that_may_already_be_in_the_session(home):
+    merge = load_module(home, "merge-pr-dispatch.py")
+    with mock.patch.object(merge.subprocess, "run",
+                           return_value=mock.Mock(returncode=5, stdout=json.dumps({"outcome": "rpc_send_text_timeout"}),
+                                                  stderr="")):
+        ok, why = merge.step2_send_and_verify("workspace:1000010002", "/merge-when-ready 7", "standing")
+    assert ok is False and why.startswith("may_have_been_typed: cmux didn't answer in time")
+
+
+@pytest.mark.parametrize("observed, title", [
+    ("may_have_been_typed: cmux didn't answer in time", "PR #7: /merge-when-ready 7 may already be in workspace:1000010001"),
+    ("something else", "PR #7: /merge-when-ready 7 did not submit into workspace:1000010001")])
+def test_the_merge_card_says_the_command_may_already_be_there_when_cmux_didnt_answer(home, observed, title):
+    merge = load_module(home, "merge-pr-dispatch.py")
+    sys.argv = ["merge-pr-dispatch.py", "--ws", "workspace:1000010001", "--pr", "7"]
+    out = io.StringIO()
+    with mock.patch.object(merge, "step0_safety_gate", return_value=(True, "", {})), \
+            mock.patch.object(merge, "gh_pr_view", return_value={"files": []}), \
+            mock.patch.object(merge, "squirrel_e2e_gate", return_value=(True, "")), \
+            mock.patch.object(merge, "step_freeze_retarget", return_value=(False, "", {})), \
+            mock.patch.object(merge, "step1_ci_route", return_value=("merge-when-ready", "", {})), \
+            mock.patch.object(merge, "step2_send_and_verify", return_value=(False, observed)), \
+            mock.patch("sys.stdout", out), pytest.raises(SystemExit) as stop:
+        merge.main()
+    card = json.loads(out.getvalue())["awaiting_card"]
+    assert stop.value.code == 2 and card["title"] == title
+    assert (card["detail"] == observed) == observed.startswith("may_have")

@@ -507,7 +507,8 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
                            attempts: int = SUBMIT_ATTEMPTS,
                            wait_sec: float = SUBMIT_WAIT_SEC,
                            sleep=time.sleep, clock=time.monotonic,
-                           busy=lambda: False, busy_wait_sec: float = BUSY_WAIT_SEC) -> bool:
+                           busy=lambda: False, busy_wait_sec: float = BUSY_WAIT_SEC,
+                           enter_only: bool = False) -> bool:
     """Type a prompt once, press Enter, and wait until `confirmed()` sees it in
     the transcript. Returns whether it did.
 
@@ -519,25 +520,34 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
     got recorded isn't typed again, and one an earlier try left sitting in the
     box only gets its Enter. While `busy()` and the box no longer holds the
     marker, confirmation waits up to `busy_wait_sec` more. All I/O is
-    injected."""
+    injected.
+
+    `enter_only` is for a message already typed: nothing is typed, and Enter is
+    pressed only while a read of the box made right then shows this message's own
+    marker (a collapsed paste doesn't count), so the owner's own half-typed text
+    is never submitted. When the box doesn't show it, nothing is pressed and it
+    returns False."""
     if confirmed():
         return True
     # Only this prompt's own marker counts here: an old collapsed paste in the
     # box says nothing about whether this text was typed.
     if not box_has_marker(read_box(), marker):
+        if enter_only:
+            return False
         send_text()
         sleep(0.5)
     press_enter()
+    holds = box_has_marker if enter_only else box_holds
     for attempt in range(attempts):
         deadline = clock() + wait_sec
         while clock() < deadline:
             if confirmed():
                 return True
             sleep(1)
-        if attempt + 1 < attempts and box_holds(read_box(), marker):
+        if attempt + 1 < attempts and holds(read_box(), marker):
             press_enter()
     deadline = clock() + busy_wait_sec
-    while clock() < deadline and busy() and not box_holds(read_box(), marker):
+    while clock() < deadline and busy() and not holds(read_box(), marker):
         if confirmed():
             return True
         sleep(2)
@@ -785,8 +795,8 @@ def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
     stripped: send_text streams keystrokes, so a trailing \\n would submit
     mid-paste."""
     delivered = submit_until_confirmed(
-        send_text=(lambda: _active_keys(surface_ref).text(text.rstrip("\n"))) if retype
-        else (lambda: None),  # a message already typed is never typed again; only its Enter is pressed
+        send_text=lambda: _active_keys(surface_ref).text(text.rstrip("\n")),
+        enter_only=not retype,  # a message already typed is never typed again; only its Enter is pressed
         press_enter=lambda: send_enter(paths, surface_ref),
         read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent),
         confirmed=confirmed,

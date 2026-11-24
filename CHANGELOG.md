@@ -54,9 +54,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   forever. Now the same thing typed into the same session more than three
   times in thirty minutes is waited on, and a typing that may have landed is
   not repeated by Assistant on its own: a nudge, `/cleanup` or merge request
-  waits 30 minutes before it may be tried again, and your own tap is never held
-  back.
-
+  waits 30 minutes before it may be tried again, and your own tap (the script
+  run by hand, "run now", restore, a hand-run merge) is never held back or
+  limited, whatever it types; the page tells you when something may already
+  have been typed, and you decide.
 - Check every request that changes something on the dashboard server the same
   way, with no exceptions. Before, a web page open in your browser could make
   your machine start a TODO's agent session (`/dispatch-now`), type a
@@ -175,11 +176,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   can't be written, nothing is typed: Assistant checks it can write before it
   starts a session for a task, and if it can't, the Tasks tab shows "Dispatch
   paused — can't record what it types" with the disk and folder to check, and
-  the tasks still waiting. A nudge is skipped, and a Slack message stays queued
-  and you still get the "I'll answer as soon as it's back" note. A Slack
-  message that can't be confirmed is never typed twice and never dropped
-  silently: if its text is still sitting in the prompt box only Enter is
-  pressed again, otherwise Assistant replies in its thread. A test fails the
+  the tasks still waiting. If it had already started a session when it
+  refused, the task is parked and the card names it and the workspace left open:
+  close the workspace and press **Queue to start** on the task. A nudge is
+  skipped, and a Slack message stays queued and you still get a note saying
+  why. A Slack message that can't be confirmed is never typed twice, and when
+  Assistant stops trying it tells you in the message's thread (also when your
+  Slack target is a person): if its text is still in the prompt box only Enter
+  is pressed again, and only while the box still shows that message, so text
+  you are typing is never submitted. A test fails the
   build if any other code types into a session. Typing by the
   `spawn-claude-workspace` skill, by the Slack session's own model and by crash
   resume isn't recorded yet; see `docs/effects.md`.

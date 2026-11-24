@@ -79,7 +79,7 @@ GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
 SOURCE_REASON = ("not_signed_in", "tool_missing", "timeout", "bad_answer", "busy", "other")
 UNSORTED_REASON = ("call_failed", "bad_answer", "not_answered", "out_of_time", "spend_limit", "no_model")
 DISPATCH_REASON = ("session_tool_down", "no_workspace", "no_surface", "session_not_ready", "todo_not_marked",
-                   "typing_refused", "other")
+                   "typing_refused", "session_refused_text", "other")
 # What the owner did (feedback.signal), why (reason_code), where, and on what kind of thing.
 SIGNAL = ("done", "drop", "snooze", "undo", "send", "send_handsoff", "approve", "keep", "archive", "mark_read",
           "used_draft", "kept_result", "thumbs_down", "tell", "retract")
