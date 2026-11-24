@@ -10,6 +10,22 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Security
+- Stop the Slack warm session from typing messages written by anyone but you.
+  Before, every non-bot message in the channel you set up was typed into a
+  session that runs with its permission prompts off, so any member of a
+  channel could make it run commands on your Mac. Now only your own messages
+  are typed. Your Slack id comes from `SLACK_USER_ID`, or from the target when
+  it is a person; a message from anyone else is kept as received, never typed,
+  and a line in the log says so. With a channel target and no id, nothing is
+  typed and the log says to set `SLACK_USER_ID`.
+- Check what the dashboard's "run now" on a proposal types. Before, it typed
+  whatever a proposal file said, of any length, into whatever session the file
+  named, with no check. Now the session must be a real `workspace:N`, the text
+  one line of at most 500 characters, and the typing is recorded first. It
+  also types into the session's terminal, not whichever pane is on top.
+- Stop the same text being typed into the same session in a loop. The same
+  thing typed into the same session more than three times in thirty minutes is
+  refused, and a typing that may have landed is not repeated on its own.
 - Check every request that changes something on the dashboard server the same
   way, with no exceptions. Before, a web page open in your browser could make
   your machine start a TODO's agent session (`/dispatch-now`), type a
@@ -50,6 +66,20 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Record everything Assistant types into an agent session before it types it.
+  Agents run with their permission prompts off and can't take typing back, and
+  before this only two of twelve ways of typing left any record, and one typed
+  text from a file with no check. Now the start of a task, the folder-trust
+  answer, the "stalled" nudge, `/cleanup`, merge requests, Slack messages and the
+  Slack session's start-up, "run now" and `cmux-restore-sessions` each write a
+  line to `~/.assistant/effects` first, saying which session, which task, where
+  the text came from and what allowed it (never the text), and a second line
+  saying how it went. When the line can't be written, nothing is typed: a task
+  stays open and the dashboard shows "Dispatch paused" with what to check, a
+  nudge is skipped, and a Slack message stays queued. A test fails the build if
+  any other code types into a session. Typing by the `spawn-claude-workspace`
+  skill and by the Slack session's own model isn't recorded yet; see
+  `docs/effects.md`.
 - Show a failure that keeps repeating as one red line at the top of the
   dashboard, with how many times in a row it has happened, since when, a short
   error, and what happens next, all in one box that shows two lines and keeps

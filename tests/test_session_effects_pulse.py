@@ -92,7 +92,8 @@ def test_the_intent_is_on_disk_before_the_first_keystroke_and_names_the_task(mod
     rows = ledger(home)
     assert [r["kind"] for r in rows] == ["intent", "result"]
     assert rows[1]["outcome"] == "done" and rows[1]["verified"] is False  # no transcript appeared in the fake
-    assert MARKER not in (home / ".assistant/effects/effects.jsonl").read_text()
+    raw = (home / ".assistant/effects/effects.jsonl").read_text()
+    assert MARKER not in raw and "spawn-prompts" not in raw and "prompt-dispatch" not in raw
 
 
 def test_the_trust_answer_is_its_own_effect_before_the_instruction(mod, home):

@@ -110,6 +110,13 @@ def test_the_fourth_identical_typing_in_half_an_hour_is_refused(home, clock):
     nudge()
 
 
+def test_a_typing_that_finished_a_moment_ago_does_not_block_the_next_one_in_the_same_second(home, clock):
+    clock.t = T0 + 0.6
+    se.finish(nudge(), "done")
+    clock.t += 0.1
+    nudge()  # its allowance is "now", rounded up, so it can't fall before the result just written
+
+
 def test_a_typing_that_failed_does_not_count_toward_the_loop(home, clock):
     for _ in range(5):
         se.finish(nudge(), "failed")

@@ -81,14 +81,11 @@ def trace_of(item) -> str:
 def _loop_count(target: dict, now: float) -> int:
     """Typings into this session from this source in the last half hour that did or may have gone out. A task or a
     Slack message is its own thing: it only counts against itself."""
-    same = {k: target[k] for k in ("session", "surface", "source", "task", "ts") if k in target}
     count = 0
     for found in effects.history(CLASS, limit=LOOP_SCAN):
         if found["t"] < now - LOOP_SEC:
             break
-        theirs = found["target"]
-        if found["outcome"] != "failed" and all(theirs.get(k) == v for k, v in same.items()) \
-                and all(k in same for k in theirs):
+        if found["outcome"] != "failed" and found["target"] == target:
             count += 1
     return count
 
