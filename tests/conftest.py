@@ -2,10 +2,27 @@
 import os
 import pwd
 import sys
+import tempfile
 import types
 from pathlib import Path
 
 import pytest
+
+# Tests never run against the real home. Many scripts under bin/ work out the home folder once, when they are
+# imported, so a test that forgets to point one at a temporary folder writes the developer's real ~/.assistant:
+# the lesson extractor's tests appended to the real assistant-audit.log for months, and pulse tests pruned the real
+# ~/.claude/spawn-prompts. HOME is moved to a throwaway folder here, before any module is imported, for the whole
+# run. A test that needs a home of its own still sets one. Tools that keep what they need in the real home (the
+# test browser, uv's Pythons, npm's cache, git's identity) are told where it is.
+_REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+_BROWSERS = "Library/Caches/ms-playwright" if sys.platform == "darwin" else ".cache/ms-playwright"
+for _name, _place in (("PLAYWRIGHT_BROWSERS_PATH", _BROWSERS), ("UV_CACHE_DIR", ".cache/uv"),
+                      ("UV_PYTHON_INSTALL_DIR", ".local/share/uv/python"), ("npm_config_cache", ".npm")):
+    os.environ.setdefault(_name, str(_REAL_HOME / _place))
+if (_REAL_HOME / ".gitconfig").is_file():
+    os.environ.setdefault("GIT_CONFIG_GLOBAL", str(_REAL_HOME / ".gitconfig"))
+TESTS_HOME = Path(tempfile.mkdtemp(prefix="assistant-tests-home-"))
+os.environ["HOME"] = str(TESTS_HOME)
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "bin"))
@@ -36,7 +53,6 @@ for _knob in ("ASSISTANT_OBSERVER_HOLD_ACTIONS", "OBSERVER_MODEL", "OBSERVER_AUD
 # Files in the real user's home that tests must never write: Copilot's hook
 # folder and the rules folder Assistant links for Copilot. On 2026-11-12 a test
 # wrote its fake hook list over the real ~/.copilot/hooks/cmux.json.
-_REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 _GUARDED = (_REAL_HOME / ".copilot" / "hooks", _REAL_HOME / ".assistant" / "copilot-instructions")
 
 

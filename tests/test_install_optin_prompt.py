@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from installer_sandbox import assert_recorded_services, installer_env
+from installer_sandbox import assert_recorded_services, installer_env, real_home
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALL = REPO / "install.sh"
@@ -85,8 +85,10 @@ launchctl bootout gui/0/com.assistant.fixture
 
 
 def test_installer_environment_rejects_real_home():
-    with pytest.raises(ValueError, match="isolated HOME"):
-        installer_env(Path.home())
+    """Both the real home and the folder the test run uses as HOME: neither is a fresh, empty one."""
+    for home in (real_home(), Path.home()):
+        with pytest.raises(ValueError, match="isolated HOME"):
+            installer_env(home)
 
 
 def test_self_update_apply_does_not_hang_and_writes_no_prompt(tmp_path):

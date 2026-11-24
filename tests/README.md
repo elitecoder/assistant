@@ -48,6 +48,11 @@ The server-side identity guard has separate coverage in `test_todo_server.py`.
 Run from the repository root. Keep installer tests isolated from the host's
 services; a temporary `HOME` alone doesn't isolate `launchctl`.
 
+**Tests never use your real home.** `tests/conftest.py` moves `HOME` to a throwaway folder before anything is
+imported, because many scripts under `bin/` work out the home folder once, at import. A test that needs a home of
+its own still sets one with `monkeypatch`. This covers `pytest` only: a one-off script or a server you start by
+hand uses whatever `HOME` you give it, so give it a temporary one.
+
 ```bash
 REPORT="$HOME/dev/generated-docs/assistant-coverage"
 mkdir -p "$REPORT"

@@ -159,6 +159,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway
+  folder before anything is imported. Until now a test that forgot to do that itself wrote into the real
+  `~/.assistant`: the lesson extractor's tests had been adding lines to the real `assistant-audit.log`
+  since July, and the guard that was meant to catch this watched only two folders.
 - Stop a Slack thread from reading as instructions to the agent. The thread in
   a saved task now sits between marker lines with a code made for that task,
   under rules that tell the agent it is content to act on and never
