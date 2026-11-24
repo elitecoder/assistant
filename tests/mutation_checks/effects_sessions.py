@@ -40,6 +40,13 @@ CHECKS = (
         T + "test_nothing_can_be_typed_without_an_intent_on_disk_that_is_still_open",
     ),
     (
+        "a typing that never got a result is treated as possibly landed once ten minutes have passed",
+        SE,
+        '        abandoned = last and last["outcome"] is None and now - last["t"] >= effects.IN_FLIGHT_SEC',
+        "        abandoned = False",
+        T + "test_a_typing_that_never_got_a_result_is_treated_as_possibly_landed_once_its_window_has_passed",
+    ),
+    (
         "typing is refused when the intent can't be written",
         SE,
         "    except effects.Unrecorded:\n        raise Refused(\"unrecorded\", UNRECORDED) from None",

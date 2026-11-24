@@ -140,6 +140,18 @@ def test_a_typing_that_may_have_landed_is_not_repeated_by_something_with_no_time
     nudge("workspace:5")  # another session is its own target
 
 
+def test_a_typing_that_never_got_a_result_is_treated_as_possibly_landed_once_its_window_has_passed(home, clock):
+    nudge()  # the process stopped before it could say how it went
+    clock.t += effects.IN_FLIGHT_SEC - 1
+    with pytest.raises(se.Refused) as exc:
+        nudge()
+    assert exc.value.code == "in-progress"
+    clock.t += 2
+    with pytest.raises(se.Refused) as exc:
+        nudge()
+    assert exc.value.code == "unknown"
+
+
 def test_a_slack_message_that_may_have_landed_is_refused_by_the_ledgers_own_rule(home, clock):
     def go():
         return se.begin("workspace:3", "slack-message", kind="tap", ref="slack:1793613610.000100",

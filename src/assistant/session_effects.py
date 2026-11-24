@@ -119,7 +119,9 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         raise Refused("loop", LOOP)
     if anchor is None:
         last = effects.last(CLASS, target)
-        if last and last["outcome"] == "unknown":
+        # An intent that never got a result and is past the ledger's in-flight window may have been typed too.
+        abandoned = last and last["outcome"] is None and now - last["t"] >= effects.IN_FLIGHT_SEC
+        if last and (last["outcome"] == "unknown" or abandoned):
             raise Refused("unknown", UNKNOWN)
     # Recorded to the second, and rounded up when it is "now": rounded down it could fall before the result of a
     # typing that finished a moment ago, and the ledger would take it for an approval older than that result.

@@ -97,3 +97,10 @@ def test_a_dry_run_types_and_records_nothing(restore, tmp_path):
     restore.run_cmux = cmux
     assert restore.respawn_panel({}, {"id": PANEL, "terminal": {"surfaceId": SURFACE}}, MARKER, True, False)
     assert cmux.calls == [] and ledger(tmp_path) == []
+
+
+def test_a_verbose_run_says_why_nothing_was_typed(restore, tmp_path, capsys):
+    restore.run_cmux = Cmux(tmp_path, answers=[1, 1])
+    assert not restore.respawn_panel({"title": "t"}, {"id": PANEL, "terminal": {"surfaceId": SURFACE}}, MARKER,
+                                     False, True)
+    assert "send_text failed" in capsys.readouterr().out

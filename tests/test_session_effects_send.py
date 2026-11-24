@@ -197,3 +197,14 @@ def test_the_pulse_runs_merge_dispatch_as_standing_and_a_person_as_a_tap(home):
             mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit):
         merge.main()
     assert seen["by"] == "tap"
+
+
+def test_a_refused_typing_is_written_to_the_send_log_without_its_effect(send, home, monkeypatch):
+    monkeypatch.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
+    send.SENDS_LOG = str(home / "sends.jsonl")
+    sys.argv = ["cmux-send.py", "--ws", "workspace:5", "--text", MARKER, "--enter"]
+    with mock.patch.object(send, "resolve_terminal_surface", return_value=SURFACE), \
+            mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit) as stop:
+        send.main()
+    logged = [json.loads(line) for line in (home / "sends.jsonl").read_text().splitlines()]
+    assert stop.value.code == 4 and logged[0]["outcome"] == "refused"
