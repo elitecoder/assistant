@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = (REPO / ".github/workflows/quality.yml").read_text()
 
 
-@pytest.mark.parametrize("n", [1, 2, 3, 4])
+@pytest.mark.parametrize("n", [1, 2, 3, 4, 6])
 def test_the_shards_together_run_every_check_exactly_once(n):
     shards = [mutation_smoke.shard(f"{i}/{n}") for i in range(1, n + 1)]
     seen = Counter(check for checks in shards for check in checks)

@@ -112,6 +112,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- Run the mutation checks in six parallel shards, up from three. The slowest shard had reached 51 of its
+  60 minutes, so a few more checks would have timed the job out. The shards still run every check exactly once.
 - The Observer is now off by default. It runs only when
   `~/.assistant/config.json` has `{"observer": {"enabled": true}}`, with the
   JSON value `true`, and the pulse has `ASSISTANT_WATCHER=1`. A missing file,
