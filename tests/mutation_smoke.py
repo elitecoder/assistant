@@ -4206,6 +4206,13 @@ CHECKS = (
         'if until and component == "self-update-x":',
         'tests/test_renderer_failures.py::test_a_paused_self_update_gives_a_command_that_works_when_pasted',
     ),
+    (
+        'the folded failure lines stay open across the page refresh',
+        'bin/render-assistant-page.py',
+        """            shown += ('<details data-context-key="repeated-failures"><summary>'\n""",
+        """            shown += ('<details><summary>'\n""",
+        'tests/test_renderer_failures.py::test_two_lines_show_and_the_rest_sit_in_one_closed_details',
+    ),
 )
 
 

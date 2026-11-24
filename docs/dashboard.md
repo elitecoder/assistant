@@ -95,7 +95,8 @@ the top of the page, with the count since it began. The box shows two lines;
 any others are inside "and N more that keep repeating", which opens when you
 click it. For example: "Self-update has failed 14 times in a row since Monday
 09:10. The error was: fetch failed: fatal: couldn't find remote ref feat/x. It
-tries again by itself at 15:10, or as soon as its remote or branch changes. To
+tries again by itself at 15:10, or as soon as the branch or remote it updates
+from changes. To
 try now, run `'/path/to/python' '/path/to/assistant/bin/self_update.py' --force`
 in a terminal." The command names the Python the services use and quotes both
 paths, so you can paste it as it is. The error is shortened to 100 characters.

@@ -489,8 +489,9 @@ def _failure_line(row: dict, now: float) -> tuple[int, str]:
         # sys.executable is the interpreter the services run under: it is the
         # one rendering this page.
         command = f"{shlex.quote(sys.executable)} {shlex.quote(str(REPO / 'bin/self_update.py'))} --force"
-        html += (e(f" It tries again by itself at {_failure_time(until, now)}, or as soon as its remote "
-                   "or branch changes. To try now, run ") + f"<code>{e(command)}</code>" + e(" in a terminal."))
+        html += (e(f" It tries again by itself at {_failure_time(until, now)}, or as soon as the branch "
+                   "or remote it updates from changes. To try now, run ")
+                 + f"<code>{e(command)}</code>" + e(" in a terminal."))
     elif until:
         html += e(f" It tries again at {_failure_time(until, now)}. "
                   "You don't need to do anything unless it keeps failing.")
@@ -526,7 +527,9 @@ def render_failure_alerts(now: float | None = None, world: dict | None = None) -
         shown = "<br>".join(html for _, html in items[:FAILURE_LINES_SHOWN])
         rest = items[FAILURE_LINES_SHOWN:]
         if rest:
-            shown += ("<details><summary>" + e(f"and {len(rest)} more that keep repeating") + "</summary>"
+            # The key lets the page reopen this after its 15-second refresh, like its other folds.
+            shown += ('<details data-context-key="repeated-failures"><summary>'
+                      + e(f"and {len(rest)} more that keep repeating") + "</summary>"
                       + "<br>".join(html for _, html in rest) + "</details>")
         return ('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
                 f'<span class="pulse-dot"></span><span class="pulse-text">{shown}</span></div>')

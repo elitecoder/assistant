@@ -30,7 +30,7 @@ def box(html):
     """(shown lines, summary, hidden lines) of the one failure box, as plain text."""
     assert html.count('data-failure="repeated"') <= 1, "one box, not a stack"
     inner = re.search(r'<span class="pulse-text">(.*)</span></div>$', html, re.S).group(1)
-    details = re.search(r"<details><summary>(.*?)</summary>(.*)</details>", inner, re.S)
+    details = re.search(r'<details data-context-key="repeated-failures"><summary>(.*?)</summary>(.*)</details>', inner, re.S)
     top = inner[:details.start()] if details else inner
 
     def split(chunk):
@@ -86,7 +86,7 @@ def test_a_paused_self_update_gives_a_command_that_works_when_pasted(mod):
     (alert,) = lines(html)
     when = datetime.fromtimestamp(until).strftime("%H:%M")
     command = f"{shlex.quote(sys.executable)} {shlex.quote(str(mod.REPO / 'bin/self_update.py'))} --force"
-    assert alert.endswith(f" It tries again by itself at {when}, or as soon as its remote or branch changes. "
+    assert alert.endswith(f" It tries again by itself at {when}, or as soon as the branch or remote it updates from changes. "
                           f"To try now, run {command} in a terminal.")
     assert f"<code>{html_lib.escape(command)}</code>" in html and "`" not in html
 
@@ -204,7 +204,8 @@ def test_two_lines_show_and_the_rest_sit_in_one_closed_details(mod):
     shown, summary, hidden = box(html)
     assert [int(re.search(r"failed (\d+) times", t).group(1)) for t in shown] == [8, 7]
     assert summary == "and 4 more that keep repeating" and len(hidden) == 4
-    assert "<details>" in html and "<details open" not in html and "<script" not in html
+    assert '<details data-context-key="repeated-failures">' in html, "the key lets the page reopen it after a refresh"
+    assert " open" not in html.split("<details", 1)[1].split(">", 1)[0] and "<script" not in html
     assert html.count('role="alert"') == 1
 
 
