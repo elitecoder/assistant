@@ -1277,6 +1277,44 @@ def test_a_note_file_that_cant_be_read_costs_a_repeat_not_the_record(wq, monkeyp
     assert len(unsorted_records()) == 6
 
 
+def test_with_recording_off_a_stopped_refresh_writes_no_note_file_and_changes_nothing_else(tmp_path, monkeypatch):
+    out = {}
+    for name, enabled in (("on", True), ("off", False)):
+        env = make_env(tmp_path / name, monkeypatch, enabled=enabled)
+        two_rows(env)
+        stopped_by(monkeypatch, "budget")
+        refresh.run(now=NOW, model=Model())
+        out[name] = (env, plain(refresh.site_path().read_text()), plain(json.dumps(server.state(), sort_keys=True, default=str)),
+                     plain((env.data / "triage-cache.json").read_text()))
+    assert triage.noted_path().parent == out["off"][0].data and not (out["off"][0].data / "unsorted-noted.json").exists()
+    assert (out["on"][0].data / "unsorted-noted.json").exists()  # the same refresh with recording on does write it
+    assert out["on"][1:] == out["off"][1:]
+
+
+def test_a_note_file_with_a_row_that_isnt_a_list_of_words_is_mended_and_the_run_still_records(wq, monkeypatch):
+    two_rows(wq)
+    stopped_by(monkeypatch, "budget")
+    refresh.run(now=NOW, model=Model())
+    saved = json.loads(triage.noted_path().read_text())
+    first, second = list(saved["rows"])
+    saved["rows"] = {first: "spend_limit", second: [1, None]}
+    triage.noted_path().write_text(json.dumps(saved))
+    refresh.run(now=NOW, model=Model())
+    assert len(unsorted_records()) == 4  # nothing was trusted, so both rows are recorded again
+    assert json.loads(triage.noted_path().read_text())["rows"] == {first: ["spend_limit"], second: ["spend_limit"]}
+    refresh.run(now=NOW, model=Model())
+    assert len(unsorted_records()) == 4
+
+
+def test_an_email_whose_link_changes_the_same_day_is_not_recorded_again_for_the_same_reason(wq, monkeypatch):
+    from test_work_queue_triage import mail_row, snap
+    stopped_by(monkeypatch, "budget")
+    for link in ("https://outlook.office.com/m1", "https://outlook.office.com/moved/m1"):
+        triage.run(snap(outlook=[mail_row(1, link=link)]), Model(), {})
+    [only] = unsorted_records()
+    assert only["subject"] == pointers.row_pointer("mail:1")  # named by the email's own key
+
+
 def test_a_run_with_nothing_unsorted_writes_no_note_file(wq):
     source_rows(wq, None)
     refresh.run(now=NOW, model=Model())

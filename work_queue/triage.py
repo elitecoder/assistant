@@ -565,11 +565,13 @@ def record_unsorted(work: "Triage", cache: dict, run_trace: str, keys: dict) -> 
     reason, and a different reason the same day is recorded. It is read and written once a run, and a file that is
     missing or can't be read just means every row is recorded."""
     left = [i for i in work.selected if (cache.get(i["hash"]) or {}).get("verdict") is None]
-    if not left:
+    if not left or not records.recording():  # with recording off nothing is written, this file included
         return
     traced = traces.lookup_many([i["link"] for i in left])
     saved = config.read_json(noted_path(), {})
     noted = saved.get("rows") if isinstance(saved, dict) and saved.get("day") == today() and isinstance(saved.get("rows"), dict) else {}
+    # A row's reasons are a list of words; anything else, in a file edited by hand, is no reasons.
+    noted = {k: v if isinstance(v, list) and all(isinstance(r, str) for r in v) else [] for k, v in noted.items()}
     for item in left:
         reason, batch = work.reasons.get(item["hash"]) or (work.stopped or "call_failed", None)
         pointer = pointers.row_pointer((keys or {}).get(item["link"], item["link"]))

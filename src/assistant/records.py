@@ -57,6 +57,14 @@ def emit(kind: str, trace: str = "", subject: str = "", component: str = "", **f
             raise
 
 
+def recording() -> bool:
+    """Whether telemetry is switched on. A setting that can't be read counts as off, as it does for `telemetry.emit`."""
+    try:
+        return bool(_telemetry()._settings()["enabled"])
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def new_trace() -> str:
     """A trace id for one run of a job (a refresh, a pulse). "" when one can't be made."""
     def made() -> str:

@@ -426,8 +426,8 @@ CHECKS = (
     (
         "a record that can't be handed over costs only the record",
         REC,
-        "    except Exception:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef new_trace",
-        "    except ImportError:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef new_trace",
+        "    except Exception:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef recording",
+        "    except ImportError:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef recording",
         T + "test_a_record_handed_to_a_store_that_fails_costs_only_the_record",
     ),
     (
@@ -906,7 +906,7 @@ CHECKS = (
     (
         "a run with nothing unsorted leaves no note file",
         TRIAGE,
-        "    if not left:\n        return\n    traced",
+        "    if not left or not records.recording():  # with recording off nothing is written, this file included\n        return\n    traced",
         "    traced",
         T + "test_a_run_with_nothing_unsorted_writes_no_note_file",
     ),
@@ -944,5 +944,27 @@ CHECKS = (
         "began, PULSE_DISPATCHED, PULSE_STAMPED, ok, failure = time.monotonic(), 0, 0, False, None",
         "began, PULSE_DISPATCHED, ok, failure = time.monotonic(), 0, False, None",
         T + "test_the_count_of_stamped_tasks_starts_again_with_each_pulse",
+    ),
+    # --- the last checks
+    (
+        "with recording off the note file is not read or written",
+        TRIAGE,
+        "    if not left or not records.recording():",
+        "    if not left:",
+        T + "test_with_recording_off_a_stopped_refresh_writes_no_note_file_and_changes_nothing_else",
+    ),
+    (
+        "a note that isn't a list of words is no note",
+        TRIAGE,
+        "    noted = {k: v if isinstance(v, list) and all(isinstance(r, str) for r in v) else [] for k, v in noted.items()}",
+        "    noted = dict(noted)",
+        T + "test_a_note_file_with_a_row_that_isnt_a_list_of_words_is_mended_and_the_run_still_records",
+    ),
+    (
+        "the note file names a row by the email's own key, not its link",
+        TRIAGE,
+        '        pointer = pointers.row_pointer((keys or {}).get(item["link"], item["link"]))',
+        '        pointer = pointers.row_pointer(item["link"])',
+        T + "test_an_email_whose_link_changes_the_same_day_is_not_recorded_again_for_the_same_reason",
     ),
 )
