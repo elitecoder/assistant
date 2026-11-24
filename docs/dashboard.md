@@ -3,6 +3,11 @@
 Open the dashboard at http://127.0.0.1:9876. `bin/todo-server.py` serves it on
 localhost only.
 
+If you open the saved file
+`~/.claude/assistant-dashboard.html` straight from disk instead, only **Refresh
+now** on the Notifications tab and the signal that you looked at it reach the
+server; every other button needs the page served at http://127.0.0.1:9876.
+
 ![The Sessions tab with sample data: four columns of cmux workspaces, Needs your answer, Assistant tasks, Ready to close, and Paused. Each card shows its state, a title, the next step, when it was first seen, and a Go to session button.](images/dashboard-sessions.png)
 
 Nothing pushes or notifies you by default. Once decisions are on, neglected ones
@@ -12,6 +17,54 @@ When the Assistant is about to trim oversized logs, a notice says so in an
 amber bar at the top of the page, above the tabs, in both modes; the same card
 also appears under **Awaiting input**. See
 [Configuration](configuration.md) for how to keep your logs.
+
+## Who can change things
+
+The dashboard answers only at an address that starts with `http://127.0.0.1` or
+`http://localhost`, on any port. A forwarded port, such as
+`ssh -L 9877:127.0.0.1:9876`, so `http://localhost:9877`, works. Any other
+name, such as one a web page points at your machine, is refused with a
+sentence that says to open http://127.0.0.1:9876.
+
+Every request that changes something passes one check, and reading the Slack,
+goal, and decision lists passes it too:
+
+- The dashboard in your browser is let through, because the address it was
+  opened at is the address it sends from, under either `127.0.0.1` or
+  `localhost` on the same port. A tab you left open from before an
+  update keeps working. A page on `localhost` at another port, such as a
+  development server, is a different page and is refused.
+- A page from any other website is refused (403), and so is a page that tries
+  to show the dashboard inside itself: the dashboard tells browsers never to
+  put it in a frame.
+- A call with no origin, or the origin `null`, needs the token. That covers the
+  dashboard opened as a local file, a command-line call with `curl`, and a page
+  sandboxed inside another website. The token is in `~/.assistant/api-token`,
+  created the first time it's needed and readable by you only. Send it as the
+  `X-Assistant-Token` header. Put it on standard input rather than on the
+  command line, where other users can see it:
+
+  ```bash
+  curl -s -X POST http://127.0.0.1:9876/goal/list \
+    -H @- <<<"X-Assistant-Token: $(cat ~/.assistant/api-token)"
+  ```
+
+  If the file doesn't exist yet, the first call is refused and creates it; run
+  it again. The saved page holds the token, so `assistant-dashboard.html` is
+  readable by you only too. Delete `~/.assistant/api-token` to get a new one;
+  the next page rebuild puts it in the page.
+
+If you forward the dashboard's port through another local server or tunnel,
+every page that address serves is treated as the dashboard's own page.
+
+The saved page always talks to `http://127.0.0.1:9876` when you open it as a
+file, and it holds your token. Don't share it: a copy opened on another
+computer would send that computer's own `127.0.0.1` the token it carries.
+
+This protects you from web pages open in your browser, including ones that try
+to show the dashboard inside themselves. It does not protect you from other
+programs running as you on this Mac: they can read the token file and the saved
+page, so they can do whatever the dashboard can.
 
 ## Tabs
 
