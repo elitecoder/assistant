@@ -100,6 +100,30 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   last-run line, and the next **Apply approvals** tries it again. The record
   holds ids only, never a subject, a sender, message text or an unsubscribe
   link, and only you can read it. See `docs/effects.md`.
+- Record every Slack Later save the Work queue marks completed or reopens in
+  the same record, before it acts and again when it ends. That covers a row you
+  send to an agent and **Apply approvals**, **Undo** included. A save the record
+  can't write, or turns down, is left out of that run and the rest still go
+  through. A reopen the record refuses leaves the save done and its row says
+  why ("Undo not done: ..."); the next **Apply approvals** tries it again. A save
+  counts as done when Slack accepted the change, and as verified when your Later
+  list, read again, shows it. When Slack answers with an error, the save is
+  recorded as not done. When the browser run stopped after it started, so a save
+  may have changed, it is recorded as unknown, never as not done. The record
+  holds only the channel id, the message time and a short code for the row,
+  never the message, its link or a name. See `docs/effects.md`.
+- Try a Slack save again by itself when marking it done after you send its row
+  to an agent didn't work (Slack answered with an error, the browser run failed,
+  Slack needed you to sign in, or the record turned it down). A sent row leaves the page, so before
+  this the save stayed open in Slack with no sign. Now it is tried again after 1,
+  5 and 15 minutes, and a restart keeps the saves still waiting. If the last try
+  fails, one line under the page title says how many saves couldn't be marked,
+  why in plain words ("Slack asked us to slow down", "Slack needs you to sign in
+  again", "Slack didn't answer", "an earlier try may still be running", and so
+  on), with an "Open in Slack" link to each of the first three that says when
+  that save was sent, and what to do ("Mark it done in Slack yourself", or sign
+  in again). A sign-in problem shows at once, because trying again can't fix it. The
+  line goes away when Slack no longer has the save or a retry marks it.
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it
   arrives to your decision on it. It never holds message text, titles,

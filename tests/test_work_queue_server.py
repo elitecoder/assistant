@@ -439,7 +439,7 @@ def test_apply_trashes_gmail_unsubscribes_and_marks_slack_then_verifies(wq, unsu
         "g9": {"kind": "gmail", "account": "a@x.com", "msg_ids": ["m9"]},
         "u1": {"kind": "unsub", "url": base + "/ok"}, "u2": {"kind": "unsub", "url": base + "/no"},
         "u3": {"kind": "unsub", "url": f"http://127.0.0.1:{closed_port()}/x"}, "u4": {"kind": "unsub", "url": base + "/ok"},
-        "s1": {"kind": "slack", "cid": "C1", "ts": "1.2"}, "m1": {"kind": "mail"}, "kept": {"kind": "gmail"}})
+        "s1": {"kind": "slack", "cid": "C0000000001", "ts": "1700000001.000002"}, "m1": {"kind": "mail"}, "kept": {"kind": "gmail"}})
     config.write_json(wq.data / "decisions.json", {k: {"decision": "approve", "at": AT} for k in ("g1", "g2", "u1", "u2", "u3", "s1", "m1", "gone")}
                       | {"g9": {"decision": "undo", "at": AT}, "u4": {"decision": "undo", "at": AT}, "kept": {"decision": "keep"}})
     config.write_json(wq.data / "applied.json", {"g9": {"status": "done"}, "u4": {"status": "done"}})
@@ -454,7 +454,7 @@ def test_apply_trashes_gmail_unsubscribes_and_marks_slack_then_verifies(wq, unsu
     assert applied["s1"]["verified"] is True and "m1" not in applied and "kept" not in applied
     assert [p for p, _ in hits] == ["/ok", "/no"] and hits[0][1] == b"List-Unsubscribe=One-Click"
     job = json.loads((wq.data / "apply-job.json").read_text())
-    assert job == [{"key": "s1", "cid": "C1", "ts": "1.2", "mark": "completed"}]
+    assert job == [{"key": "s1", "cid": "C0000000001", "ts": "1700000001.000002", "mark": "completed"}]
     assert "--headless --job" in calls(wq.bin, "uv")[0]
     status = json.loads((wq.data / "apply-status.json").read_text())
     assert (status["running"], status["gmail"], status["unsub"], status["slack"], status["ok"], status["verified"]) == \
@@ -476,10 +476,10 @@ def test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_rea
         "g2": {"kind": "gmail", "account": "a@x.com", "msg_ids": ["m2"]},
         "g3": {"kind": "gmail", "account": "a@x.com", "msg_ids": ["m3"]},
         "g4": {"kind": "gmail", "account": "a@x.com", "msg_ids": ["m4"]},
-        "s1": {"kind": "slack", "cid": "C1", "ts": "1.1"}, "s2": {"kind": "slack", "cid": "C2", "ts": "2.2"}})
+        "s1": {"kind": "slack", "cid": "C0000000001", "ts": "1700000001.000001"}, "s2": {"kind": "slack", "cid": "C0000000002", "ts": "1700000002.000002"}})
     config.write_json(wq.data / "decisions.json", {
         "g1": {"decision": "approve", "at": AT}, "g2": {"decision": "approve", "at": AT}, "g3": {"decision": "undo"},
-        "g4": {"decision": "undo", "at": AT}, "s1": {"decision": "approve"}, "s2": {"decision": "undo"}})
+        "g4": {"decision": "undo", "at": AT}, "s1": {"decision": "approve", "at": AT}, "s2": {"decision": "undo", "at": AT}})
     config.write_json(wq.data / "applied.json", {
         "g1": {"status": "done", "verified": True, "at": "before"}, "g3": {"status": "undone", "at": "before"},
         "g4": {"status": "done"}, "s1": {"status": "done", "at": "before"}, "s2": {"status": "done"}})
@@ -490,7 +490,7 @@ def test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_rea
     assert not any(" m1 " in c + " " or " m3 " in c + " " for c in calls(wq.bin, "gog"))
     assert (applied["g2"]["status"], applied["g2"]["verified"]) == ("done", False)
     assert (applied["g4"]["status"], applied["g4"]["verified"]) == ("undone", False)
-    assert json.loads((wq.data / "apply-job.json").read_text()) == [{"key": "s2", "cid": "C2", "ts": "2.2", "mark": "uncompleted"}]
+    assert json.loads((wq.data / "apply-job.json").read_text()) == [{"key": "s2", "cid": "C0000000002", "ts": "1700000002.000002", "mark": "uncompleted"}]
     status = json.loads((wq.data / "apply-status.json").read_text())
     assert (status["gmail"], status["slack"], status["ok"], status["verified"]) == (2, 1, 3, 1)
 
@@ -569,8 +569,8 @@ def test_unsubscribe_never_follows_a_redirect(wq, monkeypatch):
 
 
 def test_a_slack_apply_failure_marks_every_save_failed(wq):
-    config.write_json(refresh.candidates_path(), {"s1": {"kind": "slack", "cid": "C1", "ts": "1"}})
-    config.write_json(wq.data / "decisions.json", {"s1": {"decision": "approve"}})
+    config.write_json(refresh.candidates_path(), {"s1": {"kind": "slack", "cid": "C0000000001", "ts": "1700000001.000001"}})
+    config.write_json(wq.data / "decisions.json", {"s1": {"decision": "approve", "at": AT}})
     server.run_apply()
     assert json.loads((wq.data / "applied.json").read_text())["s1"]["error"].startswith("Slack isn't linked.")
     (wq.home / ".assistant/work-queue").mkdir(parents=True)
@@ -919,7 +919,7 @@ def test_sending_a_slack_save_marks_it_completed_in_the_background_and_records_i
 @pytest.mark.parametrize("mode", ["assist", "handsoff"])
 def test_both_modes_mark_a_sent_slack_save_completed(wq, monkeypatch, mode):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts: queued.append((cid, ts)))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append((cid, ts)))
     server.queue_todo({"key": SAVE_LINK, "title": "A", "mode": mode})
     assert queued == [("C0123456789", "1700000000.000100")]
 
@@ -934,7 +934,7 @@ def test_both_modes_mark_a_sent_slack_save_completed(wq, monkeypatch, mode):
                                  "https://x.slack.com/archives/C0123456789/p1700000000000100/extra"])
 def test_only_a_slack_save_link_starts_a_slack_update(wq, monkeypatch, key):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts: queued.append((cid, ts)))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append((cid, ts)))
     assert server.queue_todo({"key": key, "title": "A"})[0] == 200
     assert queued == []
 
@@ -1049,7 +1049,7 @@ def test_saves_sent_while_the_profile_is_busy_go_in_one_browser_run(wq):
 
 def test_an_existing_todo_doesnt_mark_its_save_again(wq, monkeypatch):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts: queued.append((cid, ts)))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append((cid, ts)))
     server.queue_todo({"key": SAVE_LINK, "title": "A"})
     assert server.queue_todo({"key": SAVE_LINK, "title": "A"})[1]["existing"] is True
     assert len(queued) == 1
@@ -1073,10 +1073,10 @@ def test_a_save_slack_no_longer_has_is_recorded_once_and_never_retried(wq):
     server.queue_save("C0123456789", "1700000000.000100")
     assert wait_for(worker_done)
     config.write_json(refresh.candidates_path(), {SAVE: {"kind": "slack", "cid": "C0123456789", "ts": "1700000000.000100"}})
-    config.write_json(wq.data / "decisions.json", {SAVE: {"decision": "approve"}})
+    config.write_json(wq.data / "decisions.json", {SAVE: {"decision": "approve", "at": AT}})
     server.run_apply()
     assert len(calls(wq.bin, "uv")) == 1, "neither a second send nor Apply asks Slack again"
-    config.write_json(wq.data / "decisions.json", {SAVE: {"decision": "undo"}})
+    config.write_json(wq.data / "decisions.json", {SAVE: {"decision": "undo", "at": AT}})
     server.run_apply()
     assert len(calls(wq.bin, "uv")) == 1 and applied(wq)[SAVE]["status"] == "gone", "there's nothing to reopen"
 
@@ -1088,7 +1088,7 @@ def test_any_other_slack_error_stays_an_error_and_apply_tries_it_again(wq):
                                                        "sent": True}
     assert wait_for(worker_done)
     config.write_json(refresh.candidates_path(), {SAVE: {"kind": "slack", "cid": "C0123456789", "ts": "1700000000.000100"}})
-    config.write_json(wq.data / "decisions.json", {SAVE: {"decision": "approve"}})
+    config.write_json(wq.data / "decisions.json", {SAVE: {"decision": "approve", "at": AT}})
     fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"ok": True, "applied": {
         SAVE: {"status": "done", "verified": True, "at": "later"}}})])
     server.run_apply()
@@ -1135,7 +1135,7 @@ def test_every_slack_browser_run_holds_the_profile_while_it_runs(wq, monkeypatch
         server.queue_save("C0123456789", "1700000000.000100")
         assert wait_for(worker_done)
     elif side == "apply":
-        server.apply_slack([(SAVE, {"cid": "C0123456789", "ts": "1700000000.000100"}, False)])
+        server.apply_slack([(SAVE, {"cid": "C0123456789", "ts": "1700000000.000100", "decided_at": AT}, False)])
     else:
         slack.later({"team_id": "T1", "workspace_url": "https://x.slack.com"})
     assert seen == [True], "the lock is held during the browser run, not just taken and let go"
@@ -1156,7 +1156,7 @@ def test_apply_and_the_refresh_give_up_waiting_for_a_busy_profile(wq, monkeypatc
     try:
         assert held.wait(5)
         started = time.monotonic()
-        out = server.apply_slack([(SAVE, {"cid": "C0123456789", "ts": "1700000000.000100"}, False)])
+        out = server.apply_slack([(SAVE, {"cid": "C0123456789", "ts": "1700000000.000100", "decided_at": AT}, False)])
         assert out[SAVE]["status"] == "error" and out[SAVE]["error"] == slack.BUSY
         with pytest.raises(refresh.tools.SourceError, match="Try again in a few minutes"):
             slack.later({"team_id": "T1", "workspace_url": "https://x.slack.com"})
