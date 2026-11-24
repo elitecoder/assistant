@@ -69,6 +69,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
+  conversation back to your inbox, and Gmail Trash from **Apply approvals**)
+  and every unsubscribe in a new append-only record, before it runs and again
+  when it ends, in `~/.assistant/effects/effects.jsonl`. An action Assistant
+  can't record doesn't run, and the page says "Assistant couldn't record this
+  action, so it didn't run it. Check that your disk isn't full, then try
+  again". A second press while the first is still working is turned down. An
+  unsubscribe that went through is never sent again, and neither is one that
+  was sent and never answered: the row says "Assistant sent this but didn't
+  hear back, so it may have gone through. Approve it again to send it once
+  more". An **Undo** that doesn't happen, because the record refused it or
+  Gmail did, leaves the row in Trash and says why on the row and on the
+  last-run line, and the next **Apply approvals** tries it again. The record
+  holds ids only, never a subject, a sender, message text or an unsubscribe
+  link, and only you can read it. See `docs/effects.md`.
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it
   arrives to your decision on it. It never holds message text, titles,

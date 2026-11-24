@@ -410,6 +410,10 @@ def unsub_site():
     srv.shutdown()
 
 
+# When the person decided: real decisions always carry it, and an effect is recorded against it.
+AT = "2026-11-02T10:00:00+00:00"
+
+
 def closed_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -436,8 +440,8 @@ def test_apply_trashes_gmail_unsubscribes_and_marks_slack_then_verifies(wq, unsu
         "u1": {"kind": "unsub", "url": base + "/ok"}, "u2": {"kind": "unsub", "url": base + "/no"},
         "u3": {"kind": "unsub", "url": f"http://127.0.0.1:{closed_port()}/x"}, "u4": {"kind": "unsub", "url": base + "/ok"},
         "s1": {"kind": "slack", "cid": "C1", "ts": "1.2"}, "m1": {"kind": "mail"}, "kept": {"kind": "gmail"}})
-    config.write_json(wq.data / "decisions.json", {k: {"decision": "approve"} for k in ("g1", "g2", "u1", "u2", "u3", "s1", "m1", "gone")}
-                      | {"g9": {"decision": "undo"}, "u4": {"decision": "undo"}, "kept": {"decision": "keep"}})
+    config.write_json(wq.data / "decisions.json", {k: {"decision": "approve", "at": AT} for k in ("g1", "g2", "u1", "u2", "u3", "s1", "m1", "gone")}
+                      | {"g9": {"decision": "undo", "at": AT}, "u4": {"decision": "undo", "at": AT}, "kept": {"decision": "keep"}})
     config.write_json(wq.data / "applied.json", {"g9": {"status": "done"}, "u4": {"status": "done"}})
     server.run_apply()
     applied = json.loads((wq.data / "applied.json").read_text())
@@ -474,8 +478,8 @@ def test_apply_skips_rows_already_in_the_state_asked_for_and_reports_what_it_rea
         "g4": {"kind": "gmail", "account": "a@x.com", "msg_ids": ["m4"]},
         "s1": {"kind": "slack", "cid": "C1", "ts": "1.1"}, "s2": {"kind": "slack", "cid": "C2", "ts": "2.2"}})
     config.write_json(wq.data / "decisions.json", {
-        "g1": {"decision": "approve"}, "g2": {"decision": "approve"}, "g3": {"decision": "undo"},
-        "g4": {"decision": "undo"}, "s1": {"decision": "approve"}, "s2": {"decision": "undo"}})
+        "g1": {"decision": "approve", "at": AT}, "g2": {"decision": "approve", "at": AT}, "g3": {"decision": "undo"},
+        "g4": {"decision": "undo", "at": AT}, "s1": {"decision": "approve"}, "s2": {"decision": "undo"}})
     config.write_json(wq.data / "applied.json", {
         "g1": {"status": "done", "verified": True, "at": "before"}, "g3": {"status": "undone", "at": "before"},
         "g4": {"status": "done"}, "s1": {"status": "done", "at": "before"}, "s2": {"status": "done"}})
@@ -558,7 +562,7 @@ def test_unsubscribe_never_follows_a_redirect(wq, monkeypatch):
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     monkeypatch.setattr(server, "unsafe_target", lambda url: "")
-    out = server.apply_unsub([("u1", {"url": f"http://127.0.0.1:{srv.server_port}/start"}, False)])
+    out = server.apply_unsub([("u1", {"url": f"http://127.0.0.1:{srv.server_port}/start", "decided_at": AT}, False)])
     srv.shutdown()
     assert hits == ["/start"]
     assert (out["u1"]["verified"], out["u1"]["error"]) == (False, "The sender answered 302")
