@@ -683,4 +683,25 @@ CHECKS = (
         "    return effect.outcome is None and abs(now - effect.t) >= IN_FLIGHT_SEC\n",
         "tests/test_effects.py::test_an_intent_dated_in_the_future_never_holds_an_action_back_for_good",
     ),
+    (
+        "a session target may have the ten digits the session tool really numbers with",
+        E,
+        '"session": re.compile(r"workspace:[0-9]{1,18}"),',
+        '"session": re.compile(r"workspace:[0-9]{1,9}"),',
+        "tests/test_work_records.py::test_the_effects_ledger_takes_a_session_with_a_ten_digit_number_and_refuses_one_that_isnt_a_number",
+    ),
+    (
+        "a session target is digits only",
+        E,
+        '"session": re.compile(r"workspace:[0-9]{1,18}"),',
+        '"session": re.compile(r"workspace:[0-9a-z]{1,18}"),',
+        "tests/test_work_records.py::test_the_effects_ledger_takes_a_session_with_a_ten_digit_number_and_refuses_one_that_isnt_a_number",
+    ),
+    (
+        "a session target is at most 18 digits",
+        E,
+        '"session": re.compile(r"workspace:[0-9]{1,18}"),',
+        '"session": re.compile(r"workspace:[0-9]+"),',
+        "tests/test_work_records.py::test_the_effects_ledger_takes_a_session_with_a_ten_digit_number_and_refuses_one_that_isnt_a_number",
+    ),
 )

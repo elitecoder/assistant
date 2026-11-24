@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -259,15 +260,37 @@ def _count_call(caller: str, model: str | None, provider: str | None,
         pass
 
 
+def _records():
+    """assistant.records, or None when it can't be loaded. Writing a model call's record is never load-bearing."""
+    try:
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from assistant import records  # noqa: PLC0415
+        return records
+    except Exception:  # noqa: BLE001 — a record must never break a model call
+        return None
+
+
+_TRACE = re.compile(r"t[rl]-[0-9a-f]{16}")
+
+
 def append_cost_row(*, caller: str, model: str | None, usage: dict,
                     wall_ms: int,
                     path: Path | None = None, status: str = "ok",
-                    provider: str | None = None, error: str | None = None) -> None:
+                    provider: str | None = None, error: str | None = None,
+                    trace: str = "", batch: int | None = None, failure_kind: str | None = None) -> None:
     """One per-call row in ~/.assistant/cost-ledger.jsonl (design section 3:
     {ts, caller, model, tokens_in, tokens_out, est_usd, wall_ms}). Every LLM
     caller beyond the Observer (triage, later strategist/drafter) appends here
     so $/day per caller is derivable. Failed rows retain observed or estimated
-    spend so repeated failures cannot evade cost accounting."""
+    spend so repeated failures cannot evade cost accounting.
+
+    `trace` is the trace id of what the call served: the run's for a batch, a row's or a task's for a call about
+    one piece of work, or "" when it served none. It goes into the row and into the call's telemetry record, which
+    also holds `batch`, which of the run's calls this was, and `failure_kind` (a word from telemetry.SOURCE_REASON) what kind of
+    failure it was, when the caller knows."""
+    trace = trace if isinstance(trace, str) and _TRACE.fullmatch(trace) else ""
     p = path if path is not None else cost_ledger_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     row = {
@@ -281,10 +304,14 @@ def append_cost_row(*, caller: str, model: str | None, usage: dict,
         "usage_source": usage.get("source", "estimated"),
         "wall_ms": int(wall_ms),
         "status": status,
+        "trace": trace,
     }
     with open(p, "a") as f:
         f.write(json.dumps(row) + "\n")
     _count_call(caller, model, provider, status, error)
+    records = _records()
+    if records is not None:
+        records.model_call(caller, model, status, usage, wall_ms, trace, error, batch, failure_kind)
 
 
 def read_cost_ledger(path: Path | None = None) -> list[dict]:

@@ -72,6 +72,19 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Every Work queue row and every TODO now carries a short id that later
   features will use to show where a piece of work came from. Nothing you see
   changes yet.
+- Assistant now records each step a piece of work goes through, so one row can
+  be followed from arrival to done: a refresh and each source it read, the
+  model sorting the row, you sending it, an agent being started on it, the agent
+  reporting back, and the check that clears it. Every model call, every
+  change Assistant makes to your mail, removing or re-queuing a task on the
+  dashboard, and every pulse that did something leaves a record too. Each line
+  of the spend file now also notes which piece of work, if any, the model call
+  was for. The records hold ids, counts, timings and states only, never a
+  title, a sender, message text, a link, a model's reason or a prompt. A row the
+  model never sorted is recorded too, with a one-word reason, and so is a source
+  or a dispatch that failed. Nothing you see changes yet, and it all stays on
+  your Mac, in the local record described in [Telemetry](docs/telemetry.md),
+  which also shows how to look up everything recorded about one row.
 - Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
   conversation back to your inbox, and Gmail Trash from **Apply approvals**)
   and every unsubscribe in a new append-only record, before it runs and again
@@ -177,6 +190,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- The records of a dispatch and of an effect on a session now accept the ten-digit session numbers
+  the session tool really uses (such as `workspace:1000020126`). Before, such a record was left out whole.
 - Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway
   folder before anything is imported, puts it back before every test, and removes the folder when the run ends.
   Before this, a test that forgot to do that itself wrote into the real `~/.assistant`: the lesson extractor's

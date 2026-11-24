@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from assistant import todostore  # noqa: E402
+from assistant import records, todostore  # noqa: E402
 
 RESULT_TAG = "RESULT:"
 
@@ -57,6 +57,7 @@ def main(td_id: str, text: str, blocked: bool = False) -> None:
         if item is None:
             raise SystemExit(f"{td_id} not found")
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        before = item.get("status")
         if blocked:
             item.update(status="blocked", statusReason=text, statusUpdatedAt=now)
         else:
@@ -64,6 +65,7 @@ def main(td_id: str, text: str, blocked: bool = False) -> None:
             item.update(status="done", closedReason="agent finished", resultAt=now, statusUpdatedAt=now)
         doc["_lastUpdated"] = now
         write_store(doc)
+    records.task(item, "blocked" if blocked else "done", "cli", before)
     print(f"{td_id}: {'blocked' if blocked else 'result recorded, marked done'}")
 
 

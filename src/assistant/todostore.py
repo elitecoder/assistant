@@ -139,7 +139,21 @@ def stamp_missing_traces() -> int:
     """Give every task in `items` that has no valid trace id its stand-in id (`trace_of`); return how many. Tasks also arrive from
     agents writing the file by hand and from before ids existed. Under the same lock as every other writer, and the
     file is written only when a task needed one, with nothing else changed, not even `_lastUpdated`. If another writer
-    changed the file meanwhile, nothing is written and the next pulse tries again (see replace_if_unchanged)."""
+    changed the file meanwhile, nothing is written and the next pulse tries again (see replace_if_unchanged).
+
+    Each task stamped here arrived without an id, so each gets a `task` record, written after the lock is let go."""
+    stamped: list = []
+    count = _stamp_missing_traces(stamped)
+    try:
+        from assistant import records  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - a record is never worth the stamping
+        return count
+    records.tasks_stamped(stamped)
+    return count
+
+
+def _stamp_missing_traces(stamped: list) -> int:
+    """`stamp_missing_traces`, under the lock; the tasks it stamped are added to `stamped`."""
     from assistant import pointers  # noqa: PLC0415
 
     with todo_lock():
@@ -159,4 +173,6 @@ def stamp_missing_traces() -> int:
             return 0
         done = replace_if_unchanged(
             text, json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if text.endswith("\n") else ""))
+        if done:
+            stamped.extend(missing)
         return len(missing) if done else 0

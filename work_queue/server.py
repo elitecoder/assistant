@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from assistant import effects, mode, pointers, todostore
+from assistant import effects, mode, pointers, records, todostore
 
 from work_queue import config, page, refresh, tools, traces
 from work_queue.inputs import slack
@@ -211,6 +211,7 @@ def queue_todo(body: dict):
         mark_sent(key)
         if key.startswith(EMAIL_MARK) and url:
             mark_sent(url)
+    records.task_created(items[-1], "work-queue", how)
     if save := slack_save(key):
         queue_save(*save)
     return 200, {"id": td_id, "existing": False}
@@ -415,13 +416,14 @@ SENT_UNHEARD = ("Assistant sent this but didn't hear back, so it may have gone t
 FAULT = "Assistant couldn't record this action, so it didn't run it. This is a fault in Assistant, not something you did"
 
 
-def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoes: str = ""):
+def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoes: str = "", trace_key: str = ""):
     """Record the intent to change something outside Assistant. Returns (effect id, None) when the caller may act, or
     ("", (status code, plain sentence)) when it must not: the action isn't recorded, is in progress, isn't approved,
-    or is a target the record can't describe (a fault in Assistant, so it says so on stderr, without content)."""
+    or is a target the record can't describe (a fault in Assistant, so it says so on stderr, without content).
+    `trace_key` is the key the page uses for the row (see `traces.lookup_many`): the effect carries the row's trace."""
     try:
-        # The row's trace id goes here (trace="") once rows carry one.
-        return effects.begin(effect_class, target, {"kind": kind, "ref": ref, "at": at}, trace="",
+        return effects.begin(effect_class, target, {"kind": kind, "ref": ref, "at": at},
+                             trace=records.guard(traces.lookup, trace_key) or "",
                              component="work-queue", undoes=undoes), None
     except effects.Duplicate as exc:
         return "", (409, ALREADY_DONE if exc.done else SENT_UNHEARD if exc.unknown else IN_PROGRESS)
@@ -469,7 +471,7 @@ def gmail_action(body: dict):
     account, tid = found
     flag, label = GMAIL_ACTIONS[action]
     cls, target = GMAIL_EFFECTS[action], {"account": account, "thread": tid}
-    ef, refusal = begin_effect(cls, target, "tap", "/api/gmail", now(),
+    ef, refusal = begin_effect(cls, target, "tap", "/api/gmail", now(), trace_key=EMAIL_MARK + key,
                                undoes=effects.latest_undoable(cls, target) if action == "unarchive" else "")
     if refusal:
         return refusal[0], {"error": refusal[1]}
@@ -544,6 +546,7 @@ def apply_gmail(jobs) -> dict:
         target = {"account": acct, "msgs": ids, "row": pointers.row_pointer(key)}
         # A conversation with no messages changes nothing outside Assistant, so there is nothing to record.
         ef, refusal = begin_effect(cls, target, "decision", pointers.row_pointer(key), cand.get("decided_at"),
+                                   trace_key=key,
                                    undoes=effects.latest_undoable(cls, target) if undo else "") if ids else ("", None)
         if refusal and undo:
             # The mail is still in Trash: keep the row done, with the reason, so the next Apply tries again.
@@ -601,7 +604,7 @@ def apply_unsub(jobs) -> dict:
             continue
         row = pointers.row_pointer(key)
         ef, refusal = begin_effect("mail.unsubscribe", {"row": row, "host": urllib.parse.urlsplit(cand["url"]).hostname},
-                                   "decision", row, cand.get("decided_at"))
+                                   "decision", row, cand.get("decided_at"), trace_key=key)
         if refusal and refusal[1] == ALREADY_DONE:
             # It went through before, and applied.json has lost its entry: say so, and send nothing.
             out[key] = {"status": "done", "verified": True, "at": now()}
