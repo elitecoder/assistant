@@ -3640,13 +3640,6 @@ CHECKS = (
         'tests/test_failwatch.py::test_no_back_off_after_two_failures_then_one_hour_after_the_third',
     ),
     (
-        'the pause is capped at 24 hours',
-        'src/assistant/failwatch.py',
-        '    return min(BACKOFF_BASE_SEC * 2 ** (streak - BACKOFF_AFTER), BACKOFF_CAP_SEC)\n',
-        '    return BACKOFF_BASE_SEC * 2 ** (streak - BACKOFF_AFTER)\n',
-        'tests/test_failwatch.py::test_back_off_doubles_and_caps_at_24_hours',
-    ),
-    (
         'a success clears the pause',
         'src/assistant/failwatch.py',
         '                if row.get("component") == component and (row.get("streak")',
@@ -3871,13 +3864,6 @@ CHECKS = (
         'tests/test_renderer_failures.py::test_the_next_step_sentence_goes_once_the_pause_is_over',
     ),
     (
-        'a paused self-update says how to try now',
-        'bin/render-assistant-page.py',
-        'if until and component == "self-update":',
-        'if until and component == "self-update-x":',
-        'tests/test_renderer_failures.py::test_a_paused_self_update_says_when_it_retries_and_how_to_try_now',
-    ),
-    (
         'the error shown is cut to 100 characters',
         'bin/render-assistant-page.py',
         'if len(text) > 100:',
@@ -4060,13 +4046,6 @@ CHECKS = (
         'tests/test_failwatch.py::test_status_401_403_404_429_stay_exact_and_other_5xx_fold_together',
     ),
     (
-        'every other 5xx folds into one',
-        'src/assistant/failwatch.py',
-        '    if code.startswith("5"):',
-        '    if False:',
-        'tests/test_failwatch.py::test_an_outage_that_alternates_5xx_codes_is_one_failure_that_pauses',
-    ),
-    (
         '401, 403, 404 and 429 stay exact',
         'src/assistant/failwatch.py',
         '_EXACT_STATUS = {"401", "403", "404", "429"}',
@@ -4212,6 +4191,20 @@ CHECKS = (
         'if not dry_run and not batch.get("unavailable"):',
         'if not dry_run:',
         'tests/test_pulse_failwatch.py::ReadyForMergeCountTests::test_a_failed_session_list_clears_nothing',
+    ),
+    (
+        'the pause is capped at 24 hours',
+        'src/assistant/failwatch.py',
+        'cap = BACKOFF_CAP_SEC if cap is None else min(cap, BACKOFF_CAP_SEC)',
+        'cap = 10 ** 9 if cap is None else cap',
+        'tests/test_failwatch.py::test_back_off_doubles_and_caps_at_24_hours',
+    ),
+    (
+        'a paused self-update says how to try now',
+        'bin/render-assistant-page.py',
+        'if until and component == "self-update":',
+        'if until and component == "self-update-x":',
+        'tests/test_renderer_failures.py::test_a_paused_self_update_gives_a_command_that_works_when_pasted',
     ),
 )
 

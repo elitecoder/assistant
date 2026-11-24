@@ -414,3 +414,13 @@ def test_one_corrupt_row_does_not_hide_the_others(store):
     data["bad3"] = {"component": "bad3", "streak": 4, "count": 4, "last_ts": None, "backoff_until": "soon"}
     store.write_text(json.dumps(data))
     assert [r["component"] for r in failwatch.repeated(now=NOW + 200)] == ["good"]
+
+
+def test_a_very_long_streak_still_records_with_the_capped_pause(store):
+    failwatch.record_failure("c", "boom", now=NOW)
+    data = json.loads(store.read_text())
+    (row,) = data.values()
+    row["streak"] = 5000
+    store.write_text(json.dumps(data))
+    row = failwatch.record_failure("c", "boom", now=NOW + 1)
+    assert row["streak"] == 5001 and row["backoff_until"] == NOW + 1 + 24 * HOUR

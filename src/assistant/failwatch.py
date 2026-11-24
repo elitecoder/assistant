@@ -49,8 +49,8 @@ _QUOTED = re.compile(r"""(?<!\w)'[^']*'(?!\w)|"[^"]*"|`[^`]*`""")
 _ERROR_TYPE = re.compile(r'"type"\s*:\s*"(\w*error)"', re.IGNORECASE)
 # A 3-digit HTTP status after one of these words is kept (as letters, so the
 # digit strip leaves it) when it names a problem of its own: 401, 403, 404 and
-# 429. Every other 5xx folds into "5xx", so one provider outage that alternates
-# 500, 502, 503 and 529 stays one failure.
+# 429. Every other status is stripped like any number, so one provider outage
+# that alternates 500, 502, 503 and 529 stays one failure.
 _EXACT_STATUS = {"401", "403", "404", "429"}
 _STATUS = re.compile(r"\b(status(?:[ _]code)?|http|code|error)(\W{0,3})([45]\d\d)(?!\d)", re.IGNORECASE)
 # One id per request would give every call its own fingerprint.
@@ -76,9 +76,7 @@ def _status_token(m: re.Match) -> str:
     code = m.group(3)
     if code in _EXACT_STATUS:
         return m.group(1) + m.group(2) + "#" + code.translate(_DIGIT_LETTERS)
-    if code.startswith("5"):
-        return m.group(1) + m.group(2) + "#5xx"
-    return m.group(0)
+    return m.group(0)  # any other status is stripped with the digits, so 500 to 529 are one outage
 
 
 def fingerprint(component: str, error_text: str) -> str:
@@ -160,7 +158,7 @@ def _write(path: Path, data: dict) -> None:
 def _pause_sec(streak: int) -> int:
     if streak < BACKOFF_AFTER:
         return 0
-    return min(BACKOFF_BASE_SEC * 2 ** (streak - BACKOFF_AFTER), BACKOFF_CAP_SEC)
+    return BACKOFF_BASE_SEC * 2 ** min(streak - BACKOFF_AFTER, 20)  # the caller applies the cap
 
 
 def record_failure(component: str, error_text: str, now: float | None = None,
