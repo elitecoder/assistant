@@ -70,6 +70,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Keep the limit of 5 busy sessions working with the Observer off. The pulse
+  counted busy sessions from the Observer's checks, so with the Observer off,
+  which is now the default, it counted none and could start up to 30 sessions.
+  It now counts them itself from cmux and each session's transcript: a session
+  is busy when it had a turn in the last 10 minutes or is waiting on a tool
+  call that hasn't returned, however long that has taken. A plain terminal and
+  an agent that has exited aren't counted, and a session whose transcript
+  can't be read is. With the Observer on, a session either count sees as busy
+  still counts, once. When the pulse can't read the open
+  workspaces or the sessions, it now starts nothing that pulse and the **Tasks**
+  tab shows a "Dispatch paused" card, which clears on the next pulse that can.
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
   workspaces with a bare `cmux list-workspaces`, which shows only the focused
