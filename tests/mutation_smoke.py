@@ -3940,6 +3940,20 @@ CHECKS = (
         '        if summary["problem"]:\n',
         'tests/test_pulse.py::CapLogsTests::test_an_unusable_setting_is_logged_once_with_its_reason',
     ),
+    (
+        'the log trim notice shows above the tabs on every page',
+        'bin/render-assistant-page.py',
+        'render_restart_alert() + render_log_trim_notice()',
+        'render_restart_alert()',
+        'tests/test_pro_mode.py::test_the_log_trim_notice_shows_above_the_tabs_in_both_modes[False]',
+    ),
+    (
+        "the log trim notice escapes the card's text",
+        'bin/render-assistant-page.py',
+        'f\'{e(card.get("detail") or "")}</span></div>\')',
+        'f\'{card.get("detail") or ""}</span></div>\')',
+        'tests/test_pro_mode.py::test_the_log_trim_notice_is_absent_without_the_card_and_escapes_its_text',
+    ),
 )
 
 
