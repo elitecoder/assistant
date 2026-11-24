@@ -135,6 +135,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   services** say which of these are off, what to add to turn each on, and when
   a value you wrote is ignored. See
   [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
+- Make the mutation checks faster without dropping any. Each test's baseline now runs once per run, not
+  once per check that names it (510 checks name 315 tests), each shard runs three checks at a time
+  (`--workers 3`), and the workflow runs four shards, up from three. The slowest shard had reached 51 of
+  its 60 minutes. Four shards plus the coverage job is five macOS jobs, the most that run at once here, so
+  no job waits in a queue.
 - The Observer is now off by default. It runs only when
   `~/.assistant/config.json` has `{"observer": {"enabled": true}}`, with the
   JSON value `true`, and the pulse has `ASSISTANT_WATCHER=1`. A missing file,
