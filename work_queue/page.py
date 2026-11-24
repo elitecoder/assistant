@@ -578,7 +578,7 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .fb{position:relative;display:inline-flex;gap:6px;align-items:center;flex:none}.fb-what{font:11px/1.2 var(--mono);color:var(--quiet)}
 .fb-down{position:relative;margin:0 2px;padding:5px 7px;line-height:0;color:var(--quiet)}.fb-down::after{content:"";position:absolute;inset:-11px -12px}.fb-down svg{display:block}
 .fb-down[aria-pressed="true"]{color:var(--text);border-color:var(--red);background:var(--red-bg)}
-.btn.fb-open{border-color:transparent;background:none;color:var(--quiet);text-decoration:underline;text-underline-offset:2px}
+.btn.fb-open,.btn.why-link{border-color:transparent;background:none;color:var(--quiet);text-decoration:underline;text-underline-offset:2px}
 .fb-pop{position:fixed;z-index:30;display:flex;flex-wrap:wrap;gap:6px;width:min(280px,calc(100vw - 16px));padding:8px;
 background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35)}.fb-pop[hidden]{display:none}
 .fb-pop .btn{text-align:left}.fb-pop .btn.ghost{color:var(--quiet)}.fb-why{flex-basis:100%}.fb-r[aria-pressed="true"]{color:var(--text);border-color:var(--text-2)}
@@ -589,6 +589,11 @@ background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;bo
 .fb-tell{display:flex;gap:6px;align-items:flex-start;margin-top:6px}
 .fb-tell textarea{flex:1;min-width:0;min-height:36px;resize:vertical;font:13px/1.5 var(--sans);padding:6px 8px;background:var(--hover);color:var(--text);border:1px solid var(--line-strong);border-radius:6px}
 .draft-fb{margin-top:4px}.fb-promise{margin:0}
+.why-box{flex:1 0 100%;width:100%;margin:8px 0 4px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--hover);font-size:13px;line-height:1.5;color:var(--text-2)}
+.ap-row:has(> .why-box){flex-wrap:wrap}.why-steps{margin:0 0 6px;padding:0;list-style:none}.why-steps li{display:flex;gap:10px;padding:2px 0}
+.why-steps time{flex:none;width:9.5em;font:11px/18px var(--mono);color:var(--quiet)}.why-box p{margin:0 0 6px}.why-foot{font:11px/16px var(--mono);color:var(--quiet)}
+.btn.why-close{margin-top:4px;color:var(--text-2)}
+@media (max-width:620px){.why-steps li{flex-direction:column;gap:0}.why-steps time{width:auto}}
 .toast.err{border-color:var(--red)}.toast{position:fixed;right:16px;bottom:70px;max-width:min(360px,calc(100vw - 32px));padding:10px 14px;border-radius:8px;background:var(--panel);border:1px solid var(--green);font-size:13px;z-index:50}
 .mq{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px}.mq code{font:11px/1.5 var(--mono);color:var(--text-2);background:var(--hover);border:1px solid var(--line);border-radius:6px;padding:4px 8px;overflow-wrap:anywhere;min-width:0;flex:1}
 .mail-h{font:600 13px/1.4 var(--sans);color:var(--text-2);margin:14px 0 4px}
@@ -635,7 +640,7 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
 .ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
 .ready-cleared:empty{display:none}.ready-cleared li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-@media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:0;padding:5px 6px}.sf-main .fb-open{position:relative;padding:0;margin-top:-4px}.sf-main .fb-open::after{content:"";position:absolute;inset:-8px -4px}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
+@media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:0;padding:5px 6px}.sf-main .fb-open,.sf-main .why-link{position:relative;padding:0;margin-top:-4px}.sf-main .fb-open::after,.sf-main .why-link::after{content:"";position:absolute;inset:-8px -4px}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
 
@@ -823,7 +828,8 @@ function renderRefresh(){const r=ST.refresh||{},b=$('refresh');b.disabled=!!r.ru
 async function refresh(){try{ST=Object.assign(ST,await api('/api/state'));API=true;MK=ST.marks||{}}catch(_){API=false}
  const wasRunning=polling;paint();renderAp();renderRefresh();
  if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)reloadIfIdle()}}
-function reloadIfIdle(){if([...document.querySelectorAll('.compose textarea')].some(t=>t.value.trim()))
+function reloadIfIdle(){if(Object.keys(WHY).length)return toast('The refresh finished. Close the explanation under “Why is this here?”, then reload to see the new rows.');
+ if([...document.querySelectorAll('.compose textarea')].some(t=>t.value.trim()))
   return toast('The refresh finished. Send or cancel your note, then reload the page to see the new rows.');
  const asked=Object.values(FBUI);
  if(asked.some(u=>u.pop))return toast('The refresh finished. Pick a reason or Skip, then reload to see the new rows.');
@@ -857,12 +863,14 @@ function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),l
   h.pop=document.createElement('div');h.pop.className='fb-pop';h.pop.setAttribute('role','group');h.pop.setAttribute('aria-label','Why is this wrong?');h.pop.hidden=true;
   h.pop.onkeydown=ev=>{if(ev.key==='Escape'){FBUI[s.dataset.fp].pop=false;fbPaint();h.down.focus()}}}
  h.open=fbBtn(k==='page'?'Tell Assistant about this page':k==='draft'?'Tell Assistant about this draft':'Tell Assistant','open',()=>fbTell(s));h.open.classList.add('fb-open');
- s.append(h.open);if(h.pop)s.append(h.pop);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);const at=s.closest('.ap-row');if(at)at.querySelector('.ap-text').append(x);else s.parentElement.after(x)}
+ s.append(h.open);if(k!=='page'&&k!=='draft'){h.why=fbBtn('Why is this here?','why',()=>whyToggle(s));h.why.classList.remove('ghost');h.why.classList.add('why-link');h.why.setAttribute('aria-expanded','false');
+  h.why.onkeydown=ev=>{if(ev.key==='Escape'&&WHY[s.dataset.fp])whyClose(s)};s.append(h.why)}
+ if(h.pop)s.append(h.pop);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);const at=s.closest('.ap-row');if(at)at.querySelector('.ap-text').append(x);else s.parentElement.after(x)}
 function fbPlace(s){const h=FBX.get(s),p=h.pop,w=p.offsetWidth,t=p.offsetHeight,r=h.down.getBoundingClientRect(),
  n=(s.querySelector('.fb-note')||h.x.querySelector('.fb-note')||h.down).getBoundingClientRect(),
  card=(s.closest('.section')||document.body).getBoundingClientRect(),lo=Math.max(8,card.left),hi=Math.min(innerWidth-8,card.right),
  rects=q=>[...document.querySelectorAll(q)].filter(b=>b!==h.open).map(b=>b.getBoundingClientRect()).filter(b=>b.width),
- must=rects('.fb-down,.fb-open').concat([n]),nice=must.concat(rects('.sf-main > .btn')),
+ must=rects('.fb-down,.fb-open').concat([n]),nice=must.concat(rects('.sf-main > .btn,.why-link')),
  clamp=x=>Math.max(lo,Math.min(x,hi-w)),
  xs=[n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...nice.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w)].map(clamp),
  near=(x,y)=>Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2),
@@ -889,7 +897,7 @@ function fbSync(s){const fp=s.dataset.fp,u=FBUI[fp]=FBUI[fp]||{},v=ST.feedback[f
  ta.oninput=()=>{u.words=ta.value};ta.onkeydown=noteKeys(go,no);
  go.dataset.fb='send';no.dataset.fb='cancel';box.append(ta,go,no);h.x.append(box)}
 function fbPaint(){if(!FB)return;document.querySelectorAll('.fb').forEach(s=>{if(!FBX.has(s))fbBuild(s);
-  const bar=s.parentElement;if(bar.lastElementChild!==s)bar.append(s);fbSync(s)});
+  const bar=s.parentElement;if(bar.lastElementChild!==s)bar.append(s);fbSync(s)});whyPaint();
  if(FBKEEP){const k=FBKEEP,el=document.querySelector('#ready [data-fp="'+k.fp+'"] [data-fb="'+k.id+'"]');FBKEEP=null;
   if(el){el.focus();if(k.s!=null)el.setSelectionRange(k.s,k.e)}}}
 function fbKeep(){const a=document.activeElement,h=a.closest('#ready [data-fp]');return h?{fp:h.dataset.fp,id:a.dataset.fb,s:a.selectionStart,e:a.selectionEnd}:null}
@@ -899,6 +907,28 @@ function fbThumb(s){const v=ST.feedback[s.dataset.fp]||{};
  return v.down?fbUndo(s,v.down):fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down'},()=>({pop:false}))}
 document.addEventListener('click',ev=>{if(!ev.target.closest('.fb-pop')&&Object.values(FBUI).some(u=>u.pop)){Object.values(FBUI).forEach(u=>u.pop=false);fbPaint()}},true);
 for(const e of ['scroll','resize'])window.addEventListener(e,()=>FBX.forEach((h,s)=>{if(h.pop&&!h.pop.hidden)fbPlace(s)}),true);
+let WHY={};
+function whyTime(sec){const d=new Date(sec*1000),t=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}).replace(/ ([AP])M$/,(m,x)=>' '+x.toLowerCase()+'m');
+ return (d.toDateString()===new Date().toDateString()?'Today':d.toLocaleDateString([],{month:'short',day:'numeric'})+',')+' '+t}
+function whyToggle(s){const p=s.dataset.fp,u=WHY[p];if(u&&u.where===fbWhere(s))return whyClose(s);
+ const mine=WHY[p]={where:fbWhere(s),status:'loading'};whyPaint();
+ api('/api/why?key='+encodeURIComponent(s.dataset.fkey)).then(o=>{if(WHY[p]===mine)Object.assign(mine,{status:'done',data:o})},()=>{if(WHY[p]===mine)mine.status='failed'}).then(whyPaint)}
+function whyClose(s){delete WHY[s.dataset.fp];whyPaint();FBX.get(s).why.focus()}
+function whyFill(box,s,u){box.textContent='';const add=(tag,text,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=text;box.append(e);return e};
+ if(u.status==='loading')add('p','Loading');
+ else if(u.status==='failed')add('p','Assistant couldn’t load this. Close it and try again.');
+ else{const o=u.data;if(o.message)add('p',o.message);
+  if(o.steps.length){const ol=add('ol','','why-steps');o.steps.forEach(st=>{const li=document.createElement('li'),t=document.createElement('time');
+   t.dateTime=new Date(st.at*1000).toISOString();t.textContent=whyTime(st.at);li.append(t,st.text);ol.append(li)})}
+  if(o.left_out)add('p',o.left_out);if(o.note)add('p',o.note);add('p',o.footer,'why-foot')}
+ const c=button('Close','btn ghost why-close',()=>whyClose(s));c.type='button';box.append(c)}
+function whyPaint(){document.querySelectorAll('.fb').forEach(s=>{const h=FBX.get(s);if(!h||!h.why)return;
+ const host=s.closest('.em-row,.sf-row,li,.ap-row'),u=WHY[s.dataset.fp],open=!!u&&u.where===fbWhere(s);
+ let box=host.querySelector(':scope > .why-box');h.why.setAttribute('aria-expanded',open);
+ if(!open){if(box)box.remove();return}
+ if(!box){box=document.createElement('div');box.className='why-box';box.setAttribute('role','region');box.setAttribute('aria-label','Why is this here?');
+  box.onkeydown=ev=>{if(ev.key==='Escape')whyClose(s)};host.append(box)}
+ const sig=JSON.stringify([u.status,u.data]);if(box.dataset.sig!==sig){box.dataset.sig=sig;whyFill(box,s,u)}})}
 function fbPost(body){return api('/api/feedback',{method:'POST',body:JSON.stringify(body)})}
 async function fbSend(s,body,after){const u=FBUI[s.dataset.fp];if(u.busy)return;u.busy=true;
  try{const o=await fbPost(body);ST.feedback=Object.assign({},ST.feedback,{[s.dataset.fp]:o.view});Object.assign(u,after(o.view));fbPaint()}

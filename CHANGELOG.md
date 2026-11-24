@@ -69,6 +69,28 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Find out why a row is on your Work queue, and what Assistant has done with
+  it. Every Open list row, Start here item, email, row waiting for your
+  approval and Ready for you result now has a small **Why is this here?** link
+  next to **Tell Assistant**. Nothing opens until you select it. Then a box
+  under the row lists, oldest first and with the time of each step, when
+  Assistant first saw it, how the model sorted it (and which model and rules),
+  that you sent it to an agent, that an agent was started or couldn't be (and
+  why), that the agent finished or was blocked, what the check afterwards
+  found, every change Assistant made because of it (such as archiving the
+  email, and whether you pressed the button or approved it) and what you said
+  about it. So "the model didn't sort this because today's spend limit was
+  reached" and "Assistant tried to start an agent twice and the program that
+  runs agent sessions didn't answer" are now on the page instead of hidden. It
+  is built from the record Assistant keeps on your Mac and holds no message
+  text: no title, sender, link, or reason the model gave. It says "Assistant
+  has no record for this yet" when nothing is kept, "Assistant can't read its
+  record right now" when it can't tell, and, for a row that was here before
+  Assistant started keeping the record, that earlier steps aren't shown. It
+  shows the newest 50 steps and says how many more there are. An open box
+  stops the page reloading on its own after a refresh, the way an open note
+  does. On a phone the link sits on the same line as **Tell Assistant**, and
+  moves to a line of its own only on a row whose buttons already fill the line.
 - Every Work queue row and every TODO now carries a short id that later
   features will use to show where a piece of work came from. Nothing you see
   changes yet.

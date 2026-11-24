@@ -3,6 +3,7 @@
     GET  /                   the page from the last refresh
     GET  /api/state          decisions, applied results, marks, the rows sent to agents, what the refresh found
                              about each Ready for you item, apply and refresh status
+    GET  /api/why?key=       the steps one row went through, in plain sentences (assistant/why.py)
     POST /api/decide         {"keys": [...], "decision": "approve" | "keep" | "undo" | "clear"}
     POST /api/mark           {"key", "state": "done" | "snoozed" | "dropped" | "clear", "until"} or {"marks": {...}}
     GET  /files/<path>       a file inside ~/dev/generated-docs, read-only, so an agent's file:// links open
@@ -63,7 +64,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from assistant import effects, feedback, mode, pointers, records, todostore
+from assistant import effects, feedback, mode, pointers, records, todostore, why
 
 from work_queue import config, held_saves, page, refresh, tools, traces
 from work_queue.inputs import slack
@@ -1026,6 +1027,33 @@ def give_feedback(body: dict):
     return 200, {"id": made, "view": feedback.views().get(feedback.view_key(found["subject"], kind), {})}
 
 
+KEY_MAX = 2000
+
+
+def why_of(query: str) -> dict:
+    """The answer to "Why is this here?" for the row with this `key` (the one the page uses: see `traces.lookup_many`).
+    A key with no id, an unknown key and a malformed one all get the same "none" answer, so it never says whether a
+    key exists. A Ready for you result answers with the steps of the row it came from. Takes no lock: it only reads."""
+    keys = urllib.parse.parse_qs(query).get("key") or [""]
+    key = keys[0]
+    if not key or len(key) > KEY_MAX or not key.isprintable():
+        return why.empty("none")
+    try:
+        found = READY_KEY.fullmatch(key)
+        if found:
+            doc = read_store()
+            task = next((i for i in [*doc.get("items", []), *doc.get("completed", [])]
+                         if i.get("id") == found.group(1)), None)
+            row = next((k for k, q in read_map("queued.json").items() if isinstance(q, dict) and q.get("id") == found.group(1)), "")
+            trace = (traces.lookup(row) if row else "") or (todostore.trace_of(task) if task else "")  # the row's id wins
+        else:
+            trace, row = traces.lookup(key), key
+        return why.read(trace, traces.first_seen(row))
+    except Exception:  # noqa: BLE001 — a record that can't be read answers in words, never with an error page
+        traceback.print_exc()
+        return why.empty("unreadable")
+
+
 def state() -> dict:
     queued = queued_view()
     return {"decisions": config.read_json(path("decisions.json"), {}), "applied": config.read_json(path("applied.json"), {}),
@@ -1090,6 +1118,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001 — a broken saved file answers with an error, never a dropped request
                 return self.failed(exc)
             return self.send_json(200, found)
+        if route == "/api/why":
+            return self.send_json(200, why_of(urllib.parse.urlsplit(self.path).query))
         if route in ("/", "/index.html"):
             site = refresh.site_path()
             body = site.read_text() if site.exists() else page.placeholder(

@@ -839,6 +839,32 @@ def events(trace=None, kind=None, subject=None, since=None, limit=200, *, until=
         return []
 
 
+def store_state() -> str:
+    """Whether `events()` can be trusted to say "nothing recorded": "ok" (the store opens and can be read), "missing"
+    (there is no store yet, or it has no records table yet), "newer" (a newer Assistant wrote it and this one leaves
+    it alone), "foreign" (another program's file) or "unreadable" (damaged, or busy for longer than the short wait).
+    `events()` gives `[]` for every one of these, so a page that wants to tell the person which one it was asks here
+    as well. Never raises, and writes nothing."""
+    try:
+        if not os.path.isfile(_path(_DB)):
+            return "missing"
+        conn = _connect(create=False)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("SELECT 1 FROM events LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        return "ok"
+    except _NewerSchema:
+        return "newer"
+    except _ForeignDatabase:
+        return "foreign"
+    except sqlite3.OperationalError as exc:
+        return "missing" if "no such table" in str(exc) else "unreadable"
+    except Exception:  # noqa: BLE001 - a read that can't tell is "unreadable", never an error
+        return "unreadable"
+
+
 # ---------------------------------------------------------------- upkeep
 
 
