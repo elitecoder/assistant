@@ -3841,6 +3841,8 @@ CHECKS = (
         "  refused = !(await assistantPost(serverUrl('/brief/refresh'), {mode: 'cors'})).ok;\n",
         "  await assistantPost(serverUrl('/brief/refresh'), {mode: 'cors'});\n",
         'tests/test_dashboard_request_guard.py::test_the_two_calls_a_local_file_page_makes_name_the_server_only_when_it_is_a_local_file',
+    ),
+    (
         'an unreadable config.json leaves the background jobs off',
         'src/assistant/mode.py',
         '    except (OSError, ValueError):\n        jobs = None\n',
