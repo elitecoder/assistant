@@ -273,7 +273,7 @@ def step2_send_and_verify(ws_ref, slash_command):
     # body verbatim and can be 30-50KB on its own; smaller budgets read
     # mid-line and silently fail to parse.
     tail = subprocess.run(
-        ["python3", TRANSCRIPT_TAIL, "--ws", ws_ref, "--bytes", "200000"],
+        [sys.executable, TRANSCRIPT_TAIL, "--ws", ws_ref, "--bytes", "200000"],
         capture_output=True, text=True, timeout=10,
     )
     if tail.returncode != 0:

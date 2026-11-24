@@ -8,6 +8,7 @@ emission, back-off respect) is straight Python and runs in <2s.
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import io
 import json
 import os
@@ -851,6 +852,203 @@ class WriteHeartbeatTests(unittest.TestCase):
         # The .tmp file is replaced atomically; only .json should exist.
         self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
         self.assertFalse((self._tmp / ".assistant/heartbeat.json.tmp").exists())
+
+
+class CapLogsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_pulse(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    MB = 1024 * 1024
+
+    def _summary(self, **kw):
+        return {"capped": [], "freed": 0, "keep": 5 * self.MB, "problem": None,
+                "announce": False, "notice": None, **kw}
+
+    def test_the_log_line_says_what_happened_to_the_old_lines(self):
+        names = ["a.log", "b.out", "c.err", "d.log", "e.log"]
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(capped=names, freed=2560 * self.MB)) as cap, \
+                self.assertLogs(self.mod.log, "INFO") as seen:
+            self.mod.cap_logs_safely()
+        cap.assert_called_once_with(self.mod.ASSISTANT_DIR, self.mod.HOME / ".claude")
+        self.assertEqual(seen.output, [
+            "INFO:" + self.mod.log.name + ":log cap: trimmed 5 logs, deleted 2,560 MB of older lines "
+            "(each now keeps its last 5 MB; no backup): a.log, b.out, c.err, d.log, e.log"])
+
+    def test_one_trimmed_log_is_not_pluralised_and_nothing_trimmed_logs_nothing(self):
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(capped=["a.log"], freed=20 * self.MB)), \
+                self.assertLogs(self.mod.log, "INFO") as seen:
+            self.mod.cap_logs_safely()
+        self.assertIn("trimmed 1 log, deleted 20 MB of older lines", seen.output[0])
+        with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary()), \
+                self.assertNoLogs(self.mod.log, "INFO"):
+            self.assertEqual(self.mod.cap_logs_safely(), [])
+
+    def test_an_unusable_setting_is_logged_once_with_its_reason(self):
+        reason = 'logs.cap_mb in config.json is "0" in quotes, not a number'
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(problem=reason, announce=True)), \
+                self.assertLogs(self.mod.log, "WARNING") as seen:
+            self.mod.cap_logs_safely()
+        self.assertEqual(seen.output, ["WARNING:" + self.mod.log.name + ":log cap: " + reason
+                                       + "; trimming is off until that is fixed"])
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(problem=reason, announce=False)), \
+                self.assertNoLogs(self.mod.log, "WARNING"):
+            self.mod.cap_logs_safely()
+
+    def test_the_notice_card_says_plainly_what_will_be_deleted_and_how_to_opt_out(self):
+        from datetime import datetime, timedelta
+        trim_at = (datetime.now() + timedelta(days=1)).replace(hour=14, minute=5, second=0).timestamp()
+        card = self.mod.log_trim_card({"trim_at": trim_at, "cap": 20 * self.MB, "keep": 5 * self.MB,
+                                       "names": ["a", "b", "c", "d", "e"], "bytes": 2560 * self.MB})
+        self.assertEqual(card, {
+            "key": "log-trim-notice", "tier": "T3",
+            "title": "Log trimming starts tomorrow at 14:05",
+            "detail": '5 logs are over 20 MB (2,560 MB in all) and will be cut to their last 5 MB '
+                      'each; the older lines are deleted and there is no backup. To keep them, add '
+                      '"logs": {"cap_mb": 0} to ~/.assistant/config.json, alongside your existing '
+                      'keys. To trim now, add "logs": {"cap_mb": 20}.'})
+
+    def test_the_notice_card_says_today_and_one_log_when_that_is_so(self):
+        from datetime import datetime
+        card = self.mod.log_trim_card({"trim_at": datetime.now().timestamp(), "cap": 20 * self.MB,
+                                       "keep": 5 * self.MB, "names": ["a"], "bytes": 30 * self.MB})
+        self.assertTrue(card["title"].startswith("Log trimming starts today at "))
+        self.assertTrue(card["detail"].startswith("1 log is over 20 MB (30 MB in all)"))
+
+    def test_the_notice_comes_back_from_cap_logs_safely_as_a_card(self):
+        notice = {"trim_at": time.time(), "cap": 20 * self.MB, "keep": 5 * self.MB,
+                  "names": ["a"], "bytes": 30 * self.MB, "saved": True}
+        with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary(notice=notice)):
+            cards = self.mod.cap_logs_safely()
+        self.assertEqual([c["key"] for c in cards], ["log-trim-notice"])
+
+    def test_a_start_time_that_cannot_be_saved_shows_text_with_no_deadline(self):
+        notice = {"trim_at": time.time(), "cap": 20 * self.MB, "keep": 5 * self.MB,
+                  "names": ["a"], "bytes": 30 * self.MB, "saved": False}
+        self.assertEqual(self.mod.log_trim_card(notice), {
+            "key": "log-trim-notice", "tier": "T3", "title": "Log trimming is waiting",
+            "detail": "Assistant can't save ~/.assistant/log-cap-state.json, so it won't trim "
+                      "anything. Check that the folder can be written to."})
+
+    def test_an_unusable_setting_comes_back_as_its_own_card_with_a_fix(self):
+        cases = {
+            'logs.cap_mb in ~/.assistant/config.json is "20" in quotes, not a number':
+                "Write it without quotes, or remove the logs entry to use the defaults.",
+            "~/.assistant/config.json isn't valid JSON":
+                "Check the file with python3 -m json.tool ~/.assistant/config.json.",
+            "~/.assistant/config.json can't be read (Is a directory)":
+                "Check the file with python3 -m json.tool ~/.assistant/config.json.",
+            "logs.cap_mb in ~/.assistant/config.json is -5, not a number of 0 or more":
+                "Fix it, or remove the logs entry to use the defaults.",
+        }
+        for problem, fix in cases.items():
+            with mock.patch.object(self.mod.logcap, "cap_logs",
+                                   return_value=self._summary(problem=problem, announce=False)):
+                cards = self.mod.cap_logs_safely()
+            self.assertEqual(cards, [{
+                "key": "log-trim-problem", "tier": "T3", "title": "Log trimming is off",
+                "detail": f"Trimming stays off until this is fixed: {problem}. {fix}"}])
+
+    def test_the_pulse_keeps_the_problem_card_until_the_setting_is_fixed(self):
+        config = self._tmp / ".assistant" / "config.json"
+        _, cards = self._pulse_state({"logs": {"cap_mb": "20"}})
+        self.assertEqual([c["key"] for c in cards], ["log-trim-problem"])
+        _, again = self._pulse_state({"logs": {"cap_mb": "20"}})          # the log line is once a day; the card isn't
+        self.assertEqual([c["key"] for c in again], ["log-trim-problem"])
+        _, fixed = self._pulse_state({"logs": {"cap_mb": 20}})
+        self.assertEqual(fixed, [])
+
+    def _pulse_state(self, config):
+        """Run a pulse with a 30 MB log and `config` for config.json; return the awaiting cards."""
+        big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))
+        (self._tmp / ".assistant" / "config.json").write_text(json.dumps(config))
+        sent = []
+
+        def run(cmd, input_text=None, **kw):
+            if input_text:
+                sent.append(json.loads(input_text))
+            return (0, "", "")
+        with self._patched(run={"side_effect": run}):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        return big, [c for c in sent[-1]["awaiting_input"] if c["key"].startswith("log-trim")]
+
+    def test_the_pulse_shows_the_notice_card_while_it_waits_then_it_goes_away(self):
+        big, cards = self._pulse_state({"mode": "pro"})
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(big.stat().st_size, 30 * self.MB)             # nothing trimmed yet
+        # Once trimming has started the card is gone.
+        state = self._tmp / ".assistant" / "log-cap-state.json"
+        state.write_text(json.dumps({"first_over": time.time() - 90000}))
+        big, cards = self._pulse_state({"mode": "pro"})
+        self.assertEqual(cards, [])
+        self.assertLessEqual(big.stat().st_size, 5 * self.MB)
+
+    def test_an_explicit_logs_entry_means_no_card(self):
+        big, cards = self._pulse_state({"logs": {"cap_mb": 20}})
+        self.assertEqual(cards, [])
+        self.assertLessEqual(big.stat().st_size, 5 * self.MB)
+
+    def test_a_failing_capper_never_stops_the_pulse(self):
+        with mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
+            self.mod.cap_logs_safely()
+
+    def _patched(self, **extra):
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(self.mod, "pick_ws_batch", return_value={
+            "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}))
+        stack.enter_context(mock.patch.object(self.mod, "purge_stale_awaiting"))
+        stack.enter_context(mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}))
+        stack.enter_context(mock.patch.object(self.mod, "run", return_value=(0, "", "")))
+        for name, kwargs in extra.items():
+            stack.enter_context(mock.patch.object(self.mod, name, **kwargs))
+        return stack
+
+    def test_the_pulse_trims_an_oversized_log_before_its_first_step(self):
+        big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))     # 30 MB
+        (self._tmp / ".assistant" / "config.json").write_text('{"logs": {}}')
+        sizes = []
+        with self._patched(self_update_pulse={"side_effect": lambda idx: sizes.append(big.stat().st_size)}):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        self.assertEqual(len(sizes), 1)
+        self.assertLessEqual(sizes[0], 5 * 1024 * 1024)       # already trimmed at step 0
+
+    def test_the_pulse_still_trims_when_a_later_step_raises(self):
+        big = self._tmp / ".assistant" / "logs" / "a.log"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"x" * (21 * 1024 * 1024))
+        (self._tmp / ".assistant" / "config.json").write_text('{"logs": {}}')
+        with self._patched(drain_inbox={"side_effect": RuntimeError("late failure")}):
+            sys.argv = ["pulse.py"]
+            with self.assertRaises(RuntimeError):
+                self.mod.main()
+        self.assertEqual(big.stat().st_size, 0)           # one unbroken line: nothing to keep
+
+    def test_a_dry_run_does_not_trim(self):
+        with self._patched(), mock.patch.object(self.mod, "cap_logs_safely") as cap, \
+                mock.patch("sys.stdout", io.StringIO()):
+            sys.argv = ["pulse.py", "--dry-run"]
+            self.assertEqual(self.mod.main(), 0)
+        cap.assert_not_called()
+
+    def test_the_pulse_completes_when_the_capper_raises(self):
+        with self._patched(), mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
 
 
 class HelperSubprocessWrapperTests(unittest.TestCase):

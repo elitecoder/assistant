@@ -220,6 +220,13 @@ unless you are the owner with that repo's SSH access.
 
 - **Nothing happens after loading pulse** → `./bin/assistant-doctor.py` (core
   checks); tail `~/.assistant/logs/assistant-pulse.launchd.err`.
+- **A log file is huge** → every five minutes the Assistant trims logs past
+  20 MB to their last 5 MB and deletes the older lines; there is no backup.
+  The first time, it shows a card and waits 24 hours. To change the limits or
+  turn trimming off, add a `logs` entry alongside your existing keys in
+  `~/.assistant/config.json`, such as `{"mode": "pro", "logs": {"cap_mb": 0}}`,
+  and check the file with `python3 -m json.tool ~/.assistant/config.json`; see
+  [Configuration](docs/configuration.md).
 - **Comms pings but never replies** → almost always a missing Slack scope or the
   warm-session `claude` binary. `./bin/assistant-doctor.py --only slack` names it.
 - **A daemon won't launch** → check the plist rendered correctly:
