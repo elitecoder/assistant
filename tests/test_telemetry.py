@@ -563,11 +563,14 @@ def test_no_secret_reaches_the_database_its_log_or_the_spool(home):
     assert stored and all(json.loads(r[-1]).get("_dropped") for r in stored)
 
 
-def test_a_secret_shaped_word_is_dropped_from_an_id_and_from_a_name_not_kept_in_a_redacted_form(home):
+def test_a_secret_shaped_word_is_dropped_from_a_name_and_from_an_error(home):
     short = "_".join(["ghp", "AbCdEfGhIjKlMnOpQrSt1234"])  # no long run of digits: only the redactor refuses it
+    token = ".".join(["ya29", "AbCdEfGhIjKlMnOpQrStUv"])  # shaped like a module path and a class name
     assert T.emit("check", subject="who:" + short, name=short, count=1)
-    [(_, _, subject, _, fields)] = rows(home)
-    assert subject == "" and json.loads(fields) == {"_dropped": 2, "count": 1}
+    assert T.emit("job_run", error=token)
+    assert [json.loads(r[-1]) for r in rows(home)] == [{"_dropped": 2, "count": 1}, {"_dropped": 1}]
+    assert rows(home)[0][2] == ""
+    assert T._clean_error("ya29.OperationalError") == "ya29.OperationalError"  # the shape alone passes
 
 
 def _spool_line(**over):

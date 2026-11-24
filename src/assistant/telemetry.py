@@ -274,16 +274,15 @@ def _path(name: str) -> str:
 
 def _pointer_ok(value) -> bool:
     return (type(value) is str and _POINTER.fullmatch(value) is not None and value.count("/") <= 1
-            and ":/" not in value and _HOST_OR_FILE.search(value) is None)
+            and _HOST_OR_FILE.search(value) is None)
 
 
 def _clean_id(value, allow_empty: bool = False):
-    """`value` if it is an id: one of ID_PREFIXES and then the body that prefix has, and nothing the redactor would
-    change. Only an exact `str` is accepted, so a subclass can't hand over something else when it is turned into
-    text."""
+    """`value` if it is an id: one of ID_PREFIXES and then the body that prefix has (hex or digits, so no secret fits).
+    Only an exact `str` is accepted, so a subclass can't hand over something else when it is turned into text."""
     if allow_empty and type(value) is str and value == "":
         return ""
-    if not _pointer_ok(value) or redact.redact(value) != value:
+    if not _pointer_ok(value):
         return None
     prefix = next((p for p in ID_PREFIXES if value.startswith(p)), None)
     if prefix is None:
