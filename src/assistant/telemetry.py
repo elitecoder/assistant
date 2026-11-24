@@ -8,7 +8,8 @@ imports no network library and has no exporter.
 
 Records go to `~/.assistant/telemetry/telemetry.db` (SQLite, write-ahead logging). When the database can't be
 written, a record goes to `spool.jsonl` beside it and `maintain()` moves it in later. `emit()` never raises and
-never waits longer than a short deadline. `upkeep()` is the hourly call the pulse makes; it runs `maintain()`.
+never waits longer than a short deadline. After one write that misses the database, this process sends its records
+straight to the spool for SPOOL_ONLY_SECONDS, so a busy database costs one wait and not one for every record. `upkeep()` is the hourly call the pulse makes; it runs `maintain()`.
 
 Strict mode: with the environment variable ASSISTANT_TELEMETRY_STRICT=1, `emit()` raises ValueError naming an
 unknown kind or a dropped field instead of storing less. The tests set it, so a mistyped field name fails the
@@ -35,6 +36,7 @@ SCHEMA_VERSION = 1
 APPLICATION_ID = 0x41535354  # "ASST": a file with another id is somebody else's database
 BUSY_SECONDS = 0.2
 EMIT_DEADLINE_SECONDS = 0.27  # the whole of one emit(): the database wait plus the spool lock
+SPOOL_ONLY_SECONDS = 30  # after a write that misses the database, this process sends records straight to the spool
 COUNT_WAIT_SECONDS = 0.03  # on top of that, to note a loss
 CONFIG_RETRY_SECONDS = 0.02  # before reading a settings file that didn't parse a second time
 SPOOL_LIMIT_BYTES = 5 * 1024 * 1024
@@ -72,6 +74,12 @@ EFFECT_CLASS = ("gmail.archive", "gmail.unarchive", "gmail.mark_read", "gmail.tr
 EFFECT_OUTCOME = ("done", "failed", "unknown", "refused")
 GUARD = ("interrupt_gate", "no_close_workspace", "meta_gate", "busy_session_cap", "outbound_gate", "back_off")
 GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
+# Why a source couldn't be read (work_queue/tools.py, the Slack client), why a row came back from the model with no
+# verdict (work_queue/triage.py), and why a dispatch didn't end well (bin/pulse.py `dispatch_todo`).
+SOURCE_REASON = ("not_signed_in", "tool_missing", "timeout", "bad_answer", "busy", "other")
+UNSORTED_REASON = ("call_failed", "bad_answer", "left_out", "time_budget", "budget", "no_model")
+DISPATCH_REASON = ("session_tool_down", "no_workspace", "no_surface", "not_ready", "stamp_failed",
+                   "unconfirmed", "other")
 # What the owner did (feedback.signal), why (reason_code), where, and on what kind of thing.
 SIGNAL = ("done", "drop", "snooze", "undo", "send", "send_handsoff", "approve", "keep", "archive", "mark_read",
           "used_draft", "kept_result", "thumbs_down", "tell", "retract")
@@ -102,9 +110,12 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "ms": INT,
         "status": INT,
         "error": ERROR,
+        "reason": SOURCE_REASON,
     },
     "triage_verdict": {
-        "verdict": DISPOSITION,
+        "verdict": DISPOSITION + ("unsorted",),  # `unsorted`: the row was put to the model and came back with none
+        "reason": UNSORTED_REASON,  # why it is unsorted
+        "batch": INT,  # which of the run's model calls this was: ties the verdict to its `model_call`
         "lane": LANE,
         "reason_code": REASON,
         "score": NUM,
@@ -128,6 +139,7 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "ms": INT,
         "error": ERROR,
         "retries": INT,
+        "batch": INT,  # which of the run's model calls this was (the `triage_verdict` that came of it has the same)
     },
     "task": {
         "state": TASK_STATE,
@@ -139,6 +151,8 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
     "dispatch": {
         "outcome": OUTCOME,
         "ok": BOOL,
+        "reason": DISPATCH_REASON,
+        "run_trace": ID,  # the pulse's trace
         "workspace": ID,
         "mode": SEND_MODE,
         "attempt": INT,
@@ -677,6 +691,11 @@ def _spool(record: dict, deadline: float) -> bool:
 
 
 _HEAD = ("kind", "trace", "subject", "component")
+_spool_only_until: dict = {}  # database path -> when this process tries it again (see SPOOL_ONLY_SECONDS)
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 def emit(*args, **kwargs) -> bool:
@@ -712,10 +731,16 @@ def emit(*args, **kwargs) -> bool:
         _ensure_dir()
         record = _stamp(record)
         deadline = started + EMIT_DEADLINE_SECONDS
+        where = _path(_DB)
+        if _now() < _spool_only_until.get(where, 0.0):
+            _spool(record, deadline)  # the database missed a moment ago: don't wait for it again yet
+            return False
         try:
             _run(lambda conn: conn.execute(_INSERT, _row(record)), deadline)
+            _spool_only_until.pop(where, None)
             return True
         except Exception:  # noqa: BLE001 - locked, full, newer schema, anything: the spool keeps it
+            _spool_only_until[where] = _now() + SPOOL_ONLY_SECONDS
             _spool(record, deadline)
             return False
     except _Strict:
@@ -888,6 +913,7 @@ def maintain(now=None) -> dict:
         now = _clamped(now)
         _ensure_dir()
         _run(lambda conn: _upkeep(conn, now, settings, result))
+        _spool_only_until.pop(_path(_DB), None)  # the database took the upkeep, so it takes records again
         result["ok"] = True
     except Exception as exc:  # noqa: BLE001 - upkeep never breaks the pulse
         result["error"] = type(exc).__name__.lstrip("_")

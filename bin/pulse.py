@@ -225,6 +225,9 @@ PULSE_JOBS: dict[str, bool] | None = None
 # This pulse's trace id and the tasks it has dispatched, while main() runs (see _recorded_pulse).
 PULSE_TRACE = ""
 PULSE_DISPATCHED = 0
+PULSE_STAMPED = 0  # tasks this pulse gave their first trace id
+PULSE_RECORD_SECONDS = 60  # a pulse with nothing to show for itself writes its record only when it ran longer than this
+DISPATCH_REASON = ""  # the word for why the dispatch in hand didn't end well (see `_recorded_dispatch`)
 
 
 def job_enabled(job: str) -> bool:
@@ -870,6 +873,8 @@ def run_trace_step() -> None:
     except Exception as e:  # noqa: BLE001 — trace ids must never break the pulse
         log.warning("trace ids: could not stamp TODOs (ignored): %s", e)
         return
+    global PULSE_STAMPED
+    PULSE_STAMPED += stamped
     if stamped:
         log.info("trace ids: stamped %d TODO(s)", stamped)
 
@@ -2215,31 +2220,40 @@ def _item_as_filed(todo_id: str) -> dict | None:
         return None
 
 
+def _dispatch_failed(reason: str) -> None:
+    """Note why the dispatch in hand is ending as it is, for its record: one of telemetry.DISPATCH_REASON."""
+    global DISPATCH_REASON
+    DISPATCH_REASON = reason
+
+
 def _recorded_dispatch(dispatch):
     """Record each attempt to dispatch a TODO, after it ends however it ends: the TODO's trace, the outcome, the
     workspace and the new state as the file holds them, and how long it took. It changes nothing the attempt does."""
     @functools.wraps(dispatch)
     def wrapper(todo_id):
-        global PULSE_DISPATCHED
-        began, before, ok = time.monotonic(), _item_as_filed(todo_id), False
+        global PULSE_DISPATCHED, DISPATCH_REASON
+        began, before, ok, DISPATCH_REASON = time.monotonic(), _item_as_filed(todo_id), False, ""
         try:
             ok = dispatch(todo_id)
             return ok
         finally:
-            _record("dispatch", before, _item_as_filed(todo_id), bool(ok), began)
+            _record("dispatch", before, _item_as_filed(todo_id), bool(ok), began,
+                    DISPATCH_REASON or (None if ok else "other"), PULSE_TRACE)
             PULSE_DISPATCHED += bool(ok)
     return wrapper
 
 
 def _recorded_pulse(main_fn):
-    """Record each pulse as one job run, with a trace of its own that its model calls carry: how long, whether it
-    ended well, and how many TODOs it dispatched. A dry run records nothing."""
+    """Record a pulse as one job run, with a trace of its own that its model calls carry: how long, whether it ended
+    well, and how many TODOs it dispatched. Only a pulse with something to show writes the record: it dispatched or
+    stamped a TODO, it failed, or it ran longer than PULSE_RECORD_SECONDS. An uneventful pulse writes nothing, since
+    the heartbeat file already shows the pulse is alive. A dry run records nothing."""
     @functools.wraps(main_fn)
     def wrapper():
-        global PULSE_TRACE, PULSE_DISPATCHED
+        global PULSE_TRACE, PULSE_DISPATCHED, PULSE_STAMPED
         if "--dry-run" in sys.argv:
             return main_fn()
-        began, PULSE_DISPATCHED, ok, failure = time.monotonic(), 0, False, None
+        began, PULSE_DISPATCHED, PULSE_STAMPED, ok, failure = time.monotonic(), 0, 0, False, None
         PULSE_TRACE = _record("new_trace") or ""
         try:
             rc = main_fn()
@@ -2249,7 +2263,8 @@ def _recorded_pulse(main_fn):
             failure = exc
             raise
         finally:
-            _record("job_run", "pulse", PULSE_TRACE, "pulse", began, ok, PULSE_DISPATCHED, failure)
+            if (PULSE_DISPATCHED or PULSE_STAMPED or not ok or time.monotonic() - began > PULSE_RECORD_SECONDS):
+                _record("job_run", "pulse", PULSE_TRACE, "pulse", began, ok, PULSE_DISPATCHED, failure)
             PULSE_TRACE = ""
     return wrapper
 
@@ -2470,6 +2485,7 @@ def dispatch_todo(todo_id: str) -> bool:
     if rc != 0:
         log.warning("dispatch %s: cmux not running — skipping (ping rc=%s bin=%s stderr=%r)",
                     todo_id, rc, CMUX_BIN, (_perr or "")[:300])
+        _dispatch_failed("session_tool_down")
         return False
 
     # 1. Stage the prompt on disk. 7-day sweep, then a per-todo stamped file.
@@ -2516,10 +2532,12 @@ def dispatch_todo(todo_id: str) -> bool:
     )
     if rc != 0:
         log.warning("dispatch %s: new-workspace failed rc=%d: %s", todo_id, rc, err.strip())
+        _dispatch_failed("no_workspace")
         return False
     m = re.search(r"workspace:\d+", out)
     if not m:
         log.warning("dispatch %s: no workspace ref in: %s", todo_id, out.strip())
+        _dispatch_failed("no_workspace")
         return False
     ws_ref = m.group(0)
 
@@ -2527,6 +2545,7 @@ def dispatch_todo(todo_id: str) -> bool:
     sm = re.search(r"surface:\d+", out)
     if not sm:
         log.warning("dispatch %s: no surface for %s", todo_id, ws_ref)
+        _dispatch_failed("no_surface")
         return False
     surface_ref = sm.group(0)
 
@@ -2588,6 +2607,7 @@ def dispatch_todo(todo_id: str) -> bool:
         if not _mark_todo_dispatched(todo_id, ws_ref):
             log.warning("dispatch %s: never-ready park stamp FAILED — TODO stays "
                         "open and WILL be re-dispatched next pulse", todo_id)
+        _dispatch_failed("not_ready")
         return False
 
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
@@ -2611,6 +2631,7 @@ def dispatch_todo(todo_id: str) -> bool:
         log.warning("dispatch %s: spawned %s + sent prompt but TODO stamp failed — "
                     "will re-dispatch next pulse (prompt staged at %s)",
                     todo_id, ws_ref, prompt_file)
+        _dispatch_failed("stamp_failed")
         return False
 
     # 7. Confirm submission via the transcript (authoritative, no screen-scraping).
@@ -2661,6 +2682,7 @@ def dispatch_todo(todo_id: str) -> bool:
         time.sleep(1)
 
     if not submitted:
+        _dispatch_failed("unconfirmed")
         log.warning("dispatch %s: stamped to %s but submission unconfirmed within window "
                     "(prompt staged at %s) — not re-dispatching; check the workspace",
                     todo_id, ws_ref, prompt_file)

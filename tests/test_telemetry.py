@@ -1714,6 +1714,7 @@ def test_healing_is_not_retried_once_the_deadline_has_passed(home, monkeypatch):
     assert len(spool_lines(home)) == 1 and len(copies(home)) == 1
     monkeypatch.undo()
     monkeypatch.setenv("HOME", str(home))
+    T._spool_only_until.clear()  # the miss above would send this process to the spool for a while
     assert T.emit("check", name="y") is True  # the next one starts a fresh database
 
 
@@ -1759,6 +1760,7 @@ def test_a_store_that_cannot_be_set_up_spools_and_leaves_no_connection_open(home
     assert len(spool_lines(home)) == 1
     monkeypatch.undo()
     monkeypatch.setenv("HOME", str(home))
+    T._spool_only_until.clear()  # the miss above would send this process to the spool for a while
     assert T.emit("check", name="y") is True  # the failed set-up left nothing half-made behind
 
 

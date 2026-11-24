@@ -68,10 +68,13 @@ def make_env(root: Path, monkeypatch, enabled: bool = True) -> Env:
     return env
 
 
-def dispatch(monkeypatch, todo_id: str, workspace: str = "workspace:9", ping_ok: bool = True):
-    """`pulse.dispatch_todo(todo_id)` against a fake cmux: (the pulse, its result, the commands it ran)."""
+def dispatch(monkeypatch, todo_id: str, workspace: str = "workspace:9", ping_ok: bool = True, fault: str = "",
+             screen: str = "Claude Code v2.1", stamps: bool = True, pulse_trace: str = ""):
+    """`pulse.dispatch_todo(todo_id)` against a fake cmux: (the pulse, its result, the commands it ran). `fault` says
+    which step of the fake cmux fails: `new-workspace`, `no-ref` (it answers with no workspace) or `no-surface`."""
     pulse = load_script("pulse_work_records", "pulse.py")
     pulse.self_update_pulse = lambda pulse_idx: None
+    pulse.PULSE_TRACE = pulse_trace
     commands: list = []
 
     def run(cmd, *a, **k):
@@ -79,15 +82,17 @@ def dispatch(monkeypatch, todo_id: str, workspace: str = "workspace:9", ping_ok:
         if "ping" in cmd:
             return (0 if ping_ok else 1), "", ""
         if "new-workspace" in cmd:
-            return 0, f"OK {workspace}\n", ""
+            return (1 if fault == "new-workspace" else 0), ("" if fault == "no-ref" else f"OK {workspace}\n"), ""
         if "list-pane-surfaces" in cmd:
-            return 0, "surface:9\n", ""
+            return 0, ("" if fault == "no-surface" else "surface:9\n"), ""
         return 0, "", ""
 
     monkeypatch.setattr(pulse, "run", run)
     monkeypatch.setattr(pulse, "_cmux_rpc", lambda method, params, timeout=15: {})
-    monkeypatch.setattr(pulse, "_surface_read_text", lambda ref, lines=200: "Claude Code v2.1")
+    monkeypatch.setattr(pulse, "_surface_read_text", lambda ref, lines=200: screen)
     monkeypatch.setattr(pulse.time, "sleep", lambda seconds: None)
+    if not stamps:
+        monkeypatch.setattr(pulse, "_mark_todo_dispatched", lambda tid, ws: False)
     return pulse, pulse.dispatch_todo(todo_id), commands
 
 
@@ -217,7 +222,7 @@ def test_a_new_verdict_is_recorded_with_the_rows_trace_and_a_saved_one_is_not(wq
     assert verdict["component"] == "work-queue"
     assert verdict["fields"] == {
         "verdict": "you", "lane": "do_first", "model": triage.model_name(), "source": "github",
-        "prompt_version": "rubric-" + triage.version()[:8],
+        "prompt_version": "rubric-" + triage.version()[:8], "batch": 1,
         "run_trace": of_kind("job_run", job="work-queue-refresh")[0]["trace"]}
     refresh.run(now=NOW, model=Model())
     assert len(of_kind("triage_verdict")) == 1
@@ -234,7 +239,8 @@ def test_a_row_the_model_didnt_answer_has_no_verdict_record(wq):
     wq.sources({"github": {"skip_authors": []}})
     refresh.run(now=NOW, model=Model(rows=lambda items: {"rows": [{"id": items[0]["id"], "why": "Ana waits.", "disposition": "you",
                                                                     "effort": "Small", "draft": ""}]}))
-    [only] = of_kind("triage_verdict")
+    [only] = of_kind("triage_verdict", verdict="you")
+    assert len(of_kind("triage_verdict", verdict="unsorted")) == 1
     assert only["subject"] in (pointers.row_pointer(gh_pr(1)["url"]), pointers.row_pointer(gh_pr(2)["url"]))
 
 
@@ -242,7 +248,7 @@ def test_a_call_that_fails_leaves_no_verdicts(wq):
     from work_queue_fakes import raises
     source_rows(wq, None)
     refresh.run(now=NOW, model=Model(rows=raises("the model is down")))
-    assert of_kind("triage_verdict") == []
+    assert of_kind("triage_verdict", verdict="you") == []  # nothing was sorted; the row is recorded as unsorted instead
     assert of_kind("job_run", job="work-queue-refresh")[0]["fields"]["outcome"] == "done"
 
 
@@ -462,6 +468,7 @@ def test_a_dispatch_records_its_outcome_the_workspace_and_the_new_state(wq, monk
     assert (dispatched["kind"], dispatched["subject"], dispatched["component"]) == ("dispatch", "td-1", "pulse")
     assert dispatched["fields"]["outcome"] == "done" and dispatched["fields"]["ok"] is True
     assert dispatched["fields"]["workspace"] == "workspace:9" and dispatched["fields"]["mode"] == "assist"
+    assert dispatched["fields"]["reason"] == "unconfirmed"  # it went through, but nothing showed the prompt arrived
     assert isinstance(dispatched["fields"]["ms"], int)
     assert (started["kind"], started["fields"]) == ("task", {"state": "in-progress", "prev_state": "open", "mode": "assist"})
     assert pulse.PULSE_DISPATCHED == 1
@@ -473,7 +480,9 @@ def test_a_dispatch_that_fails_is_recorded_as_failed_and_leaves_the_task_alone(w
     assert ok is False
     [dispatched] = trail(OWN)
     assert dispatched["fields"]["outcome"] == "failed" and dispatched["fields"]["ok"] is False
+    assert dispatched["fields"]["reason"] == "session_tool_down"
     assert "workspace" not in dispatched["fields"]
+    assert wq.items()[0]["status"] == "open"  # the task is left as it was
     _, ok, _ = dispatch(monkeypatch, "td-404")  # not in the file: nothing to say a record about
     assert ok is False and len(telemetry.events(limit=1000)) == 1
 
@@ -494,7 +503,7 @@ def test_a_dispatch_that_raises_is_recorded_and_still_raises(wq, monkeypatch):
     assert trail(OWN)[0]["fields"]["outcome"] == "failed" and pulse.PULSE_DISPATCHED == 0
 
 
-def test_a_pulse_records_one_run_with_its_own_trace_and_how_many_it_dispatched(wq, monkeypatch):
+def test_a_pulse_that_dispatched_something_records_one_run_with_its_own_trace(wq, monkeypatch):
     seen = {}
     monkeypatch.setattr(sys, "argv", ["pulse.py"])  # another test may have left a dry run's arguments behind
     pulse = load_script("pulse_work_records_run", "pulse.py")
@@ -509,15 +518,56 @@ def test_a_pulse_records_one_run_with_its_own_trace_and_how_many_it_dispatched(w
     assert run["trace"] == seen["trace"] and pointers.is_trace_id(run["trace"]) and run["component"] == "pulse"
     assert run["fields"]["outcome"] == "done" and run["fields"]["ok"] is True and run["fields"]["items"] == 2
     assert pulse.PULSE_TRACE == ""
-    assert pulse._recorded_pulse(lambda: 1)() == 1
-    assert of_kind("job_run", job="pulse")[1]["fields"]["outcome"] == "failed"
-    with pytest.raises(OSError):
-        pulse._recorded_pulse(lambda: (_ for _ in ()).throw(OSError("disk")))()
-    last = of_kind("job_run", job="pulse")[2]
-    assert last["fields"]["error"] == "OSError" and last["fields"]["items"] == 0
     monkeypatch.setattr(sys, "argv", ["pulse.py", "--dry-run"])
+    assert pulse._recorded_pulse(main)() == 0
+    assert len(of_kind("job_run", job="pulse")) == 1  # a dry run records nothing
+
+
+def pulse_with_a_clock(monkeypatch):
+    """The pulse module, its clock a list of readings, so how long a pulse took is whatever a test says."""
+    monkeypatch.setattr(sys, "argv", ["pulse.py"])
+    pulse = load_script("pulse_work_records_clock", "pulse.py")
+    readings = []
+    monkeypatch.setattr(pulse, "time", type("Clock", (), {"monotonic": staticmethod(lambda: readings.pop(0))}))
+    return pulse, readings
+
+
+def test_a_pulse_with_nothing_to_show_for_itself_writes_no_record(wq, monkeypatch):
+    pulse, readings = pulse_with_a_clock(monkeypatch)
+    readings[:] = [100.0, 160.0]  # exactly the limit: not longer than it
     assert pulse._recorded_pulse(lambda: 0)() == 0
-    assert len(of_kind("job_run", job="pulse")) == 3  # a dry run records nothing
+    assert of_kind("job_run", job="pulse") == []
+
+
+@pytest.mark.parametrize("what", ["dispatched", "stamped", "failed", "failed with an error", "slow"])
+def test_a_pulse_that_dispatched_stamped_failed_or_ran_long_writes_its_record(wq, monkeypatch, what):
+    pulse, readings = pulse_with_a_clock(monkeypatch)
+    readings[:] = [100.0, 160.5 if what == "slow" else 101.0, 200.0]
+
+    def main():
+        if what == "dispatched":
+            pulse.PULSE_DISPATCHED = 1
+        if what == "stamped":
+            pulse.PULSE_STAMPED = 3
+        if what == "failed with an error":
+            raise OSError("disk")
+        return 1 if what == "failed" else 0
+
+    if what == "failed with an error":
+        with pytest.raises(OSError):
+            pulse._recorded_pulse(main)()
+    else:
+        pulse._recorded_pulse(main)()
+    [run] = of_kind("job_run", job="pulse")
+    assert run["fields"]["ok"] is (what not in ("failed", "failed with an error"))
+    assert run["fields"].get("error") == ("OSError" if what == "failed with an error" else None)
+
+
+def test_the_pulses_trace_step_counts_the_tasks_it_stamps(wq, monkeypatch):
+    write_todos(wq, [{"id": "td-7", "title": "From elsewhere", "status": "open"}])
+    pulse = load_script("pulse_work_records_stamps", "pulse.py")
+    pulse.run_trace_step()
+    assert pulse.PULSE_STAMPED == 1
 
 
 def test_the_pulses_main_is_the_recorded_one(wq):
@@ -772,9 +822,9 @@ def test_in_the_tests_strict_mode_a_missing_record_module_is_seen_even_by_the_ef
 
 def test_a_mistake_in_a_record_is_raised_in_the_tests_strict_mode_and_costs_only_the_record_otherwise(wq, monkeypatch):
     with pytest.raises(ValueError):
-        records.task({"id": "td-1", "trace": OWN}, "not a state", "cli")
+        records.emit("task", OWN, "td-1", "cli", state="open", nonsense=1)
     monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "0")
-    records.task({"id": "td-1", "trace": OWN}, "not a state", "cli")  # recorded with the state left out, no error
+    records.emit("task", OWN, "td-1", "cli", state="open", nonsense=1)  # recorded with the field left out, no error
     assert of_kind("task")[0]["fields"]["_dropped"] == 1
     monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "1")
     with pytest.raises(KeyError):
@@ -830,3 +880,326 @@ def test_a_sources_rows_are_counted_whether_it_returns_a_list_or_a_list_for_each
 
 def test_the_registry_lists_the_field_that_ties_a_verdict_to_the_run_that_made_it():
     assert telemetry.KINDS["triage_verdict"]["run_trace"] == telemetry.ID
+
+
+# ─── a database that is busy ─────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def held_database():
+    """Another process holding the telemetry database: no one else can write to it until this lets go."""
+    import sqlite3
+    holder = sqlite3.connect(telemetry._path("telemetry.db"), isolation_level=None)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        yield
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+
+def test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up(wq, monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(telemetry, "_now", lambda: clock["t"])
+    attempts = []
+    real = telemetry._run
+    monkeypatch.setattr(telemetry, "_run", lambda work, deadline=None: attempts.append(clock["t"]) or real(work, deadline))
+    assert telemetry.emit("task", OWN, "td-1", "cli", state="open") is True
+    attempts.clear()
+    with held_database():
+        for n in range(200):
+            assert telemetry.emit("task", OWN, "td-2", "cli", state="open") is False
+        assert len(attempts) == 1  # one wait for the database, not 200
+        clock["t"] += telemetry.SPOOL_ONLY_SECONDS - 1
+        telemetry.emit("task", OWN, "td-2", "cli", state="open")
+        assert len(attempts) == 1  # still inside the 30 seconds
+        clock["t"] += 2
+        telemetry.emit("task", OWN, "td-2", "cli", state="open")
+        assert len(attempts) == 2  # time's up: it tries the database again, and misses it again
+        telemetry.emit("task", OWN, "td-2", "cli", state="open")
+        assert len(attempts) == 2
+    clock["t"] += telemetry.SPOOL_ONLY_SECONDS + 1
+    assert telemetry.emit("task", OWN, "td-3", "cli", state="done") is True
+    assert len(attempts) == 3 and telemetry._spool_only_until == {}  # a write that works clears it
+    assert telemetry.emit("task", OWN, "td-3", "cli", state="done") is True and len(attempts) == 4
+    assert len(telemetry.events(limit=1000)) == 3
+    telemetry.maintain()
+    events = telemetry.events(limit=1000)
+    tasks = [e for e in events if e["kind"] == "task"]
+    assert len(tasks) == 1 + 203 + 2 and len({e["id"] for e in events}) == len(events)  # every record, once
+
+
+def test_a_spool_that_cant_be_written_still_costs_a_record_not_the_work(wq, monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(telemetry, "_now", lambda: clock["t"])
+    monkeypatch.setattr(telemetry, "_run", lambda work, deadline=None: (_ for _ in ()).throw(OSError("no disk")))
+    monkeypatch.setattr(telemetry, "_spool", lambda record, deadline: False)
+    assert telemetry.emit("task", OWN, "td-1", "cli", state="open") is False
+    assert telemetry.emit("task", OWN, "td-1", "cli", state="open") is False
+
+
+def test_a_busy_database_in_one_place_doesnt_send_records_for_another_to_the_spool(tmp_path, monkeypatch):
+    first, second = tmp_path / "a", tmp_path / "b"
+    for home in (first, second):
+        home.mkdir()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(telemetry, "_now", lambda: clock["t"])
+    real = telemetry._run
+    monkeypatch.setenv("HOME", str(first))
+    monkeypatch.setattr(telemetry, "_run", lambda work, deadline=None: (_ for _ in ()).throw(OSError("busy")))
+    telemetry.emit("task", OWN, "td-1", "cli", state="open")
+    monkeypatch.setattr(telemetry, "_run", real)
+    monkeypatch.setenv("HOME", str(second))
+    assert telemetry.emit("task", OWN, "td-1", "cli", state="open") is True
+    monkeypatch.setenv("HOME", str(first))
+    assert telemetry.emit("task", OWN, "td-1", "cli", state="open") is False  # the first is still inside its wait
+    telemetry._spool_only_until.clear()
+
+
+# ─── a row the model never sorted ────────────────────────────────────────────
+
+def unsorted_records() -> list[dict]:
+    return of_kind("triage_verdict", verdict="unsorted")
+
+
+def two_rows(wq):
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(1), gh_pr(2)])])
+    wq.sources({"github": {"skip_authors": []}})
+
+
+def answered(items, only=None):
+    return {"rows": [{"id": i["id"], "why": "Ana waits.", "disposition": "you", "effort": "Small", "draft": ""}
+                     for i in items[:only]]}
+
+
+def test_a_row_the_model_call_failed_on_is_recorded_unsorted_with_the_reason_and_the_run_it_belongs_to(wq):
+    from work_queue_fakes import raises
+    two_rows(wq)
+    refresh.run(now=NOW, model=Model(rows=raises("the model is down")))
+    run = of_kind("job_run", job="work-queue-refresh")[0]["trace"]
+    found = unsorted_records()
+    assert sorted(e["subject"] for e in found) == sorted(pointers.row_pointer(gh_pr(n)["url"]) for n in (1, 2))
+    for e in found:
+        assert e["trace"] == traces.lookup(gh_pr(1)["url"]) or e["trace"] == traces.lookup(gh_pr(2)["url"])
+        assert e["fields"]["reason"] == "call_failed" and e["fields"]["run_trace"] == run
+        assert e["fields"]["source"] == "github" and e["fields"]["batch"] >= 1 and "lane" not in e["fields"]
+    refresh.run(now=NOW, model=Model(rows=raises("the model is down")))
+    assert len(unsorted_records()) == 2  # skipped for a day: not asked again, so not recorded again
+
+
+def test_a_row_whose_answer_was_in_the_wrong_shape_is_unsorted_for_that_reason(wq):
+    two_rows(wq)
+    refresh.run(now=NOW, model=Model(rows=lambda items: "no json at all"))
+    assert {e["fields"]["reason"] for e in unsorted_records()} == {"bad_answer"} and len(unsorted_records()) == 2
+
+
+def test_a_row_the_answer_left_out_is_unsorted_and_its_neighbours_are_not(wq):
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(n) for n in range(1, 5)])])
+    wq.sources({"github": {"skip_authors": []}})
+    refresh.run(now=NOW, model=Model(rows=lambda items: answered(items, 3)))
+    [left] = unsorted_records()
+    assert left["fields"]["reason"] == "left_out" and len(of_kind("triage_verdict", verdict="you")) == 3
+
+
+def test_a_row_that_a_split_call_sorts_after_its_batch_failed_is_not_unsorted(wq):
+    two_rows(wq)
+
+    def rows(items):
+        if len(items) > 1:
+            raise triage.Unavailable("too much at once")
+        return answered(items)
+    refresh.run(now=NOW, model=Model(rows=rows))
+    assert unsorted_records() == [] and len(of_kind("triage_verdict", verdict="you")) == 2
+
+
+@pytest.mark.parametrize("how, reason", [("time", "time_budget"), ("budget", "budget"), ("no model", "no_model")])
+def test_rows_a_run_stopped_before_sorting_are_unsorted_for_the_reason_it_stopped(wq, monkeypatch, how, reason):
+    two_rows(wq)
+    model = Model()
+    if how == "time":
+        monkeypatch.setattr(triage, "DEADLINE", 0)
+    elif how == "budget":
+        monkeypatch.setattr(triage, "daily_cap", lambda: 0.0)
+    else:
+        model = Model(rows=lambda items: (_ for _ in ()).throw(triage.Stop("claude isn't installed", "no_model")))
+    refresh.run(now=NOW, model=model)
+    assert len(unsorted_records()) == 2 and {e["fields"]["reason"] for e in unsorted_records()} == {reason}
+
+
+def test_a_model_command_that_isnt_installed_leaves_the_rows_unsorted_for_that_reason(wq, monkeypatch):
+    two_rows(wq)
+    monkeypatch.setattr(triage, "call_model", REAL_CALL)  # and no `claude` on the fakes' path
+    refresh.run(now=NOW)
+    assert len(unsorted_records()) == 2 and {e["fields"]["reason"] for e in unsorted_records()} == {"no_model"}
+
+
+def test_a_split_that_cant_afford_another_call_leaves_its_rows_unsorted_for_the_budget(wq, monkeypatch):
+    from work_queue_fakes import raises
+    two_rows(wq)
+    monkeypatch.setattr(triage, "fits", lambda prompt: False)
+    refresh.run(now=NOW, model=Model(rows=raises("down")))
+    assert {e["fields"]["reason"] for e in unsorted_records()} == {"budget"}
+
+
+def test_rows_over_the_cap_are_not_put_to_the_model_and_have_no_record_but_the_page_counts_them_as_waiting(wq, monkeypatch):
+    from test_work_queue_triage import pr, snap
+    monkeypatch.setattr(triage, "MAX_ROWS", 1)
+    shown = triage.run(snap(pr(1), pr(2)), Model(), {})
+    assert shown["waiting"] == 1 and unsorted_records() == [] and len(of_kind("triage_verdict", verdict="you")) == 1
+
+
+def test_a_verdict_and_the_model_call_that_made_it_name_the_same_call(wq, monkeypatch):
+    fake_claude(wq.home)
+    monkeypatch.setattr(triage, "call_model", REAL_CALL)
+    source_rows(wq, monkeypatch)
+    refresh.run(now=NOW)
+    [verdict] = of_kind("triage_verdict")
+    calls = {e["fields"]["batch"]: e for e in of_kind("model_call")}
+    assert sorted(calls) == [1, 2] and verdict["fields"]["batch"] in calls
+    assert calls[verdict["fields"]["batch"]]["trace"] == verdict["fields"]["run_trace"]
+
+
+# ─── why a step refused ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("stderr, reason", [("gh: To get started with GitHub CLI, please run: gh auth login", "not_signed_in"),
+                                              ("HTTP 401: Bad credentials", "not_signed_in"),
+                                              ("you are not logged in", "not_signed_in"),
+                                              ("rate limit exceeded", "other")])
+def test_a_source_that_refuses_says_which_step_refused_without_keeping_its_words(wq, stderr, reason):
+    fake_tool(wq.bin, "gh", [("search prs", {"exit": 1, "stderr": stderr})])
+    wq.sources({"github": {"skip_authors": []}})
+    refresh.run(now=NOW, model=Model())
+    fetch = of_kind("source_fetch")[0]
+    assert fetch["fields"]["reason"] == reason and stderr not in json.dumps(fetch)
+
+
+def test_a_tool_that_isnt_installed_is_not_a_tool_that_answered_badly(wq):
+    wq.sources({"github": {"skip_authors": []}})
+    refresh.run(now=NOW, model=Model())
+    assert of_kind("source_fetch")[0]["fields"]["reason"] == "tool_missing"
+    fake_tool(wq.bin, "gh", [("search prs", "this is not json")])
+    refresh.run(now=NOW, model=Model())
+    assert of_kind("source_fetch")[1]["fields"]["reason"] == "bad_answer"
+
+
+@pytest.mark.parametrize("exc, reason", [(refresh.tools.SourceError("gh didn't answer within 120 seconds"), "timeout"),
+                                           (TimeoutError("slow"), "timeout"),
+                                           (refresh.slack.Busy("another job has the Slack browser"), "busy"),
+                                           (ValueError("anything else"), "other")])
+def test_every_kind_of_source_error_has_its_word(exc, reason):
+    assert records.source_reason(exc) == reason
+
+
+def test_a_successful_fetch_has_no_reason(wq):
+    source_rows(wq, None)
+    refresh.run(now=NOW, model=Model())
+    assert "reason" not in of_kind("source_fetch")[0]["fields"]
+
+
+@pytest.mark.parametrize("kwargs, reason", [
+    ({"ping_ok": False}, "session_tool_down"), ({"fault": "new-workspace"}, "no_workspace"),
+    ({"fault": "no-ref"}, "no_workspace"), ({"fault": "no-surface"}, "no_surface"), ({"screen": ""}, "not_ready"),
+    ({"stamps": False}, "stamp_failed")])
+def test_a_dispatch_that_fails_says_which_step_refused(wq, monkeypatch, kwargs, reason):
+    sent_task(wq)
+    _, ok, _ = dispatch(monkeypatch, "td-1", pulse_trace=RUN, **kwargs)
+    assert ok is False
+    dispatched = [e for e in trail(OWN) if e["kind"] == "dispatch"][0]
+    assert dispatched["fields"]["reason"] == reason and dispatched["fields"]["run_trace"] == RUN
+    assert dispatched["fields"]["outcome"] == "failed"
+
+
+def test_a_dispatch_that_stops_for_an_unexpected_error_says_other_and_one_that_works_says_nothing_more(wq, monkeypatch):
+    sent_task(wq)
+    pulse = load_script("pulse_work_records_other", "pulse.py")
+    pulse.DISPATCH_REASON = "no_surface"  # left over from an earlier dispatch: not this one's
+    monkeypatch.setattr(pulse, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        pulse.dispatch_todo("td-1")
+    assert trail(OWN)[0]["fields"]["reason"] == "other"
+
+
+# ─── the dashboard, a check that repeats, and one pointer for a row ──────────
+
+def test_re_queueing_a_task_that_is_already_in_progress_changes_nothing_and_records_nothing(wq, monkeypatch):
+    todo_server = load_script("todo_server_work_records4", "todo-server.py")
+    monkeypatch.setattr(todo_server, "JSON_PATH", wq.todo)
+    monkeypatch.setattr(todo_server, "rerender", lambda: None)
+    write_todos(wq, [{"id": "td-1", "status": "in-progress", "trace": OWN}, {"id": "td-2", "status": "done", "trace": RUN},
+                     {"id": "td-3", "status": "weird", "trace": RUN}])
+    todo_server.dispatch_now("td-1")
+    assert of_kind("task") == [] and wq.items()[0]["status"] == "in-progress"
+    todo_server.dispatch_now("td-2")
+    [reopened] = of_kind("task")
+    assert reopened["fields"] == {"state": "open", "prev_state": "done"}
+    todo_server.dispatch_now("td-3")
+    assert len(of_kind("task")) == 1  # a status no list holds is never claimed
+
+
+def test_a_status_no_list_holds_is_never_claimed(wq):
+    records.task({"id": "td-3", "trace": OWN}, "weird", "dashboard", "open")  # strict mode would raise if it were sent
+    assert of_kind("task") == []
+
+
+def test_a_blocker_that_looks_gone_is_recorded_the_first_time_only(wq):
+    fake_tool(wq.bin, "gh", [("api repos/o/r", {"id": 1})])
+    write_todos(wq, [{"id": "td-1", "status": "blocked", "trace": OWN, "statusReason": "I can't read https://github.com/o/r access"}])
+    config.write_json(wq.data / "queued.json", {LINK: {"id": "td-1"}})
+    for _ in range(3):
+        ready.check({}, None, "")
+    assert [e["fields"]["name"] for e in of_kind("check")] == ["unblocked"]
+    write_todos(wq, [{"id": "td-1", "status": "blocked", "trace": OWN, "statusReason": "I can't read https://github.com/o/r access"}])
+    config.write_json(ready.checks_path(), ["not a dict"])
+    ready.check({}, None, "")
+    assert len(of_kind("check")) == 2  # the saved checks can't be read, so nothing says it was noted
+
+
+def test_for_an_email_row_the_verdict_the_task_and_the_effect_name_the_same_row(wq):
+    from test_work_queue_actions import ACCT
+    from test_work_queue_effects import gmail_job, gog_trash
+    from test_work_queue_inputs import gmail_fakes
+    gmail_fakes(wq)
+    wq.sources({"gmail": {"accounts": [ACCT]}})
+    refresh.run(now=NOW, model=Model())
+    emails = json.loads(refresh.emails_path().read_text())
+    key = next(k for k, v in emails.items() if v["tid"] == "t1")
+    verdict = next(e for e in of_kind("triage_verdict", source="gmail") if e["subject"] == pointers.row_pointer(key))
+    mark = server.EMAIL_MARK + key
+    assert verdict["trace"] == traces.lookup(mark) != ""
+
+    server.queue_todo({"key": mark, "url": "https://mail.google.com/mail/u/0/#inbox/t1", "title": "Email: Lunch?"})
+    [task] = [e for e in of_kind("task") if e["trace"] == verdict["trace"]]
+    traces.stamp([[key, mark]])  # a row that is also waiting for approval is keyed by both
+    gog_trash(wq)
+    server.apply_gmail(gmail_job(key, ["m1"]))
+    [effect] = of_kind("effect")
+    assert effect["fields"]["target"] == verdict["subject"] and effect["trace"] == verdict["trace"] == task["trace"]
+
+
+# ─── what the stamping and the module's own shape must keep ──────────────────
+
+def test_a_task_file_that_changes_between_the_read_and_the_replace_is_left_alone_and_not_recorded(wq, monkeypatch):
+    write_todos(wq, [{"id": "td-7", "title": "From elsewhere", "status": "open", "source": "slack-react:C1:1.2"}])
+    real = todostore.replace_if_unchanged
+
+    def raced(before, text):
+        wq.todo.write_text(before.replace("From elsewhere", "Edited by a hand"))  # another writer got in first
+        return real(before, text)
+
+    monkeypatch.setattr(todostore, "replace_if_unchanged", raced)
+    assert todostore.stamp_missing_traces() == 0
+    assert of_kind("task") == [] and "trace" not in wq.items()[0] and wq.items()[0]["title"] == "Edited by a hand"
+
+
+def test_the_record_module_imports_only_the_standard_library_when_it_loads_and_reaches_telemetry_later():
+    import ast
+    tree = ast.parse((REPO / "src/assistant/records.py").read_text())
+    loaded = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            loaded |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            loaded.add((node.module or "").split(".")[0] if not node.level else "relative")
+    assert loaded - {"__future__"} <= set(sys.stdlib_module_names), loaded
+    later = {a.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module == "assistant"
+             for a in node.names}
+    assert {"telemetry", "pointers", "todostore"} <= later

@@ -245,7 +245,8 @@ def check(doc: dict, transport, token: str) -> dict:
         if item["status"] == "blocked":
             if note := guarded(unblocked, item, gh, hosts):
                 out[td] = {"note": note, "at": now_iso()}
-                records.check(item, "unblocked")
+                if not (isinstance(saved.get(td), dict) and saved[td].get("note") == note):
+                    records.check(item, "unblocked")  # the first time only: the saved checks hold the note after
             continue
         urls = pr_urls(item, hosts)
         after = when(item.get("resultAt") or item.get("statusUpdatedAt"))

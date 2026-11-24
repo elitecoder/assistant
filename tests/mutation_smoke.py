@@ -2013,7 +2013,7 @@ CHECKS = (
     (
         'a model command that is not installed books no cost',
         'work_queue/triage.py',
-        '    if result.rc == 127:\n        raise Stop(f"{provider} isn\'t installed, so there\'s no model to ask")\n',
+        '    if result.rc == 127:\n        raise Stop(f"{provider} isn\'t installed, so there\'s no model to ask", "no_model")\n',
         '',
         'tests/test_work_queue_triage.py::test_a_model_command_that_isnt_installed_books_no_cost',
     ),
@@ -2321,7 +2321,7 @@ CHECKS = (
     (
         'the split budget is checked before each half',
         'work_queue/triage.py',
-        '                if self.budget < 1:\n                    remember(half, {}, cache, batches)\n                    continue\n',
+        '                if self.budget < 1:\n                    self.reasons.update({i["hash"]: ("budget", None) for i in half})\n                    remember(half, {}, cache, batches)\n                    continue\n',
         '',
         'tests/test_work_queue_triage.py::test_the_split_bound_holds_for_any_set_of_poisoned_rows',
     ),

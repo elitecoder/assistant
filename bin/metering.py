@@ -279,7 +279,7 @@ def append_cost_row(*, caller: str, model: str | None, usage: dict,
                     wall_ms: int,
                     path: Path | None = None, status: str = "ok",
                     provider: str | None = None, error: str | None = None,
-                    trace: str = "") -> None:
+                    trace: str = "", batch: int | None = None) -> None:
     """One per-call row in ~/.assistant/cost-ledger.jsonl (design section 3:
     {ts, caller, model, tokens_in, tokens_out, est_usd, wall_ms}). Every LLM
     caller beyond the Observer (triage, later strategist/drafter) appends here
@@ -287,7 +287,8 @@ def append_cost_row(*, caller: str, model: str | None, usage: dict,
     spend so repeated failures cannot evade cost accounting.
 
     `trace` is the trace id of what the call served: the run's for a batch, a row's or a task's for a call about
-    one piece of work, or "" when it served none. It goes into the row and into the call's telemetry record."""
+    one piece of work, or "" when it served none. It goes into the row and into the call's telemetry record, which
+    also holds `batch`, which of the run's calls this was, when the caller knows."""
     trace = trace if isinstance(trace, str) and _TRACE.fullmatch(trace) else ""
     p = path if path is not None else cost_ledger_path()
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -309,7 +310,7 @@ def append_cost_row(*, caller: str, model: str | None, usage: dict,
     _count_call(caller, model, provider, status, error)
     records = _records()
     if records is not None:
-        records.model_call(caller, model, status, usage, wall_ms, trace, error)
+        records.model_call(caller, model, status, usage, wall_ms, trace, error, batch)
 
 
 def read_cost_ledger(path: Path | None = None) -> list[dict]:

@@ -273,7 +273,8 @@ def dispatch_now(td_id):
             target["statusUpdatedAt"] = now
             target["statusReason"] = f"Re-opened via dashboard 'Dispatch now' at {now}"
         save_json(data)
-    _record("task", target, "open", "dashboard", before)
+    if target.get("status") != before:
+        _record("task", target, target.get("status"), "dashboard", before)
     rerender()
     return True, f"{td_id}: queued for next-pulse Bucket B dispatch"
 

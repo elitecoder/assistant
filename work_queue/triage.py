@@ -139,7 +139,12 @@ class Unavailable(Exception):
 
 
 class Stop(Unavailable):
-    """No more model calls this refresh: a budget is used up, the time limit is reached, or there's no model."""
+    """No more model calls this refresh: a budget is used up, the time limit is reached, or there's no model.
+    `reason` is the word a record gives for it: `budget`, `time_budget` or `no_model`."""
+
+    def __init__(self, message: str, reason: str = "budget"):
+        super().__init__(message)
+        self.reason = reason
 
 
 SHAPE = "the model's answer wasn't in the expected format"
@@ -516,20 +521,44 @@ def release(rid: str) -> None:
 
 
 RUN_TRACE = ""  # the refresh's trace while `run` is working; what the model calls and the verdicts it makes carry
+CALL_NO = 0  # which of this run's model calls is being made: the call's record and its verdicts' records say it
+ROW_KEYS: dict = {}  # link -> the key of an email, which is what its pointer is made from (see `row_keys`)
+
+
+def row_keys(snap: dict) -> dict:
+    """{link: key} for each email. A row's pointer is made from the key the page sends it and the
+    effects ledger names it by: an email's own key, not its link. Any other row goes by its link."""
+    mail = [*(snap.get("outlook") or []), *(m for rows in (snap.get("gmail") or {}).values() for m in rows)]
+    return {m["link"]: m["key"] for m in mail if isinstance(m.get("key"), str) and m["key"]}
+
+
+def verdict_record(item: dict, trace: str, found: dict, batch=None, run_trace: str = "", keys=None) -> None:
+    """One `triage_verdict` for a row: with a verdict from the model, or `unsorted` and the reason (`found["reason"]`)."""
+    records.emit("triage_verdict", trace, pointers.row_pointer((keys or {}).get(item["link"], item["link"])), "work-queue",
+                 verdict=found["disposition"], reason=found.get("reason"), lane=found.get("lane"),
+                 model=records.name_of(model_name()), prompt_version="rubric-" + version()[:8],
+                 source=item["source"].lower(), run_trace=run_trace or None, batch=batch)
 
 
 def record_verdicts(batch: list[dict], verdicts: dict[int, dict]) -> None:
     """One record for each row this call gave a new verdict (a saved verdict that is reused has no record): the
     row's own trace, its pointer, the verdict's disposition and lane, the model, the rubric's version and the
-    source, and the refresh's trace, which the call's `model_call` record carries too."""
+    source, the refresh's trace, which the call's `model_call` record carries too, and which call it was."""
     traced = traces.lookup_many([i["link"] for i in batch])
-    model, rubric = model_name(), "rubric-" + version()[:8]
     for j, item in enumerate(batch):
         if j in verdicts:
-            found = verdicts[j]
-            records.emit("triage_verdict", traced[item["link"]], pointers.row_pointer(item["link"]), "work-queue",
-                         verdict=found["disposition"], lane=found.get("lane"), model=records.name_of(model),
-                         prompt_version=rubric, source=item["source"].lower(), run_trace=RUN_TRACE or None)
+            verdict_record(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS)
+
+
+def record_unsorted(work: "Triage", cache: dict, run_trace: str, keys: dict) -> None:
+    """One `unsorted` record for each row this run put to the model that ends it with no verdict, and why. A row the
+    run never reached because it was over the cap (MAX_ROWS) isn't put to the model and has no record: it waits for
+    the next refresh and is counted in the page's `waiting`."""
+    left = [i for i in work.selected if (cache.get(i["hash"]) or {}).get("verdict") is None]
+    traced = traces.lookup_many([i["link"] for i in left])
+    for item in left:
+        reason, batch = work.reasons.get(item["hash"]) or (work.stopped or "call_failed", None)
+        verdict_record(item, traced[item["link"]], {"disposition": "unsorted", "reason": reason}, batch, run_trace, keys)
 
 
 class Triage:
@@ -542,12 +571,18 @@ class Triage:
         self.failed: list[list[dict]] = []
         self.problems: list[str] = []
         self.why = ""
+        self.reason = "call_failed"  # the word for the last failed call
+        self.selected: list[dict] = []  # the rows this run put to the model
+        self.reasons: dict = {}  # row hash -> (why it has no verdict, which call)
+        self.stopped = ""  # why the run stopped, when it did
 
     def ask(self, prompt: str) -> str:
         left = int(self.deadline - self.clock())
         if left <= 0:
-            raise Stop(f"the model took longer than {DEADLINE // 60} minutes in all")
+            raise Stop(f"the model took longer than {DEADLINE // 60} minutes in all", "time_budget")
         rid = reserve(prompt)
+        global CALL_NO
+        CALL_NO += 1
         try:
             return self.llm(prompt, min(CALL_TIMEOUT, left))
         finally:
@@ -556,6 +591,7 @@ class Triage:
     def call(self, stage: str, prompt: str, parse):
         """One call's parsed answer, or None when the call failed or its answer is in the wrong shape; either way the
         failure is noted under `stage`, and self.why says why. A Stop goes on up."""
+        self.reason = "call_failed"
         try:
             text = self.ask(prompt)
         except Stop:
@@ -563,6 +599,7 @@ class Triage:
         except Unavailable as exc:
             return self.fail(stage, str(exc))
         found = parse(text)
+        self.reason = "bad_answer"
         return found if found is not None else self.fail(stage, SHAPE)
 
     def fail(self, stage: str, why: str) -> None:
@@ -577,6 +614,7 @@ class Triage:
         todo = [i for i in items if i["hash"] not in cache]
         todo = ([i for i in todo if i["hash"] not in retry]
                 + sorted((i for i in todo if i["hash"] in retry), key=lambda i: digest([i["hash"], today()])))[:MAX_ROWS]
+        self.selected = todo
         for batch in (todo[n:n + BATCH] for n in range(0, len(todo), BATCH)):
             if not self.ask_rows(batch, cache, batches):
                 self.failed.append(batch)
@@ -590,14 +628,18 @@ class Triage:
         prompt = fenced(ROWS_RUBRIC, payload)
         if afford and not fits(prompt):
             self.budget = 0
+            self.reasons.update({i["hash"]: ("budget", None) for i in batch})
             remember(batch, {}, cache, batches)
             return None
         def shaped(text):
             found = parse_rows(text, len(batch))
             return found if found is not None and (len(batch) == 1 or 2 * len(found) >= len(batch)) else None
         verdicts = self.call("Row triage", prompt, shaped)
-        if verdicts is not None:
+        if verdicts is None:
+            self.reasons.update({i["hash"]: (self.reason, CALL_NO) for i in batch})
+        else:
             remember(batch, verdicts, cache, batches)
+            self.reasons.update({i["hash"]: ("left_out", CALL_NO) if j not in verdicts else None for j, i in enumerate(batch)})
             records.guard(record_verdicts, batch, verdicts)
         return verdicts is not None
 
@@ -609,10 +651,13 @@ class Triage:
         while queue:
             chunk = queue.pop(0)
             if len(chunk) == 1 or self.budget < 1:
+                if len(chunk) > 1:
+                    self.reasons.update({i["hash"]: ("budget", None) for i in chunk})
                 remember(chunk, {}, cache, batches)
                 continue
             for half in (chunk[:len(chunk) // 2], chunk[len(chunk) // 2:]):
                 if self.budget < 1:
+                    self.reasons.update({i["hash"]: ("budget", None) for i in half})
                     remember(half, {}, cache, batches)
                     continue
                 self.budget -= 1
@@ -715,7 +760,7 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
     how many rows wait for the next refresh or were skipped, and a note when triage stopped. `blocked` holds the
     links of rows whose Assistant TODO is blocked; they stay on Start here even when marked. Rows you marked done
     or dropped aren't triaged. `trace` is the refresh's: the records of this run's model calls and verdicts carry it."""
-    global RUN_TRACE
+    global RUN_TRACE, CALL_NO, ROW_KEYS
     saved = load_saved()
     cache, batches = load_cache(saved)
     known = set(cache)
@@ -726,7 +771,8 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
     out = empty()
     diff = since(snap, snap["built"])
     work = Triage(llm, clock)
-    RUN_TRACE = trace
+    keys = records.guard(row_keys, snap) or {}
+    RUN_TRACE, CALL_NO, ROW_KEYS = trace, 0, keys
     try:
         work.rows(asked, cache, batches, retrying(saved))
         out["rows"] = verdicts_by_link(items, cache)
@@ -736,6 +782,7 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
         out["rows"] = verdicts_by_link(items, cache)
     except Stop as exc:
         out["note"] = str(exc)
+        work.stopped = exc.reason
         for batch in work.failed:
             if left := [i for i in batch if i["hash"] not in cache]:
                 remember(left, {}, cache, batches)
@@ -747,6 +794,8 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
             if i["hash"] in cache:
                 cache[i["hash"]]["seen"] = today()
         save(cache, batches, start, summary, known)
+        CALL_NO, ROW_KEYS = 0, {}
+    records.guard(record_unsorted, work, cache, trace, keys)
     out["failed"] = work.problems
     out["waiting"] = sum(i["hash"] not in cache for i in asked)
     out["skipped"] = sum(cache.get(i["hash"], {}).get("skipped") is not None for i in asked)
@@ -802,7 +851,7 @@ def call_model(prompt: str, timeout: int) -> str:
                                run=run, droid_bin=route.droid_bin, reasoning_effort=route.reasoning_effort,
                                disable_tools=True, tag="assistant-work-queue", local_url=route.local_url)
     if result.rc == 127:
-        raise Stop(f"{provider} isn't installed, so there's no model to ask")
+        raise Stop(f"{provider} isn't installed, so there's no model to ask", "no_model")
     usage = metering.observer_usage(result.stdout, len(prompt), model)
     if not result.usable:
         floor = timeout_cost(prompt, timeout) if result.rc == 124 else cost_of(prompt)
@@ -810,7 +859,8 @@ def call_model(prompt: str, timeout: int) -> str:
     try:
         metering.append_cost_row(caller=FEATURE, model=model, usage=usage, wall_ms=result.wall_ms,
                                  status="ok" if result.usable else "failed", provider=provider,
-                                 error=metering.failure_reason(result.rc, result.stderr), trace=RUN_TRACE)
+                                 error=metering.failure_reason(result.rc, result.stderr), trace=RUN_TRACE,
+                                 batch=CALL_NO or None)
     except OSError as exc:
         print(f"Couldn't record the model's cost: {exc}", file=sys.stderr)
     if result.rc == 124:

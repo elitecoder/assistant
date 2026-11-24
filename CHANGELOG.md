@@ -54,15 +54,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   be followed from arrival to done: a refresh and each source it read, the
   model sorting the row, you sending it, an agent being started on it, the agent
   reporting back, and the check that clears it. Every model call, every
-  change Assistant makes to your mail, and every pulse leaves a record too, and
-  what a model call cost is tied to what it was for. The records
-  hold ids, counts, timings and states only, never a title, a sender, message
-  text, a link, a model's reason or a prompt. Nothing you see changes yet, and
-  it all stays on your Mac, in the local record described in
-  [Telemetry](docs/telemetry.md), which also shows how to look up everything
-  recorded about one row. Each line of the spend file
-  (`~/.assistant/cost-ledger.jsonl`) has one new field, `trace`, which
-  anything that reads it can ignore.
+  change Assistant makes to your mail, removing or re-queuing a task on the
+  dashboard, and every pulse that did something leaves a record too. Each line
+  of the spend file now also notes which piece of work, if any, the model call
+  was for. The records hold ids, counts, timings and states only, never a
+  title, a sender, message text, a link, a model's reason or a prompt. A row the
+  model never sorted is recorded too, with a one-word reason, and so is a source
+  or a dispatch that failed. Nothing you see changes yet, and it all stays on
+  your Mac, in the local record described in [Telemetry](docs/telemetry.md),
+  which also shows how to look up everything recorded about one row.
 - Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
   conversation back to your inbox, and Gmail Trash from **Apply approvals**)
   and every unsubscribe in a new append-only record, before it runs and again
