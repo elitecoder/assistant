@@ -103,12 +103,14 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Tell Assistant when something on the Work queue is wrong, with one tap. Every
   Open list row, Start here item, email, model draft, Ready for you result and
   row waiting for your approval has a small thumbs-down and a **Tell Assistant**
-  link. One tap records the thumbs-down, and a small list of reasons opens right
-  under it without moving any row (Not important, Wrong order, Not mine,
-  Already done; Wrong tone, Wrong facts, Not how I'd say it for a draft; Not
-  what I asked, Didn't finish, Shouldn't have started this for a result).
-  Choosing one is optional. A note under the buttons says what you said, with
-  **Change** and **Undo**, and it is still there after a reload or a refresh.
+  link. One tap records the thumbs-down and nothing else opens, so you can go
+  down a list tapping; tapping again takes it back. A note under the buttons
+  says what you said, with **Add a reason** and **Undo**. **Add a reason** opens
+  a small list over the page that never covers another row's controls (Not
+  important, Wrong order, Not mine, Already done; Wrong tone, Wrong facts, Not
+  how I'd say it for a draft; Not what I asked, Didn't finish, Should not have
+  been started for a result), and **Change** opens it again. The note is still
+  there after a reload or a refresh.
   **Tell Assistant** opens a box for your own words about an item, and one at
   the top of the page is for the page as a whole. A refresh that finishes while
   you are choosing a reason or typing no longer reloads the page away.
@@ -118,9 +120,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   are now written down, one line each, with a trace id and a pointer to the
   item, never its title, sender, text or link. It goes to
   `~/.assistant/feedback/feedback.jsonl`, only you can read it, and nothing is
-  sent anywhere. Assistant only records this now; it is meant to start acting
-  on it (to reorder rows, learn what you drop, and show what changed) in the
-  next update. If a note can't be saved, the page says so and the action still
+  sent anywhere. Assistant only records this now and doesn't use it yet; using
+  it (to reorder rows, learn what you drop, and show what changed) is planned
+  for the next update. If a note can't be saved, the page says so and the action still
   happens. See [Feedback](docs/feedback.md).
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it

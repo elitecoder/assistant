@@ -198,24 +198,27 @@ model draft and Ready for you result, and every row waiting for your approval
 marked **Draft** and its link reads **Tell Assistant about this draft**. Nothing
 about the other buttons changes.
 
-- **Thumbs-down**: one tap says it's wrong. A small list of reasons opens right
-  under it, over the page, so no row moves: **Not important**, **Wrong order**,
-  **Not mine**, **Already done** (rows, Start here items and email), **Wrong
-  tone**, **Wrong facts**, **Not how I'd say it** (a draft), or **Not what I
-  asked**, **Didn't finish**, **Shouldn't have started this** (a Ready for you
-  result). Picking a reason is optional: **Skip**, Esc, or a click anywhere else
-  closes the list. Rows waiting for approval have no reasons.
-- **Take it back or change it**: a small note under the buttons says what you
-  said, for example "You said: not important. Change · Undo". **Change** opens
-  the reasons again and the new one replaces the old. **Undo** takes it back.
-  Tapping a thumbs-down that is already on opens the reasons with **Take it
-  back** in them; it does not take anything back by itself. The note is still
-  there after a reload or the next refresh.
+- **Thumbs-down**: one tap says it's wrong, and nothing else opens, so you can
+  go down a list tapping. A small note under the buttons says "You said: this
+  is wrong. Add a reason · Undo". Tapping the thumbs-down again takes it back,
+  the same as **Undo**. A reason is optional: **Add a reason** opens a small
+  list over the page, close to the note and never over another row's thumbs-down
+  or **Tell Assistant**: **Not important**, **Wrong order**, **Not mine**,
+  **Already done** (rows, Start here items and email), **Wrong tone**, **Wrong
+  facts**, **Not how I'd say it** (a draft), or **Not what I asked**, **Didn't
+  finish**, **Should not have been started** (a Ready for you result). **Skip**,
+  Esc, or a click anywhere else closes the list, and a click on another row's
+  thumbs-down still counts for that row. Rows waiting for approval have no
+  reasons.
+- **Change or take it back**: once you have given a reason the note reads, for
+  example, "You said: not important. Change · Undo". **Change** opens the list
+  again and the new reason replaces the old. The note is still there after a
+  reload or the next refresh.
 - **Tell Assistant**: opens a box for your own words. **Send** (or Cmd+Enter)
   records them, **Cancel** (or Esc) closes the box. The one at the top of the
   page, **Tell Assistant about this page**, is about the page as a whole, and
-  says beside it: "Assistant keeps what you tell it. It starts using it in the
-  next update."
+  says beside it: "Assistant keeps what you tell it. It doesn't use it yet;
+  that's planned for the next update."
 - If a note can't be saved, the page says "Assistant couldn't save that. Try
   again." and keeps your words. For Done, Send to Agent and the other buttons,
   the work still happens as before, and the page says "Done. Assistant couldn't

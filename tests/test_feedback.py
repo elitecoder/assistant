@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from assistant import feedback, pointers, telemetry
+from feedback_fakes import comes_back, hold_lock
 
 REPO = Path(__file__).resolve().parent.parent
 LINK = "https://acme.slack.com/archives/C1/p123"
@@ -281,8 +282,10 @@ def test_latest_for_honours_take_backs(home):
     assert feedback.latest_for(ROW)["id"] == reason
     feedback.record("retract", ROW, "row", "work-queue", amends=first)
     assert feedback.latest_for(ROW)["id"] == done, "a taken-back thumbs-down takes its reason with it"
-    feedback.record("retract", ROW, "row", "work-queue", amends=done)
-    assert feedback.latest_for(ROW) is None
+    told = feedback.record("tell", ROW, "row", "work-queue", words="x")
+    assert feedback.latest_for(ROW)["id"] == told
+    feedback.record("retract", ROW, "row", "work-queue", amends=told)
+    assert feedback.latest_for(ROW)["id"] == done
 
 
 def test_views_say_what_still_stands_for_each_subject(home):
@@ -364,21 +367,12 @@ class Clock:
             self.at_sleep(self)
 
 
-def hold_the_lock(home):
-    """Another process holds feedback.lock, the way a stuck writer would. Returns the function that lets go."""
-    import fcntl
-    (home / ".assistant/feedback").mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(home / ".assistant/feedback/feedback.lock"), os.O_CREAT | os.O_RDWR)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    return lambda: os.close(fd)
-
-
 def test_a_stuck_lock_holds_a_record_for_half_a_second_not_for_as_long_as_it_is_stuck(home, monkeypatch):
     clock = Clock(monkeypatch)
-    release = hold_the_lock(home)
-    with pytest.raises(feedback.Unrecorded, match="busy"):
-        feedback.record("done", ROW, "row", "work-queue")
+    release = hold_lock(home / ".assistant/feedback")
+    how, error = comes_back(lambda: feedback.record("done", ROW, "row", "work-queue"))
     release()
+    assert how == "raised" and isinstance(error, feedback.Unrecorded) and "busy" in str(error)
     assert 0.5 <= clock.slept < 0.6 and lines_or_none(home) == []
 
 
@@ -389,15 +383,15 @@ def lines_or_none(home):
 
 def test_a_batch_shares_one_deadline_and_a_lock_freed_in_time_is_taken(home, monkeypatch):
     clock = Clock(monkeypatch)
-    release = hold_the_lock(home)
+    release = hold_lock(home / ".assistant/feedback")
     deadline = feedback.lock_deadline()
     for _ in range(40):
-        with pytest.raises(feedback.Unrecorded):
-            feedback.record("done", ROW, "row", "work-queue", deadline=deadline)
+        how, error = comes_back(lambda: feedback.record("done", ROW, "row", "work-queue", deadline=deadline))
+        assert how == "raised" and isinstance(error, feedback.Unrecorded)
     assert clock.slept < 0.6, "forty records waited once, not forty times"
     clock.slept = 0
     clock.at_sleep = lambda c: (release(), setattr(c, "at_sleep", None)) if c.slept >= 0.2 else None  # let go after 0.2 s
-    feedback.record("done", ROW, "row", "work-queue")
+    assert comes_back(lambda: feedback.record("done", ROW, "row", "work-queue"))[0] == "returned"
     assert 0.2 <= clock.slept < 0.5 and len(lines(home)) == 1
 
 
@@ -544,17 +538,50 @@ def test_standing_never_raises(home):
 
 
 def test_a_key_made_by_another_process_a_moment_ago_is_used(home, monkeypatch):
-    real = os.open
+    real = os.link
 
-    def racing(path, flags, *a):
-        if str(path).endswith("sender.key") and flags & os.O_EXCL:
-            (home / ".assistant/feedback").mkdir(parents=True, exist_ok=True)
-            (home / ".assistant/feedback/sender.key").write_bytes(b"theirs")
-            raise FileExistsError()
-        return real(path, flags, *a)
-    monkeypatch.setattr(feedback.os, "open", racing)
+    def racing(src, dst):
+        (home / ".assistant/feedback/sender.key").write_bytes(b"t" * 64)  # theirs, made between our look and our link
+        return real(src, dst)  # raises FileExistsError
+    monkeypatch.setattr(feedback.os, "link", racing)
     assert feedback.who_pointer("ana").startswith("who:")
-    assert (home / ".assistant/feedback/sender.key").read_bytes() == b"theirs"
+    assert (home / ".assistant/feedback/sender.key").read_bytes() == b"t" * 64
+    assert [p.name for p in (home / ".assistant/feedback").iterdir() if p.name.endswith(".tmp")] == [], "the temporary file is gone"
+
+
+def test_the_key_is_whole_the_moment_anyone_can_see_it(home, monkeypatch):
+    real, seen = os.link, []
+
+    def looking(src, dst):
+        seen.append((Path(dst).exists(), Path(src).stat().st_size, stat.S_IMODE(Path(src).stat().st_mode)))
+        return real(src, dst)
+    monkeypatch.setattr(feedback.os, "link", looking)
+    feedback.who_pointer("ana")
+    assert seen == [(False, 64, 0o600)], "written in full, owner-only, before it has its name"
+
+
+@pytest.mark.parametrize("short", [b"", b"x", b"y" * 31])
+def test_a_short_or_empty_key_is_no_key_and_no_pointer_is_made(home, short):
+    (home / ".assistant/feedback").mkdir(parents=True)
+    (home / ".assistant/feedback/sender.key").write_bytes(short)
+    assert feedback.who_pointer("ana") == ""
+    (home / ".assistant/feedback/sender.key").write_bytes(b"z" * 32)
+    assert feedback.who_pointer("ana").startswith("who:")
+
+
+def test_an_action_s_own_record_a_reason_and_a_take_back_cannot_be_taken_back(home):
+    first = down()
+    reason = down(reason="not_mine", amends=first)
+    done = feedback.record("done", ROW, "row", "work-queue")
+    for target in (done, reason):
+        with pytest.raises(ValueError, match="can be taken back"):
+            feedback.record("retract", ROW, "row", "work-queue", amends=target)
+    told = feedback.record("tell", ROW, "row", "work-queue", words="hi")
+    used = feedback.record("used_draft", ROW, "draft", "work-queue")
+    for target, kind in ((first, "row"), (told, "row"), (used, "draft")):
+        feedback.record("retract", ROW, kind, "work-queue", amends=target)
+    assert len(lines(home)) == 8
+
 
 
 def test_a_later_look_ingests_only_the_lines_added_since_the_last(home, monkeypatch):

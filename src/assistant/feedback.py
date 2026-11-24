@@ -18,8 +18,8 @@ The rules are checks, not hopes:
     sender's name, a link or message text can't be written. `words` is what the person typed: collapsed to one line,
     scrubbed with `assistant.redact`, then cut to WORDS_MAX characters. The context a later change needs to find similar
     items is the row's source and a keyed hash of its sender (`who_pointer`), never the sender's name.
-  * A reason belongs to a standing thumbs-down, and a take-back to a record that hasn't been taken back, about the
-    same item (the same `view_key`).
+  * A reason belongs to a standing thumbs-down, and a take-back to a thumbs-down, a tell or a used draft that hasn't been
+    taken back, about the same item (the same `view_key`). What an action wrote (a Done, a Send) can't be taken back.
   * Every append runs under one flock on a dedicated lock file, because the Work queue server is threaded and other
     processes may write too. Paths are computed per call so tests that move HOME see fresh ones.
 
@@ -79,7 +79,9 @@ RECENT_KEEP = 2000
 READ_BLOCK = 4 * 1024 * 1024
 TAIL_BYTES = 64
 TELL_PREVIEW = 80
+TAKE_BACK = ("thumbs_down", "tell", "used_draft")  # what a take-back may name: what the person gave, not what an action wrote
 PENDING_MAX = 1000
+KEY_MIN = 32  # bytes: a shorter sender key is as good as none
 
 _ID = re.compile(r"fb-[0-9a-f]{16}")
 _ROW = re.compile(r"row:[0-9a-f]{16}")
@@ -351,22 +353,29 @@ def views() -> dict:
 # --- writing --------------------------------------------------------------------------------------------------
 
 def _key() -> bytes:
-    """This install's secret for sender pointers, made once: 32 random bytes in the feedback folder, owner-only."""
+    """This install's secret for sender pointers: 32 random bytes (64 hex characters) in the feedback folder, owner-only,
+    made once. It is written to a temporary file and linked into place, so no reader ever sees it empty. b"" (no
+    pointer is made) when what is there is shorter than KEY_MIN, which a half-made or emptied file would be."""
     path = feedback_dir() / "sender.key"
     try:
-        return path.read_bytes()
+        found = path.read_bytes()
     except FileNotFoundError:
-        pass
-    os.makedirs(str(feedback_dir()), mode=0o700, exist_ok=True)
-    try:
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return path.read_bytes()  # another process made it first
-    try:
-        os.write(fd, secrets.token_hex(32).encode())
-    finally:
-        os.close(fd)
-    return path.read_bytes()
+        os.makedirs(str(feedback_dir()), mode=0o700, exist_ok=True)
+        tmp = feedback_dir() / f"sender.key.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, secrets.token_hex(32).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.link(str(tmp), str(path))
+        except FileExistsError:
+            pass  # another process made it first
+        finally:
+            os.unlink(str(tmp))
+        found = path.read_bytes()
+    return found if len(found) >= KEY_MIN else b""
 
 
 def who_pointer(sender) -> str:
@@ -378,9 +387,10 @@ def who_pointer(sender) -> str:
     if not sender:
         return ""
     try:
-        return "who:" + hmac.new(_key(), sender.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:16]
+        key = _key()
     except OSError:
         return ""
+    return "who:" + hmac.new(key, sender.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:16] if key else ""
 
 
 def _text(name: str, value) -> str:
@@ -421,13 +431,17 @@ def _check(signal, subject, kind, surface, trace, reason, words, amends, source,
 
 def _check_amends(state: _State, signal: str, subject: str, kind: str, amends: str) -> None:
     """A reason or a take-back names a record about the same item that hasn't been taken back. A reason belongs to a
-    thumbs-down. A take-back is itself taken back from the moment it is written, so it can't be taken back."""
+    thumbs-down. A take-back names only what the person gave (a thumbs-down, a tell, a used draft), never what an
+    action wrote, a reason, or another take-back: a take-back is itself taken back from the moment it is written."""
     target = state.recs.get(amends)
     if target is None or view_key(target[0], target[1]) != view_key(subject, kind):
         raise ValueError("amends names no earlier record about this item")
     if amends in state.dead:
         raise ValueError("amends names a record that was already taken back")
-    if signal != "retract" and not (target[2] == "thumbs_down" and not target[3]):
+    if signal == "retract":
+        if target[2] not in TAKE_BACK or target[3]:
+            raise ValueError("only a thumbs-down, a tell or a used draft can be taken back, and a reason can't be")
+    elif not (target[2] == "thumbs_down" and not target[3]):
         raise ValueError("a reason belongs to a thumbs-down")
 
 

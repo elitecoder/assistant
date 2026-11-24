@@ -11,6 +11,7 @@ import pytest
 
 from assistant import effects, feedback, pointers, todostore
 from work_queue import config, page, refresh, server, traces
+from feedback_fakes import comes_back, hold_lock
 from work_queue_fakes import fake_tool, wq  # noqa: F401
 from test_work_queue_actions import http, pro  # noqa: F401
 
@@ -445,25 +446,17 @@ def test_a_batch_where_some_records_failed_lists_those_recorded_and_says_the_res
     assert all(out["marks"][k]["state"] == "done" for k in (LINK, PR, GMAIL_MARK))
 
 
-def hold(wq):
-    import fcntl
-    import os
-    (wq.home / ".assistant/feedback").mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(wq.home / ".assistant/feedback/feedback.lock"), os.O_CREAT | os.O_RDWR)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    return lambda: os.close(fd)
-
-
 def test_a_stuck_feedback_lock_delays_an_answer_by_half_a_second_at_most_for_a_whole_batch(wq, monkeypatch):
     seed(wq)
     slept = []
     clock = [1000.0]
     monkeypatch.setattr(feedback, "_monotonic", lambda: clock[0])
     monkeypatch.setattr(feedback, "_sleep", lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s)))
-    release = hold(wq)
+    release = hold_lock(wq.home / ".assistant/feedback")
     keys = {f"https://x.example/{n}": {"state": "done"} for n in range(40)}
-    code, out = run("/api/mark", {"marks": keys})
+    how, (code, out) = comes_back(lambda: run("/api/mark", {"marks": keys}))
     release()
+    assert how == "returned"
     assert code == 200 and len(out["marks"]) == 40
     assert out["feedback"]["recorded"] is False and out["feedback"]["missed"] == 40 and out["feedback"]["ids"] == []
     assert 0.5 <= sum(slept) < 0.6, "one wait for forty rows, not forty"
@@ -536,8 +529,10 @@ def test_the_page_takes_back_only_what_the_page_gave_and_only_once(wq):
     reason = give(signal="thumbs_down", reason="not_mine", amends=first)[1]["id"]
     told = give(signal="tell", words="hi")[1]["id"]
     used = give(kind="draft", signal="used_draft")[1]["id"]
-    for target in (server_wrote, reason, "fb-" + "0" * 16, 5, ""):
-        assert give(signal="retract", amends=target)[0] == 400, target
+    for target in (server_wrote, reason, "fb-" + "0" * 16, ""):  # the page's own answer, whatever the store would say
+        code, out = give(signal="retract", amends=target)
+        assert code == 400 and out["error"].startswith("only something you told Assistant can be taken back"), target
+    assert give(signal="retract", amends=5)[0] == 400
     assert give(kind="draft", signal="retract", amends=first)[0] == 400, "a draft can't take back its row's thumbs-down"
     assert give(signal="retract", amends=told)[0] == 200 and give(kind="draft", signal="retract", amends=used)[0] == 200
     assert give(signal="retract", amends=first)[0] == 200
@@ -568,3 +563,15 @@ def test_an_unsubscribe_row_has_the_controls_and_is_a_candidate_with_no_reasons(
     doc = page.render({**page_snap(True), "gmail": {ACCT: [row]}})[0].split("</style>")[1].split("<script>")[0]
     unsub = doc.split('data-kind="unsub"')[1].split("</div></div>")[0]
     assert re.search(r'<span class="fb" data-fk="candidate" data-fp="row:[0-9a-f]{16}" data-fkey="unsub:[0-9a-f]{12}"></span>', unsub)
+
+
+def test_the_feedback_route_answers_before_its_telemetry_is_written(http, wq, monkeypatch):
+    seed(wq)
+    pro(wq)
+    order, written = [], threading.Event()
+    answer = server.Handler.send_json
+    monkeypatch.setattr(server.Handler, "send_json", lambda self, *a, **k: (answer(self, *a, **k), order.append("answer"))[0])
+    monkeypatch.setattr(feedback.telemetry, "emit_many", lambda batch: (order.append("telemetry"), written.set()))
+    code, raw, _ = http("/api/feedback", {"kind": "row", "key": LINK, "signal": "thumbs_down"})
+    assert code == 200 and written.wait(30)
+    assert order == ["answer", "telemetry"], "counted by order, not by time"

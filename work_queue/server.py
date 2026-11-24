@@ -792,7 +792,6 @@ GAVE = {"thumbs_down": ("row", "start_here", "email", "draft", "result", "candid
         "retract": ("row", "start_here", "email", "draft", "result", "candidate"),
         "tell": ("row", "start_here", "email", "draft", "result", "candidate", "page"),
         "used_draft": ("draft",)}
-TAKE_BACK = ("thumbs_down", "tell", "used_draft")  # the page may take back only what the page gave
 
 
 def kind_of_mark(key: str) -> str:
@@ -904,7 +903,7 @@ def give_feedback(body: dict):
     if kind != "page" and not known_item(kind, key):
         return 400, {"error": "unknown item"}
     target = feedback.standing(amends) or {}
-    if signal == "retract" and (target.get("signal") not in TAKE_BACK or target.get("amends")):
+    if signal == "retract" and (target.get("signal") not in feedback.TAKE_BACK or target.get("amends")):
         return 400, {"error": "only something you told Assistant can be taken back here, and only once"}
     found = about(kind, key) if kind != "page" else {"subject": "", "trace": "", "source": "", "who": ""}
     try:

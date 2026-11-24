@@ -4,9 +4,8 @@ When you tell Assistant something about the Work queue, it writes one line
 down. This page says what it writes, what it never writes, where the file is,
 how to read it, and how to delete it. Nothing in it is sent anywhere.
 
-Assistant only records this today. It does not yet change what it does because
-of it; that comes in the next update, and the records are written so that it
-can.
+Assistant only records this today. It doesn't use it yet; that's planned for the
+next update, and the records are written so that it can.
 
 It is a Pro mode feature, because the Work queue is. In default mode nothing is
 recorded.
@@ -24,8 +23,8 @@ One line each time you:
 | Select **Approve**, **Keep** or **Undo** on a row waiting for approval, or **Approve all** (one line per row) | approve, keep, or undo |
 | Select **Archive**, **Mark read** or **Undo** on a Gmail email | archive, mark read, or undo |
 | Select **Copy draft** | you used the draft |
-| Tap the thumbs-down on an item, then a reason (or **Change** it later) | wrong, and its reason |
-| Select **Undo** or **Take it back** on what you said | taking it back |
+| Tap the thumbs-down on an item; then, if you like, **Add a reason** (or **Change** it later) | wrong, and its reason |
+| Tap the thumbs-down again, or select **Undo**, on what you said | taking it back |
 | Send words with **Tell Assistant**, on an item or on the page | the words |
 
 Nothing is ever edited. A new reason is a new line that replaces the old one on
@@ -50,7 +49,7 @@ a whole.
 The reasons on offer are: **Not important**, **Wrong order**, **Not mine**,
 **Already done** (rows, Start here items and emails); **Wrong tone**, **Wrong
 facts**, **Not how I'd say it** (drafts); **Not what I asked**, **Didn't
-finish**, **Shouldn't have started this** (results).
+finish**, **Should not have been started** (results).
 
 A line is written after the action has worked, and it is on disk before the
 page says it is noted. If it can't be written, the page says so, and the action
@@ -74,17 +73,26 @@ say which one:
   for your install, in `~/.assistant/feedback/sender.key`, that only you can
   read, so nobody can match the hashes against a list of names. If you delete
   that key, a new one is made, and old and new sender pointers stop matching
-  each other.
+  each other. A key that is empty or
+  shorter than 32 bytes is treated as no key: no sender pointer is written until
+  it is deleted and made again.
 - a reason you tapped, and the id of the line it belongs to, when it is a reason
   or a take-back.
-- the words you typed, only when you used **Tell Assistant**. They are cut to
-  2,000 characters and scrubbed of anything shaped like a password or token.
+- the words you typed, only when you used **Tell Assistant**. Your own words are
+  kept as you typed them, apart from anything that looks like a password or
+  token, and cut to 2,000 characters.
 
-It never holds a title, a sender's name, an email address, message text, a link,
-or anything a model wrote.
+Apart from your own words, it never holds a title, a sender's name, an email
+address, message text, a link, or anything a model wrote.
 
-Each line also adds one record to the local record described in
-[Telemetry](telemetry.md), with the same fields and never your words.
+Each line also sends one record to the local record described in
+[Telemetry](telemetry.md), with the same fields and never your words. That
+record is sent after the page has its answer, and it can be delayed or dropped
+when the Mac is busy; the line in the feedback file is not.
+
+If a save fails after the line was written, the typed words can remain in the
+file, followed by a line that cancels them, and the page says it couldn't save.
+Trying again writes a new line; the cancelled one does not count.
 
 ## Where it lives
 
@@ -93,8 +101,7 @@ only you can open. Lines are only ever added. Taking something back adds a new
 line that names the old one; the old one stays. The file only grows. Delete it
 whenever you like.
 
-Assistant reads the whole file, however long it gets, but only the lines added
-since it last looked, so it doesn't slow down as the file grows. Beside it are
+Assistant reads each line once, so a long file doesn't slow it down. Beside it are
 `sender.key` (described above) and `feedback.lock`, which has no content.
 Each row's source and sender hash, which the refresh saves so a line can carry
 them, are in `rowctx.json` in the Work queue's data folder, also only for you.
