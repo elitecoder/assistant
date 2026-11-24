@@ -532,22 +532,26 @@ def row_keys(snap: dict) -> dict:
     return {m["link"]: m["key"] for m in mail if isinstance(m.get("key"), str) and m["key"]}
 
 
-def verdict_record(item: dict, trace: str, found: dict, batch=None, run_trace: str = "", keys=None) -> None:
-    """One `triage_verdict` for a row: with a verdict from the model, or `unsorted` and the reason (`found["reason"]`)."""
-    records.emit("triage_verdict", trace, pointers.row_pointer((keys or {}).get(item["link"], item["link"])), "work-queue",
-                 verdict=found["disposition"], reason=found.get("reason"), lane=found.get("lane"),
-                 model=records.name_of(model_name()), prompt_version="rubric-" + version()[:8],
-                 source=item["source"].lower(), run_trace=run_trace or None, batch=batch)
+def verdict_part(item: dict, trace: str, found: dict, batch=None, run_trace: str = "", keys=None, model=None,
+                 rubric: str = ""):
+    """The (kind, fields) of one `triage_verdict` for a row: with a verdict from the model, or `unsorted` and the
+    reason (`found["reason"]`)."""
+    return ("triage_verdict", {
+        "trace": trace, "subject": pointers.row_pointer((keys or {}).get(item["link"], item["link"])),
+        "component": "work-queue", "verdict": found["disposition"], "reason": found.get("reason"),
+        "lane": found.get("lane"), "model": model, "prompt_version": rubric, "source": item["source"].lower(),
+        "run_trace": run_trace or None, "batch": batch})
 
 
 def record_verdicts(batch: list[dict], verdicts: dict[int, dict]) -> None:
     """One record for each row this call gave a new verdict (a saved verdict that is reused has no record): the
     row's own trace, its pointer, the verdict's disposition and lane, the model, the rubric's version and the
-    source, the refresh's trace, which the call's `model_call` record carries too, and which call it was."""
+    source, the refresh's trace, which the call's `model_call` record carries too, and which call it was. The
+    call's records are written in one go."""
     traced = traces.lookup_many([i["link"] for i in batch])
-    for j, item in enumerate(batch):
-        if j in verdicts:
-            verdict_record(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS)
+    model, rubric = records.name_of(model_name()), "rubric-" + version()[:8]
+    records.emit_many([verdict_part(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS, model, rubric)
+                       for j, item in enumerate(batch) if j in verdicts])
 
 
 def noted_path():
@@ -572,13 +576,16 @@ def record_unsorted(work: "Triage", cache: dict, run_trace: str, keys: dict) -> 
     noted = saved.get("rows") if isinstance(saved, dict) and saved.get("day") == today() and isinstance(saved.get("rows"), dict) else {}
     # A row's reasons are a list of words; anything else, in a file edited by hand, is no reasons.
     noted = {k: v if isinstance(v, list) and all(isinstance(r, str) for r in v) else [] for k, v in noted.items()}
+    model, rubric, parts = records.name_of(model_name()), "rubric-" + version()[:8], []
     for item in left:
         reason, batch = work.reasons.get(item["hash"]) or (work.stopped or "call_failed", None)
         pointer = pointers.row_pointer((keys or {}).get(item["link"], item["link"]))
         if reason in (noted.get(pointer) or []):
             continue
-        verdict_record(item, traced[item["link"]], {"disposition": "unsorted", "reason": reason}, batch, run_trace, keys)
+        parts.append(verdict_part(item, traced[item["link"]], {"disposition": "unsorted", "reason": reason}, batch,
+                                  run_trace, keys, model, rubric))
         noted[pointer] = [*(noted.get(pointer) or []), reason]
+    records.emit_many(parts)  # the run's unsorted rows, in one write
     config.write_json(noted_path(), {"day": today(), "rows": noted})
 
 

@@ -79,7 +79,7 @@ TARGET_KEYS = {
     "host": re.compile(r"[a-z0-9._:<>-]{1,253}"),
     "msg_count": re.compile(r"[0-9]{1,9}"),
     "msg_digest": re.compile(r"[0-9a-f]{16}"),
-    "session": re.compile(r"workspace:[0-9]{1,9}"),
+    "session": re.compile(r"workspace:[0-9]{1,18}"),  # cmux numbers sessions from 1000010000
     "task": re.compile(r"td-[0-9]{1,9}"),
     "channel": re.compile(r"[CDG][A-Z0-9]{8,11}"),
     "ts": re.compile(r"[0-9]{10}\.[0-9]{6}"),

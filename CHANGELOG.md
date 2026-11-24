@@ -214,6 +214,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- The records of a dispatch and of an effect on a session now accept the ten-digit session numbers
+  the session tool really uses (such as `workspace:1000020126`). Before, such a record was left out whole.
 - Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway
   folder before anything is imported, puts it back before every test, and removes the folder when the run ends.
   Before this, a test that forgot to do that itself wrote into the real `~/.assistant`: the lesson extractor's

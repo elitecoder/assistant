@@ -68,7 +68,7 @@ def make_env(root: Path, monkeypatch, enabled: bool = True) -> Env:
     return env
 
 
-def dispatch(monkeypatch, todo_id: str, workspace: str = "workspace:9", ping_ok: bool = True, fault: str = "",
+def dispatch(monkeypatch, todo_id: str, workspace: str = "workspace:1000020126", ping_ok: bool = True, fault: str = "",
              screen: str = "Claude Code v2.1", stamps: bool = True, pulse_trace: str = ""):
     """`pulse.dispatch_todo(todo_id)` against a fake cmux: (the pulse, its result, the commands it ran). `fault` says
     which step of the fake cmux fails: `new-workspace`, `no-ref` (it answers with no workspace) or `no-surface`."""
@@ -129,7 +129,7 @@ def test_one_piece_of_work_leaves_one_trail_from_arrival_to_the_check(wq, monkey
     verdict, created, dispatch_record, started, finished, check = trail(row_trace)
     assert created["fields"] == {"state": "open", "origin": "work-queue", "mode": "handsoff"}
     assert (dispatch_record["fields"]["outcome"], dispatch_record["fields"]["workspace"],
-            dispatch_record["fields"]["mode"]) == ("done", "workspace:9", "handsoff")
+            dispatch_record["fields"]["mode"]) == ("done", "workspace:1000020126", "handsoff")
     assert started["fields"]["prev_state"] == "open" and finished["fields"]["prev_state"] == "in-progress"
     assert check["fields"]["outcome"] == "done"
     # The row's arrival is the refresh's run: the verdict names it, and that run's records carry the run's own trace.
@@ -192,22 +192,24 @@ def test_a_refresh_that_stops_on_an_error_records_a_failed_run_and_goes_on_raisi
     assert of_kind("job_run", job="work-queue-refresh")[1]["fields"]["error"] == "ValueError"
 
 
-def test_a_refresh_of_200_rows_makes_a_bounded_number_of_records(wq, monkeypatch):
+def test_a_refresh_of_200_rows_makes_a_bounded_number_of_writes_and_records(wq, monkeypatch):
     fake_tool(wq.bin, "gh", [("search prs", [gh_pr(n) for n in range(1, 201)])])
     wq.sources({"github": {"skip_authors": []}})
-    made = []
-    real = telemetry.emit
-    monkeypatch.setattr(telemetry, "emit", lambda *a, **k: made.append(a[0]) or real(*a, **k))
+    writes = inserts(monkeypatch)
+
+    def kinds() -> list:
+        return [kind for write in writes for kind, _ in write]
+
     refresh.run(now=NOW, model=Model())
-    # A verdict for each row the model sorted (at most triage.MAX_ROWS), and a handful for the run itself.
-    assert made.count("triage_verdict") == triage.MAX_ROWS
-    assert len(made) <= triage.MAX_ROWS + 5
-    made.clear()
-    refresh.run(now=NOW, model=Model())  # the next refresh sorts the rest: no more than the rows it sorts
-    assert made.count("triage_verdict") == 200 - triage.MAX_ROWS and len(made) <= 200 - triage.MAX_ROWS + 5
-    made.clear()
+    # A verdict for each row the model sorted (at most triage.MAX_ROWS), in a few writes, and the run's own few records.
+    assert kinds().count("triage_verdict") == triage.MAX_ROWS and len(kinds()) <= triage.MAX_ROWS + 5
+    assert len(writes) <= triage.MAX_ROWS // triage.BATCH + 4
+    writes.clear()
+    refresh.run(now=NOW, model=Model())  # the next refresh sorts the rest
+    assert kinds().count("triage_verdict") == 200 - triage.MAX_ROWS and len(kinds()) <= 200 - triage.MAX_ROWS + 5
+    writes.clear()
     refresh.run(now=NOW, model=Model())  # everything is sorted: only the run itself is recorded
-    assert len(made) <= 5 and "triage_verdict" not in made
+    assert len(kinds()) <= 5 and "triage_verdict" not in kinds() and len(writes) <= 5
 
 
 # ─── the model sorts a row ───────────────────────────────────────────────────
@@ -495,7 +497,7 @@ def test_a_dispatch_records_its_outcome_the_workspace_and_the_new_state(wq, monk
     dispatched, started = trail(OWN)
     assert (dispatched["kind"], dispatched["subject"], dispatched["component"]) == ("dispatch", "td-1", "pulse")
     assert dispatched["fields"]["outcome"] == "done" and dispatched["fields"]["ok"] is True
-    assert dispatched["fields"]["workspace"] == "workspace:9" and dispatched["fields"]["mode"] == "assist"
+    assert dispatched["fields"]["workspace"] == "workspace:1000020126" and dispatched["fields"]["mode"] == "assist"
     assert dispatched["fields"]["confirmed"] is False  # it went out, but nothing showed the prompt arrive
     assert "reason" not in dispatched["fields"] and dispatched["fields"]["ok"] is True
     assert isinstance(dispatched["fields"]["ms"], int)
@@ -803,6 +805,17 @@ def test_a_record_handed_to_a_store_that_fails_costs_only_the_record(wq, monkeyp
     assert records.emit("task", OWN, "td-1", "cli", state="open") is None
 
 
+def test_a_list_of_records_handed_to_a_store_that_fails_costs_only_the_records(wq, monkeypatch):
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "0")
+    real = telemetry.emit_many
+    monkeypatch.setattr(telemetry, "emit_many", lambda batch: (_ for _ in ()).throw(RuntimeError("the store is on fire")))
+    part = ("task", {"trace": OWN, "subject": "td-1", "component": "cli", "state": "open"})
+    assert records.emit_many([part]) is None
+    monkeypatch.setattr(telemetry, "emit_many", real)
+    missing_telemetry(monkeypatch)
+    assert records.emit_many([part]) is None
+
+
 @pytest.mark.parametrize("breaks", [broken_emit, missing_telemetry, missing_records, builds_wrong])
 def test_stamping_a_tasks_trace_is_never_held_back_by_its_record(wq, monkeypatch, breaks):
     write_todos(wq, [{"id": "td-7", "title": "From elsewhere", "status": "open", "source": "slack-react:C1:1.2"}])
@@ -847,6 +860,12 @@ def test_in_the_tests_strict_mode_a_missing_record_module_is_seen_even_by_the_ef
     monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "1")
     with pytest.raises(ImportError):
         effects.finish(ef, "done")
+
+
+def test_a_mistake_in_a_list_of_records_is_raised_in_the_tests_strict_mode(wq):
+    with pytest.raises(ValueError):
+        records.emit_many([("task", {"trace": OWN, "subject": "td-1", "component": "cli", "state": "open", "nonsense": 1})])
+    assert of_kind("task") == []
 
 
 def test_a_mistake_in_a_record_is_raised_in_the_tests_strict_mode_and_costs_only_the_record_otherwise(wq, monkeypatch):
@@ -948,7 +967,7 @@ def test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_u
         assert len(attempts) == 2
     clock["t"] += telemetry.SPOOL_ONLY_SECONDS + 1
     assert telemetry.emit("task", OWN, "td-3", "cli", state="done") is True
-    assert len(attempts) == 3 and telemetry._spool_only_until == {}  # a write that works clears it
+    assert len(attempts) == 3 and telemetry._path("telemetry.db") not in telemetry._spool_only_until  # a write that works clears it
     assert telemetry.emit("task", OWN, "td-3", "cli", state="done") is True and len(attempts) == 4
     assert len(telemetry.events(limit=1000)) == 3
     telemetry.maintain()
@@ -961,7 +980,7 @@ def test_a_spool_that_cant_be_written_still_costs_a_record_not_the_work(wq, monk
     clock = {"t": 1000.0}
     monkeypatch.setattr(telemetry, "_now", lambda: clock["t"])
     monkeypatch.setattr(telemetry, "_run", lambda work, deadline=None: (_ for _ in ()).throw(OSError("no disk")))
-    monkeypatch.setattr(telemetry, "_spool", lambda record, deadline: False)
+    monkeypatch.setattr(telemetry, "_spool_many", lambda records, deadline: False)
     assert telemetry.emit("task", OWN, "td-1", "cli", state="open") is False
     assert telemetry.emit("task", OWN, "td-1", "cli", state="open") is False
 
@@ -1335,9 +1354,9 @@ def test_an_upkeep_that_reaches_the_database_closes_the_spool_window(wq, monkeyp
     telemetry.emit("task", OWN, "td-1", "cli", state="open")
     with held_database():
         assert telemetry.emit("task", OWN, "td-2", "cli", state="open") is False
-    assert telemetry._spool_only_until  # the window is open: the next record would go straight to the spool
+    assert telemetry._path("telemetry.db") in telemetry._spool_only_until  # the window is open: the next record would go straight to the spool
     assert telemetry.maintain()["ok"] is True
-    assert telemetry._spool_only_until == {}
+    assert telemetry._path("telemetry.db") not in telemetry._spool_only_until
     assert telemetry.emit("task", OWN, "td-3", "cli", state="done") is True  # it reached the database, inside the 30 seconds
 
 
@@ -1376,3 +1395,83 @@ def test_a_dispatch_that_didnt_go_out_never_says_whether_the_prompt_arrived(wq):
     assert dispatched["fields"]["reason"] == "no_surface" and "confirmed" not in dispatched["fields"]
     records.dispatch({"id": "td-1", "trace": OWN}, {"id": "td-1", "trace": OWN}, True, time.monotonic(), "no_surface", "", True)
     assert of_kind("dispatch")[1]["fields"].get("reason") is None and of_kind("dispatch")[1]["fields"]["confirmed"] is True
+
+
+# ─── a step's records are written in one go ──────────────────────────────────
+
+def inserts(monkeypatch) -> list:
+    """Every database write from now on, as the list of (kind, fields json) rows it held."""
+    writes = []
+    real = telemetry._insert_all
+    monkeypatch.setattr(telemetry, "_insert_all", lambda conn, rows: writes.append([(r[2], r[6]) for r in rows]) or real(conn, rows))
+    return writes
+
+
+def test_a_refresh_sorting_120_new_rows_writes_one_database_transaction_for_each_model_calls_verdicts(wq, monkeypatch):
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(n) for n in range(1, 121)])])
+    wq.sources({"github": {"skip_authors": []}})
+    writes = inserts(monkeypatch)
+    refresh.run(now=NOW, model=Model())
+    verdict_writes = [w for w in writes if any(kind == "triage_verdict" for kind, _ in w)]
+    assert [len(w) for w in verdict_writes] == [triage.BATCH] * 4  # four calls of 30 rows: four writes, not 120
+    assert len(writes) <= 4 + 3  # and the run's own few records
+
+
+def test_a_refresh_whose_rows_all_end_unsorted_writes_them_in_one_transaction(wq, monkeypatch):
+    from work_queue_fakes import raises
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(n) for n in range(1, 61)])])
+    wq.sources({"github": {"skip_authors": []}})
+    writes = inserts(monkeypatch)
+    refresh.run(now=NOW, model=Model(rows=raises("down")))
+    unsorted_writes = [w for w in writes if any('"unsorted"' in fields for _, fields in w)]
+    assert [len(w) for w in unsorted_writes] == [60]
+
+
+def test_the_pulse_stamps_five_tasks_and_records_them_in_one_transaction(wq, monkeypatch):
+    write_todos(wq, [{"id": f"td-{n}", "title": "From elsewhere", "status": "open", "source": "slack-react:C1:1.2"} for n in range(1, 6)])
+    writes = inserts(monkeypatch)
+    assert todostore.stamp_missing_traces() == 5
+    assert [len(w) for w in writes] == [5] and {kind for kind, _ in writes[0]} == {"task"}
+
+
+def test_one_stamped_task_that_cant_be_described_doesnt_cost_the_others_their_records(wq, monkeypatch):
+    write_todos(wq, [{"id": "td-1", "status": "open", "source": 7}, {"id": "td-2", "status": "open", "source": "slack-react:C"}])
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "0")
+    real = records.origin_of
+    monkeypatch.setattr(records, "origin_of", lambda source: (_ for _ in ()).throw(KeyError("x")) if source == 7 else real(source))
+    todostore.stamp_missing_traces()
+    assert [e["subject"] for e in of_kind("task")] == ["td-2"]
+
+
+# ─── a session number as the session tool really writes it ───────────────────
+
+REAL_REF = "workspace:1000020126"
+
+
+def test_a_dispatch_to_a_session_with_a_ten_digit_number_keeps_its_workspace(wq, monkeypatch):
+    sent_task(wq)
+    _, ok, _ = dispatch(monkeypatch, "td-1", workspace=REAL_REF)
+    [dispatched, _started] = trail(OWN)
+    assert ok is True and dispatched["fields"]["workspace"] == REAL_REF and "_dropped" not in dispatched["fields"]
+
+
+@pytest.mark.parametrize("ref", ["workspace:" + "1" * 19, "workspace:12ab", "workspace:/Users/ann", "workspace:", "workspace:-1"])
+def test_a_session_ref_that_isnt_digits_or_is_too_long_is_still_refused(wq, monkeypatch, ref):
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "0")
+    telemetry.emit("dispatch", OWN, "td-1", "pulse", outcome="done", workspace=ref)
+    [record] = of_kind("dispatch")
+    assert "workspace" not in record["fields"] and record["fields"]["_dropped"] == 1
+
+
+def test_a_session_ref_of_18_digits_is_kept(wq):
+    telemetry.emit("dispatch", OWN, "td-1", "pulse", outcome="done", workspace="workspace:" + "9" * 18)
+    assert of_kind("dispatch")[0]["fields"]["workspace"] == "workspace:" + "9" * 18
+
+
+def test_the_effects_ledger_takes_a_session_with_a_ten_digit_number_and_refuses_one_that_isnt_a_number(wq):
+    ef = effects.begin("session.type", {"session": REAL_REF}, {"kind": "tap", "ref": "r", "at": server.now()})
+    assert effects.finish(ef, "done") is True
+    assert of_kind("effect")[0]["fields"]["target"] == REAL_REF
+    for bad in ("workspace:" + "1" * 19, "workspace:12ab", "workspace:"):
+        with pytest.raises(ValueError):
+            effects.begin("session.type", {"session": bad}, {"kind": "tap", "ref": "r", "at": server.now()})

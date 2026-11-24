@@ -2,6 +2,7 @@
 
 M = "src/assistant/telemetry.py"
 T = "tests/test_telemetry.py::"
+W = "tests/test_work_records.py::"
 ANYWHERE = T + "test_nothing_personal_is_kept_in_any_text_field_of_any_kind"
 
 
@@ -238,8 +239,8 @@ CHECKS = (
     (
         "strict mode raises for what would be left out",
         M,
-        '        if left_out and os.environ.get(STRICT_ENV) == "1" and "PYTEST_CURRENT_TEST" in os.environ:\n',
-        "        if False:\n",
+        '    if left_out and os.environ.get(STRICT_ENV) == "1" and "PYTEST_CURRENT_TEST" in os.environ:\n',
+        "    if False:\n",
         T + "test_strict_mode_raises_for_anything_the_store_would_leave_out",
     ),
     (
@@ -401,8 +402,8 @@ CHECKS = (
     (
         "emit never raises, even for a bug in the module",
         M,
-        "    except Exception:  # noqa: BLE001 - recording never breaks work\n        return False\n",
-        "    except ZeroDivisionError:  # noqa: BLE001 - recording never breaks work\n        return False\n",
+        "    except Exception:  # noqa: BLE001 - recording never breaks work\n        return False\n\n\ndef emit_many",
+        "    except ZeroDivisionError:  # noqa: BLE001 - recording never breaks work\n        return False\n\n\ndef emit_many",
         T + "test_emit_survives_a_bug_in_the_module_itself",
     ),
     # Files and permissions.
@@ -622,8 +623,8 @@ CHECKS = (
     (
         "an unknown kind is counted",
         M,
-        '            _count_loss("unknown_kind")\n',
-        "            pass\n",
+        '    for _ in [r for r in built if r is None]:\n        _count_loss("unknown_kind")\n',
+        "    for _ in [r for r in built if r is None]:\n        pass\n",
         T + "test_an_unknown_kind_stores_nothing_and_is_counted[nope]",
     ),
     (
@@ -732,5 +733,154 @@ CHECKS = (
         "    if not dry_run:\n        run_telemetry_upkeep()\n",
         "    if True:\n        run_telemetry_upkeep()\n",
         T + "test_a_real_pulse_runs_the_upkeep_step_once_and_a_dry_run_does_not",
+    ),
+    # --- a busy database
+    (
+        "a busy database sends later records straight to the spool for a while",
+        M,
+        "    if _now() < _spool_only_until.get(where, 0.0):",
+        "    if False:",
+        W + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
+    ),
+    (
+        "the wait before the database is tried again is 30 seconds",
+        M,
+        "SPOOL_ONLY_SECONDS = 30 ",
+        "SPOOL_ONLY_SECONDS = 0 ",
+        W + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
+    ),
+    (
+        "a miss starts the wait",
+        M,
+        "        _spool_only_until[where] = _now() + SPOOL_ONLY_SECONDS\n",
+        "        _spool_only_until[where] = 0.0\n",
+        W + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
+    ),
+    (
+        "a write that works clears the wait",
+        M,
+        "        _spool_only_until.pop(where, None)\n        return True",
+        "        return True",
+        W + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
+    ),
+    (
+        "the wait belongs to one database, not to the process",
+        M,
+        "    where = _path(_DB)\n",
+        '    where = ""\n',
+        W + "test_a_busy_database_in_one_place_doesnt_send_records_for_another_to_the_spool",
+    ),
+    (
+        "an upkeep that reached the database clears the wait",
+        M,
+        "        _spool_only_until.pop(_path(_DB), None)  # the database took the upkeep, so it takes records again\n",
+        "",
+        W + "test_an_upkeep_that_reaches_the_database_closes_the_spool_window",
+    ),
+    # A list of records in one go.
+    (
+        "a batch is stored in the order it was given",
+        M,
+        "    records = [_stamp(record) for record in records]\n",
+        "    records = [_stamp(record) for record in reversed(records)]\n",
+        T + "test_a_batch_of_200_arrives_whole_and_in_order_in_one_attempt_on_the_database",
+    ),
+    (
+        "a record the registry can't build is left out without losing the others",
+        M,
+        "    records = [r for r in built if r is not None]\n",
+        "    records = built\n",
+        T + "test_one_record_a_batch_cant_build_is_left_out_and_the_others_are_kept",
+    ),
+    (
+        "a record of an unknown kind is counted as lost",
+        M,
+        '    for _ in [r for r in built if r is None]:\n        _count_loss("unknown_kind")\n',
+        "",
+        T + "test_one_record_a_batch_cant_build_is_left_out_and_the_others_are_kept",
+    ),
+    (
+        "an item that isn't a pair is counted as lost, and the batch goes on",
+        M,
+        'is one record lost, not the batch\n                _count_loss("unknown_kind")\n                continue',
+        "is one record lost, not the batch\n                continue",
+        T + "test_one_record_a_batch_cant_build_is_left_out_and_the_others_are_kept",
+    ),
+    (
+        "strict mode raises for a bad record in a batch before any of it is written",
+        M,
+        '    if left_out and os.environ.get(STRICT_ENV) == "1" and "PYTEST_CURRENT_TEST" in os.environ:\n',
+        "    if False:\n",
+        T + "test_strict_mode_raises_for_a_bad_record_in_a_batch_and_writes_none_of_it",
+    ),
+    (
+        "a batch with recording off writes nothing",
+        M,
+        '    if not _settings()["enabled"]:\n        return False\n    built, left_out',
+        "    built, left_out",
+        T + "test_a_batch_when_recording_is_off_writes_nothing",
+    ),
+    (
+        "a batch that misses the database is spooled in one write",
+        M,
+        "        _spool_many(records, deadline)\n        return False\n\n\ndef emit(",
+        "        for record in records:\n            _spool_many([record], deadline)\n        return False\n\n\ndef emit(",
+        T + "test_a_batch_that_misses_the_database_is_spooled_whole_and_the_drain_delivers_each_record_once",
+    ),
+    (
+        "a batch inside the wait goes to the spool in one write",
+        M,
+        "        _spool_many(records, deadline)  # the database missed a moment ago: don't wait for it again yet\n",
+        "        for record in records:\n            _spool_many([record], deadline)\n",
+        T + "test_a_batch_that_misses_the_database_is_spooled_whole_and_the_drain_delivers_each_record_once",
+    ),
+    (
+        "a batch that can't be spooled counts every record lost",
+        M,
+        "        _count_loss(lost, len(records))\n",
+        "        _count_loss(lost)\n",
+        T + "test_a_batch_that_wont_fit_the_spool_is_dropped_whole_and_counted",
+    ),
+    (
+        "a batch is one transaction on one connection",
+        M,
+        '    conn.execute("BEGIN IMMEDIATE")\n    conn.executemany(_INSERT, rows)\n    conn.execute("COMMIT")\n',
+        '    for row in rows:\n        conn.execute(_INSERT, row)\n',
+        T + "test_emit_is_a_batch_of_one_and_a_batch_is_one_transaction",
+    ),
+    (
+        "emit_many never raises",
+        M,
+        "    except Exception:  # noqa: BLE001 - recording never breaks work\n        return False\n\n\ndef events",
+        "    except ZeroDivisionError:  # noqa: BLE001 - recording never breaks work\n        return False\n\n\ndef events",
+        T + "test_a_batch_of_200_arrives_whole_and_in_order_in_one_attempt_on_the_database",
+    ),
+    (
+        "a session ref may have the ten digits the session tool really numbers with",
+        M,
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,18}")',
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,9}")',
+        W + "test_a_dispatch_to_a_session_with_a_ten_digit_number_keeps_its_workspace",
+    ),
+    (
+        "a session ref is digits only and no longer than 18",
+        M,
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,18}")',
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,18}|[0-9]{1,18}[a-z]+")',
+        W + "test_a_session_ref_that_isnt_digits_or_is_too_long_is_still_refused",
+    ),
+    (
+        "a session ref of 18 digits is kept",
+        M,
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,18}")',
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,17}")',
+        W + "test_a_session_ref_of_18_digits_is_kept",
+    ),
+    (
+        "a session ref of 19 digits is refused",
+        M,
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,18}")',
+        '_SESSION_DIGITS = re.compile(r"[0-9]{1,19}")',
+        W + "test_a_session_ref_that_isnt_digits_or_is_too_long_is_still_refused",
     ),
 )

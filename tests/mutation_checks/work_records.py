@@ -92,22 +92,22 @@ CHECKS = (
     (
         "a verdict carries the row's own trace",
         TRIAGE,
-        'verdict_record(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS)',
-        'verdict_record(item, "", verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS)',
+        'verdict_part(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS, model, rubric)',
+        'verdict_part(item, "", verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS, model, rubric)',
         T + "test_a_new_verdict_is_recorded_with_the_rows_trace_and_a_saved_one_is_not",
     ),
     (
         "a verdict names the run that made it",
         TRIAGE,
-        "run_trace=run_trace or None, batch=batch)",
-        "run_trace=None, batch=batch)",
+        '"run_trace": run_trace or None,',
+        '"run_trace": None,',
         T + "test_a_new_verdict_is_recorded_with_the_rows_trace_and_a_saved_one_is_not",
     ),
     (
         "a row the model didn't answer has no verdict record",
         TRIAGE,
-        "        if j in verdicts:\n            verdict_record(",
-        "        if True:\n            verdict_record(",
+        "for j, item in enumerate(batch) if j in verdicts]",
+        "for j, item in enumerate(batch)]",
         T + "test_a_row_the_model_didnt_answer_has_no_verdict_record",
     ),
     (
@@ -426,9 +426,16 @@ CHECKS = (
     (
         "a record that can't be handed over costs only the record",
         REC,
+        "    except Exception:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef emit_many",
+        "    except ImportError:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef emit_many",
+        T + "test_a_record_handed_to_a_store_that_fails_costs_only_the_record",
+    ),
+    (
+        "a list of records that can't be handed over costs only the records",
+        REC,
         "    except Exception:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef recording",
         "    except ImportError:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef recording",
-        T + "test_a_record_handed_to_a_store_that_fails_costs_only_the_record",
+        T + "test_a_list_of_records_handed_to_a_store_that_fails_costs_only_the_records",
     ),
     (
         "a trace that can't be made costs only the record",
@@ -499,49 +506,6 @@ CHECKS = (
         '        if os.environ.get("ASSISTANT_TELEMETRY_STRICT") == "1" and "PYTEST_CURRENT_TEST" in os.environ:\n            raise\n',
         "        pass\n",
         T + "test_in_the_tests_strict_mode_a_missing_record_module_is_seen_even_by_the_effects_ledger",
-    ),
-    # --- a busy database
-    (
-        "a busy database sends later records straight to the spool for a while",
-        "src/assistant/telemetry.py",
-        "        if _now() < _spool_only_until.get(where, 0.0):",
-        "        if False:",
-        T + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
-    ),
-    (
-        "the wait before the database is tried again is 30 seconds",
-        "src/assistant/telemetry.py",
-        "SPOOL_ONLY_SECONDS = 30 ",
-        "SPOOL_ONLY_SECONDS = 0 ",
-        T + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
-    ),
-    (
-        "a miss starts the wait",
-        "src/assistant/telemetry.py",
-        "            _spool_only_until[where] = _now() + SPOOL_ONLY_SECONDS\n",
-        "            _spool_only_until[where] = 0.0\n",
-        T + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
-    ),
-    (
-        "a write that works clears the wait",
-        "src/assistant/telemetry.py",
-        "            _spool_only_until.pop(where, None)\n            return True",
-        "            return True",
-        T + "test_a_database_that_misses_costs_one_attempt_and_the_rest_go_to_the_spool_until_the_time_is_up",
-    ),
-    (
-        "the wait belongs to one database, not to the process",
-        "src/assistant/telemetry.py",
-        "        where = _path(_DB)\n",
-        '        where = ""\n',
-        T + "test_a_busy_database_in_one_place_doesnt_send_records_for_another_to_the_spool",
-    ),
-    (
-        "an upkeep that reached the database clears the wait",
-        "src/assistant/telemetry.py",
-        "        _spool_only_until.pop(_path(_DB), None)  # the database took the upkeep, so it takes records again\n",
-        "",
-        T + "test_an_upkeep_that_reaches_the_database_closes_the_spool_window",
     ),
     # --- a row the model never sorted
     (
@@ -617,8 +581,8 @@ CHECKS = (
     (
         "an email's verdict is named by the email's own key",
         TRIAGE,
-        'row_pointer((keys or {}).get(item["link"], item["link"])), "work-queue"',
-        'row_pointer(item["link"]), "work-queue"',
+        '"subject": pointers.row_pointer((keys or {}).get(item["link"], item["link"])),',
+        '"subject": pointers.row_pointer(item["link"]),',
         T + "test_for_an_email_row_the_verdict_the_task_and_the_effect_name_the_same_row",
     ),
     (
@@ -973,5 +937,50 @@ CHECKS = (
         "    except Exception:  # noqa: BLE001\n        return False\n\n\ndef new_trace",
         "    except ZeroDivisionError:  # noqa: BLE001\n        return False\n\n\ndef new_trace",
         T + "test_a_setting_that_cant_be_read_counts_as_recording_off",
+    ),
+    # --- a step's records in one go, and the session numbers the session tool really uses
+    (
+        "a call's verdicts are written in one go",
+        TRIAGE,
+        '    records.emit_many([verdict_part(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS, model, rubric)\n'
+        "                       for j, item in enumerate(batch) if j in verdicts])",
+        "    for j, item in enumerate(batch):\n        if j in verdicts:\n"
+        '            records.emit_many([verdict_part(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS, model, rubric)])',
+        T + "test_a_refresh_sorting_120_new_rows_writes_one_database_transaction_for_each_model_calls_verdicts",
+    ),
+    (
+        "a run's unsorted rows are written in one go",
+        TRIAGE,
+        "    records.emit_many(parts)  # the run's unsorted rows, in one write\n",
+        "    for part in parts:\n        records.emit_many([part])\n",
+        T + "test_a_refresh_whose_rows_all_end_unsorted_writes_them_in_one_transaction",
+    ),
+    (
+        "the tasks a pulse stamps are written in one go",
+        REC,
+        "    emit_many([part for part in parts if part])  # one write for all the tasks, not one for each\n",
+        "    for part in parts:\n        emit_many([part] if part else [])\n",
+        T + "test_the_pulse_stamps_five_tasks_and_records_them_in_one_transaction",
+    ),
+    (
+        "one stamped task that can't be described doesn't cost the others their records",
+        REC,
+        "    parts = [guard(lambda: _task_created(item",
+        "    parts = [(lambda: _task_created(item",
+        T + "test_one_stamped_task_that_cant_be_described_doesnt_cost_the_others_their_records",
+    ),
+    (
+        "the pulse's dispatch record keeps a ten-digit session number",
+        REC,
+        '_WORKSPACE = re.compile(r"workspace:[0-9]{1,18}")',
+        '_WORKSPACE = re.compile(r"workspace:[0-9]{1,9}")',
+        T + "test_a_dispatch_to_a_session_with_a_ten_digit_number_keeps_its_workspace",
+    ),
+    (
+        "a mistake in a list of records is raised in the tests' strict mode",
+        REC,
+        "        if loud():\n            raise\n\n\ndef recording",
+        "        pass\n\n\ndef recording",
+        T + "test_a_mistake_in_a_list_of_records_is_raised_in_the_tests_strict_mode",
     ),
 )
