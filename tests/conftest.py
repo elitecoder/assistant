@@ -97,3 +97,11 @@ def _no_real_self_update(monkeypatch):
 
     guard.maybe_update = maybe_update
     monkeypatch.setitem(sys.modules, "self_update", guard)
+
+
+@pytest.fixture(autouse=True)
+def _restore_crash_hooks(monkeypatch):
+    """A service's main() installs the redacting crash hooks; don't let them outlive the test."""
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    import threading
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)

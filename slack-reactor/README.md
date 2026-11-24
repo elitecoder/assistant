@@ -50,6 +50,51 @@ behalf.
 
 Tokens live in `~/.zprofile`; the launcher sources it. Nothing is hardcoded.
 
+## Tokens in the log
+
+**If the reactor ran any earlier version, rotate your Slack bot token now: its
+log file holds the old one.** The fix stops new leaks; it doesn't clean old
+lines.
+
+1. In the Slack app's settings, under OAuth & Permissions, reinstall the app
+   to get a new bot token.
+2. If the old log also shows an `xapp-` token, regenerate the app-level token
+   under Basic Information, App-Level Tokens.
+3. Update `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`) in `~/.zprofile`.
+4. Restart the reactor with this command:
+   `launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`
+5. Confirm the old token no longer works. Call `auth.test` with it, for
+   example with this command, and expect `invalid_auth` or `token_revoked`:
+   `curl -s -X POST -H "Authorization: Bearer <old token>" https://slack.com/api/auth.test`
+6. Delete or empty `~/.assistant/logs/slack-reactor.launchd.err`, and any copy
+   of it in a backup.
+
+After that, what the reactor prints, and what it prints when it crashes, has
+anything shaped like a secret replaced with `<redacted>`: Slack tokens, `Bearer`
+and `Authorization` values, cookies, `token=`, `password=` and `api_key=` fields,
+GitHub, Google, AWS and model keys, JWTs, and web addresses with a password in
+them. When something fails it prints one line (the error's name and message, its
+code, the HTTP status, Slack's reason, the network error underneath such as
+ENOTFOUND or ETIMEDOUT, and one level of cause). A crash adds the time and up to
+8 stack lines, so you can tell where it failed, and exits non-zero so launchd
+restarts the reactor as before. An error logged through `console` gets at most 3
+stack lines. `src/index.js` loads `safe-output-boot.js` before anything else;
+keep it first.
+
+This is pattern matching, not a guarantee. It does not cover output written with
+`fs.writeSync` or `process._rawDebug`, a token split across two writes, or a
+secret in a shape the rules don't know.
+
+Run the reactor's tests with `node --test slack-reactor/test/*.test.js`. To
+measure coverage you need Node 22 or newer and an output folder that exists:
+
+```bash
+mkdir -p /tmp/reactor-coverage
+node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout \
+  --test-reporter=lcov --test-reporter-destination=/tmp/reactor-coverage/reactor.lcov \
+  slack-reactor/test/*.test.js
+```
+
 ## Setup (one-time)
 
 Add this to the **existing `mukuls_bot` app** (don't create a new one — keeps the

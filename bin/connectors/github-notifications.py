@@ -265,6 +265,7 @@ class GitHubNotificationsConnector(connector.Connector):
 
 
 def main(argv=None) -> int:
+    connector.install_crash_hooks()  # an uncaught error prints a redacted traceback
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dry-run", action="store_true",
                     help="normalize + print, do NOT drop into the inbox")
@@ -278,7 +279,7 @@ def main(argv=None) -> int:
 
     if args.once or args.dry_run:
         result = c.poll_once()
-        print(connector.json.dumps(result), file=sys.stderr)
+        print(connector.redact(connector.json.dumps(result)), file=sys.stderr)
         return 0
 
     # OPTIONAL connector. If `gh` isn't logged in there is nothing to poll;
