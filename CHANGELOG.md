@@ -70,6 +70,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Stop a Work queue test from failing at random. It read the refresh log the instant the refresh
+  reported it had finished, a moment before the last lines were written, and failed about one run in
+  four. It now waits for the line it checks.
 - Keep the limit of 5 busy sessions working with the Observer off. Assistant
   counted busy sessions from the Observer's checks, so with the Observer off,
   which is now the default, it counted none and could start up to 30 sessions.
