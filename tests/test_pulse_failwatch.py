@@ -35,6 +35,16 @@ class AuditPauseTests(_AuditBase):
         self.pulse.run_observer_audit(self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 1, now=later)
         self.assertEqual(failwatch.repeated(min_count=1)[0]["streak"], 0)
 
+    def test_the_pause_check_finds_metering_when_bin_is_not_on_the_path(self):
+        self._repeat()
+        saved = sys.path[:]
+        sys.path[:] = [p for p in sys.path if p != str(self.pulse.BIN)]
+        try:
+            out = self.pulse.run_observer_audit(self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 0, now=self.now)
+        finally:
+            sys.path[:] = saved
+        self.assertEqual(out["reason"], "model-paused")
+
     def test_a_broken_pause_check_never_blocks_the_audit(self):
         import metering
         self._repeat()
