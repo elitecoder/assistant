@@ -10,6 +10,25 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Security
+- Stop a Slack reaction from anyone else starting an agent on your Mac. Until
+  now, when `SLACK_USER_ID` wasn't set, a reaction with your task emoji from
+  anyone in any channel the bot is in made a task that started by itself, and
+  the agent it launched runs with permission prompts off. The Slack reactor now
+  finds your Slack user id from `SLACK_USER_ID`, or else `slack.owner` in
+  `~/.assistant/config.json`, or else `slack.target` there when it is a user id
+  (the Slack channel setup saves it; it counts as you only when the other two
+  are absent, so it helps only if that target is your own user id). A
+  `SLACK_USER_ID` that isn't a user id, such as a typo or a channel id, is
+  reported in the log and ignored. The start-up line prints the id it found. A
+  reaction from you works as before; a reaction from anyone else is ignored.
+  When the reactor can't tell who you are, it still saves what you react to,
+  but as an "Ask me" task that never starts by itself: its title starts with
+  "Not started, reaction not confirmed as yours", its priority is P3, the message
+  gets an eyes reaction instead of the check mark, no more than 20 wait at once,
+  and the top of the task says how to fix it. Tasks already saved as "Ask me"
+  stay that way until you press On. To make sure your own reactions start work,
+  set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
+  reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
 - Stop the Slack warm session from typing messages written by anyone but you.
   Before, every non-bot message in the channel you set up was typed into a
   session that runs with its permission prompts off, so any member of a
@@ -66,6 +85,32 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
+  conversation back to your inbox, and Gmail Trash from **Apply approvals**)
+  and every unsubscribe in a new append-only record, before it runs and again
+  when it ends, in `~/.assistant/effects/effects.jsonl`. An action Assistant
+  can't record doesn't run, and the page says "Assistant couldn't record this
+  action, so it didn't run it. Check that your disk isn't full, then try
+  again". A second press while the first is still working is turned down. An
+  unsubscribe that went through is never sent again, and neither is one that
+  was sent and never answered: the row says "Assistant sent this but didn't
+  hear back, so it may have gone through. Approve it again to send it once
+  more". An **Undo** that doesn't happen, because the record refused it or
+  Gmail did, leaves the row in Trash and says why on the row and on the
+  last-run line, and the next **Apply approvals** tries it again. The record
+  holds ids only, never a subject, a sender, message text or an unsubscribe
+  link, and only you can read it. See `docs/effects.md`.
+- Keep a local record of what Assistant does, as ids, counts, timings, states
+  and money, so later features can follow one piece of work from the moment it
+  arrives to your decision on it. It never holds message text, titles,
+  prompts, a model's reasons, email addresses or links, and a secret never
+  reaches it. Nothing leaves your Mac, and nothing about it shows on a page
+  yet. It lives in `~/.assistant/telemetry/`, readable only by you, keeps 90
+  days up to about 200 MB, and the pulse tidies it once an hour and logs a line
+  if a setting can't be read or records were lost. Set
+  `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
+  off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
+  [Telemetry](docs/telemetry.md).
 - Record everything Assistant types into an agent session before it types it.
   Agents run with their permission prompts off and can't take typing back, and
   before this only two of twelve ways of typing left any record, and one typed
@@ -99,21 +144,6 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   can't be rebuilt, it can't show the line until a rebuild works. The file
   holds short error samples, with tokens, keys, and passwords removed, that can
   include a branch name or a model id. Counts stay out of the actions ledger.
-- Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
-  conversation back to your inbox, and Gmail Trash from **Apply approvals**)
-  and every unsubscribe in a new append-only record, before it runs and again
-  when it ends, in `~/.assistant/effects/effects.jsonl`. An action Assistant
-  can't record doesn't run, and the page says "Assistant couldn't record this
-  action, so it didn't run it. Check that your disk isn't full, then try
-  again". A second press while the first is still working is turned down. An
-  unsubscribe that went through is never sent again, and neither is one that
-  was sent and never answered: the row says "Assistant sent this but didn't
-  hear back, so it may have gone through. Approve it again to send it once
-  more". An **Undo** that doesn't happen, because the record refused it or
-  Gmail did, leaves the row in Trash and says why on the row and on the
-  last-run line, and the next **Apply approvals** tries it again. The record
-  holds ids only, never a subject, a sender, message text or an unsubscribe
-  link, and only you can read it. See `docs/effects.md`.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or
@@ -174,6 +204,28 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Stop one silent connection from freezing the dashboard. The dashboard's server answers one connection at a
+  time, and a connection that opened and sent nothing held it for as long as it stayed open; browsers keep
+  spare connections like that. Such a connection is now dropped after two seconds of silence.
+- Stop a Slack thread from reading as instructions to the agent. The thread in
+  a saved task now sits between marker lines with a code made for that task,
+  under rules that tell the agent it is content to act on and never
+  instructions, the same way the Work queue treats a row. A message can't forge
+  either marker, and the first message no longer appears as the title in the
+  prompt the agent reads. A long thread keeps its first message and the one you
+  reacted to, marked, then the newest messages that fit in 50 messages and 8,000
+  characters, and says how many it left out, with the link to read the rest. The
+  whole thread is read, not only its first 200 messages. A Slack task saved
+  before this change is fenced when its prompt is built.
+- Stop the Slack reactor from corrupting your task list. It now takes the lock
+  the Python services take before it reads and writes the list, waits up to 5
+  seconds for it, and tries the whole add three times about 15 seconds apart.
+  Before this, a reaction landing while another writer saved could corrupt the
+  file or lose a task. If it still can't save, it logs that and puts a warning
+  reaction on the message, so you can see it wasn't saved. The reactor also
+  writes through a private temporary file of its own and removes it if the save
+  fails. This needs macOS; on another system the reactor doesn't write. The
+  `/todo` and `/cleanup` skills still write the list without the lock.
 - Some services could fail without a word because they ran under the system's
   older Python. They now use the same Python as the rest of Assistant.
 - Trim oversized logs. Every five minutes the Assistant now checks its logs:

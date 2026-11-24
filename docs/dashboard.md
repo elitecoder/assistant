@@ -1,7 +1,9 @@
 # Use the dashboard
 
 Open the dashboard at http://127.0.0.1:9876. `bin/todo-server.py` serves it on
-localhost only.
+localhost only. The server answers one connection at a time and closes any
+connection that stays silent for two seconds, so an unused browser connection
+can't freeze the page.
 
 If you open the saved file
 `~/.claude/assistant-dashboard.html` straight from disk instead, only **Refresh
