@@ -10,6 +10,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Show a failure that keeps repeating as one red line at the top of the
+  dashboard, with how many times it happened, since when, and the error. It
+  covers self-update, background model calls, the page refresh after an edit,
+  and a merge check with no pull request to merge. A background job that
+  fails the same way three times in a row now stops retrying for an hour,
+  then two, up to 24 hours, and the line says when it will try again. A
+  different error or one success clears the pause. Self-update, the lesson,
+  strategist, morning brief, Observer audit, and triage model calls pause
+  this way. A Work queue or Slack tab refresh you ask for always runs, and
+  `self_update.py --force` ignores the pause. Counts are in
+  `~/.assistant/failures.json`, not in the actions ledger.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or
@@ -70,6 +81,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Refresh the page, switch modes, send a merge, and read a transcript with the
+  Python the service itself runs, not the first `python3` on its path, which
+  can be the older system Python and fail without a word.
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
   workspaces with a bare `cmux list-workspaces`, which shows only the focused

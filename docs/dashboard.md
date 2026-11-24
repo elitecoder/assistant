@@ -88,6 +88,30 @@ fingerprints, a locked preflight, private backups, and an atomic log update. Its
 private receipt doesn't enter the outgoing action ledger. It never approves,
 merges, closes, or completes the work those alerts represent.
 
+## Repeated failures
+
+When the same failure happens three or more times in a day, a red line shows
+at the top of the page, once, with a count. For example: "Self-update has
+failed 14 times since Monday 09:10 with the same error: fetch failed: fatal:
+couldn't find remote ref feat/x. Assistant has paused retries until 15:10."
+The page shows the five most frequent. It covers self-update, background
+model calls, the page refresh after an edit, and a merge check that has no
+pull request to merge. Two failures that differ only in a number, an id, or a
+path count as the same one.
+
+Background jobs that fail the same way three times in a row stop retrying for
+an hour, then two, four, and so on up to 24 hours. Self-update and the lesson,
+strategist, morning brief, Observer audit, and triage model calls work this
+way. A different error or one success clears the pause and keeps the count.
+Anything you ask for, such as a Work queue or Slack tab refresh, always runs,
+and `self_update.py --force` ignores the pause. The line says "paused" only
+while a pause is on.
+
+The counts live in `~/.assistant/failures.json`, which keeps the 200 most
+recent failures and only the first 200 characters of each error, with tokens
+removed. They don't go to the actions ledger or to Slack. Delete the file to
+start over.
+
 ## Dashboard writing style
 
 Follow [Google's voice and tone guide](https://developers.google.com/style/tone)

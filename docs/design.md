@@ -140,6 +140,11 @@ draw corrections get downgraded to `muted` by `bin/tools/pattern-feedback.py`.
   minutes is removed before the update when `lsof` shows no process has it open
   and no git process is working in the repo. A young or live lock is left
   alone, and every removal is recorded.
+- **Self-update backs off a failure that repeats.** After three identical
+  failures in a row it waits an hour, then two, up to 24 hours;
+  `self_update.py --force` tries anyway. `src/assistant/failwatch.py` keeps the
+  counts in `~/.assistant/failures.json`, and the dashboard shows each repeat
+  once. See [Repeated failures](dashboard.md#repeated-failures).
 - **`NO_INGEST_GUARD` stops resend loops.** If the last send to a workspace
   returned `transcript_size_delta=0` (cmux sent it, but no Claude process was
   reading) and the verdict hasn't changed, the pulse skips the next resend.

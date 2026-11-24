@@ -88,6 +88,7 @@ def test_a_refused_commit_counts_once_and_the_quiet_repeat_does_not(tmp_path):
     assert second["skipped_reason"] == "syntax-fail-known"
     (row,) = failwatch.repeated(now=NOW + 100, min_count=1)
     assert row["count"] == 1 and "broken.py" in row["sample"]
+    assert row["streak"] == 1, "a quiet repeat of a refused commit must not look like a success"
 
 
 def test_a_failed_install_counts(tmp_path):
