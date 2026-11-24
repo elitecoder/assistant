@@ -101,7 +101,6 @@ GMAIL_EFFECTS = {"archive": "gmail.archive", "read": "gmail.mark_read", "unarchi
 CMUX_TIMEOUT = 15
 # What the shell that starts the browser says, as the whole of its error, when `uv` isn't installed.
 NOT_INSTALLED = re.compile(r" failed: zsh:(?:exec:)?\d+: command not found: uv$")
-SAVE_PATH = re.compile(r"/archives/([CDG][A-Z0-9]{8,11})/p(\d{10})(\d{6})")
 URL_MAX = 1000
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 MODE_CHECK_SEC = 5.0
@@ -147,12 +146,7 @@ def entry(doc: dict, key: str) -> dict:
     return found if isinstance(found, dict) else {}
 
 
-def slack_save(link: str) -> tuple[str, str] | None:
-    """The channel and message of the Later save a Slack permalink points at, or None for any other link."""
-    parts = urllib.parse.urlsplit(link)
-    found = SAVE_PATH.fullmatch(parts.path) if parts.scheme == "https" and (parts.hostname or "").endswith(".slack.com") \
-        else None
-    return (found.group(1), f"{found.group(2)}.{found.group(3)}") if found else None
+slack_save = held_saves.slack_save
 
 
 def mark_sent(key: str) -> None:
@@ -239,7 +233,7 @@ def queue_save(cid: str, ts: str, at: str = "", link: str = "") -> None:
     global saves_worker
     with saves_lock:
         pending_saves[f"{cid}:{ts}"] = {"cid": cid, "ts": ts, "at": at or now(),
-                                        "link": link if slack_save(link) == (cid, ts) else ""}
+                                        "link": link if held_saves.own_link(link, cid, ts) else ""}
         if saves_worker is not None:
             return
         worker = saves_worker = threading.Thread(target=complete_saves, daemon=True)
@@ -280,7 +274,7 @@ def complete_saves() -> None:
                     batch = dict(pending_saves)
                     pending_saves.clear()
                     running_saves.update(batch)
-            error = " ".join(f"Couldn't mark the save done: {type(exc).__name__}: {exc}".split())[:300]
+            error = " ".join(f"{held_saves.WORKER_PREFIX}{type(exc).__name__}: {exc}".split())[:300]
             try:
                 record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})
                 held_saves.hold({k: (c, error) for k, c in batch.items()}, clock())
@@ -455,6 +449,8 @@ SENT_UNHEARD = ("Assistant sent this but didn't hear back, so it may have gone t
                 "Approve it again to send it once more")
 UNREPORTED = "Slack didn't say what happened to this save"
 FAULT = "Assistant couldn't record this action, so it didn't run it. This is a fault in Assistant, not something you did"
+held_saves.LEDGER.update({UNRECORDED: "record", FAULT: "fault", IN_PROGRESS: "progress", UNAPPROVED: "approval",
+                          UNREPORTED: "silent"})
 
 
 def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoes: str = ""):

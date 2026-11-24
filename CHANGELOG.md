@@ -103,9 +103,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   5 and 15 minutes, and a restart keeps the saves still waiting. If the last try
   fails, one line under the page title says how many saves couldn't be marked,
   why in plain words ("Slack asked us to slow down", "Slack needs you to sign in
-  again", "Slack didn't answer", and so on), with an "Open in Slack" link to each
-  of the first three, and what to do ("Mark it done in Slack yourself", or sign in
-  again). A sign-in problem shows at once, because trying again can't fix it. The
+  again", "Slack didn't answer", "an earlier try may still be running", and so
+  on), with an "Open in Slack" link to each of the first three that says when
+  that save was sent, and what to do ("Mark it done in Slack yourself", or sign
+  in again). A sign-in problem shows at once, because trying again can't fix it. The
   line goes away when Slack no longer has the save or a retry marks it.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is

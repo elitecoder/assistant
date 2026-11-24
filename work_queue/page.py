@@ -758,11 +758,13 @@ async function agSend(){const rows=agPicks(),n=rows.length,hands=$('ag-hands').c
  sending=false;
  msg.textContent=[ok?'Sent '+ok+' to agents'+(hands?', hands-off.':' for a first pass.')+' Their status and results show on the Tasks tab of the Assistant dashboard, and each session on the Sessions tab once it starts.':'',
   bad.length?'Not sent: '+bad.join('; ')+'.':''].filter(Boolean).join(' ');agCount()}
+function localTime(iso){const d=new Date(iso);return isNaN(d)?'':d.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
 function renderRefresh(){const r=ST.refresh||{},b=$('refresh');b.disabled=!!r.running;b.textContent=r.running?'Refreshing…':'Refresh';
  $('refresh-msg').textContent=r.running?'Reading your sources. This page reloads when it finishes.':r.error?'Last refresh failed: '+r.error:'';
- const h=ST.slack_held,el=$('held-msg');el.textContent=h.text||'';
- (h.links||[]).forEach((u,i)=>{const a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';a.textContent='Open in Slack';el.append(i?' · ':' ',a)});
- if(h.more)el.append(' and '+h.more+' more.')}
+ const h=ST.slack_held,el=$('held-msg'),L=h.links||[];el.textContent=h.text||'';
+ L.forEach((l,i)=>{const t=localTime(l.at),a=document.createElement('a');a.href=l.url;a.target='_blank';a.rel='noopener';
+  a.textContent='Open in Slack'+(t?' (sent '+t+')':'');a.setAttribute('aria-label','Open save '+(i+1)+' of '+L.length+' in Slack'+(t?', sent '+t:''));el.append(i?' · ':' ',a)});
+ if(L.length)el.append(h.more?' and '+h.more+' more.':'.')}
 async function refresh(){try{ST=Object.assign(ST,await api('/api/state'));API=true;MK=ST.marks||{}}catch(_){API=false}
  const wasRunning=polling;paint();renderAp();renderRefresh();
  if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)reloadIfIdle()}}
