@@ -45,7 +45,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import action_classes, decisions, policy, todostore
+from . import action_classes, decisions, pointers, policy, records, todostore
 
 EVENT_SCHEMA = "world-event/1"
 DISPOSITION_KIND = "triage.disposition"
@@ -287,11 +287,13 @@ def create_todo(event: dict, policy_id: str, params: dict,
             "source": source_key,
             "createdAt": utc_iso(now),
             "createdBy": f"policy:{policy_id}",
+            "trace": pointers.new_trace_id(),
         })
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         os.replace(tmp, p)
+    records.task_created(items[-1], "pulse")
     return todo_id, True
 
 

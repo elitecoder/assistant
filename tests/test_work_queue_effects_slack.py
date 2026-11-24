@@ -55,6 +55,15 @@ def test_a_save_marked_from_apply_records_its_intent_then_a_verified_result(wq):
     assert (e["component"], e["trace"], e["undoes"]) == ("work-queue", "", "")
 
 
+def test_a_saves_effect_carries_the_trace_of_its_row(wq):
+    from work_queue import traces
+    traces.stamp([[SAVE]])
+    slack_answers(wq, {SAVE: DONE})
+    assert server.run_slack([job()]) == {SAVE: DONE}
+    [e] = recorded(wq)
+    assert e["trace"] == traces.lookup(SAVE) and pointers.is_trace_id(e["trace"])
+
+
 def test_a_save_marked_from_a_send_records_a_tap_on_the_send_route_at_the_time_of_the_send(wq, fixed_clock):
     slack_answers(wq, {SAVE: DONE})
     with slack.session_lock():  # the worker runs after the clock has moved on

@@ -1,11 +1,45 @@
 """pytest config — make the bin/ scripts and the src/ package importable from tests."""
+import atexit
 import os
 import pwd
+import shutil
 import sys
+import tempfile
 import types
 from pathlib import Path
 
 import pytest
+
+# Tests never run against the real home. Many scripts under bin/ work out the home folder once, when they are
+# imported, so a test that forgets to point one at a temporary folder writes the developer's real ~/.assistant:
+# the lesson extractor's tests appended to the real assistant-audit.log for months, and pulse tests pruned the real
+# ~/.claude/spawn-prompts. HOME is moved to a throwaway folder here, before any module is imported, for the whole
+# run. A test that needs a home of its own still sets one. Tools that keep what they need in the real home (the
+# test browser, uv's Pythons, npm's cache) are told where it is; uv is left alone when XDG variables already say.
+# Git gets no global settings at all, as on CI: a developer's signing or hook settings must not reach a test.
+_REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+_KEPT = {"PLAYWRIGHT_BROWSERS_PATH": "Library/Caches/ms-playwright" if sys.platform == "darwin" else ".cache/ms-playwright",
+         "npm_config_cache": ".npm"}
+if not os.environ.get("XDG_CACHE_HOME"):
+    _KEPT["UV_CACHE_DIR"] = ".cache/uv"
+if not os.environ.get("XDG_DATA_HOME"):
+    _KEPT["UV_PYTHON_INSTALL_DIR"] = ".local/share/uv/python"
+for _name, _place in _KEPT.items():
+    os.environ.setdefault(_name, str(_REAL_HOME / _place))
+_TESTS_HOME_PREFIX = "assistant-tests-home-"
+_MADE = tempfile.mkdtemp(prefix=_TESTS_HOME_PREFIX)
+TESTS_HOME = Path(_MADE)
+os.environ["HOME"] = str(TESTS_HOME)
+
+
+def _remove_tests_home(made=_MADE, pid=os.getpid()):
+    """Remove the folder made above when the run ends: that folder and no other, whatever TESTS_HOME says by then,
+    and never from a child process a test forked."""
+    if os.getpid() == pid and Path(made).name.startswith(_TESTS_HOME_PREFIX):
+        shutil.rmtree(made, ignore_errors=True)
+
+
+atexit.register(_remove_tests_home)
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "bin"))
@@ -32,11 +66,15 @@ for _knob in ("ASSISTANT_OBSERVER_HOLD_ACTIONS", "OBSERVER_MODEL", "OBSERVER_AUD
               "OBSERVER_EVERY_MIN"):
     os.environ.pop(_knob, None)
 
+# The same for the variables that say where Assistant keeps its data: one set for the login session would
+# point the code under test straight back at the real folders, past the throwaway HOME.
+for _place in ("ASSISTANT_DIR", "CMUX_WATCHER_ASSISTANT_DIR", "WQ_DATA"):
+    os.environ.pop(_place, None)
+
 
 # Files in the real user's home that tests must never write: Copilot's hook
 # folder and the rules folder Assistant links for Copilot. On 2026-11-12 a test
 # wrote its fake hook list over the real ~/.copilot/hooks/cmux.json.
-_REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 _GUARDED = (_REAL_HOME / ".copilot" / "hooks", _REAL_HOME / ".assistant" / "copilot-instructions")
 
 
@@ -71,6 +109,14 @@ def _real_home_untouched():
 # ledger pass by variable), and `real_mode` tests read the real settings. Tests
 # of the defaults restore `job_settings` and delete the variable themselves.
 @pytest.fixture(autouse=True)
+def _home_is_the_tests_home(monkeypatch):
+    """Every test starts with HOME at the run's throwaway folder and leaves it there. Some older tests set
+    os.environ["HOME"] to a folder of their own and never put it back; without this, every later test would share
+    that folder after it was deleted."""
+    monkeypatch.setenv("HOME", str(TESTS_HOME))
+
+
+@pytest.fixture(autouse=True)
 def _watcher_on(request, monkeypatch):
     if "real_mode" not in request.keywords:
         from assistant import mode
@@ -78,6 +124,13 @@ def _watcher_on(request, monkeypatch):
         monkeypatch.setattr(mode, "job_settings", lambda: dict.fromkeys(mode.JOBS, True))
         monkeypatch.setenv("ASSISTANT_LESSON_LEDGER_PASS", "1")
     monkeypatch.setenv("ASSISTANT_WATCHER", "1")
+
+
+# Telemetry leaves out a field it doesn't know. In tests that would hide a mistyped name, so a record the store
+# would trim raises instead; tests of the trimming itself clear the variable.
+@pytest.fixture(autouse=True)
+def _telemetry_strict(monkeypatch):
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "1")
 
 
 @pytest.fixture(autouse=True)

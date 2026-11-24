@@ -26,8 +26,9 @@ reopens are recorded. Typing into agent sessions follows.
 - **No double runs.** A second press while the first is still working is
   turned away ("This is already in progress, or Assistant stopped partway
   through it. Try again in ten minutes"). A line with no result that is
-  more than ten minutes old stops counting, so a crash holds that action for
-  ten minutes, not for good.
+  more than ten minutes old stops counting as in progress, so a crash holds
+  an action you can undo for ten minutes, not for good. An unsubscribe is
+  different, because it can't be undone: see `unknown` below.
 - **Only ever added to.** Lines are appended. Nothing rewrites or deletes one,
   and the file is never trimmed automatically.
 - **Pointers, not content.** A line holds ids: the Gmail address you linked
@@ -68,7 +69,10 @@ The result's `outcome` is one of three words:
   points at an action whose outcome is unknown.
 
 An intent with no result at all is an action Assistant started and never
-finished, for example because it stopped partway. To find the ones whose
+finished, for example because it stopped partway or your Mac went to sleep.
+For an action that can't be undone, Assistant treats that the same as
+`unknown` once ten minutes have passed: it may have gone through, so it
+isn't sent again unless you approve it again. To find the ones whose
 outcome is unknown, run `grep '"outcome":"unknown"' ~/.assistant/effects/effects.jsonl`.
 
 ## What can be undone

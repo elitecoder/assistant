@@ -17,12 +17,15 @@ Forbidden surfaces:
 """
 from __future__ import annotations
 
+import os
+import pwd
 import re
 import unittest
 from pathlib import Path
 
 REPO_ASSISTANT = Path(__file__).resolve().parent.parent
-REPO_CLEANUP_SKILL = Path.home() / ".claude/skills/cleanup"
+# The skill as installed on this machine, read only. The test run moves HOME, so the real home is asked for by name.
+REPO_CLEANUP_SKILL = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".claude/skills/cleanup"
 
 
 def files_with_extension(root: Path, exts: tuple[str, ...]) -> list[Path]:

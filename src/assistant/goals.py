@@ -69,7 +69,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, decisions, todostore
+from . import config, decisions, pointers, records, todostore
 
 SCHEMA = 1
 
@@ -1360,12 +1360,14 @@ def _stage_todo(goal: dict, step_class: str, title: str, detail: str,
             "createdAt": utc_iso(now),
             "status": "open",
             "autoDispatch": bool(autodispatch),
+            "trace": pointers.new_trace_id(),
         }
         items.append(item)
         data["_lastUpdated"] = utc_iso(now)
         tmp = tp.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         os.replace(tmp, tp)
+    records.task_created(item, "pulse")
     return item, True
 
 

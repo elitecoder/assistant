@@ -910,6 +910,52 @@ def test_an_effect_sent_with_no_answer_is_unknown_and_holds_back_a_repeat_that_c
     assert effects.begin(UNSUB, UNSUB_TARGET, {**DECISION, "at": datetime.fromtimestamp(clock.t, timezone.utc).isoformat()})
 
 
+def later(clock):
+    return {**DECISION, "at": datetime.fromtimestamp(clock.t, timezone.utc).isoformat()}
+
+
+def test_an_effect_that_cant_be_undone_and_never_got_a_result_holds_back_the_same_old_approval(ledger, clock):
+    """Assistant dies, or the Mac sleeps, after the intent and perhaps after acting. Ten minutes later the intent
+    stops counting as in progress; the old approval must still not send it a second time."""
+    eid = effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    with pytest.raises(effects.Duplicate) as early:
+        effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    assert (early.value.done, early.value.unknown) == (False, False), "still in progress"
+    clock.t += effects.IN_FLIGHT_SEC + 1
+    with pytest.raises(effects.Duplicate) as caught:
+        effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    assert (caught.value.done, caught.value.unknown) == (False, True)
+    assert [e["id"] for e in effects.uncertain()] == [eid] and [e["id"] for e in effects.unfinished()] == [eid]
+    assert effects.begin(UNSUB, UNSUB_TARGET, later(clock)), "an approval given after it may send it once more"
+
+
+def test_an_approval_from_just_before_an_abandoned_intent_is_as_old_as_it(ledger, clock):
+    effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    clock.t += effects.IN_FLIGHT_SEC
+    at_the_intent = {**DECISION, "at": datetime.fromtimestamp(T0, timezone.utc).isoformat()}
+    with pytest.raises(effects.Duplicate):
+        effects.begin(UNSUB, UNSUB_TARGET, at_the_intent)
+
+
+def test_an_abandoned_intent_holds_back_only_its_own_target_and_only_what_cant_be_undone(ledger, clock):
+    effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    first = archive()
+    clock.t += effects.IN_FLIGHT_SEC + 1
+    assert effects.begin(UNSUB, {**UNSUB_TARGET, "host": "other.example.com"}, DECISION), "another sender is untouched"
+    assert archive().startswith("ef-"), "an archive can be undone, so an abandoned one never holds a repeat back"
+    assert first not in [e["id"] for e in effects.uncertain()], "and it is only unfinished, not uncertain"
+    assert first in [e["id"] for e in effects.unfinished()]
+
+
+def test_an_intent_dated_in_the_future_never_holds_an_action_back_for_good(ledger, clock):
+    """A row whose time can't be trusted must not block its target for ever (it shows in unfinished instead)."""
+    eid = effects.begin(UNSUB, UNSUB_TARGET, DECISION)
+    clock.t -= 3 * effects.IN_FLIGHT_SEC  # the clock moved back: the intent is now far in the future
+    approved = {**DECISION, "at": datetime.fromtimestamp(clock.t - 5, timezone.utc).isoformat()}
+    assert effects.begin(UNSUB, UNSUB_TARGET, approved)
+    assert eid in [e["id"] for e in effects.unfinished()] and eid not in [e["id"] for e in effects.uncertain()]
+
+
 def test_a_done_effect_is_reported_as_done_even_when_an_unknown_one_is_older(ledger, clock):
     effects.finish(effects.begin(UNSUB, UNSUB_TARGET, DECISION), "unknown")
     clock.t += 5

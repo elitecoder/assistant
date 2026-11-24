@@ -38,8 +38,8 @@ CHECKS = (
     (
         "a reopened save names the mark it reverses",
         S,
-        "kind, ref, at,\n                                       undoes=effects.latest_undoable(cls, target) if undo else \"\")",
-        "kind, ref, at,\n                                       undoes=\"\")",
+        "kind, ref, at, trace_key=key,\n                                       undoes=effects.latest_undoable(cls, target) if undo else \"\")",
+        "kind, ref, at, trace_key=key,\n                                       undoes=\"\")",
         W + "test_a_reopened_save_is_linked_to_the_mark_it_reverses",
     ),
     (
@@ -496,5 +496,12 @@ CHECKS = (
         "return isNaN(d)?'':d.toLocaleString",
         'return d.toLocaleString',
         B + 'test_a_link_whose_send_time_cant_be_read_is_still_offered_without_it',
+    ),
+    (
+        "a Slack save's effect carries the trace of its row",
+        "work_queue/server.py",
+        "            ef, refusal = begin_effect(cls, target, kind, ref, at, trace_key=key,\n",
+        "            ef, refusal = begin_effect(cls, target, kind, ref, at,\n",
+        "tests/test_work_queue_effects_slack.py::test_a_saves_effect_carries_the_trace_of_its_row",
     ),
 )

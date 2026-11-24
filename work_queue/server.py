@@ -59,9 +59,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from assistant import effects, mode, pointers, todostore
+from assistant import effects, mode, pointers, records, todostore
 
-from work_queue import config, held_saves, page, refresh, tools
+from work_queue import config, held_saves, page, refresh, tools, traces
 from work_queue.inputs import slack
 from work_queue.todo_result import RESULT_TAG, read_store, result_of, write_store
 
@@ -187,6 +187,7 @@ def queue_todo(body: dict):
         items = doc.setdefault("items", [])
         prior = {i.get("id"): i for i in items}.get(entry(queued, key).get("id"))
         if prior and prior.get("status") != "removed":
+            traces.reconcile_locked({key})
             mark_sent(key)
             return 200, {"id": prior["id"], "existing": True}
         next_n = 1 + max([int(m.group(1)) for b in (items, doc.get("completed", []), doc.get("removed", [])) for i in b
@@ -194,21 +195,24 @@ def queue_todo(body: dict):
         td_id = f"td-{next_n:03d}"
         detail = " ".join(str(body.get("detail") or "").split())[:1500]
         code = secrets.token_hex(8)
+        same = [url] if key.startswith(EMAIL_MARK) and url else []  # an email sent from the Email tab is also its link
+        trace = traces.trace_for(key, entry(queued, key).get("trace"), also=same)
         row = "\n".join([f"----- BEGIN UNTRUSTED ROW {code} -----", f"Title: {title}", f"Detail: {detail}",
                          f"Source: {url}", f"----- END UNTRUSTED ROW {code} -----"])
         if note := note_text(note):
             row = f"{NOTE_LABEL}\n{note}\n\n{row}"
         items.append({"id": td_id, "priority": "P2", "title": title, "source": f"work-queue:{now()[:10]}",
-                      "createdAt": now()[:10], "status": "open", "autoDispatch": True, **({"url": url} if url else {}),
-                      "workQueueMode": how,
+                      "createdAt": now()[:10], "status": "open", "autoDispatch": True, "trace": trace,
+                      **({"url": url} if url else {}), "workQueueMode": how,
                       "detail": f"{MODES[how].replace('<td-id>', td_id).replace('<code>', code)}\n\n{row}"})
         doc["_lastUpdated"] = now()
         write_store(doc)
-        queued[key] = {"id": td_id, "at": now(), "mode": how}
+        queued[key] = {"id": td_id, "at": now(), "mode": how, "trace": trace}
         config.write_json(queued_file, queued)
         mark_sent(key)
         if key.startswith(EMAIL_MARK) and url:
             mark_sent(url)
+    records.task_created(items[-1], "work-queue", how)
     if save := slack_save(key):
         queue_save(*save, at=sent_at, link=key)
     return 200, {"id": td_id, "existing": False}
@@ -453,13 +457,14 @@ held_saves.LEDGER.update({UNRECORDED: "record", FAULT: "fault", IN_PROGRESS: "pr
                           UNREPORTED: "silent"})
 
 
-def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoes: str = ""):
+def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoes: str = "", trace_key: str = ""):
     """Record the intent to change something outside Assistant. Returns (effect id, None) when the caller may act, or
     ("", (status code, plain sentence)) when it must not: the action isn't recorded, is in progress, isn't approved,
-    or is a target the record can't describe (a fault in Assistant, so it says so on stderr, without content)."""
+    or is a target the record can't describe (a fault in Assistant, so it says so on stderr, without content).
+    `trace_key` is the key the page uses for the row (see `traces.lookup_many`): the effect carries the row's trace."""
     try:
-        # The row's trace id goes here (trace="") once rows carry one.
-        return effects.begin(effect_class, target, {"kind": kind, "ref": ref, "at": at}, trace="",
+        return effects.begin(effect_class, target, {"kind": kind, "ref": ref, "at": at},
+                             trace=records.guard(traces.lookup, trace_key) or "",
                              component="work-queue", undoes=undoes), None
     except effects.Duplicate as exc:
         return "", (409, ALREADY_DONE if exc.done else SENT_UNHEARD if exc.unknown else IN_PROGRESS)
@@ -507,7 +512,7 @@ def gmail_action(body: dict):
     account, tid = found
     flag, label = GMAIL_ACTIONS[action]
     cls, target = GMAIL_EFFECTS[action], {"account": account, "thread": tid}
-    ef, refusal = begin_effect(cls, target, "tap", "/api/gmail", now(),
+    ef, refusal = begin_effect(cls, target, "tap", "/api/gmail", now(), trace_key=EMAIL_MARK + key,
                                undoes=effects.latest_undoable(cls, target) if action == "unarchive" else "")
     if refusal:
         return refusal[0], {"error": refusal[1]}
@@ -582,6 +587,7 @@ def apply_gmail(jobs) -> dict:
         target = {"account": acct, "msgs": ids, "row": pointers.row_pointer(key)}
         # A conversation with no messages changes nothing outside Assistant, so there is nothing to record.
         ef, refusal = begin_effect(cls, target, "decision", pointers.row_pointer(key), cand.get("decided_at"),
+                                   trace_key=key,
                                    undoes=effects.latest_undoable(cls, target) if undo else "") if ids else ("", None)
         if refusal and undo:
             # The mail is still in Trash: keep the row done, with the reason, so the next Apply tries again.
@@ -639,7 +645,7 @@ def apply_unsub(jobs) -> dict:
             continue
         row = pointers.row_pointer(key)
         ef, refusal = begin_effect("mail.unsubscribe", {"row": row, "host": urllib.parse.urlsplit(cand["url"]).hostname},
-                                   "decision", row, cand.get("decided_at"))
+                                   "decision", row, cand.get("decided_at"), trace_key=key)
         if refusal and refusal[1] == ALREADY_DONE:
             # It went through before, and applied.json has lost its entry: say so, and send nothing.
             out[key] = {"status": "done", "verified": True, "at": now()}
@@ -723,7 +729,7 @@ def run_slack(jobs) -> dict:
             target = slack_target(cand["cid"], cand["ts"], key)
             kind, ref, at = ("tap", "/api/todo", cand["sent_at"]) if "sent_at" in cand \
                 else ("decision", pointers.row_pointer(key), cand.get("decided_at"))
-            ef, refusal = begin_effect(cls, target, kind, ref, at,
+            ef, refusal = begin_effect(cls, target, kind, ref, at, trace_key=key,
                                        undoes=effects.latest_undoable(cls, target) if undo else "")
             if refusal and undo:
                 # The save is still done: keep its row as it was, with the reason, so the next Apply tries again.

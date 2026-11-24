@@ -546,8 +546,8 @@ CHECKS = (
     (
         "uncertain lists the effects whose outcome is unknown",
         E,
-        "    return _publish(list(_sync().unknown.values()))\n",
-        "    return []\n",
+        "    return _publish(list(state.unknown.values()) + stale)\n",
+        "    return _publish(stale)\n",
         T + "test_uncertain_lists_only_effects_whose_outcome_is_unknown",
     ),
     (
@@ -647,5 +647,40 @@ CHECKS = (
         '        error = "; ".join(dict.fromkeys(filter(None, [error, *held.values()])))\n',
         '        error = "; ".join(filter(None, [error, *held.values()]))\n',
         W + "test_each_row_an_undo_didnt_happen_for_keeps_its_own_reason_and_the_bar_gives_each_reason_once",
+    ),
+    (
+        "an intent that never got a result holds back the same old approval for an effect that can't be undone",
+        "src/assistant/effects.py",
+        "                if any(_abandoned(e, now) and counted <= e.t for e in same):\n",
+        "                if False:\n",
+        "tests/test_effects.py::test_an_effect_that_cant_be_undone_and_never_got_a_result_holds_back_the_same_old_approval",
+    ),
+    (
+        "an approval dated at the abandoned intent's own time is not newer than it",
+        "src/assistant/effects.py",
+        "_abandoned(e, now) and counted <= e.t for e in same",
+        "_abandoned(e, now) and counted < e.t for e in same",
+        "tests/test_effects.py::test_an_approval_from_just_before_an_abandoned_intent_is_as_old_as_it",
+    ),
+    (
+        "an abandoned effect that can't be undone is listed as uncertain",
+        "src/assistant/effects.py",
+        "    return _publish(list(state.unknown.values()) + stale)\n",
+        "    return _publish(list(state.unknown.values()))\n",
+        "tests/test_effects.py::test_an_effect_that_cant_be_undone_and_never_got_a_result_holds_back_the_same_old_approval",
+    ),
+    (
+        "an abandoned effect that can be undone is only unfinished, not uncertain",
+        "src/assistant/effects.py",
+        "             if _abandoned(e, now) and e.cls in CLASSES and not CLASSES[e.cls].reversible]\n",
+        "             if _abandoned(e, now) and e.cls in CLASSES]\n",
+        "tests/test_effects.py::test_an_abandoned_intent_holds_back_only_its_own_target_and_only_what_cant_be_undone",
+    ),
+    (
+        "an intent dated in the future is never counted as abandoned",
+        "src/assistant/effects.py",
+        "    return effect.outcome is None and now - effect.t >= IN_FLIGHT_SEC\n",
+        "    return effect.outcome is None and abs(now - effect.t) >= IN_FLIGHT_SEC\n",
+        "tests/test_effects.py::test_an_intent_dated_in_the_future_never_holds_an_action_back_for_good",
     ),
 )
