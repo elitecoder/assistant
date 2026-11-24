@@ -50,6 +50,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Keep a local record of what Assistant does, as ids, counts, timings, states
+  and money, so later features can follow one piece of work from the moment it
+  arrives to your decision on it. It never holds message text, titles,
+  prompts, a model's reasons, email addresses or links, and a secret never
+  reaches it. Nothing leaves your Mac, and nothing about it shows on a page
+  yet. It lives in `~/.assistant/telemetry/`, readable only by you, keeps 90
+  days up to about 200 MB, and the pulse tidies it once an hour and logs a line
+  if a setting can't be read or records were lost. Set
+  `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
+  off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
+  [Telemetry](docs/telemetry.md).
 - Show a failure that keeps repeating as one red line at the top of the
   dashboard, with how many times in a row it has happened, since when, a short
   error, and what happens next, all in one box that shows two lines and keeps

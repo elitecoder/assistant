@@ -80,6 +80,13 @@ def _watcher_on(request, monkeypatch):
     monkeypatch.setenv("ASSISTANT_WATCHER", "1")
 
 
+# Telemetry leaves out a field it doesn't know. In tests that would hide a mistyped name, so a record the store
+# would trim raises instead; tests of the trimming itself clear the variable.
+@pytest.fixture(autouse=True)
+def _telemetry_strict(monkeypatch):
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "1")
+
+
 @pytest.fixture(autouse=True)
 def _no_real_copilot_home(monkeypatch):
     monkeypatch.delenv("COPILOT_HOME", raising=False)
