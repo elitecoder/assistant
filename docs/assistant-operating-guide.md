@@ -303,7 +303,7 @@ If de-dup fires and you genuinely need to bypass (rare — usually the duplicate
 | **Mukul says "done" / "completed" / "ship it"** | `/todo done td-NNN`. Don't delete — completion history is signal. |
 | **Surface waiting** | Once per dispatcher turn (or when Mukul asks "what's on my plate"), render the TODO HTML and surface the top P0/P1 items inline. Don't re-list the whole board unless asked. |
 
-Schema is documented in the `_description` field of the JSON. Priority values: `P0 P1 P2 P3 P4`. Required item fields: `id priority title detail source createdAt`. Optional: `url closedAt`.
+Schema is documented in the `_description` field of the JSON. Priority values: `P0 P1 P2 P3 P4`. Required item fields: `id priority title detail source createdAt`. Optional: `url closedAt`. Each item also carries `trace`, an id (`tr-` and 16 hex characters) minted when the item is created and never changed; the pulse adds one to any item that has none.
 
 ## Subagent dispatch defaults
 

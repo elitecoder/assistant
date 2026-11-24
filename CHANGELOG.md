@@ -69,6 +69,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Every Work queue row and every TODO now carries a short id that later
+  features will use to show where a piece of work came from. Nothing you see
+  changes yet.
 - Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
   conversation back to your inbox, and Gmail Trash from **Apply approvals**)
   and every unsubscribe in a new append-only record, before it runs and again
