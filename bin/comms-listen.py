@@ -512,9 +512,15 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
         if confirmed():
             delivered = True
         elif comms_session.message_in_box(paths, surface, marker, agent):
-            with comms_session.typing_scope(paths, ws, surface, "submit", kind="tap", ref=allowed(recs[-1])["ref"],
-                                            slack_ts=allowed(recs[-1])["slack_ts"]) as keys:
-                delivered = comms_session.submit(paths, surface, feed, marker, confirmed, agent=agent, retype=False)
+            try:
+                with comms_session.typing_scope(paths, ws, surface, "submit", kind="tap", ref=allowed(recs[-1])["ref"],
+                                                slack_ts=allowed(recs[-1])["slack_ts"]) as keys:
+                    delivered = comms_session.submit(paths, surface, feed, marker, confirmed, agent=agent,
+                                                     retype=False)
+            except session_effects.Refused as again:
+                if again.code != "loop":
+                    raise
+                raise refusal from None  # Enter pressed enough times: it is "couldn't confirm", not silence
             if not delivered and not keys.sent:
                 raise refusal  # the box no longer shows it (someone is typing there): nothing was pressed
         else:

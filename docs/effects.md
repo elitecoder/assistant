@@ -173,7 +173,7 @@ What the record does for you:
   permissions of `~/.assistant/effects`). If the record fails after a session
   was started, or cmux refuses the instruction, the task is parked (blocked,
   with the workspace named on the card), so the next pulse doesn't start
-  another; the session is left for you to close, and **Queue to start** on the
+  another; the session is left for you to close, and "Queue to start" on the
   task tries it again.
   A nudge or `/cleanup` is skipped that round, a Slack message stays queued,
   and `cmux-send.py` exits 4.
@@ -192,8 +192,12 @@ What the record does for you:
   - a nudge, `/cleanup`, a start-up instruction, a `/clear` or a merge request
     waits 30 minutes, then may be tried again;
   - your own tap (`cmux-send.py` run by hand, a hand-run merge script,
-    restore, "run now") is never held back or limited by the loop rule, whatever
-    its source; it is only refused while another is still going. The page tells
+    restore, "run now", a Slack message you send) is never held back or limited
+    by the loop rule, whatever its source; it is only refused while another is
+    still going. A retry Assistant makes by itself on the same tap is held: the
+    second and later Enter presses for one Slack message count like automatic
+    typings, so they stop at the loop limit, and the message then gets the
+    "couldn't confirm" reply. The page tells
     you what happened (for a time-out: "Assistant sent this but didn't hear
     back, so it may have been typed. Check the session before you send it
     again."), and you decide;

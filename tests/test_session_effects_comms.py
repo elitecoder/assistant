@@ -252,6 +252,27 @@ def test_in_the_enter_only_mode_nothing_is_typed_and_a_collapsed_paste_is_not_th
     assert typed == [1]  # the normal mode still types, as before
 
 
+def test_enter_only_retries_of_one_message_stop_at_the_loop_limit_and_the_owner_is_told_but_a_new_message_is_typed(
+        reply, env_delivery, monkeypatch):
+    cmux, state = reply
+    paths, calls = env_delivery
+    rec = pending(paths)
+    state["landed"] = False
+    serve(monkeypatch)
+    state["box"] = f"[slack channel=C0 msg_ts={rec['msg_ts']}] {MARKER}"  # it stays in the box, never submitted
+    outcomes = [listen._deliver_pending(paths, "C0", None) for _ in range(2 + session_effects.LOOP_MAX)]
+    assert outcomes == [False] * (1 + session_effects.LOOP_MAX) + [True]  # typed, three Enter retries, then dropped
+    submits = [r for r in rows() if r["kind"] == "intent" and r["target"]["source"] == "submit"]
+    assert len(submits) == session_effects.LOOP_MAX
+    assert listen.read_pending(paths) == []
+    assert replies(calls)[-1][0].startswith("I couldn't confirm your message") and replies(calls)[-1][1] == rec["msg_ts"]
+    typed = len(cmux.typed())
+    state["box"] = ""  # (and still nothing in the transcript: only whether it is typed matters here)
+    new = pending(paths, text="again", msg_ts=f"{time.time():.6f}")  # the owner sends something new
+    listen._deliver_pending(paths, "C0", None)
+    assert any(t.startswith("[slack channel=") and "again" in t for t in cmux.typed()[typed:])  # typed at once
+
+
 def test_a_message_that_landed_since_is_delivered_without_typing_anything(reply, env_delivery, monkeypatch):
     cmux, state = reply
     paths, calls = env_delivery

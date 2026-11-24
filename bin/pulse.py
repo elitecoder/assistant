@@ -2331,7 +2331,7 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str, parked: str = "") -> bool:
             target["status"] = "blocked"
             target["parkedBy"] = parked
             target["statusReason"] = (f"Parked: Assistant started {ws_ref} but wouldn't type into it ({parked}). "
-                                      "Close that workspace, then press Queue to start.")
+                                      'Close that workspace, then press "Queue to start" on the task.')
         target["statusUpdatedAt"] = utc_iso()
         tmp = TODO_PATH.with_suffix(".json.tmp")
         try:
@@ -2613,7 +2613,7 @@ def _dispatch_card(bucket_b: list, parked: list) -> dict:
     if _dispatch_blocked.startswith("invalid"):
         title = f"Dispatch paused — can't describe the new session ({len(waiting)} TODO(s) waiting)"
         detail = (f"Assistant didn't recognise the name cmux gave the new session (it expects workspace:N), so it "
-                  f"typed nothing into it and parked {first}. Close that workspace, press Queue to start on {first}, "
+                  f"typed nothing into it and parked {first}. Close that workspace, press \"Queue to start\" on {first}, "
                   f"and update Assistant. The tasks below will park the same way until then. "
                   f"Waiting: {_listed(waiting) or 'none'}.")
     elif _dispatch_blocked:
@@ -2622,13 +2622,13 @@ def _dispatch_card(bucket_b: list, parked: list) -> dict:
                   "Check that your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
                   "(`ls -ld ~/.assistant/effects`).")
         if parked:
-            detail += (f" Parked: {shown}. Close each workspace, then press Queue to start on the task.")
+            detail += (f" Parked: {shown}. Close each workspace, then press \"Queue to start\" on the task.")
         detail += (f" Waiting: {_listed(waiting) or 'none'}. Nothing is lost; the next round starts them once the "
                    f"record can be written.")
     else:
         title = f"Tasks parked — Assistant wouldn't type into their sessions ({len(parked)})"
         detail = (f"Assistant started a session for each task below but wouldn't type into it, so it parked the task. "
-                  f"Close each workspace, then press Queue to start on the task. Parked: {shown}.")
+                  f"Close each workspace, then press \"Queue to start\" on the task. Parked: {shown}.")
     return {"key": "dispatch-held-no-record", "tier": "T3", "title": title, "detail": detail}
 
 

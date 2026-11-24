@@ -55,9 +55,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   times in thirty minutes is waited on, and a typing that may have landed is
   not repeated by Assistant on its own: a nudge, `/cleanup` or merge request
   waits 30 minutes before it may be tried again, and your own tap (the script
-  run by hand, "run now", restore, a hand-run merge) is never held back or
-  limited, whatever it types; the page tells you when something may already
-  have been typed, and you decide.
+  run by hand, "run now", restore, a hand-run merge, a Slack message you send)
+  is never held back or limited, whatever it types; a retry Assistant makes by
+  itself on the same tap is (Enter pressed again for one Slack message stops
+  after three tries). The page tells you when something may already have been
+  typed, and you decide.
 - Check every request that changes something on the dashboard server the same
   way, with no exceptions. Before, a web page open in your browser could make
   your machine start a TODO's agent session (`/dispatch-now`), type a
@@ -178,7 +180,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   paused — can't record what it types" with the disk and folder to check, and
   the tasks still waiting. If it had already started a session when it
   refused, the task is parked and the card names it and the workspace left open:
-  close the workspace and press **Queue to start** on the task. A nudge is
+  close the workspace and press "Queue to start" on the task. A nudge is
   skipped, and a Slack message stays queued and you still get a note saying
   why. A Slack message that can't be confirmed is never typed twice, and when
   Assistant stops trying it tells you in the message's thread (also when your

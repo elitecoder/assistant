@@ -462,3 +462,25 @@ def test_the_pulses_merge_request_is_held_after_an_unknown_and_a_persons_is_not(
     clock.t += 60
     assert refusal(merge, "standing").code == "unknown"
     merge("tap")  # a person running the script by hand
+
+
+def test_a_tap_is_exempt_only_the_first_time_it_is_used_in_a_session(home, clock):
+    def retry(session=WS, tap="slack:1793613610.000100"):
+        return se.begin(session, "submit", kind="tap", ref=tap, component="comms", slack_ts="1793613610.000100",
+                        same_tap=tap)
+    first = se.begin(WS, "slack-message", kind="tap", ref="slack:1793613610.000100", component="comms",
+                     slack_ts="1793613610.000100", anchor=T0 - 5, same_tap="slack:1793613610.000100")
+    se.finish(first, "unknown")
+    for _ in range(se.LOOP_MAX):  # the same tap again: counted, so it stops at the loop limit
+        se.finish(retry(), "unknown")
+        clock.t += 5
+    assert refusal(retry).code == "loop"
+    se.finish(retry(WS2), "done")  # another session has not used it yet
+    se.finish(se.begin(WS, "submit", kind="tap", ref="slack:1793613611.000100", component="comms",
+                       slack_ts="1793613611.000100", same_tap="slack:1793613611.000100"), "done")  # a new tap, at once
+
+
+def test_a_hand_run_tap_has_no_same_tap_and_is_never_counted_however_often_it_runs(home, clock):
+    for _ in range(se.LOOP_MAX + 3):
+        se.finish(se.begin(WS, "merge", kind="tap", ref="merge", component="merge-pr-dispatch.py"), "unknown")
+        clock.t += 5

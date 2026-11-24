@@ -134,14 +134,21 @@ def _held_by_unknown(target: dict, now: float) -> bool:
     return last["outcome"] is None and effects.IN_FLIGHT_SEC <= now - last["t"] < LOOP_SEC
 
 
+def _tap_used(where: str, same_tap: str) -> bool:
+    """Whether this tap has already been used to type into this session (or terminal)."""
+    return any(found["authorized_by"]["kind"] == "tap" and found["authorized_by"]["ref"] == same_tap
+               and where in (found["target"].get("session"), found["target"].get("surface"))
+               for found in effects.history(CLASS, limit=LOOP_SCAN))
+
+
 def begin(session: str, source: str, *, kind: str, ref: str, component: str, task: str = "", trace: str = "",
-          slack_ts: str = "", surface: str = "", anchor: float | None = None) -> str:
+          slack_ts: str = "", surface: str = "", anchor: float | None = None, same_tap: str = "") -> str:
     """Record the intent to type into `session` (`workspace:N`) and return the effect id. Type only if this returns.
 
     `source` is where the text comes from, a fixed name. `kind` and `ref` are what allowed it (`tap`, `owner_flag`
     or `standing`, and a pointer: a task id, the name of a nudge, a route). `anchor` is the time that allowance was
     given, when it has one of its own (a Slack message's time): the ledger then refuses a second typing of the same
-    thing without a newer allowance. `surface` names a terminal for a session known only by that id (`session` is
+    thing without a newer allowance. `same_tap` names a tap that a retry by Assistant itself may reuse; see below. `surface` names a terminal for a session known only by that id (`session` is
     then empty). Raises `Refused`."""
     now = _now()
     target: dict = {"source": source}
@@ -164,9 +171,12 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         raise Refused("later", LATER)
     # A person's own tap is never held back by the loop limit or an earlier unknown, whatever its source: an
     # automatic limit may only make Assistant more careful, and the person decides once the page tells the truth.
-    if kind != "tap" and _loop_count(target, now) >= LOOP_MAX:
+    # That holds for a new action. The same tap used again (`same_tap`: a Slack message's `slack:<time>` on every
+    # Enter-only retry of it) is a retry Assistant makes by itself, so it is counted and held like an automatic typing.
+    held = kind != "tap" or bool(same_tap and _tap_used(session or surface, same_tap))
+    if held and _loop_count(target, now) >= LOOP_MAX:
         raise Refused("loop", LOOP.format(where=where))
-    if kind != "tap" and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):
+    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):
         raise Refused("unknown", UNKNOWN.format(where=where), UNKNOWN_SHORT.format(where=where))
     # Recorded to the second, and rounded up when it is "now": rounded down it could fall before the result of a
     # typing that finished a moment ago, and the ledger would take it for an approval older than that result.

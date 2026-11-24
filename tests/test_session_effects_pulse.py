@@ -232,7 +232,7 @@ def test_a_session_ref_the_record_cant_describe_is_parked_and_blocks_with_its_ow
     assert card["title"] == "Dispatch paused — can't describe the new session (1 TODO(s) waiting)"
     assert card["detail"] == (
         "Assistant didn't recognise the name cmux gave the new session (it expects workspace:N), so it typed nothing "
-        "into it and parked td-1. Close that workspace, press Queue to start on td-1, and update Assistant. The tasks "
+        "into it and parked td-1. Close that workspace, press \"Queue to start\" on td-1, and update Assistant. The tasks "
         "below will park the same way until then. Waiting: td-2 later.")
 
 
@@ -339,7 +339,7 @@ def test_a_card_with_nothing_blocked_still_names_each_parked_task_and_its_worksp
     assert card["title"] == "Tasks parked — Assistant wouldn't type into their sessions (2)"
     assert card["detail"] == (
         "Assistant started a session for each task below but wouldn't type into it, so it parked the task. Close each "
-        "workspace, then press Queue to start on the task. Parked: td-1 Fix the ruler after the sign off review now please "
+        "workspace, then press \"Queue to start\" on the task. Parked: td-1 Fix the ruler after the sign off review now please "
         "(workspace:1000010007), td-2 b (workspace:1000010009).")
 
 
@@ -347,7 +347,7 @@ def test_a_card_for_a_record_that_cant_be_written_names_the_parked_task_too(mod)
     mod._dispatch_blocked = "unrecorded: x"
     card = mod._dispatch_card([{"id": "td-3", "title": "later"}], [PARKED])
     assert "Parked: td-1 Fix the ruler after the sign off review now please (workspace:1000010007). Close each workspace, " \
-           "then press Queue to start on the task. Waiting: td-3 later. Nothing is lost; the next round starts them " \
+           "then press \"Queue to start\" on the task. Waiting: td-3 later. Nothing is lost; the next round starts them " \
            "once the record can be written." in card["detail"]
 
 

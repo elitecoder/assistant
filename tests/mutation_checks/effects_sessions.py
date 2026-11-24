@@ -56,8 +56,8 @@ CHECKS = (
     (
         "the fourth identical typing in half an hour is refused: the loop limit counts the earlier ones",
         SE,
-        '    if kind != "tap" and _loop_count(target, now) >= LOOP_MAX:',
-        '    if kind != "tap" and _loop_count(target, now) > LOOP_MAX:',
+        "    if held and _loop_count(target, now) >= LOOP_MAX:",
+        "    if held and _loop_count(target, now) > LOOP_MAX:",
         T + "test_the_fourth_identical_typing_in_half_an_hour_is_refused_and_the_words_name_the_session",
     ),
     (
@@ -107,7 +107,7 @@ CHECKS = (
     (
         "an unknown nudge, cleanup, boot, clear or merge holds the same one in the same session",
         SE,
-        '    if kind != "tap" and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):',
+        "    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):",
         "    if False:",
         T + "test_an_unknown_typing_holds_the_same_source_in_the_same_session_for_half_an_hour_only",
     ),
@@ -569,16 +569,30 @@ CHECKS = (
         P + "test_an_error_making_the_trust_answers_keys_parks_the_task_and_the_next_task_still_goes_out",
     ),
     (
+        "a tap used again by Assistant's own retry is counted like an automatic typing",
+        SE,
+        '    held = kind != "tap" or bool(same_tap and _tap_used(session or surface, same_tap))',
+        '    held = kind != "tap"',
+        T + "test_a_tap_is_exempt_only_the_first_time_it_is_used_in_a_session",
+    ),
+    (
+        "Enter-only retries of one message stop at the loop limit and end as couldn't confirm",
+        CL,
+        '                if again.code != "loop":\n                    raise\n                raise refusal from None',
+        '                raise',
+        C + "test_enter_only_retries_of_one_message_stop_at_the_loop_limit_and_the_owner_is_told_but_a_new_message_is_typed",
+    ),
+    (
         "a person's tap is not limited by the loop rule",
         SE,
-        '    if kind != "tap" and _loop_count(target, now) >= LOOP_MAX:',
+        "    if held and _loop_count(target, now) >= LOOP_MAX:",
         "    if _loop_count(target, now) >= LOOP_MAX:",
         T + "test_a_persons_tap_is_never_held_by_the_loop_limit_or_an_unknown_whatever_its_source",
     ),
     (
         "a person's tap is not held by an earlier unknown whatever its source",
         SE,
-        '    if kind != "tap" and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):',
+        "    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):",
         "    if anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):",
         T + "test_the_pulses_merge_request_is_held_after_an_unknown_and_a_persons_is_not",
     ),
