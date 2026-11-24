@@ -3717,9 +3717,16 @@ CHECKS = (
     (
         "the dashboard's Settings list the three background jobs",
         'bin/render-assistant-page.py',
-        '    mode_html += render_job_settings()\n',
-        '',
+        '    mode_html += render_job_settings() if pro else ""\n',
+        '    mode_html += ""\n',
         'tests/test_unread_jobs_off.py::test_the_settings_panel_includes_the_job_lines',
+    ),
+    (
+        "default mode's Settings don't list jobs that only run in Pro mode",
+        'bin/render-assistant-page.py',
+        '    mode_html += render_job_settings() if pro else ""\n',
+        '    mode_html += render_job_settings()\n',
+        'tests/test_unread_jobs_off.py::test_default_mode_settings_do_not_list_the_pro_only_jobs',
     ),
 )
 

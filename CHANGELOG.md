@@ -113,8 +113,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Changed
 - An existing Pro install stops creating decisions, writing the morning brief,
-  and running the goals planner after this update, because nobody read what they
-  made. Turn each back on by setting `{"jobs": {"decisions": true, "brief": true,
+  and running the goals planner after this update. They are opt-in now: across
+  five months on the maintainer's machine, none of 49,193 decisions was acted
+  on and 7 of 103 briefs were opened. Turn each back on by setting `{"jobs": {"decisions": true, "brief": true,
   "planner": true}}` in `~/.assistant/config.json` (only the JSON value `true`
   counts), or by running the pulse with `ASSISTANT_DECISIONS=1`,
   `ASSISTANT_BRIEF=1`, or `ASSISTANT_PLANNER=1`. While decisions are off, the

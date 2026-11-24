@@ -28,9 +28,9 @@ digest instead of nagging you.
 
 ## Decisions and goals
 
-Decisions, the morning brief, and the goals planner are off by default. **Settings
-and background services** lists each as on or off, with the setting that
-controls it. See
+Decisions, the morning brief, and the goals planner are off by default. In Pro
+mode, **Settings and background services** lists each as on or off, with the
+setting that controls it. See
 [Configuration](configuration.md#background-jobs-that-are-off-by-default).
 
 - From a decision card you can accept, edit, reject, or snooze. Each choice is

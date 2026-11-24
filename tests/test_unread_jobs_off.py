@@ -320,6 +320,16 @@ def test_the_settings_panel_includes_the_job_lines(home, renderer):
     assert 'class="job-setting" data-job="planner"' in html
 
 
+@pytest.mark.real_mode
+def test_default_mode_settings_do_not_list_the_pro_only_jobs(home, renderer):
+    """Setting jobs.decisions in default mode would do nothing, so the page doesn't offer it there."""
+    (home / ".claude/cache").mkdir()
+    (home / ".claude/cache/world.json").write_text(json.dumps({"counts": {}, "_meta": {}}))
+    write_config(home, {"mode": "default"})
+    renderer.render()
+    assert 'class="job-setting"' not in renderer.DASHBOARD_HTML.read_text()
+
+
 def make_decision_log(home: Path, *rows) -> None:
     path = home / ".assistant/decisions/decisions.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)

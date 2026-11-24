@@ -2763,7 +2763,9 @@ def render():
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
     mode_html = render_mode_switch(pro, mode.config_error()) + render_observer_setting()
-    mode_html += render_job_settings()
+    # These three jobs only run in Pro mode, so default mode doesn't list a
+    # setting that would do nothing there.
+    mode_html += render_job_settings() if pro else ""
     pulse_alert_html = render_pulse_alert() + render_restart_alert()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
