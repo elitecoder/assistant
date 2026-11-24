@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import mode, model_tiers, redact, transcript_slice  # noqa: E402
+from assistant import logcap, mode, model_tiers, redact, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -2633,8 +2633,12 @@ def main() -> int:
     state = load_state()
     pulse_idx = int(state.get("_meta", {}).get("pulse_idx", 0)) + 1
     t0 = time.time()
+    log_cards: list[dict] = []
     log.info("=== pulse %d start (dry_run=%s) ===", pulse_idx, dry_run)
     if not dry_run:
+        # Trim oversized logs first: a pulse that fails part-way is exactly when
+        # the logs grow, and it must still trim.
+        log_cards = cap_logs_safely()
         try:
             prune_observer_runs(pulse_idx)
         except Exception as e:  # noqa: BLE001 — archive maintenance is optional
@@ -2711,6 +2715,7 @@ def main() -> int:
     # each time (and vanish the pulse after they leave `open` — card
     # existence derives from queue state).
     awaiting_input: list[dict] = list(triage_summary.get("cards") or [])
+    awaiting_input.extend(log_cards)
     ws_meta: list[dict] = []
     ctxs_by_ref: dict[str, dict] = {}
     ws_by_ref: dict[str, dict] = {}
@@ -3118,6 +3123,77 @@ def main() -> int:
 
     log.info("=== pulse %d done in %.1fs ===", pulse_idx, time.time() - t0)
     return 0
+
+
+def log_trim_card(notice: dict) -> dict:
+    """The awaiting card shown while the 24-hour notice before the first log
+    trim runs. It is rebuilt every pulse, so it goes away on its own once
+    trimming has started or config.json has a `logs` entry."""
+    if not notice.get("saved", True):
+        # With no saved start time the trim would never start, and a deadline
+        # shown now would move every pulse, so say what is wrong instead.
+        return {
+            "key": "log-trim-notice",
+            "tier": "T3",
+            "title": "Log trimming is waiting",
+            "detail": ("Assistant can't save ~/.assistant/log-cap-state.json, so it won't trim "
+                       "anything. Check that the folder can be written to."),
+        }
+    mb = 1024 * 1024
+    when = datetime.fromtimestamp(notice["trim_at"])
+    day = "today" if when.date() == datetime.now().date() else "tomorrow"
+    n = len(notice["names"])
+    return {
+        "key": "log-trim-notice",
+        "tier": "T3",
+        "title": f"Log trimming starts {day} at {when:%H:%M}",
+        "detail": (f"{n} log{' is' if n == 1 else 's are'} over {notice['cap'] / mb:g} MB "
+                   f"({notice['bytes'] / mb:,.0f} MB in all) and will be cut to their last "
+                   f"{notice['keep'] / mb:g} MB each; the older lines are deleted and there is "
+                   f"no backup. To keep them, add \"logs\": {{\"cap_mb\": 0}} to "
+                   f"~/.assistant/config.json, alongside your existing keys. To trim now, "
+                   f"add \"logs\": {{\"cap_mb\": 20}}."),
+    }
+
+
+def log_problem_card(problem: str) -> dict:
+    """The card shown for as long as a `logs` setting in config.json can't be read."""
+    if "in quotes" in problem:
+        fix = "Write it without quotes, or remove the logs entry to use the defaults."
+    elif "isn't valid JSON" in problem or "can't be read" in problem:
+        fix = "Check the file with python3 -m json.tool ~/.assistant/config.json."
+    else:
+        fix = "Fix it, or remove the logs entry to use the defaults."
+    return {
+        "key": "log-trim-problem",
+        "tier": "T3",
+        "title": "Log trimming is off",
+        "detail": f"Trimming stays off until this is fixed: {problem}. {fix}",
+    }
+
+
+def cap_logs_safely() -> list[dict]:
+    """Shrink any Assistant log over its limit. Logs one line only when it did
+    something or a setting is unusable; a failure here must never stop the
+    pulse. Returns the cards to show: the notice while the first trim waits,
+    or the problem while a setting is unusable."""
+    try:
+        summary = logcap.cap_logs(ASSISTANT_DIR, HOME / ".claude")
+        if summary["capped"]:
+            names = summary["capped"]
+            log.info("log cap: trimmed %d log%s, deleted %s MB of older lines "
+                     "(each now keeps its last %g MB; no backup): %s",
+                     len(names), "" if len(names) == 1 else "s",
+                     f"{summary['freed'] / (1024 * 1024):,.0f}",
+                     summary["keep"] / (1024 * 1024), ", ".join(names))
+        if summary["announce"]:
+            log.warning("log cap: %s; trimming is off until that is fixed", summary["problem"])
+        if summary["problem"]:
+            return [log_problem_card(summary["problem"])]
+        return [log_trim_card(summary["notice"])] if summary["notice"] else []
+    except Exception as e:  # noqa: BLE001 — log upkeep must never break the pulse
+        log.warning("log cap failed (ignored): %s", e)
+        return []
 
 
 def write_heartbeat(pulse_idx: int, drained: int) -> None:

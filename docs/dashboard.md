@@ -8,6 +8,11 @@ localhost only.
 Nothing pushes or notifies you by default. Once decisions are on, neglected ones
 fall back to the digest instead of nagging you.
 
+When the Assistant is about to trim oversized logs, a notice says so in an
+amber bar at the top of the page, above the tabs, in both modes; the same card
+also appears under **Awaiting input**. See
+[Configuration](configuration.md) for how to keep your logs.
+
 ## Tabs
 
 - **Sessions**: your default view. It counts open cmux workspaces, not GitHub

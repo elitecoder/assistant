@@ -613,6 +613,22 @@ def render_failure_alerts(now: float | None = None, world: dict | None = None) -
         return ""
 
 
+def render_log_trim_notice() -> str:
+    """Top-of-page notices about log trimming: the 24-hour notice before the
+    first trim, or why trimming is off or waiting. They sit above the tab bar so
+    they show on every tab in both modes; the same cards also stay in the
+    Awaiting input list. Amber, not the red error style."""
+    cards = load_assistant_state().get("awaiting_input") or []
+    bars = []
+    for card in cards:
+        if isinstance(card, dict) and card.get("key") in ("log-trim-notice", "log-trim-problem"):
+            bars.append('<div class="pulse-health pulse-warn log-trim-notice" role="status">'
+                        '<span class="pulse-dot"></span>'
+                        f'<span class="pulse-text"><strong>{e(card.get("title") or "Log trimming")}</strong> '
+                        f'{e(card.get("detail") or "")}</span></div>')
+    return "".join(bars)
+
+
 def render_metering_stats():
     """Fleet behavior tiles from the last 7 days of the pulse metering
     log (~/.assistant/metrics.jsonl, written by pulse.py each pulse):
@@ -2951,7 +2967,8 @@ def render():
     # These three jobs only run in Pro mode, so default mode doesn't list a
     # setting that would do nothing there.
     mode_html += render_job_settings() if pro else ""
-    pulse_alert_html = render_pulse_alert() + render_restart_alert() + render_failure_alerts(world=world)
+    pulse_alert_html = (render_pulse_alert() + render_restart_alert() + render_log_trim_notice()
+                        + render_failure_alerts(world=world))
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()
