@@ -90,9 +90,10 @@ CAP_WINDOW_SEC = 3600
 # Retry back-off for the event stream. A stream that ends at once (cmux
 # refusing the connection, say) used to be restarted with no pause at all.
 BACKOFF_START_SEC = 2
-BACKOFF_MAX_SEC = 300                  # 5 minutes
+BACKOFF_MAX_SEC = 30                   # back within seconds once cmux is up again
 STABLE_STREAM_SEC = 60                 # a stream up this long resets the back-off
 STDERR_LINE_MAX = 300                  # chars kept of the child's last stderr line
+STDERR_READ_MAX = 4096                 # bytes read from the child's stderr at a time
 
 # ---------- logging ----------
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -667,26 +668,46 @@ class _StderrTail:
     The child used to inherit our stderr, so every refused connection wrote a
     line into the launchd .err file with no bound. Draining it here keeps the
     pipe from filling and lets the retry loop report one summary instead.
+    Reads are bounded and undecodable bytes are replaced, so neither a bad
+    byte nor an endless line can stop the drain (a stopped drain blocks the
+    child on a full pipe and hangs the watcher).
     """
 
     def __init__(self, pipe) -> None:
         self.last = ""
         self._pipe = pipe
+        self._midline = False
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
 
     def _drain(self) -> None:
         try:
-            for line in self._pipe:
-                line = line.strip()
-                if line:
-                    self.last = line[:STDERR_LINE_MAX]
+            while True:
+                piece = self._pipe.readline(STDERR_READ_MAX)
+                if not piece:
+                    return
+                if isinstance(piece, bytes):
+                    piece = piece.decode("utf-8", errors="replace")
+                # A line longer than one read arrives in pieces; keep its start.
+                if not self._midline and piece.strip():
+                    self.last = piece.strip()[:STDERR_LINE_MAX]
+                self._midline = not piece.endswith("\n")
         except (OSError, ValueError):
             pass
 
     def finish(self) -> str:
         self._thread.join(timeout=1)
+        try:
+            self._pipe.close()
+        except (OSError, ValueError):
+            pass
         return self.last
+
+
+def _same_failure(text: str) -> str:
+    """The failure with its digits blanked, so a pid or timestamp in cmux's
+    message doesn't make every retry look like a new kind of failure."""
+    return re.sub(r"\d+", "#", text)
 
 
 class RetryPolicy:
@@ -697,26 +718,42 @@ class RetryPolicy:
         self.attempts = 0
         self.signature = ""
 
-    def failed(self, signature: str, uptime: float) -> tuple[int, str | None]:
+    def recover(self) -> str | None:
+        """A stream stayed up: start the back-off over. Returns a log line when
+        there had been failures to recover from."""
+        attempts = self.attempts
+        self.delay, self.attempts, self.signature = 0, 0, ""
+        if attempts:
+            return f"event stream recovered after {attempts} failed attempt{'s' if attempts != 1 else ''}"
+        return None
+
+    def ended_after_running(self, text: str) -> tuple[int, str]:
+        """A stream that had stayed up ended: not a failed attempt, so the next
+        failure starts the count from the first step."""
+        self.recover()
+        return BACKOFF_START_SEC, f"event stream ended: {text}; retrying in {BACKOFF_START_SEC}s"
+
+    def failed(self, text: str) -> tuple[int, str | None]:
         """Record an ended stream. Returns (seconds to wait, log line or None)."""
-        if uptime > STABLE_STREAM_SEC:
-            self.delay, self.attempts, self.signature = 0, 0, ""
         previous = self.delay
         self.delay = min(max(previous * 2, BACKOFF_START_SEC), BACKOFF_MAX_SEC)
+        signature = _same_failure(text)
         if signature != self.signature:
             self.signature, self.attempts = signature, 1
-            return self.delay, f"event stream ended: {signature}; retrying in {self.delay}s"
+            return self.delay, f"event stream ended: {text}; retrying in {self.delay}s"
         self.attempts += 1
         # One line per back-off step, then roughly one an hour at the ceiling.
-        hourly = self.delay == BACKOFF_MAX_SEC and self.attempts % 12 == 0
+        hourly = self.delay == BACKOFF_MAX_SEC and self.attempts % 120 == 0
         if self.delay != previous or hourly:
             return self.delay, (f"event stream still failing ({self.attempts} attempts): "
-                                f"{signature}; retrying in {self.delay}s")
+                                f"{text}; retrying in {self.delay}s")
         return self.delay, None
 
 
-def stream(registry: WorkspaceRegistry, governor: ResumeGovernor) -> str:
-    """Run one event stream until it ends. Returns a short summary of why."""
+def stream(registry: WorkspaceRegistry, governor: ResumeGovernor, on_stable=None) -> str:
+    """Run one event stream until it ends. Returns a short summary of why.
+
+    `on_stable` is called once if the stream stays up past STABLE_STREAM_SEC."""
     WATCHER_DIR.mkdir(parents=True, exist_ok=True)
     cmd = [
         CMUX_BIN, "events",
@@ -727,10 +764,15 @@ def stream(registry: WorkspaceRegistry, governor: ResumeGovernor) -> str:
         "--cursor-file", str(CURSOR_FILE),
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, bufsize=1)
+                            text=True, errors="replace", bufsize=1)
     if proc.stdout is None:
         raise RuntimeError("cmux events: no stdout")
     tail = _StderrTail(proc.stderr)
+    timer = None
+    if on_stable is not None:
+        timer = threading.Timer(STABLE_STREAM_SEC, on_stable)
+        timer.daemon = True
+        timer.start()
     try:
         for line in proc.stdout:
             line = line.strip()
@@ -751,6 +793,8 @@ def stream(registry: WorkspaceRegistry, governor: ResumeGovernor) -> str:
                     log.exception("handle_close failed")
                 continue
     finally:
+        if timer is not None:
+            timer.cancel()
         try:
             rc = proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -766,23 +810,34 @@ def main() -> int:
     registry.refresh()
     governor = ResumeGovernor()
     policy = RetryPolicy()
+
+    def stable() -> None:
+        note = policy.recover()
+        if note:
+            log.info("%s", note)
+
     while True:
         started = time.monotonic()
         if policy.attempts == 0:
             log.info("starting event stream")
         try:
-            signature = stream(registry, governor)
+            try:
+                text = stream(registry, governor, on_stable=stable)
+            except Exception as exc:
+                text = f"stream crashed: {type(exc).__name__}: {exc}"
+                if policy.signature != _same_failure(text):
+                    log.exception("stream crashed")
+            if time.monotonic() - started > STABLE_STREAM_SEC:
+                stable()
+                delay, message = policy.ended_after_running(text)
+            else:
+                delay, message = policy.failed(text)
+            if message:
+                log.warning("%s", message)
+            time.sleep(delay)
         except KeyboardInterrupt:
             log.info("interrupted, exiting")
             return 0
-        except Exception as exc:
-            signature = f"stream crashed: {type(exc).__name__}: {exc}"
-            if policy.signature != signature:
-                log.exception("stream crashed")
-        delay, message = policy.failed(signature, time.monotonic() - started)
-        if message:
-            log.warning("%s", message)
-        time.sleep(delay)
 
 
 if __name__ == "__main__":

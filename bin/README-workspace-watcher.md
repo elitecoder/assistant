@@ -119,7 +119,7 @@ To pause without unloading (e.g. while debugging), `launchctl stop com.assistant
 
 ## When cmux refuses the connection
 
-If the event stream ends or can't connect, the daemon waits 2 seconds, then 4, 8, and so on up to 5 minutes before trying again; a stream that stayed up for a minute starts the wait over. It logs the first failure with cmux's last error line, then one "still failing (N attempts)" line per wait step. cmux's own error output is read by the daemon and never reaches `workspace-watcher.launchd.err`.
+If the event stream ends or can't connect, the daemon waits 2 seconds, then 4, 8, and so on up to 30 seconds before trying again, so it is back within seconds once cmux is up. A stream that stayed up for a minute starts the wait over and logs "event stream recovered after N failed attempts". It logs the first failure with cmux's last error line, then one "still failing (N attempts)" line per wait step, then about one an hour. cmux's own error output is read by the daemon and never reaches `workspace-watcher.launchd.err`.
 
 ## How to inspect
 

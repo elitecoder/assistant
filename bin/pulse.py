@@ -2539,6 +2539,9 @@ def main() -> int:
     t0 = time.time()
     log.info("=== pulse %d start (dry_run=%s) ===", pulse_idx, dry_run)
     if not dry_run:
+        # Trim oversized logs first: a pulse that fails part-way is exactly when
+        # the logs grow, and it must still trim.
+        cap_logs_safely()
         try:
             prune_observer_runs(pulse_idx)
         except Exception as e:  # noqa: BLE001 — archive maintenance is optional
@@ -2942,10 +2945,6 @@ def main() -> int:
     # 7. Heartbeat.
     write_heartbeat(pulse_idx, n_drained)
 
-    # 7.1. Cap the log files (they are never rotated otherwise). After the
-    #      heartbeat, so a failure here leaves the pulse looking alive.
-    cap_logs_safely()
-
     # 7.5. Metering: one record per pulse to ~/.assistant/metrics.jsonl so
     #      cost/cadence regressions show on the dashboard the next morning.
     #      Runs AFTER state-write + heartbeat and swallows every failure —
@@ -3002,9 +3001,11 @@ def cap_logs_safely() -> None:
     try:
         summary = logcap.cap_logs(ASSISTANT_DIR, HOME / ".claude")
         if summary["capped"]:
-            log.info("log cap: trimmed %d file(s), freed %d bytes: %s",
-                     len(summary["capped"]), summary["freed"],
-                     ", ".join(summary["capped"]))
+            names = summary["capped"]
+            log.info("log cap: trimmed %d log%s, freed %s MB (each is now %g MB or less): %s",
+                     len(names), "" if len(names) == 1 else "s",
+                     f"{summary['freed'] / (1024 * 1024):,.0f}",
+                     summary["keep"] / (1024 * 1024), ", ".join(names))
     except Exception as e:  # noqa: BLE001 — log upkeep must never break the pulse
         log.warning("log cap failed (ignored): %s", e)
 

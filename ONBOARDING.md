@@ -200,9 +200,9 @@ unless you are the owner with that repo's SSH access.
 
 - **Nothing happens after loading pulse** → `./bin/assistant-doctor.py` (core
   checks); tail `~/.assistant/logs/assistant-pulse.launchd.err`.
-- **A log file is huge** → each pulse trims logs past 20 MB to their last 5 MB
-  (the trimmed tail is also kept as `<name>.1`). Change the limits with
-  `ASSISTANT_LOG_CAP_MB` and `ASSISTANT_LOG_KEEP_MB`; see
+- **A log file is huge** → each check trims logs past 20 MB to their last
+  5 MB and deletes the older lines. Change the limits, or turn trimming off
+  with `"cap_mb": 0`, in `~/.assistant/config.json`; see
   [Configuration](docs/configuration.md).
 - **Comms pings but never replies** → almost always a missing Slack scope or the
   warm-session `claude` binary. `./bin/assistant-doctor.py --only slack` names it.

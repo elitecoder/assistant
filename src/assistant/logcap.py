@@ -2,44 +2,56 @@
 
 launchd holds each service's stdout and stderr open in append mode and nothing
 rotates them. An over-limit file keeps its last `keep` bytes (from a line
-boundary) in `<name>.1`, then is shrunk in place: the writer's descriptor stays
-valid, so nothing has to restart.
+boundary) and loses everything older. It is shrunk in place: the writer's
+descriptor stays valid, so nothing has to restart.
 
 Bytes the writer appends between our read and our truncate are lost. That is
 fine for a diagnostics log. The file is never left corrupted: an append-mode
 write always lands at the current end, whatever the truncate did.
 
+The limits come from ~/.assistant/config.json:
+    {"logs": {"cap_mb": 20, "keep_mb": 5}}
+A launchd service never sees a shell `export`, so a file is the only setting a
+real user can change. `cap_mb: 0` turns trimming off.
+
 Stdlib only, Python 3.11 or older features only (launchd services import it).
 """
 from __future__ import annotations
 
+import json
+import math
 import os
 import stat
 from pathlib import Path
 
 DEFAULT_CAP_MB = 20.0
 DEFAULT_KEEP_MB = 5.0
-CAP_ENV = "ASSISTANT_LOG_CAP_MB"
-KEEP_ENV = "ASSISTANT_LOG_KEEP_MB"
 _MB = 1024 * 1024
 _LOG_SUFFIXES = (".log", ".out", ".err")
 
 
-def _megabytes(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
+def _megabytes(value, default: float) -> float:
+    """A finite number >= 0, else the default. A bool is not a number here."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return default
+    if not math.isfinite(value) or value < 0:
+        return default
+    return float(value)
+
+
+def limits(assistant_dir: Path | str) -> tuple[int, int]:
+    """(cap, keep) in bytes from config.json. A cap of 0 means off.
+
+    Anything missing, malformed or out of range falls back to the default."""
     try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value >= 0 else default
-
-
-def limits() -> tuple[int, int]:
-    """(cap, keep) in bytes from the environment. A cap of 0 means off."""
-    cap = int(_megabytes(CAP_ENV, DEFAULT_CAP_MB) * _MB)
-    keep = int(_megabytes(KEEP_ENV, DEFAULT_KEEP_MB) * _MB)
+        data = json.loads((Path(assistant_dir) / "config.json").read_text())
+        section = data.get("logs") if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        section = None
+    if not isinstance(section, dict):
+        section = {}
+    cap = int(_megabytes(section.get("cap_mb"), DEFAULT_CAP_MB) * _MB)
+    keep = int(_megabytes(section.get("keep_mb"), DEFAULT_KEEP_MB) * _MB)
     return cap, min(keep, cap)
 
 
@@ -47,9 +59,19 @@ def _is_log_name(name: str) -> bool:
     return name.endswith(_LOG_SUFFIXES)
 
 
+def _is_real_dir(directory: Path) -> bool:
+    """A directory that is not itself a symlink (os.listdir would follow one)."""
+    try:
+        return stat.S_ISDIR(os.lstat(directory).st_mode)
+    except OSError:
+        return False
+
+
 def _candidates(assistant_dir: Path, claude_dir: Path) -> list[Path]:
     found: list[Path] = []
     for directory, only_log_ext in ((assistant_dir / "logs", False), (assistant_dir, True)):
+        if not _is_real_dir(directory):
+            continue
         try:
             names = sorted(os.listdir(directory))
         except OSError:
@@ -59,6 +81,9 @@ def _candidates(assistant_dir: Path, claude_dir: Path) -> list[Path]:
                 found.append(directory / name)
     found.append(assistant_dir / "comms" / "comms-listen.log")
     found.append(claude_dir / "logs" / "workspace-watcher.log")
+    # The todo server's launchd output files.
+    found.append(claude_dir / "cache" / "todo-server.log")
+    found.append(claude_dir / "cache" / "todo-server.err")
     return found
 
 
@@ -73,8 +98,7 @@ def _cap_one(path: Path, cap: int, keep: int) -> int:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return 0
         size = os.fstat(fd).st_size
-        start = max(size - keep, 0)
-        os.lseek(fd, start, os.SEEK_SET)
+        os.lseek(fd, size - keep, os.SEEK_SET)
         chunks = []
         while True:
             chunk = os.read(fd, 1 << 20)
@@ -82,24 +106,11 @@ def _cap_one(path: Path, cap: int, keep: int) -> int:
                 break
             chunks.append(chunk)
         tail = b"".join(chunks)
-        # The cut falls inside a line (keep <= cap < size, so start > 0); drop it.
+        # The cut falls inside a line (keep <= cap < size, so the start is past
+        # byte 0); drop that partial line.
         newline = tail.find(b"\n")
         tail = tail[newline + 1:] if newline != -1 else b""
-        archive = path.with_name(path.name + ".1")
-        tmp = path.with_name(path.name + ".1.tmp")
-        tmp_fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        try:
-            with os.fdopen(tmp_fd, "wb") as out:
-                out.write(tail)
-            os.replace(tmp, archive)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        # Shrink in place, keeping the newest bytes in the file itself: write
-        # the tail over the front, then cut. The writer's append-mode
+        # Write the tail over the front, then cut. The writer's append-mode
         # descriptor then writes at the new end.
         with os.fdopen(os.dup(fd), "r+b") as same:
             same.seek(0)
@@ -113,11 +124,12 @@ def _cap_one(path: Path, cap: int, keep: int) -> int:
 def cap_logs(assistant_dir: Path | str, claude_dir: Path | str) -> dict:
     """Cap every Assistant log over the limit. Never raises.
 
-    Returns {"capped": [names], "freed": bytes}. Nothing is capped when the
-    cap is 0."""
-    summary: dict = {"capped": [], "freed": 0}
+    Returns {"capped": [names], "freed": bytes, "keep": bytes}. Nothing is
+    capped when the cap is 0."""
+    summary: dict = {"capped": [], "freed": 0, "keep": 0}
     try:
-        cap, keep = limits()
+        cap, keep = limits(assistant_dir)
+        summary["keep"] = keep
         if cap <= 0:
             return summary
         for path in _candidates(Path(assistant_dir), Path(claude_dir)):

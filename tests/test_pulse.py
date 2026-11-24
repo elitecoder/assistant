@@ -8,6 +8,7 @@ emission, back-off respect) is straight Python and runs in <2s.
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import io
 import json
 import os
@@ -860,16 +861,27 @@ class CapLogsTests(unittest.TestCase):
     def tearDown(self):
         self._tmp_obj.cleanup()
 
-    def test_logs_one_line_only_when_something_was_capped(self):
+    def test_the_log_line_reads_in_megabytes(self):
+        mb = 1024 * 1024
+        names = ["a.log", "b.out", "c.err", "d.log", "e.log"]
         with mock.patch.object(self.mod.logcap, "cap_logs",
-                               return_value={"capped": ["a.log"], "freed": 9}) as cap, \
+                               return_value={"capped": names, "freed": 2560 * mb, "keep": 5 * mb}) as cap, \
                 self.assertLogs(self.mod.log, "INFO") as seen:
             self.mod.cap_logs_safely()
         cap.assert_called_once_with(self.mod.ASSISTANT_DIR, self.mod.HOME / ".claude")
-        self.assertEqual(len(seen.records), 1)
-        self.assertIn("freed 9 bytes", seen.output[0])
+        self.assertEqual(seen.output, [
+            "INFO:" + self.mod.log.name + ":log cap: trimmed 5 logs, freed 2,560 MB "
+            "(each is now 5 MB or less): a.log, b.out, c.err, d.log, e.log"])
+
+    def test_one_trimmed_log_is_not_pluralised_and_nothing_trimmed_logs_nothing(self):
+        mb = 1024 * 1024
         with mock.patch.object(self.mod.logcap, "cap_logs",
-                               return_value={"capped": [], "freed": 0}), \
+                               return_value={"capped": ["a.log"], "freed": 20 * mb, "keep": 5 * mb}), \
+                self.assertLogs(self.mod.log, "INFO") as seen:
+            self.mod.cap_logs_safely()
+        self.assertIn("trimmed 1 log, freed 20 MB", seen.output[0])
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value={"capped": [], "freed": 0, "keep": 5 * mb}), \
                 self.assertNoLogs(self.mod.log, "INFO"):
             self.mod.cap_logs_safely()
 
@@ -877,27 +889,47 @@ class CapLogsTests(unittest.TestCase):
         with mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
             self.mod.cap_logs_safely()
 
-    def test_the_pulse_trims_an_oversized_log_after_the_heartbeat(self):
+    def _patched(self, **extra):
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(self.mod, "pick_ws_batch", return_value={
+            "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}))
+        stack.enter_context(mock.patch.object(self.mod, "purge_stale_awaiting"))
+        stack.enter_context(mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}))
+        stack.enter_context(mock.patch.object(self.mod, "run", return_value=(0, "", "")))
+        for name, kwargs in extra.items():
+            stack.enter_context(mock.patch.object(self.mod, name, **kwargs))
+        return stack
+
+    def test_the_pulse_trims_an_oversized_log_before_its_first_step(self):
         big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
         big.parent.mkdir(parents=True, exist_ok=True)
         big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))     # 30 MB
-        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
-                "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}), \
-                mock.patch.object(self.mod, "purge_stale_awaiting"), \
-                mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
-                mock.patch.object(self.mod, "run", return_value=(0, "", "")):
+        sizes = []
+        with self._patched(self_update_pulse={"side_effect": lambda idx: sizes.append(big.stat().st_size)}):
             sys.argv = ["pulse.py"]
             self.assertEqual(self.mod.main(), 0)
-        self.assertLessEqual(big.stat().st_size, 5 * 1024 * 1024)
-        self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
+        self.assertEqual(len(sizes), 1)
+        self.assertLessEqual(sizes[0], 5 * 1024 * 1024)       # already trimmed at step 0
+
+    def test_the_pulse_still_trims_when_a_later_step_raises(self):
+        big = self._tmp / ".assistant" / "logs" / "a.log"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"x" * (21 * 1024 * 1024))
+        with self._patched(drain_inbox={"side_effect": RuntimeError("late failure")}):
+            sys.argv = ["pulse.py"]
+            with self.assertRaises(RuntimeError):
+                self.mod.main()
+        self.assertEqual(big.stat().st_size, 0)           # one unbroken line: nothing to keep
+
+    def test_a_dry_run_does_not_trim(self):
+        with self._patched(), mock.patch.object(self.mod, "cap_logs_safely") as cap, \
+                mock.patch("sys.stdout", io.StringIO()):
+            sys.argv = ["pulse.py", "--dry-run"]
+            self.assertEqual(self.mod.main(), 0)
+        cap.assert_not_called()
 
     def test_the_pulse_completes_when_the_capper_raises(self):
-        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
-                "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}), \
-                mock.patch.object(self.mod, "purge_stale_awaiting"), \
-                mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
-                mock.patch.object(self.mod, "run", return_value=(0, "", "")), \
-                mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
+        with self._patched(), mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
             sys.argv = ["pulse.py"]
             self.assertEqual(self.mod.main(), 0)
         self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
