@@ -3841,6 +3841,8 @@ CHECKS = (
         "  refused = !(await assistantPost(serverUrl('/brief/refresh'), {mode: 'cors'})).ok;\n",
         "  await assistantPost(serverUrl('/brief/refresh'), {mode: 'cors'});\n",
         'tests/test_dashboard_request_guard.py::test_the_two_calls_a_local_file_page_makes_name_the_server_only_when_it_is_a_local_file',
+    ),
+    (
         'Slack tokens in a log line are redacted',
         'src/assistant/redact.py',
         '(xox[a-z](?:-|%2[dD])|xapp(?:-|%2[dD]))',
