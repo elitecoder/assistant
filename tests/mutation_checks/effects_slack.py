@@ -1,0 +1,126 @@
+"""Checks for the Work queue's use of the effects ledger for Slack saves (work_queue/server.py)."""
+
+S = "work_queue/server.py"
+W = "tests/test_work_queue_effects_slack.py::"
+
+CHECKS = (
+    (
+        "a save the ledger refuses is left out of the browser run",
+        S,
+        "            else:\n                efs[key] = ef\n",
+        "            if True:\n                efs[key] = ef\n",
+        W + "test_a_save_that_is_already_in_progress_is_left_out_and_the_others_still_run",
+    ),
+    (
+        "when every save is refused the browser isn't started",
+        S,
+        "        if not ready:\n            return out\n",
+        "        if False:\n            return out\n",
+        W + "test_when_every_save_is_refused_the_browser_isnt_started",
+    ),
+    (
+        "a save that can't be recorded isn't sent to Slack",
+        S,
+        "            elif refusal:\n                out[key] = {\"status\": \"error\", \"error\": refusal[1], \"at\": now()}\n",
+        "            elif refusal:\n                ready.append((key, cand, undo))\n",
+        W + "test_a_save_that_cant_be_recorded_never_starts_the_browser_and_says_so_in_the_ledgers_words",
+    ),
+    (
+        "a refused reopen keeps the save's row as it was",
+        S,
+        "                out[key] = {**row, \"error\": refusal[1]}\n            elif refusal:",
+        "                out[key] = {\"status\": \"error\", \"error\": refusal[1], \"at\": now()}\n            elif refusal:",
+        W + "test_a_reopen_the_record_refuses_keeps_the_saves_row_and_the_next_apply_tries_again",
+    ),
+    (
+        "a reopened save names the mark it reverses",
+        S,
+        "kind, ref, at,\n                                       undoes=effects.latest_undoable(cls, target) if undo else \"\")",
+        "kind, ref, at,\n                                       undoes=\"\")",
+        W + "test_a_reopened_save_is_linked_to_the_mark_it_reverses",
+    ),
+    (
+        "a save from a send is authorized by a tap, not a decision",
+        S,
+        "(\"tap\", \"/api/todo\", cand[\"sent_at\"]) if \"sent_at\" in cand",
+        "(\"decision\", \"/api/todo\", cand[\"sent_at\"]) if \"sent_at\" in cand",
+        W + "test_a_save_marked_from_a_send_records_a_tap_on_the_send_route_at_the_time_of_the_send",
+    ),
+    (
+        "the time of the send travels with the save to the worker",
+        S,
+        "\"at\": at or now()}",
+        "\"at\": now()}",
+        W + "test_the_time_of_the_send_travels_with_the_save_not_the_time_the_worker_ran",
+    ),
+    (
+        "the send hands its own time to the worker",
+        S,
+        "        queue_save(*save, at=sent_at)\n",
+        "        queue_save(*save)\n",
+        W + "test_a_send_hands_the_worker_the_time_it_was_made",
+    ),
+    (
+        "the ledger holds the row pointer of a save",
+        S,
+        "\"ts\": cand[\"ts\"], \"row\": pointers.row_pointer(key)}",
+        "\"ts\": cand[\"ts\"]}",
+        W + "test_a_save_marked_from_apply_records_its_intent_then_a_verified_result",
+    ),
+    (
+        "a save Slack no longer has is a failure with its own error class",
+        S,
+        "\"other\" if result.get(\"error\") == \"saved_not_found\" else \"tool failed\"",
+        "\"tool failed\"",
+        W + "test_each_thing_slack_can_answer_for_a_save_is_recorded_as_its_own_outcome",
+    ),
+    (
+        "a save the browser run never mentioned is unknown, not failed",
+        S,
+        "    if not isinstance(result, dict):\n        return \"unknown\", None, \"not confirmed\"",
+        "    if not isinstance(result, dict):\n        return \"failed\", None, \"not confirmed\"",
+        W + "test_each_thing_slack_can_answer_for_a_save_is_recorded_as_its_own_outcome",
+    ),
+    (
+        "a save's read-back result is what the ledger records as verified",
+        S,
+        "return \"done\", result.get(\"verified\") if isinstance(result.get(\"verified\"), bool) else None, \"\"",
+        "return \"done\", True, \"\"",
+        W + "test_each_thing_slack_can_answer_for_a_save_is_recorded_as_its_own_outcome",
+    ),
+    (
+        "a browser run that failed as a whole after starting leaves its saves unknown",
+        S,
+        "            sure = not started or error.startswith(SIGN_IN)\n",
+        "            sure = True\n",
+        W + "test_a_browser_run_that_failed_as_a_whole_is_failed_only_when_nothing_could_have_changed",
+    ),
+    (
+        "a browser run that never changed anything is a plain failure",
+        S,
+        "            sure = not started or error.startswith(SIGN_IN)\n",
+        "            sure = False\n",
+        W + "test_a_run_that_never_started_is_failed_and_a_save_may_be_tried_again",
+    ),
+    (
+        "a browser run that crashed after starting leaves its saves unknown",
+        S,
+        "            if linked:\n                started = True\n",
+        "            if linked:\n                started = False\n",
+        W + "test_a_browser_run_that_crashed_or_timed_out_leaves_each_save_unknown",
+    ),
+    (
+        "an error after the browser started leaves each save unknown",
+        S,
+        "effects.finish(ef, \"unknown\" if started else \"failed\", error=\"other\")",
+        "effects.finish(ef, \"failed\", error=\"other\")",
+        W + "test_an_error_after_the_browser_started_records_unknown_and_goes_on_up",
+    ),
+    (
+        "an error before the browser started closes each save as failed",
+        S,
+        "effects.finish(ef, \"unknown\" if started else \"failed\", error=\"other\")",
+        "effects.finish(ef, \"unknown\", error=\"other\")",
+        W + "test_an_error_before_the_browser_starts_records_failed_and_goes_on_up",
+    ),
+)

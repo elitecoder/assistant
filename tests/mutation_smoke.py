@@ -930,8 +930,8 @@ CHECKS = (
     (
         'a save Slack no longer has is recorded as gone',
         'work_queue/server.py',
-        '    return {k: {"status": "gone", "error": "Slack no longer has this save", "at": r.get("at") or now()}\n            if r.get("error") == "saved_not_found" else r for k, r in out["applied"].items()}',
-        '    return dict(out["applied"])',
+        '        results = {k: {"status": "gone", "error": "Slack no longer has this save", "at": r.get("at") or now()}\n                   if r.get("error") == "saved_not_found" else r for k, r in answer["applied"].items()}',
+        '        results = dict(answer["applied"])',
         'tests/test_work_queue_server.py::test_a_save_slack_no_longer_has_is_recorded_once_and_never_retried',
     ),
     (
@@ -1140,7 +1140,7 @@ CHECKS = (
     (
         'a sent Slack save is marked completed',
         'work_queue/server.py',
-        '    if save := slack_save(key):\n        queue_save(*save)\n',
+        '    if save := slack_save(key):\n        queue_save(*save, at=sent_at)\n',
         '',
         'tests/test_work_queue_server.py::test_both_modes_mark_a_sent_slack_save_completed',
     ),
@@ -1182,8 +1182,8 @@ CHECKS = (
     (
         "a save already marked isn't asked about again",
         'work_queue/server.py',
-        'jobs = [(k, c, False) for k, c in batch.items() if entry(applied, k).get("status") not in SETTLED]',
-        'jobs = [(k, c, False) for k, c in batch.items()]',
+        'jobs = [(k, {**c, "sent_at": c["at"]}, False) for k, c in batch.items()\n                        if entry(applied, k).get("status") not in SETTLED]',
+        'jobs = [(k, {**c, "sent_at": c["at"]}, False) for k, c in batch.items()]',
         'tests/test_work_queue_server.py::test_a_save_already_marked_isnt_asked_about_again',
     ),
     (

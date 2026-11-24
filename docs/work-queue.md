@@ -565,7 +565,10 @@ never use the Slack browser session at the same time: Apply and a refresh
 wait up to 90 seconds for it, then say to try again later. A save Slack no
 longer has is recorded as gone, and neither a later send nor **Apply
 approvals** asks Slack about it again. Any other Slack error stays an error,
-so **Apply approvals** tries it again.
+so **Apply approvals** tries it again. Each save is recorded in the effects
+record before the browser runs and again with its own result (see
+[the effects record](effects.md)). A save the record can't write or turns down
+isn't marked, and the save's row says why; the rest of the batch still runs.
 
 ## What it changes
 
@@ -579,7 +582,9 @@ Select **Apply approvals** to act on what you approved:
   a redirect.
 - Slack Later saves are marked completed through your Slack browser session,
   with no browser window. **Undo** reopens them. A save Slack no longer has
-  shows as gone and isn't tried again.
+  shows as gone and isn't tried again. An **Undo** the effects record refuses
+  leaves the save done, says why on its row, and is tried again by the next
+  **Apply approvals**.
 
 Each change is read back to verify it, and a read-back that fails never
 counts as verified. **Apply approvals** skips any Gmail conversation the page

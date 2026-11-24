@@ -6,8 +6,9 @@ writes every effect it makes to one record, `~/.assistant/effects/effects.jsonl`
 before it acts and again when it finishes.
 
 Today the Work queue's Gmail buttons (**Archive**, **Mark read**, and moving a
-conversation back to your inbox), **Apply approvals** for Gmail Trash, and
-unsubscribes are recorded. Slack saves and typing into agent sessions follow.
+conversation back to your inbox), **Apply approvals** for Gmail Trash,
+unsubscribes, and the Slack Later saves the Work queue marks completed or
+reopens are recorded. Typing into agent sessions follows.
 
 ## What it promises
 
@@ -80,9 +81,36 @@ outcome is unknown, run `grep '"outcome":"unknown"' ~/.assistant/effects/effects
 | Gmail Trash | Put back | An approval on the page |
 | Put back from Trash | Trash | An approval on the page |
 | Unsubscribe | Can't be undone | An approval on the page |
-| Mark a Slack save done (not recorded yet) | Reopen | A button press or an approval |
-| Reopen a Slack save (not recorded yet) | Mark done | An approval |
+| Mark a Slack save done | Reopen | A button press or an approval |
+| Reopen a Slack save | Mark done | An approval |
 | Type into an agent session (not recorded yet) | Can't be undone | A button press, a flag on the task, or a rule you turned on |
+
+### Slack saves
+
+A save is marked through your Slack browser session, one run for a whole batch,
+and each save in the batch has its own lines. A save is recorded by its
+channel id, its message time and the short code of its Work queue row, never
+its text or link. When the record can't write a save's first line, or turns it
+down, that save is left out of the run and the others still go through.
+
+| What happened | Outcome | `verified` |
+|---|---|---|
+| Slack accepted the change and the Later list shows it | `done` | `true` |
+| Slack accepted it but the list still shows the old state | `done` | `false` |
+| Slack accepted it and the list couldn't be read | `done` | empty |
+| Slack no longer has the save | `failed` | empty |
+| Slack answered with another error | `failed` | empty |
+| Slack isn't linked, or its sign-in is needed | `failed` | empty |
+| The browser run stopped, timed out or answered oddly after it started, or didn't mention the save | `unknown` | empty |
+| An unexpected error before the browser started | `failed` | empty |
+| An unexpected error after it started | `unknown` | empty |
+
+`verified` is `true` when the Later list, read again after the change, shows
+the save in the state asked for. The worker that marks saves after a send and
+**Apply approvals** take turns with the browser session, so one never marks a
+save while the other does. A line with no result left by a run that died turns
+away both for ten minutes, and each tries again later by its own path: the next
+**Apply approvals**, or a send.
 
 When the record has the action an undo reverses, the undo names it and is
 refused unless that action succeeded, is on the same conversation and hasn't

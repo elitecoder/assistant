@@ -179,7 +179,7 @@ def queue_todo(body: dict):
         return 400, {"error": "note must be text"}
     if not isinstance(key, str) or not key.startswith("https://") or not title or (url and not url.startswith("https://")):
         return 400, {"error": "key and title are required, and key and url must be https"}
-    queued_file = path("queued.json")
+    queued_file, sent_at = path("queued.json"), now()
     with lock, todostore.todo_lock():
         queued = read_map("queued.json")
         doc = read_store()
@@ -209,7 +209,7 @@ def queue_todo(body: dict):
         if key.startswith(EMAIL_MARK) and url:
             mark_sent(url)
     if save := slack_save(key):
-        queue_save(*save)
+        queue_save(*save, at=sent_at)
     return 200, {"id": td_id, "existing": False}
 
 
@@ -221,12 +221,12 @@ def record(results: dict) -> None:
         config.write_json(path("applied.json"), applied)
 
 
-def queue_save(cid: str, ts: str) -> None:
+def queue_save(cid: str, ts: str, at: str = "") -> None:
     """Add a sent row's Later save to the ones the background worker marks completed, and start the worker when it
-    isn't running."""
+    isn't running. `at` is when the person sent the row: the ledger records it as the approval for the change."""
     global saves_worker
     with saves_lock:
-        pending_saves[f"{cid}:{ts}"] = {"cid": cid, "ts": ts}
+        pending_saves[f"{cid}:{ts}"] = {"cid": cid, "ts": ts, "at": at or now()}
         if saves_worker is not None:
             return
         worker = saves_worker = threading.Thread(target=complete_saves, daemon=True)
@@ -251,7 +251,8 @@ def complete_saves() -> None:
                     batch = dict(pending_saves)
                     pending_saves.clear()
                 applied = read_map("applied.json")
-                jobs = [(k, c, False) for k, c in batch.items() if entry(applied, k).get("status") not in SETTLED]
+                jobs = [(k, {**c, "sent_at": c["at"]}, False) for k, c in batch.items()
+                        if entry(applied, k).get("status") not in SETTLED]
                 results = run_slack(jobs) if jobs else {}
             record({k: {**v, "sent": True} for k, v in results.items()})
         except Exception as exc:  # noqa: BLE001 — one bad batch never stops the worker; the traceback goes to the log
@@ -641,28 +642,86 @@ def apply_slack(jobs) -> dict:
         return {k: {"status": "error", "error": str(exc), "at": now()} for k, _, _ in jobs}
 
 
+def slack_outcome(result) -> tuple:
+    """(outcome, verified, error) for one save, from what the browser run reported for it. Slack answering with an error
+    means it didn't change the save, so that is `failed`; a save the run never mentioned may have been changed."""
+    if not isinstance(result, dict):
+        return "unknown", None, "not confirmed"
+    if result.get("status") in ("done", "undone"):
+        return "done", result.get("verified") if isinstance(result.get("verified"), bool) else None, ""
+    if result.get("status") == "error":
+        return "failed", None, "other" if result.get("error") == "saved_not_found" else "tool failed"
+    return "unknown", None, "bad answer"
+
+
 def run_slack(jobs) -> dict:
     """Mark Later saves completed (or uncompleted) in your Slack browser session, headless, and read the list back.
     Call it holding slack.session_lock(). A save Slack no longer has is recorded as gone; any other error stays an
-    error, so Apply tries it again."""
-    job_file = config.data_dir() / "apply-job.json"
-    config.write_json(job_file, [{"key": k, "cid": c["cid"], "ts": c["ts"],
-                                  "mark": "uncompleted" if u else "completed"} for k, c, u in jobs])
+    error, so Apply tries it again.
+
+    Each save is one effect in the ledger, begun here and finished from its own result. A save the ledger refuses is
+    left out of the run and gets its own answer, as a refused Gmail row does. A job from a send carries `sent_at`, a
+    job from Apply carries `decided_at`. When the run's result can't be trusted (the browser was started and then
+    failed or answered oddly), each save is `unknown`, not `failed`: Slack may have changed it."""
+    out: dict = {}
+    ready: list = []
+    efs: dict = {}
+    started = False
     try:
-        linked = config.load().get("slack")
-        out = tools.run_json(tools.with_profile(slack.browser("apply", linked, "--headless", "--job", str(job_file))),
-                             timeout=900) if linked else {"ok": False, "error": "Slack isn't linked. Run "
-                                                          "bin/work-queue-setup.py link slack"}
-    except (tools.SourceError, ValueError) as exc:
-        out = {"ok": False, "error": str(exc)}
-    if not out.get("ok"):
-        return {k: {"status": "error", "error": out.get("error") or "Slack apply failed", "at": now()} for k, _, _ in jobs}
-    return {k: {"status": "gone", "error": "Slack no longer has this save", "at": r.get("at") or now()}
-            if r.get("error") == "saved_not_found" else r for k, r in out["applied"].items()}
+        for key, cand, undo in jobs:
+            cls = "slack.save.uncomplete" if undo else "slack.save.complete"
+            target = {"channel": cand["cid"], "ts": cand["ts"], "row": pointers.row_pointer(key)}
+            kind, ref, at = ("tap", "/api/todo", cand["sent_at"]) if "sent_at" in cand \
+                else ("decision", pointers.row_pointer(key), cand.get("decided_at"))
+            ef, refusal = begin_effect(cls, target, kind, ref, at,
+                                       undoes=effects.latest_undoable(cls, target) if undo else "")
+            if refusal and undo:
+                # The save is still done: keep its row as it was, with the reason, so the next Apply tries again.
+                row = entry(read_map("applied.json"), key)
+                out[key] = {**row, "error": refusal[1]}
+            elif refusal:
+                out[key] = {"status": "error", "error": refusal[1], "at": now()}
+            else:
+                efs[key] = ef
+                ready.append((key, cand, undo))
+        if not ready:
+            return out
+        job_file = config.data_dir() / "apply-job.json"
+        config.write_json(job_file, [{"key": k, "cid": c["cid"], "ts": c["ts"],
+                                      "mark": "uncompleted" if u else "completed"} for k, c, u in ready])
+        try:
+            linked = config.load().get("slack")
+            if linked:
+                started = True
+            answer = tools.run_json(tools.with_profile(slack.browser("apply", linked, "--headless", "--job", str(job_file))),
+                                    timeout=900) if linked else {"ok": False, "error": "Slack isn't linked. Run "
+                                                                 "bin/work-queue-setup.py link slack"}
+        except (tools.SourceError, ValueError) as exc:
+            answer = {"ok": False, "error": str(exc)}
+        if not answer.get("ok"):
+            error = answer.get("error") or "Slack apply failed"
+            # Only a run that never got as far as changing anything is a plain failure.
+            sure = not started or error.startswith(SIGN_IN)
+            for key, ef in efs.items():
+                finish_effect(ef, "failed" if sure else "unknown", error="tool failed")
+            return {**out, **{k: {"status": "error", "error": error, "at": now()} for k, _, _ in ready}}
+        results = {k: {"status": "gone", "error": "Slack no longer has this save", "at": r.get("at") or now()}
+                   if r.get("error") == "saved_not_found" else r for k, r in answer["applied"].items()}
+        for key, ef in efs.items():
+            outcome, verified, error = slack_outcome(answer["applied"].get(key))
+            finish_effect(ef, outcome, verified=verified, error=error)
+        return {**out, **results}
+    except Exception:
+        # The run's answer can't be trusted past this point: it may have changed saves before it failed.
+        for ef in efs.values():
+            effects.finish(ef, "unknown" if started else "failed", error="other")
+        raise
 
 
 APPLIERS = {"unsub": apply_unsub, "gmail": apply_gmail, "slack": apply_slack}
 SETTLED = ("done", "gone")
+# What the Slack browser script says before it has changed anything, when no signed-in session is found.
+SIGN_IN = "Slack sign-in needed"
 
 
 def hides(mark, now_ms: float) -> bool:
