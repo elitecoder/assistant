@@ -466,6 +466,13 @@ CHECKS = (
         T + "test_a_model_call_is_booked_when_the_record_module_is_missing",
     ),
     (
+        "a model call finds the record module when the source folder isn't on the path",
+        METERING,
+        "        if src not in sys.path:\n            sys.path.insert(0, src)\n        from assistant import records",
+        "        if src not in sys.path:\n            pass\n        from assistant import records",
+        T + "test_metering_finds_the_record_module_when_the_source_folder_is_not_on_the_path",
+    ),
+    (
         "the pulse's records are raised in the tests' strict mode",
         PULSE,
         '    except Exception:  # noqa: BLE001 — recording never breaks the pulse\n        if os.environ.get("ASSISTANT_TELEMETRY_STRICT") == "1" and "PYTEST_CURRENT_TEST" in os.environ:\n            raise\n        return None',

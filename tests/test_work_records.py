@@ -738,6 +738,13 @@ def test_a_model_call_is_booked_when_the_record_module_is_missing(wq, monkeypatc
     assert [row["trace"] for row in spend(wq.home)] == [OWN] and of_kind("model_call") == []
 
 
+def test_metering_finds_the_record_module_when_the_source_folder_is_not_on_the_path(wq, monkeypatch):
+    import metering
+    src = str(REPO / "src")
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != src])
+    assert metering._records() is records and src in sys.path
+
+
 def test_a_pulse_or_a_dashboard_edit_goes_on_when_a_record_cant_be_built_and_a_test_says_so(wq, monkeypatch):
     todo_server = load_script("todo_server_work_records3", "todo-server.py")
     pulse = load_script("pulse_work_records_strict", "pulse.py")
