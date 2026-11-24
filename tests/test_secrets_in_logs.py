@@ -284,3 +284,31 @@ def test_the_changelog_names_exactly_the_services_with_crash_hooks():
     entry = entry[:entry.index("\n- ", 5)]
     for name in named:
         assert name in " ".join(entry.split()), name
+
+
+def load_service(name, filename):
+    spec = importlib.util.spec_from_file_location(name, REPO / "bin" / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def hooks_installed():
+    return sys.excepthook is redact._excepthook and threading.excepthook is redact._thread_excepthook
+
+
+def test_comms_listen_main_installs_the_crash_hooks(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ASSISTANT_DIR", str(tmp_path / ".assistant"))
+    module = load_service("comms_listen_hooks", "comms-listen.py")
+    assert module.main() == 1  # no config yet: it says so and stops, after installing the hooks
+    assert hooks_installed()
+
+
+def test_cmux_watcher_main_installs_the_crash_hooks(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CMUX_WATCHER_ASSISTANT_DIR", str(tmp_path / ".assistant"))
+    module = load_service("cmux_watcher_hooks", "cmux-watcher.py")
+    monkeypatch.setattr(module, "cmux_available", lambda: False)
+    assert module.main() == 0
+    assert hooks_installed()

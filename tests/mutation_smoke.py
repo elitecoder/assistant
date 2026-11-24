@@ -4141,14 +4141,14 @@ CHECKS = (
         'bin/comms-listen.py',
         '    install_crash_hooks()  # an uncaught error prints a redacted traceback\n',
         '',
-        'tests/test_secrets_in_logs.py::test_service_installs_the_crash_hooks_when_it_starts',
+        'tests/test_secrets_in_logs.py::test_comms_listen_main_installs_the_crash_hooks',
     ),
     (
         'the cmux watcher installs the crash hooks',
         'bin/cmux-watcher.py',
         '    install_crash_hooks()  # an uncaught error prints a redacted traceback\n',
         '',
-        'tests/test_secrets_in_logs.py::test_service_installs_the_crash_hooks_when_it_starts',
+        'tests/test_secrets_in_logs.py::test_cmux_watcher_main_installs_the_crash_hooks',
     ),
     (
         'the world scanner installs the crash hooks',
