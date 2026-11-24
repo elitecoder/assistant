@@ -776,9 +776,23 @@ def remove_item(td_id):
     return True, f"{td_id} removed"
 
 
+# This server answers one connection at a time. A connection that opens and sends nothing (a browser keeps spare
+# ones; so does anything that only probes the port) would otherwise hold it for as long as it stayed open, and the
+# dashboard would stop answering. After this many seconds of silence such a connection is closed. It limits only
+# waiting on the socket, never how long a route may take to do its work.
+IDLE_TIMEOUT_SEC = 2
+
+
 class Handler(BaseHTTPRequestHandler):
+    timeout = IDLE_TIMEOUT_SEC
+
     def log_message(self, fmt, *args):
         sys.stderr.write("[todo-server] " + redact(fmt % args) + "\n")
+
+    def log_error(self, fmt, *args):
+        if fmt.startswith("Request timed out"):
+            return  # a spare connection being closed is routine: a line for each would bury the log
+        super().log_error(fmt, *args)
 
     def _own_origins(self):
         """The origins that count as this server's own page: both loopback names on the port the

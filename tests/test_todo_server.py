@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socket
 import sys
 import threading
 import urllib.error
@@ -453,6 +454,55 @@ def server(env):
         srv.shutdown()
         srv.server_close()
         t.join(timeout=5)
+
+
+def test_a_connection_that_sends_nothing_cannot_hold_the_server(server, monkeypatch):
+    """The server answers one connection at a time, and a browser keeps spare connections open that send nothing.
+    Without a limit the first of those froze the dashboard (and, in CI, a test's shutdown for 50 minutes)."""
+    monkeypatch.setattr(mod.Handler, "timeout", 0.3)
+    host, port = server.base.removeprefix("http://").split(":")
+    idle = socket.create_connection((host, int(port)))
+    try:
+        # urlopen below gives up after 5 s; with the idle connection never dropped, it would.
+        assert _request(server.base, "GET", "/healthz")[0] == 200
+        assert _request(server.base, "GET", "/healthz")[0] == 200
+    finally:
+        idle.close()  # so a server that is still holding it can shut down
+
+
+def test_dropping_a_silent_connection_writes_no_log_line_but_other_errors_still_do(server, monkeypatch, capsys):
+    monkeypatch.setattr(mod.Handler, "timeout", 0.3)
+    host, port = server.base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port))) as idle:
+        idle.settimeout(30)
+        assert idle.recv(1) == b"", "the server closed the silent connection"
+    assert _request(server.base, "GET", "/healthz")[0] == 200  # the server has finished with the silent one
+    assert "timed out" not in capsys.readouterr().err
+    with socket.create_connection((host, int(port))) as bad:
+        bad.sendall(b"NOT-HTTP\r\n\r\n")
+        bad.settimeout(30)
+        while bad.recv(4096):
+            pass
+    assert _request(server.base, "GET", "/healthz")[0] == 200
+    assert "code 400" in capsys.readouterr().err
+
+
+def test_the_server_drops_a_silent_connection_after_a_couple_of_seconds():
+    assert mod.Handler.timeout == mod.IDLE_TIMEOUT_SEC and 0 < mod.IDLE_TIMEOUT_SEC <= 5
+
+
+def test_a_slow_route_is_not_cut_off_by_the_limit_on_silent_connections(server, monkeypatch):
+    """The limit is on waiting for the socket, not on the work: a route that takes longer than it still answers."""
+    monkeypatch.setattr(mod.Handler, "timeout", 0.2)
+    slow = threading.Event()
+    real = mod.Handler.do_GET
+
+    def do_get(handler):
+        slow.wait(0.6)
+        return real(handler)
+
+    monkeypatch.setattr(mod.Handler, "do_GET", do_get)
+    assert _request(server.base, "GET", "/healthz")[0] == 200
 
 
 def _request(base, method, path, body=None, headers=None, token=True):
