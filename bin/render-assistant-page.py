@@ -34,6 +34,7 @@ sys.path.insert(1, str(REPO))
 import agent_session  # noqa: E402
 from assistant import apitoken
 from assistant import brief as brief_store
+from assistant import failwatch
 from assistant import mode
 from assistant import session_guidance
 from work_queue import config as work_queue_config
@@ -487,6 +488,147 @@ def render_restart_alert() -> str:
             f'<span class="pulse-text">An update couldn\'t restart {e(", ".join(labels))}, so it '
             'still runs old code. The hourly update retries; run ./install.sh --apply to '
             'retry now.</span></div>')
+
+
+FAILURE_NAMES = {
+    "self-update": "Self-update",
+    "dashboard-render": "Refreshing this page",
+    "model:lessons": "Lesson extraction",
+    "model:strategist": "The strategist",
+    "model:narrator": "The morning brief",
+    "model:observer-audit": "The Observer audit",
+    "model:triage": "Triage",
+    "model:work_queue": "The Work queue refresh",
+    "model:slack_focus": "The Slack tab refresh",
+}
+MERGE_CHECK = "ready-for-merge:"
+FAILURE_LINES_SHOWN = 2
+# Model jobs that can't know their model before the call, so a fix to the
+# model can't lift their pause by itself.
+PAUSE_NEEDS_RESET = ("model:observer-audit",)
+
+
+def _failure_time(ts: float, now: float) -> str:
+    """Local time: just the clock today, the weekday within the week, and the
+    date as well once it is more than 6 days away."""
+    when, today = datetime.fromtimestamp(ts), datetime.fromtimestamp(now)
+    days = abs((when.date() - today.date()).days)
+    if days == 0:
+        return when.strftime("%H:%M")
+    return when.strftime("%A %H:%M" if days <= 6 else "%A %-d %B %H:%M")
+
+
+def _clean_error(sample: str) -> str:
+    """The saved error, shortened for a person: JSON blocks removed, at most 100 characters."""
+    text = str(sample)
+    while True:
+        shorter = re.sub(r"\{[^{}]*\}", "", text)
+        if shorter == text:
+            break
+        text = shorter
+    text = " ".join(text.split()).rstrip(" .:")
+    if len(text) > 100:
+        text = text[:99].rstrip() + "…"
+    return text or "no details were given"
+
+
+def _merge_check_line(rows: list[dict], world: dict) -> str:
+    """One line for every session flagged ready to merge with no pull request.
+    Sessions are named only when every one of them has a title, so the line
+    never reads as if only the named ones were affected."""
+    titles = {}
+    for w in world.get("workspaces", []) or []:
+        if not isinstance(w, dict):
+            continue
+        ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
+        if ref and w.get("title"):
+            titles[ref] = " ".join(str(w["title"]).split())[:60]
+    refs = [r["component"][len(MERGE_CHECK):] for r in rows]
+    n = len(rows)
+    sessions = f"{n} session{'s' if n != 1 else ''}"
+    if n <= 3 and all(ref in titles for ref in refs):
+        sessions += f" ({', '.join(titles[ref] for ref in refs)})"
+    lack = "it has no" if n == 1 else "neither has a" if n == 2 else "none of them has a"
+    return (f"Assistant has flagged {sessions} as ready to merge, but {lack} pull request linked. "
+            f"Open {'the session' if n == 1 else 'each session'} and link its pull request, "
+            "or tell it the work isn't ready.")
+
+
+def _failure_line(row: dict, now: float) -> tuple[int, str]:
+    """(weight, html) for one repeating failure."""
+    component = str(row.get("component", ""))
+    name = FAILURE_NAMES.get(component) or f"A background job ({component.rsplit(':', 1)[-1]})"
+    streak = int(row["streak"])
+    since = _failure_time(float(row.get("streak_first_ts") or row["first_ts"]), now)
+    html = e(f"{name} has failed {streak} times in a row since {since}. "
+             f"The error was: {_clean_error(row.get('sample', ''))}.")
+    until = failwatch.pause_in_force(row, now)
+    if until and component == "self-update":
+        # sys.executable is the interpreter the services run under: it is the
+        # one rendering this page.
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(REPO / 'bin/self_update.py'))} --force"
+        html += (e(f" It tries again by itself at {_failure_time(until, now)}, or as soon as the branch "
+                   "or remote it updates from changes. To try now, run ")
+                 + f"<code>{e(command)}</code>" + e(" in a terminal."))
+    elif until:
+        html += e(f" It tries again at {_failure_time(until, now)}. "
+                  "You don't need to do anything unless it keeps failing.")
+        if component in PAUSE_NEEDS_RESET:
+            html += e(" If you've fixed the cause, delete ~/.assistant/failures.json "
+                      "and it tries again at its next run.")
+    return streak, html
+
+
+def render_failure_alerts(now: float | None = None, world: dict | None = None) -> str:
+    """One top-of-page box for failures that keep happening the same way: what
+    failed, how many times in a row, since when, the error, and what happens
+    next. Merge checks with no pull request share one line. Two lines show; the
+    rest are in a closed <details>. Never raises: a bad row is left out, and on
+    any other error the page simply has no box."""
+    try:
+        now = datetime.now().timestamp() if now is None else now
+        merge, items = [], []
+        for row in failwatch.repeated(now=now, limit=200):
+            try:
+                if str(row.get("component", "")).startswith(MERGE_CHECK):
+                    merge.append({**row, "streak": int(row["streak"])})
+                else:
+                    items.append(_failure_line(row, now))
+            except Exception:  # noqa: BLE001 — a corrupt row is skipped, the rest still show
+                continue
+        if merge:
+            items.append((sum(r["streak"] for r in merge),
+                          e(_merge_check_line(merge, world if isinstance(world, dict) else {}))))
+        if not items:
+            return ""
+        items.sort(key=lambda item: -item[0])
+        shown = "<br>".join(html for _, html in items[:FAILURE_LINES_SHOWN])
+        rest = items[FAILURE_LINES_SHOWN:]
+        if rest:
+            # The key lets the page reopen this after its 15-second refresh, like its other folds.
+            shown += ('<details data-context-key="repeated-failures"><summary>'
+                      + e(f"and {len(rest)} more that keep repeating") + "</summary>"
+                      + "<br>".join(html for _, html in rest) + "</details>")
+        return ('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
+                f'<span class="pulse-dot"></span><span class="pulse-text">{shown}</span></div>')
+    except Exception:  # noqa: BLE001 — the failure box must never take the page down
+        return ""
+
+
+def render_log_trim_notice() -> str:
+    """Top-of-page notices about log trimming: the 24-hour notice before the
+    first trim, or why trimming is off or waiting. They sit above the tab bar so
+    they show on every tab in both modes; the same cards also stay in the
+    Awaiting input list. Amber, not the red error style."""
+    cards = load_assistant_state().get("awaiting_input") or []
+    bars = []
+    for card in cards:
+        if isinstance(card, dict) and card.get("key") in ("log-trim-notice", "log-trim-problem"):
+            bars.append('<div class="pulse-health pulse-warn log-trim-notice" role="status">'
+                        '<span class="pulse-dot"></span>'
+                        f'<span class="pulse-text"><strong>{e(card.get("title") or "Log trimming")}</strong> '
+                        f'{e(card.get("detail") or "")}</span></div>')
+    return "".join(bars)
 
 
 def render_metering_stats():
@@ -2836,7 +2978,8 @@ def render():
     # These three jobs only run in Pro mode, so default mode doesn't list a
     # setting that would do nothing there.
     mode_html += render_job_settings() if pro else ""
-    pulse_alert_html = render_pulse_alert() + render_restart_alert()
+    pulse_alert_html = (render_pulse_alert() + render_restart_alert() + render_log_trim_notice()
+                        + render_failure_alerts(world=world))
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()

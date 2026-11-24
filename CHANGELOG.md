@@ -50,6 +50,25 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Show a failure that keeps repeating as one red line at the top of the
+  dashboard, with how many times in a row it has happened, since when, a short
+  error, and what happens next, all in one box that shows two lines and keeps
+  the rest under "and N more that keep repeating". It covers self-update,
+  background model calls, and the page refresh after an edit. Sessions flagged
+  as ready to merge with no pull request linked share one line, which clears
+  when each has a pull request, is no longer ready, or closes. The self-update
+  line gives a command you can paste, with the Python the services use. A background job that fails the same
+  way three times in a row stops calling the model, and so stops spending,
+  for an hour, then two, up to 24 hours. Self-update pauses for 4 hours at
+  most. It, and the model jobs that know their model beforehand, try again at
+  once if the remote, branch, model, or provider changes. Anything you
+  ask for, such as a Work queue or Slack tab refresh, is never paused. A pause
+  ends by itself, and the line clears when the next attempt works. To clear a
+  pause sooner, run `self_update.py --force`, or delete
+  `~/.assistant/failures.json`, which forgets every count. If the page itself
+  can't be rebuilt, it can't show the line until a rebuild works. The file
+  holds short error samples, with tokens, keys, and passwords removed, that can
+  include a branch name or a model id. Counts stay out of the actions ledger.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or
@@ -110,6 +129,34 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Some services could fail without a word because they ran under the system's
+  older Python. They now use the same Python as the rest of Assistant.
+- Trim oversized logs. Every five minutes the Assistant now checks its logs:
+  the ones in `~/.assistant/logs`, the `.log` files in `~/.assistant`, the
+  comms listener log, the workspace watcher log, and the to-do server's two
+  output files. A log over 20 MB is cut to its last 5 MB; the older lines are
+  deleted and there is no backup copy. This frees the space the repeated lines
+  took; one log had reached 1.6 GB and another 870 MB. Services keep writing
+  without a restart, and a line written during a trim can be lost. Nothing is
+  deleted the day you update: when `~/.assistant/config.json` has no `logs`
+  entry, the first time a log is found over the limit the Assistant only shows
+  a card saying which logs it will trim and when, and waits 24 hours. To keep
+  your logs, or to change the limits, add a `logs` entry alongside your
+  existing keys; do not replace the file. For example,
+  `{"mode": "pro", "logs": {"cap_mb": 0}}` turns trimming off, and
+  `"cap_mb"` and `"keep_mb"` are in megabytes. Check the file with
+  `python3 -m json.tool ~/.assistant/config.json`. A `logs` setting that can't
+  be read, such as a number in quotes, turns trimming off and the log says why.
+- Stop the workspace watcher from restarting its cmux event stream in a tight
+  loop. When cmux refused the connection, the watcher started a new stream
+  the instant the last one ended and logged every try. It now waits 2 seconds
+  after a failed stream, doubling up to 30, and starts over after a stream
+  that stayed up for a minute. It logs a repeated failure once, then once per
+  wait step with the attempt count, and says when the stream recovers. cmux's
+  own error text no longer goes to the launchd error log; the watcher logs its
+  last line instead. The workspace numberer likewise logs a repeated cmux
+  error once, then once every 5 minutes with a count, and says when cmux
+  answers again.
 - **If the Slack reactor ran any earlier version, rotate your Slack bot token
   now: its log file holds the old one.**
 
