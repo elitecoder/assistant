@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import logcap, mode, model_tiers, transcript_slice  # noqa: E402
+from assistant import logcap, mode, model_tiers, redact, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -291,6 +291,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s pulse.py %(message)s",
 )
 log = logging.getLogger("pulse")
+redact.install()  # no token reaches pulse.log
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────

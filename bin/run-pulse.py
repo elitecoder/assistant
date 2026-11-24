@@ -32,6 +32,7 @@ STARTUP_FILES = (PULSE, BIN.parent / "src/assistant/__init__.py",
                  BIN.parent / "src/assistant/logcap.py",
                  BIN.parent / "src/assistant/mode.py",
                  BIN.parent / "src/assistant/model_tiers.py",
+                 BIN.parent / "src/assistant/redact.py",
                  BIN.parent / "src/assistant/transcript_slice.py")
 LEDGER_EVERY_SEC = 86400  # 1 day
 

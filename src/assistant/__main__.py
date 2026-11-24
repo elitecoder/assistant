@@ -18,6 +18,7 @@ import logging
 import signal
 import sys
 
+from . import redact
 from .config import Config
 from .daemon import DaemonProcess, is_running, read_pid
 
@@ -34,6 +35,7 @@ def _setup_logging(config: Config) -> logging.Logger:
                and getattr(h, "baseFilename", None) == handler.baseFilename
                for h in root.handlers):
         root.addHandler(handler)
+    redact.install(root)  # no token reaches the daemon log
     return root
 
 

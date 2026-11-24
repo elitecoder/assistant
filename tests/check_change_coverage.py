@@ -29,6 +29,17 @@ MUTATION_PROVEN = {"install.sh", "install-bootstrap.sh", "bin/assistant-comms-se
 DASHBOARD = ("bin/render-assistant-page.py", "js", "dashboard")
 WORK_QUEUE_PAGE = ("work_queue/page.py", "JS", "Work queue page")
 
+# The Slack reactor's Node source. Node's own test runner measures it:
+#   node --test --experimental-test-coverage --test-reporter=lcov \
+#     --test-reporter-destination=<dir>/reactor.lcov slack-reactor/test/*.test.js
+# and --reactor-lcov hands that report to this gate.
+REACTOR_SOURCE = "slack-reactor/src/"
+REACTOR_TESTS = "slack-reactor/test/"  # test code, like tests/, needs no coverage
+
+
+def is_reactor_source(name: str) -> bool:
+    return name.startswith(REACTOR_SOURCE) and name.endswith(".js")
+
 
 def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
     base_commit = subprocess.check_output(
@@ -42,9 +53,9 @@ def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
         text=True).split("\0")
     for name in set(changed_names) - {""}:
         file = Path(name)
-        if file.parts[0] in {"tests", "evals", "docs", ".github"}:
+        if file.parts[0] in {"tests", "evals", "docs", ".github"} or name.startswith(REACTOR_TESTS):
             continue
-        if name in MUTATION_PROVEN:
+        if name in MUTATION_PROVEN or is_reactor_source(name):
             continue
         if file.suffix in {".py", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".sh"}:
             if file.suffix != ".py" or file.parts[0] not in PYTHON_SOURCE_DIRS:
@@ -84,6 +95,82 @@ def changed_lines(repo: Path, base: str) -> dict[str, set[int]]:
         if name.endswith(".py"):
             files[name] = set(range(1, len((repo / name).read_text().splitlines()) + 1))
     return {name: lines for name, lines in files.items() if lines}
+
+
+def changed_reactor_lines(repo: Path, base: str) -> dict[str, set[int]]:
+    """Changed (or new) lines of each reactor source file, by repo-relative name."""
+    base_commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}"],
+        text=True).strip()
+    diff = subprocess.check_output(
+        ["git", "-C", str(repo), "diff", "--no-ext-diff", "--unified=0", base_commit, "--", REACTOR_SOURCE],
+        text=True)
+    files: dict[str, set[int]] = {}
+    name = None
+    line = 0
+    for text in diff.splitlines():
+        if text.startswith("+++ b/"):
+            name = text[6:] if is_reactor_source(text[6:]) else None
+            if name:
+                files.setdefault(name, set())
+        elif text.startswith("+++ "):
+            name = None
+        elif text.startswith("@@"):
+            match = re.search(r"\+(\d+)(?:,\d+)?", text)
+            if match is None:
+                raise ValueError("Git returned an unreadable change range")
+            line = int(match.group(1))
+        elif text.startswith("+") and name:
+            files[name].add(line)
+            line += 1
+    untracked = subprocess.check_output(
+        ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z", "--", REACTOR_SOURCE],
+        text=True)
+    for name in untracked.split("\0"):
+        if is_reactor_source(name):
+            files[name] = set(range(1, len((repo / name).read_text().splitlines()) + 1))
+    return {name: lines for name, lines in files.items() if lines}
+
+
+def parse_lcov(text: str) -> dict[str, dict]:
+    """{file: {"lines": {line: hits}, "branches": [(line, taken)]}} from an lcov report."""
+    files: dict[str, dict] = {}
+    current = None
+    for record in text.splitlines():
+        if record.startswith("SF:"):
+            current = files.setdefault(record[3:], {"lines": {}, "branches": []})
+        elif current is not None and record.startswith("DA:"):
+            line, hits = record[3:].split(",")[:2]
+            current["lines"][int(line)] = int(hits)
+        elif current is not None and record.startswith("BRDA:"):
+            line, _block, _branch, taken = record[5:].split(",")
+            current["branches"].append((int(line), 0 if taken == "-" else int(taken)))
+    return files
+
+
+def check_reactor(repo: Path, changes: dict[str, set[int]], lcov: str | None,
+                  report_mtime: float | None = None) -> dict:
+    """Every changed executable line and branch of the reactor's Node source must run in a test."""
+    rows = []
+    if changes and lcov is None:
+        raise ValueError("Changed reactor JavaScript needs a Node coverage report (--reactor-lcov)")
+    measured = parse_lcov(lcov) if lcov is not None else {}
+    for name, changed in sorted(changes.items()):
+        report = measured.get(name) or measured.get(str(repo / name))
+        if report is None:
+            raise ValueError(f"Coverage is missing for changed code: {name}")
+        if report_mtime is not None and (repo / name).stat().st_mtime > report_mtime:
+            raise ValueError(f"Source changed after coverage measurement: {name}")
+        lines = changed & report["lines"].keys()
+        branches = [(line, taken) for line, taken in report["branches"] if line in changed]
+        rows.append({
+            "file": name,
+            "lines": len(lines),
+            "missing_lines": sorted(line for line in lines if report["lines"][line] <= 0),
+            "branches": len(branches),
+            "missing_branches": sorted(line for line, taken in branches if taken <= 0),
+        })
+    return {"passed": all(not (row["missing_lines"] or row["missing_branches"]) for row in rows), "files": rows}
 
 
 def changed_hunks(repo: Path, base: str) -> dict[str, list[set[int]]]:
@@ -273,6 +360,8 @@ def main():
     parser.add_argument("--browser-report", type=Path)
     parser.add_argument("--work-queue-browser-report", type=Path,
                         help="browser coverage of the Work queue page's script in work_queue/page.py")
+    parser.add_argument("--reactor-lcov", type=Path,
+                        help="Node lcov coverage of slack-reactor/src (see REACTOR_SOURCE)")
     parser.add_argument("--source-manifest", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -286,6 +375,11 @@ def main():
             json.loads(args.browser_report.read_text()) if args.browser_report else None,
             json.loads(manifest_path.read_text()),
             json.loads(args.work_queue_browser_report.read_text()) if args.work_queue_browser_report else None)
+        result["reactor"] = check_reactor(
+            repo, changed_reactor_lines(repo, args.base),
+            args.reactor_lcov.read_text() if args.reactor_lcov else None,
+            args.reactor_lcov.stat().st_mtime if args.reactor_lcov else None)
+        result["passed"] = result["passed"] and result["reactor"]["passed"]
         result["mutation_proven"] = check_mutation_proof(repo, changed_hunks(repo, args.base), CHECKS)
         result["passed"] = result["passed"] and not any(
             row["unproven_hunks"] for row in result["mutation_proven"])

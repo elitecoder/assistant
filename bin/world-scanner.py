@@ -64,6 +64,7 @@ import cmux_sessions  # noqa: E402
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO / "src") not in sys.path:
     sys.path.insert(0, str(_REPO / "src"))
+from assistant.redact import install_crash_hooks, redact  # noqa: E402 - the log below never writes a token
 try:
     from assistant import connector as _connector
     _classify_connector = _connector.classify_connector
@@ -117,7 +118,7 @@ def parse_iso(s):
 def log(msg, level="info"):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     with open(LOG_DIR / "world-scanner.out", "a") as f:
-        f.write(f"[{iso(utc_now())}] [{level}] {msg}\n")
+        f.write(f"[{iso(utc_now())}] [{level}] {redact(msg)}\n")
 
 
 def load_json(path, default=None):
@@ -761,6 +762,7 @@ def build_connectors_summary(now):
 
 
 def build():
+    install_crash_hooks()  # an uncaught error prints a redacted traceback
     now = utc_now()
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 

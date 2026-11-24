@@ -58,7 +58,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent_session  # noqa: E402
+from assistant import redact  # noqa: E402
 
 # ---------- paths ----------
 HOME = Path(os.environ["HOME"])
@@ -103,6 +105,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("workspace-watcher")
+redact.install()  # no token reaches the watcher log
 
 
 # ---------- helpers ----------

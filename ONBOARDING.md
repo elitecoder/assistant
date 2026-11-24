@@ -170,7 +170,27 @@ Needs `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` in `~/.zprofile`, then:
 launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist
 ```
 
-See [slack-reactor/README.md](slack-reactor/README.md).
+**If the reactor ran any earlier version, rotate your Slack bot token now: its
+log file holds the old one.** The fix stops new leaks; it doesn't clean old
+lines.
+
+1. In the Slack app's settings, under OAuth & Permissions, reinstall the app
+   to get a new bot token.
+2. If the old log also shows an `xapp-` token, regenerate the app-level token
+   under Basic Information, App-Level Tokens.
+3. Update `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`) in `~/.zprofile`.
+4. Restart the reactor with this command:
+   `launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`
+5. Confirm the old token no longer works. Call `auth.test` with it, for
+   example with this command, and expect `invalid_auth` or `token_revoked`:
+   `curl -s -X POST -H "Authorization: Bearer <old token>" https://slack.com/api/auth.test`
+6. Delete or empty `~/.assistant/logs/slack-reactor.launchd.err`, and any copy
+   of it in a backup.
+
+After that, the reactor and the Python services replace token-shaped text in what
+they log, and in their crash output, with `<redacted>`. That is pattern matching,
+not a guarantee: scripts that only `print` are not covered, nor is a token split
+across two writes. See [slack-reactor/README.md](slack-reactor/README.md).
 
 ### PRO MODE — the Work queue
 
