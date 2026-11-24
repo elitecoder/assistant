@@ -1912,9 +1912,17 @@ def test_a_batch_has_one_deadline_for_all_of_it(home, locked_db, monkeypatch):
     assert time.monotonic() - started < 5 and len(spool_lines(home)) in (0, 100)
 
 
-def test_emit_is_a_batch_of_one(home, monkeypatch):
-    inserted = []
+def test_emit_is_a_batch_of_one_and_a_batch_is_one_transaction(home, monkeypatch):
+    inserted, statements = [], []
     real = T._insert_all
-    monkeypatch.setattr(T, "_insert_all", lambda conn, rows: inserted.append(len(rows)) or real(conn, rows))
+
+    def watching(conn, rows):
+        inserted.append(len(rows))
+        statements.clear()
+        conn.set_trace_callback(statements.append)
+        return real(conn, rows)
+
+    monkeypatch.setattr(T, "_insert_all", watching)
     assert T.emit("check", name="one") is True and T.emit_many(batch_of(3)) is True
     assert inserted == [1, 3]
+    assert [s.split(" (")[0] for s in statements] == ["BEGIN IMMEDIATE"] + ["INSERT OR IGNORE INTO events"] * 3 + ["COMMIT"]

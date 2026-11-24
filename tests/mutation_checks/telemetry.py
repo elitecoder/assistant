@@ -846,7 +846,7 @@ CHECKS = (
         M,
         '    conn.execute("BEGIN IMMEDIATE")\n    conn.executemany(_INSERT, rows)\n    conn.execute("COMMIT")\n',
         '    for row in rows:\n        conn.execute(_INSERT, row)\n',
-        T + "test_emit_is_a_batch_of_one",
+        T + "test_emit_is_a_batch_of_one_and_a_batch_is_one_transaction",
     ),
     (
         "emit_many never raises",

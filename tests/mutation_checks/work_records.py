@@ -426,9 +426,16 @@ CHECKS = (
     (
         "a record that can't be handed over costs only the record",
         REC,
+        "    except Exception:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef emit_many",
+        "    except ImportError:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef emit_many",
+        T + "test_a_record_handed_to_a_store_that_fails_costs_only_the_record",
+    ),
+    (
+        "a list of records that can't be handed over costs only the records",
+        REC,
         "    except Exception:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef recording",
         "    except ImportError:  # noqa: BLE001 - recording never breaks work\n        if loud():\n            raise\n\n\ndef recording",
-        T + "test_a_record_handed_to_a_store_that_fails_costs_only_the_record",
+        T + "test_a_list_of_records_handed_to_a_store_that_fails_costs_only_the_records",
     ),
     (
         "a trace that can't be made costs only the record",

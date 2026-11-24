@@ -805,6 +805,17 @@ def test_a_record_handed_to_a_store_that_fails_costs_only_the_record(wq, monkeyp
     assert records.emit("task", OWN, "td-1", "cli", state="open") is None
 
 
+def test_a_list_of_records_handed_to_a_store_that_fails_costs_only_the_records(wq, monkeypatch):
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "0")
+    real = telemetry.emit_many
+    monkeypatch.setattr(telemetry, "emit_many", lambda batch: (_ for _ in ()).throw(RuntimeError("the store is on fire")))
+    part = ("task", {"trace": OWN, "subject": "td-1", "component": "cli", "state": "open"})
+    assert records.emit_many([part]) is None
+    monkeypatch.setattr(telemetry, "emit_many", real)
+    missing_telemetry(monkeypatch)
+    assert records.emit_many([part]) is None
+
+
 @pytest.mark.parametrize("breaks", [broken_emit, missing_telemetry, missing_records, builds_wrong])
 def test_stamping_a_tasks_trace_is_never_held_back_by_its_record(wq, monkeypatch, breaks):
     write_todos(wq, [{"id": "td-7", "title": "From elsewhere", "status": "open", "source": "slack-react:C1:1.2"}])
