@@ -313,6 +313,7 @@ def test_default_mode_still_auto_starts_tasks(tmp_path):
             mock.patch.object(pulse, "purge_stale_awaiting"), \
             mock.patch.object(pulse, "call_observer_batch", return_value=({}, {})), \
             mock.patch.object(pulse, "pick_open_todos", return_value={"bucket_b": [todo]}), \
+            mock.patch.object(pulse, "scan_busy_ws", return_value=set()), \
             mock.patch.object(pulse, "dispatch_todo", return_value=True) as dispatch, \
             mock.patch.object(pulse, "run", return_value=(0, "", "")), \
             mock.patch.object(sys, "argv", ["pulse.py"]):
@@ -377,6 +378,14 @@ def test_tasks_tab_shows_the_held_back_warning(home):
         "detail": "active=4/4, total=9/12. Holding: td-1, td-2."}]})
     todos = page[page.index('data-panel="todos"'):]
     assert "Dispatch capped — 2 TODO(s) waiting" in todos and "Holding: td-1, td-2." in todos
+
+
+def test_tasks_tab_shows_the_paused_dispatch_warning(home):
+    page = render_page(home, {"awaiting_input": [{
+        "key": "dispatch-held-no-fleet-view", "title": "Dispatch paused — 2 TODO(s) waiting",
+        "detail": "Couldn't tell how many sessions are busy: x. Holding: td-1, td-2."}]})
+    todos = page[page.index('data-panel="todos"'):]
+    assert "Dispatch paused — 2 TODO(s) waiting" in todos and "Holding: td-1, td-2." in todos
 
 
 def test_unpause_hint_points_to_a_command_that_exists_in_each_mode(home):

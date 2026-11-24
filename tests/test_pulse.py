@@ -505,9 +505,11 @@ class CountActiveTests(unittest.TestCase):
 
     def test_counts_working_status(self):
         meta = [
-            {"ctx": {"agent_status": "working", "last_turn_age_sec": 9999}},
+            {"ctx": {"agent_status": "working", "last_turn_age_sec": 3000}},
             {"ctx": {"agent_status": "idle", "last_turn_age_sec": 100}},  # young → active
             {"ctx": {"agent_status": "idle", "last_turn_age_sec": 9999}},  # old → not active
+            # A tool call open for more than two hours is a session waiting on someone.
+            {"ctx": {"agent_status": "working", "last_turn_age_sec": 9999}},
         ]
         self.assertEqual(self.mod.count_active(meta), 2)
 
@@ -886,13 +888,14 @@ class HelperSubprocessWrapperTests(unittest.TestCase):
         with mock.patch.object(self.mod, "run", return_value=(1, "", "fail")):
             out = self.mod.pick_ws_batch()
         self.assertEqual(out, {"to_reclassify": [], "reuse_cached": [],
-                               "backed_off": [], "total_ws": 0})
+                               "backed_off": [], "total_ws": 0, "unavailable": True})
 
     def test_pick_ws_batch_returns_default_on_bad_json(self):
         with mock.patch.object(self.mod, "run",
                                return_value=(0, "not json", "")):
             out = self.mod.pick_ws_batch()
         self.assertEqual(out["total_ws"], 0)
+        self.assertTrue(out["unavailable"])
 
     def test_build_ctx_parses_json(self):
         payload = {"ws_ref": "workspace:1", "transcript_path": None,
@@ -1245,6 +1248,11 @@ class MainPipelineTests(unittest.TestCase):
         (self._tmp / ".assistant/config.json").write_text(
             json.dumps({"observer": {"enabled": True}}))
         self.mod = load_pulse(self._tmp)
+        # The Observer's contexts are the busy count here; the mechanical scan
+        # has its own tests (test_busy_session_cap.py).
+        scan = mock.patch.object(self.mod, "scan_busy_ws", return_value=set())
+        scan.start()
+        self.addCleanup(scan.stop)
 
     def tearDown(self):
         self._tmp_obj.cleanup()
