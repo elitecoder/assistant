@@ -1031,8 +1031,8 @@ def state() -> dict:
     return {"decisions": config.read_json(path("decisions.json"), {}), "applied": config.read_json(path("applied.json"), {}),
             "status": config.read_json(path("apply-status.json"), {}), "sent": sorted(queued), "queued": queued,
             "marks": config.read_json(path("marks.json"), {}), "mail": read_map("mail-actions.json"),
-            "checks": read_map("ready-checks.json"), "refresh": refresh_state(), "slack_held": held_saves.line(),
-            "feedback": feedback.views()}
+            "checks": read_map("ready-checks.json"), "refresh": refresh_state(), "feedback": feedback.views(),
+            "slack_held": held_saves.line()}
 
 
 ROUTES = {"/api/decide": noting(decide, decide_notes), "/api/mark": noting(set_marks, mark_notes),

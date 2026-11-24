@@ -355,8 +355,8 @@ CHECKS = (
     (
         "the page state carries what was said",
         S,
-        ', "feedback": feedback.views()}',
-        "}",
+        ' "feedback": feedback.views(),',
+        "",
         TS + "test_tell_keeps_the_words_for_an_item_and_for_the_page",
     ),
     (
