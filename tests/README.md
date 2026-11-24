@@ -102,14 +102,28 @@ check from the i-th; the workflow runs shards 1/4 through 4/4 in parallel jobs, 
 
 **Add the checks for a change in a file of its own**, `tests/mutation_checks/<what-the-change-is>.py`, which
 defines `CHECKS` as a tuple of `(name, file, original, broken, test)` entries. The harness adds every file in that
-folder to its list, in file-name order. Two changes in progress then never edit the same lines; when every change
-appended to the one list in `tests/mutation_smoke.py`, each pull request conflicted with the next, and one merge
-joined two entries into one. Change an entry in the long list there only when you change the line it quotes.
+folder to its list, in file-name order. Two changes in progress then never edit the same lines of the harness
+(they still share the changelog); when every change appended to the one list in `tests/mutation_smoke.py`, each
+pull request conflicted with the next, and one merge joined two entries into one.
 
-The harness refuses a list it can't trust as soon as it loads: an entry that isn't five strings, one with no name,
-file, original or test, one whose `broken` equals its original, and two entries with one name.
-`test_mutation_shards.py` also checks, in seconds, that every entry's snippet is in its file exactly once and that
-its test exists, so a stale entry doesn't wait for a shard to fail.
+- Don't add new entries to the list in `tests/mutation_smoke.py`, and don't move old ones. When you change a line
+  an existing entry quotes, edit that entry where it lives, whether in that list or in a file in the folder.
+- Every `.py` file in the folder must define `CHECKS`; helpers go elsewhere. A file whose name starts with `.` or
+  `_` isn't read.
+- A list of one check needs a comma after it: `CHECKS = ((...),)`.
+- An empty `broken` deletes the original.
+
+Try the checks you just wrote before you push; each takes about a second:
+
+```bash
+uv run --with pytest python tests/mutation_smoke.py --name "part of your check's name" --output "$REPORT/mine.json"
+```
+
+The harness refuses a list it can't trust as soon as it loads, naming the file and the entry within it: an entry
+that isn't five strings, one with no name, file, original or test, one whose `broken` equals its original, and two
+entries with one name. `test_mutation_shards.py` also checks, in seconds, that every entry's snippet is in its file
+exactly once and that pytest collects its test, so a stale entry doesn't wait for a shard to fail. It doesn't run
+the mutations; `--name` and the shards do.
 
 ## What's covered
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -246,6 +248,33 @@ def test_a_folder_with_no_files_of_checks_adds_nothing(tmp_path):
     assert mutation_smoke.checks_in(tmp_path) == () and mutation_smoke.checks_in(tmp_path / "missing") == ()
 
 
+@pytest.mark.parametrize("name", ["._mine.py", ".#mine.py", "__init__.py", "_helpers.py"])
+def test_a_file_an_editor_or_macos_left_behind_is_not_read(tmp_path, name):
+    write_checks(tmp_path, name, "this is not Python \x00")
+    write_checks(tmp_path, "mine.py", "CHECKS = (('one', 'f', 'o', 'b', 't'),)\n")
+    assert [c[0] for c in mutation_smoke.checks_in(tmp_path)] == ["one"]
+
+
+@pytest.mark.parametrize("body, complaint", [
+    ("CHECKS = (('one', 'f', 'o', 'b', 't'), ('two', 'f', 'o', 'b'))\n", "mine.py: mutation check 2 isn't"),
+    ("CHECKS = (('one', 'f', 'o', 'b', 't'), ('one', 'g', 'o', 'b', 't'))\n", "mine.py: two mutation checks are named 'one'"),
+    ("CHECKS = (('one', 'f', 'o', 'b', 't'))\n", "mine.py: mutation check 1 is a single string, not five. A list of "
+                                                 "one check needs a comma after it"),
+], ids=["a-short-entry", "a-repeated-name", "one-entry-with-no-comma"])
+def test_a_mistake_in_a_file_of_checks_names_the_file_and_the_entry_within_it(tmp_path, body, complaint):
+    write_checks(tmp_path, "earlier.py", "CHECKS = (('zero', 'f', 'o', 'b', 't'),)\n")
+    write_checks(tmp_path, "mine.py", body)
+    with pytest.raises(ValueError, match=re.escape(complaint)):
+        mutation_smoke.checks_in(tmp_path)
+
+
+def test_two_files_of_checks_sharing_a_name_are_refused_when_the_list_is_joined(tmp_path, monkeypatch):
+    write_checks(tmp_path, "a.py", "CHECKS = (('same', 'f', 'o', 'b', 't'),)\n")
+    write_checks(tmp_path, "b.py", "CHECKS = (('same', 'g', 'o', 'b', 't'),)\n")
+    with pytest.raises(ValueError, match="^two mutation checks are named 'same'"):
+        mutation_smoke.well_formed(mutation_smoke.checks_in(tmp_path))
+
+
 @pytest.mark.parametrize("body", ["CHECKS = [('one', 'f', 'o', 'b', 't')]\n", "OTHER = ()\n", "CHECKS = None\n"],
                          ids=["a-list", "no-checks", "none"])
 def test_a_file_that_doesnt_define_a_tuple_of_checks_is_refused(tmp_path, body):
@@ -268,11 +297,12 @@ def test_a_well_formed_list_is_returned_as_it_is():
 
 def test_two_entries_run_together_into_one_are_refused():
     with pytest.raises(ValueError, match="mutation check 2 isn't"):
-        mutation_smoke.well_formed((GOOD, GOOD[:4] + ("tests/a.py::one", "second", "f", "o", "b", "tests/a.py::two")))
+        mutation_smoke.well_formed((GOOD, ("joined",) + GOOD[1:4] + ("tests/a.py::one", "second", "f", "o", "b",
+                                                                      "tests/a.py::two")))
 
 
 @pytest.mark.parametrize("check", [
-    GOOD[:4], list(GOOD), "name", GOOD[:4] + (7,), ("",) + GOOD[1:], GOOD[:1] + ("",) + GOOD[2:],
+    GOOD[:4], list(GOOD), None, GOOD[:4] + (7,), ("",) + GOOD[1:], GOOD[:1] + ("",) + GOOD[2:],
     GOOD[:2] + ("",) + GOOD[3:], GOOD[:4] + ("",), GOOD[:3] + (GOOD[2],) + GOOD[4:],
 ], ids=["four-parts", "a-list", "not-a-tuple", "a-part-that-isnt-text", "no-name", "no-file", "no-original",
         "no-test", "a-broken-that-changes-nothing"])
@@ -282,23 +312,49 @@ def test_a_malformed_check_is_refused(check):
 
 
 def test_two_checks_with_one_name_are_refused():
-    with pytest.raises(ValueError, match="two mutation checks are named 'name'"):
-        mutation_smoke.well_formed((GOOD, GOOD[:1] + ("bin/other.py", "o", "b", "tests/a.py::two")))
+    other = ("other", "bin/other.py", "o", "b", "tests/a.py::two")
+    with pytest.raises(ValueError, match="^two mutation checks are named 'name'"):
+        mutation_smoke.well_formed((GOOD, other, GOOD[:1] + other[1:]))
 
 
-def test_every_check_names_a_snippet_found_exactly_once_and_a_test_that_exists():
+def test_a_single_string_where_a_check_should_be_says_a_comma_is_missing():
+    with pytest.raises(ValueError, match="^mutation check 2 is a single string, not five"):
+        mutation_smoke.well_formed((GOOD, "name"))
+
+
+def test_name_runs_only_the_checks_whose_name_contains_the_text(tmp_path, monkeypatch, capsys):
+    ran = []
+    monkeypatch.setattr(mutation_smoke, "run_check", lambda name, *rest: ran.append(name) or {"name": name, "mutant": "rejected"})
+    mine = [c[0] for c in mutation_smoke.CHECKS if "refused" in c[0]]
+    mutation_smoke.main(["--name", "refused", "--output", str(tmp_path / "out.json")])
+    assert ran == mine and len(mine) >= 2
+    ran.clear()
+    mutation_smoke.main(["--name", "refused", "--shard", "1/2", "--output", str(tmp_path / "out.json")])
+    assert ran == [c[0] for c in mutation_smoke.CHECKS[0::2] if "refused" in c[0]]
+    with pytest.raises(SystemExit):
+        mutation_smoke.main(["--name", "no check is called this", "--output", str(tmp_path / "out.json")])
+    assert "no check's name contains 'no check is called this'" in capsys.readouterr().err
+
+
+def test_every_check_names_a_snippet_found_exactly_once_and_a_test_pytest_collects():
     """A check whose snippet has gone stale, or whose test was renamed, would otherwise fail 13 minutes into a
-    shard. This says so in seconds, with every stale check at once."""
+    shard. This says so in seconds, with every stale check at once. The tests are the ones pytest itself collects,
+    so a renamed class or parameter id is found too."""
+    files = sorted({selector.partition("::")[0] for *_rest, selector in mutation_smoke.CHECKS})
+    absent = [name for name in files if not (REPO / name).is_file()]
+    assert not absent, f"no such test file: {absent}"
+    listed = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", *files], cwd=REPO,
+                            capture_output=True, text=True)
+    assert listed.returncode == 0, listed.stdout[-2000:] + listed.stderr[-2000:]
+    collected = {"tests/" + line.strip() for line in listed.stdout.splitlines() if "::" in line}
+    collected |= {found.split("[", 1)[0] for found in collected}  # a test id without brackets runs every case of it
     sources: dict = {}
     wrong = []
     for name, filename, original, _broken, selector in mutation_smoke.CHECKS:
-        test_file, _, test_name = selector.partition("::")
-        for found in (filename, test_file):
-            if found not in sources:
-                sources[found] = (REPO / found).read_text() if (REPO / found).is_file() else None
-        if sources[filename] is None or sources[filename].count(original) != 1:
-            wrong.append(f"{name}: its snippet isn't in {filename} exactly once")
-        function = test_name.rsplit("::", 1)[-1].split("[", 1)[0]
-        if sources[test_file] is None or not re.search(rf"^\s*def {re.escape(function)}\(", sources[test_file], re.M):
-            wrong.append(f"{name}: {selector} doesn't exist")
+        if filename not in sources:
+            sources[filename] = (REPO / filename).read_text() if (REPO / filename).is_file() else ""
+        if (count := sources[filename].count(original)) != 1:
+            wrong.append(f"{name}: its snippet is in {filename} {count} times, not once")
+        if selector not in collected:
+            wrong.append(f"{name}: pytest collects no test {selector}")
     assert not wrong, "\n".join(wrong)
