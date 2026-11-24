@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import mode, model_tiers, redact, telemetry, transcript_slice  # noqa: E402
+from assistant import mode, model_tiers, redact, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -1237,23 +1237,15 @@ def _write_private_text(path: Path, text: str) -> None:
     path.chmod(0o600)
 
 
-TELEMETRY_UPKEEP_EVERY_SEC = 3600
-
-
 def run_telemetry_upkeep(now: float | None = None) -> None:
-    """Hourly upkeep of the local telemetry store (spool drain, retention, size limit). The stamp is written
-    first, so a failing or slow run is not retried every pulse. Never lets a problem reach the pulse."""
+    """Hourly upkeep of the local telemetry store (spool drain, retention, size limit). The module is imported
+    here, inside the try, and is not one of run-pulse.py's start-up files: a missing or broken telemetry module
+    skips this step and nothing else. Anything it reports as a problem is logged as one plain line."""
     try:
-        now = time.time() if now is None else now
-        stamp = ASSISTANT_DIR / "telemetry-upkeep-at"
-        try:
-            last = float(stamp.read_text())
-        except (OSError, ValueError):
-            last = 0.0
-        if 0 <= now - last < TELEMETRY_UPKEEP_EVERY_SEC:
-            return
-        stamp.write_text(str(now))
-        telemetry.maintain(now)
+        from assistant import telemetry  # noqa: PLC0415
+        result = telemetry.upkeep(now)
+        if result and result["notes"]:
+            log.warning("%s", "; ".join(result["notes"]))
     except Exception as e:  # noqa: BLE001 — upkeep is optional
         log.warning("telemetry upkeep failed (ignored): %s", e)
 
