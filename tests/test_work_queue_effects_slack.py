@@ -205,11 +205,23 @@ def test_a_save_with_no_decision_time_isnt_marked(wq):
     assert out[SAVE]["error"] == server.UNAPPROVED and browser_runs(wq) == 0 and recorded(wq) == []
 
 
-def test_a_save_the_record_cant_describe_is_a_fault_in_assistant_and_isnt_marked(wq, capsys):
-    slack_answers(wq, {})
-    bad = ("x", {"cid": "not a channel", "ts": TS1, "decided_at": AT}, False)
-    assert server.run_slack([bad])["x"]["error"] == server.FAULT
-    assert browser_runs(wq) == 0 and "not a channel" not in capsys.readouterr().err
+@pytest.mark.parametrize("cid, ts", [
+    ("D0123456789", TS1), ("G0123456789", TS1), ("C01234567890123", TS1), ("W012345678", TS1), ("c0123456789", TS1),
+    ("not a channel", TS1), (CID, "1700000000"), (CID, "1700000000.0001"), (CID, "later"), (None, None)])
+def test_a_save_whose_id_the_ledgers_patterns_dont_take_is_still_marked_and_recorded_by_a_digest(wq, cid, ts):
+    key = f"{cid}:{ts}"
+    slack_answers(wq, {key: DONE})
+    out = server.run_slack([(key, {"cid": cid, "ts": ts, "decided_at": AT}, False)])
+    assert out == {key: DONE} and browser_runs(wq) == 1
+    [e] = recorded(wq)
+    assert e["outcome"] == "done" and e["target"]["row"] == pointers.row_pointer(key)
+    assert effects.TARGET_KEYS["channel"].fullmatch(e["target"]["channel"]) and effects.TARGET_KEYS["ts"].fullmatch(e["target"]["ts"])
+
+
+def test_a_digest_names_the_same_save_every_time_and_different_saves_differently(wq):
+    assert server.slack_target("not a channel", "x", "k") == server.slack_target("not a channel", "x", "k")
+    assert server.slack_target("not a channel", "x", "k") != server.slack_target("another one", "x", "k")
+    assert server.slack_target("D0123456789", TS1, "k") == {"channel": "D0123456789", "ts": TS1, "row": pointers.row_pointer("k")}
 
 
 # --- one refused save leaves the rest ----------------------------------------------------------------------
@@ -244,7 +256,8 @@ def test_a_reopen_the_record_refuses_keeps_the_saves_row_and_the_next_apply_trie
     config.write_json(wq.data / "decisions.json", {SAVE: {"decision": "undo", "at": AT}})
     hold(SAVE, TS1, "slack.save.uncomplete")
     server.run_apply()
-    assert applied(wq)[SAVE] == {**before, "error": server.IN_PROGRESS} and browser_runs(wq) == 0
+    assert applied(wq)[SAVE] == {**before, "error": server.IN_PROGRESS, "undo_error": server.IN_PROGRESS}
+    assert browser_runs(wq) == 0
     status = json.loads((wq.data / "apply-status.json").read_text())
     assert (status["error"], status["ok"]) == (server.IN_PROGRESS, 0)
 
@@ -398,3 +411,75 @@ def test_apply_still_marks_a_save_and_the_page_answers_are_as_they_were(wq):
     assert applied(wq) == {SAVE: DONE}
     assert json.loads((wq.data / "apply-job.json").read_text()) == [
         {"key": SAVE, "cid": CID, "ts": TS1, "mark": "completed"}]
+
+
+# --- a run that failed as a whole ---------------------------------------------------------------------------
+
+def test_a_browser_run_that_failed_as_a_whole_still_answers_for_a_save_the_record_refused(wq):
+    link(wq)
+    fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"ok": False, "error": "saved.list failed: ratelimited"})])
+    hold(SAVE, TS1)
+    out = server.run_slack([job(), job(key2(TS2), TS2)])
+    assert out[SAVE]["error"] == server.IN_PROGRESS, "the refused save keeps its own answer"
+    assert out[key2(TS2)]["error"] == "saved.list failed: ratelimited"
+    assert [e["outcome"] for e in recorded(wq)] == [None, "unknown"]
+
+
+@pytest.mark.parametrize("error", [["a", "list"], {"code": 5}, 7])
+def test_an_answer_whose_error_isnt_text_is_recorded_as_text_for_every_save(wq, error):
+    link(wq)
+    fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"ok": False, "error": error})])
+    out = server.run_slack([job(), job(key2(TS2), TS2)])
+    assert out[SAVE]["error"] == out[key2(TS2)]["error"] == str(error)
+    assert [e["outcome"] for e in recorded(wq)] == ["unknown", "unknown"]
+
+
+# --- nothing could have changed ----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("fault", ["uv is missing", "zsh is missing", "a field is missing"])
+def test_a_run_that_could_not_have_changed_anything_is_failed_not_unknown(wq, monkeypatch, fault):
+    link(wq)
+    if fault == "uv is missing":
+        fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"exit": 127, "stderr": "zsh:exec:1: command not found: uv"})])
+    elif fault == "zsh is missing":
+        def missing(cmd, timeout):
+            raise server.tools.ToolMissing("/bin/zsh isn't installed")
+        monkeypatch.setattr(server.tools, "run_json", missing)
+    else:
+        wq.sources({"slack": {"team_id": "T1"}})
+        with pytest.raises(KeyError):
+            server.run_slack([job()])
+        assert [(e["outcome"], e["error"]) for e in recorded(wq)] == [("failed", "other")]
+        return
+    out = server.run_slack([job()])
+    assert out[SAVE]["status"] == "error"
+    assert [e["outcome"] for e in recorded(wq)] == ["failed"]
+
+
+def test_a_run_that_failed_with_another_message_after_starting_is_still_unknown(wq):
+    link(wq)
+    fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"exit": 1, "stderr": "Traceback ... Timeout 30000ms exceeded"})])
+    server.run_slack([job()])
+    assert [e["outcome"] for e in recorded(wq)] == ["unknown"]
+
+
+def test_the_command_is_built_before_the_browser_is_counted_as_started(wq, monkeypatch):
+    link(wq)
+
+    def broken(*args):
+        raise KeyError("workspace_url")
+    monkeypatch.setattr(server.slack, "browser", broken)
+    with pytest.raises(KeyError):
+        server.run_slack([job()])
+    assert [e["outcome"] for e in recorded(wq)] == ["failed"] and browser_runs(wq) == 0
+
+
+# --- a refused reopen says why on its row ---------------------------------------------------------------
+
+def test_a_refused_reopen_keeps_the_row_and_adds_the_reason_under_its_own_name(wq):
+    config.write_json(wq.data / "applied.json", {SAVE: {"status": "done", "verified": False, "at": "before",
+                                                       "error": "Slack accepted the change but the save still shows the old state"}})
+    hold(SAVE, TS1, "slack.save.uncomplete")
+    out = server.run_slack([job(undo=True)])
+    assert out[SAVE] == {"status": "done", "verified": False, "at": "before", "error": server.IN_PROGRESS,
+                         "undo_error": server.IN_PROGRESS}

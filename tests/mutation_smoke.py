@@ -1392,8 +1392,8 @@ CHECKS = (
     (
         "a worker that can't record still stops",
         'work_queue/server.py',
-        '            try:\n                record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n            except Exception:  # noqa: BLE001 — applied.json can\'t be written; the log has the error\n                traceback.print_exc()\n',
-        '            record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n',
+        '            try:\n                record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n                held_saves.hold({k: (c, error) for k, c in batch.items()}, clock())\n            except Exception:  # noqa: BLE001 — applied.json can\'t be written; the log has the error\n                traceback.print_exc()\n',
+        '            record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n            held_saves.hold({k: (c, error) for k, c in batch.items()}, clock())\n',
         'tests/test_work_queue_server.py::test_a_worker_that_cant_record_anything_still_stops',
     ),
     (

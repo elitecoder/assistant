@@ -97,20 +97,32 @@ down, that save is left out of the run and the others still go through.
 |---|---|---|
 | Slack accepted the change and the Later list shows it | `done` | `true` |
 | Slack accepted it but the list still shows the old state | `done` | `false` |
-| Slack accepted it and the list couldn't be read | `done` | empty |
 | Slack no longer has the save | `failed` | empty |
 | Slack answered with another error | `failed` | empty |
 | Slack isn't linked, or its sign-in is needed | `failed` | empty |
-| The browser run stopped, timed out or answered oddly after it started, or didn't mention the save | `unknown` | empty |
+| The browser run stopped, timed out, couldn't read your Later list back, or answered oddly after it started, or didn't mention the save | `unknown` | empty |
 | An unexpected error before the browser started | `failed` | empty |
 | An unexpected error after it started | `unknown` | empty |
 
-`verified` is `true` when the Later list, read again after the change, shows
-the save in the state asked for. The worker that marks saves after a send and
-**Apply approvals** take turns with the browser session, so one never marks a
-save while the other does. A line with no result left by a run that died turns
-away both for ten minutes, and each tries again later by its own path: the next
-**Apply approvals**, or a send.
+`verified` is `true` when Assistant read your Slack Later list again after the
+change and the save was in the state asked for: off the open list after marking
+it done, back on it after reopening.
+
+A save that the record turns down because of its shape is never refused for it:
+a channel id or message time the record can't hold is written as a short digest
+of itself instead.
+
+The worker that marks saves after a send and **Apply approvals** take turns
+with the browser session, so one never marks a save while the other does. A
+line with no result left by a run that died turns both away for ten minutes.
+When a mark is held back after a send (the record turned it down, the browser
+session was busy, or Slack answered with an error or needed you to sign in),
+Assistant tries it again by itself three times over about twenty minutes, after
+1, 5 and 15 minutes. A save you approved under Ready to close is also tried by
+the next **Apply approvals**. If it still can't be marked, the Work queue page
+says so in one line at the top, with the reason, and you mark it done in Slack
+yourself. The line goes away when the save is marked, or Slack no longer has it.
+A save Slack no longer has isn't tried again.
 
 When the record has the action an undo reverses, the undo names it and is
 refused unless that action succeeded, is on the same conversation and hasn't

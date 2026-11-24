@@ -280,6 +280,70 @@ def test_two_rows_held_for_different_reasons_each_say_theirs_and_the_bar_gives_e
         browser.close()
 
 
+SAVE_KEY = "C0123456789:1700000000.000100"
+
+
+def slack_page(wq) -> None:
+    """One Slack save that is marked done, with a reopen approved."""
+    write_page({"built": "now", "slack": [{**slack_row(SAVE_KEY, "last", 1), "cid": "C0123456789", "ts": "1700000000.000100"}],
+                "status": [{"name": "Slack", "state": "ok", "detail": "read 1 item"}]})
+    decided = "2026-11-02T10:00:00+00:00"
+    config.write_json(wq.data / "decisions.json", {SAVE_KEY: {"decision": "undo", "at": decided}})
+    config.write_json(wq.data / "applied.json", {SAVE_KEY: {"status": "done", "verified": False, "at": decided,
+                                                           "error": "Slack accepted the change but the save still shows the old state"}})
+
+
+def test_a_reopen_the_record_refuses_leaves_a_slack_save_done_and_says_why_on_its_row(site, wq):
+    slack_page(wq)
+    server.effects.begin("slack.save.uncomplete", {"channel": "C0123456789", "ts": "1700000000.000100",
+                                                   "row": server.pointers.row_pointer(SAVE_KEY)},
+                         {"kind": "decision", "ref": server.pointers.row_pointer(SAVE_KEY), "at": "2026-11-02T10:00:00+00:00"})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#ap-count", "0 approved, 1 to reopen")
+        assert status_of(tab, SAVE_KEY) == "Marked done in Slack, not verified", "the mark's own note isn't a refused undo"
+        tab.locator("#ap-apply").click()
+        wait_text(tab, f'.ap-row[data-key="{SAVE_KEY}"] .ap-status',
+                  f"Marked done in Slack, not verified · Undo not done: {server.IN_PROGRESS}")
+        wait_text(tab, "#ap-msg", f"Last run: 0 of 1 verified · {server.IN_PROGRESS}")
+        assert "failed" not in tab.locator(f'.ap-row[data-key="{SAVE_KEY}"]').get_attribute("class")
+        cov.snap()
+        browser.close()
+
+
+def test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_that_survives_a_reload_and_clears(site, wq):
+    write_page({"built": "now", "slack": [], "status": [{"name": "Slack", "state": "ok", "detail": "read 0 items"}]})
+    line = ("2 saves you sent to an agent couldn't be marked done in Slack: ratelimited. "
+            "Mark them done in Slack yourself.")
+    for n in range(2):
+        for _ in range(4):
+            server.held_saves.hold({f"C0123456789:170000000{n}.000100": (
+                {"cid": "C0123456789", "ts": f"170000000{n}.000100", "at": "t"}, "ratelimited")}, 1.0)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#held-msg", line)
+        assert tab.locator("#held-msg").is_visible()
+        tab.reload()
+        wait_text(tab, "#held-msg", line)
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", line)
+        server.record({"C0123456789:1700000000.000100": {"status": "done"}})
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", "1 save you sent to an agent couldn't be marked done in Slack: ratelimited. "
+                                    "Mark it done in Slack yourself.")
+        server.record({"C0123456789:1700000001.000100": {"status": "gone"}})
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", "")
+        cov.snap()
+        browser.close()
+
+
 def test_an_undo_gmail_refuses_stays_in_trash_and_the_next_apply_puts_it_back(site, wq):
     held_page(wq, ["g1"])
     fake_tool(wq.bin, "gog", [("messages modify", {"exit": 1, "stderr": "quota exceeded"})])

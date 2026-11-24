@@ -1,7 +1,9 @@
 """Checks for the Work queue's use of the effects ledger for Slack saves (work_queue/server.py)."""
 
 S = "work_queue/server.py"
+H = "work_queue/held_saves.py"
 W = "tests/test_work_queue_effects_slack.py::"
+R = "tests/test_work_queue_held_saves.py::"
 
 CHECKS = (
     (
@@ -28,7 +30,7 @@ CHECKS = (
     (
         "a refused reopen keeps the save's row as it was",
         S,
-        "                out[key] = {**row, \"error\": refusal[1]}\n            elif refusal:",
+        "                out[key] = {**row, \"error\": refusal[1], \"undo_error\": refusal[1]}\n            elif refusal:",
         "                out[key] = {\"status\": \"error\", \"error\": refusal[1], \"at\": now()}\n            elif refusal:",
         W + "test_a_reopen_the_record_refuses_keeps_the_saves_row_and_the_next_apply_tries_again",
     ),
@@ -63,8 +65,8 @@ CHECKS = (
     (
         "the ledger holds the row pointer of a save",
         S,
-        "\"ts\": cand[\"ts\"], \"row\": pointers.row_pointer(key)}",
-        "\"ts\": cand[\"ts\"]}",
+        "\"row\": pointers.row_pointer(key)}\n\n\ndef run_slack",
+        "}\n\n\ndef run_slack",
         W + "test_a_save_marked_from_apply_records_its_intent_then_a_verified_result",
     ),
     (
@@ -105,8 +107,8 @@ CHECKS = (
     (
         "a browser run that crashed after starting leaves its saves unknown",
         S,
-        "            if linked:\n                started = True\n",
-        "            if linked:\n                started = False\n",
+        "            if command:\n                started = True  #",
+        "            if command:\n                started = False  #",
         W + "test_a_browser_run_that_crashed_or_timed_out_leaves_each_save_unknown",
     ),
     (
@@ -122,5 +124,173 @@ CHECKS = (
         "effects.finish(ef, \"unknown\" if started else \"failed\", error=\"other\")",
         "effects.finish(ef, \"unknown\", error=\"other\")",
         W + "test_an_error_before_the_browser_starts_records_failed_and_goes_on_up",
+    ),
+    (
+        "a run that failed as a whole still answers for the saves the record refused",
+        S,
+        "            return {**out, **{k: {\"status\": \"error\", \"error\": error, \"at\": now()} for k, _, _ in ready}}",
+        "            return {k: {\"status\": \"error\", \"error\": error, \"at\": now()} for k, _, _ in ready}",
+        W + "test_a_browser_run_that_failed_as_a_whole_still_answers_for_a_save_the_record_refused",
+    ),
+    (
+        "an answer's error is recorded as text whatever it is",
+        S,
+        "            error = str(answer.get(\"error\") or \"Slack apply failed\")",
+        "            error = answer.get(\"error\") or \"Slack apply failed\"",
+        W + "test_an_answer_whose_error_isnt_text_is_recorded_as_text_for_every_save",
+    ),
+    (
+        "a run is started only once its command is built",
+        S,
+        "            if command:\n                started = True",
+        "            started = True\n            if command:\n                pass",
+        W + "test_a_run_that_never_started_is_failed_and_a_save_may_be_tried_again",
+    ),
+    (
+        "a tool that isn't there never started the browser",
+        S,
+        "            started = started and not (isinstance(exc, tools.ToolMissing) or \"command not found\" in str(exc))",
+        "            started = started",
+        W + "test_a_run_that_could_not_have_changed_anything_is_failed_not_unknown",
+    ),
+    (
+        "an id the ledger's patterns don't take is recorded as a digest, not refused",
+        S,
+        "\"channel\": cid if isinstance(cid, str) and channel.fullmatch(cid) else \"CX\" + digest[:9].upper(),",
+        "\"channel\": cid,",
+        W + "test_a_save_whose_id_the_ledgers_patterns_dont_take_is_still_marked_and_recorded_by_a_digest",
+    ),
+    (
+        "a message time the ledger's patterns don't take is recorded as a digest, not refused",
+        S,
+        "            \"ts\": ts if isinstance(ts, str) and when.fullmatch(ts) else",
+        "            \"ts\": ts if True else",
+        W + "test_a_save_whose_id_the_ledgers_patterns_dont_take_is_still_marked_and_recorded_by_a_digest",
+    ),
+    (
+        "a refused reopen says why under its own name on the row",
+        S,
+        "\"error\": refusal[1], \"undo_error\": refusal[1]}",
+        "\"error\": refusal[1]}",
+        W + "test_a_refused_reopen_keeps_the_row_and_adds_the_reason_under_its_own_name",
+    ),
+    (
+        "a slack row shows why its reopen didn't happen",
+        "work_queue/page.py",
+        "+(kind==='slack'&&a.undo_error?' · Undo not done: '+a.undo_error:'')",
+        "+(false&&a.undo_error?' · Undo not done: '+a.undo_error:'')",
+        "tests/test_work_queue_browser.py::test_a_reopen_the_record_refuses_leaves_a_slack_save_done_and_says_why_on_its_row",
+    ),
+    (
+        "the page shows the line about saves that couldn't be marked",
+        "work_queue/page.py",
+        " $('held-msg').textContent=ST.slack_held||''}",
+        " $('held-msg').textContent=''}",
+        "tests/test_work_queue_browser.py::test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_that_survives_a_reload_and_clears",
+    ),
+    (
+        "a held save is tried again after one, five and fifteen minutes",
+        H,
+        "DELAYS = (60, 300, 900)",
+        "DELAYS = (60, 60, 60)",
+        R + "test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_minutes_and_then_no_more",
+    ),
+    (
+        "a held save stops being tried after the last try",
+        H,
+        "if tries > len(DELAYS) else",
+        "if tries > len(DELAYS) + 1 else",
+        R + "test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_minutes_and_then_no_more",
+    ),
+    (
+        "a save that was given up on isn't tried again",
+        H,
+        "if isinstance(h, dict) and not h.get(\"gave_up\") and",
+        "if isinstance(h, dict) and",
+        R + "test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_minutes_and_then_no_more",
+    ),
+    (
+        "a save that isn't due yet isn't tried",
+        H,
+        "h.get(\"next\", 0) <= at]",
+        "h.get(\"next\", 0) <= at + 10**9]",
+        R + "test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_minutes_and_then_no_more",
+    ),
+    (
+        "a save that was marked stops waiting to be tried again",
+        S,
+        "        if settled:  # a marked save",
+        "        if False:  # a marked save",
+        R + "test_the_line_clears_when_the_save_is_marked_or_slack_no_longer_has_it",
+    ),
+    (
+        "a save Slack no longer has isn't held to be tried again",
+        S,
+        "                             if entry(results, k).get(\"status\") not in SETTLED},",
+        "                             if entry(results, k).get(\"status\") != \"done\"},",
+        R + "test_a_save_slack_no_longer_has_is_not_held",
+    ),
+    (
+        "a save already waiting or running isn't queued twice",
+        S,
+        "        if not busy:\n            queue_save(cid, ts, sent)",
+        "        if True:\n            queue_save(cid, ts, sent)",
+        R + "test_a_save_already_waiting_or_running_is_not_queued_twice",
+    ),
+    (
+        "the worker keeps a save it couldn't mark after an unexpected error",
+        S,
+        "                held_saves.hold({k: (c, error) for k, c in batch.items()}, clock())",
+        "                pass",
+        R + "test_an_unexpected_error_in_the_worker_is_held",
+    ),
+    (
+        "the worker keeps a save the run never mentioned",
+        S,
+        "entry(results, k).get(\"error\") or UNREPORTED)",
+        "entry(results, k).get(\"error\") or \"\")",
+        R + "test_a_save_the_run_never_mentioned_is_held_and_so_is_one_whose_run_was_unknown",
+    ),
+    (
+        "the server checks for held saves when it starts",
+        S,
+        "    while True:\n        try:\n            retry_due(clock())",
+        "    while not retry_stop.wait(RETRY_POLL):\n        try:\n            retry_due(clock())",
+        R + "test_the_server_checks_for_held_saves_the_moment_it_starts",
+    ),
+    (
+        "the page's state carries the line about saves that couldn't be marked",
+        S,
+        "\"slack_held\": held_saves.message()}",
+        "\"slack_held\": \"\"}",
+        R + "test_a_save_still_unmarked_after_the_last_try_is_one_plain_line_in_the_state",
+    ),
+    (
+        "a sign-in that is needed says to sign in again",
+        H,
+        "if any(w.startswith(SIGN_IN) for w in why)",
+        "if False",
+        R + "test_a_sign_in_that_is_needed_says_to_sign_in_again",
+    ),
+    (
+        "each reason is given once",
+        H,
+        "list(dict.fromkeys(r.rstrip(\".\")",
+        "list((r.rstrip(\".\")",
+        R + "test_several_saves_say_how_many_and_each_reason_once",
+    ),
+    (
+        "a refresh forgets a held save Slack no longer lists",
+        "work_queue/refresh.py",
+        "    if \"slack\" in snap:  #",
+        "    if False:  #",
+        R + "test_a_refresh_forgets_a_held_save_that_is_no_longer_on_the_later_list_but_not_when_slack_couldnt_be_read",
+    ),
+    (
+        "a refresh that couldn't read Slack forgets nothing",
+        "work_queue/refresh.py",
+        "    if \"slack\" in snap:  #",
+        "    if True:  #",
+        R + "test_a_refresh_forgets_a_held_save_that_is_no_longer_on_the_later_list_but_not_when_slack_couldnt_be_read",
     ),
 )

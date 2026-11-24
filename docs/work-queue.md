@@ -568,7 +568,17 @@ approvals** asks Slack about it again. Any other Slack error stays an error,
 so **Apply approvals** tries it again. Each save is recorded in the effects
 record before the browser runs and again with its own result (see
 [the effects record](effects.md)). A save the record can't write or turns down
-isn't marked, and the save's row says why; the rest of the batch still runs.
+isn't marked, and the rest of the batch still runs.
+
+A sent row leaves the page, so a save that couldn't be marked would stay open in
+Slack with no sign. The Work queue keeps it in `slack-held.json` in its data
+folder and tries it again by itself after 1, 5 and 15 minutes, which survives a
+restart. When the last try fails, one line under the page title says how many
+saves couldn't be marked, why, and what to do: "1 save you sent to an agent
+couldn't be marked done in Slack: ratelimited. Mark it done in Slack yourself."
+When Slack needs you to sign in, it says to sign in again first. The line goes
+away when the save is marked, when Slack no longer has it (a refresh sees that
+too), or when **Apply approvals** marks it.
 
 ## What it changes
 
@@ -583,8 +593,8 @@ Select **Apply approvals** to act on what you approved:
 - Slack Later saves are marked completed through your Slack browser session,
   with no browser window. **Undo** reopens them. A save Slack no longer has
   shows as gone and isn't tried again. An **Undo** the effects record refuses
-  leaves the save done, says why on its row, and is tried again by the next
-  **Apply approvals**.
+  leaves the save done, says why on its row ("Undo not done: ..."), and is
+  tried again by the next **Apply approvals**.
 
 Each change is read back to verify it, and a read-back that fails never
 counts as verified. **Apply approvals** skips any Gmail conversation the page

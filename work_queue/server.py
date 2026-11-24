@@ -36,6 +36,7 @@ if sys.version_info < (3, 11):
 
 import contextlib
 import errno
+import hashlib
 import http.client
 import http.server
 import ipaddress
@@ -60,7 +61,7 @@ from pathlib import Path
 
 from assistant import effects, mode, pointers, todostore
 
-from work_queue import config, page, refresh, tools
+from work_queue import config, held_saves, page, refresh, tools
 from work_queue.inputs import slack
 from work_queue.todo_result import RESULT_TAG, read_store, result_of, write_store
 
@@ -106,6 +107,10 @@ lock = threading.Lock()
 saves_lock = threading.Lock()
 pending_saves: dict[str, dict] = {}
 saves_worker: threading.Thread | None = None
+running_saves: set[str] = set()  # the saves in the worker's current batch
+clock = time.time  # a test moves it
+RETRY_POLL = 15
+retry_stop = threading.Event()
 refresh_proc: subprocess.Popen | None = None
 
 
@@ -219,6 +224,9 @@ def record(results: dict) -> None:
         applied = read_map("applied.json")
         applied.update(results)
         config.write_json(path("applied.json"), applied)
+        settled = {k for k, v in results.items() if v.get("status") in SETTLED}
+        if settled:  # a marked save, or one Slack no longer has, stops waiting to be tried again
+            held_saves.drop(lambda k: k not in settled)
 
 
 def queue_save(cid: str, ts: str, at: str = "") -> None:
@@ -237,7 +245,8 @@ def complete_saves() -> None:
     """The background worker. It waits its turn with the Slack browser profile, then marks every save sent so far
     completed in one browser run, and records the results where Apply records its own. It repeats until no save is
     left, so a save sent during a run goes in the next one. A save already marked, or one Slack no longer has, isn't
-    tried again. A batch that fails in any way records an error for each of its saves, and the worker goes on."""
+    tried again. A batch that fails in any way records an error for each of its saves, and the worker goes on. A save
+    that couldn't be marked is kept in `held_saves` and tried again by `retry_due`."""
     global saves_worker
     while True:
         with saves_lock:
@@ -250,22 +259,51 @@ def complete_saves() -> None:
                 with saves_lock:
                     batch = dict(pending_saves)
                     pending_saves.clear()
+                    running_saves.update(batch)
                 applied = read_map("applied.json")
                 jobs = [(k, {**c, "sent_at": c["at"]}, False) for k, c in batch.items()
                         if entry(applied, k).get("status") not in SETTLED]
                 results = run_slack(jobs) if jobs else {}
             record({k: {**v, "sent": True} for k, v in results.items()})
+            held_saves.hold({k: (batch[k], entry(results, k).get("error") or UNREPORTED) for k, _, _ in jobs
+                             if entry(results, k).get("status") not in SETTLED},
+                            clock())
         except Exception as exc:  # noqa: BLE001 — one bad batch never stops the worker; the traceback goes to the log
             traceback.print_exc()
             if not batch:
                 with saves_lock:
                     batch = dict(pending_saves)
                     pending_saves.clear()
+                    running_saves.update(batch)
             error = " ".join(f"Couldn't mark the save done: {type(exc).__name__}: {exc}".split())[:300]
             try:
                 record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})
+                held_saves.hold({k: (c, error) for k, c in batch.items()}, clock())
             except Exception:  # noqa: BLE001 — applied.json can't be written; the log has the error
                 traceback.print_exc()
+        finally:
+            with saves_lock:
+                running_saves.difference_update(batch)
+
+
+def retry_due(at: float) -> None:
+    """Send the worker every held save whose time to be tried again has come, unless it is already waiting or running."""
+    for key, cid, ts, sent in held_saves.due(at):
+        with saves_lock:
+            busy = key in pending_saves or key in running_saves
+        if not busy:
+            queue_save(cid, ts, sent)
+
+
+def retry_loop() -> None:
+    """Check for held saves now, which picks up what a restart left waiting, and every RETRY_POLL seconds after."""
+    while True:
+        try:
+            retry_due(clock())
+        except Exception:  # noqa: BLE001 — a bad check never stops the next one; the traceback goes to the log
+            traceback.print_exc()
+        if retry_stop.wait(RETRY_POLL):
+            return
 
 
 def set_marks(body: dict):
@@ -410,6 +448,7 @@ UNAPPROVED = ("Assistant couldn't confirm your approval for this, so it didn't r
 ALREADY_DONE = "This was already done and can't be undone, so it wasn't run again"
 SENT_UNHEARD = ("Assistant sent this but didn't hear back, so it may have gone through. "
                 "Approve it again to send it once more")
+UNREPORTED = "Slack didn't say what happened to this save"
 FAULT = "Assistant couldn't record this action, so it didn't run it. This is a fault in Assistant, not something you did"
 
 
@@ -654,6 +693,16 @@ def slack_outcome(result) -> tuple:
     return "unknown", None, "bad answer"
 
 
+def slack_target(cid, ts, key) -> dict:
+    """A save's target. An id or time the ledger's patterns don't take (a kind of id Slack added, or a malformed one) is
+    recorded as a digest of itself, in the same shape, so a real save is never refused for how its id looks."""
+    channel, when = effects.TARGET_KEYS["channel"], effects.TARGET_KEYS["ts"]
+    digest = hashlib.sha256(f"{cid}\0{ts}".encode("utf-8", "replace")).hexdigest()
+    return {"channel": cid if isinstance(cid, str) and channel.fullmatch(cid) else "CX" + digest[:9].upper(),
+            "ts": ts if isinstance(ts, str) and when.fullmatch(ts) else "0000000000." + str(int(digest[9:17], 16) % 10**6).zfill(6),
+            "row": pointers.row_pointer(key)}
+
+
 def run_slack(jobs) -> dict:
     """Mark Later saves completed (or uncompleted) in your Slack browser session, headless, and read the list back.
     Call it holding slack.session_lock(). A save Slack no longer has is recorded as gone; any other error stays an
@@ -670,7 +719,7 @@ def run_slack(jobs) -> dict:
     try:
         for key, cand, undo in jobs:
             cls = "slack.save.uncomplete" if undo else "slack.save.complete"
-            target = {"channel": cand["cid"], "ts": cand["ts"], "row": pointers.row_pointer(key)}
+            target = slack_target(cand["cid"], cand["ts"], key)
             kind, ref, at = ("tap", "/api/todo", cand["sent_at"]) if "sent_at" in cand \
                 else ("decision", pointers.row_pointer(key), cand.get("decided_at"))
             ef, refusal = begin_effect(cls, target, kind, ref, at,
@@ -678,7 +727,7 @@ def run_slack(jobs) -> dict:
             if refusal and undo:
                 # The save is still done: keep its row as it was, with the reason, so the next Apply tries again.
                 row = entry(read_map("applied.json"), key)
-                out[key] = {**row, "error": refusal[1]}
+                out[key] = {**row, "error": refusal[1], "undo_error": refusal[1]}
             elif refusal:
                 out[key] = {"status": "error", "error": refusal[1], "at": now()}
             else:
@@ -691,15 +740,17 @@ def run_slack(jobs) -> dict:
                                       "mark": "uncompleted" if u else "completed"} for k, c, u in ready])
         try:
             linked = config.load().get("slack")
-            if linked:
-                started = True
-            answer = tools.run_json(tools.with_profile(slack.browser("apply", linked, "--headless", "--job", str(job_file))),
-                                    timeout=900) if linked else {"ok": False, "error": "Slack isn't linked. Run "
-                                                                 "bin/work-queue-setup.py link slack"}
+            command = tools.with_profile(slack.browser("apply", linked, "--headless", "--job", str(job_file))) if linked else None
+            if command:
+                started = True  # only now can the browser have changed anything
+            answer = tools.run_json(command, timeout=900) if command else {
+                "ok": False, "error": "Slack isn't linked. Run bin/work-queue-setup.py link slack"}
         except (tools.SourceError, ValueError) as exc:
             answer = {"ok": False, "error": str(exc)}
+            # A tool that isn't there never ran: the shell that starts it says so, and it never opened the browser.
+            started = started and not (isinstance(exc, tools.ToolMissing) or "command not found" in str(exc))
         if not answer.get("ok"):
-            error = answer.get("error") or "Slack apply failed"
+            error = str(answer.get("error") or "Slack apply failed")
             # Only a run that never got as far as changing anything is a plain failure.
             sure = not started or error.startswith(SIGN_IN)
             for key, ef in efs.items():
@@ -720,8 +771,7 @@ def run_slack(jobs) -> dict:
 
 APPLIERS = {"unsub": apply_unsub, "gmail": apply_gmail, "slack": apply_slack}
 SETTLED = ("done", "gone")
-# What the Slack browser script says before it has changed anything, when no signed-in session is found.
-SIGN_IN = "Slack sign-in needed"
+SIGN_IN = held_saves.SIGN_IN  # what the Slack browser script says, before it changes anything, when nobody is signed in
 
 
 def hides(mark, now_ms: float) -> bool:
@@ -838,7 +888,7 @@ def state() -> dict:
     return {"decisions": config.read_json(path("decisions.json"), {}), "applied": config.read_json(path("applied.json"), {}),
             "status": config.read_json(path("apply-status.json"), {}), "sent": sorted(queued), "queued": queued,
             "marks": config.read_json(path("marks.json"), {}), "mail": read_map("mail-actions.json"),
-            "checks": read_map("ready-checks.json"), "refresh": refresh_state()}
+            "checks": read_map("ready-checks.json"), "refresh": refresh_state(), "slack_held": held_saves.message()}
 
 
 ROUTES = {"/api/decide": decide, "/api/mark": set_marks, "/api/todo": queue_todo, "/api/gmail": gmail_action,
@@ -952,6 +1002,7 @@ def main() -> int:
         return 0
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     threading.Thread(target=watch_mode, args=(server,), daemon=True).start()
+    threading.Thread(target=retry_loop, daemon=True).start()
     print(f"Serving the Work queue on http://127.0.0.1:{port}/", flush=True)
     server.serve_forever()
     server.server_close()

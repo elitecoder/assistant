@@ -86,18 +86,24 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   link, and only you can read it. See `docs/effects.md`.
 - Record every Slack Later save the Work queue marks completed or reopens in
   the same record, before it acts and again when it ends. That covers a row you
-  send to an agent and **Apply approvals**, for **Undo** too. A save the record
+  send to an agent and **Apply approvals**, **Undo** included. A save the record
   can't write, or turns down, is left out of that run and the rest still go
-  through; the row says why ("Assistant couldn't record this action, so it
-  didn't run it. Check that your disk isn't full, then try again", or "This is
-  already in progress, or Assistant stopped partway through it. Try again in ten
-  minutes"), and the next run tries it again. A save counts as done when Slack
-  accepted the change, and as verified when the Later list confirmed it. When
-  Slack answers with an error, the save is recorded as not done. When the
-  browser run stopped after it started, so a save may have changed, it is
-  recorded as unknown, never as not done. The record holds only the channel id,
-  the message time and a short code for the row, never the message, its link or
-  a name. See `docs/effects.md`.
+  through. A reopen the record refuses leaves the save done and its row says
+  why ("Undo not done: ..."); the next **Apply approvals** tries it again. A save
+  counts as done when Slack accepted the change, and as verified when your Later
+  list, read again, shows it. When Slack answers with an error, the save is
+  recorded as not done. When the browser run stopped after it started, so a save
+  may have changed, it is recorded as unknown, never as not done. The record
+  holds only the channel id, the message time and a short code for the row,
+  never the message, its link or a name. See `docs/effects.md`.
+- Try a Slack save again by itself when marking it done after you send its row
+  to an agent didn't work (Slack was busy, answered with an error, needed you to
+  sign in, or the record turned it down). A sent row leaves the page, so before
+  this the save stayed open in Slack with no sign. Now it is tried again after 1,
+  5 and 15 minutes, and a restart keeps the saves still waiting. If the last try
+  fails, one line under the page title says how many saves couldn't be marked,
+  why, and what to do ("Mark it done in Slack yourself", or sign in again). The
+  line goes away when the save is marked or Slack no longer has it.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or
