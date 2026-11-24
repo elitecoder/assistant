@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -551,3 +553,22 @@ def test_docs_say_these_jobs_are_off_by_default(path):
     text = (REPO / path).read_text()
     assert "off by default" in text or "off until you turn" in text
     assert "ASSISTANT_DECISIONS" not in text and "ASSISTANT_PLANNER" not in text
+
+
+# ─── the installer says so too ───────────────────────────────────────────────
+
+def test_the_installers_help_says_the_three_jobs_stay_off_until_turned_on(tmp_path):
+    from installer_sandbox import installer_env
+    result = subprocess.run(["bash", str(REPO / "install.sh"), "--help"], capture_output=True, text=True,
+                            env=installer_env(tmp_path), stdin=subprocess.DEVNULL, timeout=30)
+    assert result.returncode == 0
+    said = " ".join(result.stdout.split())
+    assert ("Decisions, the morning brief, and the goals planner stay off until you turn each on in config.json."
+            in said)
+    assert "notifications and triage" not in said, "the old promise that Pro mode runs them is gone"
+
+
+def test_the_installers_pro_summary_says_the_three_jobs_stay_off_until_turned_on():
+    logged = " ".join(re.findall(r'^\s*log "\s*(.*?)"\s*$', (REPO / "install.sh").read_text(), re.M))
+    assert ("Decisions, the morning brief, and the planner stay off until you turn each on in "
+            "~/.assistant/config.json (see docs/configuration.md).") in " ".join(logged.split())

@@ -3961,6 +3961,20 @@ CHECKS = (
         '        return True\n',
         'tests/test_busy_session_cap.py::test_a_session_with_no_transcript_yet_is_judged_by_when_cmux_last_heard_from_it',
     ),
+    (
+        "the installer's help says the three jobs stay off until turned on",
+        'install.sh',
+        '                    morning brief, and the goals planner stay off until you\n',
+        '                    morning brief, and the goals planner run in Pro mode once you\n',
+        'tests/test_unread_jobs_off.py::test_the_installers_help_says_the_three_jobs_stay_off_until_turned_on',
+    ),
+    (
+        "the installer's Pro summary says the three jobs stay off until turned on",
+        'install.sh',
+        '    log "     morning brief, and the planner stay off until you turn each on in"\n',
+        '    log "     morning brief, and the planner run whenever Pro mode is on. See"\n',
+        'tests/test_unread_jobs_off.py::test_the_installers_pro_summary_says_the_three_jobs_stay_off_until_turned_on',
+    ),
 )
 
 
