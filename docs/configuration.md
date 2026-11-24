@@ -6,8 +6,8 @@ work. Every setting below is a deliberate edit you make yourself.
 | Setting | Default | Where | What it does |
 |---|---|---|---|
 | Noise budget | `page:0, notify:0` (fully silent) | `~/.assistant/noise-budget.json` | Maximum pushes a day through the interrupt gate. A `page` also requires lane `escalate`, urgency `now`, and a policy marked `pageable`. |
-| Brief wake hour | `7` (local time) | `~/.assistant/comms/config.json` → `{"brief": {"wake_hour": N}}` | The first pulse at or after this hour builds the day's brief. |
-| Planner autoDispatch | Off | `~/.assistant/comms/config.json` → `{"planner": {"autoDispatch": true}}` | Off: a stalled goal stages a decision for you to review. On: whitelisted steps dispatch unattended. Turn it on only after you've watched the planner behave. |
+| Brief wake hour | `7` (local time) | `~/.assistant/comms/config.json` → `{"brief": {"wake_hour": N}}` | The first pulse at or after this hour builds the day's brief, when the brief is [turned on](#background-jobs-that-are-off-by-default). |
+| Planner autoDispatch | Off (and the planner itself is [off by default](#background-jobs-that-are-off-by-default)) | `~/.assistant/comms/config.json` → `{"planner": {"autoDispatch": true}}` | Off: a stalled goal stages a decision for you to review. On: whitelisted steps dispatch unattended. Turn it on only after you've watched the planner behave. |
 | Slack channel ingest | Mentions and DMs only | `SLACK_INGEST_CHANNELS=1` plus a manifest edit | Opts in to full channel message ingestion. See [Connect your sources](connectors.md#slack-read-only). |
 | Slack focus list | Not set up | `slack_focus` block in `~/.assistant/comms/config.json` plus `SLACK_USER_TOKEN` | Which channels, bots, repos, and Jira projects the Slack tab uses. See [Slack focus list](connectors.md#slack-focus-list). |
 | Connector cadence and caps | 60 s, 200 events, 10 pages | `connectors` block in `~/.assistant/comms/config.json` | Per-connector poll interval and batch caps. The module constants are only the fallback. |
@@ -37,6 +37,30 @@ To turn the Observer on, do both of these:
 To turn it off again, set `"enabled"` to `false` or remove the `"observer"`
 key. `./bin/assistant-doctor.py` and the dashboard's **Settings and background
 services** show whether it's on.
+
+## Background jobs that are off by default
+
+Three Pro mode jobs are off until you turn them on, because nobody read what
+they made:
+
+| Job | Setting in `~/.assistant/config.json` | Variable | What it does when on |
+|---|---|---|---|
+| Decisions | `{"jobs": {"decisions": true}}` | `ASSISTANT_DECISIONS=1` | Turns GitHub and session events into a decision list. |
+| Morning brief | `{"jobs": {"brief": true}}` | `ASSISTANT_BRIEF=1` | Saves a brief each morning and expires decisions you never saw. The brief narrator also needs this. |
+| Goals planner | `{"jobs": {"planner": true}}` | `ASSISTANT_PLANNER=1` | Suggests the next step for a stalled goal. |
+
+Only the JSON value `true` turns a job on; a missing key, any other value, or a
+file that can't be read leaves it off. Each job also needs Pro mode. The pulse
+reads the setting once per pulse.
+
+While decisions are off, new events are skipped, not saved for later, so
+turning decisions on starts from that moment. Decisions already open still
+expire on schedule, and the Notifications tab keeps showing them until then.
+Goals stay viewable and editable with the planner off.
+
+The lesson extractor's pass over repeated successful actions is also off. Set
+`ASSISTANT_LESSON_LEDGER_PASS=1` to turn it on. The pass that finds corrections
+in your sessions still runs when `ASSISTANT_LESSON_EXTRACTOR=1`.
 
 ## Strategist
 

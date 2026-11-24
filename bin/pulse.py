@@ -210,26 +210,37 @@ LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 # leaves the dashboard and the heartbeat fresh. The transcript pass gets a
 # longer leash since it reads many files before any LLM draft.
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
-# Pro mode jobs. PRO_JOBS run whenever Pro mode is on; OPT_IN_JOBS also need
-# their variable set to 1.
-PRO_JOBS = ("triage", "brief", "planner")
+# Pro mode jobs. SETTING_JOBS run in Pro mode once the user turns them on
+# (config.json "jobs" or a variable; see mode.job_settings), and the key is the
+# name used there. OPT_IN_JOBS need their variable set to 1.
+SETTING_JOBS = {"triage": "decisions", "brief": "brief", "planner": "planner"}
 OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST",
                "watcher": "ASSISTANT_WATCHER", "narrator": "ASSISTANT_BRIEF_NARRATOR"}
 
 
 # Read once per pulse by main(); None outside a pulse.
 PULSE_PRO: bool | None = None
+PULSE_JOBS: dict[str, bool] | None = None
 
 
 def job_enabled(job: str) -> bool:
-    """PRO_JOBS run in Pro mode. OPT_IN_JOBS need their variable set to 1, and
-    every one but the watcher also needs Pro mode."""
+    """SETTING_JOBS need Pro mode and their setting. OPT_IN_JOBS need their
+    variable set to 1, and every one but the watcher also needs Pro mode. The
+    narrator also needs the brief, since it only decorates the brief's file."""
     pro = PULSE_PRO if PULSE_PRO is not None else mode.is_pro()
-    if job in PRO_JOBS:
-        return pro
-    opted_in = os.environ.get(OPT_IN_JOBS[job], "0").strip().lower() in (
-        "1", "true", "yes", "on")
+    settings = PULSE_JOBS if PULSE_JOBS is not None else mode.job_settings()
+    if job in SETTING_JOBS:
+        return pro and settings[SETTING_JOBS[job]]
+    opted_in = mode.env_on(OPT_IN_JOBS[job])
+    if job == "narrator":
+        opted_in = opted_in and settings["brief"]
     return opted_in and (pro or job == "watcher")
+
+
+def lesson_ledger_pass_enabled() -> bool:
+    """The lesson extractor's ledger pass (proposals from repeated successful
+    actions) is off unless ASSISTANT_LESSON_LEDGER_PASS=1."""
+    return mode.env_on("ASSISTANT_LESSON_LEDGER_PASS")
 
 
 def observer_actions_held() -> bool:
@@ -765,15 +776,16 @@ def run_triage_step(pulse_idx: int) -> dict:
     stay un-disposition'd and are retried next pulse). Returns the triage
     summary; its `cards` list seeds this pulse's awaiting_input.
 
-    In default mode it only skips past new events and expires stale decisions,
-    so turning Pro mode on later starts from current events."""
+    While decisions are off (default mode, or Pro mode without the decisions
+    setting) it only skips past new events and expires stale decisions, so
+    turning them on later starts from current events."""
     if not job_enabled("triage"):
         try:
             from assistant import decisions, triage  # noqa: PLC0415
             triage.skip_to_end()
             decisions.expire_open()
         except Exception as e:  # noqa: BLE001 — never break the pulse
-            log.warning("default-mode triage housekeeping failed: %s", e)
+            log.warning("decisions-off housekeeping failed: %s", e)
         return {"cards": []}
     try:
         src_dir = str(REPO / "src")
@@ -2495,6 +2507,10 @@ def run_lesson_extractor(pulse_idx: int) -> None:
         return
     transcript_pass = (LESSON_TRANSCRIPT_EVERY > 0
                        and pulse_idx % LESSON_TRANSCRIPT_EVERY == 0)
+    # A ledger-only run with the ledger pass off would do nothing, so don't
+    # start the subprocess at all.
+    if not transcript_pass and not lesson_ledger_pass_enabled():
+        return
     cmd = [sys.executable, str(extractor)]
     if not transcript_pass:
         cmd.append("--ledger-only")
@@ -2532,8 +2548,9 @@ def main() -> int:
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
     SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
 
-    global PULSE_PRO
+    global PULSE_PRO, PULSE_JOBS
     PULSE_PRO = mode.is_pro()
+    PULSE_JOBS = mode.job_settings()
     state = load_state()
     pulse_idx = int(state.get("_meta", {}).get("pulse_idx", 0)) + 1
     t0 = time.time()

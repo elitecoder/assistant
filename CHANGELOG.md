@@ -112,6 +112,23 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- An existing Pro install stops creating decisions, writing the morning brief,
+  and running the goals planner after this update, because nobody read what they
+  made. Turn each back on by setting `{"jobs": {"decisions": true, "brief": true,
+  "planner": true}}` in `~/.assistant/config.json` (only the JSON value `true`
+  counts), or by running the pulse with `ASSISTANT_DECISIONS=1`,
+  `ASSISTANT_BRIEF=1`, or `ASSISTANT_PLANNER=1`. While decisions are off, the
+  pulse skips past new events instead of turning them into decisions, so turning
+  them on again starts from then, not from a backlog; decisions already open
+  still expire on schedule. While the brief is off, no brief file is written and
+  the narrator has nothing to narrate. While the planner is off, no planner
+  rows reach the action history; your goals stay viewable and editable. The
+  lesson extractor no longer proposes lessons from repeated successful actions
+  unless you set `ASSISTANT_LESSON_LEDGER_PASS=1`, and the pulse no longer
+  starts it for those runs; the pass that finds corrections in your sessions is
+  unchanged. The Notifications tab and **Settings and background services** say
+  which of these are off and how to turn them on. See
+  [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
 - The Observer is now off by default. It runs only when
   `~/.assistant/config.json` has `{"observer": {"enabled": true}}`, with the
   JSON value `true`, and the pulse has `ASSISTANT_WATCHER=1`. A missing file,

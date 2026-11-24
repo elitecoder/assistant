@@ -391,6 +391,44 @@ def render_observer_setting() -> str:
             '<code>ASSISTANT_WATCHER=1</code>.</p>')
 
 
+# Plain-words copy for the three jobs that are off until someone turns them on:
+# the name with its verb, what it did, and "it" or "them" for the sentence after.
+JOB_COPY = {
+    "decisions": ("Decisions are", "Assistant no longer turns GitHub and session events into a decision list.", "them"),
+    "brief": ("The morning brief is", "Assistant no longer saves a brief each morning.", "it"),
+    "planner": ("The goals planner is", "Assistant no longer plans next steps for your goals.", "it"),
+}
+
+
+def _job_turn_on(job: str) -> str:
+    return (f'set <code>jobs.{job}</code> to <code>true</code> in <code>~/.assistant/config.json</code> '
+            f'or run the pulse with <code>{mode.JOB_ENV[job]}=1</code>')
+
+
+def job_off_line(job: str) -> str:
+    """One calm sentence for a page area that is empty because the job is off."""
+    name, did, pronoun = JOB_COPY[job]
+    return (f'<p class="job-off" data-job="{job}"><strong>{name} off.</strong> {did} '
+            f'To turn {pronoun} on, {_job_turn_on(job)}.</p>')
+
+
+def render_job_settings() -> str:
+    """One settings line per opt-in job: name, on or off, and the setting."""
+    settings = mode.job_settings()
+    lines = []
+    for job in mode.JOB_ENV:
+        name, did, pronoun = JOB_COPY[job]
+        if settings[job]:
+            lines.append(f'<p class="job-setting" data-job="{job}" data-state="on"><strong>{name} on.</strong> '
+                         f'To turn {pronoun} off, set <code>jobs.{job}</code> to '
+                         f'<code>false</code> in <code>~/.assistant/config.json</code> and unset '
+                         f'<code>{mode.JOB_ENV[job]}</code>.</p>')
+        else:
+            lines.append(f'<p class="job-setting" data-job="{job}" data-state="off"><strong>{name} off.</strong> '
+                         f'{did} To turn {pronoun} on, {_job_turn_on(job)}.</p>')
+    return "".join(lines)
+
+
 def no_workspace_summaries() -> str:
     if mode.observer_enabled():
         return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>'
@@ -626,12 +664,14 @@ def _render_brief_tab_inner():
     date_str = brief.get("date") or saved_date
     built_at = _local_hhmm(brief.get("epoch")) if live else ""
     current = False
+    log_missing = False
     try:
         queue = brief_store.read_current_queue()
         current = True
         queue_notice = (f"Built {built_at} from your current notifications."
                         if live else "This list uses your saved notifications, read when the page was built.")
     except (OSError, ValueError, TypeError, OverflowError) as exc:
+        log_missing = isinstance(exc, FileNotFoundError)
         queue = saved.get("queue") or []
         queue_notice = (
             f"Current notifications unavailable ({exc}). "
@@ -654,6 +694,8 @@ def _render_brief_tab_inner():
     source_label = " · ".join(sources) or "No notification groups"
     count_label = (f"{source_label} · {alert_count} raw alerts"
                    if counts_available else "Notification counts unavailable")
+    brief_off_html = (job_off_line("brief")
+                      if not saved_date and not mode.job_settings()["brief"] else "")
     brief = {**brief, "queue": queue,
              "counts": {**(brief.get("counts") or {}), "open_decisions": len(queue)}}
     receipts = brief.get("handled_overnight") or []
@@ -800,7 +842,11 @@ def _render_brief_tab_inner():
                 f'<summary>{len(cards) - 3} more notification groups'
                 f'</summary>{"".join(cards[3:])}</details>')
     else:
-        queue_html = ('<div class="empty">No open notifications in the current log.</div>'
+        # With decisions off the log may never have been created; say so
+        # instead of calling a log that was never written unavailable.
+        decisions_off = not mode.job_settings()["decisions"] and (current or log_missing)
+        queue_html = (job_off_line("decisions") if decisions_off
+                      else '<div class="empty">No open notifications in the current log.</div>'
                       if current else '<div class="empty">The current list is unavailable, so its count is unknown.</div>')
 
     # ─── 2. handled overnight ───
@@ -977,6 +1023,7 @@ def _render_brief_tab_inner():
 <button class="btn" onclick="showTab('overview')">Back to sessions</button>
 <p class="snapshot-status" data-current-queue="{str(current).lower()}">{e(queue_notice)}</p>
 <p class="meta">{e(snapshot_notice)} {e(focus_notice)}</p>
+{brief_off_html}
 {stats}
 
 <div class="section">
@@ -2716,6 +2763,7 @@ def render():
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
     mode_html = render_mode_switch(pro, mode.config_error()) + render_observer_setting()
+    mode_html += render_job_settings()
     pulse_alert_html = render_pulse_alert() + render_restart_alert()
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))

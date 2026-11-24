@@ -239,6 +239,8 @@ def test_default_mode_skips_triage_brief_and_planner(home, monkeypatch):
         assert not (tri.called or built.called or planned.called)
         assert not pulse.job_enabled("strategist")
         set_mode(home, "pro")
+        for var in ("ASSISTANT_DECISIONS", "ASSISTANT_BRIEF", "ASSISTANT_PLANNER"):
+            monkeypatch.setenv(var, "1")
         assert pulse.run_triage_step(1) == {"cards": ["x"]}
         pulse.run_brief_step(1)
         pulse.run_planner_step(1)
@@ -295,8 +297,9 @@ def test_default_mode_triage_housekeeping_never_breaks_the_pulse(home):
     assert "housekeeping failed" in warning.call_args[0][0]
 
 
-def test_the_pulse_reads_the_mode_once(home):
+def test_the_pulse_reads_the_mode_once(home, monkeypatch):
     pulse = load_pulse()
+    monkeypatch.setenv("ASSISTANT_DECISIONS", "1")
     set_mode(home, "pro")
     pulse.PULSE_PRO = False
     assert not pulse.job_enabled("triage")

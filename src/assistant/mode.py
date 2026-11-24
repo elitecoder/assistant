@@ -125,6 +125,32 @@ def observer_enabled() -> bool:
     return isinstance(observer, dict) and observer.get("enabled") is True
 
 
+# The background jobs that are off until someone turns them on, each with the
+# variable that turns it on for one run. `decisions` is the job that turns
+# GitHub and session events into the decision list.
+JOB_ENV = {"decisions": "ASSISTANT_DECISIONS", "brief": "ASSISTANT_BRIEF",
+           "planner": "ASSISTANT_PLANNER"}
+_ON_WORDS = ("1", "true", "yes", "on")
+
+
+def env_on(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in _ON_WORDS
+
+
+def job_settings() -> dict[str, bool]:
+    """Which of the opt-in jobs are turned on. A job is on when config.json has
+    {"jobs": {"<name>": true}} or its variable is set to 1. Only the JSON value
+    true counts; a missing key, any other value, or an unreadable file leaves
+    the job off. Reads the config once, so callers read it once per pulse."""
+    try:
+        jobs = _read_config().get("jobs")
+    except (OSError, ValueError):
+        jobs = None
+    if not isinstance(jobs, dict):
+        jobs = {}
+    return {name: jobs.get(name) is True or env_on(var) for name, var in JOB_ENV.items()}
+
+
 def save(value: str) -> None:
     """Write the mode into config.json, keeping every other key.
 

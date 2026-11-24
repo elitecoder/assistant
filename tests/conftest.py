@@ -65,11 +65,17 @@ def _real_home_untouched():
 # Fresh installs start in default mode with the watcher off. Tests written for
 # Pro mode behavior run with both on; tests marked `real_mode` read the real
 # setting, and tests of the defaults clear ASSISTANT_WATCHER themselves.
+# The same goes for the jobs that are off until someone turns them on (decisions,
+# the brief, the planner, the lesson extractor's ledger pass): tests of Pro
+# behavior run with them on, and `real_mode` tests or tests of the defaults
+# clear the variables themselves.
 @pytest.fixture(autouse=True)
 def _watcher_on(request, monkeypatch):
     if "real_mode" not in request.keywords:
         from assistant import mode
         monkeypatch.setattr(mode, "current", lambda: "pro")
+        for var in (*mode.JOB_ENV.values(), "ASSISTANT_LESSON_LEDGER_PASS"):
+            monkeypatch.setenv(var, "1")
     monkeypatch.setenv("ASSISTANT_WATCHER", "1")
 
 

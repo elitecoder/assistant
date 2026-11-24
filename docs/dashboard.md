@@ -14,7 +14,9 @@ digest instead of nagging you.
   alerts. **Go to session** focuses a workspace; expand a card for details.
 - **Notifications**: the morning brief, separate from your session workload:
   GitHub alerts and other notifications, completed actions, other updates, and
-  service status.
+  service status. Decisions and the brief are off until you turn them on. With
+  them off, the tab says so and how to turn them on, and decisions that were
+  already open keep showing until they expire.
 - **Slack**: the threads where the next move is yours, sorted into **Do
   first**, **Promise**, **This week**, and **Optional**. **Done** checks a row
   off until its thread gets a new reply. Setup is in
@@ -25,6 +27,11 @@ digest instead of nagging you.
   show open cards, per-workspace detail, background work, and your TODO list.
 
 ## Decisions and goals
+
+Decisions, the morning brief, and the goals planner are off by default. **Settings
+and background services** lists each as on or off, with the setting that
+controls it. See
+[Configuration](configuration.md#background-jobs-that-are-off-by-default).
 
 - From a decision card you can accept, edit, reject, or snooze. Each choice is
   recorded in the decision log. **Wrong lane** rejects the decision and files a

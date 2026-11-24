@@ -48,7 +48,8 @@ you promised something. You stop scrolling channels to find them.
 
 Rules sort every notification into escalate, staged, digest, or drop, and rank
 what's left. You see the few decisions that matter, and **Wrong lane** teaches
-the rules with one tap.
+the rules with one tap. Decisions are off until you turn them on with
+`jobs.decisions` in `~/.assistant/config.json`; see [Pro mode](#pro-mode).
 
 ![A decision card with sample data: "@you can you sanity-check the new rate-limit headers?" marked escalate by the gh-mention-escalate rule, with Accept, Snooze 1h, Reject, and Wrong lane buttons.](docs/images/decision-card.png)
 
@@ -67,7 +68,7 @@ services**, or run `./install.sh --apply --pro` (or `--no-pro`). New installs
 start in default mode; existing installs stay in Pro mode. Pro mode adds:
 
 - The **Notifications**, **Decisions**, **Background work**, and **Connected
-  apps** tabs, with triage ranking your notifications.
+  apps** tabs. Turning events into decisions is off until you turn it on.
 - Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack,
   which you set up separately. See [Connect your sources](docs/connectors.md).
   They pause while Pro mode is off.
@@ -75,13 +76,20 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
   Later saves, pull requests waiting on your review, Outlook, Gmail, and
   today's calendar into one list you clear. Turning Pro mode off stops its
   server within seconds.
-- Ranked goals with the `/goal` skill, and a planner that suggests next steps.
+- Ranked goals with the `/goal` skill, and a planner that suggests next steps
+  once you turn it on.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.
-- Background jobs that each need their own setting: the strategist
+- Background jobs that are off until you turn them on: decisions, the morning
+  brief, and the planner (`jobs.decisions`, `jobs.brief`, and `jobs.planner`
+  in `~/.assistant/config.json`, or `ASSISTANT_DECISIONS=1`,
+  `ASSISTANT_BRIEF=1`, and `ASSISTANT_PLANNER=1`). See
+  [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
+- Background jobs that each need their own variable: the strategist
   (`ASSISTANT_STRATEGIST=1`), the lessons extractor
-  (`ASSISTANT_LESSON_EXTRACTOR=1`), and the brief narrator
-  (`ASSISTANT_BRIEF_NARRATOR=1`).
+  (`ASSISTANT_LESSON_EXTRACTOR=1`, with its pass over repeated actions behind
+  `ASSISTANT_LESSON_LEDGER_PASS=1`), and the brief narrator
+  (`ASSISTANT_BRIEF_NARRATOR=1`, which also needs the brief).
 - The session check acting on its results: merging PRs, closing finished
   workspaces, and nudging stuck ones. The check itself, the Observer, is off by
   default in both modes. To turn it on, set `{"observer": {"enabled": true}}`
