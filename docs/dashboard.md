@@ -12,13 +12,13 @@ fall back to the digest instead of nagging you.
 
 - **Sessions**: your default view. It counts open cmux workspaces, not GitHub
   alerts. **Go to session** focuses a workspace; expand a card for details.
-- **Notifications**: the morning brief, separate from your session workload:
-  GitHub alerts and other notifications, completed actions, other updates, and
-  service status. Decisions and the brief are off until you turn them on. With
+- **Notifications**: your notifications and the morning brief, separate from
+  your session workload: GitHub alerts and other notifications, completed
+  actions, other updates, and service status. Decisions and the brief are off until you turn them on. With
   them off, the tab says so and how to turn them on, and decisions that were
   already open keep showing: urgent ones until you answer them, others until
-  they expire. With the brief off, the tab is a live summary and no copy is
-  saved each morning.
+  they expire. With the brief on, a copy is saved each morning; with it off, the
+  tab is a live summary and no copy is saved.
 - **Slack**: the threads where the next move is yours, sorted into **Do
   first**, **Promise**, **This week**, and **Optional**. **Done** checks a row
   off until its thread gets a new reply. Setup is in

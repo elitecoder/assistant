@@ -786,8 +786,10 @@ def run_triage_step(pulse_idx: int) -> dict:
             triage.skip_to_end()
             decisions.expire_open()
             # Urgent decisions never expire, so one made while decisions were
-            # on stays open until answered; keep it on the awaiting list.
-            return {"cards": triage.escalate_cards()}
+            # on stays open until answered; Pro mode keeps it on the awaiting
+            # list. Default mode never showed them, and still doesn't.
+            pro = PULSE_PRO if PULSE_PRO is not None else mode.is_pro()
+            return {"cards": triage.escalate_cards() if pro else []}
         except Exception as e:  # noqa: BLE001 — never break the pulse
             log.warning("decisions-off housekeeping failed: %s", e)
         return {"cards": []}

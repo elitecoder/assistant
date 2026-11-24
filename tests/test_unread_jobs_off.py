@@ -160,6 +160,15 @@ def seed_events(n: int) -> Path:
     return path
 
 
+def test_default_mode_never_shows_open_urgent_decisions_on_the_awaiting_list(home, pulse, monkeypatch):
+    from assistant import decisions
+    decisions.open_decision(event=event("u"), lane="escalate", policy_id="r", now=time.time() - 86400)
+    monkeypatch.setattr(mode, "current", lambda: "default")
+    assert pulse.run_triage_step(1) == {"cards": []}
+    monkeypatch.setattr(mode, "current", lambda: "pro")
+    assert len(pulse.run_triage_step(1)["cards"]) == 1
+
+
 def test_with_decisions_off_no_event_becomes_a_decision_and_the_cursor_skips(home, pulse):
     from assistant import decisions, triage
     events = seed_events(5)
@@ -223,7 +232,10 @@ def test_decisions_on_run_the_triage_step(home, pulse):
 def test_with_the_brief_off_no_file_is_written_and_nothing_expires_unseen(home, pulse, monkeypatch):
     from assistant import brief
     monkeypatch.setenv("ASSISTANT_BRIEF_NARRATOR", "1")
-    with mock.patch.object(brief, "degrade_unseen") as degrade, \
+    # pulse_step returns early before the wake hour, so pin it to 0: the guard
+    # in the pulse is then the only thing that stops the brief at any hour.
+    with mock.patch.object(brief, "wake_hour", return_value=0), \
+            mock.patch.object(brief, "degrade_unseen") as degrade, \
             mock.patch.object(brief, "build_brief") as build, \
             mock.patch.object(importlib.util, "spec_from_file_location") as narrator:
         pulse.run_brief_step(1)
@@ -376,8 +388,10 @@ def test_settings_say_when_a_value_is_present_but_ignored(home, renderer, value,
     write_config(home, {"jobs": {"brief": value}})
     html = renderer.render_job_settings()
     assert 'data-job="brief" data-state="off" data-ignored="true"' in html
-    assert (f'<code>"brief"</code> is set to <code>{shown}</code> in <code>~/.assistant/config.json</code>, '
-            "and only <code>true</code> without quotes turns it on.") in html
+    assert (f'<code>"brief"</code> is set to <code>{shown}</code> in <code>~/.assistant/config.json</code>. '
+            "Only <code>true</code> or <code>false</code> without quotes is read, "
+            "so the morning brief is off.") in html
+    assert "Change it" not in html
     assert html.count("data-ignored") == 1
 
 
@@ -416,9 +430,10 @@ def test_the_notifications_tab_says_decisions_are_off_in_place_of_the_empty_list
     make_decision_log(home)
     html, count = renderer.render_brief_tab()
     assert count == 0
-    assert "<strong>Decisions are off.</strong> Assistant no longer turns GitHub and session events into a decision list." in html
-    assert "Completed actions and Other updates get no new entries while decisions are off." in html
-    assert turn_on_json("decisions") in html
+    assert ("<strong>Decisions are off.</strong> Nothing new is listed here, and Completed actions and "
+            "Other updates get no new entries. How to turn them on is under Settings and background services."
+            ) in html
+    assert "jobs" not in html.split('data-job="decisions"')[1].split("</p>")[0]
     assert "No open notifications in the current log" not in html
 
 
@@ -439,11 +454,10 @@ def test_open_decisions_keep_rendering_under_a_notice_while_decisions_are_off(ho
     make_decision_log(home, {**OPEN_ROW, "epoch": int(time.time()) - 60})
     html, count = renderer.render_brief_tab()
     assert count == 1 and "Review the parser change" in html
-    notice = ("<strong>Decisions are off.</strong> No new decisions are being created, "
-              "and the ones shown were made earlier.")
+    notice = ("<strong>Decisions are off.</strong> No new ones are being created; these were made earlier. "
+              "How to turn them on is under Settings and background services.")
     assert notice in html
     assert html.index(notice) < html.index("Review the parser change")
-    assert "Completed actions and Other updates get no new entries while decisions are off." in html
 
 
 def test_the_notifications_tab_has_no_decisions_notice_when_they_are_on(home, renderer):
@@ -459,9 +473,10 @@ def test_the_brief_off_notice_shows_even_when_briefs_are_saved(home, renderer):
     (home / ".assistant/brief").mkdir()
     (home / ".assistant/brief/brief-2026-11-01.json").write_text("{}")
     html, _ = renderer.render_brief_tab()
-    assert ("<strong>The morning brief is off.</strong> Assistant no longer saves a brief each morning. "
-            "This tab is a live summary of your open notifications.") in html
-    assert turn_on_json("brief") in html
+    assert ("<strong>The morning brief is off.</strong> This tab is a live summary of your open "
+            "notifications; no copy is saved each morning. How to turn it on is under Settings and "
+            "background services.") in html
+    assert '"jobs"' not in html.split('data-job="brief"')[1].split("</p>")[0]
 
 
 def test_with_the_brief_off_the_tab_does_not_say_one_was_built_saved_or_unseen(home, renderer):
@@ -489,22 +504,44 @@ def test_with_the_brief_on_the_tab_keeps_its_original_wording(home, renderer):
 def test_the_saved_brief_wording_is_not_used_for_the_off_state_either(home, renderer, monkeypatch):
     monkeypatch.setattr(renderer.brief_store, "build_brief", mock.Mock(side_effect=OSError("x")))
     (home / ".assistant/brief").mkdir()
-    (home / ".assistant/brief/brief-2026-11-01.json").write_text("{}")
+    (home / ".assistant/brief/brief-2026-11-01.json").write_text('{"ts": "2026-11-01T07:00:00Z", "queue": []}')
     html, _ = renderer.render_brief_tab()
-    assert "Last saved brief · 2026-11-01" in html and "Last saved brief from" in html
+    assert "Last saved brief · 2026-11-01" in html
+    assert "Last saved brief from 2026-11-01T07:00:00Z." in html
 
 
-def test_the_decisions_panel_says_they_are_off_instead_of_none_in_24_hours(home, renderer):
+def test_the_decisions_panel_keeps_its_empty_line_and_adds_no_claim_when_nothing_is_open(home, renderer):
     html, count = renderer.render_decisions({})
-    assert count == 0
-    assert "Decisions are off, so none are listed." in html
-    assert turn_on_json("decisions") in html
-    assert "No decisions in the last" not in html
+    assert count == 0 and "No decisions in the last 24h." in html
+    assert "Decisions are off" not in html
 
 
-def test_the_decisions_panel_keeps_its_empty_line_when_they_are_on(home, renderer):
+def test_the_decisions_panel_points_to_open_ones_when_decisions_are_off(home, renderer):
+    make_decision_log(home, {**OPEN_ROW, "epoch": int(time.time()) - 60})
+    html, _ = renderer.render_decisions({})
+    assert "No decisions in the last 24h." in html
+    assert "<strong>Decisions are off.</strong> Older ones still open are under Awaiting your input." in html
+    assert "so none are listed" not in html
+
+
+def test_the_decisions_panel_has_no_notice_when_they_are_on(home, renderer):
+    make_decision_log(home, {**OPEN_ROW, "epoch": int(time.time()) - 60})
     write_config(home, {"jobs": {"decisions": True}})
-    assert "No decisions in the last 24h." in renderer.render_decisions({})[0]
+    html, _ = renderer.render_decisions({})
+    assert "No decisions in the last 24h." in html and "Decisions are off" not in html
+
+
+def test_an_unreadable_log_adds_no_notice_to_the_decisions_panel(home, renderer):
+    (home / ".assistant/decisions/decisions.jsonl").mkdir(parents=True)
+    assert "Decisions are off" not in renderer.render_decisions({})[0]
+
+
+def test_with_the_brief_off_and_nothing_saved_or_built_the_page_says_so_without_a_dangling_date(home, renderer, monkeypatch):
+    monkeypatch.setattr(renderer.brief_store, "build_brief", mock.Mock(side_effect=OSError("x")))
+    html, _ = renderer.render_brief_tab()
+    assert "Live summary unavailable" in html
+    assert "Last saved brief" not in html and "from ?" not in html and "· </div>" not in html
+    assert '<div class="brief-footer">Live summary unavailable. No copy is saved each morning.</div>' in html
 
 
 # ─── docs that promise these features ────────────────────────────────────────

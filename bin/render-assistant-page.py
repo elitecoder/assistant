@@ -238,10 +238,17 @@ def render_decisions(world):
     rows = rows[:FEED_LIMIT]
 
     if not rows:
+        note = ""
         if not mode.job_settings()["decisions"]:
-            return ('<div class="empty">Decisions are off, so none are listed. To turn them on, '
-                    f'{_job_turn_on("decisions")}.</div>'), 0
-        return f'<div class="empty">No decisions in the last {ACTIVITY_HOURS}h. (ledger: {LEDGER_PATH})</div>', 0
+            try:
+                still_open = bool(brief_store.read_current_queue())
+            except (OSError, ValueError, TypeError, OverflowError):
+                still_open = False
+            if still_open:
+                note = ('<p class="job-off" data-job="decisions"><strong>Decisions are off.</strong> '
+                        'Older ones still open are under Awaiting your input.</p>')
+        return (f'<div class="empty">No decisions in the last {ACTIVITY_HOURS}h. (ledger: {LEDGER_PATH})</div>'
+                + note), 0
 
     # Render
     out = ['<div class="feed">']
@@ -418,23 +425,24 @@ def _job_turn_on(job: str) -> str:
             f"It takes effect at Assistant's next check")
 
 
-def job_off_line(job: str, extra: str = "") -> str:
-    """One calm sentence for a page area that is empty because the job is off."""
-    name, did, pronoun, _ = JOB_COPY[job]
-    return (f'<p class="job-off" data-job="{job}"><strong>{name} off.</strong> {did}{extra} '
-            f'To turn {pronoun} on, {_job_turn_on(job)}.</p>')
-
-
-# Said wherever decisions are off, since the lists below them stop growing too.
-DECISIONS_OFF_FEED = " Completed actions and Other updates get no new entries while decisions are off."
+# Short notices for the Notifications tab; the steps live under Settings.
+SEE_SETTINGS = "under Settings and background services"
 
 
 def decisions_off_notice(open_ones: bool) -> str:
     if open_ones:
-        return (f'<p class="job-off" data-job="decisions"><strong>Decisions are off.</strong> '
-                f'No new decisions are being created, and the ones shown were made earlier.'
-                f'{DECISIONS_OFF_FEED} To turn them on, {_job_turn_on("decisions")}.</p>')
-    return job_off_line("decisions", DECISIONS_OFF_FEED)
+        body = ("<strong>Decisions are off.</strong> No new ones are being created; these were made "
+                f"earlier. How to turn them on is {SEE_SETTINGS}.")
+    else:
+        body = ("<strong>Decisions are off.</strong> Nothing new is listed here, and Completed actions "
+                f"and Other updates get no new entries. How to turn them on is {SEE_SETTINGS}.")
+    return f'<p class="job-off" data-job="decisions">{body}</p>'
+
+
+def brief_off_notice() -> str:
+    return ('<p class="job-off" data-job="brief"><strong>The morning brief is off.</strong> This tab is a '
+            'live summary of your open notifications; no copy is saved each morning. '
+            f'How to turn it on is {SEE_SETTINGS}.</p>')
 
 
 def render_job_settings() -> str:
@@ -451,9 +459,8 @@ def render_job_settings() -> str:
         elif ignored is not None:
             lines.append(f'<p class="job-setting" data-job="{job}" data-state="off" data-ignored="true">'
                          f'<strong>{name} off.</strong> <code>"{job}"</code> is set to <code>{e(ignored)}</code> '
-                         f'in <code>~/.assistant/config.json</code>, and only <code>true</code> without quotes '
-                         f'turns {pronoun} on. Change it to <code>true</code>. It takes effect at '
-                         f"Assistant's next check.</p>")
+                         f'in <code>~/.assistant/config.json</code>. Only <code>true</code> or <code>false</code> '
+                         f'without quotes is read, so {name[0].lower() + name[1:]} off.</p>')
         else:
             lines.append(f'<p class="job-setting" data-job="{job}" data-state="off"><strong>{name} off.</strong> '
                          f'{did} To turn {pronoun} on, {_job_turn_on(job)}.</p>')
@@ -726,8 +733,7 @@ def _render_brief_tab_inner():
     count_label = (f"{source_label} · {alert_count} raw alerts"
                    if counts_available else "Notification counts unavailable")
     brief_off = not mode.job_settings()["brief"]
-    brief_off_html = job_off_line(
-        "brief", " This tab is a live summary of your open notifications.") if brief_off else ""
+    brief_off_html = brief_off_notice() if brief_off else ""
     brief = {**brief, "queue": queue,
              "counts": {**(brief.get("counts") or {}), "open_decisions": len(queue)}}
     receipts = brief.get("handled_overnight") or []
@@ -1050,7 +1056,8 @@ def _render_brief_tab_inner():
         f'<p class="brief-summary template-voice">{e(summary_txt)}{voice_tag}</p>')
     eyebrow = f"Brief · built {built_at}" if built_at else f"Brief · saved {date_str}"
     if brief_off:
-        eyebrow = f"Live summary · updated {built_at}" if built_at else f"Last saved brief · {date_str}"
+        eyebrow = (f"Live summary · updated {built_at}" if built_at
+                   else f"Last saved brief · {date_str}" if date_str else "Live summary unavailable")
     header_html = (
         f'<div class="brief-eyebrow">{e(eyebrow)}</div>'
         '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
@@ -1061,6 +1068,9 @@ def _render_brief_tab_inner():
     footer_label = "Built" if live else "Summary saved"
     if brief_off:
         footer_label = "Live summary built" if live else "Last saved brief from"
+    stamp = brief.get("ts") or "?"
+    if brief_off and not live and not brief.get("ts"):
+        footer_label, stamp = "Live summary unavailable", ""
     date_attribute = f' data-brief-date="{e(saved_date)}"' if saved and not brief_off else ""
     html = f"""
 <div class="brief-root"{date_attribute}>
@@ -1094,7 +1104,7 @@ def _render_brief_tab_inner():
   {budget_note}
 </div>
 
-<div class="brief-footer">{e(footer_label)} {e(brief.get('ts') or '?')}. {e(seen_note)}.</div>
+<div class="brief-footer">{e((footer_label + " " + stamp).strip())}. {e(seen_note)}.</div>
 <details class="brief-footer"><summary>Technical details</summary>
 <p>The brief rebuilds every time the page updates. To save today's copy, run <code>python3 bin/build-morning-brief.py</code>.</p>
 </details>

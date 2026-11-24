@@ -66,7 +66,7 @@ Editing a goal's **status / links / playbook** is confirmation-gated (m18): the
 dashboard sends an `X-Assistant-Human: 1` header on those edits and they apply
 in place. A request WITHOUT that header (i.e. any automation, including the
 assistant's own LLM sessions curling localhost) does NOT apply the change — it
-files a `goal_update` proposal for Mukul to confirm in the brief. Cross-origin
+files a `goal_update` proposal in `~/.assistant/comms/proposals.jsonl` for you to confirm. Cross-origin
 mutations are refused outright (403). So automation can never flip a goal to
 `done` or repoint its links directly; it can only propose.
 
@@ -75,7 +75,7 @@ mutations are refused outright (403). So automation can never flip a goal to
 - **Outcome is mandatory and measurable** — the store rejects a goal with no outcome. "Make progress on X" is not an outcome; "X shipped to prod with test coverage ≥80%" is.
 - **`lastProgressAt` is mechanical** — never set it by hand; the planner stamps it from the ledger/PRs/decisions/TODOs. This skill cannot edit it.
 - **Rank is unique** — `rerank` reassigns 1..N; unlisted goals keep their relative order after the listed ones.
-- **Automation is confirmation-gated** — if a pulse decides a goal "looks done" or should be reranked, it files a `goal_update` proposal (type=`goal_update` in `proposals.jsonl`) for Mukul to confirm in the brief. It never edits the store. Only this human skill edits directly.
+- **Automation is confirmation-gated** — if a pulse decides a goal "looks done" or should be reranked, it files a `goal_update` proposal (type=`goal_update` in `proposals.jsonl`) in `~/.assistant/comms/proposals.jsonl` for you to confirm. It never edits the store. Only this human skill edits directly.
 - **`_paused:true` is the kill switch** — the planner no-ops (ledgered) until resumed.
 
 ## Failure handling

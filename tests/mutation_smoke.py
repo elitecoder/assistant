@@ -3724,8 +3724,8 @@ CHECKS = (
     (
         'with decisions off an open urgent decision stays on the awaiting list',
         'bin/pulse.py',
-        '            return {"cards": triage.escalate_cards()}\n',
-        '            return {"cards": []}\n',
+        'return {"cards": triage.escalate_cards() if pro else []}',
+        'return {"cards": []}',
         'tests/test_unread_jobs_off.py::test_an_open_urgent_decision_stays_open_and_on_the_awaiting_list_while_decisions_are_off',
     ),
     (
@@ -3785,13 +3785,6 @@ CHECKS = (
         'tests/test_unread_jobs_off.py::test_with_the_brief_off_the_tab_does_not_say_one_was_built_saved_or_unseen',
     ),
     (
-        'the decisions panel says they are off instead of none in 24 hours',
-        'bin/render-assistant-page.py',
-        '        if not mode.job_settings()["decisions"]:\n            return (\'<div class="empty">Decisions are off',
-        '        if False:\n            return (\'<div class="empty">Decisions are off',
-        'tests/test_unread_jobs_off.py::test_the_decisions_panel_says_they_are_off_instead_of_none_in_24_hours',
-    ),
-    (
         'Settings say a value that is present but ignored',
         'bin/render-assistant-page.py',
         '        elif ignored is not None:\n',
@@ -3818,6 +3811,41 @@ CHECKS = (
         'plans next steps for your goals or records their progress.",',
         'plans next steps for your goals.",',
         'tests/test_unread_jobs_off.py::test_settings_list_the_three_jobs_as_off_with_the_json_to_add',
+    ),
+    (
+        'with the brief off and nothing to show the eyebrow says the summary is unavailable',
+        'bin/render-assistant-page.py',
+        ' if date_str else "Live summary unavailable")',
+        ')',
+        'tests/test_unread_jobs_off.py::test_with_the_brief_off_and_nothing_saved_or_built_the_page_says_so_without_a_dangling_date',
+    ),
+    (
+        'with the brief off and nothing to show the footer drops the dangling date',
+        'bin/render-assistant-page.py',
+        '        footer_label, stamp = "Live summary unavailable", ""\n',
+        '        pass\n',
+        'tests/test_unread_jobs_off.py::test_with_the_brief_off_and_nothing_saved_or_built_the_page_says_so_without_a_dangling_date',
+    ),
+    (
+        'default mode never lists open urgent decisions as awaiting',
+        'bin/pulse.py',
+        'return {"cards": triage.escalate_cards() if pro else []}',
+        'return {"cards": triage.escalate_cards()}',
+        'tests/test_unread_jobs_off.py::test_default_mode_never_shows_open_urgent_decisions_on_the_awaiting_list',
+    ),
+    (
+        'the decisions panel only points to open ones when some are open',
+        'bin/render-assistant-page.py',
+        '            if still_open:\n',
+        '            if True:\n',
+        'tests/test_unread_jobs_off.py::test_the_decisions_panel_keeps_its_empty_line_and_adds_no_claim_when_nothing_is_open',
+    ),
+    (
+        'the decisions panel says nothing about decisions being off when they are on',
+        'bin/render-assistant-page.py',
+        '        if not mode.job_settings()["decisions"]:\n            try:\n',
+        '        if True:\n            try:\n',
+        'tests/test_unread_jobs_off.py::test_the_decisions_panel_has_no_notice_when_they_are_on',
     ),
 )
 
