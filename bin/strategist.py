@@ -197,7 +197,8 @@ def _meter(out: str, rc: int, prompt_len: int, wall_ms: int,
         metering.append_cost_row(
             caller="strategist", model=model, usage=usage,
             wall_ms=wall_ms, status="failed" if failed else "ok",
-            provider=provider)
+            provider=provider,
+            error=metering.failure_reason(rc) if failed else None)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("strategist metering capture failed (ignored): %s", e)
     return usage
@@ -211,6 +212,12 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str, in
     (run_dir / "prompt.md").write_text(prompt)
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
+    import metering  # noqa: PLC0415
+    paused = metering.paused_note("strategist")
+    if paused:
+        # 75 is "try again later"; the callers treat any non-zero exit as no output.
+        log.info("strategist skipped: %s", paused)
+        return 75, "", paused, 0
     import llm_runner  # noqa: PLC0415
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=_home()), "strategist")

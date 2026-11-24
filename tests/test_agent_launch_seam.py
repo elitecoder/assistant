@@ -3305,3 +3305,50 @@ def test_doctor_checks_the_claude_alias(home, tmp_path):
         doctor.WARN, "echo is a shell builtin in your login zsh, so Claude sessions won't start",
         "run: python3 bin/assistant-llm.py claude-alias claude")
     assert doctor.check_claude_alias in doctor.AGENT_CHECKS
+
+
+# ── a model call that keeps failing the same way is held back, for background jobs only ──
+
+def _repeat_failure(component: str) -> None:
+    from assistant import failwatch
+    for _ in range(3):
+        failwatch.record_failure(component, "claude model call failed: exit code 1")
+    assert failwatch.backed_off(component)
+
+
+@pytest.mark.parametrize("label,script,run_attr,drive,feature",
+                         [s for s in HEADLESS_SITES if s[4] in ("triage", "narrator", "strategist", "lessons")],
+                         ids=["pulse triage", "brief narrator", "strategist", "lesson extractor"])
+def test_a_background_site_makes_no_model_call_while_its_failures_are_paused(
+        home, monkeypatch, label, script, run_attr, drive, feature):
+    _pick(home, "claude")
+    mod = _load(BIN / script, f"paused_{script.replace('-', '_')}")
+    if hasattr(mod, "self_update_pulse"):
+        mod.self_update_pulse = lambda pulse_idx: None
+    commands = []
+    monkeypatch.setattr(mod, run_attr, lambda cmd, *a, **k: commands.append(cmd) or (0, "{}", ""))
+    _repeat_failure("model:" + feature)
+    drive(mod, home)
+    assert commands == []
+
+
+def test_the_slack_tab_judge_is_never_held_back(home, monkeypatch):
+    _pick(home, "claude")
+    mod = _load(BIN / "slack-focus.py", "paused_slack_focus")
+    commands = []
+    monkeypatch.setattr(mod, "run", lambda cmd, *a, **k: commands.append(cmd) or (0, "{}", ""))
+    _repeat_failure("model:slack_focus")
+    _slack_judge(mod, home)
+    assert len(commands) == 1
+
+
+def test_a_failed_background_call_is_counted_with_what_the_model_said(home, monkeypatch):
+    from assistant import failwatch
+    _pick(home, "claude")
+    mod = _load(BIN / "pulse.py", "counted_pulse")
+    mod.self_update_pulse = lambda pulse_idx: None
+    monkeypatch.setattr(mod, "run", lambda cmd, *a, **k: (1, "", "warming up\nError: model foo-9 not found"))
+    _triage(mod, home)
+    (row,) = failwatch.repeated(min_count=1)
+    assert row["component"] == "model:triage" and "Error: model foo-9 not found" in row["sample"]
+    assert row["sample"].startswith("claude ")

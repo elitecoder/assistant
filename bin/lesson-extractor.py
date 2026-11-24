@@ -788,6 +788,11 @@ def _claude_oneshot(prompt: str) -> str:
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
     import llm_runner  # noqa: PLC0415
+    import metering  # noqa: PLC0415
+    paused = metering.paused_note("lessons")
+    if paused:
+        audit(f"model call skipped: {paused}")
+        return ""
     run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompt.md").write_text(prompt)
@@ -823,7 +828,8 @@ def _claude_oneshot(prompt: str) -> str:
                    "cost_usd": cost, "source": source},
             wall_ms=result.wall_ms,
             status="ok" if result.usable else "failed",
-            provider=provider)
+            provider=provider,
+            error=metering.failure_reason(result.rc, result.stderr))
     except Exception:
         pass
     return result.result_text if result.usable else ""

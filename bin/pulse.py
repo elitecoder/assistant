@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import mode, model_tiers, transcript_slice  # noqa: E402
+from assistant import failwatch, mode, model_tiers, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -699,6 +699,11 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
 
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
+    import metering  # noqa: PLC0415
+    paused = metering.paused_note("triage")
+    if paused:
+        log.info("triage batch skipped: %s", paused)
+        return {}
     import llm_runner  # noqa: PLC0415
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=HOME), "triage")
@@ -735,7 +740,8 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
         metering.append_cost_row(
             caller="triage", model=model, usage=usage,
             wall_ms=result.wall_ms, status="ok" if accepted else "failed",
-            provider=provider)
+            provider=provider,
+            error=metering.failure_reason(result.rc, result.stderr))
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("triage metering capture failed (ignored): %s", e)
 
@@ -1600,6 +1606,18 @@ def run_observer_audit(ctxs_to_observe: list[dict],
         log.warning("audit ceiling gate unavailable → skipping audit: %s", e)
         out["reason"] = "gate-unavailable"
         return out
+    try:
+        if str(BIN) not in sys.path:
+            sys.path.insert(0, str(BIN))
+        import metering  # noqa: PLC0415
+        paused = metering.paused_note("observer-audit")
+    except Exception as e:  # noqa: BLE001 — a missing counter never blocks the audit
+        log.warning("audit pause check unavailable (ignored): %s", e)
+        paused = None
+    if paused:
+        log.info("observer audit skipped: %s", paused)
+        out["reason"] = "model-paused"
+        return out
     # Reserve the window stamp BEFORE the spend so a crash mid-audit can't let it
     # re-fire every pulse this window. If the reservation CANNOT be made durable
     # (a stray ~/.assistant/audit file, a perms problem, disk-full), FAIL CLOSED:
@@ -1634,7 +1652,7 @@ def run_observer_audit(ctxs_to_observe: list[dict],
             usage=usage or {"tokens_in": 0, "tokens_out": 0,
                             "cost_usd": 0.0, "source": "none"},
             wall_ms=0, status="ok" if verdicts_frontier else "failed",
-            provider=audit_provider)
+            provider=audit_provider, error="the model returned no verdicts")
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("audit metering failed (ignored): %s", e)
     # Compare + ledger. A ws the frontier didn't judge (no line) is a FAILURE,
@@ -1967,6 +1985,10 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
             return {**base, "kind": "skipped",
                     "evidence": "Observer actions held; merge dispatch not run"}
         if not pr_refs:
+            # The ledger row below is written every pulse; this counts it once
+            # per workspace so the dashboard shows it with a number.
+            failwatch.record_failure(f"ready-for-merge:{ws_ref}", "ready_for_merge but no pr_refs on ws",
+                                     pause=False)
             return {**base, "kind": "skipped", "outcome": "failed",
                     "evidence": "ready_for_merge but no pr_refs on ws"}
         result = run_merge_pr_dispatch(

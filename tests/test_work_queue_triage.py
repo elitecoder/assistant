@@ -1090,7 +1090,7 @@ def test_one_call_never_runs_past_its_time_even_when_it_runs_two_commands(wq, mo
     def invoke(**kw):
         kw["run"](["x"], input_text="p", timeout=100, merge_bedrock=True)
         kw["run"](["x"], input_text="p", timeout=100, merge_bedrock=True)
-        return SimpleNamespace(rc=1, stdout="", wall_ms=0, usable=False, result_text="")
+        return SimpleNamespace(rc=1, stdout="", stderr="", wall_ms=0, usable=False, result_text="")
     monkeypatch.setattr(triage, "run_cmd", run_cmd)
     monkeypatch.setattr(triage.llm_runner, "invoke", invoke)
     with pytest.raises(triage.Unavailable):
@@ -1803,3 +1803,17 @@ def test_a_start_here_item_is_blocked_only_by_the_flag(wq):
     html = page.render({**snap(pr(1), pr(2)), "triage": tri})[0]
     assert f'<li data-key="{pr(1)["link"]}" data-src="github"><div>' in html
     assert f'<li data-key="{pr(2)["link"]}" data-src="github" data-blocked><div>' in html
+
+
+def test_a_repeated_model_failure_never_holds_back_a_refresh_a_person_asked_for(wq, monkeypatch):
+    import time
+    from assistant import failwatch
+    fake_tool(wq.bin, "gh", [("search prs", [gh_pr(7)])])
+    wq.sources({"github": {}})
+    log = fake_claude(wq.home)
+    monkeypatch.setattr(triage, "call_model", REAL_CALL)
+    for _ in range(3):
+        failwatch.record_failure("model:work_queue", "claude model call failed: exit code 1", now=time.time())
+    assert failwatch.backed_off("model:work_queue")
+    refresh.run()
+    assert log.exists(), "the Work queue refresh runs the model even while a pause is on record"
