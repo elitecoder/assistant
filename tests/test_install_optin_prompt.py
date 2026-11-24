@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from installer_sandbox import assert_recorded_services, installer_env, real_home
+import installer_sandbox
+from installer_sandbox import assert_recorded_services, installer_env
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALL = REPO / "install.sh"
@@ -84,11 +85,16 @@ launchctl bootout gui/0/com.assistant.fixture
     assert (tmp_path / "cmux.log").read_text() == "hooks factory install --yes\n"
 
 
-def test_installer_environment_rejects_real_home():
-    """Both the real home and the folder the test run uses as HOME: neither is a fresh, empty one."""
-    for home in (real_home(), Path.home()):
+def test_installer_environment_rejects_real_home(tmp_path, monkeypatch):
+    """Both the real home and the folder the test run uses as HOME: neither is a fresh, empty one. A temporary
+    folder stands in for the real home here, so a guard that stops working can only ever write there."""
+    stand_in = tmp_path / "stands-in-for-the-real-home"
+    stand_in.mkdir()
+    monkeypatch.setattr(installer_sandbox, "real_home", lambda: stand_in.resolve())
+    for home in (stand_in, Path.home()):
         with pytest.raises(ValueError, match="isolated HOME"):
             installer_env(home)
+    assert list(stand_in.iterdir()) == []
 
 
 def test_self_update_apply_does_not_hang_and_writes_no_prompt(tmp_path):

@@ -8,16 +8,23 @@ tests require a separate environment.
 
 ```bash
 cd ~/dev/assistant
-python3 -m unittest discover tests -v
+uv run --with pytest --with pytest-cov --with coverage --with playwright==1.63.0 python -m pytest tests -q
 ```
 
-Or one suite at a time:
+Or one file at a time:
 
 ```bash
-python3 -m unittest tests.test_purge_stale_awaiting -v
-python3 -m unittest tests.test_build_ws_context -v
-python3 -m unittest tests.test_no_close_workspace -v
+uv run --with pytest python -m pytest tests/test_purge_stale_awaiting.py -q
+uv run --with pytest python -m pytest tests/test_no_close_workspace.py -q
 ```
+
+**Run tests with `pytest`, not `unittest`.** `tests/conftest.py` moves `HOME` to a throwaway folder before
+anything is imported, because many scripts under `bin/` work out the home folder once, at import. `python3 -m
+unittest` doesn't load `conftest.py`, so it gets no such protection and uses your real home. A test that needs a
+home of its own still sets one with `monkeypatch`. The protection covers `pytest` only: a one-off script, or a
+server you start by hand, uses whatever `HOME` you give it, so give it a temporary one. There is no switch to
+turn this off. To debug against your real setup, copy `~/.assistant` into a scratch folder and point the code at
+the copy.
 
 ## Dashboard browser checks
 
@@ -47,11 +54,6 @@ The server-side identity guard has separate coverage in `test_todo_server.py`.
 
 Run from the repository root. Keep installer tests isolated from the host's
 services; a temporary `HOME` alone doesn't isolate `launchctl`.
-
-**Tests never use your real home.** `tests/conftest.py` moves `HOME` to a throwaway folder before anything is
-imported, because many scripts under `bin/` work out the home folder once, at import. A test that needs a home of
-its own still sets one with `monkeypatch`. This covers `pytest` only: a one-off script or a server you start by
-hand uses whatever `HOME` you give it, so give it a temporary one.
 
 ```bash
 REPORT="$HOME/dev/generated-docs/assistant-coverage"
@@ -126,6 +128,10 @@ folder to its list, in file-name order. Two changes in progress then never edit 
 (they still share the changelog); when every change appended to the one list in `tests/mutation_smoke.py`, each
 pull request conflicted with the next, and one merge joined two entries into one.
 
+- **A check that weakens a guard runs with the guard really weakened.** If the guard is what keeps a test away
+  from something real (your home folder, a live session, a service), the test the check names must put a
+  stand-in in that thing's place, so the broken version can only reach the stand-in. On 2026-11-24 a check that
+  loosened the installer tests' home guard wrote three files into a developer's real home.
 - Don't add new entries to the list in `tests/mutation_smoke.py`, and don't move old ones. When you change a line
   an existing entry quotes, edit that entry where it lives, whether in that list or in a file in the folder.
 - Every `.py` file in the folder must define `CHECKS`; helpers go elsewhere. A file whose name starts with `.` or

@@ -1,6 +1,8 @@
 """pytest config — make the bin/ scripts and the src/ package importable from tests."""
+import atexit
 import os
 import pwd
+import shutil
 import sys
 import tempfile
 import types
@@ -13,16 +15,31 @@ import pytest
 # the lesson extractor's tests appended to the real assistant-audit.log for months, and pulse tests pruned the real
 # ~/.claude/spawn-prompts. HOME is moved to a throwaway folder here, before any module is imported, for the whole
 # run. A test that needs a home of its own still sets one. Tools that keep what they need in the real home (the
-# test browser, uv's Pythons, npm's cache, git's identity) are told where it is.
+# test browser, uv's Pythons, npm's cache) are told where it is; uv is left alone when XDG variables already say.
+# Git gets no global settings at all, as on CI: a developer's signing or hook settings must not reach a test.
 _REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
-_BROWSERS = "Library/Caches/ms-playwright" if sys.platform == "darwin" else ".cache/ms-playwright"
-for _name, _place in (("PLAYWRIGHT_BROWSERS_PATH", _BROWSERS), ("UV_CACHE_DIR", ".cache/uv"),
-                      ("UV_PYTHON_INSTALL_DIR", ".local/share/uv/python"), ("npm_config_cache", ".npm")):
+_KEPT = {"PLAYWRIGHT_BROWSERS_PATH": "Library/Caches/ms-playwright" if sys.platform == "darwin" else ".cache/ms-playwright",
+         "npm_config_cache": ".npm"}
+if not os.environ.get("XDG_CACHE_HOME"):
+    _KEPT["UV_CACHE_DIR"] = ".cache/uv"
+if not os.environ.get("XDG_DATA_HOME"):
+    _KEPT["UV_PYTHON_INSTALL_DIR"] = ".local/share/uv/python"
+for _name, _place in _KEPT.items():
     os.environ.setdefault(_name, str(_REAL_HOME / _place))
-if (_REAL_HOME / ".gitconfig").is_file():
-    os.environ.setdefault("GIT_CONFIG_GLOBAL", str(_REAL_HOME / ".gitconfig"))
-TESTS_HOME = Path(tempfile.mkdtemp(prefix="assistant-tests-home-"))
+_TESTS_HOME_PREFIX = "assistant-tests-home-"
+_MADE = tempfile.mkdtemp(prefix=_TESTS_HOME_PREFIX)
+TESTS_HOME = Path(_MADE)
 os.environ["HOME"] = str(TESTS_HOME)
+
+
+def _remove_tests_home(made=_MADE, pid=os.getpid()):
+    """Remove the folder made above when the run ends: that folder and no other, whatever TESTS_HOME says by then,
+    and never from a child process a test forked."""
+    if os.getpid() == pid and Path(made).name.startswith(_TESTS_HOME_PREFIX):
+        shutil.rmtree(made, ignore_errors=True)
+
+
+atexit.register(_remove_tests_home)
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "bin"))
@@ -48,6 +65,11 @@ os.environ["CMUX_BIN"] = str(_ROOT / "tests" / "no-real-cmux-in-tests")
 for _knob in ("ASSISTANT_OBSERVER_HOLD_ACTIONS", "OBSERVER_MODEL", "OBSERVER_AUDIT",
               "OBSERVER_EVERY_MIN"):
     os.environ.pop(_knob, None)
+
+# The same for the variables that say where Assistant keeps its data: one set for the login session would
+# point the code under test straight back at the real folders, past the throwaway HOME.
+for _place in ("ASSISTANT_DIR", "CMUX_WATCHER_ASSISTANT_DIR", "WQ_DATA"):
+    os.environ.pop(_place, None)
 
 
 # Files in the real user's home that tests must never write: Copilot's hook
@@ -86,6 +108,14 @@ def _real_home_untouched():
 # behavior run with them on (the three jobs by patching `mode.job_settings`, the
 # ledger pass by variable), and `real_mode` tests read the real settings. Tests
 # of the defaults restore `job_settings` and delete the variable themselves.
+@pytest.fixture(autouse=True)
+def _home_is_the_tests_home(monkeypatch):
+    """Every test starts with HOME at the run's throwaway folder and leaves it there. Some older tests set
+    os.environ["HOME"] to a folder of their own and never put it back; without this, every later test would share
+    that folder after it was deleted."""
+    monkeypatch.setenv("HOME", str(TESTS_HOME))
+
+
 @pytest.fixture(autouse=True)
 def _watcher_on(request, monkeypatch):
     if "real_mode" not in request.keywords:
