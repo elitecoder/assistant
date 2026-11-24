@@ -496,6 +496,7 @@ def test_a_dispatch_that_raises_is_recorded_and_still_raises(wq, monkeypatch):
 
 def test_a_pulse_records_one_run_with_its_own_trace_and_how_many_it_dispatched(wq, monkeypatch):
     seen = {}
+    monkeypatch.setattr(sys, "argv", ["pulse.py"])  # another test may have left a dry run's arguments behind
     pulse = load_script("pulse_work_records_run", "pulse.py")
 
     def main():
