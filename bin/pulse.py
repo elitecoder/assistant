@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import logcap, mode, model_tiers, redact, transcript_slice  # noqa: E402
+from assistant import logcap, mode, model_tiers, redact, session_effects, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -2345,6 +2345,24 @@ def _surface_read_text(surface_ref: str, lines: int = 200) -> str:
     return d.get("text", "") or ""
 
 
+# Set when a dispatch was refused because the ledger couldn't record what it was about to type; the pulse reads it
+# after the dispatch loop to show one card, and stops starting more this pulse.
+_dispatch_unrecorded = False
+
+
+def _begin_dispatch_typing(todo_id: str, item: dict, ws_ref: str, source: str):
+    """Record the intent to type into the workspace dispatch just made. Returns the effect id, or None when typing is
+    refused (logged, and the unrecorded case is flagged for the card)."""
+    global _dispatch_unrecorded
+    try:
+        return session_effects.begin(ws_ref, source, kind="owner_flag", ref=todo_id, component="pulse",
+                                     task=todo_id, trace=session_effects.trace_of(item))
+    except session_effects.Refused as refusal:
+        _dispatch_unrecorded = _dispatch_unrecorded or refusal.code == "unrecorded"
+        log.warning("dispatch %s: typing into %s refused (%s): %s", todo_id, ws_ref, refusal.code, refusal)
+        return None
+
+
 def dispatch_todo(todo_id: str) -> bool:
     """Spawn a background cmux workspace for one TODO and deliver its prompt.
 
@@ -2373,6 +2391,14 @@ def dispatch_todo(todo_id: str) -> bool:
     if rc != 0:
         log.warning("dispatch %s: cmux not running — skipping (ping rc=%s bin=%s stderr=%r)",
                     todo_id, rc, CMUX_BIN, (_perr or "")[:300])
+        return False
+
+    # Before anything is started: if Assistant can't record what it types, a workspace made now could never be typed
+    # into, and one would be made again every pulse. The TODO stays open for the next pulse.
+    if not session_effects.writable():
+        global _dispatch_unrecorded
+        _dispatch_unrecorded = True
+        log.warning("dispatch %s: %s — nothing started", todo_id, session_effects.UNRECORDED)
         return False
 
     # 1. Stage the prompt on disk. 7-day sweep, then a per-todo stamped file.
@@ -2468,9 +2494,11 @@ def dispatch_todo(todo_id: str) -> bool:
     for _ in range(READY_POLLS):
         screen = _surface_read_text(surface_ref)
         if trust and not trust_answered and trust in screen:
-            _cmux_rpc("surface.send_text", {"surface_id": surface_ref,
-                                            "text": agent_session.trust_answer(agent)})
-            _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+            trust_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "trust")
+            if trust_ef is None:
+                return False
+            session_effects.finish(trust_ef, session_effects.type_line(
+                _cmux_rpc, surface_ref, agent_session.trust_answer(agent), enter="key"))
             trust_answered = True
         elif agent_session.ready_re(agent).search(screen):
             ready = True
@@ -2496,9 +2524,10 @@ def dispatch_todo(todo_id: str) -> bool:
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
     #    keystrokes; a trailing \n auto-submits mid-paste), then Enter explicitly.
     instruction = f"Read {prompt_file} in full and execute every instruction in it."
-    _cmux_rpc("surface.send_text", {"surface_id": surface_ref, "text": instruction.rstrip("\n")})
-    time.sleep(1)
-    _cmux_rpc("surface.send_key", {"surface_id": surface_ref, "key": "enter"})
+    task_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "task")
+    if task_ef is None:
+        return False
+    typed = session_effects.type_line(_cmux_rpc, surface_ref, instruction.rstrip("\n"), enter="key", pause=1)
 
     # 6.5. STAMP NOW — a real workspace exists and the prompt has been sent.
     #    Stamping (dispatchedAt + dispatchedWs + status=in-progress) moves the
@@ -2511,6 +2540,7 @@ def dispatch_todo(todo_id: str) -> bool:
     #    session flipping status to done, the picker routes it to bucket_a
     #    (re-classify) — which is NOT auto-spawned — never back to bucket_b.
     if not _mark_todo_dispatched(todo_id, ws_ref):
+        session_effects.finish(task_ef, typed)
         log.warning("dispatch %s: spawned %s + sent prompt but TODO stamp failed — "
                     "will re-dispatch next pulse (prompt staged at %s)",
                     todo_id, ws_ref, prompt_file)
@@ -2563,6 +2593,7 @@ def dispatch_todo(todo_id: str) -> bool:
             break
         time.sleep(1)
 
+    session_effects.finish(task_ef, typed, verified=submitted)
     if not submitted:
         log.warning("dispatch %s: stamped to %s but submission unconfirmed within window "
                     "(prompt staged at %s) — not re-dispatching; check the workspace",
@@ -3029,7 +3060,11 @@ def main() -> int:
         priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
         bucket_b.sort(key=lambda t: priority_order.get(t.get("priority", "P4"), 9))
         n_dispatched = 0
+        global _dispatch_unrecorded
+        _dispatch_unrecorded = False
         for todo in bucket_b[:MAX_DISPATCH_PER_PULSE]:
+            if _dispatch_unrecorded:
+                break  # one refusal is the same for the rest: don't start workspaces nothing can be typed into
             ok = dispatch_todo(todo["id"])
             actions_taken.append({
                 "key": f"dispatch-{todo['id']}",
@@ -3039,6 +3074,23 @@ def main() -> int:
             })
             if ok:
                 n_dispatched += 1
+        if _dispatch_unrecorded:
+            held = ", ".join(t["id"] for t in bucket_b[:5])
+            more = f" (+{len(bucket_b) - 5} more)" if len(bucket_b) > 5 else ""
+            awaiting_input.append({
+                "key": "dispatch-held-no-record",
+                "tier": "T3",
+                "title": f"Dispatch paused — {len(bucket_b)} TODO(s) waiting",
+                "detail": (f"Assistant can't record what it types into your sessions, so it started nothing. "
+                           f"Check that your disk isn't full and that the folder ~/.assistant/effects can be "
+                           f"written to. Holding: {held}{more}. Nothing is lost. Assistant looks again every "
+                           f"few minutes and starts them once it can record."),
+            })
+            actions_taken.append({
+                "key": "dispatch-held-no-record",
+                "kind": "skipped", "outcome": "verified",
+                "evidence": "the effects record could not be written",
+            })
 
     # 6. Write state + trace.
     if dry_run:

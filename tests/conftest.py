@@ -114,3 +114,17 @@ def _restore_crash_hooks(monkeypatch):
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)
     import threading
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+
+
+# Typing into a session writes an intent to ~/.assistant/effects before the first keystroke. A test that reaches the
+# real home would write the real ledger, so a ledger folder under the real home is moved to a scratch folder.
+@pytest.fixture(autouse=True)
+def _no_real_effects_ledger(monkeypatch, tmp_path_factory):
+    from assistant import effects
+    original, scratch = effects.ledger_dir, tmp_path_factory.mktemp("effects")
+
+    def guarded():
+        path = original()
+        return scratch if _REAL_HOME in (path, *path.parents) else path
+
+    monkeypatch.setattr(effects, "ledger_dir", guarded)
