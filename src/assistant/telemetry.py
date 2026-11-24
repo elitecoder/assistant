@@ -36,6 +36,7 @@ APPLICATION_ID = 0x41535354  # "ASST": a file with another id is somebody else's
 BUSY_SECONDS = 0.2
 EMIT_DEADLINE_SECONDS = 0.27  # the whole of one emit(): the database wait plus the spool lock
 COUNT_WAIT_SECONDS = 0.03  # on top of that, to note a loss
+CONFIG_RETRY_SECONDS = 0.02  # before reading a settings file that didn't parse a second time
 SPOOL_LIMIT_BYTES = 5 * 1024 * 1024
 KEEP_CORRUPT_COPIES = 2
 UPKEEP_EVERY_SECONDS = 3600
@@ -47,7 +48,7 @@ DELETE_BATCH = 100
 QUERY_LIMIT_MAX = 10000
 STRICT_ENV = "ASSISTANT_TELEMETRY_STRICT"
 
-INT, NUM, BOOL, ID, NAME = "int", "num", "bool", "id", "name"
+INT, NUM, BOOL, ID, NAME, ERROR = "int", "num", "bool", "id", "name", "error"
 
 # Lists of the values a field may take. A field of one of these types takes only a value on its list, even one
 # that looks like an id. Later changes add values here, one per line, in review. The lists follow what the code
@@ -61,22 +62,34 @@ DISPOSITION = ("you", "agent", "handoff", "drop")
 TIER = ("frontier", "balanced", "cheap")
 SEND_MODE = ("assist", "handsoff")
 PULSE_MODE = ("default", "pro")
-TASK_STATE = ("open", "queued", "dispatched", "running", "blocked", "needs_input", "done", "failed", "cancelled")
-ORIGIN = SOURCE + ("work_queue", "goal", "manual", "agent")
+# The statuses the task file really holds (bin/todo-server.py, bin/pulse.py, work_queue/todo_result.py, skills/todo).
+TASK_STATE = ("open", "in-progress", "blocked", "deferred", "done", "removed")
+ORIGIN = SOURCE + ("work-queue", "goal", "manual", "agent")
 PURPOSE = ("triage", "observer", "brief", "narrate", "planner", "strategist", "lesson", "draft", "other")
-ACTION = ("send", "draft", "todo_create", "dispatch", "merge", "mark_done", "snooze", "other")
+# The classes the effects ledger writes.
+EFFECT_CLASS = ("gmail.archive", "gmail.unarchive", "gmail.mark_read", "gmail.trash", "gmail.untrash",
+                "mail.unsubscribe", "slack.save.complete", "slack.save.uncomplete", "session.type")
+EFFECT_OUTCOME = ("done", "failed", "unknown", "refused")
 GUARD = ("interrupt_gate", "no_close_workspace", "meta_gate", "busy_session_cap", "outbound_gate", "back_off")
 GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
-FEEDBACK_VERDICT = ("useful", "not_useful", "agree", "disagree", "wrong_lane")
-SURFACE = ("work_queue", "dashboard", "slack", "brief", "decision_card")
+# What the owner did (feedback.signal), why (reason_code), where, and on what kind of thing.
+SIGNAL = ("done", "drop", "snooze", "undo", "send", "send_handsoff", "approve", "keep", "archive", "mark_read",
+          "used_draft", "kept_result", "thumbs_down", "tell", "retract")
+FEEDBACK_REASON = ("none", "not_important", "wrong_order", "not_mine", "already_done", "bad_draft",
+                   "not_what_i_asked", "should_not_have_started", "should_not_have_pinged")
+SURFACE = ("work-queue", "dashboard", "slack", "voice", "cli")
+SUBJECT_KIND = ("row", "start_here", "email", "candidate", "result", "draft", "page", "task")
 REASON = ("none", "policy", "user", "limit", "budget", "duplicate", "stale", "unsafe", "not_signed_in", "unknown")
+ERROR_WORDS = ("timeout", "network", "refused", "not_found", "other")  # when there is no exception class to name
 COMPONENTS = ("pulse", "work-queue", "dashboard", "reactor", "comms", "watcher", "self-update", "installer", "cli")
-# `subject`, and a field that points at a thing, is an id: one of these prefixes and then id characters.
+# `subject`, and a field that points at a thing, is an id: one of these prefixes and then the body that prefix has
+# (`_ID_BODIES`; `tr-` and `tl-` are trace ids, see pointers.is_trace_id).
 ID_PREFIXES = ("row:", "td-", "tr-", "tl-", "ef-", "fb-", "who:", "workspace:", "dec-")
 
 # What each kind of record may hold. Adding a field is one line. A field is a number (INT, NUM), a yes/no (BOOL), a
 # value from a list above, an ID, or a NAME. A NAME is an open name, kept to the few fields whose vocabulary really
-# is open; each is marked below. A field can't be called `kind`, `trace`, `subject` or `component` (those are
+# is open; each is marked below. An ERROR is an exception class name (`sqlite3.OperationalError`) or a word from
+# ERROR_WORDS. A field can't be called `kind`, `trace`, `subject` or `component` (those are
 # `emit()`'s own arguments) and can't start with `_` (reserved: `_dropped`). `outcome` is how something ended;
 # `ok` is the yes/no. The registry is read-only: it changes in this file, in review, not at run time.
 KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spec in {
@@ -88,7 +101,7 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "new_items": INT,
         "ms": INT,
         "status": INT,
-        "error": NAME,  # open: the class name of whatever went wrong
+        "error": ERROR,
     },
     "triage_verdict": {
         "verdict": DISPOSITION,
@@ -112,7 +125,7 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "cache_write": INT,
         "cost_usd": NUM,
         "ms": INT,
-        "error": NAME,  # open: the class name of whatever went wrong
+        "error": ERROR,
         "retries": INT,
     },
     "task": {
@@ -138,17 +151,18 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "ms": INT,
     },
     "effect": {
-        "action": ACTION,
-        "outcome": OUTCOME,
+        "action": EFFECT_CLASS,
+        "outcome": EFFECT_OUTCOME,
         "ok": BOOL,
         "target": ID,
         "reversible": BOOL,
         "count": INT,
     },
     "feedback": {
-        "verdict": FEEDBACK_VERDICT,
-        "reason_code": REASON,
+        "signal": SIGNAL,
+        "reason_code": FEEDBACK_REASON,
         "surface": SURFACE,
+        "subject_kind": SUBJECT_KIND,
     },
     "guard": {
         "name": GUARD,
@@ -168,7 +182,7 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "lost": INT,
         "db_kb": INT,
         "partial": BOOL,
-        "error": NAME,  # open: the class name of whatever went wrong
+        "error": ERROR,
     },
     "sign_in": {
         "provider": PROVIDER,
@@ -186,6 +200,12 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
 _POINTER = re.compile(r"(?=.{1,120}\Z)[A-Za-z0-9][A-Za-z0-9_.:/-]*(?:@[0-9]{6,8})?")
 _HOST_OR_FILE = re.compile(r"\.[a-z]{2,6}(?:/|\Z)")
 _VERSION_SUFFIX = re.compile(r":[0-9]{1,2}\Z")
+_HEX16 = re.compile(r"[0-9a-f]{16}")
+_DIGITS = re.compile(r"[0-9]{1,9}")
+# The body each id prefix has. `dec-` is what src/assistant/decisions.py mints: 16 hex characters of a SHA-256.
+_ID_BODIES = {"row:": _HEX16, "who:": _HEX16, "ef-": _HEX16, "fb-": _HEX16, "dec-": _HEX16, "td-": _DIGITS,
+              "workspace:": _DIGITS}
+_ERROR_CLASS = re.compile(r"(?:[a-z][a-z0-9_]*\.)*[A-Z][A-Za-z0-9]*")
 _ID = re.compile(r"[0-9a-f]{16}")
 _COPY = re.compile(r"telemetry\.db\.corrupt-[0-9]{15}")
 _MAGIC = b"SQLite format 3\x00"
@@ -258,27 +278,39 @@ def _pointer_ok(value) -> bool:
 
 
 def _clean_id(value, allow_empty: bool = False):
-    """`value` if it is an id: one of ID_PREFIXES, then id characters, and nothing the redactor would change. Only
-    an exact `str` is accepted, so a subclass can't hand over something else when it is turned into text."""
+    """`value` if it is an id: one of ID_PREFIXES and then the body that prefix has, and nothing the redactor would
+    change. Only an exact `str` is accepted, so a subclass can't hand over something else when it is turned into
+    text."""
     if allow_empty and type(value) is str and value == "":
         return ""
     if not _pointer_ok(value) or redact.redact(value) != value:
         return None
     prefix = next((p for p in ID_PREFIXES if value.startswith(p)), None)
-    return value if prefix is not None and len(value) > len(prefix) else None
+    if prefix is None:
+        return None
+    body_ok = (pointers.is_trace_id(value) if prefix in ("tr-", "tl-")
+               else _ID_BODIES[prefix].fullmatch(value[len(prefix):]) is not None)
+    return value if body_ok else None
 
 
 def _clean_name(value):
     """`value` if it is an open name: pointer-shaped, with a letter, no run of nine digits, at most five `-` or `_`
-    (a phrase has more), a `:` only as `:` and one or two digits at the end (a model's `v2:0`), and nothing
-    capitalised before a `/` (`feat/trace-ids`, not `Users/ann`). It is a shape, not a proof: a short lowercase
-    phrase would pass, which is why the open names are few."""
-    if not _pointer_ok(value) or redact.redact(value) != value:
+    (a phrase has more), a `:` only as `:` and one or two digits at the end (a model's `v2:0`), nothing
+    capitalised before a `/` (`feat/trace-ids`, not `Users/ann`), and not starting with an id prefix. It is a
+    shape, not a proof: a short lowercase phrase would pass, which is why the open names are few."""
+    if not _pointer_ok(value) or redact.redact(value) != value or value.startswith(ID_PREFIXES):
         return None
     shape = (re.search("[A-Za-z]", value) and not re.search("[0-9]{9}", value)
              and value.count("-") + value.count("_") <= 5 and ":" not in _VERSION_SUFFIX.sub("", value)
              and ("/" not in value or value.partition("/")[0] == value.partition("/")[0].lower()))
     return value if shape else None
+
+
+def _clean_error(value):
+    """`value` if it is an exception class name, with its module path if it has one, or one of ERROR_WORDS."""
+    if type(value) is str and value in ERROR_WORDS:
+        return value
+    return value if _pointer_ok(value) and _ERROR_CLASS.fullmatch(value) and redact.redact(value) == value else None
 
 
 def _clean_value(kind, value):
@@ -293,6 +325,8 @@ def _clean_value(kind, value):
         return _clean_id(value)
     if kind == NAME:
         return _clean_name(value)
+    if kind == ERROR:
+        return _clean_error(value)
     if type(kind) is tuple:  # a list of the values the field may take
         return value if type(value) is str and value in kind else None
     return None  # a field the kind doesn't list
@@ -343,18 +377,28 @@ def _in_range(value, low, high) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
 
 
+def _read_block() -> dict:
+    with open(os.path.join(_home(), ".assistant", "config.json")) as handle:
+        block = json.load(handle).get("telemetry", {})
+    if not isinstance(block, dict):
+        raise TypeError("the telemetry setting isn't an object")
+    return block
+
+
 def _settings() -> dict:
     """The settings with their defaults. `problems` names each one that couldn't be read, and a setting that can't
     be read never deletes anything. `enabled` is true when the key is absent or exactly true. A `config.json` that
     exists but can't be read, or isn't an object, is a privacy switch nobody can read: recording is off
-    (`unreadable` says why) until it is fixed. A missing file means on."""
+    (`unreadable` says why) until it is fixed. A missing file means on. A file that doesn't parse is read once
+    more after a moment, in case it was caught while being rewritten."""
     found = {"enabled": True, "keep_days": DEFAULT_KEEP_DAYS, "max_mb": DEFAULT_MAX_MB, "problems": {},
              "unreadable": None}
     try:
-        with open(os.path.join(_home(), ".assistant", "config.json")) as handle:
-            block = json.load(handle).get("telemetry", {})
-        if not isinstance(block, dict):
-            raise ValueError("the telemetry setting isn't an object")
+        try:
+            block = _read_block()
+        except ValueError:
+            time.sleep(CONFIG_RETRY_SECONDS)
+            block = _read_block()
     except FileNotFoundError:
         return found
     except Exception as exc:  # noqa: BLE001 - a deeply nested file raises RecursionError; it is unreadable too

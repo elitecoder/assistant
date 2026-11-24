@@ -174,13 +174,20 @@ def test_events_is_read_only_and_capped(home, monkeypatch):
 
 # ---------------------------------------------------------------- pointers, not content
 
-IDS = ["td-012", "workspace:7", "row:0123456789abcdef", "tr-0123456789abcdef", "tl-0123456789abcdef",
-       "ef-0123456789abcdef", "fb-12", "who:ab12cd", "dec-7", "td-" + "x" * 117]
+IDS = ["td-012", "td-123456789", "workspace:7", "workspace:123456789", "row:0123456789abcdef",
+       "tr-0123456789abcdef", "tl-0123456789abcdef", "ef-0123456789abcdef", "fb-0123456789abcdef",
+       "who:0123456789abcdef", "dec-0123456789abcdef"]
+# Right prefix, wrong body: an id has the body its prefix has and nothing else.
+BAD_BODIES = ["who:Fix-the-login-bug-for-Ann-Lee-before-Friday", "row:diagnosis:cancer",
+              "workspace:password:hunter2", "td-4111-1111-1111-1111", "who:192.168.1.20:8080",
+              "tr-tel:5551234567", "dec-Users/ann", "row:0123456789ABCDEF", "row:0123456789abcde",
+              "row:0123456789abcdef0", "td-1234567890", "td-", "td-12a", "workspace:-1", "workspace:1:2",
+              "tr-0123456789abcdeg", "tl-short", "ef-", "fb-0123456789abcdef.com", "dec-12345", "dec-" + "a" * 17]
 NAMES = ["us.anthropic.claude-3-5-sonnet-20241022-v2:0", "claude-sonnet-4-5@20250929", "anthropic/claude-sonnet-4-5",
          "OperationalError", "timeout", "feat/trace-ids", "requests.exceptions.HTTPError", "gpt-4.1",
          "claude-3.5-sonnet", "work-queue", "a", "x" * 120]
 # What the shape rule alone let through before: prose, numbers, addresses, paths, links.
-PERSONAL = ["Fix-the-login-bug-for-Ann-Lee-before-Friday", "diagnosis:cancer", "555-123-4567",
+PERSONAL = BAD_BODIES + ["td-555-123-4567", "row:abc", "who:ann", "Fix-the-login-bug-for-Ann-Lee-before-Friday", "diagnosis:cancer", "555-123-4567",
             "4111-1111-1111-1111", "192.168.1.20:8080", "tel:5551234567", "Users/ann", "ann.lee@example.com",
             "/Users/ann/project-x/notes", "github.com/acme/secret-repo/pull/42", "mailto:a@b.co",
             "https:/evil.com/a", "https://example.com/a", "file:/etc/passwd", "file:/etc", "who:/etc", "www.example.com/path",
@@ -234,6 +241,32 @@ def test_nothing_personal_is_kept_in_any_text_field_of_any_kind(home, value):
 def test_an_open_name_that_breaks_its_shape_is_left_out_and_counted(home, value):
     assert T.emit("check", name=value, count=1)
     assert json.loads(rows(home)[0][-1]) == {"_dropped": 1, "count": 1}
+
+
+@pytest.mark.parametrize("value", ["body-of-text-id", *BAD_BODIES, "td-555-123-4567", "row:", "who:0123456789abcdef"],
+                         ids=repr)
+def test_an_open_name_does_not_start_with_an_id_prefix_and_other_text(home, value):
+    assert T.emit("check", name=value, count=1)
+    stored = json.loads(rows(home)[0][-1])
+    assert stored == ({"count": 1, "name": value} if value == "body-of-text-id" else {"_dropped": 1, "count": 1})
+
+
+@pytest.mark.parametrize("value", ["OperationalError", "sqlite3.OperationalError", "requests.exceptions.HTTPError",
+                                   "timeout", "network", "refused", "not_found", "other", "A", "a_b.C1"])
+def test_an_error_field_takes_a_class_name_or_a_word_from_its_list(home, value):
+    for kind in ("source_fetch", "model_call", "job_run"):
+        assert T.emit(kind, error=value)
+    assert [json.loads(r[-1]) for r in rows(home)] == [{"error": value}] * 3
+
+
+@pytest.mark.parametrize("value", ["operationalerror", "Sqlite3.OperationalError", "sqlite3.operationalError",
+                                   "timeout ", "unknown", "Fix-the-login-bug", "Operational Error",
+                                   "mod.", ".Error", "a..B", "Error:Users/ann", "a/b.Error", "A" * 121, "gpt-4.1",
+                                   "ann.lee", 5, None, b"Error"], ids=repr)
+def test_an_error_field_refuses_anything_else(home, value):
+    for kind in ("source_fetch", "model_call", "job_run"):
+        assert T.emit(kind, error=value)
+    assert [json.loads(r[-1]) for r in rows(home)] == [{"_dropped": 1}] * 3
 
 
 def test_a_value_not_on_a_fields_list_is_refused_even_when_it_looks_like_an_id(home):
@@ -395,9 +428,9 @@ def test_every_kind_stores_no_value_with_a_space_whatever_it_is_given(home):
                 assert T._pointer_ok(value), (kind, key)
 
 
-OPEN_NAMES = {("source_fetch", "error"), ("triage_verdict", "model"), ("triage_verdict", "prompt_version"),
-              ("model_call", "model"), ("model_call", "error"), ("check", "name"), ("job_run", "job"),
-              ("job_run", "error")}
+OPEN_NAMES = {("triage_verdict", "model"), ("triage_verdict", "prompt_version"), ("model_call", "model"),
+              ("check", "name"), ("job_run", "job")}
+ERROR_FIELDS = {("source_fetch", "error"), ("model_call", "error"), ("job_run", "error")}
 
 
 def test_the_registry_is_well_formed_and_read_only():
@@ -408,7 +441,7 @@ def test_the_registry_is_well_formed_and_read_only():
         for name, type_ in spec.items():
             assert name not in ("kind", "trace", "subject", "component") and not name.startswith("_"), (kind, name)
             assert name not in ("result", "decision"), (kind, name)
-            assert type_ in (T.INT, T.NUM, T.BOOL, T.ID, T.NAME) or (type(type_) is tuple and type_), (kind, name)
+            assert type_ in (T.INT, T.NUM, T.BOOL, T.ID, T.NAME, T.ERROR) or (type(type_) is tuple and type_), (kind, name)
         if "outcome" in spec:
             assert type(spec["outcome"]) is tuple
     with pytest.raises(TypeError):
@@ -420,12 +453,19 @@ def test_the_registry_is_well_formed_and_read_only():
 def test_every_text_field_is_a_list_an_id_or_one_of_the_few_open_names():
     kinds = {(kind, name) for kind, name, type_ in text_fields() if type_ == T.NAME}
     assert kinds == OPEN_NAMES  # adding an open name is a decision: it changes this list, in review
-    assert {type_ for _, _, type_ in text_fields() if type(type_) is not tuple} == {T.ID, T.NAME}
+    assert {(kind, name) for kind, name, type_ in text_fields() if type_ == T.ERROR} == ERROR_FIELDS
+    assert {type_ for _, _, type_ in text_fields() if type(type_) is not tuple} == {T.ID, T.NAME, T.ERROR}
     for kind, name, type_ in text_fields():
-        assert type_ in (T.ID, T.NAME) or all(re.fullmatch(r"[a-z]+(?:[_-][a-z]+)*", v) for v in type_), (kind, name)
-        assert type_ in (T.ID, T.NAME) or len(set(type_)) == len(type_), (kind, name)
+        assert type(type_) is not tuple or all(re.fullmatch(r"[a-z]+(?:[_.-][a-z]+)*", v) for v in type_), (kind, name)
+        assert type(type_) is not tuple or len(set(type_)) == len(type_), (kind, name)
     assert T.ID_PREFIXES == ("row:", "td-", "tr-", "tl-", "ef-", "fb-", "who:", "workspace:", "dec-")
     assert "done" in T.OUTCOME and "timeout" in T.OUTCOME and "unknown" in T.OUTCOME
+    assert T.TASK_STATE == ("open", "in-progress", "blocked", "deferred", "done", "removed")
+    assert "work_queue" not in "".join(v for _, _, t in text_fields() if type(t) is tuple for v in t)
+    assert T.EFFECT_CLASS == ("gmail.archive", "gmail.unarchive", "gmail.mark_read", "gmail.trash", "gmail.untrash",
+                              "mail.unsubscribe", "slack.save.complete", "slack.save.uncomplete", "session.type")
+    assert T.KINDS["feedback"] == {"signal": T.SIGNAL, "reason_code": T.FEEDBACK_REASON, "surface": T.SURFACE,
+                                   "subject_kind": T.SUBJECT_KIND}
 
 
 def test_a_kind_added_at_run_time_is_refused(home):
@@ -750,6 +790,36 @@ def test_a_settings_file_that_cannot_be_read_turns_recording_off_and_says_so(hom
 
 def _fill_before_the_break(home):
     _fill(home, [1000.0])
+
+
+def _fake_clock(sleep):
+    return types.SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=sleep)
+
+
+def test_a_settings_file_caught_mid_save_is_read_again_before_recording_is_given_up(home, monkeypatch):
+    config(home, '{"telemetry": {"keep_days"')
+    pauses = []
+
+    def finish_the_save(seconds):
+        pauses.append(seconds)
+        config(home, {"telemetry": {"keep_days": 30}})
+    monkeypatch.setattr(T, "time", _fake_clock(finish_the_save))
+    assert T.emit("check", name="saved") is True
+    assert pauses == [T.CONFIG_RETRY_SECONDS] and 0 < T.CONFIG_RETRY_SECONDS <= 0.05
+    assert T._settings()["keep_days"] == 30
+
+
+def test_a_settings_file_that_stays_broken_is_read_twice_and_a_file_that_cannot_be_fixed_is_not_waited_for(home,
+                                                                                                         monkeypatch):
+    pauses = []
+    monkeypatch.setattr(T, "time", _fake_clock(pauses.append))
+    config(home, '{"telemetry": {"enabled": false,}}')
+    assert T._settings()["unreadable"] and pauses == [T.CONFIG_RETRY_SECONDS]
+    del pauses[:]
+    for text in ("[1]", '{"telemetry": 5}', "[" * 100000):
+        config(home, text)
+        assert T._settings()["unreadable"]
+    assert pauses == []  # not a half-written file: nothing to wait for
 
 
 def test_upkeep_reports_a_settings_file_that_cannot_be_read_once_an_hour_and_creates_nothing_in_the_folder(home):

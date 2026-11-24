@@ -26,6 +26,7 @@ A refused value is left out, and the record says how many were left out. A Work 
 - `dropped.json`: how many records were lost, and why.
 - `telemetry.db.corrupt-...`: a damaged database Assistant set aside. Its records are not read again. The two newest are kept.
 - `upkeep-at`, `spool.lock`, `dropped.lock`, `recover.lock`: bookkeeping.
+- `~/.assistant/telemetry-config-note-at`: the time Assistant last mentioned in the pulse log that `config.json` couldn't be read. It sits outside the telemetry folder and can be deleted.
 
 The pulse writes its notes about telemetry to `~/.assistant/assistant-pulse.log`.
 
