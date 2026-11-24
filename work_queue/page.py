@@ -723,6 +723,7 @@ function linkify(el,text){el.textContent='';text.split(LINK).forEach((part,i)=>{
  el.append(a,m[2])})}
 function schedulePoll(){clearTimeout(qTimer);
  if(!polling&&Object.values(ST.queued).some(q=>!((q.status==='done'||q.status==='blocked')&&MK[readyKey(q.id)])))qTimer=setTimeout(refresh,20000)}
+const noteKeys=(go,no)=>ev=>{if(ev.key==='Enter'&&(ev.metaKey||ev.ctrlKey))go.click();else if(ev.key==='Escape')no.click()};
 function compose(b,send){const host=b.closest('.em-row,.sf-row,li'),open=host.querySelector(':scope > .compose');
  if(open)return open.querySelector('textarea').focus();
  const f=document.createElement('div'),ta=document.createElement('textarea'),row=document.createElement('div');
@@ -731,7 +732,7 @@ function compose(b,send){const host=b.closest('.em-row,.sf-row,li'),open=host.qu
  f.className='compose';row.className='compose-btns';ta.rows=2;ta.setAttribute('aria-label','Note for the agent');
  ta.placeholder='Note for the agent (optional). For example: draft a reply, or check the logs first. Cmd+Enter sends, Esc cancels.';
  ta.oninput=()=>{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight+2,240)+'px'};
- ta.onkeydown=ev=>{if(ev.key==='Enter'&&(ev.metaKey||ev.ctrlKey))go.click();else if(ev.key==='Escape')no.click()};
+ ta.onkeydown=noteKeys(go,no);
  row.append(go,no);f.append(ta,row);host.append(f);ta.focus()}
 function sentMsg(o,note){if(!o.existing)return 'Sent to an agent as '+o.id+' for a first pass. '+FOLLOW;
  return 'Already sent as '+o.id+', so nothing new was sent.'+(note?' Your note wasn’t added to it. Add it in that agent’s workspace once it starts.':'')+' '+FOLLOW}
@@ -846,7 +847,7 @@ function fbSync(s){const fp=s.dataset.fp,u=FBUI[fp]=FBUI[fp]||{},v=ST.feedback[f
  box=document.createElement('div');box.className='fb-tell';const ta=document.createElement('textarea'),go=button('Send','btn fb-go',()=>fbSendTell(s)),
   no=button('Cancel','btn ghost fb-no',()=>{u.tell=false;u.words='';fbPaint()});
  ta.rows=2;ta.value=u.words||'';ta.dataset.fb='text';ta.setAttribute('aria-label','Tell Assistant');ta.placeholder='What should Assistant know about this? Cmd+Enter sends, Esc cancels.';
- ta.oninput=()=>{u.words=ta.value};ta.onkeydown=ev=>{if(ev.key==='Enter'&&(ev.metaKey||ev.ctrlKey))go.click();else if(ev.key==='Escape')no.click()};
+ ta.oninput=()=>{u.words=ta.value};ta.onkeydown=noteKeys(go,no);
  go.dataset.fb='send';no.dataset.fb='cancel';box.append(ta,go,no);h.x.append(box)}
 function fbPaint(){if(!FB)return;document.querySelectorAll('.fb').forEach(s=>{if(!FBX.has(s))fbBuild(s);
   const bar=s.parentElement;if(bar.lastElementChild!==s)bar.append(s);fbSync(s)});

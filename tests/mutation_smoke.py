@@ -895,8 +895,8 @@ CHECKS = (
     (
         'Send to Agent shows on every open row',
         'work_queue/page.py',
-        '            \'<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button></div>{draft}{extra}</div>\')\n',
-        "            f'</div>{draft}{extra}</div>')\n",
+        '            \'<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button>{fb_span(feedback, "email" if mk else "row", mk or link)}</div>{draft}{extra}</div>\')\n',
+        "            f'{fb_span(feedback, \"email\" if mk else \"row\", mk or link)}</div>{draft}{extra}</div>')\n",
         'tests/test_work_queue_triage.py::test_send_to_agent_shows_on_every_open_row_whatever_the_model_said',
     ),
     (
