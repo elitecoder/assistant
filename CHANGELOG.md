@@ -185,6 +185,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   writes through a private temporary file of its own and removes it if the save
   fails. This needs macOS; on another system the reactor doesn't write. The
   `/todo` and `/cleanup` skills still write the list without the lock.
+- Stop a speed test for the Work queue's scrubber from failing on a busy machine. It allowed two seconds for a
+  megabyte of text and exists to catch a pattern that takes minutes; its limits are now ten times looser, and
+  the three mutation checks that rely on it still reject their mutants.
 - Some services could fail without a word because they ran under the system's
   older Python. They now use the same Python as the rest of Assistant.
 - Trim oversized logs. Every five minutes the Assistant now checks its logs:
