@@ -1,6 +1,7 @@
 """Each Python service that logs puts redaction on its log, and the Slack reactor's output can't carry a token."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import logging
@@ -9,9 +10,12 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
+
+from assistant import redact
 
 REPO = Path(__file__).resolve().parent.parent
 SECRET = "AbCdEfGhIjKlMnOpQrStUv0123456789"
@@ -180,6 +184,7 @@ def test_connector_script_result_line_is_redacted(name, tmp_path, monkeypatch, c
     monkeypatch.setattr(kinds[0], "poll_once", lambda self: {"error": f"failed token={SECRET}"})
     assert module.main(["--once"]) == 0
     assert clean(capsys.readouterr().err)
+    assert sys.excepthook is redact._excepthook and threading.excepthook is redact._thread_excepthook
 
 
 @pytest.mark.parametrize("name", ["gcal", "gmail", "outlook"])
@@ -196,15 +201,86 @@ def test_connector_script_authorization_failure_is_redacted(name, tmp_path, monk
     assert clean(capsys.readouterr().err)
 
 
+IMPORT_FROM_TESTS = re.compile(r"""\b(?:from|import|require)\s*\(?\s*['"](?:[^'"]*/)?test/""")
+
+
 def test_reactor_source_never_imports_from_the_reactor_tests():
     # The gate treats slack-reactor/test/ as test code; source that imported from there would never be measured.
-    for source in sorted(REACTOR_SRC.glob("*.js")):
+    sources = [p for pattern in ("*.js", "*.mjs", "*.cjs") for p in REACTOR_SRC.rglob(pattern)]
+    assert sources
+    for source in sorted(sources):
         for number, line in enumerate(source.read_text().splitlines(), 1):
-            assert not re.search(r"""(?:from|import\s*\(|require\s*\()\s*['"][^'"]*(?:/|^)test/""", line), f"{source.name}:{number}: {line.strip()}"
+            assert not IMPORT_FROM_TESTS.search(line), f"{source}:{number}: {line.strip()}"
 
 
 def test_the_import_fence_catches_what_it_is_for():
-    pattern = r"""(?:from|import\s*\(|require\s*\()\s*['"][^'"]*(?:/|^)test/"""
-    for bad in ("import x from '../test/helper.js'", "const x = await import('../test/x.js')", "require('../test/x')"):
-        assert re.search(pattern, bad), bad
-    assert not re.search(pattern, "import { redact } from './redact.js'")
+    for bad in ("import x from '../test/helper.js'", "const x = await import('../test/x.js')", "require('../test/x')",
+                "import '../test/x.js'", 'import "./test/side-effect.js"', "export { a } from '../../test/a.js'"):
+        assert IMPORT_FROM_TESTS.search(bad), bad
+    for good in ("import { redact } from './redact.js'", "import './safe-output-boot.js'", "import t from './latest/x.js'"):
+        assert not IMPORT_FROM_TESTS.search(good), good
+
+
+# --- crash hooks --------------------------------------------------------------
+
+# Every service that redacts its output also redacts an uncaught exception: (file, function that starts it).
+WITH_CRASH_HOOKS = [
+    ("bin/comms-listen.py", "main"), ("bin/cmux-watcher.py", "main"), ("bin/world-scanner.py", "build"),
+    ("bin/todo-server.py", "main"),
+    *[(f"bin/connectors/{name}.py", "main") for name in CONNECTOR_SCRIPTS],
+]
+# Installed through redact.install(), which also puts the filter on the logger's handlers.
+WITH_INSTALL = [("bin/pulse.py", "<module>"), ("bin/workspace-watcher.py", "<module>"),
+                ("bin/cmux-ws-numberer.py", "<module>"), ("src/assistant/__main__.py", "_setup_logging")]
+
+
+def calls_in(path, function):
+    tree = ast.parse((REPO / path).read_text())
+    scope = tree if function == "<module>" else next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == function)
+    body = scope.body if function != "<module>" else tree.body
+    names = set()
+    for statement in body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Call):
+                func = node.func
+                names.add(func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", ""))
+    return names
+
+
+@pytest.mark.parametrize(("path", "function"), WITH_CRASH_HOOKS)
+def test_service_installs_the_crash_hooks_when_it_starts(path, function):
+    assert "install_crash_hooks" in calls_in(path, function)
+
+
+@pytest.mark.parametrize(("path", "function"), WITH_INSTALL)
+def test_service_installs_the_log_filter_and_crash_hooks(path, function):
+    assert "install" in calls_in(path, function)
+
+
+def test_todo_server_main_installs_the_crash_hooks(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    spec = importlib.util.spec_from_file_location("todo_server_hooks", REPO / "bin/todo-server.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Server:
+        def __init__(self, *args):
+            pass
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(module, "HTTPServer", Server)
+    module.main()
+    assert sys.excepthook is redact._excepthook and threading.excepthook is redact._thread_excepthook
+
+
+def test_the_changelog_names_exactly_the_services_with_crash_hooks():
+    named = {"pulse", "comms listener", "cmux watcher", "world scanner", "to-do server", "workspace watcher",
+             "connectors", "background service", "numberer"}
+    text = (REPO / "CHANGELOG.md").read_text()
+    entry = text[text.index("**If the Slack reactor ran"):]
+    entry = entry[:entry.index("\n- ", 5)]
+    for name in named:
+        assert name in " ".join(entry.split()), name

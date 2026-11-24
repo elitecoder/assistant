@@ -56,7 +56,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent_session  # noqa: E402
-from assistant.redact import redact  # noqa: E402
+from assistant.redact import install_crash_hooks, redact  # noqa: E402
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 ASSISTANT_DIR = Path(os.environ.get("CMUX_WATCHER_ASSISTANT_DIR",
@@ -919,6 +919,7 @@ def stream_events(stop_flag=None, on_proc=None):
 
 
 def main() -> int:
+    install_crash_hooks()  # an uncaught error prints a redacted traceback
     ASSISTANT_DIR.mkdir(parents=True, exist_ok=True)
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
 

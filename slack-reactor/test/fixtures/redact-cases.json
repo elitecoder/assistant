@@ -224,6 +224,31 @@
    "quoted environment dump",
    "FOO_TOKEN=\"abc def\"",
    "FOO_TOKEN=\"<redacted>\""
+  ],
+  [
+   "Bearer after a non-ASCII letter",
+   "é Bearer abcdefghijkl1234 and éBearer abcdefghijkl1234 日本Bearer abcdefghijkl1234",
+   "é Bearer <redacted> and éBearer <redacted> 日本Bearer <redacted>"
+  ],
+  [
+   "Authorization and fields beside non-ASCII text",
+   "日本 Authorization: Bearer abcdefghijkl1234 né token=abcdefgh12345",
+   "日本 Authorization: <redacted> né token=<redacted>"
+  ],
+  [
+   "a value runs past a non-ASCII space (both languages agree)",
+   "token=abcdefgh12345 next",
+   "token=<redacted>"
+  ],
+  [
+   "cookie with a real name=value pair",
+   "Cookie: session=abc; other=def\nHost: x",
+   "Cookie: <redacted>\nHost: x"
+  ],
+  [
+   "Set-Cookie with a real pair after a non-ASCII letter",
+   "日Set-Cookie: sid=abc; Path=/",
+   "日Set-Cookie: <redacted>"
   ]
  ],
  "keep": [
@@ -253,6 +278,14 @@
   "api keys are rotated; the API key page",
   "eyJ is the start of a JWT but this is not one",
   "[2026-01-02T03:04:05.000Z] :mukuls2: -> td-1 (new) on laptop: fix the thing",
-  "2026-01-02 12:00:00 pulse INFO resumed 3 workspaces"
+  "2026-01-02 12:00:00 pulse INFO resumed 3 workspaces",
+  "cookie: none set on response",
+  "Set-Cookie: not sent by the server",
+  "Kelvin sign: bearer-of-news and ſtoken=1",
+  "ſoftware: authorization: pending",
+  "BEARER AUTHENTICATION FAILED",
+  "CooKie: session=abc; other=def",
+  "noBearer abcdefghijkl1234",
+  "nocookie: a=b"
  ]
 }

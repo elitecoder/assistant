@@ -60,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent_session  # noqa: E402
-from assistant.redact import redact  # noqa: E402
+from assistant.redact import install_crash_hooks, redact  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
 
@@ -1182,6 +1182,7 @@ def _announce_misconfig_once(paths: comms_lib.Paths, key: str, summary: str, env
 
 
 def main() -> int:
+    install_crash_hooks()  # an uncaught error prints a redacted traceback
     paths = comms_lib.Paths.from_env()
     if not paths.config.exists():
         log(f"no config at {paths.config} — run assistant-comms-setup.sh first")

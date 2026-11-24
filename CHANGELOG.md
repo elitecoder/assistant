@@ -70,24 +70,38 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
-- Stop writing Slack tokens and other secrets into the logs from now on. The
-  Slack reactor's error log held the bot token again and again, because a
-  failed Slack request printed its whole request, headers and body included.
-  The reactor now replaces token-shaped text with `<redacted>` in what it prints
-  and in its crash output, and a crash writes one line with the reason, the
-  network error underneath and a few stack lines, then exits so it restarts as
-  before. The pulse, the comms listener, the cmux and workspace watchers, the
-  world scanner, the to-do server, the connectors and the background service do
-  the same for Slack, GitHub, Google, AWS and model keys, JWTs, `Bearer`,
-  `Authorization` and cookie values, passwords and `token=` style fields; an
-  uncaught error in them prints its traceback the same way. This is pattern
-  matching, not a guarantee: scripts that only `print`, output written around
-  the logger, and a token split across two writes are not covered. **It does
-  not clean old lines.** If `~/.assistant/logs/slack-reactor.launchd.err` was
-  written by an earlier version, treat the bot token as exposed: rotate it in
-  the Slack app's settings, update `SLACK_BOT_TOKEN` in `~/.zprofile`, restart
-  the reactor with `launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`,
-  then delete or empty that file.
+- **If the Slack reactor ran any earlier version, rotate your Slack bot token
+  now: its log file holds the old one.**
+
+  1. In the Slack app's settings, under OAuth & Permissions, reinstall the app
+     to get a new bot token.
+  2. If the old log also shows an `xapp-` token, regenerate the app-level
+     token under Basic Information, App-Level Tokens.
+  3. Update `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`) in `~/.zprofile`.
+  4. Restart the reactor with this command:
+     `launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`
+  5. Confirm the old token no longer works. Call `auth.test` with it, for
+     example with this command, and expect `invalid_auth` or `token_revoked`:
+     `curl -s -X POST -H "Authorization: Bearer <old token>" https://slack.com/api/auth.test`
+  6. Delete or empty `~/.assistant/logs/slack-reactor.launchd.err`, and any
+     copy of it in a backup.
+
+  What changed: the Slack reactor's error log held the bot token again and
+  again, because a failed Slack request printed its whole request, headers and
+  body included. From now on the reactor replaces token-shaped text with
+  `<redacted>` in what it prints and in its crash output. A crash writes one
+  line with the reason, the network error underneath and a few stack lines,
+  then exits so it restarts as before. The pulse, the comms listener, the cmux
+  watcher, the workspace watcher and numberer, the world scanner, the to-do
+  server, the connectors and the background service do the same for Slack,
+  GitHub, Google, AWS and model keys, JWTs, `Bearer`, `Authorization` and
+  cookie values, passwords and `token=` style fields, and an uncaught error in
+  any of them prints its traceback the same way. This does not clean old lines
+  in any log.
+
+  The limits: this is pattern matching, not a guarantee. Scripts that only
+  `print`, output written around the logger, and a token split across two
+  writes are not covered.
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
   workspaces with a bare `cmux list-workspaces`, which shows only the focused

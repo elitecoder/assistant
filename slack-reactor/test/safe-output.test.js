@@ -65,6 +65,39 @@ test('describe: the summary then at most 8 stack frames, with tokens removed eve
   assert.ok(noSecret(describeError(Object.assign(new Error('x'), { stack: `Error: x\n   at ${BOT_TOKEN}` }))))
 })
 
+test('describe and render: an error that refuses to print becomes a short fixed text', () => {
+  const symbolCode = Object.assign(new Error('odd code'), { code: Symbol('oops') })
+  assert.equal(summarize(symbolCode), 'Error: odd code code=Symbol(oops)')
+  const badGetter = new Error('x')
+  Object.defineProperty(badGetter, 'message', { get() { throw new Error('getter exploded') } })
+  assert.equal(describeError(badGetter), '<unprintable error>')
+  const bareData = Object.assign(new Error('bare'), { data: { error: Object.create(null) } })
+  assert.equal(describeError(bareData), '<unprintable error>')
+  assert.equal(render(['before', badGetter, bareData]), 'before <unprintable error> <unprintable error>')
+  const badLike = { get message() { throw new Error('boom') }, stack: 's' }
+  assert.equal(render([badLike]), '<unprintable error>')
+  assert.equal(render(['before', badLike, 'after']), 'before <unprintable error> after')
+  assert.equal(render([{ toString() { throw new Error('no') }, [Symbol.for('nodejs.util.inspect.custom')]() { throw new Error('no') } }]), '<unprintable error>')
+})
+
+test('describe and summarize: a huge message and a huge frame are cut', () => {
+  const huge = new Error(`${'x'.repeat(5_000_000)}`)
+  huge.stack = `Error: x\n    at fn (${'y'.repeat(5_000_000)})\n    at second (/a.js:1:1)`
+  const out = describeError(huge)
+  assert.ok(out.length < 4500, String(out.length))
+  const [first, frame] = out.split('\n')
+  assert.ok(first.length <= 2010 && frame.length <= 2010)
+  assert.ok(first.endsWith('…') && frame.endsWith('…'))
+  assert.ok(summarize(Object.assign(new Error('c'), { code: 'z'.repeat(5_000_000) })).length <= 2010)
+})
+
+test('render: console shows at most 3 frames, the crash handlers 8', () => {
+  const err = new Error('e')
+  err.stack = `Error: e\n${Array.from({ length: 12 }, (_, i) => `    at f${i} (/a.js:${i}:1)`).join('\n')}`
+  assert.equal(render([err]).split('\n').length, 1 + 3)
+  assert.equal(describeError(err).split('\n').length, 1 + 8)
+})
+
 test('render: a thrown HTTP error object never prints a token', () => {
   const out = render(['[reactor] failed:', leakyError(), { nested: leakyError() }, 'tail'])
   assert.ok(noSecret(out), out)
@@ -92,6 +125,24 @@ test('console and stream wrappers: tokens are removed, ordinary lines are unchan
   assert.equal(proc.stdout.chunks.at(-1), 'plain\n')
   assert.equal(proc.stdout.chunks.at(-2), 7)
   assert.ok(noSecret(String(proc.stdout.chunks[0])))
+})
+
+test('process handlers still print something and exit 1 when the error will not print', () => {
+  const { proc, con, lines } = fakeWorld()
+  installSafeOutput(proc, con)
+  const badGetter = new Error('x')
+  Object.defineProperty(badGetter, 'message', { get() { throw new Error('getter exploded') } })
+  proc.emit('uncaughtException', badGetter)
+  proc.emit('unhandledRejection', Object.create(null))
+  proc.emit('unhandledRejection', { get message() { throw new Error('x') }, stack: 's' })
+  assert.deepEqual(proc.exits, [1, 1, 1])
+  assert.match(lines[0][1], /uncaught exception: <unprintable error>$/)
+  assert.match(lines[1][1], /unhandled rejection: \[Object: null prototype\] \{\}$/)
+  assert.match(lines[2][1], /unhandled rejection: <unprintable error>$/)
+  const failing = fakeWorld()
+  installSafeOutput(failing.proc, { ...failing.con, error() { throw new Error('console broke') }, log() {}, info() {}, debug() {}, warn() {} })
+  failing.proc.emit('uncaughtException', new Error('x'))
+  assert.deepEqual(failing.proc.exits, [1])
 })
 
 test('process handlers print a timestamped redacted summary with stack frames and exit non-zero', () => {

@@ -6,7 +6,7 @@ export const PLACEHOLDER = '<redacted>'
 const R = String.raw
 
 const NA = R`(?<![A-Za-z0-9])`
-const VAL = R`[^\s&\"',;\\<]`
+const VAL = R`[^ \t\r\n\f\v&\"',;\\<]`
 // Something that looks like a credential, not a word: 16+ characters holding a digit, or a known prefix.
 const CRED = R`(?:(?=[A-Za-z0-9._~+/=-]{0,512}[0-9])[A-Za-z0-9._~+/=-]{16,512}` +
   R`|(?:xox[a-z]-|xapp-|gh[pousr]_|github_pat_|ya29\.|eyJ|sk-|AKIA|ASIA)[A-Za-z0-9._~+/=%-]{4,512})`
@@ -17,12 +17,12 @@ const NAMES = R`(?:(?:access_|refresh_|id_)?token|client_secret|password|passwd|
 // [pattern, flags, replacement]. \1 and \2 keep the text that says what the value was.
 export const SPECS = [
   // Headers.
-  [R`(authorization\\?[\"']?` + HEADER + R`(?:(?:bearer|basic|token|digest)[ \t]{1,8}[^\s\"',;\\\]]{1,512}|` + CRED + ')',
+  [R`(authorization\\?[\"']?` + HEADER + R`(?:(?:bearer|basic|token|digest)[ \t]{1,8}[^ \t\r\n\f\v\"',;\\\]]{1,512}|` + CRED + ')',
     'i', '\\1<redacted>'],
-  [R`\b(bearer[ \t]{1,8})` + CRED, 'i', '\\1<redacted>'],
-  [R`\b((?:set-)?cookie\\?[\"']?` + HEADER + R`[^\r\n\"'\\\]]{1,1024}`, 'i', '\\1<redacted>'],
+  [R`(?<![A-Za-z0-9_])(bearer[ \t]{1,8})` + CRED, 'i', '\\1<redacted>'],
+  [R`(?<![A-Za-z0-9_])((?:set-)?cookie\\?[\"']?` + HEADER + R`(?=[A-Za-z0-9_.-]{1,64}=)[^\r\n\"'\\\]]{1,1024}`, 'i', '\\1<redacted>'],
   // https://user:password@host keeps the host.
-  [R`(\b[a-z][a-z0-9+.-]{1,20}://)[^\s/:@\"']{1,256}:[^\s/@\"']{1,256}@`, 'i', '\\1<redacted>@'],
+  [R`(?<![A-Za-z0-9_])([a-z][a-z0-9+.-]{1,20}://)[^ \t\r\n\f\v/:@\"']{1,256}:[^ \t\r\n\f\v/@\"']{1,256}@`, 'i', '\\1<redacted>@'],
   // Slack incoming webhook: the last part is the secret.
   [R`(hooks\.slack\.com/services/[A-Za-z0-9]{1,24}/[A-Za-z0-9]{1,24}/)[A-Za-z0-9]{8,64}`, '', '\\1<redacted>'],
   // Named fields in query strings, form bodies, JSON (also escaped JSON) and Node's object dumps.
@@ -34,7 +34,7 @@ export const SPECS = [
   [NA + R`((?:id_)?token)(\\?[\"']?[ \t]{0,8}=[ \t]{0,8})` + VAL + '{8,512}', 'i', '\\1\\2<redacted>'],
   [NA + R`(client_secret|api[_-]?key)(\\?[\"']?[ \t]{0,8}:[ \t]{0,8})` + VAL + '{1,512}', 'i', '\\1\\2<redacted>'],
   // Environment dumps: SOME_TOKEN=value.
-  [R`(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]{0,60}_(?:TOKEN|SECRET|PASSWORD|API_KEY)=)[^\s<\"'][^\s<]{0,511}`, '', '\\1<redacted>'],
+  [R`(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]{0,60}_(?:TOKEN|SECRET|PASSWORD|API_KEY)=)[^ \t\r\n\f\v<\"'][^ \t\r\n\f\v<]{0,511}`, '', '\\1<redacted>'],
   // Token shapes, keeping the prefix.
   [NA + R`(xox[a-z](?:-|%2[dD])|xapp(?:-|%2[dD]))(?:[A-Za-z0-9-]|%[0-9A-Fa-f]{2}){6,300}`, '', '\\1<redacted>'],
   [NA + R`(gh[pousr]_)[A-Za-z0-9]{20,255}`, '', '\\1<redacted>'],

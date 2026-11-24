@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import eventspine, mode
-from .redact import redact
+from .redact import install_crash_hooks, redact
 
 # ─── fallback defaults (all overridable via config; never the sole source) ───
 
