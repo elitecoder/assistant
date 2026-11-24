@@ -278,3 +278,12 @@ def test_a_transcript_that_did_not_grow_is_not_verified_and_leaves_the_typing_un
     assert code == 0 and record["transcript_size_delta"] == 0
     assert ledger(home)[1]["verified"] is False and ledger(home)[1]["outcome"] == "unknown"
     assert ledger(home)[1]["error"] == "not confirmed"
+
+
+def test_keys_that_cant_be_made_after_the_intent_exit_4_and_close_it_as_failed(send, home):
+    rpc = Rpc(home)
+    with mock.patch.object(send.session_effects, "Keys",
+                           side_effect=send.session_effects.Refused("invalid", "no keys")):
+        code, record = run(send, rpc, "--enter")
+    assert code == 4 and rpc.calls == [] and record["refused"]["reason"] == "no keys"
+    assert ledger(home)[1]["outcome"] == "failed"

@@ -417,3 +417,22 @@ def test_the_ledger_finds_an_effect_by_its_id_and_says_nothing_for_another(home)
     se.finish(ef, "done")
     assert effects.get(ef)["outcome"] == "done"
     assert effects.get("ef-0000000000000000") is None and effects.get(None) is None
+
+
+def test_line_counts_an_unexpected_transport_error_and_does_not_raise_it(home):
+    class Odd:
+        def __call__(self, method, params):
+            raise RuntimeError("a bug in the transport")
+    ef = nudge()
+    keys = se.Keys(ef, Odd(), "s", WS)
+    keys.line("hi")
+    keys.finish()
+    assert rows(home)[1]["outcome"] == "unknown"
+
+
+def test_line_lets_a_refusal_because_the_intent_was_closed_go_up(home):
+    ef = nudge()
+    keys = se.Keys(ef, Rpc(), "s", WS)
+    se.finish(ef, "failed")
+    with pytest.raises(se.Refused):
+        keys.line("hi")

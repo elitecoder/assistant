@@ -608,3 +608,12 @@ def test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown(
     assert doctor.check_slack_owner().status == doctor.PASS
     paths.config.unlink()
     assert doctor.check_slack_owner().status == doctor.SKIP
+
+
+def test_a_message_sitting_in_the_prompt_box_is_told_from_one_that_isnt(monkeypatch, paths):
+    box = lambda text: "─" * 20 + f"\n❯ {text}\n" + "─" * 20
+    monkeypatch.setattr(cs, "_surface_read_text", lambda p, ref, lines=200: box("[slack msg_ts=5] hi"))
+    assert cs.message_in_box(paths, "surface:3", "msg_ts=5", ag.CLAUDE) is True
+    assert cs.message_in_box(paths, "surface:3", "msg_ts=6", ag.CLAUDE) is False
+    monkeypatch.setattr(cs, "_surface_read_text", lambda p, ref, lines=200: box(""))
+    assert cs.message_in_box(paths, "surface:3", "msg_ts=5") is False
