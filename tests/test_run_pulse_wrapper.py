@@ -42,6 +42,7 @@ def _layout(tmp: Path, pulse_body: str, model_tiers: str = "TIERS = {}\n") -> Pa
     (tmp / "src/assistant/logcap.py").write_text("")
     (tmp / "src/assistant/redact.py").write_text("")
     (tmp / "src/assistant/mode.py").write_text("")
+    (tmp / "src/assistant/session_effects.py").write_text("")
     return tmp / "bin/run-pulse.py"
 
 
