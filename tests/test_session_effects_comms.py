@@ -237,6 +237,13 @@ def test_in_the_enter_only_mode_nothing_is_typed_and_a_collapsed_paste_is_not_th
         send_text=lambda: typed.append(1), press_enter=lambda: pressed.append(1), read_box=lambda: box["text"],
         confirmed=lambda: False, marker="msg_ts=5", attempts=2, wait_sec=0, sleep=lambda s: None, enter_only=True)
     assert got is False and len(pressed) == 2 and typed == []  # Enter again only while the box shows the message
+    reads = iter(["msg_ts=5 hello"])  # the first look shows the message; then something else is in the box
+    pressed.clear()
+    cs.submit_until_confirmed(
+        send_text=lambda: typed.append(1), press_enter=lambda: pressed.append(1),
+        read_box=lambda: next(reads, "[Pasted text #1 +4 lines]"), confirmed=lambda: False, marker="msg_ts=5",
+        attempts=3, wait_sec=0, sleep=lambda s: None, enter_only=True)
+    assert len(pressed) == 1 and typed == []  # a collapsed paste is not this message, so no second Enter
     box["text"] = "[Pasted text #1 +4 lines]"
     pressed.clear()
     cs.submit_until_confirmed(
@@ -649,6 +656,10 @@ def test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown(
     check = doctor.check_slack_owner()
     assert check.status == doctor.WARN and "launchctl kickstart -k gui/$UID/com.assistant.assistant-comms" in check.remedy
     assert doctor.check_slack_owner in doctor.SLACK_CHECKS
+    assert "not ~/.zshrc" in check.remedy  # the service reads ~/.zprofile, so that is where the id must be set
+    paths.config.write_text(json.dumps({"slack": {"target": "C0CHAN", "owner": "U0OWNER", "allowed_targets": ["C0CHAN"]}}))
+    assert doctor.check_slack_owner().status == doctor.PASS  # slack.owner names the owner, as it does for the reactor
+    _config(paths, "C0CHAN")
     monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
     assert doctor.check_slack_owner().status == doctor.PASS
     monkeypatch.delenv("SLACK_USER_ID")

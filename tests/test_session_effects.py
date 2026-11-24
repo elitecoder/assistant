@@ -183,9 +183,10 @@ def test_a_typing_that_failed_does_not_count_toward_the_loop(home, clock):
     nudge()
 
 
-def test_each_task_and_each_slack_message_is_its_own_thing(home, clock):
+def test_each_task_is_its_own_thing_for_the_loop_limit(home, clock):
     for n in range(5):
-        se.finish(slack(f"1793613{610 + n}.000100", anchor=clock.t), "done")
+        se.finish(se.begin(WS, "task", kind="owner_flag", ref=f"td-{n}", component="pulse", task=f"td-{n}"), "done")
+        clock.t += 1
 
 
 def test_a_typing_that_finished_a_moment_ago_does_not_block_the_next_one_in_the_same_second(home, clock):

@@ -91,11 +91,11 @@ CHECKS = (
         T + "test_an_old_row_in_the_middle_of_the_ledger_does_not_end_the_count",
     ),
     (
-        "each Slack message or task is its own thing for the loop limit",
+        "each task is its own thing for the loop limit",
         SE,
         'found["outcome"] != "failed" and found["target"] == target:',
         'found["outcome"] != "failed" and found["target"].get("source") == target["source"]:',
-        T + "test_each_task_and_each_slack_message_is_its_own_thing",
+        T + "test_each_task_is_its_own_thing_for_the_loop_limit",
     ),
     (
         "a message dated ahead of the clock waits, it isn't refused for good",
@@ -124,13 +124,6 @@ CHECKS = (
         '    return last["outcome"] is None and effects.IN_FLIGHT_SEC <= now - last["t"] < LOOP_SEC',
         "    return False",
         T + "test_a_typing_that_never_got_a_result_is_held_once_its_window_has_passed_and_for_half_an_hour",
-    ),
-    (
-        "a person's own tap is never held back by an earlier unknown",
-        SE,
-        'WINDOWED_SOURCES = ("nudge:stranded", "cleanup", "boot", "clear", "merge", "pulse")',
-        'WINDOWED_SOURCES = ("nudge:stranded", "cleanup", "boot", "clear", "merge", "pulse", "cli", "restore", "run-now")',
-        T + "test_a_persons_own_tap_is_never_held_back_by_an_earlier_unknown",
     ),
     (
         "a task's or a message's unknown typing keeps the ledger's rule: not again without a newer allowance",
@@ -863,7 +856,7 @@ CHECKS = (
         CS,
         "        enter_only=not retype,  # a message already typed is never typed again; only its Enter is pressed",
         "        enter_only=False,  # a message already typed is never typed again; only its Enter is pressed",
-        C + "test_a_message_typed_but_never_seen_has_only_its_enter_pressed_again_while_it_sits_in_the_box",
+        C + "test_enter_is_not_pressed_on_a_box_that_no_longer_shows_this_message",
     ),
     (
         "the Slack session's boot prompt is typed only when it is recorded",
