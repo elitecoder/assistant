@@ -627,13 +627,24 @@ hides. If applying stops on an error, the page says why instead of staying on
 **Archive** and **Mark read** on the Email tab change Gmail at once, without
 **Apply approvals**.
 
+Assistant writes each Gmail change and each unsubscribe to [its record of
+changes](effects.md) before it acts. When it can't record one, it doesn't run
+it and the page says so. A second press on a conversation that is still being
+changed is turned down, and an unsubscribe that went through is never sent
+again, and neither is one that was sent and never answered, unless you
+approve it again. When an **Undo** doesn't happen for a conversation in
+Trash, because the record refused it or Gmail did, the row stays in Trash and
+says why ("In Gmail Trash, verified · Undo not done: …"), the last-run line
+gives each reason once, and the next **Apply approvals** tries again.
+
 ## Where your data lives
 
 | Path | What's there |
 |---|---|
 | `~/.assistant/work-queue/sources.json` | Your linked sources |
 | `~/.assistant/work-queue/browser-profile/` | The Slack browser session |
-| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, what the last refresh found about each Ready for you item in `ready-checks.json`, the built page in `site/`, each row's id in `traces.json`, the Gmail conversation behind each Gmail row in `emails.json`, each row's source and a hash of its sender (never the name) in `rowctx.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
+| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, what the last refresh found about each Ready for you item in `ready-checks.json`, the built page in `site/`, each row's id in `traces.json`, which unsorted rows were already noted today in `unsorted-noted.json`, the Gmail conversation behind each Gmail row in `emails.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night**, each row's source and a hash of its sender (never the name) in `rowctx.json` |
+| `~/.assistant/effects/effects.jsonl` | The record of each Gmail change and unsubscribe, written before it runs; see [the effects record](effects.md) |
 | `~/.assistant/feedback/feedback.jsonl` | What you told Assistant on the page, one line each; see [Feedback](feedback.md) |
 | `~/.assistant/logs/work-queue.launchd.*` | The server's output |
 

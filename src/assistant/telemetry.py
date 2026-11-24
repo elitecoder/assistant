@@ -8,7 +8,8 @@ imports no network library and has no exporter.
 
 Records go to `~/.assistant/telemetry/telemetry.db` (SQLite, write-ahead logging). When the database can't be
 written, a record goes to `spool.jsonl` beside it and `maintain()` moves it in later. `emit()` never raises and
-never waits longer than a short deadline. `upkeep()` is the hourly call the pulse makes; it runs `maintain()`.
+never waits longer than a short deadline. After one write that misses the database, this process sends its records
+straight to the spool for SPOOL_ONLY_SECONDS, so a busy database costs one wait and not one for every record. `upkeep()` is the hourly call the pulse makes; it runs `maintain()`.
 
 Strict mode: with the environment variable ASSISTANT_TELEMETRY_STRICT=1, `emit()` raises ValueError naming an
 unknown kind or a dropped field instead of storing less. The tests set it, so a mistyped field name fails the
@@ -35,6 +36,7 @@ SCHEMA_VERSION = 1
 APPLICATION_ID = 0x41535354  # "ASST": a file with another id is somebody else's database
 BUSY_SECONDS = 0.2
 EMIT_DEADLINE_SECONDS = 0.27  # the whole of one emit(): the database wait plus the spool lock
+SPOOL_ONLY_SECONDS = 30  # after a write that misses the database, this process sends records straight to the spool
 COUNT_WAIT_SECONDS = 0.03  # on top of that, to note a loss
 CONFIG_RETRY_SECONDS = 0.02  # before reading a settings file that didn't parse a second time
 SPOOL_LIMIT_BYTES = 5 * 1024 * 1024
@@ -72,6 +74,11 @@ EFFECT_CLASS = ("gmail.archive", "gmail.unarchive", "gmail.mark_read", "gmail.tr
 EFFECT_OUTCOME = ("done", "failed", "unknown", "refused")
 GUARD = ("interrupt_gate", "no_close_workspace", "meta_gate", "busy_session_cap", "outbound_gate", "back_off")
 GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
+# Why a source couldn't be read (work_queue/tools.py, the Slack client), why a row came back from the model with no
+# verdict (work_queue/triage.py), and why a dispatch didn't end well (bin/pulse.py `dispatch_todo`).
+SOURCE_REASON = ("not_signed_in", "tool_missing", "timeout", "bad_answer", "busy", "other")
+UNSORTED_REASON = ("call_failed", "bad_answer", "not_answered", "out_of_time", "spend_limit", "no_model")
+DISPATCH_REASON = ("session_tool_down", "no_workspace", "no_surface", "session_not_ready", "todo_not_marked", "other")
 # What the owner did (feedback.signal), why (reason_code), where, and on what kind of thing.
 SIGNAL = ("done", "drop", "snooze", "undo", "send", "send_handsoff", "approve", "keep", "archive", "mark_read",
           "used_draft", "kept_result", "thumbs_down", "tell", "retract")
@@ -103,9 +110,12 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "ms": INT,
         "status": INT,
         "error": ERROR,
+        "reason": SOURCE_REASON,
     },
     "triage_verdict": {
-        "verdict": DISPOSITION,
+        "verdict": DISPOSITION + ("unsorted",),  # `unsorted`: the row was put to the model and came back with none
+        "reason": UNSORTED_REASON,  # why it is unsorted
+        "batch": INT,  # which of the run's model calls this was: ties the verdict to its `model_call`
         "lane": LANE,
         "reason_code": REASON,
         "score": NUM,
@@ -113,6 +123,7 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "prompt_version": NAME,  # open: names a prompt file revision
         "source": SOURCE,
         "ms": INT,
+        "run_trace": ID,  # the refresh's trace: ties a verdict to the model call that produced it
     },
     "model_call": {
         "model": NAME,  # open: a model's id, which the provider names
@@ -128,6 +139,8 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "ms": INT,
         "error": ERROR,
         "retries": INT,
+        "reason": SOURCE_REASON,  # only on a call that failed: the same words a source fetch uses
+        "batch": INT,  # which of the run's model calls this was (the `triage_verdict` that came of it has the same)
     },
     "task": {
         "state": TASK_STATE,
@@ -139,6 +152,9 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
     "dispatch": {
         "outcome": OUTCOME,
         "ok": BOOL,
+        "reason": DISPATCH_REASON,  # only on a dispatch that failed (`ok` false)
+        "confirmed": BOOL,  # on a dispatch that went out: whether the code saw the prompt arrive
+        "run_trace": ID,  # the pulse's trace
         "workspace": ID,
         "mode": SEND_MODE,
         "attempt": INT,
@@ -203,9 +219,10 @@ _HOST_OR_FILE = re.compile(r"\.[a-z]{2,6}(?:/|\Z)")
 _VERSION_SUFFIX = re.compile(r":[0-9]{1,2}\Z")
 _HEX16 = re.compile(r"[0-9a-f]{16}")
 _DIGITS = re.compile(r"[0-9]{1,9}")
+_SESSION_DIGITS = re.compile(r"[0-9]{1,18}")  # cmux 0.65 numbers sessions from 1000010000: ten digits
 # The body each id prefix has. `dec-` is what src/assistant/decisions.py mints: 16 hex characters of a SHA-256.
 _ID_BODIES = {"row:": _HEX16, "who:": _HEX16, "ef-": _HEX16, "fb-": _HEX16, "dec-": _HEX16, "td-": _DIGITS,
-              "workspace:": _DIGITS}
+              "workspace:": _SESSION_DIGITS}
 _ERROR_CLASS = re.compile(r"(?:[a-z][a-z0-9_]*\.)*[A-Z][A-Za-z0-9]*")
 _ID = re.compile(r"[0-9a-f]{16}")
 _COPY = re.compile(r"telemetry\.db\.corrupt-[0-9]{15}")
@@ -648,28 +665,30 @@ def _tally_losses() -> tuple:
     return sum(counts.get(reason, 0) for reason in _LOSS_REASONS), sentences
 
 
-def _spool(record: dict, deadline: float) -> bool:
-    """Append the record to the spool. False when it was dropped: over the size limit, the spool lock couldn't be
-    taken before `deadline` (it is never written without the lock: another process may be claiming the file), or
-    the spool can't be written."""
+def _spool_many(records: list, deadline: float) -> bool:
+    """Append the records to the spool, in one write under one lock. False when they were dropped: over the size
+    limit, the spool lock couldn't be taken before `deadline` (it is never written without the lock: another process
+    may be claiming the file), or the spool can't be written. All of them are written or none, and each dropped
+    record is counted."""
     try:
-        line = (json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+        lines = b"".join((json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+                         for record in records)
         _ensure_dir()
         with _locked(_LOCK, max(0.0, deadline - time.monotonic())) as got:
             if not got:
                 lost = "spool_busy"
-            elif os.path.getsize(_touch(_SPOOL)) + len(line) > SPOOL_LIMIT_BYTES:
+            elif os.path.getsize(_touch(_SPOOL)) + len(lines) > SPOOL_LIMIT_BYTES:
                 lost = "spool_full"
             else:
                 fd = _private(_path(_SPOOL), os.O_WRONLY | os.O_APPEND)
                 try:
-                    os.write(fd, line)
+                    os.write(fd, lines)
                 finally:
                     os.close(fd)
                 return True
-        _count_loss(lost)
+        _count_loss(lost, len(records))
         return False
-    except Exception:  # noqa: BLE001 - when the spool can't be written the record is dropped
+    except Exception:  # noqa: BLE001 - when the spool can't be written the records are dropped
         return False
 
 
@@ -677,6 +696,55 @@ def _spool(record: dict, deadline: float) -> bool:
 
 
 _HEAD = ("kind", "trace", "subject", "component")
+_spool_only_until: dict = {}  # database path -> when this process tries it again (see SPOOL_ONLY_SECONDS)
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _insert_all(conn, rows: list) -> None:
+    """One transaction for all the rows: if it fails part way, closing the connection rolls it all back."""
+    conn.execute("BEGIN IMMEDIATE")
+    conn.executemany(_INSERT, rows)
+    conn.execute("COMMIT")
+
+
+def _write(parts: list, started: float) -> bool:
+    """Store the records `parts` describes, (kind, trace, subject, component, fields) each, in one go: one
+    connection and one transaction, or when the database is missed one write to the spool. A record the registry
+    can't build is dropped and counted without losing the others. True when every record that could be built is in
+    the database, False when they were spooled, dropped, or recording is off."""
+    if not _settings()["enabled"]:
+        return False
+    built, left_out = [], []
+    for kind, trace, subject, component, fields in parts:
+        record, left = _build(kind, trace, subject, component, fields)
+        left_out += left
+        built.append(record)
+    if left_out and os.environ.get(STRICT_ENV) == "1" and "PYTEST_CURRENT_TEST" in os.environ:
+        raise _Strict("telemetry would leave out: " + ", ".join(left_out))
+    for _ in [r for r in built if r is None]:
+        _count_loss("unknown_kind")
+    records = [r for r in built if r is not None]
+    if not records:
+        return False
+    _ensure_dir()
+    records = [_stamp(record) for record in records]
+    deadline = started + EMIT_DEADLINE_SECONDS
+    where = _path(_DB)
+    if _now() < _spool_only_until.get(where, 0.0):
+        _spool_many(records, deadline)  # the database missed a moment ago: don't wait for it again yet
+        return False
+    try:
+        rows = [_row(record) for record in records]
+        _run(lambda conn: _insert_all(conn, rows), deadline)
+        _spool_only_until.pop(where, None)
+        return True
+    except Exception:  # noqa: BLE001 - locked, full, newer schema, anything: the spool keeps them
+        _spool_only_until[where] = _now() + SPOOL_ONLY_SECONDS
+        _spool_many(records, deadline)
+        return False
 
 
 def emit(*args, **kwargs) -> bool:
@@ -689,12 +757,12 @@ def emit(*args, **kwargs) -> bool:
     prefix from ID_PREFIXES (a Work queue row is `assistant.pointers.row_pointer(key)`, never its key).
     `component` is one of COMPONENTS. Anything else is left out and counted in the stored record's `_dropped`.
 
+    It is a batch of one: see `emit_many`, which writes a list the same way.
+
     For tests only: with ASSISTANT_TELEMETRY_STRICT=1 and a test running (PYTEST_CURRENT_TEST set) it raises
     ValueError naming whatever would be left out. A running service never raises."""
     started = time.monotonic()
     try:
-        if not _settings()["enabled"]:
-            return False
         head = dict(zip(_HEAD, args))
         fields = {"arg%d" % n: value for n, value in enumerate(args[len(_HEAD):], len(_HEAD))}
         for name, value in kwargs.items():
@@ -702,22 +770,34 @@ def emit(*args, **kwargs) -> bool:
                 head[name] = value
             else:
                 fields[name] = value
-        record, left_out = _build(head.get("kind"), head.get("trace", ""), head.get("subject", ""),
-                                  head.get("component", ""), fields)
-        if left_out and os.environ.get(STRICT_ENV) == "1" and "PYTEST_CURRENT_TEST" in os.environ:
-            raise _Strict("telemetry would leave out: " + ", ".join(left_out))
-        if record is None:
-            _count_loss("unknown_kind")
-            return False
-        _ensure_dir()
-        record = _stamp(record)
-        deadline = started + EMIT_DEADLINE_SECONDS
-        try:
-            _run(lambda conn: conn.execute(_INSERT, _row(record)), deadline)
-            return True
-        except Exception:  # noqa: BLE001 - locked, full, newer schema, anything: the spool keeps it
-            _spool(record, deadline)
-            return False
+        return _write([(head.get("kind"), head.get("trace", ""), head.get("subject", ""), head.get("component", ""),
+                        fields)], started)
+    except _Strict:
+        raise
+    except Exception:  # noqa: BLE001 - recording never breaks work
+        return False
+
+
+def emit_many(batch) -> bool:
+    """Record a list of events in one go: `batch` holds (kind, fields) pairs, `fields` taking `trace`, `subject`
+    and `component` as well as the kind's own fields, as the keywords of `emit` do. They are stored in order, in one
+    connection and one transaction, and the whole batch has the one deadline `emit` has. Each record is checked
+    on its own: one that can't be built is left out (or counted, and raised in tests' strict mode) without losing the
+    rest. When the database is missed the whole batch goes to the spool in one write, and for the next
+    SPOOL_ONLY_SECONDS later records do too. True when every record that could be built is in the database. Never
+    raises."""
+    started = time.monotonic()
+    try:
+        parts = []
+        for item in batch:
+            try:
+                kind, fields = item
+                fields = dict(fields)
+            except Exception:  # noqa: BLE001 - an item that isn't a pair is one record lost, not the batch
+                _count_loss("unknown_kind")
+                continue
+            parts.append((kind, fields.pop("trace", ""), fields.pop("subject", ""), fields.pop("component", ""), fields))
+        return _write(parts, started) if parts else False
     except _Strict:
         raise
     except Exception:  # noqa: BLE001 - recording never breaks work
@@ -888,6 +968,7 @@ def maintain(now=None) -> dict:
         now = _clamped(now)
         _ensure_dir()
         _run(lambda conn: _upkeep(conn, now, settings, result))
+        _spool_only_until.pop(_path(_DB), None)  # the database took the upkeep, so it takes records again
         result["ok"] = True
     except Exception as exc:  # noqa: BLE001 - upkeep never breaks the pulse
         result["error"] = type(exc).__name__.lstrip("_")

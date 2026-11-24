@@ -152,6 +152,7 @@ walkthrough, see [ONBOARDING.md](ONBOARDING.md).
 | What Assistant records about what you tell it on the Work queue, and how to delete it | [docs/feedback.md](docs/feedback.md) |
 | Noise budget, wake hour, planner, Strategist, and model settings | [docs/configuration.md](docs/configuration.md) |
 | Lanes, ranking, outbound gates, design decisions, and code map | [docs/design.md](docs/design.md) |
+| What Assistant records before it changes anything outside itself | [docs/effects.md](docs/effects.md) |
 | Slack comms design | [docs/assistant-comms-onboarding.md](docs/assistant-comms-onboarding.md) |
 | Slack emoji-to-TODO capture | [slack-reactor/README.md](slack-reactor/README.md) |
 

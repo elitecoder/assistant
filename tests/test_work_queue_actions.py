@@ -373,7 +373,7 @@ def test_apply_never_trashes_an_email_the_page_hides(wq):
     cands = {f"g{n}": {"kind": "gmail", "account": ACCT, "msg_ids": [f"m{n}"], "link": f"https://mail.google.com/#inbox/t{n}",
                        "mk": f"{server.EMAIL_MARK}g{n}"} for n in range(1, 8)}
     config.write_json(refresh.candidates_path(), cands)
-    config.write_json(wq.data / "decisions.json", {k: {"decision": "approve"} for k in cands})
+    config.write_json(wq.data / "decisions.json", {k: {"decision": "approve", "at": "2026-11-02T10:00:00+00:00"} for k in cands})
     config.write_json(wq.data / "marks.json", {
         cands["g1"]["mk"]: {"state": "snoozed", "until": now_ms + 86400000},
         cands["g2"]["link"]: {"state": "dropped", "until": 0},
@@ -393,8 +393,8 @@ def test_a_gmail_read_back_that_fails_never_verifies_a_trash_or_a_restore(wq):
                               ("gmail get m2", {"error": {"message": "expired"}}), ("gmail get m3", "[]")])
     config.write_json(refresh.candidates_path(), {
         f"g{n}": {"kind": "gmail", "account": ACCT, "msg_ids": [f"m{n}"]} for n in (1, 2, 3)})
-    config.write_json(wq.data / "decisions.json", {"g1": {"decision": "undo"}, "g2": {"decision": "undo"},
-                                                   "g3": {"decision": "approve"}})
+    config.write_json(wq.data / "decisions.json", {k: {"decision": d, "at": "2026-11-02T10:00:00+00:00"}
+                                                   for k, d in (("g1", "undo"), ("g2", "undo"), ("g3", "approve"))})
     config.write_json(wq.data / "applied.json", {"g1": {"status": "done"}, "g2": {"status": "done"}})
     server.run_apply()
     applied = json.loads((wq.data / "applied.json").read_text())
