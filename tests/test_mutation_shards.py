@@ -223,3 +223,11 @@ def test_the_workflow_runs_as_many_jobs_as_the_account_runs_at_once():
     shards = re.search(r"shard: \[([0-9, ]+)\]", WORKFLOW).group(1).split(", ")
     assert len(shards) + 1 <= 5
     assert '--workers 3 \\' in WORKFLOW
+
+
+def test_the_mutation_job_installs_what_the_tests_it_runs_import():
+    """A check names a test, and the mutation job runs that test. A test of the coverage gate imports `coverage`;
+    when the mutation job didn't install it, three shards failed on a baseline that passes everywhere else."""
+    installs = [set(line.split()[3:]) for line in WORKFLOW.splitlines() if line.strip().startswith("uv pip install ")]
+    test_job, mutation_job = installs
+    assert mutation_job == test_job - {"pytest-cov==7.1.0"}, "same tools at the same versions, minus the coverage plugin"
