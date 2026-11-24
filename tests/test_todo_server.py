@@ -328,12 +328,12 @@ def test_proposal_action_run_now_dispatches(env, monkeypatch):
     })
     calls = []
     monkeypatch.setattr(mod.subprocess, "run",
-                        lambda argv, **kw: calls.append(argv))
+                        lambda argv, **kw: calls.append(argv) or type("Done", (), {"returncode": 0, "stderr": ""})())
     ok, _ = mod.proposal_action("prop-1", "run-now", {})
     assert ok is True
-    # cmux send + send-key both invoked with the workspace ref
-    assert calls[0] == ["/bin/true", "send", "--workspace", "workspace:7", "do the thing"]
-    assert calls[1] == ["/bin/true", "send-key", "--workspace", "workspace:7", "Enter"]
+    # The text now goes through cmux-send.py (which records it and types into the terminal), not `cmux send`.
+    assert len(calls) == 1 and calls[0][1].endswith("bin/cmux-send.py")
+    assert calls[0][2:6] == ["--ws", "workspace:7", "--text", "do the thing"] and "--enter" in calls[0]
     d = json.loads(p.read_text())
     assert d["status"] == "working"
     assert d["thread"][-1]["actor"] == "assistant"

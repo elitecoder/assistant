@@ -116,6 +116,8 @@ BRIEF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC_DIR))
 from assistant.redact import install_crash_hooks, redact  # noqa: E402 - request lines can carry ?token=...
+SEND_SCRIPT = Path(__file__).resolve().parent / "cmux-send.py"
+RUN_NOW_MAX = 500
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 HOME = Path(os.path.expanduser("~"))
@@ -385,17 +387,25 @@ def proposal_action(prop_id, action, params):
         if execute_via == "send-text-to-session":
             ws_ref = next((t["ref"] for t in touches if t.get("type") == "session"), None)
             if ws_ref:
+                # The file is written by another tool, so it is checked before anything is typed: a real session, and
+                # one short line. The typing itself goes through cmux-send.py, which records it first.
+                text = data.get("action", "")
+                if not re.fullmatch(r"workspace:[0-9]{1,9}", str(ws_ref)):
+                    return False, "run-now needs the session as workspace:N, so nothing was typed"
+                if not isinstance(text, str) or not text or len(text) > RUN_NOW_MAX or "\n" in text or "\r" in text:
+                    return False, f"run-now types one line of up to {RUN_NOW_MAX} characters, so nothing was typed"
                 try:
-                    subprocess.run(
-                        [CMUX_BIN, "send", "--workspace", ws_ref, data.get("action", "")],
-                        check=False, timeout=4, capture_output=True,
-                    )
-                    subprocess.run(
-                        [CMUX_BIN, "send-key", "--workspace", ws_ref, "Enter"],
-                        check=False, timeout=4, capture_output=True,
+                    sent = subprocess.run(
+                        [sys.executable, str(SEND_SCRIPT), "--ws", ws_ref, "--text", text, "--enter",
+                         "--caller", "todo-server", "--source", "run-now", "--auth-kind", "tap",
+                         "--auth-ref", "/proposal/run-now"],
+                        check=False, timeout=20, capture_output=True, text=True,
                     )
                 except Exception as e:
                     return False, f"cmux send failed: {e}"
+                if sent.returncode != 0:
+                    return False, "run-now didn't type into the session: " + (
+                        (sent.stderr or "").strip().splitlines() or ["see the send record"])[-1][:200]
         data["status"] = "working"
         data.setdefault("thread", []).append({"ts": now, "actor": "assistant", "note": "Dispatched via dashboard Run button."})
     else:

@@ -211,7 +211,7 @@ def main():
 
     def transport(method, payload):
         rc, body = rpc(method, payload)
-        answers[method] = (rc, body)
+        answers[method.rsplit("_", 1)[-1]] = (rc, body)  # "text" or "key"
         if rc == 124:
             raise TimeoutError(method)
         return body if rc == 0 else None
@@ -243,14 +243,14 @@ def main():
 
     # Step 1: send_text
     ok = press(keys.text, args.text)
-    record["rpc_send_text"] = dict(zip(("rc", "body"), answers["surface.send_text"]))
+    record["rpc_send_text"] = dict(zip(("rc", "body"), answers["text"]))
     if not ok:
         end("rpc_send_text_failed", 2)
 
     # Step 2 (optional): send_key Enter
     if args.enter:
         ok = press(keys.key, "enter")
-        record["rpc_send_key"] = dict(zip(("rc", "body"), answers["surface.send_key"]))
+        record["rpc_send_key"] = dict(zip(("rc", "body"), answers["key"]))
         if not ok:
             end("rpc_send_key_failed", 2)
 

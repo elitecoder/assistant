@@ -27,7 +27,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import agent_session  # noqa: E402
+from assistant import session_effects  # noqa: E402
 import cmux_sessions  # noqa: E402
 
 REGISTRY = Path.home() / ".claude/cmux-registry.json"
@@ -263,21 +265,34 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
         print(f"  [DRY-RUN] Would send: {cmd}")
         return True
 
-    # Try to respawn by sending the command to the surface
-    rpc_params = json.dumps({"surface_id": surface_id, "text": cmd})
-    rc, out, err = run_cmux("rpc", "surface.send_text", rpc_params, timeout=5)
-    if rc != 0:
-        # Fall back to surface ref
-        rc, out, err = run_cmux("rpc", "surface.send_text",
-                                json.dumps({"surface_id": panel_id, "text": cmd}), timeout=5)
-    if rc == 0:
+    # A person ran this, which is what allows the typing. The intent is recorded first, and the saved state knows a
+    # panel only by its terminal id, which is what the record holds.
+    def rpc(method, params):
+        rc, out, _ = run_cmux("rpc", method, json.dumps(params), timeout=5)
+        return (out or "{}") if rc == 0 else None
+
+    try:
+        effect_id = session_effects.begin("", "restore", kind="tap", ref="cli:restore", component="restore",
+                                          surface=surface_id)
+    except session_effects.Refused as refusal:
+        print(f"  NOT TYPED: {refusal}")
+        return False
+    keys = session_effects.Keys(effect_id, rpc, surface_id)
+    # Try to respawn by sending the command to the surface, then by the panel's own id.
+    ok = keys.text(cmd)
+    if not ok:
+        keys.surface_id, keys.refused = panel_id, 0  # a refused try that is tried again isn't half a typing
+        ok = keys.text(cmd)
+    if ok:
         # Send Enter
-        run_cmux("rpc", "surface.send_key",
-                 json.dumps({"surface_id": surface_id or panel_id, "key": "enter"}), timeout=5)
+        keys.surface_id = surface_id or panel_id
+        keys.key("enter")
+        keys.finish()
         return True
+    keys.finish()
 
     if verbose:
-        print(f"  ERROR: send_text failed: {err}")
+        print("  ERROR: send_text failed: the terminal didn't take the text")
     return False
 
 
