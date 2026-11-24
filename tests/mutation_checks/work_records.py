@@ -157,7 +157,7 @@ CHECKS = (
         "a call that timed out is a timeout",
         REC,
         '{"timed out": "timeout", "not installed": "not_found"}',
-        '"timed out": "other"',
+        '{"timed out": "other", "not installed": "not_found"}',
         T + "test_a_failed_model_call_is_recorded_with_a_word_for_its_error_never_its_text",
     ),
     (

@@ -309,7 +309,7 @@ def test_a_model_call_that_worked_has_no_reason(wq):
     assert "reason" not in of_kind("model_call")[0]["fields"]
 
 
-@pytest.mark.parametrize("script, reason", [("echo 'rate limited, try later' >&2\nexit 1", "other"), ("echo 'not json at all'\nexit 0", "bad_answer")])
+@pytest.mark.parametrize("script, reason", [("echo 'rate limited, try later' >&2\nexit 1", "other"), ("echo 'a warning of its own' >&2\necho 'not json at all'\nexit 0", "bad_answer")])
 def test_the_work_queues_failed_model_call_says_what_it_can_tell_without_reading_the_tools_words(wq, monkeypatch, script, reason):
     two_rows(wq)
     exe = wq.home / ".local/bin/claude"
