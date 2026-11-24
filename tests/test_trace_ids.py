@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import threading
 import time
 import types
@@ -462,7 +463,8 @@ def test_every_reader_of_the_task_file_tolerates_the_new_field(wq, monkeypatch, 
         todo_server.append_detail("td-1", "more")
         todo_server.dispatch_now("td-2")
         stamped = without_ids(json.loads(wq.todo.read_text())["items"])
-        results[label] = [{k: v for k, v in i.items() if k not in ("statusUpdatedAt", "statusReason")} for i in stamped]
+        results[label] = [{k: re.sub(r"\d{4}-\d\d-\d\dT[\d:]+Z", "NOW", v) if isinstance(v, str) else v
+                           for k, v in i.items()} for i in stamped]  # the edits stamp the clock
     assert results["with"] == results["without"]
     write_todos(wq, [{**i, "trace": OWN} for i in ITEMS])
     todo_server.set_flag("td-1", "autoDispatch", True)
