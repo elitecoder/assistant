@@ -55,7 +55,9 @@ def seed(wq, monkeypatch=None, labels=()) -> dict:
 
 
 def run(path, body):
-    return server.ROUTES[path](body)
+    answer = server.ROUTES[path](body)
+    feedback.emit_pending()  # the server does this once the answer has gone
+    return answer
 
 
 def mark(key, state, until=0):
@@ -75,7 +77,7 @@ ACTIONS = {
     "email undo is one": ("/api/mark", {"marks": {"https://outlook.office.com/o1": {"state": "clear"}, OMARK: {"state": "clear"}}},
                           [("undo", "email", OMARK)]),
     "send": ("/api/todo", {"key": LINK, "title": TITLE, "url": LINK, "note": "my words"}, [("send", "row", LINK)]),
-    "send again": ("/api/todo", {"key": LINK, "title": TITLE, "url": LINK, "mode": "assist"}, [("send", "row", LINK)]),
+    "send assist": ("/api/todo", {"key": LINK, "title": TITLE, "url": LINK, "mode": "assist"}, [("send", "row", LINK)]),
     "hands-off": ("/api/todo", {"key": PR, "title": TITLE, "url": PR, "mode": "handsoff"}, [("send_handsoff", "row", PR)]),
     "send email": ("/api/todo", {"key": OMARK, "title": TITLE, "url": "https://outlook.office.com/o1"}, [("send", "email", OMARK)]),
     "archive": ("/api/gmail", {"key": GKEY, "action": "archive"}, [("archive", "email", GMAIL_MARK)]),
@@ -145,7 +147,7 @@ def test_an_unwritable_store_never_stops_an_action_or_changes_what_it_writes(wq,
     (wq.home / ".assistant").mkdir(exist_ok=True)
     (wq.home / ".assistant/feedback").write_text("a file where the folder belongs")
     code, out = run(path, json.loads(json.dumps(body)))
-    assert code == 200 and out["feedback"] == {"recorded": False}
+    assert code == 200 and out["feedback"]["recorded"] is False and out["feedback"]["ids"] == [] and out["feedback"]["missed"] >= 1
     ref_code, ref = HANDLERS[path](json.loads(json.dumps(body)))
     assert ref_code == 200 and {k: v for k, v in out.items() if k != "feedback"}.keys() == ref.keys()
 
@@ -161,7 +163,7 @@ def test_an_action_that_fails_records_nothing_and_adds_nothing(wq):
 def test_a_note_that_cannot_be_listed_is_reported_as_not_recorded(wq, monkeypatch):
     seed(wq)
     monkeypatch.setattr(server, "mark_notes", lambda body, out: 1 / 0)
-    server.ROUTES["/api/mark"] = server.noting(server.set_marks, server.mark_notes)
+    monkeypatch.setitem(server.ROUTES, "/api/mark", server.noting(server.set_marks, server.mark_notes))
     code, out = server.ROUTES["/api/mark"]({"key": LINK, "state": "done"})
     assert code == 200 and out["feedback"] == {"recorded": False} and out["marks"][LINK]["state"] == "done"
 
@@ -176,7 +178,8 @@ def test_a_request_never_names_the_trace_the_source_or_the_sender(wq):
         assert (r["subject"], r["trace"], r["context"]) == (ptr(LINK), traces.lookup(LINK), {"source": "slack", "who": WHO})
 
 
-def test_a_row_the_refresh_no_longer_knows_is_recorded_with_empty_context(wq):
+def test_a_row_the_refresh_saved_nothing_about_is_recorded_with_empty_context(wq):
+    config.write_json(refresh.rowctx_path(), {"https://gone.example/x": {}})
     code, out = run("/api/feedback", {"key": "https://gone.example/x", "kind": "row", "signal": "thumbs_down"})
     assert code == 200
     assert stored(wq.home)[0].keys() == {"id", "ts", "signal", "kind", "surface", "subject"}
@@ -191,7 +194,7 @@ def give(**body):
 def test_a_thumbs_down_then_a_reason_then_a_take_back(wq):
     seed(wq)
     code, first = give(signal="thumbs_down")
-    assert code == 200 and first["view"] == {"kind": "row", "down": first["id"], "reason": "", "told": ""}
+    assert code == 200 and first["view"] == {"kind": "row", "down": first["id"], "reason": "", "told": "", "told_id": ""}
     code, second = give(signal="thumbs_down", reason="not_mine", amends=first["id"])
     assert second["view"]["reason"] == "not_mine" and second["view"]["down"] == first["id"]
     code, third = give(signal="retract", amends=first["id"])
@@ -223,7 +226,7 @@ def test_a_used_draft_is_about_the_draft_and_a_result_is_about_its_task(wq):
     assert (result["kind"], result["subject"], result["trace"], result["context"]) == \
         ("result", "td-041", "tr-" + "12" * 8, {"source": "github"})
     code, out = run("/api/feedback", {"kind": "result", "key": "https://work-queue.local/ready/td-999", "signal": "thumbs_down"})
-    assert code == 200 and "trace" not in stored(wq.home)[2]
+    assert code == 400 and out == {"error": "unknown item"} and len(stored(wq.home)) == 2
 
 
 @pytest.mark.parametrize("body", [
@@ -245,20 +248,24 @@ def test_the_route_refuses_what_the_page_may_not_claim_and_writes_nothing(wq, bo
 
 
 def test_a_reason_must_fit_the_kind_of_item_it_is_given_for(wq):
+    seed(wq)
     first = give(signal="thumbs_down")[1]["id"]
     code, out = give(signal="thumbs_down", reason="bad_draft", amends=first)
     assert code == 400 and "doesn't fit" in out["error"] and len(stored(wq.home)) == 1
 
 
 def test_a_reason_may_not_amend_another_items_thumbs_down(wq):
+    seed(wq)
     first = give(signal="thumbs_down")[1]["id"]
     code, out = give(signal="thumbs_down", reason="not_mine", amends=first, key=PR)
     assert code == 400 and "no earlier record" in out["error"]
 
 
 def test_every_reason_the_page_offers_is_accepted_for_its_kind(wq):
+    seed(wq)
+    keys = {"result": "https://work-queue.local/ready/td-041", "candidate": CAND, "email": OMARK}
     for kind, reasons in feedback.REASONS_FOR.items():
-        key = "https://work-queue.local/ready/td-041" if kind == "result" else LINK
+        key = keys.get(kind, LINK)
         first = run("/api/feedback", {"kind": kind, "key": key, "signal": "thumbs_down"})[1]["id"]
         for reason in reasons:
             assert run("/api/feedback", {"kind": kind, "key": key, "signal": "thumbs_down", "reason": reason,
@@ -266,6 +273,7 @@ def test_every_reason_the_page_offers_is_accepted_for_its_kind(wq):
 
 
 def test_a_store_that_cannot_be_written_is_an_error_the_page_can_show(wq):
+    seed(wq)
     (wq.home / ".assistant").mkdir(exist_ok=True)
     (wq.home / ".assistant/feedback").write_text("in the way")
     code, out = give(signal="thumbs_down")
@@ -273,6 +281,7 @@ def test_a_store_that_cannot_be_written_is_an_error_the_page_can_show(wq):
 
 
 def test_a_failed_flush_answers_with_an_error_and_a_slow_one_makes_the_answer_wait(wq, monkeypatch):
+    seed(wq)
     real = feedback._fsync
 
     def slow(fd):
@@ -353,6 +362,8 @@ def test_the_refresh_saves_each_rows_source_and_a_hash_of_its_sender_under_every
 def test_a_refresh_writes_the_context_file_beside_the_others(wq):
     refresh.write_page({"built": "now", "status": [], "github": [{"key": PR, "link": PR, "title": "t", "meta": "m", "draft": False}]})
     assert json.loads(refresh.rowctx_path().read_text()) == {PR: {"source": "github"}}
+    import stat
+    assert stat.S_IMODE(refresh.rowctx_path().stat().st_mode) == 0o600
 
 
 # ─── the page: controls only where triage runs (Pro mode) ────────────────────
@@ -380,3 +391,136 @@ def test_the_page_names_each_item_by_its_pointer_and_never_by_its_link_in_a_poin
         ("row", ptr(PR), PR), ("start_here", ptr(PR), PR), ("draft", "draft:" + ptr(PR), PR), ("page", "page", ""),
         ("email", ptr(mk), mk), ("email", ptr(mk), mk)])
     assert all("https:" not in p for _, p, _ in spans)
+
+
+# ─── a send that sent nothing, a batch that partly failed, a stuck lock, a slow telemetry ───
+
+def test_sending_a_row_that_was_already_sent_records_nothing_new(wq):
+    seed(wq)
+    assert run("/api/todo", {"key": LINK, "title": TITLE, "url": LINK})[1]["existing"] is False
+    code, out = run("/api/todo", {"key": LINK, "title": TITLE, "url": LINK})
+    assert code == 200 and out["existing"] is True and out["feedback"] == {"recorded": True, "ids": []}
+    assert [r["signal"] for r in stored(wq.home)] == ["send"]
+
+
+def test_a_batch_where_some_records_failed_lists_those_recorded_and_says_the_rest_were_not(wq, monkeypatch):
+    seed(wq)
+    real, calls = feedback.record, []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise feedback.Unrecorded("disk")
+        return real(*a, **kw)
+    monkeypatch.setattr(feedback, "record", flaky)
+    code, out = run("/api/mark", {"marks": {LINK: {"state": "done"}, PR: {"state": "done"}, GMAIL_MARK: {"state": "done"}}})
+    assert code == 200 and out["feedback"]["recorded"] is False and out["feedback"]["missed"] == 1
+    assert len(out["feedback"]["ids"]) == 2 and [r["id"] for r in stored(wq.home)] == out["feedback"]["ids"]
+    assert all(out["marks"][k]["state"] == "done" for k in (LINK, PR, GMAIL_MARK))
+
+
+def hold(wq):
+    import fcntl
+    import os
+    (wq.home / ".assistant/feedback").mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(wq.home / ".assistant/feedback/feedback.lock"), os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return lambda: os.close(fd)
+
+
+def test_a_stuck_feedback_lock_delays_an_answer_by_half_a_second_at_most_for_a_whole_batch(http, wq):
+    seed(wq)
+    pro(wq)
+    release = hold(wq)
+    keys = {f"https://x.example/{n}": {"state": "done"} for n in range(40)}
+    started = time.monotonic()
+    code, raw, _ = http("/api/mark", {"marks": keys})
+    took = time.monotonic() - started
+    release()
+    out = json.loads(raw)
+    assert code == 200 and took < 1.5, took
+    assert out["feedback"]["recorded"] is False and out["feedback"]["missed"] == 40 and len(out["marks"]) == 40
+    print(f"/api/mark with the lock held: {took:.2f} s")
+
+
+def test_a_busy_telemetry_database_never_delays_an_answer_but_every_record_still_arrives(http, wq, monkeypatch):
+    seed(wq)
+    pro(wq)
+    sent = []
+    monkeypatch.setattr(feedback.telemetry, "emit", lambda *a, **k: (time.sleep(0.1), sent.append(k)))
+    cands = {f"cand-{n}": {"kind": "slack", "cid": "C1", "ts": "1.1", "link": LINK} for n in range(40)}
+    config.write_json(refresh.candidates_path(), cands)
+    started = time.monotonic()
+    code, raw, _ = http("/api/decide", {"keys": list(cands), "decision": "approve"})
+    took = time.monotonic() - started
+    assert code == 200 and took < 1.5 and json.loads(raw)["feedback"]["recorded"] is True, took
+    for _ in range(200):
+        if len(sent) == 40:
+            break
+        time.sleep(0.1)
+    assert len(sent) == 40 and len(stored(wq.home)) == 40
+    print(f"/api/decide of 40 rows with telemetry at 0.1 s a record: {took:.2f} s")
+
+
+# ─── what the page may claim ─────────────────────────────────────────────────
+
+def test_the_page_may_not_name_an_item_it_could_not_have(wq):
+    seed(wq)
+    ready = "https://work-queue.local/ready/td-041"
+    for body in (
+            {"kind": "row", "key": "https://nowhere.example/x", "signal": "thumbs_down"},
+            {"kind": "row", "key": ready, "signal": "thumbs_down"},
+            {"kind": "row", "key": GMAIL_MARK, "signal": "thumbs_down"},
+            {"kind": "email", "key": LINK, "signal": "thumbs_down"},
+            {"kind": "result", "key": LINK, "signal": "thumbs_down"},
+            {"kind": "result", "key": "https://work-queue.local/ready/td-999", "signal": "thumbs_down"},
+            {"kind": "candidate", "key": LINK, "signal": "thumbs_down"},
+            {"kind": "draft", "key": 5, "signal": "used_draft"},
+            {"kind": "row", "key": LINK, "signal": "used_draft"},
+            {"kind": "page", "key": "", "signal": "used_draft"},
+            {"kind": "page", "key": "", "signal": "thumbs_down"}):
+        code, out = run("/api/feedback", body)
+        assert code == 400, body
+    assert stored(wq.home) == []
+    for body in ({"kind": "candidate", "key": CAND, "signal": "thumbs_down"}, {"kind": "email", "key": OMARK, "signal": "tell", "words": "x"},
+                 {"kind": "result", "key": ready, "signal": "thumbs_down"}, {"kind": "draft", "key": PR, "signal": "used_draft"}):
+        assert run("/api/feedback", body)[0] == 200, body
+
+
+def test_a_candidate_gets_a_thumbs_down_and_words_but_no_reason(wq):
+    seed(wq)
+    first = run("/api/feedback", {"kind": "candidate", "key": CAND, "signal": "thumbs_down"})[1]
+    assert first["view"]["down"] == first["id"]
+    assert run("/api/feedback", {"kind": "candidate", "key": CAND, "signal": "thumbs_down", "reason": "not_mine",
+                                 "amends": first["id"]})[0] == 400
+    assert run("/api/feedback", {"kind": "candidate", "key": CAND, "signal": "retract", "amends": first["id"]})[1]["view"] == {}
+    record = stored(wq.home)[0]
+    assert (record["kind"], record["subject"], record["context"]["source"]) == ("candidate", ptr(CAND), "gmail")
+
+
+def test_the_page_takes_back_only_what_the_page_gave_and_only_once(wq):
+    seed(wq)
+    run("/api/mark", {"key": LINK, "state": "done"})
+    server_wrote = stored(wq.home)[0]["id"]
+    first = give(signal="thumbs_down")[1]["id"]
+    reason = give(signal="thumbs_down", reason="not_mine", amends=first)[1]["id"]
+    told = give(signal="tell", words="hi")[1]["id"]
+    used = give(kind="draft", signal="used_draft")[1]["id"]
+    for target in (server_wrote, reason, "fb-" + "0" * 16, 5, ""):
+        assert give(signal="retract", amends=target)[0] == 400, target
+    assert give(kind="draft", signal="retract", amends=first)[0] == 400, "a draft can't take back its row's thumbs-down"
+    assert give(signal="retract", amends=told)[0] == 200 and give(kind="draft", signal="retract", amends=used)[0] == 200
+    assert give(signal="retract", amends=first)[0] == 200
+    again = give(signal="retract", amends=first)
+    assert again[0] == 400 and "only once" in again[1]["error"]
+    retract = stored(wq.home)[-1]["id"]
+    assert give(signal="retract", amends=retract)[0] == 400
+
+
+def test_the_batch_keeps_one_record_for_one_piece_of_work_and_one_for_each_of_the_others(wq):
+    seed(wq)
+    twin = "https://outlook.office.com/o1"
+    code, out = run("/api/mark", {"marks": {twin: {"state": "snoozed", "until": 5}, OMARK: {"state": "clear"}}})
+    assert [r["signal"] for r in stored(wq.home)] == ["undo", "snooze"], "the same piece of work, two different things"
+    code, out = run("/api/mark", {"marks": {"https://a.example/1": {"state": "done"}, "https://a.example/2": {"state": "done"}}})
+    assert [r["signal"] for r in stored(wq.home)][2:] == ["done", "done"], "two rows with no id are two pieces of work"

@@ -683,8 +683,12 @@ def start_apply():
 READY_KEY = re.compile(r"https://work-queue\.local/ready/(td-\d+)")
 MARK_SIGNALS = {"done": "done", "snoozed": "snooze", "dropped": "drop", "clear": "undo"}
 DECIDE_SIGNALS = {"approve": "approve", "keep": "keep", "undo": "undo", "clear": "undo"}
-GAVE = ("thumbs_down", "tell", "used_draft", "retract")
-GAVE_KINDS = ("row", "start_here", "email", "draft", "result", "page")
+# What the page may claim, and about which kinds of item. Everything else is written by the actions themselves.
+GAVE = {"thumbs_down": ("row", "start_here", "email", "draft", "result", "candidate"),
+        "retract": ("row", "start_here", "email", "draft", "result", "candidate"),
+        "tell": ("row", "start_here", "email", "draft", "result", "candidate", "page"),
+        "used_draft": ("draft",)}
+TAKE_BACK = ("thumbs_down", "tell", "used_draft")  # the page may take back only what the page gave
 
 
 def kind_of_mark(key: str) -> str:
@@ -710,14 +714,16 @@ def about(kind: str, key: str) -> dict:
 def note_feedback(notes) -> dict:
     """Record one line for each (signal, kind, key). Whether it was recorded, never an error: the action the person
     took has already happened and stays done. Anything that goes wrong is logged and reported as not recorded."""
-    ids = []
-    try:
-        for signal, kind, key in notes:
-            ids.append(feedback.record(signal, surface="work-queue", kind=kind, **about(kind, key)))
-    except Exception:  # noqa: BLE001 — feedback never fails the action; the traceback goes to the log
-        traceback.print_exc()
-        return {"recorded": False}
-    return {"recorded": True, "ids": ids}
+    ids, missed = [], 0
+    deadline = time.monotonic() + feedback.LOCK_WAIT  # one wait for the whole batch, not one per record
+    for signal, kind, key in notes:
+        try:
+            ids.append(feedback.record(signal, surface="work-queue", kind=kind, deadline=deadline, defer=True,
+                                       **about(kind, key)))
+        except Exception:  # noqa: BLE001 — feedback never fails the action; the traceback goes to the log
+            traceback.print_exc()
+            missed += 1
+    return {"recorded": not missed, "ids": ids, **({"missed": missed} if missed else {})}
 
 
 def noting(route, notes):
@@ -751,6 +757,8 @@ def mark_notes(body: dict, out: dict):
 
 def todo_notes(body: dict, out: dict):
     key = body["key"]
+    if out.get("existing"):
+        return  # nothing was sent: the row had been sent already
     yield ("send_handsoff" if body.get("mode") == "handsoff" else "send"), kind_of_mark(key), key
 
 
@@ -762,25 +770,42 @@ def decide_notes(body: dict, out: dict):
     return [(DECIDE_SIGNALS[body["decision"]], "candidate", k) for k in body["keys"]]
 
 
+def known_item(kind: str, key) -> bool:
+    """Whether `key` names an item of this kind that the page could have: a row, email or draft the last refresh saw, an
+    approval candidate, or a task that exists. A key sent as the wrong kind is not one."""
+    if not isinstance(key, str):
+        return False
+    if kind == "result":
+        found = READY_KEY.fullmatch(key)
+        doc = read_store()
+        return bool(found) and any(i.get("id") == found.group(1) for i in [*doc.get("items", []), *doc.get("completed", [])])
+    if kind == "candidate":
+        return key in config.read_json(refresh.candidates_path(), {})
+    return key.startswith(EMAIL_MARK) == (kind == "email") and key in read_map("rowctx.json")
+
+
 def give_feedback(body: dict):
     """A thumbs-down, a few words, a used draft, or a take-back from the page: the only signals the page may claim
-    itself. The item is named by its key; its subject, trace and context come from here. A reason is a second thumbs-down
-    that amends the first."""
+    itself. The item is named by its key, which must be one the page could have; its subject, trace and context come
+    from here. A reason is a second thumbs-down that amends the first, and the page may take back only what the page
+    gave (a thumbs-down, a tell, a used draft)."""
     signal, kind, key = body.get("signal"), body.get("kind"), body.get("key")
     words, reason, amends = body.get("words") or "", body.get("reason") or "", body.get("amends") or ""
-    if signal not in GAVE or kind not in GAVE_KINDS or not all(isinstance(v, str) for v in (words, reason, amends)):
+    if not all(isinstance(v, str) for v in (signal, kind, words, reason, amends)) or kind not in GAVE.get(signal, ()):
         return 400, {"error": "unknown signal or kind"}
     if signal == "tell" and not words.strip():
         return 400, {"error": "Write something to tell Assistant first"}
-    if kind == "page" and signal != "tell":
-        return 400, {"error": "Only words can be about the page as a whole"}
     if reason and reason not in feedback.REASONS_FOR.get(kind, ()):
         return 400, {"error": "that reason doesn't fit this kind of item"}
-    if kind != "page" and not (isinstance(key, str) and (READY_KEY.fullmatch(key) if kind == "result" else key.startswith("https://"))):
+    if kind != "page" and not known_item(kind, key):
         return 400, {"error": "unknown item"}
+    target = feedback.standing(amends) or {}
+    if signal == "retract" and (target.get("signal") not in TAKE_BACK or target.get("amends")):
+        return 400, {"error": "only something you told Assistant can be taken back here, and only once"}
     found = about(kind, key) if kind != "page" else {"subject": "", "trace": "", "source": "", "who": ""}
     try:
-        made = feedback.record(signal, surface="work-queue", kind=kind, words=words, reason=reason, amends=amends, **found)
+        made = feedback.record(signal, surface="work-queue", kind=kind, words=words, reason=reason, amends=amends,
+                               defer=True, **found)
     except feedback.Unrecorded:
         return 500, {"error": "Assistant couldn’t save that. What you were doing isn’t affected"}
     except ValueError as exc:
@@ -859,6 +884,13 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(404, {"error": "not found"})
 
     def do_POST(self):
+        try:
+            return self.handle_post()
+        finally:
+            self.wfile.flush()
+            feedback.emit_pending()  # telemetry for what was just recorded, after the answer has gone
+
+    def handle_post(self):
         if self.refused():
             return None
         port = self.server.server_address[1]

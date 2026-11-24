@@ -56,10 +56,44 @@ def test_the_folder_and_file_are_owner_only(home):
     assert stat.S_IMODE((home / ".assistant/feedback/feedback.jsonl").stat().st_mode) == 0o600
 
 
-def test_a_sender_pointer_is_a_hash_of_the_lowercased_trimmed_sender_and_empty_for_none():
+def test_a_sender_pointer_is_a_keyed_hash_of_the_lowercased_trimmed_sender_and_empty_for_none(home):
     import hashlib
-    assert feedback.who_pointer(" Ana@Example.com ") == "who:" + hashlib.sha256(b"ana@example.com").hexdigest()[:16]
+    import hmac
+    one = feedback.who_pointer(" Ana@Example.com ")
+    key = (home / ".assistant/feedback/sender.key").read_bytes()
+    assert one == "who:" + hmac.new(key, b"ana@example.com", hashlib.sha256).hexdigest()[:16]
+    assert one != "who:" + hashlib.sha256(b"ana@example.com").hexdigest()[:16], "not a plain hash a list of names could match"
+    assert one == feedback.who_pointer("ana@example.com")
+    assert stat.S_IMODE((home / ".assistant/feedback/sender.key").stat().st_mode) == 0o600
     assert feedback.who_pointer("") == feedback.who_pointer("  ") == feedback.who_pointer(None) == ""
+
+
+def test_deleting_the_key_makes_old_and_new_sender_pointers_stop_matching_and_a_missing_one_is_made_once(home):
+    one = feedback.who_pointer("ana")
+    (home / ".assistant/feedback/sender.key").unlink()
+    assert feedback.who_pointer("ana") != one
+    keys = {(home / ".assistant/feedback/sender.key").read_bytes() for _ in range(3) if feedback.who_pointer("bob")}
+    assert len(keys) == 1
+
+
+def test_a_sender_pointer_is_empty_when_the_key_cannot_be_had_and_never_an_error(home):
+    (home / ".assistant").mkdir()
+    (home / ".assistant/feedback").write_text("in the way")
+    assert feedback.who_pointer("ana") == ""
+
+
+def test_two_processes_making_the_key_at_once_end_with_one(home):
+    ctx = multiprocessing.get_context("fork")
+    out = ctx.Queue()
+
+    def make(n):
+        os.environ["HOME"] = str(home)
+        out.put(feedback.who_pointer("ana"))
+
+    procs = [ctx.Process(target=make, args=(n,)) for n in range(4)]
+    [p.start() for p in procs]
+    [p.join(60) for p in procs]
+    assert len({out.get(timeout=10) for _ in procs}) == 1
 
 
 BAD = [
@@ -197,11 +231,54 @@ def test_reads_never_raise(home):
     assert feedback.recent() == [] and feedback.latest_for(ROW) is None and feedback.views() == {}
 
 
-def test_only_the_newest_part_of_a_big_file_is_read(home, monkeypatch):
-    monkeypatch.setattr(feedback, "READ_BYTES", 700)
-    ids = [feedback.record("done", ROW, "row", "work-queue") for _ in range(10)]
-    found = [r["id"] for r in feedback.recent()]
-    assert found and found[0] == ids[-1] and len(found) < 10 and found == ids[::-1][:len(found)]
+def test_the_whole_file_is_known_however_big_and_a_take_back_of_the_oldest_record_works(home, monkeypatch):
+    monkeypatch.setattr(feedback, "READ_BLOCK", 400)
+    first = down()
+    others = [feedback.record("done", pointers.row_pointer(f"https://x.example/{n}"), "row", "work-queue") for n in range(60)]
+    feedback.forget()
+    assert feedback.standing(first)["signal"] == "thumbs_down" and feedback.latest_for(ROW)["id"] == first
+    assert len(feedback.recent(limit=1000)) == 61 and feedback.views()[ROW]["down"] == first
+    feedback.record("retract", ROW, "row", "work-queue", amends=first)
+    assert feedback.views() == {} and feedback.standing(first) is None and others
+
+
+def test_a_record_longer_than_a_block_is_read_whole(home, monkeypatch):
+    monkeypatch.setattr(feedback, "READ_BLOCK", 100)
+    one = feedback.record("tell", ROW, "row", "work-queue", words="word " * 300)
+    feedback.forget()
+    assert feedback.views()[ROW]["told_id"] == one
+
+
+def test_only_what_was_added_is_read_and_a_file_that_changed_is_read_again(home):
+    first = down()
+    assert feedback.views()[ROW]["down"] == first
+    state = feedback._STATE
+    offset = state.offset
+    path = home / ".assistant/feedback/feedback.jsonl"
+    other = '{"id":"fb-' + "1" * 16 + '","ts":"2026-11-24T10:00:00Z","signal":"tell","kind":"row","subject":"' + ROW + '","words":"from elsewhere"}\n'
+    with open(path, "a") as f:
+        f.write(other)
+    assert feedback.views()[ROW]["told"] == "from elsewhere" and state.offset > offset and len(state.recs) == 2
+    with open(path, "a") as f:
+        f.write(other[:40])  # a line still being written isn't read until it is whole
+    assert len(feedback.recent()) == 2
+    path.unlink()
+    assert feedback.views() == {} and feedback.recent() == []
+    mine = down()
+    path2 = home / ".assistant/feedback/feedback.jsonl"
+    data = path2.read_bytes()
+    path2.write_bytes(data.replace(b'"thumbs_down"', b'"thumbs_dowm"'))  # rewritten in place, same size
+    assert feedback.views() == {} and mine
+
+
+def test_a_file_replaced_by_another_is_read_from_its_start(home):
+    first = down()
+    assert feedback.views()[ROW]["down"] == first
+    path = home / ".assistant/feedback/feedback.jsonl"
+    old = path.read_bytes()
+    path.unlink()
+    path.write_bytes(old.replace(first.encode(), b"fb-" + b"2" * 16))
+    assert feedback.views()[ROW]["down"] == "fb-" + "2" * 16
 
 
 def test_latest_for_honours_take_backs(home):
@@ -219,16 +296,16 @@ def test_latest_for_honours_take_backs(home):
 def test_views_say_what_still_stands_for_each_subject(home):
     first = down()
     down(reason="wrong_order", amends=first)
-    feedback.record("tell", ROW, "row", "work-queue", words="x" * 100)
+    mine = feedback.record("tell", ROW, "row", "work-queue", words="x" * 100)
     second = pointers.row_pointer("https://other.example/y")
     gone = feedback.record("thumbs_down", second, "row", "work-queue")
     feedback.record("retract", second, "row", "work-queue", amends=gone)
-    feedback.record("tell", "", "page", "work-queue", words="Too long a list")
+    page_note = feedback.record("tell", "", "page", "work-queue", words="Too long a list")
     feedback.record("done", ROW, "row", "work-queue")
     feedback.record("thumbs_down", ROW, "draft", "work-queue")
     assert feedback.views().pop("draft:" + ROW)["down"].startswith("fb-")
-    assert {k: v for k, v in feedback.views().items() if k != "draft:" + ROW} == {ROW: {"kind": "row", "down": first, "reason": "wrong_order", "told": "x" * 80 + "…"},
-                                "page": {"kind": "page", "down": "", "reason": "", "told": "Too long a list"}}
+    assert {k: v for k, v in feedback.views().items() if k != "draft:" + ROW} == {ROW: {"kind": "row", "down": first, "reason": "wrong_order", "told": "x" * 80 + "…", "told_id": mine},
+                                "page": {"kind": "page", "down": "", "reason": "", "told": "Too long a list", "told_id": page_note}}
     again = down()
     assert feedback.views()[ROW]["down"] == again and feedback.views()[ROW]["reason"] == ""
 
@@ -275,3 +352,202 @@ def test_threads_appending_together_leave_whole_lines(home):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert len(lines(home)) == 80
+
+
+# ─── the lock, telemetry, the cut, the rules, the cancel line ────────────────
+
+def hold_the_lock(home, seconds):
+    """Another process holds feedback.lock, the way a stuck writer would."""
+    import fcntl
+    (home / ".assistant/feedback").mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(home / ".assistant/feedback/feedback.lock"), os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    done = threading.Event()
+
+    def release():
+        if not done.is_set():
+            done.set()
+            os.close(fd)
+    timer = threading.Timer(seconds, release)
+    timer.start()
+    return release
+
+
+def test_a_stuck_lock_holds_a_record_for_half_a_second_not_for_as_long_as_it_is_stuck(home):
+    timer = hold_the_lock(home, 5)
+    started = time.monotonic()
+    with pytest.raises(feedback.Unrecorded, match="busy"):
+        feedback.record("done", ROW, "row", "work-queue")
+    assert 0.4 <= time.monotonic() - started < 1.5
+    timer()
+
+
+def test_a_batch_shares_one_deadline_and_a_lock_freed_in_time_is_taken(home):
+    timer = hold_the_lock(home, 5)
+    deadline = time.monotonic() + 0.3
+    started = time.monotonic()
+    for _ in range(40):
+        with pytest.raises(feedback.Unrecorded):
+            feedback.record("done", ROW, "row", "work-queue", deadline=deadline)
+    assert time.monotonic() - started < 1.0, "forty records waited once, not forty times"
+    timer()
+    shorter = hold_the_lock(home, 0.2)
+    feedback.record("done", ROW, "row", "work-queue")
+    shorter()
+    assert len(lines(home)) == 1
+
+
+def test_a_deferred_telemetry_record_waits_for_emit_pending_and_never_delays_the_record(home, monkeypatch):
+    sent = []
+    monkeypatch.setattr(feedback.telemetry, "emit", lambda *a, **k: (time.sleep(0.3), sent.append((a, k))))
+    started = time.monotonic()
+    feedback.record("done", ROW, "row", "work-queue", trace=TRACE, defer=True)
+    feedback.record("snooze", ROW, "row", "work-queue", defer=True)
+    assert time.monotonic() - started < 0.2 and sent == []
+    feedback.emit_pending()
+    assert [k["signal"] for _, k in sent] == ["done", "snooze"] and sent[0][0][:3] == ("feedback", TRACE, ROW)
+    feedback.emit_pending()
+    assert len(sent) == 2, "each is sent once"
+
+
+def test_pending_telemetry_is_bounded(home, monkeypatch):
+    monkeypatch.setattr(feedback, "PENDING_MAX", 2)
+    for _ in range(5):
+        feedback.record("done", ROW, "row", "work-queue", defer=True)
+    sent = []
+    monkeypatch.setattr(feedback.telemetry, "emit", lambda *a, **k: sent.append(k))
+    feedback.emit_pending()
+    assert len(sent) == 2 and len(lines(home)) == 5
+
+
+def test_a_secret_across_the_cut_is_scrubbed_before_it_is_cut(home):
+    secret = "-".join(["xoxb", "1234567890", "abcdefghijklmnop"])
+    text = "a" * (feedback.WORDS_MAX - 12) + " " + secret + " tail"
+    feedback.record("tell", ROW, "row", "work-queue", words=text)
+    words = lines(home)[0]["words"]
+    assert "xoxb-12" not in words and "1234567890" not in words and len(words) <= feedback.WORDS_MAX
+    assert words.endswith("xoxb-<redacted>"[:len(words) - (feedback.WORDS_MAX - 11)]) or "<redacted>" in words
+
+
+def test_only_a_thumbs_down_has_a_reason(home):
+    first = down()
+    with pytest.raises(ValueError, match="only a thumbs-down"):
+        feedback.record("done", ROW, "row", "work-queue", reason="not_mine", amends=first)
+
+
+def item_rules(home):
+    first = down()
+    tell = feedback.record("tell", ROW, "row", "work-queue", words="hi")
+    reason = down(reason="not_mine", amends=first)
+    draft = feedback.record("thumbs_down", ROW, "draft", "work-queue")
+    done = feedback.record("done", ROW, "row", "work-queue")
+    return first, tell, reason, draft, done
+
+
+def test_a_take_back_or_a_reason_must_be_about_the_same_item(home):
+    first, tell, reason, draft, done = item_rules(home)
+    with pytest.raises(ValueError, match="no earlier record about this item"):
+        feedback.record("retract", ROW, "draft", "work-queue", amends=first)  # a draft is not its row
+    with pytest.raises(ValueError, match="no earlier record about this item"):
+        feedback.record("retract", ROW, "row", "work-queue", amends=draft)
+    feedback.record("retract", ROW, "start_here", "work-queue", amends=first)  # a row and its Start here item are one item
+    assert feedback.views()[ROW]["down"] == ""
+
+
+def test_a_reason_belongs_to_a_standing_thumbs_down_only(home):
+    first, tell, reason, draft, done = item_rules(home)
+    for target in (tell, reason, done):
+        with pytest.raises(ValueError, match="belongs to a thumbs-down"):
+            feedback.record("thumbs_down", ROW, "row", "work-queue", reason="not_mine", amends=target)
+    feedback.record("retract", ROW, "row", "work-queue", amends=first)
+    with pytest.raises(ValueError, match="already taken back"):
+        feedback.record("thumbs_down", ROW, "row", "work-queue", reason="not_mine", amends=first)
+
+
+def test_a_take_back_is_never_itself_taken_back_or_made_twice(home):
+    first, *_ = item_rules(home)
+    gone = feedback.record("retract", ROW, "row", "work-queue", amends=first)
+    with pytest.raises(ValueError, match="already taken back"):
+        feedback.record("retract", ROW, "row", "work-queue", amends=first)
+    with pytest.raises(ValueError):
+        feedback.record("retract", ROW, "row", "work-queue", amends=gone)
+
+
+def test_a_reason_can_replace_an_earlier_one_by_a_newer_record(home):
+    first = down()
+    down(reason="not_mine", amends=first)
+    down(reason="already_done", amends=first)
+    assert feedback.views()[ROW]["reason"] == "already_done" and len(lines(home)) == 3
+
+
+def test_two_take_backs_of_the_same_record_at_once_leave_one(home):
+    for _ in range(15):
+        target = down()
+        results = []
+
+        def take():
+            try:
+                feedback.record("retract", ROW, "row", "work-queue", amends=target)
+                results.append("ok")
+            except ValueError:
+                results.append("no")
+        threads = [threading.Thread(target=take) for _ in range(6)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        assert results.count("ok") == 1, results
+
+
+def test_a_line_whose_flush_failed_is_cancelled_so_a_retry_is_not_a_twin(home, monkeypatch):
+    calls = []
+    real = os.fsync
+
+    def once(fd):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError(5, "disk")
+        real(fd)
+    monkeypatch.setattr(feedback, "_fsync", once)
+    with pytest.raises(feedback.Unrecorded):
+        down()
+    written = lines(home)
+    assert [r["signal"] for r in written] == ["thumbs_down", "retract"] and written[1]["amends"] == written[0]["id"]
+    assert feedback.views() == {}, "the failed line doesn't stand"
+    retry = down()
+    assert feedback.views()[ROW]["down"] == retry
+
+
+def test_a_cancel_that_cannot_be_written_is_ignored(home, monkeypatch):
+    def broken(fd):
+        raise OSError(5, "disk")
+    monkeypatch.setattr(feedback, "_fsync", broken)
+    with pytest.raises(feedback.Unrecorded):
+        down()
+
+
+def test_a_reason_written_after_its_thumbs_down_was_taken_back_does_not_stand(home):
+    first = down()
+    feedback.record("retract", ROW, "row", "work-queue", amends=first)
+    late = '{"id":"fb-' + "3" * 16 + '","ts":"2026-11-24T10:00:00Z","signal":"thumbs_down","kind":"row","subject":"' + ROW \
+        + '","reason":"not_mine","amends":"' + first + '"}\n'
+    with open(home / ".assistant/feedback/feedback.jsonl", "a") as f:
+        f.write(late)  # another writer, such as a later version, wrote it
+    assert feedback.views() == {} and feedback.standing("fb-" + "3" * 16) is None and feedback.standing(first) is None
+
+
+def test_standing_never_raises(home):
+    (home / ".assistant/feedback/feedback.jsonl").mkdir(parents=True)
+    assert feedback.standing("fb-" + "0" * 16) is None
+
+
+def test_a_key_made_by_another_process_a_moment_ago_is_used(home, monkeypatch):
+    real = os.open
+
+    def racing(path, flags, *a):
+        if str(path).endswith("sender.key") and flags & os.O_EXCL:
+            (home / ".assistant/feedback").mkdir(parents=True, exist_ok=True)
+            (home / ".assistant/feedback/sender.key").write_bytes(b"theirs")
+            raise FileExistsError()
+        return real(path, flags, *a)
+    monkeypatch.setattr(feedback.os, "open", racing)
+    assert feedback.who_pointer("ana").startswith("who:")
+    assert (home / ".assistant/feedback/sender.key").read_bytes() == b"theirs"

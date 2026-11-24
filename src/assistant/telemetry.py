@@ -76,7 +76,8 @@ GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
 SIGNAL = ("done", "drop", "snooze", "undo", "send", "send_handsoff", "approve", "keep", "archive", "mark_read",
           "used_draft", "kept_result", "thumbs_down", "tell", "retract")
 FEEDBACK_REASON = ("none", "not_important", "wrong_order", "not_mine", "already_done", "bad_draft",
-                   "not_what_i_asked", "should_not_have_started", "should_not_have_pinged")
+                   "not_what_i_asked", "should_not_have_started", "should_not_have_pinged",
+                   "wrong_tone", "wrong_facts", "not_how_id_say", "didnt_finish")
 SURFACE = ("work-queue", "dashboard", "slack", "voice", "cli")
 SUBJECT_KIND = ("row", "start_here", "email", "candidate", "result", "draft", "page", "task")
 REASON = ("none", "policy", "user", "limit", "budget", "duplicate", "stale", "unsafe", "not_signed_in", "unknown")

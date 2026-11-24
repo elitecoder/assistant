@@ -162,22 +162,22 @@ def agents_section(rows: list[tuple[str, str, str, str, bool]]) -> str:
                    controls + body)
 
 
-def buttons(undo: str = "ap-undo", ok: str = "Approve") -> str:
+def buttons(undo: str = "ap-undo", ok: str = "Approve", feedback: str = "") -> str:
     pick = "this.closest('.ap-row').dataset.key"
     return (f'<div class="ap-btns"><button class="btn ap-ok" onclick="decide([{pick}],\'approve\')">{ok}</button>'
             f'<button class="btn ghost ap-keep" onclick="decide([{pick}],\'keep\')">Keep</button>'
             + (f'<button class="btn ghost {undo}" onclick="decide([{pick}],\'{"clear" if undo == "ap-clear" else "undo"}\')">Undo</button>'
-               if undo else "") + '</div>')
+               if undo else "") + feedback + '</div>')
 
 
 def ap_row(key: str, title: str, link: str, ctx: str, why: str, kind: str, undo: str = "ap-undo", ev: str = "",
-           m: dict | None = None) -> str:
+           m: dict | None = None, feedback: bool = False) -> str:
     """One row you can approve. An email row (`m`) also has the email actions."""
     evidence = f'<span class="ap-ev">Evidence: {e(ev)}</span>' if ev else ""
     return (f'<div class="ap-row{" em-row" if m else ""}" data-key="{e(key)}" data-kind="{kind}"{em_data(m) if m else ""}>'
             f'<div class="ap-text"><a href="{e(link)}"{NEWTAB} class="sf-title">{e(title)}</a>{ctx}'
             f'<span class="ap-why"><b>Why it can go:</b> {e(why)}</span>{evidence}<span class="ap-status"></span>'
-            f'{em_acts(m) if m else ""}</div>{buttons(undo)}</div>')
+            f'{em_acts(m) if m else ""}</div>{buttons(undo, feedback=fb_span(feedback, "candidate", key))}</div>')
 
 
 def email_mark(m: dict) -> str:
@@ -401,7 +401,7 @@ def render(snap: dict) -> tuple[str, dict]:
         for rows in by.values():
             cands.update({m["key"]: {"kind": "mail", "link": m["link"], "mk": email_mark(m)} for m in rows})
         groups = "".join(ap_group(f"mail-{g}", t, h, [ap_row(m["key"], m["subject"], m["link"], mail_ctx(m), m["reason"], "mail",
-                                                             "ap-clear", m=m) for m in by[g]]) for g, t, h in OUTLOOK_GROUPS if by[g])
+                                                             "ap-clear", m=m, feedback=pro) for m in by[g]]) for g, t, h in OUTLOOK_GROUPS if by[g])
         reads = [m for m in mail if m["group"] == "read"]
         need += len(acts)
         parts.append(mail_section("email", "Outlook", f"{len(mail)} emails in your inbox. {len(acts)} need you, "
@@ -425,7 +425,7 @@ def render(snap: dict) -> tuple[str, dict]:
             cands.update({m["key"]: {"kind": "gmail", "account": account, "msg_ids": m["msg_ids"], "link": m["link"],
                                      "mk": email_mark(m)} for m in g_rows})
         groups = "".join(ap_group(f"gmail-{g}", t, h, [ap_row(m["key"], m["subject"], m["link"], mail_ctx(m), m["reason"], "gmail",
-                                                              m=m) for m in by[g]]) for g, t, h in GMAIL_GROUPS if by[g])
+                                                              m=m, feedback=pro) for m in by[g]]) for g, t, h in GMAIL_GROUPS if by[g])
         looks = [m for m in rows if m["group"] == "unsorted"]
         yours = [m for m in rows if m["group"] == "act"]
         n_del = sum(map(len, by.values()))
@@ -446,7 +446,7 @@ def render(snap: dict) -> tuple[str, dict]:
             subs.append(f'<div class="ap-row" data-key="{e(key)}" data-kind="unsub"><div class="ap-text">'
                         f'<a href="{e(ms[0]["link"])}"{NEWTAB} class="sf-title">{e(name)}</a>'
                         f'<span class="meta">{e(addr)} · {e(account)}</span><span class="ap-why">{len(ms)} of their emails '
-                        f'can go. Latest: {e(ms[0]["subject"][:80])}</span><span class="ap-status"></span></div>{buttons("", "Unsubscribe")}</div>')
+                        f'can go. Latest: {e(ms[0]["subject"][:80])}</span><span class="ap-status"></span></div>{buttons("", "Unsubscribe", fb_span(pro, "candidate", key))}</div>')
     if subs:
         parts.append(mail_section("unsubscribe", "Unsubscribe", f"{len(subs)} senders support one-click unsubscribe. Approve a "
                                   "sender, then select Apply approvals, and the Work queue sends that sender's unsubscribe request. "
@@ -466,7 +466,7 @@ def render(snap: dict) -> tuple[str, dict]:
             cands.update({r["key"]: {"kind": "slack", "cid": r["cid"], "ts": r["ts"], "link": r["link"]} for r in rows})
         unread = [r for r in slack_rows if r["group"] == "unread"]
         groups = "".join(ap_group(g, t, h, [ap_row(r["key"], r["title"], r["link"], ctx_html(r["ctx"]), r["reason"], "slack",
-                                                   ev=r["evidence"]) for r in by[g]]) for g, t, h in SLACK_GROUPS if by[g])
+                                                   ev=r["evidence"], feedback=pro) for r in by[g]]) for g, t, h in SLACK_GROUPS if by[g])
         unread_html = "".join(f'<div class="ap-urow"><a href="{e(r["link"])}"{NEWTAB}>Open in Slack</a> '
                               f'<span class="meta">{e(r["where"])}</span></div>' for r in unread)
         closable = sum(map(len, by.values()))
@@ -497,7 +497,8 @@ def render(snap: dict) -> tuple[str, dict]:
     return doc, cands
 
 
-PAGE_FB = '<span class="fb" data-fk="page" data-fp="page" data-fkey=""></span>'
+PAGE_FB = ('<span class="fb" data-fk="page" data-fp="page" data-fkey=""></span><span class="meta fb-promise">Assistant keeps what '
+           'you tell it. It starts using it in the next update.</span>')
 
 
 def placeholder(message: str) -> str:
@@ -574,15 +575,21 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .ag-bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin:0 0 10px}.ag-opt{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--text-2)}
 .ag-row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line);cursor:pointer}.ag-row:first-child{border-top:0}.ag-row[hidden]{display:none}
 .ag-text{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}#ag-msg{overflow-wrap:anywhere}
-.fb{display:inline-flex;gap:6px;align-items:center;flex:none}.fb-down{padding:5px 7px;line-height:0;color:var(--muted)}
-.fb-down svg{display:block}.fb-down[aria-pressed="true"]{color:var(--red);border-color:var(--red);background:var(--red-bg)}
-.fb-open{border-color:transparent;background:none;text-decoration:underline;text-underline-offset:2px}.fb-down,.fb-open{opacity:.7}.fb-down:hover,.fb-open:hover,.fb-down:focus-visible,.fb-open:focus-visible,.fb-down[aria-pressed="true"]{opacity:1}
+.fb{position:relative;display:inline-flex;gap:6px;align-items:center;flex:none}.fb-what{font:11px/1.2 var(--mono);color:var(--muted)}
+.fb-down{padding:5px 7px;line-height:0;color:var(--muted)}.fb-down svg{display:block}
+.fb-down[aria-pressed="true"]{color:var(--red);border-color:var(--red);background:var(--red-bg)}
+.fb-open{border-color:transparent;background:none;color:var(--muted);text-decoration:underline;text-underline-offset:2px}
+.fb-pop{position:fixed;z-index:30;display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:190px;max-width:calc(100vw - 16px);padding:8px;
+background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35)}.fb-pop[hidden]{display:none}
+.fb-pop .btn{text-align:left}.fb-r[aria-pressed="true"]{color:var(--text);border-color:var(--text-2)}
+.fb-note,.fb-why{font:10px/12px var(--mono);color:var(--muted)}.fb-part{display:block}
+.fb-link{background:none;border:0;padding:0 2px;color:var(--text-2);font:inherit;text-decoration:underline;cursor:pointer}
+.sf-main .fb-note{position:absolute;right:0;top:100%;margin-top:2px;white-space:nowrap;text-align:right}
 .fb-extra{display:block}.fb-line{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fb-line:not(:empty){margin-top:6px}
-.fb-reasons{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;font:11px/1.2 var(--mono);color:var(--muted)}
-.fb-r[aria-pressed="true"]{color:var(--text);border-color:var(--line-strong)}.fb-tell{display:flex;gap:6px;align-items:flex-start;margin-top:6px}
+.fb-tell{display:flex;gap:6px;align-items:flex-start;margin-top:6px}
 .fb-tell textarea{flex:1;min-width:0;min-height:36px;resize:vertical;font:13px/1.5 var(--sans);padding:6px 8px;background:var(--hover);color:var(--text);border:1px solid var(--line-strong);border-radius:6px}
-.draft-fb{margin-top:4px}
-.toast{position:fixed;right:16px;bottom:70px;max-width:min(360px,calc(100vw - 32px));padding:10px 14px;border-radius:8px;background:var(--panel);border:1px solid var(--green);font-size:13px;z-index:50}
+.draft-fb{margin-top:4px}.fb-promise{margin:0}
+.toast.err{border-color:var(--red)}.toast{position:fixed;right:16px;bottom:70px;max-width:min(360px,calc(100vw - 32px));padding:10px 14px;border-radius:8px;background:var(--panel);border:1px solid var(--green);font-size:13px;z-index:50}
 .mq{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px}.mq code{font:11px/1.5 var(--mono);color:var(--text-2);background:var(--hover);border:1px solid var(--line);border-radius:6px;padding:4px 8px;overflow-wrap:anywhere;min-width:0;flex:1}
 .mail-h{font:600 13px/1.4 var(--sans);color:var(--text-2);margin:14px 0 4px}
 .pr-row{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border-top:1px solid var(--line)}.pr-row:first-child{border-top:0}.pr-row>a{text-decoration:none}
@@ -628,7 +635,7 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
 .ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
 .ready-cleared:empty{display:none}.ready-cleared li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-@media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
+@media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
 
@@ -639,8 +646,8 @@ ST.queued={};ST.mail={};ST.checks={};ST.feedback={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);const o=await r.json();
- if(o&&o.feedback&&o.feedback.recorded===false)toast('That worked, but Assistant couldn’t save a note of it for later.');return o}
-function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
+ if(o&&o.feedback&&o.feedback.recorded===false)toast('Done. Assistant couldn’t record that for later.');return o}
+function toast(msg,bad){document.querySelectorAll('.toast').forEach(t=>t.remove());const t=document.createElement('div');t.className=bad?'toast err':'toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
  document.querySelectorAll('.sf-lane .sf-row,.ag-row,.start-list li:not([data-blocked])').forEach(r=>{if(sent.has(r.dataset.key))r.remove()});
  document.querySelectorAll('.sf-lane .sf-row').forEach(r=>{const v=MK[r.dataset.key],done=!!v&&v.state==='done';
@@ -812,35 +819,50 @@ async function refresh(){try{ST=Object.assign(ST,await api('/api/state'));API=tr
  if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)reloadIfIdle()}}
 function reloadIfIdle(){if([...document.querySelectorAll('.compose textarea')].some(t=>t.value.trim()))
   return toast('The refresh finished. Send or cancel your note, then reload the page to see the new rows.');
- if(Object.values(FBUI).some(u=>u.reasons||(u.tell&&(u.words||'').trim())))
-  return toast('The refresh finished. Finish what you are telling Assistant, then reload the page to see the new rows.');
+ const asked=Object.values(FBUI);
+ if(asked.some(u=>u.pop))return toast('The refresh finished. Pick a reason or Skip, then reload to see the new rows.');
+ if(asked.some(u=>u.tell&&(u.words||'').trim()))return toast('The refresh finished. Send or cancel what you are telling Assistant, then reload to see the new rows.');
  location.reload()}
 async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
 function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key);decide(keys,'approve')}
 async function applyNow(){try{await api('/api/apply',{method:'POST',body:'{}'});ST.status={running:true};renderAp();setTimeout(refresh,1500)}catch(e){$('ap-msg').textContent='Not started: '+e.message}}
 async function refreshNow(){try{await api('/api/refresh',{method:'POST',body:'{}'});ST.refresh={running:true};renderRefresh();polling=true;setTimeout(refresh,2500)}catch(e){$('refresh-msg').textContent='Not started: '+e.message}}
 const FB=!!document.querySelector('.fb[data-fk="page"]'),FBX=new Map(),FBR={row:[['not_important','Not important'],['wrong_order','Wrong order'],['not_mine','Not mine'],['already_done','Already done']],
- draft:[['bad_draft','Bad draft']],result:[['not_what_i_asked','Not what I asked'],['should_not_have_started','Shouldn’t have started this']]};
+ draft:[['wrong_tone','Wrong tone'],['wrong_facts','Wrong facts'],['not_how_id_say','Not how I’d say it']],
+ result:[['not_what_i_asked','Not what I asked'],['didnt_finish','Didn’t finish'],['should_not_have_started','Shouldn’t have started this']],candidate:[]};
 FBR.start_here=FBR.email=FBR.row;let FBUI={},FBKEEP=null;
-const SAID={not_important:'not important',wrong_order:'in the wrong order',not_mine:'not mine',already_done:'already done',bad_draft:'a bad draft',
- not_what_i_asked:'not what I asked',should_not_have_started:'something it shouldn’t have started'};
+const SAID={not_important:'not important',wrong_order:'wrong order',not_mine:'not mine',already_done:'already done',wrong_tone:'wrong tone',wrong_facts:'wrong facts',
+ not_how_id_say:'not how I’d say it',not_what_i_asked:'not what I asked',didnt_finish:'it didn’t finish',should_not_have_started:'this shouldn’t have been started',bad_draft:'this draft is bad'};
+const WHAT={draft:'this draft',result:'this result'};
 const THUMB='<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.7a2 2 0 0 0-2 1.7l-1.4 9a2 2 0 0 0 2 2.3H10z"/><path d="M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>';
-function fbNote(v){const p=[];if(v.down)p.push('You said: '+(SAID[v.reason]||'this is wrong')+'.');if(v.told)p.push('You told Assistant: “'+v.told+'”'+(/[.!?…]$/.test(v.told)?'':'.'));
- return p.length?p.join(' ')+' Nothing has changed yet because of this.':''}
+function fbBtn(label,id,run){const b=button(label,'btn ghost',run);b.type='button';b.dataset.fb=id;return b}
+function fbNoteEl(s,v){const k=s.dataset.fk,parts=[];
+ if(v.down)parts.push(['You said: '+(SAID[v.reason]||(WHAT[k]||'this')+' is wrong')+'.',FBR[k].length?[['Change','change',()=>fbOpen(s)],['Undo','undo',()=>fbUndo(s,v.down)]]:[['Undo','undo',()=>fbUndo(s,v.down)]]]);
+ if(v.told)parts.push(['You told Assistant: “'+v.told+'”'+(/[.!?…]$/.test(v.told)?'':'.'),[['Undo','undo-told',()=>fbUndo(s,v.told_id)]]]);
+ if(!parts.length)return null;
+ const n=document.createElement('span');n.className='fb-note';
+ parts.forEach(([t,acts])=>{const p=document.createElement('span');p.className='fb-part';p.append(t+' ');
+  acts.forEach(([l,id,f],i)=>{if(i)p.append(' · ');const b=button(l,'fb-link',f);b.type='button';b.dataset.fb=id;p.append(b)});n.append(p)});return n}
 function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),line=document.createElement('span');
- if(k!=='page'){h.down=button('','btn ghost fb-down',()=>fbDown(s));h.down.type='button';h.down.dataset.fb='down';h.down.innerHTML=THUMB;s.append(h.down)}
- h.open=button(k==='page'?'Tell Assistant about this page':'Tell Assistant','btn ghost fb-open',()=>fbTell(s));h.open.type='button';h.open.dataset.fb='open';
- s.append(h.open);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);
- s.parentElement.after(x)}
-function fbSync(s){const fp=s.dataset.fp,u=FBUI[fp]=FBUI[fp]||{},v=ST.feedback[fp]||{},h=FBX.get(s),line=h.x.firstChild,note=fbNote(v);
- if(h.down){h.down.setAttribute('aria-pressed',!!v.down);h.down.setAttribute('aria-label',v.down?'Take back: this is wrong':'This is wrong');
-  h.down.title=v.down?'Take back':'Tell Assistant this is wrong'}
- const sig=[!!(u.reasons&&v.down),v.reason,note].join('|');
- if(line.dataset.sig!==sig){line.dataset.sig=sig;line.textContent='';
-  if(u.reasons&&v.down){const g=document.createElement('span');g.className='fb-reasons';g.setAttribute('role','group');g.setAttribute('aria-label','Why is this wrong? Optional');
-   g.append('Why? ');FBR[s.dataset.fk].forEach(([c,l])=>{const b=button(l,'btn ghost fb-r',()=>fbReason(s,c));b.type='button';b.dataset.fb='r:'+c;b.setAttribute('aria-pressed',v.reason===c);g.append(b)});
-   const skip=button('Skip','btn ghost fb-skip',()=>{u.reasons=false;fbPaint()});skip.type='button';skip.dataset.fb='skip';g.append(skip);line.append(g)}
-  if(note){const n=document.createElement('span');n.className='fb-note meta';n.textContent=note;line.append(n)}}
+ if(k==='draft'){const w=document.createElement('span');w.className='fb-what';w.textContent='Draft';s.append(w)}
+ if(k!=='page'){h.down=fbBtn('','down',()=>fbThumb(s));h.down.classList.add('fb-down');h.down.innerHTML=THUMB;h.down.title='Tell Assistant this is wrong';
+  h.down.setAttribute('aria-label',k==='draft'?'This draft is wrong':k==='result'?'This result is wrong':'This is wrong');h.down.setAttribute('aria-haspopup','true');s.append(h.down);
+  h.pop=document.createElement('div');h.pop.className='fb-pop';h.pop.setAttribute('role','group');h.pop.hidden=true;
+  h.pop.onkeydown=ev=>{if(ev.key==='Escape'){FBUI[s.dataset.fp].pop=false;fbPaint();h.down.focus()}}}
+ h.open=fbBtn(k==='page'?'Tell Assistant about this page':k==='draft'?'Tell Assistant about this draft':'Tell Assistant','open',()=>fbTell(s));h.open.classList.add('fb-open');
+ s.append(h.open);if(h.pop)s.append(h.pop);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);const at=s.closest('.ap-row');if(at)at.querySelector('.ap-text').append(x);else s.parentElement.after(x)}
+function fbPlace(s){const h=FBX.get(s),r=h.down.getBoundingClientRect(),p=h.pop,w=p.offsetWidth,t=p.offsetHeight;
+ p.style.left=Math.max(8,Math.min(r.left,innerWidth-w-8))+'px';p.style.top=(r.bottom+4+t>innerHeight&&r.top-t-4>0?r.top-t-4:r.bottom+4)+'px'}
+function fbPopFill(s,h,v,u){const R=FBR[s.dataset.fk];h.pop.textContent='';
+ if(R.length){const t=document.createElement('span');t.className='fb-why';t.textContent='Why is this wrong? Optional';h.pop.append(t)}
+ R.forEach(([c,l])=>{const b=fbBtn(l,'r:'+c,()=>fbReason(s,c));b.classList.add('fb-r');b.setAttribute('aria-pressed',v.reason===c);h.pop.append(b)});
+ h.pop.append(fbBtn('Take it back','undo-pop',()=>fbUndo(s,v.down)),fbBtn('Skip','skip',()=>{u.pop=false;fbPaint()}))}
+function fbSync(s){const fp=s.dataset.fp,u=FBUI[fp]=FBUI[fp]||{},v=ST.feedback[fp]||{},h=FBX.get(s),open=!!(h.pop&&u.pop&&v.down);
+ if(h.down){h.down.setAttribute('aria-pressed',!!v.down);h.down.setAttribute('aria-expanded',open);h.pop.hidden=!open;
+  if(open){const sig=[v.down,v.reason].join('|');if(h.psig!==sig){h.psig=sig;fbPopFill(s,h,v,u)}fbPlace(s)}}
+ const sig=JSON.stringify([v.down,v.reason,v.told,v.told_id]);
+ if(h.sig!==sig){h.sig=sig;const host=s.parentElement.classList.contains('sf-main')?s:h.x.firstChild,old=host.querySelector(':scope > .fb-note'),n=fbNoteEl(s,v);
+  if(old)old.remove();if(n)host.append(n)}
  let box=h.x.querySelector('.fb-tell');
  if(!u.tell){if(box)box.remove();return}
  if(box)return;
@@ -854,19 +876,26 @@ function fbPaint(){if(!FB)return;document.querySelectorAll('.fb').forEach(s=>{if
  if(FBKEEP){const k=FBKEEP,el=document.querySelector('#ready [data-fp="'+k.fp+'"] [data-fb="'+k.id+'"]');FBKEEP=null;
   if(el){el.focus();if(k.s!=null)el.setSelectionRange(k.s,k.e)}}}
 function fbKeep(){const a=document.activeElement,h=a.closest('#ready [data-fp]');return h?{fp:h.dataset.fp,id:a.dataset.fb,s:a.selectionStart,e:a.selectionEnd}:null}
+function fbOpen(s){Object.values(FBUI).forEach(u=>u.pop=false);FBUI[s.dataset.fp].pop=true;fbPaint();FBX.get(s).pop.querySelector('button').focus()}
+function fbThumb(s){const fp=s.dataset.fp,v=ST.feedback[fp]||{},u=FBUI[fp];
+ if(v.down)return u.pop?(u.pop=false,fbPaint()):fbOpen(s);
+ return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down'},w=>({pop:!!w.down&&FBR[s.dataset.fk].length>0})).then(()=>{if(u.pop)fbOpen(s)})}
+document.addEventListener('click',ev=>{if(!ev.target.closest('.fb,.fb-extra')&&Object.values(FBUI).some(u=>u.pop)){Object.values(FBUI).forEach(u=>u.pop=false);fbPaint()}});
+for(const e of ['scroll','resize'])window.addEventListener(e,()=>FBX.forEach((h,s)=>{if(h.pop&&!h.pop.hidden)fbPlace(s)}),true);
 function fbPost(body){return api('/api/feedback',{method:'POST',body:JSON.stringify(body)})}
 async function fbSend(s,body,after){const u=FBUI[s.dataset.fp];if(u.busy)return;u.busy=true;
  try{const o=await fbPost(body);ST.feedback=Object.assign({},ST.feedback,{[s.dataset.fp]:o.view});Object.assign(u,after(o.view));fbPaint()}
- catch(e){toast('Not noted: '+e.message)}
+ catch(e){toast('Assistant couldn’t save that. Try again.',true)}
  u.busy=false}
-function fbDown(s){const v=ST.feedback[s.dataset.fp]||{},item={key:s.dataset.fkey,kind:s.dataset.fk};
- return fbSend(s,v.down?{...item,signal:'retract',amends:v.down}:{...item,signal:'thumbs_down'},w=>({reasons:!!w.down}))}
-function fbReason(s,reason){return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down',reason,amends:ST.feedback[s.dataset.fp].down},()=>({reasons:false}))}
+function fbUndo(s,id){return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'retract',amends:id},()=>({pop:false}))}
+function fbReason(s,reason){const v=ST.feedback[s.dataset.fp];
+ if(v.reason===reason){FBUI[s.dataset.fp].pop=false;return fbPaint()}
+ return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down',reason,amends:v.down},()=>({pop:false}))}
 function fbTell(s){const u=FBUI[s.dataset.fp];u.tell=true;fbPaint();FBX.get(s).x.querySelector('textarea').focus()}
 function fbSendTell(s){const u=FBUI[s.dataset.fp],words=(u.words||'').trim();if(!words)return toast('Write something to tell Assistant first.');
  return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'tell',words},()=>({tell:false,words:''}))}
 async function fbDraft(b){const s=b.closest('.sf-row').querySelector('.draft-fb .fb');
- try{await fbPost({key:s.dataset.fkey,kind:'draft',signal:'used_draft'})}catch(e){toast('Copied. Assistant couldn’t note that you used the draft.')}}
+ try{await fbPost({key:s.dataset.fkey,kind:'draft',signal:'used_draft'})}catch(e){toast('Copied. Assistant couldn’t record that you used the draft.')}}
 const TAB_IDS=[...document.querySelectorAll('#tabs .tab')].map(a=>a.dataset.t).filter(t=>t!=='all');
 function tabOf(id){if(TAB_IDS.includes(id)||id==='all')return id;const el=id?$(id):null,sec=el&&TAB_IDS.find(s=>$(s).contains(el));
  if(!sec)return TAB_IDS[0];for(let d=el;d;d=d.parentElement)if(d.tagName==='DETAILS')d.open=true;
