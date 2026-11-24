@@ -290,18 +290,18 @@ def test_keep_is_never_larger_than_the_cap(tree):
 
 
 @pytest.mark.parametrize("config, reason", [
-    ("{ not json", "config.json isn't valid JSON"),
-    ("[1, 2]", "config.json isn't a JSON object"),
-    ({"logs": "big"}, "logs in config.json isn't an object"),
-    ({"logs": ["cap_mb", 5]}, "logs in config.json isn't an object"),
-    ({"logs": {"cap_mb": "0"}}, 'logs.cap_mb in config.json is "0" in quotes, not a number'),
-    ({"logs": {"cap_mb": 20, "keep_mb": "2"}}, 'logs.keep_mb in config.json is "2" in quotes, not a number'),
-    ({"logs": {"cap_mb": True}}, "logs.cap_mb in config.json is true, not a number"),
-    ({"logs": {"cap_mb": None}}, "logs.cap_mb in config.json is null, not a number"),
-    ({"logs": {"keep_mb": [1]}}, "logs.keep_mb in config.json is [1], not a number"),
-    ({"logs": {"cap_mb": -5}}, "logs.cap_mb in config.json is -5, not a number of 0 or more"),
-    ('{"logs": {"cap_mb": NaN}}', "logs.cap_mb in config.json is NaN, not a number of 0 or more"),
-    ('{"logs": {"keep_mb": Infinity}}', "logs.keep_mb in config.json is Infinity, not a number of 0 or more"),
+    ("{ not json", "~/.assistant/config.json isn't valid JSON"),
+    ("[1, 2]", "~/.assistant/config.json isn't a JSON object"),
+    ({"logs": "big"}, "logs in ~/.assistant/config.json isn't an object"),
+    ({"logs": ["cap_mb", 5]}, "logs in ~/.assistant/config.json isn't an object"),
+    ({"logs": {"cap_mb": "0"}}, 'logs.cap_mb in ~/.assistant/config.json is "0" in quotes, not a number'),
+    ({"logs": {"cap_mb": 20, "keep_mb": "2"}}, 'logs.keep_mb in ~/.assistant/config.json is "2" in quotes, not a number'),
+    ({"logs": {"cap_mb": True}}, "logs.cap_mb in ~/.assistant/config.json is true, not a number"),
+    ({"logs": {"cap_mb": None}}, "logs.cap_mb in ~/.assistant/config.json is null, not a number"),
+    ({"logs": {"keep_mb": [1]}}, "logs.keep_mb in ~/.assistant/config.json is [1], not a number"),
+    ({"logs": {"cap_mb": -5}}, "logs.cap_mb in ~/.assistant/config.json is -5, not a number of 0 or more"),
+    ('{"logs": {"cap_mb": NaN}}', "logs.cap_mb in ~/.assistant/config.json is NaN, not a number of 0 or more"),
+    ('{"logs": {"keep_mb": Infinity}}', "logs.keep_mb in ~/.assistant/config.json is Infinity, not a number of 0 or more"),
 ])
 def test_a_setting_that_cannot_be_read_turns_trimming_off_and_says_why(tree, config, reason):
     assistant, claude = tree
@@ -322,7 +322,7 @@ def test_a_config_that_exists_but_cannot_be_read_turns_trimming_off(tree):
     _big(assistant / "a.log")
     summary = logcap.cap_logs(assistant, claude)
     assert summary["capped"] == []
-    assert summary["problem"].startswith("config.json can't be read")
+    assert summary["problem"].startswith("~/.assistant/config.json can't be read")
 
 
 def test_an_unreadable_setting_is_announced_once_per_reason_per_day(tree):
@@ -366,7 +366,7 @@ def test_with_no_logs_entry_the_first_run_trims_nothing_and_gives_a_notice(tree)
     small.write_bytes(b"x\n")
     summary = logcap.cap_logs(assistant, claude, now=1_000_000)
     assert summary["capped"] == []
-    assert summary["notice"] == {"trim_at": 1_000_000 + DAY, "cap": 20 * MB, "keep": 5 * MB,
+    assert summary["notice"] == {"trim_at": 1_000_000 + DAY, "cap": 20 * MB, "keep": 5 * MB, "saved": True,
                                  "names": ["a.log", "workspace-watcher.log"], "bytes": 44 * MB}
     assert all(p.stat().st_size == 22 * MB for p in big)
     state = assistant / "log-cap-state.json"
@@ -464,6 +464,7 @@ def test_a_state_file_that_cannot_be_written_never_trims(tree, monkeypatch):
     for now in (1_000_000, 1_000_000 + 5 * DAY):
         summary = logcap.cap_logs(assistant, claude, now=now)
         assert summary["capped"] == [] and summary["notice"] is not None
+        assert summary["notice"]["saved"] is False
     assert path.stat().st_size == 25 * MB + 13
     assert not list(assistant.glob("*.tmp"))
 

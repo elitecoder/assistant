@@ -412,17 +412,19 @@ def render_restart_alert() -> str:
 
 
 def render_log_trim_notice() -> str:
-    """A top-of-page notice while log trimming waits out its 24 hours. It sits
-    above the tab bar so it shows on every tab in both modes; the same card also
-    stays in the Awaiting input list. Amber, not the red error style."""
+    """Top-of-page notices about log trimming: the 24-hour notice before the
+    first trim, or why trimming is off or waiting. They sit above the tab bar so
+    they show on every tab in both modes; the same cards also stay in the
+    Awaiting input list. Amber, not the red error style."""
     cards = load_assistant_state().get("awaiting_input") or []
-    card = next((c for c in cards if isinstance(c, dict) and c.get("key") == "log-trim-notice"), None)
-    if not card:
-        return ""
-    return ('<div class="pulse-health pulse-warn log-trim-notice" role="status">'
-            '<span class="pulse-dot"></span>'
-            f'<span class="pulse-text"><strong>{e(card.get("title") or "Log trimming starts soon")}</strong> '
-            f'{e(card.get("detail") or "")}</span></div>')
+    bars = []
+    for card in cards:
+        if isinstance(card, dict) and card.get("key") in ("log-trim-notice", "log-trim-problem"):
+            bars.append('<div class="pulse-health pulse-warn log-trim-notice" role="status">'
+                        '<span class="pulse-dot"></span>'
+                        f'<span class="pulse-text"><strong>{e(card.get("title") or "Log trimming")}</strong> '
+                        f'{e(card.get("detail") or "")}</span></div>')
+    return "".join(bars)
 
 
 def render_metering_stats():

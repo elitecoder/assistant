@@ -3726,8 +3726,8 @@ CHECKS = (
     (
         'the pulse trims the logs before its first step',
         'bin/pulse.py',
-        '        log_trim_notice = cap_logs_safely()\n',
-        '        log_trim_notice = None\n',
+        '        log_cards = cap_logs_safely()\n',
+        '        log_cards = []\n',
         'tests/test_pulse.py::CapLogsTests::test_the_pulse_trims_an_oversized_log_before_its_first_step',
     ),
     (
@@ -3866,7 +3866,7 @@ CHECKS = (
     (
         "config.json that isn't valid JSON turns trimming off",
         'src/assistant/logcap.py',
-        '        return {**off, "problem": "config.json isn\'t valid JSON"}',
+        '        return {**off, "problem": "~/.assistant/config.json isn\'t valid JSON"}',
         '        return default',
         'tests/test_logcap.py::test_a_setting_that_cannot_be_read_turns_trimming_off_and_says_why',
     ),
@@ -3915,14 +3915,14 @@ CHECKS = (
     (
         'the log trim notice card has its own key',
         'bin/pulse.py',
-        '"key": "log-trim-notice",',
-        '"key": "log-trim",',
+        '        "key": "log-trim-notice",\n        "tier": "T3",\n        "title": f"Log trimming starts',
+        '        "key": "log-trim",\n        "tier": "T3",\n        "title": f"Log trimming starts',
         'tests/test_pulse.py::CapLogsTests::test_the_notice_card_says_plainly_what_will_be_deleted_and_how_to_opt_out',
     ),
     (
         'the pulse shows the log trim notice card',
         'bin/pulse.py',
-        '    if log_trim_notice:\n        awaiting_input.append(log_trim_card(log_trim_notice))\n',
+        '    awaiting_input.extend(log_cards)\n',
         '',
         'tests/test_pulse.py::CapLogsTests::test_the_pulse_shows_the_notice_card_while_it_waits_then_it_goes_away',
     ),
@@ -3953,6 +3953,48 @@ CHECKS = (
         'f\'{e(card.get("detail") or "")}</span></div>\')',
         'f\'{card.get("detail") or ""}</span></div>\')',
         'tests/test_pro_mode.py::test_the_log_trim_notice_is_absent_without_the_card_and_escapes_its_text',
+    ),
+    (
+        'the notice says when its start time could not be saved',
+        'src/assistant/logcap.py',
+        '                                     "saved": recorded,',
+        '                                     "saved": True,',
+        'tests/test_logcap.py::test_a_state_file_that_cannot_be_written_never_trims',
+    ),
+    (
+        'an unusable log setting gets its own card',
+        'bin/pulse.py',
+        '"key": "log-trim-problem",',
+        '"key": "log-trim-notice",',
+        'tests/test_pulse.py::CapLogsTests::test_an_unusable_setting_comes_back_as_its_own_card_with_a_fix',
+    ),
+    (
+        'the pulse shows the problem card while a setting is unusable',
+        'bin/pulse.py',
+        '        if summary["problem"]:\n            return [log_problem_card',
+        '        if False:\n            return [log_problem_card',
+        'tests/test_pulse.py::CapLogsTests::test_the_pulse_keeps_the_problem_card_until_the_setting_is_fixed',
+    ),
+    (
+        'an unsaved start time shows text with no deadline',
+        'bin/pulse.py',
+        '    if not notice.get("saved", True):\n',
+        '    if False:\n',
+        'tests/test_pulse.py::CapLogsTests::test_a_start_time_that_cannot_be_saved_shows_text_with_no_deadline',
+    ),
+    (
+        'a quoted number gets the "write it without quotes" fix',
+        'bin/pulse.py',
+        '    if "in quotes" in problem:\n',
+        '    if False:\n',
+        'tests/test_pulse.py::CapLogsTests::test_an_unusable_setting_comes_back_as_its_own_card_with_a_fix',
+    ),
+    (
+        'the dashboard bar shows the log trimming problem',
+        'bin/render-assistant-page.py',
+        '("log-trim-notice", "log-trim-problem")',
+        '("log-trim-notice",)',
+        'tests/test_pro_mode.py::test_a_log_trimming_problem_shows_above_the_tabs_in_both_modes',
     ),
 )
 

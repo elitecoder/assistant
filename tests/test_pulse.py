@@ -886,7 +886,7 @@ class CapLogsTests(unittest.TestCase):
         self.assertIn("trimmed 1 log, deleted 20 MB of older lines", seen.output[0])
         with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary()), \
                 self.assertNoLogs(self.mod.log, "INFO"):
-            self.assertIsNone(self.mod.cap_logs_safely())
+            self.assertEqual(self.mod.cap_logs_safely(), [])
 
     def test_an_unusable_setting_is_logged_once_with_its_reason(self):
         reason = 'logs.cap_mb in config.json is "0" in quotes, not a number'
@@ -921,10 +921,48 @@ class CapLogsTests(unittest.TestCase):
         self.assertTrue(card["title"].startswith("Log trimming starts today at "))
         self.assertTrue(card["detail"].startswith("1 log is over 20 MB (30 MB in all)"))
 
-    def test_the_notice_comes_back_from_cap_logs_safely(self):
-        notice = {"trim_at": 1.0}
+    def test_the_notice_comes_back_from_cap_logs_safely_as_a_card(self):
+        notice = {"trim_at": time.time(), "cap": 20 * self.MB, "keep": 5 * self.MB,
+                  "names": ["a"], "bytes": 30 * self.MB, "saved": True}
         with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary(notice=notice)):
-            self.assertIs(self.mod.cap_logs_safely(), notice)
+            cards = self.mod.cap_logs_safely()
+        self.assertEqual([c["key"] for c in cards], ["log-trim-notice"])
+
+    def test_a_start_time_that_cannot_be_saved_shows_text_with_no_deadline(self):
+        notice = {"trim_at": time.time(), "cap": 20 * self.MB, "keep": 5 * self.MB,
+                  "names": ["a"], "bytes": 30 * self.MB, "saved": False}
+        self.assertEqual(self.mod.log_trim_card(notice), {
+            "key": "log-trim-notice", "tier": "T3", "title": "Log trimming is waiting",
+            "detail": "Assistant can't save ~/.assistant/log-cap-state.json, so it won't trim "
+                      "anything. Check that the folder can be written to."})
+
+    def test_an_unusable_setting_comes_back_as_its_own_card_with_a_fix(self):
+        cases = {
+            'logs.cap_mb in ~/.assistant/config.json is "20" in quotes, not a number':
+                "Write it without quotes, or remove the logs entry to use the defaults.",
+            "~/.assistant/config.json isn't valid JSON":
+                "Check the file with python3 -m json.tool ~/.assistant/config.json.",
+            "~/.assistant/config.json can't be read (Is a directory)":
+                "Check the file with python3 -m json.tool ~/.assistant/config.json.",
+            "logs.cap_mb in ~/.assistant/config.json is -5, not a number of 0 or more":
+                "Fix it, or remove the logs entry to use the defaults.",
+        }
+        for problem, fix in cases.items():
+            with mock.patch.object(self.mod.logcap, "cap_logs",
+                                   return_value=self._summary(problem=problem, announce=False)):
+                cards = self.mod.cap_logs_safely()
+            self.assertEqual(cards, [{
+                "key": "log-trim-problem", "tier": "T3", "title": "Log trimming is off",
+                "detail": f"Trimming stays off until this is fixed: {problem}. {fix}"}])
+
+    def test_the_pulse_keeps_the_problem_card_until_the_setting_is_fixed(self):
+        config = self._tmp / ".assistant" / "config.json"
+        _, cards = self._pulse_state({"logs": {"cap_mb": "20"}})
+        self.assertEqual([c["key"] for c in cards], ["log-trim-problem"])
+        _, again = self._pulse_state({"logs": {"cap_mb": "20"}})          # the log line is once a day; the card isn't
+        self.assertEqual([c["key"] for c in again], ["log-trim-problem"])
+        _, fixed = self._pulse_state({"logs": {"cap_mb": 20}})
+        self.assertEqual(fixed, [])
 
     def _pulse_state(self, config):
         """Run a pulse with a 30 MB log and `config` for config.json; return the awaiting cards."""
@@ -941,7 +979,7 @@ class CapLogsTests(unittest.TestCase):
         with self._patched(run={"side_effect": run}):
             sys.argv = ["pulse.py"]
             self.assertEqual(self.mod.main(), 0)
-        return big, [c for c in sent[-1]["awaiting_input"] if c["key"] == "log-trim-notice"]
+        return big, [c for c in sent[-1]["awaiting_input"] if c["key"].startswith("log-trim")]
 
     def test_the_pulse_shows_the_notice_card_while_it_waits_then_it_goes_away(self):
         big, cards = self._pulse_state({"mode": "pro"})

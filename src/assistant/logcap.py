@@ -39,11 +39,11 @@ def _bad_number(name: str, value) -> str | None:
     """Why a setting isn't usable, or None when it is a finite number >= 0.
     A bool is not a number here."""
     if isinstance(value, str):
-        return f"logs.{name} in config.json is {json.dumps(value)} in quotes, not a number"
+        return f"logs.{name} in ~/.assistant/config.json is {json.dumps(value)} in quotes, not a number"
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return f"logs.{name} in config.json is {json.dumps(value)}, not a number"
+        return f"logs.{name} in ~/.assistant/config.json is {json.dumps(value)}, not a number"
     if not math.isfinite(value) or value < 0:
-        return f"logs.{name} in config.json is {json.dumps(value)}, not a number of 0 or more"
+        return f"logs.{name} in ~/.assistant/config.json is {json.dumps(value)}, not a number of 0 or more"
     return None
 
 
@@ -64,18 +64,18 @@ def settings(assistant_dir: Path | str) -> dict:
     except FileNotFoundError:
         return default
     except OSError as exc:
-        return {**off, "problem": f"config.json can't be read ({exc.strerror or type(exc).__name__})"}
+        return {**off, "problem": f"~/.assistant/config.json can't be read ({exc.strerror or type(exc).__name__})"}
     try:
         data = json.loads(text)
     except ValueError:
-        return {**off, "problem": "config.json isn't valid JSON"}
+        return {**off, "problem": "~/.assistant/config.json isn't valid JSON"}
     if not isinstance(data, dict):
-        return {**off, "problem": "config.json isn't a JSON object"}
+        return {**off, "problem": "~/.assistant/config.json isn't a JSON object"}
     if "logs" not in data:
         return default
     section = data["logs"]
     if not isinstance(section, dict):
-        return {**off, "problem": "logs in config.json isn't an object"}
+        return {**off, "problem": "logs in ~/.assistant/config.json isn't an object"}
     values = {}
     for name, fallback in (("cap_mb", DEFAULT_CAP_MB), ("keep_mb", DEFAULT_KEEP_MB)):
         if name in section:
@@ -243,6 +243,7 @@ def cap_logs(assistant_dir: Path | str, claude_dir: Path | str, now: float | Non
                 recorded = True
             if not recorded or now - first < DAY_SEC:
                 summary["notice"] = {"trim_at": first + DAY_SEC, "cap": cap, "keep": keep,
+                                     "saved": recorded,
                                      "names": [p.name for p, _ in over],
                                      "bytes": sum(n for _, n in over)}
                 return summary

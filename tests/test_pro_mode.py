@@ -404,6 +404,56 @@ def test_the_log_trim_notice_is_absent_without_the_card_and_escapes_its_text(hom
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in top and "a &lt;b&gt;bold&lt;/b&gt; &amp; more" in top
 
 
+PROBLEM = {"key": "log-trim-problem", "tier": "T3", "title": "Log trimming is off",
+           "detail": 'Trimming stays off until this is fixed: logs.cap_mb in ~/.assistant/config.json is '
+                     '"20" in quotes, not a number. Write it without quotes, or remove the logs entry '
+                     'to use the defaults.'}
+WAITING = {"key": "log-trim-notice", "tier": "T3", "title": "Log trimming is waiting",
+           "detail": "Assistant can't save ~/.assistant/log-cap-state.json, so it won't trim anything. "
+                     "Check that the folder can be written to."}
+
+
+@pytest.mark.parametrize("pro", [False, True])
+@pytest.mark.parametrize("card, plain", [
+    (PROBLEM, 'Log trimming is off Trimming stays off until this is fixed: logs.cap_mb in '
+              '~/.assistant/config.json is "20" in quotes, not a number. Write it without quotes, or '
+              'remove the logs entry to use the defaults.'),
+    (WAITING, "Log trimming is waiting Assistant can't save ~/.assistant/log-cap-state.json, so it "
+              "won't trim anything. Check that the folder can be written to."),
+])
+def test_a_log_trimming_problem_shows_above_the_tabs_in_both_modes(home, pro, card, plain):
+    import html
+    import re
+    if pro:
+        set_mode(home, "pro")
+    top = _above_the_tabs(render_page(home, {"awaiting_input": [card]}))
+    bar = top[top.index('<div class="pulse-health pulse-warn log-trim-notice"'):]
+    bar = bar[:bar.index("</div>")]
+    assert html.unescape(re.sub(r"<[^>]+>", "", bar)) == plain
+    assert "pulse-bad" not in bar
+    assert "starts tomorrow" not in bar                 # no deadline for either message
+
+
+def test_the_problem_and_the_notice_can_show_together_and_go_away_when_fixed(home):
+    top = _above_the_tabs(render_page(home, {"awaiting_input": [NOTICE, PROBLEM]}))
+    assert top.count('log-trim-notice" role="status"') == 2
+    gone = _above_the_tabs(render_page(home, {"awaiting_input": []}))
+    assert "log-trim-notice" not in gone and "Log trimming is off" not in gone
+
+
+def test_a_problem_card_escapes_its_text(home):
+    evil = dict(PROBLEM, title="<i>off</i>", detail="a <script>x</script> & b")
+    top = _above_the_tabs(render_page(home, {"awaiting_input": [evil]}))
+    assert "<script>x</script>" not in top and "<i>off</i>" not in top
+    assert "a &lt;script&gt;x&lt;/script&gt; &amp; b" in top
+
+
+def test_the_problem_card_also_stays_in_the_awaiting_list(home):
+    set_mode(home, "pro")
+    page = render_page(home, {"awaiting_input": [PROBLEM]})
+    assert "Log trimming is off" in page[page.index('<div class="tabs">'):]
+
+
 def test_the_log_trim_notice_also_stays_in_the_awaiting_list(home):
     set_mode(home, "pro")                  # the Awaiting input tab is a Pro tab
     page = render_page(home, {"awaiting_input": [NOTICE]})
