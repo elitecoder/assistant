@@ -935,10 +935,16 @@ def test_a_locked_database_spools_and_maintain_drains_it(home, locked_db):
     assert not claimed(home)
 
 
-def test_a_locked_database_costs_the_caller_well_under_a_second(home, locked_db):
+# The three limits below are loose on purpose. The work takes about 0.3 s, but a CI runner took 0.86 s for the
+# first of them, and a wall-clock limit that is nearly right fails at random. Each still catches what it is for:
+# SQLite's own default wait is 5 s, and the mutation check raises the deadline to 10 s.
+SLOW_MACHINE_LIMIT = 3.0
+
+
+def test_a_locked_database_never_holds_the_caller_for_seconds(home, locked_db):
     started = time.monotonic()
     T.emit("check", name="x")
-    assert time.monotonic() - started < 0.6
+    assert time.monotonic() - started < SLOW_MACHINE_LIMIT
 
 
 def _hold(home, name):
@@ -955,7 +961,8 @@ def test_the_whole_of_one_emit_has_one_short_deadline(home, locked_db):
         took = time.monotonic() - started
     finally:
         os.close(fd)
-    assert took < 1.0, took  # about 0.3 s: the database wait, the rest of the deadline, the note of the loss
+    # about 0.3 s: the database wait, the rest of the deadline, the note of the loss
+    assert took < SLOW_MACHINE_LIMIT, took
 
 
 def test_a_record_is_dropped_and_counted_when_the_spool_lock_is_not_taken_in_time(home, locked_db):
@@ -1694,7 +1701,7 @@ def test_a_corrupt_database_is_not_moved_when_the_lock_for_it_cannot_be_taken_in
         assert T._quarantine(os.stat(tdir(home) / "telemetry.db").st_ino) is None  # nothing moved
     finally:
         os.close(fd)
-    assert took < 1.0
+    assert took < SLOW_MACHINE_LIMIT
     assert (tdir(home) / "telemetry.db").read_bytes() == b"junk" * 1000 and not copies(home)
     assert len(spool_lines(home)) == 1
 

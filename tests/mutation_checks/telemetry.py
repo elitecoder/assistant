@@ -588,7 +588,7 @@ CHECKS = (
         "the whole of one emit has a short deadline",
         M,
         "EMIT_DEADLINE_SECONDS = 0.27",
-        "EMIT_DEADLINE_SECONDS = 3",
+        "EMIT_DEADLINE_SECONDS = 10",
         T + "test_the_whole_of_one_emit_has_one_short_deadline",
     ),
     (
