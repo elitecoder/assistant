@@ -20,6 +20,7 @@ Standard library plus `assistant.effects` and `assistant.pointers`; it loads on 
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import time
@@ -123,7 +124,9 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         last = effects.last(CLASS, target)
         if last and last["outcome"] == "unknown":
             raise Refused("unknown", UNKNOWN)
-    auth = {"kind": kind, "ref": ref, "at": _iso(now if anchor is None else anchor)}
+    # Recorded to the second, and rounded up when it is "now": rounded down it could fall before the result of a
+    # typing that finished a moment ago, and the ledger would take it for an approval older than that result.
+    auth = {"kind": kind, "ref": ref, "at": _iso(math.ceil(now) if anchor is None else anchor)}
     try:
         return effects.begin(CLASS, target, auth, trace=trace if pointers.is_trace_id(trace) else "",
                              component=component)

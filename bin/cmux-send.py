@@ -12,7 +12,12 @@ The script:
      form). NEVER `cmux send --workspace <ws>` (picks "active" surface — for
      workspaces with a browser-preview pane on top of the claude PTY, that's
      the browser).
-  3. Logs every call to ~/.assistant/sends.jsonl, structured, no
+  3. Records the intent in the effects ledger (~/.assistant/effects) before the first keystroke and the result after.
+     No record, no typing: when the intent can't be written, or the same text has been typed into the same
+     session three times in half an hour, nothing is sent and the script exits 4. The record is made here, not in
+     each caller, so nothing can type through this script unrecorded. It holds the session and where the text came
+     from (--source), never the text.
+  4. Logs every call to ~/.assistant/sends.jsonl, structured, no
      interpretation. Includes target ws/title/surface/tty, the literal text,
      the RPC return values, and — load-bearing — the post-send transcript
      byte delta. Size unchanged after the send means cmux returned OK but
@@ -29,12 +34,16 @@ reach claude.
 Usage:
   cmux-send.py --ws workspace:N --text "/merge-when-ready 10362" [--enter]
                 [--caller "merge-pr-dispatch.py"] [--no-log]
+                [--source merge] [--auth-kind tap|standing] [--auth-ref cli:cmux-send] [--task td-N]
+
+  Run by hand it counts as a person's tap (the defaults). A script that runs it says what allowed the typing.
 
 Exit codes:
   0  — text and Enter both delivered successfully (no claim about ingest)
   1  — could not resolve a terminal surface for the workspace
   2  — RPC error from cmux
   3  — usage error
+  4  — refused: the intent couldn't be recorded, or this is a loop, or it was already typed (nothing was sent)
 
 Output: JSON with the same record written to sends.jsonl, on stdout.
 """
@@ -45,6 +54,10 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from assistant import session_effects  # noqa: E402
 
 CMUX = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
 WORLD = os.path.expanduser("~/.claude/cache/world.json")
@@ -134,6 +147,11 @@ def main():
                    help="press Enter after sending text (default: do not press Enter)")
     p.add_argument("--caller", default=os.path.basename(sys.argv[0]),
                    help="who is calling — recorded in the log")
+    p.add_argument("--source", default="cli", help="where the text comes from, a fixed name (recorded)")
+    p.add_argument("--auth-kind", default="tap", choices=("tap", "standing", "owner_flag"),
+                   help="what allowed the typing: a person's tap, a standing setting, or a task's flag")
+    p.add_argument("--auth-ref", default="cli:cmux-send", help="a pointer to what allowed it (recorded)")
+    p.add_argument("--task", default="", help="the task this is for, td-N (recorded)")
     p.add_argument("--no-log", action="store_true",
                    help="do not append to sends.jsonl (for debug runs)")
     p.add_argument("--post-send-wait", type=float, default=2.5,
@@ -172,45 +190,73 @@ def main():
         print(json.dumps(record, indent=2))
         sys.exit(1)
 
-    # Step 1: send_text
-    rc1, body1 = rpc("surface.send_text", {"surface_id": surface_id, "text": args.text})
-    record["rpc_send_text"] = {"rc": rc1, "body": body1}
-    if rc1 != 0:
-        record["outcome"] = "rpc_send_text_failed"
-        size_after = file_size(transcript_path)
-        record["transcript_size_after"] = size_after
-        record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
+    # The intent goes to disk before the first keystroke; without it nothing is typed.
+    try:
+        effect_id = session_effects.begin(
+            args.ws, args.source, kind=args.auth_kind, ref=args.auth_ref, task=args.task,
+            component=os.path.basename(args.caller)[:64] or "cmux-send")
+    except session_effects.Refused as refusal:
+        record["outcome"] = "refused"
+        record["refused"] = {"code": refusal.code, "reason": str(refusal)}
+        record["transcript_size_after"] = size_before
+        record["transcript_size_delta"] = 0
         if not args.no_log:
             append_log(record)
         print(json.dumps(record, indent=2))
-        sys.exit(2)
+        print(f"cmux-send: {refusal}", file=sys.stderr)
+        sys.exit(4)
+
+    # What cmux answered to each keystroke call, for the log. A timeout is "can't tell": the call may have landed.
+    answers = {}
+
+    def transport(method, payload):
+        rc, body = rpc(method, payload)
+        answers[method] = (rc, body)
+        if rc == 124:
+            raise TimeoutError(method)
+        return body if rc == 0 else None
+
+    keys = session_effects.Keys(transport, surface_id)
+
+    def press(call, *args_):
+        try:
+            return call(*args_)
+        except TimeoutError:
+            return False
+
+    def end(outcome, code):
+        """Close the effect, say how it ended, and exit."""
+        record["outcome"] = outcome
+        size_after = file_size(transcript_path)
+        record["transcript_size_after"] = size_after
+        record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
+        # "verified" is only said when there was a transcript to watch: it grew, or it didn't.
+        session_effects.finish(effect_id, keys.outcome(),
+                               verified=record["transcript_size_delta"] > 0 if size_before is not None else None,
+                               error="" if code == 0 else "timeout" if keys.raised else "tool failed")
+        if code == 0:
+            record["wall_ms"] = int((time.time() - started_at) * 1000)
+        if not args.no_log:
+            append_log(record)
+        print(json.dumps(record, indent=2))
+        sys.exit(code)
+
+    # Step 1: send_text
+    ok = press(keys.text, args.text)
+    record["rpc_send_text"] = dict(zip(("rc", "body"), answers["surface.send_text"]))
+    if not ok:
+        end("rpc_send_text_failed", 2)
 
     # Step 2 (optional): send_key Enter
     if args.enter:
-        rc2, body2 = rpc("surface.send_key", {"surface_id": surface_id, "key": "enter"})
-        record["rpc_send_key"] = {"rc": rc2, "body": body2}
-        if rc2 != 0:
-            record["outcome"] = "rpc_send_key_failed"
-            size_after = file_size(transcript_path)
-            record["transcript_size_after"] = size_after
-            record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
-            if not args.no_log:
-                append_log(record)
-            print(json.dumps(record, indent=2))
-            sys.exit(2)
+        ok = press(keys.key, "enter")
+        record["rpc_send_key"] = dict(zip(("rc", "body"), answers["surface.send_key"]))
+        if not ok:
+            end("rpc_send_key_failed", 2)
 
     # Wait for claude to ingest + flush before stat'ing
     time.sleep(args.post_send_wait)
-    size_after = file_size(transcript_path)
-    record["transcript_size_after"] = size_after
-    record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
-    record["wall_ms"] = int((time.time() - started_at) * 1000)
-    record["outcome"] = "sent"
-
-    if not args.no_log:
-        append_log(record)
-    print(json.dumps(record, indent=2))
-    sys.exit(0)
+    end("sent", 0)
 
 
 if __name__ == "__main__":

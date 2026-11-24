@@ -432,7 +432,7 @@ def run_merge_pr_dispatch(ws_ref: str, pr, refactor_attested: bool,
     router, and send-verify. On any failure to run it, return an awaiting
     card so the workspace surfaces rather than silently stalling."""
     cmd = [sys.executable, str(BIN / "merge-pr-dispatch.py"),
-           "--ws", ws_ref, "--pr", str(pr)]
+           "--ws", ws_ref, "--pr", str(pr), "--authorized-by", "standing"]
     if refactor_attested:
         cmd.append("--refactor-attested")
     if e2e_attested:
@@ -1816,12 +1816,17 @@ def cmux_send(ws_ref: str, text: str, *, caller: str = "assistant-pulse") -> dic
     """Returns the parsed JSON record cmux-send.py wrote (which captures
     rpc results and transcript-byte delta). On failure returns
     {'outcome': 'failed', 'transcript_size_delta': 0}."""
+    # What allowed this is the standing Pro-mode setting; the ledger records which fixed nudge it was, not its text.
+    source = {"/cleanup": "cleanup", SAFE_STRANDED_NUDGE: "nudge:stranded"}.get(text, "pulse")
     rc, out, err = run([
         sys.executable, str(BIN / "cmux-send.py"),
         "--ws", ws_ref,
         "--text", text,
         "--enter",
         "--caller", caller,
+        "--source", source,
+        "--auth-kind", "standing",
+        "--auth-ref", source,
     ])
     if rc != 0:
         log.warning("cmux-send %s rc=%d: %s", ws_ref, rc, err.strip()[-200:])

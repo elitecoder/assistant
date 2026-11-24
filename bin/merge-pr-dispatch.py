@@ -233,7 +233,7 @@ def step1_ci_route(pr):
     }
 
 
-def step2_send_and_verify(ws_ref, slash_command):
+def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
     """Returns (ok, observed_last_user_text).
 
     Delegates the actual send to bin/cmux-send.py — the single sanctioned
@@ -249,6 +249,10 @@ def step2_send_and_verify(ws_ref, slash_command):
             "--text", slash_command,
             "--enter",
             "--caller", "merge-pr-dispatch.py",
+            # What allowed the typing: the pulse's standing Pro-mode setting, or a person running this by hand.
+            "--source", "merge",
+            "--auth-kind", authorized_by,
+            "--auth-ref", "merge",
         ],
         capture_output=True, text=True, timeout=20,
     )
@@ -258,7 +262,8 @@ def step2_send_and_verify(ws_ref, slash_command):
         return False, f"cmux_send_bad_output: {send.stdout[:200]}{send.stderr[:200]}"
     outcome = send_record.get("outcome", "")
     if send.returncode != 0:
-        return False, f"cmux_send_exit_{send.returncode}_outcome={outcome}: {send_record.get('rpc_send_text',{}).get('body','')[:200]}"
+        why = (send_record.get("refused") or {}).get("reason") or send_record.get("rpc_send_text", {}).get("body", "")
+        return False, f"cmux_send_exit_{send.returncode}_outcome={outcome}: {why[:200]}"
 
     # Pre-check: did the transcript actually grow? cmux-send already
     # waited 2.5s post-send. If size_delta is 0, the keystrokes did not
@@ -323,6 +328,8 @@ def main():
                    help="Dispatcher claims the workspace transcript shows full local G3 + unit suite green")
     p.add_argument("--e2e-attested", action="store_true",
                    help="Dispatcher claims the workspace transcript shows pnpm e2e:squirrel passed (required for Squirrel PRs)")
+    p.add_argument("--authorized-by", choices=("tap", "standing"), default="tap",
+                   help="what allowed the typing: a person running this (default) or the pulse's standing setting")
     args = p.parse_args()
 
     if not re.fullmatch(r"workspace:\d+", args.ws):
@@ -377,7 +384,7 @@ def main():
     # Step 2 — send + verify
     slash = f"/{skill} {args.pr}"
     out["step2"] = {"slash_command": slash, "ws": args.ws}
-    submitted, observed = step2_send_and_verify(args.ws, slash)
+    submitted, observed = step2_send_and_verify(args.ws, slash, args.authorized_by)
     out["step2"]["submitted"] = submitted
     out["step2"]["observed_last_user_text"] = observed
 
