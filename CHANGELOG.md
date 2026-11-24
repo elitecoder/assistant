@@ -174,6 +174,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Stop one silent connection from freezing the dashboard. The dashboard's server answers one connection at a
+  time, and a connection that opened and sent nothing held it for as long as it stayed open; browsers keep
+  spare connections like that. Such a connection is now dropped after two seconds of silence.
 - Stop a Slack thread from reading as instructions to the agent. The thread in
   a saved task now sits between marker lines with a code made for that task,
   under rules that tell the agent it is content to act on and never
