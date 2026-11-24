@@ -3703,8 +3703,8 @@ CHECKS = (
     (
         'the log capper starts the kept tail at a line boundary',
         'src/assistant/logcap.py',
-        '        if start > 0:\n',
-        '        if False:\n',
+        '        tail = tail[newline + 1:] if newline != -1 else b""\n',
+        '        tail = tail if newline != -1 else b""\n',
         'tests/test_logcap.py::test_a_25mb_log_is_cut_to_its_last_5mb_and_the_tail_moves_to_dot_1',
     ),
     (

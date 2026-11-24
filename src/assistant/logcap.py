@@ -82,10 +82,9 @@ def _cap_one(path: Path, cap: int, keep: int) -> int:
                 break
             chunks.append(chunk)
         tail = b"".join(chunks)
-        if start > 0:
-            # Drop the cut-through line at the front.
-            newline = tail.find(b"\n")
-            tail = tail[newline + 1:] if newline != -1 else b""
+        # The cut falls inside a line (keep <= cap < size, so start > 0); drop it.
+        newline = tail.find(b"\n")
+        tail = tail[newline + 1:] if newline != -1 else b""
         archive = path.with_name(path.name + ".1")
         tmp = path.with_name(path.name + ".1.tmp")
         tmp_fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
