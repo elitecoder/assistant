@@ -16,6 +16,7 @@
 // (operator rule: never send Slack messages on the user's behalf).
 //
 // Tokens come from the environment (launcher sources ~/.zprofile); never hardcoded.
+import './safe-output-boot.js' // must stay first: it installs the secret-redacting output wrappers
 import boltPkg from '@slack/bolt'
 import { WebClient } from '@slack/web-api'
 import fs from 'fs'
