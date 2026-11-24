@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from tempfile import TemporaryDirectory
 
 
 REPO = Path(__file__).resolve().parents[1]
+CHECKS_DIR = Path(__file__).resolve().parent / "mutation_checks"
 TEST_TIMEOUT_SEC = 90
 CHECKS = (
     (
@@ -5100,6 +5102,48 @@ def run_check(name: str, filename: str, original: str, broken: str, selector: st
             "seconds": round(time.monotonic() - started, 1)}
 
 
+def checks_in(folder: Path) -> tuple:
+    """The checks kept in `folder`, one file per change, in file-name order. Each file defines CHECKS, a tuple of
+    the same five-part entries as the list above. A change that adds its checks in a file of its own never edits
+    lines another change is editing, so two changes in progress can't conflict or run their entries together.
+    A file whose name starts with "." or "_" isn't read: editors and macOS leave such files behind."""
+    found: list = []
+    for path in sorted(folder.glob("*.py")):
+        if path.name.startswith((".", "_")):
+            continue
+        spec = importlib.util.spec_from_file_location(f"mutation_checks_{path.stem}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        checks = getattr(module, "CHECKS", None)
+        if not isinstance(checks, tuple):
+            raise ValueError(f"{path.name} must define CHECKS as a tuple of checks")
+        found += well_formed(checks, f"{path.name}: ")
+    return tuple(found)
+
+
+def well_formed(checks: tuple, where: str = "") -> tuple:
+    """`checks`, once every entry is (name, file, original, broken, test) and no two share a name: five strings,
+    none empty except a `broken` that deletes the original, and a `broken` that differs from the original. A merge
+    once joined two entries into one of ten parts; the file still loaded, and nothing said so until a check ran.
+    `where` starts each complaint, so a file of checks is named."""
+    names: set = set()
+    for n, check in enumerate(checks, 1):
+        if isinstance(check, str):
+            raise ValueError(f"{where}mutation check {n} is a single string, not five. A list of one check needs a "
+                             "comma after it: CHECKS = ((name, file, original, broken, test),)")
+        if not isinstance(check, tuple) or len(check) != 5 or not all(isinstance(part, str) for part in check) \
+                or not all(check[i] for i in (0, 1, 2, 4)) or check[2] == check[3]:
+            raise ValueError(f"{where}mutation check {n} isn't (name, file, original, broken, test) with a broken "
+                             f"that differs from the original: {str(check)[:120]}")
+        if check[0] in names:
+            raise ValueError(f"{where}two mutation checks are named {check[0]!r}")
+        names.add(check[0])
+    return checks
+
+
+CHECKS = well_formed(CHECKS + checks_in(CHECKS_DIR))
+
+
 def shard(spec: str) -> tuple:
     """The checks for shard "i/n": every n-th check from the i-th, so shards 1/n through n/n run each check once."""
     found = re.fullmatch(r"([1-9][0-9]*)/([1-9][0-9]*)", spec)
@@ -5125,7 +5169,13 @@ def main(argv: list[str] | None = None):
                         help="run only shard I of N; the N shards together run every check once")
     parser.add_argument("--workers", type=workers, default=1, metavar="N",
                         help="run N checks at a time; each check works in its own copy of the sources and its own home")
+    parser.add_argument("--name", default="", metavar="TEXT",
+                        help="run only the checks whose name contains TEXT, to try the ones you just wrote")
     args = parser.parse_args(argv)
+    if args.name:
+        args.shard = tuple(check for check in args.shard if args.name in check[0])
+        if not args.shard:
+            parser.error(f"no check's name contains {args.name!r}")
     baselines = Baselines()
     if args.workers == 1:
         results = [run_check(*check, baselines) for check in args.shard]
