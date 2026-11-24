@@ -34,7 +34,9 @@ if sys.version_info < (3, 11):
           file=sys.stderr)
     sys.exit(0)
 
+import contextlib
 import errno
+import http.client
 import http.server
 import ipaddress
 import json
@@ -56,7 +58,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from assistant import mode, todostore
+from assistant import effects, mode, pointers, todostore
 
 from work_queue import config, page, refresh, tools, traces
 from work_queue.inputs import slack
@@ -94,6 +96,7 @@ WORKSPACE = re.compile(r"workspace:\d+")
 WINDOW = re.compile(r"window:\d+")
 THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_-]{0,63}")
 GMAIL_ACTIONS = {"archive": ("--remove", "INBOX"), "read": ("--remove", "UNREAD"), "unarchive": ("--add", "INBOX")}
+GMAIL_EFFECTS = {"archive": "gmail.archive", "read": "gmail.mark_read", "unarchive": "gmail.unarchive"}
 CMUX_TIMEOUT = 15
 SAVE_PATH = re.compile(r"/archives/([CDG][A-Z0-9]{8,11})/p(\d{10})(\d{6})")
 URL_MAX = 1000
@@ -401,6 +404,53 @@ def thread_labels(account: str, tid: str) -> list[set] | None:
     return [set(m.get("labelIds") or []) for m in messages]
 
 
+# Each is shown after "Not done: " or "Failed: " on the page, so none ends with a full stop.
+UNRECORDED = "Assistant couldn't record this action, so it didn't run it. Check that your disk isn't full, then try again"
+IN_PROGRESS = "This is already in progress, or Assistant stopped partway through it. Try again in ten minutes"
+UNAPPROVED = ("Assistant couldn't confirm your approval for this, so it didn't run it. "
+              "Approve it again, then select Apply approvals")
+ALREADY_DONE = "This was already done and can't be undone, so it wasn't run again"
+SENT_UNHEARD = ("Assistant sent this but didn't hear back, so it may have gone through. "
+                "Approve it again to send it once more")
+FAULT = "Assistant couldn't record this action, so it didn't run it. This is a fault in Assistant, not something you did"
+
+
+def begin_effect(effect_class: str, target: dict, kind: str, ref: str, at, undoes: str = ""):
+    """Record the intent to change something outside Assistant. Returns (effect id, None) when the caller may act, or
+    ("", (status code, plain sentence)) when it must not: the action isn't recorded, is in progress, isn't approved,
+    or is a target the record can't describe (a fault in Assistant, so it says so on stderr, without content)."""
+    try:
+        # The row's trace id goes here (trace="") once rows carry one.
+        return effects.begin(effect_class, target, {"kind": kind, "ref": ref, "at": at}, trace="",
+                             component="work-queue", undoes=undoes), None
+    except effects.Duplicate as exc:
+        return "", (409, ALREADY_DONE if exc.done else SENT_UNHEARD if exc.unknown else IN_PROGRESS)
+    except effects.NotAuthorized:
+        return "", (403, UNAPPROVED)
+    except effects.Unrecorded:
+        return "", (503, UNRECORDED)
+    except ValueError as exc:
+        print(f"work-queue: couldn't describe a {effect_class} effect to record: {exc}", file=sys.stderr)
+        return "", (500, FAULT)
+
+
+def finish_effect(ef: str, outcome: str, verified=None, error: str = "") -> None:
+    """Record how an effect ended; nothing to record when there was no effect (a conversation with no messages)."""
+    if ef:
+        effects.finish(ef, outcome, verified=verified, error=error)
+
+
+@contextlib.contextmanager
+def effect_guard(ef: str):
+    """An error nobody expected between the intent and the result leaves the effect unknown, not open for ten
+    minutes and not failed: the action may have gone out before the error. Then it goes on up as it would have."""
+    try:
+        yield
+    except Exception:
+        finish_effect(ef, "unknown", error="other")
+        raise
+
+
 def gmail_error(found) -> str:
     error = found.get("error") if isinstance(found, dict) else None
     return text(error.get("message")) if isinstance(error, dict) else "gog answered in an unexpected format"
@@ -418,14 +468,24 @@ def gmail_action(body: dict):
         return 404, {"error": "That email isn't on the page from the last refresh, or its account isn't linked"}
     account, tid = found
     flag, label = GMAIL_ACTIONS[action]
-    changed = gog("gmail", "thread", "modify", tid, flag, label, "-a", account)
-    if not isinstance(changed, dict) or changed.get("error"):
-        return 502, {"error": f"Gmail didn't make the change: {gmail_error(changed)}"}
-    labels = thread_labels(account, tid)
-    if labels is None:
-        return 502, {"error": "Gmail may have made the change, but reading it back failed, so it isn't confirmed"}
-    if not all((label in each) == (flag == "--add") for each in labels):
-        return 502, {"error": "Gmail still shows the conversation unchanged"}
+    cls, target = GMAIL_EFFECTS[action], {"account": account, "thread": tid}
+    ef, refusal = begin_effect(cls, target, "tap", "/api/gmail", now(),
+                               undoes=effects.latest_undoable(cls, target) if action == "unarchive" else "")
+    if refusal:
+        return refusal[0], {"error": refusal[1]}
+    with effect_guard(ef):
+        changed = gog("gmail", "thread", "modify", tid, flag, label, "-a", account)
+        if not isinstance(changed, dict) or changed.get("error"):
+            effects.finish(ef, "failed", error="tool failed")
+            return 502, {"error": f"Gmail didn't make the change: {gmail_error(changed)}"}
+        labels = thread_labels(account, tid)
+        if labels is None:
+            effects.finish(ef, "done")
+            return 502, {"error": "Gmail may have made the change, but reading it back failed, so it isn't confirmed"}
+        if not all((label in each) == (flag == "--add") for each in labels):
+            effects.finish(ef, "done", verified=False)
+            return 502, {"error": "Gmail still shows the conversation unchanged"}
+        effects.finish(ef, "done", verified=True)
     mark = EMAIL_MARK + key
     with lock, config.marks_lock():
         done, marks = read_map("mail-actions.json"), read_map("marks.json")
@@ -480,14 +540,31 @@ def apply_gmail(jobs) -> dict:
     out = {}
     for key, cand, undo in jobs:
         acct, ids = cand["account"], cand["msg_ids"]
-        errors = [r["error"].get("message", "gmail call failed") for mid in ids
-                  if (r := gog("gmail", "messages", "modify", mid, "--remove", "TRASH", "--add", "INBOX", "-a", acct)
-                      if undo else gog("gmail", "trash", mid, "-a", acct)).get("error")]
-        if errors:
-            out[key] = {"status": "error", "error": errors[0], "at": now()}
+        cls = "gmail.untrash" if undo else "gmail.trash"
+        target = {"account": acct, "msgs": ids, "row": pointers.row_pointer(key)}
+        # A conversation with no messages changes nothing outside Assistant, so there is nothing to record.
+        ef, refusal = begin_effect(cls, target, "decision", pointers.row_pointer(key), cand.get("decided_at"),
+                                   undoes=effects.latest_undoable(cls, target) if undo else "") if ids else ("", None)
+        if refusal and undo:
+            # The mail is still in Trash: keep the row done, with the reason, so the next Apply tries again.
+            out[key] = {**entry(read_map("applied.json"), key), "error": refusal[1]}
             continue
-        read = [message_labels(gog("gmail", "get", mid, "-a", acct)) for mid in ids]
-        verified = all(labels is not None and ("TRASH" in labels) != undo for labels in read)
+        if refusal:
+            out[key] = {"status": "error", "error": refusal[1], "at": now()}
+            continue
+        with effect_guard(ef):
+            errors = [r["error"].get("message", "gmail call failed") for mid in ids
+                      if (r := gog("gmail", "messages", "modify", mid, "--remove", "TRASH", "--add", "INBOX", "-a", acct)
+                          if undo else gog("gmail", "trash", mid, "-a", acct)).get("error")]
+            if errors:
+                finish_effect(ef, "failed", error="tool failed")
+                # A failed undo leaves the mail in Trash: keep the row done, with the reason, so the next Apply tries again.
+                out[key] = ({**entry(read_map("applied.json"), key), "error": errors[0]} if undo
+                            else {"status": "error", "error": errors[0], "at": now()})
+                continue
+            read = [message_labels(gog("gmail", "get", mid, "-a", acct)) for mid in ids]
+            verified = all(labels is not None and ("TRASH" in labels) != undo for labels in read)
+            finish_effect(ef, "done", verified=verified)
         out[key] = {"status": "undone" if undo else "done", "verified": verified, "at": now()}
     return out
 
@@ -522,17 +599,37 @@ def apply_unsub(jobs) -> dict:
         if reason := unsafe_target(cand["url"]):
             out[key] = {"status": "error", "error": reason, "at": now()}
             continue
+        row = pointers.row_pointer(key)
+        ef, refusal = begin_effect("mail.unsubscribe", {"row": row, "host": urllib.parse.urlsplit(cand["url"]).hostname},
+                                   "decision", row, cand.get("decided_at"))
+        if refusal and refusal[1] == ALREADY_DONE:
+            # It went through before, and applied.json has lost its entry: say so, and send nothing.
+            out[key] = {"status": "done", "verified": True, "at": now()}
+            continue
+        if refusal:
+            out[key] = {"status": "error", "error": refusal[1], "at": now()}
+            continue
         req = urllib.request.Request(cand["url"], data=b"List-Unsubscribe=One-Click", method="POST",
                                      headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA})
-        try:
-            with opener.open(req, timeout=30) as r:
-                code = r.status
-        except urllib.error.HTTPError as ex:
-            code = ex.code
-        except (urllib.error.URLError, TimeoutError) as ex:
-            out[key] = {"status": "error", "error": str(ex)[:160], "at": now()}
-            continue
-        ok = 200 <= code < 300
+        with effect_guard(ef):
+            try:
+                with opener.open(req, timeout=30) as r:
+                    code = r.status
+            except urllib.error.HTTPError as ex:
+                code = ex.code
+            except (OSError, http.client.HTTPException) as ex:
+                why = getattr(ex, "reason", ex)
+                if isinstance(why, (ConnectionRefusedError, socket.gaierror)):
+                    # The request never left, so this is a plain failure and a retry is safe.
+                    effects.finish(ef, "failed", error="network")
+                    out[key] = {"status": "error", "error": str(ex)[:160], "at": now()}
+                else:
+                    # It may have gone out and the answer never came: the sender may have unsubscribed us.
+                    effects.finish(ef, "unknown", error="timeout" if isinstance(why, TimeoutError) else "network")
+                    out[key] = {"status": "error", "error": SENT_UNHEARD, "at": now()}
+                continue
+            ok = 200 <= code < 300
+            effects.finish(ef, "done" if ok else "failed", verified=True if ok else None, error="" if ok else f"http {code}")
         out[key] = {"status": "done", "verified": ok, "at": now(), **({} if ok else {"error": f"The sender answered {code}"})}
     return out
 
@@ -592,6 +689,7 @@ def run_apply() -> None:
     applied_file, status_file = path("applied.json"), path("apply-status.json")
     applied: dict = {}
     jobs: dict[str, list] = {kind: [] for kind in APPLIERS}
+    held: dict = {}  # undo jobs that didn't happen: the row stays as it was, and the reason shows on the page
     error = ""
     try:
         cands = config.read_json(refresh.candidates_path(), {})
@@ -604,19 +702,22 @@ def run_apply() -> None:
                 continue
             status = applied.get(key, {}).get("status")
             if d["decision"] == "approve" and status not in SETTLED:
-                jobs[cand["kind"]].append((key, cand, False))
+                jobs[cand["kind"]].append((key, {**cand, "decided_at": d.get("at")}, False))
             elif d["decision"] == "undo" and status == "done":
-                jobs[cand["kind"]].append((key, cand, True))
+                jobs[cand["kind"]].append((key, {**cand, "decided_at": d.get("at")}, True))
         config.write_json(status_file, {"running": True, "started": now(), **{k: len(j) for k, j in jobs.items()}})
         for kind, apply in APPLIERS.items():
             if jobs[kind]:
                 results = apply(jobs[kind])
                 applied.update(results)
                 record(results)
+                held.update({k: r["error"] for k, _, undo in jobs[kind] if undo
+                             and (r := results.get(k, {})).get("status") == "done" and r.get("error")})
     except Exception as exc:  # noqa: BLE001 — record any failure so the page doesn't stay on "Working"
         error = f"Apply stopped: {exc}"[:300]
     finally:
-        every = [k for j in jobs.values() for k, _, _ in j]
+        every = [k for j in jobs.values() for k, _, _ in j if k not in held]
+        error = "; ".join(dict.fromkeys(filter(None, [error, *held.values()])))
         config.write_json(status_file, {"running": False, "finished": now(), **{k: len(j) for k, j in jobs.items()},
                                         "ok": sum(applied.get(k, {}).get("status") in ("done", "undone") for k in every),
                                         "verified": sum(bool(applied.get(k, {}).get("verified")) for k in every),
