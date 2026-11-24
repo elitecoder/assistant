@@ -65,6 +65,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   last-run line, and the next **Apply approvals** tries it again. The record
   holds ids only, never a subject, a sender, message text or an unsubscribe
   link, and only you can read it. See `docs/effects.md`.
+- Every Work queue row and every TODO now carries a short id that later
+  features will use to show where a piece of work came from. Nothing you see
+  changes yet.
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it
   arrives to your decision on it. It never holds message text, titles,
