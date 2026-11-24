@@ -113,15 +113,17 @@ pull request conflicted with the next, and one merge joined two entries into one
 - A list of one check needs a comma after it: `CHECKS = ((...),)`.
 - An empty `broken` deletes the original.
 
-Try the checks you just wrote before you push; each takes about a second:
+Try the checks you just wrote before you push. Each takes from a second to about half a minute, depending on its
+test. The text must match the name's capital letters:
 
 ```bash
 uv run --with pytest python tests/mutation_smoke.py --name "part of your check's name" --output "$REPORT/mine.json"
 ```
 
-The harness refuses a list it can't trust as soon as it loads, naming the file and the entry within it: an entry
-that isn't five strings, one with no name, file, original or test, one whose `broken` equals its original, and two
-entries with one name. `test_mutation_shards.py` also checks, in seconds, that every entry's snippet is in its file
+The harness refuses a list it can't trust as soon as it loads: an entry that isn't five strings, one with no name,
+file, original or test, one whose `broken` equals its original, and two entries with one name. For a mistake in a
+file in the folder it names the file and the entry within it. A name used twice in different files is reported by
+name only, so search for it. `test_mutation_shards.py` also checks, in seconds, that every entry's snippet is in its file
 exactly once and that pytest collects its test, so a stale entry doesn't wait for a shard to fail. It doesn't run
 the mutations; `--name` and the shards do.
 

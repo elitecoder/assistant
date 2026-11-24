@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -343,8 +344,10 @@ def test_every_check_names_a_snippet_found_exactly_once_and_a_test_pytest_collec
     files = sorted({selector.partition("::")[0] for *_rest, selector in mutation_smoke.CHECKS})
     absent = [name for name in files if not (REPO / name).is_file()]
     assert not absent, f"no such test file: {absent}"
-    listed = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", *files], cwd=REPO,
-                            capture_output=True, text=True)
+    # Options from the environment, such as a second -q, change what --collect-only prints.
+    env = {key: value for key, value in os.environ.items() if key != "PYTEST_ADDOPTS"}
+    listed = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *files],
+                            cwd=REPO, env=env, capture_output=True, text=True)
     assert listed.returncode == 0, listed.stdout[-2000:] + listed.stderr[-2000:]
     collected = {"tests/" + line.strip() for line in listed.stdout.splitlines() if "::" in line}
     collected |= {found.split("[", 1)[0] for found in collected}  # a test id without brackets runs every case of it
