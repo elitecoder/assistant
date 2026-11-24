@@ -553,14 +553,15 @@ def test_the_key_is_whole_the_moment_anyone_can_see_it(home, monkeypatch):
     real, seen = os.link, []
 
     def looking(src, dst):
-        seen.append((Path(dst).exists(), Path(src).stat().st_size, stat.S_IMODE(Path(src).stat().st_mode)))
+        seen.append((Path(src).name.endswith(".tmp"), Path(dst).name, Path(dst).exists(), Path(src).stat().st_size,
+                     stat.S_IMODE(Path(src).stat().st_mode)))
         return real(src, dst)
     monkeypatch.setattr(feedback.os, "link", looking)
     feedback.who_pointer("ana")
-    assert seen == [(False, 64, 0o600)], "written in full, owner-only, before it has its name"
+    assert seen == [(True, "sender.key", False, 64, 0o600)], "written in full, owner-only, in a temporary file, before it has its name"
 
 
-@pytest.mark.parametrize("short", [b"", b"x", b"y" * 31])
+@pytest.mark.parametrize("short", [b"", b"x", b"y" * 31], ids=["empty", "one-byte", "thirty-one-bytes"])
 def test_a_short_or_empty_key_is_no_key_and_no_pointer_is_made(home, short):
     (home / ".assistant/feedback").mkdir(parents=True)
     (home / ".assistant/feedback/sender.key").write_bytes(short)

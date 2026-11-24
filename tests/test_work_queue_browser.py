@@ -2336,7 +2336,9 @@ CONTRAST = """(selector) => {
   const backdrop = el => { const chain = []; for (let e = el; e; e = e.parentElement) chain.unshift(parse(getComputedStyle(e).backgroundColor)); let rgb = [255, 255, 255];
     for (const c of chain) if (c.length < 4 || c[3] > 0) rgb = over(c, rgb); return rgb; };
   const lum = rgb => { const [r, g, b] = rgb.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
-  const el = document.querySelector(selector); const back = backdrop(el), fore = over(parse(getComputedStyle(el).color), back);
+  const el = document.querySelector(selector); const back = backdrop(el);
+  let fade = 1; for (let e = el; e; e = e.parentElement) fade *= Number(getComputedStyle(e).opacity);  // a faded control is as faint as it looks
+  const own = parse(getComputedStyle(el).color), fore = over([own[0], own[1], own[2], (own.length > 3 ? own[3] : 1) * fade], back);
   const [hi, lo] = [lum(fore), lum(back)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05);
 }"""
 

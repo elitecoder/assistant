@@ -420,7 +420,7 @@ CHECKS = (
         F,
         "    return found if len(found) >= KEY_MIN else b\"\"",
         "    return found",
-        T + "test_a_short_or_empty_key_is_no_key_and_no_pointer_is_made[]",
+        T + "test_a_short_or_empty_key_is_no_key_and_no_pointer_is_made[thirty-one-bytes]",
     ),
     (
         "the key is made whole before it has its name",
@@ -650,8 +650,8 @@ CHECKS = (
     (
         "the choices keep clear of every other thumb and Tell Assistant link",
         P,
-        "free=(x,y)=>no.every(b=>",
-        "free=(x,y)=>[].every(b=>",
+        "if(avoid.every(b=>",
+        "if([].every(b=>",
         TB + "test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or_the_edge_of_the_screen[390]",
     ),
     (
@@ -679,7 +679,7 @@ CHECKS = (
         "the thumb is as readable in light mode as the page's other small text",
         P,
         "line-height:0;color:var(--quiet)}",
-        "line-height:0;color:var(--muted)}",
+        "line-height:0;color:var(--quiet);opacity:.6}",
         TB + "test_the_thumb_and_the_small_labels_reach_4_5_to_1_on_the_pages_own_backgrounds[light]",
     ),
     (
