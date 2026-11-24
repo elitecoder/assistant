@@ -559,3 +559,15 @@ def test_a_key_made_by_another_process_a_moment_ago_is_used(home, monkeypatch):
     monkeypatch.setattr(feedback.os, "open", racing)
     assert feedback.who_pointer("ana").startswith("who:")
     assert (home / ".assistant/feedback/sender.key").read_bytes() == b"theirs"
+
+
+def test_a_later_look_ingests_only_the_lines_added_since_the_last(home, monkeypatch):
+    first = down()
+    for n in range(5):
+        feedback.record("done", ROW, "row", "work-queue")
+    assert feedback.views()[ROW]["down"] == first
+    seen, real = [], feedback._State.ingest
+    monkeypatch.setattr(feedback._State, "ingest", lambda self, raw: (seen.append(raw), real(self, raw))[1])
+    assert feedback.views()[ROW]["down"] == first and seen == [], "nothing was added: nothing is read"
+    mine = feedback.record("tell", ROW, "row", "work-queue", words="x")
+    assert feedback.views()[ROW]["told_id"] == mine and len(seen) == 1, "one line added: one line read"

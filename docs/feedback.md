@@ -24,8 +24,33 @@ One line each time you:
 | Select **Approve**, **Keep** or **Undo** on a row waiting for approval, or **Approve all** (one line per row) | approve, keep, or undo |
 | Select **Archive**, **Mark read** or **Undo** on a Gmail email | archive, mark read, or undo |
 | Select **Copy draft** | you used the draft |
-| Tap the thumbs-down on an item, then a reason, or tap it again | wrong, its reason, or taking it back |
+| Tap the thumbs-down on an item, then a reason (or **Change** it later) | wrong, and its reason |
+| Select **Undo** or **Take it back** on what you said | taking it back |
 | Send words with **Tell Assistant**, on an item or on the page | the words |
+
+Nothing is ever edited. A new reason is a new line that replaces the old one on
+the page, and taking something back is a new line that names the one it takes
+back.
+
+### Which items have the controls
+
+The thumbs-down and **Tell Assistant** are on:
+
+- every row of the Open list, and every Start here item;
+- every email in the Email tab;
+- every model draft (marked **Draft**, with **Tell Assistant about this draft**);
+- every Ready for you result;
+- every row waiting for your approval (**Ready to delete**, **Ready to close**,
+  and the unsubscribe rows). These take the thumbs-down and **Tell Assistant**
+  but offer no reasons.
+
+**Tell Assistant about this page**, at the top of the page, is about the page as
+a whole.
+
+The reasons on offer are: **Not important**, **Wrong order**, **Not mine**,
+**Already done** (rows, Start here items and emails); **Wrong tone**, **Wrong
+facts**, **Not how I'd say it** (drafts); **Not what I asked**, **Didn't
+finish**, **Shouldn't have started this** (results).
 
 A line is written after the action has worked, and it is on disk before the
 page says it is noted. If it can't be written, the page says so, and the action
@@ -39,13 +64,17 @@ item, an email, a draft, a result, or the page), and the small pointers that
 say which one:
 
 - the item's pointer, such as `row:3f2a9c41d8e07b65`, or its task id, such as
-  `td-051`. A pointer is a short hash. It is not the item's title, link or text,
-  and it can't be turned back into them.
+  `td-051`. A pointer is a short keyed hash. It lets Assistant recognise the
+  same item or sender again; it does not hold their text or name.
 - the item's trace id, which ties it to the same piece of work elsewhere in
   Assistant's records.
-- where it came from (Slack, GitHub, Gmail, Outlook) and a hash of the sender,
-  so Assistant can later tell "mail from the same sender" without knowing who
-  it is.
+- where it came from (Slack, GitHub, Gmail, Outlook) and a keyed hash of the
+  sender (`who:` and 16 characters), so Assistant can later tell "mail from the
+  same sender" without knowing who it is. The key is a random secret made once
+  for your install, in `~/.assistant/feedback/sender.key`, that only you can
+  read, so nobody can match the hashes against a list of names. If you delete
+  that key, a new one is made, and old and new sender pointers stop matching
+  each other.
 - a reason you tapped, and the id of the line it belongs to, when it is a reason
   or a take-back.
 - the words you typed, only when you used **Tell Assistant**. They are cut to
@@ -61,7 +90,14 @@ Each line also adds one record to the local record described in
 
 `~/.assistant/feedback/feedback.jsonl`, one JSON object per line, in a folder
 only you can open. Lines are only ever added. Taking something back adds a new
-line that names the old one; the old one stays.
+line that names the old one; the old one stays. The file only grows. Delete it
+whenever you like.
+
+Assistant reads the whole file, however long it gets, but only the lines added
+since it last looked, so it doesn't slow down as the file grows. Beside it are
+`sender.key` (described above) and `feedback.lock`, which has no content.
+Each row's source and sender hash, which the refresh saves so a line can carry
+them, are in `rowctx.json` in the Work queue's data folder, also only for you.
 
 ## Read it
 
@@ -83,4 +119,6 @@ rm -r ~/.assistant/feedback
 ```
 
 Assistant starts a new file the next time you tell it something. Deleting it
-changes nothing else.
+changes nothing else. Deleting the folder also deletes `sender.key`, so sender
+pointers written afterwards don't match the older ones. To keep them matching,
+delete only `feedback.jsonl`.

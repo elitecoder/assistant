@@ -249,7 +249,7 @@ def _sync() -> _State:
                 break
             if not state.offset:
                 state.head = chunk[:min(64, cut)]
-            for raw in chunk[:cut].split(b"\n"):
+            for raw in chunk[:cut - 1].split(b"\n"):  # each ends in a newline
                 state.ingest(raw)
             state.offset += cut
             state.tail = (state.tail + chunk[:cut])[-TAIL_BYTES:]

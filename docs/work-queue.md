@@ -191,27 +191,35 @@ its error at the top of the page, and the other sources still render.
 
 ### Tell Assistant what's wrong
 
-Every Open list row, Start here item, email in the Email tab, model draft and
-Ready for you result has a small thumbs-down and a **Tell Assistant** link,
-after its other buttons. Nothing about the other buttons changes.
+These rows have a small thumbs-down and a **Tell Assistant** link, after their
+other buttons: every Open list row, Start here item, email in the Email tab,
+model draft and Ready for you result, and every row waiting for your approval
+(**Ready to delete**, **Ready to close**, and the unsubscribe rows). A draft is
+marked **Draft** and its link reads **Tell Assistant about this draft**. Nothing
+about the other buttons changes.
 
-- **Thumbs-down**: one tap says it's wrong. A line of reasons appears beside
-  it for an optional second tap: **Not important**, **Wrong order**, **Not
-  mine**, **Already done** (rows, Start here items and email), **Bad draft**
-  (a draft), or **Not what I asked**, **Shouldn't have started this** (a Ready
-  for you result). **Skip** closes the line. Tap the thumbs-down again to take
-  it back.
-- **Tell Assistant**: opens a one-line box for your own words. **Send**
-  (or Cmd+Enter) records them, **Cancel** (or Esc) closes the box. The one at
-  the top of the page is about the page as a whole.
-- The item then says what you told it, for example "You said: not important.
-  Nothing has changed yet because of this." It is still there after a reload
-  and after the next refresh. Assistant records these now and doesn't act on
-  them yet.
-- If the note can't be saved, the page says so in plain words, and whatever
-  you were doing is not affected. The same goes for Done, Send to Agent and the
-  other buttons: they work as before, and the page says when Assistant could
-  not note them. See [Feedback](feedback.md) for what is kept.
+- **Thumbs-down**: one tap says it's wrong. A small list of reasons opens right
+  under it, over the page, so no row moves: **Not important**, **Wrong order**,
+  **Not mine**, **Already done** (rows, Start here items and email), **Wrong
+  tone**, **Wrong facts**, **Not how I'd say it** (a draft), or **Not what I
+  asked**, **Didn't finish**, **Shouldn't have started this** (a Ready for you
+  result). Picking a reason is optional: **Skip**, Esc, or a click anywhere else
+  closes the list. Rows waiting for approval have no reasons.
+- **Take it back or change it**: a small note under the buttons says what you
+  said, for example "You said: not important. Change · Undo". **Change** opens
+  the reasons again and the new one replaces the old. **Undo** takes it back.
+  Tapping a thumbs-down that is already on opens the reasons with **Take it
+  back** in them; it does not take anything back by itself. The note is still
+  there after a reload or the next refresh.
+- **Tell Assistant**: opens a box for your own words. **Send** (or Cmd+Enter)
+  records them, **Cancel** (or Esc) closes the box. The one at the top of the
+  page, **Tell Assistant about this page**, is about the page as a whole, and
+  says beside it: "Assistant keeps what you tell it. It starts using it in the
+  next update."
+- If a note can't be saved, the page says "Assistant couldn't save that. Try
+  again." and keeps your words. For Done, Send to Agent and the other buttons,
+  the work still happens as before, and the page says "Done. Assistant couldn't
+  record that for later." See [Feedback](feedback.md) for what is kept.
 - A refresh that finishes while you are choosing a reason or typing doesn't
   reload the page. It tells you and waits for you.
 

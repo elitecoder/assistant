@@ -163,6 +163,29 @@ def test_an_action_that_fails_records_nothing_and_adds_nothing(wq):
     assert stored(wq.home) == []
 
 
+@pytest.mark.parametrize("refusal,code", [(effects.Duplicate("in progress"), 409), (effects.NotAuthorized("no"), 403),
+                                          (effects.Unrecorded("disk"), 503)])
+def test_an_action_the_effects_record_refuses_is_not_noted_and_a_refusal_changes_nothing(wq, monkeypatch, refusal, code):
+    seed(wq, monkeypatch)
+    plain = {}
+    for name in ("without", "with"):  # the same refusal, with the feedback wrapper on and off
+        def refuse(*a, **k):
+            raise refusal
+        monkeypatch.setattr(effects, "begin", refuse)
+        plain[name] = (server.gmail_action if name == "without" else server.ROUTES["/api/gmail"])({"key": GKEY, "action": "archive"})
+    assert plain["with"] == plain["without"] and plain["with"][0] == code and "feedback" not in plain["with"][1]
+    assert stored(wq.home) == []
+
+
+def test_an_action_the_effects_record_allows_is_noted_for_what_happened(wq, monkeypatch):
+    seed(wq, monkeypatch)
+    code, out = run("/api/gmail", {"key": GKEY, "action": "archive"})
+    assert code == 200 and out["feedback"]["recorded"] is True
+    (row,) = stored(wq.home)
+    assert (row["signal"], row["trace"]) == ("archive", traces.lookup(GMAIL_MARK))
+    assert [e["trace"] for e in effects.history()] == [row["trace"]], "the effect and the note carry the one trace id"
+
+
 def test_a_note_that_cannot_be_listed_is_reported_as_not_recorded(wq, monkeypatch):
     seed(wq)
     monkeypatch.setattr(server, "mark_notes", lambda body, out: 1 / 0)
@@ -362,7 +385,7 @@ def test_the_refresh_saves_each_rows_source_and_a_hash_of_its_sender_under_every
 
 
 def test_a_refresh_writes_the_context_file_beside_the_others(wq):
-    refresh.write_page({"built": "now", "status": [], "github": [{"key": PR, "link": PR, "title": "t", "meta": "m", "draft": False}]})
+    refresh.write_page({**page_snap(True), "outlook": []})
     assert json.loads(refresh.rowctx_path().read_text()) == {PR: {"source": "github"}}
     import stat
     assert stat.S_IMODE(refresh.rowctx_path().stat().st_mode) == 0o600
@@ -451,8 +474,9 @@ def test_a_busy_telemetry_database_never_delays_an_answer_but_every_record_still
     answered, entered, finished, sent = threading.Event(), threading.Event(), threading.Event(), []
 
     def stuck_until_answered(batch):
+        waited = not entered.is_set()  # only the first write is held up, so a broken server fails in seconds, not minutes
         entered.set()
-        sent.append((answered.wait(30), list(batch)))  # a database that is busy until the person has their answer
+        sent.append((answered.wait(10) if waited else True, list(batch)))  # busy until the person has their answer
         finished.set()
 
     monkeypatch.setattr(feedback.telemetry, "emit_many", stuck_until_answered)
@@ -529,3 +553,8 @@ def test_the_batch_keeps_one_record_for_one_piece_of_work_and_one_for_each_of_th
     assert [r["signal"] for r in stored(wq.home)] == ["undo", "snooze"], "the same piece of work, two different things"
     code, out = run("/api/mark", {"marks": {"https://a.example/1": {"state": "done"}, "https://a.example/2": {"state": "done"}}})
     assert [r["signal"] for r in stored(wq.home)][2:] == ["done", "done"], "two rows with no id are two pieces of work"
+
+
+def test_a_refresh_in_default_mode_keeps_nothing_about_a_sender_and_makes_no_key(wq):
+    refresh.write_page(page_snap(False))
+    assert not refresh.rowctx_path().exists() and not (wq.home / ".assistant/feedback").exists()

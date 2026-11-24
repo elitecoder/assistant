@@ -96,11 +96,12 @@ def write_page(snap: dict) -> dict:
     site_path().write_text(doc)
     config.write_json(candidates_path(), cands)
     config.write_json(emails_path(), page.emails(snap))
-    old = os.umask(0o077)  # what names a sender, even as a keyed hash, is for the owner only
-    try:
-        config.write_json(rowctx_path(), page.row_context(snap))
-    finally:
-        os.umask(old)
+    if snap.get("triage") is not None:  # Pro mode only: nothing is kept about a sender in default mode
+        old = os.umask(0o077)  # what names a sender, even as a keyed hash, is for the owner only
+        try:
+            config.write_json(rowctx_path(), page.row_context(snap))
+        finally:
+            os.umask(old)
     return cands
 
 

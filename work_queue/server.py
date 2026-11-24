@@ -991,7 +991,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return self.handle_post()
         finally:
-            self.wfile.flush()
+            with contextlib.suppress(OSError):  # the person has gone away: telemetry is still owed
+                self.wfile.flush()
             feedback.emit_pending()  # telemetry for what was just recorded, after the answer has gone
 
     def handle_post(self):
