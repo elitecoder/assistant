@@ -3,6 +3,34 @@
 Open the dashboard at http://127.0.0.1:9876. `bin/todo-server.py` serves it on
 localhost only.
 
+## Who can change things
+
+The server answers only requests addressed to `127.0.0.1:9876` or
+`localhost:9876`. Every request that changes something passes one check, and
+reading the Slack, goal, and decision lists passes it too:
+
+- The dashboard in your browser is let through, because its address is the
+  server's own. A tab you left open from before an update keeps working.
+- A page from any other website is refused (403).
+- A call with no origin, or the origin `null`, needs the token. That covers the
+  dashboard opened as a local file (`~/.claude/assistant-dashboard.html`), a
+  command-line call with `curl`, and a page sandboxed inside another website.
+  The token is in `~/.assistant/api-token`, created the first time it's
+  needed and readable by you only. Send it as the `X-Assistant-Token` header:
+
+  ```bash
+  curl -s -X POST http://127.0.0.1:9876/goal/list \
+    -H "X-Assistant-Token: $(cat ~/.assistant/api-token)"
+  ```
+
+  The rendered page holds the token, so `assistant-dashboard.html` is readable
+  by you only too. Delete `~/.assistant/api-token` to get a new one; the next
+  page rebuild puts it in the page.
+
+Opened as a local file, only **Refresh now** on the Notifications tab and the
+signal that you looked at it reach the server. The other buttons need the page
+served at http://127.0.0.1:9876.
+
 ![The Sessions tab with sample data: four columns of cmux workspaces, Needs your answer, Assistant tasks, Ready to close, and Paused. Each card shows its state, a title, the next step, when it was first seen, and a Go to session button.](images/dashboard-sessions.png)
 
 Nothing pushes or notifies you by default. Neglected decisions fall back to the

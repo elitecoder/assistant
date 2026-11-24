@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
-from assistant import decisions  # noqa: E402
+from assistant import apitoken, decisions  # noqa: E402
 
 NOW = 1783000000.0
 
@@ -85,6 +85,8 @@ class DecisionRouteTests(unittest.TestCase):
     def _request(self, path, method="POST", body=b""):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", data=body, method=method)
+        # A command-line caller: no Origin, so the per-install token.
+        req.add_header("X-Assistant-Token", apitoken.ensure())
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return resp.status, resp.read().decode()

@@ -66,10 +66,17 @@ renderer posts to the absolute http://127.0.0.1:9876 origin — a relative fetch
 from file:// would resolve to file:///… and never arrive (F19).
 /focus is a side-effect-only command (shells out to `cmux select-workspace`).
 
+Every request must name this server by 127.0.0.1:<port> or localhost:<port>.
+Every POST passes one guard first (_post_refused): the page this server serves
+is let through by its Origin; a missing Origin or Origin: null (the page opened
+as a local file, curl) needs the per-install token in ~/.assistant/api-token,
+sent as X-Assistant-Token; any other Origin gets 403.
+
 Stdlib only. Run by LaunchAgent com.assistant.assistant-todo-server.
 """
 
 import datetime
+import hmac
 import json
 import os
 import plistlib
@@ -371,6 +378,14 @@ def proposal_action(prop_id, action, params):
     save_proposal(path, data)
     rerender_dashboard()
     return True, f"{prop_id}.{action} ok"
+
+
+def _api_token_mod():
+    """Import src/assistant/apitoken lazily, like the other src modules."""
+    if str(SRC_DIR) not in sys.path:
+        sys.path.insert(0, str(SRC_DIR))
+    from assistant import apitoken  # noqa: PLC0415
+    return apitoken
 
 
 def _decisions_mod():
@@ -753,17 +768,56 @@ class Handler(BaseHTTPRequestHandler):
         )
         if allowed:
             self.send_header("Access-Control-Allow-Origin", origin or "null")
+            # The token header makes the local-file page's POSTs "non-simple",
+            # so the browser asks first; without this it never sends them.
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, X-Assistant-Human, X-Assistant-Token")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-    def _origin_allowed_for_mutation(self) -> bool:
-        """A state-changing POST is refused outright (403) when it carries a
-        FOREIGN Origin (m4/CSRF) — withholding the ACAO header is not enough, a
-        no-cors form/fetch ignores the missing header and the write still lands.
-        A same-origin request omits Origin; the file:// dashboard sends 'null';
-        both are allowed, an explicit cross-site origin is not."""
-        origin = self.headers.get("Origin", "")
-        return origin in ALLOWED_ORIGINS or origin in ("null", "")
+    def _header_once(self, name):
+        """The header's value, or None when it is absent or sent twice (a second copy could be
+        what a proxy or a script hides behind the first, so it is never guessed at)."""
+        values = self.headers.get_all(name) or []
+        return values[0] if len(values) == 1 else None
+
+    def _wrong_host(self) -> bool:
+        """DNS rebinding: a page on another name that resolves to 127.0.0.1 still sends its own
+        name as Host. Only the two names the dashboard is opened by are answered."""
+        port = self.server.server_address[1]
+        if self._header_once("Host") in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            return False
+        self._reply(403, "This server only answers requests for 127.0.0.1 or localhost.")
+        return True
+
+    def _post_refused(self) -> bool:
+        """The one guard every POST passes first, with no exceptions: the page this server
+        serves (its exact Origin) is allowed; a missing Origin or Origin: null (the page opened
+        as a local file, a command-line call, a sandboxed frame on any website) is allowed only
+        with the per-install token; any other Origin is refused. Withholding the CORS header is
+        not enough: a no-cors form or fetch ignores it and the write still lands."""
+        if self._wrong_host():
+            return True
+        origin = self._header_once("Origin") if "Origin" in self.headers else ""
+        if origin in ALLOWED_ORIGINS:
+            return False
+        if "Origin" in self.headers and origin != "null":
+            self._reply(403, "Requests from another website are refused.")
+            return True
+        try:
+            token = _api_token_mod().ensure()
+        except OSError:
+            self._reply(403, "The token in ~/.assistant/api-token can't be read, so this request is refused.")
+            return True
+        supplied = self._header_once("X-Assistant-Token")
+        if supplied is None:
+            self._reply(403, "This request needs the token in ~/.assistant/api-token. "
+                             "Reload the dashboard, or send it as the X-Assistant-Token header.")
+            return True
+        if not hmac.compare_digest(supplied.encode(), token.encode()):
+            self._reply(403, "That token is not the one in ~/.assistant/api-token. "
+                             "Reload the dashboard, or send the current one as the X-Assistant-Token header.")
+            return True
+        return False
 
     def _is_human(self) -> bool:
         """The human-origin assertion (m18): the dashboard sets X-Assistant-Human
@@ -772,13 +826,23 @@ class Handler(BaseHTTPRequestHandler):
         return (self.headers.get("X-Assistant-Human", "") or "").strip() not in ("", "0", "false")
 
     def do_OPTIONS(self):
+        if self._wrong_host():
+            return
         self.send_response(204)
         self._cors()
         self.end_headers()
 
     def do_GET(self):
+        if self._wrong_host():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
+            # The page carries the token, so another website (or a sandboxed frame, whose
+            # Origin is null) must not be able to read it with a cross-origin fetch.
+            # A same-origin page load sends no Origin.
+            if "Origin" in self.headers and self._header_once("Origin") not in ALLOWED_ORIGINS:
+                self._reply(403, "Requests from another website are refused.")
+                return
             try:
                 body = DASHBOARD_HTML_PATH.read_bytes()
             except FileNotFoundError:
@@ -823,31 +887,12 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n).decode("utf-8", errors="replace") if n else ""
 
     def do_POST(self):
+        # Before any routing: every POST, reads included, passes the one guard.
+        if self._post_refused():
+            return
         parsed = urllib.parse.urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
         qs = urllib.parse.parse_qs(parsed.query)
-
-        # CSRF chokepoint (m4): refuse any FOREIGN-origin state-changing POST —
-        # the /goal mutations (which now drive the autonomous planner), the
-        # /decision transitions, and /brief/seen. Reads (/goal/list, /decision/
-        # list) are unaffected.
-        _mutation = (
-            parts[:2] in (["goal", "add"], ["goal", "rerank"],
-                          ["goal", "pause"], ["goal", "resume"])
-            or (len(parts) == 3 and parts[0] == "goal" and parts[1] == "update")
-            or (len(parts) == 3 and parts[0] == "decision" and parts[1] == "act")
-            or parts in (["brief", "seen"], ["brief", "refresh"], ["mode"])
-            or parts in (["slack-focus", "refresh"], ["slack-focus", "done"], ["slack-focus", "undone"])
-        )
-        if _mutation and not self._origin_allowed_for_mutation():
-            self._reply(403, "cross-origin mutation refused")
-            return
-        # These routes rebuild the page, change settings, or reach Slack, gh,
-        # and the model, so they also refuse Origin: null (a sandboxed frame).
-        if (parts[:1] in (["slack-focus"], ["mode"]) or parts == ["brief", "refresh"]) \
-                and self.headers.get("Origin", "") == "null":
-            self._reply(403, "cross-origin request refused")
-            return
 
         # POST /proposal/<id>/<action>
         if len(parts) == 3 and parts[0] == "proposal":

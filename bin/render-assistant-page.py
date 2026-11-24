@@ -31,6 +31,7 @@ sys.path.insert(0, str(REPO / "bin"))  # loaded by path (tests/drive_dashboard_o
 sys.path.insert(1, str(REPO))
 
 import agent_session  # noqa: E402
+from assistant import apitoken
 from assistant import brief as brief_store
 from assistant import mode
 from assistant import session_guidance
@@ -3881,6 +3882,13 @@ button:focus-visible, summary:focus-visible, input:focus-visible, a:focus-visibl
 """
 
     js = r"""
+// Every request that changes something goes through here, so each one carries the
+// token the server asks for from a page opened as a local file. The token sits in
+// a meta tag outside the part of the page a refresh swaps.
+function assistantPost(url, init) {
+  const token = document.querySelector('meta[name="assistant-api-token"]').content;
+  return fetch(url, {...init, method: 'POST', headers: {...init.headers, 'X-Assistant-Token': token}});
+}
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
@@ -4138,8 +4146,8 @@ async function setMode(value) {
   button.disabled = true;
   status.textContent = 'Switching…';
   try {
-    const response = await fetch('/mode?value=' + encodeURIComponent(value),
-      {method: 'POST', headers: {'X-Assistant-Human': '1'}});
+    const response = await assistantPost('/mode?value=' + encodeURIComponent(value),
+      {headers: {'X-Assistant-Human': '1'}});
     const message = await response.text();
     if (!response.ok) throw new Error(message);
     for (let waited = 0; dashboardRefreshing && waited < 10000; waited += 100) {
@@ -4172,7 +4180,7 @@ async function briefRefresh() {
   const button = document.getElementById('brief-refresh');
   if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
   try {
-    await fetch('http://127.0.0.1:9876/brief/refresh', {method: 'POST', mode: 'cors'});
+    await assistantPost('http://127.0.0.1:9876/brief/refresh', {mode: 'cors'});
   } catch (e) { /* the next page update still rebuilds the brief */ }
   await refreshDashboard(true);
   const fresh = document.getElementById('brief-refresh');
@@ -4185,9 +4193,9 @@ function pingBriefSeen() {
   if (!root) return;
   briefSeenSent = true;
   try {
-    fetch('http://127.0.0.1:9876/brief/seen?date='
+    assistantPost('http://127.0.0.1:9876/brief/seen?date='
             + encodeURIComponent(root.dataset.briefDate),
-          {method: 'POST', mode: 'cors'}).catch(() => {});
+          {mode: 'cors'}).catch(() => {});
   } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
@@ -4202,8 +4210,8 @@ window.addEventListener('DOMContentLoaded', () => {
 // content when the pull ends. Done and Undo save a check-off the same way.
 let slackFocusPolling = false;
 function slackFocusPost(path, body) {
-  return fetch(path, body === undefined ? {method: 'POST'}
-    : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  return assistantPost(path, body === undefined ? {}
+    : {headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 }
 function slackFocusShow(state, message) {
   const button = document.getElementById('sf-refresh');
@@ -4293,7 +4301,7 @@ async function openWs(btn) {
   try {
     const identity = btn.dataset.workspaceId
       ? '?workspace_id=' + encodeURIComponent(btn.dataset.workspaceId) : '';
-    const r = await fetch('/focus/' + ws + identity, {method: 'POST'});
+    const r = await assistantPost('/focus/' + ws + identity, {});
     if (r.ok) {
       btn.classList.remove('busy');
       btn.classList.add('ok');
@@ -4328,7 +4336,7 @@ async function handleDecisionActClick(ev) {
   const originalText = btn.textContent;
   btn.classList.add('busy');
   try {
-    const r = await fetch(url, {method: 'POST'});
+    const r = await assistantPost(url, {});
     const t = await r.text();
     if (r.ok) {
       btn.classList.remove('busy'); btn.classList.add('ok');
@@ -4363,7 +4371,7 @@ async function handleTodoToolsClick(ev) {
     const originalText = btn.textContent;
     btn.classList.add('busy');
     try {
-      const r = await fetch(`/toggle/${id}?flag=autoDispatch&value=${value}`, {method: 'POST'});
+      const r = await assistantPost(`/toggle/${id}?flag=autoDispatch&value=${value}`, {});
       if (r.ok) {
         // Visually move .active to this button immediately so the user sees
         // the absolute-set semantics. The 15s auto-refresh will re-render
@@ -4390,7 +4398,7 @@ async function handleTodoToolsClick(ev) {
 Soft-delete: TODO is moved into the 'removed[]' array of assistant-todo.json (recoverable, but disappears from the dashboard).`)) return;
     btn.classList.add('busy'); btn.textContent = 'Removing…';
     try {
-      const r = await fetch(`/remove/${id}`, {method: 'POST'});
+      const r = await assistantPost(`/remove/${id}`, {});
       const t = await r.text();
       if (r.ok) {
         // Hide the row immediately; auto-refresh will confirm
@@ -4414,7 +4422,7 @@ This sets autoDispatch=true and clears dispatchedAt/dispatchedWs.
 If the TODO was deferred/blocked/done, it will be reopened.`)) return;
     btn.classList.add('busy'); btn.textContent = 'Queueing…';
     try {
-      const r = await fetch(`/dispatch-now/${id}`, {method: 'POST'});
+      const r = await assistantPost(`/dispatch-now/${id}`, {});
       const t = await r.text();
       if (r.ok) {
         btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ queued';
@@ -4450,8 +4458,7 @@ If the TODO was deferred/blocked/done, it will be reopened.`)) return;
     if (!body) { ta.focus(); return; }
     btn.classList.add('busy'); btn.textContent = 'Saving…';
     try {
-      const r = await fetch(`/append-detail/${id}`, {
-        method: 'POST',
+      const r = await assistantPost(`/append-detail/${id}`, {
         headers: {'Content-Type': 'text/plain; charset=utf-8'},
         body: body,
       });
@@ -4480,6 +4487,7 @@ document.addEventListener('click', handleTodoToolsClick);
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Assistant</title>
+<meta name="assistant-api-token" content="{e(apitoken.ensure())}">
 <style>{css}</style>
 <script>{js}</script>
 </head><body>
@@ -4516,7 +4524,14 @@ Saved action history: <code>~/.architect/orchestrator-ledger/</code>.</p>
 </main>
 </body></html>
 """
-    DASHBOARD_HTML.write_text(body)
+    # The page now holds the token, so only its owner may read it. A temporary file with the
+    # right mode, then a rename, means it is never readable by others, even before the rename.
+    temporary = DASHBOARD_HTML.with_name(DASHBOARD_HTML.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(descriptor, 0o600)  # a leftover temporary file from a crash keeps its old mode otherwise
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(body)
+    os.replace(temporary, DASHBOARD_HTML)
     # Legacy redirect for the old TODO bookmark
     TODO_HTML.write_text(
         '<!doctype html><meta http-equiv="refresh" content="0; url=assistant-dashboard.html#todos">'

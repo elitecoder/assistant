@@ -168,12 +168,14 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 errors = []
                 mutations = []
                 intercepted_writes = []
+                write_tokens = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
 
                 def isolate_requests(route):
                     request = route.request
                     if request.method not in ("GET", "HEAD"):
                         intercepted_writes.append(request.url)
+                        write_tokens.append(request.headers.get("x-assistant-token"))
                         route.fulfill(status=200, content_type="application/json",
                                       body='{"ok":true}', headers={"Access-Control-Allow-Origin": "*"})
                     elif (request.url.startswith(f"http://127.0.0.1:{server.server_port}/")
@@ -769,6 +771,27 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 refresh_fixture()
                 assert not errors, errors
 
+                # Each button that changes something goes through the one helper that adds the token.
+                page.once("dialog", lambda dialog: dialog.accept())
+                page.evaluate("showTab('todos')")
+                before = len(intercepted_writes)
+                page.locator('.td-set-true[data-id="td-901"]').click()
+                page.wait_for_function("document.querySelector('.td-set-true[data-id=\"td-901\"]').classList.contains('active')")
+                page.locator('.td-context-toggle[data-id="td-901"]').click()
+                page.locator('.td-context-text[data-id="td-901"]').fill("one more detail")
+                page.locator('.td-context-save[data-id="td-901"]').click()
+                page.wait_for_function("document.querySelector('.td-context-save[data-id=\"td-901\"]').textContent.includes('appended')")
+                page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
+                  '<button id="drive-dec" class="dec-act" data-dec="dec-test-1" data-action="accept">Accept</button>')""")
+                page.locator("#drive-dec").click()
+                page.wait_for_function("document.getElementById('drive-dec').textContent.startsWith('✓')")
+                page.evaluate("showTab('brief')")
+                page.locator("#brief-refresh").click()
+                page.wait_for_function("document.getElementById('brief-refresh').textContent === 'Refresh now'")
+                assert [url.split("/", 3)[3].split("?")[0] for url in intercepted_writes[before:]][:3] == [
+                    "toggle/td-901", "append-detail/td-901", "decision/act/dec-test-1"], intercepted_writes[before:]
+                assert intercepted_writes[-1].endswith("/brief/refresh"), intercepted_writes[-1]
+                assert not errors, errors
                 file_page = page.context.new_page()
                 file_errors = []
                 file_page.on("pageerror", lambda error: file_errors.append(str(error)))
@@ -786,6 +809,8 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 assert not requests_after_load, requests_after_load
                 assert file_page.locator("#refresh-error").inner_text() == ""
                 assert not file_errors, file_errors
+                page_token = (output / "assistant-dashboard.html").read_text().split('name="assistant-api-token" content="')[1].split('"')[0]
+                assert intercepted_writes and set(write_tokens) == {page_token}, (intercepted_writes, write_tokens)
                 assert not errors, errors
                 if profiler is not None:
                     scripts = []

@@ -203,6 +203,8 @@ class GoalHttpTests(unittest.TestCase):
     def _post(self, path, *, origin=None, human=False, body=b""):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", data=body, method="POST")
+        from assistant import apitoken
+        req.add_header("X-Assistant-Token", apitoken.ensure())  # as a command-line caller
         if origin is not None:
             req.add_header("Origin", origin)
         if human:

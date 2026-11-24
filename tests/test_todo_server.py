@@ -21,6 +21,9 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from assistant import apitoken  # noqa: E402
+
 _BIN = Path(__file__).resolve().parent.parent / "bin"
 
 
@@ -49,6 +52,8 @@ def env(tmp_path, monkeypatch):
     props_dir = tmp_path / "proposals"
     props_dir.mkdir()
 
+    # The per-install token lives under HOME: keep it out of the real one.
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(mod, "JSON_PATH", json_path)
     monkeypatch.setattr(mod, "DASHBOARD_HTML_PATH", dash_path)
     monkeypatch.setattr(mod, "PROPOSALS_DIR", props_dir)
@@ -450,10 +455,13 @@ def server(env):
         t.join(timeout=5)
 
 
-def _request(base, method, path, body=None, headers=None):
+def _request(base, method, path, body=None, headers=None, token=True):
     """Returns (status, body_text). Non-2xx is captured via HTTPError."""
     data = body.encode() if isinstance(body, str) else body
     req = urllib.request.Request(base + path, data=data, method=method)
+    # A command-line caller: no Origin unless the test gives one, so the per-install token.
+    if token:
+        req.add_header("X-Assistant-Token", apitoken.ensure())
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
@@ -881,7 +889,8 @@ def test_slack_focus_store_import_adds_src_to_the_path(slack_home, monkeypatch):
 
 def test_slack_focus_routes_refuse_a_null_origin(server, slack_home):
     for path in ("/slack-focus/status", "/slack-focus/refresh", "/slack-focus/done"):
-        status, _ = _request(server.base, "POST", path, json.dumps({"fp": "a" * 64}), headers={"Origin": "null"})
+        status, _ = _request(server.base, "POST", path, json.dumps({"fp": "a" * 64}),
+                             headers={"Origin": "null"}, token=False)
         assert status == 403, path
     status, _ = _request(server.base, "POST", "/slack-focus/status", headers={"Origin": f"http://127.0.0.1:{mod.PORT}"})
     assert status == 200
@@ -906,7 +915,7 @@ def test_brief_refresh_rebuilds_the_page_for_same_origin_only(server, monkeypatc
                     headers={"Origin": "https://evil.example"})[0] == 403
     assert renders == []
     assert _request(server.base, "POST", "/brief/refresh",
-                    headers={"Origin": "null"})[0] == 403
+                    headers={"Origin": "null"}, token=False)[0] == 403
     assert renders == []
     assert _request(server.base, "POST", "/brief/refresh") == (200, "rebuilt")
     assert renders == [1]
@@ -916,9 +925,10 @@ def test_mode_switch_needs_the_dashboard_header_and_a_real_origin(server, monkey
     calls = []
     monkeypatch.setattr(mod, "set_mode", lambda value: calls.append(value) or (True, value))
     assert _request(server.base, "POST", "/mode?value=pro")[0] == 403
-    for origin in ("null", "https://evil.example"):
-        assert _request(server.base, "POST", "/mode?value=pro",
-                        headers={"Origin": origin, "X-Assistant-Human": "1"})[0] == 403
+    assert _request(server.base, "POST", "/mode?value=pro",
+                    headers={"Origin": "null", "X-Assistant-Human": "1"}, token=False)[0] == 403
+    assert _request(server.base, "POST", "/mode?value=pro",
+                    headers={"Origin": "https://evil.example", "X-Assistant-Human": "1"})[0] == 403
     assert calls == []
     assert _request(server.base, "POST", "/mode?value=pro",
                     headers={"X-Assistant-Human": "1"}) == (200, "pro")

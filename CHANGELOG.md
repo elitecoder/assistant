@@ -9,6 +9,25 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Security
+- Check every request that changes something on the dashboard server the same
+  way, with no exceptions. Before, a web page open in your browser could make
+  your machine start a TODO's agent session (`/dispatch-now`), type a
+  proposal's text into a session (`/proposal/<id>/run-now`), switch to a
+  workspace, turn a task's automatic start on or off, remove a task, or add a
+  note to one, because those six routes skipped the cross-site check. A page
+  sandboxed inside any website could also reach the routes that did check,
+  because a missing or `null` origin was let through. The server now answers
+  only to `127.0.0.1:<port>` and `localhost:<port>`, so a page that points
+  another name at your machine can't reach it either. The dashboard in your
+  browser keeps working as it was, including a tab you left open before this
+  update. Anything else, such as the dashboard opened as a local file or a
+  command-line call, has to send the token in `~/.assistant/api-token` as the
+  `X-Assistant-Token` header, and is refused with a sentence saying so
+  otherwise. The `/goal` skill reads the token for you. The token is created
+  the first time it is needed, readable by you only, and the rendered
+  dashboard page, which now holds it, is readable by you only too.
+
 ### Added
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
