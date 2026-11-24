@@ -69,7 +69,7 @@ from file:// would resolve to file:///… and never arrive (F19).
 Every request must name this server as 127.0.0.1 or localhost, on any port (a
 forwarded port works; a DNS-rebinding page's own name does not). Every POST
 passes one guard first (_post_refused): the page this server serves is let
-through by its Origin, which must be http:// plus the Host it was reached by; a
+through by its Origin, which must be 127.0.0.1 or localhost on the port it was reached by; a
 missing Origin or Origin: null (the page opened as a local file, curl) needs the
 per-install token in ~/.assistant/api-token, sent as X-Assistant-Token; any
 other Origin gets 403. The page is never served to a foreign Origin and cannot
@@ -756,18 +756,23 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("[todo-server] " + fmt % args + "\n")
 
-    def _own_origin(self):
-        """http:// plus the Host the request was sent to, or None when that is not one of our names."""
+    def _own_origins(self):
+        """The origins that count as this server's own page: both loopback names on the port the
+        request was sent to (a tab opened at localhost:P still posts to 127.0.0.1:P, and the other
+        way round). Empty when the Host is not one of our names, or names no port we answer on."""
         host = self._header_once("Host")
-        return f"http://{host}" if host is not None and HOST_RE.fullmatch(host) else None
+        if host is None or not HOST_RE.fullmatch(host):
+            return frozenset()
+        port = host.rsplit(":", 1)[1]
+        return frozenset({f"http://127.0.0.1:{port}", f"http://localhost:{port}"})
 
     def _cors(self):
-        # Only the page this server serves (an Origin that is exactly http:// plus the Host it
-        # reached us by) or a local file (Origin: null) may read an answer. EXACT match: a prefix
+        # Only the page this server serves (an Origin that is exactly one of our two loopback
+        # names on the port it reached us by) or a local file (Origin: null) may read an answer. EXACT match: a prefix
         # match would wave through http://localhost.evil.com. A request with no Origin gets no
         # header at all.
         origin = self.headers.get("Origin", "")
-        if origin == "null" or (origin and origin == self._own_origin()):
+        if origin == "null" or (origin and origin in self._own_origins()):
             self.send_header("Access-Control-Allow-Origin", origin)
             # The token header makes the local-file page's POSTs "non-simple",
             # so the browser asks first; without this it never sends them.
@@ -784,7 +789,7 @@ class Handler(BaseHTTPRequestHandler):
     def _wrong_host(self) -> bool:
         """DNS rebinding: a page on another name that resolves to 127.0.0.1 still sends its own
         name as Host. Only 127.0.0.1 and localhost are answered, on any port."""
-        if self._own_origin() is not None:
+        if self._own_origins():
             return False
         self._reply(403, "This dashboard only answers at an address that starts with http://127.0.0.1 "
                          "or http://localhost. If you reached it under another name, open it at "
@@ -793,7 +798,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_refused(self) -> bool:
         """The one guard every POST passes first, with no exceptions: the page this server serves
-        (an Origin that is exactly http:// plus the Host it was reached by) is allowed; a missing
+        (an Origin that is exactly 127.0.0.1 or localhost on the port it was reached by) is allowed; a missing
         Origin or Origin: null (the page opened as a local file, a command-line call, a sandboxed
         frame on any website) is allowed only with the per-install token; any other Origin,
         including a page on localhost at another port, is refused. Withholding the CORS header is
@@ -801,23 +806,25 @@ class Handler(BaseHTTPRequestHandler):
         if self._wrong_host():
             return True
         origin = self._header_once("Origin") if "Origin" in self.headers else ""
-        if origin == self._own_origin():
+        if origin in self._own_origins():
             return False
         if "Origin" in self.headers and origin != "null":
             self._reply(403, "Refused. Reload the dashboard. Requests from another website are refused.")
             return True
+        # A page can be reloaded; a command-line call has nothing to reload.
+        lead = "Refused. Reload the dashboard. " if "Origin" in self.headers else "Refused. "
         try:
             token = _api_token_mod().ensure()
         except Exception:  # an unreadable folder, no HOME: refuse cleanly, never a dropped connection
-            self._reply(403, "Refused. Reload the dashboard. The token in ~/.assistant/api-token can't be read.")
+            self._reply(403, lead + "The token in ~/.assistant/api-token can't be read.")
             return True
         supplied = self._header_once("X-Assistant-Token")
         if supplied is None:
-            self._reply(403, "Refused. Reload the dashboard. This request needs the token in "
+            self._reply(403, lead + "This request needs the token in "
                              "~/.assistant/api-token, sent as the X-Assistant-Token header.")
             return True
         if not hmac.compare_digest(supplied.encode(), token.encode()):
-            self._reply(403, "Refused. Reload the dashboard. That token isn't the one in "
+            self._reply(403, lead + "That token isn't the one in "
                              "~/.assistant/api-token; send the current one as the X-Assistant-Token header.")
             return True
         return False
@@ -843,7 +850,7 @@ class Handler(BaseHTTPRequestHandler):
             # The page carries the token, so another website (or a sandboxed frame, whose
             # Origin is null) must not be able to read it with a cross-origin fetch.
             # A same-origin page load sends no Origin.
-            if "Origin" in self.headers and self._header_once("Origin") != self._own_origin():
+            if "Origin" in self.headers and self._header_once("Origin") not in self._own_origins():
                 self._reply(403, "Refused. Reload the dashboard. Requests from another website are refused.")
                 return
             try:

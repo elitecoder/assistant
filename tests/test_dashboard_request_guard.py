@@ -359,8 +359,10 @@ def test_a_wrong_token_is_refused_and_the_comparison_is_constant_time(server, mo
     real = mod.hmac.compare_digest
     monkeypatch.setattr(mod.hmac, "compare_digest", lambda a, b: seen.append((a, b)) or real(a, b))
     status, text, _ = send(server, "POST", "/remove/td-1", [("X-Assistant-Token", "not-the-token")])
-    assert status == 403 and text.startswith("Refused. Reload the dashboard. ") and "X-Assistant-Token" in text
-    assert seen == [(b"not-the-token", token().encode())]
+    assert status == 403 and text.startswith("Refused. That token isn't the one in ~/.assistant/api-token") and "X-Assistant-Token" in text
+    status, text, _ = send(server, "POST", "/remove/td-1", [("Origin", "null"), ("X-Assistant-Token", "not-the-token")])
+    assert status == 403 and text.startswith("Refused. Reload the dashboard. That token isn't the one")
+    assert seen == [(b"not-the-token", token().encode())] * 2
     status, _, _ = send(server, "POST", "/remove/td-1", [("X-Assistant-Token", "é-not-ascii")])
     assert status == 403
     assert json.loads((server.home / "todo.json").read_text())["items"] == SEED_ITEMS
@@ -371,6 +373,9 @@ def test_a_missing_token_gets_a_short_sentence_that_fits_a_button_then_what_to_d
     assert status == 403
     assert text == ("Refused. Reload the dashboard. This request needs the token in ~/.assistant/api-token, "
                     "sent as the X-Assistant-Token header.")
+    # A command-line call has nothing to reload.
+    assert send(server, "POST", "/remove/td-1")[:2] == (403, (
+        "Refused. This request needs the token in ~/.assistant/api-token, sent as the X-Assistant-Token header."))
     assert send(server, "POST", "/remove/td-1", [("Origin", "https://evil.example")])[1] == (
         "Refused. Reload the dashboard. Requests from another website are refused.")
 
@@ -382,7 +387,9 @@ def test_a_token_that_cannot_be_read_refuses_cleanly_instead_of_dropping_the_con
 
     monkeypatch.setattr(mod, "_api_token_mod", lambda: types.SimpleNamespace(ensure=broken))
     status, text, _ = send(server, "POST", "/remove/td-1", [("X-Assistant-Token", "anything")])
-    assert status == 403 and text.startswith("Refused. Reload the dashboard. ") and "can't be read" in text
+    assert (status, text) == (403, "Refused. The token in ~/.assistant/api-token can't be read.")
+    status, text, _ = send(server, "POST", "/remove/td-1", [("Origin", "null"), ("X-Assistant-Token", "anything")])
+    assert (status, text) == (403, "Refused. Reload the dashboard. The token in ~/.assistant/api-token can't be read.")
     assert json.loads((server.home / "todo.json").read_text())["items"] == SEED_ITEMS
 
 
@@ -426,20 +433,41 @@ def test_a_forwarded_port_works_for_the_page_and_for_a_button(server):
         (server.home / "todo.json").write_text(json.dumps({"items": SEED_ITEMS}))
 
 
-def test_a_page_on_another_port_or_another_name_of_this_machine_is_not_the_same_origin(server):
+def test_a_page_on_another_port_or_scheme_or_name_is_not_the_same_origin(server):
     before = state(server.home)
-    for host, origin in ((f"localhost:{server.port}", "http://localhost:3000"),
-                         (f"localhost:{server.port}", "http://localhost:8851"),
-                         (f"localhost:{server.port}", f"http://127.0.0.1:{server.port}"),
-                         (f"127.0.0.1:{server.port}", f"http://localhost:{server.port}"),
-                         (f"localhost:{server.port}", f"https://localhost:{server.port}"),
-                         (f"localhost:{server.port}", f"http://localhost:{server.port}/"),
-                         (f"localhost:{server.port}", f"http://LOCALHOST:{server.port}")):
+    p = server.port
+    for host, origin in ((f"localhost:{p}", "http://localhost:3000"),
+                         (f"localhost:{p}", "http://localhost:8851"),
+                         (f"localhost:{p}", f"http://127.0.0.1:{p + 1}"),
+                         (f"127.0.0.1:{p}", f"http://localhost:{p + 1}"),
+                         (f"127.0.0.1:{p}", f"http://localhost:{p - 1}"),
+                         (f"localhost:{p}", f"https://localhost:{p}"),
+                         (f"localhost:{p}", f"https://127.0.0.1:{p}"),
+                         (f"localhost:{p}", f"http://localhost:{p}/"),
+                         (f"localhost:{p}", f"http://LOCALHOST:{p}"),
+                         (f"localhost:{p}", f"http://localhost.evil.com:{p}"),
+                         (f"localhost:{p}", f"http://127.0.0.1.evil.com:{p}"),
+                         (f"localhost:{p}", f"http://[::1]:{p}"),
+                         (f"localhost:{p}", f"http://localhost:{p}@evil.com"),
+                         (f"localhost:{p}", f"http://127.0.0.1:0{p}"),
+                         (f"localhost:{p}", f"http://localhost")):
         assert send(server, "POST", "/remove/td-1", [("Origin", origin)], host=[host])[0] == 403, (host, origin)
         assert send(server, "GET", "/", [("Origin", origin)], host=[host])[0] == 403, (host, origin)
-    assert send(server, "POST", "/remove/td-1", [("Origin", f"http://localhost:{server.port}")],
-                host=[f"localhost:{server.port}"])[0] == 200
-    assert state(server.home) != before and server.calls == ["rerender"]
+    assert state(server.home) == before and server.calls == []
+
+
+def test_a_tab_opened_at_one_loopback_name_may_post_to_the_other_on_the_same_port(server):
+    """A tab left open at localhost:P has old code that posts to http://127.0.0.1:P/brief/…, and the reverse."""
+    (server.home / "dashboard.html").write_text("<html>page</html>")
+    p = server.port
+    for host, origin in ((f"127.0.0.1:{p}", f"http://localhost:{p}"), (f"localhost:{p}", f"http://127.0.0.1:{p}"),
+                         (f"localhost:{p}", f"http://localhost:{p}"), (f"127.0.0.1:{p}", f"http://127.0.0.1:{p}")):
+        status, _, response = send(server, "POST", "/brief/refresh", [("Origin", origin)], host=[host])
+        assert (status, response.getheader("Access-Control-Allow-Origin")) == (200, origin), (host, origin)
+        status, _, response = send(server, "OPTIONS", "/brief/refresh", [("Origin", origin)], host=[host])
+        assert (status, response.getheader("Access-Control-Allow-Origin")) == (204, origin), (host, origin)
+        assert send(server, "GET", "/", [("Origin", origin)], host=[host])[:2] == (200, "<html>page</html>")
+    assert server.calls.count("rerender_dashboard") == 4
 
 
 PAGE_HEADERS = {"X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'",
@@ -477,7 +505,9 @@ def test_an_answer_names_an_origin_only_for_the_page_itself_or_a_local_file(serv
         "Access-Control-Allow-Origin") == server.origin
     assert send(server, "POST", "/decision/list", [("Origin", "null"), ("X-Assistant-Token", token())])[2].getheader(
         "Access-Control-Allow-Origin") == "null"
-    for origin in ("https://evil.example", "http://localhost:3000", f"http://localhost:{server.port}"):
+    assert send(server, "POST", "/decision/list", [("Origin", f"http://localhost:{server.port}")])[
+        2].getheader("Access-Control-Allow-Origin") == f"http://localhost:{server.port}"
+    for origin in ("https://evil.example", "http://localhost:3000", f"http://localhost:{server.port + 1}"):
         assert send(server, "POST", "/decision/list", [("Origin", origin), ("X-Assistant-Token", token())])[
             2].getheader("Access-Control-Allow-Origin") is None, origin
 

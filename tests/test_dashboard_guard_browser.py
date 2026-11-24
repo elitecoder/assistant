@@ -267,6 +267,33 @@ def test_a_tab_opened_before_the_update_sends_no_token_and_still_works(browser, 
     assert items(dashboard) == ["td-1"]
 
 
+def test_a_tab_left_open_at_localhost_still_reaches_the_address_its_old_code_names(browser, dashboard):
+    """Before this update the page sent its two Brief calls to http://127.0.0.1:P/…, whatever name it was opened
+    at. From a tab at localhost:P that is another name for the same port, with no token."""
+    page = browser.new_page()
+    never_the_real_port(page.context)
+    page.goto(f"http://localhost:{dashboard.port}/")
+    answers = page.evaluate(f"""async () => {{
+      const out = [];
+      for (const path of ['/brief/refresh', '/brief/seen?date=2026-01-01']) {{
+        const r = await fetch('http://127.0.0.1:{dashboard.port}' + path, {{method: 'POST', mode: 'cors'}});
+        out.push([r.status, (await r.text())]);
+      }}
+      return out;
+    }}""")
+    page.close()
+    assert answers == [[200, "rebuilt"], [404, "no brief for 2026-01-01"]], answers
+    assert dashboard.log["rebuilt"] == ["page"]
+    # and a localhost page on another port is still a stranger
+    other = browser.new_page()
+    never_the_real_port(other.context)
+    other.route("http://localhost:3000/**", lambda route: route.fulfill(status=200, content_type="text/html", body="<p>x</p>"))
+    other.goto("http://localhost:3000/")
+    refused = other.evaluate(f"""fetch('http://127.0.0.1:{dashboard.port}/brief/refresh', {{method: 'POST', mode: 'no-cors'}}).then(() => 'sent')""")
+    other.close()
+    assert refused == "sent" and dashboard.log["rebuilt"] == ["page"]
+
+
 def test_another_website_and_a_sandboxed_frame_change_nothing(browser, dashboard):
     context = browser.new_context()
     never_the_real_port(context)

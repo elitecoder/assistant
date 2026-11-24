@@ -3628,7 +3628,7 @@ CHECKS = (
     (
         'the dashboard server answers only at 127.0.0.1 or localhost',
         'bin/todo-server.py',
-        '        if self._own_origin() is not None:\n            return False\n',
+        '        if self._own_origins():\n            return False\n',
         '        if True:\n            return False\n',
         'tests/test_dashboard_request_guard.py::test_a_request_for_another_host_name_is_refused_with_a_sentence_that_says_what_to_do[GET-/]',
     ),
@@ -3649,9 +3649,9 @@ CHECKS = (
     (
         "only the page's own origin passes without the token",
         'bin/todo-server.py',
-        '        if origin == self._own_origin():\n            return False\n',
-        '        if origin.startswith("http://localhost") or origin == self._own_origin():\n            return False\n',
-        'tests/test_dashboard_request_guard.py::test_a_page_on_another_port_or_another_name_of_this_machine_is_not_the_same_origin',
+        '        if origin in self._own_origins():\n            return False\n',
+        '        if origin.startswith("http://localhost") or origin in self._own_origins():\n            return False\n',
+        'tests/test_dashboard_request_guard.py::test_a_page_on_another_port_or_scheme_or_name_is_not_the_same_origin',
     ),
     (
         'a request with no origin or a null origin needs the right token',
@@ -3666,6 +3666,20 @@ CHECKS = (
         '        if not hmac.compare_digest(supplied.encode(), token.encode()):\n',
         '        if supplied.encode() != token.encode():\n',
         'tests/test_dashboard_request_guard.py::test_a_wrong_token_is_refused_and_the_comparison_is_constant_time',
+    ),
+    (
+        'a tab opened at one loopback name may post to the other on the same port',
+        'bin/todo-server.py',
+        '        return frozenset({f"http://127.0.0.1:{port}", f"http://localhost:{port}"})\n',
+        '        return frozenset({f"http://{host}"})\n',
+        'tests/test_dashboard_request_guard.py::test_a_tab_opened_at_one_loopback_name_may_post_to_the_other_on_the_same_port',
+    ),
+    (
+        "a command-line caller isn't told to reload",
+        'bin/todo-server.py',
+        '        lead = "Refused. Reload the dashboard. " if "Origin" in self.headers else "Refused. "\n',
+        '        lead = "Refused. Reload the dashboard. "\n',
+        'tests/test_dashboard_request_guard.py::test_a_missing_token_gets_a_short_sentence_that_fits_a_button_then_what_to_do',
     ),
     (
         'a header sent twice is never guessed at',
@@ -3684,7 +3698,7 @@ CHECKS = (
     (
         'a refusal starts with a sentence that fits a button',
         'bin/todo-server.py',
-        '            self._reply(403, "Refused. Reload the dashboard. This request needs the token in "\n',
+        '            self._reply(403, lead + "This request needs the token in "\n',
         '            self._reply(403, "This request needs the token in "\n',
         'tests/test_dashboard_request_guard.py::test_a_missing_token_gets_a_short_sentence_that_fits_a_button_then_what_to_do',
     ),
@@ -3698,14 +3712,14 @@ CHECKS = (
     (
         'an answer names an origin only for the page itself or a local file',
         'bin/todo-server.py',
-        '        if origin == "null" or (origin and origin == self._own_origin()):\n',
-        '        if origin == "null" or origin == self._own_origin() or not origin:\n',
+        '        if origin == "null" or (origin and origin in self._own_origins()):\n',
+        '        if origin == "null" or origin in self._own_origins() or not origin:\n',
         'tests/test_dashboard_request_guard.py::test_an_answer_names_an_origin_only_for_the_page_itself_or_a_local_file',
     ),
     (
         "the page that holds the token isn't readable from another website",
         'bin/todo-server.py',
-        '            if "Origin" in self.headers and self._header_once("Origin") != self._own_origin():\n',
+        '            if "Origin" in self.headers and self._header_once("Origin") not in self._own_origins():\n',
         '            if False:\n',
         'tests/test_dashboard_request_guard.py::test_the_page_cannot_be_framed_or_read_by_another_website',
     ),

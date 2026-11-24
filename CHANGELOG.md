@@ -22,8 +22,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   - The dashboard answers only at `127.0.0.1` or `localhost`, on any port, so
     a forwarded port works and a page that points another name at your
     machine is refused.
-  - A change from the dashboard page you opened is let through. One from any
-    other page is refused, including a page on `localhost` at another port.
+  - A change from the dashboard page you opened is let through, under either
+    `127.0.0.1` or `localhost` on the same port. One from any other page is
+    refused, including a page on `localhost` at another port.
   - The dashboard page can't be shown in a frame, read, or embedded by another
     site.
   - Anything with no origin, such as the dashboard opened as a local file or a
@@ -33,6 +34,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     header on standard input (`curl -H @-`) so it stays off the command line.
     The token is created the first time it's needed. Only you can read it
     and the saved dashboard page that now holds it.
+  - If you forward the dashboard's port through another local server or
+    tunnel, every page that address serves is treated as the dashboard's own
+    page. The saved page holds your token and always talks to
+    `http://127.0.0.1:9876`, so don't share it.
   - This stops web pages open in your browser. It does not stop other
     programs running as you on this Mac, which can read the token file and
     the saved page.

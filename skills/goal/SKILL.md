@@ -31,19 +31,28 @@ Ranked goal store for the Assistant. File: `~/.claude/assistant-goals.json` (sch
 All mutations are POST to the local todo-server. Read-only `list` is also POST (mirrors `/decision/list`). The server re-renders the dashboard after each write.
 
 Every call sends the per-install token from `~/.assistant/api-token` as the
-`X-Assistant-Token` header. Without it the server answers 403 ("Refused.
-Reload the dashboard. This request needs the token in ~/.assistant/api-token…").
-The token must not appear on curl's command line, where other users can see it
-in `ps`, so the helper below hands curl the header on standard input. If the
-file doesn't exist yet, the first call answers 403 and the server creates the
-file then; run the call again.
+`X-Assistant-Token` header. The token must not appear on curl's command line,
+where other users can see it in `ps`, so the helper below hands curl the header
+on standard input. Each block that follows is complete on its own, because each
+one may run in a fresh shell: it repeats the two definition lines.
+
+On a fresh install the token file doesn't exist yet. The first call then
+answers `Refused. This request needs the token in ~/.assistant/api-token, sent
+as the X-Assistant-Token header.` and the server creates the file; run the same
+block again. An answer that starts with `Refused.` is never goal data, so don't
+pipe it into a JSON tool.
 
 ```bash
 BASE=http://127.0.0.1:9876
 goal_post() { curl -s -X POST "$BASE$1" -H @- "${@:2}" <<<"X-Assistant-Token: $(cat ~/.assistant/api-token)"; }
 
-# list
-goal_post /goal/list | python3 -m json.tool
+# list (a JSON answer; if it starts with "Refused." run the block again)
+goal_post /goal/list
+```
+
+```bash
+BASE=http://127.0.0.1:9876
+goal_post() { curl -s -X POST "$BASE$1" -H @- "${@:2}" <<<"X-Assistant-Token: $(cat ~/.assistant/api-token)"; }
 
 # add  (body = JSON)
 goal_post /goal/add -H 'Content-Type: application/json' \
@@ -63,6 +72,9 @@ planner then no-ops, ledgered). This is the REAL kill switch — the old
 `/goal/update -d '{}'` "no-op ping" only stamped `updatedAt` and never paused:
 
 ```bash
+BASE=http://127.0.0.1:9876
+goal_post() { curl -s -X POST "$BASE$1" -H @- "${@:2}" <<<"X-Assistant-Token: $(cat ~/.assistant/api-token)"; }
+
 goal_post /goal/pause     # sets _paused:true  → planner no-ops
 goal_post /goal/resume    # sets _paused:false
 # If the server is down, edit the store root directly via the goals module:

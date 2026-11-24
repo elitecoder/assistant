@@ -25,7 +25,8 @@ Every request that changes something passes one check, and reading the Slack,
 goal, and decision lists passes it too:
 
 - The dashboard in your browser is let through, because the address it was
-  opened at is the address it sends from. A tab you left open from before an
+  opened at is the address it sends from, under either `127.0.0.1` or
+  `localhost` on the same port. A tab you left open from before an
   update keeps working. A page on `localhost` at another port, such as a
   development server, is a different page and is refused.
 - A page from any other website is refused (403), and so is a page that tries
@@ -47,6 +48,13 @@ goal, and decision lists passes it too:
   it again. The saved page holds the token, so `assistant-dashboard.html` is
   readable by you only too. Delete `~/.assistant/api-token` to get a new one;
   the next page rebuild puts it in the page.
+
+If you forward the dashboard's port through another local server or tunnel,
+every page that address serves is treated as the dashboard's own page.
+
+The saved page always talks to `http://127.0.0.1:9876` when you open it as a
+file, and it holds your token. Don't share it: a copy opened on another
+computer would send that computer's own `127.0.0.1` the token it carries.
 
 This protects you from web pages open in your browser, including ones that try
 to show the dashboard inside themselves. It does not protect you from other
