@@ -3848,6 +3848,8 @@ CHECKS = (
         '        if not mode.job_settings()["decisions"]:\n            try:\n',
         '        if True:\n            try:\n',
         'tests/test_unread_jobs_off.py::test_the_decisions_panel_has_no_notice_when_they_are_on',
+    ),
+    (
         'the busy count includes the sessions the pulse scans itself, so the cap binds with the Observer off',
         'bin/pulse.py',
         '    n_active = count_active(ws_meta, busy_refs or ())\n',
