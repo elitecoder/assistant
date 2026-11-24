@@ -60,8 +60,11 @@ uv run --with playwright python tests/drive_dashboard_overview.py \
   --browser-executable "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --output-dir "$REPORT/browser" --coverage-dir "$REPORT/browser"
 node tests/browser_coverage.cjs "$REPORT/browser/browser-v8.json" "$REPORT/browser/istanbul.json"
+node --test --experimental-test-coverage --test-reporter=lcov \
+  --test-reporter-destination="$REPORT/reactor.lcov" slack-reactor/test/*.test.js
 uv run --with coverage python tests/check_change_coverage.py --base main \
   --python-report "$REPORT/python.json" \
+  --reactor-lcov "$REPORT/reactor.lcov" \
   --browser-report "$REPORT/browser/istanbul.json" \
   --work-queue-browser-report "$REPORT/work-queue/istanbul.json" \
   --output "$REPORT/changed-code.json"
@@ -75,6 +78,15 @@ the measurement. Changed Python continuation lines map to their executable
 statement, rather than disappearing from the count. Python coverage
 of an HTML string doesn't count as JavaScript coverage. Layout and CSS still
 need browser measurements and visual inspection.
+
+The slack reactor's Node source (`slack-reactor/src/*.js`) is measured by Node's
+own runner, and `--reactor-lcov` hands the report to the gate, which checks every
+changed line and branch and rejects a report older than the source:
+
+```bash
+node --test --experimental-test-coverage --test-reporter=lcov \
+  --test-reporter-destination="$REPORT/reactor.lcov" slack-reactor/test/*.test.js
+```
 
 The current coverage adapters cover Python under `bin/`, `hooks/`, `install/`,
 `src/`, and `work_queue/`, the dashboard's embedded JavaScript, and the Work

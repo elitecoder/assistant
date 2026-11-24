@@ -70,6 +70,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Keep Slack tokens, bearer tokens and other secrets out of the logs. The Slack
+  reactor's error log held the bot token again and again, because a failed
+  Slack request printed its whole request, headers and body included. The
+  reactor now cleans everything it prints and, when it crashes, writes a one-line
+  summary and still exits so it restarts as before. The pulse, the comms
+  listener, the cmux and workspace watchers, the world scanner, the to-do
+  server, the connectors and the background service replace Slack, GitHub,
+  Google, AWS and model keys, `Bearer` and `Authorization` values, and
+  `token=` style fields with `<redacted>` before anything is written.
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
   workspaces with a bare `cmux list-workspaces`, which shows only the focused

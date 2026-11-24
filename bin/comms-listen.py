@@ -58,7 +58,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent_session  # noqa: E402
+from assistant.redact import redact  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
 
@@ -183,7 +185,7 @@ def utc_iso() -> str:
 def log(msg: str) -> None:
     paths = comms_lib.Paths.from_env()
     paths.comms_dir.mkdir(parents=True, exist_ok=True)
-    line = f"[{utc_iso()}] {msg}"
+    line = f"[{utc_iso()}] {redact(msg)}"
     with open(paths.comms_dir / "comms-listen.log", "a") as f:
         f.write(line + "\n")
     print(line, file=sys.stderr, flush=True)

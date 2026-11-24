@@ -46,6 +46,11 @@ jobs:
           node tests/browser_coverage.cjs \
             "$RUNNER_TEMP/assistant-coverage/browser/browser-v8.json" \
             "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json"
+      - name: Measure the Slack reactor's Node tests
+        run: |
+          node --test --experimental-test-coverage --test-reporter=lcov \
+            --test-reporter-destination="$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
+            slack-reactor/test/*.test.js
       - name: Require complete new-code coverage
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -61,6 +66,7 @@ jobs:
             --python-report "$RUNNER_TEMP/assistant-coverage/python.json" \
             --browser-report "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json" \
             --work-queue-browser-report "$RUNNER_TEMP/assistant-coverage/work-queue/istanbul.json" \
+            --reactor-lcov "$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
             --output "$RUNNER_TEMP/assistant-coverage/changed-code.json"
       - name: Keep validation evidence
         if: always()

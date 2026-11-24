@@ -170,7 +170,8 @@ Needs `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` in `~/.zprofile`, then:
 launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist
 ```
 
-See [slack-reactor/README.md](slack-reactor/README.md).
+See [slack-reactor/README.md](slack-reactor/README.md). Its log never holds
+your Slack tokens: anything token-shaped prints as `<redacted>`.
 
 ### PRO MODE — the Work queue
 

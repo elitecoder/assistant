@@ -50,6 +50,18 @@ behalf.
 
 Tokens live in `~/.zprofile`; the launcher sources it. Nothing is hardcoded.
 
+## Tokens never reach the log
+
+Everything the reactor prints passes through `src/redact.js`, which replaces
+Slack tokens (`xoxb-`, `xapp-` and the like), `Bearer` and `Authorization`
+values and `token=` fields with `<redacted>`. `src/safe-output.js` does this for
+`console.*` (an error object prints as one line: name, message, `code`,
+`data.error`) and for direct writes to stdout and stderr. A crash prints the
+same one-line summary and exits non-zero, so launchd restarts the service.
+`src/index.js` loads `safe-output-boot.js` before anything else; keep it first.
+
+Run the reactor's tests with `node --test slack-reactor/test/*.test.js`.
+
 ## Setup (one-time)
 
 Add this to the **existing `mukuls_bot` app** (don't create a new one — keeps the

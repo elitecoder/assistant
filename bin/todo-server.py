@@ -104,6 +104,8 @@ DECISION_ACTIONS = {"accept": "accepted", "edit": "edited",
 # /brief/seen date param: strict ISO date only.
 BRIEF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+sys.path.insert(0, str(SRC_DIR))
+from assistant.redact import redact  # noqa: E402 - request lines can carry ?token=...
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
 
 HOME = Path(os.path.expanduser("~"))
@@ -738,7 +740,7 @@ def remove_item(td_id):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        sys.stderr.write("[todo-server] " + fmt % args + "\n")
+        sys.stderr.write("[todo-server] " + redact(fmt % args) + "\n")
 
     def _cors(self):
         origin = self.headers.get("Origin", "")

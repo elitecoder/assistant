@@ -90,6 +90,9 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("cmux-ws-numberer")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from assistant import redact  # noqa: E402
+redact.install()  # no token reaches the numberer log
 
 # Silence the legacy-alias deprecation notices so they never pollute parsed stdout.
 CMUX_ENV = {**os.environ, "CMUX_QUIET": "1"}
