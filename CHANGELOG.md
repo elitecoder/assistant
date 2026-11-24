@@ -50,6 +50,26 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Tell Assistant when something on the Work queue is wrong, with one tap. Every
+  Open list row, Start here item, email, model draft and Ready for you result
+  has a small thumbs-down. One tap records it, and a line of reasons appears
+  for an optional second tap (Not important, Wrong order, Not mine, Already
+  done; Bad draft; Not what I asked, Shouldn't have started this). Tap it again
+  to take it back. **Tell Assistant** opens a one-line box for your own words
+  about an item, and one at the top of the page is for the page as a whole.
+  The item then shows what you said, and it is still there after a reload or a
+  refresh. A refresh that finishes while you are choosing a reason or typing no
+  longer reloads the page away.
+- Keep a local record of what you do on the Work queue, and why it matters:
+  Done, Snooze, Drop, Send to Agent (and hands-off), Approve, Keep, Archive,
+  Mark read, clearing a Ready for you result, copying a draft, and each Undo
+  are now written down, one line each, with a trace id and a pointer to the
+  item, never its title, sender, text or link. It goes to
+  `~/.assistant/feedback/feedback.jsonl`, only you can read it, and nothing is
+  sent anywhere. Assistant only records this now; it starts acting on it (to
+  reorder rows, learn what you drop, and show what changed) in the next
+  update. If a note can't be saved, the page says so and the action still
+  happens. See [Feedback](docs/feedback.md).
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it
   arrives to your decision on it. It never holds message text, titles,

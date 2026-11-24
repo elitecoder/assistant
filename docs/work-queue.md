@@ -189,6 +189,32 @@ its error at the top of the page, and the other sources still render.
 - **Slack saves**: Later saves that look finished, with the last message as
   evidence.
 
+### Tell Assistant what's wrong
+
+Every Open list row, Start here item, email in the Email tab, model draft and
+Ready for you result has a small thumbs-down and a **Tell Assistant** link,
+after its other buttons. Nothing about the other buttons changes.
+
+- **Thumbs-down**: one tap says it's wrong. A line of reasons appears beside
+  it for an optional second tap: **Not important**, **Wrong order**, **Not
+  mine**, **Already done** (rows, Start here items and email), **Bad draft**
+  (a draft), or **Not what I asked**, **Shouldn't have started this** (a Ready
+  for you result). **Skip** closes the line. Tap the thumbs-down again to take
+  it back.
+- **Tell Assistant**: opens a one-line box for your own words. **Send**
+  (or Cmd+Enter) records them, **Cancel** (or Esc) closes the box. The one at
+  the top of the page is about the page as a whole.
+- The item then says what you told it, for example "You said: not important.
+  Nothing has changed yet because of this." It is still there after a reload
+  and after the next refresh. Assistant records these now and doesn't act on
+  them yet.
+- If the note can't be saved, the page says so in plain words, and whatever
+  you were doing is not affected. The same goes for Done, Send to Agent and the
+  other buttons: they work as before, and the page says when Assistant could
+  not note them. See [Feedback](feedback.md) for what is kept.
+- A refresh that finishes while you are choosing a reason or typing doesn't
+  reload the page. It tells you and waits for you.
+
 ### Ready for you
 
 **Ready for you** lists each TODO you sent from the page that's done or
@@ -607,7 +633,8 @@ hides. If applying stops on an error, the page says why instead of staying on
 |---|---|
 | `~/.assistant/work-queue/sources.json` | Your linked sources |
 | `~/.assistant/work-queue/browser-profile/` | The Slack browser session |
-| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, what the last refresh found about each Ready for you item in `ready-checks.json`, the built page in `site/`, each row's id in `traces.json`, the Gmail conversation behind each Gmail row in `emails.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
+| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, what the last refresh found about each Ready for you item in `ready-checks.json`, the built page in `site/`, each row's id in `traces.json`, the Gmail conversation behind each Gmail row in `emails.json`, each row's source and a hash of its sender (never the name) in `rowctx.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
+| `~/.assistant/feedback/feedback.jsonl` | What you told Assistant on the page, one line each; see [Feedback](feedback.md) |
 | `~/.assistant/logs/work-queue.launchd.*` | The server's output |
 
 Tests point `HOME` and `WQ_DATA` at temporary folders, so they never touch

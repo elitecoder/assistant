@@ -13,7 +13,8 @@ for you shows its TODO once it's done or blocked, until you mark it Done or a
 refresh finds its follow-up already happened (work_queue/ready.py). Send to
 Agent opens a note box first. The Email tab holds Outlook, each Gmail account,
 and Unsubscribe, with Send to Agent, Snooze, Archive, and Mark read on each
-email. Every piece of
+email. In Pro mode every
+item also has a thumbs-down and a Tell Assistant link, which record what you said (assistant/feedback.py). Every piece of
 model text is escaped. Drafts are text to copy: nothing on the page sends them.
 """
 from __future__ import annotations
@@ -823,7 +824,7 @@ FBR.start_here=FBR.email=FBR.row;let FBUI={},FBKEEP=null;
 const SAID={not_important:'not important',wrong_order:'in the wrong order',not_mine:'not mine',already_done:'already done',bad_draft:'a bad draft',
  not_what_i_asked:'not what I asked',should_not_have_started:'something it shouldn’t have started'};
 const THUMB='<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.7a2 2 0 0 0-2 1.7l-1.4 9a2 2 0 0 0 2 2.3H10z"/><path d="M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>';
-function fbNote(v){const p=[];if(v.down)p.push('You said: '+(SAID[v.reason]||'this is wrong')+'.');if(v.told)p.push('You told Assistant: “'+v.told+'”.');
+function fbNote(v){const p=[];if(v.down)p.push('You said: '+(SAID[v.reason]||'this is wrong')+'.');if(v.told)p.push('You told Assistant: “'+v.told+'”'+(/[.!?…]$/.test(v.told)?'':'.'));
  return p.length?p.join(' ')+' Nothing has changed yet because of this.':''}
 function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),line=document.createElement('span');
  if(k!=='page'){h.down=button('','btn ghost fb-down',()=>fbDown(s));h.down.type='button';h.down.dataset.fb='down';h.down.innerHTML=THUMB;s.append(h.down)}

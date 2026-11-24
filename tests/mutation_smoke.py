@@ -1425,8 +1425,8 @@ CHECKS = (
     (
         'every Start here item has Send to Agent',
         'work_queue/page.py',
-        '+ ("" if s["blocked"] else START_SEND) + \'</div>\'',
-        "+ '</div>'",
+        '+ ("" if s["blocked"] else START_SEND) + fb_span(True, "start_here", s["key"]) + \'</div>\'',
+        '+ fb_span(True, "start_here", s["key"]) + \'</div>\'',
         'tests/test_work_queue_browser.py::test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row',
     ),
     (

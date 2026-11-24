@@ -244,6 +244,12 @@ def test_the_route_refuses_what_the_page_may_not_claim_and_writes_nothing(wq, bo
     assert stored(wq.home) == []
 
 
+def test_a_reason_must_fit_the_kind_of_item_it_is_given_for(wq):
+    first = give(signal="thumbs_down")[1]["id"]
+    code, out = give(signal="thumbs_down", reason="bad_draft", amends=first)
+    assert code == 400 and "doesn't fit" in out["error"] and len(stored(wq.home)) == 1
+
+
 def test_a_reason_may_not_amend_another_items_thumbs_down(wq):
     first = give(signal="thumbs_down")[1]["id"]
     code, out = give(signal="thumbs_down", reason="not_mine", amends=first, key=PR)

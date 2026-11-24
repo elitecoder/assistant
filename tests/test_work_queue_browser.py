@@ -1665,6 +1665,12 @@ def test_a_thumbs_down_is_one_tap_a_reason_amends_it_and_a_second_tap_takes_it_b
         tab.locator(x).get_by_role("button", name="Skip").click()
         tab.wait_for_selector(f"{x} .fb-reasons", state="detached")
         assert tab.locator(f"{x} .fb-note").inner_text().startswith("You said: this is wrong.")
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, row, False)
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, row)
+        tab.evaluate("ST.feedback = {}; paint()")
+        tab.wait_for_selector(f"{x} .fb-reasons", state="detached")  # a take-back seen from elsewhere closes the reasons
         assert not errors
         cov.snap()
         browser.close()
@@ -1748,7 +1754,7 @@ def test_tell_assistant_records_your_words_for_an_item_and_for_the_page(site, wq
         assert told["subject"] == pointers.row_pointer(keys["row"]) and told["kind"] == "row"
         note = tab.locator(f"{x} .fb-note").inner_text()
         assert note.startswith("You told Assistant: “This is Ana's, not mine. Please ask her.") and \
-            note.endswith("…”. Nothing has changed yet because of this.")
+            note.endswith("…” Nothing has changed yet because of this.")
         assert tab.locator(f"{row} .fb-down").get_attribute("aria-pressed") == "false", "words are not a thumbs-down"
         tab.locator(f"{row} .fb-down").click()
         pressed(tab, f"{row}")

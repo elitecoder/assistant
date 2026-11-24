@@ -69,7 +69,7 @@ BAD = [
     {"amends": "fb-" + "0" * 16}, {"words": "hello"}, {"words": 5}, {"signal": "tell"},
     {"signal": "retract"}, {"reason": "not_important"}, {"signal": "done", "reason": "not_important"},
     {"signal": "done", "amends": "fb-" + "0" * 16},
-    {"signal": "done", "reason": "not_mine", "amends": "fb-" + "0" * 16},
+    {"signal": "done", "reason": "not_mine", "amends": "fb-" + "0" * 16}, {"kind": "result"},
 ]
 
 
