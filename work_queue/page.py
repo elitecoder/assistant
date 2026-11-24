@@ -856,12 +856,14 @@ function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),l
 function fbPlace(s){const h=FBX.get(s),p=h.pop,w=p.offsetWidth,t=p.offsetHeight,r=h.down.getBoundingClientRect(),
  n=(s.querySelector('.fb-note')||h.x.querySelector('.fb-note')||h.down).getBoundingClientRect(),
  card=(s.closest('.section')||document.body).getBoundingClientRect(),lo=Math.max(8,card.left),hi=Math.min(innerWidth-8,card.right),
- no=[...document.querySelectorAll('.fb-down,.fb-open')].filter(b=>b!==h.open).map(b=>b.getBoundingClientRect()).filter(b=>b.width).concat([n]),
- free=(x,y)=>no.every(b=>x+w+4<=b.left||x>=b.right+4||y+t+4<=b.top||y>=b.bottom+4),
- near=(x,y)=>Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2),spots=[];
- for(const x of [n.left-8-w,r.left-8-w,r.right-w,lo,hi-w].map(x=>Math.max(lo,Math.min(x,hi-w))))
-  for(let y=8;y<=innerHeight-t-8;y+=6)if(free(x,y))spots.push([x,y]);
- const [x,y]=spots.sort((a,b)=>near(...a)-near(...b))[0]||[Math.max(lo,Math.min(r.right-w,hi-w)),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
+ rects=q=>[...document.querySelectorAll(q)].filter(b=>b!==h.open).map(b=>b.getBoundingClientRect()).filter(b=>b.width),
+ must=rects('.fb-down,.fb-open').concat([n]),nice=must.concat(rects('.sf-main > .btn')),
+ clamp=x=>Math.max(lo,Math.min(x,hi-w)),
+ xs=[n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...nice.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w)].map(clamp),
+ near=(x,y)=>Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2),
+ spots=avoid=>{const out=[];for(const x of xs)for(let y=8;y<=innerHeight-t-8;y+=6)
+   if(avoid.every(b=>x+w+4<=b.left||x>=b.right+4||y+t+4<=b.top||y>=b.bottom+4))out.push([x,y]);return out.sort((a,b)=>near(...a)-near(...b))[0]},
+ away=spots(nice),close=spots(must),[x,y]=(away&&near(...away)<150?away:close||away)||[clamp(r.right-w),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
  p.style.left=x+'px';p.style.top=y+'px'}
 function fbPopFill(s,h,v,u){const R=FBR[s.dataset.fk];h.pop.textContent='';
  if(R.length){const t=document.createElement('span');t.className='fb-why';t.textContent='Why is this wrong? Optional';h.pop.append(t)}
