@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -17,6 +15,7 @@ from test_pulse_topup import _seed_todo, load_pulse
 MARKER = "TITLE-MARKER-do-not-record"
 TRUST = "1. Yes, I trust this folder"
 READY = "Claude Code v1.2.3  ⏵⏵ bypass permissions on"
+WS = "workspace:1000010007"   # cmux numbers its refs from 1000010000
 
 
 @pytest.fixture()
@@ -35,6 +34,8 @@ def mod(home):
     m.DISPATCH_CLASSIFICATION_PROMPT = home / "missing-rules.md"
     m.DISPATCH_CWD = home / "dev"
     m.DISPATCH_CWD.mkdir(parents=True, exist_ok=True)
+    m._dispatch_blocked = ""
+    m._dispatch_started.clear()
     with mock.patch.object(m.time, "sleep", lambda *_a, **_k: None):
         yield m
 
@@ -47,37 +48,44 @@ def ledger(home) -> list:
 class Cmux:
     """cmux, faked: records every keystroke and what the ledger held at the moment of the first one."""
 
-    def __init__(self, mod, home, screens=(READY,), refuse=()):
-        self.mod, self.home, self.refuse = mod, home, refuse
+    def __init__(self, mod, home, screens=(READY,), refuse=(), workspace=WS, rc=None):
+        self.mod, self.home, self.refuse, self.workspace, self.rc = mod, home, refuse, workspace, rc
         self.calls, self.at_first_keystroke = [], None
         self.screens = iter(screens)
 
     def run(self, cmd, **k):
         if cmd[1] == "new-workspace":
-            return (0, "workspace:7", "")
+            return (0, self.workspace, "")
         if cmd[1] == "list-pane-surfaces":
             return (0, "surface:3", "")
+        if cmd[1] == "rpc" and cmd[2].startswith("surface.send"):  # the real transport, with a status to read
+            return self.type(cmd[2], json.loads(cmd[3]))
         return (0, "", "")
 
-    def rpc(self, method, params, timeout=15):
+    def type(self, method, params):
         if self.at_first_keystroke is None:
             self.at_first_keystroke = ledger(self.home)
         self.calls.append((method, params))
-        return None if method in self.refuse else {}
+        rc = self.rc if self.rc is not None else (1 if method in self.refuse else 0)
+        return (rc, "" if rc == 0 else "", "boom" if rc else "")
 
     def screen(self, ref, lines=200):
         return next(self.screens, READY)
 
     def dispatch(self, td="td-1"):
         with mock.patch.object(self.mod, "run", side_effect=self.run), \
-                mock.patch.object(self.mod, "_cmux_rpc", side_effect=self.rpc), \
                 mock.patch.object(self.mod, "_surface_read_text", side_effect=self.screen):
             return self.mod.dispatch_todo(td)
 
 
 def seed(mod, **extra):
-    _seed_todo(mod, [{"id": "td-1", "title": MARKER, "detail": MARKER, "status": "open", "autoDispatch": True,
-                      "trace": "tr-0123456789abcdef", **extra}])
+    item = {"id": "td-1", "title": MARKER, "detail": MARKER, "status": "open", "autoDispatch": True,
+            "trace": "tr-0123456789abcdef", "source": "work-queue:2026-11-24", **extra}
+    _seed_todo(mod, [item])
+
+
+def stamped(mod) -> dict:
+    return json.loads(mod.TODO_PATH.read_text())["items"][0]
 
 
 def test_the_intent_is_on_disk_before_the_first_keystroke_and_names_the_task(mod, home):
@@ -86,14 +94,39 @@ def test_the_intent_is_on_disk_before_the_first_keystroke_and_names_the_task(mod
     assert cmux.dispatch() is True
     first = cmux.at_first_keystroke
     assert len(first) == 1 and first[0]["kind"] == "intent"
-    assert first[0]["target"] == {"source": "task", "session": "workspace:7", "task": "td-1"}
+    assert first[0]["target"] == {"source": "task", "session": WS, "task": "td-1"}
     assert first[0]["auth"]["kind"] == "owner_flag" and first[0]["auth"]["ref"] == "td-1"
     assert first[0]["trace"] == "tr-0123456789abcdef" and first[0]["component"] == "pulse"
     rows = ledger(home)
     assert [r["kind"] for r in rows] == ["intent", "result"]
-    assert rows[1]["outcome"] == "done" and rows[1]["verified"] is False  # no transcript appeared in the fake
+    assert rows[1]["outcome"] == "unknown" and rows[1]["verified"] is False  # typed, and the transcript never showed it
     raw = (home / ".assistant/effects/effects.jsonl").read_text()
     assert MARKER not in raw and "spawn-prompts" not in raw and "prompt-dispatch" not in raw
+
+
+@pytest.mark.parametrize("extra, kind, ref", [
+    ({"source": "work-queue:2026-11-24"}, "owner_flag", "td-1"),         # the owner's Work queue send
+    ({"source": "slack-react:C1:1.2"}, "owner_flag", "td-1"),            # their own Slack reaction, auto-start on
+    ({"source": "manual:2026-11-24"}, "owner_flag", "td-1"),             # /todo
+    ({"source": "goal:g1:abc", "goalId": "g1"}, "standing", "planner"),   # the goals planner's setting
+    ({"source": "triage:x", "createdBy": "policy:r1"}, "standing", "policy:r1"),  # a policy rule
+    ({"source": "something-else"}, "standing", "unlisted-source"),       # not listed: the more cautious claim
+    ({"source": ""}, "standing", "unlisted-source"),
+])
+def test_what_allowed_the_start_is_recorded_from_where_the_task_came_from(mod, home, extra, kind, ref):
+    seed(mod, **extra)
+    cmux = Cmux(mod, home)
+    assert cmux.dispatch() is True
+    auth = ledger(home)[0]["auth"]
+    assert (auth["kind"], auth["ref"]) == (kind, ref)
+
+
+def test_a_slack_capture_not_confirmed_as_the_owners_is_never_started(mod, home):
+    seed(mod, source="slack-react:C1:1.2", autoDispatch=None, reactedBy="U0OTHER")
+    cmux = Cmux(mod, home)
+    assert cmux.dispatch() is False
+    assert cmux.calls == [] and ledger(home) == []
+    assert stamped(mod)["status"] == "open"
 
 
 def test_the_trust_answer_is_its_own_effect_before_the_instruction(mod, home):
@@ -102,7 +135,7 @@ def test_the_trust_answer_is_its_own_effect_before_the_instruction(mod, home):
     assert cmux.dispatch() is True
     intents = [r for r in ledger(home) if r["kind"] == "intent"]
     assert [r["target"]["source"] for r in intents] == ["trust", "task"]
-    assert [r["outcome"] for r in ledger(home) if r["kind"] == "result"] == ["done", "done"]
+    assert [r["outcome"] for r in ledger(home) if r["kind"] == "result"] == ["done", "unknown"]
     assert [m for m, _ in cmux.calls] == ["surface.send_text", "surface.send_key"] * 2
     assert cmux.at_first_keystroke[0]["target"]["source"] == "trust"
 
@@ -115,7 +148,20 @@ def test_a_typing_that_fails_or_stops_halfway_is_recorded_as_such_and_still_stam
     seed(mod)
     assert Cmux(mod, home, refuse=refuse).dispatch() is True
     assert ledger(home)[-1]["outcome"] == outcome
-    assert json.loads(mod.TODO_PATH.read_text())["items"][0]["status"] == "in-progress"
+    assert stamped(mod)["status"] == "in-progress"
+
+
+def test_a_tool_that_exits_zero_with_no_answer_still_gets_its_enter(mod, home):
+    seed(mod)
+    cmux = Cmux(mod, home)
+    assert cmux.dispatch() is True
+    assert [m for m, _ in cmux.calls] == ["surface.send_text", "surface.send_key"]
+
+
+def test_a_timeout_may_have_landed_so_it_is_unknown_not_failed(mod, home):
+    seed(mod)
+    assert Cmux(mod, home, rc=124).dispatch() is True
+    assert ledger(home)[-1]["outcome"] == "unknown" and ledger(home)[-1]["error"] == "timeout"
 
 
 def test_a_failed_stamp_still_closes_the_typing(mod, home):
@@ -130,13 +176,13 @@ def test_with_the_ledger_unwritable_nothing_is_started_or_typed_and_the_task_sta
     cmux = Cmux(mod, home)
     with mock.patch.object(session_effects, "writable", return_value=False):
         assert cmux.dispatch() is False
-    assert cmux.calls == [] and mod._dispatch_unrecorded is True
-    assert json.loads(mod.TODO_PATH.read_text())["items"][0]["status"] == "open"
-    assert "dispatchedAt" not in json.loads(mod.TODO_PATH.read_text())["items"][0]
+    assert cmux.calls == [] and mod._dispatch_blocked.startswith("unrecorded")
+    assert stamped(mod)["status"] == "open" and "dispatchedAt" not in stamped(mod)
 
 
 @pytest.mark.parametrize("screens, source", [((READY,), "task"), ((TRUST, READY), "trust")])
-def test_when_the_intent_cant_be_written_after_the_workspace_exists_nothing_is_typed(mod, home, screens, source):
+def test_when_the_intent_cant_be_written_after_the_workspace_exists_nothing_is_typed_and_the_task_is_parked(
+        mod, home, screens, source):
     seed(mod)
     cmux = Cmux(mod, home, screens=screens)
     real = effects.begin
@@ -150,17 +196,44 @@ def test_when_the_intent_cant_be_written_after_the_workspace_exists_nothing_is_t
         assert cmux.dispatch() is False
     assert not any(m == "surface.send_text" and p["text"].startswith("Read ") for m, p in cmux.calls)
     assert source != "trust" or cmux.calls == []
-    assert mod._dispatch_unrecorded is True
-    assert json.loads(mod.TODO_PATH.read_text())["items"][0]["status"] == "open"
+    assert mod._dispatch_blocked.startswith("unrecorded") and "td-1" in mod._dispatch_started
+    # like a session that never got ready: stamped, so the next pulse doesn't make another workspace
+    assert stamped(mod)["status"] == "in-progress" and stamped(mod)["dispatchedWs"] == WS
 
 
-def test_a_refusal_other_than_not_recording_does_not_raise_the_card(mod, home):
+def test_a_session_ref_the_record_cant_describe_is_parked_and_blocks_with_its_own_reason(mod, home):
+    seed(mod)
+    cmux = Cmux(mod, home, workspace="workspace:" + "9" * 19)
+    assert cmux.dispatch() is False
+    assert cmux.calls == [] and mod._dispatch_blocked.startswith("invalid")
+    assert stamped(mod)["status"] == "in-progress"
+    card = mod._dispatch_blocked_card([{"id": "td-2", "title": "later"}])
+    assert card["title"] == "Dispatch paused — can't describe the new session (1 TODO(s) waiting)"
+    assert "expects workspace:N" in card["detail"] and "Waiting: td-2 later." in card["detail"]
+
+
+def test_a_refusal_that_passes_by_itself_parks_the_task_but_raises_no_card(mod, home):
     seed(mod)
     cmux = Cmux(mod, home)
-    mod._dispatch_unrecorded = False
     with mock.patch.object(effects, "begin", side_effect=effects.Duplicate("again")):
         assert cmux.dispatch() is False
-    assert cmux.calls == [] and mod._dispatch_unrecorded is False
+    assert cmux.calls == [] and mod._dispatch_blocked == ""
+    assert stamped(mod)["status"] == "in-progress"
+
+
+def test_a_failed_park_stamp_is_logged_and_the_task_stays_open(mod, home, caplog):
+    seed(mod)
+    with mock.patch.object(effects, "begin", side_effect=effects.Duplicate("again")), \
+            mock.patch.object(mod, "_mark_todo_dispatched", return_value=False):
+        assert Cmux(mod, home).dispatch() is False
+    assert "park stamp FAILED" in caplog.text
+
+
+def test_keys_that_cant_be_made_for_the_instruction_close_the_intent_as_failed(mod, home):
+    seed(mod)
+    with mock.patch.object(session_effects, "Keys", side_effect=session_effects.Refused("invalid", "x")):
+        assert Cmux(mod, home).dispatch() is False
+    assert ledger(home)[-1]["outcome"] == "failed" and stamped(mod)["status"] == "in-progress"
 
 
 # --- the card ---------------------------------------------------------------------------------------------------
@@ -168,16 +241,19 @@ def test_a_refusal_other_than_not_recording_does_not_raise_the_card(mod, home):
 class Dispatching:
     """main() with real dispatch_todo replaced by one that behaves as the ledger decides."""
 
-    def __init__(self, fleet, recordable):
+    def __init__(self, fleet, blocked):
         from test_busy_session_cap import Pulse
-        self.pulse, self.recordable = Pulse(fleet), recordable
+        self.pulse, self.blocked = Pulse(fleet), blocked
+        for index, todo in enumerate(self.pulse.todos):
+            todo["title"] = f"Task number {index}"
 
     def run(self):
         mod = self.pulse.mod
 
         def dispatch(todo_id):
-            if not self.recordable:
-                mod._dispatch_unrecorded = True
+            if self.blocked and todo_id == "td-0":
+                mod._dispatch_blocked = "unrecorded: x"
+                mod._dispatch_started.add(todo_id)  # the first was parked: no longer waiting
                 return False
             return True
 
@@ -194,13 +270,28 @@ class Dispatching:
 
 
 def test_a_card_says_dispatch_is_paused_when_it_cant_be_recorded_and_it_goes_when_it_can(fleet):
-    calls, payload = Dispatching(fleet, recordable=False).run()
+    calls, payload = Dispatching(fleet, blocked=True).run()
     assert calls.call_count == 1  # the rest of this pulse's dispatches are not started
     card = cards(payload)["dispatch-held-no-record"]
-    assert card["title"] == "Dispatch paused — 3 TODO(s) waiting"
+    assert card["title"] == "Dispatch paused — can't record what it types (2 TODO(s) waiting)"
     assert card["detail"] == (
-        "Assistant can't record what it types into your sessions, so it started nothing. Check that your disk "
-        "isn't full and that the folder ~/.assistant/effects can be written to. Holding: td-0, td-1, td-2. "
-        "Nothing is lost. Assistant looks again every few minutes and starts them once it can record.")
-    calls, payload = Dispatching(fleet, recordable=True).run()
+        "Assistant can't write its record of what it types into your sessions, so it won't start tasks. Check that "
+        "your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
+        "(`ls -ld ~/.assistant/effects`). Waiting: td-1 Task number 1, td-2 Task number 2. Nothing is lost; the "
+        "next round starts them once the record can be written.")
+    calls, payload = Dispatching(fleet, blocked=False).run()
     assert calls.call_count == 2 and "dispatch-held-no-record" not in cards(payload)
+
+
+def test_more_than_five_waiting_tasks_are_counted_not_all_listed(mod):
+    mod._dispatch_blocked = "unrecorded: x"
+    waiting = [{"id": f"td-{n}", "title": ""} for n in range(8)]
+    card = mod._dispatch_blocked_card(waiting)
+    assert "(8 TODO(s) waiting)" in card["title"] and "td-4, " not in card["detail"] and "(+3 more)" in card["detail"]
+
+
+def test_the_card_never_lists_a_task_started_this_pulse(mod):
+    mod._dispatch_blocked = "unrecorded: x"
+    mod._dispatch_started.add("td-0")
+    card = mod._dispatch_blocked_card([{"id": "td-0", "title": "a"}, {"id": "td-1", "title": "b"}])
+    assert "td-0" not in card["detail"] and "(1 TODO(s) waiting)" in card["title"]

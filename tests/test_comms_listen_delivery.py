@@ -47,6 +47,7 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("COMMS_HOME", str(home))
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("SLACK_PING_TARGET", raising=False)
+    monkeypatch.setenv("SLACK_USER_ID", "UOWNER")  # only the owner's messages are typed
     monkeypatch.setattr(listen, "INBOX_DIR", home / ".assistant" / "inbox")
     calls: list[list[str]] = []
 
@@ -71,7 +72,7 @@ def _log(paths):
 
 def _msg(text, age_sec=0.0, channel="C0"):
     return {"channel": channel, "text": text, "msg_ts": f"{time.time() - age_sec:.6f}",
-            "reply_to": None}
+            "reply_to": None, "author": "UOWNER"}
 
 
 # ─── pending queue ──────────────────────────────────────────────────────────
@@ -326,7 +327,6 @@ def test_inbound_loop_records_and_queues_before_the_worker_sees_it(env, monkeypa
     """The slack cursor has moved past a message by the time it's polled, so it
     must be on disk before a (possibly busy) worker gets it."""
     paths, calls = env
-    monkeypatch.setenv("SLACK_USER_ID", "UOWNER")  # only the owner's messages are typed
     listen.add_pending(paths, _msg("queued", channel="C1"))
     monkeypatch.setattr(listen, "ensure_warm_session", lambda p, **kw: None)
     started: list[str] = []

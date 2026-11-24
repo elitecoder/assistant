@@ -1826,6 +1826,10 @@ def save_summary(ws: dict, verdict: dict, observation_identity: dict | None = No
         log.error("save-ws-summary %s rc=%d: %s", ws["ref"], rc, err.strip())
 
 
+# cmux-send.py's worst case is the terminal lookup (10 s), two keystrokes (10 s each) and its 2.5 s wait.
+CMUX_SEND_TIMEOUT_SEC = 45
+
+
 def cmux_send(ws_ref: str, text: str, *, caller: str = "assistant-pulse") -> dict:
     """Returns the parsed JSON record cmux-send.py wrote (which captures
     rpc results and transcript-byte delta). On failure returns
@@ -1841,7 +1845,7 @@ def cmux_send(ws_ref: str, text: str, *, caller: str = "assistant-pulse") -> dic
         "--source", source,
         "--auth-kind", "standing",
         "--auth-ref", source,
-    ])
+    ], timeout=CMUX_SEND_TIMEOUT_SEC)
     if rc != 0:
         log.warning("cmux-send %s rc=%d: %s", ws_ref, rc, err.strip()[-200:])
         return {"outcome": "failed", "transcript_size_delta": 0}
@@ -2362,15 +2366,33 @@ def _build_dispatch_prompt(item: dict, agent: str = "claude") -> str:
     return f"{work}\n{rules}\n{first_pass}{note}"
 
 
+_last_rpc_rc: int | None = None
+
+
 def _cmux_rpc(method: str, params: dict, timeout: int = 15) -> dict | None:
     """Call `cmux rpc <method> <json>` and return parsed JSON, or None."""
+    global _last_rpc_rc
     rc, out, _ = run([CMUX_BIN, "rpc", method, json.dumps(params)], timeout=timeout)
+    _last_rpc_rc = rc
     if rc != 0:
         return None
     try:
         return json.loads(out)
     except Exception:
         return None
+
+
+def _cmux_type_rpc(method: str, params: dict) -> dict:
+    """The transport for typing: an exit status of 0 is an answer whatever the body, a timeout raises (the keystroke
+    may have landed, so it is recorded as unknown, not failed), and anything else is cmux refusing it (None)."""
+    global _last_rpc_rc
+    _last_rpc_rc = None
+    answer = _cmux_rpc(method, params)
+    if answer is not None:
+        return answer
+    if _last_rpc_rc == 124:
+        raise TimeoutError(method)
+    return {} if _last_rpc_rc == 0 else None
 
 
 # Default read window must capture the WHOLE TUI screen, not just the bottom.
@@ -2388,22 +2410,72 @@ def _surface_read_text(surface_ref: str, lines: int = 200) -> str:
     return d.get("text", "") or ""
 
 
-# Set when a dispatch was refused because the ledger couldn't record what it was about to type; the pulse reads it
-# after the dispatch loop to show one card, and stops starting more this pulse.
-_dispatch_unrecorded = False
+# Why dispatch is blocked until something is fixed ("" when it isn't): the ledger can't record what would be typed,
+# or the new session can't be described to it. The pulse reads it after the dispatch loop to show one card, and
+# stops starting more this pulse. `_dispatch_started` holds the tasks started or parked this pulse.
+_dispatch_blocked = ""
+_dispatch_started: set = set()
+
+# What allowed a task's auto-start, from where the task came. `owner_flag` is only ever recorded when the owner set
+# the flag (a Work queue send, their own Slack reaction, `/todo` or a hand edit); a task the goals planner or a
+# policy rule created is `standing`, with the setting or rule named. Anything not listed is `standing` too: the more
+# cautious claim.
+OWNER_SOURCES = ("work-queue:", "slack-react:", "manual:")
+
+
+def _dispatch_allowance(item: dict, todo_id: str) -> tuple[str, str]:
+    """(kind, ref) saying what allowed this task to start by itself."""
+    source, made_by = str(item.get("source") or ""), str(item.get("createdBy") or "")
+    if source.startswith(OWNER_SOURCES):
+        return "owner_flag", todo_id
+    if source.startswith("goal:") or item.get("goalId"):
+        return "standing", "planner"
+    if made_by.startswith("policy:"):
+        return "standing", re.sub(r"[^A-Za-z0-9_:./-]", "-", made_by)[:60]
+    return "standing", "unlisted-source"
 
 
 def _begin_dispatch_typing(todo_id: str, item: dict, ws_ref: str, source: str):
     """Record the intent to type into the workspace dispatch just made. Returns the effect id, or None when typing is
-    refused (logged, and the unrecorded case is flagged for the card)."""
-    global _dispatch_unrecorded
+    refused (logged; a refusal that repeats until something is fixed is kept for the card)."""
+    global _dispatch_blocked
+    kind, ref = _dispatch_allowance(item, todo_id)
     try:
-        return session_effects.begin(ws_ref, source, kind="owner_flag", ref=todo_id, component="pulse",
+        return session_effects.begin(ws_ref, source, kind=kind, ref=ref, component="pulse",
                                      task=todo_id, trace=session_effects.trace_of(item))
     except session_effects.Refused as refusal:
-        _dispatch_unrecorded = _dispatch_unrecorded or refusal.code == "unrecorded"
+        if refusal.code in ("unrecorded", "invalid"):
+            _dispatch_blocked = _dispatch_blocked or f"{refusal.code}: {refusal}"
         log.warning("dispatch %s: typing into %s refused (%s): %s", todo_id, ws_ref, refusal.code, refusal)
         return None
+
+
+def _park_refused_dispatch(todo_id: str, ws_ref: str) -> bool:
+    """The workspace exists and nothing may be typed into it. Stamp the TODO like a workspace that never got ready,
+    so the next pulse doesn't make another one; the workspace is left for a person to close."""
+    _dispatch_started.add(todo_id)
+    if not _mark_todo_dispatched(todo_id, ws_ref):
+        log.warning("dispatch %s: park stamp FAILED — TODO stays open and WILL be re-dispatched next pulse", todo_id)
+    return False
+
+
+def _dispatch_blocked_card(bucket_b: list) -> dict:
+    """The one card for a dispatch that is blocked until something is fixed. It lists only the tasks still waiting."""
+    waiting = [t for t in bucket_b if t.get("id") not in _dispatch_started]
+    names = ", ".join(f"{t['id']} {str(t.get('title') or '')[:60]}".strip() for t in waiting[:5])
+    more = f" (+{len(waiting) - 5} more)" if len(waiting) > 5 else ""
+    if _dispatch_blocked.startswith("invalid"):
+        title = f"Dispatch paused — can't describe the new session ({len(waiting)} TODO(s) waiting)"
+        why = ("Assistant didn't recognise the name cmux gave the new session (it expects workspace:N), so it "
+               "typed nothing into it and parked the task. Update Assistant, or tell its maintainer.")
+    else:
+        title = f"Dispatch paused — can't record what it types ({len(waiting)} TODO(s) waiting)"
+        why = ("Assistant can't write its record of what it types into your sessions, so it won't start tasks. "
+               "Check that your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
+               "(`ls -ld ~/.assistant/effects`).")
+    return {"key": "dispatch-held-no-record", "tier": "T3", "title": title,
+            "detail": f"{why} Waiting: {names or 'none'}{more}. Nothing is lost; the next round starts them once "
+                      f"the record can be written."}
 
 
 def dispatch_todo(todo_id: str) -> bool:
@@ -2429,6 +2501,12 @@ def dispatch_todo(todo_id: str) -> bool:
         log.warning("dispatch %s: not found in todo file", todo_id)
         return False
 
+    # A task captured from a Slack reaction that isn't confirmed as the owner's waits for the owner's decision: it
+    # starts only once auto-start is on, whoever calls this.
+    if str(item.get("source") or "").startswith("slack-react:") and item.get("autoDispatch") is not True:
+        log.warning("dispatch %s: a Slack capture not confirmed as the owner's — not starting it", todo_id)
+        return False
+
     # cmux must be up.
     rc, _pout, _perr = run([CMUX_BIN, "ping"], timeout=10)
     if rc != 0:
@@ -2439,8 +2517,8 @@ def dispatch_todo(todo_id: str) -> bool:
     # Before anything is started: if Assistant can't record what it types, a workspace made now could never be typed
     # into, and one would be made again every pulse. The TODO stays open for the next pulse.
     if not session_effects.writable():
-        global _dispatch_unrecorded
-        _dispatch_unrecorded = True
+        global _dispatch_blocked
+        _dispatch_blocked = _dispatch_blocked or f"unrecorded: {session_effects.UNRECORDED}"
         log.warning("dispatch %s: %s — nothing started", todo_id, session_effects.UNRECORDED)
         return False
 
@@ -2539,8 +2617,9 @@ def dispatch_todo(todo_id: str) -> bool:
         if trust and not trust_answered and trust in screen:
             trust_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "trust")
             if trust_ef is None:
-                return False
-            session_effects.type_line(trust_ef, _cmux_rpc, surface_ref, agent_session.trust_answer(agent))
+                return _park_refused_dispatch(todo_id, ws_ref)
+            session_effects.type_line(trust_ef, _cmux_type_rpc, surface_ref, agent_session.trust_answer(agent),
+                                      session=ws_ref)
             trust_answered = True
         elif agent_session.ready_re(agent).search(screen):
             ready = True
@@ -2568,8 +2647,13 @@ def dispatch_todo(todo_id: str) -> bool:
     instruction = f"Read {prompt_file} in full and execute every instruction in it."
     task_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "task")
     if task_ef is None:
-        return False
-    typing = session_effects.Keys(task_ef, _cmux_rpc, surface_ref)
+        return _park_refused_dispatch(todo_id, ws_ref)
+    try:
+        typing = session_effects.Keys(task_ef, _cmux_type_rpc, surface_ref, ws_ref)
+    except session_effects.Refused as refusal:
+        session_effects.finish(task_ef, "failed", error="not recorded")
+        log.warning("dispatch %s: typing into %s refused (%s)", todo_id, ws_ref, refusal)
+        return _park_refused_dispatch(todo_id, ws_ref)
     typing.line(instruction.rstrip("\n"), pause=1)
 
     # 6.5. STAMP NOW — a real workspace exists and the prompt has been sent.
@@ -3107,10 +3191,11 @@ def main() -> int:
         priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
         bucket_b.sort(key=lambda t: priority_order.get(t.get("priority", "P4"), 9))
         n_dispatched = 0
-        global _dispatch_unrecorded
-        _dispatch_unrecorded = False
+        global _dispatch_blocked
+        _dispatch_blocked = ""
+        _dispatch_started.clear()
         for todo in bucket_b[:MAX_DISPATCH_PER_PULSE]:
-            if _dispatch_unrecorded:
+            if _dispatch_blocked:
                 break  # one refusal is the same for the rest: don't start workspaces nothing can be typed into
             ok = dispatch_todo(todo["id"])
             actions_taken.append({
@@ -3121,22 +3206,14 @@ def main() -> int:
             })
             if ok:
                 n_dispatched += 1
-        if _dispatch_unrecorded:
-            held = ", ".join(t["id"] for t in bucket_b[:5])
-            more = f" (+{len(bucket_b) - 5} more)" if len(bucket_b) > 5 else ""
-            awaiting_input.append({
-                "key": "dispatch-held-no-record",
-                "tier": "T3",
-                "title": f"Dispatch paused — {len(bucket_b)} TODO(s) waiting",
-                "detail": (f"Assistant can't record what it types into your sessions, so it started nothing. "
-                           f"Check that your disk isn't full and that the folder ~/.assistant/effects can be "
-                           f"written to. Holding: {held}{more}. Nothing is lost. Assistant looks again every "
-                           f"few minutes and starts them once it can record."),
-            })
+                _dispatch_started.add(todo["id"])
+        if _dispatch_blocked:
+            card = _dispatch_blocked_card(bucket_b)
+            awaiting_input.append(card)
             actions_taken.append({
                 "key": "dispatch-held-no-record",
                 "kind": "skipped", "outcome": "verified",
-                "evidence": "the effects record could not be written",
+                "evidence": _dispatch_blocked[:200],
             })
 
     # 6. Write state + trace.

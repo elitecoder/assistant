@@ -1,9 +1,10 @@
 """Typing into an agent session, through the effects ledger.
 
 Every keystroke Assistant's own code sends to an agent session goes through this module: `begin()` before the
-first one, the `Keys` helper (or `send_text` / `send_key`) to send, `finish()` after. Nothing else in `bin/`, `src/`,
-`work_queue/` or `hooks/` may name the cmux calls that type (`tests/test_session_typing_fence.py` fails the build if
-anything does). Agents act on what is typed with their permission prompts off, and typing can't be taken back, so:
+first one, a `Keys` (made from what `begin()` returned) to send, `Keys.finish()` after. Nothing else in `bin/`,
+`src/`, `work_queue/` or `hooks/` may name the cmux calls that type (`tests/test_session_typing_fence.py` fails the
+build if anything does). Agents act on what is typed with their permission prompts off, and typing can't be taken
+back, so:
 
   * No record, no typing. `begin()` raises `Refused` when the intent can't be written, and the caller types nothing.
   * Every typing names what allowed it: a person's tap, a task whose owner turned on auto-start, or a standing
@@ -11,10 +12,20 @@ anything does). Agents act on what is typed with their permission prompts off, a
   * The ledger holds the session, the task, and where the text came from (a fixed name such as `nudge:stranded`),
     never the text, a prompt path, a title or a Slack message.
   * The same thing typed into the same session more than three times in half an hour is refused (a loop), whatever
-    else allows it. Only a Slack message or a task counts as a different thing from the one before it.
-  * A typing whose outcome is unknown (the text went out and Enter, or the answer, didn't) is not repeated unless
-    something newer allows it. A source with no natural time of its own (a nudge) counts as allowed "now", so the
-    ledger's own rule would let it through; `begin()` refuses it explicitly.
+    else allows it. A task or a Slack message counts as its own thing.
+  * A typing that went out and couldn't be confirmed, or never got a result, is `unknown` and is not repeated by
+    Assistant on its own. How long that lasts depends on who allowed it, because cmux reuses session refs:
+      - a task's instruction and a Slack message keep the ledger's own rule (not again without a newer
+        authorization);
+      - a nudge, `/cleanup`, a boot instruction, a `/clear` or a merge request waits thirty minutes, then may be
+        tried again (and counts toward the loop limit);
+      - a person's own tap is never held back by an earlier unknown.
+  * A `Keys` is bound to its intent: one per effect, only the session or terminal the intent names, and only while
+    the intent has no result.
+
+What this can't prove: that the text typed is the text the caller says it came from, that a `source` or
+`authorization` a caller gives is true (`bin/cmux-send.py` trusts the flags it is run with), or that the terminal a
+caller types into is the one in the named session. The record says what Assistant did and what it said allowed it.
 
 Standard library plus `assistant.effects` and `assistant.pointers`; it loads on the system Python (3.9).
 """
@@ -32,24 +43,34 @@ CLASS = "session.type"
 LOOP_MAX = 3
 LOOP_SEC = 1800
 LOOP_SCAN = 500
-_SESSION = re.compile(r"workspace:[0-9]{1,9}")
+# A session the record can describe. cmux numbers its refs from 1000010000 and counts up.
+SESSION = re.compile(r"workspace:[0-9]{1,18}")
+# These have no time of their own to be allowed "as of", so an unknown one holds the same source in the same
+# session for half an hour only. A person's own tap (`cli`, `restore`, `run-now`) is deliberately not here: it is
+# never held back by an earlier unknown.
+WINDOWED_SOURCES = ("nudge:stranded", "cleanup", "boot", "clear", "merge", "pulse")
 
 UNRECORDED = ("Assistant couldn't record what it types, so it typed nothing. "
               "Check that your disk isn't full and that the folder ~/.assistant/effects can be written to")
-LOOP = "Assistant already typed this into the same session three times in the last half hour, so it didn't type it again"
-IN_PROGRESS = "Assistant is already typing this into the same session"
-DONE = "Assistant already typed this into the same session, so it didn't type it again"
-UNKNOWN = ("Assistant typed this into the same session earlier and never saw it land, so it didn't type it again. "
-           "Check the session")
-UNAUTHORIZED = "Assistant couldn't confirm what allowed this, so it typed nothing"
-INVALID = "Assistant couldn't describe where this was going, so it typed nothing"
+LOOP = ("Assistant already typed this into {where} three times in the last half hour, so it is waiting. "
+        "It tries again once the oldest of them is 30 minutes old.")
+IN_PROGRESS = "Assistant may still be typing this into {where} (or stopped partway), so it waited."
+DONE = "Assistant already typed this into {where}, so it didn't type it again."
+UNKNOWN = ("Assistant typed this into {where} earlier and couldn't tell if it arrived, so it won't type it again by "
+           "itself. Look at that session; to type it again yourself run "
+           "`bin/cmux-send.py --ws {where} --text '…' --enter`.")
+UNAUTHORIZED = "Assistant couldn't confirm what allowed this, so it typed nothing."
+INVALID = "Assistant didn't recognise the session this was meant for (it expects workspace:N), so it typed nothing."
+LATER = "This message is dated later than this Mac's clock says it is now, so Assistant is waiting before typing it."
 
 _now = time.time  # a seam, so tests set the clock
+_USED: set = set()  # effect ids that already have their one Keys
 
 
 class Refused(Exception):
-    """Nothing may be typed. `code` is one of unrecorded, loop, in-progress, done, unknown, unauthorized, invalid;
-    `str(exc)` is a plain sentence a person can read."""
+    """Nothing may be typed. `code` is one of unrecorded, loop, in-progress, done, unknown, unauthorized, invalid,
+    later; `str(exc)` is a plain sentence a person can read. `later`, `loop`, `in-progress` and `unrecorded` pass by
+    themselves, so a caller keeps what it was going to type for the next try; the rest won't."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -61,12 +82,20 @@ def _iso(epoch: float) -> str:
 
 
 def writable() -> bool:
-    """Whether the ledger can be written to at all, checked without writing a row. For a caller that would otherwise
-    start something (a new workspace) before it finds out typing into it is refused."""
+    """Whether the ledger can really be written to: a small probe is written, flushed to disk and removed, which a
+    full disk refuses. For a caller that would otherwise start something (a new workspace) before it finds out that
+    typing into it is refused."""
+    probe = effects.ledger_dir() / f".probe-{os.getpid()}"
     try:
         os.makedirs(str(effects.ledger_dir()), mode=0o700, exist_ok=True)
+        fd = os.open(str(probe), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, b"x" * 512)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.unlink(str(probe))
         os.close(os.open(str(effects.ledger_path()), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600))
-        os.close(os.open(str(effects.ledger_dir() / "effects.lock"), os.O_RDWR | os.O_CREAT, 0o600))
         return True
     except OSError:
         return False
@@ -79,15 +108,24 @@ def trace_of(item) -> str:
 
 
 def _loop_count(target: dict, now: float) -> int:
-    """Typings into this session from this source in the last half hour that did or may have gone out. A task or a
-    Slack message is its own thing: it only counts against itself."""
+    """Typings into this session from this source in the last half hour that did, may have, or may still go out:
+    anything but a typing known to have failed. A task or a Slack message is its own thing and counts only against
+    itself."""
     count = 0
     for found in effects.history(CLASS, limit=LOOP_SCAN):
-        if found["t"] < now - LOOP_SEC:
-            break
-        if found["outcome"] != "failed" and found["target"] == target:
+        if found["t"] >= now - LOOP_SEC and found["outcome"] != "failed" and found["target"] == target:
             count += 1
     return count
+
+
+def _held_by_unknown(target: dict, now: float) -> bool:
+    """Whether the last typing of this source into this session may have landed within the last half hour."""
+    last = effects.last(CLASS, target)
+    if not last:
+        return False
+    if last["outcome"] == "unknown":
+        return now - last["finished_t"] < LOOP_SEC
+    return last["outcome"] is None and effects.IN_FLIGHT_SEC <= now - last["t"] < LOOP_SEC
 
 
 def begin(session: str, source: str, *, kind: str, ref: str, component: str, task: str = "", trace: str = "",
@@ -109,20 +147,19 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         target["task"] = task
     if slack_ts:
         target["ts"] = slack_ts
-    if session and not _SESSION.fullmatch(session) or not (session or surface):
+    where = session or "that terminal"
+    if session and not SESSION.fullmatch(session) or not (session or surface):
         raise Refused("invalid", INVALID)
     try:
         target = effects.clean_target(target)
     except ValueError:
         raise Refused("invalid", INVALID) from None
+    if anchor is not None and anchor > now + effects.FUTURE_SEC:
+        raise Refused("later", LATER)
     if _loop_count(target, now) >= LOOP_MAX:
-        raise Refused("loop", LOOP)
-    if anchor is None:
-        last = effects.last(CLASS, target)
-        # An intent that never got a result and is past the ledger's in-flight window may have been typed too.
-        abandoned = last and last["outcome"] is None and now - last["t"] >= effects.IN_FLIGHT_SEC
-        if last and (last["outcome"] == "unknown" or abandoned):
-            raise Refused("unknown", UNKNOWN)
+        raise Refused("loop", LOOP.format(where=where))
+    if anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):
+        raise Refused("unknown", UNKNOWN.format(where=where))
     # Recorded to the second, and rounded up when it is "now": rounded down it could fall before the result of a
     # typing that finished a moment ago, and the ledger would take it for an approval older than that result.
     auth = {"kind": kind, "ref": ref, "at": _iso(math.ceil(now) if anchor is None else anchor)}
@@ -130,8 +167,11 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         return effects.begin(CLASS, target, auth, trace=trace if pointers.is_trace_id(trace) else "",
                              component=component)
     except effects.Duplicate as exc:
-        raise Refused("done" if exc.done else "unknown" if exc.unknown else "in-progress",
-                      DONE if exc.done else UNKNOWN if exc.unknown else IN_PROGRESS) from None
+        if exc.done:
+            raise Refused("done", DONE.format(where=where)) from None
+        if exc.unknown:
+            raise Refused("unknown", UNKNOWN.format(where=where)) from None
+        raise Refused("in-progress", IN_PROGRESS.format(where=where)) from None
     except effects.NotAuthorized:
         raise Refused("unauthorized", UNAUTHORIZED) from None
     except effects.Unrecorded:
@@ -147,30 +187,41 @@ def finish(effect_id: str, outcome: str, verified: bool | None = None, error: st
 
 # --- the only place the typing calls are named ------------------------------------------------------------------
 
-def _open(effect_id) -> bool:
-    """Whether this is a typing whose intent is on disk and which has no result yet."""
-    return isinstance(effect_id, str) and any(
-        found["id"] == effect_id and found["outcome"] is None for found in effects.history(CLASS, limit=LOOP_SCAN))
-
-
 class Keys:
     """The keystrokes of one typing, and the only way to send any. It is made from the effect id `begin()` returned,
-    so nothing can be typed without an intent on disk first. `rpc(method, params)` answers with the reply, or None
-    when cmux refused. Keystrokes are counted so the outcome can be told honestly; an exception from the transport
-    counts as "can't tell" and goes on up."""
+    for the session (or terminal) that intent names: it is refused for anything else, there is one `Keys` for each
+    effect, and each keystroke first checks that the intent has no result yet. `rpc(method, params)` answers with the
+    reply, or None when cmux refused; it raises `TimeoutError` when it can't tell (the call took too long). Keystrokes are counted so the
+    outcome can be told honestly; an exception from the transport counts as "can't tell" and goes on up."""
 
-    def __init__(self, effect_id: str, rpc, surface_id: str):
-        if not _open(effect_id):
+    def __init__(self, effect_id: str, rpc, surface_id: str, session: str = "", also=()):
+        found = effects.get(effect_id) if isinstance(effect_id, str) else None
+        if not found or found["class"] != CLASS or found["outcome"] is not None or effect_id in _USED:
             raise Refused("unrecorded", UNRECORDED)
+        named = found["target"]
+        # A terminal named in the intent is the only one; a session named in it is the one the caller says it types
+        # into. Which terminal is in which session is cmux's to say, not something this module can check.
+        if ("surface" in named and named["surface"] != surface_id) or \
+                ("session" in named and named["session"] != session):
+            raise Refused("invalid", INVALID)
+        _USED.add(effect_id)
         self.effect_id, self.rpc, self.surface_id = effect_id, rpc, surface_id
+        self.also = list(also)  # other intents for what is typed in the same turn; they get the same result
         self.sent = 0       # keystroke calls cmux accepted
         self.refused = 0    # keystroke calls cmux refused
         self.raised = False
         self.confirmed = None  # True/False once something has checked that it landed
+        self.finished = False
 
     def _go(self, method: str, params: dict) -> bool:
+        found = effects.get(self.effect_id)
+        if not found or found["outcome"] is not None:
+            raise Refused("done", DONE.format(where="the session"))
         try:
             ok = self.rpc(method, {"surface_id": self.surface_id, **params}) is not None
+        except TimeoutError:
+            self.raised = True  # it may have landed: that is "unknown", and the keystroke counts as not accepted
+            return False
         except Exception:
             self.raised = True
             raise
@@ -188,38 +239,52 @@ class Keys:
         """Enter as a character, for a terminal that ignores the key."""
         return self.text("\r")
 
-    def line(self, text: str, enter: str = "key", pause: float = 0.0, sleep=time.sleep) -> None:
+    def line(self, text: str, enter: str = "key", pause: float = 0.0, sleep=None) -> None:
         """Type `text`, then Enter (`enter` is "key", "cr" or "" for none). A transport error is counted, not raised."""
         try:
             if self.text(text) and enter:
                 if pause:
-                    sleep(pause)
+                    (sleep or time.sleep)(pause)
                 self.key("enter") if enter == "key" else self.carriage_return()
+        except Refused:
+            raise
         except Exception:
             pass
 
     def outcome(self) -> str:
-        """`done` when it was seen to land or every keystroke went out, `failed` when nothing went out, else
-        `unknown`."""
+        """`done` when it was seen to land, or every keystroke went out and nothing said it hadn't landed; `failed`
+        when nothing went out; else `unknown`."""
         if self.confirmed:
             return "done"
-        if self.raised:
+        if self.raised or (self.sent and (self.refused or self.confirmed is False)):
             return "unknown"
-        if not self.sent:
-            return "failed"
-        return "done" if not self.refused else "unknown"
+        return "done" if self.sent else "failed"
 
     def finish(self) -> None:
-        """Record how it ended."""
-        error = "timeout" if self.raised else "tool failed" if self.refused else ""
-        finish(self.effect_id, self.outcome(), verified=self.confirmed, error="" if self.outcome() == "done" else error)
+        """Record how it ended, once."""
+        if self.finished:
+            return
+        self.finished = True
+        outcome = self.outcome()
+        error = "" if outcome == "done" else "timeout" if self.raised else "tool failed" if self.refused else \
+            "not confirmed" if outcome == "unknown" else ""
+        for effect_id in [self.effect_id, *self.also]:
+            finish(effect_id, outcome, verified=self.confirmed, error=error)
 
 
-def type_line(effect_id: str, rpc, surface_id: str, text: str, *, enter: str = "key", pause: float = 0.0,
-              sleep=time.sleep) -> str:
+def type_line(effect_id: str, rpc, surface_id: str, text: str, *, session: str = "", enter: str = "key",
+              pause: float = 0.0, sleep=None) -> str:
     """Type `text` and press Enter, then record how it ended and return the outcome. `effect_id` is what `begin()`
-    returned."""
-    keys = Keys(effect_id, rpc, surface_id)
-    keys.line(text, enter, pause, sleep)
-    keys.finish()
+    returned. If it can't be used, the intent is closed as failed (nothing was typed)."""
+    try:
+        keys = Keys(effect_id, rpc, surface_id, session)
+    except Refused:
+        found = effects.get(effect_id) if isinstance(effect_id, str) else None
+        if found and found["outcome"] is None:
+            finish(effect_id, "failed", error="not recorded")
+        raise
+    try:
+        keys.line(text, enter, pause, sleep)
+    finally:
+        keys.finish()
     return keys.outcome()

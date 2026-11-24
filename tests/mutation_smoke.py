@@ -5751,8 +5751,8 @@ CHECKS = (
     (
         'the Tasks tab shows the paused-dispatch card',
         'bin/render-assistant-page.py',
-        'in ("dispatch-cap-hit", "dispatch-held-no-fleet-view")), None)',
-        'in ("dispatch-cap-hit",)), None)',
+        'DISPATCH_NOTICE_KEYS = ("dispatch-cap-hit", "dispatch-held-no-fleet-view", "dispatch-held-no-record")',
+        'DISPATCH_NOTICE_KEYS = ("dispatch-cap-hit", "dispatch-held-no-record")',
         'tests/test_pro_mode.py::test_tasks_tab_shows_the_paused_dispatch_warning',
     ),
     (

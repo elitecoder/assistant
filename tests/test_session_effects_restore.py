@@ -104,3 +104,41 @@ def test_a_verbose_run_says_why_nothing_was_typed(restore, tmp_path, capsys):
     assert not restore.respawn_panel({"title": "t"}, {"id": PANEL, "terminal": {"surfaceId": SURFACE}}, MARKER,
                                      False, True)
     assert "send_text failed" in capsys.readouterr().out
+
+
+def test_a_timeout_on_the_text_is_unknown_and_is_not_tried_again_by_the_other_id(restore, tmp_path):
+    cmux = Cmux(tmp_path, answers=[124])
+    assert run(restore, cmux) is False
+    assert [p["surface_id"] for _, p in cmux.calls] == [SURFACE]
+    assert ledger(tmp_path)[1]["outcome"] == "unknown" and ledger(tmp_path)[1]["error"] == "timeout"
+
+
+def test_a_timeout_on_enter_still_counts_as_restored_and_is_unknown(restore, tmp_path):
+    assert run(restore, Cmux(tmp_path, answers=[0, 124])) is True
+    assert ledger(tmp_path)[1]["outcome"] == "unknown"
+
+
+def test_run_cmux_reports_a_timeout_as_one(restore, monkeypatch):
+    def slow(*a, **k):
+        raise restore.subprocess.TimeoutExpired(cmd="cmux", timeout=5)
+    monkeypatch.setattr(restore.subprocess, "run", slow)
+    assert restore.run_cmux("rpc", "x") == (124, "", "timeout")
+    monkeypatch.setattr(restore.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("gone")))
+    assert restore.run_cmux("rpc", "x")[0] == 1
+
+
+def test_the_restore_rpc_treats_exit_status_zero_as_an_answer_whatever_the_body(restore, tmp_path):
+    class Silent(Cmux):
+        def __call__(self, *args, timeout=5):
+            super().__call__(*args, timeout=timeout)
+            return 0, "", ""
+    cmux = Silent(tmp_path)
+    assert run(restore, cmux) is True and [m for m, _ in cmux.calls] == ["surface.send_text", "surface.send_key"]
+
+
+def test_keys_that_cant_be_made_close_the_intent_as_failed(restore, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(restore.session_effects, "Keys", lambda *a, **k: (_ for _ in ()).throw(
+        restore.session_effects.Refused("invalid", "no")))
+    cmux = Cmux(tmp_path)
+    assert run(restore, cmux) is False and cmux.calls == []
+    assert ledger(tmp_path)[1]["outcome"] == "failed" and "NOT TYPED: no" in capsys.readouterr().out

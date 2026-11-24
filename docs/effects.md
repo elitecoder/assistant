@@ -6,9 +6,10 @@ writes every effect it makes to one record, `~/.assistant/effects/effects.jsonl`
 before it acts and again when it finishes.
 
 Today the Work queue's Gmail buttons (**Archive**, **Mark read**, and moving a
-conversation back to your inbox), **Apply approvals** for Gmail Trash,
-unsubscribes, and everything Assistant types into an agent session are
-recorded. Slack saves follow.
+conversation back to your inbox), **Apply approvals** for Gmail Trash, and
+unsubscribes are recorded, and so is everything Assistant's own code types into
+an agent session. Three ways of typing that run outside that code aren't; they
+are listed under "Not recorded yet". Slack saves follow.
 
 ## What it promises
 
@@ -100,8 +101,10 @@ Agents that Assistant starts run with their permission prompts off and act on
 whatever is typed into them, and typing can't be taken back. So nothing in
 Assistant's own code types into a session until the line saying so is on
 disk. One module, `src/assistant/session_effects.py`, is the only place that
-sends keystrokes, and a test fails the build if any other file under `bin/`,
-`src/`, `work_queue/` or `hooks/` does.
+sends keystrokes, and a test fails the build if any other Python file under
+`bin/`, `src/`, `work_queue/` or `hooks/` does. Three things that type
+without going through it aren't recorded; they're listed at the end of this
+section.
 
 Each typing is one action with the session (`workspace:N`), the task when
 there is one, and a short fixed name for where the text came from. It never
@@ -109,10 +112,10 @@ holds the text, a prompt's file name, a title or a Slack message.
 
 | What is typed | Where it comes from | What allowed it |
 |---|---|---|
-| The instruction that starts a task, and the folder-trust answer before it | `task`, `trust` | The task's auto-start flag (the task's id) |
+| The instruction that starts a task, and the folder-trust answer before it | `task`, `trust` | The task's auto-start flag, as your own (a Work queue send, your Slack reaction, `/todo`) or as a standing setting (the goals planner, a policy rule, or anything not listed) |
 | The "stalled" nudge, and `/cleanup` | `nudge:stranded`, `cleanup` | Pro mode, the Observer and the watcher being on, and actions not held |
 | A merge request (`/merge-when-ready`, `/monitor-ffp-ci`) | `merge` | The same standing setting when the pulse sends it; a button press when you run the script |
-| A message in the Slack session | `slack-message` | Your own Slack message, as of its time |
+| A message in the Slack session | `slack-message`, and `submit` for pressing Enter again | Your own Slack message, as of its time |
 | The Slack session's start-up instruction, trust answer and `/clear` | `boot`, `trust`, `clear` | The Slack channel being set up and its service running |
 | "Run now" on a proposal | `run-now` | A button press on that route |
 | `cmux-restore-sessions` | `restore` | You running it |
@@ -121,35 +124,70 @@ holds the text, a prompt's file name, a title or a Slack message.
 What the record does for you:
 
 - **No record, no typing.** When the line can't be written, nothing is typed.
-  A task stays open and is tried again by the next pulse, and the dashboard
-  shows "Dispatch paused" with what to check (the disk, and the permissions
-  of `~/.assistant/effects`). A nudge or `/cleanup` is skipped that round, a
-  Slack message stays queued, and `cmux-send.py` exits 4.
+  Before Assistant starts a session for a task, it checks that it can write
+  to the record (it writes and flushes a small file), and if it can't it
+  starts nothing: the task stays open, and the Tasks tab shows "Dispatch
+  paused — can't record what it types" with what to check (the disk, and the
+  permissions of `~/.assistant/effects`). If the record fails after a session
+  was started, the task is parked like one whose session never got ready, so
+  the next pulse doesn't start another; the session is left for you to close.
+  A nudge or `/cleanup` is skipped that round, a Slack message stays queued,
+  and `cmux-send.py` exits 4.
 - **A loop is stopped.** The same thing typed into the same session more than
-  three times in thirty minutes is refused, and Assistant logs one line naming
-  the session and where it came from. Each task and each Slack message counts
-  as its own thing.
-- **Typing is not repeated when it may have landed.** The result is `done`
-  when the text and Enter both went out, `failed` when nothing did, and
-  `unknown` when the text went out and Enter didn't, or Assistant can't tell.
-  A typing that is `done` or `unknown` is not repeated by Assistant on its
-  own. For a nudge or `/cleanup` that means that session isn't sent that
-  one again until you look at it. A Slack message that was typed isn't typed
-  again, and it leaves the queue with a line in the log. `verified` is `true`
-  when the session's transcript shows the text arrived and `false` when it
-  doesn't, and is empty when nothing checked.
+  three times in thirty minutes is refused, and the log says it tries again
+  once the oldest of them is 30 minutes old. Typings that failed don't count;
+  ones nobody could tell about do. Each task and each Slack message counts as
+  its own thing.
+- **Typing that may have landed isn't repeated by Assistant on its own.** The
+  result is `done` when the text and Enter both went out and nothing says they
+  didn't land, `failed` when nothing went out, and `unknown` when the text went
+  out and Enter didn't, the transcript was checked and didn't show it, or
+  Assistant can't tell (a time-out). How long an `unknown` typing, or one that
+  never got a result at all, blocks a repeat depends on who allowed the next
+  one, because cmux reuses session numbers:
+  - a nudge, `/cleanup`, a start-up instruction, a `/clear` or a merge request
+    waits 30 minutes, then may be tried again;
+  - your own tap (`cmux-send.py` run by hand, restore, "run now") is never held
+    back, only refused while another is still going;
+  - a task's instruction and a Slack message are never repeated without a newer
+    authorization: for a message, you sending it again.
+  To type something again yourself:
+  `bin/cmux-send.py --ws workspace:N --text '…' --enter`.
+- **A Slack message is never typed twice, and never dropped without a word.**
+  If it was typed but never seen in the session's transcript, and its text is
+  still sitting in the prompt box, only Enter is pressed again, as its own
+  recorded typing (`submit`). If it landed since, that is all. Otherwise it
+  leaves the queue, and Assistant replies in its thread: "I couldn't confirm
+  your message (sent HH:MM) reached the session, and I won't type it twice.
+  Check the session, or send it again." Messages that waited three hours get a
+  note too. Each message in a batch typed together has its own record.
 - **Only your Slack messages are typed.** A message from someone else in the
-  channel is kept as received and never typed. See
+  channel is kept as received and never typed, and Assistant says so in its
+  thread once a day for each author. When it can't tell which account is yours
+  and the target is a channel, it says that once a day, and the Slack check in
+  `assistant-doctor.py` warns. See
   [assistant-comms-onboarding.md](assistant-comms-onboarding.md).
 - **"Run now" is stricter.** The session must be a `workspace:N`, and the text
-  one line of at most 500 characters. Nothing in this repository's dashboard
-  page calls the route today; only a tool that writes proposal files and posts
-  to it would.
+  one line of at most 500 characters with no control characters. Nothing in
+  this repository's dashboard page calls the route today; only a tool that
+  writes proposal files and posts to it would.
+- **A typing refused before anything was sent leaves no row in
+  `~/.assistant/sends.jsonl`**, which the pulse reads to tell whether its last
+  send landed.
+
+### What the record can't prove
+
+The record says what Assistant did and what it said allowed it; it can't check
+either. `bin/cmux-send.py` trusts the `--source` and `--auth-kind` its caller
+gives it (anything that can run the script can claim a standing setting), the
+text typed is whatever the caller passed, and cmux, not Assistant, says which
+terminal belongs to which session number. An entry's `verified` is `true` only
+when the session's transcript showed the text arrive.
 
 ### Not recorded yet
 
 Three ways of typing into a session don't pass through this record, because
-they run outside Assistant's own code:
+they run outside Assistant's own Python code:
 
 - The `spawn-claude-workspace` skill's shell snippet types the first
   instruction itself, run by you or by an agent.

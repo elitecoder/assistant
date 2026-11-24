@@ -29,22 +29,34 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   stay that way until you press On. To make sure your own reactions start work,
   set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
   reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
-- Stop the Slack warm session from typing messages written by anyone but you.
-  Before, every non-bot message in the channel you set up was typed into a
-  session that runs with its permission prompts off, so any member of a
-  channel could make it run commands on your Mac. Now only your own messages
-  are typed. Your Slack id comes from `SLACK_USER_ID`, or from the target when
-  it is a person; a message from anyone else is kept as received, never typed,
-  and a line in the log says so. With a channel target and no id, nothing is
-  typed and the log says to set `SLACK_USER_ID`.
+- If you use a Slack channel and don't have `SLACK_USER_ID` set, Assistant
+  stops typing your messages into the warm session after this update and tells
+  you so in Slack: add `export SLACK_USER_ID=U…` (your member ID: your Slack
+  profile, the three dots, Copy member ID) to `~/.zprofile` and restart the
+  service (`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`).
+  The reason: before, every non-bot message in the channel you set up was typed
+  into a session that runs with its permission prompts off, so any member of
+  the channel could make it run commands on your Mac. Now only your own
+  messages are typed. Your Slack id comes from `SLACK_USER_ID`, or from the
+  target when it is a person. A message from someone else is kept as received,
+  never typed, and Assistant says once a day, in its thread, that it only takes
+  instructions from you. The Slack check in `assistant-doctor.py` warns when
+  the target is a channel and the id isn't set.
 - Check what the dashboard's "run now" on a proposal types. Before, it typed
-  whatever a proposal file said, of any length, into whatever session the file
-  named, with no check. Now the session must be a real `workspace:N`, the text
-  one line of at most 500 characters, and the typing is recorded first. It
-  also types into the session's terminal, not whichever pane is on top.
-- Stop the same text being typed into the same session in a loop. The same
-  thing typed into the same session more than three times in thirty minutes is
-  refused, and a typing that may have landed is not repeated on its own.
+  whatever a proposal file said, of any length, with any control characters,
+  into whatever session the file named, with no check. Now the session must be
+  a real `workspace:N`, the text one line of at most 500 characters with no
+  control characters, and the typing is recorded first. It also types into the
+  session's terminal, not whichever pane is on top, and says what happened when
+  it couldn't.
+- Stop the same text being typed into the same session in a loop. Before,
+  nothing stopped a nudge or `/cleanup` going into one session every pulse,
+  forever. Now the same thing typed into the same session more than three
+  times in thirty minutes is waited on, and a typing that may have landed is
+  not repeated by Assistant on its own: a nudge, `/cleanup` or merge request
+  waits 30 minutes before it may be tried again, and your own tap is never held
+  back.
+
 - Check every request that changes something on the dashboard server the same
   way, with no exceptions. Before, a web page open in your browser could make
   your machine start a TODO's agent session (`/dispatch-now`), type a
@@ -111,20 +123,26 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
   off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
   [Telemetry](docs/telemetry.md).
-- Record everything Assistant types into an agent session before it types it.
-  Agents run with their permission prompts off and can't take typing back, and
-  before this only two of twelve ways of typing left any record, and one typed
-  text from a file with no check. Now the start of a task, the folder-trust
-  answer, the "stalled" nudge, `/cleanup`, merge requests, Slack messages and the
-  Slack session's start-up, "run now" and `cmux-restore-sessions` each write a
-  line to `~/.assistant/effects` first, saying which session, which task, where
-  the text came from and what allowed it (never the text), and a second line
-  saying how it went. When the line can't be written, nothing is typed: a task
-  stays open and the dashboard shows "Dispatch paused" with what to check, a
-  nudge is skipped, and a Slack message stays queued. A test fails the build if
-  any other code types into a session. Typing by the `spawn-claude-workspace`
-  skill and by the Slack session's own model isn't recorded yet; see
-  `docs/effects.md`.
+- Record everything Assistant's own code types into an agent session before it
+  types it. Agents run with their permission prompts off and can't take typing
+  back, and before this only two of twelve ways of typing left any record, and
+  one typed text from a file with no check. Now the start of a task, the
+  folder-trust answer, the "stalled" nudge, `/cleanup`, merge requests, Slack
+  messages and the Slack session's start-up, "run now" and
+  `cmux-restore-sessions` each write a line to `~/.assistant/effects` first,
+  saying which session, which task, where the text came from and what allowed
+  it (never the text), and a second line saying how it went. When the line
+  can't be written, nothing is typed: Assistant checks it can write before it
+  starts a session for a task, and if it can't, the Tasks tab shows "Dispatch
+  paused — can't record what it types" with the disk and folder to check, and
+  the tasks still waiting. A nudge is skipped, and a Slack message stays queued
+  and you still get the "I'll answer as soon as it's back" note. A Slack
+  message that can't be confirmed is never typed twice and never dropped
+  silently: if its text is still sitting in the prompt box only Enter is
+  pressed again, otherwise Assistant replies in its thread. A test fails the
+  build if any other code types into a session. Typing by the
+  `spawn-claude-workspace` skill, by the Slack session's own model and by crash
+  resume isn't recorded yet; see `docs/effects.md`.
 - Show a failure that keeps repeating as one red line at the top of the
   dashboard, with how many times in a row it has happened, since when, a short
   error, and what happens next, all in one box that shows two lines and keeps

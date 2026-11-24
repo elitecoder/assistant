@@ -87,10 +87,12 @@ page, so they can do whatever the dashboard can.
   connected**, or **Needs attention**, with a how-to-connect hint inline.
 - **Awaiting input**, **Session details**, **Background work**, and **Tasks**
   show open cards, per-workspace detail, background work, and your TODO list.
-  A card titled **Dispatch paused** means Assistant started no task this round:
-  either it couldn't count your busy sessions, or it couldn't record what it
-  types into your sessions. For the second, check that your disk isn't full and
-  that `~/.assistant/effects` can be written to. Nothing is lost, and the card
+  The Tasks tab also shows a **Dispatch paused** card when Assistant started
+  no task this round: either it couldn't count your busy sessions, or its title
+  reads "can't record what it types", which means it couldn't write its record
+  of what it types into your sessions. For the second, check that your disk
+  isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to
+  (`ls -ld ~/.assistant/effects`). The card lists the tasks still waiting, and
   goes away on the first round where the record works. See
   [Typing into agent sessions](effects.md#typing-into-agent-sessions).
 

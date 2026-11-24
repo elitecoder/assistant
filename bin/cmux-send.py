@@ -50,6 +50,7 @@ Output: JSON with the same record written to sends.jsonl, on stdout.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -190,23 +191,27 @@ def main():
         print(json.dumps(record, indent=2))
         sys.exit(1)
 
-    # The intent goes to disk before the first keystroke; without it nothing is typed.
-    try:
-        effect_id = session_effects.begin(
-            args.ws, args.source, kind=args.auth_kind, ref=args.auth_ref, task=args.task,
-            component=os.path.basename(args.caller)[:64] or "cmux-send")
-    except session_effects.Refused as refusal:
+    # The intent goes to disk before the first keystroke; without it nothing is typed. A typing refused before
+    # anything was sent leaves no row in sends.jsonl: the pulse reads that file as "the last send never landed", and
+    # would then skip this nudge for good.
+    def refuse(refusal):
         record["outcome"] = "refused"
         record["refused"] = {"code": refusal.code, "reason": str(refusal)}
         record["transcript_size_after"] = size_before
         record["transcript_size_delta"] = 0
-        if not args.no_log:
-            append_log(record)
         print(json.dumps(record, indent=2))
         print(f"cmux-send: {refusal}", file=sys.stderr)
         sys.exit(4)
 
+    component = re.sub(r"[^A-Za-z0-9_:./-]", "-", os.path.basename(args.caller))[:64] or "cmux-send"
+    try:
+        effect_id = session_effects.begin(
+            args.ws, args.source, kind=args.auth_kind, ref=args.auth_ref, task=args.task, component=component)
+    except session_effects.Refused as refusal:
+        refuse(refusal)
+
     # What cmux answered to each keystroke call, for the log. A timeout is "can't tell": the call may have landed.
+    # Any exit status 0 is an answer, as it always was; a body that isn't JSON (or is `null`) is not a refusal.
     answers = {}
 
     def transport(method, payload):
@@ -214,15 +219,13 @@ def main():
         answers[method.rsplit("_", 1)[-1]] = (rc, body)  # "text" or "key"
         if rc == 124:
             raise TimeoutError(method)
-        return body if rc == 0 else None
+        return ({} if body is None else body) if rc == 0 else None
 
-    keys = session_effects.Keys(effect_id, transport, surface_id)
-
-    def press(call, *args_):
-        try:
-            return call(*args_)
-        except TimeoutError:
-            return False
+    try:
+        keys = session_effects.Keys(effect_id, transport, surface_id, args.ws)
+    except session_effects.Refused as refusal:
+        session_effects.finish(effect_id, "failed", error="not recorded")
+        refuse(refusal)
 
     def end(outcome, code):
         """Close the effect, say how it ended, and exit."""
@@ -231,7 +234,7 @@ def main():
         record["transcript_size_after"] = size_after
         record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
         # "verified" is only said when there was a transcript to watch: it grew, or it didn't.
-        if size_before is not None:
+        if code == 0 and size_before is not None:
             keys.confirmed = record["transcript_size_delta"] > 0
         keys.finish()
         if code == 0:
@@ -241,22 +244,25 @@ def main():
         print(json.dumps(record, indent=2))
         sys.exit(code)
 
-    # Step 1: send_text
-    ok = press(keys.text, args.text)
-    record["rpc_send_text"] = dict(zip(("rc", "body"), answers["text"]))
-    if not ok:
-        end("rpc_send_text_failed", 2)
-
-    # Step 2 (optional): send_key Enter
-    if args.enter:
-        ok = press(keys.key, "enter")
-        record["rpc_send_key"] = dict(zip(("rc", "body"), answers["key"]))
+    try:
+        # Step 1: send_text
+        ok = keys.text(args.text)
+        record["rpc_send_text"] = dict(zip(("rc", "body"), answers.get("text", (None, None))))
         if not ok:
-            end("rpc_send_key_failed", 2)
+            end("rpc_send_text_failed", 2)
 
-    # Wait for claude to ingest + flush before stat'ing
-    time.sleep(args.post_send_wait)
-    end("sent", 0)
+        # Step 2 (optional): send_key Enter
+        if args.enter:
+            ok = keys.key("enter")
+            record["rpc_send_key"] = dict(zip(("rc", "body"), answers.get("key", (None, None))))
+            if not ok:
+                end("rpc_send_key_failed", 2)
+
+        # Wait for claude to ingest + flush before stat'ing
+        time.sleep(args.post_send_wait)
+        end("sent", 0)
+    finally:
+        keys.finish()  # whatever happened above, the intent gets its result: failed if nothing went out, else unknown
 
 
 if __name__ == "__main__":

@@ -80,7 +80,7 @@ TARGET_KEYS = {
     "host": re.compile(r"[a-z0-9._:<>-]{1,253}"),
     "msg_count": re.compile(r"[0-9]{1,9}"),
     "msg_digest": re.compile(r"[0-9a-f]{16}"),
-    "session": re.compile(r"workspace:[0-9]{1,9}"),
+    "session": re.compile(r"workspace:[0-9]{1,18}"),
     "task": re.compile(r"td-[0-9]{1,9}"),
     "channel": re.compile(r"[CDG][A-Z0-9]{8,11}"),
     "ts": re.compile(r"[0-9]{10}\.[0-9]{6}"),
@@ -407,6 +407,13 @@ def last(effect_class, target):
     """The newest effect of this class on this target, or None."""
     found = history(effect_class, target, limit=1)
     return found[0] if found else None
+
+
+@_never_raises(lambda: None)
+def get(effect_id):
+    """One effect by its id, as `history` gives it (its intent merged with its result), or None."""
+    found = _sync().effects.get(effect_id) if isinstance(effect_id, str) else None
+    return _publish([found])[0] if found else None
 
 
 @_never_raises(list)

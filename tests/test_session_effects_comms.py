@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import agent_session as ag
@@ -13,12 +14,14 @@ import pytest
 
 from assistant import effects, session_effects
 
-from test_comms_listen_delivery import _log, _msg, listen
+from test_comms_listen_delivery import _log, _msg, _sends, listen
 from test_comms_listen_delivery import env as env_delivery  # noqa: F401 - fixture
 from test_comms_session import _spawn_env, _stub_cmux, paths  # noqa: F401 - fixtures
 
 MARKER = "SLACK-TEXT-MARKER-do-not-record"
 TS = "1793613610.000100"
+WS = "workspace:1000010005"   # cmux numbers its refs from 1000010000
+WS2 = "workspace:1000010006"
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +36,7 @@ def led() -> Path:
     return Path(os.environ["HOME"])
 
 
-def rows(_home=None) -> list:
+def rows() -> list:
     path = led() / ".assistant/effects/effects.jsonl"
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
@@ -41,33 +44,40 @@ def rows(_home=None) -> list:
 class Cmux:
     """cmux, faked: records every keystroke and the ledger as it stood at the first."""
 
-    def __init__(self, home, monkeypatch):
-        self.home, self.calls, self.first = home, [], None
+    def __init__(self, monkeypatch, rc=0, refuse_text=()):
+        self.calls, self.first, self.rc, self.refuse_text = [], None, rc, refuse_text
         monkeypatch.setattr(cs, "_cmux_rpc", self.rpc)
 
     def rpc(self, paths, method, params, timeout=15):
-        if self.first is None:
-            self.first = rows()
-        self.calls.append((method, params.get("text", params.get("key"))))
+        if method.startswith("surface.send"):
+            if self.first is None:
+                self.first = rows()
+            self.calls.append((method, params.get("text", params.get("key"))))
+            cs._rpc_state.rc, cs._rpc_state.timed_out = self.rc, self.rc == -1
+            return None if self.rc or params.get("text") in self.refuse_text else {}
         return {}
 
+    def typed(self) -> list:
+        return [text for _method, text in self.calls]
 
-SESS = {"ws_ref": "workspace:5", "surface_ref": "surface:3", "cwd": "/cwd", "agent": "claude",
-        "transcript_path": "/t.jsonl"}
-INBOUND = [{"channel": "C0", "text": MARKER, "msg_ts": TS, "reply_to": None}]
+
+SESS = {"ws_ref": WS, "surface_ref": "surface:3", "cwd": "/cwd", "agent": "claude", "transcript_path": "/t.jsonl"}
+INBOUND = [{"channel": "C0", "text": MARKER, "msg_ts": TS, "reply_to": None, "author": "UOWNER"}]
 
 
 @pytest.fixture
-def reply(monkeypatch, ledger_home):
-    """reply_to_message with the screen and transcript faked; `landed` says whether the transcript shows the message."""
-    cmux = Cmux(ledger_home, monkeypatch)
-    state = {"landed": True}
+def reply(monkeypatch, env_delivery):
+    """reply_to_message with the screen and transcript faked; `state` says whether the transcript shows the message
+    and whether the prompt box still holds it."""
+    cmux = Cmux(monkeypatch)
+    state = {"landed": True, "in_box": False}
     monkeypatch.setattr(cs.time, "sleep", lambda *_a: None)
     monkeypatch.setattr(cs, "_surface_read_text", lambda p, ref, lines=200: "─" * 20 + "\n❯ \n" + "─" * 20)
     monkeypatch.setattr(cs, "should_clear", lambda *a, **k: False)
     monkeypatch.setattr(cs, "transcript_has_submission",
                         lambda path, marker: state["landed"] and len(cmux.calls) >= 2)
     monkeypatch.setattr(cs, "find_submission", lambda *a, **k: None)
+    monkeypatch.setattr(cs, "message_in_box", lambda *a, **k: state["in_box"])
     # The waits are bound as defaults when the function is defined, so they are replaced there: no waiting at all.
     monkeypatch.setattr(cs.submit_until_confirmed, "__defaults__",
                         (cs.SUBMIT_ATTEMPTS, 0.0, lambda s: None, cs.time.monotonic, lambda: False, 0.0))
@@ -76,87 +86,218 @@ def reply(monkeypatch, ledger_home):
     return cmux, state
 
 
-def test_a_message_is_recorded_before_its_first_keystroke_with_the_message_time_as_its_allowance(
-        reply, ledger_home, env_delivery):
+def pending(paths, **kw):
+    rec = {**_msg(MARKER), **kw}
+    listen.add_pending(paths, rec)
+    return rec
+
+
+def serve(monkeypatch, sessions=None, how=None):
+    seen = []
+    monkeypatch.setattr(listen, "_warm_session",
+                        lambda p, **kw: seen.append(kw) or (dict(SESS), how or listen.SESSION_ALIVE))
+    return seen
+
+
+def replies(calls) -> list:
+    """(text, thread) for each Slack send."""
+    out = []
+    for argv in calls:
+        if "slack-send.py" in argv[0]:
+            out.append((argv[argv.index("--text") + 1], argv[argv.index("--reply-to") + 1]
+                        if "--reply-to" in argv else None))
+    return out
+
+
+# --- a message is recorded before it is typed -------------------------------------------------------------------
+
+def test_a_message_is_recorded_before_its_first_keystroke_with_the_message_time_as_its_allowance(reply, env_delivery):
     cmux, _ = reply
     delivered, _ = listen.reply_to_message(cl.Paths.from_env(), dict(SESS), INBOUND)
     assert delivered is True
     assert [r["kind"] for r in cmux.first] == ["intent"]
-    intent, result = rows(ledger_home)
-    assert intent["target"] == {"source": "slack-message", "session": "workspace:5", "ts": TS}
-    assert intent["auth"]["kind"] == "tap" and intent["auth"]["ref"] == f"slack:{TS}"
-    assert intent["auth"]["at"] == "2026-11-02T10:00:10Z" if False else intent["auth"]["at"].endswith("Z")
+    intent, result = rows()
+    assert intent["target"] == {"source": "slack-message", "session": WS, "ts": TS}
+    assert intent["auth"] == {"kind": "tap", "ref": f"slack:{TS}", "at": time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(TS)))}
     assert intent["component"] == "comms"
     assert result["outcome"] == "done" and result["verified"] is True
     assert MARKER not in (led() / ".assistant/effects/effects.jsonl").read_text()
 
 
-def test_text_sent_and_enter_refused_is_unknown(reply, ledger_home, env_delivery, monkeypatch):
-    cmux, state = reply
-    state["landed"] = False
-    real = cmux.rpc
-    monkeypatch.setattr(cs, "_cmux_rpc", lambda p, m, params, timeout=15: None if params.get("text") == "\r"
-                        else real(p, m, params, timeout))
-    listen.reply_to_message(cl.Paths.from_env(), dict(SESS), INBOUND)
-    assert rows()[1]["outcome"] == "unknown"
-
-
-def test_text_and_enter_sent_but_never_seen_to_land_is_done_and_unverified(reply, ledger_home, env_delivery):
+def test_text_and_enter_sent_but_never_seen_to_land_is_unknown_and_unverified(reply, env_delivery):
     cmux, state = reply
     state["landed"] = False
     delivered, _ = listen.reply_to_message(cl.Paths.from_env(), dict(SESS), INBOUND)
     assert delivered is False
-    result = rows(ledger_home)[1]
-    assert result["outcome"] == "done" and result["verified"] is False
+    result = rows()[1]
+    assert result["outcome"] == "unknown" and result["verified"] is False
 
 
-def test_with_the_ledger_unwritable_nothing_is_typed_and_the_message_stays_queued(
-        reply, ledger_home, env_delivery, monkeypatch):
-    cmux, _ = reply
-    paths, _calls = env_delivery
-    listen.add_pending(paths, _msg(MARKER))
-    monkeypatch.setattr(listen, "_warm_session", lambda p, **kw: (dict(SESS), listen.SESSION_ALIVE))
-    monkeypatch.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
-    assert listen._deliver_pending(paths, "C0", None) is False
-    assert cmux.calls == []
-    assert [r["text"] for r in listen.read_pending(paths)] == [MARKER]
-    assert "couldn't record what it types" in _log(paths)
-
-
-def test_a_message_that_was_typed_is_never_typed_again_and_the_session_is_kept(
-        reply, ledger_home, env_delivery, monkeypatch):
+def test_text_sent_and_enter_refused_is_unknown(reply, env_delivery, monkeypatch):
     cmux, state = reply
     state["landed"] = False
-    paths, _calls = env_delivery
-    listen.add_pending(paths, _msg(MARKER))
-    replaced = []
-    monkeypatch.setattr(listen, "_warm_session", lambda p, **kw: replaced.append(kw) or (dict(SESS), listen.SESSION_ALIVE))
-    assert listen._deliver_pending(paths, "C0", None) is False  # typed, never seen to land: stays queued for a retry
-    typed = len(cmux.calls)
-    replaced.clear()
-    assert listen._deliver_pending(paths, "C0", None) is True   # the ledger says it was typed
-    assert len(cmux.calls) == typed and listen.read_pending(paths) == []
-    assert {"replace_ws": "workspace:5"} not in replaced
-    assert "it won't be typed again" in _log(paths)
+    cmux.refuse_text = ("\r",)
+    listen.reply_to_message(cl.Paths.from_env(), dict(SESS), INBOUND)
+    assert rows()[1]["outcome"] == "unknown"
 
 
-def test_a_loop_leaves_the_message_queued_and_logs_it(reply, env_delivery, monkeypatch):
+def test_a_timeout_while_typing_is_unknown_not_failed(reply, env_delivery):
+    cmux, state = reply
+    cmux.rc = -1
+    state["landed"] = False
+    listen.reply_to_message(cl.Paths.from_env(), dict(SESS), INBOUND)
+    assert rows()[1]["outcome"] == "unknown" and rows()[1]["error"] == "timeout"
+
+
+def test_an_exit_status_of_zero_is_an_answer_whatever_the_body(paths, monkeypatch):
+    sent = []
+    monkeypatch.setattr(cs, "_cmux_rpc", lambda p, m, params, timeout=15: (
+        sent.append(m) or setattr(cs._rpc_state, "rc", 0) or None))  # it ran, and printed nothing
+    with cs.typing_scope(paths, WS, "surface:3", "clear", kind="standing", ref="slack-comms") as keys:
+        assert keys.text("x") is True and keys.carriage_return() is True
+    assert sent == ["surface.send_text"] * 2 and rows()[1]["outcome"] == "done"
+
+
+# --- a refused message is kept, or dropped with a word to the owner ---------------------------------------------
+
+def test_with_the_ledger_unwritable_nothing_is_typed_the_message_stays_and_the_back_soon_notice_still_goes(
+        reply, env_delivery, monkeypatch):
     cmux, _ = reply
-    paths, _calls = env_delivery
-    listen.add_pending(paths, _msg(MARKER))
-    monkeypatch.setattr(listen, "_warm_session", lambda p, **kw: (dict(SESS), listen.SESSION_ALIVE))
-    monkeypatch.setattr(listen, "reply_to_message",
-                        lambda *a: (_ for _ in ()).throw(session_effects.Refused("loop", session_effects.LOOP)))
+    paths, calls = env_delivery
+    rec = pending(paths, msg_ts=f"{time.time() - 600:.6f}")
+    serve(monkeypatch)
+    monkeypatch.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
     assert listen._deliver_pending(paths, "C0", None) is False
-    assert len(listen.read_pending(paths)) == 1 and "stays queued" in _log(paths)
+    assert cmux.calls == [] and [r["text"] for r in listen.read_pending(paths)] == [MARKER]
+    assert "couldn't record what it types" in _log(paths) and rec["msg_ts"] in _log(paths)
+    assert _sends(calls) == [listen.RESTART_NOTICE]
+
+
+def test_a_message_dated_ahead_of_this_macs_clock_stays_queued(reply, env_delivery, monkeypatch):
+    cmux, _ = reply
+    paths, calls = env_delivery
+    pending(paths, msg_ts=f"{time.time() + 3600:.6f}")
+    serve(monkeypatch)
+    assert listen._deliver_pending(paths, "C0", None) is False
+    assert cmux.calls == [] and len(listen.read_pending(paths)) == 1 and "clock" in _log(paths)
+
+
+def test_a_message_typed_but_never_seen_has_only_its_enter_pressed_again_while_it_sits_in_the_box(
+        reply, env_delivery, monkeypatch):
+    cmux, state = reply
+    paths, calls = env_delivery
+    rec = pending(paths)
+    state["landed"] = False
+    serve(monkeypatch)
+    assert listen._deliver_pending(paths, "C0", None) is False  # typed, Enter pressed, never seen to land
+    assert len(cmux.typed()) == 2 and cmux.typed()[0].startswith("[slack channel=") and cmux.typed()[1] == "\r"
+    state["in_box"] = True
+    assert listen._deliver_pending(paths, "C0", None) is False  # its Enter again, and still not seen
+    assert cmux.typed()[2:] == ["\r"]                            # and nothing else: its text only once
+    assert sum(1 for t in cmux.typed() if t.startswith("[slack channel=")) == 1
+    intents = [r["target"] for r in rows() if r["kind"] == "intent"]
+    assert intents == [{"source": "slack-message", "session": WS, "ts": rec["msg_ts"]},
+                       {"source": "submit", "session": WS, "ts": rec["msg_ts"]}]
+    assert [r["outcome"] for r in rows() if r["kind"] == "result"] == ["unknown", "unknown"]
+
+
+def test_a_message_that_landed_since_is_delivered_without_typing_anything(reply, env_delivery, monkeypatch):
+    cmux, state = reply
+    paths, calls = env_delivery
+    pending(paths)
+    state["landed"] = False
+    serve(monkeypatch)
+    listen._deliver_pending(paths, "C0", None)
+    state["landed"] = True
+    typed = len(cmux.calls)
+    monkeypatch.setattr(cs, "transcript_has_submission", lambda path, marker: True)
+    assert listen._deliver_pending(paths, "C0", None) is True
+    assert len(cmux.calls) == typed and listen.read_pending(paths) == []
+    assert replies(calls) == [], "it arrived, so nobody is told it was dropped"
+
+
+def test_a_message_that_is_neither_confirmed_nor_in_the_box_is_dropped_and_the_owner_is_told_once(
+        reply, env_delivery, monkeypatch):
+    cmux, state = reply
+    paths, calls = env_delivery
+    rec = pending(paths)
+    state["landed"] = False
+    seen = serve(monkeypatch)
+    listen._deliver_pending(paths, "C0", None)   # typed, never seen
+    seen.clear()
+    typed = len(cmux.calls)
+    assert listen._deliver_pending(paths, "C0", None) is True   # nothing more can be done: it leaves the queue
+    assert len(cmux.calls) == typed and listen.read_pending(paths) == []
+    assert {"replace_ws": WS} not in seen, "the session did nothing wrong"
+    expected = (f"I couldn't confirm your message (sent {listen._clock(rec['msg_ts'])}) reached the session, and I "
+                "won't type it twice. Check the session, or send it again.")
+    assert replies(calls) == [(expected, rec["msg_ts"])]
+    assert f"Slack message {rec['msg_ts']} in C0: your message was dropped, and won't be typed again." in _log(paths)
+
+
+def test_a_message_that_cant_be_described_is_dropped_with_its_own_words(reply, env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    rec = pending(paths)
+    serve(monkeypatch)
+    monkeypatch.setattr(listen, "reply_to_message",
+                        lambda *a: (_ for _ in ()).throw(session_effects.Refused("invalid", session_effects.INVALID)))
+    assert listen._deliver_pending(paths, "C0", None) is True
+    [(text, thread)] = replies(calls)
+    assert text.startswith("I couldn't pass your message") and thread == rec["msg_ts"]
+
+
+def test_a_loop_leaves_the_message_queued_and_says_when_it_will_be_tried_again(reply, env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    pending(paths)
+    serve(monkeypatch)
+    monkeypatch.setattr(listen, "reply_to_message", lambda *a: (_ for _ in ()).throw(
+        session_effects.Refused("loop", session_effects.LOOP.format(where=WS))))
+    assert listen._deliver_pending(paths, "C0", None) is False
+    assert len(listen.read_pending(paths)) == 1
+    assert "is waiting and will be tried again. Assistant already typed this into workspace:1000010005" in _log(paths)
+
+
+def test_a_message_that_gave_up_after_hours_is_told_so_once(env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    rec = _msg(MARKER, age_sec=4 * 3600)
+    listen.add_pending(paths, rec)
+    serve(monkeypatch)
+    assert listen._deliver_pending(paths, "C0", None) is True
+    [(text, thread)] = replies(calls)
+    assert text.startswith("I couldn't deliver your message (sent ") and thread == rec["msg_ts"]
+
+
+def test_each_message_in_a_batch_has_its_own_intent_begun_before_any_keystroke(reply, env_delivery):
+    cmux, _ = reply
+    first = {"channel": "C0", "text": "one", "msg_ts": "1793613610.000100", "author": "UOWNER"}
+    second = {"channel": "C0", "text": "two", "msg_ts": "1793613611.000100", "author": "UOWNER"}
+    listen.reply_to_message(cl.Paths.from_env(), dict(SESS), [first, second])
+    assert [r["kind"] for r in cmux.first] == ["intent", "intent"]
+    assert sorted(r["target"]["ts"] for r in cmux.first) == ["1793613610.000100", "1793613611.000100"]
+    assert [r["outcome"] for r in rows() if r["kind"] == "result"] == ["done", "done"]
+
+
+def test_an_older_message_already_typed_drops_only_itself_and_the_rest_wait(reply, env_delivery, monkeypatch):
+    cmux, state = reply
+    paths, calls = env_delivery
+    old, new = _msg("old", age_sec=30), _msg("new")
+    for rec in (old, new):
+        listen.add_pending(paths, rec)
+    serve(monkeypatch)
+    session_effects.finish(session_effects.begin(
+        WS, "slack-message", kind="tap", ref="slack:x", component="comms", slack_ts=old["msg_ts"],
+        anchor=float(old["msg_ts"])), "unknown")
+    assert listen._deliver_pending(paths, "C0", None) is False
+    assert [r["text"] for r in listen.read_pending(paths)] == ["new"] and cmux.calls == []
+    assert [thread for _text, thread in replies(calls)] == [old["msg_ts"]]
 
 
 # --- boot, trust, clear -----------------------------------------------------------------------------------------
 
-def test_the_trust_answer_and_boot_prompt_are_recorded_as_the_standing_slack_setting(
-        tmp_path, monkeypatch, ledger_home):
-    paths_, closed = _spawn_env(tmp_path, monkeypatch)
-    cmux = Cmux(ledger_home, monkeypatch)
+def test_the_trust_answer_and_boot_prompt_are_recorded_as_the_standing_slack_setting(tmp_path, monkeypatch):
+    paths_, closed = _spawn_env(tmp_path, monkeypatch, ws=WS, surface="surface:310")
+    cmux = Cmux(monkeypatch)
     monkeypatch.setattr(cs.time, "sleep", lambda s: None)
 
     def ready_after_trust(**kw):
@@ -172,27 +313,26 @@ def test_the_trust_answer_and_boot_prompt_are_recorded_as_the_standing_slack_set
 
     monkeypatch.setattr(cs, "deliver_boot", deliver)
     assert cs.spawn_session(paths_, Path("/boot.md"), agent=ag.CLAUDE)["transcript_path"] == "/t.jsonl"
-    intents = [r for r in rows(ledger_home) if r["kind"] == "intent"]
+    intents = [r for r in rows() if r["kind"] == "intent"]
     assert [r["target"]["source"] for r in intents] == ["trust", "boot"]
     assert {(r["auth"]["kind"], r["auth"]["ref"]) for r in intents} == {("standing", "slack-comms")}
     assert [m for m, _ in cmux.calls] == ["surface.send_text"] * 4
-    assert [r["outcome"] for r in rows(ledger_home) if r["kind"] == "result"] == ["done", "done"]
+    assert [r["outcome"] for r in rows() if r["kind"] == "result"] == ["done", "done"]
 
 
-def test_a_boot_prompt_that_cant_be_recorded_is_not_typed_and_the_spawn_is_abandoned(
-        tmp_path, monkeypatch, ledger_home):
-    paths_, closed = _spawn_env(tmp_path, monkeypatch)
-    cmux = Cmux(ledger_home, monkeypatch)
+def test_a_boot_prompt_that_cant_be_recorded_is_not_typed_and_the_spawn_is_abandoned(tmp_path, monkeypatch):
+    paths_, closed = _spawn_env(tmp_path, monkeypatch, ws=WS)
+    cmux = Cmux(monkeypatch)
     logs: list = []
     monkeypatch.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
     assert cs.spawn_session(paths_, Path("/boot.md"), log=logs.append, agent=ag.CLAUDE) is None
-    assert cmux.calls == [] and closed == ["workspace:310"]
+    assert cmux.calls == [] and closed == [WS]
     assert any("boot prompt not typed" in line for line in logs)
 
 
-def test_a_trust_answer_that_cant_be_recorded_is_not_typed(tmp_path, monkeypatch, ledger_home):
-    paths_, closed = _spawn_env(tmp_path, monkeypatch)
-    cmux = Cmux(ledger_home, monkeypatch)
+def test_a_trust_answer_that_cant_be_recorded_is_not_typed(tmp_path, monkeypatch):
+    paths_, closed = _spawn_env(tmp_path, monkeypatch, ws=WS)
+    cmux = Cmux(monkeypatch)
     logs: list = []
     monkeypatch.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
     monkeypatch.setattr(cs, "await_ready", lambda **kw: (kw["answer_trust"]() or (False, True)))
@@ -200,52 +340,85 @@ def test_a_trust_answer_that_cant_be_recorded_is_not_typed(tmp_path, monkeypatch
     assert cmux.calls == [] and any("trust answer not typed" in line for line in logs)
 
 
-def test_clear_and_the_boot_after_it_are_recorded_in_order(paths, monkeypatch, ledger_home):
-    _rpc, feeds, calls, _ = _stub_cmux(monkeypatch)
-    cmux = Cmux(ledger_home, monkeypatch)
+def test_clear_and_the_boot_after_it_are_recorded_in_order(paths, monkeypatch):
+    _stub_cmux(monkeypatch)
+    cmux = Cmux(monkeypatch)
     monkeypatch.setattr(cs, "deliver_boot",
                         lambda p, surface, cwd, prompt, agent: cs._active_keys(surface).text("boot") and "/new.jsonl")
-    cs.clear_session(paths, {"ws_ref": "workspace:5", "surface_ref": "surface:3", "cwd": "/cwd"},
-                     Path("/boot.md"), agent=ag.CLAUDE)
-    intents = [r for r in rows(ledger_home) if r["kind"] == "intent"]
+    cs.clear_session(paths, {"ws_ref": WS, "surface_ref": "surface:3", "cwd": "/cwd"}, Path("/boot.md"),
+                     agent=ag.CLAUDE)
+    intents = [r for r in rows() if r["kind"] == "intent"]
     assert [r["target"]["source"] for r in intents] == ["clear", "boot"]
     assert cmux.first[0]["target"]["source"] == "clear" and len(cmux.first) == 1
-    assert [(m, t) for m, t in cmux.calls][:2] == [("surface.send_text", "/clear"), ("surface.send_text", "\r")]
+    assert cmux.calls[:2] == [("surface.send_text", "/clear"), ("surface.send_text", "\r")]
 
 
-def test_a_clear_that_cant_be_recorded_is_skipped_and_the_session_kept(paths, monkeypatch, ledger_home):
+def test_a_clear_that_cant_be_recorded_is_skipped_and_the_session_kept(paths, monkeypatch):
     _stub_cmux(monkeypatch)
-    cmux = Cmux(ledger_home, monkeypatch)
+    cmux = Cmux(monkeypatch)
     logs: list = []
     monkeypatch.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
-    sess = {"ws_ref": "workspace:5", "surface_ref": "surface:3", "cwd": "/cwd"}
+    sess = {"ws_ref": WS, "surface_ref": "surface:3", "cwd": "/cwd"}
     assert cs.clear_session(paths, sess, Path("/boot.md"), agent=ag.CLAUDE, log=logs.append) == sess
-    assert cmux.calls == [] and any("not clearing workspace:5" in line for line in logs)
+    assert cmux.calls == [] and any(f"not clearing {WS}" in line for line in logs)
 
 
-def test_typing_outside_a_recorded_scope_is_refused_and_a_scope_is_per_thread(paths, monkeypatch, ledger_home):
-    cmux = Cmux(ledger_home, monkeypatch)
+def test_typing_outside_a_recorded_scope_is_refused_and_a_scope_is_per_thread(paths, monkeypatch):
+    cmux = Cmux(monkeypatch)
     with pytest.raises(session_effects.Refused):
         cs.send_enter(paths, "surface:9")
     with pytest.raises(session_effects.Refused):
         cs.submit(paths, "surface:9", "x", "m", lambda: False)
     seen = []
-    with cs.typing_scope(paths, "workspace:4", "surface:9", "clear", kind="standing", ref="slack-comms"):
+    with cs.typing_scope(paths, WS2, "surface:9", "clear", kind="standing", ref="slack-comms"):
         t = threading.Thread(target=lambda: seen.append(getattr(cs._scope, "keys", None)))
         t.start()
         t.join()
         with pytest.raises(session_effects.Refused):
             cs.send_enter(paths, "surface:OTHER")  # a scope belongs to one terminal
-    assert seen == [None] and [m for m, _ in cmux.calls if m.startswith("surface.send")] == []
+    assert seen == [None] and cmux.calls == []
 
 
-def test_an_error_inside_a_scope_leaves_the_typing_unknown(paths, monkeypatch, ledger_home):
-    Cmux(ledger_home, monkeypatch)
+def test_an_error_inside_a_scope_after_typing_leaves_it_unknown_and_before_typing_failed(paths, monkeypatch):
+    Cmux(monkeypatch)
     with pytest.raises(RuntimeError):
-        with cs.typing_scope(paths, "workspace:4", "surface:9", "clear", kind="standing", ref="slack-comms") as keys:
+        with cs.typing_scope(paths, WS2, "surface:9", "clear", kind="standing", ref="slack-comms") as keys:
             keys.text("/clear")
             raise RuntimeError("boom")
-    assert rows(ledger_home)[1]["outcome"] == "unknown"
+    assert rows()[1]["outcome"] == "unknown"
+    with pytest.raises(RuntimeError):
+        with cs.typing_scope(paths, WS, "surface:9", "boot", kind="standing", ref="slack-comms"):
+            raise RuntimeError("boom")
+    assert rows()[3]["outcome"] == "failed"
+
+
+def test_a_refusal_inside_a_scope_before_anything_was_typed_is_failed_not_unknown(paths, monkeypatch):
+    Cmux(monkeypatch)
+    with pytest.raises(session_effects.Refused):
+        with cs.typing_scope(paths, WS2, "surface:9", "clear", kind="standing", ref="slack-comms"):
+            cs.send_enter(paths, "surface:OTHER")
+    assert rows()[1]["outcome"] == "failed"
+
+
+def test_keys_that_cant_be_made_close_the_scopes_intent_as_failed(paths, monkeypatch):
+    Cmux(monkeypatch)
+    monkeypatch.setattr(session_effects, "Keys", lambda *a, **k: (_ for _ in ()).throw(
+        session_effects.Refused("invalid", "x")))
+    with pytest.raises(session_effects.Refused):
+        with cs.typing_scope(paths, WS2, "surface:9", "clear", kind="standing", ref="slack-comms"):
+            pass
+    assert rows()[1]["outcome"] == "failed"
+
+
+def test_a_batch_whose_primary_refuses_closes_the_older_intents_as_failed(paths, monkeypatch):
+    Cmux(monkeypatch)
+    older = [{"ref": "slack:1793613610.000100", "anchor": 1793613610.0, "slack_ts": "1793613610.000100"}]
+    with pytest.raises(session_effects.Refused) as exc:
+        with cs.typing_scope(paths, WS2, "surface:9", "slack-message", kind="tap", batch=older,
+                             ref="slack:later", anchor=time.time() + 7200, slack_ts="1793613611.000100"):
+            pass
+    assert exc.value.slack_ts == "1793613611.000100" and exc.value.code == "later"
+    assert [r["outcome"] for r in rows() if r["kind"] == "result"] == ["failed"]
 
 
 # --- only the owner's messages are typed -------------------------------------------------------------------------
@@ -257,12 +430,15 @@ def _config(paths, target):
 @pytest.mark.parametrize("target, owner_env, author, typed", [
     ("U0OWNER", "", "U0OWNER", True),        # a direct message: the target is the owner
     ("U0OWNER", "", "U0OTHER", False),
+    ("W0OWNER", "", "W0OWNER", True),        # an Enterprise Grid id counts like a U id
     ("C0CHAN", "U0OWNER", "U0OWNER", True),  # a channel: the owner's id comes from SLACK_USER_ID
+    ("C0CHAN", "W0OWNER", "W0OWNER", True),
     ("C0CHAN", "U0OWNER", "U0OTHER", False),
-    ("C0CHAN", "U0OWNER", "", False),
+    ("C0CHAN", "U0OWNER", "", False),        # a message with no author is never the owner's
     ("C0CHAN", "", "U0OWNER", False),        # a channel and no owner id: nothing is typed
+    ("C0CHAN", "not-an-id", "not-an-id", False),
     ("D0DM", "", "U0OWNER", True),           # a direct-message conversation holds only the owner
-    ("C0CHAN", "U0OWNER", "U0OWNER", True),
+    ("D0DM", "", "", False),
 ])
 def test_only_the_owners_message_is_typed(env_delivery, monkeypatch, target, owner_env, author, typed):
     paths, _ = env_delivery
@@ -270,11 +446,23 @@ def test_only_the_owners_message_is_typed(env_delivery, monkeypatch, target, own
     monkeypatch.delenv("SLACK_USER_ID", raising=False)
     if owner_env:
         monkeypatch.setenv("SLACK_USER_ID", owner_env)
-    assert listen.typed_for(paths, {"msg_ts": TS, "author": author}) is typed
+    assert listen.typed_for(paths, {"msg_ts": TS, "author": author, "channel": "C0"}) is typed
+    assert (_log(paths) == "") is typed
+
+
+def test_the_log_says_in_a_sentence_why_a_message_was_not_typed(env_delivery, monkeypatch):
+    paths, _ = env_delivery
+    _config(paths, "C0CHAN")
+    monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
+    listen.typed_for(paths, {"msg_ts": TS, "author": "U0OTHER", "channel": "C0CHAN"})
+    listen.typed_for(paths, {"msg_ts": TS, "author": "", "channel": "C0CHAN"})
+    monkeypatch.delenv("SLACK_USER_ID")
+    listen.typed_for(paths, {"msg_ts": TS, "author": "U0OWNER", "channel": "C0CHAN"})
     log = _log(paths)
-    assert (log == "") is typed
-    if not typed:
-        assert "not typed into the session" in log
+    assert f"Slack message {TS} in C0CHAN was written by U0OTHER, not by you (U0OWNER), so Assistant kept it as " \
+           "received and did not type it into the session." in log
+    assert f"Slack message {TS} in C0CHAN has no author, so Assistant did not type it into the session." in log
+    assert "Assistant can't tell which Slack member is you. Set SLACK_USER_ID" in log
 
 
 def test_an_owner_id_in_the_daemons_own_environment_counts(env_delivery, monkeypatch):
@@ -289,10 +477,8 @@ def test_a_message_from_someone_else_is_recorded_as_received_but_never_queued(en
     monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
     monkeypatch.setattr(listen, "ensure_warm_session", lambda p, **kw: None)
     stop = threading.Event()
-    woken = []
 
     def fake_worker(channel_id, wake, stop_, env_):
-        woken.append(channel_id)
         wake.get(timeout=5)
         stop_.set()
 
@@ -308,4 +494,117 @@ def test_a_message_from_someone_else_is_recorded_as_received_but_never_queued(en
     assert [r["text"] for r in listen.read_pending(paths)] == ["mine"]
     appended = [a[a.index("--text") + 1] for a in calls if "conversation.py" in a[0] and "append" in a]
     assert appended == [MARKER, "mine"], "both are recorded as received"
-    assert "from another member (U0OTHER)" in _log(paths)
+    assert "was written by U0OTHER, not by you (U0OWNER)" in _log(paths)
+    assert replies(calls) == [("I only take instructions from <@U0OWNER>, so I haven't acted on this message.",
+                               "1793613611.000100")]
+
+
+def test_messages_queued_before_the_owner_check_are_checked_again_when_they_are_delivered(
+        reply, env_delivery, monkeypatch):
+    cmux, _ = reply
+    paths, calls = env_delivery
+    pending(paths, author="U0OTHER")
+    serve(monkeypatch)
+    assert listen._deliver_pending(paths, "C0", None) is True
+    assert cmux.calls == [] and listen.read_pending(paths) == []
+
+
+# --- telling the owner they weren't acted on -------------------------------------------------------------------
+
+def _ignored(author="U0OWNER", ts=TS, channel="C0CHAN"):
+    return {"channel": channel, "msg_ts": ts, "author": author, "text": MARKER}
+
+
+def test_the_first_message_ignored_for_want_of_an_owner_id_gets_one_reply_in_its_own_thread(env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    _config(paths, "C0CHAN")
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    listen.tell_ignored(paths, _ignored(), None)
+    assert replies(calls) == [(listen.UNKNOWN_OWNER_REPLY, TS)]
+    assert listen.UNKNOWN_OWNER_REPLY.startswith("I didn't act on your message. I can't tell which Slack account is "
+                                                 "yours, and this is a channel, so I don't type anything from it into a session.")
+    assert "launchctl kickstart -k gui/$UID/com.assistant.assistant-comms" in listen.UNKNOWN_OWNER_REPLY
+    assert "export SLACK_USER_ID=U…" in listen.UNKNOWN_OWNER_REPLY and "~/.zprofile" in listen.UNKNOWN_OWNER_REPLY
+    listen.tell_ignored(paths, _ignored(ts="1793613999.000100"), None)
+    assert len(replies(calls)) == 1  # a second inside 24 hours sends nothing
+    marker = next(paths.comms_dir.glob("ignored-unknown-owner-*"))
+    old = time.time() - 25 * 3600
+    marker.write_text(json.dumps({"ts": old}))
+    listen.tell_ignored(paths, _ignored(ts="1793614000.000100"), None)
+    assert len(replies(calls)) == 2  # once the marker is 25 hours old, one again
+
+
+def test_someone_elses_message_gets_one_reply_a_day_for_each_author(env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    _config(paths, "C0CHAN")
+    monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
+    listen.tell_ignored(paths, _ignored("U0OTHER"), None)
+    listen.tell_ignored(paths, _ignored("U0OTHER", ts="1793613999.000100"), None)
+    listen.tell_ignored(paths, _ignored("U0THIRD", ts="1793614000.000100"), None)
+    assert replies(calls) == [("I only take instructions from <@U0OWNER>, so I haven't acted on this message.", TS),
+                              ("I only take instructions from <@U0OWNER>, so I haven't acted on this message.",
+                               "1793614000.000100")]
+
+
+@pytest.mark.parametrize("target, owner, author", [
+    ("C0CHAN", "U0OWNER", "U0OWNER"),   # the owner's own message
+    ("D0DM", "", "U0OWNER"),            # a direct-message conversation
+    ("U0OWNER", "", "U0OWNER"),         # a person as the target
+    ("C0CHAN", "U0OWNER", ""),          # nobody wrote it
+])
+def test_no_reply_goes_for_a_message_that_was_typed_or_has_no_author(env_delivery, monkeypatch, target, owner, author):
+    paths, calls = env_delivery
+    _config(paths, target)
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    if owner:
+        monkeypatch.setenv("SLACK_USER_ID", owner)
+    listen.tell_ignored(paths, _ignored(author), None)
+    assert replies(calls) == []
+
+
+def test_a_marker_that_cant_be_written_means_no_reply(env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    _config(paths, "C0CHAN")
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    paths.comms_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: (_ for _ in ()).throw(OSError("read-only")))
+    listen.tell_ignored(paths, _ignored(), None)
+    assert replies(calls) == [] and "did not send its reply about the ignored message" in _log(paths)
+
+
+def test_a_reply_that_fails_to_send_is_logged(env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    _config(paths, "C0CHAN")
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    monkeypatch.setattr(listen, "cli", lambda argv, timeout=30, env=None: (1, "", "slack is down"))
+    listen.tell_ignored(paths, _ignored(), None)
+    assert "did not send (rc=1): slack is down" in _log(paths)
+
+
+def test_a_dropped_note_that_fails_to_send_is_logged(env_delivery, monkeypatch):
+    paths, calls = env_delivery
+    monkeypatch.setattr(listen, "cli", lambda argv, timeout=30, env=None: (1, "", "slack is down"))
+    listen._tell_dropped(paths, {"channel": "C0", "msg_ts": TS}, None, listen.DROPPED_EXPIRED)
+    assert "did not send (rc=1): slack is down" in _log(paths)
+
+
+def test_a_message_time_that_isnt_a_time_still_gets_a_clock_for_the_note():
+    assert listen._clock("not a time") == "earlier" and listen._clock(None) == "earlier"
+
+
+def test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown(env_delivery, monkeypatch):
+    from test_doctor import _load as load_doctor
+    doctor = load_doctor()
+    paths, _ = env_delivery
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    _config(paths, "C0CHAN")
+    check = doctor.check_slack_owner()
+    assert check.status == doctor.WARN and "launchctl kickstart -k gui/$UID/com.assistant.assistant-comms" in check.remedy
+    assert doctor.check_slack_owner in doctor.SLACK_CHECKS
+    monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
+    assert doctor.check_slack_owner().status == doctor.PASS
+    monkeypatch.delenv("SLACK_USER_ID")
+    _config(paths, "U0OWNER")
+    assert doctor.check_slack_owner().status == doctor.PASS
+    paths.config.unlink()
+    assert doctor.check_slack_owner().status == doctor.SKIP

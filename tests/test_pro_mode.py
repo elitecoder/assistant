@@ -478,6 +478,19 @@ def test_tasks_tab_shows_the_paused_dispatch_warning(home):
     assert "Dispatch paused — 2 TODO(s) waiting" in todos and "Holding: td-1, td-2." in todos
 
 
+def test_tasks_tab_shows_the_card_for_dispatch_that_cant_record_what_it_types(home):
+    title = "Dispatch paused — can't record what it types (2 TODO(s) waiting)"
+    detail = ("Assistant can't write its record of what it types into your sessions, so it won't start tasks. Check "
+              "that your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
+              "(`ls -ld ~/.assistant/effects`). Waiting: td-0 First, td-1 Second. Nothing is lost; the next round "
+              "starts them once the record can be written.")
+    page = render_page(home, {"awaiting_input": [{"key": "dispatch-held-no-record", "title": title, "detail": detail}]})
+    todos = page[page.index('data-panel="todos"'):]
+    import html
+    assert html.escape(title) in todos and "Waiting: td-0 First, td-1 Second." in todos
+    assert "df -h ~" in todos and "ls -ld ~/.assistant/effects" in todos
+
+
 def test_unpause_hint_points_to_a_command_that_exists_in_each_mode(home):
     spec = importlib.util.spec_from_file_location("render_hint", REPO / "bin/render-assistant-page.py")
     module = importlib.util.module_from_spec(spec)

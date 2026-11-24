@@ -50,7 +50,7 @@ def flags_of(cmd) -> dict:
 
 
 def run(send, rpc, *argv, text=MARKER):
-    sys.argv = ["cmux-send.py", "--ws", "workspace:5", "--text", text, "--no-log", "--post-send-wait", "0", *argv]
+    sys.argv = ["cmux-send.py", "--ws", "workspace:1000010005", "--text", text, "--no-log", "--post-send-wait", "0", *argv]
     out = io.StringIO()
     with mock.patch.object(send, "resolve_terminal_surface", return_value=SURFACE), \
             mock.patch.object(send, "rpc", rpc), mock.patch.object(send.time, "sleep"), \
@@ -67,7 +67,7 @@ def test_the_intent_is_on_disk_before_the_first_keystroke_and_one_effect_is_made
     assert [r["kind"] for r in rpc.first] == ["intent"]
     rows = ledger(home)
     assert [r["kind"] for r in rows] == ["intent", "result"]
-    assert rows[0]["target"] == {"source": "cleanup", "session": "workspace:5"}
+    assert rows[0]["target"] == {"source": "cleanup", "session": "workspace:1000010005"}
     assert rows[0]["auth"]["kind"] == "standing" and rows[0]["auth"]["ref"] == "cleanup"
     assert rows[0]["component"] == "assistant-pulse"
     assert rows[1]["outcome"] == "done"
@@ -78,7 +78,7 @@ def test_run_by_hand_it_counts_as_a_persons_tap_and_the_task_is_recorded(send, h
     code, _ = run(send, Rpc(home), "--task", "td-9")
     row = ledger(home)[0]
     assert code == 0 and row["auth"]["kind"] == "tap" and row["auth"]["ref"] == "cli:cmux-send"
-    assert row["target"] == {"source": "cli", "session": "workspace:5", "task": "td-9"}
+    assert row["target"] == {"source": "cli", "session": "workspace:1000010005", "task": "td-9"}
 
 
 def test_a_transcript_that_grew_is_verified(send, home):
@@ -136,7 +136,7 @@ def test_a_bad_workspace_or_no_terminal_makes_no_effect(send, home):
             mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit) as stop:
         send.main()
     assert stop.value.code == 4 and ledger(home) == []
-    sys.argv = ["cmux-send.py", "--ws", "workspace:5", "--text", "hi", "--no-log"]
+    sys.argv = ["cmux-send.py", "--ws", "workspace:1000010005", "--text", "hi", "--no-log"]
     with mock.patch.object(send, "resolve_terminal_surface", return_value=(None,) * 4), \
             mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit) as stop:
         send.main()
@@ -150,7 +150,7 @@ def test_the_pulse_says_it_is_the_standing_setting_and_which_fixed_nudge(home, t
     pulse = load_pulse(home)
     text = pulse.SAFE_STRANDED_NUDGE if text == "STRANDED" else text
     with mock.patch.object(pulse, "run", return_value=(0, json.dumps({"outcome": "sent"}), "")) as ran:
-        pulse.cmux_send("workspace:3", text)
+        pulse.cmux_send("workspace:1000010003", text)
     cmd = ran.call_args.args[0]
     flags = flags_of(cmd)
     assert flags["--source"] == source and flags["--auth-kind"] == "standing" and flags["--auth-ref"] == source
@@ -159,7 +159,7 @@ def test_the_pulse_says_it_is_the_standing_setting_and_which_fixed_nudge(home, t
 def test_a_refused_typing_is_a_send_that_failed_for_the_pulse(home):
     pulse = load_pulse(home)
     with mock.patch.object(pulse, "run", return_value=(4, "{}", "cmux-send: Assistant couldn't record")):
-        assert pulse.cmux_send("workspace:3", "/cleanup") == {"outcome": "failed", "transcript_size_delta": 0}
+        assert pulse.cmux_send("workspace:1000010003", "/cleanup") == {"outcome": "failed", "transcript_size_delta": 0}
 
 
 def test_merge_dispatch_says_who_allowed_it_and_reports_a_refusal(home):
@@ -167,13 +167,13 @@ def test_merge_dispatch_says_who_allowed_it_and_reports_a_refusal(home):
     refused = json.dumps({"outcome": "refused", "refused": {"reason": "Assistant couldn't record it"}})
     with mock.patch.object(merge.subprocess, "run",
                            return_value=mock.Mock(returncode=4, stdout=refused, stderr="")) as ran:
-        ok, why = merge.step2_send_and_verify("workspace:2", "/merge-when-ready 7", "standing")
+        ok, why = merge.step2_send_and_verify("workspace:1000010002", "/merge-when-ready 7", "standing")
     cmd = ran.call_args.args[0]
     flags = flags_of(cmd)
     assert (ok, flags["--source"], flags["--auth-kind"], flags["--auth-ref"]) == (False, "merge", "standing", "merge")
     assert "couldn't record it" in why
     with mock.patch.object(merge.subprocess, "run", return_value=mock.Mock(returncode=4, stdout=refused, stderr="")) as ran:
-        merge.step2_send_and_verify("workspace:2", "/merge-when-ready 7")
+        merge.step2_send_and_verify("workspace:1000010002", "/merge-when-ready 7")
     assert "tap" in ran.call_args.args[0]
 
 
@@ -181,11 +181,11 @@ def test_the_pulse_runs_merge_dispatch_as_standing_and_a_person_as_a_tap(home):
     pulse = load_pulse(home)
     with mock.patch.object(pulse.subprocess, "run",
                            return_value=mock.Mock(returncode=0, stdout=json.dumps({"outcome": "submitted"}))) as ran:
-        pulse.run_merge_pr_dispatch("workspace:1", 7, False, False)
+        pulse.run_merge_pr_dispatch("workspace:1000010001", 7, False, False)
     cmd = ran.call_args.args[0]
     assert cmd[cmd.index("--authorized-by") + 1] == "standing"
     merge = load_module(home, "merge-pr-dispatch.py")
-    sys.argv = ["merge-pr-dispatch.py", "--ws", "workspace:1", "--pr", "7"]
+    sys.argv = ["merge-pr-dispatch.py", "--ws", "workspace:1000010001", "--pr", "7"]
     seen = {}
     with mock.patch.object(merge, "step0_safety_gate", return_value=(True, "", {})), \
             mock.patch.object(merge, "gh_pr_view", return_value={"files": []}), \
@@ -199,12 +199,82 @@ def test_the_pulse_runs_merge_dispatch_as_standing_and_a_person_as_a_tap(home):
     assert seen["by"] == "tap"
 
 
-def test_a_refused_typing_is_written_to_the_send_log_without_its_effect(send, home, monkeypatch):
+def test_a_typing_refused_before_anything_was_sent_leaves_no_row_in_the_send_log(send, home, monkeypatch):
     monkeypatch.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
     send.SENDS_LOG = str(home / "sends.jsonl")
-    sys.argv = ["cmux-send.py", "--ws", "workspace:5", "--text", MARKER, "--enter"]
+    sys.argv = ["cmux-send.py", "--ws", "workspace:1000010005", "--text", MARKER, "--enter"]
+    out = io.StringIO()
     with mock.patch.object(send, "resolve_terminal_surface", return_value=SURFACE), \
-            mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit) as stop:
+            mock.patch("sys.stdout", out), pytest.raises(SystemExit) as stop:
         send.main()
-    logged = [json.loads(line) for line in (home / "sends.jsonl").read_text().splitlines()]
-    assert stop.value.code == 4 and logged[0]["outcome"] == "refused"
+    assert stop.value.code == 4 and json.loads(out.getvalue())["outcome"] == "refused"
+    assert not (home / "sends.jsonl").exists()
+
+
+def test_after_a_refusal_the_pulse_does_not_take_the_nudge_for_one_that_never_landed(send, home, monkeypatch):
+    """pulse.previous_send_ingested reads sends.jsonl: a refused send used to leave a row with a zero delta, and the
+    same nudge was then skipped for good, even after the cause was fixed."""
+    pulse = load_pulse(home)
+    log = home / ".assistant/sends.jsonl"
+    send.SENDS_LOG = str(log)
+    sys.argv = ["cmux-send.py", "--ws", "workspace:1000010005", "--text", "/cleanup", "--enter", "--source", "cleanup",
+                "--auth-kind", "standing"]
+    with mock.patch.object(send, "resolve_terminal_surface", return_value=SURFACE), \
+            mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit):
+        with monkeypatch.context() as broken:
+            broken.setattr(effects, "_write", lambda fd, data: (_ for _ in ()).throw(OSError(28, "full")))
+            send.main()
+    pulse.SENDS_LOG = log
+    assert pulse.previous_send_ingested("workspace:1000010005", "/cleanup") is True
+
+
+def test_the_effect_is_closed_whatever_goes_wrong_after_it_was_begun(send, home):
+    class Boom(Exception):
+        pass
+
+    def rpc(method, payload):
+        raise Boom()
+
+    sys.argv = ["cmux-send.py", "--ws", "workspace:1000010005", "--text", MARKER, "--enter", "--no-log"]
+    with mock.patch.object(send, "resolve_terminal_surface", return_value=SURFACE), \
+            mock.patch.object(send, "rpc", rpc), mock.patch("sys.stdout", io.StringIO()), pytest.raises(Boom):
+        send.main()
+    assert ledger(home)[1]["outcome"] == "unknown"
+
+
+def test_a_caller_name_with_a_space_is_still_accepted(send, home):
+    code, _ = run(send, Rpc(home), "--enter", "--caller", "my caller.py")
+    assert code == 0 and ledger(home)[0]["component"] == "my-caller.py"
+
+
+def test_a_null_or_empty_answer_with_exit_status_zero_is_not_a_refusal(send, home):
+    rpc = Rpc(home, [(0, None), (0, "")])
+    code, _ = run(send, rpc, "--enter")
+    assert code == 0 and [c[0] for c in rpc.calls] == ["surface.send_text", "surface.send_key"]
+    assert ledger(home)[1]["outcome"] == "done"
+
+
+def test_the_callers_wait_longer_than_the_script_can_take(home):
+    """The script's worst case is its terminal lookup (10 s), two keystrokes (10 s each) and its 2.5 s wait."""
+    worst = 10 + 10 + 10 + 2.5
+    pulse = load_pulse(home)
+    with mock.patch.object(pulse, "run", return_value=(0, json.dumps({"outcome": "sent"}), "")) as ran:
+        pulse.cmux_send("workspace:1000010003", "/cleanup")
+    assert ran.call_args.kwargs["timeout"] > worst
+    merge = load_module(home, "merge-pr-dispatch.py")
+    with mock.patch.object(merge.subprocess, "run", return_value=mock.Mock(returncode=4, stdout="{}", stderr="")) as ran:
+        merge.step2_send_and_verify("workspace:1000010002", "/merge-when-ready 7")
+    assert ran.call_args.kwargs["timeout"] > worst
+    todo = load_module(home, "todo-server.py")
+    assert todo.SEND_SCRIPT_TIMEOUT_SEC > worst
+
+
+def test_a_transcript_that_did_not_grow_is_not_verified_and_leaves_the_typing_unknown(send, home):
+    transcript = home / "t.jsonl"
+    transcript.write_text("a\n")
+    with mock.patch.object(send, "find_transcript_for_ws", return_value=str(transcript)), \
+            mock.patch.object(send, "file_size", side_effect=lambda p: 2):
+        code, record = run(send, Rpc(home), "--enter")
+    assert code == 0 and record["transcript_size_delta"] == 0
+    assert ledger(home)[1]["verified"] is False and ledger(home)[1]["outcome"] == "unknown"
+    assert ledger(home)[1]["error"] == "not confirmed"

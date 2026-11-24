@@ -43,6 +43,8 @@ def run_cmux(*args, timeout=5):
             capture_output=True, text=True, timeout=timeout
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
     except Exception as e:
         return 1, "", str(e)
 
@@ -269,6 +271,8 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
     # panel only by its terminal id, which is what the record holds.
     def rpc(method, params):
         rc, out, _ = run_cmux("rpc", method, json.dumps(params), timeout=5)
+        if rc == 124:
+            raise TimeoutError(method)  # the keystroke may have landed: recorded as unknown, not failed
         return (out or "{}") if rc == 0 else None
 
     try:
@@ -277,19 +281,26 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
     except session_effects.Refused as refusal:
         print(f"  NOT TYPED: {refusal}")
         return False
-    keys = session_effects.Keys(effect_id, rpc, surface_id)
-    # Try to respawn by sending the command to the surface, then by the panel's own id.
-    ok = keys.text(cmd)
-    if not ok:
-        keys.surface_id, keys.refused = panel_id, 0  # a refused try that is tried again isn't half a typing
+    try:
+        keys = session_effects.Keys(effect_id, rpc, surface_id)
+    except session_effects.Refused as refusal:
+        session_effects.finish(effect_id, "failed", error="not recorded")
+        print(f"  NOT TYPED: {refusal}")
+        return False
+    try:
+        # Try to respawn by sending the command to the surface, then by the panel's own id (the same terminal). A
+        # timeout is "can't tell", so it is not tried again.
         ok = keys.text(cmd)
-    if ok:
-        # Send Enter
-        keys.surface_id = surface_id or panel_id
-        keys.key("enter")
+        if not ok and not keys.raised:
+            keys.surface_id, keys.refused = panel_id, 0  # a refused try that is tried again isn't half a typing
+            ok = keys.text(cmd)
+        if ok:
+            # Send Enter; as before, a text that went out counts as restored whatever Enter did.
+            keys.surface_id = surface_id or panel_id
+            keys.key("enter")
+            return True
+    finally:
         keys.finish()
-        return True
-    keys.finish()
 
     if verbose:
         print("  ERROR: send_text failed: the terminal didn't take the text")

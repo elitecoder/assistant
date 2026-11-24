@@ -254,7 +254,7 @@ def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
             "--auth-kind", authorized_by,
             "--auth-ref", "merge",
         ],
-        capture_output=True, text=True, timeout=20,
+        capture_output=True, text=True, timeout=45,  # cmux-send.py's worst case is about 33 s
     )
     try:
         send_record = json.loads(send.stdout)
