@@ -531,8 +531,8 @@ CHECKS = (
     (
         "the page says when an action's note wasn't saved",
         P,
-        "if(o&&o.feedback&&o.feedback.recorded===false){let done",
-        "if(o&&o.feedback&&o.feedback.recorded===true){let done",
+        "if(o&&o.feedback&&o.feedback.recorded===false){const done",
+        "if(o&&o.feedback&&o.feedback.recorded===true){const done",
         TB + "test_when_a_note_cant_be_saved_the_page_says_so_once_and_the_work_still_happens",
     ),
     (

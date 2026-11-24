@@ -646,7 +646,7 @@ ST.queued={};ST.mail={};ST.checks={};ST.feedback={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);const o=await r.json();
- if(o&&o.feedback&&o.feedback.recorded===false){let done=false;try{done=JSON.parse((opts||{}).body||'{}').state==='done'}catch(_){}
+ if(o&&o.feedback&&o.feedback.recorded===false){const done=JSON.parse(opts.body).state==='done';
   toast(done?'Done. Assistant couldn’t record that for later.':'That worked. Assistant couldn’t record it for later.')}return o}
 function toast(msg,bad){document.querySelectorAll('.toast').forEach(t=>t.remove());const t=document.createElement('div');t.className=bad?'toast err':'toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
