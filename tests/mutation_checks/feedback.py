@@ -139,14 +139,14 @@ CHECKS = (
         F,
         "if state.ident != ident or (state.offset and (",
         "if (state.offset and (",
-        T + "test_a_file_replaced_by_another_is_read_from_its_start",
+        T + "test_a_file_replaced_by_one_that_differs_only_in_the_middle_is_read_from_its_start",
     ),
     (
         "a file changed in place is read again",
         F,
         "                os.pread(fd, len(state.head), 0) != state.head\n                or os.pread(fd, len(state.tail), state.offset - len(state.tail)) != state.tail)):",
         "                False)):",
-        T + "test_only_what_was_added_is_read_and_a_file_that_changed_is_read_again",
+        T + "test_a_file_changed_in_place_is_read_again",
     ),
     (
         "a later look reads only what was added",
@@ -266,7 +266,7 @@ CHECKS = (
         S,
         "        if (trace[key], signal) in seen and trace[key]:",
         "        if False:",
-        TS + "test_the_batch_keeps_one_record_for_one_piece_of_work_and_one_for_each_of_the_others",
+        TS + "test_each_action_records_one_line_per_row_and_changes_nothing_else[email undo is one]",
     ),
     (
         "a send that sent nothing records nothing",
@@ -526,7 +526,7 @@ CHECKS = (
         P,
         '{buttons("", "Unsubscribe", fb_span(pro, "candidate", key))}',
         '{buttons("", "Unsubscribe")}',
-        TB + "test_every_kind_of_item_offers_its_own_choices_and_says_what_it_is",
+        TS + "test_an_unsubscribe_row_has_the_controls_and_is_a_candidate_with_no_reasons",
     ),
     (
         "a result offers Didn't finish",

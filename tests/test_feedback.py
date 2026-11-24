@@ -260,11 +260,7 @@ def test_only_what_was_added_is_read_and_a_file_that_changed_is_read_again(home)
     assert len(feedback.recent()) == 2
     path.unlink()
     assert feedback.views() == {} and feedback.recent() == []
-    mine = down()
-    path2 = home / ".assistant/feedback/feedback.jsonl"
-    data = path2.read_bytes()
-    path2.write_bytes(data.replace(b'"thumbs_down"', b'"thumbs_dowm"'))  # rewritten in place, same size
-    assert feedback.views() == {} and mine
+    assert down() and feedback.views()[ROW]["down"]
 
 
 def test_a_file_replaced_by_another_is_read_from_its_start(home):
@@ -571,3 +567,29 @@ def test_a_later_look_ingests_only_the_lines_added_since_the_last(home, monkeypa
     assert feedback.views()[ROW]["down"] == first and seen == [], "nothing was added: nothing is read"
     mine = feedback.record("tell", ROW, "row", "work-queue", words="x")
     assert feedback.views()[ROW]["told_id"] == mine and len(seen) == 1, "one line added: one line read"
+
+
+def test_a_file_changed_in_place_is_read_again(home, monkeypatch):
+    first, second = down(), down()
+    feedback.views()
+    path = home / ".assistant/feedback/feedback.jsonl"
+    seen, real = [], feedback._State.ingest
+    monkeypatch.setattr(feedback._State, "ingest", lambda self, raw: (seen.append(raw), real(self, raw))[1])
+    changed = first[:-1] + ("0" if first[-1] != "0" else "1")
+    path.write_bytes(path.read_bytes().replace(first.encode(), changed.encode()))  # its first bytes, same size, same file
+    assert feedback.views()[ROW]["down"] == second and len(seen) == 2, "read again from the start"
+    seen.clear()
+    path.write_bytes(path.read_bytes().replace(b"abababababababab", b"cdcdcdcdcdcdcdcd"))  # its last bytes
+    feedback.views()
+    assert len(seen) == 2, "read again from the start"
+
+
+def test_a_file_replaced_by_one_that_differs_only_in_the_middle_is_read_from_its_start(home, monkeypatch):
+    ids = [down() for _ in range(3)]
+    feedback.views()
+    path = home / ".assistant/feedback/feedback.jsonl"
+    swapped = path.read_bytes().replace(ids[1].encode(), b"fb-" + b"5" * 16)
+    new = path.with_name("new.jsonl")
+    new.write_bytes(swapped)
+    new.replace(path)  # another file (another inode), the same first and last bytes
+    assert feedback.standing("fb-" + "5" * 16) is not None and feedback.standing(ids[1]) is None

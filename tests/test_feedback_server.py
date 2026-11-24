@@ -268,6 +268,7 @@ def test_a_used_draft_is_about_the_draft_and_a_result_is_about_its_task(wq):
     {"signal": "thumbs_down", "words": "extra words"}, {"signal": "thumbs_down", "reason": 3},
 ])
 def test_the_route_refuses_what_the_page_may_not_claim_and_writes_nothing(wq, body):
+    seed(wq)  # the item exists, so it is the signal that is refused
     code, out = give(**body)
     assert code == 400 and out["error"], out
     assert stored(wq.home) == []
@@ -558,3 +559,12 @@ def test_the_batch_keeps_one_record_for_one_piece_of_work_and_one_for_each_of_th
 def test_a_refresh_in_default_mode_keeps_nothing_about_a_sender_and_makes_no_key(wq):
     refresh.write_page(page_snap(False))
     assert not refresh.rowctx_path().exists() and not (wq.home / ".assistant/feedback").exists()
+
+
+def test_an_unsubscribe_row_has_the_controls_and_is_a_candidate_with_no_reasons():
+    row = {"key": "u-a", "account": ACCT, "msg_ids": ["id-u-a"], "group": "note", "title": "Mail", "subject": "Mail",
+           "reason": "A newsletter.", "addr": "a@promo.example", "unsub_url": "https://promo.example/a", "from": "Ana", "day": "Nov 2",
+           "to": [], "cc": [], "body": "Body", "unread": False, "link": "https://mail.google.com/mail/#inbox/u-a"}
+    doc = page.render({**page_snap(True), "gmail": {ACCT: [row]}})[0].split("</style>")[1].split("<script>")[0]
+    unsub = doc.split('data-kind="unsub"')[1].split("</div></div>")[0]
+    assert re.search(r'<span class="fb" data-fk="candidate" data-fp="row:[0-9a-f]{16}" data-fkey="unsub:[0-9a-f]{12}"></span>', unsub)
