@@ -7,7 +7,6 @@ import multiprocessing
 import os
 import stat
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -157,11 +156,10 @@ def test_words_are_collapsed_cut_and_scrubbed(home):
 def test_the_unwritable_store_raises_unrecorded_and_a_failed_flush_is_not_a_record(home, monkeypatch):
     def broken(fd):
         raise OSError(5, "disk")
-    monkeypatch.setattr(feedback, "_fsync", broken)
-    with pytest.raises(feedback.Unrecorded):
-        feedback.record("done", ROW, "row", "work-queue")
-    monkeypatch.undo()
-    monkeypatch.setenv("HOME", str(home))
+    with monkeypatch.context() as broke:
+        broke.setattr(feedback, "_fsync", broken)
+        with pytest.raises(feedback.Unrecorded):
+            feedback.record("done", ROW, "row", "work-queue")
     import shutil
     shutil.rmtree(home / ".assistant/feedback")
     (home / ".assistant/feedback").write_text("a file where the folder should be")
@@ -169,17 +167,15 @@ def test_the_unwritable_store_raises_unrecorded_and_a_failed_flush_is_not_a_reco
         feedback.record("done", ROW, "row", "work-queue")
 
 
-def test_a_record_waits_for_the_flush(home, monkeypatch):
+def test_a_record_is_written_and_then_flushed_before_record_returns(home, monkeypatch):
     real, seen = os.fsync, []
 
-    def slow(fd):
-        time.sleep(0.2)
-        seen.append(1)
+    def watching(fd):
+        seen.append(os.pread(fd, 1000, 0))  # what is on the file at the moment of the flush
         real(fd)
-    monkeypatch.setattr(feedback, "_fsync", slow)
-    started = time.monotonic()
-    feedback.record("done", ROW, "row", "work-queue")
-    assert seen and time.monotonic() - started >= 0.2
+    monkeypatch.setattr(feedback, "_fsync", watching)
+    rec_id = feedback.record("done", ROW, "row", "work-queue")
+    assert len(seen) == 1 and rec_id.encode() in seen[0], "the line was written, then flushed, before the answer"
 
 
 def test_a_torn_last_line_is_not_glued_to_the_next_record(home):
@@ -356,58 +352,70 @@ def test_threads_appending_together_leave_whole_lines(home):
 
 # ─── the lock, telemetry, the cut, the rules, the cancel line ────────────────
 
-def hold_the_lock(home, seconds):
-    """Another process holds feedback.lock, the way a stuck writer would."""
+class Clock:
+    """A clock the lock wait runs on: sleeping moves it, and nothing really waits."""
+
+    def __init__(self, monkeypatch):
+        self.now, self.slept = 1000.0, 0.0
+        monkeypatch.setattr(feedback, "_monotonic", lambda: self.now)
+        monkeypatch.setattr(feedback, "_sleep", self.sleep)
+        self.at_sleep = None
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.slept += seconds
+        if self.at_sleep:
+            self.at_sleep(self)
+
+
+def hold_the_lock(home):
+    """Another process holds feedback.lock, the way a stuck writer would. Returns the function that lets go."""
     import fcntl
     (home / ".assistant/feedback").mkdir(parents=True, exist_ok=True)
     fd = os.open(str(home / ".assistant/feedback/feedback.lock"), os.O_CREAT | os.O_RDWR)
     fcntl.flock(fd, fcntl.LOCK_EX)
-    done = threading.Event()
-
-    def release():
-        if not done.is_set():
-            done.set()
-            os.close(fd)
-    timer = threading.Timer(seconds, release)
-    timer.start()
-    return release
+    return lambda: os.close(fd)
 
 
-def test_a_stuck_lock_holds_a_record_for_half_a_second_not_for_as_long_as_it_is_stuck(home):
-    timer = hold_the_lock(home, 5)
-    started = time.monotonic()
+def test_a_stuck_lock_holds_a_record_for_half_a_second_not_for_as_long_as_it_is_stuck(home, monkeypatch):
+    clock = Clock(monkeypatch)
+    release = hold_the_lock(home)
     with pytest.raises(feedback.Unrecorded, match="busy"):
         feedback.record("done", ROW, "row", "work-queue")
-    assert 0.4 <= time.monotonic() - started < 1.5
-    timer()
+    release()
+    assert feedback.LOCK_WAIT <= clock.slept < feedback.LOCK_WAIT + 0.1 and lines_or_none(home) == []
 
 
-def test_a_batch_shares_one_deadline_and_a_lock_freed_in_time_is_taken(home):
-    timer = hold_the_lock(home, 5)
-    deadline = time.monotonic() + 0.3
-    started = time.monotonic()
+def lines_or_none(home):
+    path = home / ".assistant/feedback/feedback.jsonl"
+    return lines(home) if path.exists() else []
+
+
+def test_a_batch_shares_one_deadline_and_a_lock_freed_in_time_is_taken(home, monkeypatch):
+    clock = Clock(monkeypatch)
+    release = hold_the_lock(home)
+    deadline = feedback.lock_deadline()
     for _ in range(40):
         with pytest.raises(feedback.Unrecorded):
             feedback.record("done", ROW, "row", "work-queue", deadline=deadline)
-    assert time.monotonic() - started < 1.0, "forty records waited once, not forty times"
-    timer()
-    shorter = hold_the_lock(home, 0.2)
+    assert clock.slept < feedback.LOCK_WAIT + 0.1, "forty records waited once, not forty times"
+    clock.slept = 0
+    clock.at_sleep = lambda c: (release(), setattr(c, "at_sleep", None)) if c.slept >= 0.2 else None  # let go after 0.2 s
     feedback.record("done", ROW, "row", "work-queue")
-    shorter()
-    assert len(lines(home)) == 1
+    assert 0.2 <= clock.slept < feedback.LOCK_WAIT and len(lines(home)) == 1
 
 
-def test_a_deferred_telemetry_record_waits_for_emit_pending_and_never_delays_the_record(home, monkeypatch):
+def test_a_deferred_telemetry_record_waits_for_emit_pending_and_is_sent_in_one_write(home, monkeypatch):
     sent = []
-    monkeypatch.setattr(feedback.telemetry, "emit", lambda *a, **k: (time.sleep(0.3), sent.append((a, k))))
-    started = time.monotonic()
+    monkeypatch.setattr(feedback.telemetry, "emit_many", lambda batch: sent.append(list(batch)))
     feedback.record("done", ROW, "row", "work-queue", trace=TRACE, defer=True)
     feedback.record("snooze", ROW, "row", "work-queue", defer=True)
-    assert time.monotonic() - started < 0.2 and sent == []
+    assert sent == [] and len(lines(home)) == 2, "the records are on disk and nothing was sent to telemetry yet"
     feedback.emit_pending()
-    assert [k["signal"] for _, k in sent] == ["done", "snooze"] and sent[0][0][:3] == ("feedback", TRACE, ROW)
+    assert len(sent) == 1 and [f["signal"] for _, f in sent[0]] == ["done", "snooze"]
+    assert sent[0][0][0] == "feedback" and (sent[0][0][1]["trace"], sent[0][0][1]["subject"]) == (TRACE, ROW)
     feedback.emit_pending()
-    assert len(sent) == 2, "each is sent once"
+    assert len(sent) == 1, "each is sent once"
 
 
 def test_pending_telemetry_is_bounded(home, monkeypatch):
@@ -415,7 +423,7 @@ def test_pending_telemetry_is_bounded(home, monkeypatch):
     for _ in range(5):
         feedback.record("done", ROW, "row", "work-queue", defer=True)
     sent = []
-    monkeypatch.setattr(feedback.telemetry, "emit", lambda *a, **k: sent.append(k))
+    monkeypatch.setattr(feedback.telemetry, "emit_many", lambda batch: sent.extend(batch))
     feedback.emit_pending()
     assert len(sent) == 2 and len(lines(home)) == 5
 

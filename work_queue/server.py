@@ -819,7 +819,7 @@ def note_feedback(notes) -> dict:
     """Record one line for each (signal, kind, key). Whether it was recorded, never an error: the action the person
     took has already happened and stays done. Anything that goes wrong is logged and reported as not recorded."""
     ids, missed = [], 0
-    deadline = time.monotonic() + feedback.LOCK_WAIT  # one wait for the whole batch, not one per record
+    deadline = feedback.lock_deadline()  # one wait for the whole batch, not one per record
     for signal, kind, key in notes:
         try:
             ids.append(feedback.record(signal, surface="work-queue", kind=kind, deadline=deadline, defer=True,

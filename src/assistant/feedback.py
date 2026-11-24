@@ -112,11 +112,18 @@ def _iso(epoch: float) -> str:
 # Seams, so a test can make a write or a flush fail or take a while.
 _write = os.write
 _fsync = os.fsync
+_monotonic = time.monotonic
+_sleep = time.sleep
+
+
+def lock_deadline() -> float:
+    """When a wait for the file lock that begins now must give up (a `_monotonic()` value). A batch takes one."""
+    return _monotonic() + LOCK_WAIT
 
 
 @contextlib.contextmanager
 def _locked(deadline: float):
-    """The file lock, taken without blocking: Unrecorded when `deadline` (a time.monotonic() value) passes first."""
+    """The file lock, taken without blocking: Unrecorded when `deadline` (a `_monotonic()` value) passes first."""
     os.makedirs(str(feedback_dir()), mode=0o700, exist_ok=True)
     os.chmod(str(feedback_dir()), 0o700)
     fd = os.open(str(feedback_dir() / "feedback.lock"), os.O_CREAT | os.O_RDWR, 0o600)
@@ -127,9 +134,9 @@ def _locked(deadline: float):
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                if time.monotonic() >= deadline:
+                if _monotonic() >= deadline:
                     raise Unrecorded("the feedback file is busy") from None
-                time.sleep(0.005)
+                _sleep(0.005)
         yield
     finally:
         os.close(fd)  # closing releases the lock
@@ -428,10 +435,11 @@ _PENDING = threading.local()
 
 
 def emit_pending() -> None:
-    """Send the telemetry records `record(..., defer=True)` held back in this thread. Call it after the answer has gone."""
+    """Send the telemetry records `record(..., defer=True)` held back in this thread, in one write. Call it after the
+    answer has gone."""
     held, _PENDING.held = getattr(_PENDING, "held", []), []
-    for args, fields in held:
-        telemetry.emit(*args, **fields)
+    if held:
+        telemetry.emit_many(held)
 
 
 def record(signal, subject, kind, surface, trace="", reason="", words="", amends="", source="", who="",
@@ -441,7 +449,7 @@ def record(signal, subject, kind, surface, trace="", reason="", words="", amends
     `subject` is what it is about: a row pointer, or a task id for a `result`, or "" for the `page`. `trace`, `source`
     and `who` (a `who_pointer`) say which piece of work it was and what it looked like, never what it said. `amends`
     names the earlier record a reason or a take-back belongs to; it must be about the same item and not taken back.
-    `words` is the person's own text, for `tell` only. `deadline` (a time.monotonic() value) is how long to wait for
+    `words` is the person's own text, for `tell` only. `deadline` (a `lock_deadline()` value) is how long to wait for
     the file lock; a batch shares one. With `defer`, the telemetry record waits for `emit_pending()`.
 
     Raises ValueError for anything malformed and `Unrecorded` when the line couldn't be written and flushed."""
@@ -455,7 +463,7 @@ def record(signal, subject, kind, surface, trace="", reason="", words="", amends
     cancel = (json.dumps({"id": "fb-" + secrets.token_hex(8), "ts": rec["ts"], "signal": "retract", "kind": kind,
                           "surface": surface, "subject": subject, "amends": rec_id}, separators=(",", ":")) + "\n").encode("utf-8")
     try:
-        with _locked(deadline if deadline is not None else time.monotonic() + LOCK_WAIT):
+        with _locked(deadline if deadline is not None else lock_deadline()):
             if amends:
                 with _STATE_LOCK:
                     _check_amends(_sync(), signal, subject, kind, amends)
@@ -467,11 +475,11 @@ def record(signal, subject, kind, surface, trace="", reason="", words="", amends
                 raise
     except OSError as exc:
         raise Unrecorded(f"couldn't write the feedback file: {type(exc).__name__}") from exc
-    held = (("feedback", trace, subject, COMPONENTS[surface]),
-            {"signal": signal, "reason_code": reason or "none", "surface": surface, "subject_kind": kind})
+    held = ("feedback", {"trace": trace, "subject": subject, "component": COMPONENTS[surface], "signal": signal,
+                         "reason_code": reason or "none", "surface": surface, "subject_kind": kind})
     if defer:
         if len(getattr(_PENDING, "held", [])) < PENDING_MAX:
             _PENDING.held = getattr(_PENDING, "held", []) + [held]
     else:
-        telemetry.emit(*held[0], **held[1])
+        telemetry.emit_many([held])
     return rec_id

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-import time
+import threading
 import types
 
 import pytest
 
-from assistant import feedback, pointers, todostore
+from assistant import effects, feedback, pointers, todostore
 from work_queue import config, page, refresh, server, traces
 from work_queue_fakes import fake_tool, wq  # noqa: F401
 from test_work_queue_actions import http, pro  # noqa: F401
@@ -105,6 +105,9 @@ def test_each_action_records_one_line_per_row_and_changes_nothing_else(wq, monke
     path, body, expected = ACTIONS[name]
     monkeypatch.setattr(server, "now", lambda: "2026-11-24T10:00:00+00:00")
     monkeypatch.setattr(server, "secrets", types.SimpleNamespace(token_hex=lambda n: "ab" * n))
+    # the effects record (every Gmail and approval action leaves a row there) gets its id and time from here
+    monkeypatch.setattr(effects, "secrets", types.SimpleNamespace(token_hex=lambda n: "cd" * n))
+    monkeypatch.setattr(effects, "_now", lambda: 1795549200.0)
     monkeypatch.setattr(traces, "today", lambda: "2026-11-24")
     config.write_json(wq.data / "marks.json", {LINK: {"state": "done", "until": 0}, OMARK: {"state": "done", "until": 0}})
     seed(wq, monkeypatch, ["INBOX"] if name == "unarchive" else [])
@@ -280,17 +283,16 @@ def test_a_store_that_cannot_be_written_is_an_error_the_page_can_show(wq):
     assert code == 500 and "couldn’t save that" in out["error"] and "isn’t affected" in out["error"]
 
 
-def test_a_failed_flush_answers_with_an_error_and_a_slow_one_makes_the_answer_wait(wq, monkeypatch):
+def test_a_failed_flush_answers_with_an_error_and_the_answer_comes_after_the_flush(wq, monkeypatch):
     seed(wq)
-    real = feedback._fsync
+    real, at_flush = feedback._fsync, []
 
-    def slow(fd):
-        time.sleep(0.3)
+    def watching(fd):
+        at_flush.append(len(stored(wq.home)))  # the line is on the file when the flush is asked for
         real(fd)
-    monkeypatch.setattr(feedback, "_fsync", slow)
-    started = time.monotonic()
-    assert give(signal="thumbs_down")[0] == 200
-    assert time.monotonic() - started >= 0.3
+    monkeypatch.setattr(feedback, "_fsync", watching)
+    code, out = give(signal="thumbs_down")
+    assert code == 200 and at_flush == [1] and out["id"] == stored(wq.home)[0]["id"]
 
     def broken(fd):
         raise OSError(5, "disk")
@@ -428,38 +430,41 @@ def hold(wq):
     return lambda: os.close(fd)
 
 
-def test_a_stuck_feedback_lock_delays_an_answer_by_half_a_second_at_most_for_a_whole_batch(http, wq):
+def test_a_stuck_feedback_lock_delays_an_answer_by_half_a_second_at_most_for_a_whole_batch(wq, monkeypatch):
     seed(wq)
-    pro(wq)
+    slept = []
+    clock = [1000.0]
+    monkeypatch.setattr(feedback, "_monotonic", lambda: clock[0])
+    monkeypatch.setattr(feedback, "_sleep", lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s)))
     release = hold(wq)
     keys = {f"https://x.example/{n}": {"state": "done"} for n in range(40)}
-    started = time.monotonic()
-    code, raw, _ = http("/api/mark", {"marks": keys})
-    took = time.monotonic() - started
+    code, out = run("/api/mark", {"marks": keys})
     release()
-    out = json.loads(raw)
-    assert code == 200 and took < 1.5, took
-    assert out["feedback"]["recorded"] is False and out["feedback"]["missed"] == 40 and len(out["marks"]) == 40
-    print(f"/api/mark with the lock held: {took:.2f} s")
+    assert code == 200 and len(out["marks"]) == 40
+    assert out["feedback"]["recorded"] is False and out["feedback"]["missed"] == 40 and out["feedback"]["ids"] == []
+    assert feedback.LOCK_WAIT <= sum(slept) < feedback.LOCK_WAIT + 0.1, "one wait for forty rows, not forty"
 
 
 def test_a_busy_telemetry_database_never_delays_an_answer_but_every_record_still_arrives(http, wq, monkeypatch):
     seed(wq)
     pro(wq)
-    sent = []
-    monkeypatch.setattr(feedback.telemetry, "emit", lambda *a, **k: (time.sleep(0.1), sent.append(k)))
+    answered, entered, finished, sent = threading.Event(), threading.Event(), threading.Event(), []
+
+    def stuck_until_answered(batch):
+        entered.set()
+        sent.append((answered.wait(30), list(batch)))  # a database that is busy until the person has their answer
+        finished.set()
+
+    monkeypatch.setattr(feedback.telemetry, "emit_many", stuck_until_answered)
     cands = {f"cand-{n}": {"kind": "slack", "cid": "C1", "ts": "1.1", "link": LINK} for n in range(40)}
     config.write_json(refresh.candidates_path(), cands)
-    started = time.monotonic()
     code, raw, _ = http("/api/decide", {"keys": list(cands), "decision": "approve"})
-    took = time.monotonic() - started
-    assert code == 200 and took < 1.5 and json.loads(raw)["feedback"]["recorded"] is True, took
-    for _ in range(200):
-        if len(sent) == 40:
-            break
-        time.sleep(0.1)
-    assert len(sent) == 40 and len(stored(wq.home)) == 40
-    print(f"/api/decide of 40 rows with telemetry at 0.1 s a record: {took:.2f} s")
+    answered.set()  # the answer is already here; had it waited for telemetry this would never be reached in time
+    assert code == 200 and json.loads(raw)["feedback"]["recorded"] is True
+    assert entered.wait(30) and finished.wait(30)
+    (seen_answer, batch), = sent
+    assert seen_answer is True, "telemetry was still waiting when the answer arrived"
+    assert len(batch) == 40 and len(stored(wq.home)) == 40, "one write for all forty, and all forty are on disk"
 
 
 # ─── what the page may claim ─────────────────────────────────────────────────
