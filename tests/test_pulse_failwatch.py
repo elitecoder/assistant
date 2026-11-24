@@ -6,6 +6,7 @@ import sys
 from assistant import failwatch
 from test_model_tiering import _AuditBase
 import unittest
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -93,6 +94,62 @@ class ReadyForMergeCountTests(unittest.TestCase):
             sys.modules["assistant.failwatch"] = saved
             sys.modules["assistant"].failwatch = saved
         self.assertEqual(action["evidence"], "ready_for_merge but no pr_refs on ws")
+
+    def _repeat(self, ws_ref, n=3):
+        for _ in range(n):
+            failwatch.record_failure(f"ready-for-merge:{ws_ref}", "ready_for_merge but no pr_refs on ws", pause=False)
+
+    def _listed(self):
+        return {r["component"] for r in failwatch.repeated()}
+
+    def test_the_merge_check_row_clears_when_a_pull_request_is_linked(self):
+        self._repeat("workspace:99")
+        self.assertEqual(self._listed(), {"ready-for-merge:workspace:99"})
+        ws = {**self._ws(), "pr_refs": ["12"]}
+        with mock.patch.object(self.mod, "run_merge_pr_dispatch", return_value={"outcome": "submitted"}):
+            self.mod.execute_verdict(ws, {"verdict": "ready_for_merge", "summary": "s", "next": "n"}, [])
+        self.assertEqual(self._listed(), set())
+
+    def test_the_merge_check_row_clears_when_it_is_no_longer_ready_to_merge(self):
+        self._repeat("workspace:99")
+        self._repeat("workspace:5")
+        self.mod.execute_verdict(self._ws(), {"verdict": "active", "summary": "s", "next": "n"}, [])
+        self.assertEqual(self._listed(), {"ready-for-merge:workspace:5"})
+
+    def test_still_ready_with_no_pull_request_keeps_the_row(self):
+        self._repeat("workspace:99")
+        self.mod.execute_verdict(self._ws(), {"verdict": "ready_for_merge", "summary": "s", "next": "n"}, [])
+        self.assertEqual(self._listed(), {"ready-for-merge:workspace:99"})
+
+    def test_a_pulse_clears_rows_for_sessions_that_have_closed(self):
+        self._repeat("workspace:1")
+        self._repeat("workspace:9")
+        batch = {"to_reclassify": [], "reuse_cached": ["workspace:1"], "backed_off": [], "total_ws": 1}
+        self._pulse(batch)
+        self.assertEqual(self._listed(), {"ready-for-merge:workspace:1"})
+
+    def test_a_failed_session_list_clears_nothing(self):
+        self._repeat("workspace:9")
+        self._pulse({"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0, "failed": True})
+        self.assertEqual(self._listed(), {"ready-for-merge:workspace:9"})
+
+    def test_a_dry_run_clears_nothing(self):
+        self._repeat("workspace:9")
+        self._pulse({"to_reclassify": [], "reuse_cached": [], "backed_off": [{"ref": "workspace:2"}], "total_ws": 1},
+                    argv=["pulse.py", "--dry-run"])
+        self.assertEqual(self._listed(), {"ready-for-merge:workspace:9"})
+
+    def _pulse(self, batch, argv=None):
+        old = sys.argv
+        sys.argv = argv or ["pulse.py"]
+        try:
+            with mock.patch.object(self.mod, "pick_ws_batch", return_value=batch), \
+                    mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                    mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                    mock.patch.object(self.mod, "run", return_value=(0, "", "")):
+                self.mod.main()
+        finally:
+            sys.argv = old
 
     def test_the_merge_dispatch_runs_under_the_running_interpreter(self):
         seen = []

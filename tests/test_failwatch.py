@@ -19,9 +19,9 @@ def store(tmp_path, monkeypatch):
     return path
 
 
-def fail(n, text=ERR, component="self-update", start=NOW, step=60):
+def fail(n, text=ERR, component="self-update", start=NOW, step=60, **kw):
     for i in range(n):
-        failwatch.record_failure(component, text, now=start + i * step)
+        failwatch.record_failure(component, text, now=start + i * step, **kw)
 
 
 # fingerprints
@@ -147,8 +147,9 @@ def test_a_failure_that_has_since_worked_is_no_longer_listed(store):
     failwatch.record_ok("self-update", now=NOW + 20)
     assert failwatch.repeated(now=NOW + 30) == []
     failwatch.record_failure("self-update", "fetch failed", now=NOW + 40)
-    (row,) = failwatch.repeated(now=NOW + 50)
-    assert row["count"] == 5 and row["streak"] == 1, "it is listed again, with its history, once it fails again"
+    assert failwatch.repeated(now=NOW + 50) == [], "one new failure after a recovery is not a repeat"
+    (row,) = failwatch.history()
+    assert row["count"] == 5 and row["streak"] == 1, "the history keeps the old episode"
 
 
 def test_an_error_replaced_by_a_different_one_is_no_longer_listed(store):
@@ -171,7 +172,8 @@ def test_store_is_owner_only_and_holds_the_documented_fields(store):
     fail(3)
     assert stat.S_IMODE(store.stat().st_mode) == 0o600
     (row,) = json.loads(store.read_text()).values()
-    assert set(row) == {"component", "count", "streak", "first_ts", "last_ts", "sample", "backoff_until"}
+    assert set(row) == {"component", "count", "streak", "first_ts", "streak_first_ts", "last_ts", "sample",
+                        "backoff_until", "cap", "context"}
     assert row["first_ts"] == NOW and row["last_ts"] == NOW + 120 and row["sample"] == ERR
     assert not list(store.parent.glob("*.tmp"))
 
@@ -228,10 +230,11 @@ def test_a_lock_held_too_long_drops_the_record_instead_of_hanging(store, monkeyp
     sleeps = []
     monkeypatch.setattr(failwatch.fcntl, "flock", lambda *_: (_ for _ in ()).throw(BlockingIOError()))
     monkeypatch.setattr(failwatch.time, "sleep", sleeps.append)
-    ticks = iter(range(0, 100, 1))
+    ticks = iter(i * 0.05 for i in range(100))
     monkeypatch.setattr(failwatch.time, "monotonic", lambda: next(ticks))
     assert failwatch.record_failure("c", "boom") is None
-    assert sleeps and not store.exists()
+    assert 0 < len(sleeps) <= 6, "a contended store costs a fraction of a second, not seconds"
+    assert not store.exists()
 
 
 def test_default_path_is_under_home(monkeypatch, tmp_path):
@@ -248,3 +251,130 @@ def test_default_time_is_now(store):
     failwatch.record_failure("c", "boom")
     failwatch.record_failure("c", "boom")
     assert failwatch.backed_off("c") and len(failwatch.repeated()) == 1
+
+
+# the current run, not all time
+
+def test_repeated_lists_the_current_streak_and_when_it_began(store):
+    fail(5, "boom", start=NOW)
+    failwatch.record_ok("self-update")
+    failwatch.record_failure("self-update", "boom", now=NOW + 1000)
+    failwatch.record_failure("self-update", "boom", now=NOW + 1100)
+    assert failwatch.repeated(now=NOW + 1200) == [], "two in a row since the recovery is not a repeat"
+    failwatch.record_failure("self-update", "boom", now=NOW + 1200)
+    (row,) = failwatch.repeated(now=NOW + 1300)
+    assert (row["streak"], row["count"]) == (3, 8)
+    assert row["streak_first_ts"] == NOW + 1000 and row["first_ts"] == NOW
+
+
+def test_a_row_still_paused_stays_listed_whatever_the_window_says(store):
+    fail(8, "boom", start=NOW, step=1)  # a 24-hour pause from NOW + 7
+    assert failwatch.repeated(now=NOW + 7200, window_sec=3600)
+    assert failwatch.repeated(now=NOW + 7200, window_sec=3600, min_count=99)
+    assert failwatch.repeated(now=NOW + 86400 + 10) == [], "the pause is over and the window has passed"
+
+
+def test_a_streak_outside_the_window_with_no_pause_is_not_listed(store):
+    fail(3, "boom", pause=False, start=NOW, step=1)
+    assert failwatch.repeated(now=NOW + 7200, window_sec=3600) == []
+
+
+def test_repeated_limit_can_be_raised(store):
+    for i in range(8):
+        fail(3, f"error kind {chr(97 + i)}", component=f"c{i}")
+    assert len(failwatch.repeated(now=NOW + 500, limit=50)) == 8
+
+
+# a pause that should not outlive its cause
+
+def test_the_longest_pause_can_be_capped(store):
+    got = [(failwatch.record_failure("c", "boom", now=NOW, cap=4 * HOUR)["backoff_until"] or NOW) - NOW
+           for _ in range(7)]
+    assert got == [0, 0, HOUR, 2 * HOUR, 4 * HOUR, 4 * HOUR, 4 * HOUR]
+
+
+def test_a_pause_set_for_another_context_does_not_hold(store):
+    for i in range(3):
+        failwatch.record_failure("c", "boom", now=NOW + i, context="origin/feat-x")
+    assert failwatch.backed_off("c", now=NOW + 10)
+    assert failwatch.backed_off("c", now=NOW + 10, context="origin/feat-x")
+    assert failwatch.backed_off("c", now=NOW + 10, context="origin/main") is None
+
+
+def test_failing_on_something_else_starts_the_streak_over(store):
+    for i in range(3):
+        failwatch.record_failure("c", "boom", now=NOW + i, context="origin/feat-x")
+    row = failwatch.record_failure("c", "boom", now=NOW + 10, context="origin/main")
+    assert (row["streak"], row["backoff_until"], row["streak_first_ts"]) == (1, 0, NOW + 10)
+
+
+def test_a_pause_further_away_than_its_cap_is_a_clock_error_and_counts_as_over(store):
+    fail(3, "boom", component="c")
+    path = store
+    data = json.loads(path.read_text())
+    (row,) = data.values()
+    row["backoff_until"] = NOW + 365 * 86400
+    path.write_text(json.dumps(data))
+    assert failwatch.backed_off("c", now=NOW + 200) is None
+    row["backoff_until"] = NOW + 200 + 5 * HOUR
+    row["cap"] = 4 * HOUR
+    path.write_text(json.dumps(data))
+    assert failwatch.backed_off("c", now=NOW + 200) is None
+    assert failwatch.repeated(now=NOW + 200)[0]["streak"] == 3
+
+
+def test_record_ok_except_clears_rows_whose_subject_is_gone(store):
+    for name in ("workspace:1", "workspace:2"):
+        fail(3, "boom", component=f"ready-for-merge:{name}")
+    fail(3, "boom", component="self-update")
+    failwatch.record_ok_except("ready-for-merge:", {"workspace:1"})
+    assert sorted(r["component"] for r in failwatch.repeated(now=NOW + 300)) == [
+        "ready-for-merge:workspace:1", "self-update"]
+    failwatch.record_ok_except("ready-for-merge:", {"workspace:1"})  # nothing left to clear
+
+
+def test_record_ok_except_is_quiet_with_no_file_or_on_an_error(store, monkeypatch):
+    failwatch.record_ok_except("x:", set())
+    assert not store.exists()
+    fail(3, "boom", component="x:1")
+    monkeypatch.setattr(failwatch, "_read", lambda path: 1 / 0)
+    failwatch.record_ok_except("x:", set())
+
+
+# what counts as the same failure, and what a sample may hold
+
+def test_http_status_and_error_type_keep_a_401_a_429_and_a_529_apart():
+    def fp(text):
+        return failwatch.fingerprint("m", text)
+    a = fp('Error code: 401 {"type": "error", "error": {"type": "authentication_error"}}')
+    b = fp('Error code: 429 {"type": "error", "error": {"type": "rate_limit_error"}}')
+    c = fp('Error code: 529 {"type": "error", "error": {"type": "overloaded_error"}}')
+    d = fp('Error code: 529 {"type": "error", "error": {"type": "overloaded_error"}}')
+    assert len({a, b, c}) == 3 and c == d
+    assert fp("HTTP 500 from host") != fp("HTTP 502 from host")
+    assert fp("failed at line 404 of the file") == fp("failed at line 7 of the file")
+
+
+def test_the_error_type_alone_tells_two_errors_with_one_status_apart():
+    a = failwatch.fingerprint("m", 'Error code: 529 {"error": {"type": "overloaded_error"}}')
+    b = failwatch.fingerprint("m", 'Error code: 529 {"error": {"type": "api_error"}}')
+    assert a != b
+
+
+def test_a_request_id_does_not_make_each_call_its_own_failure():
+    a = failwatch.fingerprint("m", "Error code: 529 request_id req_011CVabcDEF123")
+    b = failwatch.fingerprint("m", "Error code: 529 request_id req_011CVzzzXYZ999")
+    c = failwatch.fingerprint("m", "overloaded msg_01AbCdEf toolu_01XyZ")
+    d = failwatch.fingerprint("m", "overloaded msg_01ZzZzZz toolu_09QqQ")
+    assert a == b and c == d
+
+
+def test_more_secret_shapes_never_reach_the_sample(store):
+    secrets = ["-".join(["sk", "ant", "api03", "AbCdEf123456"]), "hunter" + "2" * 3, "p4" + "ssw0rd", "s3" + "cretkey"]
+    text = (f"key {secrets[0]} api_key={secrets[3]} \"password\": \"{secrets[1]}\" "
+            f"https://bob:{secrets[2]}@example.com/x risk-averse")
+    sample = failwatch.record_failure("c", text, now=NOW)["sample"]
+    for leaked in secrets:
+        assert leaked not in sample
+    assert "https://<redacted>@example.com/x" in sample and "risk-averse" in sample
+    assert "bob" not in sample

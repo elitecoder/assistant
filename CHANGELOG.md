@@ -11,16 +11,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ### Added
 - Show a failure that keeps repeating as one red line at the top of the
-  dashboard, with how many times it happened, since when, and the error. It
-  covers self-update, background model calls, the page refresh after an edit,
-  and a merge check with no pull request to merge. A background job that
-  fails the same way three times in a row now stops retrying for an hour,
-  then two, up to 24 hours, and the line says when it will try again. A
-  different error or one success clears the pause. Self-update, the lesson,
-  strategist, morning brief, Observer audit, and triage model calls pause
-  this way. A Work queue or Slack tab refresh you ask for always runs, and
-  `self_update.py --force` ignores the pause. Counts are in
-  `~/.assistant/failures.json`, not in the actions ledger.
+  dashboard, with how many times in a row it has happened, since when, a short
+  error, and what happens next. It covers self-update, background model calls,
+  and the page refresh after an edit. Sessions flagged as ready to merge with
+  no pull request linked share one line, which clears when each has a pull
+  request, is no longer ready, or closes. A background job that fails the same
+  way three times in a row stops calling the model, and so stops spending,
+  for an hour, then two, up to 24 hours. Self-update pauses for 4 hours at
+  most, and tries again at once if its remote or branch changes. Anything you
+  ask for, such as a Work queue or Slack tab refresh, is never paused. A pause
+  ends by itself, and the line clears when the next attempt works. To clear a
+  pause sooner, run `self_update.py --force`, or delete
+  `~/.assistant/failures.json`, which forgets every count. If the page itself
+  can't be rebuilt, it can't show the line until a rebuild works. The file
+  holds short error samples, with tokens, keys, and passwords removed, that can
+  include a branch name or a model id. Counts stay out of the actions ledger.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or
@@ -81,9 +86,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
-- Refresh the page, switch modes, send a merge, and read a transcript with the
-  Python the service itself runs, not the first `python3` on its path, which
-  can be the older system Python and fail without a word.
+- Some services could fail without a word because they ran under the system's
+  older Python. They now use the same Python as the rest of Assistant.
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
   workspaces with a bare `cmux list-workspaces`, which shows only the focused

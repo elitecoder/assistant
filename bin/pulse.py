@@ -397,6 +397,15 @@ def run(cmd: list[str], *, input_text: str | None = None,
         return 1, "", str(e)
 
 
+def _watch(method: str, *args, **kwargs):
+    """Call the failure counter. Loaded lazily and never allowed to stop the pulse."""
+    try:
+        from assistant import failwatch  # noqa: PLC0415 — not a startup file
+        return getattr(failwatch, method)(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't count a failure (ignored): %s", e)
+
+
 def append_ledger(entry: dict) -> None:
     LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LEDGER_PATH, "a") as f:
@@ -672,6 +681,14 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     if not TRIAGE_BATCH_PROMPT.exists():
         log.error("triage batch prompt missing: %s", TRIAGE_BATCH_PROMPT)
         return {}
+    if str(BIN) not in sys.path:
+        sys.path.insert(0, str(BIN))
+    import metering  # noqa: PLC0415
+    paused = metering.paused_note("triage")
+    if paused:
+        # Before the run folder exists, so a paused job leaves nothing behind.
+        log.info("triage batch skipped: %s", paused)
+        return {}
 
     run_dir = TRIAGE_RUNS_DIR / f"{pulse_idx:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -697,13 +714,6 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     (run_dir / "prompt.md").write_text(prompt)
     (run_dir / "events.json").write_text(events_json)
 
-    if str(BIN) not in sys.path:
-        sys.path.insert(0, str(BIN))
-    import metering  # noqa: PLC0415
-    paused = metering.paused_note("triage")
-    if paused:
-        log.info("triage batch skipped: %s", paused)
-        return {}
     import llm_runner  # noqa: PLC0415
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=HOME), "triage")
@@ -1190,12 +1200,12 @@ def pick_ws_batch() -> dict:
     rc, out, err = run([sys.executable, str(BIN / "pick-ws-batch.py")])
     if rc != 0:
         log.error("pick-ws-batch rc=%d: %s", rc, err.strip())
-        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}
+        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0, "failed": True}
     try:
         return json.loads(out)
     except Exception as e:
         log.error("pick-ws-batch bad json: %s", e)
-        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}
+        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0, "failed": True}
 
 
 def build_ctx(ws: dict) -> dict | None:
@@ -1879,6 +1889,9 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
     kind = verdict.get("verdict")
     ws_ref = ws["ref"]
     key = f"{ws_ref}-{kind}"
+    if kind != "ready_for_merge" or ws.get("pr_refs"):
+        # Fixed: it isn't ready to merge any more, or it has a pull request.
+        _watch("record_ok", f"ready-for-merge:{ws_ref}")
     base = {
         "key": key, "kind": kind, "ws_ref": ws_ref,
         "outcome": "verified", "verified_via": "observer",
@@ -1987,12 +2000,8 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
         if not pr_refs:
             # The ledger row below is written every pulse; this counts it once
             # per workspace so the dashboard shows it with a number.
-            try:
-                from assistant import failwatch  # noqa: PLC0415 — not a startup file; never block a verdict
-                failwatch.record_failure(f"ready-for-merge:{ws_ref}", "ready_for_merge but no pr_refs on ws",
-                                         pause=False)
-            except Exception as e:  # noqa: BLE001
-                log.warning("couldn't count the merge check failure (ignored): %s", e)
+            _watch("record_failure", f"ready-for-merge:{ws_ref}", "ready_for_merge but no pr_refs on ws",
+                   pause=False)
             return {**base, "kind": "skipped", "outcome": "failed",
                     "evidence": "ready_for_merge but no pr_refs on ws"}
         result = run_merge_pr_dispatch(
@@ -2626,6 +2635,11 @@ def main() -> int:
     batch = pick_ws_batch()
     to_reclassify = batch.get("to_reclassify", []) if observer_enabled() else []
     backed_off = batch.get("backed_off", [])
+    if not dry_run and not batch.get("failed"):
+        # A merge check for a session that has closed has nothing left to fix.
+        open_refs = ({w["ref"] for w in batch.get("to_reclassify", [])} | set(batch.get("reuse_cached", []))
+                     | {w["ref"] for w in backed_off})
+        _watch("record_ok_except", "ready-for-merge:", open_refs)
 
     # 4. Per-workspace flow.
     #    Phase 1: build ctx for every ws (sequential — these are quick).

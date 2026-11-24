@@ -118,3 +118,48 @@ def test_an_unloadable_counter_is_none(monkeypatch):
     monkeypatch.setitem(sys.modules, "assistant.failwatch", None)
     monkeypatch.delattr(sys.modules["assistant"], "failwatch")
     assert su._failwatch() is None
+
+
+def test_the_pause_never_runs_past_four_hours(world):
+    for i in range(10):
+        world.run(NOW + i * 5 * HOUR)  # each try after the last pause ended
+    (row,) = failwatch.repeated(now=NOW + 9 * 5 * HOUR + 10)
+    assert row["streak"] == 10 and row["backoff_until"] - row["last_ts"] == 4 * HOUR
+
+
+def test_the_same_branch_stays_paused_but_a_different_one_tries_at_once(world):
+    for i in range(3):
+        world.run(NOW + i)
+    assert world.run(NOW + 600) is None
+    fetches = len(world.fetches)
+    git(world.clone, "remote", "set-url", "origin", world.good_url)
+    git(world.clone, "branch", "-m", "main", "other")
+    git(world.clone, "branch", "--unset-upstream", "other")
+    assert world.run(NOW + 900) is not None, "a changed branch lifts the pause"
+    assert len(world.fetches) == fetches + 1
+
+
+def test_a_different_remote_also_tries_at_once(world):
+    for i in range(3):
+        world.run(NOW + i)
+    git(world.clone, "remote", "add", "second", str(world.tmp / "gone2.git"))
+    git(world.clone, "remote", "rename", "origin", "first")
+    assert world.run(NOW + 900) is not None
+
+
+def test_failing_on_a_new_branch_starts_a_new_streak(world):
+    for i in range(3):
+        world.run(NOW + i)
+    git(world.clone, "branch", "-m", "main", "other")
+    git(world.clone, "branch", "--unset-upstream", "other")
+    assert world.run(NOW + 900)["skipped_reason"] == "fetch-failed"
+    (row,) = failwatch.history()
+    assert row["streak"] == 1 and row["context"] == "origin/other"
+
+
+def test_with_no_remote_the_context_is_none_and_a_pause_for_one_holds(tmp_path):
+    clone, _ = make_repos(tmp_path)
+    git(clone, "remote", "remove", "origin")
+    for i in range(3):
+        failwatch.record_failure("self-update", "x", now=NOW + i, cap=4 * HOUR, context="none")
+    assert su.maybe_update(clone, interval_sec=0, marker_path=tmp_path / "m.json", now=NOW + 100) is None

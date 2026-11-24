@@ -3328,8 +3328,12 @@ def test_a_background_site_makes_no_model_call_while_its_failures_are_paused(
     commands = []
     monkeypatch.setattr(mod, run_attr, lambda cmd, *a, **k: commands.append(cmd) or (0, "{}", ""))
     _repeat_failure("model:" + feature)
+    before = sorted(str(p) for p in home.rglob("*") if "failures.json" not in p.name and p.name != "assistant-audit.log")
     drive(mod, home)
     assert commands == []
+    # A paused job leaves nothing behind: no run folder, no prompt file.
+    after = sorted(str(p) for p in home.rglob("*") if "failures.json" not in p.name and p.name != "assistant-audit.log")
+    assert after == before
 
 
 def test_the_slack_tab_judge_is_never_held_back(home, monkeypatch):
@@ -3352,3 +3356,12 @@ def test_a_failed_background_call_is_counted_with_what_the_model_said(home, monk
     (row,) = failwatch.repeated(min_count=1)
     assert row["component"] == "model:triage" and "Error: model foo-9 not found" in row["sample"]
     assert row["sample"].startswith("claude ")
+
+
+def test_a_paused_lesson_extractor_logs_one_skipped_line_per_run(home, monkeypatch):
+    _pick(home, "claude")
+    mod = _load(BIN / "lesson-extractor.py", "paused_lessons_once")
+    _repeat_failure("model:lessons")
+    assert [mod._claude_oneshot(f"candidate {i}") for i in range(3)] == ["", "", ""]
+    log = (home / ".assistant" / "assistant-audit.log").read_text().splitlines()
+    assert len([line for line in log if "model call skipped" in line]) == 1

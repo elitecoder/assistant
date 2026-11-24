@@ -784,6 +784,9 @@ def draft_lesson(candidate: dict[str, Any],
     return {"trigger": trigger, "rule": rule, "target": target, "scope": scope}
 
 
+_PAUSE_LOGGED = False
+
+
 def _claude_oneshot(prompt: str) -> str:
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
@@ -791,7 +794,10 @@ def _claude_oneshot(prompt: str) -> str:
     import metering  # noqa: PLC0415
     paused = metering.paused_note("lessons")
     if paused:
-        audit(f"model call skipped: {paused}")
+        global _PAUSE_LOGGED
+        if not _PAUSE_LOGGED:  # one line per run, not one per candidate
+            audit(f"model call skipped: {paused}")
+            _PAUSE_LOGGED = True
         return ""
     run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
     run_dir.mkdir(parents=True, exist_ok=True)

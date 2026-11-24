@@ -423,33 +423,87 @@ FAILURE_NAMES = {
     "model:work_queue": "The Work queue refresh",
     "model:slack_focus": "The Slack tab refresh",
 }
+MERGE_CHECK = "ready-for-merge:"
+FAILURE_LINES_SHOWN = 3
 
 
 def _failure_time(ts: float, now: float) -> str:
-    """Local time, with the weekday when it isn't today."""
-    when = datetime.fromtimestamp(ts)
-    return when.strftime("%H:%M" if when.date() == datetime.fromtimestamp(now).date() else "%A %H:%M")
+    """Local time: just the clock today, the weekday within the week, and the
+    date as well once it is more than 6 days away."""
+    when, today = datetime.fromtimestamp(ts), datetime.fromtimestamp(now)
+    days = abs((when.date() - today.date()).days)
+    if days == 0:
+        return when.strftime("%H:%M")
+    return when.strftime("%A %H:%M" if days <= 6 else "%A %-d %B %H:%M")
 
 
-def render_failure_alerts(now: float | None = None) -> str:
+def _clean_error(sample: str) -> str:
+    """The saved error, shortened for a person: JSON blocks removed, at most 100 characters."""
+    text = str(sample)
+    while True:
+        shorter = re.sub(r"\{[^{}]*\}", "", text)
+        if shorter == text:
+            break
+        text = shorter
+    text = " ".join(text.split()).rstrip(" .:")
+    if len(text) > 100:
+        text = text[:99].rstrip() + "…"
+    return text or "no details were given"
+
+
+def _merge_check_line(rows: list[dict], world: dict) -> str:
+    """One line for every session flagged ready to merge with no pull request."""
+    titles = {}
+    for w in world.get("workspaces", []) or []:
+        ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
+        if ref and w.get("title"):
+            titles[ref] = " ".join(str(w["title"]).split())[:60]
+    refs = [r["component"][len(MERGE_CHECK):] for r in rows]
+    names = [titles[ref] for ref in refs if ref in titles]
+    n = len(rows)
+    sessions = f"{n} session{'s' if n != 1 else ''}"
+    if names and len(names) <= 3:
+        sessions += f" ({', '.join(names)})"
+    total = sum(int(r["streak"]) for r in rows)
+    lack = "it has no" if n == 1 else "neither has a" if n == 2 else "none of them has a"
+    return (f"Assistant has flagged {sessions} as ready to merge {total} times, but {lack} pull request linked. "
+            f"Open {'the session' if n == 1 else 'each session'} and link its pull request, "
+            "or tell it the work isn't ready.")
+
+
+def render_failure_alerts(now: float | None = None, world: dict | None = None) -> str:
     """Top-of-page alerts for a failure that keeps happening the same way:
-    what failed, how many times, since when, the error, and whether Assistant
-    has paused retries. Up to five, most frequent first; empty when none."""
+    what failed, how many times in a row, since when, the error, and what
+    happens next. Merge checks with no pull request share one line. Shows at
+    most three lines, then how many more; empty when nothing is repeating."""
     now = datetime.now().timestamp() if now is None else now
-    out = []
-    for row in failwatch.repeated(now=now):
+    merge, items = [], []
+    for row in failwatch.repeated(now=now, limit=200):
         component = str(row.get("component", ""))
-        name = FAILURE_NAMES.get(component)
-        if name is None and component.startswith("ready-for-merge:"):
-            name = f"The merge check for {component.split(':', 1)[1]}"
-        text = (f"{name or component} has failed {int(row['count'])} times since "
-                f"{_failure_time(float(row['first_ts']), now)} with the same error: {str(row.get('sample', '')).rstrip('.')}.")
-        until = float(row.get("backoff_until") or 0)
-        if until > now:
-            text += f" Assistant has paused retries until {_failure_time(until, now)}."
-        out.append('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
-                   f'<span class="pulse-dot"></span><span class="pulse-text">{e(text)}</span></div>')
-    return "".join(out)
+        if component.startswith(MERGE_CHECK):
+            merge.append(row)
+            continue
+        name = FAILURE_NAMES.get(component) or f"A background job ({component.rsplit(':', 1)[-1]})"
+        text = (f"{name} has failed {int(row['streak'])} times in a row since "
+                f"{_failure_time(float(row.get('streak_first_ts') or row['first_ts']), now)}. "
+                f"The error was: {_clean_error(row.get('sample', ''))}.")
+        until = failwatch.pause_in_force(row, now)
+        if until and component == "self-update":
+            text += (f" It tries again by itself at {_failure_time(until, now)}. "
+                     f"To try now, run `{REPO}/bin/self_update.py --force` in a terminal.")
+        elif until:
+            text += (f" It tries again at {_failure_time(until, now)}. "
+                     "You don't need to do anything unless it keeps failing.")
+        items.append((int(row["streak"]), text))
+    if merge:
+        items.append((sum(int(r["streak"]) for r in merge), _merge_check_line(merge, world or {})))
+    items.sort(key=lambda item: -item[0])
+    lines = [text for _, text in items[:FAILURE_LINES_SHOWN]]
+    if len(items) > FAILURE_LINES_SHOWN:
+        lines.append(f"and {len(items) - FAILURE_LINES_SHOWN} more failures that keep repeating.")
+    return "".join('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
+                   f'<span class="pulse-dot"></span><span class="pulse-text">{e(text)}</span></div>'
+                   for text in lines)
 
 
 def render_metering_stats():
@@ -2757,7 +2811,7 @@ def render():
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
     mode_html = render_mode_switch(pro, mode.config_error()) + render_observer_setting()
-    pulse_alert_html = render_pulse_alert() + render_restart_alert() + render_failure_alerts()
+    pulse_alert_html = render_pulse_alert() + render_restart_alert() + render_failure_alerts(world=world)
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()

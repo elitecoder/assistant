@@ -72,6 +72,9 @@ SELF_PLIST_LABEL = "com.assistant.assistant-pulse"
 DEFAULT_INTERVAL_SEC = 3600
 
 WATCH = "self-update"  # the name failwatch counts this job's failures under
+# The hourly throttle already limits the load, so a pause here never needs the
+# full day: the cause (a branch, a network) is often fixed within hours.
+WATCH_CAP_SEC = 4 * 3600
 
 # A working tree that stays dirty across this many seconds is auto-stashed so
 # self-update can proceed. Measured from the FIRST throttle-passing pulse that
@@ -441,6 +444,12 @@ def _failwatch():
         return None
 
 
+def _context(remote: str | None, branch: str | None) -> str:
+    """What an update is trying to reach, so a pause for one branch doesn't
+    hold once the branch or remote has changed."""
+    return f"{remote}/{branch}" if remote and branch else "none"
+
+
 def maybe_update(repo: Path, **kwargs) -> dict | None:
     """Throttled self-update (see _maybe_update), plus failure counting: every
     attempt that failed is counted under one name so a repeat shows once with
@@ -454,7 +463,8 @@ def maybe_update(repo: Path, **kwargs) -> dict | None:
         return result
     problem = result.get("error") or (result.get("syntax_error") if result.get("skipped_reason") == "syntax-fail" else None)
     if problem:
-        watch.record_failure(WATCH, problem, now=kwargs.get("now"))
+        watch.record_failure(WATCH, problem, now=kwargs.get("now"), cap=WATCH_CAP_SEC,
+                             context=_context(result.get("remote"), result.get("branch")))
     else:
         watch.record_ok(WATCH, now=kwargs.get("now"))
     return result
@@ -495,6 +505,11 @@ def _maybe_update(
     # to 24). --force is a person asking, so it always tries.
     watch = None if force else _failwatch()
     paused_until = watch.backed_off(WATCH, now=now) if watch else None
+    if paused_until:
+        # The pause was earned on one remote and branch. If the checkout now
+        # points somewhere else (the branch was fixed), try straight away.
+        target = resolve_remote_branch(repo)
+        paused_until = watch.backed_off(WATCH, now=now, context=_context(*(target or (None, None))))
     if paused_until:
         _log("paused after repeating the same failure; next try after "
              f"{time.strftime('%H:%M', time.localtime(paused_until))}")
