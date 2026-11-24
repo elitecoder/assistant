@@ -148,6 +148,7 @@ walkthrough, see [ONBOARDING.md](ONBOARDING.md).
 | Connect GitHub, Gmail, Google Calendar, Outlook, and Slack | [docs/connectors.md](docs/connectors.md) |
 | Clear one list from all your sources (Pro mode) | [docs/work-queue.md](docs/work-queue.md) |
 | Using the dashboard tabs and decision cards | [docs/dashboard.md](docs/dashboard.md) |
+| What Assistant records about its own work, locally, and how to turn it off | [docs/telemetry.md](docs/telemetry.md) |
 | Noise budget, wake hour, planner, Strategist, and model settings | [docs/configuration.md](docs/configuration.md) |
 | Lanes, ranking, outbound gates, design decisions, and code map | [docs/design.md](docs/design.md) |
 | Slack comms design | [docs/assistant-comms-onboarding.md](docs/assistant-comms-onboarding.md) |

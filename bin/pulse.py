@@ -1270,6 +1270,19 @@ def _write_private_text(path: Path, text: str) -> None:
     path.chmod(0o600)
 
 
+def run_telemetry_upkeep(now: float | None = None) -> None:
+    """Hourly upkeep of the local telemetry store (spool drain, retention, size limit). The module is imported
+    here, inside the try, and is not one of run-pulse.py's start-up files: a missing or broken telemetry module
+    skips this step and nothing else. Anything it reports as a problem is logged as one plain line."""
+    try:
+        from assistant import telemetry  # noqa: PLC0415
+        result = telemetry.upkeep(now)
+        if result and result["notes"]:
+            log.warning("%s", "; ".join(result["notes"]))
+    except Exception as e:  # noqa: BLE001 — upkeep is optional
+        log.warning("telemetry upkeep failed (ignored): %s", e)
+
+
 def prune_observer_runs(current_pulse_idx: int, now: float | None = None) -> int:
     """Remove expired numeric pulse archives while preserving active runs."""
     if not OBSERVER_RUNS_DIR.is_dir():
@@ -2717,6 +2730,9 @@ def main() -> int:
     # 2. Purge stale awaiting cards.
     if not dry_run:
         purge_stale_awaiting()
+
+    if not dry_run:
+        run_telemetry_upkeep()
 
     # 3. Pick batch.
     batch = pick_ws_batch()
