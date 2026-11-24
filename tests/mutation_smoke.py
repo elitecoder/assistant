@@ -1416,10 +1416,12 @@ CHECKS = (
         """            if not batch:
                 with saves_lock:
                     batch = dict(pending_saves)
-                    pending_saves.clear()""",
+                    pending_saves.clear()
+                    running_saves.update(batch)""",
         """            with saves_lock:
                 batch = batch or dict(pending_saves)
-                pending_saves.clear()""",
+                pending_saves.clear()
+                running_saves.update(batch)""",
         'tests/test_work_queue_server.py::test_a_save_sent_during_a_failing_run_is_still_tried',
     ),
     (
