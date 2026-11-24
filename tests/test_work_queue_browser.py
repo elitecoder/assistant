@@ -280,6 +280,122 @@ def test_two_rows_held_for_different_reasons_each_say_theirs_and_the_bar_gives_e
         browser.close()
 
 
+SAVE_KEY = "C0123456789:1700000000.000100"
+
+
+def slack_page(wq) -> None:
+    """One Slack save that is marked done, with a reopen approved."""
+    write_page({"built": "now", "slack": [{**slack_row(SAVE_KEY, "last", 1), "cid": "C0123456789", "ts": "1700000000.000100"}],
+                "status": [{"name": "Slack", "state": "ok", "detail": "read 1 item"}]})
+    decided = "2026-11-02T10:00:00+00:00"
+    config.write_json(wq.data / "decisions.json", {SAVE_KEY: {"decision": "undo", "at": decided}})
+    config.write_json(wq.data / "applied.json", {SAVE_KEY: {"status": "done", "verified": False, "at": decided,
+                                                           "error": "Slack accepted the change but the save still shows the old state"}})
+
+
+def test_a_reopen_the_record_refuses_leaves_a_slack_save_done_and_says_why_on_its_row(site, wq):
+    slack_page(wq)
+    server.effects.begin("slack.save.uncomplete", {"channel": "C0123456789", "ts": "1700000000.000100",
+                                                   "row": server.pointers.row_pointer(SAVE_KEY)},
+                         {"kind": "decision", "ref": server.pointers.row_pointer(SAVE_KEY), "at": "2026-11-02T10:00:00+00:00"})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#ap-count", "0 approved, 1 to reopen")
+        assert status_of(tab, SAVE_KEY) == "Marked done in Slack, not verified", "the mark's own note isn't a refused undo"
+        tab.locator("#ap-apply").click()
+        wait_text(tab, f'.ap-row[data-key="{SAVE_KEY}"] .ap-status',
+                  f"Marked done in Slack, not verified · Undo not done: {server.IN_PROGRESS}")
+        wait_text(tab, "#ap-msg", f"Last run: 0 of 1 verified · {server.IN_PROGRESS}")
+        assert "failed" not in tab.locator(f'.ap-row[data-key="{SAVE_KEY}"]').get_attribute("class")
+        cov.snap()
+        browser.close()
+
+
+def hold_saves_for_page(count: int, reason: str = "ratelimited") -> None:
+    for n in range(count):
+        for _ in range(4):
+            server.held_saves.hold({f"C0123456789:170000000{n}.000100": (
+                {"cid": "C0123456789", "ts": f"170000000{n}.000100", "at": f"2026-11-02T10:4{n}:00+00:00",
+                 "link": f"https://acme.slack.com/archives/C0123456789/p170000000{n}000100"}, reason)}, 1.0)
+
+
+def test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_with_links_that_survives_a_reload_and_clears(site, wq):
+    write_page({"built": "now", "slack": [], "status": [{"name": "Slack", "state": "ok", "detail": "read 0 items"}]})
+    line = ("5 saves you sent to an agent couldn't be marked done in Slack: Slack asked us to slow down. "
+            "Mark them done in Slack yourself. Open in Slack (sent Nov 2, 7:40 PM) · Open in Slack (sent Nov 2, 7:41 PM) · "
+            "Open in Slack (sent Nov 2, 7:42 PM) and 2 more.")
+    hold_saves_for_page(5)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(timezone_id="Asia/Tokyo", locale="en-US", viewport={"width": 900, "height": 300}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#held-msg", line)
+        assert tab.locator("#held-msg").is_visible()
+        links = tab.locator("#held-msg a")
+        assert [links.nth(i).get_attribute("href") for i in range(3)] == [
+            f"https://acme.slack.com/archives/C0123456789/p170000000{n}000100" for n in range(3)]
+        assert [links.nth(i).get_attribute("aria-label") for i in range(3)] == [
+            f"Open save {n + 1} of 3 in Slack, sent Nov 2, 7:4{n} PM" for n in range(3)], "each link has its own name"
+        assert links.nth(0).get_attribute("rel") == "noopener" and links.nth(0).get_attribute("target") == "_blank"
+        if os.environ.get("WQ_SHOT"):
+            tab.screenshot(path=os.environ["WQ_SHOT"])
+        tab.reload()
+        wait_text(tab, "#held-msg", line)
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", line)
+        server.record({f"C0123456789:170000000{n}.000100": {"status": "done"} for n in range(3)})
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", "2 saves you sent to an agent couldn't be marked done in Slack: Slack asked us to "
+                                    "slow down. Mark them done in Slack yourself. Open in Slack (sent Nov 2, 7:43 PM) · "
+                                    "Open in Slack (sent Nov 2, 7:44 PM).")
+        server.record({"C0123456789:1700000003.000100": {"status": "done"}, "C0123456789:1700000004.000100": {"status": "gone"}})
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", "")
+        cov.snap()
+        browser.close()
+
+
+def test_a_link_whose_send_time_cant_be_read_is_still_offered_without_it(site, wq):
+    write_page({"built": "now", "slack": [], "status": [{"name": "Slack", "state": "ok", "detail": "read 0 items"}]})
+    server.held_saves.hold({"C0123456789:1700000000.000100": (
+        {"cid": "C0123456789", "ts": "1700000000.000100", "at": "yesterday",
+         "link": "https://acme.slack.com/archives/C0123456789/p1700000000000100"}, "x")}, 1.0)
+    for _ in range(3):
+        server.held_saves.hold({"C0123456789:1700000000.000100": (
+            {"cid": "C0123456789", "ts": "1700000000.000100", "at": "yesterday",
+             "link": "https://acme.slack.com/archives/C0123456789/p1700000000000100"}, "x")}, 1.0)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#held-msg", "1 save you sent to an agent couldn't be marked done in Slack: Slack refused the "
+                                    "change. Mark it done in Slack yourself. Open in Slack.")
+        assert tab.locator("#held-msg a").get_attribute("aria-label") == "Open save 1 of 1 in Slack"
+        cov.snap()
+        browser.close()
+
+
+def test_a_save_that_needs_a_sign_in_is_on_the_page_before_its_last_try(site, wq):
+    write_page({"built": "now", "slack": [], "status": [{"name": "Slack", "state": "ok", "detail": "read 0 items"}]})
+    server.held_saves.hold({"C0123456789:1700000000.000100": (
+        {"cid": "C0123456789", "ts": "1700000000.000100", "at": "t", "link": ""}, "Slack sign-in needed: run it")}, 1.0)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#held-msg", "1 save you sent to an agent couldn't be marked done in Slack: Slack needs you to "
+                                    "sign in again. Sign in to Slack again, then mark it done in Slack yourself. "
+                                    "They are still open in your Slack Later list.")
+        cov.snap()
+        browser.close()
+
+
 def test_an_undo_gmail_refuses_stays_in_trash_and_the_next_apply_puts_it_back(site, wq):
     held_page(wq, ["g1"])
     fake_tool(wq.bin, "gog", [("messages modify", {"exit": 1, "stderr": "quota exceeded"})])

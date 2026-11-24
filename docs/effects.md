@@ -6,10 +6,11 @@ writes every effect it makes to one record, `~/.assistant/effects/effects.jsonl`
 before it acts and again when it finishes.
 
 Today the Work queue's Gmail buttons (**Archive**, **Mark read**, and moving a
-conversation back to your inbox), **Apply approvals** for Gmail Trash, and
-unsubscribes are recorded, and so is everything Assistant's own code types into
-an agent session. Three ways of typing that run outside that code aren't; they
-are listed under "Not recorded yet". Slack saves follow.
+conversation back to your inbox), **Apply approvals** for Gmail Trash,
+unsubscribes, the Slack Later saves the Work queue marks completed or reopens,
+and everything Assistant's own code types into an agent session are recorded.
+Three ways of typing that run outside that code aren't; they are listed under
+"Not recorded yet".
 
 ## What it promises
 
@@ -86,9 +87,50 @@ outcome is unknown, run `grep '"outcome":"unknown"' ~/.assistant/effects/effects
 | Gmail Trash | Put back | An approval on the page |
 | Put back from Trash | Trash | An approval on the page |
 | Unsubscribe | Can't be undone | An approval on the page |
-| Mark a Slack save done (not recorded yet) | Reopen | A button press or an approval |
-| Reopen a Slack save (not recorded yet) | Mark done | An approval |
+| Mark a Slack save done | Reopen | A button press or an approval |
+| Reopen a Slack save | Mark done | An approval |
 | Type into an agent session | Can't be undone | A button press, a flag on the task, or a rule you turned on |
+
+### Slack saves
+
+A save is marked through your Slack browser session, one run for a whole batch,
+and each save in the batch has its own lines. A save is recorded by its
+channel id, its message time and the short code of its Work queue row, never
+its text or link. When the record can't write a save's first line, or turns it
+down, that save is left out of the run and the others still go through.
+
+| What happened | Outcome | `verified` |
+|---|---|---|
+| Slack accepted the change and the Later list shows it | `done` | `true` |
+| Slack accepted it but the list still shows the old state | `done` | `false` |
+| Slack no longer has the save | `failed` | empty |
+| Slack answered with another error | `failed` | empty |
+| Slack isn't linked, or its sign-in is needed | `failed` | empty |
+| The browser run stopped, timed out, couldn't read your Later list back, or answered oddly after it started, or didn't mention the save | `unknown` | empty |
+| An unexpected error before the browser started | `failed` | empty |
+| An unexpected error after it started | `unknown` | empty |
+
+`verified` is `true` when Assistant read your Slack Later list again after the
+change and the save was in the state asked for: off the open list after marking
+it done, back on it after reopening.
+
+An odd-looking channel id or message time never stops a save being marked. The
+record writes a short code made from it instead.
+
+The worker that marks saves after a send and **Apply approvals** take turns
+with the browser session, so one never marks a save while the other does. A
+line with no result left by a run that died turns both away for ten minutes.
+When a mark is held back after a send (the record turned it down, Slack answered
+with an error, the browser run failed, or Slack needed you to sign in),
+Assistant tries it again by itself three times over about twenty minutes, after
+1, 5 and 15 minutes. A save you approved under Ready to close is also tried by
+the next **Apply approvals**. If it still can't be marked, the Work queue page
+says so in one line at the top, in plain words, with a link to each save, and you
+mark it done in Slack yourself. When Slack needs you to sign in, the line shows
+at once, because trying again can't fix that, and the tries go on. The line goes
+away when Slack no longer has the save (a refresh sees that), or when a retry
+marks it.
+A save Slack no longer has isn't tried again.
 
 When the record has the action an undo reverses, the undo names it and is
 refused unless that action succeeded, is on the same conversation and hasn't
