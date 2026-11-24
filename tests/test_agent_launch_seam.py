@@ -3365,3 +3365,35 @@ def test_a_paused_lesson_extractor_logs_one_skipped_line_per_run(home, monkeypat
     assert [mod._claude_oneshot(f"candidate {i}") for i in range(3)] == ["", "", ""]
     log = (home / ".assistant" / "assistant-audit.log").read_text().splitlines()
     assert len([line for line in log if "model call skipped" in line]) == 1
+
+
+@pytest.mark.parametrize("label,script,run_attr,drive,feature",
+                         [s for s in HEADLESS_SITES if s[4] in ("triage", "narrator", "strategist", "lessons")],
+                         ids=["pulse triage", "brief narrator", "strategist", "lesson extractor"])
+def test_a_background_site_tries_again_at_once_when_its_model_changed(
+        home, monkeypatch, label, script, run_attr, drive, feature):
+    """The model id was wrong, three failures paused the job, and the person fixed the id."""
+    import metering
+    _pick(home, "claude")
+    mod = _load(BIN / script, f"model_changed_{script.replace('-', '_')}")
+    if hasattr(mod, "self_update_pulse"):
+        mod.self_update_pulse = lambda pulse_idx: None
+    commands, asked = [], []
+    monkeypatch.setattr(mod, run_attr, lambda cmd, *a, **k: commands.append(cmd) or (0, "{}", ""))
+    real = metering.paused_note
+    monkeypatch.setattr(metering, "paused_note", lambda *a: asked.append(a) or real(*a))
+    from assistant import failwatch
+    for _ in range(3):
+        failwatch.record_failure("model:" + feature, "claude old-model call failed: exit code 1",
+                                 context="claude/old-model")
+    drive(mod, home)
+    assert asked and asked[0][1] and asked[0][2], "the site names the provider and model it is about to use"
+    assert asked[0][1:] != ("claude", "old-model")
+    assert commands, "a pause set for another model doesn't hold"
+    drive(mod, home)  # and the same model, failing again, would be paused again
+    for _ in range(3):
+        failwatch.record_failure("model:" + feature, "claude call failed: exit code 1",
+                                 context=f"{asked[0][1]}/{asked[0][2]}")
+    before = len(commands)
+    drive(mod, home)
+    assert len(commands) == before

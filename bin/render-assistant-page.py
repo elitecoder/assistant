@@ -424,7 +424,10 @@ FAILURE_NAMES = {
     "model:slack_focus": "The Slack tab refresh",
 }
 MERGE_CHECK = "ready-for-merge:"
-FAILURE_LINES_SHOWN = 3
+FAILURE_LINES_SHOWN = 2
+# Model jobs that can't know their model before the call, so a fix to the
+# model can't lift their pause by itself.
+PAUSE_NEEDS_RESET = ("model:observer-audit",)
 
 
 def _failure_time(ts: float, now: float) -> str:
@@ -452,58 +455,83 @@ def _clean_error(sample: str) -> str:
 
 
 def _merge_check_line(rows: list[dict], world: dict) -> str:
-    """One line for every session flagged ready to merge with no pull request."""
+    """One line for every session flagged ready to merge with no pull request.
+    Sessions are named only when every one of them has a title, so the line
+    never reads as if only the named ones were affected."""
     titles = {}
     for w in world.get("workspaces", []) or []:
+        if not isinstance(w, dict):
+            continue
         ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
         if ref and w.get("title"):
             titles[ref] = " ".join(str(w["title"]).split())[:60]
     refs = [r["component"][len(MERGE_CHECK):] for r in rows]
-    names = [titles[ref] for ref in refs if ref in titles]
     n = len(rows)
     sessions = f"{n} session{'s' if n != 1 else ''}"
-    if names and len(names) <= 3:
-        sessions += f" ({', '.join(names)})"
-    total = sum(int(r["streak"]) for r in rows)
+    if n <= 3 and all(ref in titles for ref in refs):
+        sessions += f" ({', '.join(titles[ref] for ref in refs)})"
     lack = "it has no" if n == 1 else "neither has a" if n == 2 else "none of them has a"
-    return (f"Assistant has flagged {sessions} as ready to merge {total} times, but {lack} pull request linked. "
+    return (f"Assistant has flagged {sessions} as ready to merge, but {lack} pull request linked. "
             f"Open {'the session' if n == 1 else 'each session'} and link its pull request, "
             "or tell it the work isn't ready.")
 
 
+def _failure_line(row: dict, now: float) -> tuple[int, str]:
+    """(weight, html) for one repeating failure."""
+    component = str(row.get("component", ""))
+    name = FAILURE_NAMES.get(component) or f"A background job ({component.rsplit(':', 1)[-1]})"
+    streak = int(row["streak"])
+    since = _failure_time(float(row.get("streak_first_ts") or row["first_ts"]), now)
+    html = e(f"{name} has failed {streak} times in a row since {since}. "
+             f"The error was: {_clean_error(row.get('sample', ''))}.")
+    until = failwatch.pause_in_force(row, now)
+    if until and component == "self-update":
+        # sys.executable is the interpreter the services run under: it is the
+        # one rendering this page.
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(REPO / 'bin/self_update.py'))} --force"
+        html += (e(f" It tries again by itself at {_failure_time(until, now)}, or as soon as its remote "
+                   "or branch changes. To try now, run ") + f"<code>{e(command)}</code>" + e(" in a terminal."))
+    elif until:
+        html += e(f" It tries again at {_failure_time(until, now)}. "
+                  "You don't need to do anything unless it keeps failing.")
+        if component in PAUSE_NEEDS_RESET:
+            html += e(" If you've fixed the cause, delete ~/.assistant/failures.json "
+                      "and it tries again at its next run.")
+    return streak, html
+
+
 def render_failure_alerts(now: float | None = None, world: dict | None = None) -> str:
-    """Top-of-page alerts for a failure that keeps happening the same way:
-    what failed, how many times in a row, since when, the error, and what
-    happens next. Merge checks with no pull request share one line. Shows at
-    most three lines, then how many more; empty when nothing is repeating."""
-    now = datetime.now().timestamp() if now is None else now
-    merge, items = [], []
-    for row in failwatch.repeated(now=now, limit=200):
-        component = str(row.get("component", ""))
-        if component.startswith(MERGE_CHECK):
-            merge.append(row)
-            continue
-        name = FAILURE_NAMES.get(component) or f"A background job ({component.rsplit(':', 1)[-1]})"
-        text = (f"{name} has failed {int(row['streak'])} times in a row since "
-                f"{_failure_time(float(row.get('streak_first_ts') or row['first_ts']), now)}. "
-                f"The error was: {_clean_error(row.get('sample', ''))}.")
-        until = failwatch.pause_in_force(row, now)
-        if until and component == "self-update":
-            text += (f" It tries again by itself at {_failure_time(until, now)}. "
-                     f"To try now, run `{REPO}/bin/self_update.py --force` in a terminal.")
-        elif until:
-            text += (f" It tries again at {_failure_time(until, now)}. "
-                     "You don't need to do anything unless it keeps failing.")
-        items.append((int(row["streak"]), text))
-    if merge:
-        items.append((sum(int(r["streak"]) for r in merge), _merge_check_line(merge, world or {})))
-    items.sort(key=lambda item: -item[0])
-    lines = [text for _, text in items[:FAILURE_LINES_SHOWN]]
-    if len(items) > FAILURE_LINES_SHOWN:
-        lines.append(f"and {len(items) - FAILURE_LINES_SHOWN} more failures that keep repeating.")
-    return "".join('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
-                   f'<span class="pulse-dot"></span><span class="pulse-text">{e(text)}</span></div>'
-                   for text in lines)
+    """One top-of-page box for failures that keep happening the same way: what
+    failed, how many times in a row, since when, the error, and what happens
+    next. Merge checks with no pull request share one line. Two lines show; the
+    rest are in a closed <details>. Never raises: a bad row is left out, and on
+    any other error the page simply has no box."""
+    try:
+        now = datetime.now().timestamp() if now is None else now
+        merge, items = [], []
+        for row in failwatch.repeated(now=now, limit=200):
+            try:
+                if str(row.get("component", "")).startswith(MERGE_CHECK):
+                    merge.append({**row, "streak": int(row["streak"])})
+                else:
+                    items.append(_failure_line(row, now))
+            except Exception:  # noqa: BLE001 — a corrupt row is skipped, the rest still show
+                continue
+        if merge:
+            items.append((sum(r["streak"] for r in merge),
+                          e(_merge_check_line(merge, world if isinstance(world, dict) else {}))))
+        if not items:
+            return ""
+        items.sort(key=lambda item: -item[0])
+        shown = "<br>".join(html for _, html in items[:FAILURE_LINES_SHOWN])
+        rest = items[FAILURE_LINES_SHOWN:]
+        if rest:
+            shown += ("<details><summary>" + e(f"and {len(rest)} more that keep repeating") + "</summary>"
+                      + "<br>".join(html for _, html in rest) + "</details>")
+        return ('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
+                f'<span class="pulse-dot"></span><span class="pulse-text">{shown}</span></div>')
+    except Exception:  # noqa: BLE001 — the failure box must never take the page down
+        return ""
 
 
 def render_metering_stats():

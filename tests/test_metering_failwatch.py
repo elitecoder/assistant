@@ -102,3 +102,18 @@ def test_an_unloadable_counter_is_none(monkeypatch):
     monkeypatch.setitem(sys.modules, "assistant.failwatch", None)
     monkeypatch.delattr(sys.modules["assistant"], "failwatch")
     assert metering._failwatch() is None
+
+
+def test_a_failed_call_records_its_provider_and_model_as_the_context(tmp_path):
+    book(tmp_path)
+    (row,) = failwatch.history()
+    assert row["context"] == "droid/m-1"
+
+
+def test_a_pause_set_for_another_model_does_not_hold_a_job_that_names_its_model(tmp_path):
+    for _ in range(3):
+        book(tmp_path)
+    assert metering.paused_note("lessons") is not None, "a job that can't name its model stays paused"
+    assert metering.paused_note("lessons", "droid", "m-1") is not None
+    assert metering.paused_note("lessons", "droid", "m-2") is None
+    assert metering.paused_note("lessons", "claude", "m-1") is None

@@ -12,13 +12,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ### Added
 - Show a failure that keeps repeating as one red line at the top of the
   dashboard, with how many times in a row it has happened, since when, a short
-  error, and what happens next. It covers self-update, background model calls,
-  and the page refresh after an edit. Sessions flagged as ready to merge with
-  no pull request linked share one line, which clears when each has a pull
-  request, is no longer ready, or closes. A background job that fails the same
+  error, and what happens next, all in one box that shows two lines and keeps
+  the rest under "and N more that keep repeating". It covers self-update,
+  background model calls, and the page refresh after an edit. Sessions flagged
+  as ready to merge with no pull request linked share one line, which clears
+  when each has a pull request, is no longer ready, or closes. The self-update
+  line gives a command you can paste, with the Python the services use. A background job that fails the same
   way three times in a row stops calling the model, and so stops spending,
   for an hour, then two, up to 24 hours. Self-update pauses for 4 hours at
-  most, and tries again at once if its remote or branch changes. Anything you
+  most. It, and the model jobs that know their model beforehand, try again at
+  once if the remote, branch, model, or provider changes. Anything you
   ask for, such as a Work queue or Slack tab refresh, is never paused. A pause
   ends by itself, and the line clears when the next attempt works. To clear a
   pause sooner, run `self_update.py --force`, or delete

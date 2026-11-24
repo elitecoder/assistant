@@ -211,7 +211,13 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str, in
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
     import metering  # noqa: PLC0415
-    paused = metering.paused_note("strategist")
+    import llm_runner  # noqa: PLC0415
+    route = llm_runner.load_route_config(
+        llm_runner.config_path(home=_home()), "strategist")
+    provider = llm_runner.select_provider(route, [str(run_dir)])
+    model = route.model_for(DEFAULT_MODEL)
+    # A changed model or provider lifts the pause at once.
+    paused = metering.paused_note("strategist", provider, model)
     if paused:
         # Before the run folder exists, so a paused job leaves nothing behind.
         # 75 is "try again later"; the callers treat any non-zero exit as no output.
@@ -219,11 +225,6 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str, in
         return 75, "", paused, 0
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompt.md").write_text(prompt)
-    import llm_runner  # noqa: PLC0415
-    route = llm_runner.load_route_config(
-        llm_runner.config_path(home=_home()), "strategist")
-    provider = llm_runner.select_provider(route, [str(run_dir)])
-    model = route.model_for(DEFAULT_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=STRATEGIST_TIMEOUT_SEC, run=run,

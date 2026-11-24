@@ -1,6 +1,9 @@
 """The dashboard shows a failure that keeps repeating once, with a count, and says what happens next."""
 import html as html_lib
 import re
+import shlex
+import sys
+from pathlib import Path
 from datetime import datetime
 
 import pytest
@@ -23,8 +26,23 @@ def fail(n, text, component="self-update", start=NOW - 3600, step=60, **kw):
         failwatch.record_failure(component, text, now=start + i * step, **kw)
 
 
+def box(html):
+    """(shown lines, summary, hidden lines) of the one failure box, as plain text."""
+    assert html.count('data-failure="repeated"') <= 1, "one box, not a stack"
+    inner = re.search(r'<span class="pulse-text">(.*)</span></div>$', html, re.S).group(1)
+    details = re.search(r"<details><summary>(.*?)</summary>(.*)</details>", inner, re.S)
+    top = inner[:details.start()] if details else inner
+
+    def split(chunk):
+        return [html_lib.unescape(re.sub(r"<[^>]+>", "", part)) for part in chunk.split("<br>") if part]
+    return split(top), (html_lib.unescape(details.group(1)) if details else None), split(details.group(2)) if details else []
+
+
 def lines(html):
-    return [html_lib.unescape(t) for t in re.findall(r'<span class="pulse-text">(.*?)</span>', html)]
+    if not html:
+        return []
+    shown, _summary, hidden = box(html)
+    return shown + hidden
 
 
 def test_nothing_shows_below_three_in_a_row(mod):
@@ -61,14 +79,26 @@ def test_the_date_shows_once_the_run_is_more_than_six_days_old(mod):
     assert any("since Saturday 09:10." in a for a in lines(mod.render_failure_alerts(now=NOW)))
 
 
-def test_a_paused_self_update_says_when_it_retries_and_how_to_try_now(mod):
+def test_a_paused_self_update_gives_a_command_that_works_when_pasted(mod):
     fail(3, "fetch failed: fatal: couldn't find remote ref feat/x", step=1, cap=4 * HOUR)
     until = failwatch.backed_off("self-update", now=NOW)
-    (alert,) = lines(mod.render_failure_alerts(now=NOW))
+    html = mod.render_failure_alerts(now=NOW)
+    (alert,) = lines(html)
     when = datetime.fromtimestamp(until).strftime("%H:%M")
-    assert alert.endswith(f" It tries again by itself at {when}. To try now, run "
-                          f"`{mod.REPO}/bin/self_update.py --force` in a terminal.")
-    assert "paused" not in alert
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(mod.REPO / 'bin/self_update.py'))} --force"
+    assert alert.endswith(f" It tries again by itself at {when}, or as soon as its remote or branch changes. "
+                          f"To try now, run {command} in a terminal.")
+    assert f"<code>{html_lib.escape(command)}</code>" in html and "`" not in html
+
+
+def test_the_command_quotes_an_install_folder_with_a_space(mod, monkeypatch):
+    monkeypatch.setattr(mod, "REPO", Path("/Users/me/My Assistant"))
+    monkeypatch.setattr(mod.sys, "executable", "/opt/my python/bin/python3")
+    fail(3, "boom", step=1, cap=4 * HOUR)
+    html = mod.render_failure_alerts(now=NOW)
+    command = "'/opt/my python/bin/python3' '/Users/me/My Assistant/bin/self_update.py' --force"
+    assert f"<code>{html_lib.escape(command)}</code>" in html
+    assert shlex.split(command) == ["/opt/my python/bin/python3", "/Users/me/My Assistant/bin/self_update.py", "--force"]
 
 
 def test_a_paused_background_job_says_nothing_needs_doing(mod):
@@ -117,20 +147,40 @@ def test_merge_checks_share_one_line_with_session_titles_and_no_ids(mod):
     fail(15, "ready_for_merge but no pr_refs on ws", component="ready-for-merge:workspace:7", pause=False)
     fail(15, "ready_for_merge but no pr_refs on ws", component="ready-for-merge:workspace:8", pause=False)
     (alert,) = lines(mod.render_failure_alerts(now=NOW, world=world))
-    assert alert == ("Assistant has flagged 2 sessions (Fix login, Docs <pass>) as ready to merge 30 times, but neither has a "
+    assert alert == ("Assistant has flagged 2 sessions (Fix login, Docs <pass>) as ready to merge, but neither has a "
                      "pull request linked. Open each session and link its pull request, or tell it the work isn't ready.")
-    assert "workspace" not in alert and "pr_refs" not in alert
+    assert "workspace" not in alert and "pr_refs" not in alert and "times" not in alert
     assert "Docs &lt;pass&gt;" in mod.render_failure_alerts(now=NOW, world=world)
 
 
-@pytest.mark.parametrize("count,expected", [(1, "1 session (Fix login) as ready to merge 3 times, but it has no pull request"),
-                                            (4, "4 sessions as ready to merge 12 times, but none of them has a pull request")])
+def test_four_sessions_with_two_titles_give_only_the_count(mod):
+    world = {"workspaces": [{"ws_ref": "workspace:0", "title": "A"}, {"ws_ref": "workspace:1", "title": "B"}]}
+    for i in range(4):
+        fail(3, "x", component=f"ready-for-merge:workspace:{i}", pause=False)
+    (alert,) = lines(mod.render_failure_alerts(now=NOW, world=world))
+    assert alert.startswith("Assistant has flagged 4 sessions as ready to merge, but none of them has a pull request")
+    fail(3, "x", component="ready-for-merge:workspace:9", pause=False)
+    (alert,) = lines(mod.render_failure_alerts(now=NOW, world={"workspaces": [
+        {"ws_ref": f"workspace:{i}", "title": f"T{i}"} for i in (0, 1, 2, 3, 9)]}))
+    assert "5 sessions as ready" in alert and "(" not in alert, "more than three are never named"
+
+
+def test_two_sessions_one_titled_give_only_the_count(mod):
+    fail(3, "x", component="ready-for-merge:workspace:0", pause=False)
+    fail(3, "x", component="ready-for-merge:workspace:1", pause=False)
+    (alert,) = lines(mod.render_failure_alerts(now=NOW, world={"workspaces": [{"ws_ref": "workspace:0", "title": "A"}]}))
+    assert alert.startswith("Assistant has flagged 2 sessions as ready to merge, but neither")
+
+
+@pytest.mark.parametrize("count,expected", [(1, "1 session (Fix login) as ready to merge, but it has no pull request"),
+                                            (4, "4 sessions as ready to merge, but none of them has a pull request")])
 def test_merge_check_wording_for_one_and_many(mod, count, expected):
     world = {"workspaces": [{"ws_ref": "workspace:0", "title": "Fix login"}]}
     for i in range(count):
         fail(3, "x", component=f"ready-for-merge:workspace:{i}", pause=False)
     (alert,) = lines(mod.render_failure_alerts(now=NOW, world=world))
-    assert expected in alert and "Open the session and" in alert if count == 1 else "Open each session and" in alert
+    assert expected in alert
+    assert ("Open the session and" if count == 1 else "Open each session and") in alert
 
 
 def test_a_session_without_a_known_title_is_never_named_by_id(mod):
@@ -147,19 +197,39 @@ def test_many_merge_rows_do_not_push_self_update_out(mod):
     assert "Self-update has failed" in text and "10 sessions" in text
 
 
-def test_at_most_three_lines_then_how_many_more(mod):
+def test_two_lines_show_and_the_rest_sit_in_one_closed_details(mod):
     for i in range(6):
         fail(3 + i, f"error {chr(97 + i)}", component=f"model:job{i}", pause=False)
-    out = lines(mod.render_failure_alerts(now=NOW))
-    assert len(out) == 4
-    assert [int(re.search(r"failed (\d+) times", t).group(1)) for t in out[:3]] == [8, 7, 6]
-    assert out[3] == "and 3 more failures that keep repeating."
+    html = mod.render_failure_alerts(now=NOW)
+    shown, summary, hidden = box(html)
+    assert [int(re.search(r"failed (\d+) times", t).group(1)) for t in shown] == [8, 7]
+    assert summary == "and 4 more that keep repeating" and len(hidden) == 4
+    assert "<details>" in html and "<details open" not in html and "<script" not in html
+    assert html.count('role="alert"') == 1
 
 
-def test_exactly_three_lines_say_nothing_about_more(mod):
-    for i in range(3):
+def test_two_lines_say_nothing_about_more(mod):
+    for i in range(2):
         fail(3, f"error {chr(97 + i)}", component=f"model:job{i}", pause=False)
-    assert len(lines(mod.render_failure_alerts(now=NOW))) == 3
+    html = mod.render_failure_alerts(now=NOW)
+    assert len(lines(html)) == 2 and "<details" not in html
+
+
+def test_the_grouped_merge_line_counts_as_one_line(mod):
+    for i in range(5):
+        fail(3, "x", component=f"ready-for-merge:workspace:{i}", pause=False)
+    fail(3, "a", component="model:a", pause=False)
+    shown, summary, hidden = box(mod.render_failure_alerts(now=NOW))
+    assert len(shown) == 2 and summary is None and hidden == []
+
+
+def test_a_paused_audit_says_how_to_clear_it_but_a_model_job_that_knows_its_model_does_not(mod):
+    fail(3, "boom", component="model:observer-audit", step=1)
+    fail(3, "boom", component="model:strategist", step=1)
+    text = {t.split(" has failed")[0]: t for t in lines(mod.render_failure_alerts(now=NOW))}
+    reset = " If you've fixed the cause, delete ~/.assistant/failures.json and it tries again at its next run."
+    assert text["The Observer audit"].endswith(reset)
+    assert reset not in text["The strategist"]
 
 
 def test_friendly_names_and_unknown_components(mod):
@@ -186,3 +256,34 @@ def test_the_alert_is_on_the_page_at_the_top(tmp_path, monkeypatch):
     page = render_page(tmp_path, workspaces=[{"ws_ref": "workspace:1", "title": "Fix login"}])
     assert page.count("Self-update has failed 3 times") == 1
     assert page.index("Self-update has failed") < page.index('<div class="tabs">')
+
+
+def test_corrupt_rows_in_the_store_are_left_out_and_the_rest_show(mod, tmp_path):
+    import json, os
+    fail(3, "boom", component="model:triage", pause=False)
+    path = Path(os.environ["ASSISTANT_FAILURES_FILE"])
+    data = json.loads(path.read_text())
+    data["a"] = {"component": "self-update", "streak": 5, "count": 5, "last_ts": NOW, "cap": "x"}
+    data["b"] = {"component": "self-update", "streak": 4, "count": 4, "last_ts": NOW, "first_ts": None}
+    data["c"] = {"component": "ready-for-merge:workspace:1", "streak": "lots", "count": 4, "last_ts": NOW}
+    data["d"] = {"component": "model:lessons", "streak": 4, "count": 4, "last_ts": NOW, "backoff_until": "soon"}
+    path.write_text(json.dumps(data))
+    assert [t.split(" has failed")[0] for t in lines(mod.render_failure_alerts(now=NOW))] == ["Triage"]
+
+
+def test_a_bad_workspace_entry_or_world_never_raises(mod):
+    fail(3, "x", component="ready-for-merge:workspace:1", pause=False)
+    for world in ({"workspaces": ["junk", None, 5, {"ws_ref": "workspace:1", "title": "Fix login"}]},
+                  {"workspaces": "nope"}, {"workspaces": None}, "not a dict", []):
+        out = mod.render_failure_alerts(now=NOW, world=world)
+        assert "Assistant has flagged 1 session" in out
+
+
+def test_any_other_error_means_no_box_and_the_page_still_renders(mod, monkeypatch, tmp_path):
+    fail(3, "boom", component="model:triage", pause=False)
+    monkeypatch.setattr(mod.failwatch, "repeated", lambda **kw: 1 / 0)
+    assert mod.render_failure_alerts(now=NOW) == ""
+    from test_pro_mode import render_page
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".assistant").mkdir(exist_ok=True)
+    assert "Triage has failed" not in render_page(tmp_path)

@@ -792,7 +792,12 @@ def _claude_oneshot(prompt: str) -> str:
         sys.path.insert(0, str(BIN))
     import llm_runner  # noqa: PLC0415
     import metering  # noqa: PLC0415
-    paused = metering.paused_note("lessons")
+    route = llm_runner.load_route_config(
+        llm_runner.config_path(home=HOME), "lessons")
+    provider = llm_runner.select_provider(route, [str(time.time_ns())])
+    model = route.model_for(EXTRACTOR_MODEL)
+    # A changed model or provider lifts the pause at once.
+    paused = metering.paused_note("lessons", provider, model)
     if paused:
         global _PAUSE_LOGGED
         if not _PAUSE_LOGGED:  # one line per run, not one per candidate
@@ -802,10 +807,6 @@ def _claude_oneshot(prompt: str) -> str:
     run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompt.md").write_text(prompt)
-    route = llm_runner.load_route_config(
-        llm_runner.config_path(home=HOME), "lessons")
-    provider = llm_runner.select_provider(route, [str(time.time_ns())])
-    model = route.model_for(EXTRACTOR_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=120, run=_run,

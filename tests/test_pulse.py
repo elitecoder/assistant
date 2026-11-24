@@ -886,13 +886,13 @@ class HelperSubprocessWrapperTests(unittest.TestCase):
         with mock.patch.object(self.mod, "run", return_value=(1, "", "fail")):
             out = self.mod.pick_ws_batch()
         self.assertEqual(out, {"to_reclassify": [], "reuse_cached": [],
-                               "backed_off": [], "total_ws": 0, "failed": True})
+                               "backed_off": [], "total_ws": 0, "unavailable": True})
 
     def test_pick_ws_batch_returns_default_on_bad_json(self):
         with mock.patch.object(self.mod, "run",
                                return_value=(0, "not json", "")):
             out = self.mod.pick_ws_batch()
-        self.assertEqual((out["total_ws"], out["failed"]), (0, True))
+        self.assertEqual((out["total_ws"], out["unavailable"]), (0, True))
 
     def test_build_ctx_parses_json(self):
         payload = {"ws_ref": "workspace:1", "transcript_path": None,

@@ -684,7 +684,17 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
     import metering  # noqa: PLC0415
-    paused = metering.paused_note("triage")
+    import llm_runner  # noqa: PLC0415
+    route = llm_runner.load_route_config(
+        llm_runner.config_path(home=HOME), "triage")
+    requested_ids = {
+        event["id"] for event in events
+        if isinstance(event.get("id"), str) and event["id"]
+    }
+    provider = llm_runner.select_provider(route, sorted(requested_ids))
+    model = route.model_for(TRIAGE_MODEL)
+    # A changed model or provider lifts the pause at once.
+    paused = metering.paused_note("triage", provider, model)
     if paused:
         # Before the run folder exists, so a paused job leaves nothing behind.
         log.info("triage batch skipped: %s", paused)
@@ -694,10 +704,6 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     run_dir.mkdir(parents=True, exist_ok=True)
     lanes_path = run_dir / "lanes.jsonl"
     events_json = json.dumps(events, indent=2)
-    requested_ids = {
-        event["id"] for event in events
-        if isinstance(event.get("id"), str) and event["id"]
-    }
     prompt = (
         TRIAGE_BATCH_PROMPT.read_text()
         + "\n\n---\n\n## RUNTIME CONTEXT\n\n"
@@ -714,11 +720,6 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
     (run_dir / "prompt.md").write_text(prompt)
     (run_dir / "events.json").write_text(events_json)
 
-    import llm_runner  # noqa: PLC0415
-    route = llm_runner.load_route_config(
-        llm_runner.config_path(home=HOME), "triage")
-    provider = llm_runner.select_provider(route, sorted(requested_ids))
-    model = route.model_for(TRIAGE_MODEL)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=TRIAGE_TIMEOUT_SEC, run=run,
@@ -1196,16 +1197,20 @@ def observer_enabled() -> bool:
 
 
 def pick_ws_batch() -> dict:
-    """Returns dict with to_reclassify, reuse_cached, backed_off, total_ws."""
+    """Returns dict with to_reclassify, reuse_cached, backed_off, total_ws. When
+    the step fails the dict also carries unavailable=True: its total_ws of 0 then
+    means "couldn't look", not "no workspaces"."""
     rc, out, err = run([sys.executable, str(BIN / "pick-ws-batch.py")])
     if rc != 0:
         log.error("pick-ws-batch rc=%d: %s", rc, err.strip())
-        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0, "failed": True}
+        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0,
+                "unavailable": True}
     try:
         return json.loads(out)
     except Exception as e:
         log.error("pick-ws-batch bad json: %s", e)
-        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0, "failed": True}
+        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0,
+                "unavailable": True}
 
 
 def build_ctx(ws: dict) -> dict | None:
@@ -2635,7 +2640,7 @@ def main() -> int:
     batch = pick_ws_batch()
     to_reclassify = batch.get("to_reclassify", []) if observer_enabled() else []
     backed_off = batch.get("backed_off", [])
-    if not dry_run and not batch.get("failed"):
+    if not dry_run and not batch.get("unavailable"):
         # A merge check for a session that has closed has nothing left to fix.
         open_refs = ({w["ref"] for w in batch.get("to_reclassify", [])} | set(batch.get("reuse_cached", []))
                      | {w["ref"] for w in backed_off})

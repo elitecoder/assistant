@@ -343,16 +343,24 @@ def test_record_ok_except_is_quiet_with_no_file_or_on_an_error(store, monkeypatc
 
 # what counts as the same failure, and what a sample may hold
 
-def test_http_status_and_error_type_keep_a_401_a_429_and_a_529_apart():
+def test_status_401_403_404_429_stay_exact_and_other_5xx_fold_together():
     def fp(text):
         return failwatch.fingerprint("m", text)
-    a = fp('Error code: 401 {"type": "error", "error": {"type": "authentication_error"}}')
-    b = fp('Error code: 429 {"type": "error", "error": {"type": "rate_limit_error"}}')
-    c = fp('Error code: 529 {"type": "error", "error": {"type": "overloaded_error"}}')
-    d = fp('Error code: 529 {"type": "error", "error": {"type": "overloaded_error"}}')
-    assert len({a, b, c}) == 3 and c == d
-    assert fp("HTTP 500 from host") != fp("HTTP 502 from host")
+    kept = [fp(f"HTTP {code} from host") for code in (401, 403, 404, 429)]
+    assert len(set(kept)) == 4
+    assert len({fp(f"HTTP {code} from host") for code in (500, 502, 503, 529)}) == 1
+    assert fp("Error code: 529 overloaded") == fp("Error code: 500 overloaded")
+    assert fp("HTTP 429 from host") != fp("HTTP 503 from host")
+    assert fp("HTTP 401 from host") != fp("HTTP 503 from host")
     assert fp("failed at line 404 of the file") == fp("failed at line 7 of the file")
+    assert fp("failed with code 400") == fp("failed with code 418")
+
+
+def test_an_outage_that_alternates_5xx_codes_is_one_failure_that_pauses(store):
+    for i, code in enumerate((500, 502, 503, 529)):
+        failwatch.record_failure("model:x", f"Error code: {code} upstream down request_id req_0{i}AbC", now=NOW + i)
+    (row,) = failwatch.repeated(now=NOW + 10)
+    assert row["streak"] == 4 and failwatch.backed_off("model:x", now=NOW + 10)
 
 
 def test_the_error_type_alone_tells_two_errors_with_one_status_apart():
@@ -378,3 +386,31 @@ def test_more_secret_shapes_never_reach_the_sample(store):
         assert leaked not in sample
     assert "https://<redacted>@example.com/x" in sample and "risk-averse" in sample
     assert "bob" not in sample
+
+
+def test_a_row_stamped_while_the_clock_was_wrong_is_not_listed_and_goes_first(store):
+    import time as _t
+    fail(3, "boom", component="old", start=_t.time() - 60, step=1)
+    data = json.loads(store.read_text())
+    (row,) = data.values()
+    row["last_ts"] = _t.time() + 365 * 86400
+    store.write_text(json.dumps(data))
+    assert failwatch.repeated() == []
+    data["x"] = {"component": "ghost", "count": 9, "streak": 9, "last_ts": _t.time() + 365 * 86400}
+    for i in range(205):
+        data[f"c{i}"] = {"component": f"c{i}", "streak": 1, "count": 1, "last_ts": _t.time() - 1000 + i}
+    store.write_text(json.dumps(data))
+    failwatch.record_failure("fresh", "boom")
+    kept = json.loads(store.read_text())
+    assert len(kept) == 200 and "x" not in kept and "fresh: boom" in kept
+    assert not any(r["component"] == "old" for r in kept.values())
+
+
+def test_one_corrupt_row_does_not_hide_the_others(store):
+    fail(3, "boom", component="good")
+    data = json.loads(store.read_text())
+    data["bad1"] = {"component": "bad1", "streak": 5, "count": 5, "last_ts": NOW, "cap": "x"}
+    data["bad2"] = {"component": "bad2", "streak": "many", "count": 5, "last_ts": NOW}
+    data["bad3"] = {"component": "bad3", "streak": 4, "count": 4, "last_ts": None, "backoff_until": "soon"}
+    store.write_text(json.dumps(data))
+    assert [r["component"] for r in failwatch.repeated(now=NOW + 200)] == ["good"]

@@ -90,39 +90,44 @@ merges, closes, or completes the work those alerts represent.
 
 ## Repeated failures
 
-When the same failure happens three times in a row, a red line shows at the
-top of the page, once, with the count since it began. For example:
-"Self-update has failed 14 times in a row since Monday 09:10. The error was:
-fetch failed: fatal: couldn't find remote ref feat/x. It tries again by itself
-at 15:10. To try now, run `<install path>/bin/self_update.py --force` in a
-terminal." The error is shortened to 100 characters. The page shows three
-lines at most, then how many more. Once the run is more than six days old the
-line gives the date as well as the weekday. The line covers self-update,
-background model calls, and the page refresh after an edit. Two failures that
-differ only in a number, an id, or a path count as the same one, but a 401, a
-429, and a 529 stay apart.
+When the same failure happens three times in a row, it shows in one red box at
+the top of the page, with the count since it began. The box shows two lines;
+any others are inside "and N more that keep repeating", which opens when you
+click it. For example: "Self-update has failed 14 times in a row since Monday
+09:10. The error was: fetch failed: fatal: couldn't find remote ref feat/x. It
+tries again by itself at 15:10, or as soon as its remote or branch changes. To
+try now, run `'/path/to/python' '/path/to/assistant/bin/self_update.py' --force`
+in a terminal." The command names the Python the services use and quotes both
+paths, so you can paste it as it is. The error is shortened to 100 characters.
+Once the run is more than six days old the line gives the date as well as the
+weekday. The lines cover self-update, background model calls, and the page
+refresh after an edit. Two failures that differ only in a number, an id, or a
+path count as the same one. A 401, 403, 404, or 429 stays apart from other
+errors, but 500, 502, 503, and 529 count as one outage.
 
 Sessions flagged as ready to merge with no pull request linked share one line,
 for example: "Assistant has flagged 2 sessions (Fix login, Docs) as ready to
-merge 30 times, but neither has a pull request linked. Open each session and
-link its pull request, or tell it the work isn't ready." The line goes away
-when each session has a pull request linked, is no longer ready to merge, or
-closes.
+merge, but neither has a pull request linked. Open each session and link its
+pull request, or tell it the work isn't ready." It names the sessions only when
+every one has a title and there are three or fewer. The line goes away when
+each session has a pull request linked, is no longer ready to merge, or closes.
 
 A background job that keeps failing the same way stops calling the model, and
 so stops spending, until its pause ends: an hour after the third failure, then
 two, four, and so on up to 24 hours. Self-update, the lesson, strategist,
-morning brief, Observer audit, and triage model calls work this way. Self-update
-never waits more than 4 hours, and it tries again at once if its remote or
-branch changes. Requests you make, such as a Work queue or Slack tab refresh,
-are never paused. A pause ends by itself, and the line clears when the next
-attempt works. A paused job makes no attempts, so a pause ends only when its
-time is up. To clear a pause sooner, run `self_update.py --force` for
-self-update, or delete `~/.assistant/failures.json`, which forgets every count.
-The line says "tries again" only while a pause is on.
+morning brief, Observer audit, and triage model calls work this way.
+Self-update never waits more than 4 hours. Requests you make, such as a Work
+queue or Slack tab refresh, are never paused. A pause ends by itself, and the
+line clears when the next attempt works. A paused job makes no attempts, so a
+pause ends when its time is up, or earlier when what it was failing on changes:
+self-update tries again at once if its remote or branch changes, and the lesson,
+strategist, morning brief, and triage jobs do the same if their model or
+provider changes. The Observer audit can't know its model beforehand, so its
+line says to delete `~/.assistant/failures.json` once you've fixed the cause.
+Deleting that file forgets every count and clears every pause.
 
-If the page itself can't be rebuilt, the page can't show this line. It
-appears once a rebuild works.
+If the page itself can't be rebuilt, the page can't show this box. It appears
+once a rebuild works.
 
 The counts live in `~/.assistant/failures.json`. It keeps the 200 most recent
 failures and the first 200 characters of each error, with tokens, keys, and

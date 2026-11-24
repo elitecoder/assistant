@@ -48,7 +48,10 @@ _QUOTED = re.compile(r"""(?<!\w)'[^']*'(?!\w)|"[^"]*"|`[^`]*`""")
 # 529 from a 429, so it is kept as a bare word first.
 _ERROR_TYPE = re.compile(r'"type"\s*:\s*"(\w*error)"', re.IGNORECASE)
 # A 3-digit HTTP status after one of these words is kept (as letters, so the
-# digit strip leaves it): a 401, a 429 and a 529 are different problems.
+# digit strip leaves it) when it names a problem of its own: 401, 403, 404 and
+# 429. Every other 5xx folds into "5xx", so one provider outage that alternates
+# 500, 502, 503 and 529 stays one failure.
+_EXACT_STATUS = {"401", "403", "404", "429"}
 _STATUS = re.compile(r"\b(status(?:[ _]code)?|http|code|error)(\W{0,3})([45]\d\d)(?!\d)", re.IGNORECASE)
 # One id per request would give every call its own fingerprint.
 _REQUEST_ID = re.compile(r"\b(?:req|msg|toolu)_\w+|\brequest[-_ ]?id\W+[\w-]+", re.IGNORECASE)
@@ -69,13 +72,22 @@ def _store_path() -> Path:
     return home / ".assistant" / "failures.json"
 
 
+def _status_token(m: re.Match) -> str:
+    code = m.group(3)
+    if code in _EXACT_STATUS:
+        return m.group(1) + m.group(2) + "#" + code.translate(_DIGIT_LETTERS)
+    if code.startswith("5"):
+        return m.group(1) + m.group(2) + "#5xx"
+    return m.group(0)
+
+
 def fingerprint(component: str, error_text: str) -> str:
     """A stable class for "the same failure": the error with numbers, ids,
     hex runs, home paths and quoted values removed, whitespace collapsed, the
     first 100 characters kept, prefixed with the component."""
     text = str(error_text)[:2000]
     text = _ERROR_TYPE.sub(lambda m: f"type {m.group(1)}", text)
-    text = _STATUS.sub(lambda m: m.group(1) + m.group(2) + "#" + m.group(3).translate(_DIGIT_LETTERS), text)
+    text = _STATUS.sub(_status_token, text)
     for pattern in (_REQUEST_ID, _QUOTED, _UUID, _HOME_PATH, _ABS_PATH, _HEX, _DIGITS):
         text = pattern.sub("", text)
     text = _SPACE.sub(" ", text).strip()[:FINGERPRINT_TEXT]
@@ -120,10 +132,18 @@ def _locked(path: Path):
         os.close(fd)  # closing the descriptor releases the lock
 
 
+def _from_the_future(row: dict, now: float) -> bool:
+    """A row stamped further ahead than its own cap was written while the clock
+    was wrong. It is stale: not listed, and first to go when the file is full."""
+    return float(row.get("last_ts") or 0) > now + float(row.get("cap") or BACKOFF_CAP_SEC)
+
+
 def _write(path: Path, data: dict) -> None:
     """Temp file then replace, so a crash in between leaves the old file whole."""
     if len(data) > MAX_FINGERPRINTS:
-        keep = sorted(data, key=lambda k: data[k].get("last_ts", 0), reverse=True)[:MAX_FINGERPRINTS]
+        now = time.time()
+        keep = sorted(data, key=lambda k: (not _from_the_future(data[k], now), data[k].get("last_ts", 0)),
+                      reverse=True)[:MAX_FINGERPRINTS]
         data = {k: data[k] for k in keep}
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
@@ -278,11 +298,16 @@ def repeated(now: float | None = None, min_count: int = 3, window_sec: int = 864
         now = time.time() if now is None else now
         rows = []
         for row in _read(_store_path()).values():
-            streak = int(row.get("streak") or 0)
-            recent = float(row.get("last_ts") or 0) >= now - window_sec
-            if (streak >= min_count and recent) or (streak and pause_in_force(row, now)):
-                rows.append(row)
-        rows.sort(key=lambda r: (-int(r["streak"]), -float(r["last_ts"])))
+            try:  # one corrupt row must not hide the others
+                if _from_the_future(row, now):
+                    continue
+                streak = int(row.get("streak") or 0)
+                recent = float(row.get("last_ts") or 0) >= now - window_sec
+                if (streak >= min_count and recent) or (streak and pause_in_force(row, now)):
+                    rows.append(row)
+            except (TypeError, ValueError):
+                continue
+        rows.sort(key=lambda r: (-int(r["streak"]), -float(r.get("last_ts") or 0)))
         return rows[:limit]
     except Exception:  # noqa: BLE001
         return []

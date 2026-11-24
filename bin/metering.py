@@ -217,12 +217,20 @@ def failure_reason(rc: int | None, stderr: str = "") -> str:
     return lines[-1][:150] if lines else f"exit code {rc}"
 
 
-def paused_note(caller: str) -> str | None:
+def _context(provider: str | None, model: str | None) -> str:
+    return f"{provider}/{model}"
+
+
+def paused_note(caller: str, provider: str | None = None, model: str | None = None) -> str | None:
     """For a background job about to call a model: a one-line reason to skip the
-    call because the same failure has repeated, or None to go ahead."""
+    call because the same failure has repeated, or None to go ahead. A job that
+    knows its provider and model before the call passes them, so a pause set
+    for another model (the wrong id was fixed) doesn't hold."""
     try:
         watch = _failwatch()
-        until = watch.backed_off("model:" + caller) if watch and caller in BACKGROUND_CALLERS else None
+        context = _context(provider, model) if provider or model else None
+        until = (watch.backed_off("model:" + caller, context=context)
+                 if watch and caller in BACKGROUND_CALLERS else None)
         if until:
             return (f"{caller} model calls paused after repeating the same failure; "
                     f"next try after {time.strftime('%H:%M', time.localtime(until))}")
@@ -243,7 +251,8 @@ def _count_call(caller: str, model: str | None, provider: str | None,
             text = f"{provider or 'unknown provider'} {model or 'unknown model'} call failed"
             if error:
                 text += f": {error}"
-            watch.record_failure(component, text, pause=caller in BACKGROUND_CALLERS)
+            watch.record_failure(component, text, pause=caller in BACKGROUND_CALLERS,
+                                 context=_context(provider, model))
         elif status == "ok":
             watch.record_ok(component)
     except Exception:  # noqa: BLE001

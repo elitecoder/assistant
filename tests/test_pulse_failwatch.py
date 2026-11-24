@@ -36,6 +36,17 @@ class AuditPauseTests(_AuditBase):
         self.pulse.run_observer_audit(self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 1, now=later)
         self.assertEqual(failwatch.history()[0]["streak"], 0)
 
+    def test_the_audit_cannot_name_its_model_beforehand_so_it_asks_with_the_caller_only(self):
+        import metering
+        asked = []
+        real = metering.paused_note
+        metering.paused_note = lambda *a: asked.append(a) or real(*a)
+        try:
+            self.pulse.run_observer_audit(self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 0, now=self.now)
+        finally:
+            metering.paused_note = real
+        self.assertEqual(asked, [("observer-audit",)])
+
     def test_the_pause_check_finds_metering_when_bin_is_not_on_the_path(self):
         self._repeat()
         saved = sys.path[:]
@@ -146,7 +157,7 @@ class ReadyForMergeCountTests(unittest.TestCase):
 
     def test_a_failed_session_list_clears_nothing(self):
         self._repeat("workspace:9")
-        self._pulse({"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0, "failed": True})
+        self._pulse({"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0, "unavailable": True})
         self.assertEqual(self._listed(), {"ready-for-merge:workspace:9"})
 
     def test_a_dry_run_clears_nothing(self):
