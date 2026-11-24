@@ -16,10 +16,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   when it ends, in `~/.assistant/effects/effects.jsonl`. An action Assistant
   can't record doesn't run, and the page says "Assistant couldn't record this
   action, so it didn't run it." A second press while the first is still
-  working is turned down, and an unsubscribe that went through isn't sent
-  again unless you approve it again. The record holds ids only, never a
-  subject, a sender, message text or an unsubscribe link, and only you can
-  read it. See `docs/effects.md`.
+  working is turned down, and an unsubscribe that went through is never sent
+  again. An **Undo** the record refuses leaves the row in Trash, says why on
+  the last-run line, and the next **Apply approvals** tries it again. The
+  record holds ids only, never a subject, a sender, message text or an
+  unsubscribe link, and only you can read it. See `docs/effects.md`.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or

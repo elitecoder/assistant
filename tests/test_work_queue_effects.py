@@ -17,7 +17,7 @@ from work_queue import config, refresh, server
 from work_queue_fakes import calls, fake_tool, wq  # noqa: F401
 
 LATER = "2026-11-02T11:00:00+00:00"
-NOON = datetime(2026, 11, 2, 10, 30, tzinfo=timezone.utc).timestamp()  # after AT, before LATER
+NOON = datetime(2026, 11, 2, 11, 30, tzinfo=timezone.utc).timestamp()  # after AT and LATER
 # Made-up secrets are built from parts so GitHub's push protection doesn't take them for real ones.
 TOKEN = "-".join(["xoxb", "111111111", "222222222", "AbCdEfGhIjKlMnOpQrStUv0123456789"])
 SUBJECT, SENDER = "ZEBRA-QUARTERLY-INVOICE", "Ana Lee <ana.lee@sender.example>"
@@ -25,8 +25,12 @@ SUBJECT, SENDER = "ZEBRA-QUARTERLY-INVOICE", "Ana Lee <ana.lee@sender.example>"
 
 @pytest.fixture(autouse=True)
 def fixed_clock(monkeypatch):
-    """The ledger's clock stands still, so a decision's time is before or after a result whatever the date is."""
-    monkeypatch.setattr(effects, "_now", lambda: NOON)
+    """The clock stands still at half past eleven, so a decision's time is before or after a result whatever the date
+    is. A test moves it with `clock.t`."""
+    clock = type("Clock", (), {"t": NOON})()
+    monkeypatch.setattr(effects, "_now", lambda: clock.t)
+    monkeypatch.setattr(server, "now", lambda: datetime.fromtimestamp(clock.t, timezone.utc).replace(microsecond=0).isoformat())
+    return clock
 
 
 def ledger_path(wq) -> Path:
@@ -129,11 +133,11 @@ def test_a_second_click_while_the_first_is_still_working_makes_no_second_call(wq
     assert first[0][0] == 200 and len(modifies) == 1
 
 
-def test_an_unfinished_intent_older_than_ten_minutes_no_longer_blocks_a_click(wq, monkeypatch):
+def test_an_unfinished_intent_older_than_ten_minutes_no_longer_blocks_a_click(wq, fixed_clock):
     gmail(wq, thread([]))
     effects.begin("gmail.archive", {"account": ACCT, "thread": "t1"}, {"kind": "tap", "ref": "/api/gmail", "at": AT})
     assert server.gmail_action({"key": KEY, "action": "archive"})[0] == 409
-    monkeypatch.setattr(effects, "_now", lambda: NOON + 601)
+    fixed_clock.t += 601
     assert server.gmail_action({"key": KEY, "action": "archive"})[0] == 200
 
 
@@ -163,11 +167,13 @@ def test_a_gmail_action_that_cant_be_recorded_does_not_run_and_changes_no_file(w
     assert {p.name: p.read_bytes() for p in wq.data.iterdir()} == before
 
 
-def test_an_account_that_isnt_an_email_address_is_not_recorded_so_it_does_not_run(wq):
+def test_a_target_the_record_cant_describe_is_a_fault_in_assistant_and_does_not_run(wq, capsys):
     wq.sources({"gmail": {"accounts": ["not an address"]}})
     config.write_json(refresh.emails_path(), {KEY: {"account": "not an address", "tid": "t1"}})
     fake_tool(wq.bin, "gog", [("thread", {})])
-    assert server.gmail_action({"key": KEY, "action": "archive"}) == (503, {"error": server.UNRECORDED})
+    assert server.gmail_action({"key": KEY, "action": "archive"}) == (500, {"error": server.FAULT})
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "gmail.archive" in err and "not an address" not in err
     assert gog_calls(wq) == []
 
 
@@ -308,7 +314,8 @@ def test_a_sender_that_answers_an_error_is_recorded_failed_with_its_status(wq, u
     assert (e["outcome"], e["error"]) == ("failed", "http 500")
 
 
-def test_a_sender_unsubscribed_once_is_not_sent_the_request_again_but_a_failure_may_be_retried(wq, unsub_site, open_net):
+def test_a_sender_unsubscribed_once_is_not_sent_the_request_again_but_a_failure_may_be_retried(wq, unsub_site, open_net,
+                                                                                                fixed_clock):
     base, hits = unsub_site
     server.apply_unsub(unsub_job(base + "/no"))            # fails
     server.apply_unsub(unsub_job(base + "/no"))            # a failure doesn't block a retry
@@ -316,10 +323,12 @@ def test_a_sender_unsubscribed_once_is_not_sent_the_request_again_but_a_failure_
     server.apply_unsub(unsub_job(base + "/ok"))
     assert len(hits) == 3
     again = server.apply_unsub(unsub_job(base + "/ok"))
-    assert again["u1"]["error"] == server.ALREADY_DONE and len(hits) == 3
-    assert "can't be undone" in server.ALREADY_DONE
+    assert again["u1"]["status"] == "done" and again["u1"]["verified"] is True and "error" not in again["u1"]
+    assert len(hits) == 3
     # Approving it again afterwards is a new authorization.
-    assert server.apply_unsub(unsub_job(base + "/ok", at=LATER))["u1"]["status"] == "done" and len(hits) == 4
+    fixed_clock.t += 1200
+    assert server.apply_unsub(unsub_job(base + "/ok", at="2026-11-02T11:45:00+00:00"))["u1"]["status"] == "done"
+    assert len(hits) == 4
 
 
 @pytest.mark.parametrize("at", [None, "", "yesterday", 5])
@@ -351,12 +360,6 @@ def test_an_unsubscribe_that_cant_be_recorded_sends_nothing(wq, unsub_site, open
     break_the_ledger(wq, monkeypatch, how)
     out = server.apply_unsub(unsub_job(base + "/ok"))
     assert out["u1"] == {"status": "error", "error": server.UNRECORDED, "at": out["u1"]["at"]} and hits == []
-
-
-def test_a_link_without_a_usable_host_name_is_not_recorded_so_it_is_not_sent(wq, monkeypatch):
-    monkeypatch.setattr(server, "unsafe_target", lambda url: "")
-    out = server.apply_unsub(unsub_job("https://Bad_Host_Name!.example.com/u"))
-    assert out["u1"]["error"] == server.UNRECORDED
 
 
 # --- apply carries the decision's time to the effect ------------------------------------------------------------
@@ -406,3 +409,183 @@ def test_the_actions_ledger_is_never_written(wq, unsub_site, open_net):
     server.apply_unsub(unsub_job(base + "/ok"))
     assert not (wq.home / ".assistant/actions-ledger.jsonl").exists()
     assert sorted(p.name for p in (wq.home / ".assistant/effects").iterdir()) == ["effects.jsonl", "effects.lock"]
+
+
+# --- what worked before still works --------------------------------------------------------------------------
+
+class Sent:
+    """A stand-in for the unsubscribe request that answers 200 and keeps each address it was sent to."""
+    status = 200
+
+    def __init__(self):
+        self.urls = []
+
+    def build(self, *args):
+        outer = self
+
+        class Opener:
+            def open(self, req, timeout):
+                outer.urls.append(req.full_url)
+                return outer
+
+        return Opener()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def sent(monkeypatch, open_net):
+    found = Sent()
+    monkeypatch.setattr(server.urllib.request, "build_opener", found.build)
+    return found
+
+
+@pytest.mark.parametrize("url, host", [
+    ("https://News_Mailer.Example.com./u", "news_mailer.example.com"),
+    ("https://münchen.example/u", "xn--mnchen-3ya.example"),
+    ("https://[2001:db8::1]/u", "2001:db8::1"),
+    ("https://EXAMPLE.com:8443/u", "example.com"),
+])
+def test_an_unsubscribe_to_any_kind_of_host_still_goes_out_and_is_recorded(wq, sent, url, host):
+    assert server.apply_unsub(unsub_job(url))["u1"]["status"] == "done"
+    assert sent.urls == [url] and recorded(wq)[0]["target"]["host"] == host
+
+
+def test_example_com_with_and_without_a_dot_is_one_sender(wq, sent):
+    server.apply_unsub(unsub_job("https://example.com/u"))
+    again = server.apply_unsub(unsub_job("https://example.com./u"))
+    assert again["u1"]["status"] == "done" and len(sent.urls) == 1
+
+
+def test_a_conversation_of_hundreds_of_messages_is_trashed_and_recorded_as_a_count(wq, monkeypatch):
+    ids = [f"m{n}" for n in range(300)]
+    seen = []
+
+    def gog(*args):
+        seen.append(args)
+        return {"ok": True} if args[1] == "trash" else {"message": {"labelIds": ["TRASH"]}}
+    monkeypatch.setattr(server, "gog", gog)
+    assert server.apply_gmail(gmail_job(ids=ids))["g1"]["verified"] is True and len(seen) == 600
+    [e] = recorded(wq)
+    assert e["target"]["msg_count"] == "300" and e["outcome"] == "done"
+    assert "m17" not in ledger_path(wq).read_text()
+
+
+def test_a_conversation_with_no_messages_is_left_as_it_was_and_records_nothing(wq, monkeypatch):
+    monkeypatch.setattr(server, "gog", lambda *a: pytest.fail("nothing to change"))
+    out = server.apply_gmail(gmail_job(ids=[]) + gmail_job("g2", ids=[], undo=True))
+    assert (out["g1"]["status"], out["g1"]["verified"], out["g2"]["status"]) == ("done", True, "undone")
+    assert recorded(wq) == [] and not ledger_path(wq).exists()
+
+
+def test_a_gmail_address_with_an_apostrophe_is_archived(wq):
+    account = "o'brien@example.com"
+    gmail(wq, thread([]))
+    wq.sources({"gmail": {"accounts": [account]}})
+    config.write_json(refresh.emails_path(), {KEY: {"account": account, "tid": "t1"}})
+    assert server.gmail_action({"key": KEY, "action": "archive"})[0] == 200
+    assert recorded(wq)[0]["target"]["account"] == account
+
+
+# --- an error nobody expected leaves no open intent ---------------------------------------------------------
+
+def test_an_unsubscribe_cut_off_by_the_sender_is_recorded_failed_and_the_error_goes_on_up(wq, monkeypatch, open_net):
+    import http.client
+
+    class Cut:
+        def open(self, req, timeout):
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+    monkeypatch.setattr(server.urllib.request, "build_opener", lambda *a: Cut())
+    with pytest.raises(http.client.RemoteDisconnected):
+        server.apply_unsub(unsub_job("https://news.example.com/u"))
+    [e] = recorded(wq)
+    assert (e["outcome"], e["error"]) == ("failed", "other") and effects.unfinished(0) == []
+    sent = Sent()
+    monkeypatch.setattr(server.urllib.request, "build_opener", sent.build)
+    assert server.apply_unsub(unsub_job("https://news.example.com/u"))["u1"]["status"] == "done"  # not held off
+
+
+def test_a_gmail_action_or_trash_that_dies_unexpectedly_is_recorded_failed_and_the_error_goes_on_up(wq, monkeypatch):
+    gmail(wq, thread([]))
+
+    def boom(*args):
+        raise RuntimeError("gog crashed")
+    monkeypatch.setattr(server, "gog", boom)
+    with pytest.raises(RuntimeError):
+        server.gmail_action({"key": KEY, "action": "archive"})
+    with pytest.raises(RuntimeError):
+        server.apply_gmail(gmail_job())
+    assert [(e["outcome"], e["error"]) for e in recorded(wq)] == [("failed", "other")] * 2 and effects.unfinished(0) == []
+
+
+# --- an undo the record refuses leaves the row as it was ----------------------------------------------------
+
+def test_an_undo_the_record_refuses_keeps_the_row_done_with_the_reason_and_the_next_apply_tries_again(wq, monkeypatch):
+    gog_trash(wq, labels=("INBOX",))
+    config.write_json(refresh.candidates_path(), {"g1": {"kind": "gmail", "account": ACCT, "msg_ids": ["m1"]}})
+    config.write_json(wq.data / "decisions.json", {"g1": {"decision": "undo", "at": AT}})
+    before = {"status": "done", "verified": True, "at": "2026-11-02T09:00:00+00:00"}
+    config.write_json(wq.data / "applied.json", {"g1": before})
+    break_the_ledger(wq, monkeypatch, "folder is a file")
+    server.run_apply()
+    assert json.loads((wq.data / "applied.json").read_text())["g1"] == {**before, "error": server.UNRECORDED}
+    status = json.loads((wq.data / "apply-status.json").read_text())
+    assert (status["running"], status["error"], status["ok"], status["verified"]) == (False, server.UNRECORDED, 0, 0)
+    assert gog_calls(wq) == []
+    (wq.home / ".assistant/effects").unlink()  # the disk is fine again
+    server.run_apply()
+    assert json.loads((wq.data / "applied.json").read_text())["g1"]["status"] == "undone"
+    assert "error" not in json.loads((wq.data / "apply-status.json").read_text())
+
+
+def test_a_trash_the_record_refuses_is_an_error_the_next_apply_tries_again(wq, monkeypatch):
+    gog_trash(wq)
+    config.write_json(refresh.candidates_path(), {"g1": {"kind": "gmail", "account": ACCT, "msg_ids": ["m1"]}})
+    config.write_json(wq.data / "decisions.json", {"g1": {"decision": "approve", "at": AT}})
+    break_the_ledger(wq, monkeypatch, "folder is a file")
+    server.run_apply()
+    assert json.loads((wq.data / "applied.json").read_text())["g1"]["status"] == "error"
+    (wq.home / ".assistant/effects").unlink()
+    server.run_apply()
+    assert json.loads((wq.data / "applied.json").read_text())["g1"]["status"] == "done"
+
+
+# --- an unsubscribe that went through stays done ------------------------------------------------------------
+
+def test_an_unsubscribe_that_went_through_shows_as_done_when_applied_json_lost_its_entry(wq, sent):
+    config.write_json(refresh.candidates_path(), {"u1": {"kind": "unsub", "url": "https://news.example.com/u"}})
+    config.write_json(wq.data / "decisions.json", {"u1": {"decision": "approve", "at": AT}})
+    server.run_apply()
+    assert len(sent.urls) == 1
+    (wq.data / "applied.json").unlink()
+    server.run_apply()
+    now_done = json.loads((wq.data / "applied.json").read_text())["u1"]
+    assert (now_done["status"], now_done["verified"], "error" in now_done) == ("done", True, False)
+    assert len(sent.urls) == 1
+    status = json.loads((wq.data / "apply-status.json").read_text())
+    assert (status["ok"], status["verified"]) == (1, 1)
+
+
+def test_an_approval_dated_in_the_future_is_not_an_approval(wq, sent):
+    out = server.apply_unsub(unsub_job("https://news.example.com/u", at="2099-01-01T00:00:00+00:00"))
+    assert out["u1"]["error"] == server.UNAPPROVED and sent.urls == []
+
+
+# --- the sentences ------------------------------------------------------------------------------------------
+
+def test_the_sentences_a_person_can_see_read_after_not_done_and_failed_with_no_full_stop():
+    assert server.UNRECORDED == ("Assistant couldn't record this action, so it didn't run it. "
+                                 "Check that your disk isn't full, then try again")
+    assert server.IN_PROGRESS == ("This is already in progress, or Assistant stopped partway through it. "
+                                  "Try again in ten minutes")
+    assert server.UNAPPROVED == ("Assistant couldn't confirm your approval for this, so it didn't run it. "
+                                 "Approve it again, then select Apply approvals")
+    assert server.ALREADY_DONE == "This was already done and can't be undone, so it wasn't run again"
+    assert server.FAULT == ("Assistant couldn't record this action, so it didn't run it. "
+                            "This is a fault in Assistant, not something you did")
+    for sentence in (server.UNRECORDED, server.IN_PROGRESS, server.UNAPPROVED, server.ALREADY_DONE, server.FAULT):
+        assert not sentence.endswith(".")

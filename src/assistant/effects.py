@@ -32,12 +32,16 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import functools
+import hashlib
 import json
+import math
 import os
 import re
 import secrets
 import sys
+import threading
 import time
+import types
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,10 +51,13 @@ from assistant.redact import redact
 
 # An intent with no result blocks a repeat for this long; after it, the intent no longer counts.
 IN_FLIGHT_SEC = 600
+# An approval dated further ahead than this is refused: it would outrank every result and switch off repeat protection.
+FUTURE_SEC = 60
 ERROR_MAX = 160
+READ_BLOCK = 4 * 1024 * 1024
 OUTCOMES = ("done", "failed")
 # The only error texts a row may hold, besides `http NNN`.
-ERRORS = ("timeout", "network", "tool failed", "bad answer", "not confirmed", "other")
+ERRORS = ("timeout", "network", "tool failed", "bad answer", "not confirmed", "not recorded", "other")
 KINDS = ("tap", "decision", "owner_flag", "standing")
 
 _HTTP = re.compile(r"http [1-5][0-9]{2}")
@@ -60,10 +67,14 @@ _REF = re.compile(r"[A-Za-z0-9_:./-]{1,100}")
 _COMPONENT = re.compile(r"[A-Za-z0-9_:./-]{0,64}")
 # Bounded, linear patterns, like redact.py's.
 TARGET_KEYS = {
-    "account": re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}"),
+    # The caller has already matched the address to a linked account, so this only needs one @ and no spaces.
+    "account": re.compile(r"[^\s@\x00-\x1f\x7f]{1,64}@[^\s@\x00-\x1f\x7f]{1,255}"),
     "thread": re.compile(_ID),
     "row": re.compile(r"row:[0-9a-f]{16}"),
-    "host": re.compile(r"[a-z0-9.-]{1,253}"),
+    # `<redacted>` is allowed so a host already scrubbed is still a valid target (cleaning twice changes nothing).
+    "host": re.compile(r"[a-z0-9._:<>-]{1,253}"),
+    "msg_count": re.compile(r"[0-9]{1,9}"),
+    "msg_digest": re.compile(r"[0-9a-f]{16}"),
     "session": re.compile(r"workspace:[0-9]{1,9}"),
     "task": re.compile(r"td-[0-9]{1,9}"),
     "channel": re.compile(r"[CDG][A-Z0-9]{8,11}"),
@@ -96,7 +107,7 @@ class EffectClass:
     accepts: tuple
 
 
-CLASSES = {
+CLASSES = types.MappingProxyType({
     "gmail.archive": EffectClass(True, "gmail.unarchive", ("tap",)),
     "gmail.unarchive": EffectClass(True, "gmail.archive", ("tap",)),
     "gmail.mark_read": EffectClass(True, "", ("tap",)),
@@ -106,7 +117,7 @@ CLASSES = {
     "slack.save.complete": EffectClass(True, "slack.save.uncomplete", ("tap", "decision")),
     "slack.save.uncomplete": EffectClass(True, "slack.save.complete", ("decision",)),
     "session.type": EffectClass(False, "", ("tap", "owner_flag", "standing")),
-}
+})
 
 
 # --- paths and the lock ---------------------------------------------------------------------------------------
@@ -190,52 +201,148 @@ def _text(value) -> str:
 
 
 def _number(value) -> float:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
-
-
-def _read() -> dict:
-    """Every effect in the file, by id, in file order: its intent merged with its first result. Corrupt lines are
-    skipped. Never raises."""
+    """A finite number, or 0.0 for anything else (a bool, text, infinity, an integer too big for a float)."""
     try:
-        with open(str(ledger_path()), "rb") as f:
-            data = f.read()
-    except OSError:
-        return {}
-    found: dict = {}
-    for raw in data.split(b"\n"):
-        try:
-            row = json.loads(raw)
-        except (ValueError, RecursionError):
-            continue
-        eid = row.get("id") if isinstance(row, dict) else None
-        if not isinstance(eid, str):
-            continue
-        if row.get("kind") == "intent":
-            if isinstance(row.get("class"), str) and isinstance(row.get("target"), dict) \
-                    and isinstance(row.get("auth"), dict) and eid not in found:
-                found[eid] = {"id": eid, "class": row["class"], "target": row["target"], "authorized_by": row["auth"],
-                              "trace": _text(row.get("trace")), "component": _text(row.get("component")),
-                              "undoes": _text(row.get("undoes")), "at": _text(row.get("at")), "t": _number(row.get("t")),
-                              "outcome": None, "verified": None, "error": "", "finished_at": "", "finished_t": 0.0}
-        elif row.get("kind") == "result" and eid in found and found[eid]["outcome"] is None \
-                and row.get("outcome") in OUTCOMES:
-            found[eid].update(outcome=row["outcome"], error=_text(row.get("error")), finished_at=_text(row.get("at")),
-                              finished_t=_number(row.get("t")),
-                              verified=row["verified"] if isinstance(row.get("verified"), bool) else None)
-    return found
+        found = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+    except OverflowError:
+        return 0.0
+    return found if math.isfinite(found) else 0.0
 
 
 def _canon(target: dict) -> str:
     return json.dumps(target, sort_keys=True, separators=(",", ":"))
 
 
-def _young(effect: dict, now: float) -> bool:
-    return effect["outcome"] is None and now - effect["t"] < IN_FLIGHT_SEC
+class _Effect:
+    """What the checks need to know about one effect. The rest of its rows stays in the file, where `where` points,
+    and is read only when someone asks for the effect's history: a year of use is 100,000 of these."""
+
+    __slots__ = ("id", "cls", "key", "t", "trace", "undoes", "outcome", "finished_t", "intent", "result")
+
+    def __init__(self, row: dict, key: str, intent: tuple):
+        self.id, self.cls, self.key = row["id"], row["class"], key
+        self.t, self.trace, self.undoes = _number(row.get("t")), _text(row.get("trace")), _text(row.get("undoes"))
+        self.outcome, self.finished_t, self.intent, self.result = None, 0.0, intent, None
 
 
-def _undone(effects: dict, effect_id: str, now: float) -> bool:
+class _State:
+    """The ledger as read so far, in one process. The file is only ever appended to, so it is read once and then
+    only the bytes added since: `offset` is the end of the last whole line read. The file's first bytes and its
+    identity say whether it is still the file that was read; if not, it is read again from the start."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.ident, self.head, self.offset = None, b"", 0
+        self.effects: dict = {}    # id -> _Effect, in file order
+        self.by_target: dict = {}  # target -> effects of any class
+        self.undo_of: dict = {}    # id -> effects that say they undo it
+        self.open: dict = {}       # ids with no result yet
+
+    def ingest(self, raw: bytes, where: int) -> None:
+        try:
+            row = json.loads(raw)
+        except (ValueError, RecursionError):
+            return
+        eid = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(eid, str):
+            return
+        if row.get("kind") == "intent":
+            if isinstance(row.get("class"), str) and isinstance(row.get("target"), dict) \
+                    and isinstance(row.get("auth"), dict) and eid not in self.effects:
+                key = _canon(row["target"])
+                found = self.effects[eid] = _Effect(row, key, (where, len(raw)))
+                self.by_target.setdefault(key, []).append(found)
+                if found.undoes:
+                    self.undo_of.setdefault(found.undoes, []).append(found)
+                self.open[eid] = found
+        elif row.get("kind") == "result" and eid in self.open and row.get("outcome") in OUTCOMES:
+            found = self.open.pop(eid)
+            found.outcome, found.finished_t, found.result = row["outcome"], _number(row.get("t")), (where, len(raw))
+
+
+_STATE = _State()
+# Readers in other threads share the one state, so every use of it holds this.
+_STATE_LOCK = threading.RLock()
+
+
+def _sync() -> _State:
+    """The state, brought up to date with the file. Call it holding _STATE_LOCK. Never raises."""
+    state = _STATE
+    try:
+        fd = os.open(str(ledger_path()), os.O_RDONLY)
+    except OSError:
+        state.reset()
+        return state
+    try:
+        info = os.fstat(fd)
+        ident = (info.st_dev, info.st_ino)
+        if state.ident != ident or info.st_size < state.offset \
+                or (state.offset and os.pread(fd, len(state.head), 0) != state.head):
+            state.reset()
+            state.ident = ident
+        while info.st_size > state.offset:
+            # In blocks, so a ledger of a year's use isn't held in memory twice while it is read.
+            chunk = os.pread(fd, min(info.st_size - state.offset, READ_BLOCK), state.offset)
+            cut = chunk.rfind(b"\n") + 1  # a line still being written isn't read until it is whole
+            if not cut and state.offset + len(chunk) < info.st_size:
+                chunk = os.pread(fd, info.st_size - state.offset, state.offset)  # one line longer than a block
+                cut = chunk.rfind(b"\n") + 1
+            if not cut:
+                break
+            if not state.offset:
+                state.head = chunk[:min(64, cut)]
+            where = state.offset
+            for raw in chunk[:cut].split(b"\n"):
+                state.ingest(raw, where)
+                where += len(raw) + 1
+            state.offset += cut
+    except OSError:
+        state.reset()
+    finally:
+        os.close(fd)
+    return state
+
+
+def _forget() -> None:
+    """Drop what was read, so the next call reads the whole file. For tests that compare the two."""
+    with _STATE_LOCK:
+        _STATE.reset()
+
+
+def _row(fd: int, where) -> dict:
+    return json.loads(os.pread(fd, where[1], where[0]))
+
+
+def _publish(found: list) -> list:
+    """The effects as dicts, each its intent merged with its result, read from the file."""
+    fd = os.open(str(ledger_path()), os.O_RDONLY)
+    try:
+        out = []
+        for e in found:
+            intent = _row(fd, e.intent)
+            result = _row(fd, e.result) if e.result else {}
+            out.append({"id": e.id, "class": e.cls, "target": intent["target"], "authorized_by": intent["auth"],
+                        "trace": e.trace, "component": _text(intent.get("component")), "undoes": e.undoes,
+                        "at": _text(intent.get("at")), "t": e.t, "outcome": e.outcome,
+                        "verified": result["verified"] if isinstance(result.get("verified"), bool) else None,
+                        "error": _text(result.get("error")), "finished_at": _text(result.get("at")),
+                        "finished_t": e.finished_t})
+        return out
+    finally:
+        os.close(fd)
+
+
+def _young(effect: _Effect, now: float) -> bool:
+    """An intent with no result whose time is within ten minutes of now, either way. One dated further off, or with
+    no usable time, is an action whose outcome is unknown, not one in progress."""
+    return effect.outcome is None and abs(now - effect.t) < IN_FLIGHT_SEC
+
+
+def _undone(state: _State, effect_id: str, now: float) -> bool:
     """Whether an effect that reverses this one has succeeded or is still in flight."""
-    return any(e["undoes"] == effect_id and (e["outcome"] == "done" or _young(e, now)) for e in effects.values())
+    return any(e.outcome == "done" or _young(e, now) for e in state.undo_of.get(effect_id, ()))
 
 
 def _never_raises(default):
@@ -243,7 +350,8 @@ def _never_raises(default):
         @functools.wraps(fn)
         def inner(*args, **kwargs):
             try:
-                return fn(*args, **kwargs)
+                with _STATE_LOCK:
+                    return fn(*args, **kwargs)
             except Exception:  # noqa: BLE001 - the contract is that a read never raises
                 return default()
         return inner
@@ -253,11 +361,15 @@ def _never_raises(default):
 @_never_raises(list)
 def history(effect_class=None, target=None, trace=None, limit=100) -> list:
     """Each effect as one dict with its intent and result merged, newest first. Filters match exactly."""
-    key = _canon(clean_target(target)) if target is not None else None
-    found = [e for e in reversed(list(_read().values()))
-             if (effect_class is None or e["class"] == effect_class) and (trace is None or e["trace"] == trace)
-             and (key is None or _canon(e["target"]) == key)]
-    return found[:max(limit, 0)]
+    state = _sync()
+    pool = state.effects.values() if target is None else state.by_target.get(_canon(clean_target(target)), ())
+    found = []
+    for e in reversed(list(pool)):
+        if len(found) >= limit:
+            break
+        if (effect_class is None or e.cls == effect_class) and (trace is None or e.trace == trace):
+            found.append(e)
+    return _publish(found)
 
 
 @_never_raises(lambda: None)
@@ -269,42 +381,65 @@ def last(effect_class, target):
 
 @_never_raises(list)
 def unfinished(older_than_sec=IN_FLIGHT_SEC) -> list:
-    """Intents with no result that are at least this old: the actions whose outcome is unknown."""
+    """Intents with no result that are at least this old, or whose time can't be trusted: the actions whose outcome
+    is unknown."""
     now = _now()
-    return [e for e in _read().values() if e["outcome"] is None and now - e["t"] >= older_than_sec]
+    return _publish([e for e in _sync().open.values() if now - e.t >= older_than_sec or e.t - now >= IN_FLIGHT_SEC])
 
 
 @_never_raises(str)
 def latest_undoable(effect_class: str, target: dict) -> str:
     """The id of the newest successful effect on this target that `effect_class` undoes and nothing has undone yet,
     or "". Pass it as `undoes` when a person reverses something the ledger recorded."""
-    key, effects, now = _canon(clean_target(target)), _read(), _now()
-    for e in reversed(list(effects.values())):
-        spec = CLASSES.get(e["class"])
-        if spec and spec.undone_by == effect_class and e["outcome"] == "done" and _canon(e["target"]) == key \
-                and not _undone(effects, e["id"], now):
-            return e["id"]
+    state, now = _sync(), _now()
+    for e in reversed(state.by_target.get(_canon(clean_target(target)), [])):
+        spec = CLASSES.get(e.cls)
+        if spec and spec.undone_by == effect_class and e.outcome == "done" and not _undone(state, e.id, now):
+            return e.id
     return ""
 
 
 # --- writing --------------------------------------------------------------------------------------------------
 
+def _host(value: str) -> str:
+    """A host name as it is recorded: lower case, no trailing dot, in its ASCII (IDNA) form. One that still doesn't
+    fit is recorded as a digest of itself, so the effect can be recorded and the same host is still the same target."""
+    name = value.lower().rstrip(".")
+    try:
+        name = name.encode("idna").decode("ascii")
+    except UnicodeError:
+        pass
+    if TARGET_KEYS["host"].fullmatch(name):
+        return name
+    return "h:" + hashlib.sha256(name.encode("utf-8", "replace")).hexdigest()[:16]
+
+
 def clean_target(target) -> dict:
-    """The target, checked against the allow-list. ValueError for anything that isn't a pointer."""
+    """The target exactly as it is written to the file: checked against the allow-list, then scrubbed. Everything
+    that compares targets compares this form, so two targets that scrub to the same text are the same target.
+    A conversation with more than MSGS_MAX message ids is recorded as their count and a digest. ValueError for
+    anything that isn't a pointer; the message never holds a value."""
     if not isinstance(target, dict) or not target or len(target) > len(TARGET_KEYS) + 1:
         raise ValueError("a target is a small dict of pointers")
     clean: dict = {}
     for key, value in target.items():
         if key == "msgs":
-            if not isinstance(value, (list, tuple)) or not 0 < len(value) <= MSGS_MAX or not all(
+            if not isinstance(value, (list, tuple)) or not value or not all(
                     isinstance(v, str) and _MSG_ID.fullmatch(v) for v in value):
-                raise ValueError("msgs must be a short list of message ids")
-            clean[key] = sorted(set(value))
+                raise ValueError("msgs must be a list of message ids")
+            ids = sorted(set(value))
+            if len(ids) > MSGS_MAX:
+                clean["msg_count"] = str(len(ids))
+                clean["msg_digest"] = hashlib.sha256(",".join(ids).encode("ascii")).hexdigest()[:16]
+            else:
+                clean[key] = ids
+        elif key == "host" and isinstance(value, str) and value:
+            clean[key] = _host(value)
         elif key in TARGET_KEYS and isinstance(value, str) and TARGET_KEYS[key].fullmatch(value):
             clean[key] = value
         else:
             raise ValueError(f"a target can't hold {key if key in TARGET_KEYS or key == 'msgs' else 'that key'} like this")
-    return clean
+    return _scrub(clean)
 
 
 def _parse_time(value):
@@ -312,9 +447,9 @@ def _parse_time(value):
         return None
     try:
         when = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    except ValueError:
+        return (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).timestamp()
+    except (ValueError, OverflowError, OSError):
         return None
-    return (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def _authorization(spec: EffectClass, authorized_by) -> tuple:
@@ -330,11 +465,20 @@ def _authorization(spec: EffectClass, authorized_by) -> tuple:
     return {"kind": kind, "ref": ref, "at": _iso(given)}, given
 
 
+def _abandon(effect_id: str) -> None:
+    """The intent may have landed although writing it failed, for an action that will never run: close it as failed,
+    so a retry isn't held off. If this fails too, the caller's error is still what goes up and the intent ages out."""
+    now = _now()
+    _write_row({"v": 1, "kind": "result", "id": effect_id, "at": _iso(now), "t": round(now, 3),
+                "outcome": "failed", "verified": None, "error": "not recorded"})
+
+
 def begin(effect_class, target, authorized_by, trace="", component="", undoes="") -> str:
     """Record the intent to do an effect and return its id. The caller acts only if this returns.
 
     ValueError: an unknown class, or a target, trace, component or `undoes` that isn't a pointer.
-    NotAuthorized: this kind of authorization isn't accepted for the class, or `undoes` isn't a valid undo.
+    NotAuthorized: this kind of authorization isn't accepted for the class, it is malformed or dated more than a
+    minute ahead, or `undoes` isn't a valid undo.
     Duplicate: the same class and target is in flight (an intent under ten minutes old with no result), or, for an
     effect that can't be undone, already succeeded and the authorization isn't newer than that.
     Unrecorded: the row couldn't be written and fsynced."""
@@ -351,25 +495,31 @@ def begin(effect_class, target, authorized_by, trace="", component="", undoes=""
     auth, given = _authorization(spec, authorized_by)
     key = _canon(target)
     try:
-        with _locked():
-            effects, now = _read(), _now()
-            same = [e for e in effects.values() if e["class"] == effect_class and _canon(e["target"]) == key]
+        with _locked(), _STATE_LOCK:
+            state, now = _sync(), _now()
+            if given > now + FUTURE_SEC:
+                raise NotAuthorized("the authorization is dated in the future")
+            same = [e for e in state.by_target.get(key, ()) if e.cls == effect_class]
             if any(_young(e, now) for e in same):
                 raise Duplicate("the same action is already in progress")
-            if not spec.reversible and any(e["outcome"] == "done" and given <= e["finished_t"] for e in same):
+            if not spec.reversible and any(e.outcome == "done" and given <= e.finished_t for e in same):
                 raise Duplicate("this can't be undone and was already done", done=True)
             if undoes:
-                prior = effects.get(undoes)
-                before = CLASSES.get(prior["class"]) if prior else None
-                if not (prior and before and prior["outcome"] == "done" and before.reversible
-                        and before.undone_by == effect_class and _canon(prior["target"]) == key):
+                prior = state.effects.get(undoes)
+                before = CLASSES.get(prior.cls) if prior else None
+                if not (prior and before and prior.outcome == "done" and before.undone_by == effect_class
+                        and prior.key == key):
                     raise NotAuthorized("that isn't an effect this one can undo")
-                if _undone(effects, undoes, now):
+                if _undone(state, undoes, now):
                     raise NotAuthorized("that effect was already undone")
             effect_id = "ef-" + secrets.token_hex(8)
-            _write_row({"v": 1, "kind": "intent", "id": effect_id, "at": _iso(now), "t": round(now, 3),
-                        "class": effect_class, "target": target, "auth": auth, "trace": trace,
-                        "component": component, "undoes": undoes})
+            try:
+                _write_row({"v": 1, "kind": "intent", "id": effect_id, "at": _iso(now), "t": round(now, 3),
+                            "class": effect_class, "target": target, "auth": auth, "trace": trace,
+                            "component": component, "undoes": undoes})
+            except OSError:
+                _abandon(effect_id)
+                raise
     except OSError as exc:
         raise Unrecorded(f"couldn't record the intent ({type(exc).__name__})") from None
     return effect_id
@@ -388,9 +538,9 @@ def finish(effect_id, outcome, verified=None, error="") -> bool:
     try:
         if outcome not in OUTCOMES:
             raise ValueError("outcome must be done or failed")
-        with _locked():
-            found = _read().get(effect_id)
-            if found is None or found["outcome"] is not None:
+        with _locked(), _STATE_LOCK:
+            found = _sync().effects.get(effect_id)
+            if found is None or found.outcome is not None:
                 raise ValueError("no open intent with that id")
             now = _now()
             _write_row({"v": 1, "kind": "result", "id": effect_id, "at": _iso(now), "t": round(now, 3),

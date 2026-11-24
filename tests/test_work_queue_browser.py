@@ -221,6 +221,35 @@ def test_marks_persist_send_to_agent_queues_a_first_pass_and_apply_trashes_gmail
         browser.close()
 
 
+def test_an_undo_the_record_refuses_leaves_the_row_in_trash_says_why_and_can_be_applied_again(site, wq):
+    """The row doesn't flip to Failed, which would make Apply forget it is still in Trash."""
+    write_page(snapshot())
+    decided = "2026-11-02T10:00:00+00:00"
+    config.write_json(wq.data / "decisions.json", {"gmail:1": {"decision": "undo", "at": decided}})
+    config.write_json(wq.data / "applied.json", {"gmail:1": {"status": "done", "verified": True, "at": decided}})
+    (wq.home / ".assistant").mkdir(exist_ok=True)
+    (wq.home / ".assistant/effects").write_text("a file where the record's folder should be")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page()
+        cov = Coverage(tab)
+        tab.goto(site)
+        row_status = '.ap-row[data-key="gmail:1"] .ap-status'
+        tab.wait_for_function("document.getElementById('ap-count').textContent.includes('1 to reopen')")
+        assert tab.locator(row_status).text_content() == "In Gmail Trash, verified"
+        tab.locator("#ap-apply").click()
+        reason = ("Assistant couldn't record this action, so it didn't run it. "
+                  "Check that your disk isn't full, then try again")
+        tab.wait_for_function("document.getElementById('ap-msg').textContent.includes(%s)" % json.dumps(reason), timeout=15000)
+        assert tab.locator("#ap-msg").text_content() == f"Last run: 0 of 1 verified · {reason}"
+        assert tab.locator(row_status).text_content() == "In Gmail Trash, verified"
+        assert "failed" not in tab.locator('.ap-row[data-key="gmail:1"]').get_attribute("class")
+        assert "1 to reopen" in tab.locator("#ap-count").text_content()
+        assert tab.locator("#ap-apply").is_enabled(), "the next Apply tries the undo again"
+        cov.snap()
+        browser.close()
+
+
 # ─── every state the page shows, on the in-process server ────────────────────
 
 NOW_MS = int(time.time() * 1000)

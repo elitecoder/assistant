@@ -591,8 +591,10 @@ hides. If applying stops on an error, the page says why instead of staying on
 Assistant writes each Gmail change and each unsubscribe to [its record of
 changes](effects.md) before it acts. When it can't record one, it doesn't run
 it and the page says so. A second press on a conversation that is still being
-changed is turned down, and an unsubscribe that went through isn't sent again
-unless you approve it again.
+changed is turned down, and an unsubscribe that went through is never sent
+again. If **Undo** is refused for a conversation in Trash, the row stays as
+it was, the last-run line says why, and the next **Apply approvals** tries
+again.
 
 ## Where your data lives
 

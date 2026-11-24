@@ -17,21 +17,26 @@ unsubscribes are recorded. Slack saves and typing into agent sessions follow.
 - **Approved first, when it can't be undone.** Each kind of action says
   whether it can be undone and what approval it needs. An unsubscribe can't be
   undone, so it needs an approval you gave on the page. A button press, or a
-  rule, doesn't count. Once an unsubscribe has gone through, it isn't sent
-  again unless you approve it again afterwards.
+  rule, doesn't count. An unsubscribe that went through is never sent again.
+  Unsubscribing can't be undone, because the sender has already received the
+  request.
 - **No double runs.** A second press while the first is still working is
-  turned away ("This is already in progress"). A line with no result that's
-  more than ten minutes old stops counting, so a crash never locks a button.
+  turned away ("This is already in progress"). A line with no result that is
+  more than ten minutes old stops counting, so a crash holds that action for
+  ten minutes, not for good.
 - **Only ever added to.** Lines are appended. Nothing rewrites or deletes one,
   and the file is never trimmed automatically.
 - **Pointers, not content.** A line holds ids: the Gmail address you linked
   (it's needed to undo), a conversation or message id, a short code for the
-  Work queue row, and the host name of an unsubscribe link. It never holds a
+  Work queue row (for a conversation of more than 100 messages, a count and a
+  short digest of their ids), and the host name of an unsubscribe link. It never holds a
   subject, a sender's name, message text or the unsubscribe link itself, which
   works like a password. Every line is also run through the same token
   scrubber as the logs. A failure is recorded as a kind (`timeout`,
   `network`, `tool failed`, `http 500`), never as the server's own words.
 - **Private.** The folder is readable only by you, and so is the file.
+- **Not there before.** Actions from before this record existed aren't in it,
+  and undoing them still works.
 
 ## What the file looks like
 
@@ -42,8 +47,9 @@ One JSON object per line. An action writes two lines with the same id:
 {"v":1,"kind":"result","id":"ef-0123456789abcdef","at":"2026-11-02T10:00:11Z","t":1793613611.0,"outcome":"done","verified":true,"error":""}
 ```
 
-`verified` is `true` when Gmail confirmed the change, `false` when it showed
-something else, and `null` when it couldn't be checked. An intent with no
+`verified` is `true` when Gmail (or, for an unsubscribe, the sender) confirmed
+the change, `false` when Gmail showed something else, and `null` when it
+couldn't be checked. An intent with no
 result is an action whose outcome is unknown, for example because Assistant
 stopped partway.
 
@@ -57,9 +63,19 @@ stopped partway.
 | Gmail Trash | Put back | An approval on the page |
 | Put back from Trash | Trash | An approval on the page |
 | Unsubscribe | Can't be undone | An approval on the page |
-| Mark a Slack save done | Reopen | A button press or an approval |
-| Reopen a Slack save | Mark done | An approval |
-| Type into an agent session | Can't be undone | A button press, a flag on the task, or a rule you turned on |
+| Mark a Slack save done (not recorded yet) | Reopen | A button press or an approval |
+| Reopen a Slack save (not recorded yet) | Mark done | An approval |
+| Type into an agent session (not recorded yet) | Can't be undone | A button press, a flag on the task, or a rule you turned on |
 
 An undo names the action it reverses, and is refused unless that action
 succeeded, is on the same conversation, and hasn't been undone already.
+
+## Reading it and keeping it
+
+To see the last actions, run `tail -n 20 ~/.assistant/effects/effects.jsonl`.
+The file `effects.lock` sits beside it; it's empty and only makes two Assistant
+processes take turns. Each action takes about 450 bytes, so a year of normal
+use is a few tens of megabytes.
+
+The file is never trimmed. Deleting it also deletes the record that stops a
+second unsubscribe, so leave it alone unless you mean to start over.
