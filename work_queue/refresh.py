@@ -16,7 +16,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from assistant import mode
+from assistant import mode, records
 from assistant.slack_focus.client import Client, SlackError, http_transport
 
 from work_queue import config, page, ready, todo_result, tools, traces, triage
@@ -24,6 +24,7 @@ from work_queue.inputs import gcal, github, gmail, outlook, slack
 
 LABELS = {"slack": "Slack", "github": "GitHub", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook"}
 FAILURES = (tools.SourceError, SlackError, OSError, ValueError)
+JOB = "work-queue-refresh"
 
 
 def site_path():
@@ -46,7 +47,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def read_sources(doc: dict, transport, now: float) -> dict:
+def read_sources(doc: dict, transport, now: float, trace: str = "") -> dict:
     readers = {
         "slack": lambda e: slack.rows(e, Client(os.environ.get("SLACK_USER_TOKEN", ""), transport), now),
         "github": github.rows,
@@ -54,6 +55,7 @@ def read_sources(doc: dict, transport, now: float) -> dict:
         "calendar": lambda e: [r for a in e["accounts"] for r in gcal.rows(a)],
         "outlook": outlook.rows,
     }
+    readers = {name: records.fetching(name, read, trace) for name, read in readers.items()}
     snap: dict = {"status": []}
     for name, read in readers.items():
         if name not in doc:
@@ -64,7 +66,8 @@ def read_sources(doc: dict, transport, now: float) -> dict:
         if found is not None:
             snap[name] = found
     if "outlook" in doc and doc["outlook"].get("calendar", True):
-        found = read_one(snap["status"], "Outlook calendar", outlook.events, doc["outlook"])
+        found = read_one(snap["status"], "Outlook calendar", records.fetching("outlook", outlook.events, trace),
+                         doc["outlook"])
         if found:
             snap["calendar"] = snap.get("calendar", []) + found
     return snap
@@ -140,13 +143,26 @@ def stamp_traces(snap: dict, cands: dict) -> None:
 
 def run(transport=http_transport, now: float | None = None, model=None) -> list[dict]:
     """One refresh. Returns each source's status line. `model(prompt, timeout)` replaces triage.call_model."""
+    trace, began, tally = records.new_trace(), time.monotonic(), {}
+    try:
+        lines = refresh_once(transport, now, model, trace, tally)
+    except Exception as exc:
+        records.job_run(JOB, trace, "work-queue", began, False, tally.get("rows"), exc)
+        raise
+    records.job_run(JOB, trace, "work-queue", began, not any(s["state"] == "error" for s in lines), tally.get("rows"))
+    return lines
+
+
+def refresh_once(transport, now, model, trace: str, tally: dict) -> list[dict]:
+    """The refresh itself. `trace` is this run's; `tally["rows"]` is how many rows the sources returned."""
     config.write_json(status_path(), {"running": True, "started": now_iso(), "pid": os.getpid()})
     try:
         doc = config.load()
-        snap = read_sources(doc, transport, time.time() if now is None else now)
+        snap = read_sources(doc, transport, time.time() if now is None else now, trace)
     except ValueError as exc:
         config.write_json(status_path(), {"running": False, "finished": now_iso(), "error": str(exc)})
         raise
+    tally["rows"] = records.rows_in(snap)
     ready.run(doc, transport, os.environ.get("SLACK_USER_TOKEN", ""))
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
     snap["built_iso"] = now_iso()
@@ -157,7 +173,7 @@ def run(transport=http_transport, now: float | None = None, model=None) -> list[
     if pro:
         marks = config.read_json(config.data_dir() / "marks.json", {})
         try:
-            snap["triage"] = triage.run(snap, model or triage.call_model, marks, blocked_rows())
+            snap["triage"] = triage.run(snap, model or triage.call_model, marks, blocked_rows(), trace=trace)
         except Exception as exc:  # noqa: BLE001 — a triage bug never holds back the page; the traceback goes to the log
             traceback.print_exc()
             snap["triage"] = paid(snap, f"triage stopped on an unexpected error ({type(exc).__name__})")

@@ -171,6 +171,17 @@ def _todo_lock():
         return contextlib.nullcontext()
 
 
+def _record(name, *args, **kwargs):
+    """One telemetry record, built by assistant.records.<name>. Imported here, inside the try: a broken module costs a
+    record, never a dashboard edit. In the tests' strict mode a mistake in a record is raised."""
+    try:
+        from assistant import records  # noqa: PLC0415
+        getattr(records, name)(*args, **kwargs)
+    except Exception:
+        if os.environ.get("ASSISTANT_TELEMETRY_STRICT") == "1" and "PYTEST_CURRENT_TEST" in os.environ:
+            raise
+
+
 def _count_render_failure(error):
     """Count a failed re-render so a repeat shows once on the dashboard. Never
     raises: this runs on the request path."""
@@ -253,6 +264,7 @@ def dispatch_now(td_id):
         if target is None:
             return False, f"id {td_id!r} not found"
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        before = target.get("status")
         target["autoDispatch"] = True
         target["dispatchedAt"] = None
         target["dispatchedWs"] = None
@@ -261,6 +273,7 @@ def dispatch_now(td_id):
             target["statusUpdatedAt"] = now
             target["statusReason"] = f"Re-opened via dashboard 'Dispatch now' at {now}"
         save_json(data)
+    _record("task", target, "open", "dashboard", before)
     rerender()
     return True, f"{td_id}: queued for next-pulse Bucket B dispatch"
 
@@ -772,6 +785,7 @@ def remove_item(td_id):
         data.setdefault("removed", []).append(item)
         data["items"] = items
         save_json(data)
+    _record("task", item, "removed", "dashboard", item.get("status"))
     rerender()
     return True, f"{td_id} removed"
 

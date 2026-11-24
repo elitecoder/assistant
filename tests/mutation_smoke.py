@@ -845,7 +845,7 @@ CHECKS = (
     (
         'a failed Outlook calendar shows its own error and the rest still render',
         "work_queue/refresh.py",
-        'found = read_one(snap["status"], "Outlook calendar", outlook.events, doc["outlook"])',
+        'found = read_one(snap["status"], "Outlook calendar", records.fetching("outlook", outlook.events, trace),\n                         doc["outlook"])',
         'found = outlook.events(doc["outlook"])',
         'tests/test_work_queue_refresh.py::test_a_failed_outlook_calendar_shows_its_own_error_and_calendar_false_turns_it_off',
     ),
@@ -1859,8 +1859,8 @@ CHECKS = (
     (
         'the cache is saved even when triage breaks',
         'work_queue/triage.py',
-        '    finally:\n        for i in items:',
-        '    except ZeroDivisionError:\n        pass\n    if True:\n        for i in items:',
+        '    finally:\n        RUN_TRACE = ""\n        for i in items:',
+        '    except ZeroDivisionError:\n        pass\n    if True:\n        RUN_TRACE = ""\n        for i in items:',
         'tests/test_work_queue_triage.py::test_an_unexpected_triage_error_keeps_the_verdicts_already_paid_for',
     ),
     (

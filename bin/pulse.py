@@ -58,6 +58,7 @@ The bugs we built this for don't exist here:
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -221,6 +222,9 @@ OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT
 # Read once per pulse by main(); None outside a pulse.
 PULSE_PRO: bool | None = None
 PULSE_JOBS: dict[str, bool] | None = None
+# This pulse's trace id and the tasks it has dispatched, while main() runs (see _recorded_pulse).
+PULSE_TRACE = ""
+PULSE_DISPATCHED = 0
 
 
 def job_enabled(job: str) -> bool:
@@ -764,7 +768,8 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
             caller="triage", model=model, usage=usage,
             wall_ms=result.wall_ms, status="ok" if accepted else "failed",
             provider=provider,
-            error=metering.failure_reason(result.rc, result.stderr))
+            error=metering.failure_reason(result.rc, result.stderr),
+            trace=PULSE_TRACE)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("triage metering capture failed (ignored): %s", e)
 
@@ -1715,7 +1720,8 @@ def run_observer_audit(ctxs_to_observe: list[dict],
             usage=usage or {"tokens_in": 0, "tokens_out": 0,
                             "cost_usd": 0.0, "source": "none"},
             wall_ms=0, status="ok" if verdicts_frontier else "failed",
-            provider=audit_provider, error="the model returned no verdicts")
+            provider=audit_provider, error="the model returned no verdicts",
+            trace=PULSE_TRACE)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("audit metering failed (ignored): %s", e)
     # Compare + ledger. A ws the frontier didn't judge (no line) is a FAILURE,
@@ -2187,6 +2193,67 @@ def _load_todo_item(todo_id: str) -> dict | None:
     return None
 
 
+def _record(name: str, *args, **kwargs):
+    """What `assistant.records.<name>` returns: one telemetry record, built there. The module is imported here, inside
+    the try, and is not one of run-pulse.py's start-up files: a broken one costs a record and never the pulse. In the
+    tests' strict mode a mistake in a record is raised."""
+    try:
+        from assistant import records  # noqa: PLC0415
+        return getattr(records, name)(*args, **kwargs)
+    except Exception:  # noqa: BLE001 — recording never breaks the pulse
+        if os.environ.get("ASSISTANT_TELEMETRY_STRICT") == "1" and "PYTEST_CURRENT_TEST" in os.environ:
+            raise
+        return None
+
+
+def _item_as_filed(todo_id: str) -> dict | None:
+    """The TODO as the file holds it now: for the dispatch record, which says what the file says."""
+    try:
+        data = json.loads(TODO_PATH.read_text())
+        return next((it for it in data["items"] if it.get("id") == todo_id), None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _recorded_dispatch(dispatch):
+    """Record each attempt to dispatch a TODO, after it ends however it ends: the TODO's trace, the outcome, the
+    workspace and the new state as the file holds them, and how long it took. It changes nothing the attempt does."""
+    @functools.wraps(dispatch)
+    def wrapper(todo_id):
+        global PULSE_DISPATCHED
+        began, before, ok = time.monotonic(), _item_as_filed(todo_id), False
+        try:
+            ok = dispatch(todo_id)
+            return ok
+        finally:
+            _record("dispatch", before, _item_as_filed(todo_id), bool(ok), began)
+            PULSE_DISPATCHED += bool(ok)
+    return wrapper
+
+
+def _recorded_pulse(main_fn):
+    """Record each pulse as one job run, with a trace of its own that its model calls carry: how long, whether it
+    ended well, and how many TODOs it dispatched. A dry run records nothing."""
+    @functools.wraps(main_fn)
+    def wrapper():
+        global PULSE_TRACE, PULSE_DISPATCHED
+        if "--dry-run" in sys.argv:
+            return main_fn()
+        began, PULSE_DISPATCHED, ok, failure = time.monotonic(), 0, False, None
+        PULSE_TRACE = _record("new_trace") or ""
+        try:
+            rc = main_fn()
+            ok = not rc
+            return rc
+        except Exception as exc:
+            failure = exc
+            raise
+        finally:
+            _record("job_run", "pulse", PULSE_TRACE, "pulse", began, ok, PULSE_DISPATCHED, failure)
+            PULSE_TRACE = ""
+    return wrapper
+
+
 def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
     """Stamp dispatchedAt + dispatchedWs on the TODO so it leaves bucket_b.
 
@@ -2374,6 +2441,7 @@ def _surface_read_text(surface_ref: str, lines: int = 200) -> str:
     return d.get("text", "") or ""
 
 
+@_recorded_dispatch
 def dispatch_todo(todo_id: str) -> bool:
     """Spawn a background cmux workspace for one TODO and deliver its prompt.
 
@@ -2641,6 +2709,7 @@ def run_lesson_extractor(pulse_idx: int) -> None:
 
 # ─── main ───────────────────────────────────────────────────────────────────
 
+@_recorded_pulse
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])

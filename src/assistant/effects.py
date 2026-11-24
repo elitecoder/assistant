@@ -611,8 +611,20 @@ def finish(effect_id, outcome, verified=None, error="") -> bool:
             _write_row({"v": 1, "kind": "result", "id": effect_id, "at": _iso(now), "t": round(now, 3),
                         "outcome": outcome, "verified": verified if isinstance(verified, bool) else None,
                         "error": _error_class(error)})
-        return True
     except Exception as exc:  # noqa: BLE001 - finish runs after the action; it must not undo it by raising
         print(f"effects: couldn't record the result of {redact(str(effect_id))[:40]} ({type(exc).__name__})",
               file=sys.stderr)
         return False
+    _tell_telemetry(found, outcome)
+    return True
+
+
+def _tell_telemetry(effect, outcome: str) -> None:
+    """One `effect` record for a result just written. Its own try and a lazy import: the ledger works whether
+    telemetry is there, broken or missing, and nothing here changes what `finish` returns."""
+    try:
+        from assistant import records  # noqa: PLC0415
+        records.effect_finished(effect, outcome)
+    except Exception:  # noqa: BLE001 - a record is never worth the ledger
+        if os.environ.get("ASSISTANT_TELEMETRY_STRICT") == "1" and "PYTEST_CURRENT_TEST" in os.environ:
+            raise

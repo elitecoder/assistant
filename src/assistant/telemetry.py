@@ -112,6 +112,7 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "prompt_version": NAME,  # open: names a prompt file revision
         "source": SOURCE,
         "ms": INT,
+        "run_trace": ID,  # the refresh's trace: ties a verdict to the model call that produced it
     },
     "model_call": {
         "model": NAME,  # open: a model's id, which the provider names

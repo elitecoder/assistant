@@ -60,9 +60,9 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from assistant import model_tiers, strategist
+from assistant import model_tiers, pointers, records, strategist
 
-from work_queue import config, tools
+from work_queue import config, tools, traces
 from work_queue.scrubber import scrub
 
 sys.path.insert(0, str(tools.REPO / "bin"))
@@ -515,6 +515,23 @@ def release(rid: str) -> None:
         config.write_json(reservations_path(), held)
 
 
+RUN_TRACE = ""  # the refresh's trace while `run` is working; what the model calls and the verdicts it makes carry
+
+
+def record_verdicts(batch: list[dict], verdicts: dict[int, dict]) -> None:
+    """One record for each row this call gave a new verdict (a saved verdict that is reused has no record): the
+    row's own trace, its pointer, the verdict's disposition and lane, the model, the rubric's version and the
+    source, and the refresh's trace, which the call's `model_call` record carries too."""
+    traced = traces.lookup_many([i["link"] for i in batch])
+    model, rubric = model_name(), "rubric-" + version()[:8]
+    for j, item in enumerate(batch):
+        if j in verdicts:
+            found = verdicts[j]
+            records.emit("triage_verdict", traced[item["link"]], pointers.row_pointer(item["link"]), "work-queue",
+                         verdict=found["disposition"], lane=found.get("lane"), model=records.name_of(model),
+                         prompt_version=rubric, source=item["source"].lower(), run_trace=RUN_TRACE or None)
+
+
 class Triage:
     """One refresh's triage. `llm(prompt, timeout)` returns the model's text, or raises Unavailable when the call
     fails and Stop when no later call can work either."""
@@ -581,6 +598,7 @@ class Triage:
         verdicts = self.call("Row triage", prompt, shaped)
         if verdicts is not None:
             remember(batch, verdicts, cache, batches)
+            records.guard(record_verdicts, batch, verdicts)
         return verdicts is not None
 
     def split(self, cache: dict, batches: dict) -> None:
@@ -691,11 +709,13 @@ def cached(snap: dict, note: str = "") -> dict:
     return {**empty(note), "rows": verdicts_by_link(items, intact(cache, batches, items, read_sources(snap)))}
 
 
-def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), clock=time.monotonic) -> dict:
+def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), clock=time.monotonic,
+        trace: str = "") -> dict:
     """Triage one refresh's rows. Returns what the page shows: verdicts by link, the Start here list, what changed,
     how many rows wait for the next refresh or were skipped, and a note when triage stopped. `blocked` holds the
     links of rows whose Assistant TODO is blocked; they stay on Start here even when marked. Rows you marked done
-    or dropped aren't triaged."""
+    or dropped aren't triaged. `trace` is the refresh's: the records of this run's model calls and verdicts carry it."""
+    global RUN_TRACE
     saved = load_saved()
     cache, batches = load_cache(saved)
     known = set(cache)
@@ -706,6 +726,7 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
     out = empty()
     diff = since(snap, snap["built"])
     work = Triage(llm, clock)
+    RUN_TRACE = trace
     try:
         work.rows(asked, cache, batches, retrying(saved))
         out["rows"] = verdicts_by_link(items, cache)
@@ -721,6 +742,7 @@ def run(snap: dict, llm, marks: dict, blocked: set | frozenset = frozenset(), cl
         out["rows"] = verdicts_by_link(items, cache)
         out["changes"] = out["changes"] or diff
     finally:
+        RUN_TRACE = ""
         for i in items:
             if i["hash"] in cache:
                 cache[i["hash"]]["seen"] = today()
@@ -788,7 +810,7 @@ def call_model(prompt: str, timeout: int) -> str:
     try:
         metering.append_cost_row(caller=FEATURE, model=model, usage=usage, wall_ms=result.wall_ms,
                                  status="ok" if result.usable else "failed", provider=provider,
-                                 error=metering.failure_reason(result.rc, result.stderr))
+                                 error=metering.failure_reason(result.rc, result.stderr), trace=RUN_TRACE)
     except OSError as exc:
         print(f"Couldn't record the model's cost: {exc}", file=sys.stderr)
     if result.rc == 124:
