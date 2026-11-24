@@ -55,18 +55,26 @@ MAX_DISPATCH_PER_PULSE = 2
 # there is headroom the dispatcher will refuse (m14: the planner counted ALL
 # live sessions incl. long-idle cron workers). This predicate is that rule.
 ACTIVE_WS_WINDOW_SEC = 600
+# "Working" means a tool call with no result yet. One still open after this long
+# is not a tool running: it is a session waiting on a person (a permission
+# prompt, a question) or one that was interrupted. On the maintainer's machine
+# two such sessions, each more than a day old, would have held the count at the
+# cap by themselves and stopped every dispatch.
+WORKING_STALE_SEC = 2 * 3600
 
 
 def ws_is_active(agent_status, last_turn_age_sec) -> bool:
     """One shared "is this workspace active?" predicate (m14). A workspace is
-    active if its agent is working, else if it had a turn within
-    ACTIVE_WS_WINDOW_SEC. An unknown age (never a turn) is NOT active — the same
-    call pulse.count_active makes, so the planner's headroom can never disagree
-    with the dispatcher's active count on the same fleet."""
+    active if its agent is working and its transcript changed within
+    WORKING_STALE_SEC (or at an unknown time), else if it had a turn within
+    ACTIVE_WS_WINDOW_SEC. An unknown age with no tool call open (never a turn)
+    is NOT active — the same call pulse.count_active makes, so the planner's
+    headroom can never disagree with the dispatcher's active count on the same
+    fleet."""
+    known = isinstance(last_turn_age_sec, (int, float))
     if agent_status == "working":
-        return True
-    return isinstance(last_turn_age_sec, (int, float)) \
-        and last_turn_age_sec < ACTIVE_WS_WINDOW_SEC
+        return not known or last_turn_age_sec < WORKING_STALE_SEC
+    return known and last_turn_age_sec < ACTIVE_WS_WINDOW_SEC
 
 
 @dataclass

@@ -1,7 +1,9 @@
 """Default or Pro mode.
 
-Pro mode turns on notifications and triage, goals and the planner, and the
-model-heavy background jobs. The setting is `{"mode": "pro"}` or
+Pro mode adds the Notifications, Decisions and connector tabs, goals, and the
+background jobs. Decisions, the morning brief and the goals planner also need
+their own setting, {"jobs": {"decisions": true}} and so on; they are off by
+default. The mode is `{"mode": "pro"}` or
 `{"mode": "default"}` in ~/.assistant/config.json. When the file or the key
 is missing, an install that already has Pro data (goals, notifications, a saved
 brief, or the Pro skills) counts as Pro, and a fresh install counts as default.
@@ -123,6 +125,50 @@ def observer_enabled() -> bool:
     except (OSError, ValueError):
         return False
     return isinstance(observer, dict) and observer.get("enabled") is True
+
+
+# The background jobs that are off until someone turns them on in config.json.
+# `decisions` is the job that turns GitHub and session events into the decision
+# list. The setting is the file only: the dashboard is drawn by a different
+# process than the pulse, so a variable set for one could not reach the other.
+JOBS = ("decisions", "brief", "planner")
+_NOT_SET = object()
+
+
+def env_on(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _job_value(name: str):
+    try:
+        jobs = _read_config().get("jobs")
+    except (OSError, ValueError):
+        return _NOT_SET
+    return jobs.get(name, _NOT_SET) if isinstance(jobs, dict) else _NOT_SET
+
+
+def job_settings() -> dict[str, bool]:
+    """Which of the opt-in jobs are turned on: those with {"jobs": {"<name>":
+    true}} in config.json. Only the JSON value true counts; a missing key, any
+    other value, or an unreadable file leaves the job off. Reads the config
+    once, so callers read it once per pulse."""
+    try:
+        jobs = _read_config().get("jobs")
+    except (OSError, ValueError):
+        jobs = None
+    if not isinstance(jobs, dict):
+        jobs = {}
+    return {name: jobs.get(name) is True for name in JOBS}
+
+
+def ignored_job_value(name: str) -> str | None:
+    """The raw JSON of jobs.<name> when it is set to something other than true
+    or false (such as "true" in quotes, 1, or "yes"), which leaves the job off.
+    None when it is absent, true, false, or the file is unreadable."""
+    value = _job_value(name)
+    if value is _NOT_SET or isinstance(value, bool):
+        return None
+    return json.dumps(value)
 
 
 def save(value: str) -> None:

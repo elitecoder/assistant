@@ -14,6 +14,8 @@ Two signal sources feed one proposal pipeline:
   tool results, harness reminders, and spawn prompts), and emits candidates in
   the same shape the ledger pass produces. Skipped with --ledger-only.
 
+The ledger pass is off by default; set ASSISTANT_LESSON_LEDGER_PASS=1 to run it.
+
 Both passes drop candidates already covered by an existing lesson or a pending
 proposal (idempotency — running twice produces no duplicates), ask Claude
 (one-shot `claude -p`) to write a {rule, target, scope}, and append it
@@ -1172,6 +1174,7 @@ def run_discovery(*, dry_run: bool = False,
 
 def extract(*, dry_run: bool = False,
             ledger_only: bool = False,
+            ledger_pass: bool | None = None,
             llm: Callable[[str], str] | None = None,
             ledger_path: Path = LEDGER_PATH,
             proposals_path: Path = PROPOSALS_PATH,
@@ -1186,7 +1189,12 @@ def extract(*, dry_run: bool = False,
     scanner_factory).
     """
     now = now if now is not None else now_epoch()
-    entries = read_ledger_tail(ledger_path)
+    # The ledger pass is off unless ASSISTANT_LESSON_LEDGER_PASS=1: nobody
+    # answered its proposals, so by default only transcript corrections run.
+    if ledger_pass is None:
+        ledger_pass = os.environ.get("ASSISTANT_LESSON_LEDGER_PASS", "0").strip().lower() in (
+            "1", "true", "yes", "on")
+    entries = read_ledger_tail(ledger_path) if ledger_pass else []
     candidates = find_patterns(entries, now=now)
 
     triggers = existing_triggers(curator)

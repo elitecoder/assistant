@@ -98,6 +98,11 @@ def drive(output_dir, browser_executable, coverage_dir=None):
         }]}))
         (home / ".assistant/heartbeat.json").write_text(json.dumps({
             "last_pulse_ts": now.timestamp(), "pulse_idx": 1, "model": "fixture"}))
+        # Decisions, the brief and the planner are off until turned on. This drive covers the page's
+        # behaviour with them on (the brief's "seen" signal only fires then). No "mode" key, so the
+        # mode is still worked out from the data here, as before.
+        (home / ".assistant/config.json").write_text(json.dumps(
+            {"jobs": {"decisions": True, "brief": True, "planner": True}}))
         (output / "assistant-todo.json").write_text(json.dumps({"items": [
             {"id": "td-901", "title": "Finish the older retry fix", "priority": "P1",
              "createdAt": (now - timedelta(days=5)).date().isoformat(), "status": "blocked"},

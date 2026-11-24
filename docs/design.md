@@ -31,6 +31,9 @@ your own rules.
 
 ## Ranking the brief
 
+Decisions and the brief are off by default; the sections below describe them
+once you turn them on.
+
 Each open decision scores its lane (escalate 100, staged 60, digest 20) plus
 urgency (now 50, high 20) plus freshness (20, minus 5 a day) plus a goal boost
 (up to 20), and the queue sorts by lane first. Each decision card shows its
@@ -85,7 +88,15 @@ confirm the agent received the merge command. It's written for the author's own
 repository and merge skills, so expect to adapt it.
 
 TODOs flagged `autoDispatch` are spawned into fresh cmux workspaces with hard
-caps: at most 5 busy workspaces, 30 total, and 2 new spawns per pulse.
+caps: at most 5 busy workspaces, 30 total, and 2 new spawns per pulse. The busy
+count doesn't depend on the Observer. Each pulse that has a TODO to start reads
+every open agent session from cmux and the tail of its transcript. A session is
+busy when it had a turn in the last 10 minutes or has a tool call open; a tool
+call still open after 2 hours is a session waiting on a person, and stops
+counting. Sessions you are using yourself count. A plain terminal and an agent
+that has exited aren't busy, and a session whose transcript can't be read is.
+If the pulse can't read the open workspaces or the sessions, it starts nothing
+that pulse and shows a "Dispatch paused" card instead.
 
 ## Design decisions
 
@@ -157,8 +168,8 @@ draw corrections get downgraded to `muted` by `bin/tools/pattern-feedback.py`.
 | `bin/assistant-daemon.py` | The opt-in single-process daemon. |
 | `bin/cmux-watcher.py` | Event-driven workspace signals (opt-in LaunchAgent). |
 | `bin/connectors/*.py` | Read-only source connectors (opt-in daemons). |
-| `bin/build-morning-brief.py` | Rebuilds today's brief on demand. `--print` also writes the JSON to stdout. |
-| `bin/plan-next-actions.py` | Runs the goals planner on demand. |
+| `bin/build-morning-brief.py` | Rebuilds today's brief on demand, even while the brief job is off. `--print` also writes the JSON to stdout. |
+| `bin/plan-next-actions.py` | Runs the goals planner on demand, even while the planner job is off. |
 | `bin/interrupt-gate.py` | The only path to a push notification. |
 | `bin/outbound-dispatch.py` | The only path to an outbound action. |
 | `bin/todo-server.py` | The dashboard and JSON API at http://127.0.0.1:9876. It answers only at `127.0.0.1` or `localhost` (any port), refuses to be framed by another site, and every POST passes one check: the page it serves, or the token in `~/.assistant/api-token` (`src/assistant/apitoken.py`). See [Use the dashboard](dashboard.md#who-can-change-things). |
@@ -167,6 +178,18 @@ draw corrections get downgraded to `muted` by `bin/tools/pattern-feedback.py`.
 | `bin/assistant-doctor.py` | Preflight health check. `--only core\|slack\|all`. |
 | `bin/tool-dispatch.py` | Named tool dispatcher (`bin/tools-manifest.json`). |
 | `install.sh` | Dry run by default. `--apply` links skills and code, copies plists, and reloads the core set. |
+
+## Jobs that are off by default
+
+In Pro mode the pulse runs triage (the `decisions` setting), the brief, and the
+planner only when `~/.assistant/config.json` has `{"jobs": {"decisions": true,
+"brief": true, "planner": true}}`; `mode.job_settings()` reads them once per
+pulse. Only the config file counts, so the dashboard, which another process
+draws, agrees with the pulse. With triage off the pulse moves the event cursor
+to the end of the log, still runs the decision TTL sweep, and keeps open
+escalate decisions on the awaiting list, since they never expire. The narrator
+also needs the brief. The lesson extractor's ledger pass needs
+`ASSISTANT_LESSON_LEDGER_PASS=1`.
 
 ## Milestones
 

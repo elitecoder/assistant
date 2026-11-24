@@ -23,8 +23,8 @@ starting sessions, answering you on Slack, and cleaning up after them.
 | **Talk to your Mac from Slack** | A Claude session answers your messages in a private Slack channel and pings you when a workspace needs you. |
 | **Save a Slack thread as a task** | React with your machine's emoji, and the thread becomes a task, which then gets its own session. |
 | **Find Slack threads that need you** | The **Slack** tab lists threads where someone is waiting on you or you promised something. |
-| **One list for your inbox** (Pro mode) | The **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. |
-| **Track ranked goals** (Pro mode) | `/goal` records your goals, and a planner suggests the next step when one stalls. |
+| **One list for your inbox** (Pro mode) | Once you turn on decisions, the **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. Decisions are off by default. |
+| **Track ranked goals** (Pro mode) | `/goal` records your goals. Once you turn on the planner, it suggests the next step when one stalls and records their progress. The planner is off by default. |
 | **Recover from crashes** | Workspaces that crash come back on their own. Opt in with `--with-crash-resume`. |
 | **Keep your Macs in sync** | Claude memory syncs across your Macs. Opt in with `--with-memory`. |
 
@@ -46,9 +46,11 @@ you promised something. You stop scrolling channels to find them.
 
 ### Rank your notifications instead of reading them all (Pro mode)
 
-Rules sort every notification into escalate, staged, digest, or drop, and rank
-what's left. You see the few decisions that matter, and **Wrong lane** teaches
-the rules with one tap.
+Decisions are off until you turn them on with `"jobs": {"decisions": true}` in
+`~/.assistant/config.json`; see [Pro mode](#pro-mode). Once they're on, rules
+sort every notification into escalate, staged, digest, or drop, and rank what's
+left. You see the few decisions that matter, and **Wrong lane** teaches the
+rules with one tap.
 
 ![A decision card with sample data: "@you can you sanity-check the new rate-limit headers?" marked escalate by the gh-mention-escalate rule, with Accept, Snooze 1h, Reject, and Wrong lane buttons.](docs/images/decision-card.png)
 
@@ -67,7 +69,7 @@ services**, or run `./install.sh --apply --pro` (or `--no-pro`). New installs
 start in default mode; existing installs stay in Pro mode. Pro mode adds:
 
 - The **Notifications**, **Decisions**, **Background work**, and **Connected
-  apps** tabs, with triage ranking your notifications.
+  apps** tabs. Turning events into decisions is off until you turn it on.
 - Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack,
   which you set up separately. See [Connect your sources](docs/connectors.md).
   They pause while Pro mode is off.
@@ -75,13 +77,21 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
   Later saves, pull requests waiting on your review, Outlook, Gmail, and
   today's calendar into one list you clear. Turning Pro mode off stops its
   server within seconds.
-- Ranked goals with the `/goal` skill, and a planner that suggests next steps.
+- Ranked goals with the `/goal` skill, and a planner that suggests next steps
+  and records their progress once you turn it on.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.
-- Background jobs that each need their own setting: the strategist
+- Background jobs that are off until you turn them on: decisions, the morning
+  brief, and the planner. Add `"jobs": {"decisions": true, "brief": true,
+  "planner": true}` to `~/.assistant/config.json`, next to `"mode"`, with only
+  the ones you want. Write `true` without quotes. It takes effect at Assistant's
+  next check. See
+  [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
+- Background jobs that each need their own variable: the strategist
   (`ASSISTANT_STRATEGIST=1`), the lessons extractor
-  (`ASSISTANT_LESSON_EXTRACTOR=1`), and the brief narrator
-  (`ASSISTANT_BRIEF_NARRATOR=1`).
+  (`ASSISTANT_LESSON_EXTRACTOR=1`, with its pass over repeated actions behind
+  `ASSISTANT_LESSON_LEDGER_PASS=1`), and the brief narrator
+  (`ASSISTANT_BRIEF_NARRATOR=1`, which also needs the brief).
 - The session check acting on its results: merging PRs, closing finished
   workspaces, and nudging stuck ones. The check itself, the Observer, is off by
   default in both modes. To turn it on, set `{"observer": {"enabled": true}}`

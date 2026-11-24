@@ -1,11 +1,11 @@
 ---
 name: goal
-description: Add, list, rerank, and update Mukul's ranked goals at ~/.claude/assistant-goals.json — the Keel goals control loop the deterministic planner (bin/plan-next-actions.py) reads every pulse. Use when the user types /goal, asks to "add a goal", "list goals", "rerank goals", "pause the planner", or wants to change a goal's outcome/links/status. Mutations go through the local todo-server routes (POST-only, localhost) so goals.json stays flock'd and atomically written. Automation NEVER edits goals directly — it files a confirmation-gated goal_update proposal; only a human (this skill) edits in place.
+description: Add, list, rerank, and update Mukul's ranked goals at ~/.claude/assistant-goals.json — the Keel goals control loop the deterministic planner (bin/plan-next-actions.py) reads once turned on. Use when the user types /goal, asks to "add a goal", "list goals", "rerank goals", "pause the planner", or wants to change a goal's outcome/links/status. Mutations go through the local todo-server routes (POST-only, localhost) so goals.json stays flock'd and atomically written. Automation NEVER edits goals directly — it files a confirmation-gated goal_update proposal; only a human (this skill) edits in place.
 ---
 
 # /goal — ranked goals + planner control loop
 
-Ranked goal store for the Assistant. File: `~/.claude/assistant-goals.json` (schema in the `_schema` field). The deterministic planner reads it every pulse, stamps mechanical progress, and stages the next playbook step for stalled goals. This skill is the **human** edit path; it drives the todo-server's `/goal/*` routes (localhost `http://127.0.0.1:9876`), which own the flock'd atomic writes.
+Ranked goal store for the Assistant. File: `~/.claude/assistant-goals.json` (schema in the `_schema` field). The planner is off by default: nothing acts on a goal or records its progress until `"jobs": {"planner": true}` is in `~/.assistant/config.json`. Once it is on, the deterministic planner reads the store at every check, stamps mechanical progress, and stages the next playbook step for stalled goals. This skill is the **human** edit path; it drives the todo-server's `/goal/*` routes (localhost `http://127.0.0.1:9876`), which own the flock'd atomic writes.
 
 ## Subcommands
 
@@ -87,7 +87,7 @@ Editing a goal's **status / links / playbook** is confirmation-gated (m18): the
 dashboard sends an `X-Assistant-Human: 1` header on those edits and they apply
 in place. A request WITHOUT that header (i.e. any automation, including the
 assistant's own LLM sessions curling localhost) does NOT apply the change — it
-files a `goal_update` proposal for Mukul to confirm in the brief. Cross-origin
+files a `goal_update` proposal in `~/.assistant/comms/proposals.jsonl` for you to confirm. Cross-origin
 mutations are refused outright (403). So automation can never flip a goal to
 `done` or repoint its links directly; it can only propose.
 
@@ -96,7 +96,7 @@ mutations are refused outright (403). So automation can never flip a goal to
 - **Outcome is mandatory and measurable** — the store rejects a goal with no outcome. "Make progress on X" is not an outcome; "X shipped to prod with test coverage ≥80%" is.
 - **`lastProgressAt` is mechanical** — never set it by hand; the planner stamps it from the ledger/PRs/decisions/TODOs. This skill cannot edit it.
 - **Rank is unique** — `rerank` reassigns 1..N; unlisted goals keep their relative order after the listed ones.
-- **Automation is confirmation-gated** — if a pulse decides a goal "looks done" or should be reranked, it files a `goal_update` proposal (type=`goal_update` in `proposals.jsonl`) for Mukul to confirm in the brief. It never edits the store. Only this human skill edits directly.
+- **Automation is confirmation-gated** — if a pulse decides a goal "looks done" or should be reranked, it files a `goal_update` proposal (type=`goal_update` in `proposals.jsonl`) in `~/.assistant/comms/proposals.jsonl` for you to confirm. It never edits the store. Only this human skill edits directly.
 - **`_paused:true` is the kill switch** — the planner no-ops (ledgered) until resumed.
 
 ## Failure handling
