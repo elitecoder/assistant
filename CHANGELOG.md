@@ -19,7 +19,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   days up to about 200 MB, and the pulse tidies it once an hour and logs a line
   if a setting can't be read or records were lost. Set
   `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
-  off (anything but `true` is off); delete the folder to remove what is there. See
+  off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
   [Telemetry](docs/telemetry.md).
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is

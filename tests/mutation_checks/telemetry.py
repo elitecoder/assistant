@@ -2,11 +2,11 @@
 
 M = "src/assistant/telemetry.py"
 T = "tests/test_telemetry.py::"
-REFUSED = T + "test_anything_else_is_left_out_and_counted"
+ANYWHERE = T + "test_nothing_personal_is_kept_in_any_text_field_of_any_kind"
 
 
 def refused(value):
-    return REFUSED + "[%r]" % (value,)
+    return ANYWHERE + "[%r]" % (value,)
 
 
 CHECKS = (
@@ -15,7 +15,7 @@ CHECKS = (
         "a field the kind doesn't list is never stored, whatever its value",
         M,
         "    return None  # a field the kind doesn't list\n",
-        "    return _clean_pointer(value)\n",
+        "    return _clean_name(value)\n",
         T + "test_a_field_the_kind_does_not_list_is_left_out_and_counted",
     ),
     (
@@ -37,7 +37,7 @@ CHECKS = (
         M,
         '            and ":/" not in value',
         "",
-        refused("file:/etc"),
+        refused("who:/etc"),
     ),
     (
         "a pointer isn't a host or file name",
@@ -68,11 +68,81 @@ CHECKS = (
         refused("x" * 121),
     ),
     (
-        "a pointer holding a secret shape is dropped, not stored",
+        "an id holding a secret shape is dropped, not stored",
         M,
-        " or redact.redact(value) != value",
-        "",
-        T + "test_a_secret_shaped_word_is_dropped_not_kept_in_a_redacted_form",
+        "    if not _pointer_ok(value) or redact.redact(value) != value:\n        return None\n    prefix =",
+        "    if not _pointer_ok(value):\n        return None\n    prefix =",
+        T + "test_a_secret_shaped_word_is_dropped_from_an_id_and_from_a_name_not_kept_in_a_redacted_form",
+    ),
+    (
+        "an open name holding a secret shape is dropped, not stored",
+        M,
+        "    if not _pointer_ok(value) or redact.redact(value) != value:\n        return None\n    shape =",
+        "    if not _pointer_ok(value):\n        return None\n    shape =",
+        T + "test_a_secret_shaped_word_is_dropped_from_an_id_and_from_a_name_not_kept_in_a_redacted_form",
+    ),
+    (
+        "an id starts with a known prefix",
+        M,
+        "    return value if prefix is not None and len(value) > len(prefix) else None\n",
+        "    return value\n",
+        T + "test_nothing_that_is_not_an_id_is_a_subject_or_a_pointing_field[%r]" % "claude-3.5-sonnet",
+    ),
+    (
+        "a prefix alone is not an id",
+        M,
+        "prefix is not None and len(value) > len(prefix)",
+        "prefix is not None",
+        T + "test_nothing_that_is_not_an_id_is_a_subject_or_a_pointing_field[%r]" % "td-",
+    ),
+    (
+        "a field with a list takes only a value on it, even an id-shaped one",
+        M,
+        "        return value if type(value) is str and value in kind else None\n",
+        "        return value if type(value) is str else None\n",
+        T + "test_a_value_not_on_a_fields_list_is_refused_even_when_it_looks_like_an_id",
+    ),
+    (
+        "a component is on its list or empty",
+        M,
+        '    return value if type(value) is str and (value == "" or value in COMPONENTS) else None\n',
+        "    return value if type(value) is str else None\n",
+        T + "test_a_component_is_on_its_list_or_empty",
+    ),
+    (
+        "an open name has a letter",
+        M,
+        '    shape = (re.search("[A-Za-z]", value) and',
+        "    shape = (True and",
+        refused("555-123-4567"),
+    ),
+    (
+        "an open name has no run of nine digits",
+        M,
+        'not re.search("[0-9]{9}", value)',
+        "True",
+        T + "test_an_open_name_that_breaks_its_shape_is_left_out_and_counted[%r]" % "a1234567890123",
+    ),
+    (
+        "an open name has at most five hyphens and underscores",
+        M,
+        'value.count("-") + value.count("_") <= 5',
+        'value.count("-") + value.count("_") <= 50',
+        refused("Fix-the-login-bug-for-Ann-Lee-before-Friday"),
+    ),
+    (
+        "an open name has a colon only as a short version at the end",
+        M,
+        'and ":" not in _VERSION_SUFFIX.sub("", value)',
+        "and True",
+        refused("diagnosis:cancer"),
+    ),
+    (
+        "an open name has nothing capitalised before a slash",
+        M,
+        '("/" not in value or value.partition("/")[0] == value.partition("/")[0].lower())',
+        "True",
+        refused("Users/ann"),
     ),
     (
         "a yes/no is not taken for a whole number",
@@ -103,18 +173,39 @@ CHECKS = (
         T + "test_the_registry_is_well_formed_and_read_only",
     ),
     (
-        "a dict with a kind key spread into emit doesn't raise",
-        M,
-        "def emit(kind=None, /, *, trace=",
-        "def emit(kind=None, *, trace=",
-        T + "test_a_dict_with_a_kind_key_spread_into_emit_does_not_raise",
-    ),
-    (
         "strict mode raises for what would be left out",
         M,
-        '        if left_out and os.environ.get(STRICT_ENV) == "1":\n',
+        '        if left_out and os.environ.get(STRICT_ENV) == "1" and "PYTEST_CURRENT_TEST" in os.environ:\n',
         "        if False:\n",
         T + "test_strict_mode_raises_for_anything_the_store_would_leave_out",
+    ),
+    (
+        "strict mode is for tests only",
+        M,
+        ' and "PYTEST_CURRENT_TEST" in os.environ:\n',
+        ":\n",
+        T + "test_strict_mode_is_for_tests_only",
+    ),
+    (
+        "strict mode names an unknown kind",
+        M,
+        '["unknown kind " + (repr(kind[:40]) if type(kind) is str else type(kind).__name__)]',
+        '["unknown kind"]',
+        T + "test_strict_mode_names_the_unknown_kind",
+    ),
+    (
+        "the first four arguments can be given by keyword",
+        M,
+        "            if name in _HEAD and name not in head:\n",
+        "            if False:\n",
+        T + "test_the_first_four_arguments_can_be_positional_or_by_keyword_and_nothing_raises_at_the_call",
+    ),
+    (
+        "a fifth positional argument is an unknown field, not an error",
+        M,
+        '        fields = {"arg%d" % n: value for n, value in enumerate(args[len(_HEAD):], len(_HEAD))}\n',
+        "        fields = {}\n",
+        T + "test_the_first_four_arguments_can_be_positional_or_by_keyword_and_nothing_raises_at_the_call",
     ),
     (
         "the test suite runs telemetry in strict mode",
@@ -132,11 +223,39 @@ CHECKS = (
         T + "test_with_recording_off_nothing_is_created[0]",
     ),
     (
-        "an unreadable settings file still keeps recording, even when it is nested too deep",
+        "a settings file that can't be read, even one nested too deep, turns recording off",
         M,
-        "    except Exception as exc:  # noqa: BLE001 - a deeply nested file raises RecursionError, and still keeps recording\n",
+        "    except Exception as exc:  # noqa: BLE001 - a deeply nested file raises RecursionError; it is unreadable too\n",
         "    except (OSError, ValueError, AttributeError) as exc:  # noqa: BLE001\n",
-        T + "test_a_settings_file_nested_too_deep_still_keeps_recording",
+        T + "test_a_settings_file_that_cannot_be_read_turns_recording_off_and_says_so[" + "[" * 30 + "]",
+    ),
+    (
+        "a settings file that can't be read turns recording off",
+        M,
+        "        found.update(enabled=False, unreadable=why,",
+        "        found.update(enabled=True, unreadable=why,",
+        T + "test_a_settings_file_that_cannot_be_read_turns_recording_off_and_says_so[{broken]",
+    ),
+    (
+        "upkeep says a settings file can't be read",
+        M,
+        '            if settings["unreadable"]:\n                result["notes"].append(',
+        '            if False:\n                result["notes"].append(',
+        T + "test_a_settings_file_that_cannot_be_read_turns_recording_off_and_says_so[{broken]",
+    ),
+    (
+        "the hourly upkeep says so once an hour when a settings file can't be read",
+        M,
+        '        elif settings["unreadable"]:\n',
+        "        elif False:\n",
+        T + "test_upkeep_reports_a_settings_file_that_cannot_be_read_once_an_hour_and_creates_nothing_in_the_folder",
+    ),
+    (
+        "the same sentence is given once",
+        M,
+        '    result["notes"] = list(dict.fromkeys(result["notes"]))  # the same sentence once\n',
+        "    pass\n",
+        T + "test_the_same_sentence_is_given_once",
     ),
     (
         "keep_days is at least one day",
@@ -167,11 +286,18 @@ CHECKS = (
         T + "test_an_unreadable_size_setting_deletes_nothing_by_size_and_says_why[block0]",
     ),
     (
+        "age is counted from the earlier of now and the newest record",
+        M,
+        "reference = now if newest is None else min(now, newest)",
+        "reference = now",
+        T + "test_a_clock_that_jumps_forward_does_not_empty_the_store",
+    ),
+    (
         "a time in the future is never later than the clock",
         M,
         "return min(float(now), clock) if",
         "return float(now) if",
-        T + "test_a_time_in_the_future_never_deletes_what_is_recent",
+        T + "test_upkeep_never_writes_a_time_later_than_the_clock",
     ),
     (
         "a time later than now on a spool line is clamped to now",
@@ -256,7 +382,7 @@ CHECKS = (
     (
         "a database that isn't Assistant's is never written to",
         M,
-        '        if int.from_bytes(head[68:72], "big") != APPLICATION_ID:\n',
+        '        if int.from_bytes(head[68:72], "big") != APPLICATION_ID and not empty:\n',
         "        if False:\n",
         T + "test_a_database_that_is_someone_elses_is_never_given_tables_or_records",
     ),
@@ -268,11 +394,32 @@ CHECKS = (
         T + "test_the_header_is_read_before_sqlite_opens_the_file",
     ),
     (
-        "a newer version that is still in the log is left alone",
+        "a newer version that only the log holds is read without opening the file for writing",
         M,
-        "        if version > SCHEMA_VERSION:  # a version still in the log",
-        "        if False:  # a version still in the log",
+        '    probe = sqlite3.connect(_read_only_uri(path), uri=True, timeout=BUSY_SECONDS)\n',
+        '    probe = sqlite3.connect(path, timeout=BUSY_SECONDS)\n',
+        T + "test_a_newer_version_that_only_the_log_holds_leaves_both_files_exactly_as_they_were",
+    ),
+    (
+        "a newer version that only the log holds is left alone",
+        M,
+        "    if version > SCHEMA_VERSION:\n        raise _NewerSchema(",
+        "    if False:\n        raise _NewerSchema(",
         T + "test_a_newer_version_still_in_the_log_is_left_alone_too",
+    ),
+    (
+        "a file that is left alone has its mode left alone: the header is read before the file is touched",
+        M,
+        "    with contextlib.suppress(FileNotFoundError):\n        _check_header(path)\n    if create:\n        _touch(_DB)\n",
+        "    if create:\n        _touch(_DB)\n    with contextlib.suppress(FileNotFoundError):\n        _check_header(path)\n",
+        T + "test_a_file_that_is_left_alone_keeps_its_mode[someone-elses]",
+    ),
+    (
+        "a store whose set-up was interrupted is finished, not taken for someone else's",
+        M,
+        '        empty = int.from_bytes(head[40:44], "big") == 0 and',
+        '        empty = False and',
+        T + "test_a_store_that_cannot_be_set_up_spools_and_leaves_no_connection_open",
     ),
     (
         "the database is in write-ahead logging mode",
@@ -313,15 +460,43 @@ CHECKS = (
     (
         "damage found after connecting is healed",
         M,
-        "    _quarantine(seen)\n    return _once(work)\n",
-        "    return _once(work)\n",
+        "        if not _is_corrupt(exc) or not _quarantine(seen, deadline):\n",
+        "        if True:\n",
         T + "test_damage_in_the_middle_of_the_database_is_healed_by_the_next_write",
+    ),
+    (
+        "a corrupt database is not moved when the lock for it can't be taken",
+        M,
+        "        if not got:\n            return None\n        if _inode(db)",
+        "        if False:\n            return None\n        if _inode(db)",
+        T + "test_a_corrupt_database_is_not_moved_when_the_lock_for_it_cannot_be_taken_in_time",
+    ),
+    (
+        "healing is not retried once the deadline has passed",
+        M,
+        "    if deadline is not None and time.monotonic() >= deadline:\n        raise TimeoutError",
+        "    if False:\n        raise TimeoutError",
+        T + "test_healing_is_not_retried_once_the_deadline_has_passed",
+    ),
+    (
+        "a set-aside database is counted, with its records when they can be read",
+        M,
+        '    _count_loss("set_aside", _records_in(aside) or 1)\n',
+        "    pass\n",
+        T + "test_the_records_in_a_set_aside_file_are_counted_when_it_can_be_read_cheaply",
+    ),
+    (
+        "reading a set-aside file leaves no log or index file beside it",
+        M,
+        '+ ("&immutable=1" if immutable else ""))',
+        '+ "")',
+        T + "test_the_records_in_a_set_aside_file_are_counted_when_it_can_be_read_cheaply",
     ),
     (
         "a process that saw a corrupt file already replaced leaves the new one alone",
         M,
-        "        if _inode(db) != seen_inode:\n            return\n",
-        "        if False:\n            return\n",
+        "        if _inode(db) != seen_inode:\n            return True\n",
+        "        if False:\n            return True\n",
         T + "test_a_second_process_that_saw_the_same_corrupt_file_leaves_the_new_one_alone",
     ),
     (
@@ -396,17 +571,24 @@ CHECKS = (
         T + "test_unusable_spool_lines_are_counted_as_lost_and_the_rest_are_inserted",
     ),
     (
-        "records lost since the last upkeep are reported",
+        "records lost since the last upkeep are reported, each kind of loss in its own words",
         M,
-        "    if new:\n",
-        "    if False:\n",
+        "            if new > 0:\n",
+        "            if False:\n",
         T + "test_the_spool_has_a_size_limit_past_which_records_are_dropped_and_counted",
+    ),
+    (
+        "a damaged database set aside is reported to the owner",
+        M,
+        '    "set_aside": "the database was damaged and set aside, and its records are no longer used (%d lost)",\n',
+        '    "set_aside": "",\n',
+        T + "test_a_damaged_database_that_is_set_aside_is_counted_and_upkeep_says_so_once",
     ),
     (
         "a setting that can't be read is reported",
         M,
-        '    result["notes"] += ["telemetry: " + why for why in result["skipped"].values()]\n',
-        '    result["notes"] += []\n',
+        '["telemetry: " + why for why in result["skipped"].values()]',
+        "[]",
         T + "test_an_unreadable_age_setting_deletes_nothing_by_age_and_says_why[block0]",
     ),
     (
@@ -441,8 +623,8 @@ CHECKS = (
     (
         "records older than keep_days are deleted",
         M,
-        '(now - settings["keep_days"] * 86400,)',
-        '(now - settings["keep_days"] * 86400 * 2,)',
+        '(reference - settings["keep_days"] * 86400,)',
+        '(reference - settings["keep_days"] * 86400 * 2,)',
         T + "test_old_records_are_deleted_and_new_ones_kept",
     ),
     (
@@ -462,8 +644,8 @@ CHECKS = (
     (
         "the upkeep does nothing, and creates nothing, when recording is off",
         M,
-        '        if not _settings()["enabled"]:\n            return None\n',
-        "        if False:\n            return None\n",
+        "        else:\n            return None\n",
+        "        else:\n            return maintain()\n",
         T + "test_with_recording_off_nothing_is_created[False]",
     ),
     # The pulse.

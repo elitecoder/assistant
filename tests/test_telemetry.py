@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 from unittest import mock
 
@@ -113,8 +114,9 @@ def test_a_record_lands_in_the_database_with_its_pointers_and_fields(home):
 
 def test_events_read_back_oldest_first_and_filter(home):
     other = pointers.legacy_trace_id("row", "x")
-    for i, (kind, trace, subject, component) in enumerate([("check", TRACE, "a", "x"), ("task", other, "b", "y"),
-                                                           ("check", TRACE, "b", "x")]):
+    for i, (kind, trace, subject, component) in enumerate([("check", TRACE, "td-1", "pulse"),
+                                                           ("task", other, "td-2", "dashboard"),
+                                                           ("check", TRACE, "td-2", "pulse")]):
         assert T.emit(kind, trace=trace, subject=subject, component=component,
                       **({"count": i} if kind == "check" else {}))
     everything = T.events()
@@ -123,8 +125,8 @@ def test_events_read_back_oldest_first_and_filter(home):
     assert {"id", "ts", "kind", "trace", "subject", "component", "fields"} == set(everything[0])
     assert len(T.events(trace=TRACE)) == 2
     assert len(T.events(kind="task")) == 1
-    assert len(T.events(trace=TRACE, subject="b")) == 1
-    assert len(T.events(component="x")) == 2
+    assert len(T.events(trace=TRACE, subject="td-2")) == 1
+    assert len(T.events(component="pulse")) == 2
     assert len(T.events(since=everything[2]["ts"])) >= 1
     assert T.events(since=everything[2]["ts"] + 10) == []
     assert [e["fields"].get("count") for e in T.events(until=everything[0]["ts"])] == [0]
@@ -172,32 +174,103 @@ def test_events_is_read_only_and_capped(home, monkeypatch):
 
 # ---------------------------------------------------------------- pointers, not content
 
-ACCEPTED = ["td-012", "workspace:7", "row:0123456789abcdef", "tr-0123456789abcdef", "ef-0123456789abcdef",
-            "anthropic/claude-sonnet-4-5", "claude-sonnet-4-5@20250929", "requests.exceptions.HTTPError",
-            "gpt-4.1", "claude-3.5-sonnet", "work-queue", "a", "A_b.c:d/e-9@123456", "x" * 120]
-REFUSED = ["ann.lee@example.com", "/Users/ann/project-x/notes", "github.com/acme/secret-repo/pull/42",
-           "mailto:a@b.co", "https:/evil.com/a", "file:/etc", "_lead", "https://example.com/a", "file:/etc/passwd",
-           "www.example.com/path", "mail.example.com", "~/notes", ".hidden", "a/b/c", "two words", "a//b",
-           "x" * 121, 'a"b', "a\nb", "a#b", "a+b", "-lead", "a@12345", "a@123456789", "a@123456x", "a@123456-x",
-           "notes.txt", "a.py/b", "ann@example", 5, 1.5, None, b"abc", ["a"]]
+IDS = ["td-012", "workspace:7", "row:0123456789abcdef", "tr-0123456789abcdef", "tl-0123456789abcdef",
+       "ef-0123456789abcdef", "fb-12", "who:ab12cd", "dec-7", "td-" + "x" * 117]
+NAMES = ["us.anthropic.claude-3-5-sonnet-20241022-v2:0", "claude-sonnet-4-5@20250929", "anthropic/claude-sonnet-4-5",
+         "OperationalError", "timeout", "feat/trace-ids", "requests.exceptions.HTTPError", "gpt-4.1",
+         "claude-3.5-sonnet", "work-queue", "a", "x" * 120]
+# What the shape rule alone let through before: prose, numbers, addresses, paths, links.
+PERSONAL = ["Fix-the-login-bug-for-Ann-Lee-before-Friday", "diagnosis:cancer", "555-123-4567",
+            "4111-1111-1111-1111", "192.168.1.20:8080", "tel:5551234567", "Users/ann", "ann.lee@example.com",
+            "/Users/ann/project-x/notes", "github.com/acme/secret-repo/pull/42", "mailto:a@b.co",
+            "https:/evil.com/a", "https://example.com/a", "file:/etc/passwd", "file:/etc", "who:/etc", "www.example.com/path",
+            "mail.example.com", "~/notes", ".hidden", "a/b/c", "two words", "a//b", 'a"b', "a\nb", "a#b", "a+b",
+            "-lead", "_lead", "a@12345", "a@123456789", "a@123456x", "ann@example", "notes.txt", "a.py/b",
+            "x" * 121, 5, 1.5, None, b"abc", ["a"]]
 
 
-@pytest.mark.parametrize("value", ACCEPTED)
-def test_an_id_like_word_is_kept_as_a_field_a_subject_and_a_component(home, value):
-    assert T.emit("task", subject=value, component=value, state=value)
-    [(_, _, subject, component, fields)] = rows(home)
-    assert (subject, component, json.loads(fields)) == (value, value, {"state": value})
+def text_fields():
+    """(kind, field, type) for every field that holds text."""
+    return [(kind, name, type_) for kind, spec in T.KINDS.items() for name, type_ in spec.items()
+            if type_ not in (T.INT, T.NUM, T.BOOL)]
 
 
-@pytest.mark.parametrize("value", REFUSED, ids=repr)
-def test_anything_else_is_left_out_and_counted(home, value):
-    assert T.emit("task", subject=value, component=value, state=value, attempt=1)
-    [(_, _, subject, component, fields)] = rows(home)
-    assert (subject, component, json.loads(fields)) == ("", "", {"_dropped": 3, "attempt": 1})
+@pytest.mark.parametrize("value", IDS)
+def test_an_id_with_a_known_prefix_is_kept_as_a_subject_and_where_a_field_points_at_a_thing(home, value):
+    assert T.emit("dispatch", subject=value, workspace=value, mode="assist")
+    [(_, _, subject, _, fields)] = rows(home)
+    assert (subject, json.loads(fields)) == (value, {"workspace": value, "mode": "assist"})
+
+
+@pytest.mark.parametrize("value", NAMES)
+def test_an_open_name_of_the_right_shape_is_kept(home, value):
+    assert T.emit("check", name=value)
+    assert json.loads(rows(home)[0][-1]) == {"name": value}
+
+
+@pytest.mark.parametrize("value", PERSONAL + ["claude-3.5-sonnet", "work-queue", "td-", "who:", "TD-1", "row"],
+                         ids=repr)
+def test_nothing_that_is_not_an_id_is_a_subject_or_a_pointing_field(home, value):
+    assert T.emit("dispatch", subject=value, workspace=value, attempt=1)
+    [(_, _, subject, _, fields)] = rows(home)
+    assert (subject, json.loads(fields)) == ("", {"_dropped": 2, "attempt": 1})
+
+
+@pytest.mark.parametrize("value", PERSONAL, ids=repr)
+def test_nothing_personal_is_kept_in_any_text_field_of_any_kind(home, value):
+    for kind, name, _ in text_fields():
+        assert T.emit(kind, subject=value, component=value, **{name: value})
+    stored = rows(home)
+    assert len(stored) == len(text_fields())
+    for _, _, subject, component, fields in stored:
+        assert (subject, component, json.loads(fields)) == ("", "", {"_dropped": 3})
+
+
+@pytest.mark.parametrize("value", ["a/b/c", "x" * 121, "notes.txt", "-lead", "_lead", "a@12345", "a@123456789",
+                                   "file:/etc", "mail.example.com", "two words", "a//b", 'a"b', "a#b",
+                                   "Fix-the-login-bug-for-Ann-Lee-before-Friday", "diagnosis:cancer",
+                                   "555-123-4567", "1234567890123", "a1234567890123", "Users/ann", "td-012:99999", "a:1:2",
+                                   "ok:123", "a-b-c-d-e-f-g", "a_b_c_d_e_f_g", 5, None, b"x"], ids=repr)
+def test_an_open_name_that_breaks_its_shape_is_left_out_and_counted(home, value):
+    assert T.emit("check", name=value, count=1)
+    assert json.loads(rows(home)[0][-1]) == {"_dropped": 1, "count": 1}
+
+
+def test_a_value_not_on_a_fields_list_is_refused_even_when_it_looks_like_an_id(home):
+    assert T.emit("task", state="td-012", origin="row:0123456789abcdef", mode="handsoff ", attempt=1)
+    assert T.emit("task", state="bogus_state", origin="Slack", mode="assist", attempt=2)
+    assert T.emit("sign_in", provider="slack", outcome="ok", ok=True)
+    assert [json.loads(r[-1]) for r in rows(home)] == [
+        {"_dropped": 3, "attempt": 1}, {"_dropped": 2, "attempt": 2, "mode": "assist"},
+        {"_dropped": 1, "ok": True, "provider": "slack"}]
+
+
+LISTED = [(kind, name, type_) for kind, name, type_ in text_fields() if type(type_) is tuple]
+
+
+@pytest.mark.parametrize(("kind", "name", "values"), LISTED, ids=["%s.%s" % (k, n) for k, n, _ in LISTED])
+def test_every_value_on_a_list_is_kept_and_a_value_off_it_is_not(home, kind, name, values):
+    for value in values:
+        assert T.emit(kind, **{name: value})
+    assert T.emit(kind, **{name: values[0] + "_x"})
+    assert T.emit(kind, **{name: values[0].upper()})
+    stored = [json.loads(r[-1]) for r in rows(home) if r[0] == kind]
+    assert stored == [{name: value} for value in values] + [{"_dropped": 1}] * 2
+
+
+def test_a_component_is_on_its_list_or_empty(home):
+    for component in T.COMPONENTS + ("",):
+        assert T.emit("check", component=component)
+    for component in ("pulse2", "Pulse", "other", "x", 5, None, b"pulse"):
+        assert T.emit("check", component=component)
+    assert [r[3] for r in rows(home)] == list(T.COMPONENTS) + [""] * 8
+    assert json.loads(rows(home)[-1][-1]) == {"_dropped": 1}
+    assert T.COMPONENTS == ("pulse", "work-queue", "dashboard", "reactor", "comms", "watcher", "self-update",
+                            "installer", "cli")
 
 
 def test_an_empty_word_is_no_subject_but_not_a_field_value(home):
-    assert T.emit("task", subject="", state="")
+    assert T.emit("check", subject="", name="")
     assert json.loads(rows(home)[0][-1]) == {"_dropped": 1}
 
 
@@ -207,19 +280,21 @@ def test_a_str_that_is_a_subclass_cannot_hand_over_other_text(home):
             return "Dear Ana, the quarterly numbers are attached"
 
     class Colour(str, enum.Enum):
-        RED = "red"
+        RED = "td-1"
 
-    for value in (Sneaky("fine"), Colour.RED):
-        assert T.emit("task", subject=value, component=value, state=value, attempt=1)
-    assert T.emit(Sneaky("task"), state="x") is False
-    assert T.emit("task", trace=Sneaky(TRACE)) is True
-    assert T.emit("task", **{Sneaky("state"): "x"}) is True
+    for value in (Sneaky("td-1"), Colour.RED):
+        assert T.emit("dispatch", subject=value, workspace=value, mode=value, attempt=1)
+        assert T.emit("check", name=value, component=value)
+    assert T.emit(Sneaky("check"), name="x") is False
+    assert T.emit("check", trace=Sneaky(TRACE)) is True
+    assert T.emit("check", **{Sneaky("name"): "x"}) is True
     stored = rows(home)
-    assert len(stored) == 4
-    assert all(s == "" and c == "" for _, _, s, c, _ in stored[:2])
+    assert len(stored) == 6
+    assert all(s == "" and c == "" for _, _, s, c, _ in stored[:4])
     assert json.loads(stored[0][-1]) == {"_dropped": 3, "attempt": 1}
-    assert stored[2][1] == "" and json.loads(stored[2][-1]) == {"_dropped": 1}
-    assert json.loads(stored[3][-1]) == {"_dropped": 1}
+    assert json.loads(stored[1][-1]) == {"_dropped": 2}
+    assert stored[4][1] == "" and json.loads(stored[4][-1]) == {"_dropped": 1}
+    assert json.loads(stored[5][-1]) == {"_dropped": 1}
     assert b"Dear Ana" not in (tdir(home) / "telemetry.db").read_bytes()
 
 
@@ -303,7 +378,7 @@ def test_a_busy_counter_lock_at_upkeep_still_reports(home):
         result = T.maintain()
     finally:
         os.close(fd)
-    assert any("2 records were lost" in n for n in result["notes"])
+    assert "telemetry: 2 records were dropped because the waiting list was full" in result["notes"]
 
 
 def test_every_kind_stores_no_value_with_a_space_whatever_it_is_given(home):
@@ -320,21 +395,37 @@ def test_every_kind_stores_no_value_with_a_space_whatever_it_is_given(home):
                 assert T._pointer_ok(value), (kind, key)
 
 
+OPEN_NAMES = {("source_fetch", "error"), ("triage_verdict", "model"), ("triage_verdict", "prompt_version"),
+              ("model_call", "model"), ("model_call", "error"), ("check", "name"), ("job_run", "job"),
+              ("job_run", "error")}
+
+
 def test_the_registry_is_well_formed_and_read_only():
     assert set(T.KINDS) == {"source_fetch", "triage_verdict", "model_call", "task", "dispatch", "check", "effect",
                             "feedback", "guard", "job_run", "sign_in"}
     for kind, spec in T.KINDS.items():
         assert spec, kind
         for name, type_ in spec.items():
-            assert type_ in (T.INT, T.NUM, T.BOOL, T.PTR), (kind, name)
             assert name not in ("kind", "trace", "subject", "component") and not name.startswith("_"), (kind, name)
             assert name not in ("result", "decision"), (kind, name)
+            assert type_ in (T.INT, T.NUM, T.BOOL, T.ID, T.NAME) or (type(type_) is tuple and type_), (kind, name)
         if "outcome" in spec:
-            assert spec["outcome"] == T.PTR
+            assert type(spec["outcome"]) is tuple
     with pytest.raises(TypeError):
         T.KINDS["invented"] = {}
     with pytest.raises(TypeError):
-        T.KINDS["task"]["title"] = T.PTR
+        T.KINDS["task"]["title"] = T.ID
+
+
+def test_every_text_field_is_a_list_an_id_or_one_of_the_few_open_names():
+    kinds = {(kind, name) for kind, name, type_ in text_fields() if type_ == T.NAME}
+    assert kinds == OPEN_NAMES  # adding an open name is a decision: it changes this list, in review
+    assert {type_ for _, _, type_ in text_fields() if type(type_) is not tuple} == {T.ID, T.NAME}
+    for kind, name, type_ in text_fields():
+        assert type_ in (T.ID, T.NAME) or all(re.fullmatch(r"[a-z]+(?:[_-][a-z]+)*", v) for v in type_), (kind, name)
+        assert type_ in (T.ID, T.NAME) or len(set(type_)) == len(type_), (kind, name)
+    assert T.ID_PREFIXES == ("row:", "td-", "tr-", "tl-", "ef-", "fb-", "who:", "workspace:", "dec-")
+    assert "done" in T.OUTCOME and "timeout" in T.OUTCOME and "unknown" in T.OUTCOME
 
 
 def test_a_kind_added_at_run_time_is_refused(home):
@@ -350,14 +441,23 @@ def test_a_dict_with_a_kind_key_spread_into_emit_does_not_raise(home):
     assert T.emit() is False
 
 
+def test_the_first_four_arguments_can_be_positional_or_by_keyword_and_nothing_raises_at_the_call(home):
+    assert T.emit("check", TRACE, "td-1", "pulse", count=1)
+    assert T.emit(kind="check", subject="td-2", count=2)
+    assert T.emit("check", TRACE, "td-1", "pulse", "extra", 7, count=3)  # more positionals are unknown fields
+    assert T.emit(trace=TRACE, count=4) is False  # no kind
+    first, second, third = rows(home)
+    assert first == ("check", TRACE, "td-1", "pulse", '{"count":1}')
+    assert second == ("check", "", "td-2", "", '{"count":2}')
+    assert json.loads(third[-1]) == {"_dropped": 2, "count": 3}
+
+
 # ---------------------------------------------------------------- strict mode
 
 
 def test_strict_mode_raises_for_anything_the_store_would_leave_out(home, monkeypatch):
     monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "1")
     assert T.emit("check", name="fine", count=1) is True
-    with pytest.raises(ValueError, match="unknown kind"):
-        T.emit("chek")
     with pytest.raises(ValueError, match="bogus"):
         T.emit("check", bogus=1)
     with pytest.raises(ValueError, match="count"):
@@ -369,6 +469,20 @@ def test_strict_mode_raises_for_anything_the_store_would_leave_out(home, monkeyp
     assert len(rows(home)) == 1
     config(home, {"telemetry": {"enabled": False}})
     assert T.emit("chek") is False  # off: nothing looked at
+
+
+def test_strict_mode_is_for_tests_only(home, monkeypatch):
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "1")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    assert T.emit("check", bogus=1) is True  # a running service never raises
+
+
+def test_strict_mode_names_the_unknown_kind(home, monkeypatch):
+    monkeypatch.setenv("ASSISTANT_TELEMETRY_STRICT", "1")
+    with pytest.raises(ValueError, match="unknown kind 'chek'"):
+        T.emit("chek")
+    with pytest.raises(ValueError, match="unknown kind int"):
+        T.emit(5)
 
 
 def test_strict_mode_is_off_unless_it_is_exactly_one(home, monkeypatch):
@@ -386,16 +500,17 @@ def test_the_suite_runs_in_strict_mode():
 def test_no_secret_reaches_the_database_its_log_or_the_spool(home):
     words = list(SECRET_WORDS.values())
     for word in words:
-        T.emit("task", subject=word, component=word, state=word, mode=word, attempt=1)
+        T.emit("task", subject="who:" + word, component=word, state=word, mode=word, attempt=1)
+        T.emit("check", subject=word, name=word, count=1)
     # Keep the write-ahead log from being folded away, and put records in the spool too.
     holder = sqlite3.connect(str(tdir(home) / "telemetry.db"), isolation_level=None)
     reader = sqlite3.connect(str(tdir(home) / "telemetry.db"))
     reader.execute("SELECT count(*) FROM events").fetchall()
     for word in words:
-        T.emit("task", subject=word, state=word, attempt=1)
+        T.emit("check", subject="who:" + word, name=word, count=1)
     holder.execute("BEGIN EXCLUSIVE")
     for word in words:
-        T.emit("task", subject=word, state=word, attempt=1)
+        T.emit("check", subject="who:" + word, name=word, count=1)
     holder.close()
     reader.close()
     found = [p for p in tdir(home).iterdir() if p.is_file()]
@@ -408,14 +523,16 @@ def test_no_secret_reaches_the_database_its_log_or_the_spool(home):
     assert stored and all(json.loads(r[-1]).get("_dropped") for r in stored)
 
 
-def test_a_secret_shaped_word_is_dropped_not_kept_in_a_redacted_form(home):
-    assert T.emit("task", state=SECRET_WORDS["github"], attempt=1)
-    assert json.loads(rows(home)[0][-1]) == {"_dropped": 1, "attempt": 1}
+def test_a_secret_shaped_word_is_dropped_from_an_id_and_from_a_name_not_kept_in_a_redacted_form(home):
+    short = "_".join(["ghp", "AbCdEfGhIjKlMnOpQrSt1234"])  # no long run of digits: only the redactor refuses it
+    assert T.emit("check", subject="who:" + short, name=short, count=1)
+    [(_, _, subject, _, fields)] = rows(home)
+    assert subject == "" and json.loads(fields) == {"_dropped": 2, "count": 1}
 
 
 def _spool_line(**over):
     line = {"id": "0123456789abcdef", "ts": time.time() - 5, "kind": "task", "trace": "", "subject": "",
-            "component": "x", "fields": {"attempt": 1}}
+            "component": "cli", "fields": {"attempt": 1}}
     line.update(over)
     return line
 
@@ -423,7 +540,7 @@ def _spool_line(**over):
 def test_the_spool_is_cleaned_again_when_it_is_read(home):
     secret = SECRET_WORDS["slack"]
     tdir(home).mkdir()
-    line = _spool_line(subject=secret, fields={"state": secret, "attempt": 1, "title": "Quarterly plan",
+    line = _spool_line(subject="who:" + secret, fields={"state": secret, "attempt": 1, "title": "Quarterly plan",
                                                "_dropped": 2})
     (tdir(home) / "spool.jsonl").write_text(json.dumps(line) + "\n")
     assert T.maintain()["drained"] == 1
@@ -604,12 +721,6 @@ def test_with_recording_off_nothing_is_created(home, value):
     assert sorted(p.name for p in (home / ".assistant").iterdir()) == ["config.json"]
 
 
-def test_a_settings_file_nested_too_deep_still_keeps_recording(home):
-    config(home, "[" * 100000)
-    assert T.emit("check", name="still")
-    assert len(rows(home)) == 1
-
-
 def test_recording_is_on_without_the_setting_and_with_true(home):
     assert T.emit("check", name="a")
     config(home, {"telemetry": {"enabled": True}})
@@ -619,11 +730,44 @@ def test_recording_is_on_without_the_setting_and_with_true(home):
     assert len(rows(home)) == 3
 
 
-@pytest.mark.parametrize("text", ["{broken", "[1]", '{"telemetry": 5}', '{"telemetry": null}'])
-def test_an_unreadable_settings_file_keeps_recording_with_the_defaults(home, text):
+UNREADABLE = ["{broken", "[1]", '{"telemetry": 5}', '{"telemetry": null}', '{"telemetry": {"enabled": false,}}',
+              "[" * 100000, ""]
+
+
+@pytest.mark.parametrize("text", UNREADABLE, ids=lambda t: t[:30] or "empty")
+def test_a_settings_file_that_cannot_be_read_turns_recording_off_and_says_so(home, text):
+    _fill_before_the_break(home)
     config(home, text)
-    assert T.emit("check", name="still")
-    assert len(rows(home)) == 1
+    assert T.emit("check", name="not recorded") is False
+    result = T.maintain(NOW)
+    assert result["enabled"] is False and result["deleted_old"] == 0 and result["deleted_size"] == 0
+    [note] = result["notes"]  # once, not once per setting
+    assert note.startswith("telemetry: config.json can't be read: ") and note.endswith("recording is off until it is fixed")
+    assert len(rows(home, "SELECT id FROM events WHERE component='t'")) == 1
+    assert len(rows(home)) == 2  # nothing was added by the attempt
+    assert T.events(kind="check", limit=1) != []  # what was recorded before can still be read
+
+
+def _fill_before_the_break(home):
+    _fill(home, [1000.0])
+
+
+def test_upkeep_reports_a_settings_file_that_cannot_be_read_once_an_hour_and_creates_nothing_in_the_folder(home):
+    config(home, '{"telemetry": {"enabled": false,}}')
+    first = T.upkeep(NOW)
+    assert first["enabled"] is False and "can't be read" in first["notes"][0]
+    assert T.upkeep(NOW + 60) is None
+    assert T.upkeep(NOW + 3600)["notes"] == first["notes"]
+    assert not tdir(home).exists()
+    stamp = home / ".assistant" / "telemetry-config-note-at"
+    assert mode(stamp) == 0o600
+
+
+def test_a_missing_settings_file_means_recording_is_on(home):
+    assert T.emit("check", name="a")
+    config(home, {"mode": "pro"})
+    assert T.emit("check", name="b")
+    assert len(rows(home)) == 2
 
 
 # ---------------------------------------------------------------- permissions
@@ -738,7 +882,7 @@ def test_the_whole_of_one_emit_has_one_short_deadline(home, locked_db):
         took = time.monotonic() - started
     finally:
         os.close(fd)
-    assert took < 0.2 + 0.1 + 0.05, took  # the database wait, the rest of the deadline, the note of the loss
+    assert took < 1.0, took  # about 0.3 s: the database wait, the rest of the deadline, the note of the loss
 
 
 def test_a_record_is_dropped_and_counted_when_the_spool_lock_is_not_taken_in_time(home, locked_db):
@@ -751,9 +895,12 @@ def test_a_record_is_dropped_and_counted_when_the_spool_lock_is_not_taken_in_tim
     assert counter(home)["spool_busy"] == 1
 
 
+WRITERS = ("pulse", "dashboard", "reactor", "watcher")
+
+
 def _writer(home, count, marker):
     code = ("from assistant import telemetry as T\n"
-            "for i in range(%d):\n    T.emit('check', component='w%d', count=i)\n" % (count, marker))
+            "for i in range(%d):\n    T.emit('check', component=%r, count=i)\n" % (count, WRITERS[marker]))
     env = {**os.environ, "HOME": str(home), "PYTHONPATH": str(REPO / "src")}
     env.pop("ASSISTANT_TELEMETRY_STRICT", None)
     return subprocess.Popen([sys.executable, "-c", code], env=env)
@@ -768,13 +915,13 @@ def test_four_processes_writing_at_once_lose_nothing(home):
     assert spool_lines(home) == []
     assert len(rows(home, "SELECT id FROM events WHERE kind='check'")) == 800
     for n in range(4):
-        assert len(rows(home, "SELECT id FROM events WHERE component='w%d'" % n)) == 200
+        assert len(rows(home, "SELECT id FROM events WHERE component='%s'" % WRITERS[n])) == 200
 
 
 def _spool_of(home, n, start=0):
     tdir(home).mkdir(exist_ok=True)
     out = [json.dumps({"id": "%016x" % (start + i), "ts": time.time() - 10 + i / 1000, "kind": "check", "trace": "",
-                       "subject": "", "component": "s", "fields": {"count": i}}) for i in range(n)]
+                       "subject": "", "component": "cli", "fields": {"count": i}}) for i in range(n)]
     (tdir(home) / "spool.jsonl").write_text("\n".join(out) + "\n")
 
 
@@ -790,7 +937,7 @@ def test_two_drains_at_once_insert_each_line_once(home):
     threads = [threading.Thread(target=drain) for _ in range(2)]
     [t.start() for t in threads]
     [t.join() for t in threads]
-    assert len(rows(home, "SELECT id FROM events WHERE component='s'")) == 300
+    assert len(rows(home, "SELECT id FROM events WHERE component='cli'")) == 300
     assert sum(r["drained"] for r in results) == 300
 
 
@@ -803,7 +950,7 @@ def test_a_drain_that_died_after_claiming_is_finished_by_the_next_without_doubli
     _spool_of(home, 3, start=100)
     result = T.maintain()
     assert result["drained"] == 3
-    assert len(rows(home, "SELECT id FROM events WHERE component='s'")) == 8
+    assert len(rows(home, "SELECT id FROM events WHERE component='cli'")) == 8
     assert not claimed(home)
 
 
@@ -814,7 +961,7 @@ def test_a_drain_that_fails_puts_the_lines_back(home, monkeypatch):
     assert result["ok"] is False
     assert len(spool_lines(home)) == 4
     assert not claimed(home)
-    assert rows(home, "SELECT id FROM events WHERE component='s'") == []
+    assert rows(home, "SELECT id FROM events WHERE component='cli'") == []
     monkeypatch.undo()
     monkeypatch.setenv("HOME", str(home))
     assert T.maintain()["drained"] == 4
@@ -823,10 +970,10 @@ def test_a_drain_that_fails_puts_the_lines_back(home, monkeypatch):
 def test_a_drain_that_fails_part_way_inserts_nothing(home, monkeypatch):
     _spool_of(home, 4)
     good = T._row({"id": "%016x" % 999, "ts": time.time(), "kind": "check", "trace": "", "subject": "",
-                   "component": "s", "fields": {}})
+                   "component": "cli", "fields": {}})
     monkeypatch.setattr(T, "_spool_rows", lambda claimed: ([good, ("short",)], 0))
     assert T.maintain()["ok"] is False
-    assert rows(home, "SELECT id FROM events WHERE component='s'") == []
+    assert rows(home, "SELECT id FROM events WHERE component='cli'") == []
 
 
 def test_a_drain_that_cannot_take_the_spool_lock_leaves_what_it_claimed_for_the_next(home, monkeypatch):
@@ -874,7 +1021,7 @@ def test_unusable_spool_lines_are_counted_as_lost_and_the_rest_are_inserted(home
     result = T.maintain()
     assert (result["drained"], result["bad_lines"]) == (2, 6)
     assert counter(home)["bad_line"] == 6
-    assert any("6 records were lost" in note for note in result["notes"])
+    assert "telemetry: 6 unreadable records were discarded from the waiting list" in result["notes"]
 
 
 def test_the_spool_has_a_size_limit_past_which_records_are_dropped_and_counted(home, locked_db, monkeypatch):
@@ -890,8 +1037,8 @@ def test_the_spool_has_a_size_limit_past_which_records_are_dropped_and_counted(h
     result = T.maintain()
     job = [json.loads(r[-1]) for r in rows(home) if r[0] == "job_run"][-1]
     assert job["lost"] == 10 - len(kept)
-    assert any("were lost since the last upkeep" in note for note in result["notes"])
-    assert not any("lost" in note for note in T.maintain()["notes"])  # said once
+    assert "telemetry: %d records were dropped because the waiting list was full" % (10 - len(kept)) in result["notes"]
+    assert not any("waiting list" in note for note in T.maintain()["notes"])  # said once
 
 
 def test_a_record_is_dropped_silently_when_neither_database_nor_spool_can_be_written(home, locked_db, monkeypatch):
@@ -997,7 +1144,7 @@ def test_damage_in_the_middle_of_the_database_is_healed_by_upkeep_too(home):
     result = T.maintain()
     assert result["ok"] is True and result["drained"] == 3
     assert len(copies(home)) == 1
-    assert len(rows(home, "SELECT id FROM events WHERE component='s'")) == 3
+    assert len(rows(home, "SELECT id FROM events WHERE component='cli'")) == 3
 
 
 def test_a_database_that_stays_corrupt_after_the_move_spools_instead_of_looping(home, monkeypatch):
@@ -1037,8 +1184,10 @@ def test_moving_a_corrupt_database_aside_takes_its_log_with_it(home):
     for suffix in ("", "-wal", "-shm"):
         (tdir(home) / ("telemetry.db" + suffix)).write_bytes(b"x" * 100)
     T._quarantine(os.stat(db).st_ino)
-    assert sorted(p.name for p in tdir(home).iterdir() if "corrupt" not in p.name) == ["recover.lock"]
+    assert sorted(p.name for p in tdir(home).iterdir() if "corrupt" not in p.name) == ["dropped.json", "dropped.lock",
+                                                                                                "recover.lock"]
     assert len(copies(home)) == 1
+    assert counter(home)["set_aside"] == 1
 
 
 def test_a_database_that_is_a_directory_is_not_renamed_and_the_record_spools(home):
@@ -1241,18 +1390,6 @@ def test_the_edges_of_the_ranges_are_accepted(home):
     assert T._settings()["problems"] == {}
 
 
-@pytest.mark.parametrize("text", ["{not json", "[1]", '{"telemetry": 5}', "[" * 100000])
-def test_an_unreadable_settings_file_deletes_nothing_and_recording_continues(home, text):
-    _fill(home, [1000.0])
-    config(home, text)
-    assert T.emit("check", name="still")
-    result = T.maintain(NOW)
-    assert result["deleted_old"] == 0 and result["deleted_size"] == 0
-    assert set(result["skipped"]) == {"age", "size"}
-    assert "can't be read" in result["skipped"]["age"]
-    assert len(rows(home, "SELECT id FROM events WHERE component='t'")) == 1
-
-
 def test_maintain_writes_one_record_about_itself(home):
     _fill(home, [1.0])
     result = T.maintain()
@@ -1287,6 +1424,11 @@ def test_upkeep_runs_at_most_once_an_hour_and_keeps_its_stamp_in_the_folder(home
     assert (tdir(home) / "upkeep-at").exists() and mode(tdir(home) / "upkeep-at") == 0o600
     assert T.upkeep(first + 3600) is not None
     assert len(calls) == 2
+
+
+def test_upkeep_never_writes_a_time_later_than_the_clock(home):
+    T.upkeep(time.time() + 10 ** 9)
+    assert float((tdir(home) / "upkeep-at").read_text()) <= time.time()
 
 
 def test_upkeep_reads_the_clock_when_given_none(home, monkeypatch):
@@ -1417,6 +1559,132 @@ def _run_main(home, argv):
 def test_a_real_pulse_runs_the_upkeep_step_once_and_a_dry_run_does_not(home):
     assert len(_run_main(home, [])) == 1
     assert _run_main(home, ["--dry-run"]) == []
+
+
+# ---------------------------------------------------------------- round three: what the reviews found
+
+
+def test_a_newer_version_that_only_the_log_holds_leaves_both_files_exactly_as_they_were(home):
+    assert T.emit("check", name="mine")
+    db = tdir(home) / "telemetry.db"
+    code = ("import os, sqlite3, sys\nc = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+            "c.execute('PRAGMA user_version=%d')\nos._exit(0)\n" % (T.SCHEMA_VERSION + 1))
+    subprocess.run([sys.executable, "-c", code, str(db)], check=True)  # a newer writer that never checkpoints
+    wal = tdir(home) / "telemetry.db-wal"
+    assert wal.exists() and wal.stat().st_size > 0
+    before = (db.read_bytes(), wal.read_bytes())
+    assert T.emit("check", name="x") is False
+    assert T.events() == []
+    result = T.maintain()
+    assert result["error"] == "NewerSchema"
+    assert (db.read_bytes(), wal.read_bytes()) == before
+    assert len(spool_lines(home)) >= 2
+
+
+@pytest.mark.parametrize("make", [lambda home: _someone_elses_database(home),
+                                  lambda home: _someone_elses_database(home, T.APPLICATION_ID,
+                                                                       T.SCHEMA_VERSION + 1)],
+                         ids=["someone-elses", "newer"])
+def test_a_file_that_is_left_alone_keeps_its_mode(home, make):
+    before = make(home)
+    db = tdir(home) / "telemetry.db"
+    db.chmod(0o644)
+    T.emit("check", name="x")
+    T.events()
+    T.maintain()
+    assert mode(db) == 0o644 and db.read_bytes() == before
+
+
+def test_a_clock_that_jumps_forward_does_not_empty_the_store(home, monkeypatch):
+    for i in range(20):
+        assert T.emit("check", count=i)
+    real = time.time
+    monkeypatch.setattr(T, "time", types.SimpleNamespace(time=lambda: real() + 400 * 86400,
+                                                         monotonic=time.monotonic, sleep=time.sleep))
+    assert T.maintain()["deleted_old"] == 0
+    assert len(rows(home, "SELECT id FROM events WHERE kind='check'")) == 20
+
+
+def test_age_is_still_counted_from_now_when_the_newest_record_is_newer_than_now(home):
+    _fill(home, [NOW - 100 * 86400, NOW + 10])
+    assert T.maintain(NOW)["deleted_old"] == 1
+
+
+def test_a_corrupt_database_is_not_moved_when_the_lock_for_it_cannot_be_taken_in_time(home):
+    tdir(home).mkdir()
+    (tdir(home) / "telemetry.db").write_bytes(b"junk" * 1000)
+    fd = _hold(home, "recover.lock")
+    try:
+        started = time.monotonic()
+        assert T.emit("check", name="x") is False
+        took = time.monotonic() - started
+        assert T._quarantine(os.stat(tdir(home) / "telemetry.db").st_ino) is None  # nothing moved
+    finally:
+        os.close(fd)
+    assert took < 1.0
+    assert (tdir(home) / "telemetry.db").read_bytes() == b"junk" * 1000 and not copies(home)
+    assert len(spool_lines(home)) == 1
+
+
+def test_healing_is_not_retried_once_the_deadline_has_passed(home, monkeypatch):
+    tdir(home).mkdir()
+    (tdir(home) / "telemetry.db").write_bytes(b"junk" * 1000)
+    monkeypatch.setattr(T, "EMIT_DEADLINE_SECONDS", 0)
+    assert T.emit("check", name="x") is False
+    assert len(spool_lines(home)) == 1 and len(copies(home)) == 1
+    monkeypatch.undo()
+    monkeypatch.setenv("HOME", str(home))
+    assert T.emit("check", name="y") is True  # the next one starts a fresh database
+
+
+def test_a_damaged_database_that_is_set_aside_is_counted_and_upkeep_says_so_once(home):
+    tdir(home).mkdir()
+    (tdir(home) / "telemetry.db").write_bytes(b"junk" * 1000)
+    assert T.emit("check", name="x") is True
+    assert counter(home)["set_aside"] == 1  # the file can't be read, so one, without a number
+    sentence = "telemetry: the database was damaged and set aside, and its records are no longer used (1 lost)"
+    assert sentence in T.maintain()["notes"]
+    assert sentence not in T.maintain()["notes"]
+
+
+def test_the_records_in_a_set_aside_file_are_counted_when_it_can_be_read_cheaply(home):
+    _big_store(home, 40)
+    T._quarantine(os.stat(tdir(home) / "telemetry.db").st_ino)
+    assert counter(home)["set_aside"] == 41
+    assert [p.name for p in copies(home)] == [p.name for p in tdir(home).iterdir() if ".corrupt-" in p.name]
+    assert len(copies(home)) == 1  # reading it left no log or index file beside it
+
+
+def test_records_drained_just_before_damage_is_found_are_counted_not_lost_without_a_word(home, monkeypatch):
+    _spool_of(home, 3)
+    assert T.emit("check", name="before")
+    calls = []
+    real = T._trim
+
+    def damaged_after_the_drain(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return real(*args)
+    monkeypatch.setattr(T, "_trim", damaged_after_the_drain)
+    result = T.maintain()
+    assert result["ok"] is True and len(copies(home)) == 1
+    assert counter(home)["set_aside"] == 4  # the seed record and the three that were just drained
+    assert any("set aside" in note for note in result["notes"])
+
+
+def test_a_store_that_cannot_be_set_up_spools_and_leaves_no_connection_open(home, monkeypatch):
+    monkeypatch.setattr(T, "_SCHEMA", ("THIS IS NOT SQL",))
+    assert T.emit("check", name="x") is False
+    assert len(spool_lines(home)) == 1
+    monkeypatch.undo()
+    monkeypatch.setenv("HOME", str(home))
+    assert T.emit("check", name="y") is True  # the failed set-up left nothing half-made behind
+
+
+def test_the_same_sentence_is_given_once(home, monkeypatch):
+    monkeypatch.setattr(T, "_tally_losses", lambda: (0, ["telemetry: one", "telemetry: one"]))
+    assert T.maintain()["notes"] == ["telemetry: one"]
 
 
 # ---------------------------------------------------------------- local only, and the oldest Python

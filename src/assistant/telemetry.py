@@ -47,38 +47,64 @@ DELETE_BATCH = 100
 QUERY_LIMIT_MAX = 10000
 STRICT_ENV = "ASSISTANT_TELEMETRY_STRICT"
 
-INT, NUM, BOOL, PTR = "int", "num", "bool", "ptr"
+INT, NUM, BOOL, ID, NAME = "int", "num", "bool", "id", "name"
 
-# What each kind of record may hold. Adding a field is one line. A name can't be `kind`, `trace`, `subject` or
-# `component` (those are `emit()`'s own arguments) and can't start with `_` (reserved: `_dropped`). `outcome` is
-# how something ended, as a pointer (`ok`, `timeout`, `HTTPError`); `ok` is the yes/no. The registry is
-# read-only: it changes in this file, in review, not at run time.
+# Lists of the values a field may take. A field of one of these types takes only a value on its list, even one
+# that looks like an id. Later changes add values here, one per line, in review. The lists follow what the code
+# already uses: lanes and dispositions in work_queue/triage.py, sources in work_queue/config.py, tiers in
+# src/assistant/model_tiers.py, send modes in work_queue/server.py; the rest are short and sensible.
+OUTCOME = ("done", "failed", "skipped", "refused", "timeout", "unknown")
+SOURCE = ("slack", "gmail", "calendar", "outlook", "github")
+PROVIDER = SOURCE + ("claude", "copilot")
+LANE = ("do_first", "promise", "week", "optional")
+DISPOSITION = ("you", "agent", "handoff", "drop")
+TIER = ("frontier", "balanced", "cheap")
+SEND_MODE = ("assist", "handsoff")
+PULSE_MODE = ("default", "pro")
+TASK_STATE = ("open", "queued", "dispatched", "running", "blocked", "needs_input", "done", "failed", "cancelled")
+ORIGIN = SOURCE + ("work_queue", "goal", "manual", "agent")
+PURPOSE = ("triage", "observer", "brief", "narrate", "planner", "strategist", "lesson", "draft", "other")
+ACTION = ("send", "draft", "todo_create", "dispatch", "merge", "mark_done", "snooze", "other")
+GUARD = ("interrupt_gate", "no_close_workspace", "meta_gate", "busy_session_cap", "outbound_gate", "back_off")
+GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
+FEEDBACK_VERDICT = ("useful", "not_useful", "agree", "disagree", "wrong_lane")
+SURFACE = ("work_queue", "dashboard", "slack", "brief", "decision_card")
+REASON = ("none", "policy", "user", "limit", "budget", "duplicate", "stale", "unsafe", "not_signed_in", "unknown")
+COMPONENTS = ("pulse", "work-queue", "dashboard", "reactor", "comms", "watcher", "self-update", "installer", "cli")
+# `subject`, and a field that points at a thing, is an id: one of these prefixes and then id characters.
+ID_PREFIXES = ("row:", "td-", "tr-", "tl-", "ef-", "fb-", "who:", "workspace:", "dec-")
+
+# What each kind of record may hold. Adding a field is one line. A field is a number (INT, NUM), a yes/no (BOOL), a
+# value from a list above, an ID, or a NAME. A NAME is an open name, kept to the few fields whose vocabulary really
+# is open; each is marked below. A field can't be called `kind`, `trace`, `subject` or `component` (those are
+# `emit()`'s own arguments) and can't start with `_` (reserved: `_dropped`). `outcome` is how something ended;
+# `ok` is the yes/no. The registry is read-only: it changes in this file, in review, not at run time.
 KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spec in {
     "source_fetch": {
-        "source": PTR,
-        "outcome": PTR,
+        "source": SOURCE,
+        "outcome": OUTCOME,
         "ok": BOOL,
         "items": INT,
         "new_items": INT,
         "ms": INT,
         "status": INT,
-        "error": PTR,
+        "error": NAME,  # open: the class name of whatever went wrong
     },
     "triage_verdict": {
-        "verdict": PTR,
-        "lane": PTR,
-        "reason_code": PTR,
+        "verdict": DISPOSITION,
+        "lane": LANE,
+        "reason_code": REASON,
         "score": NUM,
-        "model": PTR,
-        "prompt_version": PTR,
-        "source": PTR,
+        "model": NAME,  # open: a model's id, which the provider names
+        "prompt_version": NAME,  # open: names a prompt file revision
+        "source": SOURCE,
         "ms": INT,
     },
     "model_call": {
-        "model": PTR,
-        "tier": PTR,
-        "purpose": PTR,
-        "outcome": PTR,
+        "model": NAME,  # open: a model's id, which the provider names
+        "tier": TIER,
+        "purpose": PURPOSE,
+        "outcome": OUTCOME,
         "ok": BOOL,
         "tokens_in": INT,
         "tokens_out": INT,
@@ -86,56 +112,54 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "cache_write": INT,
         "cost_usd": NUM,
         "ms": INT,
-        "error": PTR,
+        "error": NAME,  # open: the class name of whatever went wrong
         "retries": INT,
     },
     "task": {
-        "state": PTR,
-        "prev_state": PTR,
-        "origin": PTR,
-        "mode": PTR,
-        "session": PTR,
+        "state": TASK_STATE,
+        "prev_state": TASK_STATE,
+        "origin": ORIGIN,
+        "mode": SEND_MODE,
         "attempt": INT,
     },
     "dispatch": {
-        "outcome": PTR,
+        "outcome": OUTCOME,
         "ok": BOOL,
-        "session": PTR,
-        "workspace": PTR,
-        "mode": PTR,
+        "workspace": ID,
+        "mode": SEND_MODE,
         "attempt": INT,
         "ms": INT,
     },
     "check": {
-        "name": PTR,
-        "outcome": PTR,
+        "name": NAME,  # open: each check names itself
+        "outcome": OUTCOME,
         "ok": BOOL,
         "count": INT,
         "ms": INT,
     },
     "effect": {
-        "action": PTR,
-        "outcome": PTR,
+        "action": ACTION,
+        "outcome": OUTCOME,
         "ok": BOOL,
-        "target": PTR,
+        "target": ID,
         "reversible": BOOL,
         "count": INT,
     },
     "feedback": {
-        "verdict": PTR,
-        "reason_code": PTR,
-        "surface": PTR,
+        "verdict": FEEDBACK_VERDICT,
+        "reason_code": REASON,
+        "surface": SURFACE,
     },
     "guard": {
-        "name": PTR,
-        "outcome": PTR,
+        "name": GUARD,
+        "outcome": GUARD_OUTCOME,
         "ok": BOOL,
-        "reason_code": PTR,
+        "reason_code": REASON,
         "count": INT,
     },
     "job_run": {
-        "job": PTR,
-        "outcome": PTR,
+        "job": NAME,  # open: each job names itself
+        "outcome": OUTCOME,
         "ok": BOOL,
         "ms": INT,
         "items": INT,
@@ -144,23 +168,24 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "lost": INT,
         "db_kb": INT,
         "partial": BOOL,
-        "error": PTR,
+        "error": NAME,  # open: the class name of whatever went wrong
     },
     "sign_in": {
-        "provider": PTR,
-        "outcome": PTR,
+        "provider": PROVIDER,
+        "outcome": OUTCOME,
         "ok": BOOL,
         "ms": INT,
         "expires_in": INT,
     },
 }.items()})
 
-# A pointer is an id-like word, never prose, a link, an address or a path: 1 to 120 characters, letters, digits and
+# A pointer is the shape both an id and an open name must have: an id-like word, never prose, a link, an address or a path: 1 to 120 characters, letters, digits and
 # `_ . : / -`, starting with a letter or digit, and optionally ending in `@` and 6 to 8 digits (a dated model id).
 # On top of that (see `_pointer_ok`): one `/` at most, no `:/` (a scheme), and no dot followed by 2 to 6 lowercase
 # letters at the end or before a `/` (a host or file name).
 _POINTER = re.compile(r"(?=.{1,120}\Z)[A-Za-z0-9][A-Za-z0-9_.:/-]*(?:@[0-9]{6,8})?")
 _HOST_OR_FILE = re.compile(r"\.[a-z]{2,6}(?:/|\Z)")
+_VERSION_SUFFIX = re.compile(r":[0-9]{1,2}\Z")
 _ID = re.compile(r"[0-9a-f]{16}")
 _COPY = re.compile(r"telemetry\.db\.corrupt-[0-9]{15}")
 _MAGIC = b"SQLite format 3\x00"
@@ -173,7 +198,13 @@ _COUNTER_LOCK = "dropped.lock"
 _STAMP = "upkeep-at"
 _LOCK = "spool.lock"
 _RECOVER_LOCK = "recover.lock"
-_LOSS_REASONS = ("spool_full", "spool_busy", "bad_line", "unknown_kind")
+_LOSS_REASONS = {
+    "spool_full": "%d records were dropped because the waiting list was full",
+    "spool_busy": "%d records were dropped because the waiting list was busy",
+    "bad_line": "%d unreadable records were discarded from the waiting list",
+    "unknown_kind": "%d records were dropped because their kind is unknown",
+    "set_aside": "the database was damaged and set aside, and its records are no longer used (%d lost)",
+}
 
 # One transaction, so another process never sees a half-made store. The write-ahead log is switched on after it,
 # so the file's own header already holds the schema version and the application id.
@@ -226,15 +257,28 @@ def _pointer_ok(value) -> bool:
             and ":/" not in value and _HOST_OR_FILE.search(value) is None)
 
 
-def _clean_pointer(value, allow_empty: bool = False):
-    """`value` if it is a pointer that the redactor leaves alone, else None. A secret-shaped word is not kept in a
-    redacted form: it is not a pointer, so it is dropped and counted. Only an exact `str` is accepted, so a
-    subclass can't hand over something else when it is turned into text."""
+def _clean_id(value, allow_empty: bool = False):
+    """`value` if it is an id: one of ID_PREFIXES, then id characters, and nothing the redactor would change. Only
+    an exact `str` is accepted, so a subclass can't hand over something else when it is turned into text."""
     if allow_empty and type(value) is str and value == "":
         return ""
     if not _pointer_ok(value) or redact.redact(value) != value:
         return None
-    return value
+    prefix = next((p for p in ID_PREFIXES if value.startswith(p)), None)
+    return value if prefix is not None and len(value) > len(prefix) else None
+
+
+def _clean_name(value):
+    """`value` if it is an open name: pointer-shaped, with a letter, no run of nine digits, at most five `-` or `_`
+    (a phrase has more), a `:` only as `:` and one or two digits at the end (a model's `v2:0`), and nothing
+    capitalised before a `/` (`feat/trace-ids`, not `Users/ann`). It is a shape, not a proof: a short lowercase
+    phrase would pass, which is why the open names are few."""
+    if not _pointer_ok(value) or redact.redact(value) != value:
+        return None
+    shape = (re.search("[A-Za-z]", value) and not re.search("[0-9]{9}", value)
+             and value.count("-") + value.count("_") <= 5 and ":" not in _VERSION_SUFFIX.sub("", value)
+             and ("/" not in value or value.partition("/")[0] == value.partition("/")[0].lower()))
+    return value if shape else None
 
 
 def _clean_value(kind, value):
@@ -245,16 +289,24 @@ def _clean_value(kind, value):
     if kind == NUM:
         ok = type(value) in (int, float) and math.isfinite(value)
         return value if ok else None
-    if kind == PTR:
-        return _clean_pointer(value)
+    if kind == ID:
+        return _clean_id(value)
+    if kind == NAME:
+        return _clean_name(value)
+    if type(kind) is tuple:  # a list of the values the field may take
+        return value if type(value) is str and value in kind else None
     return None  # a field the kind doesn't list
+
+
+def _clean_component(value):
+    return value if type(value) is str and (value == "" or value in COMPONENTS) else None
 
 
 def _build(kind, trace, subject, component, fields, carried: int = 0):
     """(the record to store, what was left out). The record is None for an unknown kind."""
     registry = KINDS.get(kind) if type(kind) is str else None
     if registry is None:
-        return None, ["unknown kind"]
+        return None, ["unknown kind " + (repr(kind[:40]) if type(kind) is str else type(kind).__name__)]
     left_out = []
     kept = {}
     for name, value in fields.items():
@@ -264,7 +316,7 @@ def _build(kind, trace, subject, component, fields, carried: int = 0):
         else:
             kept[name] = clean
     parts = {"trace": trace if type(trace) is str and (trace == "" or pointers.is_trace_id(trace)) else None,
-             "subject": _clean_pointer(subject, True), "component": _clean_pointer(component, True)}
+             "subject": _clean_id(subject, True), "component": _clean_component(component)}
     left_out += [name + " of " + kind for name, part in parts.items() if part is None]
     dropped = carried + len(left_out)
     if dropped:
@@ -292,10 +344,12 @@ def _in_range(value, low, high) -> bool:
 
 
 def _settings() -> dict:
-    """The settings with their defaults. `problems` names each one that couldn't be read; a setting that can't be
-    read never deletes anything. An unreadable file keeps recording (with the defaults); a present `enabled`
-    that isn't the JSON value true turns recording off."""
-    found = {"enabled": True, "keep_days": DEFAULT_KEEP_DAYS, "max_mb": DEFAULT_MAX_MB, "problems": {}}
+    """The settings with their defaults. `problems` names each one that couldn't be read, and a setting that can't
+    be read never deletes anything. `enabled` is true when the key is absent or exactly true. A `config.json` that
+    exists but can't be read, or isn't an object, is a privacy switch nobody can read: recording is off
+    (`unreadable` says why) until it is fixed. A missing file means on."""
+    found = {"enabled": True, "keep_days": DEFAULT_KEEP_DAYS, "max_mb": DEFAULT_MAX_MB, "problems": {},
+             "unreadable": None}
     try:
         with open(os.path.join(_home(), ".assistant", "config.json")) as handle:
             block = json.load(handle).get("telemetry", {})
@@ -303,9 +357,9 @@ def _settings() -> dict:
             raise ValueError("the telemetry setting isn't an object")
     except FileNotFoundError:
         return found
-    except Exception as exc:  # noqa: BLE001 - a deeply nested file raises RecursionError, and still keeps recording
+    except Exception as exc:  # noqa: BLE001 - a deeply nested file raises RecursionError; it is unreadable too
         why = "config.json can't be read: " + type(exc).__name__
-        found["problems"] = {"enabled": why, "keep_days": why, "max_mb": why}
+        found.update(enabled=False, unreadable=why, problems={"enabled": why, "keep_days": why, "max_mb": why})
         return found
     found["enabled"] = block.get("enabled", True) is True
     for name, (low, high) in (("keep_days", KEEP_DAYS_RANGE), ("max_mb", MAX_MB_RANGE)):
@@ -378,22 +432,39 @@ def _check_header(path: str) -> None:
     with open(path, "rb") as handle:
         head = handle.read(100)
     if len(head) == 100 and head[:16] == _MAGIC:
-        if int.from_bytes(head[68:72], "big") != APPLICATION_ID:
+        # A file with no tables yet (schema cookie 0) is a store whose set-up was interrupted: ours to finish.
+        empty = int.from_bytes(head[40:44], "big") == 0 and int.from_bytes(head[68:72], "big") == 0
+        if int.from_bytes(head[68:72], "big") != APPLICATION_ID and not empty:
             raise _ForeignDatabase("telemetry.db belongs to another program, so Assistant left it alone")
         if int.from_bytes(head[60:64], "big") > SCHEMA_VERSION:
             raise _NewerSchema("telemetry.db was written by a newer Assistant, so this one left it alone")
 
 
+def _read_only_uri(path: str, immutable: bool = False) -> str:
+    """`immutable` reads the file as it is and makes no log or index files beside it."""
+    return ("file:" + path.replace("%", "%25").replace("?", "%3f").replace("#", "%23") + "?mode=ro"
+            + ("&immutable=1" if immutable else ""))
+
+
 def _connect(create: bool = True):
     """A new connection, schema ready. Raises _NewerSchema or _ForeignDatabase for a file that isn't ours to
-    change."""
-    path = _touch(_DB) if create else _path(_DB)
-    _check_header(path)
+    change: its header is read, and then its version through a read-only connection (a newer version may be only
+    in the log, and closing a writing connection would copy the log into the file), before the file's mode is
+    touched or SQLite opens it for writing."""
+    path = _path(_DB)
+    with contextlib.suppress(FileNotFoundError):
+        _check_header(path)
+    if create:
+        _touch(_DB)
+    probe = sqlite3.connect(_read_only_uri(path), uri=True, timeout=BUSY_SECONDS)
+    try:
+        version = probe.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        probe.close()
+    if version > SCHEMA_VERSION:
+        raise _NewerSchema("telemetry.db was written by a newer Assistant, so this one left it alone")
     conn = sqlite3.connect(path, timeout=BUSY_SECONDS, isolation_level=None)
     try:
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version > SCHEMA_VERSION:  # a version still in the log, not yet in the file's header
-            raise _NewerSchema("telemetry.db was written by a newer Assistant, so this one left it alone")
         if create and version < SCHEMA_VERSION:
             conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             conn.execute("BEGIN IMMEDIATE")
@@ -427,21 +498,40 @@ def _copy_stamp() -> str:
     return "%015d" % int(time.time() * 1000)
 
 
-def _quarantine(seen_inode) -> None:
-    """Move the corrupt database aside and keep the newest copies. If another process already replaced the file
-    this one saw, leave the new one alone."""
+def _records_in(path: str) -> int:
+    """How many records a set-aside file holds, when it can be read cheaply; 0 when it can't."""
+    try:
+        conn = sqlite3.connect(_read_only_uri(path, True), uri=True, timeout=0)
+        try:
+            return int(conn.execute("SELECT count(*) FROM events").fetchone()[0])
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - a damaged file is the usual reason it can't be read
+        return 0
+
+
+def _quarantine(seen_inode, deadline=None):
+    """Move the corrupt database aside and keep the newest copies; the loss is counted. Returns True once it is
+    safe to try again (including when another process already replaced the file this one saw, which is left
+    alone), and None when the lock for it couldn't be taken in time: then nothing is moved."""
     path, db = folder(), _path(_DB)
-    with _locked(_RECOVER_LOCK):
+    wait = BUSY_SECONDS if deadline is None else max(0.0, deadline - time.monotonic())
+    with _locked(_RECOVER_LOCK, wait) as got:
+        if not got:
+            return None
         if _inode(db) != seen_inode:
-            return
+            return True
         os.chmod(db, 0o600)
-        os.replace(db, "%s.corrupt-%s" % (db, _copy_stamp()))
+        aside = "%s.corrupt-%s" % (db, _copy_stamp())
+        os.replace(db, aside)
         for suffix in ("-wal", "-shm"):
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(db + suffix)
         copies = sorted(name for name in os.listdir(path) if _COPY.fullmatch(name))
         for name in copies[:-KEEP_CORRUPT_COPIES]:
             os.unlink(os.path.join(path, name))
+    _count_loss("set_aside", _records_in(aside) or 1)
+    return True
 
 
 def _once(work):
@@ -452,16 +542,17 @@ def _once(work):
         conn.close()
 
 
-def _run(work):
+def _run(work, deadline=None):
     """`work(connection)`. If the database turns out to be corrupt, at any point, move it aside, start a fresh one
-    and run it once more."""
+    and run it once more, unless `deadline` (a time on the monotonic clock) has passed."""
     seen = _inode(_path(_DB))
     try:
         return _once(work)
     except sqlite3.DatabaseError as exc:
-        if not _is_corrupt(exc):
+        if not _is_corrupt(exc) or not _quarantine(seen, deadline):
             raise
-    _quarantine(seen)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("telemetry ran out of time")
     return _once(work)
 
 
@@ -499,15 +590,18 @@ def _count_loss(reason: str, n: int = 1) -> None:
 
 
 def _tally_losses() -> tuple:
-    """(all losses so far, those since the last time this was asked)."""
+    """(all losses so far, a sentence for each kind of loss since the last time this was asked)."""
+    sentences = []
     with _locked(_COUNTER_LOCK) as got:
         counts = _read_counter()
-        total = sum(counts.get(reason, 0) for reason in _LOSS_REASONS)
-        new = max(0, total - counts.get("reported", 0))
+        for reason, sentence in _LOSS_REASONS.items():
+            new = counts.get(reason, 0) - counts.get("seen_" + reason, 0)
+            if new > 0:
+                sentences.append("telemetry: " + sentence % new)
+            counts["seen_" + reason] = counts.get(reason, 0)
         if got:
-            counts["reported"] = total
             _write_counter(counts)
-    return total, new
+    return sum(counts.get(reason, 0) for reason in _LOSS_REASONS), sentences
 
 
 def _spool(record: dict, deadline: float) -> bool:
@@ -538,31 +632,47 @@ def _spool(record: dict, deadline: float) -> bool:
 # ---------------------------------------------------------------- writing and reading
 
 
-def emit(kind=None, /, *, trace="", subject="", component="", **fields) -> bool:
-    """Record one event. True when it is in the database; False when it was spooled, dropped, or recording is off.
-    Never raises, and never waits longer than a short deadline for the database and the spool (see
-    EMIT_DEADLINE_SECONDS), except in strict mode, which raises ValueError for anything that would be left out.
+_HEAD = ("kind", "trace", "subject", "component")
 
-    `kind` must be a key of KINDS and `fields` its fields; `trace` is a trace id; `subject` and `component` are
-    pointers (a Work queue row is `assistant.pointers.row_pointer(key)`, never its key). Anything else is left
-    out and counted in the stored record's `_dropped`."""
+
+def emit(*args, **kwargs) -> bool:
+    """Record one event: `emit(kind, trace, subject, component, **fields)`, where the first four may also be given
+    by keyword. True when it is in the database; False when it was spooled, dropped, or recording is off. Never
+    raises, whatever it is given, and never waits longer than a short deadline for the database and the spool
+    (EMIT_DEADLINE_SECONDS). Any keyword that isn't one of the four is a field, and so is a fifth positional.
+
+    `kind` must be a key of KINDS and the fields its fields. `trace` is a trace id. `subject` is an id with a
+    prefix from ID_PREFIXES (a Work queue row is `assistant.pointers.row_pointer(key)`, never its key).
+    `component` is one of COMPONENTS. Anything else is left out and counted in the stored record's `_dropped`.
+
+    For tests only: with ASSISTANT_TELEMETRY_STRICT=1 and a test running (PYTEST_CURRENT_TEST set) it raises
+    ValueError naming whatever would be left out. A running service never raises."""
     started = time.monotonic()
     try:
         if not _settings()["enabled"]:
             return False
-        record, left_out = _build(kind, trace, subject, component, fields)
-        if left_out and os.environ.get(STRICT_ENV) == "1":
+        head = dict(zip(_HEAD, args))
+        fields = {"arg%d" % n: value for n, value in enumerate(args[len(_HEAD):], len(_HEAD))}
+        for name, value in kwargs.items():
+            if name in _HEAD and name not in head:
+                head[name] = value
+            else:
+                fields[name] = value
+        record, left_out = _build(head.get("kind"), head.get("trace", ""), head.get("subject", ""),
+                                  head.get("component", ""), fields)
+        if left_out and os.environ.get(STRICT_ENV) == "1" and "PYTEST_CURRENT_TEST" in os.environ:
             raise _Strict("telemetry would leave out: " + ", ".join(left_out))
         if record is None:
             _count_loss("unknown_kind")
             return False
         _ensure_dir()
         record = _stamp(record)
+        deadline = started + EMIT_DEADLINE_SECONDS
         try:
-            _run(lambda conn: conn.execute(_INSERT, _row(record)))
+            _run(lambda conn: conn.execute(_INSERT, _row(record)), deadline)
             return True
         except Exception:  # noqa: BLE001 - locked, full, newer schema, anything: the spool keeps it
-            _spool(record, started + EMIT_DEADLINE_SECONDS)
+            _spool(record, deadline)
             return False
     except _Strict:
         raise
@@ -688,7 +798,11 @@ def _trim(conn, now: float, settings: dict, result: dict) -> None:
     if "keep_days" in problems:
         result["skipped"]["age"] = problems["keep_days"]
     else:
-        cursor = conn.execute("DELETE FROM events WHERE ts<?", (now - settings["keep_days"] * 86400,))
+        # Age is counted from the earlier of now and the newest record, so a clock that jumps forward doesn't
+        # empty the store.
+        newest = conn.execute("SELECT max(ts) FROM events").fetchone()[0]
+        reference = now if newest is None else min(now, newest)
+        cursor = conn.execute("DELETE FROM events WHERE ts<?", (reference - settings["keep_days"] * 86400,))
         result["deleted_old"] = cursor.rowcount
     if "max_mb" in problems:
         result["skipped"]["size"] = problems["max_mb"]
@@ -712,11 +826,11 @@ def _upkeep(conn, now: float, settings: dict, result: dict) -> None:
 
 
 def maintain(now=None) -> dict:
-    """The hourly upkeep. Moves the spool into the database, deletes records older than `keep_days`, then the
-    oldest ones while the database is above `max_mb`, and checkpoints the log. Returns the counts, in `notes` a
-    plain sentence for each problem (a setting that can't be read, which skips the deletion it controls; a
-    database it can't use; records lost since the last time), and writes one `job_run` record about itself.
-    `now` is never later than the clock. Never raises."""
+    """The hourly upkeep. Moves the spool into the database, deletes records older than `keep_days` (counted from
+    the earlier of `now` and the newest record), then the oldest ones while the database is above `max_mb`, and
+    checkpoints the log. Returns the counts, and in `notes` a plain sentence for each problem, once: a setting or
+    a `config.json` that can't be read, a database it can't use, a damaged database set aside, records lost since
+    the last time. Writes one `job_run` record about itself. `now` is never later than the clock. Never raises."""
     result = {"ok": False, "enabled": True, "drained": 0, "bad_lines": 0, "deleted_old": 0, "deleted_size": 0,
               "skipped": {}, "notes": []}
     started = time.monotonic()
@@ -724,6 +838,8 @@ def maintain(now=None) -> dict:
         settings = _settings()
         if not settings["enabled"]:
             result["enabled"] = False
+            if settings["unreadable"]:
+                result["notes"].append("telemetry: %s, so recording is off until it is fixed" % settings["unreadable"])
             return result
         now = _clamped(now)
         _ensure_dir()
@@ -735,12 +851,11 @@ def maintain(now=None) -> dict:
     try:
         if result["bad_lines"]:
             _count_loss("bad_line", result["bad_lines"])
-        lost, new = _tally_losses()
+        lost, sentences = _tally_losses()
     except Exception:  # noqa: BLE001
-        lost, new = 0, 0
-    result["notes"] += ["telemetry: " + why for why in result["skipped"].values()]
-    if new:
-        result["notes"].append("telemetry: %d records were lost since the last upkeep" % new)
+        lost, sentences = 0, []
+    result["notes"] += ["telemetry: " + why for why in result["skipped"].values()] + sentences
+    result["notes"] = list(dict.fromkeys(result["notes"]))  # the same sentence once
     emit("job_run", job="telemetry-maintain", ok=result["ok"], ms=int((time.monotonic() - started) * 1000),
          items=result["drained"], drained=result["drained"], deleted=result["deleted_old"] + result["deleted_size"],
          lost=lost, db_kb=result.get("db_kb", 0), partial=bool(result["skipped"]),
@@ -749,29 +864,34 @@ def maintain(now=None) -> dict:
 
 
 def upkeep(now=None):
-    """`maintain()`, at most once an hour: None when it isn't due yet or recording is off. The time of the last run
-    is kept in the telemetry folder and written first, so a failing run isn't retried at once; if it can't be
-    written the upkeep runs anyway (it is cheap). Never raises."""
+    """`maintain()`, at most once an hour: None when it isn't due yet, or recording is off (but a `config.json`
+    that can't be read is reported, hourly). The time of the last run is kept in a file and written first, so a
+    failing run isn't retried at once; if it can't be written the upkeep runs anyway (it is cheap). Never
+    raises."""
     try:
-        if not _settings()["enabled"]:
+        settings = _settings()
+        if settings["enabled"]:
+            stamp = _path(_STAMP)
+            with contextlib.suppress(OSError):
+                _ensure_dir()
+        elif settings["unreadable"]:
+            stamp = os.path.join(_home(), ".assistant", "telemetry-config-note-at")
+        else:
             return None
         now = _clamped(now)
         try:
-            with open(_path(_STAMP)) as handle:
+            with open(stamp) as handle:
                 last = float(handle.read())
         except (OSError, ValueError):
             last = 0.0
         if 0 <= now - last < UPKEEP_EVERY_SECONDS:
             return None
-        try:
-            _ensure_dir()
-            fd = _private(_path(_STAMP), os.O_WRONLY | os.O_TRUNC)
+        with contextlib.suppress(OSError):
+            fd = _private(stamp, os.O_WRONLY | os.O_TRUNC)
             try:
                 os.write(fd, str(now).encode())
             finally:
                 os.close(fd)
-        except OSError:
-            pass
         return maintain(now)
     except Exception:  # noqa: BLE001
         return None
