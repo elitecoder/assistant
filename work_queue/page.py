@@ -23,6 +23,7 @@ import html
 import json
 from datetime import datetime
 
+from assistant import feedback, pointers
 from work_queue.inputs import gmail, outlook
 
 e = html.escape
@@ -202,6 +203,27 @@ def emails(snap: dict) -> dict:
     """The Gmail conversation behind each Gmail row's key, for the server's Archive and Mark read."""
     return {m["key"]: {"account": account, "tid": m["tid"]} for account, rows in (snap.get("gmail") or {}).items()
             for m in rows if m.get("tid")}
+
+
+def row_context(snap: dict) -> dict:
+    """What a feedback record may say about each row, by every key the page names it by: where it came from, and a hash
+    of who sent it (never the name). Saved by the refresh, because a request must never say it. GitHub rows carry no
+    sender of their own."""
+    out: dict = {}
+
+    def add(keys, source: str, sender: str = "") -> None:
+        found = {"source": source, **({"who": feedback.who_pointer(sender)} if sender.strip() else {})}
+        out.update({k: found for k in keys if isinstance(k, str) and k})
+
+    for r in snap.get("slack") or []:
+        add([r["key"], r["link"]], "slack", r.get("who") or "")
+    for p in snap.get("github") or []:
+        add([p["key"], p["link"]], "github")
+    for source, rows in (("outlook", snap.get("outlook") or []),
+                         *(("gmail", found) for found in (snap.get("gmail") or {}).values())):
+        for m in rows:
+            add([m["key"], email_mark(m), m["link"]], source, m.get("addr") or m.get("from") or "")
+    return out
 
 
 def ap_group(group: str, title: str, help_text: str, rows: list[str], is_open: bool = False) -> str:

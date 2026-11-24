@@ -42,6 +42,10 @@ def emails_path():
     return config.data_dir() / "emails.json"
 
 
+def rowctx_path():
+    return config.data_dir() / "rowctx.json"
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -89,6 +93,7 @@ def write_page(snap: dict) -> dict:
     site_path().write_text(doc)
     config.write_json(candidates_path(), cands)
     config.write_json(emails_path(), page.emails(snap))
+    config.write_json(rowctx_path(), page.row_context(snap))
     return cands
 
 
