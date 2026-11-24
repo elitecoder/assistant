@@ -71,6 +71,8 @@ SELF_PLIST_LABEL = "com.assistant.assistant-pulse"
 
 DEFAULT_INTERVAL_SEC = 3600
 
+WATCH = "self-update"  # the name failwatch counts this job's failures under
+
 # A working tree that stays dirty across this many seconds is auto-stashed so
 # self-update can proceed. Measured from the FIRST throttle-passing pulse that
 # observed it dirty (tracked via dirty_since_ts in the marker), NOT the file
@@ -426,10 +428,43 @@ def syntax_gate(repo: Path, old_sha: str, new_sha: str) -> tuple[str, str]:
     return "ok", "ok"
 
 
-def maybe_update(
+def _failwatch():
+    """The failure counter, or None if it can't be loaded: counting a failure
+    must never stop an update."""
+    try:
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from assistant import failwatch  # noqa: PLC0415
+        return failwatch
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def maybe_update(repo: Path, **kwargs) -> dict | None:
+    """Throttled self-update (see _maybe_update), plus failure counting: every
+    attempt that failed is counted under one name so a repeat shows once with
+    a count, and a clean attempt clears the streak. A refused commit that was
+    already reported today (syntax-fail-known) is neither."""
+    result = _maybe_update(repo, **kwargs)
+    if result is None or not result.get("attempted") or result.get("skipped_reason") == "syntax-fail-known":
+        return result
+    watch = _failwatch()
+    if watch is None:
+        return result
+    problem = result.get("error") or (result.get("syntax_error") if result.get("skipped_reason") == "syntax-fail" else None)
+    if problem:
+        watch.record_failure(WATCH, problem, now=kwargs.get("now"))
+    else:
+        watch.record_ok(WATCH, now=kwargs.get("now"))
+    return result
+
+
+def _maybe_update(
     repo: Path,
     *,
     now: float | None = None,
+    force: bool = False,
     interval_sec: int = DEFAULT_INTERVAL_SEC,
     dirty_stash_after_sec: int = DEFAULT_DIRTY_STASH_AFTER_SEC,
     marker_path: Path | None = None,
@@ -455,6 +490,15 @@ def maybe_update(
     # throttle next pulse (we never want a hot retry loop).
     marker["last_attempt_ts"] = now
     _write_marker(marker_path, marker)
+
+    # The same failure three times running pauses the retries (1 hour, doubling
+    # to 24). --force is a person asking, so it always tries.
+    watch = None if force else _failwatch()
+    paused_until = watch.backed_off(WATCH, now=now) if watch else None
+    if paused_until:
+        _log("paused after repeating the same failure; next try after "
+             f"{time.strftime('%H:%M', time.localtime(paused_until))}")
+        return None
 
     result: dict = {"attempted": True, "changed": False, "installed": False,
                     "skipped_reason": None}
@@ -663,6 +707,7 @@ if __name__ == "__main__":  # manual run: ./self_update.py [--force]
     out = maybe_update(
         repo,
         interval_sec=0 if args.force else DEFAULT_INTERVAL_SEC,
+        force=args.force,
         log=logging.getLogger("self_update"),
     )
     print(json.dumps(out, indent=2))

@@ -90,3 +90,12 @@ def _no_real_self_update(monkeypatch):
 
     guard.maybe_update = maybe_update
     monkeypatch.setitem(sys.modules, "self_update", guard)
+
+
+# Failure counts go to ~/.assistant/failures.json. Point them at a scratch file
+# for every test, so a test that fails a model call or a render can't write the
+# real home; the failwatch tests set their own path.
+@pytest.fixture(autouse=True)
+def _no_real_failures_file(monkeypatch, tmp_path_factory):
+    monkeypatch.setenv("ASSISTANT_FAILURES_FILE",
+                       str(tmp_path_factory.mktemp("failwatch") / "failures.json"))
