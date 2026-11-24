@@ -163,16 +163,38 @@ def _todo_lock():
         return contextlib.nullcontext()
 
 
+def _count_render_failure(error):
+    """Count a failed re-render so a repeat shows once on the dashboard. Never
+    raises: this runs on the request path."""
+    try:
+        if str(SRC_DIR) not in sys.path:
+            sys.path.insert(0, str(SRC_DIR))
+        from assistant import failwatch  # noqa: PLC0415
+        if error is None:
+            failwatch.record_ok("dashboard-render")
+        else:
+            # Nothing retries a render by itself, so there is nothing to pause.
+            failwatch.record_failure("dashboard-render", error, pause=False)
+    except Exception:
+        pass
+
+
 def rerender():
     try:
-        subprocess.run(
-            ["python3", str(RENDER_SCRIPT)],
+        done = subprocess.run(
+            [sys.executable, str(RENDER_SCRIPT)],
             check=False,
             timeout=4,
             capture_output=True,
+            text=True,
         )
-    except Exception:
-        pass
+        lines = (done.stderr or "").strip().splitlines()
+        _count_render_failure(None if done.returncode == 0 else
+                              (lines[-1] if lines else f"the page render exited with code {done.returncode}"))
+    except subprocess.TimeoutExpired:
+        _count_render_failure("the page render took longer than 4 seconds")
+    except Exception as exc:
+        _count_render_failure(f"the page render could not start: {exc}")
 
 
 def set_flag(td_id, flag, value):
@@ -301,7 +323,7 @@ def set_mode(value):
 def rerender_dashboard():
     try:
         return subprocess.run(
-            ["python3", str(RENDER_DASHBOARD_SCRIPT)],
+            [sys.executable, str(RENDER_DASHBOARD_SCRIPT)],
             check=False, timeout=6, capture_output=True,
         ).returncode == 0
     except Exception:

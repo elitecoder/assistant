@@ -107,7 +107,7 @@ def test_rerender_invokes_subprocess(env, monkeypatch):
     calls = []
     monkeypatch.setattr(mod.subprocess, "run", lambda argv, **kw: calls.append(argv))
     mod.rerender()
-    assert calls and calls[0][0] == "python3"
+    assert calls and calls[0][0] == sys.executable
     assert str(mod.RENDER_SCRIPT) in calls[0][1]
 
 
@@ -125,7 +125,7 @@ def test_rerender_dashboard_invokes_subprocess(env, monkeypatch):
     calls = []
     monkeypatch.setattr(mod.subprocess, "run", lambda argv, **kw: calls.append(argv))
     mod.rerender_dashboard()
-    assert calls and calls[0][0] == "python3"
+    assert calls and calls[0][0] == sys.executable
 
 
 def test_rerender_dashboard_swallows_exception(monkeypatch):
