@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from assistant import mode
 from assistant.slack_focus.client import Client, SlackError, http_transport
 
-from work_queue import config, page, ready, todo_result, tools, triage
+from work_queue import config, page, ready, todo_result, tools, traces, triage
 from work_queue.inputs import gcal, github, gmail, outlook, slack
 
 LABELS = {"slack": "Slack", "github": "GitHub", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook"}
@@ -106,6 +106,21 @@ def paid(snap: dict, note: str = "") -> dict:
         return triage.empty(note or f"triage stopped on an unexpected error ({type(exc).__name__})")
 
 
+def row_links(snap: dict) -> list[str]:
+    """The link of every row the sources gave: the key a row is sent and marked by."""
+    rows = [*(snap.get("slack") or []), *(snap.get("github") or []), *(snap.get("outlook") or []),
+            *(m for found in (snap.get("gmail") or {}).values() for m in found)]
+    return [r["link"] for r in rows if isinstance(r.get("link"), str) and r["link"].startswith("https://")]
+
+
+def stamp_traces(snap: dict) -> None:
+    """Give each row an id. A registry that can't be used never holds back the page; the traceback goes to the log."""
+    try:
+        traces.stamp(row_links(snap))
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+
+
 def run(transport=http_transport, now: float | None = None, model=None) -> list[dict]:
     """One refresh. Returns each source's status line. `model(prompt, timeout)` replaces triage.call_model."""
     config.write_json(status_path(), {"running": True, "started": now_iso(), "pid": os.getpid()})
@@ -116,6 +131,7 @@ def run(transport=http_transport, now: float | None = None, model=None) -> list[
         config.write_json(status_path(), {"running": False, "finished": now_iso(), "error": str(exc)})
         raise
     ready.run(doc, transport, os.environ.get("SLACK_USER_TOKEN", ""))
+    stamp_traces(snap)
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
     snap["built_iso"] = now_iso()
     pro = mode.is_pro()

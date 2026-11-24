@@ -916,8 +916,8 @@ CHECKS = (
     (
         'the mode is saved with the sent row',
         'work_queue/server.py',
-        'queued[key] = {"id": td_id, "at": now(), "mode": how}',
-        'queued[key] = {"id": td_id, "at": now()}',
+        'queued[key] = {"id": td_id, "at": now(), "mode": how, "trace": trace}',
+        'queued[key] = {"id": td_id, "at": now(), "trace": trace}',
         'tests/test_work_queue_server.py::test_a_hands_off_send_creates_an_auto_dispatch_todo_with_the_next_id_and_finish_instructions',
     ),
     (

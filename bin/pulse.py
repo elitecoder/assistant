@@ -836,6 +836,22 @@ def run_brief_step(pulse_idx: int) -> None:
         log.info("brief: %s", json.dumps(summary))
 
 
+def run_trace_step() -> None:
+    """Step 1.7b: stamp a trace id on every TODO that has none (todostore.stamp_missing_traces). Fenced: a broken
+    or unwritable TODO file costs this pulse's stamping, never the pulse."""
+    try:
+        src_dir = str(REPO / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from assistant import todostore  # noqa: PLC0415
+        stamped = todostore.stamp_missing_traces()
+    except Exception as e:  # noqa: BLE001 — trace ids must never break the pulse
+        log.warning("trace ids: could not stamp TODOs (ignored): %s", e)
+        return
+    if stamped:
+        log.info("trace ids: stamped %d TODO(s)", stamped)
+
+
 def run_narrator_step(pulse_idx: int) -> None:
     """Step 1.6b (Keel M7): the brief's editorial VOICE. Once per day (a per-date
     spend stamp), after the brief is built, narrate-brief.generate() reads the
@@ -2643,6 +2659,12 @@ def main() -> int:
     #      pulse; NO LLM. Fenced, never load-bearing (see run_planner_step).
     if not dry_run:
         run_planner_step(pulse_idx)
+
+    # 1.7b. Trace ids: give every open TODO that arrived without one (written by
+    #       hand, or before ids existed) its id. Runs after the planner and before
+    #       dispatch; NO LLM. Fenced, never load-bearing (see run_trace_step).
+    if not dry_run:
+        run_trace_step()
 
     # 1.8. Strategist decision-context pre-research (Keel M6): on IDLE capacity
     #      only, pre-research queued OPEN decisions into decision-context/*.md

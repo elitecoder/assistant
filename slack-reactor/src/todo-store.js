@@ -2,6 +2,7 @@
 // Single source of truth: ~/.claude/assistant-todo.json (the dashboard + pulse
 // read the same file).
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 
@@ -62,6 +63,7 @@ export function addTodo({ title, detail, url, source, priority = 'P2', autoDispa
     status: 'open',
     autoDispatch,
     capturedBy: MACHINE,
+    trace: `tr-${randomBytes(8).toString('hex')}`,
   })
   writeAtomic(data)
   return { id, created: true }

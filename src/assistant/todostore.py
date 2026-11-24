@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import os
 from pathlib import Path
 
@@ -63,3 +64,27 @@ def todo_lock():
         except OSError:
             pass
         os.close(fd)
+
+
+def stamp_missing_traces() -> int:
+    """Give every task in `items` that has no valid trace id a new one; return how many. Tasks also arrive from
+    agents writing the file by hand and from before ids existed. Under the same lock as every other writer, and the
+    file is written only when a task needed one, with nothing else changed, not even `_lastUpdated`."""
+    from assistant import pointers  # noqa: PLC0415
+
+    with todo_lock():
+        try:
+            text = todo_path().read_text()
+            data = json.loads(text)
+        except (OSError, ValueError):
+            return 0
+        items = data.get("items") if isinstance(data, dict) else None
+        missing = [i for i in items if isinstance(i, dict) and not pointers.is_trace_id(i.get("trace"))] \
+            if isinstance(items, list) else []
+        for item in missing:
+            item["trace"] = pointers.new_trace_id()
+        if missing:
+            tmp = todo_path().with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if text.endswith("\n") else ""))
+            os.replace(tmp, todo_path())
+        return len(missing)
