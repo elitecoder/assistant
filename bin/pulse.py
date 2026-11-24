@@ -2502,8 +2502,7 @@ def dispatch_todo(todo_id: str) -> bool:
             trust_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "trust")
             if trust_ef is None:
                 return False
-            session_effects.finish(trust_ef, session_effects.type_line(
-                _cmux_rpc, surface_ref, agent_session.trust_answer(agent), enter="key"))
+            session_effects.type_line(trust_ef, _cmux_rpc, surface_ref, agent_session.trust_answer(agent))
             trust_answered = True
         elif agent_session.ready_re(agent).search(screen):
             ready = True
@@ -2532,7 +2531,8 @@ def dispatch_todo(todo_id: str) -> bool:
     task_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "task")
     if task_ef is None:
         return False
-    typed = session_effects.type_line(_cmux_rpc, surface_ref, instruction.rstrip("\n"), enter="key", pause=1)
+    typing = session_effects.Keys(task_ef, _cmux_rpc, surface_ref)
+    typing.line(instruction.rstrip("\n"), pause=1)
 
     # 6.5. STAMP NOW — a real workspace exists and the prompt has been sent.
     #    Stamping (dispatchedAt + dispatchedWs + status=in-progress) moves the
@@ -2545,7 +2545,7 @@ def dispatch_todo(todo_id: str) -> bool:
     #    session flipping status to done, the picker routes it to bucket_a
     #    (re-classify) — which is NOT auto-spawned — never back to bucket_b.
     if not _mark_todo_dispatched(todo_id, ws_ref):
-        session_effects.finish(task_ef, typed)
+        typing.finish()
         log.warning("dispatch %s: spawned %s + sent prompt but TODO stamp failed — "
                     "will re-dispatch next pulse (prompt staged at %s)",
                     todo_id, ws_ref, prompt_file)
@@ -2598,7 +2598,8 @@ def dispatch_todo(todo_id: str) -> bool:
             break
         time.sleep(1)
 
-    session_effects.finish(task_ef, typed, verified=submitted)
+    typing.confirmed = submitted
+    typing.finish()
     if not submitted:
         log.warning("dispatch %s: stamped to %s but submission unconfirmed within window "
                     "(prompt staged at %s) — not re-dispatching; check the workspace",

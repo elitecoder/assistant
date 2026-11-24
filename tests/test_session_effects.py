@@ -193,38 +193,59 @@ class Rpc:
         return None if len(self.calls) in self.refuse else {}
 
 
-def test_text_and_enter_both_sent_is_done_and_the_calls_are_the_two_keystrokes():
+def test_text_and_enter_both_sent_is_done_and_the_calls_are_the_two_keystrokes(home):
     rpc = Rpc()
-    assert se.type_line(rpc, "surface:2", "hi", pause=1, sleep=lambda s: None) == "done"
+    assert se.type_line(nudge(), rpc, "surface:2", "hi", pause=1, sleep=lambda s: None) == "done"
     assert rpc.calls == [("surface.send_text", {"surface_id": "surface:2", "text": "hi"}),
                          ("surface.send_key", {"surface_id": "surface:2", "key": "enter"})]
+    assert rows(home)[1]["outcome"] == "done"
 
 
-def test_enter_as_a_character_and_no_enter_are_supported():
+def test_enter_as_a_character_and_no_enter_are_supported(home):
     rpc = Rpc()
-    assert se.type_line(rpc, "s", "hi", enter="cr") == "done"
+    assert se.type_line(nudge(), rpc, "s", "hi", enter="cr") == "done"
     assert rpc.calls[1] == ("surface.send_text", {"surface_id": "s", "text": "\r"})
     rpc = Rpc()
-    assert se.type_line(rpc, "s", "1", enter="") == "done" and len(rpc.calls) == 1
+    assert se.type_line(nudge("workspace:5"), rpc, "s", "1", enter="") == "done" and len(rpc.calls) == 1
 
 
-def test_text_refused_is_failed_and_enter_is_not_pressed():
+def test_text_refused_is_failed_and_enter_is_not_pressed(home):
     rpc = Rpc(refuse=(1,))
-    assert se.type_line(rpc, "s", "hi") == "failed" and len(rpc.calls) == 1
+    assert se.type_line(nudge(), rpc, "s", "hi") == "failed" and len(rpc.calls) == 1
+    assert rows(home)[1]["outcome"] == "failed" and rows(home)[1]["error"] == "tool failed"
 
 
-def test_text_sent_and_enter_refused_is_unknown():
-    assert se.type_line(Rpc(refuse=(2,)), "s", "hi") == "unknown"
+def test_text_sent_and_enter_refused_is_unknown(home):
+    assert se.type_line(nudge(), Rpc(refuse=(2,)), "s", "hi") == "unknown"
 
 
-def test_a_transport_error_after_it_started_is_unknown_and_before_any_keystroke_is_failed():
-    assert se.type_line(Rpc(boom=(2,)), "s", "hi") == "unknown"
-    assert se.type_line(Rpc(boom=(1,)), "s", "hi") == "unknown"
+def test_a_transport_error_is_unknown_whenever_it_happens_and_is_recorded_as_a_timeout(home):
+    assert se.type_line(nudge(), Rpc(boom=(2,)), "s", "hi") == "unknown"
+    assert se.type_line(nudge("workspace:5"), Rpc(boom=(1,)), "s", "hi") == "unknown"
+    assert rows(home)[-1]["error"] == "timeout"
 
 
-def test_keys_report_confirmed_and_nothing_sent():
-    keys = se.Keys(Rpc(), "s")
-    assert keys.outcome() == "failed" and keys.outcome(confirmed=True) == "done"
-    assert keys.text("a") and keys.key("enter") and keys.outcome() == "done"
-    keys.rpc = Rpc(refuse=(1,))
-    assert not keys.carriage_return() and keys.outcome() == "unknown"
+def test_a_confirmed_typing_is_done_and_verified_and_nothing_sent_is_failed(home):
+    keys = se.Keys(nudge(), Rpc(), "s")
+    assert keys.outcome() == "failed"
+    keys.confirmed = True
+    assert keys.outcome() == "done"
+    keys.finish()
+    assert rows(home)[1]["verified"] is True
+    keys = se.Keys(nudge("workspace:5"), Rpc(refuse=(1,)), "s")
+    assert not keys.carriage_return() and keys.outcome() == "failed"
+    keys.text("a")
+    assert keys.outcome() == "unknown"  # one keystroke went out, one was refused
+
+
+def test_nothing_can_be_typed_without_an_intent_on_disk_that_is_still_open(home):
+    rpc = Rpc()
+    for bad in ("", "ef-0123456789abcdef", None):
+        with pytest.raises(se.Refused) as exc:
+            se.Keys(bad, rpc, "s")
+        assert exc.value.code == "unrecorded"
+    ef = nudge()
+    se.finish(ef, "done")
+    with pytest.raises(se.Refused):
+        se.type_line(ef, rpc, "s", "again")  # its result is already in
+    assert rpc.calls == []

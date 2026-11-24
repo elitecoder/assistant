@@ -216,7 +216,7 @@ def main():
             raise TimeoutError(method)
         return body if rc == 0 else None
 
-    keys = session_effects.Keys(transport, surface_id)
+    keys = session_effects.Keys(effect_id, transport, surface_id)
 
     def press(call, *args_):
         try:
@@ -231,9 +231,9 @@ def main():
         record["transcript_size_after"] = size_after
         record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
         # "verified" is only said when there was a transcript to watch: it grew, or it didn't.
-        session_effects.finish(effect_id, keys.outcome(),
-                               verified=record["transcript_size_delta"] > 0 if size_before is not None else None,
-                               error="" if code == 0 else "timeout" if keys.raised else "tool failed")
+        if size_before is not None:
+            keys.confirmed = record["transcript_size_delta"] > 0
+        keys.finish()
         if code == 0:
             record["wall_ms"] = int((time.time() - started_at) * 1000)
         if not args.no_log:

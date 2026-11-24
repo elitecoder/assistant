@@ -148,28 +148,30 @@ def finish(effect_id: str, outcome: str, verified: bool | None = None, error: st
 
 # --- the only place the typing calls are named ------------------------------------------------------------------
 
-def send_text(rpc, surface_id: str, text: str) -> bool:
-    """Type text at a terminal. `rpc(method, params)` answers with the reply, or None when cmux refused."""
-    return rpc("surface.send_text", {"surface_id": surface_id, "text": text}) is not None
-
-
-def send_key(rpc, surface_id: str, key: str) -> bool:
-    return rpc("surface.send_key", {"surface_id": surface_id, "key": key}) is not None
+def _open(effect_id) -> bool:
+    """Whether this is a typing whose intent is on disk and which has no result yet."""
+    return isinstance(effect_id, str) and any(
+        found["id"] == effect_id and found["outcome"] is None for found in effects.history(CLASS, limit=LOOP_SCAN))
 
 
 class Keys:
-    """The keystrokes of one typing, counted so the outcome can be told honestly. An exception from the transport
-    after it started counts as "can't tell" and goes on up."""
+    """The keystrokes of one typing, and the only way to send any. It is made from the effect id `begin()` returned,
+    so nothing can be typed without an intent on disk first. `rpc(method, params)` answers with the reply, or None
+    when cmux refused. Keystrokes are counted so the outcome can be told honestly; an exception from the transport
+    counts as "can't tell" and goes on up."""
 
-    def __init__(self, rpc, surface_id: str):
-        self.rpc, self.surface_id = rpc, surface_id
+    def __init__(self, effect_id: str, rpc, surface_id: str):
+        if not _open(effect_id):
+            raise Refused("unrecorded", UNRECORDED)
+        self.effect_id, self.rpc, self.surface_id = effect_id, rpc, surface_id
         self.sent = 0       # keystroke calls cmux accepted
         self.refused = 0    # keystroke calls cmux refused
         self.raised = False
+        self.confirmed = None  # True/False once something has checked that it landed
 
-    def _go(self, call) -> bool:
+    def _go(self, method: str, params: dict) -> bool:
         try:
-            ok = call()
+            ok = self.rpc(method, {"surface_id": self.surface_id, **params}) is not None
         except Exception:
             self.raised = True
             raise
@@ -178,19 +180,29 @@ class Keys:
         return ok
 
     def text(self, text: str) -> bool:
-        return self._go(lambda: send_text(self.rpc, self.surface_id, text))
+        return self._go("surface.send_text", {"text": text})
 
     def key(self, key: str) -> bool:
-        return self._go(lambda: send_key(self.rpc, self.surface_id, key))
+        return self._go("surface.send_key", {"key": key})
 
     def carriage_return(self) -> bool:
         """Enter as a character, for a terminal that ignores the key."""
         return self.text("\r")
 
-    def outcome(self, confirmed: bool = False) -> str:
+    def line(self, text: str, enter: str = "key", pause: float = 0.0, sleep=time.sleep) -> None:
+        """Type `text`, then Enter (`enter` is "key", "cr" or "" for none). A transport error is counted, not raised."""
+        try:
+            if self.text(text) and enter:
+                if pause:
+                    sleep(pause)
+                self.key("enter") if enter == "key" else self.carriage_return()
+        except Exception:
+            pass
+
+    def outcome(self) -> str:
         """`done` when it was seen to land or every keystroke went out, `failed` when nothing went out, else
         `unknown`."""
-        if confirmed:
+        if self.confirmed:
             return "done"
         if self.raised:
             return "unknown"
@@ -198,17 +210,17 @@ class Keys:
             return "failed"
         return "done" if not self.refused else "unknown"
 
+    def finish(self) -> None:
+        """Record how it ended."""
+        error = "timeout" if self.raised else "tool failed" if self.refused else ""
+        finish(self.effect_id, self.outcome(), verified=self.confirmed, error="" if self.outcome() == "done" else error)
 
-def type_line(rpc, surface_id: str, text: str, *, enter: str = "key", pause: float = 0.0, sleep=time.sleep) -> str:
-    """Type `text` and press Enter (`enter` is "key", "cr" or "" for none). Returns the outcome."""
-    keys = Keys(rpc, surface_id)
-    try:
-        if keys.text(text) and enter:
-            if pause:
-                sleep(pause)
-            keys.key("enter") if enter == "key" else keys.carriage_return()
-    except Exception:
-        pass
-    if keys.refused and keys.sent:
-        return "unknown"  # the text went out and the Enter didn't
+
+def type_line(effect_id: str, rpc, surface_id: str, text: str, *, enter: str = "key", pause: float = 0.0,
+              sleep=time.sleep) -> str:
+    """Type `text` and press Enter, then record how it ended and return the outcome. `effect_id` is what `begin()`
+    returned."""
+    keys = Keys(effect_id, rpc, surface_id)
+    keys.line(text, enter, pause, sleep)
+    keys.finish()
     return keys.outcome()

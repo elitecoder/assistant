@@ -452,11 +452,18 @@ def _record_rpc(monkeypatch):
     return calls
 
 
+def _recorded(surface_ref):
+    """Typing is only allowed inside a scope that has written its intent (these two tests used to type bare)."""
+    return cs.typing_scope(PATHS, "workspace:4", surface_ref, "slack-message", kind="tap",
+                           ref="slack:1793613610.000100", slack_ts="1793613610.000100")
+
+
 def test_send_enter_writes_a_carriage_return(monkeypatch):
     """send_key enter left prompts unsent on never-shown workspaces; a "\\r"
     through send_text submits them."""
     calls = _record_rpc(monkeypatch)
-    cs.send_enter(PATHS, "surface:9")
+    with _recorded("surface:9"):
+        cs.send_enter(PATHS, "surface:9")
     assert calls == [("surface.send_text", {"surface_id": "surface:9", "text": "\r"})]
 
 
@@ -465,7 +472,8 @@ def test_submit_types_once_then_presses_enter(monkeypatch):
     monkeypatch.setattr(cs, "_surface_read_text", lambda p, s, lines=200: _screen(["❯ "]))
     monkeypatch.setattr(cs.time, "sleep", lambda s: None)
     seen = iter([False, True])
-    assert cs.submit(PATHS, "surface:9", "hello msg_ts=5\n", "msg_ts=5", lambda: next(seen))
+    with _recorded("surface:9"):
+        assert cs.submit(PATHS, "surface:9", "hello msg_ts=5\n", "msg_ts=5", lambda: next(seen))
     assert calls == [("surface.send_text", {"surface_id": "surface:9", "text": "hello msg_ts=5"}),
                      ("surface.send_text", {"surface_id": "surface:9", "text": "\r"})]
 

@@ -326,6 +326,7 @@ def test_inbound_loop_records_and_queues_before_the_worker_sees_it(env, monkeypa
     """The slack cursor has moved past a message by the time it's polled, so it
     must be on disk before a (possibly busy) worker gets it."""
     paths, calls = env
+    monkeypatch.setenv("SLACK_USER_ID", "UOWNER")  # only the owner's messages are typed
     listen.add_pending(paths, _msg("queued", channel="C1"))
     monkeypatch.setattr(listen, "ensure_warm_session", lambda p, **kw: None)
     started: list[str] = []
@@ -341,8 +342,8 @@ def test_inbound_loop_records_and_queues_before_the_worker_sees_it(env, monkeypa
             stop_.set()
 
     def fake_poll(stop_, env_, msg_queue):
-        msg_queue.put(_msg("new"))
-        msg_queue.put(_msg("newer"))
+        msg_queue.put({**_msg("new"), "author": "UOWNER"})
+        msg_queue.put({**_msg("newer"), "author": "UOWNER"})
 
     monkeypatch.setattr(listen, "_channel_worker", fake_worker)
     monkeypatch.setattr(listen, "_poll_thread", fake_poll)

@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import select
 import signal
 import subprocess
@@ -60,6 +61,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent_session  # noqa: E402
+from assistant import session_effects  # noqa: E402
 from assistant.redact import install_crash_hooks, redact  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
@@ -314,6 +316,34 @@ def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = Fals
     return _warm_session(paths, respawn_on_stale=respawn_on_stale)[0]
 
 
+def owner_id(paths: comms_lib.Paths, env: dict | None = None) -> str:
+    """The owner's Slack user id: SLACK_USER_ID, else the configured target when that is a user id (a direct
+    message). Empty when it can't be worked out."""
+    found = ((env or {}).get("SLACK_USER_ID") or os.environ.get("SLACK_USER_ID") or "").strip()
+    if found:
+        return found
+    target = _target(paths)
+    return target if target.startswith("U") else ""
+
+
+def typed_for(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> bool:
+    """Whether this message may be typed into the warm session: only its owner's. A direct message conversation
+    (D...) holds only the owner, so it counts when the owner's id isn't known; a channel never does. Logs one plain
+    line when the answer is no."""
+    owner, author = owner_id(paths, env), str(rec.get("author") or "")
+    if owner:
+        if author == owner:
+            return True
+        log(f"inbound msg={rec.get('msg_ts')} from another member ({author or 'unknown'}): kept as received, "
+            f"not typed into the session; only {owner}'s messages are")
+        return False
+    if _target(paths).startswith("D"):
+        return True
+    log(f"inbound msg={rec.get('msg_ts')}: not typed into the session because the owner's Slack id isn't known "
+        f"and the conversation is a channel; set SLACK_USER_ID")
+    return False
+
+
 def feed_text(recs: list[dict], channel: str) -> str:
     """The user turn that hands inbound Slack message(s) to the warm session.
 
@@ -377,8 +407,15 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
         return hit is not None
 
     t0 = time.time()
-    delivered = comms_session.submit(paths, sess["surface_ref"], feed_text(recs, channel),
-                                     marker, confirmed, agent=agent)
+    # The owner's own message allowed this typing, as of the message's time. Raises session_effects.Refused.
+    # A message time Slack didn't write (it always has this shape) is recorded without its time, as "now".
+    ts = str(recs[-1].get("msg_ts"))
+    real = re.fullmatch(r"[0-9]{10}\.[0-9]{6}", ts) is not None
+    with comms_session.typing_scope(paths, sess["ws_ref"], sess["surface_ref"], "slack-message", kind="tap",
+                                    ref=f"slack:{ts}"[:100], anchor=float(ts) if real else None,
+                                    slack_ts=ts if real else ""):
+        delivered = comms_session.submit(paths, sess["surface_ref"], feed_text(recs, channel),
+                                         marker, confirmed, agent=agent)
     log(f"reply channel={channel} msg={recs[-1].get('msg_ts')} n={len(recs)} "
         f"submitted={delivered} wall_ms={int((time.time() - t0) * 1000)}")
     if not delivered:
@@ -499,7 +536,10 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
     sess, how = _warm_session(paths, respawn_on_stale=True)
     delivered = False
     if sess and how != SESSION_UNREACHABLE:
-        delivered, fed = reply_to_message(paths, sess, fresh)
+        try:
+            delivered, fed = reply_to_message(paths, sess, fresh)
+        except session_effects.Refused as refusal:
+            return _refused_delivery(paths, fresh, refusal)
         # Replace an existing session that didn't take the message. One that was
         # just spawned (here or by a clear) is left for the next, backed-off
         # try, so a Claude that can't accept input costs one spawn per retry.
@@ -512,6 +552,23 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
     log(f"inbound: {len(fresh)} message(s) waiting for the warm session (session={how})")
     if message_age_sec(fresh[0], now) >= RESTART_NOTICE_AFTER_SEC:
         _notify_restart_once(paths, channel, env)
+    return False
+
+
+# A message that was typed (or may have been) is never typed again, and one that can't be described never will be:
+# both leave the queue. One that couldn't be recorded, or is waiting on another try, stays for the next one.
+_FINAL_REFUSALS = ("done", "unknown", "invalid", "unauthorized")
+
+
+def _refused_delivery(paths: comms_lib.Paths, fresh: list[dict], refusal) -> bool:
+    """What to do with queued messages Assistant refused to type. True when nothing is left waiting. The warm
+    session is not replaced: it did nothing wrong."""
+    stamps = [r.get("msg_ts") for r in fresh]
+    if refusal.code in _FINAL_REFUSALS:
+        remove_pending(paths, stamps)
+        log(f"inbound msg={stamps[-1]}: not typed into the session ({refusal}); it won't be typed again")
+        return True
+    log(f"inbound msg={stamps[-1]}: not typed into the session ({refusal}); it stays queued")
     return False
 
 
@@ -625,6 +682,8 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
         # On disk before the worker sees it: the slack cursor has already moved
         # past this message, and the worker may be busy for minutes.
         _record_inbound(rec)
+        if not typed_for(paths, rec, env):
+            continue  # recorded as received; only the owner's messages are typed
         add_pending(paths, rec)
         worker_for(channel_id).put(True)
 
