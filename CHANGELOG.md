@@ -69,6 +69,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Every Work queue row and every TODO now carries a short id that later
+  features will use to show where a piece of work came from. Nothing you see
+  changes yet.
 - Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
   conversation back to your inbox, and Gmail Trash from **Apply approvals**)
   and every unsubscribe in a new append-only record, before it runs and again
@@ -181,6 +184,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   catch this watched only two folders. Data folders named for the whole login session (`ASSISTANT_DIR`,
   `WQ_DATA`) and your global git settings no longer reach the tests either. The test README now says to run
   the suite with `pytest`: `unittest` skips this protection.
+- Stop one silent connection from freezing the dashboard. The dashboard's server answers one connection at a
+  time, and a connection that opened and sent nothing held it for as long as it stayed open; browsers keep
+  spare connections like that. Such a connection is now dropped after two seconds of silence.
 - Stop a Slack thread from reading as instructions to the agent. The thread in
   a saved task now sits between marker lines with a code made for that task,
   under rules that tell the agent it is content to act on and never

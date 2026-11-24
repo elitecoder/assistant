@@ -19,14 +19,16 @@ function home(items = []) {
 const read = (h) => JSON.parse(fs.readFileSync(h.store, 'utf8'))
 const hold = (h) => fs.openSync(h.lock, fs.constants.O_RDWR | fs.constants.O_CREAT | O_EXLOCK | fs.constants.O_NONBLOCK, 0o600)
 const todo = (extra = {}) => ({ title: 't', detail: 'd', url: 'u', source: 'slack-react:C:1', ...extra })
+const TRACE = /^tr-[0-9a-f]{16}$/ // the shape the Python side mints and accepts
 
 test('add: a new task takes the next id and the fields the dashboard reads', DARWIN, async () => {
   const h = home()
   assert.deepEqual(await addTodo(todo({ priority: 'P1', autoDispatch: null, reactedBy: 'U7' })), { id: 'td-010', created: true })
   const item = read(h).items[0]
-  assert.deepEqual({ ...item, createdAt: undefined }, {
+  assert.match(item.trace, TRACE)
+  assert.deepEqual({ ...item, createdAt: undefined, trace: undefined }, {
     id: 'td-010', priority: 'P1', title: 't', detail: 'd', url: 'u', source: 'slack-react:C:1', createdAt: undefined,
-    status: 'open', autoDispatch: null, capturedBy: MACHINE, reactedBy: 'U7',
+    status: 'open', autoDispatch: null, capturedBy: MACHINE, reactedBy: 'U7', trace: undefined,
   })
   assert.match(read(h)._lastUpdated, /^\d{4}-\d\d-\d\dT[\d:]+Z$/)
 })
@@ -134,3 +136,27 @@ test('add: with the limit reached, a task from an unconfirmed reaction is not ad
   assert.equal((await addTodo(todo({ source: 'slack-react:C:new', reactedBy: 'U9', unconfirmedCap: 3 }))).created, true)
   assert.equal((await addTodo(todo({ source: 'slack-react:C:owner' }))).created, true)
 })
+
+test('add: a captured thread gets a trace id of its own, and tasks already there are left exactly as they were', DARWIN, async () => {
+  // A task written before ids existed, and one that has an id already: neither is touched.
+  const old = { id: 'td-001', status: 'open', source: 'manual:2026-01-01' }
+  const kept = { id: 'td-002', status: 'open', source: 'manual:2026-01-02', trace: 'tr-0123456789abcdef' }
+  const h = home([old, kept])
+  assert.deepEqual(await addTodo(todo()), { id: 'td-010', created: true })
+  const [first, second, task] = read(h).items
+  assert.deepEqual([first, second], [old, kept])
+  assert.match(task.trace, TRACE)
+  await addTodo(todo({ source: 'slack-react:C:2' }))
+  const other = read(h).items[3]
+  assert.match(other.trace, TRACE)
+  assert.notEqual(other.trace, task.trace)
+})
+
+test('add: a thread captured again keeps its task and its trace id', DARWIN, async () => {
+  const h = home()
+  await addTodo(todo())
+  const before = fs.readFileSync(h.store, 'utf8')
+  assert.deepEqual(await addTodo(todo()), { id: 'td-010', created: false })
+  assert.equal(fs.readFileSync(h.store, 'utf8'), before)
+})
+
