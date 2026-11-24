@@ -134,6 +134,29 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   used to add its checks at the same place in one long list, so each conflicted with the next, and one merge
   joined two checks into one that nothing reported. The harness now also refuses a malformed or duplicated
   check when it loads, and a quick test finds a check whose quoted line or test has gone.
+- An existing Pro install stops creating decisions, saving the morning brief,
+  and planning for your goals after this update; to turn each back on, add
+  `"jobs": {"decisions": true, "brief": true, "planner": true}` (just the ones
+  you want) to `~/.assistant/config.json`, next to `"mode"`.
+  Write `true` without quotes; it takes effect at Assistant's next check. Behind
+  this is five months on the maintainer's machine: none of 49,193
+  decisions was accepted, rejected, edited, or snoozed, 7 of 103 briefs were
+  opened, and the planner acted twice and no goal recorded progress. With
+  decisions off, new GitHub and session events are skipped, so turning them on
+  later starts fresh, not from a backlog. Decisions that are already open still
+  age out, staged ones after 72 hours and digest ones after 24, and urgent ones
+  stay until you answer them and still show under **Awaiting your input**. The
+  **Completed actions** and **Other updates** lists get no new entries while
+  decisions are off. With the brief off, no brief is saved and the Notifications
+  tab is a live summary; decisions no longer move to the digest for going
+  unseen. With the planner off, nothing acts on your goals or records their
+  progress, though they stay viewable and editable. The lesson extractor no
+  longer proposes lessons from repeated successful actions unless you set
+  `ASSISTANT_LESSON_LEDGER_PASS=1`; the part that finds corrections in your
+  sessions is unchanged. The Notifications tab and **Settings and background
+  services** say which of these are off, what to add to turn each on, and when
+  a value you wrote is ignored. See
+  [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
 - Make the mutation checks faster without dropping any. Each test's baseline now runs once per run, not
   once per check that names it (510 checks name 315 tests), each shard runs three checks at a time
   (`--workers 3`), and the workflow runs four shards, up from three. The slowest shard had reached 51 of
