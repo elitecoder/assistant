@@ -1592,9 +1592,11 @@ def render_todos_tab(world):
 
 
 def _dispatch_cap_notice() -> str:
-    """The pulse's "tasks held back" card, shown on the Tasks tab."""
+    """The pulse's "tasks held back" card, shown on the Tasks tab: held at the
+    cap, or paused because it couldn't see which sessions are busy."""
     cards = load_assistant_state().get("awaiting_input") or []
-    card = next((c for c in cards if isinstance(c, dict) and c.get("key") == "dispatch-cap-hit"), None)
+    card = next((c for c in cards if isinstance(c, dict)
+                 and c.get("key") in ("dispatch-cap-hit", "dispatch-held-no-fleet-view")), None)
     if not card:
         return ""
     return (f'<div class="section dispatch-cap"><h2>{e(card.get("title") or "Tasks held back")}</h2>'
