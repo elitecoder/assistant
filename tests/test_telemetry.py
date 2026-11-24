@@ -914,11 +914,12 @@ def test_the_module_imports_nothing_outside_its_allow_list():
 
 
 def test_importing_the_module_loads_no_network_library():
+    # Compared with what was loaded before: a coverage run starts its subprocesses with its own imports.
     code = ("import sys; sys.path.insert(0, %r)\n"
+            "names = ('socket', 'ssl', 'http.client', 'urllib.request', 'ftplib', 'smtplib', 'xmlrpc', 'asyncio')\n"
+            "before = {m for m in names if m in sys.modules}\n"
             "from assistant import telemetry\n"
-            "bad = [m for m in ('socket', 'ssl', 'http.client', 'urllib.request', 'ftplib', 'smtplib', 'xmlrpc',"
-            " 'asyncio') if m in sys.modules]\n"
-            "print(bad)\n" % str(REPO / "src"))
+            "print(sorted(m for m in names if m in sys.modules and m not in before))\n" % str(REPO / "src"))
     out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "[]"
 
