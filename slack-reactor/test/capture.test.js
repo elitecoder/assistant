@@ -150,6 +150,11 @@ test('a thread with no text, and the unknown-owner sentence at the top', async (
   assert.ok(!(await detailOf(thread(1))).includes("doesn't know your Slack user id"))
 })
 
+test('a sender with no name still shows', async () => {
+  const detail = await detailOf([{ user: 'U1', text: 'hi' }], { userName: async () => undefined })
+  assert.ok(detail.includes('\n*:* hi\n'))
+})
+
 test('the title is the start of the first message', async () => {
   const n = async () => 'x'
   assert.equal((await buildTodo({ messages: [{ text: 'short  title' }], link: '', machine: 'm', userName: n })).title, 'short title')
@@ -166,12 +171,12 @@ function world({ owner, autoDispatchOn = true, failures = {}, threadOf = () => t
       history: async () => (fail('history'), { messages: [{ thread_ts: '5.5' }] }),
       replies: async () => (fail('replies'), { messages: threadOf() }),
     },
-    chat: { getPermalink: async () => (fail('permalink'), { permalink: 'https://x.slack.com/p5' }) },
+    chat: { getPermalink: async () => (fail('permalink'), { permalink: failures.noLink ? undefined : 'https://x.slack.com/p5' }) },
     reactions: { add: async (a) => (calls.reactions.push(a), fail('react', { error: failures.reactError })) },
   }
   const ctx = {
     bot, owner, emojis: new Set(emojis), machine: 'mac', priority: 'P2', autoDispatchOn, userName: names,
-    addTodo: async (todo) => (fail('write'), calls.added.push(todo), { id: 'td-001', created: true }),
+    addTodo: async (todo) => (fail('write'), calls.added.push(todo), { id: 'td-001', created: !failures.existing }),
   }
   const original = console.error
   console.error = (...a) => calls.logs.push(a.join(' '))
@@ -240,6 +245,9 @@ test('failures: each is logged without a token, and a failed read or write captu
   assert.match(replies.logs[0], /replies fetch failed/)
   assert.equal((await run({ owner: OWNER, threadOf: () => [] })).added.length, 0)
   assert.equal((await run({ owner: OWNER, failures: { permalink: true } })).added[0].url, '')
+  assert.equal((await run({ owner: OWNER, failures: { noLink: true } })).added[0].url, '')
+  assert.match((await run({ owner: OWNER, failures: { existing: true } })).logs[0], /td-001 \(existing\)/)
+  assert.equal((await run({ owner: OWNER, threadOf: () => undefined })).added.length, 0)
   const write = await run({ owner: OWNER, failures: { write: true } })
   assert.deepEqual([write.reactions.length, write.logs[0]], [0, '[reactor] todo write failed: write broke'])
   const react = await run({ owner: OWNER, failures: { react: true, reactError: 'ratelimited' } })
