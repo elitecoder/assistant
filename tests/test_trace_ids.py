@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import sys
 import threading
 import time
 import types
@@ -363,6 +364,7 @@ def test_two_pulses_at_once_stamp_a_task_once(wq, monkeypatch):
 def test_the_pulse_step_stamps_and_never_fails_the_pulse(wq, monkeypatch, caplog):
     pulse = load_pulse()
     write_todos(wq, [{"id": "td-1", "status": "open"}])
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != str(REPO / "src")])  # the step adds it back
     with caplog.at_level("INFO"):
         pulse.run_trace_step()
         pulse.run_trace_step()
