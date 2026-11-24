@@ -44,15 +44,22 @@ class Unavailable(RuntimeError):
     """cmux could not say which workspaces or sessions are live."""
 
 
+_BUILD_WS_CONTEXT = None
+
+
 def _transcript_signals(path: str):
     """build-ws-context.transcript_signals: the Observer's own reader of a
     transcript tail (bounded to the last 64KB). Loaded by path because the
-    script's name has a hyphen; reusing it keeps one parser for "working"."""
-    spec = importlib.util.spec_from_file_location(
-        "build_ws_context_for_busy_ws", BIN / "build-ws-context.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.transcript_signals(path)
+    script's name has a hyphen; reusing it keeps one parser for "working".
+    Loaded once per scan, not once per session."""
+    global _BUILD_WS_CONTEXT
+    if _BUILD_WS_CONTEXT is None:
+        spec = importlib.util.spec_from_file_location(
+            "build_ws_context_for_busy_ws", BIN / "build-ws-context.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _BUILD_WS_CONTEXT = module
+    return _BUILD_WS_CONTEXT.transcript_signals(path)
 
 
 def _pid_alive(pid) -> bool:
