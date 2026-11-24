@@ -1,9 +1,9 @@
 // TODO store writer — mirrors the /todo skill schema + atomic write.
 // Single source of truth: ~/.claude/assistant-todo.json (the dashboard + pulse
-// read the same file). Every Python writer wraps its read-modify-write in
+// read the same file). Every one of the Python services wraps its read-modify-write in
 // todostore.todo_lock(), an flock on ~/.claude/assistant-todo.lock. The reactor
-// takes that same lock (the one the Python services take): on macOS, opening the lock file with O_EXLOCK takes the
-// very lock flock() takes, so Node needs no native code to join the queue.
+// takes that same lock: on macOS, opening the lock file with O_EXLOCK takes the very lock flock() takes, so Node
+// needs no native code to join the queue.
 import fs from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
