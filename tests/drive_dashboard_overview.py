@@ -801,12 +801,25 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 # A refused refresh or "seen" signal says so where the page shows its other errors.
                 message = "Couldn't refresh. Reload this page, or open http://127.0.0.1:9876."
                 refuse_brief_posts.append(True)
+                # Record every text the message line takes. Served over http, as here, the page's own
+                # 15-second update clears that line when it finishes, and one already under way can do so
+                # in the same instant the refusal is shown, so reading the line afterwards can miss it.
+                page.evaluate("""() => {
+                  const line = document.getElementById('refresh-error');
+                  window.refusalsShown = [];
+                  new MutationObserver(() => window.refusalsShown.push(line.textContent))
+                    .observe(line, {childList: true, characterData: true, subtree: true});
+                }""")
                 page.locator("#brief-refresh").click()
+                page.wait_for_function("message => window.refusalsShown.includes(message)", arg=message)
                 page.wait_for_function("document.getElementById('brief-refresh').textContent === 'Refresh now'")
-                assert page.locator("#refresh-error").inner_text() == message
-                page.evaluate("document.getElementById('refresh-error').textContent = ''; briefSeenSent = false; pingBriefSeen()")
-                page.wait_for_function("document.getElementById('refresh-error').textContent !== ''")
-                assert page.locator("#refresh-error").inner_text() == message
+                page.evaluate("""() => {
+                  document.getElementById('refresh-error').textContent = '';
+                  window.refusalsShown.length = 0;
+                  briefSeenSent = false;
+                  pingBriefSeen();
+                }""")
+                page.wait_for_function("message => window.refusalsShown.includes(message)", arg=message)
                 refuse_brief_posts.clear()
                 page.evaluate("document.getElementById('refresh-error').textContent = ''")
                 assert not errors, errors
