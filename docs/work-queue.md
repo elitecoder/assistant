@@ -615,7 +615,34 @@ never use the Slack browser session at the same time: Apply and a refresh
 wait up to 90 seconds for it, then say to try again later. A save Slack no
 longer has is recorded as gone, and neither a later send nor **Apply
 approvals** asks Slack about it again. Any other Slack error stays an error,
-so **Apply approvals** tries it again.
+so **Apply approvals** tries it again. Each save is recorded in the effects
+record before the browser runs and again with its own result (see
+[the effects record](effects.md)). A save the record can't write or turns down
+isn't marked, and the rest of the batch still runs.
+
+A sent row leaves the page, so a save that couldn't be marked would stay open in
+Slack with no sign. The Work queue keeps it in `slack-held.json` in its data
+folder and tries it again by itself after 1, 5 and 15 minutes, which survives a
+restart. When the last try fails, one line under the page title says how many
+saves couldn't be marked, why, and what to do, with an "Open in Slack" link to
+each of the first three and "and N more" for the rest. Each link says when its
+save was sent, in your local time, because the links look alike: "1 save you
+sent to an agent couldn't be marked done in Slack: Slack asked us to slow down.
+Mark it done in Slack yourself. Open in Slack (sent Nov 2, 10:42 AM)."
+
+The reason is one of nine plain phrases: Slack asked us to slow down; Slack
+needs you to sign in again; Slack didn't answer; Slack refused the change;
+Assistant couldn't record the change (is your disk full?); Assistant hit a fault
+recording the change; an earlier try may still be running; Assistant couldn't
+confirm your approval; or Assistant couldn't finish marking it. With more than
+two different reasons the line names two, the sign-in one first, then "and one
+other problem" or "and N other problems". When Slack needs you to sign in, the
+line shows at once, and says to sign in again first, and the tries go on. When
+the only reason is an earlier try that may still be running, it says "Mark it
+done in Slack yourself if it is still open in a few minutes." A save with no
+link says "They are still open in your Slack Later list." The line goes away
+when Slack no longer has the save (a refresh sees that), or when a retry marks
+it.
 
 ## What it changes
 
@@ -629,7 +656,9 @@ Select **Apply approvals** to act on what you approved:
   a redirect.
 - Slack Later saves are marked completed through your Slack browser session,
   with no browser window. **Undo** reopens them. A save Slack no longer has
-  shows as gone and isn't tried again.
+  shows as gone and isn't tried again. An **Undo** the effects record refuses
+  leaves the save done, says why on its row ("Undo not done: ..."), and is
+  tried again by the next **Apply approvals**.
 
 Each change is read back to verify it, and a read-back that fails never
 counts as verified. **Apply approvals** skips any Gmail conversation the page

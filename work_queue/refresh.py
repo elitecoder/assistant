@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from assistant import mode, records
 from assistant.slack_focus.client import Client, SlackError, http_transport
 
-from work_queue import config, page, ready, todo_result, tools, traces, triage
+from work_queue import config, held_saves, page, ready, todo_result, tools, traces, triage
 from work_queue.inputs import gcal, github, gmail, outlook, slack
 
 LABELS = {"slack": "Slack", "github": "GitHub", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook"}
@@ -173,6 +173,8 @@ def refresh_once(transport, now, model, trace: str, tally: dict) -> list[dict]:
         config.write_json(status_path(), {"running": False, "finished": now_iso(), "error": str(exc)})
         raise
     tally["rows"] = records.rows_in(snap)
+    if "slack" in snap:  # a save Slack no longer lists was marked, so it needn't be tried again
+        held_saves.drop({r["key"] for r in snap["slack"]}.__contains__)
     ready.run(doc, transport, os.environ.get("SLACK_USER_TOKEN", ""))
     snap["built"] = datetime.now().strftime("%b %-d, %-I:%M %p")
     snap["built_iso"] = now_iso()

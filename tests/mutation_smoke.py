@@ -930,8 +930,8 @@ CHECKS = (
     (
         'a save Slack no longer has is recorded as gone',
         'work_queue/server.py',
-        '    return {k: {"status": "gone", "error": "Slack no longer has this save", "at": r.get("at") or now()}\n            if r.get("error") == "saved_not_found" else r for k, r in out["applied"].items()}',
-        '    return dict(out["applied"])',
+        '        results = {k: {"status": "gone", "error": "Slack no longer has this save", "at": r.get("at") or now()}\n                   if r.get("error") == "saved_not_found" else r for k, r in answer["applied"].items()}',
+        '        results = dict(answer["applied"])',
         'tests/test_work_queue_server.py::test_a_save_slack_no_longer_has_is_recorded_once_and_never_retried',
     ),
     (
@@ -1140,27 +1140,27 @@ CHECKS = (
     (
         'a sent Slack save is marked completed',
         'work_queue/server.py',
-        '    if save := slack_save(key):\n        queue_save(*save)\n',
+        '    if save := slack_save(key):\n        queue_save(*save, at=sent_at, link=key)\n',
         '',
         'tests/test_work_queue_server.py::test_both_modes_mark_a_sent_slack_save_completed',
     ),
     (
         'only a slack.com host is a Slack save',
-        'work_queue/server.py',
+        'work_queue/held_saves.py',
         '(parts.hostname or "").endswith(".slack.com")',
         '".slack.com" in link',
         'tests/test_work_queue_server.py::test_only_a_slack_save_link_starts_a_slack_update',
     ),
     (
         'only an https link is a Slack save',
-        'work_queue/server.py',
+        'work_queue/held_saves.py',
         'parts.scheme == "https" and ',
         '',
         'tests/test_work_queue_server.py::test_a_slack_link_on_any_workspace_names_its_save',
     ),
     (
         'only a save permalink is a Slack save',
-        'work_queue/server.py',
+        'work_queue/held_saves.py',
         'SAVE_PATH.fullmatch(parts.path)',
         'SAVE_PATH.match(parts.path)',
         'tests/test_work_queue_server.py::test_only_a_slack_save_link_starts_a_slack_update',
@@ -1182,8 +1182,8 @@ CHECKS = (
     (
         "a save already marked isn't asked about again",
         'work_queue/server.py',
-        'jobs = [(k, c, False) for k, c in batch.items() if entry(applied, k).get("status") not in SETTLED]',
-        'jobs = [(k, c, False) for k, c in batch.items()]',
+        'jobs = [(k, {**c, "sent_at": c["at"]}, False) for k, c in batch.items()\n                        if entry(applied, k).get("status") not in SETTLED]',
+        'jobs = [(k, {**c, "sent_at": c["at"]}, False) for k, c in batch.items()]',
         'tests/test_work_queue_server.py::test_a_save_already_marked_isnt_asked_about_again',
     ),
     (
@@ -1392,8 +1392,8 @@ CHECKS = (
     (
         "a worker that can't record still stops",
         'work_queue/server.py',
-        '            try:\n                record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n            except Exception:  # noqa: BLE001 — applied.json can\'t be written; the log has the error\n                traceback.print_exc()\n',
-        '            record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n',
+        '            try:\n                record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n                held_saves.hold({k: (c, error) for k, c in batch.items()}, clock())\n            except Exception:  # noqa: BLE001 — applied.json can\'t be written; the log has the error\n                traceback.print_exc()\n',
+        '            record({k: {"status": "error", "error": error, "at": now(), "sent": True} for k in batch})\n            held_saves.hold({k: (c, error) for k, c in batch.items()}, clock())\n',
         'tests/test_work_queue_server.py::test_a_worker_that_cant_record_anything_still_stops',
     ),
     (
@@ -1416,10 +1416,12 @@ CHECKS = (
         """            if not batch:
                 with saves_lock:
                     batch = dict(pending_saves)
-                    pending_saves.clear()""",
+                    pending_saves.clear()
+                    running_saves.update(batch)""",
         """            with saves_lock:
                 batch = batch or dict(pending_saves)
-                pending_saves.clear()""",
+                pending_saves.clear()
+                running_saves.update(batch)""",
         'tests/test_work_queue_server.py::test_a_save_sent_during_a_failing_run_is_still_tried',
     ),
     (

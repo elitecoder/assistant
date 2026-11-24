@@ -491,7 +491,7 @@ def render(snap: dict) -> tuple[str, dict]:
            f'<div class="sf-head"><h2>Work queue</h2><p class="meta">Last refreshed <span id="built" data-iso="{e(snap.get("built_iso", ""))}">{e(snap["built"])}</span> from your linked sources. '
            + ("Rules sort every row, and a model explains each open row and picks where to start. Nothing is sent "
               "without you.</p>" if tri else "Rules sort every row; nothing is sent without you.</p>") +
-           '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span>' + (PAGE_FB if pro else "") + '</div>'
+           '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span><p class="meta" id="held-msg"></p>' + (PAGE_FB if pro else "") + '</div>'
            f'<ul class="sources">{status}</ul>{tabs_html}{"".join(sections)}{bar}'
            f'</div><script>const MAILDATA={maildata};</script><script>{JS}</script></body></html>')
     return doc, cands
@@ -505,7 +505,7 @@ def placeholder(message: str) -> str:
     return (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>Work queue</title><style>{CSS}</style><body><div class="section"><div class="sf-head"><h2>Work queue</h2>'
             f'<p class="meta">{e(message)}</p><button class="btn" id="refresh" onclick="refreshNow()">Refresh</button>'
-            f'<span class="meta" id="refresh-msg"></span></div></div><script>const MAILDATA=[];</script><script>{JS}</script></body></html>')
+            f'<span class="meta" id="refresh-msg"></span><p class="meta" id="held-msg"></p></div></div><script>const MAILDATA=[];</script><script>{JS}</script></body></html>')
 
 
 CSS = """
@@ -641,7 +641,7 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 
 JS = r"""
 const DAY=864e5;
-let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{}}, API=true, polling=false, sending=false;
+let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{},slack_held:{}}, API=true, polling=false, sending=false;
 ST.queued={};ST.mail={};ST.checks={};ST.feedback={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
@@ -781,7 +781,7 @@ function renderAp(){let approved=0;const MS=mailSearch();
  document.querySelectorAll('.ap-row').forEach(r=>{const k=r.dataset.key,d=(ST.decisions[k]||{}).decision,a=ST.applied[k]||{},kind=r.dataset.kind;
   const done=a.status==='done',settled=done||a.status==='gone';r.classList.toggle('applied',settled);r.classList.toggle('approved',d==='approve'&&!settled);r.classList.toggle('kept',d==='keep');r.classList.toggle('failed',a.status==='error');
   let s='';if(kind==='mail')s=d==='approve'?(MS.manual.includes(k)?'Approved. No search can single this one out, so delete it by hand':'Approved: in your Outlook search'):d==='keep'?'Kept':'';
-  else if(done)s=(kind==='unsub'?(a.verified?'Unsubscribed':'Sent, but the sender didn’t confirm'):(kind==='gmail'?'In Gmail Trash':'Marked done in Slack')+(a.verified?', verified':', not verified')+(kind==='gmail'&&a.error?' · Undo not done: '+a.error:''));
+  else if(done)s=(kind==='unsub'?(a.verified?'Unsubscribed':'Sent, but the sender didn’t confirm'):(kind==='gmail'?'In Gmail Trash':'Marked done in Slack')+(a.verified?', verified':', not verified')+(kind==='gmail'&&a.error?' · Undo not done: '+a.error:'')+(kind==='slack'&&a.undo_error?' · Undo not done: '+a.undo_error:''));
   else if(a.status==='gone')s='Slack no longer has this save';
   else if(a.status==='error')s='Failed: '+a.error;else if(a.status==='undone')s=kind==='gmail'?'Back in your inbox':'Reopened in Slack';
   else if(d==='keep')s='Kept';else if(d==='undo')s=kind==='gmail'?'Will restore':'Will reopen';
@@ -813,8 +813,13 @@ async function agSend(){const rows=agPicks(),n=rows.length,hands=$('ag-hands').c
  sending=false;
  msg.textContent=[ok?'Sent '+ok+' to agents'+(hands?', hands-off.':' for a first pass.')+' Their status and results show on the Tasks tab of the Assistant dashboard, and each session on the Sessions tab once it starts.':'',
   bad.length?'Not sent: '+bad.join('; ')+'.':''].filter(Boolean).join(' ');agCount()}
+function localTime(iso){const d=new Date(iso);return isNaN(d)?'':d.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
 function renderRefresh(){const r=ST.refresh||{},b=$('refresh');b.disabled=!!r.running;b.textContent=r.running?'Refreshing…':'Refresh';
- $('refresh-msg').textContent=r.running?'Reading your sources. This page reloads when it finishes.':r.error?'Last refresh failed: '+r.error:''}
+ $('refresh-msg').textContent=r.running?'Reading your sources. This page reloads when it finishes.':r.error?'Last refresh failed: '+r.error:'';
+ const h=ST.slack_held,el=$('held-msg'),L=h.links||[];el.textContent=h.text||'';
+ L.forEach((l,i)=>{const t=localTime(l.at),a=document.createElement('a');a.href=l.url;a.target='_blank';a.rel='noopener';
+  a.textContent='Open in Slack'+(t?' (sent '+t+')':'');a.setAttribute('aria-label','Open save '+(i+1)+' of '+L.length+' in Slack'+(t?', sent '+t:''));el.append(i?' · ':' ',a)});
+ if(L.length)el.append(h.more?' and '+h.more+' more.':'.')}
 async function refresh(){try{ST=Object.assign(ST,await api('/api/state'));API=true;MK=ST.marks||{}}catch(_){API=false}
  const wasRunning=polling;paint();renderAp();renderRefresh();
  if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)reloadIfIdle()}}
