@@ -183,6 +183,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- Keep each change's mutation checks in a file of its own under `tests/mutation_checks/`. Every pull request
+  used to add its checks at the same place in one long list, so each conflicted with the next, and one merge
+  joined two checks into one that nothing reported. The harness now also refuses a malformed or duplicated
+  check when it loads, and a quick test finds a check whose quoted line or test has gone.
 - An existing Pro install stops creating decisions, saving the morning brief,
   and planning for your goals after this update; to turn each back on, add
   `"jobs": {"decisions": true, "brief": true, "planner": true}` (just the ones
