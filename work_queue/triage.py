@@ -787,7 +787,8 @@ def call_model(prompt: str, timeout: int) -> str:
         usage = {**usage, "cost_usd": max(usage["cost_usd"], floor), "source": "reserved"}
     try:
         metering.append_cost_row(caller=FEATURE, model=model, usage=usage, wall_ms=result.wall_ms,
-                                 status="ok" if result.usable else "failed", provider=provider)
+                                 status="ok" if result.usable else "failed", provider=provider,
+                                 error=metering.failure_reason(result.rc, result.stderr))
     except OSError as exc:
         print(f"Couldn't record the model's cost: {exc}", file=sys.stderr)
     if result.rc == 124:

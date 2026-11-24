@@ -151,6 +151,12 @@ draw corrections get downgraded to `muted` by `bin/tools/pattern-feedback.py`.
   minutes is removed before the update when `lsof` shows no process has it open
   and no git process is working in the repo. A young or live lock is left
   alone, and every removal is recorded.
+- **Self-update backs off a failure that repeats.** After three identical
+  failures in a row it waits an hour, then two, up to 4 hours, and it tries at
+  once if the remote or branch changes. `self_update.py --force` tries anyway.
+  `src/assistant/failwatch.py` keeps the counts in `~/.assistant/failures.json`,
+  and the dashboard shows each repeat once. See
+  [Repeated failures](dashboard.md#repeated-failures).
 - **`NO_INGEST_GUARD` stops resend loops.** If the last send to a workspace
   returned `transcript_size_delta=0` (cmux sent it, but no Claude process was
   reading) and the verdict hasn't changed, the pulse skips the next resend.
@@ -172,7 +178,7 @@ draw corrections get downgraded to `muted` by `bin/tools/pattern-feedback.py`.
 | `bin/plan-next-actions.py` | Runs the goals planner on demand, even while the planner job is off. |
 | `bin/interrupt-gate.py` | The only path to a push notification. |
 | `bin/outbound-dispatch.py` | The only path to an outbound action. |
-| `bin/todo-server.py` | The dashboard and JSON API at http://127.0.0.1:9876. |
+| `bin/todo-server.py` | The dashboard and JSON API at http://127.0.0.1:9876. It answers only at `127.0.0.1` or `localhost` (any port), refuses to be framed by another site, and every POST passes one check: the page it serves, or the token in `~/.assistant/api-token` (`src/assistant/apitoken.py`). See [Use the dashboard](dashboard.md#who-can-change-things). |
 | `bin/slack-focus.py` | Refreshes the Slack tab's list. |
 | `bin/assistant-curator.py` | Manages lessons across every rule store. |
 | `bin/assistant-doctor.py` | Preflight health check. `--only core\|slack\|all`. |
