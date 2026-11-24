@@ -664,8 +664,8 @@ CHECKS = (
     (
         "the thumb has a 44 pixel touch target",
         P,
-        '.fb-down::after{content:"";position:absolute;inset:-11px -12px;z-index:2}',
-        '.fb-down::after{content:"";position:absolute;inset:0;z-index:2}',
+        '.fb-down::after{content:"";position:absolute;inset:-11px -12px}',
+        '.fb-down::after{content:"";position:absolute;inset:0}',
         TB + "test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_the_row_of_buttons_on_a_phone[1280]",
     ),
     (
@@ -706,16 +706,16 @@ CHECKS = (
     (
         "the reasons keep off their own row's Tell Assistant link where they can",
         P,
-        "(clear(link,x,y,4)?0:80)",
+        "(clear(link,x,y,4)?0:400)",
         "0",
         TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[390]",
     ),
     (
         "the reasons keep off other rows' notes where they can",
         P,
-        "60*notes.filter(b=>!clear(b,x,y,0)).length",
+        "100*notes.filter(b=>!clear(b,x,y,0)).length",
         "0",
-        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[390]",
+        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[1280]",
     ),
     (
         "after a reason is picked focus goes to the row's Change link",
@@ -737,12 +737,5 @@ CHECKS = (
         "()=>{u.pop=false;fbPaint();h.down.focus()}))}",
         "()=>{u.pop=false;fbPaint()}))}",
         TB + "test_choosing_a_reason_with_the_keyboard_puts_focus_on_the_notes_change_link_and_skip_or_esc_put_it_on_the_thumb",
-    ),
-    (
-        "the thumb's touch target is not cut off by the link beside it",
-        P,
-        "inset:-11px -12px;z-index:2}",
-        "inset:-11px -12px}",
-        TB + "test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_the_row_of_buttons_on_a_phone[390]",
     ),
 )

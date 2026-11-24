@@ -576,7 +576,7 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .ag-row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line);cursor:pointer}.ag-row:first-child{border-top:0}.ag-row[hidden]{display:none}
 .ag-text{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}#ag-msg{overflow-wrap:anywhere}
 .fb{position:relative;display:inline-flex;gap:6px;align-items:center;flex:none}.fb-what{font:11px/1.2 var(--mono);color:var(--quiet)}
-.fb-down{position:relative;margin:0 2px;padding:5px 7px;line-height:0;color:var(--quiet)}.fb-down::after{content:"";position:absolute;inset:-11px -12px;z-index:2}.fb-down svg{display:block}
+.fb-down{position:relative;margin:0 2px;padding:5px 7px;line-height:0;color:var(--quiet)}.fb-down::after{content:"";position:absolute;inset:-11px -12px}.fb-down svg{display:block}
 .fb-down[aria-pressed="true"]{color:var(--text);border-color:var(--red);background:var(--red-bg)}
 .btn.fb-open{border-color:transparent;background:none;color:var(--quiet);text-decoration:underline;text-underline-offset:2px}
 .fb-pop{position:fixed;z-index:30;display:flex;flex-wrap:wrap;gap:6px;width:min(280px,calc(100vw - 16px));padding:8px;
@@ -872,7 +872,7 @@ function fbPlace(s){const h=FBX.get(s),p=h.pop,w=p.offsetWidth,t=p.offsetHeight,
  area=(b,x,y)=>Math.max(0,Math.min(x+w,b.right)-Math.max(x,b.left))*Math.max(0,Math.min(y+t,b.bottom)-Math.max(y,b.top)),
  // never over another thumb, another Tell Assistant or its own note; as far as it can be, not over its own link, another note or a button;
  // and always within one row's height of its thumb
- cost=(x,y)=>{const g=gap(x,y);return g+(g>reach?1000:0)+(clear(link,x,y,4)?0:80)+60*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
+ cost=(x,y)=>{const g=gap(x,y);return g+(g>reach?1000:0)+(clear(link,x,y,4)?0:400)+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
  let pick=null,low=1e9;for(const x of xs)for(let y=8;y<=innerHeight-t-8;y+=6)if(must.every(b=>clear(b,x,y,4))){const c=cost(x,y);if(c<low){low=c;pick=[x,y]}}
  pick=pick||[clamp(r.right-w),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
  p.style.left=pick[0]+'px';p.style.top=pick[1]+'px'}

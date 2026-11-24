@@ -2075,12 +2075,17 @@ SPOTS = """(own) => {
   const things = [...document.querySelectorAll('.fb-down, .fb-open, .fb-note')].map(e => ({e, r: e.getBoundingClientRect()})).filter(o => o.r.width && o.r.bottom > 0 && o.r.top < innerHeight);
   const name = o => o.e.className.split(' ').pop() + ' of ' + ((o.e.closest('.sf-row') || {dataset: {}}).dataset.key || '').split('/').pop();
   const covered = things.filter(o => hit(panel, o.r)).map(name);
-  // is there anywhere within one row's height of the thumb that covers none of them? Then the panel must be on such a place.
-  let free = false;
+  // Is there anywhere within one row's height of the thumb that keeps clear of each group of things? Then the panel must be on such a place.
   const card = row.closest('.section').getBoundingClientRect(), lo = Math.max(8, card.left), hi = Math.min(innerWidth - 8, card.right);
-  for (let x = lo; x <= hi - w && !free; x += 6) for (let y = 8; y <= innerHeight - 8 - t && !free; y += 6)
-    if (gapOf(x, y) <= rowHeight && !things.some(o => hit({left: x, right: x + w, top: y, bottom: y + t}, o.r, 4))) free = true;
-  return {gap: gapOf(panel.left, panel.top), rowHeight, covered, free, ownLink: covered.filter(c => c.startsWith('fb-open of ' + own.split('/').pop().replace('"]', ''))).length,
+  const ownTell = row.querySelector('.fb-open'), isOwn = o => o.e === ownTell, isNote = o => o.e.classList.contains('fb-note');
+  const must = o => !isOwn(o) && !isNote(o) || (isNote(o) && o.e.closest('.sf-row') === row);
+  const clearOf = (x, y, keep) => !things.some(o => keep(o) && hit({left: x, right: x + w, top: y, bottom: y + t}, o.r, 4));
+  const exists = keep => { for (let x = lo; x <= hi - w; x += 6) for (let y = 8; y <= innerHeight - 8 - t; y += 6) if (gapOf(x, y) <= rowHeight && clearOf(x, y, keep)) return true; return false; };
+  const free = exists(() => true);
+  const freeOfOwnLink = exists(o => must(o) || isOwn(o));
+  const coveredObjs = things.filter(o => hit(panel, o.r));
+  const ownLinkCovered = coveredObjs.some(isOwn), otherNoteCovered = coveredObjs.some(o => isNote(o) && !must(o));
+  return {gap: gapOf(panel.left, panel.top), rowHeight, covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
           inScreen: panel.left >= 8 && panel.right <= innerWidth - 8 && panel.top >= 8 && panel.bottom <= innerHeight - 8};
 }"""
 
@@ -2110,6 +2115,7 @@ def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bott
                 assert not [c for c in found["covered"] if c.startswith("fb-down") or c.startswith("fb-open")] or all(
                     c.endswith(f" of {keys[i].split('/')[-1]}") and c.startswith("fb-open") for c in found["covered"] if c.startswith(("fb-down", "fb-open"))), (width, i, where, found)
                 assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, where, found)
+                assert not found["freeOfOwnLink"] or not found["ownLinkCovered"], ("a place off its own Tell Assistant link existed", width, i, where, found)
                 tab.keyboard.press("Escape")
                 for j in [i, *around]:
                     thumbs.nth(j).evaluate(OPEN_AT["middle"])
