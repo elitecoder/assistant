@@ -306,6 +306,13 @@ CHECKS = (
         R + "test_a_refused_first_try_is_retried_by_the_panels_id_and_is_still_one_clean_effect",
     ),
     (
+        "the pulse's start-up check covers the module that records typing",
+        "bin/run-pulse.py",
+        '                 BIN.parent / "src/assistant/session_effects.py",\n',
+        "",
+        "tests/test_run_pulse_wrapper.py::test_startup_files_match_pulse_module_level_imports",
+    ),
+    (
         "the fence fails the build for any other file that types into a session",
         "tests/test_session_typing_fence.py",
         '            if node.value in METHODS or SHELL.search(node.value):',
