@@ -967,4 +967,11 @@ CHECKS = (
         '        pointer = pointers.row_pointer(item["link"])',
         T + "test_an_email_whose_link_changes_the_same_day_is_not_recorded_again_for_the_same_reason",
     ),
+    (
+        "a setting that can't be read counts as recording off",
+        REC,
+        "    except Exception:  # noqa: BLE001\n        return False\n\n\ndef new_trace",
+        "    except ZeroDivisionError:  # noqa: BLE001\n        return False\n\n\ndef new_trace",
+        T + "test_a_setting_that_cant_be_read_counts_as_recording_off",
+    ),
 )

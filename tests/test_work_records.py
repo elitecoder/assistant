@@ -1291,6 +1291,12 @@ def test_with_recording_off_a_stopped_refresh_writes_no_note_file_and_changes_no
     assert out["on"][1:] == out["off"][1:]
 
 
+def test_a_setting_that_cant_be_read_counts_as_recording_off(wq, monkeypatch):
+    assert records.recording() is True
+    monkeypatch.setattr(telemetry, "_settings", lambda: (_ for _ in ()).throw(OSError("unreadable")))
+    assert records.recording() is False
+
+
 def test_a_note_file_with_a_row_that_isnt_a_list_of_words_is_mended_and_the_run_still_records(wq, monkeypatch):
     two_rows(wq)
     stopped_by(monkeypatch, "budget")
