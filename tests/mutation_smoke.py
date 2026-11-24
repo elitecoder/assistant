@@ -3710,11 +3710,11 @@ CHECKS = (
         'tests/test_busy_session_cap.py::test_busy_sessions_are_named_in_workspace_order',
     ),
     (
-        'a record whose pid now belongs to another program is not a live session',
+        'an agent that runs under another process name still counts as a live session',
         'bin/busy_ws.py',
-        '                and cmux_sessions.agent_process(record.pid)):\n',
-        '                and True):\n',
-        'tests/test_busy_session_cap.py::test_a_record_whose_pid_now_belongs_to_another_program_is_not_busy',
+        '        if record.source == cmux_sessions.REGISTRY and not cmux_sessions.agent_process(record.pid):\n',
+        '        if not cmux_sessions.agent_process(record.pid):\n',
+        'tests/test_busy_session_cap.py::test_an_agent_that_runs_under_another_process_name_still_counts',
     ),
     (
         'a session with no transcript yet stops counting once cmux has not heard from it',

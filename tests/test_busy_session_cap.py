@@ -103,8 +103,6 @@ def ref_of(n: int) -> str:
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
-    # The sessions here carry this test process's pid, which is not an agent.
-    monkeypatch.setattr(cmux_sessions, "agent_process", lambda pid: True)
     return Fleet(tmp_path, monkeypatch)
 
 
@@ -154,10 +152,20 @@ def test_a_transcript_the_scan_may_not_read_counts_as_busy(fleet):
         path.chmod(0o600)
 
 
-def test_a_record_whose_pid_now_belongs_to_another_program_is_not_busy(fleet, monkeypatch):
-    """cmux keeps its records across restarts and macOS reuses pids."""
-    fleet.agent(1, [TURN], age=5)
+def test_an_agent_that_runs_under_another_process_name_still_counts(fleet, monkeypatch):
+    """Copilot, or a Claude installed through npm, shows up as `node`. cmux's own records are
+    trusted for what the process is; only registry rows are checked by name."""
+    fleet.agent(1, [TURN], age=5, agent="copilot",
+                path=str(fleet.home / ".copilot/session-state/s1/events.jsonl"))
     monkeypatch.setattr(cmux_sessions, "agent_process", lambda pid: False)
+    assert busy_ws.busy_refs() == {"workspace:1"}
+
+
+def test_a_stale_record_whose_pid_was_reused_cannot_hold_the_count(fleet):
+    """cmux keeps its records across restarts and macOS reuses pids: the pid is alive, but the
+    transcript is old, even with a tool call left open, so the session is not busy."""
+    fleet.agent(1, [TURN, TOOL_CALL], age=3 * 3600)
+    fleet.agent(2, [TURN], age=3600)
     assert busy_ws.busy_refs() == set()
 
 

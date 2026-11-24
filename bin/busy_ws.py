@@ -129,10 +129,14 @@ def busy_refs() -> set[str]:
         ref = refs_by_id.get((record.workspace_id or "").lower())
         if ref is None or ref in busy:
             continue
-        # A live agent session: cmux's records outlive restarts and macOS reuses
-        # pids, so the process must also still be an agent, not just exist.
-        if not (record.active_for_surface and record.provider and _pid_alive(record.pid)
-                and cmux_sessions.agent_process(record.pid)):
+        # The same "live agent session" filter world-scanner applies. The process
+        # name is checked only for registry rows, as there: a Copilot or npm-installed
+        # agent runs as `node`, so checking the name on cmux's own records would drop
+        # real sessions from the count. A stale record whose pid was reused cannot
+        # hold the count anyway: its transcript is old, so it reads as not busy.
+        if not (record.active_for_surface and record.provider and _pid_alive(record.pid)):
+            continue
+        if record.source == cmux_sessions.REGISTRY and not cmux_sessions.agent_process(record.pid):
             continue
         if _session_busy(record, now):
             busy.add(ref)
