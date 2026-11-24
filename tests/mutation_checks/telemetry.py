@@ -623,8 +623,8 @@ CHECKS = (
     (
         "an unknown kind is counted",
         M,
-        '            _count_loss("unknown_kind")\n',
-        "            pass\n",
+        '    for _ in [r for r in built if r is None]:\n        _count_loss("unknown_kind")\n',
+        "    for _ in [r for r in built if r is None]:\n        pass\n",
         T + "test_an_unknown_kind_stores_nothing_and_is_counted[nope]",
     ),
     (

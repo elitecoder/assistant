@@ -976,4 +976,11 @@ CHECKS = (
         '_WORKSPACE = re.compile(r"workspace:[0-9]{1,9}")',
         T + "test_a_dispatch_to_a_session_with_a_ten_digit_number_keeps_its_workspace",
     ),
+    (
+        "a mistake in a list of records is raised in the tests' strict mode",
+        REC,
+        "        if loud():\n            raise\n\n\ndef recording",
+        "        pass\n\n\ndef recording",
+        T + "test_a_mistake_in_a_list_of_records_is_raised_in_the_tests_strict_mode",
+    ),
 )

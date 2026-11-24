@@ -862,6 +862,12 @@ def test_in_the_tests_strict_mode_a_missing_record_module_is_seen_even_by_the_ef
         effects.finish(ef, "done")
 
 
+def test_a_mistake_in_a_list_of_records_is_raised_in_the_tests_strict_mode(wq):
+    with pytest.raises(ValueError):
+        records.emit_many([("task", {"trace": OWN, "subject": "td-1", "component": "cli", "state": "open", "nonsense": 1})])
+    assert of_kind("task") == []
+
+
 def test_a_mistake_in_a_record_is_raised_in_the_tests_strict_mode_and_costs_only_the_record_otherwise(wq, monkeypatch):
     with pytest.raises(ValueError):
         records.emit("task", OWN, "td-1", "cli", state="open", nonsense=1)
