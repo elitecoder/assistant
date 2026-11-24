@@ -585,7 +585,8 @@ class BriefTabTests(unittest.TestCase):
         self.write_brief(brief_fixture())
         self.mod.render()
         page = (self.home / ".claude/assistant-dashboard.html").read_text()
-        self.assertIn("127.0.0.1:9876/brief/seen", page)
+        self.assertIn("http://127.0.0.1:9876", page)
+        self.assertIn("serverUrl('/brief/seen?date='", page)
         # The bare relative form must be gone.
         self.assertNotIn("fetch('/brief/seen", page)
 

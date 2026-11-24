@@ -84,6 +84,8 @@ class BriefRouteTests(unittest.TestCase):
     def post(self, path):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", method="POST")
+        from assistant import apitoken
+        req.add_header("X-Assistant-Token", apitoken.ensure())  # as a command-line caller
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return resp.status, resp.read().decode()
