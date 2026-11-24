@@ -469,14 +469,18 @@ def test_a_task_created_by_a_policy_carries_an_id_and_a_repeat_keeps_it(wq):
 
 def test_the_backstop_stamps_only_tasks_without_a_valid_id_and_changes_nothing_else(wq):
     items = [{"id": "td-1", "status": "open", "title": "naïve — ünïcode"}, {"id": "td-2", "trace": OWN, "status": "open"},
-             {"id": "td-3", "trace": LEGACY}, {"id": "td-4", "trace": "tr-short"}, {"id": "td-5", "trace": 7}, "stray"]
+             {"id": "td-3", "trace": LEGACY}, {"id": "td-4", "trace": "tr-short"}, {"id": "td-5", "trace": 7}, "stray",
+             {"title": "no id of its own"}]
     write_todos(wq, items, completed=[{"id": "td-9"}], removed=[{"id": "td-8"}])
     before = json.loads(wq.todo.read_text())
-    assert todostore.stamp_missing_traces() == 3
+    standins = [todostore.trace_of(before["items"][n]) for n in (0, 3, 4)]
+    assert todostore.stamp_missing_traces() == 4
     after = json.loads(wq.todo.read_text())
     assert [i.get("trace") for i in after["items"][1:3]] == [OWN, LEGACY]
-    for n in (0, 3, 4):
-        assert pointers.is_trace_id(after["items"][n]["trace"]) and after["items"][n]["trace"].startswith("tr-")
+    # the id a caller got from `trace_of` before the pass is the id stored by it
+    assert [after["items"][n]["trace"] for n in (0, 3, 4)] == standins and all(t.startswith("tl-") for t in standins)
+    assert after["items"][6]["trace"].startswith("tr-") and pointers.is_trace_id(after["items"][6]["trace"])
+    for n in (0, 3, 4, 6):
         del after["items"][n]["trace"]
     for n in (3, 4):
         before["items"][n].pop("trace")
@@ -760,3 +764,141 @@ def test_a_task_file_that_vanishes_before_the_replace_is_not_recreated_and_leave
     wq.todo.unlink()
     assert todostore.replace_if_unchanged(before, "{}") is False
     assert not wq.todo.exists() and list(wq.todo.parent.glob("*.tmp")) == []
+
+
+# ─── Round three: ordering, bounded waits, stable stand-ins ──────────────────
+
+def test_a_discarded_task_write_leaves_the_row_the_entry_and_the_task_for_the_next_refresh(wq, monkeypatch):
+    old_send(wq)
+    real, calls = todostore.replace_if_unchanged, []
+
+    def discarded_once(before, text):
+        calls.append(1)
+        return False if len(calls) == 1 else real(before, text)
+    monkeypatch.setattr(todostore, "replace_if_unchanged", discarded_once)
+    traces.reconcile(DAY)
+    assert not traces.path().exists() and "trace" not in json.loads((wq.data / "queued.json").read_text())[ROW]
+    assert "trace" not in wq.items()[0]
+    todostore.stamp_missing_traces()  # the pulse stamps the task meanwhile
+    stored = wq.items()[0]["trace"]
+    traces.reconcile(DAY)
+    assert agreed(wq) == stored == todostore.trace_of({"id": "td-1"})
+
+
+def test_matching_never_overwrites_an_id_the_queued_entry_holds_and_an_idle_refresh_leaves_it_alone(wq):
+    old_send(wq)
+    config.write_json(wq.data / "queued.json", {ROW: {"id": "td-1", "mode": "assist", "trace": LEGACY}})
+    config.write_json(traces.path(), {ROW: {"trace": OWN, "seen": DAY}})
+    traces.reconcile(DAY)
+    entry = json.loads((wq.data / "queued.json").read_text())[ROW]
+    assert entry["trace"] == LEGACY and registry()[ROW]["trace"] == OWN and wq.items()[0]["trace"] == OWN
+    queued = wq.data / "queued.json"
+    before = (queued.stat().st_ino, queued.stat().st_mtime_ns, queued.read_bytes())
+    refresh.stamp_traces({}, {})
+    refresh.stamp_traces({}, {})
+    assert (queued.stat().st_ino, queued.stat().st_mtime_ns, queued.read_bytes()) == before
+
+
+def test_every_wait_while_the_task_lock_is_held_is_at_most_half_a_second(wq, monkeypatch):
+    waits, real = [], traces.lock
+
+    @contextlib.contextmanager
+    def recording(timeout):
+        waits.append(timeout)
+        with real(timeout):
+            yield
+    monkeypatch.setattr(traces, "lock", recording)
+    old_send(wq, {"url": ROW})
+    server.queue_todo({"key": ROW, "title": "A"})  # the already-sent path
+    refresh.stamp_traces({}, {})
+    assert waits and max(waits[:2]) <= 0.5 == traces.LOCK_WAIT and traces.TASK_LOCK_WAIT <= 2
+    assert max(waits) <= traces.REFRESH_WAIT
+
+
+def test_a_refresh_gives_up_on_a_busy_task_lock_and_matches_the_rows_next_time(wq, monkeypatch, capsys):
+    old_send(wq)
+    monkeypatch.setattr(traces, "TASK_LOCK_WAIT", 0.05)
+    done = threading.Event()
+    with todostore.todo_lock():  # another writer holds the task lock
+        worker = threading.Thread(target=lambda: (refresh.stamp_traces({}, {}), done.set()), daemon=True)
+        worker.start()
+        finished = done.wait(5)
+    worker.join(5)
+    assert finished and "TODO store was busy" in capsys.readouterr().err
+    assert "trace" not in wq.items()[0]
+    refresh.stamp_traces({}, {})
+    agreed(wq)
+
+
+def test_the_task_lock_can_be_taken_with_a_time_limit(wq):
+    release, holding = threading.Event(), threading.Event()
+
+    def hold():
+        with todostore.todo_lock():
+            holding.set()
+            release.wait(5)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    holding.wait(5)
+    with pytest.raises(TimeoutError):
+        with todostore.todo_lock(0.05):
+            pass
+    release.set()
+    holder.join(5)
+    with todostore.todo_lock(0.05):
+        pass
+
+
+def test_a_busy_registry_lock_is_given_up_on_after_the_time_limit_and_not_before_it_runs_out(wq, monkeypatch):
+    sleeps = []
+
+    def counting(seconds):
+        sleeps.append(seconds)
+        assert len(sleeps) < 200, "the wait for the lock has no end"
+        time.sleep(seconds)
+    monkeypatch.setattr(traces, "time", types.SimpleNamespace(monotonic=time.monotonic, sleep=counting))
+    wq.data.mkdir(exist_ok=True)
+    with (wq.data / "traces.lock").open("a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(TimeoutError):
+            with traces.lock(0.05):
+                pass
+    assert 1 <= len(sleeps) < 200
+
+
+def test_a_page_of_rows_is_looked_up_with_one_read(wq, monkeypatch):
+    traces.stamp([[ROW], ["https://b"]], DAY)
+    reads, real = [], traces.read_registry
+    monkeypatch.setattr(traces, "read_registry", lambda: (reads.append(1), real())[1])
+    got = traces.lookup_many([ROW, "https://b", "https://none"])
+    assert reads == [1] and got == {ROW: registry()[ROW]["trace"], "https://b": registry()["https://b"]["trace"],
+                                    "https://none": ""}
+    assert traces.lookup_many([]) == {}
+
+
+def test_a_file_that_cant_be_read_is_unreadable_not_empty(wq):
+    config.write_json(traces.path(), {ROW: {"trace": OWN, "seen": DAY}})
+    before = traces.path().read_bytes()
+    traces.path().chmod(0)
+    try:
+        assert traces.lookup(ROW) == "" and traces.lookup_many([ROW]) == {ROW: ""}
+        with pytest.raises(OSError):
+            traces.stamp([[ROW + "2"]], DAY)
+        assert traces.trace_for(ROW + "3", known=OWN) == OWN  # a send carries on
+    finally:
+        traces.path().chmod(0o644)
+    assert traces.path().read_bytes() == before
+
+
+def test_a_temporary_file_a_killed_pulse_left_behind_is_removed_after_an_hour_and_no_other_writers_is(wq):
+    write_todos(wq, [{"id": "td-1"}])
+    folder = wq.todo.parent
+    names = {"stale": "assistant-todo.json.4242.tmp", "fresh": "assistant-todo.json.4343.tmp",
+             "old shared": "assistant-todo.json.tmp", "reactor": "assistant-todo.json.4444.ab12cd34.tmp"}
+    for name in names.values():
+        (folder / name).write_text("x")
+    for kind in ("stale", "old shared", "reactor"):
+        os.utime(folder / names[kind], (1, 1))
+    todostore.stamp_missing_traces()
+    assert sorted(p.name for p in folder.glob("*.tmp")) == sorted(
+        [names["fresh"], names["old shared"], names["reactor"]])

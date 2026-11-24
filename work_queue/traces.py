@@ -36,6 +36,7 @@ KEEP_DAYS = 60
 MAX_ENTRIES = 5000
 LOCK_WAIT = 0.5  # a send gives up on the registry after this long; it runs inside the server's lock and the task lock
 REFRESH_WAIT = 10
+TASK_LOCK_WAIT = 2  # the refresh gives up matching sent rows with their tasks after this long
 
 
 def path():
@@ -64,7 +65,7 @@ def lock(timeout: float):
         yield
 
 
-def trace_of(value) -> str | None:
+def held_id(value) -> str | None:
     """The valid trace id a registry value holds, or None. A value is an entry, or a bare id."""
     found = value.get("trace") if isinstance(value, dict) else value
     return found if is_trace_id(found) else None
@@ -79,7 +80,7 @@ def is_day(value) -> bool:
 
 def entry_of(value, day: str):
     """A registry value as an entry, or None. A bare id is adopted; a missing, odd or future `seen` counts as today."""
-    found = trace_of(value)
+    found = held_id(value)
     if found is None:
         return None
     seen = value.get("seen") if isinstance(value, dict) else None
@@ -114,17 +115,17 @@ def queued_ids() -> dict:
     """The trace id each `queued.json` entry holds (None when it holds none), by row key: also the rows it refers to."""
     queued = config.read_json(config.data_dir() / "queued.json", {})
     queued = queued if isinstance(queued, dict) else {}
-    return {key: trace_of(q.get("trace") if isinstance(q, dict) else None) for key, q in queued.items()}
+    return {key: held_id(q.get("trace") if isinstance(q, dict) else None) for key, q in queued.items()}
 
 
 def adopt(registry: dict, keys, held: dict, day: str) -> None:
     """Give every key of one piece of work the same id: the first one any key already has (in the registry, else in
     `queued.json`), else a new one. A key that has an id keeps it."""
     keys = [k for k in dict.fromkeys(keys) if isinstance(k, str) and k]
-    found = [t for k in keys if (t := trace_of(registry.get(k)) or held.get(k))]
+    found = [t for k in keys if (t := held_id(registry.get(k)) or held.get(k))]
     chosen = found[0] if found else new_trace_id()
     for key in keys:
-        registry[key] = {"trace": trace_of(registry.get(key)) or chosen, "seen": day}
+        registry[key] = {"trace": held_id(registry.get(key)) or chosen, "seen": day}
 
 
 def prune(registry: dict, day: str, protected: set) -> dict:
@@ -158,13 +159,26 @@ def stamp(groups, day: str | None = None) -> None:
             config.write_json(path(), registry)
 
 
-def lookup(key: str) -> str:
-    """The id of the row with this key, or "" when it has none. Reads only, and never writes or locks: for anything that
-    wants a row's id on every row (records, feedback). A send, which must give a row an id, uses `trace_for`."""
+def lookup_many(keys) -> dict:
+    """{key: its id, or "" when it has none} for each key, reading traces.json once. Never writes or locks. Use this
+    to ask for a page of rows at a time; `lookup` is the one-row form.
+
+    Pass the key the page uses for the row: the link for an Open list row (Slack, GitHub), the mark key
+    (`https://work-queue.local/email/` and the email's key) for an email, the candidate key for a row waiting for
+    approval. The keys of one email all hold the same id, but only these are kept for it. A row and the task it became
+    share one id, so a task's row is the key of the `queued.json` entry whose `id` is the task's id."""
     try:
-        return trace_of(read_registry()[0].get(key)) or ""
+        registry = read_registry()[0]
     except OSError:
-        return ""
+        return {key: "" for key in keys}
+    return {key: held_id(registry.get(key)) or "" for key in keys}
+
+
+def lookup(key: str) -> str:
+    """The id of the row with this key (see `lookup_many` for which key), or "" when it has none. Reads only, and never
+    writes or locks: for anything that wants a row's id (records, feedback). A send, which must give a row an id, uses
+    `trace_for`."""
+    return lookup_many([key])[key]
 
 
 def trace_for(key: str, known: str | None = None, day: str | None = None, also=()) -> str:
@@ -182,7 +196,7 @@ def trace_for(key: str, known: str | None = None, day: str | None = None, also=(
             day = day or today()
             registry, damaged = read_registry()
             registry = {k: e for k, v in registry.items() if (e := entry_of(v, day))}
-            chosen = next((t for k in keys if (t := trace_of(registry.get(k)))), None) or chosen or new_trace_id()
+            chosen = next((t for k in keys if (t := held_id(registry.get(k)))), None) or chosen or new_trace_id()
             if not damaged:  # a damaged file is left for the refresh to move aside, never written over here
                 adopt(registry, keys, {key: chosen}, day)
                 config.write_json(path(), registry)
@@ -193,18 +207,28 @@ def trace_for(key: str, known: str | None = None, day: str | None = None, also=(
 
 
 def reconcile(day: str | None = None) -> None:
-    """`reconcile_locked` for every sent row, taking the task-file lock itself."""
-    with todostore.todo_lock():
-        reconcile_locked(None, day)
+    """`reconcile_locked` for every sent row, taking the task-file lock itself. It waits at most TASK_LOCK_WAIT seconds
+    for that lock and, when it can't have it, does nothing this time: the page never stalls behind another writer."""
+    try:
+        with todostore.todo_lock(TASK_LOCK_WAIT):
+            reconcile_locked(None, day)
+    except TimeoutError:
+        print("Work queue: the TODO store was busy, so sent rows weren't matched with their TODOs this time.",
+              file=sys.stderr)
 
 
 def reconcile_locked(only=None, day: str | None = None) -> None:
     """Make each sent row, its `queued.json` entry and its task agree on one id. Call it inside `todostore.todo_lock()`.
 
     The row's id wins; with none, the entry's; then the task's; else a new one for all three. What already has an id
-    keeps it, so when the row's and the task's differ both stay and the entry records the row's. This is what ties a
-    row sent before ids existed to its task, whichever of the pulse and the refresh got there first. `only` is a set of
-    row keys; None means every sent row. Never raises: a failure here never holds back a refresh or a send."""
+    keeps it, so when the row's and the task's differ both stay and the entry records the row's, and an id the entry
+    already holds is never overwritten. This is what ties a row sent before ids existed to its task, whichever of the
+    pulse and the refresh got there first. `only` is a set of row keys; None means every sent row.
+
+    A new id is saved to the registry and `queued.json` only after the task has it: if another writer changed the task
+    file meanwhile the write is discarded, and all three are left for the next refresh, so the pulse can't later give the
+    task a different id. It waits at most LOCK_WAIT seconds for the registry lock, since the task-file lock is held.
+    Never raises: a failure here never holds back a refresh or a send."""
     try:
         _reconcile(only, day or today())
     except Exception:  # noqa: BLE001 — the traceback goes to the log
@@ -222,27 +246,34 @@ def _reconcile(only, day: str) -> None:
     store = json.loads(text)
     tasks = {i["id"]: i for bucket in ("items", "completed") for i in (store.get(bucket) or [])
              if isinstance(i, dict) and isinstance(i.get("id"), str)} if isinstance(store, dict) else {}
-    with lock(REFRESH_WAIT):
+    with lock(LOCK_WAIT):
         registry, raw = open_registry(day)
-        changed = {"queued": False, "task": False}
+        plan = []  # (row key, entry, id to use, whether it is new, whether the task needs it)
         for key, entry in entries.items():
             task = tasks.get(entry["id"])
             if task is None:
                 continue
-            row, kept, own = trace_of(registry.get(key)), trace_of(entry), trace_of(task)
+            row, kept, own = held_id(registry.get(key)), held_id(entry), held_id(task)
             chosen = row or kept or own or new_trace_id()
-            if not row:
+            plan.append((key, entry, task, chosen, not (row or kept or own), not own))
+        if any(needs for *_, needs in plan):
+            for _key, _entry, task, chosen, _new, needs in plan:
+                if needs:
+                    task["trace"] = chosen
+            done = todostore.replace_if_unchanged(
+                text, json.dumps(store, indent=2, ensure_ascii=False) + ("\n" if text.endswith("\n") else ""))
+        else:
+            done = True
+        queued_changed = False
+        for key, entry, _task, chosen, new, _needs in plan:
+            if new and not done:
+                continue  # left for the next refresh, with the registry and the entry as they were
+            if not held_id(registry.get(key)):
                 registry[key] = {"trace": chosen, "seen": day}
-            if not kept:
+            if not held_id(entry):
                 entry["trace"] = chosen
-                changed["queued"] = True
-            if not own:
-                task["trace"] = chosen
-                changed["task"] = True
+                queued_changed = True
         if registry != raw:
             config.write_json(path(), registry)
-    if changed["queued"]:
+    if queued_changed:
         config.write_json(queued_file, queued)
-    if changed["task"]:
-        todostore.replace_if_unchanged(text, json.dumps(store, indent=2, ensure_ascii=False)
-                                       + ("\n" if text.endswith("\n") else ""))

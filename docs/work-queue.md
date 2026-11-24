@@ -504,11 +504,12 @@ other TODO gets one when it is created or, if an agent wrote it by hand, on
 the next pulse. An email has one id whether you send it from the Email tab or
 the Open list, and keeps it if it moves to another Gmail folder. The first
 refresh after this update matches rows you had already sent with their TODOs.
-The first pulse after the update adds the id to each open TODO; for a file
-written by hand or by a skill, it may also change the file's spacing and how
-accented characters are written, never what it says. Nothing shows any id yet,
-and nothing changes for you. If the id file is ever damaged, the refresh keeps
-a copy next to it as `traces.json.damaged` and starts a new one.
+The first refresh or pulse after the update adds the id to each TODO it
+touches. For a file written by hand or by a skill, it may also change the
+file's spacing and how accented characters are written, never what it says.
+Nothing shows any id yet, and nothing changes for you. If the id file is ever
+damaged, the refresh keeps a copy next to it as `traces.json.damaged` and
+starts a new one.
 
 Follow the work on the Assistant dashboard. The TODO's status and result show
 on the **Tasks** tab, and its session shows on the **Sessions** tab once it
