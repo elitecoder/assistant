@@ -94,7 +94,7 @@ def test_a_success_resets_the_back_off_but_keeps_the_history(store):
     fail(4)
     failwatch.record_ok("self-update")
     assert failwatch.backed_off("self-update", now=NOW + 100) is None
-    (row,) = failwatch.repeated(now=NOW + 100)
+    (row,) = failwatch.history()
     assert row["count"] == 4 and row["streak"] == 0
     failwatch.record_failure("self-update", ERR, now=NOW + 200)
     assert failwatch.backed_off("self-update", now=NOW + 201) is None  # streak restarted at 1
@@ -111,17 +111,52 @@ def test_record_ok_for_another_component_or_with_no_file_changes_nothing(store):
     failwatch.record_ok("self-update")  # nothing left to clear: no rewrite needed
 
 
-# repeated()
+# history() and repeated()
+
+def test_history_lists_everything_most_recent_first_and_survives_a_broken_store(store):
+    fail(1, "first", component="a")
+    fail(1, "second", component="b", start=NOW + 500)
+    failwatch.record_ok("a")
+    assert [r["sample"] for r in failwatch.history()] == ["second", "first"]
+    store.write_text("not json")
+    assert failwatch.history() == []
+
+
+def test_history_never_raises(monkeypatch):
+    monkeypatch.setattr(failwatch, "_read", lambda path: 1 / 0)
+    assert failwatch.history() == []
+
+
 
 def test_repeated_needs_three_inside_the_window_and_sorts_by_count(store):
-    fail(2, "two")
-    fail(3, "three", start=NOW + 10)
-    fail(5, "five", start=NOW + 20)
-    fail(4, "old", start=NOW - 3 * 86400)
+    fail(2, "two", component="a")
+    fail(3, "three", component="b", start=NOW + 10)
+    fail(5, "five", component="c", start=NOW + 20)
+    fail(4, "old", component="d", start=NOW - 3 * 86400)
     rows = failwatch.repeated(now=NOW + 1000)
     assert [r["sample"] for r in rows] == ["five", "three"]
     assert [r["count"] for r in failwatch.repeated(now=NOW + 1000, min_count=2)] == [5, 3, 2]
     assert failwatch.repeated(now=NOW + 3 * 86400 + 10 ** 6) == []
+
+
+def test_a_failure_that_has_since_worked_is_no_longer_listed(store):
+    """Self-update failing three times and then succeeding must not stay on the dashboard for a day."""
+    for i in range(4):
+        failwatch.record_failure("self-update", "fetch failed", now=NOW + i)
+    assert len(failwatch.repeated(now=NOW + 10)) == 1
+    failwatch.record_ok("self-update", now=NOW + 20)
+    assert failwatch.repeated(now=NOW + 30) == []
+    failwatch.record_failure("self-update", "fetch failed", now=NOW + 40)
+    (row,) = failwatch.repeated(now=NOW + 50)
+    assert row["count"] == 5 and row["streak"] == 1, "it is listed again, with its history, once it fails again"
+
+
+def test_an_error_replaced_by_a_different_one_is_no_longer_listed(store):
+    for i in range(3):
+        failwatch.record_failure("self-update", "fetch failed", now=NOW + i)
+    for i in range(3):
+        failwatch.record_failure("self-update", "install script missing", now=NOW + 10 + i)
+    assert [r["sample"] for r in failwatch.repeated(now=NOW + 20)] == ["install script missing"]
 
 
 def test_repeated_returns_at_most_five(store):

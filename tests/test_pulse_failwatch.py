@@ -33,7 +33,7 @@ class AuditPauseTests(_AuditBase):
         self._frontier = {"ws:1": "active"}
         later = self.now + 2 * 7200
         self.pulse.run_observer_audit(self._ctxs("ws:1"), {"ws:1": {"verdict": "active"}}, 1, now=later)
-        self.assertEqual(failwatch.repeated(min_count=1)[0]["streak"], 0)
+        self.assertEqual(failwatch.history()[0]["streak"], 0)
 
     def test_the_pause_check_finds_metering_when_bin_is_not_on_the_path(self):
         self._repeat()

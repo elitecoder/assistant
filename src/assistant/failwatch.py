@@ -187,14 +187,28 @@ def backed_off(component: str, now: float | None = None) -> float | None:
         return None
 
 
+def history() -> list[dict]:
+    """Every failure on record, most recent first, including ones that have
+    since recovered. `repeated()` is the subset still happening."""
+    try:
+        return sorted(_read(_store_path()).values(), key=lambda r: -float(r.get("last_ts") or 0))
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def repeated(now: float | None = None, min_count: int = 3, window_sec: int = 86400) -> list[dict]:
-    """Failures seen at least `min_count` times, the last one inside the window,
-    most frequent first, at most 5. Each row has `component`, `count`, `streak`,
-    `first_ts`, `last_ts`, `sample` and `backoff_until`."""
+    """Failures seen at least `min_count` times that are still happening (the
+    last one inside the window and nothing has worked since), most frequent
+    first, at most 5. A failure whose operation has since succeeded, or was
+    replaced by a different error, has a streak of 0 and is not shown: the
+    dashboard must not keep reporting something that recovered. Each row has
+    `component`, `count`, `streak`, `first_ts`, `last_ts`, `sample` and
+    `backoff_until`."""
     try:
         now = time.time() if now is None else now
         rows = [row for row in _read(_store_path()).values()
-                if int(row.get("count") or 0) >= min_count and float(row.get("last_ts") or 0) >= now - window_sec]
+                if int(row.get("count") or 0) >= min_count and int(row.get("streak") or 0) > 0
+                and float(row.get("last_ts") or 0) >= now - window_sec]
         rows.sort(key=lambda r: (-int(r["count"]), -float(r["last_ts"])))
         return rows[:MAX_SHOWN]
     except Exception:  # noqa: BLE001

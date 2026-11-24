@@ -61,7 +61,7 @@ def test_after_the_window_it_tries_again_and_a_success_clears_the_pause(world):
     git(world.clone, "remote", "set-url", "origin", world.good_url)
     assert world.run(NOW + 4 * HOUR)["skipped_reason"] is None
     assert failwatch.backed_off("self-update", now=NOW + 4 * HOUR + 1) is None
-    assert failwatch.repeated(now=NOW + 4 * HOUR + 1)[0]["streak"] == 0
+    assert failwatch.history()[0]["streak"] == 0
 
 
 def test_force_ignores_the_pause(world):

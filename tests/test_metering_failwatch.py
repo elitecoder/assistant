@@ -38,7 +38,7 @@ def test_an_ok_row_clears_the_back_off_and_keeps_the_history(tmp_path):
     book(tmp_path, status="ok")
     assert failwatch.backed_off("model:lessons") is None
     assert metering.paused_note("lessons") is None
-    assert failwatch.repeated(min_count=1)[0]["count"] == 3
+    assert failwatch.history()[0]["count"] == 3
 
 
 def test_other_statuses_are_not_counted(tmp_path):

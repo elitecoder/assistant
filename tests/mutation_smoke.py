@@ -3819,6 +3819,13 @@ CHECKS = (
         'failwatch.record_failure("ready-for-merge",',
         'tests/test_pulse_failwatch.py::ReadyForMergeCountTests::test_ready_for_merge_with_no_pr_is_counted_once_per_workspace_and_the_ledger_row_is_unchanged',
     ),
+    (
+        'a failure that has since worked is no longer listed on the dashboard',
+        'src/assistant/failwatch.py',
+        'if int(row.get("count") or 0) >= min_count and int(row.get("streak") or 0) > 0\n',
+        'if int(row.get("count") or 0) >= min_count\n',
+        'tests/test_failwatch.py::test_a_failure_that_has_since_worked_is_no_longer_listed',
+    ),
 )
 
 
