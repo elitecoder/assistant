@@ -342,6 +342,7 @@ class SkipWiringTests(unittest.TestCase):
              mock.patch.object(self.mod, "cmux_send") as send_mock, \
              mock.patch.object(self.mod, "pick_open_todos", return_value={
                  "bucket_b": [{"id": "td-1", "priority": "P1"}]}), \
+             mock.patch.object(self.mod, "scan_busy_ws", return_value=set()), \
              mock.patch.object(self.mod, "dispatch_todo", return_value=True) as dispatch_mock, \
              mock.patch.object(self.mod, "run", return_value=(0, "", "")) as run_mock:
             sys.argv = ["pulse.py"]

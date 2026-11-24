@@ -5,16 +5,20 @@ localhost only.
 
 ![The Sessions tab with sample data: four columns of cmux workspaces, Needs your answer, Assistant tasks, Ready to close, and Paused. Each card shows its state, a title, the next step, when it was first seen, and a Go to session button.](images/dashboard-sessions.png)
 
-Nothing pushes or notifies you by default. Neglected decisions fall back to the
-digest instead of nagging you.
+Nothing pushes or notifies you by default. Once decisions are on, neglected ones
+fall back to the digest instead of nagging you.
 
 ## Tabs
 
 - **Sessions**: your default view. It counts open cmux workspaces, not GitHub
   alerts. **Go to session** focuses a workspace; expand a card for details.
-- **Notifications**: the morning brief, separate from your session workload:
-  GitHub alerts and other notifications, completed actions, other updates, and
-  service status.
+- **Notifications**: your notifications and the morning brief, separate from
+  your session workload: GitHub alerts and other notifications, completed
+  actions, other updates, and service status. Decisions and the brief are off until you turn them on. With
+  them off, the tab says so and how to turn them on, and decisions that were
+  already open keep showing: urgent ones until you answer them, others until
+  they expire. With the brief on, a copy is saved each morning; with it off, the
+  tab is a live summary and no copy is saved.
 - **Slack**: the threads where the next move is yours, sorted into **Do
   first**, **Promise**, **This week**, and **Optional**. **Done** checks a row
   off until its thread gets a new reply. Setup is in
@@ -26,12 +30,17 @@ digest instead of nagging you.
 
 ## Decisions and goals
 
-- From a decision card you can accept, edit, reject, or snooze. Each choice is
+Decisions, the morning brief, and the goals planner are off by default. In Pro
+mode, **Settings and background services** lists each as on or off, with the
+setting that controls it. See
+[Configuration](configuration.md#background-jobs-that-are-off-by-default).
+
+- Once decisions are on, from a decision card you can accept, edit, reject, or snooze. Each choice is
   recorded in the decision log. **Wrong lane** rejects the decision and files a
   policy proposal for that source and kind, so the rules learn from the tap.
 - The `/goal` skill adds, lists, reranks, and pauses goals, for example
-  `/goal add "…" --outcome "…"`. Goals feed the planner and lift a decision's
-  rank within its lane. Automation can only propose goal changes; only you edit
+  `/goal add "…" --outcome "…"`. Once the planner is on, goals feed it and lift
+  a decision's rank within its lane. Automation can only propose goal changes; only you edit
   the goal store.
 
 ## How the overview stays honest

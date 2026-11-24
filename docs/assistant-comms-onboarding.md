@@ -5,7 +5,7 @@
 It runs as a single **event-driven daemon**, `bin/comms-listen.py`, kept alive by a `KeepAlive` LaunchAgent (no `StartInterval` — it listens, it does not tick). The daemon runs four concurrent loops in threads:
 
 - **Inbound** — REST-polls Slack (`conversations.history`, ~3s) for new messages in your DM/channel and feeds each to a **warm cmux Claude session** that replies in seconds. Each message waits in `comms/pending-inbound.json` until the session's transcript shows it arrived. If the session is down, the message is retried every 30s for up to 3 hours, and you get one "I'll answer as soon as it's back" note per outage.
-- **Outbound pings** — watches `actions-ledger.jsonl` for appends; formats + sends each new verified/failed action in plain language. Housekeeping (expired decisions, stranded nudges, skips, strategist pauses) stays in the brief. At most 5 posts per pass, then one summary line. No LLM, ~2s latency floor.
+- **Outbound pings** — watches `actions-ledger.jsonl` for appends; formats + sends each new verified/failed action in plain language. Housekeeping (expired decisions, stranded nudges, skips, strategist pauses) stays on the Notifications tab. At most 5 posts per pass, then one summary line. No LLM, ~2s latency floor.
 - **Inbox** — watches `~/.assistant/inbox` for cmux-watcher signals ("workspace needs input" / "work complete") and pings within seconds, at most once per workspace per 15 minutes unless it's a real question. kqueue-driven on macOS.
 - **Heartbeat page** — every 60s, checks Assistant's heartbeat. If it's stale or `status ∈ {frozen, stale_world, respawn-requested}` for two checks in a row, pages you once (urgent, templated), then posts once when it recovers. No LLM.
 
