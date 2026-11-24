@@ -412,10 +412,19 @@ def unfinished(older_than_sec=IN_FLIGHT_SEC) -> list:
     return _publish([e for e in _sync().open.values() if now - e.t >= older_than_sec or e.t - now >= IN_FLIGHT_SEC])
 
 
+def _abandoned(effect, now: float) -> bool:
+    """An intent in the past with no result that is no longer in progress: it may or may not have happened."""
+    return effect.outcome is None and now - effect.t >= IN_FLIGHT_SEC
+
+
 @_never_raises(list)
 def uncertain() -> list:
-    """Effects that were sent and never answered: they may or may not have happened."""
-    return _publish(list(_sync().unknown.values()))
+    """Effects that may or may not have happened: sent and never answered, or, for an effect that can't be undone,
+    begun and never finished."""
+    state, now = _sync(), _now()
+    stale = [e for e in state.open.values()
+             if _abandoned(e, now) and e.cls in CLASSES and not CLASSES[e.cls].reversible]
+    return _publish(list(state.unknown.values()) + stale)
 
 
 @_never_raises(str)
@@ -525,7 +534,8 @@ def begin(effect_class, target, authorized_by, trace="", component="", undoes=""
     NotAuthorized: this kind of authorization isn't accepted for the class, it is malformed or dated more than a
     minute ahead, or `undoes` isn't a valid undo.
     Duplicate: the same class and target is in flight (an intent under ten minutes old with no result), or, for an
-    effect that can't be undone, already succeeded and the authorization isn't newer than that.
+    effect that can't be undone, already succeeded, may have succeeded (an `unknown` result, or an older intent that
+    never got a result) and the authorization isn't newer than that.
     Unrecorded: the row couldn't be written and fsynced."""
     if not isinstance(effect_class, str) or effect_class not in CLASSES:
         raise ValueError("unknown effect class")
@@ -553,6 +563,11 @@ def begin(effect_class, target, authorized_by, trace="", component="", undoes=""
                 if any(e.outcome == "done" and counted <= e.finished_t for e in same):
                     raise Duplicate("this can't be undone and was already done", done=True)
                 if any(e.outcome == "unknown" and counted <= e.finished_t for e in same):
+                    raise Duplicate("this can't be undone and may already have been done", unknown=True)
+                # An intent that never got a result (Assistant died, or the Mac slept, after it may have acted) is
+                # as uncertain as an `unknown` one. Once it stops counting as in progress it must not let the same
+                # old approval through; only an approval given after it does.
+                if any(_abandoned(e, now) and counted <= e.t for e in same):
                     raise Duplicate("this can't be undone and may already have been done", unknown=True)
             if undoes:
                 prior = state.effects.get(undoes)
