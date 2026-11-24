@@ -4,14 +4,14 @@ import { EventEmitter } from 'node:events'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { installSafeOutput, render, summarize } from '../src/safe-output.js'
-import { redact } from '../src/redact.js'
+import { describe as describeError, installSafeOutput, render, summarize } from '../src/safe-output.js'
 import { BOT_TOKEN, APP_TOKEN, leakyError } from './fixtures/leaky-error.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const INDEX = path.join(here, '..', 'src', 'index.js')
 const REGISTER = path.join(here, 'fixtures', 'stub-register.mjs')
-const SECRET_PARTS = ['AbCdEfGhIjKlMnOpQrStUvWx', '0123456789abcdef0123456789abcdef']
+const PLAIN_SECRET = 'abcdefgh12345678'
+const SECRET_PARTS = ['AbCdEfGhIjKlMnOpQrStUvWx', '0123456789abcdef0123456789abcdef', PLAIN_SECRET]
 
 function fakeStream() {
   const chunks = []
@@ -29,54 +29,40 @@ function fakeWorld() {
 
 const noSecret = (text) => SECRET_PARTS.every((part) => !text.includes(part))
 
-test('redact: every token shape', () => {
-  assert.equal(redact(`xoxb-123456-abcdefgh`), 'xoxb-<redacted>')
-  assert.equal(redact(`xoxp-123456-abcdefgh`), 'xoxp-<redacted>')
-  assert.equal(redact(`xapp-1-A0123-abcdef`), 'xapp-<redacted>')
-  assert.equal(redact('Authorization: Bearer abc.def-ghi_jkl'), 'Authorization: <redacted>')
-  assert.equal(redact("Authorization: 'Bearer xoxb-123456-abcdef',"), "Authorization: '<redacted>',")
-  assert.equal(redact('Authorization: Bearer xoxb-123456-abcdef\\r\\nHost: slack.com'), 'Authorization: <redacted>\\r\\nHost: slack.com')
-  assert.equal(redact('call with Bearer abcdefghijkl1234'), 'call with Bearer <redacted>')
-  assert.equal(redact("data: 'token=xoxb-123456-abcdef&channel=C1',"), "data: 'token=<redacted>&channel=C1',")
-  assert.equal(redact('access_token=abc123&x=1'), 'access_token=<redacted>&x=1')
-  assert.equal(redact('{"refresh_token": "r-123", "ok": true}'), '{"refresh_token": "<redacted>", "ok": true}')
-  assert.equal(redact('client_secret=shh'), 'client_secret=<redacted>')
-  assert.equal(redact("token: 'abc'"), "token: '<redacted>'")
-})
-
-test('redact: look-alikes and ordinary lines are unchanged', () => {
-  for (const line of [
-    'the token expired, ask for a new token',
-    'token: expired',
-    'commit 3f786850e387550fdab836ed7e6dc881de23001b',
-    'id 123e4567-e89b-12d3-a456-426614174000',
-    'https://example.com/a/b?x=1&y=2',
-    'max_tokens=100 input_tokens=5',
-    '[2026-01-02T03:04:05.000Z] :mukuls2: -> td-1 (new) on laptop: fix the thing',
-  ]) assert.equal(redact(line), line)
-})
-
-test('redact: never throws and a hostile megabyte line is fast', () => {
-  assert.match(redact({ toString() { throw new Error('boom') } }), /withheld/)
-  const started = Date.now()
-  for (const unit of ['Bearer ', 'token=', 'xoxb-', 'authorization: ', 'a'.repeat(64) + ' ', 'token' + ' '.repeat(7)]) {
-    redact(unit.repeat(Math.ceil(1_000_000 / unit.length)))
-  }
-  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`)
-})
-
 test('render: null, plain objects and error-like objects', () => {
   assert.equal(render(['value', null, { ok: 1 }]), 'value null { ok: 1 }')
   const like = { message: 'from another realm', stack: 's', config: { headers: { Authorization: `Bearer ${BOT_TOKEN}` } } }
   assert.equal(render([like]), 'Error: from another realm')
 })
 
-test('summarize: name, message, code and Slack data.error only', () => {
+test('summarize: name, message, code, status, Slack error, real reason, cause and aggregate members', () => {
   const err = leakyError('bad\nthing')
   err.data = { error: 'invalid_auth' }
-  const line = summarize(err)
-  assert.equal(line, 'Error: bad thing code=slack_webapi_request_error data.error=invalid_auth')
-  assert.equal(summarize({ message: undefined }), 'Error: ')
+  err.statusCode = 429
+  assert.equal(summarize(err), 'Error: bad thing code=slack_webapi_request_error status=429 data.error=invalid_auth original=ENOTFOUND')
+  assert.equal(summarize({ message: undefined, status: 502, original: { message: 'socket hang up' } }), 'Error:  status=502 original=socket hang up')
+  const wrapped = new Error('outer', { cause: new Error('inner', { cause: new Error('too deep') }) })
+  assert.equal(summarize(wrapped), 'Error: outer cause=[Error: inner]')
+  const many = new AggregateError([new Error('first one'), new Error('second')], 'several failed')
+  assert.equal(summarize(many), 'AggregateError: several failed errors=2 first=[Error: first one]')
+  assert.equal(summarize(new AggregateError(['plain text'], 'x')), 'AggregateError: x errors=1 first=[plain text]')
+  assert.equal(summarize(new Error('c', { cause: 'not an error' })), 'Error: c')
+})
+
+test('describe: the summary then at most 8 stack frames, with tokens removed everywhere', () => {
+  const err = new Error(`failed with token=${PLAIN_SECRET}`)
+  err.stack = `Error: failed with token=${PLAIN_SECRET}\n` +
+    Array.from({ length: 12 }, (_, i) => `    at fn${i} (/srv/app/index.js:${100 + i}:4)`).join('\n') +
+    `\n    at leak (/srv/${BOT_TOKEN}/x.js:1:1)`
+  const out = describeError(err)
+  const lines = out.split('\n')
+  assert.equal(lines.length, 1 + 8)
+  assert.equal(lines[1], '    at fn0 (/srv/app/index.js:100:4)')
+  assert.ok(noSecret(out), out)
+  assert.ok(lines[0].includes('token=<redacted>'))
+  const noStack = Object.assign(new Error('plain'), { stack: undefined })
+  assert.equal(describeError(noStack), 'Error: plain')
+  assert.ok(noSecret(describeError(Object.assign(new Error('x'), { stack: `Error: x\n   at ${BOT_TOKEN}` }))))
 })
 
 test('render: a thrown HTTP error object never prints a token', () => {
@@ -108,15 +94,17 @@ test('console and stream wrappers: tokens are removed, ordinary lines are unchan
   assert.ok(noSecret(String(proc.stdout.chunks[0])))
 })
 
-test('process handlers print a redacted summary and exit non-zero', () => {
+test('process handlers print a timestamped redacted summary with stack frames and exit non-zero', () => {
   const { proc, con, lines } = fakeWorld()
   installSafeOutput(proc, con)
-  proc.emit('uncaughtException', leakyError())
+  const crash = leakyError(`boom token=${PLAIN_SECRET}`)
+  crash.stack = `Error: boom\n    at fn (/srv/app/index.js:123:4)\n    at next (node:internal/x:1:1)`
+  proc.emit('uncaughtException', crash)
   proc.emit('unhandledRejection', leakyError())
   assert.deepEqual(proc.exits, [1, 1])
   assert.ok(lines.every((l) => noSecret(l.join(' '))))
-  assert.match(lines[0][1], /uncaught exception: Error: A request error occurred/)
-  assert.match(lines[1][1], /unhandled rejection: Error: A request error occurred/)
+  assert.match(lines[0][1], /^\d{4}-\d\d-\d\dT[\d:.]+Z \[reactor\] uncaught exception: Error: boom token=<redacted> code=slack_webapi_request_error original=ENOTFOUND\n    at fn \(\/srv\/app\/index\.js:123:4\)/)
+  assert.match(lines[1][1], /^\d{4}-.* \[reactor\] unhandled rejection: Error: A request error occurred/)
 })
 
 function bootReactor(env = {}) {
@@ -133,7 +121,7 @@ test('the real reactor: a rejection while starting prints no token and exits non
   const all = run.stdout + run.stderr
   assert.ok(noSecret(all), all)
   assert.ok(!all.includes(BOT_TOKEN) && !all.includes(APP_TOKEN))
-  assert.match(all, /unhandled rejection: Error: A request error occurred/)
+  assert.match(all, /unhandled rejection: Error: A request error occurred code=slack_webapi_request_error original=ENOTFOUND\n\s+at leakyError .*leaky-error\.mjs:\d+:\d+\)\n(?:.*\n)*\s+at .*src\/index\.js:\d+:\d+/)
   assert.equal(run.status, 1)
 })
 

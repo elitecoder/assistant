@@ -170,8 +170,17 @@ Needs `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` in `~/.zprofile`, then:
 launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist
 ```
 
-See [slack-reactor/README.md](slack-reactor/README.md). Its log never holds
-your Slack tokens: anything token-shaped prints as `<redacted>`.
+See [slack-reactor/README.md](slack-reactor/README.md). The reactor and the
+Python services replace token-shaped text in what they log, and in their crash
+output, with `<redacted>`. That is pattern matching, not a guarantee: scripts
+that only `print` are not covered, nor is a token split across two writes.
+
+It stops new leaks; it doesn't clean old lines. If
+`~/.assistant/logs/slack-reactor.launchd.err` was written by an earlier version,
+treat the bot token as exposed: rotate it in the Slack app's settings, put the
+new one in `SLACK_BOT_TOKEN` in `~/.zprofile`, restart the reactor with
+`launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`, then delete or
+empty that file.
 
 ### PRO MODE — the Work queue
 

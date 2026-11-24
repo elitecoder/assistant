@@ -278,7 +278,7 @@ def main(argv=None) -> int:
 
     if args.once or args.dry_run:
         result = c.poll_once()
-        print(connector.json.dumps(result), file=sys.stderr)
+        print(connector.redact(connector.json.dumps(result)), file=sys.stderr)
         return 0
 
     # OPTIONAL connector. If `gh` isn't logged in there is nothing to poll;

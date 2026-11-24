@@ -156,3 +156,55 @@ def test_output_protection_is_the_first_thing_the_reactor_loads():
     assert imports[0].startswith("import './safe-output-boot.js'")
     assert "installSafeOutput()" in (REACTOR_SRC / "safe-output-boot.js").read_text()
     assert not [l for l in imports if "process.on" in l]
+
+
+# --- connector scripts -------------------------------------------------------
+
+CONNECTOR_SCRIPTS = ["gcal", "github-notifications", "gmail", "outlook", "slack-events"]
+
+
+def load_connector_script(name):
+    spec = importlib.util.spec_from_file_location("conn_" + name.replace("-", "_"), REPO / "bin/connectors" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("name", CONNECTOR_SCRIPTS)
+def test_connector_script_result_line_is_redacted(name, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    module = load_connector_script(name)
+    from assistant import connector
+    kinds = [v for v in vars(module).values()
+             if isinstance(v, type) and issubclass(v, connector.Connector) and v is not connector.Connector]
+    monkeypatch.setattr(kinds[0], "poll_once", lambda self: {"error": f"failed token={SECRET}"})
+    assert module.main(["--once"]) == 0
+    assert clean(capsys.readouterr().err)
+
+
+@pytest.mark.parametrize("name", ["gcal", "gmail", "outlook"])
+def test_connector_script_authorization_failure_is_redacted(name, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    module = load_connector_script(name)
+    from assistant import connector
+
+    def refuse(*args, **kwargs):
+        raise connector.OAuthError(f"exchange failed token={SECRET}")
+
+    monkeypatch.setattr(module, "authorize", refuse)
+    assert module.main(["--authorize", "--client-secrets", "x.json"]) == 1
+    assert clean(capsys.readouterr().err)
+
+
+def test_reactor_source_never_imports_from_the_reactor_tests():
+    # The gate treats slack-reactor/test/ as test code; source that imported from there would never be measured.
+    for source in sorted(REACTOR_SRC.glob("*.js")):
+        for number, line in enumerate(source.read_text().splitlines(), 1):
+            assert not re.search(r"""(?:from|import\s*\(|require\s*\()\s*['"][^'"]*(?:/|^)test/""", line), f"{source.name}:{number}: {line.strip()}"
+
+
+def test_the_import_fence_catches_what_it_is_for():
+    pattern = r"""(?:from|import\s*\(|require\s*\()\s*['"][^'"]*(?:/|^)test/"""
+    for bad in ("import x from '../test/helper.js'", "const x = await import('../test/x.js')", "require('../test/x')"):
+        assert re.search(pattern, bad), bad
+    assert not re.search(pattern, "import { redact } from './redact.js'")

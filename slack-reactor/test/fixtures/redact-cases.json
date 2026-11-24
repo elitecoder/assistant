@@ -1,0 +1,258 @@
+{
+ "redact": [
+  [
+   "Slack bot token",
+   "{SLACK_BOT}",
+   "xoxb-<redacted>"
+  ],
+  [
+   "Slack user token in text",
+   "see {SLACK_USER} now",
+   "see xoxp-<redacted> now"
+  ],
+  [
+   "Slack session token",
+   "{SLACK_SESSION}",
+   "xoxc-<redacted>"
+  ],
+  [
+   "Slack app token",
+   "app {SLACK_APP} up",
+   "app xapp-<redacted> up"
+  ],
+  [
+   "Slack token with URL-encoded tail",
+   "token={SLACK_ENCODED}&x=1",
+   "token=<redacted>&x=1"
+  ],
+  [
+   "Slack token with URL-encoded tail on its own",
+   "got {SLACK_ENCODED} ok",
+   "got xoxb-<redacted> ok"
+  ],
+  [
+   "percent-encoded Slack prefix",
+   "got {SLACK_PCT_PREFIX} ok",
+   "got xoxb%2D<redacted> ok"
+  ],
+  [
+   "GitHub token",
+   "{GHP}",
+   "ghp_<redacted>"
+  ],
+  [
+   "GitHub fine-grained token",
+   "{PAT}",
+   "github_pat_<redacted>"
+  ],
+  [
+   "Google access token",
+   "{GOOG}",
+   "ya29.<redacted>"
+  ],
+  [
+   "Google refresh token",
+   "refresh {REFRESH}",
+   "refresh 1//<redacted>"
+  ],
+  [
+   "Google client secret",
+   "{GOCSPX}",
+   "GOCSPX-<redacted>"
+  ],
+  [
+   "AWS key id",
+   "key {AWS} end",
+   "key AKIA<redacted> end"
+  ],
+  [
+   "Anthropic key",
+   "{ANT}",
+   "sk-ant-<redacted>"
+  ],
+  [
+   "long sk- key",
+   "{SK}",
+   "sk-<redacted>"
+  ],
+  [
+   "JWT on its own",
+   "graph {JWT} done",
+   "graph eyJ<redacted> done"
+  ],
+  [
+   "JWT after Bearer",
+   "Bearer {JWT}",
+   "Bearer <redacted>"
+  ],
+  [
+   "Bearer with a number",
+   "Bearer abcdefghijkl1234",
+   "Bearer <redacted>"
+  ],
+  [
+   "lowercase bearer",
+   "bearer abcdefghijkl1234",
+   "bearer <redacted>"
+  ],
+  [
+   "Bearer Slack token",
+   "Bearer {SLACK_BOT}",
+   "Bearer <redacted>"
+  ],
+  [
+   "Authorization Basic",
+   "Authorization: Basic dXNlcjpwYXNz",
+   "Authorization: <redacted>"
+  ],
+  [
+   "Authorization with a long value",
+   "Authorization: abcdefghijkl1234",
+   "Authorization: <redacted>"
+  ],
+  [
+   "Authorization quoted in an object dump",
+   "'Authorization': 'Bearer abcdefghijkl1234',",
+   "'Authorization': '<redacted>',"
+  ],
+  [
+   "Authorization followed by a literal CRLF",
+   "Authorization: Bearer {SLACK_BOT}\\r\\nHost: x",
+   "Authorization: <redacted>\\r\\nHost: x"
+  ],
+  [
+   "Authorization in Node's array form",
+   "authorization: [ 'Bearer abcdefghijkl1234' ],",
+   "authorization: [ '<redacted>' ],"
+  ],
+  [
+   "Authorization array without a scheme",
+   "authorization: [ '{SLACK_BOT}' ]",
+   "authorization: [ '<redacted>' ]"
+  ],
+  [
+   "escaped JSON Authorization",
+   "{\\\"Authorization\\\": \\\"Bearer abcdefghijkl1234\\\"}",
+   "{\\\"Authorization\\\": \\\"<redacted>\\\"}"
+  ],
+  [
+   "Cookie header",
+   "Cookie: sid=abc; theme=dark\nHost: x",
+   "Cookie: <redacted>\nHost: x"
+  ],
+  [
+   "Set-Cookie header",
+   "Set-Cookie: sid=abc; Path=/; HttpOnly",
+   "Set-Cookie: <redacted>"
+  ],
+  [
+   "X-API-Key header",
+   "X-API-Key: abcd1234",
+   "X-API-Key: <redacted>"
+  ],
+  [
+   "credentials in a URL",
+   "fetch https://bob:hunter2@example.com/a?b=1 now",
+   "fetch https://<redacted>@example.com/a?b=1 now"
+  ],
+  [
+   "Slack webhook URL",
+   "post https://{WEBHOOK} ok",
+   "post https://hooks.slack.com/services/T0AAAA/B0BBBB/<redacted> ok"
+  ],
+  [
+   "token field in a query",
+   "GET /x?token=abcdefgh123&y=1",
+   "GET /x?token=<redacted>&y=1"
+  ],
+  [
+   "access, refresh and secret fields",
+   "access_token=abc&refresh_token=def&client_secret=ghi",
+   "access_token=<redacted>&refresh_token=<redacted>&client_secret=<redacted>"
+  ],
+  [
+   "JSON fields",
+   "{\"access_token\": \"abc\", \"refresh_token\":\"def\", \"ok\": true}",
+   "{\"access_token\": \"<redacted>\", \"refresh_token\":\"<redacted>\", \"ok\": true}"
+  ],
+  [
+   "escaped JSON fields",
+   "{\\\"access_token\\\": \\\"abc\\\", \\\"n\\\": 1}",
+   "{\\\"access_token\\\": \\\"<redacted>\\\", \\\"n\\\": 1}"
+  ],
+  [
+   "Node object dump form body",
+   "data: 'token={SLACK_BOT}&channel=C1',",
+   "data: 'token=<redacted>&channel=C1',"
+  ],
+  [
+   "quoted value with spaces",
+   "token='abc def ghi' next",
+   "token='<redacted>' next"
+  ],
+  [
+   "double-quoted value with spaces",
+   "password=\"abc def\" next",
+   "password=\"<redacted>\" next"
+  ],
+  [
+   "unquoted client_secret",
+   "client_secret: abcdef next",
+   "client_secret: <redacted> next"
+  ],
+  [
+   "password and passwd",
+   "password=hunter2 passwd=hunter3",
+   "password=<redacted> passwd=<redacted>"
+  ],
+  [
+   "api key fields",
+   "api_key=k1 apikey=k2 api-key=k3",
+   "api_key=<redacted> apikey=<redacted> api-key=<redacted>"
+  ],
+  [
+   "csrf token",
+   "csrf_token=abcdefghij",
+   "csrf_token=<redacted>"
+  ],
+  [
+   "environment dump",
+   "GITHUB_TOKEN=abc\nMY_SECRET=x y\nDB_PASSWORD=p\nSOME_API_KEY=k",
+   "GITHUB_TOKEN=<redacted>\nMY_SECRET=<redacted> y\nDB_PASSWORD=<redacted>\nSOME_API_KEY=<redacted>"
+  ],
+  [
+   "quoted environment dump",
+   "FOO_TOKEN=\"abc def\"",
+   "FOO_TOKEN=\"<redacted>\""
+  ]
+ ],
+ "keep": [
+  "the token expired; request a new token",
+  "token: expired",
+  "model=opus token=12345",
+  "tokens=100 max_tokens=4096 input_tokens=5",
+  "commit 3f786850e387550fdab836ed7e6dc881de23001b",
+  "id 123e4567-e89b-12d3-a456-426614174000",
+  "https://example.com/a/b.html?x=1&y=2#frag",
+  "http://localhost:8080/path and ssh://git@host/repo",
+  "git@github.com:owner/repo.git",
+  "Bearer authentication failed",
+  "bearer authentication-required",
+  "Bearer of bad news",
+  "Authorization: denied — check scopes",
+  "the Authorization: value was bad",
+  "risk-assessment-for-the-quarterly-planning-document-2026",
+  "task-runner-configuration-for-the-nightly-build-job",
+  "task-sk-0123456789abcdef0123456789abcdef0123",
+  "branch sk-learn-feature-branch-for-model-evaluation-experiments",
+  "/src/sk-0123456789abcdef0123456789abcdef0123/run",
+  "see http://host//1//abcdefghijklmnopqrstuvwxyz",
+  "AKIA is a prefix; so is xoxb",
+  "the cookie jar and 3 cookies",
+  "password reset requested; passwords differ",
+  "api keys are rotated; the API key page",
+  "eyJ is the start of a JWT but this is not one",
+  "[2026-01-02T03:04:05.000Z] :mukuls2: -> td-1 (new) on laptop: fix the thing",
+  "2026-01-02 12:00:00 pulse INFO resumed 3 workspaces"
+ ]
+}

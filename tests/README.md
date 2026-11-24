@@ -81,9 +81,12 @@ need browser measurements and visual inspection.
 
 The slack reactor's Node source (`slack-reactor/src/*.js`) is measured by Node's
 own runner, and `--reactor-lcov` hands the report to the gate, which checks every
-changed line and branch and rejects a report older than the source:
+changed line and branch and rejects a report older than the source. It needs
+Node 22 or newer, and the output folder must already exist:
 
 ```bash
+REPORT="$HOME/dev/generated-docs/assistant-coverage"
+mkdir -p "$REPORT"
 node --test --experimental-test-coverage --test-reporter=lcov \
   --test-reporter-destination="$REPORT/reactor.lcov" slack-reactor/test/*.test.js
 ```

@@ -458,7 +458,7 @@ def main(argv=None) -> int:
         except (connector.OAuthError, OSError, ValueError) as e:
             # str(e) is our own message / a parse error — it never contains a
             # secret (client_secret is never interpolated into any message).
-            print(f"authorization failed: {e}", file=sys.stderr)
+            print(connector.redact(f"authorization failed: {e}"), file=sys.stderr)
             return 1
         print(f"authorized — token cache seeded at {path}", file=sys.stderr)
         return 0
@@ -468,7 +468,7 @@ def main(argv=None) -> int:
 
     if args.once or args.dry_run:
         result = c.poll_once()
-        print(connector.json.dumps(result), file=sys.stderr)
+        print(connector.redact(connector.json.dumps(result)), file=sys.stderr)
         return 0
 
     # OPTIONAL connector. With no token cache the owner simply hasn't connected

@@ -327,7 +327,7 @@ def main(argv=None) -> int:
 
     if args.once or args.dry_run:
         result = c.poll_once()
-        print(connector.json.dumps(result), file=sys.stderr)
+        print(connector.redact(connector.json.dumps(result)), file=sys.stderr)
         return 0
 
     if not c._wired_check():

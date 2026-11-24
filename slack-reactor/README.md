@@ -50,17 +50,41 @@ behalf.
 
 Tokens live in `~/.zprofile`; the launcher sources it. Nothing is hardcoded.
 
-## Tokens never reach the log
+## Tokens in the log
 
-Everything the reactor prints passes through `src/redact.js`, which replaces
-Slack tokens (`xoxb-`, `xapp-` and the like), `Bearer` and `Authorization`
-values and `token=` fields with `<redacted>`. `src/safe-output.js` does this for
-`console.*` (an error object prints as one line: name, message, `code`,
-`data.error`) and for direct writes to stdout and stderr. A crash prints the
-same one-line summary and exits non-zero, so launchd restarts the service.
-`src/index.js` loads `safe-output-boot.js` before anything else; keep it first.
+What the reactor prints, and what it prints when it crashes, has anything shaped
+like a secret replaced with `<redacted>`: Slack tokens, `Bearer` and
+`Authorization` values, cookies, `token=`, `password=` and `api_key=` fields,
+GitHub, Google, AWS and model keys, JWTs, and web addresses with a password in
+them. When something fails it prints one line (the error's name and message, its
+code, the HTTP status, Slack's reason, the network error underneath such as
+ENOTFOUND or ETIMEDOUT, and one level of cause) and then up to 8 stack lines, so
+you can still tell where it failed. A crash also prints the time and exits
+non-zero, so launchd restarts the reactor as before. `src/index.js` loads
+`safe-output-boot.js` before anything else; keep it first.
 
-Run the reactor's tests with `node --test slack-reactor/test/*.test.js`.
+This is pattern matching, not a guarantee. It does not cover output written with
+`fs.writeSync` or `process._rawDebug`, a token split across two writes, or a
+secret in a shape the rules don't know.
+
+**It stops new leaks; it doesn't clean old lines.** If
+`~/.assistant/logs/slack-reactor.launchd.err` was written by an earlier version,
+treat the bot token as exposed:
+
+1. Rotate it in the Slack app's settings (OAuth & Permissions, then reinstall).
+2. Put the new token in `SLACK_BOT_TOKEN` in `~/.zprofile`.
+3. Restart the reactor: `launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`.
+4. Delete or empty `~/.assistant/logs/slack-reactor.launchd.err`.
+
+Run the reactor's tests with `node --test slack-reactor/test/*.test.js`. To
+measure coverage you need Node 22 or newer and an output folder that exists:
+
+```bash
+mkdir -p /tmp/reactor-coverage
+node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout \
+  --test-reporter=lcov --test-reporter-destination=/tmp/reactor-coverage/reactor.lcov \
+  slack-reactor/test/*.test.js
+```
 
 ## Setup (one-time)
 

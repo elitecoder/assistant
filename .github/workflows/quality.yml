@@ -48,8 +48,9 @@ jobs:
             "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json"
       - name: Measure the Slack reactor's Node tests
         run: |
-          node --test --experimental-test-coverage --test-reporter=lcov \
-            --test-reporter-destination="$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
+          node --test --experimental-test-coverage \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=lcov --test-reporter-destination="$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
             slack-reactor/test/*.test.js
       - name: Require complete new-code coverage
         env:

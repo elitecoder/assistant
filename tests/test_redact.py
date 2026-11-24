@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -19,53 +21,48 @@ MODULE = REPO / "src/assistant/redact.py"
 BODY = "AbCdEfGhIjKlMnOpQrStUv0123456789"  # the secret part: must never survive
 
 
-@pytest.mark.parametrize(("text", "expected"), [
-    (f"xoxb-111-222-{BODY}", "xoxb-<redacted>"),
-    (f"xoxp-111-{BODY}", "xoxp-<redacted>"),
-    (f"xoxc-111-{BODY}", "xoxc-<redacted>"),
-    (f"app xapp-1-A0123-{BODY} up", "app xapp-<redacted> up"),
-    (f"ghp_{BODY}", "ghp_<redacted>"),
-    (f"gho_{BODY}", "gho_<redacted>"),
-    (f"github_pat_11ABCDEFG0_{BODY}", "github_pat_<redacted>"),
-    (f"ya29.a0Af_{BODY}", "ya29.<redacted>"),
-    (f"refresh 1//0g{BODY}", "refresh 1//<redacted>"),
-    ("key AKIAIOSFODNN7EXAMPLE end", "key AKIA<redacted> end"),
-    ("key ASIAIOSFODNN7EXAMPLE end", "key ASIA<redacted> end"),
-    (f"sk-ant-api03-{BODY}", "sk-ant-<redacted>"),
-    (f"sk-{BODY}", "sk-<redacted>"),
-    ("Bearer abcdefghijkl1234", "Bearer <redacted>"),
-    ("bearer abcdefghijkl1234", "bearer <redacted>"),
-    ("Authorization: Basic dXNlcjpwYXNz", "Authorization: <redacted>"),
-    ("Authorization: opaque-value-1", "Authorization: <redacted>"),
-    ("'Authorization': 'Bearer abcdefghijkl1234',", "'Authorization': '<redacted>',"),
-    ("Authorization: Bearer xoxb-1-abcdefgh\\r\\nHost: x", "Authorization: <redacted>\\r\\nHost: x"),
-    ("GET /x?token=abc123&y=1", "GET /x?token=<redacted>&y=1"),
-    ("access_token=abc&refresh_token=def&client_secret=ghi", "access_token=<redacted>&refresh_token=<redacted>&client_secret=<redacted>"),
-    ('{"access_token": "abc", "refresh_token":"def", "ok": true}', '{"access_token": "<redacted>", "refresh_token":"<redacted>", "ok": true}'),
-    ("data: 'token=xoxb-1-abcdefgh',", "data: 'token=<redacted>',"),
-    ("csrf_token=zzz", "csrf_token=<redacted>"),
-])
-def test_every_token_shape_is_redacted(text, expected):
-    assert R.redact(text) == expected
-    assert BODY not in R.redact(text)
+B = "AbCdEfGhIjKlMnOpQrStUv0123456789"
+# Made-up secrets are built from parts so GitHub's push protection doesn't take them for real ones.
+SECRETS = {
+    "SLACK_BOT": "-".join(["xoxb", "111111111", "222222222", B]),
+    "SLACK_USER": "-".join(["xoxp", "111111111", B]),
+    "SLACK_SESSION": "-".join(["xoxc", "111111111", B]),
+    "SLACK_APP": "-".join(["xapp", "1", "A0123456789", "9876543210", "0123456789abcdef0123456789abcdef"]),
+    "SLACK_ENCODED": "-".join(["xoxb", "1111%2F2222%2B3333", B]),
+    "SLACK_PCT_PREFIX": "%2D".join(["xoxb", "1111-" + B]),
+    "GHP": "_".join(["ghp", B]),
+    "PAT": "_".join(["github", "pat", "11ABCDEFG0", B]),
+    "GOOG": ".".join(["ya29", "a0Af_" + B]),
+    "REFRESH": "//".join(["1", "0g" + B]),
+    "GOCSPX": "-".join(["GOCSPX", "abcdefghijklmnopqrstuvwx"]),
+    "AWS": "".join(["AK", "IAIOSFODNN7EXAMPLE"]),
+    "ANT": "-".join(["sk", "ant", "api03", B]),
+    "SK": "-".join(["sk", B]),
+    "JWT": ".".join(["eyJhbGciOiJSUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "c2lnbmF0dXJlMTIzNDU2"]),
+    "WEBHOOK": "/".join(["hooks.slack.com", "services", "T0AAAA", "B0BBBB", "abcdEFGH12345678ijklMNOP"]),
+}
+CASES = json.loads((REPO / "slack-reactor/test/fixtures/redact-cases.json").read_text())
 
 
-@pytest.mark.parametrize("text", [
-    "the token expired; request a new token",
-    "token: expired",
-    "commit 3f786850e387550fdab836ed7e6dc881de23001b",
-    "id 123e4567-e89b-12d3-a456-426614174000",
-    "https://example.com/a/b.html?x=1&y=2#frag",
-    "max_tokens=100 input_tokens=5",
-    "risk-assessment-for-the-quarterly-planning-document-2026",
-    "task-runner-configuration-for-the-nightly-build-job",
-    "see http://host//1//abcdefghijklmnopqrstuvwxyz",
-    "AKIA is a prefix; so is xoxb",
-    "Bearer of bad news",
-    "2026-01-02 12:00:00 pulse INFO resumed 3 workspaces",
-])
+def expand(text: str) -> str:
+    return re.sub(r"\{([A-Z_]+)\}", lambda m: SECRETS[m.group(1)], text)
+
+
+@pytest.mark.parametrize(("name", "text", "expected"), CASES["redact"], ids=[c[0] for c in CASES["redact"]])
+def test_every_secret_shape_is_redacted(name, text, expected):
+    assert R.redact(expand(text)) == expand(expected)
+    assert R.redact(R.redact(expand(text))) == expand(expected)  # redacting twice changes nothing
+
+
+@pytest.mark.parametrize("text", CASES["keep"])
 def test_look_alikes_and_ordinary_lines_are_unchanged(text):
     assert R.redact(text) == text
+
+
+def test_the_secret_part_never_survives():
+    for name, secret in SECRETS.items():
+        out = R.redact(f"x {secret} y")
+        assert B not in out and "abcdEFGH12345678ijklMNOP" not in out, name
 
 
 def test_redact_never_raises_and_never_returns_the_original(monkeypatch):
@@ -80,11 +77,25 @@ def test_redact_never_raises_and_never_returns_the_original(monkeypatch):
     assert BODY not in R.WITHHELD
 
 
-def test_a_hostile_megabyte_line_is_fast():
+ADVERSARIAL_UNITS = [
+    "Bearer ", "Bearer a", "authorization: ", "authorization: [ '", "Cookie: ", "http://a:", "https://" + "u" * 200 + ":",
+    "hooks.slack.com/services/T/B/", "token=", "token='", "token=\\\"", "api_key=", "password: \"", "client_secret:",
+    "A_TOKEN=", "xoxb-", "xoxb-1%2F", "xapp-", "ghp_", "github_pat_", "ya29.", "1//", "AKIA", "GOCSPX-", "sk-ant-",
+    "sk-", "sk-" + "0" * 40 + "/", "eyJ", "eyJ" + "a" * 20 + ".", "eyJ" + "a" * 2000 + ".b.", "a" * 64 + " ",
+    "token" + " " * 7, "x" * 40 + "-", " ", "\\", "%", "-", "A" * 60 + "_",
+]
+
+
+def test_a_hostile_megabyte_line_is_fast_for_every_rule():
     started = time.monotonic()
-    for unit in ("Bearer ", "token=", "xoxb-", "authorization: ", "a" * 64 + " ", "token" + " " * 7, "sk-", "1//", "x" * 40 + "-"):
-        R.redact((unit * (1_000_000 // len(unit) + 1))[:1_000_000])
-    assert time.monotonic() - started < 10
+    slowest = 0.0
+    for unit in ADVERSARIAL_UNITS:
+        line = (unit * (1_000_000 // len(unit) + 1))[:1_000_000]
+        one = time.monotonic()
+        R.redact(line)
+        slowest = max(slowest, time.monotonic() - one)
+    assert slowest < 2, slowest
+    assert time.monotonic() - started < 20
 
 
 def logger_with_stream(name):
@@ -109,7 +120,7 @@ def test_filter_cleans_percent_args_dict_args_and_literal_percent():
     assert BODY not in out
     assert "call failed for token=<redacted> with 50%" in out
     assert "100% sure, token=<redacted>" in out
-    assert out.count("withheld") == 1
+    assert "bad format %s %s" in out  # a bad format call keeps its line
 
 
 def test_filter_cleans_tracebacks_and_stack_text():
@@ -162,15 +173,65 @@ def test_install_defaults_to_the_root_logger():
         root.filters[:] = before
 
 
-def test_a_filter_failure_withholds_the_text_instead_of_leaking_it():
-    class Unprintable:
-        def __str__(self):
-            raise RuntimeError("no")
+def test_a_bad_format_call_keeps_its_line_and_its_traceback():
+    logger, stream = logger_with_stream("redact.test.badformat")
+    R.install(logger)
+    try:
+        raise RuntimeError(f"boom token={BODY}")
+    except RuntimeError:
+        logger.exception("bad %s %s token=" + BODY, "only-one")
+    out = stream.getvalue()
+    assert BODY not in out
+    assert "bad %s %s token=<redacted>" in out and "RuntimeError: boom token=<redacted>" in out
 
-    record = logging.LogRecord("n", logging.ERROR, __file__, 1, "%s", (Unprintable(),), (RuntimeError, RuntimeError("x"), None))
+
+def test_a_filter_failure_withholds_the_text_instead_of_leaking_it():
+    record = logging.LogRecord("n", logging.ERROR, __file__, 1, f"token={BODY}", None, (RuntimeError, "not an exception", None))
     record.stack_info = f"token={BODY}"
     assert R.RedactingFilter().filter(record) is True
     assert record.msg == R.WITHHELD and record.exc_info is None and record.stack_info is None
+
+
+def test_an_uncaught_exception_prints_its_traceback_redacted(capsys):
+    try:
+        raise RuntimeError(f"failed with token={BODY}")
+    except RuntimeError:
+        info = sys.exc_info()
+    R.install(logging.getLogger("redact.test.hook"))
+    sys.excepthook(*info)
+    err = capsys.readouterr().err
+    assert BODY not in err and "RuntimeError: failed with token=<redacted>" in err and "Traceback" in err
+
+
+def test_an_uncaught_exception_in_a_thread_prints_its_traceback_redacted(capsys):
+    R.install(logging.getLogger("redact.test.hook"))
+
+    def boom():
+        raise RuntimeError(f"thread failed token={BODY}")
+
+    thread = threading.Thread(target=boom, name="worker-1")
+    thread.start()
+    thread.join()
+    err = capsys.readouterr().err
+    assert BODY not in err and "Exception in thread worker-1" in err and "token=<redacted>" in err
+
+    def leave():
+        raise SystemExit(0)
+
+    thread = threading.Thread(target=leave)
+    thread.start()
+    thread.join()
+    assert capsys.readouterr().err == ""
+
+
+def test_the_hooks_are_installed_once_and_never_chain_the_default(capsys, monkeypatch):
+    R.install(logging.getLogger("redact.test.hook"))
+    first = (sys.excepthook, threading.excepthook)
+    R.install(logging.getLogger("redact.test.hook"))
+    assert (sys.excepthook, threading.excepthook) == first
+    monkeypatch.setattr(R, "redact", lambda text: (_ for _ in ()).throw(RuntimeError("no")))
+    sys.excepthook(RuntimeError, RuntimeError("x"), None)
+    assert R.WITHHELD in capsys.readouterr().err
 
 
 def test_the_module_has_no_possessive_quantifier_or_atomic_group():
@@ -182,7 +243,9 @@ def test_the_module_has_no_possessive_quantifier_or_atomic_group():
         assert "(?>" not in pattern, pattern
     assert not re.search(r"\(\?>", source)
     for rule, _ in R._RULES:
-        assert not re.search(r"[*+]\s*$|\{\d+,\}", rule.pattern), rule.pattern  # every repeat is bounded
+        bare = re.sub(r"\\.", "", rule.pattern)
+        bare = re.sub(r"\[(?:\\.|[^\]\\])*\]", "[]", bare)  # a character class, escapes removed
+        assert not re.search(r"[*+]|\{\d+,\}", bare), rule.pattern  # every repeat is bounded
 
 
 @pytest.mark.skipif(not Path("/usr/bin/python3").exists(), reason="no system Python here")
@@ -194,7 +257,35 @@ def test_it_loads_and_redacts_on_the_system_python():
     probe = ("import importlib.util, sys\n"
              "s = importlib.util.spec_from_file_location('r', sys.argv[1])\n"
              "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
-             "print(m.redact('x Bearer abcdefghijkl1234 token=zzz xoxb-1-abcdefgh'))\n")
+             "print(m.redact('x Bearer abcdefghijkl1234 token=zzzzzzzz ' + 'xo' + 'xb-1-abcdefgh'))\n")
     run = subprocess.run(["/usr/bin/python3", "-I", "-c", probe, str(MODULE)], capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "x Bearer <redacted> token=<redacted> xoxb-<redacted>"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_python_and_javascript_rules_are_the_same():
+    run = subprocess.run(
+        [shutil.which("node"), "--input-type=module", "-e",
+         "import { SPECS } from './slack-reactor/src/redact.js'; console.log(JSON.stringify(SPECS))"],
+        cwd=REPO, capture_output=True, text=True, timeout=30, check=True)
+    javascript = [tuple(spec) for spec in json.loads(run.stdout)]
+    python = [(pattern, "i" if flags & re.IGNORECASE else "", template) for pattern, flags, template in R._SPECS]
+    assert python == javascript
+
+
+@pytest.mark.skipif(not Path("/usr/bin/python3").exists(), reason="no system Python here")
+def test_the_shared_cases_give_the_same_answers_on_the_system_python():
+    version = subprocess.run(["/usr/bin/python3", "-c", "import sys; print(sys.version_info[:2] < (3, 11))"],
+                             capture_output=True, text=True)
+    if version.returncode != 0 or version.stdout.strip() != "True":
+        pytest.skip("the system Python is not older than 3.11")
+    pairs = [(expand(text), expand(expected)) for _, text, expected in CASES["redact"]] + [(t, t) for t in CASES["keep"]]
+    probe = ("import importlib.util, json, sys\n"
+             "s = importlib.util.spec_from_file_location('r', sys.argv[1])\n"
+             "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+             "print(json.dumps([m.redact(a) for a, _ in json.load(sys.stdin)]))\n")
+    run = subprocess.run(["/usr/bin/python3", "-I", "-c", probe, str(MODULE)], input=json.dumps(pairs),
+                         capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == [expected for _, expected in pairs]
