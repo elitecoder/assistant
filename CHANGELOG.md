@@ -112,23 +112,28 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
-- An existing Pro install stops creating decisions, writing the morning brief,
-  and running the goals planner after this update. They are opt-in now: across
-  five months on the maintainer's machine, none of 49,193 decisions was acted
-  on and 7 of 103 briefs were opened. Turn each back on by setting `{"jobs": {"decisions": true, "brief": true,
-  "planner": true}}` in `~/.assistant/config.json` (only the JSON value `true`
-  counts), or by running the pulse with `ASSISTANT_DECISIONS=1`,
-  `ASSISTANT_BRIEF=1`, or `ASSISTANT_PLANNER=1`. While decisions are off, the
-  pulse skips past new events instead of turning them into decisions, so turning
-  them on again starts from then, not from a backlog; decisions already open
-  still expire on schedule. While the brief is off, no brief file is written and
-  the narrator has nothing to narrate. While the planner is off, no planner
-  rows reach the action history; your goals stay viewable and editable. The
-  lesson extractor no longer proposes lessons from repeated successful actions
-  unless you set `ASSISTANT_LESSON_LEDGER_PASS=1`, and the pulse no longer
-  starts it for those runs; the pass that finds corrections in your sessions is
-  unchanged. The Notifications tab and **Settings and background services** say
-  which of these are off and how to turn them on. See
+- An existing Pro install stops creating decisions, saving the morning brief,
+  and planning for your goals after this update; to turn each back on, add
+  `"jobs": {"decisions": true, "brief": true, "planner": true}` (just the ones
+  you want) to `~/.assistant/config.json`, next to `"mode"`.
+  Write `true` without quotes; it takes effect at Assistant's next check. Behind
+  this is five months on the maintainer's machine: none of 49,193
+  decisions was accepted, rejected, edited, or snoozed, 7 of 103 briefs were
+  opened, and the planner acted twice and no goal recorded progress. With
+  decisions off, new GitHub and session events are skipped, so turning them on
+  later starts fresh, not from a backlog. Decisions that are already open still
+  age out, staged ones after 72 hours and digest ones after 24, and urgent ones
+  stay until you answer them and still show under **Awaiting your input**. The
+  **Completed actions** and **Other updates** lists get no new entries while
+  decisions are off. With the brief off, no brief is saved and the Notifications
+  tab is a live summary; decisions no longer move to the digest for going
+  unseen. With the planner off, nothing acts on your goals or records their
+  progress, though they stay viewable and editable. The lesson extractor no
+  longer proposes lessons from repeated successful actions unless you set
+  `ASSISTANT_LESSON_LEDGER_PASS=1`; the part that finds corrections in your
+  sessions is unchanged. The Notifications tab and **Settings and background
+  services** say which of these are off, what to add to turn each on, and when
+  a value you wrote is ignored. See
   [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
 - The Observer is now off by default. It runs only when
   `~/.assistant/config.json` has `{"observer": {"enabled": true}}`, with the

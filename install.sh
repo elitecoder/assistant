@@ -62,10 +62,12 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
   --dry-run         (default) Show what would change. No mutation.
   --apply           Actually create symlinks/copies, copy plists, reload launchd.
-  --pro             Turn on Pro mode: notifications and triage, goals and the
-                    planner, the Notifications, Decisions, Background work, and
-                    Connected apps tabs, and the /goal, /attend, /back-off, and
-                    /lesson skills. Connectors you've set up start polling.
+  --pro             Turn on Pro mode: goals, the Notifications, Decisions,
+                    Background work, and Connected apps tabs, and the /goal,
+                    /attend, /back-off, and /lesson skills. Decisions, the
+                    morning brief, and the goals planner stay off until you
+                    turn each on in config.json. Connectors you've set up
+                    start polling.
                     Also loads the Work queue page (docs/work-queue.md).
                     Saved as {"mode": "pro"} in ~/.assistant/config.json. The
                     dashboard's settings area has the same switch.
@@ -1289,7 +1291,9 @@ else
     log "   ── Pro mode (now: $MODE) ─────────────────────────────────────────"
     log "   • Switch it in the dashboard's Settings and background services, or"
     log "     run ./install.sh --apply --pro (or --no-pro). Pro mode adds"
-    log "     notifications and triage, goals and the planner, and their tabs."
+    log "     goals and the Notifications and Decisions tabs. Decisions, the"
+    log "     morning brief, and the planner stay off until you turn each on in"
+    log "     ~/.assistant/config.json (see docs/configuration.md)."
     log "   • Pro mode also runs the Work queue page. Link your sources with"
     log "     ./bin/work-queue-setup.py link <source> (see docs/work-queue.md)."
     log ""

@@ -1,11 +1,11 @@
 ---
 name: goal
-description: Add, list, rerank, and update Mukul's ranked goals at ~/.claude/assistant-goals.json — the Keel goals control loop the deterministic planner (bin/plan-next-actions.py) reads every pulse. Use when the user types /goal, asks to "add a goal", "list goals", "rerank goals", "pause the planner", or wants to change a goal's outcome/links/status. Mutations go through the local todo-server routes (POST-only, localhost) so goals.json stays flock'd and atomically written. Automation NEVER edits goals directly — it files a confirmation-gated goal_update proposal; only a human (this skill) edits in place.
+description: Add, list, rerank, and update Mukul's ranked goals at ~/.claude/assistant-goals.json — the Keel goals control loop the deterministic planner (bin/plan-next-actions.py) reads once turned on. Use when the user types /goal, asks to "add a goal", "list goals", "rerank goals", "pause the planner", or wants to change a goal's outcome/links/status. Mutations go through the local todo-server routes (POST-only, localhost) so goals.json stays flock'd and atomically written. Automation NEVER edits goals directly — it files a confirmation-gated goal_update proposal; only a human (this skill) edits in place.
 ---
 
 # /goal — ranked goals + planner control loop
 
-Ranked goal store for the Assistant. File: `~/.claude/assistant-goals.json` (schema in the `_schema` field). The deterministic planner reads it every pulse, stamps mechanical progress, and stages the next playbook step for stalled goals. This skill is the **human** edit path; it drives the todo-server's `/goal/*` routes (localhost `http://127.0.0.1:9876`), which own the flock'd atomic writes.
+Ranked goal store for the Assistant. File: `~/.claude/assistant-goals.json` (schema in the `_schema` field). The planner is off by default: nothing acts on a goal or records its progress until `"jobs": {"planner": true}` is in `~/.assistant/config.json`. Once it is on, the deterministic planner reads the store at every check, stamps mechanical progress, and stages the next playbook step for stalled goals. This skill is the **human** edit path; it drives the todo-server's `/goal/*` routes (localhost `http://127.0.0.1:9876`), which own the flock'd atomic writes.
 
 ## Subcommands
 

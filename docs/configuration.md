@@ -43,20 +43,36 @@ services** show whether it's on.
 Three Pro mode jobs are off until you turn them on, because nobody read what
 they made:
 
-| Job | Setting in `~/.assistant/config.json` | Variable | What it does when on |
-|---|---|---|---|
-| Decisions | `{"jobs": {"decisions": true}}` | `ASSISTANT_DECISIONS=1` | Turns GitHub and session events into a decision list. |
-| Morning brief | `{"jobs": {"brief": true}}` | `ASSISTANT_BRIEF=1` | Saves a brief each morning and expires decisions you never saw. The brief narrator also needs this. |
-| Goals planner | `{"jobs": {"planner": true}}` | `ASSISTANT_PLANNER=1` | Suggests the next step for a stalled goal. |
+| Job | What it does when on |
+|---|---|
+| `decisions` | Turns GitHub and session events into a decision list. |
+| `brief` | Saves a brief each morning and moves decisions you never saw to the digest. The brief narrator also needs this. |
+| `planner` | Suggests the next step for a stalled goal, and records each goal's progress. |
 
-Only the JSON value `true` turns a job on; a missing key, any other value, or a
-file that can't be read leaves it off. Each job also needs Pro mode. The pulse
-reads the setting once per pulse.
+Add the ones you want to `~/.assistant/config.json`, next to `"mode"`:
+
+```json
+{"mode": "pro", "jobs": {"decisions": true, "brief": true, "planner": true}}
+```
+
+Only the JSON value `true`, written without quotes, turns a job on. A missing
+key, any other value, or a file that can't be read leaves it off, and
+**Settings and background services** names a value it ignores. There's no
+variable for these: the dashboard and the background checks both read this
+file, so they always agree. Each job also needs Pro mode, and a change takes
+effect at Assistant's next check.
 
 While decisions are off, new events are skipped, not saved for later, so
-turning decisions on starts from that moment. Decisions already open still
-expire on schedule, and the Notifications tab keeps showing them until then.
-Goals stay viewable and editable with the planner off.
+turning decisions on starts from that moment. Decisions that are already open
+still age out: staged ones after 72 hours and digest ones after 24 hours.
+Urgent (escalate) ones have no timer, so they stay open until you answer them,
+and the Decisions tab keeps listing them under **Awaiting your input**. The
+**Completed actions** and **Other updates** lists get no new entries while
+decisions are off.
+
+With the planner off, goals stay viewable and editable, but nothing acts on a
+goal or records its progress. With the brief off, no brief is saved, and the
+Notifications tab shows a live summary instead.
 
 The lesson extractor's pass over repeated successful actions is also off. Set
 `ASSISTANT_LESSON_LEDGER_PASS=1` to turn it on. The pass that finds corrections

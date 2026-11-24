@@ -2,7 +2,8 @@
 turns them on, and so is the lesson extractor's pass over repeated actions.
 
 conftest's `_watcher_on` fixture forces Pro mode and turns these jobs on for
-other tests; each test here clears the variables to see the defaults.
+other tests; the `home` fixture here puts the real settings back, so each test
+sees the defaults.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 from assistant import mode  # noqa: E402
 
-JOB_VARS = ("ASSISTANT_DECISIONS", "ASSISTANT_BRIEF", "ASSISTANT_PLANNER")
+REAL_JOB_SETTINGS = mode.job_settings
 
 
 @pytest.fixture
@@ -27,8 +28,8 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".assistant").mkdir()
     (tmp_path / ".claude").mkdir()
-    for var in (*JOB_VARS, "ASSISTANT_LESSON_LEDGER_PASS"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(mode, "job_settings", REAL_JOB_SETTINGS)
+    monkeypatch.delenv("ASSISTANT_LESSON_LEDGER_PASS", raising=False)
     return tmp_path
 
 
@@ -64,15 +65,12 @@ def test_config_turns_each_job_on_by_itself(home):
         assert mode.job_settings() == {n: n == name for n in ("decisions", "brief", "planner")}
 
 
-@pytest.mark.parametrize("name, var", [("decisions", "ASSISTANT_DECISIONS"),
-                                       ("brief", "ASSISTANT_BRIEF"),
-                                       ("planner", "ASSISTANT_PLANNER")])
-def test_the_variable_turns_each_job_on(home, monkeypatch, name, var):
+@pytest.mark.parametrize("var", ["ASSISTANT_DECISIONS", "ASSISTANT_BRIEF", "ASSISTANT_PLANNER"])
+def test_the_variables_no_longer_turn_anything_on(home, pulse, monkeypatch, var):
+    """The dashboard is drawn by another process, so only the config file counts."""
     monkeypatch.setenv(var, "1")
-    assert mode.job_settings()[name] is True
-    assert sum(mode.job_settings().values()) == 1
-    monkeypatch.setenv(var, "0")
-    assert mode.job_settings()[name] is False
+    assert not any(mode.job_settings().values())
+    assert not any(pulse.job_enabled(job) for job in ("triage", "brief", "planner"))
 
 
 @pytest.mark.parametrize("value", ["true", "yes", 1, "1", [True], {"enabled": True}, None, False, 0])
@@ -88,10 +86,19 @@ def test_a_wrong_shape_or_unreadable_config_leaves_every_job_off(home, config):
     assert not any(mode.job_settings().values())
 
 
-def test_the_variable_still_works_when_the_config_is_unreadable(home, monkeypatch):
-    write_config(home, "{torn")
-    monkeypatch.setenv("ASSISTANT_BRIEF", "on")
-    assert mode.job_settings() == {"decisions": False, "brief": True, "planner": False}
+@pytest.mark.parametrize("value, raw", [("true", '"true"'), (1, "1"), ("yes", '"yes"'),
+                                        ([True], "[true]"), (None, "null")])
+def test_a_value_that_is_ignored_is_reported(home, value, raw):
+    write_config(home, {"jobs": {"decisions": value}})
+    assert mode.ignored_job_value("decisions") == raw
+    assert mode.job_settings()["decisions"] is False
+
+
+@pytest.mark.parametrize("config", [{"jobs": {"decisions": True}}, {"jobs": {"decisions": False}},
+                                    {"jobs": {}}, {"jobs": "x"}, {}, "{torn"])
+def test_a_true_false_or_absent_value_is_not_reported_as_ignored(home, config):
+    write_config(home, config)
+    assert mode.ignored_job_value("decisions") is None
 
 
 # ─── the pulse ───────────────────────────────────────────────────────────────
@@ -102,11 +109,11 @@ def test_pro_mode_alone_runs_none_of_the_three_jobs(pulse, monkeypatch):
     assert pulse.job_enabled("strategist")
 
 
-def test_config_and_variables_turn_the_jobs_on_in_pro_mode(home, pulse, monkeypatch):
+def test_config_turns_the_jobs_on_in_pro_mode(home, pulse):
     write_config(home, {"jobs": {"decisions": True, "planner": True}})
     assert pulse.job_enabled("triage") and pulse.job_enabled("planner")
     assert not pulse.job_enabled("brief")
-    monkeypatch.setenv("ASSISTANT_BRIEF", "1")
+    write_config(home, {"jobs": {"brief": True}})
     assert pulse.job_enabled("brief")
 
 
@@ -120,7 +127,7 @@ def test_default_mode_runs_none_of_them_even_when_turned_on(home, pulse, monkeyp
 def test_the_narrator_needs_the_brief(home, pulse, monkeypatch):
     monkeypatch.setenv("ASSISTANT_BRIEF_NARRATOR", "1")
     assert not pulse.job_enabled("narrator")
-    monkeypatch.setenv("ASSISTANT_BRIEF", "1")
+    write_config(home, {"jobs": {"brief": True}})
     assert pulse.job_enabled("narrator")
 
 
@@ -154,30 +161,55 @@ def seed_events(n: int) -> Path:
 
 
 def test_with_decisions_off_no_event_becomes_a_decision_and_the_cursor_skips(home, pulse):
-    from assistant import triage
+    from assistant import decisions, triage
     events = seed_events(5)
     with mock.patch.object(triage, "triage_new_events") as lane:
         assert pulse.run_triage_step(1) == {"cards": []}
     lane.assert_not_called()
     assert json.loads(triage.cursor_path().read_text())["offset"] == events.stat().st_size
+    assert decisions.open_decisions() == []
 
 
-def test_turning_decisions_on_later_replays_nothing(home, pulse):
-    from assistant import triage
+def event(external_id: str) -> dict:
+    return {"source": "github", "external_id": external_id, "id": external_id}
+
+
+def test_turning_decisions_on_later_replays_nothing(home, pulse, monkeypatch):
+    """Events that arrive while decisions are off never become decisions; only
+    events after the switch do."""
+    from assistant import decisions, triage
     seed_events(5)
     pulse.run_triage_step(1)
-    assert triage.scan_new_events()[0] == []
     write_config(home, {"jobs": {"decisions": True}})
-    seed_events(1)
-    new, _ = triage.scan_new_events()
-    assert len(new) == 1
+    seed_events(2)
+    monkeypatch.setattr(pulse, "call_triage_batch", lambda events, idx: {})
+    with mock.patch.object(triage, "triage_new_events", wraps=triage.triage_new_events) as lane:
+        pulse.run_triage_step(2)
+    assert lane.call_args.kwargs["pulse_idx"] == 2
+    ids = [d["event_ref"] for d in decisions.open_decisions()]
+    assert len(ids) == 2
+    assert not set(ids) & {e["id"] for e in map(json.loads, triage.events_path().read_text().splitlines()[:5])}
 
 
 def test_open_decisions_still_expire_while_decisions_are_off(home, pulse):
     from assistant import decisions
-    with mock.patch.object(decisions, "expire_open", return_value=[]) as expire:
-        pulse.run_triage_step(1)
-    expire.assert_called_once()
+    five_days_ago = time.time() - 5 * 86400
+    staged, _ = decisions.open_decision(event=event("s"), lane="staged", policy_id="r",
+                                        ttl_h=72, now=five_days_ago)
+    digest, _ = decisions.open_decision(event=event("d"), lane="digest", policy_id="r",
+                                        ttl_h=24, now=five_days_ago)
+    pulse.run_triage_step(1)
+    status = {d["id"]: d["status"] for d in decisions.fold(decisions.read_log()).values()}
+    assert status[staged["id"]] == "expired" and status[digest["id"]] == "expired"
+
+
+def test_an_open_urgent_decision_stays_open_and_on_the_awaiting_list_while_decisions_are_off(home, pulse):
+    from assistant import decisions
+    urgent, _ = decisions.open_decision(event=event("u"), lane="escalate", policy_id="r",
+                                        now=time.time() - 30 * 86400)
+    cards = pulse.run_triage_step(1)["cards"]
+    assert [c["key"] for c in cards] == [urgent["id"]]
+    assert decisions.fold(decisions.read_log())[urgent["id"]]["status"] == "open"
 
 
 def test_decisions_on_run_the_triage_step(home, pulse):
@@ -292,39 +324,79 @@ def test_the_ledger_pass_can_be_asked_for_directly(extractor, tmp_path):
 
 # ─── the dashboard ───────────────────────────────────────────────────────────
 
-def test_settings_list_the_three_jobs_as_off_with_the_setting(renderer):
+def world(home: Path) -> None:
+    (home / ".claude/cache").mkdir(exist_ok=True)
+    (home / ".claude/cache/world.json").write_text(json.dumps({"counts": {}, "_meta": {}}))
+
+
+def turn_on_json(job: str) -> str:
+    return (f'add <code>"jobs": {{"{job}": true}}</code> to <code>~/.assistant/config.json</code>, '
+            'next to <code>"mode"</code>. Write <code>true</code> without quotes. '
+            "It takes effect at Assistant's next check")
+
+
+def test_settings_list_the_three_jobs_as_off_with_the_json_to_add(renderer):
     html = renderer.render_job_settings()
-    for job, var in (("decisions", "ASSISTANT_DECISIONS"), ("brief", "ASSISTANT_BRIEF"),
-                     ("planner", "ASSISTANT_PLANNER")):
+    for job in ("decisions", "brief", "planner"):
         assert f'data-job="{job}" data-state="off"' in html
-        assert f"<code>jobs.{job}</code>" in html and f"{var}=1" in html
-    assert "Decisions are off." in html
-    assert "The morning brief is off." in html
-    assert "The goals planner is off." in html
-    assert "~/.assistant/config.json" in html
+        assert turn_on_json(job) in html
+    assert "<strong>Decisions are off.</strong> Assistant no longer turns GitHub and session events into a decision list." in html
+    assert "<strong>The morning brief is off.</strong> Assistant no longer saves a brief each morning." in html
+    assert ("<strong>The goals planner is off.</strong> Assistant no longer plans next steps for your goals "
+            "or records their progress.") in html
 
 
-def test_settings_say_a_job_is_on_when_config_turns_it_on(home, renderer):
-    write_config(home, {"jobs": {"brief": True}})
+def test_no_dashboard_copy_mentions_a_variable_or_the_pulse(home, renderer):
+    write_config(home, {"jobs": {"decisions": True, "brief": "yes"}})
+    html = renderer.render_job_settings() + renderer.render_brief_tab()[0]
+    for word in ("ASSISTANT_", "pulse", "Pulse", "triage", "PRO_JOBS"):
+        assert word not in html
+
+
+def test_settings_say_what_to_expect_when_a_job_is_on(home, renderer):
+    write_config(home, {"jobs": {"decisions": True, "brief": True, "planner": True}})
     html = renderer.render_job_settings()
-    assert 'data-job="brief" data-state="on"' in html
-    assert "The morning brief is on." in html
-    assert 'data-job="decisions" data-state="off"' in html
+    assert 'data-job="decisions" data-state="on"' in html
+    assert "<strong>Decisions are on.</strong> New ones appear from Assistant's next check." in html
+    assert ("<strong>The morning brief is on.</strong> A new one is saved each morning, "
+            "at the first check after 7 AM.") in html
+    assert "<strong>The goals planner is on.</strong> It plans a next step for a stalled goal" in html
+    assert 'data-state="off"' not in html
+
+
+def test_the_brief_line_names_the_wake_hour(home, renderer):
+    (home / ".assistant/comms").mkdir()
+    (home / ".assistant/comms/config.json").write_text(json.dumps({"brief": {"wake_hour": 13}}))
+    write_config(home, {"jobs": {"brief": True}})
+    assert "at the first check after 1 PM." in renderer.render_job_settings()
+
+
+@pytest.mark.parametrize("value, shown", [("true", "&quot;true&quot;"), (1, "1"), ("yes", "&quot;yes&quot;")])
+def test_settings_say_when_a_value_is_present_but_ignored(home, renderer, value, shown):
+    write_config(home, {"jobs": {"brief": value}})
+    html = renderer.render_job_settings()
+    assert 'data-job="brief" data-state="off" data-ignored="true"' in html
+    assert (f'<code>"brief"</code> is set to <code>{shown}</code> in <code>~/.assistant/config.json</code>, '
+            "and only <code>true</code> without quotes turns it on.") in html
+    assert html.count("data-ignored") == 1
+
+
+@pytest.mark.parametrize("config", [{"jobs": {"brief": True}}, {"jobs": {"brief": False}}, {}])
+def test_settings_do_not_mention_an_ignored_value_for_true_false_or_absent(home, renderer, config):
+    write_config(home, config)
+    assert "data-ignored" not in renderer.render_job_settings()
 
 
 def test_the_settings_panel_includes_the_job_lines(home, renderer):
-    (home / ".claude/cache").mkdir()
-    (home / ".claude/cache/world.json").write_text(json.dumps({"counts": {}, "_meta": {}}))
+    world(home)
     renderer.render()
-    html = renderer.DASHBOARD_HTML.read_text()
-    assert 'class="job-setting" data-job="planner"' in html
+    assert 'class="job-setting" data-job="planner"' in renderer.DASHBOARD_HTML.read_text()
 
 
 @pytest.mark.real_mode
 def test_default_mode_settings_do_not_list_the_pro_only_jobs(home, renderer):
     """Setting jobs.decisions in default mode would do nothing, so the page doesn't offer it there."""
-    (home / ".claude/cache").mkdir()
-    (home / ".claude/cache/world.json").write_text(json.dumps({"counts": {}, "_meta": {}}))
+    world(home)
     write_config(home, {"mode": "default"})
     renderer.render()
     assert 'class="job-setting"' not in renderer.DASHBOARD_HTML.read_text()
@@ -336,50 +408,109 @@ def make_decision_log(home: Path, *rows) -> None:
     path.write_text("".join(json.dumps({"schema": "decision/1", **row}) + "\n" for row in rows))
 
 
+OPEN_ROW = {"id": "dec-1", "status": "open", "title": "Review the parser change",
+            "lane": "escalate", "source": "github"}
+
+
 def test_the_notifications_tab_says_decisions_are_off_in_place_of_the_empty_list(home, renderer):
     make_decision_log(home)
     html, count = renderer.render_brief_tab()
     assert count == 0
-    assert 'class="job-off" data-job="decisions"' in html
     assert "<strong>Decisions are off.</strong> Assistant no longer turns GitHub and session events into a decision list." in html
-    assert "To turn them on, set <code>jobs.decisions</code> to <code>true</code>" in html
+    assert "Completed actions and Other updates get no new entries while decisions are off." in html
+    assert turn_on_json("decisions") in html
     assert "No open notifications in the current log" not in html
 
 
 def test_the_notifications_tab_says_decisions_are_off_when_no_log_was_ever_written(renderer):
     html, _ = renderer.render_brief_tab()
     assert 'class="job-off" data-job="decisions"' in html
+    assert "unavailable" not in html.split('data-job="decisions"')[1].split("</section>")[0][:900]
 
 
-def test_an_unreadable_log_is_not_called_a_job_that_is_off(home, renderer):
-    path = home / ".assistant/decisions/decisions.jsonl"
-    path.mkdir(parents=True)
+def test_an_unreadable_log_keeps_its_own_message_beside_the_notice(home, renderer):
+    (home / ".assistant/decisions/decisions.jsonl").mkdir(parents=True)
     html, _ = renderer.render_brief_tab()
-    assert 'data-job="decisions"' not in html
     assert "The current list is unavailable" in html
+    assert 'class="job-off" data-job="decisions"' in html
 
 
-def test_the_notifications_tab_says_the_brief_is_off_until_one_is_saved(home, renderer):
-    html, _ = renderer.render_brief_tab()
-    assert 'class="job-off" data-job="brief"' in html
-    assert "<strong>The morning brief is off.</strong> Assistant no longer saves a brief each morning." in html
-    (home / ".assistant/brief").mkdir()
-    (home / ".assistant/brief/brief-2026-11-01.json").write_text("{}")
-    assert 'data-job="brief"' not in renderer.render_brief_tab()[0]
-
-
-def test_the_notifications_tab_is_plain_when_the_jobs_are_on(home, renderer):
-    make_decision_log(home)
-    write_config(home, {"jobs": {"decisions": True, "brief": True}})
-    html, _ = renderer.render_brief_tab()
-    assert "job-off" not in html
-    assert "No open notifications in the current log." in html
-
-
-def test_open_decisions_keep_rendering_while_decisions_are_off(home, renderer):
-    make_decision_log(home, {
-        "id": "dec-1", "status": "open", "title": "Review the parser change",
-        "epoch": int(time.time()) - 60, "lane": "escalate", "source": "github"})
+def test_open_decisions_keep_rendering_under_a_notice_while_decisions_are_off(home, renderer):
+    make_decision_log(home, {**OPEN_ROW, "epoch": int(time.time()) - 60})
     html, count = renderer.render_brief_tab()
     assert count == 1 and "Review the parser change" in html
-    assert 'data-job="decisions"' not in html
+    notice = ("<strong>Decisions are off.</strong> No new decisions are being created, "
+              "and the ones shown were made earlier.")
+    assert notice in html
+    assert html.index(notice) < html.index("Review the parser change")
+    assert "Completed actions and Other updates get no new entries while decisions are off." in html
+
+
+def test_the_notifications_tab_has_no_decisions_notice_when_they_are_on(home, renderer):
+    make_decision_log(home, {**OPEN_ROW, "epoch": int(time.time()) - 60})
+    write_config(home, {"jobs": {"decisions": True, "brief": True}})
+    html, _ = renderer.render_brief_tab()
+    assert 'data-job="decisions"' not in html and "Review the parser change" in html
+    make_decision_log(home)
+    assert "No open notifications in the current log." in renderer.render_brief_tab()[0]
+
+
+def test_the_brief_off_notice_shows_even_when_briefs_are_saved(home, renderer):
+    (home / ".assistant/brief").mkdir()
+    (home / ".assistant/brief/brief-2026-11-01.json").write_text("{}")
+    html, _ = renderer.render_brief_tab()
+    assert ("<strong>The morning brief is off.</strong> Assistant no longer saves a brief each morning. "
+            "This tab is a live summary of your open notifications.") in html
+    assert turn_on_json("brief") in html
+
+
+def test_with_the_brief_off_the_tab_does_not_say_one_was_built_saved_or_unseen(home, renderer):
+    (home / ".assistant/brief").mkdir()
+    (home / ".assistant/brief/brief-2026-11-01.json").write_text('{"queue": []}')
+    html, _ = renderer.render_brief_tab()
+    assert "Live summary · updated" in html
+    assert "Brief · built" not in html and "Brief · saved" not in html
+    assert "No copy is saved each morning." in html
+    assert "unseen" not in html and "Expired unseen" not in html
+    assert "data-brief-date" not in html
+
+
+def test_with_the_brief_on_the_tab_keeps_its_original_wording(home, renderer):
+    write_config(home, {"jobs": {"brief": True, "decisions": True}})
+    (home / ".assistant/brief").mkdir()
+    (home / ".assistant/brief/brief-2026-11-01.json").write_text('{"queue": []}')
+    html, _ = renderer.render_brief_tab()
+    assert "Expired unseen" in html
+    assert "Brief · built" in html and "unseen — viewing this tab records it." in html
+    assert 'data-brief-date="2026-11-01"' in html
+    assert 'data-job="brief"' not in html
+
+
+def test_the_saved_brief_wording_is_not_used_for_the_off_state_either(home, renderer, monkeypatch):
+    monkeypatch.setattr(renderer.brief_store, "build_brief", mock.Mock(side_effect=OSError("x")))
+    (home / ".assistant/brief").mkdir()
+    (home / ".assistant/brief/brief-2026-11-01.json").write_text("{}")
+    html, _ = renderer.render_brief_tab()
+    assert "Last saved brief · 2026-11-01" in html and "Last saved brief from" in html
+
+
+def test_the_decisions_panel_says_they_are_off_instead_of_none_in_24_hours(home, renderer):
+    html, count = renderer.render_decisions({})
+    assert count == 0
+    assert "Decisions are off, so none are listed." in html
+    assert turn_on_json("decisions") in html
+    assert "No decisions in the last" not in html
+
+
+def test_the_decisions_panel_keeps_its_empty_line_when_they_are_on(home, renderer):
+    write_config(home, {"jobs": {"decisions": True}})
+    assert "No decisions in the last 24h." in renderer.render_decisions({})[0]
+
+
+# ─── docs that promise these features ────────────────────────────────────────
+
+@pytest.mark.parametrize("path", ["README.md", "docs/dashboard.md", "docs/configuration.md", "skills/goal/SKILL.md"])
+def test_docs_say_these_jobs_are_off_by_default(path):
+    text = (REPO / path).read_text()
+    assert "off by default" in text or "off until you turn" in text
+    assert "ASSISTANT_DECISIONS" not in text and "ASSISTANT_PLANNER" not in text

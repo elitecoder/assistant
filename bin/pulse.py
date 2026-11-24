@@ -211,7 +211,7 @@ LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 # longer leash since it reads many files before any LLM draft.
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
 # Pro mode jobs. SETTING_JOBS run in Pro mode once the user turns them on
-# (config.json "jobs" or a variable; see mode.job_settings), and the key is the
+# (config.json "jobs"; see mode.job_settings), and the key is the
 # name used there. OPT_IN_JOBS need their variable set to 1.
 SETTING_JOBS = {"triage": "decisions", "brief": "brief", "planner": "planner"}
 OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST",
@@ -777,13 +777,17 @@ def run_triage_step(pulse_idx: int) -> dict:
     summary; its `cards` list seeds this pulse's awaiting_input.
 
     While decisions are off (default mode, or Pro mode without the decisions
-    setting) it only skips past new events and expires stale decisions, so
-    turning them on later starts from current events."""
+    setting) it only skips past new events, expires stale decisions, and keeps
+    open urgent ones on the awaiting list, so turning decisions on later starts
+    from current events."""
     if not job_enabled("triage"):
         try:
             from assistant import decisions, triage  # noqa: PLC0415
             triage.skip_to_end()
             decisions.expire_open()
+            # Urgent decisions never expire, so one made while decisions were
+            # on stays open until answered; keep it on the awaiting list.
+            return {"cards": triage.escalate_cards()}
         except Exception as e:  # noqa: BLE001 — never break the pulse
             log.warning("decisions-off housekeeping failed: %s", e)
         return {"cards": []}

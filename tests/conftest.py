@@ -67,15 +67,16 @@ def _real_home_untouched():
 # setting, and tests of the defaults clear ASSISTANT_WATCHER themselves.
 # The same goes for the jobs that are off until someone turns them on (decisions,
 # the brief, the planner, the lesson extractor's ledger pass): tests of Pro
-# behavior run with them on, and `real_mode` tests or tests of the defaults
-# clear the variables themselves.
+# behavior run with them on (the three jobs by patching `mode.job_settings`, the
+# ledger pass by variable), and `real_mode` tests read the real settings. Tests
+# of the defaults restore `job_settings` and delete the variable themselves.
 @pytest.fixture(autouse=True)
 def _watcher_on(request, monkeypatch):
     if "real_mode" not in request.keywords:
         from assistant import mode
         monkeypatch.setattr(mode, "current", lambda: "pro")
-        for var in (*mode.JOB_ENV.values(), "ASSISTANT_LESSON_LEDGER_PASS"):
-            monkeypatch.setenv(var, "1")
+        monkeypatch.setattr(mode, "job_settings", lambda: dict.fromkeys(mode.JOBS, True))
+        monkeypatch.setenv("ASSISTANT_LESSON_LEDGER_PASS", "1")
     monkeypatch.setenv("ASSISTANT_WATCHER", "1")
 
 

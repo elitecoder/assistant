@@ -23,8 +23,8 @@ starting sessions, answering you on Slack, and cleaning up after them.
 | **Talk to your Mac from Slack** | A Claude session answers your messages in a private Slack channel and pings you when a workspace needs you. |
 | **Save a Slack thread as a task** | React with your machine's emoji, and the thread becomes a task, which then gets its own session. |
 | **Find Slack threads that need you** | The **Slack** tab lists threads where someone is waiting on you or you promised something. |
-| **One list for your inbox** (Pro mode) | The **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. |
-| **Track ranked goals** (Pro mode) | `/goal` records your goals, and a planner suggests the next step when one stalls. |
+| **One list for your inbox** (Pro mode) | Once you turn on decisions, the **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. Decisions are off by default. |
+| **Track ranked goals** (Pro mode) | `/goal` records your goals. Once you turn on the planner, it suggests the next step when one stalls and records their progress. The planner is off by default. |
 | **Recover from crashes** | Workspaces that crash come back on their own. Opt in with `--with-crash-resume`. |
 | **Keep your Macs in sync** | Claude memory syncs across your Macs. Opt in with `--with-memory`. |
 
@@ -46,10 +46,11 @@ you promised something. You stop scrolling channels to find them.
 
 ### Rank your notifications instead of reading them all (Pro mode)
 
-Rules sort every notification into escalate, staged, digest, or drop, and rank
-what's left. You see the few decisions that matter, and **Wrong lane** teaches
-the rules with one tap. Decisions are off until you turn them on with
-`jobs.decisions` in `~/.assistant/config.json`; see [Pro mode](#pro-mode).
+Decisions are off until you turn them on with `"jobs": {"decisions": true}` in
+`~/.assistant/config.json`; see [Pro mode](#pro-mode). Once they're on, rules
+sort every notification into escalate, staged, digest, or drop, and rank what's
+left. You see the few decisions that matter, and **Wrong lane** teaches the
+rules with one tap.
 
 ![A decision card with sample data: "@you can you sanity-check the new rate-limit headers?" marked escalate by the gh-mention-escalate rule, with Accept, Snooze 1h, Reject, and Wrong lane buttons.](docs/images/decision-card.png)
 
@@ -77,13 +78,14 @@ start in default mode; existing installs stay in Pro mode. Pro mode adds:
   today's calendar into one list you clear. Turning Pro mode off stops its
   server within seconds.
 - Ranked goals with the `/goal` skill, and a planner that suggests next steps
-  once you turn it on.
+  and records their progress once you turn it on.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.
 - Background jobs that are off until you turn them on: decisions, the morning
-  brief, and the planner (`jobs.decisions`, `jobs.brief`, and `jobs.planner`
-  in `~/.assistant/config.json`, or `ASSISTANT_DECISIONS=1`,
-  `ASSISTANT_BRIEF=1`, and `ASSISTANT_PLANNER=1`). See
+  brief, and the planner. Add `"jobs": {"decisions": true, "brief": true,
+  "planner": true}` to `~/.assistant/config.json`, next to `"mode"`, with only
+  the ones you want. Write `true` without quotes. It takes effect at Assistant's
+  next check. See
   [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
 - Background jobs that each need their own variable: the strategist
   (`ASSISTANT_STRATEGIST=1`), the lessons extractor

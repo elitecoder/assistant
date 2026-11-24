@@ -238,6 +238,9 @@ def render_decisions(world):
     rows = rows[:FEED_LIMIT]
 
     if not rows:
+        if not mode.job_settings()["decisions"]:
+            return ('<div class="empty">Decisions are off, so none are listed. To turn them on, '
+                    f'{_job_turn_on("decisions")}.</div>'), 0
         return f'<div class="empty">No decisions in the last {ACTIVITY_HOURS}h. (ledger: {LEDGER_PATH})</div>', 0
 
     # Render
@@ -392,37 +395,65 @@ def render_observer_setting() -> str:
 
 
 # Plain-words copy for the three jobs that are off until someone turns them on:
-# the name with its verb, what it did, and "it" or "them" for the sentence after.
+# the name with its verb, what it did, "it" or "them" for the sentence after,
+# and what to expect once it is on.
 JOB_COPY = {
-    "decisions": ("Decisions are", "Assistant no longer turns GitHub and session events into a decision list.", "them"),
-    "brief": ("The morning brief is", "Assistant no longer saves a brief each morning.", "it"),
-    "planner": ("The goals planner is", "Assistant no longer plans next steps for your goals.", "it"),
+    "decisions": ("Decisions are", "Assistant no longer turns GitHub and session events into a decision list.",
+                  "them", "New ones appear from Assistant's next check."),
+    "brief": ("The morning brief is", "Assistant no longer saves a brief each morning.",
+              "it", "A new one is saved each morning, at the first check after {wake}."),
+    "planner": ("The goals planner is", "Assistant no longer plans next steps for your goals or records their progress.",
+                "it", "It plans a next step for a stalled goal at Assistant's next check."),
 }
 
 
+def _wake_label() -> str:
+    hour = brief_store.wake_hour()
+    return f"{hour % 12 or 12} {'AM' if hour < 12 else 'PM'}"
+
+
 def _job_turn_on(job: str) -> str:
-    return (f'set <code>jobs.{job}</code> to <code>true</code> in <code>~/.assistant/config.json</code> '
-            f'or run the pulse with <code>{mode.JOB_ENV[job]}=1</code>')
+    return (f'add <code>"jobs": {{"{job}": true}}</code> to <code>~/.assistant/config.json</code>, '
+            f'next to <code>"mode"</code>. Write <code>true</code> without quotes. '
+            f"It takes effect at Assistant's next check")
 
 
-def job_off_line(job: str) -> str:
+def job_off_line(job: str, extra: str = "") -> str:
     """One calm sentence for a page area that is empty because the job is off."""
-    name, did, pronoun = JOB_COPY[job]
-    return (f'<p class="job-off" data-job="{job}"><strong>{name} off.</strong> {did} '
+    name, did, pronoun, _ = JOB_COPY[job]
+    return (f'<p class="job-off" data-job="{job}"><strong>{name} off.</strong> {did}{extra} '
             f'To turn {pronoun} on, {_job_turn_on(job)}.</p>')
+
+
+# Said wherever decisions are off, since the lists below them stop growing too.
+DECISIONS_OFF_FEED = " Completed actions and Other updates get no new entries while decisions are off."
+
+
+def decisions_off_notice(open_ones: bool) -> str:
+    if open_ones:
+        return (f'<p class="job-off" data-job="decisions"><strong>Decisions are off.</strong> '
+                f'No new decisions are being created, and the ones shown were made earlier.'
+                f'{DECISIONS_OFF_FEED} To turn them on, {_job_turn_on("decisions")}.</p>')
+    return job_off_line("decisions", DECISIONS_OFF_FEED)
 
 
 def render_job_settings() -> str:
     """One settings line per opt-in job: name, on or off, and the setting."""
     settings = mode.job_settings()
     lines = []
-    for job in mode.JOB_ENV:
-        name, did, pronoun = JOB_COPY[job]
+    for job in mode.JOBS:
+        name, did, pronoun, expect = JOB_COPY[job]
+        ignored = mode.ignored_job_value(job)
         if settings[job]:
             lines.append(f'<p class="job-setting" data-job="{job}" data-state="on"><strong>{name} on.</strong> '
-                         f'To turn {pronoun} off, set <code>jobs.{job}</code> to '
-                         f'<code>false</code> in <code>~/.assistant/config.json</code> and unset '
-                         f'<code>{mode.JOB_ENV[job]}</code>.</p>')
+                         f'{expect.format(wake=_wake_label())} To turn {pronoun} off, set <code>"{job}"</code> to '
+                         f'<code>false</code> under <code>"jobs"</code> in <code>~/.assistant/config.json</code>.</p>')
+        elif ignored is not None:
+            lines.append(f'<p class="job-setting" data-job="{job}" data-state="off" data-ignored="true">'
+                         f'<strong>{name} off.</strong> <code>"{job}"</code> is set to <code>{e(ignored)}</code> '
+                         f'in <code>~/.assistant/config.json</code>, and only <code>true</code> without quotes '
+                         f'turns {pronoun} on. Change it to <code>true</code>. It takes effect at '
+                         f"Assistant's next check.</p>")
         else:
             lines.append(f'<p class="job-setting" data-job="{job}" data-state="off"><strong>{name} off.</strong> '
                          f'{did} To turn {pronoun} on, {_job_turn_on(job)}.</p>')
@@ -694,8 +725,9 @@ def _render_brief_tab_inner():
     source_label = " · ".join(sources) or "No notification groups"
     count_label = (f"{source_label} · {alert_count} raw alerts"
                    if counts_available else "Notification counts unavailable")
-    brief_off_html = (job_off_line("brief")
-                      if not saved_date and not mode.job_settings()["brief"] else "")
+    brief_off = not mode.job_settings()["brief"]
+    brief_off_html = job_off_line(
+        "brief", " This tab is a live summary of your open notifications.") if brief_off else ""
     brief = {**brief, "queue": queue,
              "counts": {**(brief.get("counts") or {}), "open_decisions": len(queue)}}
     receipts = brief.get("handled_overnight") or []
@@ -742,6 +774,10 @@ def _render_brief_tab_inner():
         f'<div class="stat brief-trend"><div class="v">{alert_count}'
         f'{spark}</div>'
         f'<div class="k">Individual alerts · daily totals</div></div>')
+    # Nothing expires for going unseen while the brief is off.
+    unseen_tile = "" if brief_off else (
+        f'<div class="stat"><div class="v">{int(health.get("expired_unseen_24h") or 0)}</div>'
+        '<div class="k">Expired unseen · 24h</div></div>')
     stats = f"""
 <div class="stats">
   <div class="stat"><div class="v">{topic_count}</div><div class="k">Notification groups · not workspaces</div></div>
@@ -749,7 +785,7 @@ def _render_brief_tab_inner():
   <div class="stat"><div class="v">{len(receipts)}</div><div class="k">Handled overnight</div></div>
   <div class="stat"><div class="v">{sum(len(v) for v in digest.values())}</div><div class="k">FYI digest rows</div></div>
   <div class="stat"><div class="v">{int(interrupts.get('delivered_24h') or 0)} / {int(interrupts.get('denied_24h') or 0)}</div><div class="k">Interrupts delivered / denied</div></div>
-  <div class="stat"><div class="v">{int(health.get('expired_unseen_24h') or 0)}</div><div class="k">Expired unseen · 24h</div></div>
+  {unseen_tile}
 </div>"""
 
     # ─── 1. decision queue ───
@@ -842,12 +878,13 @@ def _render_brief_tab_inner():
                 f'<summary>{len(cards) - 3} more notification groups'
                 f'</summary>{"".join(cards[3:])}</details>')
     else:
+        queue_html = ('<div class="empty">No open notifications in the current log.</div>'
+                      if current else '<div class="empty">The current list is unavailable, so its count is unknown.</div>')
+    if not mode.job_settings()["decisions"]:
         # With decisions off the log may never have been created; say so
         # instead of calling a log that was never written unavailable.
-        decisions_off = not mode.job_settings()["decisions"] and (current or log_missing)
-        queue_html = (job_off_line("decisions") if decisions_off
-                      else '<div class="empty">No open notifications in the current log.</div>'
-                      if current else '<div class="empty">The current list is unavailable, so its count is unknown.</div>')
+        notice = decisions_off_notice(bool(queue))
+        queue_html = notice if not queue and (current or log_missing) else notice + queue_html
 
     # ─── 2. handled overnight ───
     if receipts:
@@ -1002,6 +1039,8 @@ def _render_brief_tab_inner():
 
     seen = (BRIEF_DIR / f"brief-{saved_date}.seen.json").exists()
     seen_note = "seen" if seen else "unseen — viewing this tab records it"
+    if brief_off:
+        seen_note = "No copy is saved each morning"
 
     # ─── editorial header: eyebrow · good morning · voice summary ───
     summary_txt = (f"{count_label}. "
@@ -1009,12 +1048,20 @@ def _render_brief_tab_inner():
     voice_tag = '<span class="voice-tag">notification summary</span>'
     summary_html = (
         f'<p class="brief-summary template-voice">{e(summary_txt)}{voice_tag}</p>')
+    eyebrow = f"Brief · built {built_at}" if built_at else f"Brief · saved {date_str}"
+    if brief_off:
+        eyebrow = f"Live summary · updated {built_at}" if built_at else f"Last saved brief · {date_str}"
     header_html = (
-        f'<div class="brief-eyebrow">{e(f"Brief · built {built_at}" if built_at else f"Brief · saved {date_str}")}</div>'
+        f'<div class="brief-eyebrow">{e(eyebrow)}</div>'
         '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
         f'{summary_html}')
 
-    date_attribute = f' data-brief-date="{e(saved_date)}"' if saved else ""
+    # With the brief off, viewing the tab records nothing, so the page doesn't
+    # send the "seen" signal.
+    footer_label = "Built" if live else "Summary saved"
+    if brief_off:
+        footer_label = "Live summary built" if live else "Last saved brief from"
+    date_attribute = f' data-brief-date="{e(saved_date)}"' if saved and not brief_off else ""
     html = f"""
 <div class="brief-root"{date_attribute}>
 {header_html}
@@ -1047,7 +1094,7 @@ def _render_brief_tab_inner():
   {budget_note}
 </div>
 
-<div class="brief-footer">{e("Built" if live else "Summary saved")} {e(brief.get('ts') or '?')}. {e(seen_note)}.</div>
+<div class="brief-footer">{e(footer_label)} {e(brief.get('ts') or '?')}. {e(seen_note)}.</div>
 <details class="brief-footer"><summary>Technical details</summary>
 <p>The brief rebuilds every time the page updates. To save today's copy, run <code>python3 bin/build-morning-brief.py</code>.</p>
 </details>
