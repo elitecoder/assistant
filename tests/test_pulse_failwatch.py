@@ -72,6 +72,18 @@ class ReadyForMergeCountTests(unittest.TestCase):
         self.assertEqual((row["count"], row["backoff_until"]), (3, 0))
         self.assertEqual(row["sample"], "ready_for_merge but no pr_refs on ws")
 
+    def test_a_counter_that_cannot_load_never_blocks_the_verdict(self):
+        sys.modules["assistant.failwatch"] = None
+        saved = sys.modules["assistant"].failwatch
+        del sys.modules["assistant"].failwatch
+        try:
+            action = self.mod.execute_verdict(
+                self._ws(), {"verdict": "ready_for_merge", "summary": "s", "next": "n"}, [])
+        finally:
+            sys.modules["assistant.failwatch"] = saved
+            sys.modules["assistant"].failwatch = saved
+        self.assertEqual(action["evidence"], "ready_for_merge but no pr_refs on ws")
+
     def test_the_merge_dispatch_runs_under_the_running_interpreter(self):
         seen = []
         real = subprocess.run

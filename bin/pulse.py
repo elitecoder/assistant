@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import failwatch, mode, model_tiers, transcript_slice  # noqa: E402
+from assistant import mode, model_tiers, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -1987,8 +1987,12 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
         if not pr_refs:
             # The ledger row below is written every pulse; this counts it once
             # per workspace so the dashboard shows it with a number.
-            failwatch.record_failure(f"ready-for-merge:{ws_ref}", "ready_for_merge but no pr_refs on ws",
-                                     pause=False)
+            try:
+                from assistant import failwatch  # noqa: PLC0415 — not a startup file; never block a verdict
+                failwatch.record_failure(f"ready-for-merge:{ws_ref}", "ready_for_merge but no pr_refs on ws",
+                                         pause=False)
+            except Exception as e:  # noqa: BLE001
+                log.warning("couldn't count the merge check failure (ignored): %s", e)
             return {**base, "kind": "skipped", "outcome": "failed",
                     "evidence": "ready_for_merge but no pr_refs on ws"}
         result = run_merge_pr_dispatch(
