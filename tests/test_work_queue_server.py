@@ -671,7 +671,14 @@ def test_the_refresh_button_rebuilds_the_page_in_the_background(http, wq, monkey
         time.sleep(0.1)
     assert state["finished"] and state["error"] == ""
     assert "No sources are linked yet." in http("/")[1]
-    assert "Slack: off — not linked" in (wq.data / "refresh.log").read_text()
+    # The refresh marks itself finished just before its last output reaches the log file,
+    # so the log can still be empty for a moment after the state says finished.
+    log = wq.data / "refresh.log"
+    for _ in range(100):
+        if "Slack: off — not linked" in log.read_text():
+            break
+        time.sleep(0.1)
+    assert "Slack: off — not linked" in log.read_text()
 
 
 def test_the_background_refresh_triages_through_the_model_command_with_tools_off(http, wq, monkeypatch):

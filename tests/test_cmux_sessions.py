@@ -97,6 +97,26 @@ def test_unusable_cli_answers_yield_no_sessions(cli, capsys, stdout, returncode,
     assert f"sessions list` unavailable ({reason}" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("stdout,returncode,reason", [
+    ('{"sessions": [{"session_id": "s"}]}', 1, "exit 1"),
+    ("Error: sessions list: unknown agent", 0, "output is not JSON"),
+    ('[{"session_id": "s"}]', 0, "output has no sessions list"),
+])
+def test_strict_listing_raises_instead_of_answering_no_sessions(cli, capsys, stdout, returncode, reason):
+    fake_cmux.write(cli, stdout=stdout, returncode=returncode)
+    with pytest.raises(cmux_sessions.SessionsUnavailable, match=reason):
+        cmux_sessions.list_sessions(strict=True)
+    assert f"sessions list` unavailable ({reason}" in capsys.readouterr().err
+
+
+def test_strict_listing_raises_for_a_missing_cli_and_still_lists_when_cmux_answers(
+        tmp_path, monkeypatch, cli):
+    assert cmux_sessions.list_sessions(strict=True) == cmux_sessions.list_sessions()
+    monkeypatch.setenv("CMUX_BIN", str(tmp_path / "no-cmux-here"))
+    with pytest.raises(cmux_sessions.SessionsUnavailable):
+        cmux_sessions.list_sessions(strict=True)
+
+
 def test_missing_cli_yields_no_sessions(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CMUX_BIN", str(tmp_path / "no-cmux-here"))
     assert cmux_sessions.list_sessions() == []
