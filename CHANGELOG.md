@@ -61,6 +61,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
   off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
   [Telemetry](docs/telemetry.md).
+- Every Work queue row and every TODO now carries a short id that later
+  features will use to show where a piece of work came from. Nothing you see
+  changes yet.
 - Show a failure that keeps repeating as one red line at the top of the
   dashboard, with how many times in a row it has happened, since when, a short
   error, and what happens next, all in one box that shows two lines and keeps

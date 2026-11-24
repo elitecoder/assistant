@@ -58,7 +58,7 @@ from pathlib import Path
 
 from assistant import mode, todostore
 
-from work_queue import config, page, refresh, tools
+from work_queue import config, page, refresh, tools, traces
 from work_queue.inputs import slack
 from work_queue.todo_result import RESULT_TAG, read_store, result_of, write_store
 
@@ -183,6 +183,7 @@ def queue_todo(body: dict):
         items = doc.setdefault("items", [])
         prior = {i.get("id"): i for i in items}.get(entry(queued, key).get("id"))
         if prior and prior.get("status") != "removed":
+            traces.reconcile_locked({key})
             mark_sent(key)
             return 200, {"id": prior["id"], "existing": True}
         next_n = 1 + max([int(m.group(1)) for b in (items, doc.get("completed", []), doc.get("removed", [])) for i in b
@@ -190,17 +191,19 @@ def queue_todo(body: dict):
         td_id = f"td-{next_n:03d}"
         detail = " ".join(str(body.get("detail") or "").split())[:1500]
         code = secrets.token_hex(8)
+        same = [url] if key.startswith(EMAIL_MARK) and url else []  # an email sent from the Email tab is also its link
+        trace = traces.trace_for(key, entry(queued, key).get("trace"), also=same)
         row = "\n".join([f"----- BEGIN UNTRUSTED ROW {code} -----", f"Title: {title}", f"Detail: {detail}",
                          f"Source: {url}", f"----- END UNTRUSTED ROW {code} -----"])
         if note := note_text(note):
             row = f"{NOTE_LABEL}\n{note}\n\n{row}"
         items.append({"id": td_id, "priority": "P2", "title": title, "source": f"work-queue:{now()[:10]}",
-                      "createdAt": now()[:10], "status": "open", "autoDispatch": True, **({"url": url} if url else {}),
-                      "workQueueMode": how,
+                      "createdAt": now()[:10], "status": "open", "autoDispatch": True, "trace": trace,
+                      **({"url": url} if url else {}), "workQueueMode": how,
                       "detail": f"{MODES[how].replace('<td-id>', td_id).replace('<code>', code)}\n\n{row}"})
         doc["_lastUpdated"] = now()
         write_store(doc)
-        queued[key] = {"id": td_id, "at": now(), "mode": how}
+        queued[key] = {"id": td_id, "at": now(), "mode": how, "trace": trace}
         config.write_json(queued_file, queued)
         mark_sent(key)
         if key.startswith(EMAIL_MARK) and url:

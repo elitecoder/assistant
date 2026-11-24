@@ -260,7 +260,7 @@ def test_a_blocked_item_never_clears_and_says_when_its_repo_access_works_now(wq)
              blocked("td-804", "Waiting on Ana to answer in the repo o/r about the plan."),
              blocked("td-805", f"Can't read {pr_url(40)}: 403.")]
     seed(wq, items)
-    before = wq.todo.read_text()
+    before = json.loads(wq.todo.read_text())
     fake_tool(wq.bin, "gh", [("api repos/OneAdobe/architect-ffp-telemetry", {"full_name": "x"}),
                              ("api repos/o/private", {"full_name": "y"}),
                              ("api repos/o/still-locked", {"exit": 1, "stderr": "HTTP 404: Not Found"}),
@@ -274,7 +274,10 @@ def test_a_blocked_item_never_clears_and_says_when_its_repo_access_works_now(wq)
     assert "td-803" not in seen, "a repo gh still can't read leaves the item as it is"
     assert "td-804" not in seen, "a reason that isn't about access isn't checked"
     assert (seen.get("td-805", {}).get("note") or "").startswith("The blocker looks gone: GitHub can read o/r now")
-    assert wq.todo.read_text() == before, "a blocked TODO is never restarted"
+    after = json.loads(wq.todo.read_text())  # the refresh may add each sent TODO's id, and changes nothing else
+    assert [{k: v for k, v in i.items() if k != "trace"} for i in after["items"]] == before["items"], \
+        "a blocked TODO is never restarted"
+    assert {k: v for k, v in after.items() if k != "items"} == {k: v for k, v in before.items() if k != "items"}
     assert not any(k.startswith(ready.READY_MARK) for k in marks(wq))
     assert calls(wq.bin, "gh").count("api repos/o/r") == 1, "only the reason about access asks gh"
 

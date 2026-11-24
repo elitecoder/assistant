@@ -59,7 +59,7 @@ def test_a_hands_off_send_creates_an_auto_dispatch_todo_with_the_next_id_and_fin
     assert "<td-id>" not in detail
     assert "first pass" not in detail and "leave those as drafts" not in detail
     queued = json.loads((wq.data / "queued.json").read_text())[ROW]
-    assert (queued["id"], queued["mode"], sorted(queued)) == ("td-051", "handsoff", ["at", "id", "mode"])
+    assert (queued["id"], queued["mode"], sorted(queued)) == ("td-051", "handsoff", ["at", "id", "mode", "trace"])
 
 
 @pytest.mark.parametrize("body", [{}, {"mode": "assist"}])

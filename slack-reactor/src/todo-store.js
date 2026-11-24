@@ -2,6 +2,7 @@
 // Single source of truth: ~/.claude/assistant-todo.json (the dashboard + pulse
 // read the same file).
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 
@@ -26,7 +27,7 @@ function nextId(data) {
 
 function writeAtomic(data) {
   data._lastUpdated = nowIso()
-  const tmp = TODO_PATH + '.tmp'
+  const tmp = `${TODO_PATH}.${process.pid}.${randomBytes(4).toString('hex')}.tmp` // its own name, never one another writer uses
   writeFileSync(tmp, JSON.stringify(data, null, 2))
   renameSync(tmp, TODO_PATH)
 }
@@ -62,6 +63,7 @@ export function addTodo({ title, detail, url, source, priority = 'P2', autoDispa
     status: 'open',
     autoDispatch,
     capturedBy: MACHINE,
+    trace: `tr-${randomBytes(8).toString('hex')}`,
   })
   writeAtomic(data)
   return { id, created: true }
