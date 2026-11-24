@@ -115,6 +115,8 @@ export async function addTodo({ title, detail, url, source, priority = 'P2', aut
       autoDispatch,
       capturedBy: MACHINE,
       ...(reactedBy ? { reactedBy } : {}),
+      // One id for this piece of work, minted here and never replaced (the same shape the Python side mints).
+      trace: `tr-${randomBytes(8).toString('hex')}`,
     })
     writeAtomic(data, opts.rename ?? fs.renameSync)
     return { id, created: true }

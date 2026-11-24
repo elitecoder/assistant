@@ -5,7 +5,7 @@ description: Add, list, and update items in Mukul's persistent TODO list at ~/.c
 
 # /todo — TODO management
 
-Persistent TODO list for the Assistant system. File: `~/.claude/assistant-todo.json`. Schema documented in the file's `_schema` field. The Assistant agent reads this file on every pulse; dashboard renderer surfaces it on the **TODOs** tab.
+Persistent TODO list for the Assistant system. File: `~/.claude/assistant-todo.json`. Schema documented in the file's `_schema` field. Every new item gets a `trace` id (`tr-` and 16 hex characters) when it is added; it is never changed afterward, and the pulse adds one to any item written without it. The Assistant agent reads this file on every pulse; dashboard renderer surfaces it on the **TODOs** tab.
 
 ## Subcommands
 
@@ -39,7 +39,7 @@ Extract subcommand. Validate priority is one of `P0/P1/P2/P3/P4`. Title must be 
 ### Step 2 — read + mutate the JSON file atomically
 
 ```python
-import json, os, shutil, sys
+import json, os, secrets, shutil, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -143,6 +143,7 @@ new_item = {
     "createdAt": datetime.now(timezone.utc).date().isoformat(),
     "status": "open",
     "autoDispatch": auto_dispatch,
+    "trace": "tr-" + secrets.token_hex(8),  # minted once, never changed
 }
 if detail: new_item["detail"] = detail
 if ws: new_item["dispatchedWs"] = ws

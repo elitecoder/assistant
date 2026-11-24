@@ -87,6 +87,12 @@ feature and bug-fix pull requests, then reads the workspace transcript to
 confirm the agent received the merge command. It's written for the author's own
 repository and merge skills, so expect to adapt it.
 
+Each TODO carries a `trace` id (`tr-` and 16 hex characters), minted when the
+TODO is created and never changed; the pulse adds one to any open TODO written
+without it. A Work queue row has its own id in `traces.json`, and a TODO sent
+from a row takes it. The id is how later features follow one piece of work from
+arrival to your decision; nothing reads it yet.
+
 TODOs flagged `autoDispatch` are spawned into fresh cmux workspaces with hard
 caps: at most 5 busy workspaces, 30 total, and 2 new spawns per pulse. The busy
 count doesn't depend on the Observer. Each pulse that has a TODO to start reads

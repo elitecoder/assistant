@@ -18,6 +18,7 @@ import traceback
 import urllib.parse
 from datetime import datetime, timezone
 
+from assistant import records
 from assistant.slack_focus.client import Client, SlackError
 
 from work_queue import config, todo_result, tools
@@ -244,6 +245,8 @@ def check(doc: dict, transport, token: str) -> dict:
         if item["status"] == "blocked":
             if note := guarded(unblocked, item, gh, hosts):
                 out[td] = {"note": note, "at": now_iso()}
+                if not (isinstance(saved.get(td), dict) and saved[td].get("note") == note):
+                    records.check(item, "unblocked")  # the first time only: the saved checks hold the note after
             continue
         urls = pr_urls(item, hosts)
         after = when(item.get("resultAt") or item.get("statusUpdatedAt"))
@@ -252,6 +255,7 @@ def check(doc: dict, transport, token: str) -> dict:
         if found:
             out[td] = {"cleared": found[0], "why": found[1], "at": now_iso()}
             cleared[td] = out[td]
+            records.check(item, found[0])
         elif wait := guarded(pending, urls, gh):
             out[td] = {"pending": wait, "at": now_iso()}
     if cleared:

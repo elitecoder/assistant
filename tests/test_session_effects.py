@@ -405,9 +405,12 @@ def test_writable_is_false_when_the_folder_cant_be_made_or_the_write_is_refused(
     assert not se.writable()
 
 
-def test_trace_of_takes_only_a_real_trace_id():
-    assert se.trace_of({"trace": "tr-0123456789abcdef"}) == "tr-0123456789abcdef"
-    assert se.trace_of({"trace": "nope"}) == "" and se.trace_of(None) == ""
+def test_trace_of_is_the_tasks_own_or_its_stand_in_and_nothing_without_a_task():
+    from assistant import todostore
+    assert se.trace_of({"id": "td-1", "trace": "tr-0123456789abcdef"}) == "tr-0123456789abcdef"
+    item = {"id": "td-1", "trace": "nope", "createdAt": "2026-11-01T00:00:00Z"}
+    assert se.trace_of(item) == todostore.trace_of(item) and se.trace_of(item).startswith("tl-")
+    assert se.trace_of(None) == ""
 
 
 def test_the_ledger_finds_an_effect_by_its_id_and_says_nothing_for_another(home):

@@ -102,9 +102,12 @@ def writable() -> bool:
 
 
 def trace_of(item) -> str:
-    """The task's own trace id when it has a valid one."""
-    found = item.get("trace") if isinstance(item, dict) else ""
-    return found if pointers.is_trace_id(found) else ""
+    """The trace id of the task a typing is for: the task's own, else the stand-in `todostore.trace_of` gives, so the
+    typing and the task's own records share one trace. "" for no task."""
+    if not isinstance(item, dict):
+        return ""
+    from assistant import todostore  # noqa: PLC0415
+    return todostore.trace_of(item)
 
 
 def _loop_count(target: dict, now: float) -> int:

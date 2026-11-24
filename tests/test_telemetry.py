@@ -1714,6 +1714,7 @@ def test_healing_is_not_retried_once_the_deadline_has_passed(home, monkeypatch):
     assert len(spool_lines(home)) == 1 and len(copies(home)) == 1
     monkeypatch.undo()
     monkeypatch.setenv("HOME", str(home))
+    T._spool_only_until.clear()  # the miss above would send this process to the spool for a while
     assert T.emit("check", name="y") is True  # the next one starts a fresh database
 
 
@@ -1759,6 +1760,7 @@ def test_a_store_that_cannot_be_set_up_spools_and_leaves_no_connection_open(home
     assert len(spool_lines(home)) == 1
     monkeypatch.undo()
     monkeypatch.setenv("HOME", str(home))
+    T._spool_only_until.clear()  # the miss above would send this process to the spool for a while
     assert T.emit("check", name="y") is True  # the failed set-up left nothing half-made behind
 
 
@@ -1824,3 +1826,103 @@ def test_nothing_is_written_to_the_actions_ledger(home):
     T.emit("check", name="x")
     T.maintain()
     assert not (home / ".assistant" / "actions-ledger.jsonl").exists()
+
+
+# ─── emit_many: a list of records in one go ──────────────────────────────────
+
+def batch_of(n: int, start: int = 0) -> list:
+    return [("check", {"name": "batch", "count": start + i}) for i in range(n)]
+
+
+def counts(home) -> list:
+    return [e["fields"]["count"] for e in T.events(kind="check", limit=10000) if e["fields"].get("name") == "batch"]
+
+
+def test_a_batch_of_200_arrives_whole_and_in_order_in_one_attempt_on_the_database(home, monkeypatch):
+    attempts = []
+    real = T._run
+    monkeypatch.setattr(T, "_run", lambda work, deadline=None: attempts.append(1) or real(work, deadline))
+    assert T.emit_many(batch_of(200)) is True
+    assert counts(home) == list(range(200)) and len(attempts) == 1
+    assert T.emit_many([]) is False and T.emit_many(iter(())) is False
+    assert T.emit_many(5) is False  # not even a list: never raises
+
+
+def test_one_record_a_batch_cant_build_is_left_out_and_the_others_are_kept(home, monkeypatch):
+    monkeypatch.setenv(T.STRICT_ENV, "0")
+    batch = batch_of(3)
+    batch.insert(1, ("check", {"name": "bad", "no_such_field": 1}))
+    batch.insert(3, ("no_such_kind", {"count": 1}))
+    batch.insert(4, "not a pair")
+    assert T.emit_many(batch) is True
+    events = T.events(kind="check", limit=100)
+    assert [e["fields"].get("count") for e in events] == [0, None, 1, 2]
+    assert events[1]["fields"]["_dropped"] == 1  # the bad field is counted on its own record
+    lost = json.loads((tdir(home) / "dropped.json").read_text())
+    assert lost["unknown_kind"] == 2  # the unknown kind and the item that wasn't a pair
+
+
+def test_strict_mode_raises_for_a_bad_record_in_a_batch_and_writes_none_of_it(home, monkeypatch):
+    monkeypatch.setenv(T.STRICT_ENV, "1")
+    with pytest.raises(ValueError, match="no_such_field"):
+        T.emit_many(batch_of(2) + [("check", {"no_such_field": 1})])
+    assert T.events(limit=100) == []
+
+
+def test_a_batch_when_recording_is_off_writes_nothing(home):
+    (home / ".assistant").mkdir(exist_ok=True)
+    (home / ".assistant" / "config.json").write_text(json.dumps({"telemetry": {"enabled": False}}))
+    assert T.emit_many(batch_of(5)) is False
+    assert not tdir(home).exists()
+    (home / ".assistant" / "config.json").write_text("{not json")
+    assert T.emit_many(batch_of(5)) is False and not tdir(home).exists()
+
+
+def test_a_batch_that_misses_the_database_is_spooled_whole_and_the_drain_delivers_each_record_once(home, locked_db, monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(T, "_now", lambda: clock["t"])
+    attempts = []
+    real = T._run
+    monkeypatch.setattr(T, "_run", lambda work, deadline=None: attempts.append(1) or real(work, deadline))
+    writes = []
+    real_spool = T._spool_many
+    monkeypatch.setattr(T, "_spool_many", lambda records, deadline: writes.append(len(records)) or real_spool(records, deadline))
+    assert T.emit_many(batch_of(200)) is False
+    assert len(attempts) == 1 and len(spool_lines(home)) == 200 and writes == [200]  # one write for the batch
+    assert T.emit_many(batch_of(50, 200)) is False  # inside the window: straight to the spool
+    assert len(attempts) == 1 and len(spool_lines(home)) == 250 and writes == [200, 50]
+    locked_db.close()
+    assert T.maintain()["drained"] == 250
+    assert counts(home) == list(range(250))  # in order, each once
+    assert spool_lines(home) == []
+    clock["t"] += T.SPOOL_ONLY_SECONDS + 1
+    assert T.emit_many(batch_of(2, 300)) is True
+
+
+def test_a_batch_that_wont_fit_the_spool_is_dropped_whole_and_counted(home, locked_db, monkeypatch):
+    monkeypatch.setattr(T, "SPOOL_LIMIT_BYTES", 500)
+    assert T.emit_many(batch_of(20)) is False
+    assert spool_lines(home) == [] and json.loads((tdir(home) / "dropped.json").read_text())["spool_full"] == 20
+
+
+def test_a_batch_has_one_deadline_for_all_of_it(home, locked_db, monkeypatch):
+    monkeypatch.setattr(T, "EMIT_DEADLINE_SECONDS", 0)
+    started = time.monotonic()
+    T.emit_many(batch_of(100))
+    assert time.monotonic() - started < 5 and len(spool_lines(home)) in (0, 100)
+
+
+def test_emit_is_a_batch_of_one_and_a_batch_is_one_transaction(home, monkeypatch):
+    inserted, statements = [], []
+    real = T._insert_all
+
+    def watching(conn, rows):
+        inserted.append(len(rows))
+        statements.clear()
+        conn.set_trace_callback(statements.append)
+        return real(conn, rows)
+
+    monkeypatch.setattr(T, "_insert_all", watching)
+    assert T.emit("check", name="one") is True and T.emit_many(batch_of(3)) is True
+    assert inserted == [1, 3]
+    assert [s.split(" (")[0] for s in statements] == ["BEGIN IMMEDIATE"] + ["INSERT OR IGNORE INTO events"] * 3 + ["COMMIT"]

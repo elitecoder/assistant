@@ -845,7 +845,7 @@ CHECKS = (
     (
         'a failed Outlook calendar shows its own error and the rest still render',
         "work_queue/refresh.py",
-        'found = read_one(snap["status"], "Outlook calendar", outlook.events, doc["outlook"])',
+        'found = read_one(snap["status"], "Outlook calendar", records.fetching("outlook", outlook.events, trace),\n                         doc["outlook"])',
         'found = outlook.events(doc["outlook"])',
         'tests/test_work_queue_refresh.py::test_a_failed_outlook_calendar_shows_its_own_error_and_calendar_false_turns_it_off',
     ),
@@ -916,8 +916,8 @@ CHECKS = (
     (
         'the mode is saved with the sent row',
         'work_queue/server.py',
-        'queued[key] = {"id": td_id, "at": now(), "mode": how}',
-        'queued[key] = {"id": td_id, "at": now()}',
+        'queued[key] = {"id": td_id, "at": now(), "mode": how, "trace": trace}',
+        'queued[key] = {"id": td_id, "at": now(), "trace": trace}',
         'tests/test_work_queue_server.py::test_a_hands_off_send_creates_an_auto_dispatch_todo_with_the_next_id_and_finish_instructions',
     ),
     (
@@ -1859,8 +1859,8 @@ CHECKS = (
     (
         'the cache is saved even when triage breaks',
         'work_queue/triage.py',
-        '    finally:\n        for i in items:',
-        '    except ZeroDivisionError:\n        pass\n    if True:\n        for i in items:',
+        '    finally:\n        RUN_TRACE = ""\n        for i in items:',
+        '    except ZeroDivisionError:\n        pass\n    if True:\n        RUN_TRACE = ""\n        for i in items:',
         'tests/test_work_queue_triage.py::test_an_unexpected_triage_error_keeps_the_verdicts_already_paid_for',
     ),
     (
@@ -2013,7 +2013,7 @@ CHECKS = (
     (
         'a model command that is not installed books no cost',
         'work_queue/triage.py',
-        '    if result.rc == 127:\n        raise Stop(f"{provider} isn\'t installed, so there\'s no model to ask")\n',
+        '    if result.rc == 127:\n        raise Stop(f"{provider} isn\'t installed, so there\'s no model to ask", "no_model")\n',
         '',
         'tests/test_work_queue_triage.py::test_a_model_command_that_isnt_installed_books_no_cost',
     ),
@@ -2321,7 +2321,7 @@ CHECKS = (
     (
         'the split budget is checked before each half',
         'work_queue/triage.py',
-        '                if self.budget < 1:\n                    remember(half, {}, cache, batches)\n                    continue\n',
+        '                if self.budget < 1:\n                    self.reasons.update({i["hash"]: ("spend_limit", None) for i in half})\n                    remember(half, {}, cache, batches)\n                    continue\n',
         '',
         'tests/test_work_queue_triage.py::test_the_split_bound_holds_for_any_set_of_poisoned_rows',
     ),

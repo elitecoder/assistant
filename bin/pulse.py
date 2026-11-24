@@ -58,6 +58,7 @@ The bugs we built this for don't exist here:
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -222,6 +223,13 @@ OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT
 # Read once per pulse by main(); None outside a pulse.
 PULSE_PRO: bool | None = None
 PULSE_JOBS: dict[str, bool] | None = None
+# This pulse's trace id and the tasks it has dispatched, while main() runs (see _recorded_pulse).
+PULSE_TRACE = ""
+PULSE_DISPATCHED = 0
+PULSE_STAMPED = 0  # tasks this pulse gave their first trace id
+PULSE_RECORD_SECONDS = 60  # a pulse with nothing to show for itself writes its record only when it ran longer than this
+DISPATCH_REASON = ""  # the word for why the dispatch in hand didn't end well (see `_recorded_dispatch`)
+DISPATCH_CONFIRMED = None  # for a dispatch that went out: whether the prompt was seen to arrive
 
 
 def job_enabled(job: str) -> bool:
@@ -765,7 +773,8 @@ def call_triage_batch(events: list[dict], pulse_idx: int) -> dict[str, dict]:
             caller="triage", model=model, usage=usage,
             wall_ms=result.wall_ms, status="ok" if accepted else "failed",
             provider=provider,
-            error=metering.failure_reason(result.rc, result.stderr))
+            error=metering.failure_reason(result.rc, result.stderr),
+            trace=PULSE_TRACE)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("triage metering capture failed (ignored): %s", e)
 
@@ -852,6 +861,24 @@ def run_brief_step(pulse_idx: int) -> None:
         return
     if summary.get("built"):
         log.info("brief: %s", json.dumps(summary))
+
+
+def run_trace_step() -> None:
+    """Step 1.7b: stamp a trace id on every TODO that has none (todostore.stamp_missing_traces). Fenced: a broken
+    or unwritable TODO file costs this pulse's stamping, never the pulse."""
+    try:
+        src_dir = str(REPO / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from assistant import todostore  # noqa: PLC0415
+        stamped = todostore.stamp_missing_traces()
+    except Exception as e:  # noqa: BLE001 — trace ids must never break the pulse
+        log.warning("trace ids: could not stamp TODOs (ignored): %s", e)
+        return
+    global PULSE_STAMPED
+    PULSE_STAMPED += stamped
+    if stamped:
+        log.info("trace ids: stamped %d TODO(s)", stamped)
 
 
 def run_narrator_step(pulse_idx: int) -> None:
@@ -1700,7 +1727,8 @@ def run_observer_audit(ctxs_to_observe: list[dict],
             usage=usage or {"tokens_in": 0, "tokens_out": 0,
                             "cost_usd": 0.0, "source": "none"},
             wall_ms=0, status="ok" if verdicts_frontier else "failed",
-            provider=audit_provider, error="the model returned no verdicts")
+            provider=audit_provider, error="the model returned no verdicts",
+            trace=PULSE_TRACE)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("audit metering failed (ignored): %s", e)
     # Compare + ledger. A ws the frontier didn't judge (no line) is a FAILURE,
@@ -2181,6 +2209,83 @@ def _load_todo_item(todo_id: str) -> dict | None:
     return None
 
 
+def _record(name: str, *args, **kwargs):
+    """What `assistant.records.<name>` returns: one telemetry record, built there. The module is imported here, inside
+    the try, and is not one of run-pulse.py's start-up files: a broken one costs a record and never the pulse. In the
+    tests' strict mode a mistake in a record is raised."""
+    try:
+        from assistant import records  # noqa: PLC0415
+        return getattr(records, name)(*args, **kwargs)
+    except Exception:  # noqa: BLE001 — recording never breaks the pulse
+        if os.environ.get("ASSISTANT_TELEMETRY_STRICT") == "1" and "PYTEST_CURRENT_TEST" in os.environ:
+            raise
+        return None
+
+
+def _item_as_filed(todo_id: str) -> dict | None:
+    """The TODO as the file holds it now: for the dispatch record, which says what the file says."""
+    try:
+        data = json.loads(TODO_PATH.read_text())
+        return next((it for it in data["items"] if it.get("id") == todo_id), None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dispatch_failed(reason: str) -> None:
+    """Note why the dispatch in hand is ending as it is, for its record: one of telemetry.DISPATCH_REASON."""
+    global DISPATCH_REASON
+    DISPATCH_REASON = reason
+
+
+def _dispatch_confirmed(seen: bool) -> None:
+    """Note whether the prompt of the dispatch in hand was seen to arrive, for its record."""
+    global DISPATCH_CONFIRMED
+    DISPATCH_CONFIRMED = seen
+
+
+def _recorded_dispatch(dispatch):
+    """Record each attempt to dispatch a TODO, after it ends however it ends: the TODO's trace, the outcome, the
+    workspace and the new state as the file holds them, and how long it took. It changes nothing the attempt does."""
+    @functools.wraps(dispatch)
+    def wrapper(todo_id):
+        global PULSE_DISPATCHED, DISPATCH_REASON
+        began, before, ok, DISPATCH_REASON = time.monotonic(), _item_as_filed(todo_id), False, ""
+        try:
+            ok = dispatch(todo_id)
+            return ok
+        finally:
+            _record("dispatch", before, _item_as_filed(todo_id), bool(ok), began,
+                    DISPATCH_REASON or (None if ok else "other"), PULSE_TRACE, DISPATCH_CONFIRMED)
+            PULSE_DISPATCHED += bool(ok)
+    return wrapper
+
+
+def _recorded_pulse(main_fn):
+    """Record a pulse as one job run, with a trace of its own that its model calls carry: how long, whether it ended
+    well, and how many TODOs it dispatched. Only a pulse with something to show writes the record: it dispatched or
+    stamped a TODO, it failed, or it ran longer than PULSE_RECORD_SECONDS. An uneventful pulse writes nothing, since
+    the heartbeat file already shows the pulse is alive. A dry run records nothing."""
+    @functools.wraps(main_fn)
+    def wrapper():
+        global PULSE_TRACE, PULSE_DISPATCHED, PULSE_STAMPED
+        if "--dry-run" in sys.argv:
+            return main_fn()
+        began, PULSE_DISPATCHED, PULSE_STAMPED, ok, failure = time.monotonic(), 0, 0, False, None
+        PULSE_TRACE = _record("new_trace") or ""
+        try:
+            rc = main_fn()
+            ok = not rc
+            return rc
+        except Exception as exc:
+            failure = exc
+            raise
+        finally:
+            if (PULSE_DISPATCHED or PULSE_STAMPED or not ok or time.monotonic() - began > PULSE_RECORD_SECONDS):
+                _record("job_run", "pulse", PULSE_TRACE, "pulse", began, ok, PULSE_DISPATCHED, failure)
+            PULSE_TRACE = ""
+    return wrapper
+
+
 def _mark_todo_dispatched(todo_id: str, ws_ref: str) -> bool:
     """Stamp dispatchedAt + dispatchedWs on the TODO so it leaves bucket_b.
 
@@ -2454,6 +2559,7 @@ def _park_refused_dispatch(todo_id: str, ws_ref: str) -> bool:
     """The workspace exists and nothing may be typed into it. Stamp the TODO like a workspace that never got ready,
     so the next pulse doesn't make another one; the workspace is left for a person to close."""
     _dispatch_started.add(todo_id)
+    _dispatch_failed("typing_refused")
     if not _mark_todo_dispatched(todo_id, ws_ref):
         log.warning("dispatch %s: park stamp FAILED — TODO stays open and WILL be re-dispatched next pulse", todo_id)
     return False
@@ -2478,6 +2584,7 @@ def _dispatch_blocked_card(bucket_b: list) -> dict:
                       f"the record can be written."}
 
 
+@_recorded_dispatch
 def dispatch_todo(todo_id: str) -> bool:
     """Spawn a background cmux workspace for one TODO and deliver its prompt.
 
@@ -2499,12 +2606,14 @@ def dispatch_todo(todo_id: str) -> bool:
     item = _load_todo_item(todo_id)
     if item is None:
         log.warning("dispatch %s: not found in todo file", todo_id)
+        _dispatch_failed("other")
         return False
 
     # A task captured from a Slack reaction that isn't confirmed as the owner's waits for the owner's decision: it
     # starts only once auto-start is on, whoever calls this.
     if str(item.get("source") or "").startswith("slack-react:") and item.get("autoDispatch") is not True:
         log.warning("dispatch %s: a Slack capture not confirmed as the owner's — not starting it", todo_id)
+        _dispatch_failed("other")
         return False
 
     # cmux must be up.
@@ -2512,6 +2621,7 @@ def dispatch_todo(todo_id: str) -> bool:
     if rc != 0:
         log.warning("dispatch %s: cmux not running — skipping (ping rc=%s bin=%s stderr=%r)",
                     todo_id, rc, CMUX_BIN, (_perr or "")[:300])
+        _dispatch_failed("session_tool_down")
         return False
 
     # Before anything is started: if Assistant can't record what it types, a workspace made now could never be typed
@@ -2520,6 +2630,7 @@ def dispatch_todo(todo_id: str) -> bool:
         global _dispatch_blocked
         _dispatch_blocked = _dispatch_blocked or f"unrecorded: {session_effects.UNRECORDED}"
         log.warning("dispatch %s: %s — nothing started", todo_id, session_effects.UNRECORDED)
+        _dispatch_failed("typing_refused")
         return False
 
     # 1. Stage the prompt on disk. 7-day sweep, then a per-todo stamped file.
@@ -2566,10 +2677,12 @@ def dispatch_todo(todo_id: str) -> bool:
     )
     if rc != 0:
         log.warning("dispatch %s: new-workspace failed rc=%d: %s", todo_id, rc, err.strip())
+        _dispatch_failed("no_workspace")
         return False
     m = re.search(r"workspace:\d+", out)
     if not m:
         log.warning("dispatch %s: no workspace ref in: %s", todo_id, out.strip())
+        _dispatch_failed("no_workspace")
         return False
     ws_ref = m.group(0)
 
@@ -2577,6 +2690,7 @@ def dispatch_todo(todo_id: str) -> bool:
     sm = re.search(r"surface:\d+", out)
     if not sm:
         log.warning("dispatch %s: no surface for %s", todo_id, ws_ref)
+        _dispatch_failed("no_surface")
         return False
     surface_ref = sm.group(0)
 
@@ -2640,6 +2754,7 @@ def dispatch_todo(todo_id: str) -> bool:
         if not _mark_todo_dispatched(todo_id, ws_ref):
             log.warning("dispatch %s: never-ready park stamp FAILED — TODO stays "
                         "open and WILL be re-dispatched next pulse", todo_id)
+        _dispatch_failed("session_not_ready")
         return False
 
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
@@ -2671,6 +2786,7 @@ def dispatch_todo(todo_id: str) -> bool:
         log.warning("dispatch %s: spawned %s + sent prompt but TODO stamp failed — "
                     "will re-dispatch next pulse (prompt staged at %s)",
                     todo_id, ws_ref, prompt_file)
+        _dispatch_failed("todo_not_marked")
         return False
 
     # 7. Confirm submission via the transcript (authoritative, no screen-scraping).
@@ -2722,6 +2838,7 @@ def dispatch_todo(todo_id: str) -> bool:
 
     typing.confirmed = submitted
     typing.finish()
+    _dispatch_confirmed(submitted)
     if not submitted:
         log.warning("dispatch %s: stamped to %s but submission unconfirmed within window "
                     "(prompt staged at %s) — not re-dispatching; check the workspace",
@@ -2771,6 +2888,7 @@ def run_lesson_extractor(pulse_idx: int) -> None:
 
 # ─── main ───────────────────────────────────────────────────────────────────
 
+@_recorded_pulse
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -2842,6 +2960,12 @@ def main() -> int:
     #      pulse; NO LLM. Fenced, never load-bearing (see run_planner_step).
     if not dry_run:
         run_planner_step(pulse_idx)
+
+    # 1.7b. Trace ids: give every open TODO that arrived without one (written by
+    #       hand, or before ids existed) its id. Runs after the planner and before
+    #       dispatch; NO LLM. Fenced, never load-bearing (see run_trace_step).
+    if not dry_run:
+        run_trace_step()
 
     # 1.8. Strategist decision-context pre-research (Keel M6): on IDLE capacity
     #      only, pre-research queued OPEN decisions into decision-context/*.md

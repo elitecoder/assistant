@@ -350,6 +350,48 @@ CHECKS = (
         '        log.warning("dispatch %s: typing into',
         P + "test_keys_that_cant_be_made_for_the_instruction_close_the_intent_as_failed",
     ),
+    (
+        "a dispatch parked because typing was refused says typing_refused",
+        PULSE,
+        '    _dispatch_started.add(todo_id)\n    _dispatch_failed("typing_refused")\n',
+        "    _dispatch_started.add(todo_id)\n",
+        "tests/test_session_effects_records.py::test_a_dispatch_whose_typing_is_refused_says_typing_refused_and_the_task_is_parked_unless_nothing_started",
+    ),
+    (
+        "a dispatch that started nothing because it can't record says typing_refused",
+        PULSE,
+        '        _dispatch_failed("typing_refused")\n        return False',
+        "        return False",
+        "tests/test_session_effects_records.py::test_a_dispatch_whose_typing_is_refused_says_typing_refused_and_the_task_is_parked_unless_nothing_started",
+    ),
+    (
+        "a dispatch for a task that isn't in the file still says why",
+        PULSE,
+        '        log.warning("dispatch %s: not found in todo file", todo_id)\n        _dispatch_failed("other")\n',
+        '        log.warning("dispatch %s: not found in todo file", todo_id)\n',
+        "tests/test_session_effects_records.py::test_every_return_in_dispatch_todo_says_why_or_says_it_went_out",
+    ),
+    (
+        "a Slack capture that isn't confirmed as the owner's says why it wasn't started",
+        PULSE,
+        '        _dispatch_failed("other")\n        return False\n\n    # cmux must be up.',
+        "        return False\n\n    # cmux must be up.",
+        "tests/test_session_effects_records.py::test_every_return_in_dispatch_todo_says_why_or_says_it_went_out",
+    ),
+    (
+        "telemetry accepts typing_refused as a reason a dispatch failed",
+        "src/assistant/telemetry.py",
+        '                   "typing_refused", "other")',
+        '                   "other")',
+        "tests/test_session_effects_records.py::test_a_dispatch_reason_of_typing_refused_is_accepted_and_free_text_still_is_not",
+    ),
+    (
+        "a typing carries the trace of its task, or the stand-in the task's own records use",
+        SE,
+        "    return todostore.trace_of(item)",
+        '    return item.get("trace") or ""',
+        "tests/test_session_effects_records.py::test_a_task_without_a_trace_of_its_own_shares_its_stand_in",
+    ),
     # --- the dashboard ----------------------------------------------------------------------------------------
     (
         "the Tasks tab shows the card for dispatch that can't record what it types",

@@ -251,7 +251,7 @@ If `--keep-todo` is off:
 ```bash
 if [ "$KEEP_TODO" = "0" ]; then
   python3 <<PYEOF
-import json, os
+import json, os, secrets
 from datetime import datetime, timezone
 PATH = os.path.expanduser("~/.claude/assistant-todo.json")
 LEDGER = "$LEDGER"
@@ -291,6 +291,7 @@ else:
         "completedAt": now,
         "doneBy": "cleanup:$LEDGER_ID",
         "autoDispatch": False,
+        "trace": "tr-" + secrets.token_hex(8),
         "dispatchedWs": "$WS_REF",
         "detail": ("Reconstructed at cleanup — no matching TODO existed. "
                    "branch=$BRANCH cwd=$CWD_REAL"),
