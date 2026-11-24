@@ -140,9 +140,9 @@ class Unavailable(Exception):
 
 class Stop(Unavailable):
     """No more model calls this refresh: a budget is used up, the time limit is reached, or there's no model.
-    `reason` is the word a record gives for it: `budget`, `time_budget` or `no_model`."""
+    `reason` is the word a record gives for it: `spend_limit`, `out_of_time` or `no_model`."""
 
-    def __init__(self, message: str, reason: str = "budget"):
+    def __init__(self, message: str, reason: str = "spend_limit"):
         super().__init__(message)
         self.reason = reason
 
@@ -550,15 +550,34 @@ def record_verdicts(batch: list[dict], verdicts: dict[int, dict]) -> None:
             verdict_record(item, traced[item["link"]], verdicts[j], CALL_NO, RUN_TRACE, ROW_KEYS)
 
 
+def noted_path():
+    return config.data_dir() / "unsorted-noted.json"
+
+
 def record_unsorted(work: "Triage", cache: dict, run_trace: str, keys: dict) -> None:
     """One `unsorted` record for each row this run put to the model that ends it with no verdict, and why. A row the
     run never reached because it was over the cap (MAX_ROWS) isn't put to the model and has no record: it waits for
-    the next refresh and is counted in the page's `waiting`."""
+    the next refresh and is counted in the page's `waiting`.
+
+    A run that stops early (a spend limit, the time limit, no model) caches nothing for its rows, so each refresh
+    that day would put them to the model again and write the same record again. The rows noted today, and why, are
+    kept in unsorted-noted.json beside the other Work queue files: a row is recorded at most once a day for each
+    reason, and a different reason the same day is recorded. It is read and written once a run, and a file that is
+    missing or can't be read just means every row is recorded."""
     left = [i for i in work.selected if (cache.get(i["hash"]) or {}).get("verdict") is None]
+    if not left:
+        return
     traced = traces.lookup_many([i["link"] for i in left])
+    saved = config.read_json(noted_path(), {})
+    noted = saved.get("rows") if isinstance(saved, dict) and saved.get("day") == today() and isinstance(saved.get("rows"), dict) else {}
     for item in left:
         reason, batch = work.reasons.get(item["hash"]) or (work.stopped or "call_failed", None)
+        pointer = pointers.row_pointer((keys or {}).get(item["link"], item["link"]))
+        if reason in (noted.get(pointer) or []):
+            continue
         verdict_record(item, traced[item["link"]], {"disposition": "unsorted", "reason": reason}, batch, run_trace, keys)
+        noted[pointer] = [*(noted.get(pointer) or []), reason]
+    config.write_json(noted_path(), {"day": today(), "rows": noted})
 
 
 class Triage:
@@ -579,7 +598,7 @@ class Triage:
     def ask(self, prompt: str) -> str:
         left = int(self.deadline - self.clock())
         if left <= 0:
-            raise Stop(f"the model took longer than {DEADLINE // 60} minutes in all", "time_budget")
+            raise Stop(f"the model took longer than {DEADLINE // 60} minutes in all", "out_of_time")
         rid = reserve(prompt)
         global CALL_NO
         CALL_NO += 1
@@ -628,7 +647,7 @@ class Triage:
         prompt = fenced(ROWS_RUBRIC, payload)
         if afford and not fits(prompt):
             self.budget = 0
-            self.reasons.update({i["hash"]: ("budget", None) for i in batch})
+            self.reasons.update({i["hash"]: ("spend_limit", None) for i in batch})
             remember(batch, {}, cache, batches)
             return None
         def shaped(text):
@@ -639,7 +658,7 @@ class Triage:
             self.reasons.update({i["hash"]: (self.reason, CALL_NO) for i in batch})
         else:
             remember(batch, verdicts, cache, batches)
-            self.reasons.update({i["hash"]: ("left_out", CALL_NO) if j not in verdicts else None for j, i in enumerate(batch)})
+            self.reasons.update({i["hash"]: ("not_answered", CALL_NO) if j not in verdicts else None for j, i in enumerate(batch)})
             records.guard(record_verdicts, batch, verdicts)
         return verdicts is not None
 
@@ -652,12 +671,12 @@ class Triage:
             chunk = queue.pop(0)
             if len(chunk) == 1 or self.budget < 1:
                 if len(chunk) > 1:
-                    self.reasons.update({i["hash"]: ("budget", None) for i in chunk})
+                    self.reasons.update({i["hash"]: ("spend_limit", None) for i in chunk})
                 remember(chunk, {}, cache, batches)
                 continue
             for half in (chunk[:len(chunk) // 2], chunk[len(chunk) // 2:]):
                 if self.budget < 1:
-                    self.reasons.update({i["hash"]: ("budget", None) for i in half})
+                    self.reasons.update({i["hash"]: ("spend_limit", None) for i in half})
                     remember(half, {}, cache, batches)
                     continue
                 self.budget -= 1
@@ -860,7 +879,8 @@ def call_model(prompt: str, timeout: int) -> str:
         metering.append_cost_row(caller=FEATURE, model=model, usage=usage, wall_ms=result.wall_ms,
                                  status="ok" if result.usable else "failed", provider=provider,
                                  error=metering.failure_reason(result.rc, result.stderr), trace=RUN_TRACE,
-                                 batch=CALL_NO or None)
+                                 batch=CALL_NO or None,
+                                 failure_kind="timeout" if result.rc == 124 else "bad_answer" if result.rc == 0 else None)
     except OSError as exc:
         print(f"Couldn't record the model's cost: {exc}", file=sys.stderr)
     if result.rc == 124:

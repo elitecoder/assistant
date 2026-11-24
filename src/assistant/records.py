@@ -152,7 +152,7 @@ def tasks_stamped(items) -> None:
     guard(_tasks_stamped, items)
 
 
-def _dispatch(before, after, ok: bool, began: float, reason=None, run_trace: str = "") -> None:
+def _dispatch(before, after, ok: bool, began: float, reason=None, run_trace: str = "", confirmed=None) -> None:
     item = after if isinstance(after, dict) and after else before
     if not isinstance(item, dict):
         return
@@ -161,16 +161,18 @@ def _dispatch(before, after, ok: bool, began: float, reason=None, run_trace: str
     emit("dispatch", task_trace(item), task_id(item), "pulse", outcome="done" if ok else "failed", ok=ok,
          workspace=workspace if moved and isinstance(workspace, str) and _WORKSPACE.fullmatch(workspace) else None,
          mode=one_of(item.get("workQueueMode"), "SEND_MODE"), ms=ms_since(began),
-         reason=one_of(reason, "DISPATCH_REASON"), run_trace=run_trace or None)
+         reason=None if ok else one_of(reason, "DISPATCH_REASON"), run_trace=run_trace or None,
+         confirmed=confirmed if ok and isinstance(confirmed, bool) else None)
     if moved and after.get("status") == "in-progress":
         _task(after, "in-progress", "pulse", before.get("status"))
 
 
-def dispatch(before, after, ok: bool, began: float, reason=None, run_trace: str = "") -> None:
+def dispatch(before, after, ok: bool, began: float, reason=None, run_trace: str = "", confirmed=None) -> None:
     """A task was dispatched (or the attempt failed). `before` and `after` are the task as the file held it before
     and after, so the workspace and the new state are what the file says, not what the code meant. `reason` is the
-    word for what stopped a dispatch (`DISPATCH_REASON`), `run_trace` the pulse's."""
-    guard(_dispatch, before, after, ok, began, reason, run_trace)
+    word for what stopped a dispatch (`DISPATCH_REASON`, only when it failed), `run_trace` the pulse's, and
+    `confirmed` whether a dispatch that went out was seen to arrive."""
+    guard(_dispatch, before, after, ok, began, reason, run_trace, confirmed)
 
 
 def _check(item, name: str, component: str = "work-queue") -> None:
@@ -245,7 +247,10 @@ def fetching(source: str, read, trace: str):
     return recorded
 
 
-def _model_call(caller: str, model, status: str, usage: dict, wall_ms, trace: str, error, batch=None) -> None:
+MODEL_FAILURE_KINDS = {"timed out": "timeout", "not installed": "tool_missing", "exit code 0": "bad_answer"}
+
+
+def _model_call(caller: str, model, status: str, usage: dict, wall_ms, trace: str, error, batch=None, kind=None) -> None:
     ok = status == "ok"
     model = model if isinstance(model, str) else ""
     tier = next((tier for word, tier in TIERS if word in model), None)
@@ -255,13 +260,18 @@ def _model_call(caller: str, model, status: str, usage: dict, wall_ms, trace: st
          outcome="done" if ok else ("timeout" if word == "timeout" else "failed"), ok=ok,
          tokens_in=int(usage.get("tokens_in") or 0), tokens_out=int(usage.get("tokens_out") or 0),
          cost_usd=float(usage.get("cost_usd") or 0.0), ms=int(wall_ms), error=word,
-         batch=batch if isinstance(batch, int) and not isinstance(batch, bool) and batch > 0 else None)
+         batch=batch if isinstance(batch, int) and not isinstance(batch, bool) and batch > 0 else None,
+         reason=None if ok else one_of(kind or MODEL_FAILURE_KINDS.get(error), "SOURCE_REASON") or "other")
 
 
-def model_call(caller: str, model, status: str, usage: dict, wall_ms, trace: str = "", error=None, batch=None) -> None:
+def model_call(caller: str, model, status: str, usage: dict, wall_ms, trace: str = "", error=None, batch=None,
+               kind=None) -> None:
     """A model call, as the spend row has it: the same estimate of cost, for a call that failed too. The error is a
-    word from a short list, never the model's or the tool's text. `batch` is which of the run's calls this was."""
-    guard(_model_call, caller, model, status, usage, wall_ms, trace, error, batch)
+    word from a short list, never the model's or the tool's text. `batch` is which of the run's calls this was.
+    A failed call's `reason` is `kind` when the caller knows the kind of failure without reading the tool's output
+    (it timed out, the tool is missing, it answered with something unusable), else `other`: a call that failed
+    because it wasn't signed in or was rate limited can only be told apart by reading that output, which isn't done."""
+    guard(_model_call, caller, model, status, usage, wall_ms, trace, error, batch, kind)
 
 
 def _effect_finished(effect, outcome: str) -> None:

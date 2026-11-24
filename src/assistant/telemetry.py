@@ -77,9 +77,8 @@ GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
 # Why a source couldn't be read (work_queue/tools.py, the Slack client), why a row came back from the model with no
 # verdict (work_queue/triage.py), and why a dispatch didn't end well (bin/pulse.py `dispatch_todo`).
 SOURCE_REASON = ("not_signed_in", "tool_missing", "timeout", "bad_answer", "busy", "other")
-UNSORTED_REASON = ("call_failed", "bad_answer", "left_out", "time_budget", "budget", "no_model")
-DISPATCH_REASON = ("session_tool_down", "no_workspace", "no_surface", "not_ready", "stamp_failed",
-                   "unconfirmed", "other")
+UNSORTED_REASON = ("call_failed", "bad_answer", "not_answered", "out_of_time", "spend_limit", "no_model")
+DISPATCH_REASON = ("session_tool_down", "no_workspace", "no_surface", "session_not_ready", "todo_not_marked", "other")
 # What the owner did (feedback.signal), why (reason_code), where, and on what kind of thing.
 SIGNAL = ("done", "drop", "snooze", "undo", "send", "send_handsoff", "approve", "keep", "archive", "mark_read",
           "used_draft", "kept_result", "thumbs_down", "tell", "retract")
@@ -139,6 +138,7 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
         "ms": INT,
         "error": ERROR,
         "retries": INT,
+        "reason": SOURCE_REASON,  # only on a call that failed: the same words a source fetch uses
         "batch": INT,  # which of the run's model calls this was (the `triage_verdict` that came of it has the same)
     },
     "task": {
@@ -151,7 +151,8 @@ KINDS = types.MappingProxyType({name: types.MappingProxyType(spec) for name, spe
     "dispatch": {
         "outcome": OUTCOME,
         "ok": BOOL,
-        "reason": DISPATCH_REASON,
+        "reason": DISPATCH_REASON,  # only on a dispatch that failed (`ok` false)
+        "confirmed": BOOL,  # on a dispatch that went out: whether the code saw the prompt arrive
         "run_trace": ID,  # the pulse's trace
         "workspace": ID,
         "mode": SEND_MODE,

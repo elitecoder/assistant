@@ -294,6 +294,34 @@ def test_a_failed_model_call_is_recorded_with_a_word_for_its_error_never_its_tex
     assert error not in json.dumps(call)
 
 
+@pytest.mark.parametrize("error, kind, reason", [("timed out", None, "timeout"), ("not installed", None, "tool_missing"),
+                                                  ("exit code 0", None, "bad_answer"), ("exit code 1", None, "other"),
+                                                  ("a message of the tool's own", None, "other"),
+                                                  ("a message of the tool's own", "bad_answer", "bad_answer"),
+                                                  ("exit code 7", "timeout", "timeout")])
+def test_a_failed_model_call_says_what_kind_of_failure_it_was_when_the_code_knows(wq, error, kind, reason):
+    meter(status="failed", error=error, failure_kind=kind)
+    assert of_kind("model_call")[0]["fields"]["reason"] == reason
+
+
+def test_a_model_call_that_worked_has_no_reason(wq):
+    meter(failure_kind="timeout")
+    assert "reason" not in of_kind("model_call")[0]["fields"]
+
+
+@pytest.mark.parametrize("script, reason", [("echo 'rate limited, try later' >&2\nexit 1", "other"), ("echo 'not json at all'\nexit 0", "bad_answer")])
+def test_the_work_queues_failed_model_call_says_what_it_can_tell_without_reading_the_tools_words(wq, monkeypatch, script, reason):
+    two_rows(wq)
+    exe = wq.home / ".local/bin/claude"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text("#!/bin/sh\ncat >/dev/null\n" + script + "\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(triage, "call_model", REAL_CALL)
+    refresh.run(now=NOW)
+    calls = of_kind("model_call")
+    assert calls and {c["fields"]["reason"] for c in calls} == {reason} and "rate limited" not in json.dumps(calls)
+
+
 @pytest.mark.parametrize("caller, purpose", [("work_queue", "triage"), ("triage", "triage"), ("observer-audit", "observer"),
                                               ("strategist", "strategist"), ("narrator", "narrate"), ("lessons", "lesson"),
                                               ("slack_focus", "other")])
@@ -468,7 +496,8 @@ def test_a_dispatch_records_its_outcome_the_workspace_and_the_new_state(wq, monk
     assert (dispatched["kind"], dispatched["subject"], dispatched["component"]) == ("dispatch", "td-1", "pulse")
     assert dispatched["fields"]["outcome"] == "done" and dispatched["fields"]["ok"] is True
     assert dispatched["fields"]["workspace"] == "workspace:9" and dispatched["fields"]["mode"] == "assist"
-    assert dispatched["fields"]["reason"] == "unconfirmed"  # it went through, but nothing showed the prompt arrived
+    assert dispatched["fields"]["confirmed"] is False  # it went out, but nothing showed the prompt arrive
+    assert "reason" not in dispatched["fields"] and dispatched["fields"]["ok"] is True
     assert isinstance(dispatched["fields"]["ms"], int)
     assert (started["kind"], started["fields"]) == ("task", {"state": "in-progress", "prev_state": "open", "mode": "assist"})
     assert pulse.PULSE_DISPATCHED == 1
@@ -997,7 +1026,7 @@ def test_a_row_the_answer_left_out_is_unsorted_and_its_neighbours_are_not(wq):
     wq.sources({"github": {"skip_authors": []}})
     refresh.run(now=NOW, model=Model(rows=lambda items: answered(items, 3)))
     [left] = unsorted_records()
-    assert left["fields"]["reason"] == "left_out" and len(of_kind("triage_verdict", verdict="you")) == 3
+    assert left["fields"]["reason"] == "not_answered" and len(of_kind("triage_verdict", verdict="you")) == 3
 
 
 def test_a_row_that_a_split_call_sorts_after_its_batch_failed_is_not_unsorted(wq):
@@ -1011,7 +1040,7 @@ def test_a_row_that_a_split_call_sorts_after_its_batch_failed_is_not_unsorted(wq
     assert unsorted_records() == [] and len(of_kind("triage_verdict", verdict="you")) == 2
 
 
-@pytest.mark.parametrize("how, reason", [("time", "time_budget"), ("budget", "budget"), ("no model", "no_model")])
+@pytest.mark.parametrize("how, reason", [("time", "out_of_time"), ("budget", "spend_limit"), ("no model", "no_model")])
 def test_rows_a_run_stopped_before_sorting_are_unsorted_for_the_reason_it_stopped(wq, monkeypatch, how, reason):
     two_rows(wq)
     model = Model()
@@ -1037,7 +1066,7 @@ def test_a_split_that_cant_afford_another_call_leaves_its_rows_unsorted_for_the_
     two_rows(wq)
     monkeypatch.setattr(triage, "fits", lambda prompt: False)
     refresh.run(now=NOW, model=Model(rows=raises("down")))
-    assert {e["fields"]["reason"] for e in unsorted_records()} == {"budget"}
+    assert {e["fields"]["reason"] for e in unsorted_records()} == {"spend_limit"}
 
 
 def test_rows_over_the_cap_are_not_put_to_the_model_and_have_no_record_but_the_page_counts_them_as_waiting(wq, monkeypatch):
@@ -1097,15 +1126,15 @@ def test_a_successful_fetch_has_no_reason(wq):
 
 @pytest.mark.parametrize("kwargs, reason", [
     ({"ping_ok": False}, "session_tool_down"), ({"fault": "new-workspace"}, "no_workspace"),
-    ({"fault": "no-ref"}, "no_workspace"), ({"fault": "no-surface"}, "no_surface"), ({"screen": ""}, "not_ready"),
-    ({"stamps": False}, "stamp_failed")])
+    ({"fault": "no-ref"}, "no_workspace"), ({"fault": "no-surface"}, "no_surface"), ({"screen": ""}, "session_not_ready"),
+    ({"stamps": False}, "todo_not_marked")])
 def test_a_dispatch_that_fails_says_which_step_refused(wq, monkeypatch, kwargs, reason):
     sent_task(wq)
     _, ok, _ = dispatch(monkeypatch, "td-1", pulse_trace=RUN, **kwargs)
     assert ok is False
     dispatched = [e for e in trail(OWN) if e["kind"] == "dispatch"][0]
     assert dispatched["fields"]["reason"] == reason and dispatched["fields"]["run_trace"] == RUN
-    assert dispatched["fields"]["outcome"] == "failed"
+    assert dispatched["fields"]["outcome"] == "failed" and "confirmed" not in dispatched["fields"]
 
 
 def test_a_dispatch_that_stops_for_an_unexpected_error_says_other_and_one_that_works_says_nothing_more(wq, monkeypatch):
@@ -1203,3 +1232,103 @@ def test_the_record_module_imports_only_the_standard_library_when_it_loads_and_r
     later = {a.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module == "assistant"
              for a in node.names}
     assert {"telemetry", "pointers", "todostore"} <= later
+
+
+# ─── an unsorted row is recorded once a day for each reason ──────────────────
+
+def stopped_by(monkeypatch, how: str):
+    if how == "time":
+        monkeypatch.setattr(triage, "DEADLINE", 0)
+    elif how == "budget":
+        monkeypatch.setattr(triage, "daily_cap", lambda: 0.0)
+
+
+def test_rows_a_run_stopped_before_sorting_are_recorded_once_a_day_however_often_you_refresh(wq, monkeypatch):
+    day = {"d": "2026-11-20"}
+    monkeypatch.setattr(triage, "today", lambda: day["d"])
+    two_rows(wq)
+    stopped_by(monkeypatch, "budget")
+    for _ in range(3):
+        refresh.run(now=NOW, model=Model())
+    assert len(unsorted_records()) == 2  # not 6
+    saved = json.loads(triage.noted_path().read_text())
+    assert saved["day"] == "2026-11-20" and sorted(len(v) for v in saved["rows"].values()) == [1, 1]
+    stopped_by(monkeypatch, "time")  # another reason the same day is recorded, once
+    for _ in range(2):
+        refresh.run(now=NOW, model=Model())
+    assert sorted(e["fields"]["reason"] for e in unsorted_records()) == ["out_of_time"] * 2 + ["spend_limit"] * 2
+    monkeypatch.setattr(triage, "DEADLINE", 600)  # back to the first reason: already recorded, so not again
+    refresh.run(now=NOW, model=Model())
+    assert len(unsorted_records()) == 4
+    day["d"] = "2026-11-21"  # the next day the same rows are recorded again
+    refresh.run(now=NOW, model=Model())
+    assert len(unsorted_records()) == 6
+    assert json.loads(triage.noted_path().read_text())["day"] == "2026-11-21"
+
+
+def test_a_note_file_that_cant_be_read_costs_a_repeat_not_the_record(wq, monkeypatch):
+    two_rows(wq)
+    stopped_by(monkeypatch, "budget")
+    refresh.run(now=NOW, model=Model())
+    triage.noted_path().write_text("not json")
+    refresh.run(now=NOW, model=Model())
+    triage.noted_path().write_text(json.dumps({"day": triage.today(), "rows": "nonsense"}))
+    refresh.run(now=NOW, model=Model())
+    assert len(unsorted_records()) == 6
+
+
+def test_a_run_with_nothing_unsorted_writes_no_note_file(wq):
+    source_rows(wq, None)
+    refresh.run(now=NOW, model=Model())
+    assert not triage.noted_path().exists()
+
+
+# ─── the spool window closes when the upkeep reaches the database; a pulse starts from nothing ──
+
+def test_an_upkeep_that_reaches_the_database_closes_the_spool_window(wq, monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(telemetry, "_now", lambda: clock["t"])
+    telemetry.emit("task", OWN, "td-1", "cli", state="open")
+    with held_database():
+        assert telemetry.emit("task", OWN, "td-2", "cli", state="open") is False
+    assert telemetry._spool_only_until  # the window is open: the next record would go straight to the spool
+    assert telemetry.maintain()["ok"] is True
+    assert telemetry._spool_only_until == {}
+    assert telemetry.emit("task", OWN, "td-3", "cli", state="done") is True  # it reached the database, inside the 30 seconds
+
+
+def test_the_count_of_stamped_tasks_starts_again_with_each_pulse(wq, monkeypatch):
+    pulse, readings = pulse_with_a_clock(monkeypatch)
+    readings[:] = [100.0, 200.0, 201.0]  # the first pulse reads the clock once (it has something to show), the second twice
+
+    def first():
+        pulse.PULSE_STAMPED += 3
+        return 0
+
+    pulse._recorded_pulse(first)()
+    assert len(of_kind("job_run", job="pulse")) == 1
+    pulse._recorded_pulse(lambda: 0)()  # nothing to do this time
+    assert len(of_kind("job_run", job="pulse")) == 1 and pulse.PULSE_STAMPED == 0
+
+
+def test_a_dispatch_the_code_saw_arrive_says_so(wq, monkeypatch):
+    sent_task(wq)
+    pulse = load_script("pulse_work_records_seen", "pulse.py")
+    monkeypatch.setattr(pulse, "run", lambda cmd, *a, **k: (0, "", ""))
+
+    def arrives(todo_id):
+        pulse._dispatch_confirmed(True)
+        wq.todo.write_text(wq.todo.read_text().replace('"open"', '"in-progress"').replace('"trace"', '"dispatchedWs": "workspace:4", "trace"'))
+        return True
+
+    pulse._recorded_dispatch(arrives)("td-1")
+    [dispatched, _] = trail(OWN)
+    assert dispatched["fields"]["confirmed"] is True and "reason" not in dispatched["fields"]
+
+
+def test_a_dispatch_that_didnt_go_out_never_says_whether_the_prompt_arrived(wq):
+    records.dispatch({"id": "td-1", "trace": OWN}, {"id": "td-1", "trace": OWN}, False, time.monotonic(), "no_surface", "", True)
+    [dispatched] = of_kind("dispatch")
+    assert dispatched["fields"]["reason"] == "no_surface" and "confirmed" not in dispatched["fields"]
+    records.dispatch({"id": "td-1", "trace": OWN}, {"id": "td-1", "trace": OWN}, True, time.monotonic(), "no_surface", "", True)
+    assert of_kind("dispatch")[1]["fields"].get("reason") is None and of_kind("dispatch")[1]["fields"]["confirmed"] is True

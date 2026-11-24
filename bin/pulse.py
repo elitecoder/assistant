@@ -228,6 +228,7 @@ PULSE_DISPATCHED = 0
 PULSE_STAMPED = 0  # tasks this pulse gave their first trace id
 PULSE_RECORD_SECONDS = 60  # a pulse with nothing to show for itself writes its record only when it ran longer than this
 DISPATCH_REASON = ""  # the word for why the dispatch in hand didn't end well (see `_recorded_dispatch`)
+DISPATCH_CONFIRMED = None  # for a dispatch that went out: whether the prompt was seen to arrive
 
 
 def job_enabled(job: str) -> bool:
@@ -2226,6 +2227,12 @@ def _dispatch_failed(reason: str) -> None:
     DISPATCH_REASON = reason
 
 
+def _dispatch_confirmed(seen: bool) -> None:
+    """Note whether the prompt of the dispatch in hand was seen to arrive, for its record."""
+    global DISPATCH_CONFIRMED
+    DISPATCH_CONFIRMED = seen
+
+
 def _recorded_dispatch(dispatch):
     """Record each attempt to dispatch a TODO, after it ends however it ends: the TODO's trace, the outcome, the
     workspace and the new state as the file holds them, and how long it took. It changes nothing the attempt does."""
@@ -2238,7 +2245,7 @@ def _recorded_dispatch(dispatch):
             return ok
         finally:
             _record("dispatch", before, _item_as_filed(todo_id), bool(ok), began,
-                    DISPATCH_REASON or (None if ok else "other"), PULSE_TRACE)
+                    DISPATCH_REASON or (None if ok else "other"), PULSE_TRACE, DISPATCH_CONFIRMED)
             PULSE_DISPATCHED += bool(ok)
     return wrapper
 
@@ -2607,7 +2614,7 @@ def dispatch_todo(todo_id: str) -> bool:
         if not _mark_todo_dispatched(todo_id, ws_ref):
             log.warning("dispatch %s: never-ready park stamp FAILED — TODO stays "
                         "open and WILL be re-dispatched next pulse", todo_id)
-        _dispatch_failed("not_ready")
+        _dispatch_failed("session_not_ready")
         return False
 
     # 6. Deliver by reference. Strip the trailing newline (send_text streams
@@ -2631,7 +2638,7 @@ def dispatch_todo(todo_id: str) -> bool:
         log.warning("dispatch %s: spawned %s + sent prompt but TODO stamp failed — "
                     "will re-dispatch next pulse (prompt staged at %s)",
                     todo_id, ws_ref, prompt_file)
-        _dispatch_failed("stamp_failed")
+        _dispatch_failed("todo_not_marked")
         return False
 
     # 7. Confirm submission via the transcript (authoritative, no screen-scraping).
@@ -2681,8 +2688,8 @@ def dispatch_todo(todo_id: str) -> bool:
             break
         time.sleep(1)
 
+    _dispatch_confirmed(submitted)
     if not submitted:
-        _dispatch_failed("unconfirmed")
         log.warning("dispatch %s: stamped to %s but submission unconfirmed within window "
                     "(prompt staged at %s) — not re-dispatching; check the workspace",
                     todo_id, ws_ref, prompt_file)
