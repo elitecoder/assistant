@@ -40,6 +40,8 @@ def _layout(tmp: Path, pulse_body: str, model_tiers: str = "TIERS = {}\n") -> Pa
     (tmp / "src/assistant/model_tiers.py").write_text(model_tiers)
     (tmp / "src/assistant/transcript_slice.py").write_text("")
     (tmp / "src/assistant/redact.py").write_text("")
+    (tmp / "src/assistant/pointers.py").write_text("")
+    (tmp / "src/assistant/telemetry.py").write_text("")
     (tmp / "src/assistant/mode.py").write_text("")
     return tmp / "bin/run-pulse.py"
 
@@ -165,6 +167,17 @@ def test_startup_files_match_pulse_module_level_imports():
             assert module == "assistant", f"add {module} to run-pulse.py STARTUP_FILES"
             imported.add("src/assistant/__init__.py")
             imported.update(f"src/assistant/{alias.name}.py" for alias in node.names)
+    # A module pulse imports may itself import another of the package's modules (telemetry imports pointers).
+    pending = [name for name in imported if name != "bin/pulse.py"]
+    while pending:
+        tree = ast.parse((REPO / pending.pop()).read_text())
+        for node in _module_level_imports(tree.body):
+            if isinstance(node, ast.ImportFrom) and node.module == "assistant":
+                for alias in node.names:
+                    path = f"src/assistant/{alias.name}.py"
+                    if path not in imported:
+                        imported.add(path)
+                        pending.append(path)
     listed = {str(path.relative_to(REPO)) for path in _load().STARTUP_FILES}
     assert imported == listed
 

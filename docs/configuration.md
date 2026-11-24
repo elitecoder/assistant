@@ -16,6 +16,7 @@ work. Every setting below is a deliberate edit you make yourself.
 | Copilot model | Copilot's default | `llm.copilot.model` in `~/.assistant/comms/config.json`, or `COPILOT_MODEL` | The model Copilot sessions and jobs use. `<FEATURE>_COPILOT_MODEL` overrides it for one job. |
 | Copilot thinking effort | the shared `llm.droid.reasoning_effort` | `llm.copilot.reasoning_effort` (`off`, `high`, or `max`), or `<FEATURE>_COPILOT_REASONING_EFFORT` | How hard Copilot thinks on background jobs. A model that refuses the setting runs without it. |
 | Agent binaries | found on `PATH` | `CLAUDE_BIN`, `COPILOT_BIN`, `DROID_BIN` | Full path to an agent's CLI when it isn't on `PATH`. For an npm Copilot install, background jobs run its standalone build, so they don't need Node. |
+| Local record | On, keeps 90 days, up to 200 MB | `~/.assistant/config.json` → `{"telemetry": {"enabled": true, "keep_days": 90, "max_mb": 200}}` | Assistant keeps a record of what it did, on your Mac only. `enabled: false` stops it and creates nothing. A setting that can't be read never deletes anything. See [Telemetry](telemetry.md). |
 
 ## Observer
 

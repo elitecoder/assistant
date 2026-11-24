@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import mode, model_tiers, redact, transcript_slice  # noqa: E402
+from assistant import mode, model_tiers, redact, telemetry, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -1235,6 +1235,27 @@ def build_ctx(ws: dict) -> dict | None:
 def _write_private_text(path: Path, text: str) -> None:
     path.write_text(text)
     path.chmod(0o600)
+
+
+TELEMETRY_UPKEEP_EVERY_SEC = 3600
+
+
+def run_telemetry_upkeep(now: float | None = None) -> None:
+    """Hourly upkeep of the local telemetry store (spool drain, retention, size limit). The stamp is written
+    first, so a failing or slow run is not retried every pulse. Never lets a problem reach the pulse."""
+    try:
+        now = time.time() if now is None else now
+        stamp = ASSISTANT_DIR / "telemetry-upkeep-at"
+        try:
+            last = float(stamp.read_text())
+        except (OSError, ValueError):
+            last = 0.0
+        if 0 <= now - last < TELEMETRY_UPKEEP_EVERY_SEC:
+            return
+        stamp.write_text(str(now))
+        telemetry.maintain(now)
+    except Exception as e:  # noqa: BLE001 — upkeep is optional
+        log.warning("telemetry upkeep failed (ignored): %s", e)
 
 
 def prune_observer_runs(current_pulse_idx: int, now: float | None = None) -> int:
@@ -2655,6 +2676,9 @@ def main() -> int:
     # 2. Purge stale awaiting cards.
     if not dry_run:
         purge_stale_awaiting()
+
+    if not dry_run:
+        run_telemetry_upkeep()
 
     # 3. Pick batch.
     batch = pick_ws_batch()

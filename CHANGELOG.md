@@ -10,6 +10,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 ## [Unreleased]
 
 ### Added
+- Keep a local record of what Assistant does, as ids, counts, timings, states
+  and money, so later features can follow one piece of work from the moment it
+  arrives to your decision on it. It never holds message text, titles,
+  prompts, a model's reasons, email addresses or links, and a secret never
+  reaches it. Nothing leaves your Mac, and nothing about it shows on a page
+  yet. It lives in `~/.assistant/telemetry/`, readable only by you, keeps 90
+  days up to 200 MB, and the pulse tidies it once an hour. Set
+  `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
+  off; delete the folder to remove what is there. See
+  [Telemetry](docs/telemetry.md).
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or
