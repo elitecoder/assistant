@@ -4598,6 +4598,13 @@ CHECKS = (
         '    log "     morning brief, and the planner run whenever Pro mode is on. See"\n',
         'tests/test_unread_jobs_off.py::test_the_installers_pro_summary_says_the_three_jobs_stay_off_until_turned_on',
     ),
+    (
+        'the mutation job installs coverage, which the coverage gate\'s own tests import',
+        '.github/workflows/quality.yml',
+        '          uv pip install pytest==9.1.1 coverage==7.16.1 playwright==1.63.0\n',
+        '          uv pip install pytest==9.1.1 playwright==1.63.0\n',
+        'tests/test_mutation_shards.py::test_the_mutation_job_installs_what_the_tests_it_runs_import',
+    ),
 )
 
 
