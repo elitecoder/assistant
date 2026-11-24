@@ -629,7 +629,10 @@ def test_the_work_queue_shows_the_same_with_ids_and_without(wq, today):
     fake_tool(wq.bin, "gh", [("search prs", [PR])])
     wq.sources({"github": {"skip_authors": []}})
     server.queue_todo({"key": ROW, "title": "A"})
-    built = re.compile(r"[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} [AP]M")
+    # The page carries the time it was built twice, from the real clock: once for people ("Nov 24, 5:03 PM") and
+    # once to the second for the page's own script. Both are left out of the comparison; two refreshes a second
+    # apart are still the same page.
+    built = re.compile(r"[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} [AP]M|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}")
     refresh.run(now=NOW)
     refresh.run(now=NOW)  # the second refresh is the first with the model's saved answers, the same as the third
     page_with, view_with = built.sub("", refresh.site_path().read_text()), server.queued_view()
