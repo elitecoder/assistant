@@ -16,6 +16,7 @@ work. Every setting below is a deliberate edit you make yourself.
 | Copilot model | Copilot's default | `llm.copilot.model` in `~/.assistant/comms/config.json`, or `COPILOT_MODEL` | The model Copilot sessions and jobs use. `<FEATURE>_COPILOT_MODEL` overrides it for one job. |
 | Copilot thinking effort | the shared `llm.droid.reasoning_effort` | `llm.copilot.reasoning_effort` (`off`, `high`, or `max`), or `<FEATURE>_COPILOT_REASONING_EFFORT` | How hard Copilot thinks on background jobs. A model that refuses the setting runs without it. |
 | Agent binaries | found on `PATH` | `CLAUDE_BIN`, `COPILOT_BIN`, `DROID_BIN` | Full path to an agent's CLI when it isn't on `PATH`. For an npm Copilot install, background jobs run its standalone build, so they don't need Node. |
+| Log size limit | Trim a log past 20 MB to its last 5 MB | `ASSISTANT_LOG_CAP_MB` and `ASSISTANT_LOG_KEEP_MB` in the pulse's environment | Each pulse trims the logs in `~/.assistant/logs`, the `.log` files in `~/.assistant`, `~/.assistant/comms/comms-listen.log`, and `~/.claude/logs/workspace-watcher.log`. The last `ASSISTANT_LOG_KEEP_MB` megabytes stay in the file and are also saved as `<name>.1`, which replaces the earlier copy. Services keep writing without a restart; a line written during the trim can be lost. `ASSISTANT_LOG_CAP_MB=0` turns trimming off. It never touches `.json`, `.jsonl`, or lock files. |
 
 ## Observer
 

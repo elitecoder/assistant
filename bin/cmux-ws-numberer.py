@@ -95,6 +95,26 @@ log = logging.getLogger("cmux-ws-numberer")
 CMUX_ENV = {**os.environ, "CMUX_QUIET": "1"}
 
 
+# While cmux refuses connections every 3-second poll fails the same way. Log the
+# first failure, then one line per interval saying how many repeats it saw.
+REPEAT_LOG_INTERVAL = 300.0
+_repeat = {"key": None, "count": 0, "logged_at": 0.0}
+
+
+def _log_list_failure(rc: int, stdout: str, stderr: str) -> None:
+    key = (rc, stdout[:300], stderr[:300])
+    now = time.monotonic()
+    if key != _repeat["key"]:
+        _repeat.update(key=key, count=0, logged_at=now)
+        log.error("list-workspaces --json rc=%s stdout=%r stderr=%r", rc, key[1], key[2])
+        return
+    _repeat["count"] += 1
+    if now - _repeat["logged_at"] >= REPEAT_LOG_INTERVAL:
+        log.error("list-workspaces --json still failing (%d more times): rc=%s stderr=%r",
+                  _repeat["count"], rc, key[2])
+        _repeat.update(count=0, logged_at=now)
+
+
 def list_workspaces() -> list[dict]:
     """Return [{ref:int, index:int|None, title:str, color:str|None}] for every workspace.
 
@@ -107,8 +127,7 @@ def list_workspaces() -> list[dict]:
     try:
         data = json.loads(out.stdout)
     except json.JSONDecodeError:
-        log.error("list-workspaces --json rc=%s stdout=%r stderr=%r",
-                  out.returncode, out.stdout[:300], out.stderr[:300])
+        _log_list_failure(out.returncode, out.stdout, out.stderr)
         return []
     rows: list[dict] = []
     for w in data.get("workspaces", []):

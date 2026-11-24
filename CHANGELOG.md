@@ -70,6 +70,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Stop the workspace watcher from restarting its cmux event stream in a tight
+  loop. When cmux refused the connection, the watcher started a new stream
+  the instant the last one ended and logged every try: one log reached 1.6 GB
+  and another 870 MB. It now waits 2 seconds after a failed stream, doubling
+  up to 5 minutes, and starts over after a stream that stayed up for a
+  minute. It logs a repeated failure once, then once per wait step with the
+  attempt count, and keeps cmux's own error text out of the launchd error log
+  by logging only its last line. The workspace numberer likewise logs a
+  repeated cmux error once, then once every 5 minutes with a count.
+- Cap the Assistant's log files. Each pulse trims any log in
+  `~/.assistant/logs`, any `.log` file in `~/.assistant`, the comms listener
+  log, and the workspace watcher log once it passes 20 MB: the last 5 MB stays
+  in the file and is also saved as `<name>.1`. Services keep writing without
+  a restart. Set `ASSISTANT_LOG_CAP_MB` and `ASSISTANT_LOG_KEEP_MB` to change
+  the limits, or `ASSISTANT_LOG_CAP_MB=0` to turn the trimming off.
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
   workspaces with a bare `cmux list-workspaces`, which shows only the focused

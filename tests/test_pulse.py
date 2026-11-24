@@ -851,6 +851,58 @@ class WriteHeartbeatTests(unittest.TestCase):
         self.assertFalse((self._tmp / ".assistant/heartbeat.json.tmp").exists())
 
 
+class CapLogsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_pulse(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    def test_logs_one_line_only_when_something_was_capped(self):
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value={"capped": ["a.log"], "freed": 9}) as cap, \
+                self.assertLogs(self.mod.log, "INFO") as seen:
+            self.mod.cap_logs_safely()
+        cap.assert_called_once_with(self.mod.ASSISTANT_DIR, self.mod.HOME / ".claude")
+        self.assertEqual(len(seen.records), 1)
+        self.assertIn("freed 9 bytes", seen.output[0])
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value={"capped": [], "freed": 0}), \
+                self.assertNoLogs(self.mod.log, "INFO"):
+            self.mod.cap_logs_safely()
+
+    def test_a_failing_capper_never_stops_the_pulse(self):
+        with mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
+            self.mod.cap_logs_safely()
+
+    def test_the_pulse_trims_an_oversized_log_after_the_heartbeat(self):
+        big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))     # 30 MB
+        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}), \
+                mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                mock.patch.object(self.mod, "run", return_value=(0, "", "")):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        self.assertLessEqual(big.stat().st_size, 5 * 1024 * 1024)
+        self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
+
+    def test_the_pulse_completes_when_the_capper_raises(self):
+        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}), \
+                mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                mock.patch.object(self.mod, "run", return_value=(0, "", "")), \
+                mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
+
+
 class HelperSubprocessWrapperTests(unittest.TestCase):
     """purge-stale-awaiting / pick-ws-batch / build-ctx / cmux-send /
     save-summary / pick-open-todos / dispatch-todo. These are 1:1

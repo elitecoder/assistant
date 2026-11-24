@@ -52,6 +52,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -86,6 +87,12 @@ IPS_LOOKAHEAD_SEC = 10
 PER_WS_CAP = 2                         # max resumes per workspace per hour
 DAEMON_CAP = 5                         # max resumes daemon-wide per hour
 CAP_WINDOW_SEC = 3600
+# Retry back-off for the event stream. A stream that ends at once (cmux
+# refusing the connection, say) used to be restarted with no pause at all.
+BACKOFF_START_SEC = 2
+BACKOFF_MAX_SEC = 300                  # 5 minutes
+STABLE_STREAM_SEC = 60                 # a stream up this long resets the back-off
+STDERR_LINE_MAX = 300                  # chars kept of the child's last stderr line
 
 # ---------- logging ----------
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -654,7 +661,62 @@ def handle_close(evt: dict, registry: WorkspaceRegistry,
 
 
 # ---------- event loop ----------
-def stream(registry: WorkspaceRegistry, governor: ResumeGovernor) -> None:
+class _StderrTail:
+    """Drain the child's stderr and keep only its last line.
+
+    The child used to inherit our stderr, so every refused connection wrote a
+    line into the launchd .err file with no bound. Draining it here keeps the
+    pipe from filling and lets the retry loop report one summary instead.
+    """
+
+    def __init__(self, pipe) -> None:
+        self.last = ""
+        self._pipe = pipe
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        try:
+            for line in self._pipe:
+                line = line.strip()
+                if line:
+                    self.last = line[:STDERR_LINE_MAX]
+        except (OSError, ValueError):
+            pass
+
+    def finish(self) -> str:
+        self._thread.join(timeout=1)
+        return self.last
+
+
+class RetryPolicy:
+    """Exponential back-off plus repeat-collapsing for the stream restart loop."""
+
+    def __init__(self) -> None:
+        self.delay = 0
+        self.attempts = 0
+        self.signature = ""
+
+    def failed(self, signature: str, uptime: float) -> tuple[int, str | None]:
+        """Record an ended stream. Returns (seconds to wait, log line or None)."""
+        if uptime > STABLE_STREAM_SEC:
+            self.delay, self.attempts, self.signature = 0, 0, ""
+        previous = self.delay
+        self.delay = min(max(previous * 2, BACKOFF_START_SEC), BACKOFF_MAX_SEC)
+        if signature != self.signature:
+            self.signature, self.attempts = signature, 1
+            return self.delay, f"event stream ended: {signature}; retrying in {self.delay}s"
+        self.attempts += 1
+        # One line per back-off step, then roughly one an hour at the ceiling.
+        hourly = self.delay == BACKOFF_MAX_SEC and self.attempts % 12 == 0
+        if self.delay != previous or hourly:
+            return self.delay, (f"event stream still failing ({self.attempts} attempts): "
+                                f"{signature}; retrying in {self.delay}s")
+        return self.delay, None
+
+
+def stream(registry: WorkspaceRegistry, governor: ResumeGovernor) -> str:
+    """Run one event stream until it ends. Returns a short summary of why."""
     WATCHER_DIR.mkdir(parents=True, exist_ok=True)
     cmd = [
         CMUX_BIN, "events",
@@ -664,28 +726,37 @@ def stream(registry: WorkspaceRegistry, governor: ResumeGovernor) -> None:
         "--no-ack",
         "--cursor-file", str(CURSOR_FILE),
     ]
-    log.info("starting event stream: %s", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1)
     if proc.stdout is None:
         raise RuntimeError("cmux events: no stdout")
-    for line in proc.stdout:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            evt = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        name = evt.get("name", "")
-        if name in ("workspace.created", "workspace.renamed", "workspace.selected"):
-            registry.refresh()
-            continue
-        if name == "workspace.closed":
+    tail = _StderrTail(proc.stderr)
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
             try:
-                handle_close(evt, registry, governor)
-            except Exception:
-                log.exception("handle_close failed")
-            continue
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            name = evt.get("name", "")
+            if name in ("workspace.created", "workspace.renamed", "workspace.selected"):
+                registry.refresh()
+                continue
+            if name == "workspace.closed":
+                try:
+                    handle_close(evt, registry, governor)
+                except Exception:
+                    log.exception("handle_close failed")
+                continue
+    finally:
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
+    return f"exit {rc}: {tail.finish() or 'no error output'}"
 
 
 def main() -> int:
@@ -694,15 +765,24 @@ def main() -> int:
     registry = WorkspaceRegistry()
     registry.refresh()
     governor = ResumeGovernor()
+    policy = RetryPolicy()
     while True:
+        started = time.monotonic()
+        if policy.attempts == 0:
+            log.info("starting event stream")
         try:
-            stream(registry, governor)
+            signature = stream(registry, governor)
         except KeyboardInterrupt:
             log.info("interrupted, exiting")
             return 0
-        except Exception:
-            log.exception("stream crashed; sleeping 5s and retrying")
-            time.sleep(5)
+        except Exception as exc:
+            signature = f"stream crashed: {type(exc).__name__}: {exc}"
+            if policy.signature != signature:
+                log.exception("stream crashed")
+        delay, message = policy.failed(signature, time.monotonic() - started)
+        if message:
+            log.warning("%s", message)
+        time.sleep(delay)
 
 
 if __name__ == "__main__":

@@ -83,7 +83,7 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import mode, model_tiers, transcript_slice  # noqa: E402
+from assistant import logcap, mode, model_tiers, transcript_slice  # noqa: E402
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -2942,6 +2942,10 @@ def main() -> int:
     # 7. Heartbeat.
     write_heartbeat(pulse_idx, n_drained)
 
+    # 7.1. Cap the log files (they are never rotated otherwise). After the
+    #      heartbeat, so a failure here leaves the pulse looking alive.
+    cap_logs_safely()
+
     # 7.5. Metering: one record per pulse to ~/.assistant/metrics.jsonl so
     #      cost/cadence regressions show on the dashboard the next morning.
     #      Runs AFTER state-write + heartbeat and swallows every failure —
@@ -2990,6 +2994,19 @@ def main() -> int:
 
     log.info("=== pulse %d done in %.1fs ===", pulse_idx, time.time() - t0)
     return 0
+
+
+def cap_logs_safely() -> None:
+    """Shrink any Assistant log over its limit. Logs one line only when it did
+    something; a failure here must never stop the pulse."""
+    try:
+        summary = logcap.cap_logs(ASSISTANT_DIR, HOME / ".claude")
+        if summary["capped"]:
+            log.info("log cap: trimmed %d file(s), freed %d bytes: %s",
+                     len(summary["capped"]), summary["freed"],
+                     ", ".join(summary["capped"]))
+    except Exception as e:  # noqa: BLE001 — log upkeep must never break the pulse
+        log.warning("log cap failed (ignored): %s", e)
 
 
 def write_heartbeat(pulse_idx: int, drained: int) -> None:

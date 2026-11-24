@@ -117,6 +117,10 @@ launchctl unload -w ~/Library/LaunchAgents/com.assistant.workspace-watcher.plist
 
 To pause without unloading (e.g. while debugging), `launchctl stop com.assistant.workspace-watcher` once is enough — KeepAlive will respawn it on next event, but if you uncheck `RunAtLoad` first, you can suppress restart.
 
+## When cmux refuses the connection
+
+If the event stream ends or can't connect, the daemon waits 2 seconds, then 4, 8, and so on up to 5 minutes before trying again; a stream that stayed up for a minute starts the wait over. It logs the first failure with cmux's last error line, then one "still failing (N attempts)" line per wait step. cmux's own error output is read by the daemon and never reaches `workspace-watcher.launchd.err`.
+
 ## How to inspect
 
 ```bash

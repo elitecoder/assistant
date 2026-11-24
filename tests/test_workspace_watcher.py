@@ -884,8 +884,20 @@ def test_handle_close_uuid_from_payload_nested(home, monkeypatch):
 # --------------------------------------------------------------------------- stream()
 
 class _FakeProc:
-    def __init__(self, lines):
+    def __init__(self, lines, err_lines=(), rc=0, hang=False):
         self.stdout = iter(lines)
+        self.stderr = iter(err_lines)
+        self._rc = rc
+        self._hang = hang
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self._hang and not self.killed:
+            raise subprocess.TimeoutExpired("cmux", timeout)
+        return self._rc
+
+    def kill(self):
+        self.killed = True
 
 
 def test_stream_dispatches_handlers(home, monkeypatch):
@@ -960,7 +972,7 @@ def test_main_retries_on_stream_crash_then_exits(home, monkeypatch):
         raise KeyboardInterrupt
     monkeypatch.setattr(WW, "stream", flaky)
     assert WW.main() == 0
-    assert slept == [5]            # the retry path slept once for 5s
+    assert slept == [2]            # the retry path backed off 2s
     assert calls["n"] == 2
 
 
@@ -982,3 +994,130 @@ def test_crash_resume_gives_a_copilot_session_the_users_rules(home, monkeypatch,
     rules = user / ".assistant" / "copilot-instructions"
     assert argv[argv.index("--command") + 1] == saved.replace(
         "&& ", f"&& COPILOT_CUSTOM_INSTRUCTIONS_DIRS={rules} ", 1)
+
+
+# --------------------------------------------------------------------------- retry back-off
+
+class _Clock:
+    """Fake time module for main(): sleeping just advances the clock."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class _Records:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg, *a):
+        self.lines.append(msg % a)
+
+    warning = info
+
+    def exception(self, msg, *a):
+        self.lines.append(msg % a)
+
+
+def _drive_main(monkeypatch, stream_fn, until, clock=None):
+    clock = clock or _Clock()
+    records = _Records()
+    monkeypatch.setattr(WW, "time", clock)
+    monkeypatch.setattr(WW, "log", records)
+    monkeypatch.setattr(WW, "WorkspaceRegistry", lambda: type("R", (), {"refresh": lambda self: None})())
+    monkeypatch.setattr(WW, "ResumeGovernor", lambda: object())
+    calls = {"n": 0}
+
+    def wrapped(reg, gov):
+        if clock.now >= until or calls["n"] > 1000:
+            raise KeyboardInterrupt
+        calls["n"] += 1
+        return stream_fn(clock, calls["n"])
+    monkeypatch.setattr(WW, "stream", wrapped)
+    assert WW.main() == 0
+    return clock, records, calls["n"]
+
+
+def test_a_stream_that_always_ends_at_once_is_retried_with_bounded_attempts_and_lines(home, monkeypatch):
+    refused = "exit 1: Error: Connection to cmux was denied."
+    clock, records, attempts = _drive_main(monkeypatch, lambda c, n: refused, until=3600)
+    # Doubling from 2s to the 5-minute ceiling: about a dozen attempts an hour,
+    # not one every few milliseconds.
+    assert attempts <= 20
+    assert max(clock.sleeps) == WW.BACKOFF_MAX_SEC
+    assert clock.sleeps[:4] == [2, 4, 8, 16]
+    # Far fewer log lines than attempts x 2; the first names the cause.
+    assert len(records.lines) <= attempts + 2
+    assert any("Connection to cmux was denied" in line for line in records.lines)
+    assert any("still failing" in line for line in records.lines)
+
+
+def test_a_failure_repeated_at_the_ceiling_logs_about_once_an_hour():
+    policy = WW.RetryPolicy()
+    logged = [policy.failed("same", 0)[1] for _ in range(40)]
+    ceiling_lines = [m for m in logged[9:] if m]
+    assert len(ceiling_lines) == 3          # attempts 12, 24, 36 of 40
+
+
+def test_a_different_failure_is_logged_at_once():
+    policy = WW.RetryPolicy()
+    policy.failed("a", 0)
+    _, message = policy.failed("b", 0)
+    assert message.startswith("event stream ended: b")
+
+
+def test_a_stream_that_stayed_up_resets_the_back_off(home, monkeypatch):
+    def fn(clock, n):
+        if n == 4:
+            clock.now += 120          # this one stayed up two minutes
+        return "exit 0: no error output"
+    clock, records, attempts = _drive_main(monkeypatch, fn, until=140)
+    # 2, 4, 8, then the long stream resets the delay to the first step.
+    assert clock.sleeps[:5] == [2, 4, 8, 2, 4]
+
+
+def test_a_crashing_stream_logs_its_traceback_once(home, monkeypatch):
+    def fn(clock, n):
+        raise RuntimeError("socket dropped")
+    clock, records, attempts = _drive_main(monkeypatch, fn, until=3600)
+    assert sum(1 for line in records.lines if line == "stream crashed") == 1
+    assert attempts <= 20
+
+
+def test_stream_returns_the_childs_last_error_line_and_exit_code(home, monkeypatch):
+    proc = _FakeProc([], err_lines=["Error: first\n", "\n", "Error: Connection to cmux was denied.\n"], rc=1)
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: proc)
+    out = WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())
+    assert out == "exit 1: Error: Connection to cmux was denied."
+
+
+def test_stream_pipes_the_childs_stderr_instead_of_inheriting_it(home, monkeypatch):
+    seen = {}
+
+    def popen(cmd, **kw):
+        seen.update(kw)
+        return _FakeProc([])
+    monkeypatch.setattr(WW.subprocess, "Popen", popen)
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor()) == "exit 0: no error output"
+    assert seen["stderr"] == subprocess.PIPE
+
+
+def test_stream_kills_a_child_that_closed_stdout_but_lives(home, monkeypatch):
+    proc = _FakeProc([], rc=-9, hang=True)
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: proc)
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor()).startswith("exit -9")
+    assert proc.killed
+
+
+def test_stderr_tail_survives_a_closed_pipe():
+    class Broken:
+        def __iter__(self):
+            raise ValueError("I/O operation on closed file")
+    assert WW._StderrTail(Broken()).finish() == ""
