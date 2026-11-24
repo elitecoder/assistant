@@ -47,23 +47,20 @@ def today() -> str:
 
 
 @contextlib.contextmanager
-def lock(timeout: float | None = None):
+def lock(timeout: float):
     """Hold traces.json for one read-modify-write; TimeoutError when `timeout` seconds pass first."""
     lock_file = config.data_dir() / "traces.lock"
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     with lock_file.open("a") as f:
-        if timeout is None:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        else:
-            deadline = time.monotonic() + timeout
-            while True:
-                try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("traces.lock is busy") from None
-                    time.sleep(0.01)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("traces.lock is busy") from None
+                time.sleep(0.01)
         yield
 
 

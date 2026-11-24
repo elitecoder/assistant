@@ -195,7 +195,7 @@ def test_the_registry_is_read_and_written_inside_its_own_lock(wq, monkeypatch):
     events, real_lock, real_write = [], traces.lock, config.write_json
 
     @contextlib.contextmanager
-    def tracked(timeout=None):
+    def tracked(timeout):
         with real_lock(timeout):
             events.append("lock")
             yield
@@ -435,7 +435,7 @@ def test_a_registry_that_cant_be_used_never_stops_a_send(wq, capsys):
 
 
 def test_a_lock_that_cant_be_taken_never_stops_a_send(wq, monkeypatch):
-    monkeypatch.setattr(traces, "lock", lambda timeout=None: (_ for _ in ()).throw(OSError("no lock")))
+    monkeypatch.setattr(traces, "lock", lambda timeout: (_ for _ in ()).throw(OSError("no lock")))
     assert server.queue_todo({"key": ROW, "title": "A"})[0] == 200
     assert pointers.is_trace_id(wq.items()[-1]["trace"])
 
