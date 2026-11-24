@@ -1,14 +1,20 @@
 """Keep installer tests away from the host's services."""
 
 import os
+import pwd
 import shutil
 import sys
 from pathlib import Path
 
 
+def real_home() -> Path:
+    """The home folder of the person running the tests, whatever HOME says (the test run moves HOME)."""
+    return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+
+
 def installer_env(home: Path) -> dict[str, str]:
     home = home.resolve()
-    if home == Path.home().resolve():
+    if home in (real_home(), Path.home().resolve()):
         raise ValueError("Installer tests require an isolated HOME")
     stubbin = home / "stubbin"
     stubbin.mkdir(parents=True)

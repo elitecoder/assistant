@@ -177,6 +177,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway
+  folder before anything is imported, puts it back before every test, and removes the folder when the run ends.
+  Before this, a test that forgot to do that itself wrote into the real `~/.assistant`: the lesson extractor's
+  tests had been adding lines to the real `assistant-audit.log` since July, and the guard that was meant to
+  catch this watched only two folders. Data folders named for the whole login session (`ASSISTANT_DIR`,
+  `WQ_DATA`) and your global git settings no longer reach the tests either. The test README now says to run
+  the suite with `pytest`: `unittest` skips this protection.
 - Stop one silent connection from freezing the dashboard. The dashboard's server answers one connection at a
   time, and a connection that opened and sent nothing held it for as long as it stayed open; browsers keep
   spare connections like that. Such a connection is now dropped after two seconds of silence.
@@ -199,6 +206,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   writes through a private temporary file of its own and removes it if the save
   fails. This needs macOS; on another system the reactor doesn't write. The
   `/todo` and `/cleanup` skills still write the list without the lock.
+- Stop a speed test for the Work queue's scrubber from failing on a busy machine. It allowed two seconds for a
+  megabyte of text and exists to catch a pattern that takes minutes; its limits are now ten times looser, and
+  the three mutation checks that rely on it still reject their mutants.
 - Some services could fail without a word because they ran under the system's
   older Python. They now use the same Python as the rest of Assistant.
 - Trim oversized logs. Every five minutes the Assistant now checks its logs:
