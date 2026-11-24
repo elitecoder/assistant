@@ -791,9 +791,31 @@ def remove_item(td_id):
     return True, f"{td_id} removed"
 
 
+# This server answers one connection at a time. A connection that opens and sends nothing (a browser keeps spare
+# ones; so does anything that only probes the port) would otherwise hold it for as long as it stayed open, and the
+# dashboard would stop answering. A connection is closed when the server has waited this many seconds for its next
+# bytes. The limit is on each wait for the client, never on how long a route takes to do its work. It is not a
+# defence against a program on this Mac that feeds a request in a byte at a time: each byte starts the wait again.
+IDLE_TIMEOUT_SEC = 2
+# Sending the answer gets a longer limit. For a send the limit is the total time, so two seconds would cut a
+# large page off part-way when the reader is slow (a tunnel).
+SEND_TIMEOUT_SEC = 30
+
+
 class Handler(BaseHTTPRequestHandler):
+    timeout = IDLE_TIMEOUT_SEC
+
     def log_message(self, fmt, *args):
         sys.stderr.write("[todo-server] " + redact(fmt % args) + "\n")
+
+    def log_error(self, fmt, *args):
+        if fmt.startswith("Request timed out") and not getattr(self, "raw_requestline", b""):
+            return  # a spare connection that never sent a request: routine, and a line for each would bury the log
+        super().log_error(fmt, *args)
+
+    def end_headers(self):
+        self.connection.settimeout(SEND_TIMEOUT_SEC)  # the request has been read; all that is left is sending
+        super().end_headers()
 
     def _own_origins(self):
         """The origins that count as this server's own page: both loopback names on the port the

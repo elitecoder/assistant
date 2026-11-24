@@ -97,7 +97,8 @@ NO_NETWORK_PREFLIGHT = ("--disable-features=PrivateNetworkAccessSendPreflights,P
 def browser_executable():
     """$ASSISTANT_TEST_BROWSER, else Playwright's own Chromium, else Chrome or an older Chromium that is installed."""
     candidates = [os.environ.get("ASSISTANT_TEST_BROWSER", "")]
-    cache = Path.home() / "Library/Caches/ms-playwright"
+    # The test run moves HOME, so Playwright's browsers are found where conftest.py says they are.
+    cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or Path.home() / "Library/Caches/ms-playwright")
     candidates += ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                    *sorted(map(str, cache.glob("chromium-*/chrome-mac*/*.app/Contents/MacOS/*")), reverse=True)]
     return next((c for c in candidates if c and Path(c).is_file()), None)

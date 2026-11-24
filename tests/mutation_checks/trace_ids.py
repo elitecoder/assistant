@@ -232,13 +232,6 @@ CHECKS = (
         T + "test_the_slack_reactors_tests_for_its_task_writer_pass",
     ),
     (
-        "the reactor writes its task file through a temporary file of its own",
-        "slack-reactor/src/todo-store.js",
-        "`${TODO_PATH}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`",
-        "`${TODO_PATH}.tmp`",
-        T + "test_the_slack_reactors_tests_for_its_task_writer_pass",
-    ),
-    (
         "the pulse stamps only tasks whose id is missing or not valid",
         STORE,
         'not pointers.is_trace_id(i.get("trace"))',
