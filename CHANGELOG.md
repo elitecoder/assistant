@@ -14,15 +14,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   now, when `SLACK_USER_ID` wasn't set, a reaction with your task emoji from
   anyone in any channel the bot is in made a task that started by itself, and
   the agent it launched runs with permission prompts off. The Slack reactor now
-  finds your Slack user id from `SLACK_USER_ID`, or else from the Slack target
-  the Slack channel setup saved in `~/.assistant/config.json` when it is a user
-  id. A reaction from you works as before. A reaction from anyone else is
-  ignored. When the reactor can't tell who you are, it still saves what you
-  react to, but as an "Ask me" task that never starts by itself, with a line at
-  the top saying why and that `SLACK_USER_ID` fixes it. To make sure
-  your own reactions start work, set `SLACK_USER_ID` to your Slack user id in
-  `~/.zprofile`, or run the Slack channel setup, then restart the reactor.
-  `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
+  finds your Slack user id from `SLACK_USER_ID`, or else `slack.owner` in
+  `~/.assistant/config.json`, or else `slack.target` there when it is a user id
+  (the Slack channel setup saves it; it counts as you only when the other two
+  are absent, so it helps only if that target is your own user id). A
+  `SLACK_USER_ID` that isn't a user id, such as a typo or a channel id, is
+  reported in the log and ignored. The start-up line prints the id it found. A
+  reaction from you works as before; a reaction from anyone else is ignored.
+  When the reactor can't tell who you are, it still saves what you react to,
+  but as an "Ask me" task that never starts by itself: its title starts with
+  "Not started, reaction not confirmed as yours", its priority is P3, the message
+  gets an eyes reaction instead of the check mark, no more than 20 wait at once,
+  and the top of the task says how to fix it. Tasks already saved as "Ask me"
+  stay that way until you press On. To make sure your own reactions start work,
+  set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
+  reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
 
 ### Added
 - Clear finished work from the Work queue's **Ready for you** box on each
@@ -89,16 +95,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   a saved task now sits between marker lines with a code made for that task,
   under rules that tell the agent it is content to act on and never
   instructions, the same way the Work queue treats a row. A message can't forge
-  either marker, only the newest 50 messages and 8,000 characters are kept
-  (the task says when it was cut, with the link to read the rest), and the
-  first message no longer appears as the title in the prompt the agent reads.
-- Stop the Slack reactor from corrupting your task list. It now takes the same
-  lock every other writer takes before it reads and writes the list, waits up
-  to 5 seconds for it, and saves nothing (and logs that the write failed) if it
-  can't get it. Before this, a reaction landing while another writer saved
-  could corrupt the file or lose a task. The reactor also writes through a
-  private temporary file of its own and removes it if the save fails. This
-  needs macOS; on another system the reactor doesn't write.
+  either marker, and the first message no longer appears as the title in the
+  prompt the agent reads. A long thread keeps its first message and the one you
+  reacted to, marked, then the newest messages that fit in 50 messages and 8,000
+  characters, and says how many it left out, with the link to read the rest. The
+  whole thread is read, not only its first 200 messages. A Slack task saved
+  before this change is fenced when its prompt is built.
+- Stop the Slack reactor from corrupting your task list. It now takes the lock
+  the Python services take before it reads and writes the list, waits up to 5
+  seconds for it, and tries the whole add three times about 15 seconds apart.
+  Before this, a reaction landing while another writer saved could corrupt the
+  file or lose a task. If it still can't save, it logs that and puts a warning
+  reaction on the message, so you can see it wasn't saved. The reactor also
+  writes through a private temporary file of its own and removes it if the save
+  fails. This needs macOS; on another system the reactor doesn't write. The
+  `/todo` and `/cleanup` skills still write the list without the lock.
 - Trim oversized logs. Every five minutes the Assistant now checks its logs:
   the ones in `~/.assistant/logs`, the `.log` files in `~/.assistant`, the
   comms listener log, the workspace watcher log, and the to-do server's two

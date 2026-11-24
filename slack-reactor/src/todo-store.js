@@ -2,7 +2,7 @@
 // Single source of truth: ~/.claude/assistant-todo.json (the dashboard + pulse
 // read the same file). Every Python writer wraps its read-modify-write in
 // todostore.todo_lock(), an flock on ~/.claude/assistant-todo.lock. The reactor
-// takes that same lock: on macOS, opening the lock file with O_EXLOCK takes the
+// takes that same lock (the one the Python services take): on macOS, opening the lock file with O_EXLOCK takes the
 // very lock flock() takes, so Node needs no native code to join the queue.
 import fs from 'node:fs'
 import { homedir, hostname } from 'node:os'
@@ -47,7 +47,10 @@ export async function withTodoLock(fn, { platform = process.platform, waitMs = L
       fd = fs.openSync(lockPath(), flags, 0o600)
     } catch (e) {
       if (e.code !== 'EAGAIN' && e.code !== 'EWOULDBLOCK') throw e
-      if (Date.now() >= deadline) throw new Error(`task-list lock still held by another writer after ${waitMs} ms`)
+      if (Date.now() >= deadline) {
+        // Slack won't send the reaction again; the caller may try again later.
+        throw Object.assign(new Error(`task-list lock still held by another writer after ${waitMs} ms`), { code: 'LOCK_BUSY' })
+      }
       await new Promise((resolve) => setTimeout(resolve, retryMs))
     }
   }
@@ -74,13 +77,14 @@ function writeAtomic(data, rename) {
 /**
  * Append a captured-thread TODO. De-dups on `source` (the thread identity), so
  * re-reacting the same thread is a no-op. The whole read-modify-write runs under
- * the task-list lock.
+ * the task-list lock. `unconfirmedCap`: when this many tasks with a `reactedBy` are still waiting for a
+ * decision, nothing is added and `skipped` is returned.
  *
  * `autoDispatch` true starts by itself, false is manual only, null means "Ask me".
  *
  * @returns {Promise<{ id: string, created: boolean }>} — created=false means it already existed.
  */
-export async function addTodo({ title, detail, url, source, priority = 'P2', autoDispatch = true, reactedBy }, opts = {}) {
+export async function addTodo({ title, detail, url, source, priority = 'P2', autoDispatch = true, reactedBy, unconfirmedCap }, opts = {}) {
   if (!fs.existsSync(todoPath())) {
     throw new Error(`todo store not found: ${todoPath()}`)
   }
@@ -94,6 +98,10 @@ export async function addTodo({ title, detail, url, source, priority = 'P2', aut
       }
     }
 
+    // Tasks from reactions not confirmed as the owner's wait for a decision; only so many may wait at once.
+    if (unconfirmedCap && items.filter((it) => it.reactedBy && it.status === 'open' && it.autoDispatch !== true).length >= unconfirmedCap) {
+      return { id: null, created: false, skipped: true }
+    }
     const id = nextId(data)
     items.push({
       id,

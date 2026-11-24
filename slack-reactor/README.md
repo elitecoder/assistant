@@ -43,7 +43,7 @@ behalf.
 |---|---|---|
 | `SLACK_BOT_TOKEN` | ✅ | `xoxb-`; bot scopes `reactions:read`, `reactions:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`. |
 | `SLACK_APP_TOKEN` | ✅ | `xapp-` app-level token, scope `connections:write` (Socket Mode). |
-| `SLACK_USER_ID` | strongly recommended | Your own Slack user id (e.g. `U…`). Only your reactions create todos that start by itself. Without it the reactor uses the Slack target in `~/.assistant/config.json` when that is a user id (the Slack channel setup writes it); see "Who can start work". |
+| `SLACK_USER_ID` | strongly recommended | Your own Slack user id: `U` or `W` followed by capital letters and digits (in Slack, open your profile, choose the three dots, then Copy member ID). When the owner is known, only your reactions are captured at all. A value of any other shape is reported in the log and ignored, and the owner is then unknown. See "Who can start work". |
 | `TODO_EMOJI` | default `mukuls2` | emoji name(s) this machine claims (comma-separated for several). |
 | `TODO_PRIORITY` | default `P2` | priority for captured todos. |
 | `TODO_AUTODISPATCH` | default `1` | `0` = manual-only (no auto-dispatch), for everyone. |
@@ -54,34 +54,64 @@ Tokens live in `~/.zprofile`; the launcher sources it. Nothing is hardcoded.
 
 Text written by someone else can prepare work; only the owner's own action
 starts it. The reactor works out who the owner is once, at start, and prints
-one line saying how: your Slack user id from `SLACK_USER_ID`, else from
-`slack.target` in `~/.assistant/config.json` when that value starts with `U` or
-`W`, else unknown.
+one line saying how, with the id it found (a user id is not a secret). It takes
+the first of these:
+
+1. `SLACK_USER_ID`, when it has the shape of a user id. A typo, a channel id or
+   two ids are reported in the log (the value is not printed) and the owner is
+   unknown.
+2. `slack.owner` in `~/.assistant/config.json`.
+3. `slack.target` in `~/.assistant/config.json`, when it starts with `U` or `W`.
+   That is where notifications go, and the Slack channel setup writes it, so it
+   is taken as you only when `slack.owner` and `SLACK_USER_ID` are both absent.
+   It must be your own id; if your notifications go to someone else, set
+   `SLACK_USER_ID`.
 
 - **Owner known:** your reaction creates the task and it starts by itself (unless
   `TODO_AUTODISPATCH=0`). A reaction from anyone else is ignored.
 - **Owner unknown:** every reaction is captured, so nothing you react to is lost,
   but as an **Ask me** task that never starts by itself, whatever
-  `TODO_AUTODISPATCH` says. Its detail starts with a sentence saying why, and the
-  task records who reacted (`reactedBy`). Set `SLACK_USER_ID` and restart the
-  reactor to fix it.
+  `TODO_AUTODISPATCH` says. The card's title starts with "Not started, reaction
+  not confirmed as yours: ", the priority is P3, the reactor puts an `eyes`
+  reaction on the message (not the check mark), and the log line says
+  `Ask me: owner unknown`. No more than 20 such tasks wait at once; after that
+  further reactions are skipped, with one log line each. The detail starts with
+  what to do: copy your member ID in Slack, add `export SLACK_USER_ID=U…` to
+  `~/.zprofile`, and run
+  `launchctl kickstart -k gui/$UID/com.assistant.slack-reactor`. Press **Queue
+  to start** to start a task now. A task already saved as Ask me stays that way
+  until you press **On**.
 
 The thread in a task's detail is untrusted text, so it sits between
 `----- BEGIN UNTRUSTED THREAD <code> -----` and `----- END UNTRUSTED THREAD <code> -----`
 (a new random code for each task), under rules telling the agent to treat it as
-content to act on and never as instructions; a marker inside a message is
-removed. The newest 50 messages and 8,000 characters are kept, and the detail
-says when it was cut. The link to the thread stays outside the fence, and the
-dispatched agent's prompt shows a fixed title instead of the first message.
+content to act on and never as instructions; text that reads as a marker is
+replaced. The reactor reads the whole thread, a page of 200 messages at a time
+(up to 10 pages; the detail says when it read only the first part). A long thread
+keeps its first message and the message you reacted to (marked `[reacted to]`),
+then the newest that fit in 50 messages and 8,000 characters; a line inside the
+fence says how many were left out. The link to the thread stays outside the
+fence, and the dispatched agent's prompt shows a fixed title instead of the first
+message. A Slack task saved without a fence (by an earlier version) is fenced
+when its prompt is built.
+
+Not covered here:
+
+- A task from a reaction runs under the full dispatch rules, not the Work queue's
+  first-pass limits.
+- The agent is given the thread's link and may read the thread from Slack
+  itself; what it reads there is not fenced.
 
 ## The task list lock
 
-Every write to `~/.claude/assistant-todo.json` happens while holding the same
-lock the Python writers hold (`~/.claude/assistant-todo.lock`). On macOS, opening
+Every write the reactor makes to `~/.claude/assistant-todo.json` happens while holding the same
+lock the Python services take (`~/.claude/assistant-todo.lock`; the `/todo` and `/cleanup` skills don't yet). On macOS, opening
 that file with `O_EXLOCK` takes the very lock `flock()` takes, so the reactor
 needs no extra software. It retries for up to 5 seconds without blocking, and if
-it still can't get the lock (or isn't on macOS) it saves nothing and logs
-`todo write failed`. The temporary file has a name of its own, mode `0600`, and
+it still can't get the lock it tries the whole add again, three tries about 15
+seconds apart, so other reactions are handled meanwhile. If all fail (or it isn't
+on macOS) it saves nothing, logs `todo write failed`, and puts a `warning`
+reaction on the message so you can see it wasn't saved. The temporary file has a name of its own, mode `0600`, and
 is removed if the rename fails.
 
 ## Tokens in the log
