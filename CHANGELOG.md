@@ -9,6 +9,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Security
+- Stop a Slack reaction from anyone else starting an agent on your Mac. Until
+  now, when `SLACK_USER_ID` wasn't set, a reaction with your task emoji from
+  anyone in any channel the bot is in made a task that started by itself, and
+  the agent it launched runs with permission prompts off. The Slack reactor now
+  finds your Slack user id from `SLACK_USER_ID`, or else from the Slack target
+  the Slack channel setup saved in `~/.assistant/config.json` when it is a user
+  id. A reaction from you works as before. A reaction from anyone else is
+  ignored. When the reactor can't tell who you are, it still saves what you
+  react to, but as an "Ask me" task that never starts by itself, with a line at
+  the top saying why and that `SLACK_USER_ID` fixes it. To make sure
+  your own reactions start work, set `SLACK_USER_ID` to your Slack user id in
+  `~/.zprofile`, or run the Slack channel setup, then restart the reactor.
+  `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
+
 ### Added
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
@@ -70,6 +85,20 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- Stop a Slack thread from reading as instructions to the agent. The thread in
+  a saved task now sits between marker lines with a code made for that task,
+  under rules that tell the agent it is content to act on and never
+  instructions, the same way the Work queue treats a row. A message can't forge
+  either marker, only the newest 50 messages and 8,000 characters are kept
+  (the task says when it was cut, with the link to read the rest), and the
+  first message no longer appears as the title in the prompt the agent reads.
+- Stop the Slack reactor from corrupting your task list. It now takes the same
+  lock every other writer takes before it reads and writes the list, waits up
+  to 5 seconds for it, and saves nothing (and logs that the write failed) if it
+  can't get it. Before this, a reaction landing while another writer saved
+  could corrupt the file or lose a task. The reactor also writes through a
+  private temporary file of its own and removes it if the save fails. This
+  needs macOS; on another system the reactor doesn't write.
 - Trim oversized logs. Every five minutes the Assistant now checks its logs:
   the ones in `~/.assistant/logs`, the `.log` files in `~/.assistant`, the
   comms listener log, the workspace watcher log, and the to-do server's two

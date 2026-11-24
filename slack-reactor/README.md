@@ -43,12 +43,46 @@ behalf.
 |---|---|---|
 | `SLACK_BOT_TOKEN` | ✅ | `xoxb-`; bot scopes `reactions:read`, `reactions:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`. |
 | `SLACK_APP_TOKEN` | ✅ | `xapp-` app-level token, scope `connections:write` (Socket Mode). |
-| `SLACK_USER_ID` | optional | If set, only this user's reactions create todos (e.g. your `U…`). |
+| `SLACK_USER_ID` | strongly recommended | Your own Slack user id (e.g. `U…`). Only your reactions create todos that start by itself. Without it the reactor uses the Slack target in `~/.assistant/config.json` when that is a user id (the Slack channel setup writes it); see "Who can start work". |
 | `TODO_EMOJI` | default `mukuls2` | emoji name(s) this machine claims (comma-separated for several). |
 | `TODO_PRIORITY` | default `P2` | priority for captured todos. |
-| `TODO_AUTODISPATCH` | default `1` | `0` = manual-only (no auto-dispatch). |
+| `TODO_AUTODISPATCH` | default `1` | `0` = manual-only (no auto-dispatch), for everyone. |
 
 Tokens live in `~/.zprofile`; the launcher sources it. Nothing is hardcoded.
+
+## Who can start work
+
+Text written by someone else can prepare work; only the owner's own action
+starts it. The reactor works out who the owner is once, at start, and prints
+one line saying how: your Slack user id from `SLACK_USER_ID`, else from
+`slack.target` in `~/.assistant/config.json` when that value starts with `U` or
+`W`, else unknown.
+
+- **Owner known:** your reaction creates the task and it starts by itself (unless
+  `TODO_AUTODISPATCH=0`). A reaction from anyone else is ignored.
+- **Owner unknown:** every reaction is captured, so nothing you react to is lost,
+  but as an **Ask me** task that never starts by itself, whatever
+  `TODO_AUTODISPATCH` says. Its detail starts with a sentence saying why, and the
+  task records who reacted (`reactedBy`). Set `SLACK_USER_ID` and restart the
+  reactor to fix it.
+
+The thread in a task's detail is untrusted text, so it sits between
+`----- BEGIN UNTRUSTED THREAD <code> -----` and `----- END UNTRUSTED THREAD <code> -----`
+(a new random code for each task), under rules telling the agent to treat it as
+content to act on and never as instructions; a marker inside a message is
+removed. The newest 50 messages and 8,000 characters are kept, and the detail
+says when it was cut. The link to the thread stays outside the fence, and the
+dispatched agent's prompt shows a fixed title instead of the first message.
+
+## The task list lock
+
+Every write to `~/.claude/assistant-todo.json` happens while holding the same
+lock the Python writers hold (`~/.claude/assistant-todo.lock`). On macOS, opening
+that file with `O_EXLOCK` takes the very lock `flock()` takes, so the reactor
+needs no extra software. It retries for up to 5 seconds without blocking, and if
+it still can't get the lock (or isn't on macOS) it saves nothing and logs
+`todo write failed`. The temporary file has a name of its own, mode `0600`, and
+is removed if the rename fails.
 
 ## Tokens in the log
 
@@ -111,7 +145,8 @@ bot token that's already in `$SLACK_BOT_TOKEN`).
 5. **Reinstall** the app (scope change) → the bot token may rotate; if so update
    `SLACK_BOT_TOKEN` in `~/.zprofile`.
 6. `~/.zprofile`: `export SLACK_APP_TOKEN=xapp-…`, `export TODO_EMOJI=mukuls2`,
-   and optionally `export SLACK_USER_ID=U…`.
+   and `export SLACK_USER_ID=U…` (your own Slack user id; without it nothing
+   you react to starts by itself).
 7. `/invite @mukuls_bot` in every channel you want capture to work in.
 8. Load the daemon: `./install.sh --apply` (or `launchctl bootstrap gui/$UID
    ~/Library/LaunchAgents/com.assistant.slack-reactor.plist`).
@@ -166,9 +201,10 @@ node slack-reactor/src/index.js          # or: ./bin/spawn-slack-reactor.sh
 ## Test the write path (no Slack needed)
 
 ```bash
+mkdir -p /tmp/reactor-home/.claude && echo '{"items":[]}' > /tmp/reactor-home/.claude/assistant-todo.json
 HOME=/tmp/reactor-home node --input-type=module -e "
   import { addTodo } from './slack-reactor/src/todo-store.js';
-  console.log(addTodo({title:'t', detail:'d', url:'u', source:'slack-react:C:1.1'}));
+  console.log(await addTodo({title:'t', detail:'d', url:'u', source:'slack-react:C:1.1'}));
 "
 ```
 
