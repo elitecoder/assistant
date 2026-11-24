@@ -383,7 +383,7 @@ def test_a_stuck_lock_holds_a_record_for_half_a_second_not_for_as_long_as_it_is_
     with pytest.raises(feedback.Unrecorded, match="busy"):
         feedback.record("done", ROW, "row", "work-queue")
     release()
-    assert feedback.LOCK_WAIT <= clock.slept < feedback.LOCK_WAIT + 0.1 and lines_or_none(home) == []
+    assert 0.5 <= clock.slept < 0.6 and lines_or_none(home) == []
 
 
 def lines_or_none(home):
@@ -398,11 +398,11 @@ def test_a_batch_shares_one_deadline_and_a_lock_freed_in_time_is_taken(home, mon
     for _ in range(40):
         with pytest.raises(feedback.Unrecorded):
             feedback.record("done", ROW, "row", "work-queue", deadline=deadline)
-    assert clock.slept < feedback.LOCK_WAIT + 0.1, "forty records waited once, not forty times"
+    assert clock.slept < 0.6, "forty records waited once, not forty times"
     clock.slept = 0
     clock.at_sleep = lambda c: (release(), setattr(c, "at_sleep", None)) if c.slept >= 0.2 else None  # let go after 0.2 s
     feedback.record("done", ROW, "row", "work-queue")
-    assert 0.2 <= clock.slept < feedback.LOCK_WAIT and len(lines(home)) == 1
+    assert 0.2 <= clock.slept < 0.5 and len(lines(home)) == 1
 
 
 def test_a_deferred_telemetry_record_waits_for_emit_pending_and_is_sent_in_one_write(home, monkeypatch):

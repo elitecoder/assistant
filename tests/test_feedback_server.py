@@ -465,7 +465,7 @@ def test_a_stuck_feedback_lock_delays_an_answer_by_half_a_second_at_most_for_a_w
     release()
     assert code == 200 and len(out["marks"]) == 40
     assert out["feedback"]["recorded"] is False and out["feedback"]["missed"] == 40 and out["feedback"]["ids"] == []
-    assert feedback.LOCK_WAIT <= sum(slept) < feedback.LOCK_WAIT + 0.1, "one wait for forty rows, not forty"
+    assert 0.5 <= sum(slept) < 0.6, "one wait for forty rows, not forty"
 
 
 def test_a_busy_telemetry_database_never_delays_an_answer_but_every_record_still_arrives(http, wq, monkeypatch):
