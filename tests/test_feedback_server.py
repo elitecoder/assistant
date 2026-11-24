@@ -3,6 +3,7 @@ recording get in the way of the action."""
 from __future__ import annotations
 
 import json
+import re
 import time
 import types
 
@@ -346,3 +347,30 @@ def test_the_refresh_saves_each_rows_source_and_a_hash_of_its_sender_under_every
 def test_a_refresh_writes_the_context_file_beside_the_others(wq):
     refresh.write_page({"built": "now", "status": [], "github": [{"key": PR, "link": PR, "title": "t", "meta": "m", "draft": False}]})
     assert json.loads(refresh.rowctx_path().read_text()) == {PR: {"source": "github"}}
+
+
+# ─── the page: controls only where triage runs (Pro mode) ────────────────────
+
+def page_snap(triage) -> dict:
+    snap = {"built": "now", "status": [], "github": [{"key": PR, "link": PR, "title": "t", "meta": "m", "draft": False}],
+            "outlook": [{"key": "mail:1", "link": "https://outlook.office.com/m1", "title": "Hi", "subject": "Hi", "from": "Bob", "addr": "",
+                         "day": "Nov 2", "to": [], "cc": [], "body": "Body", "unread": False, "group": "act", "reason": "Because"}]}
+    verdict = {"why": "w", "disposition": "you", "effort": "Quick", "draft": "A draft", "lane": "do_first"}
+    start = [{"key": PR, "title": "t", "source": "GitHub", "effort": "", "reason": "r", "blocked": False}]
+    return {**snap, **({"triage": {"rows": {PR: verdict}, "start": start, "changes": None, "waiting": 0, "skipped": 0,
+                                   "note": "", "failed": []}} if triage else {})}
+
+
+def test_the_page_has_no_feedback_controls_without_triage_which_is_default_mode():
+    doc = page.render(page_snap(False))[0].split("<script>")[0]
+    assert 'class="fb"' not in doc and "data-fp" not in doc and "draft-fb" not in doc
+
+
+def test_the_page_names_each_item_by_its_pointer_and_never_by_its_link_in_a_pointer():
+    doc = page.render(page_snap(True))[0].split("<script>")[0]
+    mk = server.EMAIL_MARK + "mail:1"
+    spans = re.findall(r'<span class="fb" data-fk="([a-z_]+)" data-fp="([^"]*)" data-fkey="([^"]*)"></span>', doc)
+    assert sorted((k, p, key) for k, p, key in spans) == sorted([
+        ("row", ptr(PR), PR), ("start_here", ptr(PR), PR), ("draft", "draft:" + ptr(PR), PR), ("page", "page", ""),
+        ("email", ptr(mk), mk), ("email", ptr(mk), mk)])
+    assert all("https:" not in p for _, p, _ in spans)

@@ -105,8 +105,16 @@ def pill(v: dict) -> str:
     return f'<span class="disp d-{e(v["disposition"])}">Model suggests: {e(DISP[v["disposition"]])}</span>'
 
 
+def fb_span(on: bool, kind: str, key: str) -> str:
+    """Where the page puts the small feedback controls for one item, or nothing when feedback is off (it is on only
+    where the model's triage is, which is Pro mode). The page's script fills it in. `key` is what the server is
+    told the item by; `data-fp` is the item's pointer, which the page looks its saved feedback up by."""
+    return (f'<span class="fb" data-fk="{kind}" data-fp="{e(feedback.view_key(pointers.row_pointer(key), kind))}" data-fkey="{e(key)}"></span>'
+            if on else "")
+
+
 def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | None = None, mk: str = "",
-             source: str = "") -> str:
+             source: str = "", feedback: bool = False) -> str:
     """One Open list row, with the model's verdict when there is one, and Send to Agent whatever the verdict. The
     model's action title is the headline, with the row's own text under it. A row in one of the model's lanes names
     its `source`. An email row also carries its stable mark key, so hiding or sending it from the Email tab hides it
@@ -118,7 +126,8 @@ def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | 
     effort = f'<span class="sf-effort sf-{e(v["effort"].lower())}">{e(v["effort"])}</span>' if v else ""
     why = f'<span class="sf-why">{e(v["why"])}</span>' if v else ""
     draft = (f'<div class="draft"><textarea readonly rows="{min(6, 2 + len(v["draft"]) // 90)}" aria-label="Draft reply">'
-             f'{e(v["draft"])}</textarea><button class="btn" onclick="copyDraft(this)">Copy draft</button></div>') if v.get("draft") else ""
+             f'{e(v["draft"])}</textarea><button class="btn" onclick="copyDraft(this)">Copy draft</button></div>'
+             + (f'<div class="draft-fb">{fb_span(True, "draft", link)}</div>' if feedback else "")) if v.get("draft") else ""
     marked = f' data-mk="{e(mk)}"' if mk else ""
     return (f'<div class="sf-row" data-key="{e(link)}"{marked} data-q-title="{e(title)}" data-q-detail="{e(meta)}">'
             f'<div class="sf-main"><a class="sf-link" href="{e(link)}"{NEWTAB}>'
@@ -127,7 +136,7 @@ def open_row(title: str, meta: str, link: str, extra: str = "", verdict: dict | 
             '<button class="btn ghost" onclick="setState(this,\'snoozed\')" title="Hide for 3 days">Snooze</button>'
             '<button class="btn ghost" onclick="setState(this,\'dropped\')">Drop</button>'
             '<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts '
-            f'for you">Send to Agent</button></div>{draft}{extra}</div>')
+            f'for you">Send to Agent</button>{fb_span(feedback, "email" if mk else "row", mk or link)}</div>{draft}{extra}</div>')
 
 
 def agents_section(rows: list[tuple[str, str, str, str, bool]]) -> str:
@@ -184,7 +193,7 @@ def em_data(m: dict) -> str:
             f' data-q-detail="{e(detail)}"{gmail_key}')
 
 
-def em_acts(m: dict) -> str:
+def em_acts(m: dict, feedback: bool = False) -> str:
     """Send to Agent and Snooze on every email; Archive (while it's in the inbox) and Mark read (while it's unread) on
     Gmail only, since the Work queue only reads Outlook. Undo shows on a hidden email."""
     gmail_row = m["key"].startswith("gmail:")
@@ -196,7 +205,7 @@ def em_acts(m: dict) -> str:
                if gmail_row and not m.get("archived") else "")
             + ('<button class="btn ghost em-readbtn" onclick="gmailAct(this,\'read\')">Mark read</button>'
                if gmail_row and m["unread"] else "")
-            + '<button class="btn em-undo" onclick="undoMail(this)" hidden>Undo</button></div>')
+            + '<button class="btn em-undo" onclick="undoMail(this)" hidden>Undo</button>' + fb_span(feedback, "email", email_mark(m)) + '</div>')
 
 
 def emails(snap: dict) -> dict:
@@ -241,17 +250,17 @@ def mail_ctx(m: dict) -> str:
             f'<span class="cx-t">{e(m["body"][:3000])}</span></div>{more}</div>')
 
 
-def mail_info(m: dict, need: bool = False) -> str:
+def mail_info(m: dict, need: bool = False, feedback: bool = False) -> str:
     """An email that needs you or is worth reading, with the email actions."""
     flag = '<span class="pr-pill amber">Unread</span>' if m["unread"] else ""
     return (f'<div class="pr-row em-row{" em-need" if need else ""}"{em_data(m)}><a class="sf-title" href="{e(m["link"])}"'
             f'{NEWTAB}>{e(m["title"])}</a><div class="pr-meta">{flag}</div>{mail_ctx(m)}<span class="ap-why"><b>Why:</b> '
-            f'{e(m["reason"])}</span>{em_acts(m)}</div>')
+            f'{e(m["reason"])}</span>{em_acts(m, feedback)}</div>')
 
 
-def mail_list(title: str, rows: list[dict], need: bool = False) -> str:
+def mail_list(title: str, rows: list[dict], need: bool = False, feedback: bool = False) -> str:
     return (f'<h4 class="mail-h">{title} <span class="count">{len(rows)}</span></h4>'
-            f'<div class="sf-list">{"".join(mail_info(m, need) for m in rows)}</div>')
+            f'<div class="sf-list">{"".join(mail_info(m, need, feedback) for m in rows)}</div>')
 
 
 def mail_section(sid: str, title: str, note: str, body: str, is_open: bool) -> str:
@@ -296,7 +305,7 @@ def start_section(tri: dict, note: str) -> str:
                     f' <span class="pr-pill src">{e(s["source"])}</span>'
                     + (f' <span class="sf-effort sf-{e(s["effort"].lower())}">{e(s["effort"])}</span>' if s["effort"] else "")
                     + '<button class="btn sf-mark" onclick="setState(this,\'done\')">Done</button>'
-                    + ("" if s["blocked"] else START_SEND) + '</div>'
+                    + ("" if s["blocked"] else START_SEND) + fb_span(True, "start_here", s["key"]) + '</div>'
                     + (f'<span class="sf-orig">{e(s["title"])}</span>' if heads[s["key"]] else "") +
                     f'<span class="ap-why">{e(s["reason"])}</span></li>' for s in tri["start"])
     body = f'<ol class="start-list">{items}</ol>' if items else '<p class="meta">No Start here list this time.</p>'
@@ -310,6 +319,7 @@ def render(snap: dict) -> tuple[str, dict]:
     cands: dict[str, dict] = {}
     lanes, sections, tabs = [], [], []
     tri = snap.get("triage")
+    pro = tri is not None  # triage runs only in Pro mode, and so do the feedback controls
     verdicts = (tri or {}).get("rows", {})
     note = (f'<p class="triage-note">Triage unavailable: {e(tri["note"])}. Rows without a model verdict still show, '
             'grouped by the rules, and offer Send to Agent.</p>'
@@ -330,7 +340,7 @@ def render(snap: dict) -> tuple[str, dict]:
         """The row's HTML for its source's group, or "" when it goes in the model's lane instead."""
         v = verdicts.get(link)
         agent_rows.append((title, meta, link, source, bool(v) and v["disposition"] == "agent"))
-        html_row = open_row(title, meta, link, extra, v, mk, source)
+        html_row = open_row(title, meta, link, extra, v, mk, source, pro)
         if v and v.get("lane") in laned:
             laned[v["lane"]].append(html_row)
             return ""
@@ -395,7 +405,7 @@ def render(snap: dict) -> tuple[str, dict]:
         need += len(acts)
         parts.append(mail_section("email", "Outlook", f"{len(mail)} emails in your inbox. {len(acts)} need you, "
                                   f"{len(reads)} are worth reading, and {sum(map(len, by.values()))} can go.",
-                                  mail_list("Needs you", acts, True) + mail_list("Worth reading", reads) +
+                                  mail_list("Needs you", acts, True, pro) + mail_list("Worth reading", reads, False, pro) +
                                   '<h4 class="mail-h">Ready to delete</h4><p class="meta">The Work queue only reads Outlook. '
                                   'Approve what can go, and this search updates to find exactly those emails. Paste it into '
                                   'Outlook search with the scope set to Inbox, select all, and delete.</p>'
@@ -421,7 +431,7 @@ def render(snap: dict) -> tuple[str, dict]:
         need += len(yours)
         parts.append(mail_section(f"gmail-{n}", f"Gmail: {e(account)}", f"{len(rows)} conversations. {len(yours)} need you, "
                                   f"{len(looks)} are worth a look, and {n_del} can go.",
-                                  mail_list("Needs you", yours, True) + mail_list("Worth a look", looks) +
+                                  mail_list("Needs you", yours, True, pro) + mail_list("Worth a look", looks, False, pro) +
                                   '<h4 class="mail-h">Ready to delete</h4><p class="meta">Approve what can go, then select Apply approvals. '
                                   'Each conversation moves to Gmail\'s Trash, which keeps it for 30 days. Undo moves it back to your inbox.</p>'
                                   f'{groups}', bool(yours)))
@@ -480,10 +490,13 @@ def render(snap: dict) -> tuple[str, dict]:
            f'<div class="sf-head"><h2>Work queue</h2><p class="meta">Last refreshed <span id="built" data-iso="{e(snap.get("built_iso", ""))}">{e(snap["built"])}</span> from your linked sources. '
            + ("Rules sort every row, and a model explains each open row and picks where to start. Nothing is sent "
               "without you.</p>" if tri else "Rules sort every row; nothing is sent without you.</p>") +
-           '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span></div>'
+           '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span>' + (PAGE_FB if pro else "") + '</div>'
            f'<ul class="sources">{status}</ul>{tabs_html}{"".join(sections)}{bar}'
            f'</div><script>const MAILDATA={maildata};</script><script>{JS}</script></body></html>')
     return doc, cands
+
+
+PAGE_FB = '<span class="fb" data-fk="page" data-fp="page" data-fkey=""></span>'
 
 
 def placeholder(message: str) -> str:
@@ -560,6 +573,14 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .ag-bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin:0 0 10px}.ag-opt{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--text-2)}
 .ag-row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line);cursor:pointer}.ag-row:first-child{border-top:0}.ag-row[hidden]{display:none}
 .ag-text{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}#ag-msg{overflow-wrap:anywhere}
+.fb{display:inline-flex;gap:6px;align-items:center;flex:none}.fb-down{padding:5px 7px;line-height:0;color:var(--muted)}
+.fb-down svg{display:block}.fb-down[aria-pressed="true"]{color:var(--red);border-color:var(--red);background:var(--red-bg)}
+.fb-open{border-color:transparent;background:none;text-decoration:underline;text-underline-offset:2px}.fb-down,.fb-open{opacity:.7}.fb-down:hover,.fb-open:hover,.fb-down:focus-visible,.fb-open:focus-visible,.fb-down[aria-pressed="true"]{opacity:1}
+.fb-extra{display:block}.fb-line{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fb-line:not(:empty){margin-top:6px}
+.fb-reasons{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;font:11px/1.2 var(--mono);color:var(--muted)}
+.fb-r[aria-pressed="true"]{color:var(--text);border-color:var(--line-strong)}.fb-tell{display:flex;gap:6px;align-items:flex-start;margin-top:6px}
+.fb-tell textarea{flex:1;min-width:0;min-height:36px;resize:vertical;font:13px/1.5 var(--sans);padding:6px 8px;background:var(--hover);color:var(--text);border:1px solid var(--line-strong);border-radius:6px}
+.draft-fb{margin-top:4px}
 .toast{position:fixed;right:16px;bottom:70px;max-width:min(360px,calc(100vw - 32px));padding:10px 14px;border-radius:8px;background:var(--panel);border:1px solid var(--green);font-size:13px;z-index:50}
 .mq{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px}.mq code{font:11px/1.5 var(--mono);color:var(--text-2);background:var(--hover);border:1px solid var(--line);border-radius:6px;padding:4px 8px;overflow-wrap:anywhere;min-width:0;flex:1}
 .mail-h{font:600 13px/1.4 var(--sans);color:var(--text-2);margin:14px 0 4px}
@@ -613,10 +634,11 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 JS = r"""
 const DAY=864e5;
 let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{}}, API=true, polling=false, sending=false;
-ST.queued={};ST.mail={};ST.checks={};let GONE=new Set(),qTimer=0;
+ST.queued={};ST.mail={};ST.checks={};ST.feedback={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
-async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.json()}
+async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);const o=await r.json();
+ if(o&&o.feedback&&o.feedback.recorded===false)toast('That worked, but Assistant couldn’t save a note of it for later.');return o}
 function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
  document.querySelectorAll('.sf-lane .sf-row,.ag-row,.start-list li:not([data-blocked])').forEach(r=>{if(sent.has(r.dataset.key))r.remove()});
@@ -636,7 +658,7 @@ function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
   const el=document.querySelector(s);if(el)el.textContent=n}
  document.querySelectorAll('.sf-lane').forEach(l=>{l.querySelector('h3 .count').textContent=l.querySelectorAll('.sf-row:not(.is-done):not(.is-hidden)').length});
  const b=$('showhidden');if(b)b.textContent=(document.body.classList.contains('show-hidden')?'Hide':'Show')+' snoozed and dropped ('+hidden+')'
- renderReady();schedulePoll()}
+ renderReady();fbPaint();schedulePoll()}
 function hides(v,now){return !!v&&(v.state!=='snoozed'||v.until>now)}
 function mailWhy(r,now){const ks=[r.dataset.mk,r.dataset.link],q=ks.map(k=>ST.queued[k]).find(Boolean);
  if(q)return 'Sent to an agent as '+q.id;
@@ -657,7 +679,7 @@ function paintMail(now,sent){let extra=0,gone=0;GONE=new Set();
 function toggleMailHidden(){document.body.classList.toggle('show-em-hidden');paint()}
 function readyKey(id){return READY_MARK+id}
 function renderReady(){const box=$('ready');if(!box)return;const ol=box.querySelector('.ready-list'),cl=box.querySelector('.ready-cleared');
- ol.textContent='';cl.textContent='';
+ FBKEEP=fbKeep();ol.textContent='';cl.textContent='';
  const ready=Object.values(ST.queued).filter(q=>(q.status==='done'||q.status==='blocked')&&!MK[readyKey(q.id)]);
  const auto=Object.values(ST.queued).filter(q=>{const m=MK[readyKey(q.id)];return !!m&&!!m.auto&&Date.now()-new Date(m.at)<CLEARED_FOR});
  ready.sort((a,b)=>b.finished.localeCompare(a.finished)).forEach(q=>ol.append(readyItem(q)));
@@ -670,6 +692,7 @@ function renderReady(){const box=$('ready');if(!box)return;const ol=box.querySel
 function readyItem(q){const li=document.createElement('li'),top=document.createElement('div'),t=document.createElement('span'),s=document.createElement('span');
  t.className='sf-title';t.textContent=q.title+' ('+q.id+')';top.append(t,button('Done','btn sf-mark',b=>doneReady(b,q.id)));
  if(q.workspace)top.append(button('Open workspace','btn',b=>openWs(b,q.id)));
+ if(FB){const f=document.createElement('span');f.className='fb';f.dataset.fk='result';f.dataset.fp=q.id;f.dataset.fkey=readyKey(q.id);top.append(f)}
  s.className='ready-result '+q.status;li.dataset.id=q.id;
  if(q.status==='blocked')s.textContent='Blocked: '+(q.reason||'the agent didn’t say why.');
  else linkify(s,q.result||'Done, but the agent left no written result. Open '+q.id+' on the Tasks tab of the Assistant dashboard to see what happened.');
@@ -743,7 +766,7 @@ function mailSearch(){const appr=new Set(MAILDATA.filter(m=>(ST.decisions[m.k]||
 function renderMq(MS){const q=$('mq-q');if(!q)return;q.textContent=MS.q||'Approve emails below to build your search.';$('mq-copy').disabled=!MS.q;
  $('mq-note').textContent=MS.q?('Finds the '+MS.n+' emails you approved and nothing else in your inbox as last read. Newer mail from the same sender or with the same subject matches too, so check the results before you delete.'+(MS.manual.length?' '+MS.manual.length+' approved emails share a sender and subject with ones you kept, so delete those by hand.':'')):''}
 function copySearch(b){navigator.clipboard.writeText($('mq-q').textContent).then(()=>b.textContent='Copied')}
-function copyDraft(b){navigator.clipboard.writeText(b.previousElementSibling.value).then(()=>b.textContent='Copied')}
+function copyDraft(b){navigator.clipboard.writeText(b.previousElementSibling.value).then(()=>{b.textContent='Copied';fbDraft(b)})}
 function renderAp(){let approved=0;const MS=mailSearch();
  document.querySelectorAll('.ap-row').forEach(r=>{const k=r.dataset.key,d=(ST.decisions[k]||{}).decision,a=ST.applied[k]||{},kind=r.dataset.kind;
   const done=a.status==='done',settled=done||a.status==='gone';r.classList.toggle('applied',settled);r.classList.toggle('approved',d==='approve'&&!settled);r.classList.toggle('kept',d==='keep');r.classList.toggle('failed',a.status==='error');
@@ -787,11 +810,61 @@ async function refresh(){try{ST=Object.assign(ST,await api('/api/state'));API=tr
  if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)reloadIfIdle()}}
 function reloadIfIdle(){if([...document.querySelectorAll('.compose textarea')].some(t=>t.value.trim()))
   return toast('The refresh finished. Send or cancel your note, then reload the page to see the new rows.');
+ if(Object.values(FBUI).some(u=>u.reasons||(u.tell&&(u.words||'').trim())))
+  return toast('The refresh finished. Finish what you are telling Assistant, then reload the page to see the new rows.');
  location.reload()}
 async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
 function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key);decide(keys,'approve')}
 async function applyNow(){try{await api('/api/apply',{method:'POST',body:'{}'});ST.status={running:true};renderAp();setTimeout(refresh,1500)}catch(e){$('ap-msg').textContent='Not started: '+e.message}}
 async function refreshNow(){try{await api('/api/refresh',{method:'POST',body:'{}'});ST.refresh={running:true};renderRefresh();polling=true;setTimeout(refresh,2500)}catch(e){$('refresh-msg').textContent='Not started: '+e.message}}
+const FB=!!document.querySelector('.fb[data-fk="page"]'),FBX=new Map(),FBR={row:[['not_important','Not important'],['wrong_order','Wrong order'],['not_mine','Not mine'],['already_done','Already done']],
+ draft:[['bad_draft','Bad draft']],result:[['not_what_i_asked','Not what I asked'],['should_not_have_started','Shouldn’t have started this']]};
+FBR.start_here=FBR.email=FBR.row;let FBUI={},FBKEEP=null;
+const SAID={not_important:'not important',wrong_order:'in the wrong order',not_mine:'not mine',already_done:'already done',bad_draft:'a bad draft',
+ not_what_i_asked:'not what I asked',should_not_have_started:'something it shouldn’t have started'};
+const THUMB='<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.7a2 2 0 0 0-2 1.7l-1.4 9a2 2 0 0 0 2 2.3H10z"/><path d="M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>';
+function fbNote(v){const p=[];if(v.down)p.push('You said: '+(SAID[v.reason]||'this is wrong')+'.');if(v.told)p.push('You told Assistant: “'+v.told+'”.');
+ return p.length?p.join(' ')+' Nothing has changed yet because of this.':''}
+function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),line=document.createElement('span');
+ if(k!=='page'){h.down=button('','btn ghost fb-down',()=>fbDown(s));h.down.type='button';h.down.dataset.fb='down';h.down.innerHTML=THUMB;s.append(h.down)}
+ h.open=button(k==='page'?'Tell Assistant about this page':'Tell Assistant','btn ghost fb-open',()=>fbTell(s));h.open.type='button';h.open.dataset.fb='open';
+ s.append(h.open);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);
+ s.parentElement.after(x)}
+function fbSync(s){const fp=s.dataset.fp,u=FBUI[fp]=FBUI[fp]||{},v=ST.feedback[fp]||{},h=FBX.get(s),line=h.x.firstChild,note=fbNote(v);
+ if(h.down){h.down.setAttribute('aria-pressed',!!v.down);h.down.setAttribute('aria-label',v.down?'Take back: this is wrong':'This is wrong');
+  h.down.title=v.down?'Take back':'Tell Assistant this is wrong'}
+ const sig=[!!(u.reasons&&v.down),v.reason,note].join('|');
+ if(line.dataset.sig!==sig){line.dataset.sig=sig;line.textContent='';
+  if(u.reasons&&v.down){const g=document.createElement('span');g.className='fb-reasons';g.setAttribute('role','group');g.setAttribute('aria-label','Why is this wrong? Optional');
+   g.append('Why? ');FBR[s.dataset.fk].forEach(([c,l])=>{const b=button(l,'btn ghost fb-r',()=>fbReason(s,c));b.type='button';b.dataset.fb='r:'+c;b.setAttribute('aria-pressed',v.reason===c);g.append(b)});
+   const skip=button('Skip','btn ghost fb-skip',()=>{u.reasons=false;fbPaint()});skip.type='button';skip.dataset.fb='skip';g.append(skip);line.append(g)}
+  if(note){const n=document.createElement('span');n.className='fb-note meta';n.textContent=note;line.append(n)}}
+ let box=h.x.querySelector('.fb-tell');
+ if(!u.tell){if(box)box.remove();return}
+ if(box)return;
+ box=document.createElement('div');box.className='fb-tell';const ta=document.createElement('textarea'),go=button('Send','btn fb-go',()=>fbSendTell(s)),
+  no=button('Cancel','btn ghost fb-no',()=>{u.tell=false;u.words='';fbPaint()});
+ ta.rows=2;ta.value=u.words||'';ta.dataset.fb='text';ta.setAttribute('aria-label','Tell Assistant');ta.placeholder='What should Assistant know about this? Cmd+Enter sends, Esc cancels.';
+ ta.oninput=()=>{u.words=ta.value};ta.onkeydown=ev=>{if(ev.key==='Enter'&&(ev.metaKey||ev.ctrlKey))go.click();else if(ev.key==='Escape')no.click()};
+ go.dataset.fb='send';no.dataset.fb='cancel';box.append(ta,go,no);h.x.append(box)}
+function fbPaint(){if(!FB)return;document.querySelectorAll('.fb').forEach(s=>{if(!FBX.has(s))fbBuild(s);
+  const bar=s.parentElement;if(bar.lastElementChild!==s)bar.append(s);fbSync(s)});
+ if(FBKEEP){const k=FBKEEP,el=document.querySelector('#ready [data-fp="'+k.fp+'"] [data-fb="'+k.id+'"]');FBKEEP=null;
+  if(el){el.focus();if(k.s!=null)el.setSelectionRange(k.s,k.e)}}}
+function fbKeep(){const a=document.activeElement,h=a.closest('#ready [data-fp]');return h?{fp:h.dataset.fp,id:a.dataset.fb,s:a.selectionStart,e:a.selectionEnd}:null}
+function fbPost(body){return api('/api/feedback',{method:'POST',body:JSON.stringify(body)})}
+async function fbSend(s,body,after){const u=FBUI[s.dataset.fp];if(u.busy)return;u.busy=true;
+ try{const o=await fbPost(body);ST.feedback=Object.assign({},ST.feedback,{[s.dataset.fp]:o.view});Object.assign(u,after(o.view));fbPaint()}
+ catch(e){toast('Not noted: '+e.message)}
+ u.busy=false}
+function fbDown(s){const v=ST.feedback[s.dataset.fp]||{},item={key:s.dataset.fkey,kind:s.dataset.fk};
+ return fbSend(s,v.down?{...item,signal:'retract',amends:v.down}:{...item,signal:'thumbs_down'},w=>({reasons:!!w.down}))}
+function fbReason(s,reason){return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down',reason,amends:ST.feedback[s.dataset.fp].down},()=>({reasons:false}))}
+function fbTell(s){const u=FBUI[s.dataset.fp];u.tell=true;fbPaint();FBX.get(s).x.querySelector('textarea').focus()}
+function fbSendTell(s){const u=FBUI[s.dataset.fp],words=(u.words||'').trim();if(!words)return toast('Write something to tell Assistant first.');
+ return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'tell',words},()=>({tell:false,words:''}))}
+async function fbDraft(b){const s=b.closest('.sf-row').querySelector('.draft-fb .fb');
+ try{await fbPost({key:s.dataset.fkey,kind:'draft',signal:'used_draft'})}catch(e){toast('Copied. Assistant couldn’t note that you used the draft.')}}
 const TAB_IDS=[...document.querySelectorAll('#tabs .tab')].map(a=>a.dataset.t).filter(t=>t!=='all');
 function tabOf(id){if(TAB_IDS.includes(id)||id==='all')return id;const el=id?$(id):null,sec=el&&TAB_IDS.find(s=>$(s).contains(el));
  if(!sec)return TAB_IDS[0];for(let d=el;d;d=d.parentElement)if(d.tagName==='DETAILS')d.open=true;

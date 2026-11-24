@@ -785,7 +785,7 @@ def give_feedback(body: dict):
         return 500, {"error": "Assistant couldn’t save that. What you were doing isn’t affected"}
     except ValueError as exc:
         return 400, {"error": str(exc)}
-    return 200, {"id": made, "view": feedback.views().get(found["subject"] or "page", {})}
+    return 200, {"id": made, "view": feedback.views().get(feedback.view_key(found["subject"], kind), {})}
 
 
 def state() -> dict:

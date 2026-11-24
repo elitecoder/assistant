@@ -223,7 +223,9 @@ def test_views_say_what_still_stands_for_each_subject(home):
     feedback.record("retract", second, "row", "work-queue", amends=gone)
     feedback.record("tell", "", "page", "work-queue", words="Too long a list")
     feedback.record("done", ROW, "row", "work-queue")
-    assert feedback.views() == {ROW: {"kind": "row", "down": first, "reason": "wrong_order", "told": "x" * 80 + "…"},
+    feedback.record("thumbs_down", ROW, "draft", "work-queue")
+    assert feedback.views().pop("draft:" + ROW)["down"].startswith("fb-")
+    assert {k: v for k, v in feedback.views().items() if k != "draft:" + ROW} == {ROW: {"kind": "row", "down": first, "reason": "wrong_order", "told": "x" * 80 + "…"},
                                 "page": {"kind": "page", "down": "", "reason": "", "told": "Too long a list"}}
     again = down()
     assert feedback.views()[ROW]["down"] == again and feedback.views()[ROW]["reason"] == ""

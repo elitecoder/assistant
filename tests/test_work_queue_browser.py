@@ -26,6 +26,7 @@ import pytest
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Error, sync_playwright  # noqa: E402
 
+from assistant import pointers  # noqa: E402
 from work_queue import config, page, refresh, server, triage  # noqa: E402
 from work_queue_fakes import (VERDICT, Model, calls, chromium_missing, fake_tool, first_line, gh_pr, raises,  # noqa: E402, F401
                               require_chromium, spare_port, wq)
@@ -1572,5 +1573,382 @@ def test_a_refresh_that_finishes_while_you_type_a_note_doesnt_reload_it_away(sit
         wait_text(tab, ".toast", "The refresh finished. Send or cancel your note, then reload the page to see the new rows.")
         assert tab.locator(f"{row} .compose textarea").input_value() == "Half a thought"
         no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+# ─── feedback: the thumbs-down and Tell Assistant ────────────────────────────
+
+def fb_seed(wq) -> dict:
+    """The Ready for you seed, plus an open row with a draft, an email, and the Start here item for that row."""
+    ready_seed(wq)
+    row = pr(3)["key"]
+    verdict = {**VERDICT, "disposition": "you", "lane": "do_first", "draft": "Hi Ana, I will take this one.", "title": "Review change 3"}
+    start = [{"key": pr(2)["key"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "", "reason": triage.BLOCKED_REASON,
+              "blocked": True},
+             {"key": row, "title": "o/r#3: Change 3", "source": "GitHub", "effort": "Quick", "reason": "Go", "blocked": False}]
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 9)], "status": [],
+                "outlook": [mail("o-act", "act", "ana@example.com", "Can you review?")],
+                "triage": {"rows": {row: verdict}, "start": start, "changes": None, "waiting": 0, "skipped": 0, "note": "",
+                           "failed": []}})
+    traces_file = wq.data / "traces.json"
+    config.write_json(traces_file, {row: {"trace": "tr-" + "ab" * 8, "seen": "2026-11-20"}})
+    return {"row": row, "mail": server.EMAIL_MARK + "o-act"}
+
+
+def fb_lines(wq) -> list[dict]:
+    path = wq.home / ".assistant/feedback/feedback.jsonl"
+    return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+
+
+def fb_in(selector: str) -> str:
+    return f"{selector} .fb"
+
+
+def pressed(tab, selector: str, on: bool = True) -> None:
+    tab.wait_for_selector(f'{selector} .fb-down[aria-pressed="{str(on).lower()}"]')
+
+
+def test_a_thumbs_down_is_one_tap_a_reason_amends_it_and_a_second_tap_takes_it_back(site, wq):
+    keys = fb_seed(wq)
+    row = f'.sf-row[data-key="{keys["row"]}"] > .sf-main'
+    x = f'.sf-row[data-key="{keys["row"]}"] > .sf-main + .fb-extra'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        errors = []
+        tab.on("pageerror", lambda exc: errors.append(str(exc)))
+        tab.clock.install()
+        tab.goto(site + "#all")
+        assert tab.locator(f"{row} .fb-down").get_attribute("aria-pressed") == "false"
+        assert tab.locator(f"{row} .fb-down").get_attribute("aria-label") == "This is wrong"
+        assert tab.locator(f"{row} .fb-open").inner_text() == "Tell Assistant"
+        assert tab.locator(f"{row} > button").evaluate_all("els => els.map(e => e.textContent)") == \
+            ["Done", "Snooze", "Drop", "Send to Agent"], "the old buttons keep their places"
+        assert tab.locator(f"{row} > :last-child").get_attribute("class") == "fb"
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, row)
+        (first,) = fb_lines(wq)
+        assert (first["signal"], first["kind"], first["surface"], first["subject"], first["trace"]) == \
+            ("thumbs_down", "row", "work-queue", pointers.row_pointer(keys["row"]), "tr-" + "ab" * 8)
+        assert tab.locator(f"{row} .fb-down").get_attribute("aria-label") == "Take back: this is wrong"
+        reasons = tab.locator(f"{x} .fb-reasons")
+        assert reasons.locator("button").evaluate_all("els => els.map(e => e.textContent)") == \
+            ["Not important", "Wrong order", "Not mine", "Already done", "Skip"]
+        assert tab.locator(f"{x} .fb-note").inner_text() == "You said: this is wrong. Nothing has changed yet because of this."
+        assert tab.locator(".sf-row[data-key] .sf-mark").first.inner_text() in ("Done", "Undo")
+
+        reasons.get_by_role("button", name="Not mine").click()
+        tab.wait_for_selector(f"{x} .fb-reasons", state="detached")
+        assert tab.locator(f"{x} .fb-note").inner_text() == "You said: not mine. Nothing has changed yet because of this."
+        second = fb_lines(wq)[1]
+        assert (second["signal"], second["reason"], second["amends"], second["subject"]) == \
+            ("thumbs_down", "not_mine", first["id"], first["subject"])
+        assert "words" not in second
+
+        tab.reload()
+        tab.wait_for_selector(f'{row} .fb-down[aria-pressed="true"]')
+        assert tab.locator(f"{x} .fb-note").inner_text() == "You said: not mine. Nothing has changed yet because of this."
+        assert tab.locator(f"{x} .fb-reasons").count() == 0, "a reload doesn't reopen the reasons"
+        start = '.start-list li[data-key="%s"]' % keys["row"]
+        assert tab.locator(f"{start} .fb-down").get_attribute("aria-pressed") == "true", "the same row says the same"
+        assert tab.locator(f"{start} .fb-note").inner_text().startswith("You said: not mine.")
+
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, row, False)
+        assert [r["signal"] for r in fb_lines(wq)] == ["thumbs_down", "thumbs_down", "retract"]
+        assert fb_lines(wq)[2]["amends"] == first["id"]
+        assert tab.locator(f"{x} .fb-note").count() == 0
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, row)
+        tab.locator(x).get_by_role("button", name="Skip").click()
+        tab.wait_for_selector(f"{x} .fb-reasons", state="detached")
+        assert tab.locator(f"{x} .fb-note").inner_text().startswith("You said: this is wrong.")
+        assert not errors
+        cov.snap()
+        browser.close()
+
+
+def test_every_kind_of_item_offers_its_own_reasons_and_a_used_draft_is_noted(site, wq):
+    keys = fb_seed(wq)
+    x = f'.sf-row[data-key="{keys["row"]}"] > .sf-main + .fb-extra'
+    items = {
+        "start_here": ('.start-list li[data-key="%s"] .fb' % pr(3)["key"], ["Not important", "Wrong order", "Not mine", "Already done"]),
+        "email": (f'.em-row[data-mk="{keys["mail"]}"] .fb', ["Not important", "Wrong order", "Not mine", "Already done"]),
+        "draft": (".draft-fb .fb", ["Bad draft"]),
+        "result": ('#ready li[data-id="td-101"] .fb', ["Not what I asked", "Shouldn’t have started this"]),
+    }
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        context.grant_permissions(["clipboard-read", "clipboard-write"])
+        tab = context.new_page()
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#all")
+        for kind, (fb, labels) in items.items():
+            tab.locator(f"{fb} .fb-down").first.click()
+            tab.wait_for_selector(f'{fb} .fb-down[aria-pressed="true"]')
+            extra = f'.fb-extra[data-fp="{tab.locator(fb).first.get_attribute("data-fp")}"]'
+            group = tab.locator(f"{extra} .fb-reasons").first
+            assert group.locator("button:not(.fb-skip)").evaluate_all("els => els.map(e => e.textContent)") == labels, kind
+            group.locator("button").first.click()
+            tab.wait_for_selector(f"{extra} .fb-reasons", state="detached")
+        got = {r["kind"]: r for r in fb_lines(wq) if r["signal"] == "thumbs_down" and r.get("amends")}
+        assert {k: r["reason"] for k, r in got.items()} == {"start_here": "not_important", "email": "not_important",
+                                                           "draft": "bad_draft", "result": "not_what_i_asked"}
+        assert got["result"]["subject"] == "td-101"
+        assert got["email"]["subject"] == pointers.row_pointer(keys["mail"])
+        assert got["draft"]["subject"] == pointers.row_pointer(keys["row"])
+        assert tab.locator("#ready li[data-id='td-101'] .fb-note").inner_text() == \
+            "You said: not what I asked. Nothing has changed yet because of this."
+        assert tab.locator(".draft-fb + .fb-extra .fb-note").inner_text().startswith("You said: a bad draft.")
+        assert tab.locator(f"{x} .fb-note").inner_text().startswith("You said: not important."), "a draft is its own item"
+
+        tab.get_by_role("button", name="Copy draft").click()
+        tab.wait_for_function("document.querySelector('.draft .btn').textContent === 'Copied'")
+        assert wait_for(lambda: any(r["signal"] == "used_draft" for r in fb_lines(wq)))
+        used = next(r for r in fb_lines(wq) if r["signal"] == "used_draft")
+        assert (used["kind"], used["subject"]) == ("draft", pointers.row_pointer(keys["row"]))
+        cov.snap()
+        browser.close()
+
+
+def test_tell_assistant_records_your_words_for_an_item_and_for_the_page(site, wq):
+    keys = fb_seed(wq)
+    row = f'.sf-row[data-key="{keys["row"]}"] > .sf-main'
+    x = f'.sf-row[data-key="{keys["row"]}"] > .sf-main + .fb-extra'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#all")
+        tab.locator(f"{row} .fb-open").click()
+        box = tab.locator(f"{row} + .fb-extra .fb-tell textarea, {x} .fb-tell textarea").first
+        assert tab.evaluate("document.activeElement.dataset.fb") == "text", "the box takes focus"
+        tab.locator(f"{x} .fb-go").click()
+        wait_text(tab, ".toast", "Write something to tell Assistant first.")
+        assert fb_lines(wq) == []
+        box.fill("never mind")
+        tab.keyboard.press("Escape")
+        tab.wait_for_selector(f"{x} .fb-tell", state="detached")
+        tab.locator(f"{row} .fb-open").click()
+        assert tab.locator(f"{x} .fb-tell textarea").input_value() == ""
+        tab.locator(f"{x} .fb-no").click()
+        tab.wait_for_selector(f"{x} .fb-tell", state="detached")
+        tab.locator(f"{row} .fb-open").click()
+        tab.locator(f"{x} .fb-tell textarea").fill("This is Ana's, not mine. " + "Please ask her. " * 10)
+        tab.keyboard.press("Shift+Enter")
+        tab.keyboard.press("Meta+Enter")
+        tab.wait_for_selector(f"{x} .fb-tell", state="detached")
+        (told,) = fb_lines(wq)
+        assert told["signal"] == "tell" and told["words"].startswith("This is Ana's, not mine. Please ask her.")
+        assert told["subject"] == pointers.row_pointer(keys["row"]) and told["kind"] == "row"
+        note = tab.locator(f"{x} .fb-note").inner_text()
+        assert note.startswith("You told Assistant: “This is Ana's, not mine. Please ask her.") and \
+            note.endswith("…”. Nothing has changed yet because of this.")
+        assert tab.locator(f"{row} .fb-down").get_attribute("aria-pressed") == "false", "words are not a thumbs-down"
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, f"{row}")
+        assert tab.locator(f"{x} .fb-note").inner_text().startswith("You said: this is wrong. You told Assistant: “This is Ana")
+
+        page_box = '.sf-head .fb[data-fk="page"]'
+        assert tab.locator(f"{page_box} .fb-down").count() == 0 and tab.locator(f"{page_box} .fb-open").inner_text() == \
+            "Tell Assistant about this page"
+        tab.locator(f"{page_box} .fb-open").click()
+        tab.locator(".sf-head + .fb-extra .fb-tell textarea, .fb-extra[data-fp=page] textarea").first.fill("Too many Slack rows")
+        tab.locator(".fb-extra[data-fp=page] .fb-go").click()
+        tab.wait_for_selector(".fb-extra[data-fp=page] .fb-tell", state="detached")
+        page_note = fb_lines(wq)[-1]
+        assert (page_note["kind"], page_note["words"], "subject" in page_note) == ("page", "Too many Slack rows", False)
+        assert tab.locator(".fb-extra[data-fp=page] .fb-note").inner_text() == \
+            "You told Assistant: “Too many Slack rows”. Nothing has changed yet because of this."
+        no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+def test_a_refresh_that_finishes_while_you_choose_a_reason_or_type_keeps_your_place(site, wq, monkeypatch):
+    keys = fb_seed(wq)
+    row = f'.sf-row[data-key="{keys["row"]}"] > .sf-main'
+    x = f'.sf-row[data-key="{keys["row"]}"] > .sf-main + .fb-extra'
+    monkeypatch.setattr(server, "start_refresh", lambda: (config.write_json(refresh.status_path(), {"running": True}),
+                                                         (202, {"started": True}))[1])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 900})
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#all")
+
+        def finish_a_refresh(n: int) -> None:
+            tab.locator("#refresh").click()
+            wait_text(tab, "#refresh", "Refreshing…")
+            config.write_json(refresh.status_path(), {"running": False, "finished": f"t{n}"})
+            tab.clock.run_for(2500)
+
+        tab.evaluate("window.stillHere = 1")
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, row)
+        finish_a_refresh(1)
+        wait_text(tab, ".toast", "The refresh finished. Finish what you are telling Assistant, then reload the page to see the new rows.")
+        assert tab.locator(f"{row} + .fb-extra .fb-reasons, {x} .fb-reasons").count() == 1, "the reasons are still open"
+        tab.locator(f"{x}").get_by_role("button", name="Wrong order").click()
+        tab.wait_for_selector(f"{x} .fb-reasons", state="detached")
+
+        tab.locator(f"{row} .fb-open").click()
+        tab.locator(f"{x} .fb-tell textarea").fill("Half a thought")
+        tab.evaluate("document.querySelectorAll('.toast').forEach(t => t.remove())")
+        finish_a_refresh(2)
+        wait_text(tab, ".toast", "The refresh finished. Finish what you are telling Assistant, then reload the page to see the new rows.")
+        assert tab.locator(f"{x} .fb-tell textarea").input_value() == "Half a thought"
+        assert tab.evaluate("window.stillHere") == 1
+        tab.locator(f"{x} .fb-no").click()
+
+        tab.locator(f"{row} .fb-open").click()  # an empty box has nothing to lose
+        tab.locator(f"{x} .fb-no").click()
+        tab.locator(f"{row} .fb-open").click()
+        finish_a_refresh(3)
+        tab.wait_for_function("window.stillHere === undefined")
+        no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+def test_a_ready_result_keeps_its_open_box_its_text_and_its_focus_when_the_list_is_redrawn(site, wq):
+    fb_seed(wq)
+    item = '#ready li[data-id="td-101"]'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#start")
+        tab.wait_for_selector(item)
+        tab.locator(f"{item} .fb-open").click()
+        box = tab.locator(f"{item} .fb-tell textarea")
+        box.fill("Looks wrong to me")
+        box.evaluate("t => t.setSelectionRange(3, 8)")
+        tab.evaluate("paint()")
+        assert tab.locator(f"{item} .fb-tell textarea").input_value() == "Looks wrong to me"
+        assert tab.evaluate("[document.activeElement.dataset.fb, document.activeElement.selectionStart, "
+                            "document.activeElement.selectionEnd, !!document.activeElement.closest('#ready li[data-id=\"td-101\"]')]") == \
+            ["text", 3, 8, True]
+        tab.locator(f"{item} .fb-down").click()
+        pressed(tab, item)
+        tab.locator(f"{item} .fb-down").focus()
+        tab.evaluate("paint()")
+        assert tab.evaluate("document.activeElement.dataset.fb") == "down", "a button keeps focus too"
+        assert tab.locator(f"{item} .fb-reasons").count() == 1
+        tab.locator(f"{item} .fb-tell textarea").focus()
+        tab.evaluate("ST.queued = Object.fromEntries(Object.entries(ST.queued).filter(([k, q]) => q.id !== 'td-101')); paint()")
+        tab.wait_for_selector(item, state="detached")
+        tab.evaluate("document.activeElement.blur()")
+        cov.snap()
+        browser.close()
+
+
+def test_the_blocked_start_item_keeps_its_note_button_where_it_was_and_the_new_controls_come_last(site, wq):
+    keys = fb_seed(wq)
+    blocked = f'.start-list li[data-key="{pr(2)["key"]}"]'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#start")
+        tab.wait_for_selector(f"{blocked} .sf-sent")
+        names = tab.locator(f"{blocked} > div > *").evaluate_all("els => els.map(e => e.className.split(' ')[0])")
+        assert names[-1] == "fb" and names[-2] == "btn" and names.count("fb") == 1
+        no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+def test_when_a_note_cant_be_saved_the_page_says_so_and_the_work_still_happens(site, wq):
+    keys = fb_seed(wq)
+    row = f'.sf-row[data-key="{keys["row"]}"] > .sf-main'
+    x = f'.sf-row[data-key="{keys["row"]}"] > .sf-main + .fb-extra'
+    (wq.home / ".assistant").mkdir(exist_ok=True)
+    (wq.home / ".assistant/feedback").write_text("in the way")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        context.grant_permissions(["clipboard-read", "clipboard-write"])
+        tab = context.new_page()
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#all")
+        tab.locator(f"{row} .fb-down").click()
+        wait_text(tab, ".toast", "Not noted: Assistant couldn’t save that. What you were doing isn’t affected")
+        assert tab.locator(f"{row} .fb-down").get_attribute("aria-pressed") == "false"
+        tab.locator(f"{row} .fb-open").click()
+        tab.locator(f"{x} .fb-tell textarea").fill("My words")
+        tab.locator(f"{x} .fb-go").click()
+        tab.wait_for_function("document.querySelectorAll('.toast').length === 2")
+        assert tab.locator(f"{x} .fb-tell textarea").input_value() == "My words"
+        tab.get_by_role("button", name="Copy draft").click()
+        tab.wait_for_function("document.querySelectorAll('.toast').length === 3")
+        assert text(tab, ".toast:last-of-type") == "Copied. Assistant couldn’t note that you used the draft."
+
+        tab.locator(f"{row} .sf-mark").click()
+        tab.wait_for_selector(".sf-row.is-done")
+        wait_text(tab, ".toast:last-of-type", "That worked, but Assistant couldn’t save a note of it for later.")
+        assert json.loads((wq.data / "marks.json").read_text())[keys["row"]]["state"] == "done", "Done still happened"
+        cov.snap()
+        browser.close()
+
+
+def test_a_reason_or_a_take_back_that_the_server_refuses_leaves_the_page_as_it_was(site, wq):
+    keys = fb_seed(wq)
+    row = f'.sf-row[data-key="{keys["row"]}"] > .sf-main'
+    x = f'.sf-row[data-key="{keys["row"]}"] > .sf-main + .fb-extra'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#all")
+        tab.locator(f"{row} .fb-down").click()
+        pressed(tab, row)
+        tab.route("**/api/feedback", lambda route: route.fulfill(status=400, json={"error": "that reason doesn't fit"}))
+        tab.locator(x).get_by_role("button", name="Not mine").click()
+        wait_text(tab, ".toast", "Not noted: that reason doesn't fit")
+        assert tab.locator(f"{x} .fb-reasons").count() == 1
+        tab.locator(f"{row} .fb-down").click()
+        tab.wait_for_function("document.querySelectorAll('.toast').length === 2")
+        assert tab.locator(f"{row} .fb-down").get_attribute("aria-pressed") == "true"
+        cov.snap()
+        browser.close()
+
+
+def test_the_reasons_and_every_control_are_real_buttons_you_can_reach_with_the_keyboard(site, wq):
+    keys = fb_seed(wq)
+    row = f'.sf-row[data-key="{keys["row"]}"] > .sf-main'
+    x = f'.sf-row[data-key="{keys["row"]}"] > .sf-main + .fb-extra'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        tab.clock.install()
+        tab.goto(site + "#all")
+        tab.locator(f"{row} .fb-down").focus()
+        tab.keyboard.press("Enter")
+        pressed(tab, row)
+        assert tab.evaluate("document.activeElement.dataset.fb") == "down", "focus stays on the control you used"
+        order = []
+        for _ in range(8):
+            tab.keyboard.press("Tab")
+            order.append(tab.evaluate("document.activeElement.dataset.fb || document.activeElement.textContent"))
+            if order[-1] == "r:not_mine":
+                break
+        assert order[0] == "open" and "r:not_important" in order and order[-1] == "r:not_mine", order
+        tab.keyboard.press("Enter")
+        tab.wait_for_selector(f"{x} .fb-reasons", state="detached")
+        assert fb_lines(wq)[-1]["reason"] == "not_mine"
+        names = tab.locator(f"{row} .fb button").evaluate_all("els => els.map(e => e.type + ':' + (e.getAttribute('aria-label') || e.textContent))")
+        assert names == ["button:Take back: this is wrong", "button:Tell Assistant"]
         cov.snap()
         browser.close()

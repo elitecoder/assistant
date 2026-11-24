@@ -192,10 +192,16 @@ def latest_for(subject):
         return None
 
 
+def view_key(subject: str, kind: str) -> str:
+    """The key `views` files what stands about an item under: the subject, except that a draft is its own item (it has
+    its row's subject), and a note about the page is `page`."""
+    return "page" if kind == "page" else "draft:" + subject if kind == "draft" else subject
+
+
 def views() -> dict:
     """What the person has said about each subject that still stands, for the page to show:
     {subject: {"kind", "down": id of the thumbs-down or "", "reason": its reason or "", "told": the first words of what
-    they told Assistant or ""}}. A page-wide note is under "page". Never raises."""
+    they told Assistant or ""}}, by `view_key`. Never raises."""
     try:
         records = _load()
         dead = _taken_back(records)
@@ -203,7 +209,7 @@ def views() -> dict:
         for r in records:  # oldest first, so the newest of each kind wins
             if r["id"] in dead or r["signal"] not in ("thumbs_down", "tell"):
                 continue
-            view = out.setdefault(r.get("subject") or "page", {"kind": r.get("kind", ""), "down": "", "reason": "",
+            view = out.setdefault(view_key(r.get("subject", ""), r.get("kind", "")), {"kind": r.get("kind", ""), "down": "", "reason": "",
                                                                "told": ""})
             if r["signal"] == "tell":
                 words = r.get("words", "")
