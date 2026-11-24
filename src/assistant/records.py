@@ -22,7 +22,7 @@ import time
 
 STRICT_ENV = "ASSISTANT_TELEMETRY_STRICT"
 _TASK_ID = re.compile(r"td-[0-9]{1,9}")
-_WORKSPACE = re.compile(r"workspace:[0-9]{1,9}")
+_WORKSPACE = re.compile(r"workspace:[0-9]{1,18}")  # cmux numbers sessions from 1000010000
 # The caller named in a spend row, as the purpose a record lists. Anything else is "other".
 PURPOSES = {"work_queue": "triage", "triage": "triage", "observer": "observer", "observer-audit": "observer",
             "strategist": "strategist", "narrator": "narrate", "brief": "brief", "planner": "planner",
@@ -52,6 +52,17 @@ def emit(kind: str, trace: str = "", subject: str = "", component: str = "", **f
     try:
         from assistant import telemetry  # noqa: PLC0415
         telemetry.emit(kind, trace, subject, component, **{k: v for k, v in fields.items() if v is not None})
+    except Exception:  # noqa: BLE001 - recording never breaks work
+        if loud():
+            raise
+
+
+def emit_many(batch) -> None:
+    """`telemetry.emit_many`: a list of (kind, fields) pairs, `fields` holding `trace`, `subject` and `component` too,
+    written in one go, imported now and never raising. Fields that are None are left out."""
+    try:
+        from assistant import telemetry  # noqa: PLC0415
+        telemetry.emit_many([(kind, {k: v for k, v in fields.items() if v is not None}) for kind, fields in batch])
     except Exception:  # noqa: BLE001 - recording never breaks work
         if loud():
             raise
@@ -127,12 +138,18 @@ def origin_of(source) -> str | None:
 # ---------------------------------------------------------------- the records
 
 
-def _task(item, state: str, component: str, prev=None, origin=None, mode=None) -> None:
+def _task_part(item, state: str, component: str, prev=None, origin=None, mode=None):
+    """The (kind, fields) of a task record, or None when there is nothing to say."""
     if one_of(state, "TASK_STATE") is None:  # a status written by hand that no list holds: nothing to say
-        return
+        return None
     item = item if isinstance(item, dict) else {}
-    emit("task", task_trace(item), task_id(item), component, state=state, prev_state=one_of(prev, "TASK_STATE"),
-         origin=origin, mode=one_of(mode if mode is not None else item.get("workQueueMode"), "SEND_MODE"))
+    return ("task", {"trace": task_trace(item), "subject": task_id(item), "component": component, "state": state,
+                     "prev_state": one_of(prev, "TASK_STATE"), "origin": origin,
+                     "mode": one_of(mode if mode is not None else item.get("workQueueMode"), "SEND_MODE")})
+
+
+def _task(item, state: str, component: str, prev=None, origin=None, mode=None) -> None:
+    emit_many([part for part in [_task_part(item, state, component, prev, origin, mode)] if part])
 
 
 def task(item, state: str, component: str, prev=None, origin=None, mode=None) -> None:
@@ -140,18 +157,18 @@ def task(item, state: str, component: str, prev=None, origin=None, mode=None) ->
     guard(_task, item, state, component, prev, origin, mode)
 
 
-def _task_created(item, component: str, mode=None, state=None) -> None:
-    _task(item, state or "open", component, None, origin_of(item.get("source")), mode)
+def _task_created(item, component: str, mode=None, state=None):
+    return _task_part(item, state or "open", component, None, origin_of(item.get("source")), mode)
 
 
 def task_created(item, component: str, mode=None) -> None:
     """A task was made, `open`, with the origin its `source` stands for."""
-    guard(_task_created, item, component, mode)
+    guard(lambda: emit_many([part for part in [_task_created(item, component, mode)] if part]))
 
 
 def _tasks_stamped(items) -> None:
-    for item in items:
-        guard(lambda: _task_created(item, "pulse", None, one_of(item.get("status"), "TASK_STATE")))
+    parts = [guard(lambda: _task_created(item, "pulse", None, one_of(item.get("status"), "TASK_STATE"))) for item in items]
+    emit_many([part for part in parts if part])  # one write for all the tasks, not one for each
 
 
 def tasks_stamped(items) -> None:
