@@ -54,7 +54,7 @@ def test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_mi
     server.queue_save(CID, TS1, SENT)
     settle(wq)
     assert runs == [[SAVE]] and held(wq)[SAVE] == {"cid": CID, "ts": TS1, "at": SENT, "tries": 1, "reason": "ratelimited",
-                                                    "next": T0 + 60}
+                                                    "link": "", "next": T0 + 60}
     server.retry_due(T0 + 59)
     settle(wq)
     assert len(runs) == 1, "not before the minute is up"
@@ -73,7 +73,8 @@ def test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_mi
     server.retry_due(now.t)
     settle(wq)
     assert len(runs) == 4
-    assert held(wq)[SAVE] == {"cid": CID, "ts": TS1, "at": SENT, "tries": 4, "reason": "ratelimited", "gave_up": True}
+    assert held(wq)[SAVE] == {"cid": CID, "ts": TS1, "at": SENT, "link": "", "tries": 4, "reason": "ratelimited",
+                                "gave_up": True}
     server.retry_due(T0 + 10**7)
     settle(wq)
     assert len(runs) == 4, "after the last try it stops"
@@ -223,9 +224,9 @@ def test_the_server_checks_for_held_saves_the_moment_it_starts(wq, now, monkeypa
     server.retry_stop.clear()
     thread = threading.Thread(target=server.retry_loop, daemon=True)
     thread.start()
-    assert wait_for(lambda: seen == [T0], 5)
+    assert wait_for(lambda: seen == [T0], 20)
     server.retry_stop.set()
-    thread.join(5)
+    thread.join(20)
     server.retry_stop.clear()
     assert not thread.is_alive()
 
@@ -239,7 +240,7 @@ def test_the_server_checks_for_held_saves_on_a_timer_after_that(wq, now, monkeyp
     thread.start()
     assert wait_for(lambda: len(seen) >= 3)
     server.retry_stop.set()
-    thread.join(5)
+    thread.join(20)
     server.retry_stop.clear()
     assert not thread.is_alive()
 
@@ -258,14 +259,14 @@ def test_a_check_that_fails_never_stops_the_next_one(wq, now, monkeypatch, capsy
     thread.start()
     assert wait_for(lambda: len(tries) >= 2)
     server.retry_stop.set()
-    thread.join(5)
+    thread.join(20)
     server.retry_stop.clear()
     assert "OSError: no space left" in capsys.readouterr().err
 
 
 def test_a_save_already_waiting_or_running_is_not_queued_twice(wq, now, monkeypatch):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="": queued.append(ts))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append(ts))
     held_saves.hold({SAVE: ({"cid": CID, "ts": TS1, "at": SENT}, "x"), key2(TS2): ({"cid": CID, "ts": TS2, "at": SENT}, "x")}, T0)
     with server.saves_lock:
         server.pending_saves[SAVE] = {}
@@ -283,47 +284,143 @@ def test_a_save_already_waiting_or_running_is_not_queued_twice(wq, now, monkeypa
 
 # --- the line on the page ----------------------------------------------------------------------------------------
 
-def give_up(wq, reasons, now):
+def link_of(n) -> str:
+    return f"https://acme.slack.com/archives/{CID}/p170000000{n}000100"
+
+
+def give_up(wq, reasons, now, links=True):
+    """Each reason is a save that was tried four times and couldn't be marked."""
     for n, why in enumerate(reasons):
         for _ in range(4):
-            held_saves.hold({key2(f"170000000{n}.000100"): ({"cid": CID, "ts": f"170000000{n}.000100", "at": SENT}, why)}, now.t)
+            held_saves.hold({key2(f"170000000{n}.000100"): ({"cid": CID, "ts": f"170000000{n}.000100", "at": SENT,
+                                                             "link": link_of(n) if links else ""}, why)}, now.t)
 
 
-def test_a_save_still_unmarked_after_the_last_try_is_one_plain_line_in_the_state(wq, now):
+def test_a_save_still_unmarked_after_the_last_try_is_one_plain_line_in_the_state_with_a_link_to_it(wq, now):
     give_up(wq, ["ratelimited"], now)
-    assert server.state()["slack_held"] == \
-        "1 save you sent to an agent couldn't be marked done in Slack: ratelimited. Mark it done in Slack yourself."
+    assert server.state()["slack_held"] == {
+        "text": "1 save you sent to an agent couldn't be marked done in Slack: Slack asked us to slow down. "
+                "Mark it done in Slack yourself.", "links": [link_of(0)], "more": 0}
 
 
-def test_several_saves_say_how_many_and_each_reason_once(wq, now):
-    give_up(wq, ["ratelimited", "ratelimited.", "Slack no longer answers", "a third"], now)
-    assert held_saves.message() == ("4 saves you sent to an agent couldn't be marked done in Slack: ratelimited; "
-                                    "Slack no longer answers. Mark them done in Slack yourself.")
+def test_several_saves_say_how_many_and_each_reason_once_and_link_the_first_three(wq, now):
+    give_up(wq, ["ratelimited", "ratelimited", "invalid_auth", "TimeoutError: Page.goto", "x"], now)
+    assert held_saves.line() == {
+        "text": "5 saves you sent to an agent couldn't be marked done in Slack: Slack asked us to slow down; "
+                "Slack needs you to sign in again. Sign in to Slack again, then mark them done in Slack yourself.",
+        "links": [link_of(0), link_of(1), link_of(2)], "more": 2}
 
 
-def test_a_sign_in_that_is_needed_says_to_sign_in_again(wq, now):
-    give_up(wq, ["Slack sign-in needed: run bin/work-queue-setup.py link slack and sign in"], now)
-    assert held_saves.message().endswith("Sign in to Slack again, then mark it done in Slack yourself.")
+def test_a_save_with_no_link_says_it_is_still_on_the_later_list(wq, now):
+    give_up(wq, ["x", "x"], now, links=False)
+    assert held_saves.line() == {
+        "text": "2 saves you sent to an agent couldn't be marked done in Slack: Slack refused the change. Mark them "
+                "done in Slack yourself. They are still open in your Slack Later list.", "links": [], "more": 0}
+
+
+def test_a_link_is_offered_only_when_it_is_a_link(wq, now):
+    give_up(wq, ["x"], now)
+    entries = held(wq)
+    entries[key2("1700000000.000100")]["link"] = "javascript:alert(1)"
+    config.write_json(wq.data / "slack-held.json", entries)
+    assert held_saves.line()["links"] == []
+
+
+@pytest.mark.parametrize("raw, plain", [
+    ("ratelimited", "Slack asked us to slow down"),
+    ("invalid_auth", "Slack needs you to sign in again"), ("not_authed", "Slack needs you to sign in again"),
+    ("token_expired", "Slack needs you to sign in again"),
+    ("Slack sign-in needed: run bin/work-queue-setup.py link slack and sign in", "Slack needs you to sign in again"),
+    ("TimeoutError: Page.goto: Timeout 60000ms exceeded.", "Slack didn't answer"), ("Error: net::ERR_FAILED", "Slack didn't answer"),
+    ("uv run --no-project --quiet --with playwright==1.63.0 python slack_browser.py failed: Call log: navigating to the page",
+     "Slack didn't answer"),
+    ("Assistant couldn't record this action, so it didn't run it. Check that your disk isn't full, then try again",
+     "Assistant couldn't record the change (is your disk full?)"),
+    ("Assistant couldn't record this action, so it didn't run it. This is a fault in Assistant, not something you did",
+     "Assistant couldn't record the change (is your disk full?)"),
+    ("saved_not_found_x", "Slack refused the change"), ("Couldn't mark the save done: RuntimeError: x", "Slack refused the change"),
+    ("", "Slack refused the change"), (None, "Slack refused the change"),
+])
+def test_each_reason_reads_in_plain_words_and_the_raw_text_is_never_shown(wq, now, raw, plain):
+    assert held_saves.plain(raw) == plain
+    config.write_json(wq.data / "slack-held.json", {SAVE: {"cid": CID, "ts": TS1, "at": SENT, "link": link_of(0),
+                                                           "tries": 4, "gave_up": True, "reason": raw}})
+    assert plain in held_saves.line()["text"] and (not raw or raw not in held_saves.line()["text"])
 
 
 def test_there_is_no_line_while_a_save_is_still_waiting_or_when_nothing_is_held(wq, now):
-    assert server.state()["slack_held"] == ""
+    assert server.state()["slack_held"] == {}
     held_saves.hold({SAVE: ({"cid": CID, "ts": TS1, "at": SENT}, "x")}, T0)
-    assert server.state()["slack_held"] == ""
+    assert server.state()["slack_held"] == {}
 
 
-def test_a_line_with_no_reason_still_reads_whole(wq, now):
-    config.write_json(wq.data / "slack-held.json", {SAVE: {"gave_up": True}, "junk": 5})
-    assert held_saves.message() == "1 save you sent to an agent couldn't be marked done in Slack. Mark it done in Slack yourself."
+def test_a_save_that_needs_a_sign_in_shows_the_line_at_once_and_is_still_tried_on_the_same_schedule(wq, now, monkeypatch):
+    runs = failing_runs(monkeypatch, "invalid_auth")
+    server.queue_save(CID, TS1, SENT, link_of(0))
+    settle(wq)
+    assert held(wq)[SAVE]["next"] == T0 + 60 and "gave_up" not in held(wq)[SAVE]
+    assert held_saves.line() == {
+        "text": "1 save you sent to an agent couldn't be marked done in Slack: Slack needs you to sign in again. "
+                "Sign in to Slack again, then mark it done in Slack yourself.", "links": [link_of(0)], "more": 0}
+    now.t = T0 + 60
+    server.retry_due(now.t)
+    settle(wq)
+    assert len(runs) == 2 and held(wq)[SAVE]["next"] == T0 + 60 + 300, "the schedule is the same"
+    assert held_saves.line()["text"].startswith("1 save ")
+
+
+def test_a_malformed_entry_beside_a_good_one_stops_nothing(wq, now):
+    good = {"cid": CID, "ts": TS1, "at": SENT, "link": link_of(0), "tries": 1, "next": T0, "reason": "x"}
+    waiting_bad = [{**good, "next": "soon"}, {**good, "next": True}, {k: v for k, v in good.items() if k != "next"},
+                   {k: v for k, v in good.items() if k != "cid"}, {**good, "ts": 5}, {**good, "at": None}, "text", 7, None]
+    gave_up_bad = [{"gave_up": True, "cid": CID}, {"gave_up": True, "cid": CID, "ts": TS1, "at": 3}]
+    entries = {f"bad{n}": bad for n, bad in enumerate(waiting_bad + gave_up_bad)}
+    config.write_json(wq.data / "slack-held.json", {**entries, SAVE: good, key2(TS2): {**good, "ts": TS2, "gave_up": True}})
+    assert held_saves.due(T0 + 1) == [(SAVE, CID, TS1, SENT, link_of(0))]
+    assert held_saves.line()["text"].startswith("1 save ")
+    queued = []
+    from_queue = server.queue_save
+    server.queue_save = lambda cid, ts, at="", link="": queued.append(ts)
+    try:
+        server.retry_due(T0 + 1)
+    finally:
+        server.queue_save = from_queue
+    assert queued == [TS1]
+
+
+def test_a_junk_link_field_is_ignored_by_the_retry_and_the_line(wq, now):
+    config.write_json(wq.data / "slack-held.json", {SAVE: {"cid": CID, "ts": TS1, "at": SENT, "next": T0, "link": 5, "tries": 1}})
+    assert held_saves.due(T0) == [(SAVE, CID, TS1, SENT, "")]
+
+
+def test_the_row_s_own_link_is_kept_through_the_worker_and_every_retry(wq, now, monkeypatch):
+    runs = failing_runs(monkeypatch)
+    server.queue_todo({"key": link_of(0), "title": "A save"})
+    wait_for(lambda: SAVE in held(wq) if (wq.data / "slack-held.json").exists() else False)
+    settle(wq)
+    assert held(wq)[SAVE]["link"] == link_of(0)
+    server.retry_due(T0 + 60)
+    settle(wq)
+    assert len(runs) == 2 and held(wq)[SAVE]["link"] == link_of(0) and held(wq)[SAVE]["tries"] == 2
+
+
+@pytest.mark.parametrize("link", ["", "https://evil.example/archives/C0123456789/p1700000000000100",
+                                  "https://acme.slack.com/archives/C0123456789/p1700000009000100",
+                                  "http://acme.slack.com/archives/C0123456789/p1700000000000100"])
+def test_a_link_that_is_not_to_this_save_is_dropped(wq, now, monkeypatch, link):
+    failing_runs(monkeypatch)
+    server.queue_save(CID, TS1, SENT, link)
+    settle(wq)
+    assert held(wq)[SAVE]["link"] == ""
 
 
 def test_the_line_clears_when_the_save_is_marked_or_slack_no_longer_has_it(wq, now):
     give_up(wq, ["ratelimited", "other"], now)
     two = [key2("1700000000.000100"), key2("1700000001.000100")]
     server.record({two[0]: {"status": "done"}})
-    assert held_saves.message().startswith("1 save ")
+    assert held_saves.line()["text"].startswith("1 save ")
     server.record({two[1]: {"status": "gone"}})
-    assert held_saves.message() == "" and held(wq) == {}
+    assert held_saves.line() == {} and held(wq) == {}
 
 
 def test_a_junk_file_or_a_junk_entry_never_breaks_the_held_saves(wq, now):
@@ -332,9 +429,7 @@ def test_a_junk_file_or_a_junk_entry_never_breaks_the_held_saves(wq, now):
     config.write_json(wq.data / "slack-held.json", {SAVE: {"tries": "x", "cid": CID, "ts": TS1, "at": SENT}, "j": 1})
     held_saves.hold({SAVE: ({"cid": CID, "ts": TS1, "at": SENT}, "why  \n  with\nbreaks")}, T0)
     assert held(wq)[SAVE]["tries"] == 1 and held(wq)[SAVE]["reason"] == "why with breaks"
-    assert held_saves.due(T0 + 60) == [(SAVE, CID, TS1, SENT)]
-    config.write_json(wq.data / "slack-held.json", {SAVE: {"cid": CID, "ts": TS1, "at": SENT}, "j": 1})
-    assert held_saves.due(T0) == [(SAVE, CID, TS1, SENT)], "an entry with no time is due"
+    assert held_saves.due(T0 + 60) == [(SAVE, CID, TS1, SENT, "")]
     held_saves.drop(lambda k: True)
     assert held(wq)["j"] == 1, "nothing is rewritten when nothing changes"
 

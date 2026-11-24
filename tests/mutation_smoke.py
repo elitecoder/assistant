@@ -1140,7 +1140,7 @@ CHECKS = (
     (
         'a sent Slack save is marked completed',
         'work_queue/server.py',
-        '    if save := slack_save(key):\n        queue_save(*save, at=sent_at)\n',
+        '    if save := slack_save(key):\n        queue_save(*save, at=sent_at, link=key)\n',
         '',
         'tests/test_work_queue_server.py::test_both_modes_mark_a_sent_slack_save_completed',
     ),

@@ -86,9 +86,9 @@ def test_the_time_of_the_send_travels_with_the_save_not_the_time_the_worker_ran(
 
 def test_a_send_hands_the_worker_the_time_it_was_made(wq, monkeypatch):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="": queued.append((cid, ts, at)))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append((cid, ts, at, link)))
     server.queue_todo({"key": SAVE_LINK, "title": "A save"})
-    assert queued == [(CID, TS1, "2026-11-02T11:30:00+00:00")]
+    assert queued == [(CID, TS1, "2026-11-02T11:30:00+00:00", SAVE_LINK)]
 
 
 def test_a_save_queued_without_a_time_is_dated_now(wq, monkeypatch):
@@ -456,11 +456,26 @@ def test_a_run_that_could_not_have_changed_anything_is_failed_not_unknown(wq, mo
     assert [e["outcome"] for e in recorded(wq)] == ["failed"]
 
 
-def test_a_run_that_failed_with_another_message_after_starting_is_still_unknown(wq):
+@pytest.mark.parametrize("stderr", [
+    "Traceback ... Timeout 30000ms exceeded",
+    "bash: line 1: command not found: git",
+    "playwright: command not found: chromium",
+    "zsh:1: command not found: uv\nTraceback (most recent call last)",
+    "Traceback (most recent call last)\nzsh:1: command not found: uv",
+])
+def test_a_run_that_started_and_failed_is_unknown_even_when_its_own_output_says_command_not_found(wq, stderr):
     link(wq)
-    fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"exit": 1, "stderr": "Traceback ... Timeout 30000ms exceeded"})])
+    fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"exit": 1, "stderr": stderr})])
     server.run_slack([job()])
     assert [e["outcome"] for e in recorded(wq)] == ["unknown"]
+
+
+@pytest.mark.parametrize("stderr", ["zsh:1: command not found: uv", "zsh:exec:1: command not found: uv"])
+def test_only_the_shells_own_message_for_uv_means_the_browser_never_started(wq, stderr):
+    link(wq)
+    fake_tool(wq.bin, "uv", [("slack_browser.py apply", {"exit": 127, "stderr": stderr})])
+    server.run_slack([job()])
+    assert [e["outcome"] for e in recorded(wq)] == ["failed"]
 
 
 def test_the_command_is_built_before_the_browser_is_counted_as_started(wq, monkeypatch):

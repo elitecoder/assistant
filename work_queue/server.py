@@ -99,6 +99,8 @@ THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_-]{0,63}")
 GMAIL_ACTIONS = {"archive": ("--remove", "INBOX"), "read": ("--remove", "UNREAD"), "unarchive": ("--add", "INBOX")}
 GMAIL_EFFECTS = {"archive": "gmail.archive", "read": "gmail.mark_read", "unarchive": "gmail.unarchive"}
 CMUX_TIMEOUT = 15
+# What the shell that starts the browser says, as the whole of its error, when `uv` isn't installed.
+NOT_INSTALLED = re.compile(r" failed: zsh:(?:exec:)?\d+: command not found: uv$")
 SAVE_PATH = re.compile(r"/archives/([CDG][A-Z0-9]{8,11})/p(\d{10})(\d{6})")
 URL_MAX = 1000
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
@@ -214,7 +216,7 @@ def queue_todo(body: dict):
         if key.startswith(EMAIL_MARK) and url:
             mark_sent(url)
     if save := slack_save(key):
-        queue_save(*save, at=sent_at)
+        queue_save(*save, at=sent_at, link=key)
     return 200, {"id": td_id, "existing": False}
 
 
@@ -229,12 +231,15 @@ def record(results: dict) -> None:
             held_saves.drop(lambda k: k not in settled)
 
 
-def queue_save(cid: str, ts: str, at: str = "") -> None:
+def queue_save(cid: str, ts: str, at: str = "", link: str = "") -> None:
     """Add a sent row's Later save to the ones the background worker marks completed, and start the worker when it
-    isn't running. `at` is when the person sent the row: the ledger records it as the approval for the change."""
+    isn't running. `at` is when the person sent the row: the ledger records it as the approval for the change. `link`
+    is the row's own Slack link, kept so the page can offer to open the save; one that isn't a link to this save is
+    dropped."""
     global saves_worker
     with saves_lock:
-        pending_saves[f"{cid}:{ts}"] = {"cid": cid, "ts": ts, "at": at or now()}
+        pending_saves[f"{cid}:{ts}"] = {"cid": cid, "ts": ts, "at": at or now(),
+                                        "link": link if slack_save(link) == (cid, ts) else ""}
         if saves_worker is not None:
             return
         worker = saves_worker = threading.Thread(target=complete_saves, daemon=True)
@@ -288,11 +293,11 @@ def complete_saves() -> None:
 
 def retry_due(at: float) -> None:
     """Send the worker every held save whose time to be tried again has come, unless it is already waiting or running."""
-    for key, cid, ts, sent in held_saves.due(at):
+    for key, cid, ts, sent, link in held_saves.due(at):
         with saves_lock:
             busy = key in pending_saves or key in running_saves
         if not busy:
-            queue_save(cid, ts, sent)
+            queue_save(cid, ts, sent, link)
 
 
 def retry_loop() -> None:
@@ -748,7 +753,7 @@ def run_slack(jobs) -> dict:
         except (tools.SourceError, ValueError) as exc:
             answer = {"ok": False, "error": str(exc)}
             # A tool that isn't there never ran: the shell that starts it says so, and it never opened the browser.
-            started = started and not (isinstance(exc, tools.ToolMissing) or "command not found" in str(exc))
+            started = started and not (isinstance(exc, tools.ToolMissing) or NOT_INSTALLED.search(str(exc)))
         if not answer.get("ok"):
             error = str(answer.get("error") or "Slack apply failed")
             # Only a run that never got as far as changing anything is a plain failure.
@@ -888,7 +893,7 @@ def state() -> dict:
     return {"decisions": config.read_json(path("decisions.json"), {}), "applied": config.read_json(path("applied.json"), {}),
             "status": config.read_json(path("apply-status.json"), {}), "sent": sorted(queued), "queued": queued,
             "marks": config.read_json(path("marks.json"), {}), "mail": read_map("mail-actions.json"),
-            "checks": read_map("ready-checks.json"), "refresh": refresh_state(), "slack_held": held_saves.message()}
+            "checks": read_map("ready-checks.json"), "refresh": refresh_state(), "slack_held": held_saves.line()}
 
 
 ROUTES = {"/api/decide": decide, "/api/mark": set_marks, "/api/todo": queue_todo, "/api/gmail": gmail_action,

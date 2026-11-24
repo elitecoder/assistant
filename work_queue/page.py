@@ -590,7 +590,7 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 
 JS = r"""
 const DAY=864e5;
-let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{}}, API=true, polling=false, sending=false;
+let MK={}, ST={decisions:{},applied:{},status:{},sent:[],marks:{},refresh:{},slack_held:{}}, API=true, polling=false, sending=false;
 ST.queued={};ST.mail={};ST.checks={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
@@ -760,7 +760,9 @@ async function agSend(){const rows=agPicks(),n=rows.length,hands=$('ag-hands').c
   bad.length?'Not sent: '+bad.join('; ')+'.':''].filter(Boolean).join(' ');agCount()}
 function renderRefresh(){const r=ST.refresh||{},b=$('refresh');b.disabled=!!r.running;b.textContent=r.running?'Refreshing…':'Refresh';
  $('refresh-msg').textContent=r.running?'Reading your sources. This page reloads when it finishes.':r.error?'Last refresh failed: '+r.error:'';
- $('held-msg').textContent=ST.slack_held||''}
+ const h=ST.slack_held,el=$('held-msg');el.textContent=h.text||'';
+ (h.links||[]).forEach((u,i)=>{const a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';a.textContent='Open in Slack';el.append(i?' · ':' ',a)});
+ if(h.more)el.append(' and '+h.more+' more.')}
 async function refresh(){try{ST=Object.assign(ST,await api('/api/state'));API=true;MK=ST.marks||{}}catch(_){API=false}
  const wasRunning=polling;paint();renderAp();renderRefresh();
  if(ST.status.running||(ST.refresh||{}).running){polling=true;setTimeout(refresh,2500)}else{polling=false;if(wasRunning&&(ST.refresh||{}).finished)reloadIfIdle()}}

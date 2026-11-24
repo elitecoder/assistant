@@ -97,13 +97,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   holds only the channel id, the message time and a short code for the row,
   never the message, its link or a name. See `docs/effects.md`.
 - Try a Slack save again by itself when marking it done after you send its row
-  to an agent didn't work (Slack was busy, answered with an error, needed you to
-  sign in, or the record turned it down). A sent row leaves the page, so before
+  to an agent didn't work (Slack answered with an error, the browser run failed,
+  Slack needed you to sign in, or the record turned it down). A sent row leaves the page, so before
   this the save stayed open in Slack with no sign. Now it is tried again after 1,
   5 and 15 minutes, and a restart keeps the saves still waiting. If the last try
   fails, one line under the page title says how many saves couldn't be marked,
-  why, and what to do ("Mark it done in Slack yourself", or sign in again). The
-  line goes away when the save is marked or Slack no longer has it.
+  why in plain words ("Slack asked us to slow down", "Slack needs you to sign in
+  again", "Slack didn't answer", and so on), with an "Open in Slack" link to each
+  of the first three, and what to do ("Mark it done in Slack yourself", or sign in
+  again). A sign-in problem shows at once, because trying again can't fix it. The
+  line goes away when Slack no longer has the save or a retry marks it.
 - Clear finished work from the Work queue's **Ready for you** box on each
   refresh. A done item clears when every pull request its result names is
   merged or closed, or when you commented on or reviewed one of them, or

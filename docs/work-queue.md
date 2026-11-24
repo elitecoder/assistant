@@ -574,11 +574,16 @@ A sent row leaves the page, so a save that couldn't be marked would stay open in
 Slack with no sign. The Work queue keeps it in `slack-held.json` in its data
 folder and tries it again by itself after 1, 5 and 15 minutes, which survives a
 restart. When the last try fails, one line under the page title says how many
-saves couldn't be marked, why, and what to do: "1 save you sent to an agent
-couldn't be marked done in Slack: ratelimited. Mark it done in Slack yourself."
-When Slack needs you to sign in, it says to sign in again first. The line goes
-away when the save is marked, when Slack no longer has it (a refresh sees that
-too), or when **Apply approvals** marks it.
+saves couldn't be marked, why, and what to do, with an "Open in Slack" link to
+each of the first three and "and N more" for the rest: "1 save you sent to an
+agent couldn't be marked done in Slack: Slack asked us to slow down. Mark it done
+in Slack yourself. Open in Slack". The reason is one of five plain phrases: Slack
+asked us to slow down; Slack needs you to sign in again; Slack didn't answer;
+Assistant couldn't record the change (is your disk full?); or Slack refused the
+change. When Slack needs you to sign in, the line shows at once and says to sign
+in again first, and the tries go on. A save with no link says "They are still
+open in your Slack Later list." The line goes away when Slack no longer has the
+save (a refresh sees that), or when a retry marks it.
 
 ## What it changes
 

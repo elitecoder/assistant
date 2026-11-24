@@ -314,32 +314,59 @@ def test_a_reopen_the_record_refuses_leaves_a_slack_save_done_and_says_why_on_it
         browser.close()
 
 
-def test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_that_survives_a_reload_and_clears(site, wq):
-    write_page({"built": "now", "slack": [], "status": [{"name": "Slack", "state": "ok", "detail": "read 0 items"}]})
-    line = ("2 saves you sent to an agent couldn't be marked done in Slack: ratelimited. "
-            "Mark them done in Slack yourself.")
-    for n in range(2):
+def hold_saves_for_page(count: int, reason: str = "ratelimited") -> None:
+    for n in range(count):
         for _ in range(4):
             server.held_saves.hold({f"C0123456789:170000000{n}.000100": (
-                {"cid": "C0123456789", "ts": f"170000000{n}.000100", "at": "t"}, "ratelimited")}, 1.0)
+                {"cid": "C0123456789", "ts": f"170000000{n}.000100", "at": "t",
+                 "link": f"https://acme.slack.com/archives/C0123456789/p170000000{n}000100"}, reason)}, 1.0)
+
+
+def test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_with_links_that_survives_a_reload_and_clears(site, wq):
+    write_page({"built": "now", "slack": [], "status": [{"name": "Slack", "state": "ok", "detail": "read 0 items"}]})
+    line = ("5 saves you sent to an agent couldn't be marked done in Slack: Slack asked us to slow down. "
+            "Mark them done in Slack yourself. Open in Slack · Open in Slack · Open in Slack and 2 more.")
+    hold_saves_for_page(5)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 900, "height": 300})
+        cov = Coverage(tab)
+        tab.goto(site)
+        wait_text(tab, "#held-msg", line)
+        assert tab.locator("#held-msg").is_visible()
+        links = tab.locator("#held-msg a")
+        assert [links.nth(i).get_attribute("href") for i in range(3)] == [
+            f"https://acme.slack.com/archives/C0123456789/p170000000{n}000100" for n in range(3)]
+        assert links.nth(0).get_attribute("rel") == "noopener" and links.nth(0).get_attribute("target") == "_blank"
+        if os.environ.get("WQ_SHOT"):
+            tab.screenshot(path=os.environ["WQ_SHOT"])
+        tab.reload()
+        wait_text(tab, "#held-msg", line)
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", line)
+        server.record({f"C0123456789:170000000{n}.000100": {"status": "done"} for n in range(3)})
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", "2 saves you sent to an agent couldn't be marked done in Slack: Slack asked us to "
+                                    "slow down. Mark them done in Slack yourself. Open in Slack · Open in Slack")
+        server.record({"C0123456789:1700000003.000100": {"status": "done"}, "C0123456789:1700000004.000100": {"status": "gone"}})
+        tab.evaluate("refresh()")
+        wait_text(tab, "#held-msg", "")
+        cov.snap()
+        browser.close()
+
+
+def test_a_save_that_needs_a_sign_in_is_on_the_page_before_its_last_try(site, wq):
+    write_page({"built": "now", "slack": [], "status": [{"name": "Slack", "state": "ok", "detail": "read 0 items"}]})
+    server.held_saves.hold({"C0123456789:1700000000.000100": (
+        {"cid": "C0123456789", "ts": "1700000000.000100", "at": "t", "link": ""}, "Slack sign-in needed: run it")}, 1.0)
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         tab = browser.new_page()
         cov = Coverage(tab)
         tab.goto(site)
-        wait_text(tab, "#held-msg", line)
-        assert tab.locator("#held-msg").is_visible()
-        tab.reload()
-        wait_text(tab, "#held-msg", line)
-        tab.evaluate("refresh()")
-        wait_text(tab, "#held-msg", line)
-        server.record({"C0123456789:1700000000.000100": {"status": "done"}})
-        tab.evaluate("refresh()")
-        wait_text(tab, "#held-msg", "1 save you sent to an agent couldn't be marked done in Slack: ratelimited. "
-                                    "Mark it done in Slack yourself.")
-        server.record({"C0123456789:1700000001.000100": {"status": "gone"}})
-        tab.evaluate("refresh()")
-        wait_text(tab, "#held-msg", "")
+        wait_text(tab, "#held-msg", "1 save you sent to an agent couldn't be marked done in Slack: Slack needs you to "
+                                    "sign in again. Sign in to Slack again, then mark it done in Slack yourself. "
+                                    "They are still open in your Slack Later list.")
         cov.snap()
         browser.close()
 

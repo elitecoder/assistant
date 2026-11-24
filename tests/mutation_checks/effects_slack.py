@@ -4,6 +4,7 @@ S = "work_queue/server.py"
 H = "work_queue/held_saves.py"
 W = "tests/test_work_queue_effects_slack.py::"
 R = "tests/test_work_queue_held_saves.py::"
+B = "tests/test_work_queue_browser.py::"
 
 CHECKS = (
     (
@@ -51,15 +52,15 @@ CHECKS = (
     (
         "the time of the send travels with the save to the worker",
         S,
-        "\"at\": at or now()}",
-        "\"at\": now()}",
+        "\"at\": at or now(),\n",
+        "\"at\": now(),\n",
         W + "test_the_time_of_the_send_travels_with_the_save_not_the_time_the_worker_ran",
     ),
     (
         "the send hands its own time to the worker",
         S,
-        "        queue_save(*save, at=sent_at)\n",
-        "        queue_save(*save)\n",
+        "        queue_save(*save, at=sent_at, link=key)\n",
+        "        queue_save(*save, link=key)\n",
         W + "test_a_send_hands_the_worker_the_time_it_was_made",
     ),
     (
@@ -149,7 +150,7 @@ CHECKS = (
     (
         "a tool that isn't there never started the browser",
         S,
-        "            started = started and not (isinstance(exc, tools.ToolMissing) or \"command not found\" in str(exc))",
+        "            started = started and not (isinstance(exc, tools.ToolMissing) or NOT_INSTALLED.search(str(exc)))",
         "            started = started",
         W + "test_a_run_that_could_not_have_changed_anything_is_failed_not_unknown",
     ),
@@ -184,9 +185,9 @@ CHECKS = (
     (
         "the page shows the line about saves that couldn't be marked",
         "work_queue/page.py",
-        " $('held-msg').textContent=ST.slack_held||''}",
-        " $('held-msg').textContent=''}",
-        "tests/test_work_queue_browser.py::test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_that_survives_a_reload_and_clears",
+        " const h=ST.slack_held,el=$('held-msg');el.textContent=h.text||'';",
+        " const h=ST.slack_held,el=$('held-msg');el.textContent='';",
+        "tests/test_work_queue_browser.py::test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_with_links_that_survives_a_reload_and_clears",
     ),
     (
         "a held save is tried again after one, five and fifteen minutes",
@@ -205,15 +206,15 @@ CHECKS = (
     (
         "a save that was given up on isn't tried again",
         H,
-        "if isinstance(h, dict) and not h.get(\"gave_up\") and",
-        "if isinstance(h, dict) and",
+        "if well_formed(h) and not h.get(\"gave_up\") and",
+        "if well_formed(h) and",
         R + "test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_minutes_and_then_no_more",
     ),
     (
         "a save that isn't due yet isn't tried",
         H,
-        "h.get(\"next\", 0) <= at]",
-        "h.get(\"next\", 0) <= at + 10**9]",
+        "h[\"next\"] <= at]",
+        "h[\"next\"] <= at + 10**9]",
         R + "test_a_save_that_cant_be_marked_is_tried_again_after_one_five_and_fifteen_minutes_and_then_no_more",
     ),
     (
@@ -233,8 +234,8 @@ CHECKS = (
     (
         "a save already waiting or running isn't queued twice",
         S,
-        "        if not busy:\n            queue_save(cid, ts, sent)",
-        "        if True:\n            queue_save(cid, ts, sent)",
+        "        if not busy:\n            queue_save(cid, ts, sent, link)",
+        "        if True:\n            queue_save(cid, ts, sent, link)",
         R + "test_a_save_already_waiting_or_running_is_not_queued_twice",
     ),
     (
@@ -261,23 +262,23 @@ CHECKS = (
     (
         "the page's state carries the line about saves that couldn't be marked",
         S,
-        "\"slack_held\": held_saves.message()}",
+        "\"slack_held\": held_saves.line()}",
         "\"slack_held\": \"\"}",
-        R + "test_a_save_still_unmarked_after_the_last_try_is_one_plain_line_in_the_state",
+        R + "test_a_save_still_unmarked_after_the_last_try_is_one_plain_line_in_the_state_with_a_link_to_it",
     ),
     (
         "a sign-in that is needed says to sign in again",
         H,
-        "if any(w.startswith(SIGN_IN) for w in why)",
-        "if False",
-        R + "test_a_sign_in_that_is_needed_says_to_sign_in_again",
+        "if WORDS[\"sign_in\"] in why else",
+        "if False else",
+        R + "test_a_save_that_needs_a_sign_in_shows_the_line_at_once_and_is_still_tried_on_the_same_schedule",
     ),
     (
         "each reason is given once",
         H,
-        "list(dict.fromkeys(r.rstrip(\".\")",
-        "list((r.rstrip(\".\")",
-        R + "test_several_saves_say_how_many_and_each_reason_once",
+        "list(dict.fromkeys(plain(h.get(\"reason\")) for h in shown))",
+        "list(plain(h.get(\"reason\")) for h in shown)",
+        R + "test_several_saves_say_how_many_and_each_reason_once_and_link_the_first_three",
     ),
     (
         "a refresh forgets a held save Slack no longer lists",
@@ -292,5 +293,117 @@ CHECKS = (
         "    if \"slack\" in snap:  #",
         "    if True:  #",
         R + "test_a_refresh_forgets_a_held_save_that_is_no_longer_on_the_later_list_but_not_when_slack_couldnt_be_read",
+    ),
+    (
+        'a rate limit reads as Slack asking us to slow down',
+        H,
+        'if text == "ratelimited":',
+        'if text == "ratelimitedX":',
+        R + 'test_each_reason_reads_in_plain_words_and_the_raw_text_is_never_shown',
+    ),
+    (
+        'an error code for a sign-in reads as needing to sign in again',
+        H,
+        'if text in SIGN_IN_ERRORS or text.startswith(SIGN_IN):',
+        'if text.startswith(SIGN_IN):',
+        R + 'test_each_reason_reads_in_plain_words_and_the_raw_text_is_never_shown',
+    ),
+    (
+        "the ledger's refusal reads as a problem recording the change",
+        H,
+        'if text.startswith("Assistant couldn\'t record"):',
+        'if text.startswith("Assistant couldn\'t recordX"):',
+        R + 'test_each_reason_reads_in_plain_words_and_the_raw_text_is_never_shown',
+    ),
+    (
+        'a timeout reads as Slack not answering',
+        H,
+        'text.startswith(("TimeoutError", "Error"))',
+        'text.startswith(("TimeoutErrorX", "ErrorX"))',
+        R + 'test_each_reason_reads_in_plain_words_and_the_raw_text_is_never_shown',
+    ),
+    (
+        'a long reason reads as Slack not answering',
+        H,
+        'len(text) > SILENT_AFTER',
+        'len(text) > 10**6',
+        R + 'test_each_reason_reads_in_plain_words_and_the_raw_text_is_never_shown',
+    ),
+    (
+        'a save that needs a sign-in is on the page at once',
+        H,
+        'plain(h.get("reason")) == WORDS["sign_in"])]',
+        'plain(h.get("reason")) == "never")]',
+        R + 'test_a_save_that_needs_a_sign_in_shows_the_line_at_once_and_is_still_tried_on_the_same_schedule',
+    ),
+    (
+        'one malformed entry never stops the others',
+        H,
+        'all(isinstance(held.get(f), str) for f in ("cid", "ts", "at"))',
+        'True',
+        R + 'test_a_malformed_entry_beside_a_good_one_stops_nothing',
+    ),
+    (
+        'a save waiting for a retry needs a time to be tried',
+        H,
+        '(held.get("gave_up") is True or (isinstance(held.get("next"), (int, float))\n                                                 and not isinstance(held.get("next"), bool)))',
+        'True',
+        R + 'test_a_malformed_entry_beside_a_good_one_stops_nothing',
+    ),
+    (
+        'the line links only the first three saves',
+        H,
+        'for h in shown[:SHOWN] if',
+        'for h in shown if',
+        R + 'test_several_saves_say_how_many_and_each_reason_once_and_link_the_first_three',
+    ),
+    (
+        'the line links only to a real link',
+        H,
+        'h["link"].startswith("https://")',
+        'True',
+        R + 'test_a_link_is_offered_only_when_it_is_a_link',
+    ),
+    (
+        'a save with no link is said to be on the Later list',
+        H,
+        '("" if links else " They are still open in your Slack Later list.")',
+        '("")',
+        R + 'test_a_save_with_no_link_says_it_is_still_on_the_later_list',
+    ),
+    (
+        "a link that isn't to the save is dropped",
+        S,
+        '"link": link if slack_save(link) == (cid, ts) else ""',
+        '"link": link',
+        R + 'test_a_link_that_is_not_to_this_save_is_dropped',
+    ),
+    (
+        "only the shell's own message means the browser never started",
+        S,
+        'r" failed: zsh:(?:exec:)?\\d+: command not found: uv$"',
+        'r"zsh:(?:exec:)?\\d+: command not found: uv"',
+        W + 'test_a_run_that_started_and_failed_is_unknown_even_when_its_own_output_says_command_not_found',
+    ),
+    (
+        "the shell's message has to be the whole error",
+        S,
+        'command not found: uv$"',
+        'command not found: uv"',
+        W + 'test_a_run_that_started_and_failed_is_unknown_even_when_its_own_output_says_command_not_found',
+    ),
+    (
+        'the page links each save the line names',
+        "work_queue/page.py",
+        "a.href=u;a.target='_blank';a.rel='noopener';",
+        "a.target='_blank';a.rel='noopener';",
+        B + 'test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_with_links_that_survives_a_reload_and_clears',
+    ),
+    (
+        'the page says how many more saves there are',
+        "work_queue/page.py",
+        'if(h.more)el.append',
+        'if(false)el.append',
+        B + 'test_a_sent_save_that_still_couldnt_be_marked_says_so_in_one_line_with_links_that_survives_a_reload_and_clears',
     ),
 )

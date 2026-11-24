@@ -108,20 +108,22 @@ down, that save is left out of the run and the others still go through.
 change and the save was in the state asked for: off the open list after marking
 it done, back on it after reopening.
 
-A save that the record turns down because of its shape is never refused for it:
-a channel id or message time the record can't hold is written as a short digest
-of itself instead.
+An odd-looking channel id or message time never stops a save being marked. The
+record writes a short code made from it instead.
 
 The worker that marks saves after a send and **Apply approvals** take turns
 with the browser session, so one never marks a save while the other does. A
 line with no result left by a run that died turns both away for ten minutes.
-When a mark is held back after a send (the record turned it down, the browser
-session was busy, or Slack answered with an error or needed you to sign in),
+When a mark is held back after a send (the record turned it down, Slack answered
+with an error, the browser run failed, or Slack needed you to sign in),
 Assistant tries it again by itself three times over about twenty minutes, after
 1, 5 and 15 minutes. A save you approved under Ready to close is also tried by
 the next **Apply approvals**. If it still can't be marked, the Work queue page
-says so in one line at the top, with the reason, and you mark it done in Slack
-yourself. The line goes away when the save is marked, or Slack no longer has it.
+says so in one line at the top, in plain words, with a link to each save, and you
+mark it done in Slack yourself. When Slack needs you to sign in, the line shows
+at once, because trying again can't fix that, and the tries go on. The line goes
+away when Slack no longer has the save (a refresh sees that), or when a retry
+marks it.
 A save Slack no longer has isn't tried again.
 
 When the record has the action an undo reverses, the undo names it and is

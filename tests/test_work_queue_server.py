@@ -919,7 +919,7 @@ def test_sending_a_slack_save_marks_it_completed_in_the_background_and_records_i
 @pytest.mark.parametrize("mode", ["assist", "handsoff"])
 def test_both_modes_mark_a_sent_slack_save_completed(wq, monkeypatch, mode):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="": queued.append((cid, ts)))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append((cid, ts)))
     server.queue_todo({"key": SAVE_LINK, "title": "A", "mode": mode})
     assert queued == [("C0123456789", "1700000000.000100")]
 
@@ -934,7 +934,7 @@ def test_both_modes_mark_a_sent_slack_save_completed(wq, monkeypatch, mode):
                                  "https://x.slack.com/archives/C0123456789/p1700000000000100/extra"])
 def test_only_a_slack_save_link_starts_a_slack_update(wq, monkeypatch, key):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="": queued.append((cid, ts)))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append((cid, ts)))
     assert server.queue_todo({"key": key, "title": "A"})[0] == 200
     assert queued == []
 
@@ -1049,7 +1049,7 @@ def test_saves_sent_while_the_profile_is_busy_go_in_one_browser_run(wq):
 
 def test_an_existing_todo_doesnt_mark_its_save_again(wq, monkeypatch):
     queued = []
-    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="": queued.append((cid, ts)))
+    monkeypatch.setattr(server, "queue_save", lambda cid, ts, at="", link="": queued.append((cid, ts)))
     server.queue_todo({"key": SAVE_LINK, "title": "A"})
     assert server.queue_todo({"key": SAVE_LINK, "title": "A"})[1]["existing"] is True
     assert len(queued) == 1
