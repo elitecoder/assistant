@@ -701,7 +701,7 @@ CHECKS = (
         P,
         "return g+(g>reach?1000:0)+",
         "return g+",
-        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[390]",
+        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[1280]",
     ),
     (
         "the reasons keep off their own row's Tell Assistant link where they can",
