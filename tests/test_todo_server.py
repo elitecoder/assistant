@@ -15,6 +15,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import HTTPServer
@@ -470,25 +471,65 @@ def test_a_connection_that_sends_nothing_cannot_hold_the_server(server, monkeypa
         idle.close()  # so a server that is still holding it can shut down
 
 
-def test_dropping_a_silent_connection_writes_no_log_line_but_other_errors_still_do(server, monkeypatch, capsys):
+def _closed_by_the_server(sock):
+    """Read until the server closes the connection; returns what it sent first."""
+    sock.settimeout(30)
+    got = b""
+    while chunk := sock.recv(65536):
+        got += chunk
+    return got
+
+
+def test_dropping_a_silent_connection_writes_no_log_line_but_a_cut_off_request_still_does(server, monkeypatch, capsys):
     monkeypatch.setattr(mod.Handler, "timeout", 0.3)
-    host, port = server.base.removeprefix("http://").split(":")
-    with socket.create_connection((host, int(port))) as idle:
-        idle.settimeout(30)
-        assert idle.recv(1) == b"", "the server closed the silent connection"
+    address = server.base.removeprefix("http://").split(":")
+    address = (address[0], int(address[1]))
+    with socket.create_connection(address) as silent:
+        assert _closed_by_the_server(silent) == b""
     assert _request(server.base, "GET", "/healthz")[0] == 200  # the server has finished with the silent one
-    assert "timed out" not in capsys.readouterr().err
-    with socket.create_connection((host, int(port))) as bad:
-        bad.sendall(b"NOT-HTTP\r\n\r\n")
-        bad.settimeout(30)
-        while bad.recv(4096):
-            pass
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert lines and all("/healthz" in line for line in lines), lines  # the request's own line and nothing else
+
+    with socket.create_connection(address) as cut_off:  # a request line, then nothing
+        cut_off.sendall(b"GET /healthz HTTP/1.1\r\n")
+        assert _closed_by_the_server(cut_off) == b""
+    assert _request(server.base, "GET", "/healthz")[0] == 200
+    assert "Request timed out" in capsys.readouterr().err
+
+    with socket.create_connection(address) as malformed:
+        malformed.sendall(b"NOT-HTTP\r\n\r\n")
+        _closed_by_the_server(malformed)
     assert _request(server.base, "GET", "/healthz")[0] == 200
     assert "code 400" in capsys.readouterr().err
 
 
+def test_a_silent_connection_is_closed_after_about_two_seconds(server):
+    """With the limit the server really runs with, not one a test set. Waits about two seconds."""
+    host, port = server.base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port))) as silent:
+        started = time.monotonic()
+        assert _closed_by_the_server(silent) == b""  # fails after 30 s if the server never lets go
+        assert time.monotonic() - started >= 1, "a limit this short would drop a real request on a slow link"
+
+
+def test_a_large_page_sent_to_a_slow_reader_arrives_whole(server, monkeypatch):
+    """The limit on a send is the total time for the whole send. With the two-second limit on it, a page too big
+    for the socket's buffers was cut off part-way whenever the reader was slower than that."""
+    monkeypatch.setattr(mod.Handler, "timeout", 0.2)
+    page = b"<!doctype html>" + b"x" * (32 * 1024 * 1024)
+    mod.DASHBOARD_HTML_PATH.write_bytes(page)
+    host, port = server.base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port))) as reader:
+        reader.sendall(f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+        time.sleep(0.8)  # reads nothing for longer than the limit on waiting for a request
+        head, _, body = _closed_by_the_server(reader).partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.0 200"), head[:80]
+    assert len(body) == len(page)
+
+
 def test_the_server_drops_a_silent_connection_after_a_couple_of_seconds():
     assert mod.Handler.timeout == mod.IDLE_TIMEOUT_SEC and 0 < mod.IDLE_TIMEOUT_SEC <= 5
+    assert mod.SEND_TIMEOUT_SEC >= 10 * mod.IDLE_TIMEOUT_SEC
 
 
 def test_a_slow_route_is_not_cut_off_by_the_limit_on_silent_connections(server, monkeypatch):
