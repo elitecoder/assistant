@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from tempfile import TemporaryDirectory
 
 
 REPO = Path(__file__).resolve().parents[1]
+CHECKS_DIR = Path(__file__).resolve().parent / "mutation_checks"
 TEST_TIMEOUT_SEC = 90
 CHECKS = (
     (
@@ -3831,6 +3833,41 @@ def run_check(name: str, filename: str, original: str, broken: str, selector: st
             outcome, failure = "rejected", [line for line in mutant.stdout.splitlines() if line.startswith("FAILED")]
     return {"check": name, "test": selector, "baseline": "passed", "mutant": outcome, "failure": failure,
             "seconds": round(time.monotonic() - started, 1)}
+
+
+def checks_in(folder: Path) -> tuple:
+    """The checks kept in `folder`, one file per change, in file-name order. Each file defines CHECKS, a tuple of
+    the same five-part entries as the list above. A change that adds its checks in a file of its own never edits
+    lines another change is editing, so two changes in progress can't conflict or run their entries together."""
+    found: list = []
+    for path in sorted(folder.glob("*.py")):
+        spec = importlib.util.spec_from_file_location(f"mutation_checks_{path.stem}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        checks = getattr(module, "CHECKS", None)
+        if not isinstance(checks, tuple):
+            raise ValueError(f"{path.name} must define CHECKS as a tuple of checks")
+        found += checks
+    return tuple(found)
+
+
+def well_formed(checks: tuple) -> tuple:
+    """`checks`, once every entry is (name, file, original, broken, test) and no two share a name: five strings,
+    none empty except a `broken` that deletes the original, and a `broken` that differs from the original. A merge
+    once joined two entries into one of ten parts; the file still loaded, and nothing said so until a check ran."""
+    names: set = set()
+    for n, check in enumerate(checks, 1):
+        if not isinstance(check, tuple) or len(check) != 5 or not all(isinstance(part, str) for part in check) \
+                or not all(check[i] for i in (0, 1, 2, 4)) or check[2] == check[3]:
+            raise ValueError(f"mutation check {n} isn't (name, file, original, broken, test) with a broken that "
+                             f"differs from the original: {str(check)[:120]}")
+        if check[0] in names:
+            raise ValueError(f"two mutation checks are named {check[0]!r}")
+        names.add(check[0])
+    return checks
+
+
+CHECKS = well_formed(CHECKS + checks_in(CHECKS_DIR))
 
 
 def shard(spec: str) -> tuple:

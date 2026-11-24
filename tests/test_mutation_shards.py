@@ -223,3 +223,82 @@ def test_the_workflow_runs_as_many_jobs_as_the_account_runs_at_once():
     shards = re.search(r"shard: \[([0-9, ]+)\]", WORKFLOW).group(1).split(", ")
     assert len(shards) + 1 <= 5
     assert '--workers 3 \\' in WORKFLOW
+
+
+# ─── checks kept one file per change, and the shape every check must have ─────
+
+GOOD = ("name", "bin/pulse.py", "original\n", "broken\n", "tests/test_pulse.py::test_one")
+
+
+def write_checks(folder: Path, name: str, body: str) -> None:
+    folder.mkdir(exist_ok=True)
+    (folder / name).write_text(body)
+
+
+def test_checks_kept_one_file_per_change_join_the_list_in_file_name_order(tmp_path):
+    write_checks(tmp_path, "b_second.py", "CHECKS = (('two', 'f', 'o', 'b', 't'),)\n")
+    write_checks(tmp_path, "a_first.py", "CHECKS = (('one', 'f', 'o', 'b', 't'), ('one-b', 'f', 'o', 'b', 't'))\n")
+    (tmp_path / "notes.txt").write_text("not a file of checks")
+    assert [c[0] for c in mutation_smoke.checks_in(tmp_path)] == ["one", "one-b", "two"]
+
+
+def test_a_folder_with_no_files_of_checks_adds_nothing(tmp_path):
+    assert mutation_smoke.checks_in(tmp_path) == () and mutation_smoke.checks_in(tmp_path / "missing") == ()
+
+
+@pytest.mark.parametrize("body", ["CHECKS = [('one', 'f', 'o', 'b', 't')]\n", "OTHER = ()\n", "CHECKS = None\n"],
+                         ids=["a-list", "no-checks", "none"])
+def test_a_file_that_doesnt_define_a_tuple_of_checks_is_refused(tmp_path, body):
+    write_checks(tmp_path, "mine.py", body)
+    with pytest.raises(ValueError, match="mine.py must define CHECKS as a tuple"):
+        mutation_smoke.checks_in(tmp_path)
+
+
+def test_the_list_the_shards_run_includes_every_file_in_the_folder():
+    kept = mutation_smoke.checks_in(mutation_smoke.CHECKS_DIR)
+    assert kept, "the folder holds at least the checks for its own loading"
+    assert mutation_smoke.CHECKS[-len(kept):] == kept, "they follow the list in mutation_smoke.py, in order"
+    assert mutation_smoke.CHECKS_DIR == REPO / "tests/mutation_checks"
+
+
+def test_a_well_formed_list_is_returned_as_it_is():
+    checks = (GOOD, ("deletes its target", "bin/pulse.py", "original\n", "", "tests/test_pulse.py::test_two"))
+    assert mutation_smoke.well_formed(checks) is checks
+
+
+def test_two_entries_run_together_into_one_are_refused():
+    with pytest.raises(ValueError, match="mutation check 2 isn't"):
+        mutation_smoke.well_formed((GOOD, GOOD[:4] + ("tests/a.py::one", "second", "f", "o", "b", "tests/a.py::two")))
+
+
+@pytest.mark.parametrize("check", [
+    GOOD[:4], list(GOOD), "name", GOOD[:4] + (7,), ("",) + GOOD[1:], GOOD[:1] + ("",) + GOOD[2:],
+    GOOD[:2] + ("",) + GOOD[3:], GOOD[:4] + ("",), GOOD[:3] + (GOOD[2],) + GOOD[4:],
+], ids=["four-parts", "a-list", "not-a-tuple", "a-part-that-isnt-text", "no-name", "no-file", "no-original",
+        "no-test", "a-broken-that-changes-nothing"])
+def test_a_malformed_check_is_refused(check):
+    with pytest.raises(ValueError, match="mutation check 1 isn't"):
+        mutation_smoke.well_formed((check,))
+
+
+def test_two_checks_with_one_name_are_refused():
+    with pytest.raises(ValueError, match="two mutation checks are named 'name'"):
+        mutation_smoke.well_formed((GOOD, GOOD[:1] + ("bin/other.py", "o", "b", "tests/a.py::two")))
+
+
+def test_every_check_names_a_snippet_found_exactly_once_and_a_test_that_exists():
+    """A check whose snippet has gone stale, or whose test was renamed, would otherwise fail 13 minutes into a
+    shard. This says so in seconds, with every stale check at once."""
+    sources: dict = {}
+    wrong = []
+    for name, filename, original, _broken, selector in mutation_smoke.CHECKS:
+        test_file, _, test_name = selector.partition("::")
+        for found in (filename, test_file):
+            if found not in sources:
+                sources[found] = (REPO / found).read_text() if (REPO / found).is_file() else None
+        if sources[filename] is None or sources[filename].count(original) != 1:
+            wrong.append(f"{name}: its snippet isn't in {filename} exactly once")
+        function = test_name.rsplit("::", 1)[-1].split("[", 1)[0]
+        if sources[test_file] is None or not re.search(rf"^\s*def {re.escape(function)}\(", sources[test_file], re.M):
+            wrong.append(f"{name}: {selector} doesn't exist")
+    assert not wrong, "\n".join(wrong)
