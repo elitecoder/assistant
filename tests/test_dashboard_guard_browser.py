@@ -73,7 +73,6 @@ def dashboard(tmp_path, monkeypatch):
     monkeypatch.setattr(server_mod.subprocess, "run", fake_run)
     httpd = HTTPServer(("127.0.0.1", 0), server_mod.Handler)
     port = httpd.server_address[1]
-    monkeypatch.setattr(server_mod, "ALLOWED_ORIGINS", frozenset({f"http://127.0.0.1:{port}", f"http://localhost:{port}"}))
     renderer = load("renderer_guard_browser", "render-assistant-page.py")
     renderer.render()
     page = claude / "assistant-dashboard.html"
@@ -201,6 +200,55 @@ def test_the_two_buttons_that_work_from_a_local_file_still_do(browser, dashboard
     assert not errors, errors
     assert ("POST", "brief/refresh", 200, apitoken.ensure()) in seen, seen
     assert dashboard.log["rebuilt"] == ["page"]
+
+
+def test_a_stale_token_in_a_local_file_page_says_so_instead_of_doing_nothing(browser, dashboard):
+    stale = dashboard.local.with_name("stale-copy.html")
+    stale.write_text(dashboard.local.read_text().replace(apitoken.ensure(), "a-token-from-before"))
+    page = browser.new_page()
+    never_the_real_port(page.context)
+    seen = watch(page)
+    page.goto(stale.as_uri() + "#brief")
+    page.locator('[data-tab="brief"]').click()
+    page.locator("#brief-refresh").click()
+    page.wait_for_function("document.getElementById('brief-refresh').textContent === 'Refresh now'")
+    assert page.locator("#refresh-error").inner_text() == f"Couldn't refresh. Reload this page, or open http://127.0.0.1:{dashboard.port}."
+    page.close()
+    assert [(method, path, status) for method, path, status, _ in seen] == [("POST", "brief/refresh", 403)]
+    assert dashboard.log["rebuilt"] == []
+
+
+FRAME_ATTACK = """<!doctype html><body>
+<iframe id="plain" src="{url}"></iframe>
+<iframe id="boxed" sandbox="allow-scripts allow-same-origin allow-forms" src="{url}"></iframe>
+<iframe id="boxed-null" sandbox="allow-scripts allow-forms" src="{url}"></iframe></body>"""
+
+
+def test_another_website_cannot_show_the_dashboard_in_a_frame_or_act_through_one(browser, dashboard):
+    """A page on another site frames the dashboard (a navigation sends no Origin, so it is served) and the
+    visitor's click lands on its buttons. Plain, sandboxed, and sandboxed with a null origin."""
+    context = browser.new_context()
+    never_the_real_port(context)
+    page = context.new_page()
+    url = f"http://127.0.0.1:{dashboard.port}/#todos"
+    page.route("http://evil.test/**", lambda route: route.fulfill(
+        status=200, content_type="text/html", body=FRAME_ATTACK.format(url=url)))
+    page.goto("http://evil.test/")
+    for _ in range(50):
+        if len([f for f in page.frames if f != page.main_frame]) == 3 and all(
+                f.url for f in page.frames if f != page.main_frame):
+            break
+        page.wait_for_timeout(100)
+    page.wait_for_timeout(800)  # a framed dashboard would have drawn by now
+    frames = [f for f in page.frames if f != page.main_frame]
+    assert len(frames) == 3
+    for frame in frames:
+        assert frame.locator('.td-set-true[data-id="td-1"]').count() == 0, frame.url
+        assert frame.locator("#dashboard-content").count() == 0, frame.url
+    posts = [line for line in dashboard.log["answers"] if line.startswith('"POST')]
+    assert posts == [] and items(dashboard) == ["td-1", "td-2"]
+    assert len([line for line in dashboard.log["answers"] if line.startswith('"GET /')]) >= 3
+    context.close()
 
 
 def test_a_tab_opened_before_the_update_sends_no_token_and_still_works(browser, dashboard):

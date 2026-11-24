@@ -892,7 +892,7 @@ def test_slack_focus_routes_refuse_a_null_origin(server, slack_home):
         status, _ = _request(server.base, "POST", path, json.dumps({"fp": "a" * 64}),
                              headers={"Origin": "null"}, token=False)
         assert status == 403, path
-    status, _ = _request(server.base, "POST", "/slack-focus/status", headers={"Origin": f"http://127.0.0.1:{mod.PORT}"})
+    status, _ = _request(server.base, "POST", "/slack-focus/status", headers={"Origin": server.base})
     assert status == 200
     assert _FakeProc.made == []
 

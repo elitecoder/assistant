@@ -213,14 +213,14 @@ class DecisionRouteTests(unittest.TestCase):
                      "http://localhost.evil.com",
                      "http://127.0.0.1.evil.com",
                      "https://evil.example",
-                     "http://localhost:9999"):
+                     "http://localhost:9876",
+                     f"http://localhost:{self.port + 1}"):
             _, headers = self._request_with_origin("/decision/list", evil)
             self.assertNotIn("Access-Control-Allow-Origin", headers,
                              msg=evil)
 
     def test_allowed_origins_get_exact_acao_echo(self):
-        for good in ("http://127.0.0.1:9876", "http://localhost:9876",
-                     "null"):
+        for good in (f"http://127.0.0.1:{self.port}", "null"):
             _, headers = self._request_with_origin("/decision/list", good)
             self.assertEqual(headers.get("Access-Control-Allow-Origin"),
                              good, msg=good)

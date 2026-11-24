@@ -31,27 +31,30 @@ Ranked goal store for the Assistant. File: `~/.claude/assistant-goals.json` (sch
 All mutations are POST to the local todo-server. Read-only `list` is also POST (mirrors `/decision/list`). The server re-renders the dashboard after each write.
 
 Every call sends the per-install token from `~/.assistant/api-token` as the
-`X-Assistant-Token` header. Without it the server answers 403 ("This request
-needs the token in ~/.assistant/api-token"). The dashboard creates the file the
-first time it rebuilds the page, which the pulse does every few minutes.
+`X-Assistant-Token` header. Without it the server answers 403 ("Refused.
+Reload the dashboard. This request needs the token in ~/.assistant/api-token…").
+The token must not appear on curl's command line, where other users can see it
+in `ps`, so the helper below hands curl the header on standard input. If the
+file doesn't exist yet, the first call answers 403 and the server creates the
+file then; run the call again.
 
 ```bash
 BASE=http://127.0.0.1:9876
-TOKEN="X-Assistant-Token: $(cat ~/.assistant/api-token)"
+goal_post() { curl -s -X POST "$BASE$1" -H @- "${@:2}" <<<"X-Assistant-Token: $(cat ~/.assistant/api-token)"; }
 
 # list
-curl -s -X POST $BASE/goal/list -H "$TOKEN" | python3 -m json.tool
+goal_post /goal/list | python3 -m json.tool
 
 # add  (body = JSON)
-curl -s -X POST $BASE/goal/add -H "$TOKEN" -H 'Content-Type: application/json' \
+goal_post /goal/add -H 'Content-Type: application/json' \
   -d '{"title":"Ship Keel M5 connectors","outcome":"GitHub+Gmail connectors green in prod, mis-lane <10%","horizon":"Q3","links":{"repos":["elitecoder/assistant"]}}'
 
 # update  (body = changes)
-curl -s -X POST $BASE/goal/update/goal-1 -H "$TOKEN" -H 'Content-Type: application/json' \
+goal_post /goal/update/goal-1 -H 'Content-Type: application/json' \
   -d '{"status":"done"}'
 
 # rerank
-curl -s -X POST $BASE/goal/rerank -H "$TOKEN" -H 'Content-Type: application/json' \
+goal_post /goal/rerank -H 'Content-Type: application/json' \
   -d '{"order":["goal-3","goal-1","goal-2"]}'
 ```
 
@@ -60,8 +63,8 @@ planner then no-ops, ledgered). This is the REAL kill switch — the old
 `/goal/update -d '{}'` "no-op ping" only stamped `updatedAt` and never paused:
 
 ```bash
-curl -s -X POST $BASE/goal/pause -H "$TOKEN"     # sets _paused:true  → planner no-ops
-curl -s -X POST $BASE/goal/resume -H "$TOKEN"    # sets _paused:false
+goal_post /goal/pause     # sets _paused:true  → planner no-ops
+goal_post /goal/resume    # sets _paused:false
 # If the server is down, edit the store root directly via the goals module:
 #   python3 -c "import sys;sys.path.insert(0,'$HOME/dev/assistant/src');from assistant import goals;goals.set_paused(True)"
 ```

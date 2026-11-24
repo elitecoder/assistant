@@ -18,6 +18,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from html import escape as e
 from pathlib import Path
@@ -2677,6 +2678,15 @@ def _render_slack_focus_tab_inner():
     return html, (view["do_first"] if focus else None)
 
 
+def page_token() -> str:
+    """The token to embed in the page. Any trouble with the token file leaves it empty: the page still renders
+    and works over http; only the local-file copy's buttons are refused until the file is fixed."""
+    try:
+        return apitoken.ensure()
+    except Exception:
+        return ""
+
+
 def render():
     if not WORLD_PATH.exists():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
@@ -4173,16 +4183,27 @@ async function setMode(value) {
 // sidecar so the unseen-degradation pass knows the brief was looked at.
 // Fired at most once per page load; failures (server down) are swallowed —
 // the signal is best-effort by design. The URL is ABSOLUTE to the todo-server
-// (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
+// (127.0.0.1:9876, see serverUrl) when the page is a local file, so it reaches the server even when the dashboard is opened
 // as a file:// page — a relative fetch resolves to file:///brief/seen and
 // never arrives, silently arming the destructive unseen-TTL (F19).
+// A page opened as a local file has no server of its own, so these two calls name it. Served over
+// http, the same address that served the page is used, so a forwarded port works too.
+function serverUrl(path) {
+  return (location.protocol === 'file:' ? 'http://127.0.0.1:9876' : '') + path;
+}
+function showRefused() {
+  document.getElementById('refresh-error').textContent =
+    "Couldn't refresh. Reload this page, or open http://127.0.0.1:9876.";
+}
 async function briefRefresh() {
   const button = document.getElementById('brief-refresh');
   if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
+  let refused = false;
   try {
-    await assistantPost('http://127.0.0.1:9876/brief/refresh', {mode: 'cors'});
+    refused = !(await assistantPost(serverUrl('/brief/refresh'), {mode: 'cors'})).ok;
   } catch (e) { /* the next page update still rebuilds the brief */ }
   await refreshDashboard(true);
+  if (refused) showRefused();
   const fresh = document.getElementById('brief-refresh');
   if (fresh) { fresh.disabled = false; fresh.textContent = 'Refresh now'; }
 }
@@ -4193,9 +4214,8 @@ function pingBriefSeen() {
   if (!root) return;
   briefSeenSent = true;
   try {
-    assistantPost('http://127.0.0.1:9876/brief/seen?date='
-            + encodeURIComponent(root.dataset.briefDate),
-          {mode: 'cors'}).catch(() => {});
+    assistantPost(serverUrl('/brief/seen?date=' + encodeURIComponent(root.dataset.briefDate)),
+          {mode: 'cors'}).then(response => { if (!response.ok) showRefused(); }).catch(() => {});
   } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
@@ -4487,7 +4507,7 @@ document.addEventListener('click', handleTodoToolsClick);
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Assistant</title>
-<meta name="assistant-api-token" content="{e(apitoken.ensure())}">
+<meta name="assistant-api-token" content="{e(page_token())}">
 <style>{css}</style>
 <script>{js}</script>
 </head><body>
@@ -4526,12 +4546,16 @@ Saved action history: <code>~/.architect/orchestrator-ledger/</code>.</p>
 """
     # The page now holds the token, so only its owner may read it. A temporary file with the
     # right mode, then a rename, means it is never readable by others, even before the rename.
-    temporary = DASHBOARD_HTML.with_name(DASHBOARD_HTML.name + ".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(descriptor, 0o600)  # a leftover temporary file from a crash keeps its old mode otherwise
-    with os.fdopen(descriptor, "w") as handle:
-        handle.write(body)
-    os.replace(temporary, DASHBOARD_HTML)
+    # mkstemp makes a file of its own name, readable by its owner only, so two renders at once (the page
+    # service every 30 seconds and every change a button makes) never share one.
+    descriptor, temporary = tempfile.mkstemp(prefix=DASHBOARD_HTML.name + ".", suffix=".tmp", dir=DASHBOARD_HTML.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(body)
+        os.replace(temporary, DASHBOARD_HTML)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
     # Legacy redirect for the old TODO bookmark
     TODO_HTML.write_text(
         '<!doctype html><meta http-equiv="refresh" content="0; url=assistant-dashboard.html#todos">'

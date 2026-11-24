@@ -169,6 +169,7 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 mutations = []
                 intercepted_writes = []
                 write_tokens = []
+                refuse_brief_posts = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
 
                 def isolate_requests(route):
@@ -176,7 +177,8 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                     if request.method not in ("GET", "HEAD"):
                         intercepted_writes.append(request.url)
                         write_tokens.append(request.headers.get("x-assistant-token"))
-                        route.fulfill(status=200, content_type="application/json",
+                        route.fulfill(status=403 if refuse_brief_posts and "/brief/" in request.url else 200,
+                                      content_type="application/json",
                                       body='{"ok":true}', headers={"Access-Control-Allow-Origin": "*"})
                     elif (request.url.startswith(f"http://127.0.0.1:{server.server_port}/")
                           or request.url.split("#", 1)[0] == (output / "assistant-dashboard.html").as_uri()):
@@ -791,6 +793,17 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 assert [url.split("/", 3)[3].split("?")[0] for url in intercepted_writes[before:]][:3] == [
                     "toggle/td-901", "append-detail/td-901", "decision/act/dec-test-1"], intercepted_writes[before:]
                 assert intercepted_writes[-1].endswith("/brief/refresh"), intercepted_writes[-1]
+                # A refused refresh or "seen" signal says so where the page shows its other errors.
+                message = "Couldn't refresh. Reload this page, or open http://127.0.0.1:9876."
+                refuse_brief_posts.append(True)
+                page.locator("#brief-refresh").click()
+                page.wait_for_function("document.getElementById('brief-refresh').textContent === 'Refresh now'")
+                assert page.locator("#refresh-error").inner_text() == message
+                page.evaluate("document.getElementById('refresh-error').textContent = ''; briefSeenSent = false; pingBriefSeen()")
+                page.wait_for_function("document.getElementById('refresh-error').textContent !== ''")
+                assert page.locator("#refresh-error").inner_text() == message
+                refuse_brief_posts.clear()
+                page.evaluate("document.getElementById('refresh-error').textContent = ''")
                 assert not errors, errors
                 file_page = page.context.new_page()
                 file_errors = []
@@ -807,6 +820,11 @@ def drive(output_dir, browser_executable, coverage_dir=None):
                 file_page.on("request", lambda request: requests_after_load.append(request.url))
                 file_page.evaluate("refreshDashboard(true)")
                 assert not requests_after_load, requests_after_load
+                # From a local file the two Brief calls name the server (127.0.0.1:9876) themselves.
+                before_file = len(intercepted_writes)
+                file_page.evaluate("briefRefresh()")
+                file_page.wait_for_function("document.getElementById('brief-refresh').textContent === 'Refresh now'")
+                assert intercepted_writes[before_file:] == ["http://127.0.0.1:9876/brief/refresh"], intercepted_writes[before_file:]
                 assert file_page.locator("#refresh-error").inner_text() == ""
                 assert not file_errors, file_errors
                 page_token = (output / "assistant-dashboard.html").read_text().split('name="assistant-api-token" content="')[1].split('"')[0]

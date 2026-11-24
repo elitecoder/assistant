@@ -161,7 +161,7 @@ draw corrections get downgraded to `muted` by `bin/tools/pattern-feedback.py`.
 | `bin/plan-next-actions.py` | Runs the goals planner on demand. |
 | `bin/interrupt-gate.py` | The only path to a push notification. |
 | `bin/outbound-dispatch.py` | The only path to an outbound action. |
-| `bin/todo-server.py` | The dashboard and JSON API at http://127.0.0.1:9876. It answers only to `127.0.0.1` and `localhost`, and every POST passes one check: the page it serves, or the token in `~/.assistant/api-token` (`src/assistant/apitoken.py`). |
+| `bin/todo-server.py` | The dashboard and JSON API at http://127.0.0.1:9876. It answers only at `127.0.0.1` or `localhost` (any port), refuses to be framed by another site, and every POST passes one check: the page it serves, or the token in `~/.assistant/api-token` (`src/assistant/apitoken.py`). See [Use the dashboard](dashboard.md#who-can-change-things). |
 | `bin/slack-focus.py` | Refreshes the Slack tab's list. |
 | `bin/assistant-curator.py` | Manages lessons across every rule store. |
 | `bin/assistant-doctor.py` | Preflight health check. `--only core\|slack\|all`. |

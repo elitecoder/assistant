@@ -229,7 +229,7 @@ class GoalHttpTests(unittest.TestCase):
 
     def test_same_origin_goal_add_allowed(self):
         code, _ = self._post(
-            "/goal/add", origin="http://127.0.0.1:9876",
+            "/goal/add", origin=f"http://127.0.0.1:{self.port}",
             body=json.dumps({"title": "x", "outcome": "y"}).encode())
         self.assertEqual(code, 200)
 
