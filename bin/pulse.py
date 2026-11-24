@@ -210,26 +210,37 @@ LESSON_TRANSCRIPT_EVERY = int(os.environ.get("LESSON_TRANSCRIPT_EVERY", "144"))
 # leaves the dashboard and the heartbeat fresh. The transcript pass gets a
 # longer leash since it reads many files before any LLM draft.
 LESSON_EXTRACT_TIMEOUT_SEC = int(os.environ.get("LESSON_EXTRACT_TIMEOUT_SEC", "300"))
-# Pro mode jobs. PRO_JOBS run whenever Pro mode is on; OPT_IN_JOBS also need
-# their variable set to 1.
-PRO_JOBS = ("triage", "brief", "planner")
+# Pro mode jobs. SETTING_JOBS run in Pro mode once the user turns them on
+# (config.json "jobs"; see mode.job_settings), and the key is the
+# name used there. OPT_IN_JOBS need their variable set to 1.
+SETTING_JOBS = {"triage": "decisions", "brief": "brief", "planner": "planner"}
 OPT_IN_JOBS = {"lessons": "ASSISTANT_LESSON_EXTRACTOR", "strategist": "ASSISTANT_STRATEGIST",
                "watcher": "ASSISTANT_WATCHER", "narrator": "ASSISTANT_BRIEF_NARRATOR"}
 
 
 # Read once per pulse by main(); None outside a pulse.
 PULSE_PRO: bool | None = None
+PULSE_JOBS: dict[str, bool] | None = None
 
 
 def job_enabled(job: str) -> bool:
-    """PRO_JOBS run in Pro mode. OPT_IN_JOBS need their variable set to 1, and
-    every one but the watcher also needs Pro mode."""
+    """SETTING_JOBS need Pro mode and their setting. OPT_IN_JOBS need their
+    variable set to 1, and every one but the watcher also needs Pro mode. The
+    narrator also needs the brief, since it only decorates the brief's file."""
     pro = PULSE_PRO if PULSE_PRO is not None else mode.is_pro()
-    if job in PRO_JOBS:
-        return pro
-    opted_in = os.environ.get(OPT_IN_JOBS[job], "0").strip().lower() in (
-        "1", "true", "yes", "on")
+    settings = PULSE_JOBS if PULSE_JOBS is not None else mode.job_settings()
+    if job in SETTING_JOBS:
+        return pro and settings[SETTING_JOBS[job]]
+    opted_in = mode.env_on(OPT_IN_JOBS[job])
+    if job == "narrator":
+        opted_in = opted_in and settings["brief"]
     return opted_in and (pro or job == "watcher")
+
+
+def lesson_ledger_pass_enabled() -> bool:
+    """The lesson extractor's ledger pass (proposals from repeated successful
+    actions) is off unless ASSISTANT_LESSON_LEDGER_PASS=1."""
+    return mode.env_on("ASSISTANT_LESSON_LEDGER_PASS")
 
 
 def observer_actions_held() -> bool:
@@ -765,15 +776,22 @@ def run_triage_step(pulse_idx: int) -> dict:
     stay un-disposition'd and are retried next pulse). Returns the triage
     summary; its `cards` list seeds this pulse's awaiting_input.
 
-    In default mode it only skips past new events and expires stale decisions,
-    so turning Pro mode on later starts from current events."""
+    While decisions are off (default mode, or Pro mode without the decisions
+    setting) it only skips past new events, expires stale decisions, and keeps
+    open urgent ones on the awaiting list, so turning decisions on later starts
+    from current events."""
     if not job_enabled("triage"):
         try:
             from assistant import decisions, triage  # noqa: PLC0415
             triage.skip_to_end()
             decisions.expire_open()
+            # Urgent decisions never expire, so one made while decisions were
+            # on stays open until answered; Pro mode keeps it on the awaiting
+            # list. Default mode never showed them, and still doesn't.
+            pro = PULSE_PRO if PULSE_PRO is not None else mode.is_pro()
+            return {"cards": triage.escalate_cards() if pro else []}
         except Exception as e:  # noqa: BLE001 — never break the pulse
-            log.warning("default-mode triage housekeeping failed: %s", e)
+            log.warning("decisions-off housekeeping failed: %s", e)
         return {"cards": []}
     try:
         src_dir = str(REPO / "src")
@@ -1180,16 +1198,20 @@ def observer_enabled() -> bool:
 
 
 def pick_ws_batch() -> dict:
-    """Returns dict with to_reclassify, reuse_cached, backed_off, total_ws."""
+    """Returns dict with to_reclassify, reuse_cached, backed_off, total_ws. When
+    the step fails the dict also carries unavailable=True: its total_ws of 0 then
+    means "couldn't look", not "no workspaces"."""
     rc, out, err = run([sys.executable, str(BIN / "pick-ws-batch.py")])
     if rc != 0:
         log.error("pick-ws-batch rc=%d: %s", rc, err.strip())
-        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}
+        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0,
+                "unavailable": True}
     try:
         return json.loads(out)
     except Exception as e:
         log.error("pick-ws-batch bad json: %s", e)
-        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}
+        return {"to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0,
+                "unavailable": True}
 
 
 def build_ctx(ws: dict) -> dict | None:
@@ -2025,8 +2047,12 @@ def execute_verdict(ws: dict, verdict: dict, awaiting: list[dict],
 
 # ─── TODO dispatch ──────────────────────────────────────────────────────────
 
-def count_active(ws_meta: list[dict]) -> int:
-    """Count workspaces with last_turn_age_sec < 600 OR agent_status=working.
+def count_active(ws_meta: list[dict], busy_refs=()) -> int:
+    """Count busy workspaces: those the Observer's context marks active
+    (last_turn_age_sec < 600 OR agent_status=working) UNION those in
+    `busy_refs`, the mechanical scan of every live agent workspace
+    (busy_ws.busy_refs, no model call). The scan is what keeps the cap working
+    with the Observer off, when ws_meta is empty. Each workspace counts once.
 
     The predicate lives in config.ws_is_active — THE single source (m14) — so the
     goals planner's headroom math (which reads world.json) can never disagree
@@ -2035,13 +2061,41 @@ def count_active(ws_meta: list[dict]) -> int:
     if src_dir not in sys.path:
         sys.path.insert(0, src_dir)
     from assistant import config as _appconfig  # noqa: PLC0415
-    n = 0
-    for w in ws_meta:
+    active = set(busy_refs)
+    for i, w in enumerate(ws_meta):
         ctx = w.get("ctx") or {}
         if _appconfig.ws_is_active(ctx.get("agent_status"),
                                    ctx.get("last_turn_age_sec")):
-            n += 1
-    return n
+            # A context with no ref still counts, once.
+            active.add(w.get("ref") or ("no-ref", i))
+    return len(active)
+
+
+def cap_reason(n_active: int, n_total: int, busy_refs) -> str:
+    """Plain words for why dispatch is waiting: which limit, and what counts
+    toward it. The busy limit comes first because it is the one a person can
+    do something about right now."""
+    if n_active >= ACTIVE_WS_CAP:
+        refs = sorted(busy_refs or (), key=lambda ref: (len(ref), ref))
+        named = f" Busy now: {', '.join(refs[:8])}." if refs else ""
+        return (f"{n_active} sessions are busy and the limit is {ACTIVE_WS_CAP}. "
+                f"Sessions you are using count: a session is busy when it had a turn "
+                f"in the last 10 minutes or is running a tool.{named}")
+    return (f"{n_total} workspaces are open and the limit is {TOTAL_WS_CAP}. "
+            f"Close the ones you no longer need.")
+
+
+def scan_busy_ws() -> set[str] | None:
+    """ws_refs of the live workspaces whose agent is busy, read mechanically
+    from cmux and the transcripts; None when the scan could not be made. Never
+    raises: the caller holds dispatch on None."""
+    try:
+        sys.path.insert(0, str(BIN))
+        import busy_ws  # noqa: PLC0415
+        return busy_ws.busy_refs()
+    except Exception as e:  # noqa: BLE001 — a failed scan must not break the pulse
+        log.warning("busy-session scan failed (dispatch held this pulse): %s", e)
+        return None
 
 
 def pick_open_todos() -> dict:
@@ -2495,6 +2549,10 @@ def run_lesson_extractor(pulse_idx: int) -> None:
         return
     transcript_pass = (LESSON_TRANSCRIPT_EVERY > 0
                        and pulse_idx % LESSON_TRANSCRIPT_EVERY == 0)
+    # A ledger-only run with the ledger pass off would do nothing, so don't
+    # start the subprocess at all.
+    if not transcript_pass and not lesson_ledger_pass_enabled():
+        return
     cmd = [sys.executable, str(extractor)]
     if not transcript_pass:
         cmd.append("--ledger-only")
@@ -2532,8 +2590,9 @@ def main() -> int:
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
     SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
 
-    global PULSE_PRO
+    global PULSE_PRO, PULSE_JOBS
     PULSE_PRO = mode.is_pro()
+    PULSE_JOBS = mode.job_settings()
     state = load_state()
     pulse_idx = int(state.get("_meta", {}).get("pulse_idx", 0)) + 1
     t0 = time.time()
@@ -2877,9 +2936,37 @@ def main() -> int:
     #    Skipped entirely in dry-run (dispatch_todo creates real workspaces).
     todos = pick_open_todos() if not dry_run else {"bucket_b": []}
     bucket_b = todos.get("bucket_b", [])
-    n_active = count_active(ws_meta)
     n_total = batch.get("total_ws", 0)
-    if bucket_b and (n_active >= ACTIVE_WS_CAP or n_total >= TOTAL_WS_CAP):
+    # The busy count needs the live workspace list; if the batch step or the
+    # scan couldn't produce it, start nothing rather than dispatch blind. The
+    # next good pulse clears the card by simply not adding it.
+    busy_refs = None
+    blind_reason = None
+    if bucket_b:
+        if batch.get("unavailable"):
+            blind_reason = "the list of your open workspaces could not be read"
+        else:
+            busy_refs = scan_busy_ws()
+            if busy_refs is None:
+                blind_reason = "cmux did not answer when asked for your sessions"
+    n_active = count_active(ws_meta, busy_refs or ())
+    if blind_reason:
+        held = ", ".join(t["id"] for t in bucket_b[:5])
+        more = f" (+{len(bucket_b) - 5} more)" if len(bucket_b) > 5 else ""
+        awaiting_input.append({
+            "key": "dispatch-held-no-fleet-view",
+            "tier": "T3",
+            "title": f"Dispatch paused — {len(bucket_b)} TODO(s) waiting",
+            "detail": (f"Couldn't count busy sessions: {blind_reason}. "
+                       f"Holding: {held}{more}. Nothing is lost. Assistant looks again "
+                       f"every few minutes and starts them once it can count."),
+        })
+        actions_taken.append({
+            "key": "dispatch-held-no-fleet-view",
+            "kind": "skipped", "outcome": "verified",
+            "evidence": blind_reason,
+        })
+    elif bucket_b and (n_active >= ACTIVE_WS_CAP or n_total >= TOTAL_WS_CAP):
         # Old-prompt behavior: surface the cap hit as an awaiting card so Mukul
         # knows dispatchable work is being held back, not just a trace line.
         held = ", ".join(t["id"] for t in bucket_b[:5])
@@ -2888,9 +2975,8 @@ def main() -> int:
             "key": "dispatch-cap-hit",
             "tier": "T3",
             "title": f"Dispatch capped — {len(bucket_b)} TODO(s) waiting",
-            "detail": (f"active={n_active}/{ACTIVE_WS_CAP}, "
-                       f"total={n_total}/{TOTAL_WS_CAP}. Holding: {held}{more}. "
-                       f"Reclaim a workspace or raise the cap to dispatch."),
+            "detail": f"{cap_reason(n_active, n_total, busy_refs)} Holding: {held}{more}. "
+                      f"They start when there is room.",
         })
         actions_taken.append({
             "key": f"dispatch-cap-hit-{n_active}-active",

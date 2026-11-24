@@ -96,6 +96,24 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   last line instead. The workspace numberer likewise logs a repeated cmux
   error once, then once every 5 minutes with a count, and says when cmux
   answers again.
+- Stop a Work queue test from failing at random. It read the refresh log the instant the refresh
+  reported it had finished, a moment before the last lines were written, and failed about one run in
+  four. It now waits for the line it checks.
+- Keep the limit of 5 busy sessions working with the Observer off. Assistant
+  counted busy sessions from the Observer's checks, so with the Observer off,
+  which is now the default, it counted none and could start up to 30 sessions.
+  It now counts them itself from cmux and each session's transcript. **The 5
+  includes sessions you are using yourself**, so a task set to start
+  automatically, or a Work queue row you sent to an agent, now waits while 5
+  sessions are busy. A session is busy when it had a turn in the last 10
+  minutes or has a tool call open. A tool call still open after 2 hours is
+  treated as a session waiting on you, not a busy one. A plain terminal and an
+  agent that has exited aren't counted; a session whose transcript can't be
+  read is. The limit is fixed at 5; there is no setting for it. The **Tasks**
+  tab's "Dispatch capped" card now says in plain words which limit is holding
+  things and names the busy sessions. When Assistant can't read the open
+  workspaces or the sessions, it starts nothing that time and shows a
+  "Dispatch paused" card, which clears by itself once it can.
 - Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
   workspaces. Its liveness check, close guard, and orphan scan listed
   workspaces with a bare `cmux list-workspaces`, which shows only the focused
@@ -138,6 +156,29 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- An existing Pro install stops creating decisions, saving the morning brief,
+  and planning for your goals after this update; to turn each back on, add
+  `"jobs": {"decisions": true, "brief": true, "planner": true}` (just the ones
+  you want) to `~/.assistant/config.json`, next to `"mode"`.
+  Write `true` without quotes; it takes effect at Assistant's next check. Behind
+  this is five months on the maintainer's machine: none of 49,193
+  decisions was accepted, rejected, edited, or snoozed, 7 of 103 briefs were
+  opened, and the planner acted twice and no goal recorded progress. With
+  decisions off, new GitHub and session events are skipped, so turning them on
+  later starts fresh, not from a backlog. Decisions that are already open still
+  age out, staged ones after 72 hours and digest ones after 24, and urgent ones
+  stay until you answer them and still show under **Awaiting your input**. The
+  **Completed actions** and **Other updates** lists get no new entries while
+  decisions are off. With the brief off, no brief is saved and the Notifications
+  tab is a live summary; decisions no longer move to the digest for going
+  unseen. With the planner off, nothing acts on your goals or records their
+  progress, though they stay viewable and editable. The lesson extractor no
+  longer proposes lessons from repeated successful actions unless you set
+  `ASSISTANT_LESSON_LEDGER_PASS=1`; the part that finds corrections in your
+  sessions is unchanged. The Notifications tab and **Settings and background
+  services** say which of these are off, what to add to turn each on, and when
+  a value you wrote is ignored. See
+  [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
 - Make the mutation checks faster without dropping any. Each test's baseline now runs once per run, not
   once per check that names it (510 checks name 315 tests), each shard runs three checks at a time
   (`--workers 3`), and the workflow runs four shards, up from three. The slowest shard had reached 51 of

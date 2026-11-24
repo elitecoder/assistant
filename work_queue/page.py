@@ -145,7 +145,8 @@ def agents_section(rows: list[tuple[str, str, str, str, bool]]) -> str:
     return section("agents", "Send to agents", "Every open item, with the ones marked Agent can finish first. Each one "
                    "you send becomes an Assistant TODO. Its status and result show on the Tasks tab of the Assistant "
                    "dashboard, and its session on the Sessions tab once it starts. Assistant starts up to 2 TODOs every "
-                   "5 minutes and keeps at most 5 sessions open, so a large batch takes a while. An agent takes a first "
+                   "5 minutes, and only while fewer than 5 sessions are busy. Sessions you are using count, so an item "
+                   "you send can wait; the Tasks tab says when starts are on hold. An agent takes a first "
                    "pass and leaves drafts for you; turn on Hands-off to let it finish and post on its own.",
                    controls + body)
 
