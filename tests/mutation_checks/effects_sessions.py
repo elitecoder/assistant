@@ -618,6 +618,13 @@ CHECKS = (
         C + "test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
     ),
     (
+        "the doctor copes with a config whose slack part isn't a table",
+        DOC,
+        '    except (OSError, ValueError, AttributeError):\n        configured = ""\n    if re.fullmatch(r"[UW][A-Z0-9]{2,}", configured.strip()):',
+        '    except (OSError, ValueError):\n        configured = ""\n    if re.fullmatch(r"[UW][A-Z0-9]{2,}", configured.strip()):',
+        C + "test_the_doctor_copes_with_a_config_whose_slack_part_isnt_a_table",
+    ),
+    (
         "the doctor says the service reads ~/.zprofile",
         DOC,
         '"member ID) to ~/.zprofile (the service reads that file, not ~/.zshrc), then run "',

@@ -840,3 +840,13 @@ def test_the_unknown_owner_notice_and_the_log_line_both_say_to_send_the_message_
     monkeypatch.delenv("SLACK_USER_ID", raising=False)
     listen.typed_for(paths, {"msg_ts": TS, "author": "U0ANYONE", "channel": "C0CHAN"})
     assert "launchctl kickstart -k gui/$UID/com.assistant.assistant-comms" in _log(paths)
+
+
+def test_the_doctor_copes_with_a_config_whose_slack_part_isnt_a_table(env_delivery, monkeypatch):
+    from test_doctor import _load as load_doctor
+    doctor = load_doctor()
+    paths, _ = env_delivery
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    monkeypatch.setenv("SLACK_PING_TARGET", "C0CHAN")  # the target comes from the environment
+    paths.config.write_text(json.dumps({"slack": ["not", "a", "table"]}))
+    assert doctor.check_slack_owner().status == doctor.WARN
