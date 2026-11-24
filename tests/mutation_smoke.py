@@ -9,7 +9,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -3750,10 +3752,47 @@ def scratch() -> TemporaryDirectory:
     return found
 
 
-def run_check(name: str, filename: str, original: str, broken: str, selector: str) -> dict:
-    """Run selector on a copy of the sources, then on a copy with the mutation; the mutant must fail.
+class Baselines:
+    """The tests one run has already proved pass on unmodified sources.
 
-    A mutant whose test runs past TEST_TIMEOUT_SEC counts as rejected: the test didn't pass."""
+    Every check's copy of the sources starts identical, so a test that passed on one copy passes on all of
+    them. Sharing one of these across a run's checks runs each test's baseline once, not once per check that
+    names it: 510 checks name 315 tests, and the repeated ones are mostly the slow browser tests."""
+
+    def __init__(self):
+        self.passed: set[str] = set()
+        self.locks: dict[str, threading.Lock] = {}
+        self.guard = threading.Lock()
+
+
+def prove_baseline(name: str, repo: Path, home: Path, selector: str, baselines: Baselines | None = None):
+    """Run selector on unmodified sources, unless `baselines` already saw it pass; a failure is never remembered."""
+    if baselines is None:
+        run_baseline(name, repo, home, selector)
+        return
+    with baselines.guard:
+        lock = baselines.locks.setdefault(selector, threading.Lock())
+    with lock:  # a second check naming this test waits for the first one's answer
+        if selector not in baselines.passed:
+            run_baseline(name, repo, home, selector)
+            baselines.passed.add(selector)
+
+
+def run_baseline(name: str, repo: Path, home: Path, selector: str):
+    try:
+        baseline = run_test(repo, home, selector)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{name}: baseline {selector} didn't finish within {TEST_TIMEOUT_SEC} seconds") from None
+    if baseline.returncode != 0:
+        raise RuntimeError(f"{name}: baseline failed\n{baseline.stdout}\n{baseline.stderr}")
+
+
+def run_check(name: str, filename: str, original: str, broken: str, selector: str,
+              baselines: Baselines | None = None) -> dict:
+    """Prove selector passes on a copy of the sources, then run it on a copy with the mutation; the mutant must fail.
+
+    A mutant whose test runs past TEST_TIMEOUT_SEC counts as rejected: the test didn't pass. Checks that share
+    one `baselines` prove each test's baseline once between them."""
     started = time.monotonic()
     with scratch() as temporary:
         root = Path(temporary)
@@ -3761,12 +3800,7 @@ def run_check(name: str, filename: str, original: str, broken: str, selector: st
         repo.mkdir()
         home.mkdir()
         copy_sources(repo)
-        try:
-            baseline = run_test(repo, home, selector)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"{name}: baseline {selector} didn't finish within {TEST_TIMEOUT_SEC} seconds") from None
-        if baseline.returncode != 0:
-            raise RuntimeError(f"{name}: baseline failed\n{baseline.stdout}\n{baseline.stderr}")
+        prove_baseline(name, repo, home, selector, baselines)
         target = repo / filename
         source = target.read_text()
         if source.count(original) != 1:
@@ -3796,13 +3830,28 @@ def shard(spec: str) -> tuple:
     return checks
 
 
+def workers(spec: str) -> int:
+    """How many checks to run at once: a whole number from 1 to 8."""
+    if not re.fullmatch(r"[1-8]", spec):
+        raise argparse.ArgumentTypeError(f"{spec!r} isn't a number of workers from 1 to 8")
+    return int(spec)
+
+
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--shard", type=shard, default=CHECKS, metavar="I/N",
                         help="run only shard I of N; the N shards together run every check once")
+    parser.add_argument("--workers", type=workers, default=1, metavar="N",
+                        help="run N checks at a time; each check works in its own copy of the sources and its own home")
     args = parser.parse_args(argv)
-    results = [run_check(*check) for check in args.shard]
+    baselines = Baselines()
+    if args.workers == 1:
+        results = [run_check(*check, baselines) for check in args.shard]
+    else:
+        # map() keeps the checks' order in the results and raises the first failure once the pool has drained.
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            results = list(pool.map(lambda check: run_check(*check, baselines), args.shard))
     args.output.write_text(json.dumps({"passed": True, "checks": results}, indent=2))
     timed_out = sum(result["mutant"] == "rejected (timed out)" for result in results)
     print(f"{len(results)} targeted mutations rejected ({timed_out} by timing out); production files were not edited.")
