@@ -651,7 +651,7 @@ CHECKS = (
         "a typing on its own says what it was",
         W,
         '    "cleanup": ("typed /cleanup into the session", "type /cleanup into the session", "typing /cleanup into the session"),',
-        '    "cleanup": TYPED_ANY,',
+        '    "cleanup": ("typed into an agent session", "type into an agent session", "typing into an agent session"),',
         T + "test_a_typing_shown_on_its_own_says_what_it_was_by_where_it_came_from",
     ),
     (
