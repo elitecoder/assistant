@@ -301,8 +301,8 @@ CHECKS = (
     (
         "the capture log line says when the owner is unknown",
         CAPTURE,
-        "const mark = unknownOwner ? ' (Ask me: owner unknown)' : ''",
-        "const mark = ''",
+        "const mark = unknownOwner ? ' (Ask me: owner unknown)' : everyone",
+        "const mark = everyone",
         CAPTURE_TESTS,
     ),
     (
