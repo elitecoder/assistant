@@ -109,6 +109,33 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Find out why a row is on your Work queue, and what Assistant has done with
+  it. Every Open list row, Start here item, email, row waiting for your
+  approval and Ready for you result now has a short **Why?** link next to
+  **Tell Assistant** (its full name, "Why is this here?", is what a screen
+  reader says and what shows when you point at it). Nothing opens until you
+  select it. Then a box under the row's line of buttons lists, oldest first and
+  with the time of each step, when Assistant first saw it and from where, how
+  the model sorted it (and which model and sorting rules), that you sent it to
+  an agent, that an agent was started or couldn't be (and why, and whether
+  Assistant will try again by itself), that the agent finished or was blocked, what the
+  check afterwards found, every change Assistant made because of it (such as
+  archiving the email, and whether you pressed the button or approved it) and
+  what you said about it. So "the model didn't sort this because today's spend
+  limit was reached" and "Assistant tried to start an agent 14 times and cmux
+  didn't answer" are now on the page instead of hidden. It is built from the
+  record Assistant keeps on your Mac and holds no message text: no title,
+  sender, link, or reason the model gave. It says "Assistant has no record for
+  this yet" when nothing is kept, and when it can't read part of its record it
+  says so, and says the list may be missing steps, instead of calling it
+  complete. For a row that was here before Assistant started keeping the record
+  it says that earlier steps aren't shown. Repeated steps are one line, and it
+  shows the newest 50 steps and says how many earlier ones aren't shown. An open
+  box stops the page reloading on its own after a refresh, the way an open note
+  does; changing tabs closes it. The link adds no line to any row on a phone, and
+  below 860 px wide the buttons sit under the title so a title is never squeezed
+  to nothing: between 621 and 860 px wide a plain row is about 98 px tall where
+  it was 61, and its title has the full width. At 320 wide a row can gain a line.
 - Every Work queue row and every TODO now carries a short id that later
   features will use to show where a piece of work came from. Nothing you see
   changes yet.
@@ -164,6 +191,31 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   that save was sent, and what to do ("Mark it done in Slack yourself", or sign
   in again). A sign-in problem shows at once, because trying again can't fix it. The
   line goes away when Slack no longer has the save or a retry marks it.
+- Tell Assistant when something on the Work queue is wrong, with one tap. Every
+  Open list row, Start here item, email, model draft, Ready for you result and
+  row waiting for your approval has a small thumbs-down and a **Tell Assistant**
+  link. One tap records the thumbs-down and nothing else opens, so you can go
+  down a list tapping; tapping again takes it back. A note under the buttons
+  says what you said, with **Add a reason** and **Undo**. **Add a reason** opens
+  a small list over the page that never covers another row's thumbs-down or
+  **Tell Assistant** link (Not
+  important, Wrong order, Not mine, Already done; Wrong tone, Wrong facts, Not
+  how I'd say it for a draft; Not what I asked, Didn't finish, Should not have
+  been started for a result), and **Change** opens it again. The note is still
+  there after a reload or a refresh.
+  **Tell Assistant** opens a box for your own words about an item, and one at
+  the top of the page is for the page as a whole. A refresh that finishes while
+  you are choosing a reason or typing no longer reloads the page away.
+- Keep a local record of what you do on the Work queue:
+  Done, Snooze, Drop, Send to Agent (and hands-off), Approve, Keep, Archive,
+  Mark read, clearing a Ready for you result, copying a draft, and each Undo
+  are now written down, one line each, with a trace id and a pointer to the
+  item, never its title, sender, text or link. It goes to
+  `~/.assistant/feedback/feedback.jsonl`, only you can read it, and nothing is
+  sent anywhere. Assistant only records this now and doesn't use it yet; using
+  it (to reorder rows, learn what you drop, and show what changed) is planned
+  for the next update. If a note can't be saved, the page says so and the action still
+  happens. See [Feedback](docs/feedback.md).
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it
   arrives to your decision on it. It never holds message text, titles,

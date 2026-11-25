@@ -1,7 +1,11 @@
 """The trace id of each piece of work in the Work queue: minted the first time it is seen, kept in traces.json beside
 the other Work queue files, and never replaced.
 
-    traces.json   {key: {"trace": "tr-...", "seen": "YYYY-MM-DD"}}
+    traces.json   {key: {"trace": "tr-...", "seen": "YYYY-MM-DD", "first": <epoch seconds>}}
+
+`first` is when the id was made, so a row's answer to "Why is this here?" can start with the moment Assistant first saw it
+(`first_seen`). A row whose id was made before `first` existed, or adopted from `queued.json`, has none, and an older
+file without the key loads unchanged.
 
 One piece of work can be reached by more than one key: an email by its mark key and by its link, a Slack save by its
 link and by its channel and time. The keys for one piece of work are given together (a group), and they all hold one
@@ -37,6 +41,10 @@ MAX_ENTRIES = 5000
 LOCK_WAIT = 0.5  # a send gives up on the registry after this long; it runs inside the server's lock and the task lock
 REFRESH_WAIT = 10
 TASK_LOCK_WAIT = 2  # the refresh gives up matching sent rows with their tasks after this long
+
+
+def now() -> float:
+    return time.time()  # a seam, so a test can say what time it is
 
 
 def path():
@@ -78,13 +86,23 @@ def is_day(value) -> bool:
         return False
 
 
+def first_of(value) -> float | None:
+    """The time (epoch seconds) a registry value says its id was made, or None when it holds none or an odd one."""
+    found = value.get("first") if isinstance(value, dict) else None
+    return found if type(found) in (int, float) and 0 < found < 1e12 else None
+
+
 def entry_of(value, day: str):
-    """A registry value as an entry, or None. A bare id is adopted; a missing, odd or future `seen` counts as today."""
+    """A registry value as an entry, or None. A bare id is adopted; a missing, odd or future `seen` counts as today; a
+    `first` is kept when it is a time, and left out otherwise."""
     found = held_id(value)
     if found is None:
         return None
     seen = value.get("seen") if isinstance(value, dict) else None
-    return {"trace": found, "seen": seen if is_day(seen) and seen <= day else day}
+    entry = {"trace": found, "seen": seen if is_day(seen) and seen <= day else day}
+    if (first := first_of(value)) is not None:
+        entry["first"] = first
+    return entry
 
 
 def read_registry() -> tuple[dict, bool]:
@@ -118,14 +136,25 @@ def queued_ids() -> dict:
     return {key: held_id(q.get("trace") if isinstance(q, dict) else None) for key, q in queued.items()}
 
 
-def adopt(registry: dict, keys, held: dict, day: str) -> None:
+def adopt(registry: dict, keys, held: dict, day: str, made: str = "") -> None:
     """Give every key of one piece of work the same id: the first one any key already has (in the registry, else in
-    `queued.json`), else a new one. A key that has an id keeps it."""
+    `queued.json`), else a new one. A key that has an id keeps it, and its `first`. An id made now (here, or `made`, one
+    the caller just made) starts the time the row was first seen; an id found in `queued.json`, or in a file from before
+    `first` existed, has none. A key that joins the chosen id takes the earliest `first` its group holds."""
     keys = [k for k in dict.fromkeys(keys) if isinstance(k, str) and k]
     found = [t for k in keys if (t := held_id(registry.get(k)) or held.get(k))]
     chosen = found[0] if found else new_trace_id()
+    firsts = [f for k in keys if held_id(registry.get(k)) == chosen and (f := first_of(registry.get(k))) is not None]
+    first = min(firsts) if firsts else now() if (not found or chosen == made) else None
     for key in keys:
-        registry[key] = {"trace": held_id(registry.get(key)) or chosen, "seen": day}
+        own = held_id(registry.get(key))
+        entry = {"trace": own or chosen, "seen": day}
+        when = first_of(registry.get(key)) if own else None
+        if when is None and own in (None, chosen):
+            when = first
+        if when is not None:
+            entry["first"] = when
+        registry[key] = entry
 
 
 def prune(registry: dict, day: str, protected: set) -> dict:
@@ -174,6 +203,15 @@ def lookup_many(keys) -> dict:
     return {key: held_id(registry.get(key)) or "" for key in keys}
 
 
+def first_seen(key: str) -> float | None:
+    """When the row with this key was first seen (epoch seconds, see `first_of`), or None for a row without an id, a
+    row whose id was made before this was kept, or a registry that can't be read. Reads only."""
+    try:
+        return first_of(read_registry()[0].get(key))
+    except OSError:
+        return None
+
+
 def lookup(key: str) -> str:
     """The id of the row with this key (see `lookup_many` for which key), or "" when it has none. Reads only, and never
     writes or locks: for anything that wants a row's id (records, feedback). A send, which must give a row an id, uses
@@ -196,9 +234,11 @@ def trace_for(key: str, known: str | None = None, day: str | None = None, also=(
             day = day or today()
             registry, damaged = read_registry()
             registry = {k: e for k, v in registry.items() if (e := entry_of(v, day))}
-            chosen = next((t for k in keys if (t := held_id(registry.get(k)))), None) or chosen or new_trace_id()
+            chosen = next((t for k in keys if (t := held_id(registry.get(k)))), None) or chosen
+            made = "" if chosen else new_trace_id()
+            chosen = chosen or made
             if not damaged:  # a damaged file is left for the refresh to move aside, never written over here
-                adopt(registry, keys, {key: chosen}, day)
+                adopt(registry, keys, {key: chosen}, day, made)
                 config.write_json(path(), registry)
     except Exception:  # noqa: BLE001 — a registry that can't be used never stops a send; the traceback goes to the log
         traceback.print_exc()

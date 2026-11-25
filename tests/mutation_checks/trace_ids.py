@@ -10,8 +10,8 @@ CHECKS = (
     (
         "a key that has an id keeps it when its group holds another",
         TRACES,
-        '"trace": held_id(registry.get(key)) or chosen, "seen": day}',
-        '"trace": chosen, "seen": day}',
+        'entry = {"trace": own or chosen, "seen": day}',
+        'entry = {"trace": chosen, "seen": day}',
         T + "test_a_key_that_has_an_id_keeps_it_when_the_other_keys_of_its_group_hold_another",
     ),
     (
@@ -87,8 +87,9 @@ CHECKS = (
     (
         "a send looks up the id a row already has",
         TRACES,
-        "            chosen = next((t for k in keys if (t := held_id(registry.get(k)))), None) or chosen or new_trace_id()\n",
-        "            chosen = chosen or new_trace_id()\n",
+        "            chosen = next((t for k in keys if (t := held_id(registry.get(k)))), None) or chosen\n"
+        '            made = "" if chosen else new_trace_id()\n            chosen = chosen or made\n',
+        '            chosen = chosen or new_trace_id()\n            made = ""\n',
         T + "test_a_send_stores_the_rows_id_on_the_task_and_the_queued_entry",
     ),
     (
