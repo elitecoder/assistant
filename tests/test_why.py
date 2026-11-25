@@ -555,6 +555,19 @@ def test_the_ledgers_cut_is_the_time_its_steps_are_given_which_is_when_the_chang
     assert answer["footer"].startswith("Only the newest records were read")
 
 
+def test_a_feedback_file_read_to_its_limit_is_cut_at_its_own_oldest_record(home, monkeypatch):
+    for _ in range(4):
+        feedback.record("done", "row:" + "1" * 16, "row", "work-queue", trace=TRACE)
+    feedback.emit_pending()
+    monkeypatch.setattr(why, "FEEDBACK_READ", 3)
+    cut = why.read(TRACE)
+    (run,) = [s for s in cut["steps"] if s["kind"] == "feedback"]
+    assert run["count"] == 3 and run["text"].endswith("This happened at least 3 times.")
+    monkeypatch.setattr(why, "FEEDBACK_READ", 100)
+    (whole,) = [s for s in why.read(TRACE)["steps"] if s["kind"] == "feedback"]
+    assert whole["count"] == 4 and whole["text"].endswith("This happened 4 times.")
+
+
 def test_a_store_that_is_there_but_cant_be_read_is_unreadable_and_never_nothing_recorded(home):
     telemetry.emit("task", TRACE, "td-1", "work-queue", state="done", prev_state="open")
     path = home / ".assistant/telemetry/telemetry.db"
