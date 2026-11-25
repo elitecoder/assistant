@@ -273,6 +273,7 @@ def dispatch_now(td_id):
         target["autoDispatch"] = True
         target["dispatchedAt"] = None
         target["dispatchedWs"] = None
+        target.pop("parkedBy", None)  # asking again ends a park
         if target.get("status") in ("deferred", "blocked", "done"):
             target["status"] = "open"
             target["statusUpdatedAt"] = now
@@ -392,7 +393,7 @@ def _run_now_failure(sent) -> str:
         return "run-now couldn't type into the session"
     if outcome == "no_terminal_surface":
         return "run-now couldn't find a terminal in that session, so nothing was typed"
-    last = ((sent.stderr or "").strip().splitlines() or ["see the send record"])[-1][:200]
+    last = ((sent.stderr or "").strip().splitlines() or ["see the send record"])[-1][:400]
     return f"run-now didn't type into the session: {last}"
 
 

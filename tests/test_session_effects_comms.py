@@ -859,7 +859,7 @@ def test_the_sentences_a_person_can_read_from_the_typing_module():
     assert se.INVALID == ("Assistant didn't recognise the session this was meant for (it expects workspace:N), so it "
                           "typed nothing.")
     assert se.LATER.endswith("If this Mac's clock is wrong, fix it.")
-    assert "from the Assistant folder, run `bin/cmux-send.py --ws {where} --text '…' --enter`." in se.UNKNOWN
+    assert se.UNKNOWN.endswith("Look at that session. If it isn't there, type it into the session yourself.")
     assert "bin/cmux-send.py" not in se.UNKNOWN_SHORT
 
 
@@ -892,3 +892,12 @@ def test_the_doctor_copes_with_a_config_whose_slack_part_isnt_a_table(env_delive
     monkeypatch.setenv("SLACK_PING_TARGET", "C0CHAN")  # the target comes from the environment
     paths.config.write_text(json.dumps({"slack": ["not", "a", "table"]}))
     assert doctor.check_slack_owner().status == doctor.WARN
+
+
+def test_the_doctor_says_both_places_the_owner_can_be_set(env_delivery, monkeypatch):
+    from test_doctor import _load as load_doctor
+    doctor = load_doctor()
+    paths, _ = env_delivery
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    _config(paths, "C0CHAN")
+    assert "neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json" in doctor.check_slack_owner().detail

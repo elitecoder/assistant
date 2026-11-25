@@ -2325,13 +2325,16 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str, parked: str = "") -> bool:
         target["dispatchedWs"] = ws_ref
         target["status"] = "in-progress"
         target["statusReason"] = f"dispatched to {ws_ref}"
+        target.pop("parkedBy", None)  # a good dispatch ends any earlier park
         if parked:
             # Assistant wouldn't type into the session it started: a blocked task is skipped by the picker (so no
             # second session) and is the one status the dashboard's "Queue to start" turns back into an open one.
             target["status"] = "blocked"
             target["parkedBy"] = parked
-            target["statusReason"] = (f"Parked: Assistant started {ws_ref} but wouldn't type into it ({parked}). "
-                                      'Close that workspace, then press "Queue to start" on the task.')
+            target["statusReason"] = (
+                f"Parked: Assistant started {ws_ref} but nothing could be typed into it (it couldn't record the "
+                "typing, or cmux refused the text). Close that workspace, then press \"Queue to start\" on the task "
+                "on the Assistant dashboard's Tasks tab.")
         target["statusUpdatedAt"] = utc_iso()
         tmp = TODO_PATH.with_suffix(".json.tmp")
         try:
@@ -2626,8 +2629,8 @@ def _dispatch_card(bucket_b: list, parked: list) -> dict:
         detail += (f" Waiting: {_listed(waiting) or 'none'}. Nothing is lost; the next round starts them once the "
                    f"record can be written.")
     else:
-        title = f"Tasks parked — Assistant wouldn't type into their sessions ({len(parked)})"
-        detail = (f"Assistant started a session for each task below but wouldn't type into it, so it parked the task. "
+        title = f"Tasks parked — Assistant couldn't type into their sessions ({len(parked)})"
+        detail = (f"Assistant started a session for each task below but couldn't type into it, so it parked the task. "
                   f"Close each workspace, then press \"Queue to start\" on the task. Parked: {shown}.")
     return {"key": "dispatch-held-no-record", "tier": "T3", "title": title, "detail": detail}
 

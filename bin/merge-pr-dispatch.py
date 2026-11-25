@@ -398,7 +398,7 @@ def main():
             "tier": "T2",
             "title": (f"PR #{args.pr}: {slash} may already be in {args.ws}" if observed.startswith("may_have_been_typed")
                       else f"PR #{args.pr}: {slash} did not submit into {args.ws}"),
-            "detail": (observed if observed.startswith("may_have_been_typed") else
+            "detail": (observed.split(": ", 1)[1] if observed.startswith("may_have_been_typed") else
                        f"cmux send returned 0 but the JSONL transcript's last_user.text does not match. Observed: {observed[:200]}"),
         }
         print(json.dumps(out, indent=2))

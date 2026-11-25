@@ -1755,13 +1755,17 @@ def render_todos_tab(world):
             url = it.get("url", "")
             url_html = f' <a href="{e(url)}" class="alt-link">[link]</a>' if url else ""
             status = it.get("status", "open")
-            status_pill = f'<span class="pill status-{status}">{e(status)}</span>'
+            # A blocked task's reason is its status pill's tooltip, so a parked task says why it is blocked.
+            reason_tip = f' title="{e(it.get("statusReason") or "")}"' if status == "blocked" and it.get("statusReason") else ""
+            status_pill = f'<span class="pill status-{status}"{reason_tip}>{e(status)}</span>'
             td_id = it.get("id", "") or ""
             ad_flag = it.get("autoDispatch")
             # AUTO pill = "this should be auto-dispatched"; once dispatchedAt is set
             # the TODO has already been picked up by a workspace. Show DISPATCHED instead.
             if ad_flag:
-                if it.get("dispatchedAt"):
+                if it.get("parkedBy"):
+                    ad = ""  # parked: a session was started but nothing was typed into it, so it wasn't dispatched
+                elif it.get("dispatchedAt"):
                     ad = ' <span class="pill status-in-progress" title="dispatched at ' + e(it.get("dispatchedAt", "")) + ' to ' + e(it.get("dispatchedWs", "?")) + '">dispatched</span>'
                 else:
                     ad = ' <span class="pill auto-dispatch">auto</span>'

@@ -54,12 +54,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   forever. Now the same thing typed into the same session more than three
   times in thirty minutes is waited on, and a typing that may have landed is
   not repeated by Assistant on its own: a nudge, `/cleanup` or merge request
-  waits 30 minutes before it may be tried again, and your own tap (the script
-  run by hand, "run now", restore, a hand-run merge, a Slack message you send)
-  is never held back or limited, whatever it types; a retry Assistant makes by
-  itself on the same tap is (Enter pressed again for one Slack message stops
-  after three tries). The page tells you when something may already have been
-  typed, and you decide.
+  waits 30 minutes before it may be tried again. A message you send in Slack is
+  typed once, whatever was typed before it. Everything else Assistant types,
+  including a script that you or an agent runs, is limited to three of the same
+  thing into one session in thirty minutes and is not retyped for thirty minutes
+  after a typing whose outcome isn't known; you can always type into the
+  session yourself. The page tells you when something may already have been
+  typed.
 - Check every request that changes something on the dashboard server the same
   way, with no exceptions. Before, a web page open in your browser could make
   your machine start a TODO's agent session (`/dispatch-now`), type a

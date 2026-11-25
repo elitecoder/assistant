@@ -11,15 +11,17 @@ back, so:
     setting that is on. Text somebody else wrote is never what allows typing.
   * The ledger holds the session, the task, and where the text came from (a fixed name such as `nudge:stranded`),
     never the text, a prompt path, a title or a Slack message.
-  * The same thing typed into the same session more than three times in half an hour is refused (a loop), unless a
-    person's own tap allowed it. A task or a Slack message counts as its own thing.
+  * The same thing typed into the same session more than three times in half an hour is refused (a loop), whatever
+    allowed it, except the first use of a one-time tap (the owner's own Slack message). A task or a Slack message
+    counts as its own thing.
   * A typing that went out and couldn't be confirmed, or never got a result, is `unknown` and is not repeated by
     Assistant on its own. How long that lasts depends on who allowed it, because cmux reuses session refs:
       - a task's instruction and a Slack message keep the ledger's own rule (not again without a newer
         authorization);
       - a nudge, `/cleanup`, a boot instruction, a `/clear` or a merge request waits thirty minutes, then may be
         tried again (and counts toward the loop limit);
-      - a person's own tap is never held back by an earlier unknown.
+      - the owner's own Slack message is typed once whatever was typed before it; everything else, however it was
+        authorized (a script run by hand or by an agent, "run now", restore), is held the same way.
   * A `Keys` is bound to its intent: one per effect, only the session or terminal the intent names, and only while
     the intent has no result.
 
@@ -46,9 +48,9 @@ LOOP_SCAN = 500
 # A session the record can describe. cmux numbers its refs from 1000010000 and counts up.
 SESSION = re.compile(r"workspace:[0-9]{1,18}")
 # These have no time of their own to be allowed "as of", so an unknown one holds the same source in the same
-# session for half an hour only, for anything that isn't a person's own tap (a tap is never held, whatever its
-# source: the pulse's merge request is held, a hand-run merge script is not).
-WINDOWED_SOURCES = ("nudge:stranded", "cleanup", "boot", "clear", "merge", "pulse")
+# session for half an hour only. That applies to every one of them however it was authorized: the merge script run
+# by hand, `bin/cmux-send.py` run by an agent, "run now" and restore are held like the pulse's typing.
+WINDOWED_SOURCES = ("nudge:stranded", "cleanup", "boot", "clear", "merge", "pulse", "cli", "restore", "run-now")
 
 UNRECORDED = ("Assistant couldn't record what it types, so it typed nothing. "
               "Check that your disk isn't full and that the folder ~/.assistant/effects can be written to.")
@@ -58,8 +60,7 @@ IN_PROGRESS = "Assistant may still be typing this into {where} (or stopped partw
 DONE = "Assistant already typed this into {where}, so it didn't type it again."
 UNKNOWN_SHORT = ("Assistant typed this into {where} earlier and couldn't tell if it arrived, so it won't type it "
                  "again by itself.")
-UNKNOWN = (UNKNOWN_SHORT + " Look at that session; to type it again yourself, from the Assistant folder, run "
-           "`bin/cmux-send.py --ws {where} --text '…' --enter`.")
+UNKNOWN = UNKNOWN_SHORT + " Look at that session. If it isn't there, type it into the session yourself."
 UNAUTHORIZED = "Assistant couldn't confirm what allowed this, so it typed nothing. Run it again from the place you meant."
 INVALID = "Assistant didn't recognise the session this was meant for (it expects workspace:N), so it typed nothing."
 LATER = ("This message is dated later than this Mac's clock says it is now, so Assistant is waiting before typing "
@@ -134,21 +135,21 @@ def _held_by_unknown(target: dict, now: float) -> bool:
     return last["outcome"] is None and effects.IN_FLIGHT_SEC <= now - last["t"] < LOOP_SEC
 
 
-def _tap_used(where: str, same_tap: str) -> bool:
+def _tap_used(where: str, once_tap: str) -> bool:
     """Whether this tap has already been used to type into this session (or terminal)."""
-    return any(found["authorized_by"]["kind"] == "tap" and found["authorized_by"]["ref"] == same_tap
+    return any(found["authorized_by"]["kind"] == "tap" and found["authorized_by"]["ref"] == once_tap
                and where in (found["target"].get("session"), found["target"].get("surface"))
                for found in effects.history(CLASS, limit=LOOP_SCAN))
 
 
 def begin(session: str, source: str, *, kind: str, ref: str, component: str, task: str = "", trace: str = "",
-          slack_ts: str = "", surface: str = "", anchor: float | None = None, same_tap: str = "") -> str:
+          slack_ts: str = "", surface: str = "", anchor: float | None = None, once_tap: str = "") -> str:
     """Record the intent to type into `session` (`workspace:N`) and return the effect id. Type only if this returns.
 
     `source` is where the text comes from, a fixed name. `kind` and `ref` are what allowed it (`tap`, `owner_flag`
     or `standing`, and a pointer: a task id, the name of a nudge, a route). `anchor` is the time that allowance was
     given, when it has one of its own (a Slack message's time): the ledger then refuses a second typing of the same
-    thing without a newer allowance. `same_tap` names a tap that a retry by Assistant itself may reuse; see below. `surface` names a terminal for a session known only by that id (`session` is
+    thing without a newer allowance. `once_tap` names a one-time tap (see below). `surface` names a terminal for a session known only by that id (`session` is
     then empty). Raises `Refused`."""
     now = _now()
     target: dict = {"source": source}
@@ -169,11 +170,12 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         raise Refused("invalid", INVALID) from None
     if anchor is not None and anchor > now + effects.FUTURE_SEC:
         raise Refused("later", LATER)
-    # A person's own tap is never held back by the loop limit or an earlier unknown, whatever its source: an
-    # automatic limit may only make Assistant more careful, and the person decides once the page tells the truth.
-    # That holds for a new action. The same tap used again (`same_tap`: a Slack message's `slack:<time>` on every
-    # Enter-only retry of it) is a retry Assistant makes by itself, so it is counted and held like an automatic typing.
-    held = kind != "tap" or bool(same_tap and _tap_used(session or surface, same_tap))
+    # One thing is exempt from the loop limit and from the hold after an unknown: the first use of a tap that can
+    # only be used once (`once_tap`: the owner's own Slack message, `slack:<time>`, after the owner rule has passed;
+    # only Assistant's Slack path passes it, so no command line or route can claim it). Its second and later uses
+    # (every Enter-only retry of that message) are counted and held. Everything else is counted and held, whatever
+    # its authorization kind: a script can't tell a person from an agent, and a person can type into the session.
+    held = not (kind == "tap" and once_tap and not _tap_used(session or surface, once_tap))
     if held and _loop_count(target, now) >= LOOP_MAX:
         raise Refused("loop", LOOP.format(where=where))
     if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):

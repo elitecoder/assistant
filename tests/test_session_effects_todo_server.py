@@ -124,3 +124,34 @@ def test_a_refusal_with_no_message_still_says_something(env, monkeypatch):
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: mock.Mock(returncode=2, stderr=""))
     ok, why = mod.proposal_action("prop-1", "run-now", {})
     assert ok is False and why.startswith("run-now didn't type")
+
+
+def test_run_now_is_held_after_a_typing_nobody_could_tell_about_and_says_so(env, tmp_path, monkeypatch):
+    """The real script, with only cmux faked: the first run times out (unknown), the second is refused."""
+    import subprocess as sp
+    path = seed(env)
+    send = REPO / "bin/cmux-send.py"
+    home = tmp_path / "held-home"
+    home.mkdir()
+    wrapper = tmp_path / "wrap2.py"
+    wrapper.write_text(
+        "import sys, importlib.util as u\n"
+        "mode = sys.argv[-1]\n"
+        "sys.argv = ['cmux-send.py'] + sys.argv[1:-1]\n"
+        f"spec = u.spec_from_file_location('s', {str(send)!r}); s = u.module_from_spec(spec); spec.loader.exec_module(s)\n"
+        "s.resolve_terminal_surface = lambda ws: ('S-1', 'surface:1', 'tty', 't')\n"
+        "s.rpc = (lambda m, p: (124, {})) if mode == 'timeout' else (lambda m, p: (0, {}))\n"
+        "s.time.sleep = lambda x: None\n"
+        "s.SENDS_LOG = '" + str(tmp_path / "sends.jsonl") + "'\n"
+        "s.main()\n")
+    real = sp.run
+    modes = iter(["timeout", "ok"])
+
+    def run(argv, **kw):
+        return real([sys.executable, str(wrapper), *argv[2:], next(modes)], **{**kw, "env": {"HOME": str(home), "PATH": "/usr/bin"}})
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    ok, why = mod.proposal_action("prop-1", "run-now", {})
+    assert ok is False and why.startswith("Assistant sent this but didn't hear back")
+    ok, why = mod.proposal_action("prop-1", "run-now", {})
+    assert ok is False and "couldn't tell if it arrived" in why and "type it into the session yourself" in why

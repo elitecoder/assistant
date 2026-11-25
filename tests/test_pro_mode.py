@@ -845,3 +845,20 @@ def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
     log.write_text("")
     run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
     assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
+
+
+def test_a_parked_task_row_has_no_dispatched_pill_and_its_reason_is_the_blocked_pills_tooltip(home):
+    parked = {"id": "td-1", "title": "Fix it", "priority": "P1", "status": "blocked", "autoDispatch": True,
+              "dispatchedAt": "2026-11-24T10:00:00Z", "dispatchedWs": "workspace:1000010007", "parkedBy": "typing_refused",
+              "statusReason": 'Parked: Assistant started workspace:1000010007 but nothing could be typed into it.'}
+    plain = {"id": "td-2", "title": "Other", "priority": "P1", "status": "in-progress", "autoDispatch": True,
+             "dispatchedAt": "2026-11-24T10:00:00Z", "dispatchedWs": "workspace:1000010008"}
+    (home / ".claude").mkdir(exist_ok=True)
+    (home / ".claude/assistant-todo.json").write_text(json.dumps({"items": [parked, plain]}))
+    page = render_page(home, {})
+    first, second = page.index('data-task-id="td-1"'), page.index('data-task-id="td-2"')
+    row = page[first:second] if first < second else page[first:]  # in-progress rows are listed before blocked ones
+    other = page[second:first] if second < first else page[second:]
+    assert ">dispatched</span>" not in row and ">blocked</span>" in row
+    assert 'title="Parked: Assistant started workspace:1000010007 but nothing could be typed into it."' in row
+    assert ">dispatched</span>" in other  # an ordinary dispatched task still shows it

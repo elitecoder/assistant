@@ -198,17 +198,19 @@ def test_a_typing_that_finished_a_moment_ago_does_not_block_the_next_one_in_the_
 
 # --- unknown typings ---------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("source", ["nudge:stranded", "cleanup", "boot", "clear", "merge"])
-def test_an_unknown_typing_holds_the_same_source_in_the_same_session_for_half_an_hour_only(home, clock, source):
+@pytest.mark.parametrize("source", ["nudge:stranded", "cleanup", "boot", "clear", "merge", "cli", "restore", "run-now"])
+@pytest.mark.parametrize("kind", ["standing", "tap"])
+def test_an_unknown_typing_holds_the_same_source_in_the_same_session_for_half_an_hour_only(home, clock, source, kind):
+    """Whatever allowed it: a script run by hand or by an agent, "run now" and restore are held like the pulse's."""
     def go(session=WS):
-        return se.begin(session, source, kind="standing", ref=source, component="pulse")
+        return se.begin(session, source, kind=kind, ref="x:y", component="pulse")
     se.finish(go(), "unknown", error="timeout")
     clock.t += 600
     exc = refusal(go)
     assert exc.code == "unknown"
     assert str(exc) == (f"Assistant typed this into {WS} earlier and couldn't tell if it arrived, so it won't type it "
-                        f"again by itself. Look at that session; to type it again yourself, from the Assistant folder, run "
-                        f"`bin/cmux-send.py --ws {WS} --text '…' --enter`.")
+                        f"again by itself. Look at that session. If it isn't there, type it into the session yourself.")
+    assert "cmux-send.py" not in str(exc)
     go(WS2)  # another session is its own target
     clock.t += se.LOOP_SEC
     go()     # half an hour on, it may be tried again, and a reused session ref isn't blocked for ever
@@ -224,20 +226,6 @@ def test_a_typing_that_never_got_a_result_is_held_once_its_window_has_passed_and
     assert refusal(nudge).code == "unknown"
     clock.t = T0 + se.LOOP_SEC + 1
     nudge()
-
-
-@pytest.mark.parametrize("source", ["cli", "restore", "run-now"])
-def test_a_persons_own_tap_is_never_held_back_by_an_earlier_unknown(home, clock, source):
-    def go():
-        return se.begin(WS, source, kind="tap", ref="cli:x", component="c")
-    se.finish(go(), "unknown")
-    clock.t += 5
-    se.finish(go(), "unknown")
-    clock.t += 5
-    se.finish(go(), "done")  # an earlier unknown didn't hold it back
-    other = se.begin(WS2, source, kind="tap", ref="cli:x", component="c")
-    assert refusal(se.begin, WS2, source, kind="tap", ref="cli:x", component="c").code == "in-progress"
-    se.finish(other, "done")
 
 
 def test_a_task_keeps_the_ledgers_own_rule_and_a_slack_message_is_not_typed_again_without_a_newer_allowance(home, clock):
@@ -444,32 +432,42 @@ def test_line_lets_a_refusal_because_the_intent_was_closed_go_up(home):
         keys.line("hi")
 
 
-def test_a_persons_tap_is_never_held_by_the_loop_limit_or_an_unknown_whatever_its_source(home, clock):
-    def tap(source):
-        return se.begin(WS, source, kind="tap", ref="cli:cmux-send", component="cmux-send")
-    for source in ("merge", "nudge:stranded", "cleanup", "cli"):
-        for _ in range(se.LOOP_MAX + 2):  # more than the loop limit, each after an unknown one
-            se.finish(tap(source), "unknown")
-            clock.t += 5
-        tap(source)
-        clock.t += 700
+@pytest.mark.parametrize("source", ["merge", "cli", "restore", "run-now", "nudge:stranded"])
+@pytest.mark.parametrize("kind", ["tap", "standing", "owner_flag"])
+def test_every_typing_is_limited_to_three_in_half_an_hour_whatever_allowed_it(home, clock, source, kind):
+    def go():
+        return se.begin(WS, source, kind=kind, ref="x:y", component="c")
+    for _ in range(se.LOOP_MAX):
+        se.finish(go(), "done")
+        clock.t += 5
+    assert refusal(go).code == "loop"  # the fourth identical one, run by a script, an agent or a person's button
 
 
-def test_the_pulses_merge_request_is_held_after_an_unknown_and_a_persons_is_not(home, clock):
+def test_a_hand_run_merge_script_is_held_after_an_unknown_like_the_pulses(home, clock):
     def merge(kind):
         return se.begin(WS, "merge", kind=kind, ref="merge", component="merge-pr-dispatch.py")
     se.finish(merge("standing"), "unknown")
     clock.t += 60
     assert refusal(merge, "standing").code == "unknown"
-    merge("tap")  # a person running the script by hand
+    assert refusal(merge, "tap").code == "unknown"  # run by hand: a script can't tell a person from an agent
+
+
+def test_an_owners_slack_messages_are_typed_at_once_four_in_a_row_whatever_came_before(home, clock):
+    se.finish(se.begin(WS, "nudge:stranded", kind="standing", ref="nudge:stranded", component="pulse"), "unknown")
+    for n in range(se.LOOP_MAX + 1):
+        ts = f"17936136{10 + n}.000100"
+        ef = se.begin(WS, "slack-message", kind="tap", ref=f"slack:{ts}", component="comms", slack_ts=ts,
+                      anchor=clock.t - 5, once_tap=f"slack:{ts}")
+        se.finish(ef, "unknown")  # each is the first use of its own one-time tap
+        clock.t += 1
 
 
 def test_a_tap_is_exempt_only_the_first_time_it_is_used_in_a_session(home, clock):
     def retry(session=WS, tap="slack:1793613610.000100"):
         return se.begin(session, "submit", kind="tap", ref=tap, component="comms", slack_ts="1793613610.000100",
-                        same_tap=tap)
+                        once_tap=tap)
     first = se.begin(WS, "slack-message", kind="tap", ref="slack:1793613610.000100", component="comms",
-                     slack_ts="1793613610.000100", anchor=T0 - 5, same_tap="slack:1793613610.000100")
+                     slack_ts="1793613610.000100", anchor=T0 - 5, once_tap="slack:1793613610.000100")
     se.finish(first, "unknown")
     for _ in range(se.LOOP_MAX):  # the same tap again: counted, so it stops at the loop limit
         se.finish(retry(), "unknown")
@@ -477,10 +475,4 @@ def test_a_tap_is_exempt_only_the_first_time_it_is_used_in_a_session(home, clock
     assert refusal(retry).code == "loop"
     se.finish(retry(WS2), "done")  # another session has not used it yet
     se.finish(se.begin(WS, "submit", kind="tap", ref="slack:1793613611.000100", component="comms",
-                       slack_ts="1793613611.000100", same_tap="slack:1793613611.000100"), "done")  # a new tap, at once
-
-
-def test_a_hand_run_tap_has_no_same_tap_and_is_never_counted_however_often_it_runs(home, clock):
-    for _ in range(se.LOOP_MAX + 3):
-        se.finish(se.begin(WS, "merge", kind="tap", ref="merge", component="merge-pr-dispatch.py"), "unknown")
-        clock.t += 5
+                       slack_ts="1793613611.000100", once_tap="slack:1793613611.000100"), "done")  # a new tap, at once

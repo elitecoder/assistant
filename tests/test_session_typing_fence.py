@@ -4,8 +4,8 @@ That module writes the intent to the effects ledger before the first keystroke, 
 ledger can't happen from here. Caught, in Python files under bin/, src/, work_queue/ and hooks/:
 - any string (a docstring excepted, an f-string's pieces included) that holds `surface.send_`, so the rpc method
   names can't be written out, split across an f-string, or put in a shell command;
-- any string that mentions `cmux send` / `cmux send-key` (ALLOWED_TEXT lists the few that are help or error text,
-  each with its reason), an f-string or a sum where a variable is followed by ` send ` or ` send-key `, or holds the verbs `send-text`, `send-panel`, `send-key`, `send-keys` (which is
+- any string that mentions `cmux send` / `cmux send-key` (ALLOWED_TEXT lists the few whole strings that are help or error text,
+  each with its reason; a string that only begins with one is not skipped), an f-string or a sum where a variable is followed by ` send ` or ` send-key `, or holds the verbs `send-text`, `send-panel`, `send-key`, `send-keys` (which is
   also tmux's) or an AppleScript `keystroke`/`key code`, and any argument list that has `send` with something named cmux;
 - a call to one of the rpc wrappers whose method isn't a literal string, except inside the transports the one module
   is given (the functions named in TRANSPORTS).
@@ -35,7 +35,8 @@ AFTER_BINARY = re.compile(r"^\s+send(-key|-text|-keys|-panel)?(\s|$)")
 # Text that mentions the command and is not a call to it. Each entry says why; a new one needs a reason too.
 ALLOWED_TEXT = {
     "cmux send failed: ": "bin/todo-server.py: the error a person reads when run-now's script can't start",
-    "cmux send returned 0 but the JSONL transcript": "bin/merge-pr-dispatch.py: the card's help text after a send",
+    "cmux send returned 0 but the JSONL transcript's last_user.text does not match. Observed: ":
+        "bin/merge-pr-dispatch.py: the card's help text after a send",
 }
 WRAPPERS = {"_cmux_rpc", "_cmux_type_rpc", "rpc", "run_cmux", "cmux_rpc"}
 # The functions that carry a method name from `Keys` to cmux: they are handed the name, and `Keys` is what names it.
@@ -81,7 +82,7 @@ class _Walker(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Constant(self, node):
-        if isinstance(node.value, str) and id(node) not in self.docs and not node.value.startswith(tuple(ALLOWED_TEXT)) \
+        if isinstance(node.value, str) and id(node) not in self.docs and node.value not in ALLOWED_TEXT \
                 and (STRING.search(node.value) or AFTER_BINARY.match(node.value) and id(node) in self.after_binary):
             self.found.append(node.lineno)
 
@@ -165,6 +166,11 @@ def test_the_fence_sees_shell_commands_with_a_variable_binary():
     assert typing_calls('run(f"{b} send-key Enter")\nrun(CMUX + " send hello")\nrun(self.cmux + " send-key Enter")') == [1, 2, 3]
     assert typing_calls('run("cmux send hello")\nrun("cmux send-key Enter")') == [1, 2]
     assert typing_calls('say(f"{n} sends an alert")\nsay("a " + "sendmail")') == []
+
+
+def test_an_allowed_text_is_skipped_only_when_the_whole_string_matches():
+    assert typing_calls('say("cmux send failed: ")') == []
+    assert typing_calls('say("cmux send failed: " + "x")\nsay("cmux send failed: then cmux send --ws w hi")') == [2]
 
 
 def test_the_allowed_text_is_help_or_error_text_and_each_entry_still_exists_in_the_code():

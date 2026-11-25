@@ -338,4 +338,34 @@ def test_the_merge_card_says_the_command_may_already_be_there_when_cmux_didnt_an
         merge.main()
     card = json.loads(out.getvalue())["awaiting_card"]
     assert stop.value.code == 2 and card["title"] == title
-    assert (card["detail"] == observed) == observed.startswith("may_have")
+    assert "may_have_been_typed" not in card["detail"]  # the token is for the script's result, not for a person
+    assert (card["detail"] == "cmux didn't answer in time") == observed.startswith("may_have")
+
+
+def test_a_script_run_by_an_agent_with_its_defaults_is_limited_and_held_like_everything_else(send, home):
+    """The default source and authorization (what agents are told to use) get no exemption."""
+    for _ in range(3):
+        assert run(send, Rpc(home), "--enter")[0] == 0
+    rpc = Rpc(home)
+    code, record = run(send, rpc, "--enter")  # the fourth identical run
+    assert code == 4 and rpc.calls == [] and record["refused"]["code"] == "loop"
+
+
+def test_a_default_run_right_after_a_typing_nobody_could_tell_about_is_refused(send, home):
+    run(send, Rpc(home, [(0, {}), (124, {})]), "--enter")  # the Enter timed out: unknown
+    rpc = Rpc(home)
+    code, record = run(send, rpc, "--enter")
+    assert code == 4 and rpc.calls == [] and record["refused"]["code"] == "unknown"
+    assert "type it into the session yourself" in record["refused"]["reason"]
+
+
+def test_no_option_of_the_script_can_claim_the_one_time_exemption(send):
+    import ast
+    source = (Path(send.__file__).read_text())
+    assert "once_tap" not in source
+    options = {a.value for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "add_argument"
+               for a in n.args if isinstance(a, ast.Constant)}
+    assert options == {"--ws", "--text", "--enter", "--caller", "--source", "--auth-kind", "--auth-ref", "--task",
+                       "--no-log", "--post-send-wait"}
+    for name in ("todo-server.py", "cmux-restore-sessions.py", "merge-pr-dispatch.py", "pulse.py"):
+        assert "once_tap" not in (Path(send.__file__).parent / name).read_text(), name

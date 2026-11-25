@@ -186,28 +186,22 @@ What the record does for you:
   result is `done` when the text and Enter both went out and nothing says they
   didn't land, `failed` when nothing went out, and `unknown` when the text went
   out and Enter didn't, the transcript was checked and didn't show it, or
-  Assistant can't tell (a time-out). How long an `unknown` typing, or one that
-  never got a result at all, blocks a repeat depends on who allowed the next
-  one, because cmux reuses session numbers:
-  - a nudge, `/cleanup`, a start-up instruction, a `/clear` or a merge request
-    waits 30 minutes, then may be tried again;
-  - your own tap (`cmux-send.py` run by hand, a hand-run merge script,
-    restore, "run now", a Slack message you send) is never held back or limited
-    by the loop rule, whatever its source; it is only refused while another is
-    still going. A retry Assistant makes by itself on the same tap is held: the
-    second and later Enter presses for one Slack message count like automatic
-    typings, so they stop at the loop limit, and the message then gets the
-    "couldn't confirm" reply. The page tells
-    you what happened (for a time-out: "Assistant sent this but didn't hear
-    back, so it may have been typed. Check the session before you send it
-    again."), and you decide;
-  - a Slack message is never repeated without a newer authorization: you
-    sending it again;
+  Assistant can't tell (a time-out). A message you send in Slack is typed once,
+  whatever was typed before it. Everything else Assistant types, including a
+  script that you or an agent runs (`cmux-send.py`, the merge script, "run now",
+  restore), is limited to three of the same thing into one session in thirty
+  minutes, and is not typed again for thirty minutes after a typing whose
+  outcome isn't known. No option or flag overrides this: a script can't tell a
+  person from an agent, and you can always type into the session yourself. The
+  page tells you what happened (for a time-out: "Assistant sent this but didn't
+  hear back, so it may have been typed. Check the session before you send it
+  again."). Two more cases:
   - a task's instruction is not held by an earlier `unknown`: each dispatch
     starts a new session, so there is nothing earlier in it to repeat. (The
     ledger's own rule would hold it, but its authorization is "now".)
-  To type something again yourself:
-  `bin/cmux-send.py --ws workspace:N --text '…' --enter`.
+  - the second and later Enter presses for one Slack message count like
+    automatic typings, so they stop at the loop limit, and the message then gets
+    the "couldn't confirm" reply.
 - **A Slack message is never typed twice, and it is dropped only with a word
   to you.** If it was typed but never seen in the session's transcript, and its
   text is still sitting in the prompt box, only Enter is pressed again, as its own
@@ -249,6 +243,10 @@ gives it (anything that can run the script can claim a standing setting). An `ow
 text typed is whatever the caller passed, and cmux, not Assistant, says which
 terminal belongs to which session number. An entry's `verified` is `true` only
 when the session's transcript showed the text arrive.
+
+Between reading the prompt box and pressing Enter there is one cmux call's
+worth of time in which your own keystrokes can land, so text you are typing
+yourself could still be submitted. That can't be closed from outside cmux.
 
 ### Not recorded yet
 

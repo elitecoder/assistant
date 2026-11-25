@@ -336,9 +336,9 @@ def test_a_title_is_cut_at_a_word_boundary_with_an_ellipsis(mod):
 def test_a_card_with_nothing_blocked_still_names_each_parked_task_and_its_workspace(mod):
     mod._dispatch_blocked = ""
     card = mod._dispatch_card([], [PARKED, {**PARKED, "id": "td-2", "title": "b", "dispatchedWs": "workspace:1000010009"}])
-    assert card["title"] == "Tasks parked — Assistant wouldn't type into their sessions (2)"
+    assert card["title"] == "Tasks parked — Assistant couldn't type into their sessions (2)"
     assert card["detail"] == (
-        "Assistant started a session for each task below but wouldn't type into it, so it parked the task. Close each "
+        "Assistant started a session for each task below but couldn't type into it, so it parked the task. Close each "
         "workspace, then press \"Queue to start\" on the task. Parked: td-1 Fix the ruler after the sign off review now please "
         "(workspace:1000010007), td-2 b (workspace:1000010009).")
 
@@ -401,3 +401,35 @@ def test_queue_to_start_on_a_parked_task_makes_it_a_task_the_next_pulse_dispatch
     _seed_todo(mod, [{"id": "td-1", "status": "in-progress", "dispatchedAt": "x", "dispatchedWs": WS}])
     server.dispatch_now("td-1")
     assert stamped(mod)["status"] == "in-progress"
+
+
+def test_a_good_dispatch_clears_an_earlier_park_marker_and_the_reason_says_what_happened(mod, home):
+    seed(mod)
+    with mock.patch.object(effects, "begin", side_effect=effects.Unrecorded("disk full")):
+        Cmux(mod, home).dispatch()
+    parked = stamped(mod)
+    assert parked["parkedBy"] == "typing_refused" and parked["statusReason"] == (
+        'Parked: Assistant started workspace:1000010007 but nothing could be typed into it (it couldn\'t record the '
+        'typing, or cmux refused the text). Close that workspace, then press "Queue to start" on the task on the '
+        "Assistant dashboard's Tasks tab.")
+    assert mod._mark_todo_dispatched("td-1", "workspace:1000010009") is True  # a later, good dispatch
+    assert "parkedBy" not in stamped(mod) and stamped(mod)["status"] == "in-progress"
+    assert mod._parked_tasks() == []
+
+
+def test_queue_to_start_clears_the_park_marker_so_a_later_block_is_not_listed_as_parked(mod, home, monkeypatch):
+    import importlib.util
+    seed(mod)
+    with mock.patch.object(effects, "begin", side_effect=effects.Unrecorded("disk full")):
+        Cmux(mod, home).dispatch()
+    spec = importlib.util.spec_from_file_location("todo_server_marker", mod.REPO / "bin/todo-server.py")
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+    monkeypatch.setattr(server, "JSON_PATH", mod.TODO_PATH)
+    monkeypatch.setattr(server, "rerender", lambda: None)
+    server.dispatch_now("td-1")
+    assert "parkedBy" not in stamped(mod)
+    data = json.loads(mod.TODO_PATH.read_text())
+    data["items"][0]["status"] = "blocked"  # the agent later blocks it for its own reason
+    mod.TODO_PATH.write_text(json.dumps(data))
+    assert mod._parked_tasks() == []

@@ -726,7 +726,7 @@ def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: 
     def begin(**given):
         try:
             begun.append(session_effects.begin(ws_ref, source, kind=kind, component="comms",
-                                               same_tap=given.get("ref", "") if kind == "tap" else "", **given))
+                                               once_tap=given.get("ref", "") if kind == "tap" else "", **given))
         except session_effects.Refused as refusal:
             refusal.slack_ts = given.get("slack_ts", "")
             for effect_id in begun:  # nothing is typed, so the ones already begun say so

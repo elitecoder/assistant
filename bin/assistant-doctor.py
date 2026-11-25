@@ -290,8 +290,9 @@ def check_slack_owner() -> Check:
     if re.fullmatch(r"[UW][A-Z0-9]{2,}", configured.strip()):
         return Check("slack owner", PASS, core=False, detail="slack.owner in ~/.assistant/config.json names you")
     return Check("slack owner", WARN, core=False,
-                 detail="the target is a channel and SLACK_USER_ID isn't set to a member ID, so Assistant can't tell "
-                        "which messages are yours and types none of them into the session",
+                 detail="the target is a channel and neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json "
+                        "is set to a member ID, so Assistant can't tell which messages are yours and types none of "
+                        "them into the session",
                  remedy="add `export SLACK_USER_ID=U…` (your member ID: your Slack profile, the three dots, Copy "
                         "member ID) to ~/.zprofile (the service reads that file, not ~/.zshrc), then run "
                         "`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`")
