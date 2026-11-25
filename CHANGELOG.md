@@ -52,7 +52,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - In Pro mode, "run now" on a proposal is checked before it types. Before, it typed
   whatever a proposal file said, of any length, with any control characters,
   into whatever session the file named, with no check. Now the session must be
-  a real `workspace:N`, the text free of characters you can't see in it, and the typing is recorded first. It also types into the
+  a real `workspace:N`, the text one line of at most 500 characters with no
+  control characters, and the typing is recorded first. It also types into the
   session's terminal, not whichever pane is on top, and says what happened when
   it couldn't. This is closed in Pro mode only: in the default mode "run now"
   still types whatever a proposal file says, as before, and nothing here changes
@@ -350,10 +351,6 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   held every later one for half an hour. Now only the same text into the same session is counted
   or held; the record keeps a keyed digest of the text, never the text. Nudges, `/cleanup`, boot
   and the rest keep their limits. Default mode is unchanged.
-- In Pro mode, "run now" on a proposal types a long proposal, or one with several lines, as the
-  default mode does. Before, it refused anything over 500 characters or with a line break, though
-  you could read it on the page. It still refuses text with characters you can't see in it, and
-  now says which. Default mode is unchanged.
 - In Pro mode, Assistant types your Slack messages into the warm session again
   when the target is a channel and `SLACK_USER_ID` isn't set. An update on
   2026-11-25 made it refuse them all and reply "I can't tell which Slack

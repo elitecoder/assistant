@@ -183,54 +183,3 @@ def test_a_different_run_now_goes_through_after_one_nobody_could_tell_about(env,
     assert press(env, TEXTS[1]) == (True, "prop-1.run-now ok")
     ok, why = press(env, TEXTS[0])
     assert ok is False and "couldn't tell if it arrived" in why
-
-
-# --- 3. "run now" types what the proposal says (the default mode types it whatever it is) -------------------------------
-
-@pytest.mark.parametrize("text", ["x" * 501, "x" * 5000, "one\ntwo", "one\n\ntwo\n", "col1\tcol2", "line one\nline two\n" * 40,
-                                  "naïve — “quoted” 日本語"])
-def test_run_now_types_a_long_or_several_line_proposal_as_it_says_it(env, monkeypatch, text):
-    _seed_proposal(env, {"id": "prop-1", "execute_via": "send-text-to-session", "action": text,
-                         "touches": [{"type": "session", "ref": "workspace:1000010007"}]})
-    seen = []
-    monkeypatch.setattr(server.subprocess, "run", lambda argv, **k: seen.append(argv) or mock.Mock(returncode=0))
-    assert server.proposal_action("prop-1", "run-now", {}) == (True, "prop-1.run-now ok")
-    assert len(seen) == 1 and seen[0][seen[0].index("--text") + 1] == text and "--enter" in seen[0]
-
-
-@pytest.mark.parametrize("text, named", [
-    ("a\x03b", "U+0003"), ("a\x1b[Zb", "U+001B"), ("a\x15b", "U+0015"), ("a\x1b[201~b", "U+001B"), ("a b", "U+2028"),
-    ("a b", "U+2029"), ("a‮b", "U+202E"), ("one\rtwo", "U+000D"), ("a​b", "U+200B"), ("a\x00b", "U+0000"),
-])
-def test_run_now_still_refuses_characters_nobody_could_see_and_says_which(env, monkeypatch, text, named):
-    path = _seed_proposal(env, {"id": "prop-1", "execute_via": "send-text-to-session", "action": text,
-                                "touches": [{"type": "session", "ref": "workspace:1000010007"}]})
-    before = path.read_text()
-    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: pytest.fail("must not type"))
-    ok, why = server.proposal_action("prop-1", "run-now", {})
-    assert ok is False and named in why and "nothing was typed" in why and path.read_text() == before
-
-
-def test_run_now_names_at_most_five_hidden_characters(env, monkeypatch):
-    _seed_proposal(env, {"id": "prop-1", "execute_via": "send-text-to-session", "action": "".join(map(chr, range(1, 9))),
-                         "touches": [{"type": "session", "ref": "workspace:1000010007"}]})
-    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: pytest.fail("must not type"))
-    why = server.proposal_action("prop-1", "run-now", {})[1]
-    assert why.count("U+") == 5 and "U+0001" in why and "U+0006" not in why
-
-
-@pytest.mark.parametrize("action", ["", None, ["a"], 7])
-def test_run_now_with_no_text_types_nothing(env, monkeypatch, action):
-    _seed_proposal(env, {"id": "prop-1", "execute_via": "send-text-to-session", "action": action,
-                         "touches": [{"type": "session", "ref": "workspace:1000010007"}]})
-    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: pytest.fail("must not type"))
-    ok, why = server.proposal_action("prop-1", "run-now", {})
-    assert ok is False and "no text to type" in why
-
-
-def test_the_script_types_several_lines_in_one_text_call_and_then_enter_like_the_default_mode_does(send, home):
-    """In Pro mode and in the default mode `bin/cmux-send.py` sends the text in one `surface.send_text` and then Enter."""
-    text = "first line\nsecond line\n\tthird"
-    rpc = Rpc(home)
-    assert run(send, rpc, "--enter", text=text)[0] == 0
-    assert [(m, p.get("text") or p.get("key")) for m, p in rpc.calls] == [("surface.send_text", text), ("surface.send_key", "enter")]

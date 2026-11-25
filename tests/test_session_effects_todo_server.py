@@ -1,4 +1,4 @@
-"""The dashboard's "run now" on a proposal types what the proposal says into a real session, and records it first."""
+"""The dashboard's "run now" on a proposal types only a short line into a real session, and records it first."""
 from __future__ import annotations
 
 import json
@@ -25,7 +25,7 @@ def seed(env, action=MARKER, ref="workspace:1000010007"):
 
 @pytest.mark.parametrize("action, ref", [
     (MARKER, "not-a-session"), (MARKER, "workspace:7; rm -rf"), (MARKER, "surface:3"),
-    ("one\rtwo", "workspace:1000010007"), ("", "workspace:1000010007"),
+    ("one\ntwo", "workspace:1000010007"), ("one\rtwo", "workspace:1000010007"), ("x" * 501, "workspace:1000010007"), ("", "workspace:1000010007"),
     (["a"], "workspace:1000010007"), (MARKER, "workspace:" + "1" * 19),
     # control characters: Ctrl-C, back-tab, Ctrl-U, the end of a bracketed paste, a line separator
     ("a\x03b", "workspace:1000010007"), ("a\x1b[Zb", "workspace:1000010007"), ("a\x15b", "workspace:1000010007"),

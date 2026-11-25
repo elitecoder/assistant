@@ -1384,10 +1384,17 @@ CHECKS = (
     ),
 
     (
+        "run now refuses text longer than 500 characters",
+        TS,
+        "len(text) > RUN_NOW_MAX",
+        "len(text) > 5 * RUN_NOW_MAX",
+        D + "test_a_bad_session_or_text_is_refused_with_nothing_typed_and_the_proposal_untouched",
+    ),
+    (
         "run now refuses control and separator characters",
         TS,
-        'unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp")}',
-        'unicodedata.category(c) in ("Zs",)}',
+        'unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in text',
+        'unicodedata.category(c) in ("Zs",) for c in text',
         D + "test_a_bad_session_or_text_is_refused_with_nothing_typed_and_the_proposal_untouched",
     ),
     (

@@ -242,9 +242,7 @@ What the record does for you:
   `assistant-doctor.py` warns. See
   [assistant-comms-onboarding.md](assistant-comms-onboarding.md).
 - **"Run now" is stricter.** The session must be a `workspace:N`, and the text
-  must hold no character you couldn't see in it (control and format characters
-  other than a line break or a tab). It may be long and have several lines, as
-  in the default mode. Nothing in
+  one line of at most 500 characters with no control characters. Nothing in
   this repository's dashboard page calls the route today; only a tool that
   writes proposal files and posts to it would.
 - **A typing refused before anything was sent leaves no row in
