@@ -459,5 +459,3 @@ def test_a_pulse_task_with_an_auto_id_is_typed_into_recorded_and_not_parked(mod,
     assert "parkedBy" not in item and item["status"] != "blocked" and item["dispatchedWs"] == WS
     assert mod._dispatch_blocked == "" and mod._parked_tasks() == []
 
-
-WS = "workspace:1000010007"

@@ -19,4 +19,11 @@ CHECKS = (
         '    if task:  # a task like `td-auto-1a2b` has no id in a record',
         P + "test_a_pulse_task_with_an_auto_id_is_typed_into_recorded_and_not_parked",
     ),
+    (
+        "a task with the record's id shape keeps its id in the record",
+        SE,
+        '    if task and effects.TARGET_KEYS["task"].fullmatch(task):  # a task like `td-auto-1a2b` has no id in a record',
+        '    if task and False:  # a task like `td-auto-1a2b` has no id in a record',
+        T + "test_a_task_id_the_record_can_hold_is_still_recorded",
+    ),
 )
