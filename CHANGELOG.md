@@ -124,6 +124,31 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   that save was sent, and what to do ("Mark it done in Slack yourself", or sign
   in again). A sign-in problem shows at once, because trying again can't fix it. The
   line goes away when Slack no longer has the save or a retry marks it.
+- Tell Assistant when something on the Work queue is wrong, with one tap. Every
+  Open list row, Start here item, email, model draft, Ready for you result and
+  row waiting for your approval has a small thumbs-down and a **Tell Assistant**
+  link. One tap records the thumbs-down and nothing else opens, so you can go
+  down a list tapping; tapping again takes it back. A note under the buttons
+  says what you said, with **Add a reason** and **Undo**. **Add a reason** opens
+  a small list over the page that never covers another row's thumbs-down or
+  **Tell Assistant** link (Not
+  important, Wrong order, Not mine, Already done; Wrong tone, Wrong facts, Not
+  how I'd say it for a draft; Not what I asked, Didn't finish, Should not have
+  been started for a result), and **Change** opens it again. The note is still
+  there after a reload or a refresh.
+  **Tell Assistant** opens a box for your own words about an item, and one at
+  the top of the page is for the page as a whole. A refresh that finishes while
+  you are choosing a reason or typing no longer reloads the page away.
+- Keep a local record of what you do on the Work queue:
+  Done, Snooze, Drop, Send to Agent (and hands-off), Approve, Keep, Archive,
+  Mark read, clearing a Ready for you result, copying a draft, and each Undo
+  are now written down, one line each, with a trace id and a pointer to the
+  item, never its title, sender, text or link. It goes to
+  `~/.assistant/feedback/feedback.jsonl`, only you can read it, and nothing is
+  sent anywhere. Assistant only records this now and doesn't use it yet; using
+  it (to reorder rows, learn what you drop, and show what changed) is planned
+  for the next update. If a note can't be saved, the page says so and the action still
+  happens. See [Feedback](docs/feedback.md).
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it
   arrives to your decision on it. It never holds message text, titles,
