@@ -497,6 +497,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Run the four mutation-check shards on Linux. Only the coverage job still needs a Mac, and it also runs the
   mutation checks whose tests save through the Slack task-list lock (`--mac-only`). Before, runs often failed
   when GitHub had no Mac free for one of the five macOS jobs.
+  A new push to a pull request now cancels that pull request's older runs. A mutation check whose test
+  ran nothing fails, instead of passing its baseline unseen.
 - Keep each change's mutation checks in a file of its own under `tests/mutation_checks/`. Every pull request
   used to add its checks at the same place in one long list, so each conflicted with the next, and one merge
   joined two checks into one that nothing reported. The harness now also refuses a malformed or duplicated

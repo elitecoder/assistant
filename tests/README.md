@@ -123,7 +123,8 @@ check from the i-th; the workflow runs shards 1/4 through 4/4 in parallel Linux 
 (`--workers 4`), and `test_mutation_shards.py` proves the shards together run each check exactly once. Checks whose
 test needs a Mac (`MAC_ONLY_TESTS` in `tests/mutation_smoke.py`: tests that save through the Slack task-list lock,
 which takes a macOS-only flag) are left out of the shards off a Mac; the coverage job, on macOS, runs them with
-`--mac-only`.
+`--mac-only`. A check whose test ran nothing (it skipped here) fails with a message that says to add the test
+to `MAC_ONLY_TESTS` when it needs a Mac.
 
 **Add the checks for a change in a file of its own**, `tests/mutation_checks/<what-the-change-is>.py`, which
 defines `CHECKS` as a tuple of `(name, file, original, broken, test)` entries. The harness adds every file in that

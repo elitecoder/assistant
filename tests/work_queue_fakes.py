@@ -10,11 +10,13 @@ or {"seq": [...]} to answer each call with the next response.
 """
 from __future__ import annotations
 
+import atexit
 import functools
 import json
 import os
 import pwd
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -187,6 +189,7 @@ REAL_TOOLS = frozenset(("gh", "npx", "uv"))
 def system_basics() -> str:
     """A folder with everything in /usr/bin and /bin except REAL_TOOLS, made once per test run."""
     folder = Path(tempfile.mkdtemp(prefix="wq-system-basics-"))
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
     for system in (Path("/usr/bin"), Path("/bin")):
         for tool in system.iterdir():
             if tool.name not in REAL_TOOLS and not (folder / tool.name).is_symlink():

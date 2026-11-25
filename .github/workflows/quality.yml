@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's older runs, so they don't all wait for a Mac.
+# Each run on main has a group of its own, so none is cancelled or held back: each push's changes get checked.
+concurrency:
+  group: quality-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changed-code-coverage:
     name: Tests and coverage
@@ -52,10 +58,6 @@ jobs:
             --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter=lcov --test-reporter-destination="$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
             slack-reactor/test/*.test.js
-      - name: Prove the Mac-only regression tests catch broken behavior
-        run: |
-          uv run --no-sync python tests/mutation_smoke.py --mac-only --workers 3 \
-            --output "$RUNNER_TEMP/assistant-coverage/mutations-mac-only.json"
       - name: Require complete new-code coverage
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -73,6 +75,10 @@ jobs:
             --work-queue-browser-report "$RUNNER_TEMP/assistant-coverage/work-queue/istanbul.json" \
             --reactor-lcov "$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
             --output "$RUNNER_TEMP/assistant-coverage/changed-code.json"
+      - name: Prove the Mac-only regression tests catch broken behavior
+        run: |
+          uv run --no-sync python tests/mutation_smoke.py --mac-only --workers 3 \
+            --output "$RUNNER_TEMP/assistant-coverage/mutations-mac-only.json"
       - name: Keep validation evidence
         if: always()
         uses: actions/upload-artifact@v4
