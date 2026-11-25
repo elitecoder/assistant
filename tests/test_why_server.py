@@ -67,7 +67,7 @@ def test_a_row_with_a_full_trail_answers_every_step_in_order_in_plain_sentences(
         ("first_seen", "Assistant first saw this, in Slack."),
         ("sorted", "The model sorted it into Do first and suggested you do it yourself. Model: claude-test-1. Sorting rules: version 1a2b3c4d."),
         ("task", "You sent it to an agent for a first pass. It became task td-41."),
-        ("start_failed", "Assistant tried to start an agent and couldn't: cmux didn't answer. It tries again on the next round."),
+        ("start_failed", "Assistant tried to start an agent and couldn't: cmux didn't answer. It will try again by itself."),
         ("started", "Assistant started an agent on it."),
         ("task", "The agent reported it finished."),
         ("check", "Assistant checked the result: the pull request is merged."),

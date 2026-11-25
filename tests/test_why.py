@@ -145,10 +145,10 @@ def test_a_start_says_whether_the_agent_got_the_instruction_and_leaves_the_works
 
 
 @pytest.mark.parametrize("reason, said", [
-    ("session_tool_down", "Assistant tried to start an agent and couldn't: cmux didn't answer. It tries again on the next round."),
-    ("no_workspace", "Assistant tried to start an agent and couldn't: cmux couldn't open a workspace for it. It tries again on the next round."),
-    ("no_surface", "Assistant tried to start an agent and couldn't: the new workspace had no window to type in. It tries again on the next round."),
-    ("todo_not_marked", "Assistant started an agent on it, but couldn't mark the task as started, so the next round may start a second one."),
+    ("session_tool_down", "Assistant tried to start an agent and couldn't: cmux didn't answer. It will try again by itself."),
+    ("no_workspace", "Assistant tried to start an agent and couldn't: cmux couldn't open a workspace for it. It will try again by itself."),
+    ("no_surface", "Assistant tried to start an agent and couldn't: the new workspace had no window to type in. It will try again by itself."),
+    ("todo_not_marked", "Assistant started an agent on it, but couldn't mark the task as started, so it may start a second one by itself."),
     ("other", "Assistant tried to start an agent and couldn't: something went wrong."),
     ("typing_refused", "Assistant opened a session but wouldn't type into it, because it couldn't record what it types. The task is parked."),
     ("session_refused_text", "cmux refused the instruction, so nothing was typed. The task is parked."),
@@ -158,17 +158,19 @@ def test_a_start_says_whether_the_agent_got_the_instruction_and_leaves_the_works
 def test_a_failed_start_says_only_what_is_true_for_each_reason_and_promises_a_retry_only_where_there_is_one(reason, said):
     step = why.steps_of([ev("dispatch", NOW, "td-1", outcome="failed", reason=reason)])[0]
     assert (step["kind"], step["text"]) == ("start_failed", said)
-    assert ("tries again" in said) == (reason in ("session_tool_down", "no_workspace", "no_surface"))
+    assert ("try again" in said) == (reason in ("session_tool_down", "no_workspace", "no_surface"))
 
 
 def test_a_start_that_stopped_because_the_session_was_not_ready_says_whether_the_task_was_parked():
     parked = one(ev("dispatch", NOW, "td-1", outcome="failed", reason="session_not_ready", workspace="workspace:1000010013"))
     assert parked == ("Assistant tried to start an agent and couldn't: the agent session wasn't ready for it. The task is "
-                      "marked as started and Assistant won't start it again by itself. To run it again, remove the task "
+                      "marked as started and Assistant won't start it again by itself. To run it again, remove task td-1 "
                       "on the Tasks tab of the Assistant dashboard and send the row to an agent again.")
+    nameless = one(ev("dispatch", NOW, "", outcome="failed", reason="session_not_ready", workspace="workspace:1000010013"))
+    assert "remove the task on the Tasks tab" in nameless and "td-" not in nameless
     retry = one(ev("dispatch", NOW, "td-1", outcome="failed", reason="session_not_ready"))
     assert retry == ("Assistant tried to start an agent and couldn't: the agent session wasn't ready for it. "
-                     "It tries again on the next round.")
+                     "It will try again by itself.")
 
 
 def test_every_reason_telemetry_knows_for_a_failed_start_has_its_own_sentence():
@@ -373,14 +375,14 @@ def test_sixty_failed_starts_in_a_row_are_one_step_with_the_first_time_the_count
     steps = why.steps_of(fails, now=NOW)
     assert len(steps) == 1
     assert steps[0] == {"at": 100.0, "kind": "start_failed", "count": 60, "last": 159.0,
-                        "text": "Assistant tried to start an agent 60 times and couldn't: cmux didn't answer. It tries again on the next round."}
+                        "text": "Assistant tried to start an agent 60 times and couldn't: cmux didn't answer. It will try again by itself."}
 
 
 def test_a_different_step_in_between_ends_the_run_and_any_identical_steps_collapse_not_only_starts():
     fail = lambda n: ev("dispatch", n, "td-1", outcome="failed", reason="no_workspace")
     steps = why.steps_of([fail(1), fail(2), ev("check", 3, "td-1", name="pr-merged"), fail(4)], now=NOW)
     assert [(s["kind"], s.get("count")) for s in steps] == [("start_failed", 2), ("check", None), ("start_failed", None)]
-    assert steps[2]["text"] == "Assistant tried to start an agent and couldn't: cmux couldn't open a workspace for it. It tries again on the next round."
+    assert steps[2]["text"] == "Assistant tried to start an agent and couldn't: cmux couldn't open a workspace for it. It will try again by itself."
     different = why.steps_of([fail(1), ev("dispatch", 2, "td-1", outcome="failed", reason="session_tool_down")], now=NOW)
     assert [s.get("count") for s in different] == [None, None], "two failures for different reasons are two steps"
     twice = why.steps_of([ev("check", 1, "td-1", name="pr-merged"), ev("check", 2, "td-1", name="pr-merged")], now=NOW)
@@ -388,7 +390,31 @@ def test_a_different_step_in_between_ends_the_run_and_any_identical_steps_collap
                       "text": "Assistant checked the result: the pull request is merged. This happened 2 times."}]
     mixed = why.steps_of([ev("dispatch", 1, "td-1", outcome="failed", reason="todo_not_marked"),
                           ev("dispatch", 2, "td-1", outcome="failed", reason="todo_not_marked")], now=NOW)
-    assert mixed[0]["text"].endswith("the next round may start a second one. This happened 2 times.")
+    assert mixed[0]["text"].endswith("it may start a second one by itself. This happened 2 times.")
+
+
+def test_a_tap_pairs_with_a_change_that_started_before_it_and_finished_after_it_give_or_take_five_seconds():
+    at = _epoch("2026-11-20T10:00:00Z")
+    change = effect("gmail.archive", t=at, finished_t=at + 20)  # a slow Gmail call: the tap is recorded when it returns
+
+    def shown(tap_at, **kw):
+        from datetime import datetime, timezone
+        stamp = datetime.fromtimestamp(tap_at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        steps = why.steps_of([], [change], [say("archive", ts=stamp)], now=at + 1000)
+        return [s["text"] for s in steps].count("You archived it.")
+    assert shown(at - 5) == 0 and shown(at - 6) == 1, "five seconds before the change started"
+    assert shown(at + 13) == 0, "while it was still running"
+    assert shown(at + 20 + 5) == 0 and shown(at + 20 + 6) == 1, "five seconds after it finished"
+    assert shown(at + 20 + 60) == 1, "a minute later is not the same tap"
+
+
+def test_a_send_pairs_with_its_task_give_or_take_five_seconds():
+    at = _epoch("2026-11-20T10:00:10Z")
+    task = ev("task", at, "td-1", state="open", origin="work-queue", mode="assist")
+    kept = lambda stamp: [s["text"] for s in why.steps_of([task], [], [say("send", ts=stamp)], now=at + 1000)].count(
+        "You sent it to an agent for a first pass.")
+    assert kept("2026-11-20T10:00:15Z") == 0 and kept("2026-11-20T10:00:16Z") == 1
+    assert kept("2026-11-20T10:00:05Z") == 0 and kept("2026-11-20T10:00:04Z") == 1
 
 
 # --- the reader -------------------------------------------------------------------------------------------------
@@ -475,6 +501,30 @@ def test_a_read_that_stopped_at_its_limit_says_at_least_and_the_limits_are_the_o
     answer = why.read(TRACE)
     assert why.EVENTS_READ == 400 and why.EFFECTS_READ == 100 and why.FEEDBACK_READ == 100 and why.SHOWN == 50
     assert answer["more"] == 350 and answer["left_out"] == "At least 350 earlier steps aren't shown here."
+
+
+def test_a_read_that_was_cut_says_so_in_its_footer_and_a_run_that_reaches_the_oldest_record_is_a_floor(home):
+    for _ in range(450):
+        telemetry.emit("dispatch", TRACE, "td-1", "pulse", outcome="failed", ok=False, reason="session_tool_down")
+    answer = why.read(TRACE, first=NOW)
+    failed = [s for s in answer["steps"] if s["kind"] == "start_failed"]
+    assert len(failed) == 1 and failed[0]["count"] == 400
+    assert failed[0]["text"].startswith("Assistant tried to start an agent at least 400 times and couldn't: cmux didn't answer.")
+    assert answer["footer"] == "Only the newest records were read, so older steps may be missing. The record stays on this Mac."
+    assert "This is everything" not in answer["footer"]
+
+
+def test_a_run_that_began_after_the_oldest_record_read_has_an_exact_count_and_a_read_that_was_not_cut_says_everything(home):
+    fails = [ev("dispatch", 100 + n, "td-1", outcome="failed", reason="session_tool_down") for n in range(3)]
+    early = ev("check", 50, "td-1", name="pr-merged")
+    steps = why.steps_of([early] + fails, now=NOW, floor_at=50)
+    assert [s.get("count") for s in steps] == [None, 3] and steps[1]["text"].startswith("Assistant tried to start an agent 3 times")
+    at_floor = why.steps_of(fails, now=NOW, floor_at=100)
+    assert at_floor[0]["text"].startswith("Assistant tried to start an agent at least 3 times")
+    twice = why.steps_of([ev("check", 1, "td-1", name="pr-merged"), ev("check", 2, "td-1", name="pr-merged")], now=NOW, floor_at=1)
+    assert twice[0]["text"].endswith("This happened at least 2 times.")
+    telemetry.emit("task", TRACE, "td-1", "work-queue", state="done", prev_state="open")
+    assert why.read(TRACE)["footer"].startswith("This is everything")
 
 
 def test_a_store_that_is_there_but_cant_be_read_is_unreadable_and_never_nothing_recorded(home):
@@ -691,3 +741,8 @@ def test_a_key_joining_an_id_takes_the_earliest_first_time_its_group_holds(tmp_p
                                          "https://b": {"trace": TRACE, "seen": "2026-11-20", "first": 100.0}}))
     traces.stamp([["https://a", "https://b", "https://c"]], "2026-11-21")
     assert [traces.first_seen(k) for k in ("https://a", "https://b", "https://c")] == [200.0, 100.0, 100.0]
+
+
+def test_no_sentence_about_a_failed_start_talks_about_rounds():
+    said = list(why.START_FAILED.values()) + [why.PARKED_HOW, why.RETRY, why._dispatch(ev("dispatch", NOW, "td-1", outcome="failed"))]
+    assert not [t for t in said if "round" in t], said

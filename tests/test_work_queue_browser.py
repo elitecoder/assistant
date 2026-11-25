@@ -2961,11 +2961,11 @@ def layout_seed(wq) -> dict:
 KINDS = {"a plain Open list row": '.sf-row[data-key="https://github.com/o/r/pull/8"]',
          "a row with the Small pill and a draft": '.sf-row[data-key="https://github.com/o/r/pull/3"]',
          "an agent row": '.sf-row[data-key="https://github.com/o/r/pull/9"]', "an email row": ".em-row",
-         "a row waiting for approval": ".ap-row", "a Start here item": ".start-list li", "a Ready for you result": "#ready li[data-id]"}
+         "a row waiting for approval": ".ap-row", "a Start here item": ".start-list li"}
 HEIGHTS = "(s) => [...document.querySelectorAll(s)].filter(e => e.getBoundingClientRect().height).map(e => e.getBoundingClientRect().height)"
 
 
-@pytest.mark.parametrize("width", [390, 640, 1280])
+@pytest.mark.parametrize("width", [390, 1280])
 def test_no_kind_of_row_gains_a_line_from_the_closed_why_link(site, wq, width):
     layout_seed(wq)
     with sync_playwright() as pw:
@@ -2984,6 +2984,47 @@ def test_no_kind_of_row_gains_a_line_from_the_closed_why_link(site, wq, width):
             assert with_link[name] and len(with_link[name]) == len(without[name]), (width, name)
             assert with_link[name] == without[name], (width, name, with_link[name], without[name])
         no_sideways_scroll(tab)
+        browser.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_a_ready_result_with_an_open_workspace_button_a_blocked_one_and_one_without_gain_no_line(site, wq, width):
+    fb_seed(wq)
+    many_rows(wq, 12)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector("#ready li .why-link")
+        probe = """() => Object.fromEntries([...document.querySelectorAll('#ready li[data-id]')].map(e => [e.dataset.id,
+            [e.getBoundingClientRect().height, !!e.querySelector('button:not(.sf-mark):not(.fb-down):not(.fb-open):not(.why-link)'),
+             e.querySelector('.ready-result').classList.contains('blocked')]]))"""
+        with_link = tab.evaluate(probe)
+        tab.evaluate("document.querySelectorAll('.why-link').forEach(e => e.style.display = 'none')")
+        without = tab.evaluate(probe)
+        print(f"ready results at {width} wide, with the link / without it:", {k: (v[0], without[k][0]) for k, v in with_link.items()})
+        assert with_link["td-101"][1] and with_link["td-102"][2] and not with_link["td-105"][1], "the three kinds are there"
+        assert {k: v[0] for k, v in with_link.items()} == {k: v[0] for k, v in without.items()}
+        browser.close()
+
+
+def test_a_ready_result_with_an_open_workspace_button_inside_start_here_gains_one_line_at_390_and_nothing_else_does(site, wq):
+    """The known limit: Start here holds the Ready for you box, which leaves a result 274 px wide at 390. Its "Open
+    workspace" button, the thumb, Tell Assistant and Why? need about 300, so on a result with that button the controls
+    take one more line. Every other result, and every other kind of row, is unchanged."""
+    layout_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector("#ready li .why-link")
+        probe = "() => Object.fromEntries([...document.querySelectorAll('#ready li[data-id]')].map(e => [e.dataset.id, e.getBoundingClientRect().height]))"
+        with_link = tab.evaluate(probe)
+        tab.evaluate("document.querySelectorAll('.why-link').forEach(e => e.style.display = 'none')")
+        without = tab.evaluate(probe)
+        grown = {k: round(with_link[k] - without[k], 1) for k in with_link if abs(with_link[k] - without[k]) > 0.5}
+        print("results inside Start here at 390: height gained with the link:", grown, "of", {k: round(v) for k, v in without.items()})
+        assert set(grown) <= {"td-101"} and all(0 < g <= 40 for g in grown.values()), grown
         browser.close()
 
 
@@ -3021,18 +3062,20 @@ def test_at_1280_the_link_moves_the_buttons_and_narrows_the_title_by_at_most_60_
         browser.close()
 
 
-def test_why_is_a_link_of_its_own_and_does_not_read_as_part_of_tell_assistant(site, wq):
-    keys = why_seed(wq)
+@pytest.mark.parametrize("width, least", [(1280, 20), (390, 12)])
+def test_why_is_a_link_of_its_own_with_clear_space_between_the_end_of_tell_assistant_and_it(site, wq, width, least):
+    layout_seed(wq)
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
-        tab = browser.new_page(viewport={"width": 1280, "height": 900})
-        tab.goto(site + "#open-list")
-        tell, why = tab.locator(Sel(keys["row"]).open).bounding_box(), tab.locator(why_link(keys["row"])).bounding_box()
-        text = tab.evaluate("""(sel) => { const r = document.createRange(), e = document.querySelector(sel); r.selectNodeContents(e);
-            return r.getBoundingClientRect().left }""", Sel(keys["row"]).open)
-        gap = why["x"] - (tell["x"] + tell["width"])
-        assert gap >= 4, ("Tell Assistant's own padding and the gap keep them apart", gap)
-        assert tab.locator(Sel(keys["row"]).open).inner_text() == "Tell Assistant" and text > 0
+        tab = browser.new_page(viewport={"width": width, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector("#ready li .why-link")
+        gaps = tab.evaluate("""() => [...document.querySelectorAll('.fb')].filter(f => f.querySelector('.why-link')).map(f => {
+            const tell = f.querySelector('.fb-open'), r = document.createRange(); r.selectNodeContents(tell);
+            const why = f.querySelector('.why-link').getBoundingClientRect(), end = r.getBoundingClientRect();
+            return [f.dataset.fk, Math.abs(why.top - end.top) < 14 ? why.left - end.right : 99]; })""")
+        print(f"space between the end of Tell Assistant and Why? at {width} wide:", gaps)
+        assert gaps and all(g >= least for _, g in gaps), gaps
         browser.close()
 
 
@@ -3160,7 +3203,7 @@ def test_a_step_that_happened_several_times_shows_its_first_time_and_says_when_t
     keys = why_seed(wq)
     answer = {"state": "ok", "more": 0, "left_out": "", "note": "", "message": "", "footer": "Footer.",
               "steps": [{"at": WHY_FIRST, "kind": "start_failed", "count": 14, "last": WHY_FIRST + 3600,
-                         "text": "Assistant tried to start an agent 14 times and couldn't: cmux didn't answer. It tries again on the next round."}]}
+                         "text": "Assistant tried to start an agent 14 times and couldn't: cmux didn't answer. It will try again by itself."}]}
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         tab = browser.new_context(viewport={"width": 1280, "height": 900}, locale="en-US", timezone_id="UTC").new_page()

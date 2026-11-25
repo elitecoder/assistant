@@ -35,6 +35,7 @@ PAIR_SEC = 5  # a thing you pressed and the change it made are recorded this clo
 
 FOOTER = "This is everything Assistant has recorded about this item. The record stays on this Mac."
 PARTIAL_FOOTER = "Some of it couldn't be read, so this may be missing steps. The record stays on this Mac."
+CUT_FOOTER = "Only the newest records were read, so older steps may be missing. The record stays on this Mac."
 NONE_YET = "Assistant has no record for this yet. It starts one at the next refresh."
 NOTHING_SINCE = "Nothing has been recorded about this since Assistant started keeping this record."
 UNREADABLE = "Assistant can't read its record right now. Nothing is lost; try again in a minute."
@@ -52,17 +53,17 @@ UNSORTED = {"call_failed": "the model's answer didn't come back",
             "spend_limit": "today's spend limit for sorting was reached",
             "no_model": "no model is set up for sorting"}
 STARTING = "Assistant tried to start an agent and couldn't"
-RETRY = "It tries again on the next round."
+RETRY = "It will try again by itself."
 # A task that was parked is marked as started, so nothing starts it again by itself. What does start it again is
 # removing it on the Tasks tab and sending the row to an agent again (tests/test_why_restart.py); "Queue to start"
 # on a task that is marked as started does not.
 PARKED_HOW = ("The task is marked as started and Assistant won't start it again by itself. To run it again, remove "
-              "the task on the Tasks tab of the Assistant dashboard and send the row to an agent again.")
+              "{task} on the Tasks tab of the Assistant dashboard and send the row to an agent again.")
 START_FAILED = {"session_tool_down": f"{STARTING}: cmux didn't answer. {RETRY}",
                 "no_workspace": f"{STARTING}: cmux couldn't open a workspace for it. {RETRY}",
                 "no_surface": f"{STARTING}: the new workspace had no window to type in. {RETRY}",
                 "todo_not_marked": ("Assistant started an agent on it, but couldn't mark the task as started, so "
-                                    "the next round may start a second one."),
+                                    "it may start a second one by itself."),
                 "other": f"{STARTING}: something went wrong.",
                 "typing_refused": ("Assistant opened a session but wouldn't type into it, because it couldn't "
                                    "record what it types. The task is parked."),
@@ -172,7 +173,8 @@ def _task(record: dict) -> str | None:
     return TASK_SAYS.get(state)
 
 
-def _dispatch(fields: dict) -> str | None:
+def _dispatch(record: dict) -> str | None:
+    fields = record["fields"]
     if fields.get("outcome") == "done":
         return "Assistant started an agent on it." + (
             " It couldn't confirm the session got the instruction." if fields.get("confirmed") is False else "")
@@ -181,7 +183,9 @@ def _dispatch(fields: dict) -> str | None:
     reason = fields.get("reason")
     if reason == "session_not_ready":  # parked only when the task was stamped, which the record shows as a workspace
         parked = WORKSPACE.fullmatch(fields.get("workspace") or "") is not None
-        return f"{STARTING}: the agent session wasn't ready for it. " + (PARKED_HOW if parked else RETRY)
+        task = record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""
+        return f"{STARTING}: the agent session wasn't ready for it. " + (
+            PARKED_HOW.format(task=f"task {task}" if task else "the task") if parked else RETRY)
     return START_FAILED.get(reason, f"{STARTING}.")
 
 
@@ -194,7 +198,7 @@ def _check(fields: dict) -> str | None:
 
 
 EVENT_TEXT = {"triage_verdict": ("sorted", lambda r: _verdict(r["fields"])), "task": ("task", _task),
-              "dispatch": ("started", lambda r: _dispatch(r["fields"])),
+              "dispatch": ("started", _dispatch),
               "check": ("check", lambda r: _check(r["fields"]))}
 # The telemetry copies of what the other two records hold (`effect`, `feedback`) have no entry above, so they say
 # nothing: the ledger and the feedback record are the ones read.
@@ -284,10 +288,12 @@ def _feedback_text(record: dict, by_id: dict) -> str | None:
 
 
 def _claim(pool: list, at: float) -> bool:
-    """Take the time in `pool` that is within PAIR_SEC of `at`, if there is one: one thing pressed, one change made."""
-    for t in pool:
-        if abs(t - at) <= PAIR_SEC:
-            pool.remove(t)
+    """Take the change in `pool` (a (start, finish) pair) that a tap at `at` belongs to, if there is one: one thing
+    pressed, one change made. The tap is recorded after the change returns, so it falls between the change's start and
+    its finish, give or take PAIR_SEC."""
+    for pair in pool:
+        if pair[0] - PAIR_SEC <= at <= pair[1] + PAIR_SEC:
+            pool.remove(pair)
             return True
     return False
 
@@ -296,11 +302,12 @@ def _feedback_steps(records: list, made: list, effects: list) -> list:
     """What you said. A tap that the task or the ledger says again is dropped, but only one record for each task or
     change, so a second tap that made nothing is still shown."""
     by_id = {r.get("id"): r for r in records}
-    pools = {"send": list(made), "send_handsoff": list(made)}
+    pools = {"send": [(t, t) for t in made], "send_handsoff": [(t, t) for t in made]}
     for e in effects:
         signal = SIGNAL_OF_EFFECT.get(e.get("class"))
         if signal and isinstance(e.get("t"), (int, float)):
-            pools.setdefault(signal, []).append(float(e["t"]))
+            end = e.get("finished_t")
+            pools.setdefault(signal, []).append((float(e["t"]), float(end) if isinstance(end, (int, float)) else float(e["t"])))
     steps = []
     for record in records:
         signal, at = record.get("signal"), _iso_seconds(record.get("ts"))
@@ -316,28 +323,31 @@ def _feedback_steps(records: list, made: list, effects: list) -> list:
 
 # --- putting it together ---------------------------------------------------------------------------------------
 
-def _repeat(step: dict, n: int, last: float) -> dict:
+def _repeat(step: dict, n: int, last: float, floor: bool) -> dict:
+    times = f"{'at least ' if floor else ''}{n} times"
     text = step["text"]
     if text.startswith(STARTING):
-        text = f"Assistant tried to start an agent {n} times and couldn't" + text[len(STARTING):]
+        text = f"Assistant tried to start an agent {times} and couldn't" + text[len(STARTING):]
     else:
-        text += f" This happened {n} times."
+        text += f" This happened {times}."
     return {**step, "text": text, "count": n, "last": last}
 
 
-def _collapse(steps: list) -> list:
-    """Steps that say the same thing one after another are one step: the first time, how many, and the last time."""
+def _collapse(steps: list, floor_at=None) -> list:
+    """Steps that say the same thing one after another are one step: the first time, how many, and the last time. A run
+    that begins at or before `floor_at` (the oldest record a read that was cut got to) may have begun earlier, so its
+    count is a floor."""
     out, run = [], []
     for step in steps + [None]:
         if run and (step is None or (step["kind"], step["text"]) != (run[0]["kind"], run[0]["text"])):
-            out.append(run[0] if len(run) == 1 else _repeat(run[0], len(run), run[-1]["at"]))
+            out.append(run[0] if len(run) == 1 else _repeat(run[0], len(run), run[-1]["at"], floor_at is not None and run[0]["at"] <= floor_at))
             run = []
         if step is not None:
             run.append(step)
     return out
 
 
-def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source="") -> list:
+def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source="", floor_at=None) -> list:
     """The steps, oldest first, from telemetry records, ledger effects, feedback records and the time the row was first
     seen. A step with a time that can't be one (not a number, or more than a day ahead) is left out. Never raises on a
     record it doesn't know."""
@@ -354,7 +364,7 @@ def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source=""
         steps.append(_step(first, "first_seen", "Assistant first saw this" + (f", in {source}." if source else ".")))
     steps = [s for s in steps if math.isfinite(s["at"]) and 0 < s["at"] <= now + FUTURE_SEC]
     steps.sort(key=lambda s: s["at"])  # stable: records at one moment keep the order they were gathered in
-    return _collapse(steps)
+    return _collapse(steps, floor_at)
 
 
 def answer(state: str, steps=(), more: int = 0, before: bool = False, message: str = "", floor: bool = False,
@@ -367,7 +377,7 @@ def answer(state: str, steps=(), more: int = 0, before: bool = False, message: s
         "Earlier steps may not be shown here." if floor else "")
     return {"state": state, "steps": list(steps), "more": more, "message": message,
             "left_out": left[:1].upper() + left[1:], "note": BEFORE_RECORDS if before else "",
-            "footer": FOOTER if complete else PARTIAL_FOOTER}
+            "footer": PARTIAL_FOOTER if not complete else CUT_FOOTER if floor else FOOTER}
 
 
 def empty(state: str) -> dict:
@@ -386,8 +396,8 @@ def read(trace: str, first=None, now=None, row: bool = True) -> dict:
 
 
 def _gather(trace: str) -> tuple:
-    """(telemetry records, effects, feedback records, whether any read stopped at its limit, whether any of the three
-    couldn't be read)."""
+    """(telemetry records, effects, feedback records, the time of the oldest record of a read that stopped at its limit or
+    None, whether any of the three couldn't be read)."""
     unreadable, events, effects, feedback = False, [], [], []
     try:
         from assistant import telemetry
@@ -412,17 +422,20 @@ def _gather(trace: str) -> tuple:
             unreadable = True
     except Exception:  # noqa: BLE001
         unreadable = True
-    cut = len(events) >= EVENTS_READ or len(effects) >= EFFECTS_READ or len(feedback) >= FEEDBACK_READ
-    return events, effects, feedback, cut, unreadable
+    oldest = ([events[0]["ts"]] if len(events) >= EVENTS_READ else []) \
+        + ([min(e.get("t") or 0 for e in effects)] if len(effects) >= EFFECTS_READ else []) \
+        + ([t for t in [_iso_seconds(feedback[0].get("ts"))] if t] if len(feedback) >= FEEDBACK_READ else [])
+    return events, effects, feedback, (round(min(oldest), 3) if oldest else None), unreadable
 
 
 def _read(trace: str, first, now, row: bool) -> dict:
     from assistant.pointers import is_trace_id
     if not is_trace_id(trace):
         return empty("none")
-    events, effects, feedback, cut, unreadable = _gather(trace)
+    events, effects, feedback, cut_at, unreadable = _gather(trace)
+    cut = cut_at is not None
     first = first if type(first) in (int, float) and first > 0 else None
-    steps = steps_of(events, effects, feedback, first, now, _source(events, feedback))
+    steps = steps_of(events, effects, feedback, first, now, _source(events, feedback), cut_at)
     more = max(0, len(steps) - SHOWN)
     shown = steps[-SHOWN:]
     before = first is None and row

@@ -846,7 +846,8 @@ def read_trace(trace: str, limit: int = 200) -> tuple:
     them apart, and a store that goes busy between a check and a read can't read as "nothing recorded". The state is
     "ok", "missing" (there is no store yet, or it has no records table yet, so nothing is recorded), "newer" (a newer
     Assistant wrote it and this one leaves it alone), "foreign" (another program's file) or "unreadable" (damaged, or
-    busy for longer than the short wait). Never raises, and writes nothing."""
+    busy for longer than the short wait). Never raises and writes no record; like `events()`, opening the store may
+    tighten the database file's permissions to owner-only."""
     try:
         if not os.path.isfile(_path(_DB)):
             return "missing", []
