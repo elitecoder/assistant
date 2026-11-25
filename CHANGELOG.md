@@ -94,10 +94,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   box stops the page reloading on its own after a refresh, the way an open note
   does; changing tabs closes it. The link adds no line to any row on a phone, and
   below 860 px wide the buttons sit under the title so a title is never squeezed
-  to nothing: between 621 and 860 px wide a plain row is about 96 px tall where
-  it was 61, and its title has the full width. At 320 wide a row can gain a line,
-  and so can a Ready for you result with an Open workspace button when it sits
-  inside Start here at 390.
+  to nothing: between 621 and 860 px wide a plain row is about 98 px tall where
+  it was 61, and its title has the full width. At 320 wide a row can gain a line.
 - Every Work queue row and every TODO now carries a short id that later
   features will use to show where a piece of work came from. Nothing you see
   changes yet.

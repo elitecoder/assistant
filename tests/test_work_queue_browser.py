@@ -3008,10 +3008,11 @@ def test_a_ready_result_with_an_open_workspace_button_a_blocked_one_and_one_with
         browser.close()
 
 
-def test_a_ready_result_with_an_open_workspace_button_inside_start_here_gains_one_line_at_390_and_nothing_else_does(site, wq):
-    """The known limit: Start here holds the Ready for you box, which leaves a result 274 px wide at 390. Its "Open
-    workspace" button, the thumb, Tell Assistant and Why? need about 300, so on a result with that button the controls
-    take one more line. Every other result, and every other kind of row, is unchanged."""
+def test_with_the_link_hidden_a_ready_result_with_an_open_workspace_button_inside_start_here_is_one_line_shorter_at_390(site, wq):
+    """Compares the same page with the link shown and with it hidden; it is not a comparison with the page before this
+    change, which lays this result out just as tall (259 px). Start here holds the Ready for you box, which leaves a
+    result 274 px wide at 390, and its Open workspace button, thumb, Tell Assistant and Why? need about 300, so the
+    controls take a line the hidden-link page doesn't use. Every other result is the same either way."""
     layout_seed(wq)
     with sync_playwright() as pw:
         browser = pw.chromium.launch()

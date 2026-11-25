@@ -517,14 +517,42 @@ def test_a_read_that_was_cut_says_so_in_its_footer_and_a_run_that_reaches_the_ol
 def test_a_run_that_began_after_the_oldest_record_read_has_an_exact_count_and_a_read_that_was_not_cut_says_everything(home):
     fails = [ev("dispatch", 100 + n, "td-1", outcome="failed", reason="session_tool_down") for n in range(3)]
     early = ev("check", 50, "td-1", name="pr-merged")
-    steps = why.steps_of([early] + fails, now=NOW, floor_at=50)
+    steps = why.steps_of([early] + fails, now=NOW, cuts={"events": 50})
     assert [s.get("count") for s in steps] == [None, 3] and steps[1]["text"].startswith("Assistant tried to start an agent 3 times")
-    at_floor = why.steps_of(fails, now=NOW, floor_at=100)
+    at_floor = why.steps_of(fails, now=NOW, cuts={"events": 100})
     assert at_floor[0]["text"].startswith("Assistant tried to start an agent at least 3 times")
-    twice = why.steps_of([ev("check", 1, "td-1", name="pr-merged"), ev("check", 2, "td-1", name="pr-merged")], now=NOW, floor_at=1)
+    twice = why.steps_of([ev("check", 1, "td-1", name="pr-merged"), ev("check", 2, "td-1", name="pr-merged")], now=NOW, cuts={"events": 1})
     assert twice[0]["text"].endswith("This happened at least 2 times.")
     telemetry.emit("task", TRACE, "td-1", "work-queue", state="done", prev_state="open")
     assert why.read(TRACE)["footer"].startswith("This is everything")
+
+
+def test_each_record_is_judged_against_its_own_cut_so_two_records_cut_at_different_depths_each_get_the_right_count():
+    fails = [ev("dispatch", 100 + n, "td-1", outcome="failed", reason="session_tool_down") for n in range(3)]
+    archives = [effect("gmail.archive", id="ef-%016d" % n, t=200 + n, finished_t=200 + n) for n in range(3)]
+
+    def counts(cuts):
+        steps = why.steps_of(fails, archives, now=NOW, cuts=cuts)
+        return [s["text"] for s in steps if s["kind"] in ("start_failed", "effect")]
+    sooner = counts({"events": 100, "effects": 150})  # telemetry got back to its first record; the ledger started well before
+    assert sooner[0].startswith("Assistant tried to start an agent at least 3 times") and sooner[1].endswith("This happened 3 times.")
+    later = counts({"events": 50, "effects": 200})  # the other way round
+    assert later[0].startswith("Assistant tried to start an agent 3 times") and later[1].endswith("This happened at least 3 times.")
+    assert [t.endswith("This happened 3 times.") for t in counts({})[1:]] == [True]
+
+
+def test_the_ledgers_cut_is_the_time_its_steps_are_given_which_is_when_the_change_finished(home, monkeypatch):
+    clock = iter(range(1_795_000_000, 1_795_000_900, 10))
+    monkeypatch.setattr(effects, "_now", lambda: float(next(clock)))
+    for n in range(5):
+        e = effects.begin("gmail.archive", {"account": "me@example.com", "thread": "t%d" % n},
+                          {"kind": "tap", "ref": "/api/gmail", "at": "2026-11-02T10:00:10Z"}, trace=TRACE)
+        effects.finish(e, "done", True)
+    monkeypatch.setattr(why, "EFFECTS_READ", 3)
+    answer = why.read(TRACE, now=1_795_000_900)
+    (run,) = [s for s in answer["steps"] if s["kind"] == "effect"]
+    assert run["count"] == 3 and run["text"].endswith("This happened at least 3 times.")
+    assert answer["footer"].startswith("Only the newest records were read")
 
 
 def test_a_store_that_is_there_but_cant_be_read_is_unreadable_and_never_nothing_recorded(home):

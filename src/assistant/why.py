@@ -135,8 +135,9 @@ def _name(value) -> str:
         return ""
 
 
-def _step(at, kind: str, text: str) -> dict:
-    return {"at": round(float(at), 3), "kind": kind, "text": text}
+def _step(at, kind: str, text: str, store: str = "") -> dict:
+    """A step. `store` (which record it came from) is for `_collapse` and never leaves this module."""
+    return {"at": round(float(at), 3), "kind": kind, "text": text, "store": store}
 
 
 # --- one telemetry record --------------------------------------------------------------------------------------
@@ -222,7 +223,7 @@ def _event_steps(events: list) -> list:
             kind_word = "start_failed"
         elif kind == "triage_verdict" and record["fields"].get("verdict") == "unsorted":
             kind_word = "unsorted"
-        steps.append(_step(record["ts"], kind_word, text))
+        steps.append(_step(record["ts"], kind_word, text, "events"))
     return steps
 
 
@@ -261,7 +262,7 @@ def _effect_steps(effects: list, now: float) -> list:
     for e in effects:
         undone = EFFECTS.get(classes.get(e.get("undoes")), ("", "", "", ""))[3]
         at = e.get("finished_t") or e.get("t")
-        steps.append(_step(at, "effect", _effect_text(e, undone, now)))
+        steps.append(_step(at, "effect", _effect_text(e, undone, now), "effects"))
     return steps
 
 
@@ -317,7 +318,7 @@ def _feedback_steps(records: list, made: list, effects: list) -> list:
             continue
         text = _feedback_text(record, by_id)
         if text is not None:
-            steps.append(_step(at, "feedback", text))
+            steps.append(_step(at, "feedback", text, "feedback"))
     return steps
 
 
@@ -333,21 +334,24 @@ def _repeat(step: dict, n: int, last: float, floor: bool) -> dict:
     return {**step, "text": text, "count": n, "last": last}
 
 
-def _collapse(steps: list, floor_at=None) -> list:
-    """Steps that say the same thing one after another are one step: the first time, how many, and the last time. A run
-    that begins at or before `floor_at` (the oldest record a read that was cut got to) may have begun earlier, so its
-    count is a floor."""
+def _collapse(steps: list, cuts=None) -> list:
+    """Steps that say the same thing one after another are one step: the first time, how many, and the last time. Each
+    record is cut at its own depth, so a run is judged against the cut of the record it came from: `cuts` is {record:
+    the time of the oldest step a read of it that stopped at its limit got to}. A run that begins at or before that may
+    have begun earlier, so its count is a floor."""
+    cuts = cuts or {}
     out, run = [], []
     for step in steps + [None]:
         if run and (step is None or (step["kind"], step["text"]) != (run[0]["kind"], run[0]["text"])):
-            out.append(run[0] if len(run) == 1 else _repeat(run[0], len(run), run[-1]["at"], floor_at is not None and run[0]["at"] <= floor_at))
+            floor = run[0]["store"] in cuts and run[0]["at"] <= cuts[run[0]["store"]]
+            out.append(run[0] if len(run) == 1 else _repeat(run[0], len(run), run[-1]["at"], floor))
             run = []
         if step is not None:
             run.append(step)
-    return out
+    return [{k: v for k, v in step.items() if k != "store"} for step in out]
 
 
-def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source="", floor_at=None) -> list:
+def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source="", cuts=None) -> list:
     """The steps, oldest first, from telemetry records, ledger effects, feedback records and the time the row was first
     seen. A step with a time that can't be one (not a number, or more than a day ahead) is left out. Never raises on a
     record it doesn't know."""
@@ -364,7 +368,7 @@ def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source=""
         steps.append(_step(first, "first_seen", "Assistant first saw this" + (f", in {source}." if source else ".")))
     steps = [s for s in steps if math.isfinite(s["at"]) and 0 < s["at"] <= now + FUTURE_SEC]
     steps.sort(key=lambda s: s["at"])  # stable: records at one moment keep the order they were gathered in
-    return _collapse(steps, floor_at)
+    return _collapse(steps, cuts)
 
 
 def answer(state: str, steps=(), more: int = 0, before: bool = False, message: str = "", floor: bool = False,
@@ -396,8 +400,9 @@ def read(trace: str, first=None, now=None, row: bool = True) -> dict:
 
 
 def _gather(trace: str) -> tuple:
-    """(telemetry records, effects, feedback records, the time of the oldest record of a read that stopped at its limit or
-    None, whether any of the three couldn't be read)."""
+    """(telemetry records, effects, feedback records, the cuts, whether any of the three couldn't be read). The cuts are
+    {record: the time of the oldest step a read of that record got to}, for each record whose read stopped at its limit
+    (a ledger step is timed by when the change finished, as `_effect_steps` times it)."""
     unreadable, events, effects, feedback = False, [], [], []
     try:
         from assistant import telemetry
@@ -422,20 +427,24 @@ def _gather(trace: str) -> tuple:
             unreadable = True
     except Exception:  # noqa: BLE001
         unreadable = True
-    oldest = ([events[0]["ts"]] if len(events) >= EVENTS_READ else []) \
-        + ([min(e.get("t") or 0 for e in effects)] if len(effects) >= EFFECTS_READ else []) \
-        + ([t for t in [_iso_seconds(feedback[0].get("ts"))] if t] if len(feedback) >= FEEDBACK_READ else [])
-    return events, effects, feedback, (round(min(oldest), 3) if oldest else None), unreadable
+    cuts = {}
+    if len(events) >= EVENTS_READ:
+        cuts["events"] = round(events[0]["ts"], 3)
+    if len(effects) >= EFFECTS_READ:
+        cuts["effects"] = round(min(e.get("finished_t") or e.get("t") or 0 for e in effects), 3)
+    if len(feedback) >= FEEDBACK_READ and (at := _iso_seconds(feedback[0].get("ts"))):
+        cuts["feedback"] = round(at, 3)
+    return events, effects, feedback, cuts, unreadable
 
 
 def _read(trace: str, first, now, row: bool) -> dict:
     from assistant.pointers import is_trace_id
     if not is_trace_id(trace):
         return empty("none")
-    events, effects, feedback, cut_at, unreadable = _gather(trace)
-    cut = cut_at is not None
+    events, effects, feedback, cuts, unreadable = _gather(trace)
+    cut = bool(cuts)
     first = first if type(first) in (int, float) and first > 0 else None
-    steps = steps_of(events, effects, feedback, first, now, _source(events, feedback), cut_at)
+    steps = steps_of(events, effects, feedback, first, now, _source(events, feedback), cuts)
     more = max(0, len(steps) - SHOWN)
     shown = steps[-SHOWN:]
     before = first is None and row

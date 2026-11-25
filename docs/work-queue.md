@@ -293,12 +293,10 @@ tells you and waits. **Why?** is short on purpose and costs a title little room:
 on a laptop it takes about 34 px from it. Between 621 and 860 px wide (a tablet,
 or a laptop zoomed to 200%) the buttons now sit under the title, as they do on a
 phone, so a title is never squeezed narrower than 200 px. What that costs: a
-plain Open list row there is about 96 px tall where it was 61, and its title has
+plain Open list row there is about 98 px tall where it was 61, and its title has
 the full width. On a phone (390 wide) the link adds no line to an Open list row,
-an agent row, a row with a draft, an email, a row waiting for approval or a Start
-here item. It does add one line (about 36 px) to a Ready for you result that has
-an **Open workspace** button, when the result sits inside Start here (that box is
-only 274 px wide), and at 320 wide any row can gain a line.
+an agent row, a row with a draft, an email, a row waiting for approval, a Start
+here item or a Ready for you result. At 320 wide a row can gain a line.
 
 ### Ready for you
 
