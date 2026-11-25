@@ -666,9 +666,14 @@ def test_the_page_holds_the_token_and_is_readable_by_its_owner_only(home):
     assert not list(page.parent.glob("*.tmp"))
 
 
-def test_two_renders_at_once_both_finish_and_leave_one_complete_page(home):
+def test_two_renders_at_once_both_finish_and_leave_one_complete_page(home, monkeypatch):
     renderer = renderer_for(home)
     errors = []
+    page = home / ".claude/assistant-dashboard.html"
+    # Every render waits with its page written to a temporary file, so the four always overlap, however fast they run.
+    all_written, replace = threading.Barrier(4, timeout=30), renderer.os.replace
+    monkeypatch.setattr(renderer.os, "replace",
+                        lambda source, target: (Path(target) == page and all_written.wait(), replace(source, target)))
 
     def render():
         try:
@@ -682,7 +687,6 @@ def test_two_renders_at_once_both_finish_and_leave_one_complete_page(home):
     for thread in threads:
         thread.join(timeout=120)
     assert errors == []
-    page = home / ".claude/assistant-dashboard.html"
     assert page.read_text().rstrip().endswith("</html>") and page.read_text().count("<!doctype html>") == 1
     assert not list(page.parent.glob("*.tmp")) and mode_of(page) == 0o600
 
