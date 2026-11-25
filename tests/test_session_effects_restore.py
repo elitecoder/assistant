@@ -118,14 +118,14 @@ def test_a_timeout_on_enter_still_counts_as_restored_and_is_unknown(restore, tmp
     assert ledger(tmp_path)[1]["outcome"] == "unknown"
 
 
-def test_a_cmux_that_times_out_for_real_is_unknown_and_is_not_tried_again(restore, tmp_path):
+def test_a_cmux_that_times_out_for_real_is_unknown_and_is_not_tried_again(restore, tmp_path, monkeypatch):
     calls = []
 
     def slow(*a, **k):
         calls.append(a[0][2])
         raise restore.subprocess.TimeoutExpired(cmd="cmux", timeout=5)
 
-    restore.subprocess.run = slow
+    monkeypatch.setattr(restore.subprocess, "run", slow)
     assert restore.respawn_panel({"title": "t"}, {"id": PANEL, "terminal": {"surfaceId": SURFACE}}, MARKER,
                                  False, False) is False
     assert calls == ["surface.send_text"]
