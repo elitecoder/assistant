@@ -2563,6 +2563,21 @@ def test_when_a_note_cant_be_saved_the_page_says_so_once_and_the_work_still_happ
         browser.close()
 
 
+def test_a_new_message_replaces_the_one_before_it_at_once(site, wq):
+    """Two messages with nothing between them: only the newer one is on the page. They are shown in one step, so
+    the older one cannot have gone away by its own timer, however slow the machine is."""
+    fb_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        tab.clock.install()
+        tab.goto(site + "#all")
+        shown = tab.evaluate(
+            "() => { toast('first'); toast('second'); return [...document.querySelectorAll('.toast')].map(t => t.textContent) }")
+        assert shown == ["second"]
+        browser.close()
+
+
 LOST_IT = "Assistant couldn’t record it for later."
 
 

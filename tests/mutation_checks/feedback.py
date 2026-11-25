@@ -715,7 +715,7 @@ CHECKS = (
         P,
         " document.querySelectorAll('.toast').forEach(t=>t.remove());",
         " ",
-        TB + "test_when_a_note_cant_be_saved_the_page_says_so_once_and_the_work_still_happens",
+        TB + "test_a_new_message_replaces_the_one_before_it_at_once",
     ),
     (
         "the page notes when an action's note wasn't saved",
